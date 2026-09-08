@@ -51,9 +51,9 @@ pub struct TokamakConfig {
 pub struct TokamakIcons {
     /// Android `res` directory contents.
     pub android: Option<PathBuf>,
-    /// Apple iOS asset catalog directory.
+    /// Apple Icon Composer `.icon` package.
     pub ios: Option<PathBuf>,
-    /// macOS `.icns` file.
+    /// Apple Icon Composer `.icon` package.
     pub macos: Option<PathBuf>,
     /// Windows `.ico` file.
     pub windows: Option<PathBuf>,
@@ -224,7 +224,7 @@ mod tests {
             r#"{
                 // Native application assets.
                 "icons": {
-                    "ios": "assets/ios",
+                    "ios": "assets/AppIcon.icon",
                 },
             }"#,
         )?;
@@ -234,7 +234,7 @@ mod tests {
         assert_eq!(config.path, Some(config_path));
         assert_eq!(
             config.icons.and_then(|icons| icons.ios),
-            Some(temporary.path().join("assets/ios"))
+            Some(temporary.path().join("assets/AppIcon.icon"))
         );
         Ok(())
     }
@@ -258,10 +258,7 @@ mod tests {
     fn prefers_jsonc_over_json() -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
         fs::write(temporary.path().join("tokamak.json"), "{}")?;
-        fs::write(
-            temporary.path().join("tokamak.jsonc"),
-            r#"{"icons":{"macos":"icon.icns"}}"#,
-        )?;
+        fs::write(temporary.path().join("tokamak.jsonc"), "{}")?;
 
         let path = resolve_config_path(temporary.path(), None)?;
 

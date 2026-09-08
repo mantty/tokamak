@@ -143,10 +143,6 @@ pub(crate) fn stage_platform_icons(
         return Ok(());
     };
 
-    let directory_required = matches!(
-        platform,
-        Platform::Android | Platform::Ios | Platform::IosSimulator
-    );
     if !source.exists() {
         bail!(
             "Tokamak {} icon path does not exist: {}",
@@ -154,48 +150,70 @@ pub(crate) fn stage_platform_icons(
             source.display()
         );
     }
-    if source.is_dir() != directory_required {
-        let expected = if directory_required {
-            "directory"
-        } else {
-            "file"
-        };
-        bail!(
-            "Tokamak {} icon path must be a {expected}: {}",
-            platform.display_name(),
-            source.display()
-        );
-    }
 
     let destination = input.join("icons").join(platform.directory_name());
-    if directory_required {
-        fs::create_dir_all(&destination)?;
-        copy_dir_contents(source, &destination)?;
-    } else {
-        let expected_extension = match platform {
-            Platform::Macos => "icns",
-            Platform::Windows => "ico",
-            Platform::Android | Platform::Ios | Platform::IosSimulator => unreachable!(),
-        };
-        let extension = source
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Tokamak {} icon path must have a file extension: {}",
+    match platform {
+        Platform::Android => {
+            if !source.is_dir() {
+                bail!(
+                    "Tokamak {} icon path must be a directory: {}",
                     platform.display_name(),
                     source.display()
-                )
-            })?;
-        if !extension.eq_ignore_ascii_case(expected_extension) {
-            bail!(
-                "Tokamak {} icon path must use the .{expected_extension} format: {}",
-                platform.display_name(),
-                source.display()
-            );
+                );
+            }
+            fs::create_dir_all(&destination)?;
+            copy_dir_contents(source, &destination)?;
         }
-        let destination = destination.join(format!("AppIcon.{expected_extension}"));
-        copy_file(source, destination)?;
+        Platform::Ios | Platform::IosSimulator | Platform::Macos => {
+            if !source.is_dir() {
+                bail!(
+                    "Tokamak {} icon path must be an .icon directory: {}",
+                    platform.display_name(),
+                    source.display()
+                );
+            }
+            let is_icon_package = source
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("icon"));
+            if !is_icon_package {
+                bail!(
+                    "Tokamak {} icon path must use the .icon format: {}",
+                    platform.display_name(),
+                    source.display()
+                );
+            }
+            let destination = destination.join("AppIcon.icon");
+            fs::create_dir_all(&destination)?;
+            copy_dir_contents(source, &destination)?;
+        }
+        Platform::Windows => {
+            if source.is_dir() {
+                bail!(
+                    "Tokamak {} icon path must be a file: {}",
+                    platform.display_name(),
+                    source.display()
+                );
+            }
+            let extension = source
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Tokamak {} icon path must have a file extension: {}",
+                        platform.display_name(),
+                        source.display()
+                    )
+                })?;
+            if !extension.eq_ignore_ascii_case("ico") {
+                bail!(
+                    "Tokamak {} icon path must use the .ico format: {}",
+                    platform.display_name(),
+                    source.display()
+                );
+            }
+            copy_file(source, destination.join("AppIcon.ico"))?;
+        }
     }
     Ok(())
 }
@@ -347,6 +365,57 @@ mod tests {
         )?;
 
         assert!(!temporary.path().join("input").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn stages_apple_icon_packages_for_both_platforms() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let source = temporary.path().join("Brand.icon");
+        fs::create_dir(&source)?;
+        fs::write(source.join("icon.json"), "icon")?;
+        let config = TokamakConfig {
+            icons: Some(TokamakIcons {
+                ios: Some(source.clone()),
+                macos: Some(source),
+                ..TokamakIcons::default()
+            }),
+            ..TokamakConfig::default()
+        };
+
+        for platform in [Platform::Ios, Platform::Macos] {
+            let input = temporary.path().join(platform.directory_name());
+            stage_platform_icons(&input, &config, platform)?;
+            assert_eq!(
+                fs::read_to_string(input.join(format!(
+                    "icons/{}/AppIcon.icon/icon.json",
+                    platform.directory_name()
+                )))?,
+                "icon"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_non_icon_apple_packages() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let source = temporary.path().join("AppIcon.invalid");
+        fs::create_dir(&source)?;
+        let config = TokamakConfig {
+            icons: Some(TokamakIcons {
+                macos: Some(source),
+                ..TokamakIcons::default()
+            }),
+            ..TokamakConfig::default()
+        };
+
+        let Err(error) =
+            stage_platform_icons(&temporary.path().join("input"), &config, Platform::Macos)
+        else {
+            return Err(std::io::Error::other("non-.icon package was accepted").into());
+        };
+        assert!(error.to_string().contains("must use the .icon format"));
         Ok(())
     }
 

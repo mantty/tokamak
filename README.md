@@ -67,8 +67,8 @@ For now, the supported value is `icons`:
 {
   "icons": {
     "android": "assets/icons/android",
-    "ios": "assets/icons/ios/AppIcon.xcassets",
-    "macos": "assets/icons/macos/AppIcon.icns",
+    "ios": "assets/icons/AppIcon.icon",
+    "macos": "assets/icons/AppIcon.icon",
     "windows": "assets/icons/windows/AppIcon.ico",
   },
 }
@@ -79,11 +79,16 @@ entry is absent, that platform keeps its existing icon behavior.
 
 - `android` points to the contents of an Android `res` directory. It should
   contain launcher resources such as `mipmap-*/ic_launcher`.
-- `ios` points to an `.xcassets` directory containing
-  `AppIcon.appiconset`. It is used for both iOS devices and iOS simulators.
-- `macos` points to an `.icns` file.
+- `ios` points to an Apple Icon Composer `.icon` package. It is used for both
+  iOS devices and iOS simulators.
+- `macos` points to an Apple Icon Composer `.icon` package. The same package
+  can be used for both iOS and macOS, or each platform can use its own package.
 - `windows` points to an `.ico` file. It is copied beside the packaged
   executable and used for the Windows window and taskbar icon.
+
+The Apple `.icon` package must be created by Icon Composer and kept as a
+package directory; do not point to a flattened export. Apple builds compile
+the package into the platform bundle.
 
 Relative paths are resolved from the directory containing the Tokamak
 configuration file. Invalid paths or platform formats fail the native build.
