@@ -263,6 +263,9 @@ rm -rf "$output"
 mkdir -p "$output/app"
 cp -R "$input/app/." "$output/app/"
 cp "$input/runtime/tokamak-shell-windows.exe" "$output/$app_name.exe"
+if [ -f "$input/icons/windows/AppIcon.ico" ]; then
+  cp "$input/icons/windows/AppIcon.ico" "$output/AppIcon.ico"
+fi
 printf '{"name":"%s","host":"%s"}\n' "$app_name" "$host" > "$output/tokamak.json"
 "#
     };
@@ -289,6 +292,76 @@ fn build_command(platform: &str, project: &Path, target_pack: &Path) -> TestResu
         .arg(target_pack)
         .arg("--skip-web-build");
     Ok(command)
+}
+
+#[cfg(unix)]
+fn configure_fake_apple_tools(command: &mut Command, root: &Path) -> TestResult<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = root.join("fake-apple-tools");
+    fs::create_dir_all(&bin)?;
+    let xcrun = bin.join("xcrun");
+    fs::write(
+        &xcrun,
+        r#"#!/bin/sh
+set -eu
+
+mode=
+next=
+compile=
+partial=
+output=
+for arg in "$@"; do
+  if [ "$arg" = actool ] || [ "$arg" = swiftc ]; then
+    mode=$arg
+  elif [ "$arg" = --compile ]; then
+    next=compile
+  elif [ "$arg" = --output-partial-info-plist ]; then
+    next=partial
+  elif [ "$arg" = -o ]; then
+    next=output
+  elif [ -n "$next" ]; then
+    case "$next" in
+      compile) compile=$arg ;;
+      partial) partial=$arg ;;
+      output) output=$arg ;;
+    esac
+    next=
+  fi
+done
+
+printf '%s\n' "$*" >> "$TOKAMAK_TEST_TOOL_LOG"
+case "$mode" in
+  actool)
+    mkdir -p "$compile"
+    printf '%s\n' fake-assets > "$compile/Assets.car"
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0"><dict><key>CFBundleIconName</key><string>AppIcon</string></dict></plist>' > "$partial"
+    ;;
+  swiftc)
+    mkdir -p "$(dirname "$output")"
+    printf '%s\n' '#!/bin/sh' > "$output"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+    )?;
+    let codesign = bin.join("codesign");
+    fs::write(&codesign, "#!/bin/sh\nexit 0\n")?;
+    for tool in [&xcrun, &codesign] {
+        let mut permissions = fs::metadata(tool)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(tool, permissions)?;
+    }
+
+    let log = root.join("apple-tool.log");
+    let mut path = OsString::from(bin);
+    path.push(":");
+    path.push(std::env::var_os("PATH").ok_or("PATH unavailable")?);
+    command.env("PATH", path).env("TOKAMAK_TEST_TOOL_LOG", &log);
+    Ok(log)
 }
 
 #[test]
@@ -319,10 +392,69 @@ fn builds_macos_app_with_quickjs_bundle_and_assets() -> TestResult {
     assert!(app.join("assets/index.html").is_file());
     let plist = fs::read_to_string(bundle.join("Contents/Info.plist"))?;
     assert!(plist.contains("NSAllowsLocalNetworking"));
+    assert!(!bundle.join("Contents/Resources/Assets.car").exists());
+    assert!(!plist.contains("CFBundleIconName"));
+    assert!(!plist.contains("CFBundleIconFile"));
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(app.join("asset-manifest.json"))?)?;
     assert_eq!(manifest["files"]["styles/app.css"], "text/css");
     assert!(!app.join("config.capnp").exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn builds_configured_apple_icon_packages() -> TestResult {
+    for (platform, target, bundle_path, assets_path, sdk) in [
+        (
+            "macos",
+            "macos-arm64",
+            "build/macos/demo-app.app",
+            "Contents/Resources/Assets.car",
+            "macosx",
+        ),
+        (
+            "ios-simulator",
+            "ios-simulator-arm64",
+            "build/ios-simulator/demo-app.app",
+            "Assets.car",
+            "iphonesimulator",
+        ),
+    ] {
+        let (temporary, project, manifest) = create_inputs(target)?;
+        let icon = project.join("assets/AppIcon.icon");
+        fs::create_dir_all(&icon)?;
+        fs::write(icon.join("icon.json"), "{}")?;
+        fs::write(
+            project.join("tokamak.jsonc"),
+            r#"{
+  "icons": {
+    "ios": "assets/AppIcon.icon",
+    "macos": "assets/AppIcon.icon"
+  }
+}"#,
+        )?;
+
+        let mut command = build_command(platform, &project, &manifest)?;
+        command.arg("--config").arg(project.join("tokamak.jsonc"));
+        let tool_log = configure_fake_apple_tools(&mut command, temporary.path())?;
+        command.assert().success();
+
+        let bundle = project.join(bundle_path);
+        assert!(bundle.join(assets_path).is_file());
+        let plist = fs::read_to_string(bundle.join(if platform == "macos" {
+            "Contents/Info.plist"
+        } else {
+            "Info.plist"
+        }))?;
+        assert!(plist.contains("CFBundleIconName"));
+        assert!(plist.contains("AppIcon"));
+        assert!(!plist.contains("CFBundleIconFile"));
+        let log = fs::read_to_string(tool_log)?;
+        assert!(log.contains("--app-icon AppIcon"));
+        assert!(log.contains(&format!("--platform {sdk}")));
+        assert!(log.contains("AppIcon.icon"));
+    }
     Ok(())
 }
 
@@ -422,6 +554,26 @@ fn builds_windows_app_with_its_runtime_files() -> TestResult {
 }
 
 #[test]
+fn builds_a_configured_windows_icon() -> TestResult {
+    let (_temporary, project, manifest) = create_windows_inputs()?;
+    fs::write(project.join("AppIcon.ico"), "ico")?;
+    fs::write(
+        project.join("tokamak.jsonc"),
+        r#"{"icons":{"windows":"AppIcon.ico"}}"#,
+    )?;
+
+    let mut command = build_command("windows", &project, &manifest)?;
+    command.arg("--config").arg(project.join("tokamak.jsonc"));
+    command.assert().success();
+
+    assert_eq!(
+        fs::read(project.join("build/windows/demo-app/AppIcon.ico"))?,
+        b"ico"
+    );
+    Ok(())
+}
+
+#[test]
 fn requires_a_target_pack_for_app_builds() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let project = temporary.path().join("project");
@@ -479,7 +631,7 @@ fn builds_web_project_before_loading_generated_config() -> TestResult {
         .arg(&project)
         .arg("--target-pack")
         .arg(target_pack)
-        .arg("--config")
+        .arg("--wrangler")
         .arg(config);
     command.assert().success();
 

@@ -11,6 +11,7 @@ output=$3
 metadata=$input/metadata
 app_name=$(cat "$metadata/app-name")
 host=$(cat "$metadata/host")
+platform=$(cat "$metadata/platform")
 dev_endpoint=
 dev_session_token=
 if [[ -f "$metadata/dev-endpoint" ]]; then
@@ -34,12 +35,25 @@ native=$app/src/main/jniLibs/arm64-v8a
 assets=$app/src/main/assets/app
 kotlin=$app/src/main/kotlin/com/tokamak/runtime
 plugins_root=$app/src/main/kotlin/tokamak/plugins
+icons=$input/icons/$platform
 
 rm -rf "$project" "$output"
-mkdir -p "$native" "$assets" "$kotlin" "$plugins_root"
+mkdir -p "$native" "$assets" "$kotlin" "$plugins_root" "$app/src/main/res"
 cp -R "$input/app/." "$assets/"
 cp "$input/runtime/libtokamak.so" "$native/libtokamak.so"
 cp -R "$input/native-shell/." "$kotlin/"
+
+has_icon=false
+if [[ -d "$icons" ]]; then
+  cp -R "$icons/." "$app/src/main/res/"
+  shopt -s nullglob
+  launcher_resources=("$app/src/main/res"/mipmap*/ic_launcher.*)
+  if (( ${#launcher_resources[@]} == 0 )); then
+    echo "Android icon resources must define mipmap/ic_launcher" >&2
+    exit 1
+  fi
+  has_icon=true
+fi
 
 shopt -s nullglob
 plugin_classes=()
@@ -157,7 +171,11 @@ manifest=$app/src/main/AndroidManifest.xml
       printf '  <uses-permission android:name="%s" />\n' "$(cat "$permission")"
     done
   done
-  printf '  <application android:label="%s" android:usesCleartextTraffic="false">\n' "$app_name"
+  if [[ "$has_icon" == true ]]; then
+    printf '  <application android:label="%s" android:icon="@mipmap/ic_launcher" android:usesCleartextTraffic="false">\n' "$app_name"
+  else
+    printf '  <application android:label="%s" android:usesCleartextTraffic="false">\n' "$app_name"
+  fi
   printf '    <meta-data android:name="tokamak.host" android:value="%s" />\n' "$host"
   if [[ -n "$dev_endpoint" ]]; then
     printf '    <meta-data android:name="tokamak.dev.endpoint" android:value="%s" />\n' "$dev_endpoint"

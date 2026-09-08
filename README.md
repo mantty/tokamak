@@ -39,19 +39,59 @@ We do not (currently) support all Cloudflare bindings to additional services the
 Your project must have a `package.json` build script and a Wrangler config with
 at least `name` and `main`. tokamak runs the build with pnpm, Yarn, or npm based on
 the project's lockfile, then writes the native bundle under `build/<platform>`.
+The optional Tokamak configuration file is described below.
 
 ```sh
 tok build macos --project ./my-app
 ```
 
-Use `--config` to point to a specific Wrangler config file
+Use `--wrangler` to point to a specific Wrangler config file:
 
 ```sh
-tok build macos --config dist/server/wrangler.json
+tok build macos --wrangler dist/server/wrangler.json
 ```
 
 Platforms are `android`, `ios`, `ios-simulator`, `macos`, and `windows`.
 Multiple platforms can be comma-separated, for example `macos,android`.
+
+### Tokamak configuration
+
+tokamak looks for `tokamak.jsonc` in the current directory, followed by
+`tokamak.json`. The file is optional. Use `-c` or `--config` to provide a
+different file or directory; the option defaults to the current directory.
+JSONC comments and trailing commas are supported, and plain JSON is also valid.
+
+For now, the supported value is `icons`:
+
+```jsonc
+{
+  "icons": {
+    "android": "assets/icons/android",
+    "ios": "assets/icons/AppIcon.icon",
+    "macos": "assets/icons/AppIcon.icon",
+    "windows": "assets/icons/windows/AppIcon.ico",
+  },
+}
+```
+
+Each platform entry is optional. If the Tokamak configuration or a platform
+entry is absent, that platform keeps its existing icon behavior.
+
+- `android` points to the contents of an Android `res` directory. It should
+  contain launcher resources such as `mipmap-*/ic_launcher`.
+- `ios` points to an Apple Icon Composer `.icon` package. It is used for both
+  iOS devices and iOS simulators.
+- `macos` points to an Apple Icon Composer `.icon` package. The same package
+  can be used for both iOS and macOS, or each platform can use its own package.
+- `windows` points to an `.ico` file. It is copied beside the packaged
+  executable and used for the Windows window and taskbar icon.
+
+The Apple `.icon` package must be created by Icon Composer and kept as a
+package directory; do not point to a flattened export. Apple builds compile
+the package into the platform bundle.
+
+Relative paths are resolved from the directory containing the Tokamak
+configuration file. Invalid paths or platform formats fail the native build.
 
 ## Development
 
@@ -88,7 +128,7 @@ To produce a native bundle instead:
 pnpm --dir examples/astro run build
 tok build macos \
   --project examples/astro \
-  --config examples/astro/dist/server/wrangler.json \
+  --wrangler examples/astro/dist/server/wrangler.json \
   --skip-web-build
 ```
 
@@ -152,7 +192,7 @@ After building a target pack:
 pnpm --dir examples/astro run build
 cargo run -p tokamak-cli -- build macos \
   --project examples/astro \
-  --config examples/astro/dist/server/wrangler.json \
+  --wrangler examples/astro/dist/server/wrangler.json \
   --target-pack target/tokamak-target-packs/macos-arm64 \
   --skip-web-build
 ```

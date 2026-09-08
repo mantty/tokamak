@@ -44,6 +44,7 @@ pub use server::{Config, DevelopmentConfig, Runtime};
 mod compat;
 mod env_vars;
 mod streams;
+mod tokamak_config;
 #[cfg(feature = "native")]
 mod transport;
 mod wrangler_config;
@@ -67,6 +68,10 @@ pub use packaging::{
 };
 pub use quickjs::Error as QuickJsError;
 pub use quickjs::{compile_module, compile_worker};
+pub use tokamak_config::{
+    Error as TokamakConfigError, TokamakConfig, TokamakIcons, load_config as load_tokamak_config,
+    resolve_config_path as resolve_tokamak_config_path,
+};
 pub use wrangler_config::{
     Error as WranglerConfigError, HtmlHandling, NotFoundHandling, WranglerAssets, WranglerBinding,
     WranglerConfig, WranglerModuleType, WranglerRule, app_host, is_valid_app_name,

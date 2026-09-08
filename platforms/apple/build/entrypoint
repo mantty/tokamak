@@ -71,10 +71,33 @@ else
   executable_dir=$bundle
   app_dir=$bundle/app
 fi
+icons=$input/icons/$platform
+icon_info_plist=$temporary/icon-info.plist
 
 rm -rf "$bundle"
 mkdir -p "$executable_dir" "$app_dir" "$module_cache"
 cp -R "$input/app/." "$app_dir/"
+
+if [[ ( "$platform" == macos || "$platform" == ios || "$platform" == ios-simulator ) && -d "$icons/AppIcon.icon" ]]; then
+  if [[ "$platform" == macos ]]; then
+    icon_output=$contents/Resources
+    icon_minimum=14.0
+    icon_targets=(--target-device mac)
+  else
+    icon_output=$bundle
+    icon_minimum=17.0
+    icon_targets=(--target-device iphone --target-device ipad)
+  fi
+  xcrun --sdk "$sdk" actool \
+    --compile "$icon_output" \
+    --platform "$sdk" \
+    --minimum-deployment-target "$icon_minimum" \
+    --app-icon AppIcon \
+    "${icon_targets[@]}" \
+    --output-partial-info-plist "$icon_info_plist" \
+    --output-format human-readable-text \
+    "$icons/AppIcon.icon"
+fi
 
 shopt -s nullglob
 swift_sources=()
@@ -211,6 +234,9 @@ write_plist() {
 }
 
 write_plist
+if [[ -f "$icon_info_plist" ]]; then
+  /usr/libexec/PlistBuddy -c "Merge $icon_info_plist" "$contents/Info.plist"
+fi
 
 sign_bundle() {
   if [[ "$platform" == ios ]]; then

@@ -16,7 +16,7 @@ Build a target pack from the tokamak workspace, then package it:
 ```sh
 cargo run -p xtask -- target-pack --target macos-arm64
 TOKAMAK_TARGET_PACK_DIR=../../target/tokamak-target-packs \
-  cargo run -p tokamak-cli -- build macos --project . --config dist/server/wrangler.json
+  cargo run -p tokamak-cli -- build macos --project . --wrangler dist/server/wrangler.json
 ```
 
 The example intentionally uses no WebAssembly. It covers server rendering,

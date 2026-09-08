@@ -12,7 +12,8 @@ use serde::Deserialize;
 use tao::event::{Event as TaoEvent, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
-use tao::window::WindowBuilder;
+use tao::platform::windows::IconExtWindows;
+use tao::window::{Icon, WindowBuilder};
 use tokamak::{
     Certificates, Config, DevProxyConfig, DevelopmentConfig, Event, PackageLayout, Runtime,
     app_host, frontend_url,
@@ -66,8 +67,10 @@ pub(crate) fn run() -> Result<()> {
     let runtime = start_runtime(&config, &root, &state, events)?;
     let identity = ClientIdentity::install(&runtime.certificates(), &config.host)?;
     let client_certificate = Arc::new(RwLock::new(identity.certificate().to_vec()));
+    let icon = load_window_icon(&root)?;
     let window = WindowBuilder::new()
         .with_title(&config.name)
+        .with_window_icon(icon)
         .build(&event_loop)
         .context("create app window")?;
     let mut context = WebContext::new(Some(state.join("webview")));
@@ -175,6 +178,16 @@ fn executable_dir() -> Result<PathBuf> {
         .parent()
         .map(Path::to_path_buf)
         .context("app executable has no parent directory")
+}
+
+fn load_window_icon(root: &Path) -> Result<Option<Icon>> {
+    let path = root.join("AppIcon.ico");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    Icon::from_path(path, None)
+        .map(Some)
+        .context("load Windows app icon")
 }
 
 fn read_config(root: &Path) -> Result<ShellConfig> {

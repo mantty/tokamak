@@ -3,7 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use tokamak::{WranglerConfig, load_wrangler_config, resolve_wrangler_config_path};
+use tokamak::{
+    TokamakConfig, WranglerConfig, load_tokamak_config, load_wrangler_config,
+    resolve_tokamak_config_path, resolve_wrangler_config_path,
+};
 use tokamak_cli::{MANIFEST_FILE, Platform, Target, TargetPackManifest, load_manifest};
 
 use super::{plugins, support, worker};
@@ -12,7 +15,8 @@ pub(crate) struct BuildRequest {
     pub(crate) platforms: Vec<Platform>,
     pub(crate) project_dir: PathBuf,
     pub(crate) target_pack_dir: Option<PathBuf>,
-    pub(crate) config_path: Option<PathBuf>,
+    pub(crate) tokamak_config_path: PathBuf,
+    pub(crate) wrangler_config_path: Option<PathBuf>,
     pub(crate) skip_web_build: bool,
 }
 
@@ -25,7 +29,8 @@ pub(crate) struct DevelopmentRequest {
     pub(crate) platform: Platform,
     pub(crate) project_dir: PathBuf,
     pub(crate) target_pack_dir: Option<PathBuf>,
-    pub(crate) config_path: Option<PathBuf>,
+    pub(crate) tokamak_config_path: PathBuf,
+    pub(crate) wrangler_config_path: Option<PathBuf>,
     pub(crate) endpoint: String,
     pub(crate) session_token: String,
     pub(crate) ios_signing_identity: Option<String>,
@@ -44,12 +49,14 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     if !request.skip_web_build {
         support::run_web_build(&request.project_dir)?;
     }
-    let config_base = if request.config_path.is_some() {
+    let tokamak = load_project_config(&request.tokamak_config_path)?;
+    let config_base = if request.wrangler_config_path.is_some() {
         env::current_dir()?
     } else {
         request.project_dir.clone()
     };
-    let config_path = resolve_wrangler_config_path(&config_base, request.config_path.as_deref())?;
+    let config_path =
+        resolve_wrangler_config_path(&config_base, request.wrangler_config_path.as_deref())?;
     let wrangler = load_wrangler_config(&config_path)?;
     support::validate_web_build(&wrangler)?;
     let plugins = plugins::discover(&request.project_dir)?;
@@ -57,7 +64,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     request
         .platforms
         .iter()
-        .map(|platform| build_platform(request, *platform, &wrangler, &plugins))
+        .map(|platform| build_platform(request, *platform, &wrangler, &tokamak, &plugins))
         .collect()
 }
 
@@ -68,18 +75,21 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
             request.project_dir.display()
         );
     }
-    let config_base = if request.config_path.is_some() {
+    let tokamak = load_project_config(&request.tokamak_config_path)?;
+    let config_base = if request.wrangler_config_path.is_some() {
         env::current_dir()?
     } else {
         request.project_dir.clone()
     };
-    let config_path = resolve_wrangler_config_path(&config_base, request.config_path.as_deref())?;
+    let config_path =
+        resolve_wrangler_config_path(&config_base, request.wrangler_config_path.as_deref())?;
     let wrangler = load_wrangler_config(&config_path)?;
     let plugins = plugins::discover(&request.project_dir)?;
     let (input, pack_root, manifest, project) = prepare_platform_input(
         &request.project_dir,
         request.platform,
         request.target_pack_dir.as_deref(),
+        &tokamak,
     )?;
     plugins::stage(&plugins, request.platform, &input.join("plugins"))
         .context("stage native plugin inputs")?;
@@ -145,12 +155,14 @@ fn build_platform(
     request: &BuildRequest,
     platform: Platform,
     wrangler: &WranglerConfig,
+    tokamak: &TokamakConfig,
     plugins: &[plugins::Plugin],
 ) -> Result<BuildSummary> {
     let (input, pack_root, manifest, project) = prepare_platform_input(
         &request.project_dir,
         platform,
         request.target_pack_dir.as_deref(),
+        tokamak,
     )?;
 
     worker::prepare_quickjs_app(&input.join("app"), &pack_root, &manifest, wrangler)
@@ -179,6 +191,7 @@ fn prepare_platform_input(
     project_dir: &Path,
     platform: Platform,
     target_pack_dir: Option<&Path>,
+    tokamak: &TokamakConfig,
 ) -> Result<(PathBuf, PathBuf, TargetPackManifest, PathBuf)> {
     let manifest_path = fs::canonicalize(resolve_manifest(platform, target_pack_dir)?)?;
     let manifest = load_manifest(&manifest_path)
@@ -208,7 +221,20 @@ fn prepare_platform_input(
     fs::create_dir_all(input.join("app"))?;
     support::stage_platform_artifacts(&input, &pack_root, &manifest)
         .context("stage target-pack platform artifacts")?;
+    support::stage_platform_icons(&input, tokamak, platform)
+        .context("stage Tokamak application assets")?;
     Ok((input, pack_root, manifest, project))
+}
+
+fn load_project_config(config_path: &Path) -> Result<TokamakConfig> {
+    let current_dir = env::current_dir()?;
+    let path = resolve_tokamak_config_path(&current_dir, Some(config_path))?;
+    path.map(|path| {
+        load_tokamak_config(&path)
+            .with_context(|| format!("load Tokamak config {}", path.display()))
+    })
+    .transpose()
+    .map(Option::unwrap_or_default)
 }
 
 fn output_path(project: &Path, platform: Platform, app_name: &str) -> PathBuf {

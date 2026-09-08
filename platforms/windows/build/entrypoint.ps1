@@ -42,6 +42,10 @@ if (Test-Path $output) {
 New-Item -ItemType Directory -Force -Path $app | Out-Null
 Copy-Item (Join-Path $InputDirectory "app/*") $app -Recurse -Force
 Copy-Item (Join-Path $InputDirectory "runtime/tokamak-shell-windows.exe") (Join-Path $output "$appName.exe")
+$icon = Join-Path $InputDirectory "icons/windows/AppIcon.ico"
+if (Test-Path -LiteralPath $icon -PathType Leaf) {
+  Copy-Item -LiteralPath $icon (Join-Path $output "AppIcon.ico")
+}
 
 $config = [ordered]@{
   name = $appName
