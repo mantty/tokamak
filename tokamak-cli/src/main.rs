@@ -38,9 +38,12 @@ enum Command {
         /// Target-pack directory containing target-pack.json.
         #[arg(long = "target-pack")]
         target_pack: Option<PathBuf>,
+        /// Tokamak configuration file or directory. Defaults to the current directory.
+        #[arg(short = 'c', long = "config", default_value = ".")]
+        config: PathBuf,
         /// Path to the Wrangler configuration file.
-        #[arg(short = 'c', long = "config")]
-        config: Option<PathBuf>,
+        #[arg(short = 'w', long = "wrangler")]
+        wrangler: Option<PathBuf>,
         /// Reuse an existing dist/ directory instead of running the web build.
         #[arg(long)]
         skip_web_build: bool,
@@ -56,9 +59,12 @@ enum Command {
         /// Target-pack directory containing target-pack.json.
         #[arg(long = "target-pack")]
         target_pack: Option<PathBuf>,
+        /// Tokamak configuration file or directory. Defaults to the current directory.
+        #[arg(short = 'c', long = "config", default_value = ".")]
+        config: PathBuf,
         /// Path to the Wrangler configuration file.
-        #[arg(short = 'c', long = "config")]
-        config: Option<PathBuf>,
+        #[arg(short = 'w', long = "wrangler")]
+        wrangler: Option<PathBuf>,
         /// HTTP endpoint served by the framework's development command.
         #[arg(long, value_name = "URL", default_value = "http://localhost:5173")]
         server: String,
@@ -94,6 +100,7 @@ fn run() -> Result<()> {
             project,
             target_pack,
             config,
+            wrangler,
             skip_web_build,
         } => {
             let platforms = parse_platforms(&platforms)?;
@@ -101,7 +108,8 @@ fn run() -> Result<()> {
                 platforms,
                 project_dir: project,
                 target_pack_dir: target_pack,
-                config_path: config,
+                tokamak_config_path: config,
+                wrangler_config_path: wrangler,
                 skip_web_build,
             })?;
             for summary in summaries {
@@ -118,6 +126,7 @@ fn run() -> Result<()> {
             project,
             target_pack,
             config,
+            wrangler,
             server,
             host_address,
             command,
@@ -126,7 +135,8 @@ fn run() -> Result<()> {
                 device_id,
                 project_dir: project,
                 target_pack_dir: target_pack,
-                config_path: config,
+                tokamak_config_path: config,
+                wrangler_config_path: wrangler,
                 server,
                 host_address,
                 command,
@@ -160,6 +170,7 @@ fn list_targets() {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::path::Path;
 
     use clap::Parser;
 
@@ -179,6 +190,43 @@ mod tests {
             Cli::try_parse_from(["tok", "build", "macos,android"]),
             Ok(Cli { command: Command::Build { platforms, .. } })
                 if platforms == "macos,android"
+        ));
+    }
+
+    #[test]
+    fn defaults_tokamak_config_to_the_current_directory() {
+        assert!(matches!(
+            Cli::try_parse_from(["tok", "build", "macos"]),
+            Ok(Cli {
+                command: Command::Build {
+                    config,
+                    wrangler,
+                    ..
+                }
+            }) if config.as_path() == Path::new(".") && wrangler.is_none()
+        ));
+    }
+
+    #[test]
+    fn keeps_tokamak_and_wrangler_config_paths_separate() {
+        assert!(matches!(
+            Cli::try_parse_from([
+                "tok",
+                "build",
+                "macos",
+                "--config",
+                "tokamak.jsonc",
+                "--wrangler",
+                "dist/wrangler.json"
+            ]),
+            Ok(Cli {
+                command: Command::Build {
+                    config,
+                    wrangler: Some(wrangler),
+                    ..
+                }
+            }) if config.as_path() == Path::new("tokamak.jsonc")
+                && wrangler.as_path() == Path::new("dist/wrangler.json")
         ));
     }
 

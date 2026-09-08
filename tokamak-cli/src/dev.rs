@@ -31,7 +31,8 @@ pub(crate) struct Request {
     pub(crate) device_id: String,
     pub(crate) project_dir: PathBuf,
     pub(crate) target_pack_dir: Option<PathBuf>,
-    pub(crate) config_path: Option<PathBuf>,
+    pub(crate) tokamak_config_path: PathBuf,
+    pub(crate) wrangler_config_path: Option<PathBuf>,
     pub(crate) server: String,
     pub(crate) host_address: Option<String>,
     pub(crate) command: Vec<std::ffi::OsString>,
@@ -48,7 +49,7 @@ pub(crate) fn run(request: &Request) -> Result<()> {
             request.project_dir.display()
         )
     })?;
-    let wrangler = load_development_config(&project, request.config_path.as_deref())?;
+    let wrangler = load_development_config(&project, request.wrangler_config_path.as_deref())?;
     warn_unsupported_bindings(&wrangler);
     let device = devices::prepare(&request.device_id)?;
     let signing = ios_signing::resolve(
@@ -210,7 +211,8 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
         platform: session.device.platform,
         project_dir: session.request.project_dir.clone(),
         target_pack_dir: session.request.target_pack_dir.clone(),
-        config_path: session.request.config_path.clone(),
+        tokamak_config_path: session.request.tokamak_config_path.clone(),
+        wrangler_config_path: session.request.wrangler_config_path.clone(),
         endpoint: session.relay.device_endpoint(),
         session_token: session.session_token.to_owned(),
         ios_signing_identity: session.signing.map(|selection| selection.identity.clone()),

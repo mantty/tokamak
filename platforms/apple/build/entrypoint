@@ -71,10 +71,34 @@ else
   executable_dir=$bundle
   app_dir=$bundle/app
 fi
+icons=$input/icons/$platform
+has_ios_icon=false
+has_macos_icon=false
 
 rm -rf "$bundle"
 mkdir -p "$executable_dir" "$app_dir" "$module_cache"
 cp -R "$input/app/." "$app_dir/"
+
+if [[ "$platform" == macos && -f "$icons/AppIcon.icns" ]]; then
+  cp "$icons/AppIcon.icns" "$contents/Resources/AppIcon.icns"
+  has_macos_icon=true
+elif [[ ( "$platform" == ios || "$platform" == ios-simulator ) && -d "$icons" ]]; then
+  if [[ ! -d "$icons/AppIcon.appiconset" ]]; then
+    echo "iOS icon catalog must contain AppIcon.appiconset: $icons" >&2
+    exit 1
+  fi
+  xcrun --sdk "$sdk" actool \
+    --compile "$bundle" \
+    --platform "$sdk" \
+    --minimum-deployment-target 17.0 \
+    --app-icon AppIcon \
+    --target-device iphone \
+    --target-device ipad \
+    --compress-pngs \
+    --output-format human-readable-text \
+    "$icons"
+  has_ios_icon=true
+fi
 
 shopt -s nullglob
 swift_sources=()
@@ -179,6 +203,11 @@ write_plist() {
     printf '%s\n' '  <key>CFBundlePackageType</key><string>APPL</string>'
     printf '%s\n' '  <key>CFBundleVersion</key><string>1</string>'
     printf '%s\n' '  <key>CFBundleShortVersionString</key><string>1.0</string>'
+    if [[ "$has_macos_icon" == true ]]; then
+      printf '%s\n' '  <key>CFBundleIconFile</key><string>AppIcon.icns</string>'
+    elif [[ "$has_ios_icon" == true ]]; then
+      printf '%s\n' '  <key>CFBundleIconName</key><string>AppIcon</string>'
+    fi
     printf '  <key>TokamakHost</key><string>%s</string>\n' "$(xml_escape "$host")"
     if [[ -n "$dev_endpoint" ]]; then
       printf '  <key>TokamakDevEndpoint</key><string>%s</string>\n' "$(xml_escape "$dev_endpoint")"

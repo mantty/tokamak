@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use tokamak::WranglerConfig;
+use tokamak::{TokamakConfig, TokamakIcons, WranglerConfig};
 use tokamak_cli::{ArtifactKind, Platform, Target, TargetPackManifest};
 use walkdir::WalkDir;
 
@@ -131,6 +131,84 @@ pub(crate) fn stage_platform_artifacts(
     Ok(())
 }
 
+pub(crate) fn stage_platform_icons(
+    input: &Path,
+    config: &TokamakConfig,
+    platform: Platform,
+) -> Result<()> {
+    let Some(icons) = config.icons.as_ref() else {
+        return Ok(());
+    };
+    let Some(source) = icon_path(icons, platform) else {
+        return Ok(());
+    };
+
+    let directory_required = matches!(
+        platform,
+        Platform::Android | Platform::Ios | Platform::IosSimulator
+    );
+    if !source.exists() {
+        bail!(
+            "Tokamak {} icon path does not exist: {}",
+            platform.display_name(),
+            source.display()
+        );
+    }
+    if source.is_dir() != directory_required {
+        let expected = if directory_required {
+            "directory"
+        } else {
+            "file"
+        };
+        bail!(
+            "Tokamak {} icon path must be a {expected}: {}",
+            platform.display_name(),
+            source.display()
+        );
+    }
+
+    let destination = input.join("icons").join(platform.directory_name());
+    if directory_required {
+        fs::create_dir_all(&destination)?;
+        copy_dir_contents(source, &destination)?;
+    } else {
+        let expected_extension = match platform {
+            Platform::Macos => "icns",
+            Platform::Windows => "ico",
+            Platform::Android | Platform::Ios | Platform::IosSimulator => unreachable!(),
+        };
+        let extension = source
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Tokamak {} icon path must have a file extension: {}",
+                    platform.display_name(),
+                    source.display()
+                )
+            })?;
+        if !extension.eq_ignore_ascii_case(expected_extension) {
+            bail!(
+                "Tokamak {} icon path must use the .{expected_extension} format: {}",
+                platform.display_name(),
+                source.display()
+            );
+        }
+        let destination = destination.join(format!("AppIcon.{expected_extension}"));
+        copy_file(source, destination)?;
+    }
+    Ok(())
+}
+
+fn icon_path(config: &TokamakIcons, platform: Platform) -> Option<&Path> {
+    match platform {
+        Platform::Android => config.android.as_deref(),
+        Platform::Ios | Platform::IosSimulator => config.ios.as_deref(),
+        Platform::Macos => config.macos.as_deref(),
+        Platform::Windows => config.windows.as_deref(),
+    }
+}
+
 pub(crate) fn run_entrypoint(
     pack_root: &Path,
     input: &Path,
@@ -209,7 +287,12 @@ pub(crate) fn copy_dir_contents(from: &Path, to: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::package_manager;
+    use std::fs;
+
+    use tokamak::{TokamakConfig, TokamakIcons};
+    use tokamak_cli::Platform;
+
+    use super::{package_manager, stage_platform_icons};
 
     #[test]
     fn selects_platform_package_manager_commands() {
@@ -217,6 +300,54 @@ mod tests {
         for name in ["npm", "pnpm", "yarn"] {
             assert_eq!(package_manager(name), format!("{name}{suffix}"));
         }
+    }
+
+    #[test]
+    fn stages_only_the_configured_platform_icons() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let android = temporary.path().join("android");
+        fs::create_dir_all(android.join("mipmap-mdpi"))?;
+        fs::write(android.join("mipmap-mdpi/ic_launcher.png"), "png")?;
+        let windows = temporary.path().join("icon.ico");
+        fs::write(&windows, "ico")?;
+        let config = TokamakConfig {
+            icons: Some(TokamakIcons {
+                android: Some(android),
+                windows: Some(windows),
+                ..TokamakIcons::default()
+            }),
+            ..TokamakConfig::default()
+        };
+
+        let android_input = temporary.path().join("android-input");
+        stage_platform_icons(&android_input, &config, Platform::Android)?;
+        assert_eq!(
+            fs::read_to_string(android_input.join("icons/android/mipmap-mdpi/ic_launcher.png"))?,
+            "png"
+        );
+
+        let windows_input = temporary.path().join("windows-input");
+        stage_platform_icons(&windows_input, &config, Platform::Windows)?;
+        assert_eq!(
+            fs::read_to_string(windows_input.join("icons/windows/AppIcon.ico"))?,
+            "ico"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn absent_platform_icon_does_not_create_staging_files() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temporary = tempfile::tempdir()?;
+
+        stage_platform_icons(
+            &temporary.path().join("input"),
+            &TokamakConfig::default(),
+            Platform::Macos,
+        )?;
+
+        assert!(!temporary.path().join("input").exists());
+        Ok(())
     }
 
     #[cfg(unix)]

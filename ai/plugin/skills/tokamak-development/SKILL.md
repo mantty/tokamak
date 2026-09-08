@@ -45,7 +45,8 @@ tok targets
 ```
 
 - Use `--server http://<host>:<port>` when the framework development server is not at `http://localhost:5173`.
-- Use `--config <path>` when the relevant Wrangler file is generated outside the project root.
+- Use `--wrangler <path>` when the relevant Wrangler file is generated outside the project root.
+- Use `--config <path>` for the optional Tokamak configuration file; it defaults to the current directory.
 - Pass `--skip-web-build` only when the framework output already exists and is current.
 - Use the current native platform names: `android`, `ios`, `ios-simulator`, `macos`, and `windows`.
 - Require a `package.json` build script and a Wrangler configuration with at least `name` and `main` for a packaged build.
