@@ -42,8 +42,40 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct TokamakConfig {
     /// Absolute path to the configuration file, when one was loaded.
     pub path: Option<PathBuf>,
+    /// Normalized application names, when configured.
+    pub name: Option<TokamakName>,
     /// Platform-specific application assets.
     pub icons: Option<TokamakIcons>,
+}
+
+/// Normalized application names for the supported platforms.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TokamakName {
+    /// Name used when a platform-specific name is not configured.
+    pub default: String,
+    /// Android application name override.
+    pub android: Option<String>,
+    /// iOS application name override, also used by iOS simulators.
+    pub ios: Option<String>,
+    /// macOS application name override.
+    pub macos: Option<String>,
+    /// Windows application name override.
+    pub windows: Option<String>,
+}
+
+impl TokamakName {
+    /// Return the configured name for a platform, falling back to default.
+    #[must_use]
+    pub fn for_platform(&self, platform: &str) -> &str {
+        let platform_name = match platform {
+            "android" => self.android.as_deref(),
+            "ios" | "ios-simulator" => self.ios.as_deref(),
+            "macos" => self.macos.as_deref(),
+            "windows" => self.windows.as_deref(),
+            _ => None,
+        };
+        platform_name.unwrap_or(&self.default)
+    }
 }
 
 /// Platform-specific application asset paths.
@@ -116,6 +148,10 @@ pub fn load_config(config_path: &Path) -> Result<TokamakConfig> {
     let config_dir = config_path
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let name = raw
+        .name
+        .map(|name| resolve_name(&config_path, name))
+        .transpose()?;
     let icons = raw
         .icons
         .map(|icons| resolve_icons(&config_path, &config_dir, icons))
@@ -123,6 +159,7 @@ pub fn load_config(config_path: &Path) -> Result<TokamakConfig> {
 
     Ok(TokamakConfig {
         path: Some(config_path),
+        name,
         icons,
     })
 }
@@ -130,8 +167,19 @@ pub fn load_config(config_path: &Path) -> Result<TokamakConfig> {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawTokamakConfig {
+    name: Option<RawTokamakName>,
     #[serde(default)]
     icons: Option<RawTokamakIcons>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTokamakName {
+    default: String,
+    android: Option<String>,
+    ios: Option<String>,
+    macos: Option<String>,
+    windows: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,6 +189,51 @@ struct RawTokamakIcons {
     ios: Option<String>,
     macos: Option<String>,
     windows: Option<String>,
+}
+
+fn resolve_name(config_path: &Path, name: RawTokamakName) -> Result<TokamakName> {
+    Ok(TokamakName {
+        default: normalize_name(config_path, "name.default", &name.default)?,
+        android: normalize_optional_name(config_path, "name.android", name.android)?,
+        ios: normalize_optional_name(config_path, "name.ios", name.ios)?,
+        macos: normalize_optional_name(config_path, "name.macos", name.macos)?,
+        windows: normalize_optional_name(config_path, "name.windows", name.windows)?,
+    })
+}
+
+fn normalize_optional_name(
+    config_path: &Path,
+    field: &str,
+    value: Option<String>,
+) -> Result<Option<String>> {
+    value
+        .map(|value| normalize_name(config_path, field, &value))
+        .transpose()
+}
+
+fn normalize_name(config_path: &Path, field: &str, value: &str) -> Result<String> {
+    let mut normalized = String::new();
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character.to_ascii_lowercase());
+        } else if !normalized.is_empty() && !normalized.ends_with('-') {
+            normalized.push('-');
+        }
+    }
+    let normalized = normalized.trim_end_matches('-').to_owned();
+    if normalized.is_empty() {
+        return Err(Error::InvalidConfig {
+            path: config_path.to_path_buf(),
+            message: format!("{field} must contain an ASCII letter or digit"),
+        });
+    }
+    if normalized.len() > 63 {
+        return Err(Error::InvalidConfig {
+            path: config_path.to_path_buf(),
+            message: format!("{field} must normalize to at most 63 characters"),
+        });
+    }
+    Ok(normalized)
 }
 
 fn resolve_icons(
@@ -212,7 +305,64 @@ fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
 mod tests {
     use std::fs;
 
-    use super::{Error, load_config, resolve_config_path};
+    use super::{Error, TokamakName, load_config, resolve_config_path};
+
+    #[test]
+    fn normalizes_names_and_applies_platform_overrides() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let config_path = temporary.path().join("tokamak.jsonc");
+        fs::write(
+            &config_path,
+            r#"{
+                "name": {
+                    "default": "My App",
+                    "ios": "Myapp Pro",
+                },
+            }"#,
+        )?;
+
+        let config = load_config(&config_path)?;
+        let name = config.name.ok_or("name was not loaded")?;
+
+        assert_eq!(
+            name,
+            TokamakName {
+                default: "my-app".to_owned(),
+                ios: Some("myapp-pro".to_owned()),
+                ..TokamakName::default()
+            }
+        );
+        assert_eq!(name.for_platform("ios"), "myapp-pro");
+        assert_eq!(name.for_platform("ios-simulator"), "myapp-pro");
+        assert_eq!(name.for_platform("macos"), "my-app");
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_name_that_normalizes_to_nothing() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let config_path = temporary.path().join("tokamak.json");
+        fs::write(&config_path, r#"{"name":{"default":"!!!"}}"#)?;
+
+        assert!(matches!(
+            load_config(&config_path),
+            Err(Error::InvalidConfig { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn requires_default_when_name_is_configured() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let config_path = temporary.path().join("tokamak.json");
+        fs::write(&config_path, r#"{"name":{"ios":"My App"}}"#)?;
+
+        assert!(matches!(
+            load_config(&config_path),
+            Err(Error::InvalidConfig { .. })
+        ));
+        Ok(())
+    }
 
     #[test]
     fn loads_jsonc_and_resolves_paths_from_its_directory() -> Result<(), Box<dyn std::error::Error>>

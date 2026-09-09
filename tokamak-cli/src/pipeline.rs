@@ -9,7 +9,7 @@ use tokamak::{
 };
 use tokamak_cli::{MANIFEST_FILE, Platform, Target, TargetPackManifest, load_manifest};
 
-use super::{plugins, support, worker};
+use super::{ios_signing, plugins, support, worker};
 
 pub(crate) struct BuildRequest {
     pub(crate) platforms: Vec<Platform>,
@@ -85,6 +85,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
         resolve_wrangler_config_path(&config_base, request.wrangler_config_path.as_deref())?;
     let wrangler = load_wrangler_config(&config_path)?;
     let plugins = plugins::discover(&request.project_dir)?;
+    let app_name = resolve_app_name(&tokamak, &wrangler.name, request.platform);
     let (input, pack_root, manifest, project) = prepare_platform_input(
         &request.project_dir,
         request.platform,
@@ -96,14 +97,14 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
     fs::write(input.join("app/.tokamak-development"), b"")?;
     write_build_metadata(
         &input,
-        &wrangler.name,
+        &app_name,
         request.platform,
         &manifest,
         Some((&request.endpoint, &request.session_token)),
     )
     .context("write development metadata")?;
 
-    let bundle_dir = output_path(&project, request.platform, &wrangler.name);
+    let bundle_dir = output_path(&project, request.platform, &app_name);
     let mut environment = Vec::new();
     if let Some(identity) = &request.ios_signing_identity {
         environment.push((
@@ -127,11 +128,12 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
             request.platform.display_name()
         )
     })?;
+    let bundle_id = format!("com.tokamak.{app_name}");
     Ok(DevelopmentSummary {
         platform: request.platform,
         bundle_dir,
-        app_name: wrangler.name.clone(),
-        bundle_id: format!("com.tokamak.{}", wrangler.name),
+        app_name,
+        bundle_id,
     })
 }
 
@@ -169,22 +171,43 @@ fn build_platform(
         .context("prepare the tokamak application package")?;
     plugins::stage(plugins, platform, &input.join("plugins"))
         .context("stage native plugin inputs")?;
-    write_build_metadata(&input, &wrangler.name, platform, &manifest, None)
+    let app_name = resolve_app_name(tokamak, &wrangler.name, platform);
+    let bundle_id = format!("com.tokamak.{app_name}");
+    write_build_metadata(&input, &app_name, platform, &manifest, None)
         .context("write platform build metadata")?;
 
-    let output = output_path(&project, platform, &wrangler.name);
-    support::run_entrypoint(&pack_root, &input, &output, manifest.target, &[]).with_context(
-        || {
+    let output = output_path(&project, platform, &app_name);
+    let signing = ios_signing::resolve(platform, &project, &bundle_id, None)?;
+    let mut environment = Vec::new();
+    if let Some(selection) = signing.as_ref() {
+        environment.push(("TOKAMAK_IOS_SIGNING_IDENTITY", selection.identity.as_ref()));
+        environment.push((
+            "TOKAMAK_IOS_PROVISIONING_PROFILE",
+            selection.profile.as_os_str(),
+        ));
+    }
+    support::run_entrypoint(&pack_root, &input, &output, manifest.target, &environment)
+        .with_context(|| {
             format!(
                 "build {} using target-pack entrypoint",
                 platform.display_name()
             )
-        },
-    )?;
+        })?;
     Ok(BuildSummary {
         platform,
         bundle_dir: output,
     })
+}
+
+pub(crate) fn resolve_app_name(
+    config: &TokamakConfig,
+    worker_name: &str,
+    platform: Platform,
+) -> String {
+    config.name.as_ref().map_or_else(
+        || worker_name.to_owned(),
+        |name| name.for_platform(platform.directory_name()).to_owned(),
+    )
 }
 
 fn prepare_platform_input(
@@ -226,7 +249,7 @@ fn prepare_platform_input(
     Ok((input, pack_root, manifest, project))
 }
 
-fn load_project_config(config_path: &Path) -> Result<TokamakConfig> {
+pub(crate) fn load_project_config(config_path: &Path) -> Result<TokamakConfig> {
     let current_dir = env::current_dir()?;
     let path = resolve_tokamak_config_path(&current_dir, Some(config_path))?;
     path.map(|path| {
@@ -331,8 +354,34 @@ fn bundled_manifest(target: Target) -> Option<PathBuf> {
 mod tests {
     use std::fs;
 
-    use super::resolve_manifest;
+    use super::{resolve_app_name, resolve_manifest};
+    use tokamak::{TokamakConfig, TokamakName};
     use tokamak_cli::{MANIFEST_FILE, Platform};
+
+    #[test]
+    fn resolves_configured_platform_names_and_worker_fallback() {
+        let config = TokamakConfig {
+            name: Some(TokamakName {
+                default: "my-app".to_owned(),
+                ios: Some("myapp-pro".to_owned()),
+                ..TokamakName::default()
+            }),
+            ..TokamakConfig::default()
+        };
+
+        assert_eq!(
+            resolve_app_name(&config, "worker-name", Platform::Ios),
+            "myapp-pro"
+        );
+        assert_eq!(
+            resolve_app_name(&config, "worker-name", Platform::Macos),
+            "my-app"
+        );
+        assert_eq!(
+            resolve_app_name(&TokamakConfig::default(), "worker-name", Platform::Windows),
+            "worker-name"
+        );
+    }
 
     #[test]
     fn resolves_an_explicit_target_pack_directory() -> Result<(), Box<dyn std::error::Error>> {

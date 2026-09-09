@@ -49,15 +49,13 @@ pub(crate) fn run(request: &Request) -> Result<()> {
             request.project_dir.display()
         )
     })?;
+    let tokamak = pipeline::load_project_config(&request.tokamak_config_path)?;
     let wrangler = load_development_config(&project, request.wrangler_config_path.as_deref())?;
     warn_unsupported_bindings(&wrangler);
     let device = devices::prepare(&request.device_id)?;
-    let signing = ios_signing::resolve(
-        device.platform,
-        &project,
-        &format!("com.tokamak.{}", wrangler.name),
-        &device.id,
-    )?;
+    let app_name = pipeline::resolve_app_name(&tokamak, &wrangler.name, device.platform);
+    let bundle_id = format!("com.tokamak.{app_name}");
+    let signing = ios_signing::resolve(device.platform, &project, &bundle_id, Some(&device.id))?;
     let server = ServerEndpoint::parse(&request.server)?;
     let session_token = session_token()?;
     let relay_host = relay_host(&device, request.host_address.as_deref())?;
