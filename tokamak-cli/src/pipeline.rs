@@ -41,15 +41,16 @@ pub(crate) struct DevelopmentSummary {
     pub(crate) platform: Platform,
     pub(crate) bundle_dir: PathBuf,
     pub(crate) app_name: String,
-    pub(crate) bundle_id: String,
+    pub(crate) identifier: String,
 }
 
 pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     validate_request(request)?;
+    let tokamak = load_project_config(&request.tokamak_config_path)?;
+    let version = required_version(&tokamak)?;
     if !request.skip_web_build {
         support::run_web_build(&request.project_dir)?;
     }
-    let tokamak = load_project_config(&request.tokamak_config_path)?;
     let config_base = if request.wrangler_config_path.is_some() {
         env::current_dir()?
     } else {
@@ -64,7 +65,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     request
         .platforms
         .iter()
-        .map(|platform| build_platform(request, *platform, &wrangler, &tokamak, &plugins))
+        .map(|platform| build_platform(request, *platform, &wrangler, &tokamak, &plugins, &version))
         .collect()
 }
 
@@ -86,6 +87,8 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
     let wrangler = load_wrangler_config(&config_path)?;
     let plugins = plugins::discover(&request.project_dir)?;
     let app_name = resolve_app_name(&tokamak, &wrangler.name, request.platform);
+    let identifier = resolve_identifier(&tokamak, &app_name, request.platform)?;
+    let version = resolve_version(&tokamak)?;
     let (input, pack_root, manifest, project) = prepare_platform_input(
         &request.project_dir,
         request.platform,
@@ -98,8 +101,9 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
     write_build_metadata(
         &input,
         &app_name,
-        request.platform,
+        &identifier,
         &manifest,
+        version.as_deref(),
         Some((&request.endpoint, &request.session_token)),
     )
     .context("write development metadata")?;
@@ -128,12 +132,11 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
             request.platform.display_name()
         )
     })?;
-    let bundle_id = format!("com.tokamak.{app_name}");
     Ok(DevelopmentSummary {
         platform: request.platform,
         bundle_dir,
         app_name,
-        bundle_id,
+        identifier,
     })
 }
 
@@ -159,6 +162,7 @@ fn build_platform(
     wrangler: &WranglerConfig,
     tokamak: &TokamakConfig,
     plugins: &[plugins::Plugin],
+    version: &str,
 ) -> Result<BuildSummary> {
     let (input, pack_root, manifest, project) = prepare_platform_input(
         &request.project_dir,
@@ -172,12 +176,19 @@ fn build_platform(
     plugins::stage(plugins, platform, &input.join("plugins"))
         .context("stage native plugin inputs")?;
     let app_name = resolve_app_name(tokamak, &wrangler.name, platform);
-    let bundle_id = format!("com.tokamak.{app_name}");
-    write_build_metadata(&input, &app_name, platform, &manifest, None)
-        .context("write platform build metadata")?;
+    let identifier = resolve_identifier(tokamak, &app_name, platform)?;
+    write_build_metadata(
+        &input,
+        &app_name,
+        &identifier,
+        &manifest,
+        Some(version),
+        None,
+    )
+    .context("write platform build metadata")?;
 
     let output = output_path(&project, platform, &app_name);
-    let signing = ios_signing::resolve(platform, &project, &bundle_id, None)?;
+    let signing = ios_signing::resolve(platform, &project, &identifier, None)?;
     let mut environment = Vec::new();
     if let Some(selection) = signing.as_ref() {
         environment.push(("TOKAMAK_IOS_SIGNING_IDENTITY", selection.identity.as_ref()));
@@ -208,6 +219,129 @@ pub(crate) fn resolve_app_name(
         || worker_name.to_owned(),
         |name| name.for_platform(platform.directory_name()).to_owned(),
     )
+}
+
+pub(crate) fn resolve_identifier(
+    config: &TokamakConfig,
+    app_name: &str,
+    platform: Platform,
+) -> Result<String> {
+    let value = if let Some(value) = environment_value(platform_identifier_env(platform))? {
+        value
+    } else if let Some(value) = environment_value("TOKAMAK_IDENTIFIER")? {
+        value
+    } else if let Some(identifier) = config.identifier.as_ref() {
+        identifier
+            .for_platform(platform.directory_name())
+            .to_owned()
+    } else {
+        default_identifier(app_name, platform)
+    };
+    validate_platform_identifier(platform, value)
+}
+
+pub(crate) fn resolve_version(config: &TokamakConfig) -> Result<Option<String>> {
+    if let Some(value) = environment_value("TOKAMAK_VERSION")? {
+        return Ok(Some(validate_version("TOKAMAK_VERSION", value)?));
+    }
+    config
+        .version
+        .as_ref()
+        .map(|value| validate_version("version", value.clone()))
+        .transpose()
+}
+
+fn required_version(config: &TokamakConfig) -> Result<String> {
+    resolve_version(config)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "tokamak version is required for `tok build`; set `version` in tokamak.jsonc or TOKAMAK_VERSION"
+        )
+    })
+}
+
+fn environment_value(name: &str) -> Result<Option<String>> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => bail!("{name} must contain valid UTF-8"),
+    }
+}
+
+fn platform_identifier_env(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Android => "TOKAMAK_ANDROID_IDENTIFIER",
+        Platform::Ios | Platform::IosSimulator => "TOKAMAK_IOS_IDENTIFIER",
+        Platform::Macos => "TOKAMAK_MACOS_IDENTIFIER",
+        Platform::Windows => "TOKAMAK_WINDOWS_IDENTIFIER",
+    }
+}
+
+fn default_identifier(app_name: &str, platform: Platform) -> String {
+    if platform == Platform::Android {
+        let mut name = app_name.replace('-', "_");
+        if name
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
+        {
+            name.insert_str(0, "app_");
+        }
+        format!("com.tokamak.{name}")
+    } else {
+        format!("com.tokamak.{app_name}")
+    }
+}
+
+fn validate_platform_identifier(platform: Platform, identifier: String) -> Result<String> {
+    let valid = match platform {
+        Platform::Android => {
+            let parts = identifier.split('.').collect::<Vec<_>>();
+            parts.len() >= 2
+                && parts.iter().all(|part| {
+                    part.chars()
+                        .next()
+                        .is_some_and(|character| character.is_ascii_alphabetic())
+                        && part
+                            .chars()
+                            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+                })
+        }
+        Platform::Ios | Platform::IosSimulator | Platform::Macos => {
+            !identifier.starts_with('.')
+                && !identifier.ends_with('.')
+                && !identifier.contains("..")
+                && identifier
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || ".-".contains(character))
+        }
+        Platform::Windows => {
+            !identifier.is_empty()
+                && identifier
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || ".-_".contains(character))
+        }
+    };
+    if valid {
+        Ok(identifier)
+    } else {
+        bail!(
+            "invalid {} identifier `{identifier}`",
+            platform.display_name()
+        )
+    }
+}
+
+fn validate_version(field: &str, value: String) -> Result<String> {
+    if value.trim().is_empty()
+        || value != value.trim()
+        || value.chars().any(char::is_control)
+        || value.contains('\'')
+    {
+        bail!(
+            "{field} must be a non-empty version without whitespace, quotes, or control characters"
+        )
+    }
+    Ok(value)
 }
 
 fn prepare_platform_input(
@@ -267,20 +401,27 @@ fn output_path(project: &Path, platform: Platform, app_name: &str) -> PathBuf {
 fn write_build_metadata(
     input: &Path,
     app_name: &str,
-    platform: Platform,
+    identifier: &str,
     manifest: &TargetPackManifest,
+    version: Option<&str>,
     development: Option<(&str, &str)>,
 ) -> Result<()> {
     let metadata = input.join("metadata");
     let values = [
         ("app-name", app_name.to_owned()),
-        ("bundle-id", format!("com.tokamak.{app_name}")),
+        ("identifier", identifier.to_owned()),
         ("host", format!("{app_name}.tokamak.local")),
-        ("platform", platform.directory_name().to_owned()),
+        (
+            "platform",
+            manifest.target.platform().directory_name().to_owned(),
+        ),
         ("target", manifest.target.to_string()),
     ];
     for (name, value) in values {
         fs::write(metadata.join(name), value)?;
+    }
+    if let Some(version) = version {
+        fs::write(metadata.join("version"), version)?;
     }
     if let Some((endpoint, session_token)) = development {
         fs::write(metadata.join("dev-endpoint"), endpoint)?;
@@ -354,8 +495,8 @@ fn bundled_manifest(target: Target) -> Option<PathBuf> {
 mod tests {
     use std::fs;
 
-    use super::{resolve_app_name, resolve_manifest};
-    use tokamak::{TokamakConfig, TokamakName};
+    use super::{resolve_app_name, resolve_identifier, resolve_manifest};
+    use tokamak::{TokamakConfig, TokamakIdentifier, TokamakName};
     use tokamak_cli::{MANIFEST_FILE, Platform};
 
     #[test]
@@ -381,6 +522,44 @@ mod tests {
             resolve_app_name(&TokamakConfig::default(), "worker-name", Platform::Windows),
             "worker-name"
         );
+    }
+
+    #[test]
+    fn resolves_configured_identifiers_and_platform_defaults()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = TokamakConfig {
+            identifier: Some(TokamakIdentifier {
+                default: "com.example.app".to_owned(),
+                ios: Some("com.example.ios".to_owned()),
+                ..TokamakIdentifier::default()
+            }),
+            ..TokamakConfig::default()
+        };
+
+        assert_eq!(
+            resolve_identifier(&config, "demo-app", Platform::Ios)?,
+            "com.example.ios"
+        );
+        assert_eq!(
+            resolve_identifier(&config, "demo-app", Platform::Macos)?,
+            "com.example.app"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_platform_identifier_fallbacks() -> Result<(), Box<dyn std::error::Error>> {
+        let config = TokamakConfig::default();
+
+        assert_eq!(
+            resolve_identifier(&config, "demo-app", Platform::Android)?,
+            "com.tokamak.demo_app"
+        );
+        assert_eq!(
+            resolve_identifier(&config, "demo-app", Platform::Ios)?,
+            "com.tokamak.demo-app"
+        );
+        Ok(())
     }
 
     #[test]

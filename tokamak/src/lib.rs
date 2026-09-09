@@ -69,7 +69,7 @@ pub use packaging::{
 pub use quickjs::Error as QuickJsError;
 pub use quickjs::{compile_module, compile_worker};
 pub use tokamak_config::{
-    Error as TokamakConfigError, TokamakConfig, TokamakIcons, TokamakName,
+    Error as TokamakConfigError, TokamakConfig, TokamakIcons, TokamakIdentifier, TokamakName,
     load_config as load_tokamak_config, resolve_config_path as resolve_tokamak_config_path,
 };
 pub use wrangler_config::{

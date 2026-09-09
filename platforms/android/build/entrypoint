@@ -12,6 +12,11 @@ metadata=$input/metadata
 app_name=$(cat "$metadata/app-name")
 host=$(cat "$metadata/host")
 platform=$(cat "$metadata/platform")
+identifier=$(cat "$metadata/identifier")
+version=1.0
+if [[ -f "$metadata/version" ]]; then
+  version=$(cat "$metadata/version")
+fi
 dev_endpoint=
 dev_session_token=
 if [[ -f "$metadata/dev-endpoint" ]]; then
@@ -24,11 +29,6 @@ if [[ -n "$dev_endpoint" && -z "$dev_session_token" ]] || [[ -z "$dev_endpoint" 
   echo "development endpoint and session token must be provided together" >&2
   exit 1
 fi
-application_id=$(printf '%s' "$app_name" | tr '-' '_')
-if [[ "$application_id" =~ ^[0-9] ]]; then
-  application_id=app_"$application_id"
-fi
-application_id=com.tokamak."$application_id"
 project=$(dirname "$output")/.tokamak
 app=$project/app
 native=$app/src/main/jniLibs/arm64-v8a
@@ -116,11 +116,11 @@ android {
   compileSdk 35
 
   defaultConfig {
-    applicationId '$application_id'
+    applicationId '$identifier'
     minSdk 31
     targetSdk 35
     versionCode 1
-    versionName '1.0'
+    versionName '$version'
   }
 
   androidResources {
