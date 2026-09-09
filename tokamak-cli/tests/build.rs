@@ -694,7 +694,7 @@ fn builds_web_project_before_loading_generated_config() -> TestResult {
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 #[test]
 fn builds_physical_ios_app() -> TestResult {
     let (temporary, project, manifest) = create_inputs("ios-arm64")?;
