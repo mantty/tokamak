@@ -54,8 +54,8 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     warn_unsupported_bindings(&wrangler);
     let device = devices::prepare(&request.device_id)?;
     let app_name = pipeline::resolve_app_name(&tokamak, &wrangler.name, device.platform);
-    let bundle_id = format!("com.tokamak.{app_name}");
-    let signing = ios_signing::resolve(device.platform, &project, &bundle_id, Some(&device.id))?;
+    let identifier = pipeline::resolve_identifier(&tokamak, &app_name, device.platform)?;
+    let signing = ios_signing::resolve(device.platform, &project, &identifier, Some(&device.id))?;
     let server = ServerEndpoint::parse(&request.server)?;
     let session_token = session_token()?;
     let relay_host = relay_host(&device, request.host_address.as_deref())?;
@@ -629,7 +629,7 @@ fn install_and_launch_ios_simulator(
     )?;
     run_platform_command(
         "xcrun",
-        ["simctl", "launch", device_id, &summary.bundle_id]
+        ["simctl", "launch", device_id, &summary.identifier]
             .into_iter()
             .map(String::from),
         "launch the app in the iOS Simulator",
@@ -666,7 +666,7 @@ fn install_and_launch_ios_device(
             "launch",
             "--device",
             device_id,
-            &summary.bundle_id,
+            &summary.identifier,
         ]
         .into_iter()
         .map(String::from),
@@ -710,7 +710,7 @@ fn install_and_launch_android(
             "shell",
             "monkey",
             "-p",
-            &android_application_id(&summary.app_name),
+            &summary.identifier,
             "1",
         ]
         .into_iter()
@@ -774,18 +774,6 @@ fn is_transient_devicectl_error(program: &str, arguments: &[String], detail: &st
     ]
     .iter()
     .any(|fragment| detail.contains(fragment))
-}
-
-fn android_application_id(app_name: &str) -> String {
-    let mut name = app_name.replace('-', "_");
-    if name
-        .chars()
-        .next()
-        .is_some_and(|character| character.is_ascii_digit())
-    {
-        name.insert_str(0, "app_");
-    }
-    format!("com.tokamak.{name}")
 }
 
 fn session_token() -> Result<String> {
@@ -1123,9 +1111,8 @@ mod tests {
     use std::thread;
 
     use super::{
-        DevRelay, PreparedDevice, ServerEndpoint, android_application_id, authorized,
-        is_transient_devicectl_error, parse_authority, relay_host, rewrite_request,
-        usable_ipv4_address,
+        DevRelay, PreparedDevice, ServerEndpoint, authorized, is_transient_devicectl_error,
+        parse_authority, relay_host, rewrite_request, usable_ipv4_address,
     };
     use tokamak_cli::Platform;
 
@@ -1158,12 +1145,6 @@ mod tests {
             rewritten,
             Some(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:5173\r\n\r\n".to_vec())
         );
-    }
-
-    #[test]
-    fn derives_android_application_ids() {
-        assert_eq!(android_application_id("demo-app"), "com.tokamak.demo_app");
-        assert_eq!(android_application_id("123-app"), "com.tokamak.app_123_app");
     }
 
     #[test]

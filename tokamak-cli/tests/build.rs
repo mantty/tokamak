@@ -290,7 +290,8 @@ fn build_command(platform: &str, project: &Path, target_pack: &Path) -> TestResu
         .arg(project)
         .arg("--target-pack")
         .arg(target_pack)
-        .arg("--skip-web-build");
+        .arg("--skip-web-build")
+        .env("TOKAMAK_VERSION", "1.0.0");
     Ok(command)
 }
 
@@ -433,6 +434,66 @@ fn builds_macos_app_with_quickjs_bundle_and_assets() -> TestResult {
         serde_json::from_slice(&fs::read(app.join("asset-manifest.json"))?)?;
     assert_eq!(manifest["files"]["styles/app.css"], "text/css");
     assert!(!app.join("config.capnp").exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn builds_configured_identifier_and_version() -> TestResult {
+    let (temporary, project, manifest) = create_inputs("macos-arm64")?;
+    fs::write(
+        project.join("tokamak.jsonc"),
+        r#"{
+  "identifier": {
+    "default": "com.example.app",
+    "macos": "com.example.desktop"
+  },
+  "version": "2.3.4"
+}"#,
+    )?;
+
+    let mut command = build_command("macos", &project, &manifest)?;
+    command.env_remove("TOKAMAK_VERSION");
+    command.arg("--config").arg(project.join("tokamak.jsonc"));
+    configure_fake_apple_tools(&mut command, temporary.path())?;
+    command.assert().success();
+
+    let plist = fs::read_to_string(project.join("build/macos/demo-app.app/Contents/Info.plist"))?;
+    assert!(plist.contains("<key>CFBundleIdentifier</key><string>com.example.desktop</string>"));
+    assert!(plist.contains("<key>CFBundleVersion</key><string>2.3.4</string>"));
+    assert!(plist.contains("<key>CFBundleShortVersionString</key><string>2.3.4</string>"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn environment_overrides_configured_identifier_and_version() -> TestResult {
+    let (temporary, project, manifest) = create_inputs("macos-arm64")?;
+    fs::write(
+        project.join("tokamak.jsonc"),
+        r#"{
+  "identifier": {
+    "default": "com.example.config",
+    "macos": "com.example.config-macos"
+  },
+  "version": "2.3.4"
+}"#,
+    )?;
+
+    let mut command = build_command("macos", &project, &manifest)?;
+    command
+        .arg("--config")
+        .arg(project.join("tokamak.jsonc"))
+        .env("TOKAMAK_MACOS_IDENTIFIER", "com.example.environment")
+        .env("TOKAMAK_VERSION", "3.4.5");
+    configure_fake_apple_tools(&mut command, temporary.path())?;
+    command.assert().success();
+
+    let plist = fs::read_to_string(project.join("build/macos/demo-app.app/Contents/Info.plist"))?;
+    assert!(
+        plist.contains("<key>CFBundleIdentifier</key><string>com.example.environment</string>")
+    );
+    assert!(plist.contains("<key>CFBundleVersion</key><string>3.4.5</string>"));
     Ok(())
 }
 
@@ -629,6 +690,18 @@ fn builds_a_configured_windows_icon() -> TestResult {
 }
 
 #[test]
+fn requires_a_version_for_app_builds() -> TestResult {
+    let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
+    let mut command = build_command("macos", &project, &manifest)?;
+    command
+        .env_remove("TOKAMAK_VERSION")
+        .assert()
+        .failure()
+        .stderr(contains("tokamak version is required for `tok build`"));
+    Ok(())
+}
+
+#[test]
 fn requires_a_target_pack_for_app_builds() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let project = temporary.path().join("project");
@@ -640,6 +713,7 @@ fn requires_a_target_pack_for_app_builds() -> TestResult {
         .args(["build", "macos", "--project"])
         .arg(&project)
         .arg("--skip-web-build")
+        .env("TOKAMAK_VERSION", "1.0.0")
         .assert()
         .failure()
         .stderr(contains("no target pack found"));
@@ -660,6 +734,7 @@ fn reads_target_pack_directory_from_tokamak_environment() -> TestResult {
         .args(["build", "macos", "--project"])
         .arg(&project)
         .arg("--skip-web-build")
+        .env("TOKAMAK_VERSION", "1.0.0")
         .env("TOKAMAK_TARGET_PACK_DIR", target_packs)
         .assert()
         .failure()
@@ -687,7 +762,8 @@ fn builds_web_project_before_loading_generated_config() -> TestResult {
         .arg("--target-pack")
         .arg(target_pack)
         .arg("--wrangler")
-        .arg(config);
+        .arg(config)
+        .env("TOKAMAK_VERSION", "1.0.0");
     command.assert().success();
 
     assert!(project.join("build/macos/built-app.app").is_dir());

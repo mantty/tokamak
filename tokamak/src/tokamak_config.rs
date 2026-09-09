@@ -44,6 +44,10 @@ pub struct TokamakConfig {
     pub path: Option<PathBuf>,
     /// Normalized application names, when configured.
     pub name: Option<TokamakName>,
+    /// Application identifiers, when configured.
+    pub identifier: Option<TokamakIdentifier>,
+    /// Application version, when configured.
+    pub version: Option<String>,
     /// Platform-specific application assets.
     pub icons: Option<TokamakIcons>,
 }
@@ -75,6 +79,36 @@ impl TokamakName {
             _ => None,
         };
         platform_name.unwrap_or(&self.default)
+    }
+}
+
+/// Platform-specific application identifiers.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TokamakIdentifier {
+    /// Identifier used when a platform-specific identifier is not configured.
+    pub default: String,
+    /// Android application identifier override.
+    pub android: Option<String>,
+    /// iOS application identifier override, also used by iOS simulators.
+    pub ios: Option<String>,
+    /// macOS application identifier override.
+    pub macos: Option<String>,
+    /// Windows application identifier override.
+    pub windows: Option<String>,
+}
+
+impl TokamakIdentifier {
+    /// Return the configured identifier for a platform, falling back to default.
+    #[must_use]
+    pub fn for_platform(&self, platform: &str) -> &str {
+        let platform_identifier = match platform {
+            "android" => self.android.as_deref(),
+            "ios" | "ios-simulator" => self.ios.as_deref(),
+            "macos" => self.macos.as_deref(),
+            "windows" => self.windows.as_deref(),
+            _ => None,
+        };
+        platform_identifier.unwrap_or(&self.default)
     }
 }
 
@@ -152,6 +186,14 @@ pub fn load_config(config_path: &Path) -> Result<TokamakConfig> {
         .name
         .map(|name| resolve_name(&config_path, name))
         .transpose()?;
+    let identifier = raw
+        .identifier
+        .map(|identifier| resolve_identifier(&config_path, identifier))
+        .transpose()?;
+    let version = raw
+        .version
+        .map(|version| validate_value(&config_path, "version", version))
+        .transpose()?;
     let icons = raw
         .icons
         .map(|icons| resolve_icons(&config_path, &config_dir, icons))
@@ -160,6 +202,8 @@ pub fn load_config(config_path: &Path) -> Result<TokamakConfig> {
     Ok(TokamakConfig {
         path: Some(config_path),
         name,
+        identifier,
+        version,
         icons,
     })
 }
@@ -168,6 +212,8 @@ pub fn load_config(config_path: &Path) -> Result<TokamakConfig> {
 #[serde(deny_unknown_fields)]
 struct RawTokamakConfig {
     name: Option<RawTokamakName>,
+    identifier: Option<RawTokamakIdentifier>,
+    version: Option<String>,
     #[serde(default)]
     icons: Option<RawTokamakIcons>,
 }
@@ -175,6 +221,16 @@ struct RawTokamakConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawTokamakName {
+    default: String,
+    android: Option<String>,
+    ios: Option<String>,
+    macos: Option<String>,
+    windows: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTokamakIdentifier {
     default: String,
     android: Option<String>,
     ios: Option<String>,
@@ -198,6 +254,19 @@ fn resolve_name(config_path: &Path, name: RawTokamakName) -> Result<TokamakName>
         ios: normalize_optional_name(config_path, "name.ios", name.ios)?,
         macos: normalize_optional_name(config_path, "name.macos", name.macos)?,
         windows: normalize_optional_name(config_path, "name.windows", name.windows)?,
+    })
+}
+
+fn resolve_identifier(
+    config_path: &Path,
+    identifier: RawTokamakIdentifier,
+) -> Result<TokamakIdentifier> {
+    Ok(TokamakIdentifier {
+        default: validate_value(config_path, "identifier.default", identifier.default)?,
+        android: validate_optional_value(config_path, "identifier.android", identifier.android)?,
+        ios: validate_optional_value(config_path, "identifier.ios", identifier.ios)?,
+        macos: validate_optional_value(config_path, "identifier.macos", identifier.macos)?,
+        windows: validate_optional_value(config_path, "identifier.windows", identifier.windows)?,
     })
 }
 
@@ -234,6 +303,28 @@ fn normalize_name(config_path: &Path, field: &str, value: &str) -> Result<String
         });
     }
     Ok(normalized)
+}
+
+fn validate_optional_value(
+    config_path: &Path,
+    field: &str,
+    value: Option<String>,
+) -> Result<Option<String>> {
+    value
+        .map(|value| validate_value(config_path, field, value))
+        .transpose()
+}
+
+fn validate_value(config_path: &Path, field: &str, value: String) -> Result<String> {
+    if value.trim().is_empty() || value != value.trim() || value.chars().any(char::is_control) {
+        return Err(Error::InvalidConfig {
+            path: config_path.to_path_buf(),
+            message: format!(
+                "{field} must be a non-empty value without whitespace or control characters"
+            ),
+        });
+    }
+    Ok(value)
 }
 
 fn resolve_icons(
@@ -305,7 +396,7 @@ fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
 mod tests {
     use std::fs;
 
-    use super::{Error, TokamakName, load_config, resolve_config_path};
+    use super::{Error, TokamakIdentifier, TokamakName, load_config, resolve_config_path};
 
     #[test]
     fn normalizes_names_and_applies_platform_overrides() -> Result<(), Box<dyn std::error::Error>> {
@@ -356,6 +447,61 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         let config_path = temporary.path().join("tokamak.json");
         fs::write(&config_path, r#"{"name":{"ios":"My App"}}"#)?;
+
+        assert!(matches!(
+            load_config(&config_path),
+            Err(Error::InvalidConfig { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn loads_identifiers_and_version() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let config_path = temporary.path().join("tokamak.json");
+        fs::write(
+            &config_path,
+            r#"{
+                "identifier": {
+                    "default": "com.example.app",
+                    "ios": "com.example.ios",
+                },
+                "version": "1.2.3",
+            }"#,
+        )?;
+
+        let config = load_config(&config_path)?;
+
+        assert_eq!(
+            config.identifier,
+            Some(TokamakIdentifier {
+                default: "com.example.app".to_owned(),
+                ios: Some("com.example.ios".to_owned()),
+                ..TokamakIdentifier::default()
+            })
+        );
+        assert_eq!(config.version.as_deref(), Some("1.2.3"));
+        Ok(())
+    }
+
+    #[test]
+    fn requires_default_when_identifier_is_configured() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let config_path = temporary.path().join("tokamak.json");
+        fs::write(&config_path, r#"{"identifier":{"ios":"com.example.ios"}}"#)?;
+
+        assert!(matches!(
+            load_config(&config_path),
+            Err(Error::InvalidConfig { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_an_empty_version() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let config_path = temporary.path().join("tokamak.json");
+        fs::write(&config_path, r#"{"version":"  "}"#)?;
 
         assert!(matches!(
             load_config(&config_path),

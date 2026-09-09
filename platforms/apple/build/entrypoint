@@ -12,10 +12,16 @@ metadata=$input/metadata
 native_shell=$input/native-shell
 framework_root=$input/runtime/frameworks
 app_name=$(cat "$metadata/app-name")
-bundle_id=$(cat "$metadata/bundle-id")
+identifier=$(cat "$metadata/identifier")
 host=$(cat "$metadata/host")
 platform=$(cat "$metadata/platform")
 target=$(cat "$metadata/target")
+version=1.0
+build_version=1
+if [[ -f "$metadata/version" ]]; then
+  version=$(cat "$metadata/version")
+  build_version=$version
+fi
 dev_endpoint=
 dev_session_token=
 if [[ -f "$metadata/dev-endpoint" ]]; then
@@ -196,12 +202,12 @@ write_plist() {
     printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
     printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
     printf '%s\n' '<plist version="1.0"><dict>'
-    printf '  <key>CFBundleIdentifier</key><string>%s</string>\n' "$(xml_escape "$bundle_id")"
+    printf '  <key>CFBundleIdentifier</key><string>%s</string>\n' "$(xml_escape "$identifier")"
     printf '  <key>CFBundleName</key><string>%s</string>\n' "$(xml_escape "$app_name")"
     printf '  <key>CFBundleExecutable</key><string>%s</string>\n' "$(xml_escape "$app_name")"
     printf '%s\n' '  <key>CFBundlePackageType</key><string>APPL</string>'
-    printf '%s\n' '  <key>CFBundleVersion</key><string>1</string>'
-    printf '%s\n' '  <key>CFBundleShortVersionString</key><string>1.0</string>'
+    printf '  <key>CFBundleVersion</key><string>%s</string>\n' "$(xml_escape "$build_version")"
+    printf '  <key>CFBundleShortVersionString</key><string>%s</string>\n' "$(xml_escape "$version")"
     printf '  <key>TokamakHost</key><string>%s</string>\n' "$(xml_escape "$host")"
     if [[ -n "$dev_endpoint" ]]; then
       printf '  <key>TokamakDevEndpoint</key><string>%s</string>\n' "$(xml_escape "$dev_endpoint")"

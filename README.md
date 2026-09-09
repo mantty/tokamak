@@ -61,7 +61,7 @@ tokamak looks for `tokamak.jsonc` in the current directory, followed by
 different file or directory; the option defaults to the current directory.
 JSONC comments and trailing commas are supported, and plain JSON is also valid.
 
-The supported values are `name` and `icons`:
+The supported values are `name`, `identifier`, `version`, and `icons`:
 
 ```jsonc
 {
@@ -69,6 +69,11 @@ The supported values are `name` and `icons`:
     "default": "My App",
     "ios": "Myapp Pro",
   },
+  "identifier": {
+    "default": "com.example.myapp",
+    "ios": "com.example.myapp.ios",
+  },
+  "version": "1.0.0",
   "icons": {
     "android": "assets/icons/android",
     "ios": "assets/icons/AppIcon.icon",
@@ -83,7 +88,23 @@ present. Platform names are optional and fall back to `default`; `ios` is
 used for both iOS devices and iOS simulators. Names are normalized to a
 lower-case ASCII slug for bundle filenames, application IDs, and
 `tokamak.local` hosts, so `My App` becomes `my-app`. If `name` is absent, the
-Wrangler Worker name is used.
+Wrangler Worker name is used. The normalized name is also used to derive an
+identifier when no identifier is configured.
+
+The `identifier` value is optional, but `identifier.default` is required when
+it is present. Platform identifiers are optional and fall back to `default`.
+They are used as the Apple bundle identifier and Android application ID. If
+`identifier` is absent, Tokamak keeps deriving the identifier from the
+normalized application name. `TOKAMAK_IDENTIFIER` overrides the configured
+value, and `TOKAMAK_ANDROID_IDENTIFIER`, `TOKAMAK_IOS_IDENTIFIER`,
+`TOKAMAK_MACOS_IDENTIFIER`, or `TOKAMAK_WINDOWS_IDENTIFIER` override it for
+one platform. iOS simulators use the iOS variable.
+
+The `version` value is optional in the configuration, but is required for
+`tok build`. Set it in the configuration or with `TOKAMAK_VERSION`; the
+environment variable takes precedence. Development builds keep their existing
+native default when no version is supplied. Apple builds use the value for
+both bundle version fields, and Android uses it as `versionName`.
 
 Each icon platform entry is optional. If the Tokamak configuration or a
 platform entry is absent, that platform keeps its existing icon behavior.

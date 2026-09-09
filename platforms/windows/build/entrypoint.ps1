@@ -20,6 +20,7 @@ function Read-TokamakValue([string] $Name) {
 
 $output = [System.IO.Path]::GetFullPath($OutputDirectory)
 $appName = Read-TokamakValue "app-name"
+$identifier = Read-TokamakValue "identifier"
 $appHost = Read-TokamakValue "host"
 $devEndpoint = $null
 $devSessionToken = $null
@@ -49,7 +50,11 @@ if (Test-Path -LiteralPath $icon -PathType Leaf) {
 
 $config = [ordered]@{
   name = $appName
+  identifier = $identifier
   host = $appHost
+}
+if (Test-Path (Join-Path $InputDirectory "metadata/version")) {
+  $config.version = Read-TokamakValue "version"
 }
 if (-not [string]::IsNullOrWhiteSpace($devEndpoint)) {
   $config.devEndpoint = $devEndpoint
