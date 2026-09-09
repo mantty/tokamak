@@ -31,19 +31,22 @@ use sha1::{Digest as Sha1Digest, Sha1};
 use sha2::{Digest as Sha2Digest, Sha256};
 use tokamak_cli::Platform;
 
-/// A signing identity and provisioning profile selected for a physical iOS app.
+/// A signing identity and provisioning profile selected for an iOS app.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Selection {
     pub(crate) identity: String,
     pub(crate) profile: PathBuf,
 }
 
-/// Resolve signing assets when the selected target is a physical iOS device.
+/// Resolve signing assets for an iOS app.
+///
+/// A device ID is required for development on a physical device. Builds omit
+/// it and use a generic iOS destination for automatic provisioning.
 pub(crate) fn resolve(
     platform: Platform,
     project: &Path,
     bundle_id: &str,
-    device_id: &str,
+    device_id: Option<&str>,
 ) -> Result<Option<Selection>> {
     if platform != Platform::Ios {
         return Ok(None);
@@ -57,7 +60,7 @@ pub(crate) fn resolve(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (project, bundle_id, device_id);
-        bail!("physical iOS development requires a macOS host");
+        bail!("iOS signing requires a macOS host with Xcode");
     }
 }
 
@@ -77,12 +80,14 @@ struct Profile {
 
 #[cfg(any(target_os = "macos", test))]
 impl Profile {
-    fn matches(&self, bundle_id: &str, device_id: &str, identity: &Identity) -> bool {
-        self.expiration > SystemTime::now()
-            && self
-                .devices
+    fn matches(&self, bundle_id: &str, device_id: Option<&str>, identity: &Identity) -> bool {
+        let device_matches = device_id.is_none_or(|device_id| {
+            self.devices
                 .iter()
                 .any(|device| device.eq_ignore_ascii_case(device_id))
+        });
+        self.expiration > SystemTime::now()
+            && device_matches
             && app_identifier_matches(&self.application_identifier, bundle_id)
             && self
                 .developer_certificates
@@ -128,19 +133,29 @@ struct CachedSelection {
 }
 
 #[cfg(target_os = "macos")]
-fn resolve_macos(project: &Path, bundle_id: &str, device_id: &str) -> Result<Selection> {
-    if let Some(selection) = explicit_selection()? {
+fn resolve_macos(project: &Path, bundle_id: &str, device_id: Option<&str>) -> Result<Selection> {
+    let configured_team = configured_team_id()?;
+    if let Some(selection) = explicit_selection(configured_team.is_some())? {
         return Ok(selection);
     }
 
     let profiles = discover_profiles();
     let identities = discover_identities()?;
+    let team_id = match configured_team {
+        Some(team_id) => team_id,
+        None => automatic_team_id(project, bundle_id, device_id, &identities, &profiles)
+            .map_err(|error| automatic_signing_error(bundle_id, device_id, &error))?,
+    };
+    let selected_team = team_id.as_str();
     let mut candidates = identities
         .iter()
         .flat_map(|identity| {
             profiles
                 .iter()
-                .filter(move |profile| profile.matches(bundle_id, device_id, identity))
+                .filter(move |profile| {
+                    profile.team_id == selected_team
+                        && profile.matches(bundle_id, device_id, identity)
+                })
                 .map(move |profile| Candidate {
                     identity: identity.clone(),
                     profile: profile.clone(),
@@ -169,13 +184,8 @@ fn resolve_macos(project: &Path, bundle_id: &str, device_id: &str) -> Result<Sel
     });
 
     if candidates.is_empty() {
-        return automatic_selection(project, bundle_id, device_id, &identities, &profiles).map_err(
-            |error| {
-                anyhow::anyhow!(
-                    "no valid iOS development signing profile was found for bundle {bundle_id} and device {device_id}; automatic Xcode provisioning failed: {error}; set TOKAMAK_IOS_SIGNING_IDENTITY and TOKAMAK_IOS_PROVISIONING_PROFILE to override it"
-                )
-            },
-        );
+        return automatic_selection(project, bundle_id, device_id, &team_id)
+            .map_err(|error| automatic_signing_error(bundle_id, device_id, &error));
     }
 
     let key = cache_key(project, bundle_id, device_id);
@@ -209,11 +219,9 @@ fn resolve_macos(project: &Path, bundle_id: &str, device_id: &str) -> Result<Sel
 fn automatic_selection(
     project: &Path,
     bundle_id: &str,
-    device_id: &str,
-    identities: &[Identity],
-    profiles: &[Profile],
+    device_id: Option<&str>,
+    team_id: &str,
 ) -> Result<Selection> {
-    let team_id = automatic_team_id(project, bundle_id, device_id, identities, profiles)?;
     println!(
         "No matching iOS signing profile found; asking Xcode to provision {bundle_id} automatically"
     );
@@ -221,9 +229,12 @@ fn automatic_selection(
     let temporary = tempfile::tempdir().context("create Xcode signing probe directory")?;
     let project_path = write_signing_probe(temporary.path(), bundle_id)?;
     let derived_data = temporary.path().join("DerivedData");
-    let destination = format!("id={device_id}");
-    let team_setting = format!("DEVELOPMENT_TEAM={team_id}");
-    let output = Command::new("xcodebuild")
+    let destination = device_id.map_or_else(
+        || "generic/platform=iOS".to_owned(),
+        |device_id| format!("id={device_id}"),
+    );
+    let mut command = Command::new("xcodebuild");
+    command
         .current_dir(temporary.path())
         .arg("-project")
         .arg(&project_path)
@@ -239,13 +250,16 @@ fn automatic_selection(
         .arg(destination)
         .arg("-derivedDataPath")
         .arg(&derived_data)
+        .arg("-allowProvisioningUpdates");
+    if device_id.is_some() {
+        command.arg("-allowProvisioningDeviceRegistration");
+    }
+    let output = command
         .args([
-            "-allowProvisioningUpdates",
-            "-allowProvisioningDeviceRegistration",
             "CODE_SIGN_STYLE=Automatic",
             "CODE_SIGN_IDENTITY=Apple Development",
         ])
-        .arg(team_setting)
+        .arg(format!("DEVELOPMENT_TEAM={team_id}"))
         .arg("build")
         .stdin(Stdio::inherit())
         .output()
@@ -267,7 +281,9 @@ fn automatic_selection(
     let identities = discover_identities()?;
     let identity = identities
         .iter()
-        .find(|identity| profile.matches(bundle_id, device_id, identity))
+        .find(|identity| {
+            profile.team_id == team_id && profile.matches(bundle_id, device_id, identity)
+        })
         .context(
             "Xcode generated a profile that does not match an installed Apple Development identity",
         )?;
@@ -292,7 +308,7 @@ fn automatic_selection(
 fn automatic_team_id(
     project: &Path,
     bundle_id: &str,
-    device_id: &str,
+    device_id: Option<&str>,
     identities: &[Identity],
     profiles: &[Profile],
 ) -> Result<String> {
@@ -343,9 +359,12 @@ fn automatic_team_id(
         .map(|(team_id, _)| team_id)
         .collect::<Vec<_>>();
     if best.len() != 1 {
-        bail!(
-            "multiple Apple Development teams are available; set TOKAMAK_IOS_SIGNING_IDENTITY and TOKAMAK_IOS_PROVISIONING_PROFILE"
-        );
+        let available = best
+            .iter()
+            .map(|team_id| format!("  - {team_id}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        bail!("multiple Apple Development teams are available:\n{available}");
     }
     best.into_iter().next().context("one team was selected")
 }
@@ -429,11 +448,31 @@ fn command_output_detail(output: &Output) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn explicit_selection() -> Result<Option<Selection>> {
+fn automatic_signing_error(
+    bundle_id: &str,
+    device_id: Option<&str>,
+    error: &anyhow::Error,
+) -> anyhow::Error {
+    let target = device_id.map_or_else(
+        || "a generic iOS device".to_owned(),
+        |device_id| format!("iOS device {device_id}"),
+    );
+    anyhow::anyhow!(
+        "automatic iOS signing failed for bundle {bundle_id} and {target}: {error}; set TOKAMAK_IOS_TEAM_ID to choose a team, or set both TOKAMAK_IOS_SIGNING_IDENTITY and TOKAMAK_IOS_PROVISIONING_PROFILE for manual signing"
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn explicit_selection(team_configured: bool) -> Result<Option<Selection>> {
     let identity = env::var("TOKAMAK_IOS_SIGNING_IDENTITY").ok();
     let profile = env::var_os("TOKAMAK_IOS_PROVISIONING_PROFILE").map(PathBuf::from);
     match (identity, profile) {
         (Some(identity), Some(profile)) => {
+            if team_configured {
+                bail!(
+                    "choose either TOKAMAK_IOS_TEAM_ID or both TOKAMAK_IOS_SIGNING_IDENTITY and TOKAMAK_IOS_PROVISIONING_PROFILE"
+                );
+            }
             if identity.trim().is_empty() {
                 bail!("TOKAMAK_IOS_SIGNING_IDENTITY must not be empty");
             }
@@ -452,6 +491,18 @@ fn explicit_selection() -> Result<Option<Selection>> {
             "TOKAMAK_IOS_SIGNING_IDENTITY and TOKAMAK_IOS_PROVISIONING_PROFILE must be provided together"
         ),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn configured_team_id() -> Result<Option<String>> {
+    let Some(team_id) = env::var("TOKAMAK_IOS_TEAM_ID").ok() else {
+        return Ok(None);
+    };
+    let team_id = team_id.trim();
+    if team_id.is_empty() {
+        bail!("TOKAMAK_IOS_TEAM_ID must not be empty");
+    }
+    Ok(Some(team_id.to_owned()))
 }
 
 #[cfg(target_os = "macos")]
@@ -699,8 +750,9 @@ fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn cache_key(project: &Path, bundle_id: &str, device_id: &str) -> String {
-    format!("{}\n{bundle_id}\n{device_id}", project.display())
+fn cache_key(project: &Path, bundle_id: &str, device_id: Option<&str>) -> String {
+    let target = device_id.unwrap_or("<generic>");
+    format!("{}\n{bundle_id}\n{target}", project.display())
 }
 
 #[cfg(target_os = "macos")]
@@ -852,9 +904,10 @@ mod tests {
         assert_eq!(identity.name, "Apple Development: Test");
         assert_eq!(identity.fingerprint, fingerprint(&[1, 2, 3]));
         assert_eq!(identity.selector, sha1_fingerprint(&[1, 2, 3]));
-        assert!(profile.matches("com.example.app", "DEVICE", &identity));
-        assert!(!profile.matches("com.example.other", "DEVICE", &identity));
-        assert!(!profile.matches("com.example.app", "OTHER", &identity));
+        assert!(profile.matches("com.example.app", Some("DEVICE"), &identity));
+        assert!(!profile.matches("com.example.other", Some("DEVICE"), &identity));
+        assert!(!profile.matches("com.example.app", Some("OTHER"), &identity));
+        assert!(profile.matches("com.example.app", None, &identity));
         Ok(())
     }
 
@@ -970,7 +1023,7 @@ mod tests {
             automatic_team_id(
                 Path::new("/automatic-team-test"),
                 "com.tokamak.new-app",
-                "DEVICE",
+                Some("DEVICE"),
                 &identities,
                 &profiles,
             )?,
