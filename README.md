@@ -45,7 +45,7 @@ The optional Tokamak configuration file is described below.
 tok build macos --project ./my-app
 ```
 
-Use `--wrangler` to point to a specific Wrangler config file:
+Use `-w` or `--wrangler` to point to a specific Wrangler config file:
 
 ```sh
 tok build macos --wrangler dist/server/wrangler.json
@@ -61,10 +61,14 @@ tokamak looks for `tokamak.jsonc` in the current directory, followed by
 different file or directory; the option defaults to the current directory.
 JSONC comments and trailing commas are supported, and plain JSON is also valid.
 
-For now, the supported value is `icons`:
+The supported values are `name` and `icons`:
 
 ```jsonc
 {
+  "name": {
+    "default": "My App",
+    "ios": "Myapp Pro",
+  },
   "icons": {
     "android": "assets/icons/android",
     "ios": "assets/icons/AppIcon.icon",
@@ -74,8 +78,15 @@ For now, the supported value is `icons`:
 }
 ```
 
-Each platform entry is optional. If the Tokamak configuration or a platform
-entry is absent, that platform keeps its existing icon behavior.
+The `name` value is optional, but `name.default` is required when it is
+present. Platform names are optional and fall back to `default`; `ios` is
+used for both iOS devices and iOS simulators. Names are normalized to a
+lower-case ASCII slug for bundle filenames, application IDs, and
+`tokamak.local` hosts, so `My App` becomes `my-app`. If `name` is absent, the
+Wrangler Worker name is used.
+
+Each icon platform entry is optional. If the Tokamak configuration or a
+platform entry is absent, that platform keeps its existing icon behavior.
 
 - `android` points to the contents of an Android `res` directory. It should
   contain launcher resources such as `mipmap-*/ic_launcher`.
@@ -92,6 +103,14 @@ the package into the platform bundle.
 
 Relative paths are resolved from the directory containing the Tokamak
 configuration file. Invalid paths or platform formats fail the native build.
+
+Physical iOS builds use automatic development signing by default. Tokamak
+selects an available Apple Development team automatically; set
+`TOKAMAK_IOS_TEAM_ID` to choose a team explicitly. For a fully manual signing
+selection, set both `TOKAMAK_IOS_SIGNING_IDENTITY` and
+`TOKAMAK_IOS_PROVISIONING_PROFILE`. These variables are used by both `tok dev`
+and `tok build ios`; the latter provisions for a generic iOS device and does
+not require a device ID. iOS Simulator builds do not require provisioning.
 
 ## Development
 

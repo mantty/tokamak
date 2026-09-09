@@ -297,12 +297,23 @@ fn build_command(platform: &str, project: &Path, target_pack: &Path) -> TestResu
 #[cfg(unix)]
 fn configure_fake_apple_tools(command: &mut Command, root: &Path) -> TestResult<PathBuf> {
     use std::ffi::OsString;
-    use std::os::unix::fs::PermissionsExt;
 
     let bin = root.join("fake-apple-tools");
     fs::create_dir_all(&bin)?;
+    write_fake_apple_tools(&bin)?;
+
+    let log = root.join("apple-tool.log");
+    let mut path = OsString::from(bin);
+    path.push(":");
+    path.push(std::env::var_os("PATH").ok_or("PATH unavailable")?);
+    command.env("PATH", path).env("TOKAMAK_TEST_TOOL_LOG", &log);
+    Ok(log)
+}
+
+#[cfg(unix)]
+fn write_fake_apple_tools(bin: &Path) -> TestResult {
     let xcrun = bin.join("xcrun");
-    fs::write(
+    write_executable(
         &xcrun,
         r#"#!/bin/sh
 set -eu
@@ -348,20 +359,43 @@ case "$mode" in
 esac
 "#,
     )?;
-    let codesign = bin.join("codesign");
-    fs::write(&codesign, "#!/bin/sh\nexit 0\n")?;
-    for tool in [&xcrun, &codesign] {
-        let mut permissions = fs::metadata(tool)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(tool, permissions)?;
-    }
+    write_executable(&bin.join("codesign"), "#!/bin/sh\nexit 0\n")?;
+    write_executable(
+        &bin.join("security"),
+        r#"#!/bin/sh
+set -eu
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0"><dict><key>Entitlements</key><dict><key>application-identifier</key><string>TEAM.com.tokamak.demo-app</string></dict></dict></plist>'
+"#,
+    )?;
+    write_executable(
+        &bin.join("plutil"),
+        r#"#!/bin/sh
+set -eu
+output=
+next=
+for arg in "$@"; do
+  if [ "$arg" = -o ]; then
+    next=output
+  elif [ "$next" = output ]; then
+    output=$arg
+    next=
+  fi
+done
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0"><dict><key>application-identifier</key><string>TEAM.com.tokamak.demo-app</string></dict></plist>' > "$output"
+"#,
+    )?;
+    Ok(())
+}
 
-    let log = root.join("apple-tool.log");
-    let mut path = OsString::from(bin);
-    path.push(":");
-    path.push(std::env::var_os("PATH").ok_or("PATH unavailable")?);
-    command.env("PATH", path).env("TOKAMAK_TEST_TOOL_LOG", &log);
-    Ok(log)
+#[cfg(unix)]
+fn write_executable(path: &Path, contents: &str) -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::write(path, contents)?;
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions)?;
+    Ok(())
 }
 
 #[test]
@@ -554,6 +588,27 @@ fn builds_windows_app_with_its_runtime_files() -> TestResult {
 }
 
 #[test]
+fn builds_with_a_normalized_configured_app_name() -> TestResult {
+    let (_temporary, project, manifest) = create_windows_inputs()?;
+    fs::write(
+        project.join("tokamak.jsonc"),
+        r#"{"name":{"default":"My App","windows":"My App Pro"}}"#,
+    )?;
+
+    let mut command = build_command("windows", &project, &manifest)?;
+    command.arg("--config").arg(project.join("tokamak.jsonc"));
+    command.assert().success();
+
+    let bundle = project.join("build/windows/my-app-pro");
+    assert!(bundle.join("my-app-pro.exe").is_file());
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(bundle.join("tokamak.json"))?)?;
+    assert_eq!(config["name"], "my-app-pro");
+    assert_eq!(config["host"], "my-app-pro.tokamak.local");
+    Ok(())
+}
+
+#[test]
 fn builds_a_configured_windows_icon() -> TestResult {
     let (_temporary, project, manifest) = create_windows_inputs()?;
     fs::write(project.join("AppIcon.ico"), "ico")?;
@@ -639,11 +694,19 @@ fn builds_web_project_before_loading_generated_config() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn builds_physical_ios_app() -> TestResult {
-    let (_temporary, project, manifest) = create_inputs("ios-arm64")?;
+    let (temporary, project, manifest) = create_inputs("ios-arm64")?;
     install_geolocation_plugin(&project)?;
-    build_command("ios", &project, &manifest)?
+    let profile = project.join("development.mobileprovision");
+    fs::write(&profile, "profile")?;
+    let mut command = build_command("ios", &project, &manifest)?;
+    configure_fake_apple_tools(&mut command, temporary.path())?;
+    command
+        .env_remove("TOKAMAK_IOS_TEAM_ID")
+        .env("TOKAMAK_IOS_SIGNING_IDENTITY", "Apple Development: Test")
+        .env("TOKAMAK_IOS_PROVISIONING_PROFILE", &profile)
         .assert()
         .success()
         .stdout(contains("Built iOS bundle"));
@@ -658,6 +721,7 @@ fn builds_physical_ios_app() -> TestResult {
     assert!(plist.contains("UILaunchScreen"));
     assert!(plist.contains("NSAllowsLocalNetworking"));
     assert!(plist.contains("NSLocationWhenInUseUsageDescription"));
+    assert!(bundle.join("embedded.mobileprovision").is_file());
     Ok(())
 }
 
