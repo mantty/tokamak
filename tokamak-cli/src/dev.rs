@@ -33,6 +33,7 @@ pub(crate) struct Request {
     pub(crate) target_pack_dir: Option<PathBuf>,
     pub(crate) tokamak_config_path: PathBuf,
     pub(crate) wrangler_config_path: Option<PathBuf>,
+    pub(crate) ios_team_id: Option<String>,
     pub(crate) server: String,
     pub(crate) host_address: Option<String>,
     pub(crate) command: Vec<std::ffi::OsString>,
@@ -55,7 +56,13 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     let device = devices::prepare(&request.device_id)?;
     let app_name = pipeline::resolve_app_name(&tokamak, &wrangler.name, device.platform);
     let identifier = pipeline::resolve_identifier(&tokamak, &app_name, device.platform)?;
-    let signing = ios_signing::resolve(device.platform, &project, &identifier, Some(&device.id))?;
+    let signing = ios_signing::resolve(
+        device.platform,
+        &project,
+        &identifier,
+        Some(&device.id),
+        request.ios_team_id.as_deref(),
+    )?;
     let server = ServerEndpoint::parse(&request.server)?;
     let session_token = session_token()?;
     let relay_host = relay_host(&device, request.host_address.as_deref())?;

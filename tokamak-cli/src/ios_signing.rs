@@ -1,4 +1,4 @@
-//! iOS development signing asset discovery.
+//! iOS signing asset discovery and development signing selection.
 
 #[cfg(target_os = "macos")]
 use std::collections::BTreeMap;
@@ -38,6 +38,94 @@ pub(crate) struct Selection {
     pub(crate) profile: PathBuf,
 }
 
+/// List installed iOS signing identities and provisioning profiles without provisioning.
+pub(crate) fn list() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let identities = discover_identities()?;
+        print!("{}", signing_inventory(&identities, &discover_profiles())?);
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    bail!("iOS signing discovery requires a macOS host");
+}
+
+#[cfg(target_os = "macos")]
+fn signing_inventory(identities: &[Identity], profiles: &[Result<Profile>]) -> Result<String> {
+    let mut output = String::from("iOS signing identities (certificate and private key):\n");
+    let mut count = 0;
+    for identity in identities.iter().filter(|identity| {
+        [
+            "Apple Development:",
+            "Apple Distribution:",
+            "iPhone Developer:",
+            "iPhone Distribution:",
+        ]
+        .iter()
+        .any(|prefix| identity.name.starts_with(prefix))
+    }) {
+        count += 1;
+        writeln!(output, "\n  {}", identity.name)?;
+        writeln!(output, "    SHA-1: {}", identity.selector)?;
+        if let Some(team_id) = certificate_team_id(&identity.certificate_der) {
+            writeln!(output, "    Team: {team_id}")?;
+        }
+        if let Ok((_, certificate)) = x509_parser::parse_x509_certificate(&identity.certificate_der)
+        {
+            let validity = certificate.validity();
+            let status = if validity.is_valid() {
+                ""
+            } else {
+                " (outside validity period)"
+            };
+            writeln!(output, "    Expires: {}{status}", validity.not_after)?;
+        }
+    }
+    if count == 0 {
+        writeln!(output, "  None found.")?;
+    }
+
+    writeln!(output, "\niOS provisioning profiles:")?;
+    if profiles.is_empty() {
+        writeln!(output, "  None found.")?;
+    }
+    for result in profiles {
+        let profile = match result {
+            Ok(profile) => profile,
+            Err(error) => {
+                writeln!(output, "\n  Could not read profile: {error:#}")?;
+                continue;
+            }
+        };
+        let status = if profile.expiration > SystemTime::now() {
+            ""
+        } else {
+            " (expired)"
+        };
+        writeln!(output, "\n  {} ({})", profile.name, profile.id)?;
+        writeln!(output, "    Path: {}", profile.path.display())?;
+        writeln!(output, "    Team: {}", profile.team_id)?;
+        writeln!(output, "    App ID: {}", profile.application_identifier)?;
+        writeln!(output, "    Expires: {}{status}", profile.expiration_label)?;
+        writeln!(output, "    Matching installed identities (SHA-1):")?;
+        let matching = identities
+            .iter()
+            .filter(|identity| {
+                profile
+                    .developer_certificates
+                    .contains(&identity.certificate_der)
+            })
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            writeln!(output, "      None found.")?;
+        }
+        for identity in matching {
+            writeln!(output, "      {}  {}", identity.selector, identity.name)?;
+        }
+    }
+    Ok(output)
+}
+
 /// Resolve signing assets for an iOS app.
 ///
 /// A device ID is required for development on a physical device. Builds omit
@@ -47,6 +135,7 @@ pub(crate) fn resolve(
     project: &Path,
     bundle_id: &str,
     device_id: Option<&str>,
+    team_id: Option<&str>,
 ) -> Result<Option<Selection>> {
     if platform != Platform::Ios {
         return Ok(None);
@@ -54,12 +143,12 @@ pub(crate) fn resolve(
 
     #[cfg(target_os = "macos")]
     {
-        resolve_macos(project, bundle_id, device_id).map(Some)
+        resolve_macos(project, bundle_id, device_id, team_id).map(Some)
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (project, bundle_id, device_id);
+        let _ = (project, bundle_id, device_id, team_id);
         bail!("iOS signing requires a macOS host with Xcode");
     }
 }
@@ -87,6 +176,7 @@ impl Profile {
                 .any(|device| device.eq_ignore_ascii_case(device_id))
         });
         self.expiration > SystemTime::now()
+            && !self.devices.is_empty()
             && device_matches
             && app_identifier_matches(&self.application_identifier, bundle_id)
             && self
@@ -133,13 +223,19 @@ struct CachedSelection {
 }
 
 #[cfg(target_os = "macos")]
-fn resolve_macos(project: &Path, bundle_id: &str, device_id: Option<&str>) -> Result<Selection> {
-    let configured_team = configured_team_id()?;
+fn resolve_macos(
+    project: &Path,
+    bundle_id: &str,
+    device_id: Option<&str>,
+    team_id: Option<&str>,
+) -> Result<Selection> {
+    let environment_team = env::var("TOKAMAK_IOS_TEAM_ID").ok();
+    let configured_team = configured_team_id(team_id, environment_team.as_deref())?;
     if let Some(selection) = explicit_selection(configured_team.is_some())? {
         return Ok(selection);
     }
 
-    let profiles = discover_profiles();
+    let profiles = development_profiles(discover_profiles());
     let identities = discover_identities()?;
     let team_id = match configured_team {
         Some(team_id) => team_id,
@@ -354,19 +450,35 @@ fn automatic_team_id(
         );
     };
     let best = teams
-        .into_iter()
-        .filter(|(_, score)| *score == best_score)
-        .map(|(team_id, _)| team_id)
+        .iter()
+        .filter_map(|(team_id, score)| (*score == best_score).then_some(team_id))
         .collect::<Vec<_>>();
     if best.len() != 1 {
-        let available = best
-            .iter()
-            .map(|team_id| format!("  - {team_id}"))
+        let available = teams
+            .keys()
+            .map(|team_id| format!("  {}", team_label(team_id, identities, profiles)))
             .collect::<Vec<_>>()
             .join("\n");
-        bail!("multiple Apple Development teams are available:\n{available}");
+        let command = device_id.map_or_else(
+            || "tok build ios --ios-team-id TEAM_ID".to_owned(),
+            |device_id| format!("tok dev {device_id} --ios-team-id TEAM_ID -- <dev-command>"),
+        );
+        bail!(
+            "Multiple Apple Development teams are available:\n\n  Team ID     Name\n{available}\n\n\
+             Choose the team that owns this app. Replace TEAM_ID below with its ID.\n\n  \
+             Set it for this shell, then rerun your command:\n    \
+             export TOKAMAK_IOS_TEAM_ID=TEAM_ID\n\n  \
+             Or select it for a single command:\n    {command}\n\n\
+             Tokamak will select the signing identity and provisioning profile automatically.\n\n\
+             Alternatively, use manual signing:\n\n  \
+             List installed signing identities and provisioning profiles:\n    \
+             tok certs\n\n  \
+             Set BOTH the identity and its matching provisioning profile:\n    \
+             export TOKAMAK_IOS_SIGNING_IDENTITY=\"IDENTITY_SHA1\"\n    \
+             export TOKAMAK_IOS_PROVISIONING_PROFILE=\"/path/to/profile.mobileprovision\""
+        );
     }
-    best.into_iter().next().context("one team was selected")
+    Ok(best[0].clone())
 }
 
 #[cfg(target_os = "macos")]
@@ -390,6 +502,38 @@ fn certificate_team_id(certificate_der: &[u8]) -> Option<String> {
         .subject()
         .iter_organizational_unit()
         .find_map(|attribute| attribute.as_str().ok().map(str::to_owned))
+}
+
+#[cfg(target_os = "macos")]
+fn team_label(team_id: &str, identities: &[Identity], profiles: &[Profile]) -> String {
+    let mut fallback = format!("{team_id}  (team name unavailable)");
+    for identity in identities.iter().filter(|identity| {
+        identity.name.starts_with("Apple Development:")
+            && identity_team_id(identity, profiles).as_deref() == Some(team_id)
+    }) {
+        fallback = format!(
+            "{team_id}  (team name unavailable; signing identity: {})",
+            identity.name
+        );
+        let Ok((_, certificate)) = x509_parser::parse_x509_certificate(&identity.certificate_der)
+        else {
+            continue;
+        };
+        if let Some(name) = certificate
+            .subject()
+            .iter_organization()
+            .find_map(|attribute| {
+                attribute
+                    .as_str()
+                    .ok()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+            })
+        {
+            return format!("{team_id}  {name}");
+        }
+    }
+    fallback
 }
 
 #[cfg(target_os = "macos")]
@@ -458,7 +602,7 @@ fn automatic_signing_error(
         |device_id| format!("iOS device {device_id}"),
     );
     anyhow::anyhow!(
-        "automatic iOS signing failed for bundle {bundle_id} and {target}: {error}; set TOKAMAK_IOS_TEAM_ID to choose a team, or set both TOKAMAK_IOS_SIGNING_IDENTITY and TOKAMAK_IOS_PROVISIONING_PROFILE for manual signing"
+        "automatic iOS signing failed for bundle {bundle_id} and {target}:\n\n{error:#}"
     )
 }
 
@@ -470,7 +614,11 @@ fn explicit_selection(team_configured: bool) -> Result<Option<Selection>> {
         (Some(identity), Some(profile)) => {
             if team_configured {
                 bail!(
-                    "choose either TOKAMAK_IOS_TEAM_ID or both TOKAMAK_IOS_SIGNING_IDENTITY and TOKAMAK_IOS_PROVISIONING_PROFILE"
+                    "automatic and manual iOS signing cannot be combined.\n\n\
+                     Choose ONE signing mode:\n  \
+                     Automatic: --ios-team-id or TOKAMAK_IOS_TEAM_ID\n  \
+                     Manual:    both TOKAMAK_IOS_SIGNING_IDENTITY and\n             \
+                     TOKAMAK_IOS_PROVISIONING_PROFILE"
                 );
             }
             if identity.trim().is_empty() {
@@ -493,14 +641,17 @@ fn explicit_selection(team_configured: bool) -> Result<Option<Selection>> {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn configured_team_id() -> Result<Option<String>> {
-    let Some(team_id) = env::var("TOKAMAK_IOS_TEAM_ID").ok() else {
+#[cfg(any(target_os = "macos", test))]
+fn configured_team_id(argument: Option<&str>, environment: Option<&str>) -> Result<Option<String>> {
+    let Some((team_id, source)) = argument
+        .map(|value| (value, "--ios-team-id"))
+        .or_else(|| environment.map(|value| (value, "TOKAMAK_IOS_TEAM_ID")))
+    else {
         return Ok(None);
     };
     let team_id = team_id.trim();
     if team_id.is_empty() {
-        bail!("TOKAMAK_IOS_TEAM_ID must not be empty");
+        bail!("{source} must not be empty");
     }
     Ok(Some(team_id.to_owned()))
 }
@@ -514,9 +665,11 @@ fn discover_identities() -> Result<Vec<Identity>> {
         .class(ItemClass::identity())
         .load_refs(true)
         .limit(Limit::All);
-    let results = options
-        .search()
-        .map_err(|error| anyhow::anyhow!("search macOS signing identities: {error}"))?;
+    let results = match options.search() {
+        Ok(results) => results,
+        Err(error) if error.code() == -25300 => Vec::new(), // errSecItemNotFound
+        Err(error) => bail!("search macOS signing identities: {error}"),
+    };
 
     let mut identities = results
         .into_iter()
@@ -545,14 +698,25 @@ fn discover_identities() -> Result<Vec<Identity>> {
 }
 
 #[cfg(target_os = "macos")]
-fn discover_profiles() -> Vec<Profile> {
+fn development_profiles(profiles: Vec<Result<Profile>>) -> Vec<Profile> {
+    profiles
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|profile| !profile.devices.is_empty())
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn discover_profiles() -> Vec<Result<Profile>> {
     let mut paths = profile_paths();
     paths.sort();
     paths
         .into_iter()
-        .filter_map(|path| {
-            let bytes = fs::read(&path).ok()?;
-            parse_profile(&path, &bytes).ok()
+        .map(|path| {
+            fs::read(&path)
+                .map_err(anyhow::Error::from)
+                .and_then(|bytes| parse_profile(&path, &bytes))
+                .with_context(|| path.display().to_string())
         })
         .collect()
 }
@@ -627,9 +791,6 @@ fn parse_profile(path: &Path, bytes: &[u8]) -> Result<Profile> {
     let expiration_label = expiration_date.to_xml_format();
     let devices = string_array(root, "ProvisionedDevices");
     let developer_certificates = data_array(root, "DeveloperCertificates");
-    if devices.is_empty() {
-        bail!("provisioning profile does not contain registered devices");
-    }
     if developer_certificates.is_empty() {
         bail!("provisioning profile does not contain developer certificates");
     }
@@ -843,12 +1004,278 @@ mod tests {
     use std::path::Path;
     use std::time::{Duration, SystemTime};
 
+    use anyhow::Context;
     use plist::{Dictionary, Value};
 
-    use super::{Identity, app_identifier_matches, fingerprint, parse_profile, sha1_fingerprint};
+    use super::{
+        Identity, app_identifier_matches, configured_team_id, fingerprint, parse_profile,
+        sha1_fingerprint,
+    };
+
+    #[test]
+    fn team_flag_overrides_the_environment() -> anyhow::Result<()> {
+        assert_eq!(
+            configured_team_id(Some(" FLAG "), Some("ENV"))?.as_deref(),
+            Some("FLAG")
+        );
+        assert_eq!(
+            configured_team_id(Some("FLAG"), Some(""))?.as_deref(),
+            Some("FLAG")
+        );
+        assert_eq!(
+            configured_team_id(None, Some(" ENV "))?.as_deref(),
+            Some("ENV")
+        );
+        assert_eq!(configured_team_id(None, None)?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn empty_team_selections_report_the_source_instead_of_falling_back() -> anyhow::Result<()> {
+        for (argument, environment, source) in [
+            (Some(" "), Some("ENV"), "--ios-team-id"),
+            (None, Some(" "), "TOKAMAK_IOS_TEAM_ID"),
+        ] {
+            let error = configured_team_id(argument, environment)
+                .err()
+                .context("expected an empty-team error")?;
+            assert_eq!(error.to_string(), format!("{source} must not be empty"));
+        }
+        Ok(())
+    }
 
     #[cfg(target_os = "macos")]
-    use super::{Profile, automatic_team_id, pbx_escape, write_signing_probe};
+    use super::{
+        Profile, automatic_signing_error, automatic_team_id, pbx_escape, write_signing_probe,
+    };
+
+    #[cfg(target_os = "macos")]
+    fn development_identity(team_id: &str, team_name: Option<&str>) -> anyhow::Result<Identity> {
+        use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
+
+        let mut subject = DistinguishedName::new();
+        subject.push(DnType::CommonName, "Apple Development: Same Developer");
+        subject.push(DnType::OrganizationalUnitName, team_id);
+        if let Some(name) = team_name {
+            subject.push(DnType::OrganizationName, name);
+        }
+        let mut params = CertificateParams::default();
+        params.distinguished_name = subject;
+        let key = KeyPair::generate()?;
+        let certificate = params.self_signed(&key)?;
+        let certificate_der = certificate.der().to_vec();
+        Ok(Identity {
+            name: "Apple Development: Same Developer".to_owned(),
+            fingerprint: fingerprint(&certificate_der),
+            selector: sha1_fingerprint(&certificate_der),
+            certificate_der,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn signing_inventory_reports_empty_results() -> anyhow::Result<()> {
+        assert_eq!(
+            super::signing_inventory(&[], &[])?,
+            "iOS signing identities (certificate and private key):\n  None found.\n\niOS provisioning profiles:\n  None found.\n"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn signing_inventory_lists_profile_metadata_and_matching_identity_selectors()
+    -> anyhow::Result<()> {
+        let development = development_identity("TEAM", Some("Example Company"))?;
+        let mut distribution = development_identity("TEAM", Some("Example Company"))?;
+        distribution.name = "Apple Distribution: Example Company".to_owned();
+        let mut unrelated = development_identity("OTHER", None)?;
+        unrelated.name = "Unrelated TLS identity".to_owned();
+        let mut value = profile_value("TEAM.com.example.app", "DEVICE");
+        let root = value.as_dictionary_mut().context("profile dictionary")?;
+        root.remove("ProvisionedDevices");
+        root.insert("Name".to_owned(), Value::String("App Store".to_owned()));
+        root.insert(
+            "DeveloperCertificates".to_owned(),
+            Value::Array(vec![Value::Data(distribution.certificate_der.clone())]),
+        );
+        root.insert(
+            "ExpirationDate".to_owned(),
+            Value::Date(SystemTime::UNIX_EPOCH.into()),
+        );
+        let mut bytes = Vec::new();
+        value.to_writer_xml(&mut bytes)?;
+        let profile = parse_profile(Path::new("/profiles/app.mobileprovision"), &bytes)?;
+        let identities = [development, distribution, unrelated];
+        let output = super::signing_inventory(&identities, &[Ok(profile)])?;
+        let (identity_output, profile_output) = output
+            .split_once("iOS provisioning profiles:")
+            .context("profile heading")?;
+        for identity in &identities[..2] {
+            assert!(identity_output.contains(&format!("SHA-1: {}", identity.selector)));
+        }
+        assert!(!identity_output.contains("Unrelated TLS identity"));
+        assert!(identity_output.contains("Team: TEAM"));
+        assert!(identity_output.contains("Expires:"));
+        assert!(profile_output.contains("App Store (PROFILE-1)"));
+        assert!(profile_output.contains("Path: /profiles/app.mobileprovision"));
+        assert!(profile_output.contains("Team: TEAM"));
+        assert!(profile_output.contains("App ID: TEAM.com.example.app"));
+        assert!(profile_output.contains("Expires: 1970-01-01T00:00:00Z (expired)"));
+        assert!(profile_output.contains(&format!(
+            "{}  Apple Distribution: Example Company",
+            identities[1].selector
+        )));
+        assert!(!profile_output.contains(&identities[0].selector));
+        assert!(!profile_output.contains(&identities[2].selector));
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn signing_inventory_reports_unmatched_and_unreadable_profiles() -> anyhow::Result<()> {
+        let mut bytes = Vec::new();
+        profile_value("TEAM.com.example.app", "DEVICE").to_writer_xml(&mut bytes)?;
+        let profile = parse_profile(Path::new("/profiles/dev.mobileprovision"), &bytes)?;
+        let error = anyhow::anyhow!("invalid profile").context("/profiles/broken.mobileprovision");
+        let output = super::signing_inventory(&[], &[Ok(profile), Err(error)])?;
+        assert!(output.contains("Matching installed identities (SHA-1):\n      None found."));
+        assert!(
+            output.contains(
+                "Could not read profile: /profiles/broken.mobileprovision: invalid profile"
+            )
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ambiguous_teams_show_names_and_selection_examples() -> anyhow::Result<()> {
+        let identities = [
+            development_identity("TEAMBBBBBB", Some("Example Company Ltd"))?,
+            development_identity("TEAMAAAAAA", Some("Example Person"))?,
+            development_identity("TEAMBBBBBB", Some("Example Company Ltd"))?,
+        ];
+        let project = tempfile::tempdir()?;
+        let error = automatic_team_id(
+            project.path(),
+            "com.example.app",
+            Some("DEVICE"),
+            &identities,
+            &[],
+        )
+        .err()
+        .context("a team must be selected")?;
+        let error = automatic_signing_error("com.example.app", Some("DEVICE"), &error);
+        assert_eq!(
+            error.to_string(),
+            concat!(
+                "automatic iOS signing failed for bundle com.example.app and iOS device DEVICE:\n\n",
+                "Multiple Apple Development teams are available:\n\n",
+                "  Team ID     Name\n",
+                "  TEAMAAAAAA  Example Person\n",
+                "  TEAMBBBBBB  Example Company Ltd\n\n",
+                "Choose the team that owns this app. Replace TEAM_ID below with its ID.\n\n",
+                "  Set it for this shell, then rerun your command:\n",
+                "    export TOKAMAK_IOS_TEAM_ID=TEAM_ID\n\n",
+                "  Or select it for a single command:\n",
+                "    tok dev DEVICE --ios-team-id TEAM_ID -- <dev-command>\n\n",
+                "Tokamak will select the signing identity and provisioning profile automatically.\n\n",
+                "Alternatively, use manual signing:\n\n",
+                "  List installed signing identities and provisioning profiles:\n",
+                "    tok certs\n\n",
+                "  Set BOTH the identity and its matching provisioning profile:\n",
+                "    export TOKAMAK_IOS_SIGNING_IDENTITY=\"IDENTITY_SHA1\"\n",
+                "    export TOKAMAK_IOS_PROVISIONING_PROFILE=\"/path/to/profile.mobileprovision\""
+            )
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ambiguous_teams_include_personal_teams_without_matching_profiles() -> anyhow::Result<()> {
+        let identities = [
+            development_identity("TEAMAAAAAA", Some("First Company"))?,
+            development_identity("TEAMBBBBBB", Some("Second Company"))?,
+            development_identity("TEAMCCCCCC", Some("Personal Developer"))?,
+        ];
+        let mut profiles = Vec::new();
+        for (team_id, identity) in ["TEAMAAAAAA", "TEAMBBBBBB"].iter().zip(&identities) {
+            let mut value = profile_value(&format!("{team_id}.com.example.app"), "DEVICE");
+            let root = value
+                .as_dictionary_mut()
+                .context("profile fixture is a dictionary")?;
+            root.insert(
+                "TeamIdentifier".to_owned(),
+                Value::Array(vec![Value::String((*team_id).to_owned())]),
+            );
+            root.insert(
+                "DeveloperCertificates".to_owned(),
+                Value::Array(vec![Value::Data(identity.certificate_der.clone())]),
+            );
+            let mut bytes = Vec::new();
+            value.to_writer_xml(&mut bytes)?;
+            profiles.push(parse_profile(Path::new("profile.mobileprovision"), &bytes)?);
+        }
+        let project = tempfile::tempdir()?;
+        for device_id in [Some("DEVICE"), None] {
+            let error = automatic_team_id(
+                project.path(),
+                "com.example.app",
+                device_id,
+                &identities,
+                &profiles,
+            )
+            .err()
+            .context("matching company teams are ambiguous")?
+            .to_string();
+            for team in [
+                "TEAMAAAAAA  First Company",
+                "TEAMBBBBBB  Second Company",
+                "TEAMCCCCCC  Personal Developer",
+            ] {
+                assert!(error.contains(team), "missing {team}: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unnamed_teams_show_the_identity_without_claiming_it_is_the_team_name() -> anyhow::Result<()>
+    {
+        let identities = [
+            development_identity("TEAMAAAAAA", None)?,
+            development_identity("TEAMBBBBBB", Some("  "))?,
+        ];
+        let project = tempfile::tempdir()?;
+        let error = automatic_team_id(project.path(), "com.example.app", None, &identities, &[])
+            .err()
+            .context("a team must be selected")?
+            .to_string();
+        for team in ["TEAMAAAAAA", "TEAMBBBBBB"] {
+            assert!(error.contains(&format!("{team}  (team name unavailable; signing identity: Apple Development: Same Developer)")));
+        }
+        assert!(error.contains("tok build ios --ios-team-id TEAM_ID"));
+        assert!(!error.contains("tok dev"));
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn automatic_signing_errors_preserve_details_without_unrelated_manual_instructions() {
+        let cause =
+            anyhow::anyhow!("No devices are registered").context("Xcode provisioning failed");
+        let error = automatic_signing_error("com.example.app", None, &cause);
+        assert_eq!(
+            error.to_string(),
+            concat!(
+                "automatic iOS signing failed for bundle com.example.app and a generic iOS device:\n\n",
+                "Xcode provisioning failed: No devices are registered"
+            )
+        );
+    }
 
     fn profile_value(application_identifier: &str, device: &str) -> Value {
         let mut entitlements = Dictionary::new();
@@ -908,6 +1335,29 @@ mod tests {
         assert!(!profile.matches("com.example.other", Some("DEVICE"), &identity));
         assert!(!profile.matches("com.example.app", Some("OTHER"), &identity));
         assert!(profile.matches("com.example.app", None, &identity));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_profiles_without_devices_but_excludes_them_from_automatic_signing()
+    -> anyhow::Result<()> {
+        let mut value = profile_value("TEAM.com.example.app", "DEVICE");
+        value
+            .as_dictionary_mut()
+            .context("profile dictionary")?
+            .remove("ProvisionedDevices");
+        let mut bytes = Vec::new();
+        value.to_writer_xml(&mut bytes)?;
+        let profile = parse_profile(Path::new("distribution.mobileprovision"), &bytes)?;
+        let identity = Identity {
+            name: "Apple Distribution: Test".to_owned(),
+            fingerprint: fingerprint(&[1, 2, 3]),
+            selector: sha1_fingerprint(&[1, 2, 3]),
+            certificate_der: vec![1, 2, 3],
+        };
+        assert!(profile.devices.is_empty());
+        assert!(!profile.matches("com.example.app", None, &identity));
+        assert!(!profile.matches("com.example.app", Some("DEVICE"), &identity));
         Ok(())
     }
 
@@ -978,6 +1428,53 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn automatic_team_ranking_ignores_profiles_without_registered_devices() -> anyhow::Result<()> {
+        let identities = [
+            development_identity("PERSONAL", Some("Personal Developer"))?,
+            development_identity("COMPANY", Some("Example Company"))?,
+        ];
+        let mut profiles = Vec::new();
+        for (identity, team_id, bundle_id) in [
+            (&identities[0], "PERSONAL", "com.tokamak.old-app"),
+            (&identities[1], "COMPANY", "com.example.other"),
+        ] {
+            let mut value = profile_value(&format!("{team_id}.{bundle_id}"), "DEVICE");
+            let root = value.as_dictionary_mut().context("profile dictionary")?;
+            root.insert(
+                "TeamIdentifier".to_owned(),
+                Value::Array(vec![Value::String(team_id.to_owned())]),
+            );
+            root.insert(
+                "DeveloperCertificates".to_owned(),
+                Value::Array(vec![Value::Data(identity.certificate_der.clone())]),
+            );
+            let mut bytes = Vec::new();
+            value.to_writer_xml(&mut bytes)?;
+            profiles.push(parse_profile(Path::new("profile.mobileprovision"), &bytes)?);
+        }
+        let project = tempfile::tempdir()?;
+        let mut deviceless = profiles[1].clone();
+        deviceless.devices.clear();
+        deviceless.application_identifier = "COMPANY.com.tokamak.new-app".to_owned();
+        profiles.push(deviceless);
+        let eligible = super::development_profiles(profiles.into_iter().map(Ok).collect());
+        for device_id in [Some("DEVICE"), None] {
+            assert_eq!(
+                automatic_team_id(
+                    project.path(),
+                    "com.tokamak.new-app",
+                    device_id,
+                    &identities,
+                    &eligible
+                )?,
+                "PERSONAL"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn automatic_signing_prefers_an_existing_tokamak_team() -> Result<(), Box<dyn std::error::Error>>
     {
         let identities = vec![
@@ -1003,7 +1500,7 @@ mod tests {
                 application_identifier: "PERSONAL.com.tokamak.old-app".to_owned(),
                 expiration: SystemTime::now() - Duration::from_secs(1),
                 expiration_label: String::new(),
-                devices: Vec::new(),
+                devices: vec!["DEVICE".to_owned()],
                 developer_certificates: vec![vec![1, 2, 3]],
             },
             Profile {
@@ -1014,7 +1511,7 @@ mod tests {
                 application_identifier: "COMPANY.com.example.other".to_owned(),
                 expiration: SystemTime::now() - Duration::from_secs(1),
                 expiration_label: String::new(),
-                devices: Vec::new(),
+                devices: vec!["DEVICE".to_owned()],
                 developer_certificates: vec![vec![4, 5, 6]],
             },
         ];

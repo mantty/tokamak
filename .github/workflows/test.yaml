@@ -135,6 +135,11 @@ jobs:
           cargo clippy -p tokamak --lib --target x86_64-apple-ios --features test-stubs -- -D warnings
           cargo clippy -p tokamak --lib --target x86_64-apple-darwin --features test-stubs -- -D warnings
 
+      - name: Test iOS signing
+        run: |
+          cargo test -p tokamak-cli --bin tok ios_signing::tests
+          cargo test -p tokamak-cli --test cli
+
       - name: Test Apple builds
         run: >-
           cargo test -p tokamak-cli --test build --

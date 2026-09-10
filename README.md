@@ -128,12 +128,56 @@ Relative paths are resolved from the directory containing the Tokamak
 configuration file. Invalid paths or platform formats fail the native build.
 
 Physical iOS builds use automatic development signing by default. Tokamak
-selects an available Apple Development team automatically; set
-`TOKAMAK_IOS_TEAM_ID` to choose a team explicitly. For a fully manual signing
-selection, set both `TOKAMAK_IOS_SIGNING_IDENTITY` and
-`TOKAMAK_IOS_PROVISIONING_PROFILE`. These variables are used by both `tok dev`
-and `tok build ios`; the latter provisions for a generic iOS device and does
-not require a device ID. iOS Simulator builds do not require provisioning.
+selects an available Apple Development team automatically. If the choice is
+ambiguous, it lists the team names from the signing certificates and their
+IDs. Choose the team that owns your app. Set its ID for your shell and rerun
+your command:
+
+```sh
+export TOKAMAK_IOS_TEAM_ID=YOUR_TEAM_ID
+```
+
+Alternatively, select the team for a single command with `--ios-team-id`:
+
+```sh
+tok dev DEVICE_ID --ios-team-id YOUR_TEAM_ID -- pnpm dev
+tok build ios --ios-team-id YOUR_TEAM_ID
+```
+
+The command-line flag takes precedence over `TOKAMAK_IOS_TEAM_ID`.
+
+Tokamak selects the signing identity and provisioning profile for that team,
+asking Xcode to provision the app when needed. No manual signing variables
+are required. If a certificate has no team name, the list identifies its
+signing identity instead and marks the team name as unavailable.
+
+For **manual signing**, provide both the identity and its matching profile.
+List locally installed iOS signing assets on macOS with:
+
+```sh
+tok certs
+```
+
+This read-only command lists identity names and SHA-1 selectors, plus profile
+names, paths, team IDs, app identifiers, expiration dates, and matching installed
+identities. It includes development and distribution profiles; matching means
+the identity's certificate is included in the profile, not that the pair is valid
+for every app or device. It does not create or import signing assets.
+
+Use the identity's SHA-1 and the profile's path:
+
+```sh
+export TOKAMAK_IOS_SIGNING_IDENTITY="IDENTITY_SHA1"
+export TOKAMAK_IOS_PROVISIONING_PROFILE="/path/to/profile.mobileprovision"
+```
+
+An explicit team (`--ios-team-id` or `TOKAMAK_IOS_TEAM_ID`) and the manual pair
+are mutually exclusive. Providing both produces an error explaining the two
+choices. Manual signing uses these environment variables; it has no CLI flags.
+
+Both `tok dev` and `tok build ios` use these settings; the latter provisions
+for a generic iOS device and does not require a device ID. iOS Simulator
+builds do not require provisioning.
 
 ## Development
 

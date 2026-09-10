@@ -44,6 +44,9 @@ enum Command {
         /// Path to the Wrangler configuration file.
         #[arg(short = 'w', long = "wrangler")]
         wrangler: Option<PathBuf>,
+        /// Apple team for automatic iOS signing. Overrides `TOKAMAK_IOS_TEAM_ID`.
+        #[arg(long, value_name = "TEAM_ID")]
+        ios_team_id: Option<String>,
         /// Reuse an existing dist/ directory instead of running the web build.
         #[arg(long)]
         skip_web_build: bool,
@@ -65,6 +68,9 @@ enum Command {
         /// Path to the Wrangler configuration file.
         #[arg(short = 'w', long = "wrangler")]
         wrangler: Option<PathBuf>,
+        /// Apple team for automatic iOS signing. Overrides `TOKAMAK_IOS_TEAM_ID`.
+        #[arg(long, value_name = "TEAM_ID")]
+        ios_team_id: Option<String>,
         /// HTTP endpoint served by the framework's development command.
         #[arg(long, value_name = "URL", default_value = "http://localhost:5173")]
         server: String,
@@ -77,6 +83,8 @@ enum Command {
     },
     /// List concrete and provisionable development targets.
     Devices,
+    /// List local iOS signing identities and provisioning profiles (macOS only).
+    Certs,
     /// List runtime targets supported by this CLI.
     Targets,
 }
@@ -101,6 +109,7 @@ fn run() -> Result<()> {
             target_pack,
             config,
             wrangler,
+            ios_team_id,
             skip_web_build,
         } => {
             let platforms = parse_platforms(&platforms)?;
@@ -110,6 +119,7 @@ fn run() -> Result<()> {
                 target_pack_dir: target_pack,
                 tokamak_config_path: config,
                 wrangler_config_path: wrangler,
+                ios_team_id,
                 skip_web_build,
             })?;
             for summary in summaries {
@@ -127,6 +137,7 @@ fn run() -> Result<()> {
             target_pack,
             config,
             wrangler,
+            ios_team_id,
             server,
             host_address,
             command,
@@ -137,6 +148,7 @@ fn run() -> Result<()> {
                 target_pack_dir: target_pack,
                 tokamak_config_path: config,
                 wrangler_config_path: wrangler,
+                ios_team_id,
                 server,
                 host_address,
                 command,
@@ -147,6 +159,7 @@ fn run() -> Result<()> {
             devices::list();
             Ok(())
         }
+        Command::Certs => ios_signing::list(),
         Command::Targets => {
             list_targets();
             Ok(())

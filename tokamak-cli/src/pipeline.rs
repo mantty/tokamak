@@ -17,6 +17,7 @@ pub(crate) struct BuildRequest {
     pub(crate) target_pack_dir: Option<PathBuf>,
     pub(crate) tokamak_config_path: PathBuf,
     pub(crate) wrangler_config_path: Option<PathBuf>,
+    pub(crate) ios_team_id: Option<String>,
     pub(crate) skip_web_build: bool,
 }
 
@@ -188,7 +189,13 @@ fn build_platform(
     .context("write platform build metadata")?;
 
     let output = output_path(&project, platform, &app_name);
-    let signing = ios_signing::resolve(platform, &project, &identifier, None)?;
+    let signing = ios_signing::resolve(
+        platform,
+        &project,
+        &identifier,
+        None,
+        request.ios_team_id.as_deref(),
+    )?;
     let mut environment = Vec::new();
     if let Some(selection) = signing.as_ref() {
         environment.push(("TOKAMAK_IOS_SIGNING_IDENTITY", selection.identity.as_ref()));
