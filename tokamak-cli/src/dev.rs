@@ -54,8 +54,8 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     let wrangler = load_development_config(&project, request.wrangler_config_path.as_deref())?;
     warn_unsupported_bindings(&wrangler);
     let device = devices::prepare(&request.device_id)?;
-    let app_name = pipeline::resolve_app_name(&tokamak, &wrangler.name, device.platform);
-    let identifier = pipeline::resolve_identifier(&tokamak, &app_name, device.platform)?;
+    let (_, app_slug) = pipeline::resolve_app(&tokamak, &wrangler.name, device.platform);
+    let identifier = pipeline::resolve_identifier(&tokamak, &app_slug, device.platform)?;
     let signing = ios_signing::resolve(
         device.platform,
         &project,
@@ -603,7 +603,7 @@ fn launch_macos(summary: &pipeline::DevelopmentSummary) -> Result<LaunchedApp> {
     let executable = summary
         .bundle_dir
         .join("Contents/MacOS")
-        .join(&summary.app_name);
+        .join(&summary.app_slug);
     let mut command = ProcessCommand::new(&executable);
     configure_process_group(&mut command);
     let process = command
@@ -613,7 +613,7 @@ fn launch_macos(summary: &pipeline::DevelopmentSummary) -> Result<LaunchedApp> {
 }
 
 fn launch_windows(summary: &pipeline::DevelopmentSummary) -> Result<LaunchedApp> {
-    let executable = summary.bundle_dir.join(format!("{}.exe", summary.app_name));
+    let executable = summary.bundle_dir.join(format!("{}.exe", summary.app_slug));
     let process = ProcessCommand::new(&executable)
         .spawn()
         .with_context(|| format!("launch Windows app {}", executable.display()))?;
@@ -1181,6 +1181,57 @@ mod tests {
             relay_host(&device, Some("192.168.1.42"))?,
             IpAddr::V4(Ipv4Addr::new(192, 168, 1, 42))
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launches_macos_using_the_app_slug() -> Result<(), Box<dyn std::error::Error>> {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempfile::tempdir()?;
+        let executable_dir = temporary.path().join("Contents/MacOS");
+        fs::create_dir_all(&executable_dir)?;
+        let executable = executable_dir.join("my-app");
+        fs::write(&executable, "#!/bin/sh\nsleep 10\n")?;
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))?;
+
+        let summary = super::pipeline::DevelopmentSummary {
+            platform: Platform::Macos,
+            bundle_dir: temporary.path().to_owned(),
+            app_slug: "my-app".to_owned(),
+            identifier: "com.example.my-app".to_owned(),
+        };
+        let mut app = super::launch_macos(&summary)?;
+        assert!(!app.has_exited()?);
+        app.stop();
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn launches_windows_using_the_app_slug() -> Result<(), Box<dyn std::error::Error>> {
+        use std::fs;
+
+        let temporary = tempfile::tempdir()?;
+        let executable = temporary.path().join("my-app.exe");
+        let system_root = std::env::var_os("SystemRoot").ok_or("SystemRoot is unavailable")?;
+        fs::copy(
+            std::path::PathBuf::from(system_root)
+                .join("System32")
+                .join("timeout.exe"),
+            &executable,
+        )?;
+
+        let summary = super::pipeline::DevelopmentSummary {
+            platform: Platform::Windows,
+            bundle_dir: temporary.path().to_owned(),
+            app_slug: "my-app".to_owned(),
+            identifier: "com.example.my-app".to_owned(),
+        };
+        let mut app = super::launch_windows(&summary)?;
+        app.stop();
         Ok(())
     }
 

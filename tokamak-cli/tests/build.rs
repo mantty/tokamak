@@ -131,6 +131,29 @@ fn create_target_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
         root.join(target.build_entrypoint_path()),
         include_str!("../../platforms/apple/build/entrypoint"),
     )?;
+    write_test_manifest(root, target)?;
+    Ok(root.to_path_buf())
+}
+
+#[cfg(unix)]
+fn create_android_target_pack(root: &Path) -> TestResult<PathBuf> {
+    let target = Target::AndroidArm64;
+    fs::create_dir_all(root.join("bin"))?;
+    fs::write(root.join(target.runtime_artifact_path()), "runtime")?;
+    fs::create_dir_all(root.join("native-shell"))?;
+    fs::File::create(root.join("native-shell/TokamakActivity.kt"))?;
+    let entrypoint = root.join(target.build_entrypoint_path());
+    fs::create_dir_all(entrypoint.parent().ok_or("entrypoint path has no parent")?)?;
+    fs::write(
+        entrypoint,
+        include_str!("../../platforms/android/build/entrypoint"),
+    )?;
+    write_test_esbuild(root)?;
+    write_test_manifest(root, target)?;
+    Ok(root.to_path_buf())
+}
+
+fn write_test_manifest(root: &Path, target: Target) -> TestResult {
     write_manifest(
         root.join(MANIFEST_FILE),
         &TargetPackManifest {
@@ -144,7 +167,7 @@ fn create_target_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
                 .collect(),
         },
     )?;
-    Ok(root.to_path_buf())
+    Ok(())
 }
 
 fn write_test_shell(shell: &Path) -> TestResult {
@@ -253,28 +276,21 @@ set -eu
 input=$2
 output=$3
 app_name=$(cat "$input/metadata/app-name")
+app_slug=$(cat "$input/metadata/app-slug")
 host=$(cat "$input/metadata/host")
 rm -rf "$output"
 mkdir -p "$output/app"
 cp -R "$input/app/." "$output/app/"
-cp "$input/runtime/tokamak-shell-windows.exe" "$output/$app_name.exe"
+cp "$input/runtime/tokamak-shell-windows.exe" "$output/$app_slug.exe"
 if [ -f "$input/icons/windows/AppIcon.ico" ]; then
   cp "$input/icons/windows/AppIcon.ico" "$output/AppIcon.ico"
 fi
-printf '{"name":"%s","host":"%s"}\n' "$app_name" "$host" > "$output/tokamak.json"
+printf '{"name":"%s","slug":"%s","host":"%s"}\n' "$app_name" "$app_slug" "$host" > "$output/tokamak.json"
 "#
     };
     fs::write(pack.join(entrypoint_path), entrypoint)?;
     write_test_esbuild(&pack)?;
-    write_manifest(
-        pack.join(MANIFEST_FILE),
-        &TargetPackManifest {
-            tokamak_version: env!("CARGO_PKG_VERSION").to_owned(),
-            target,
-            artifacts: target.artifacts(),
-            required_tools: Vec::new(),
-        },
-    )?;
+    write_test_manifest(&pack, target)?;
     Ok((temporary, project, pack))
 }
 
@@ -304,6 +320,38 @@ fn configure_fake_apple_tools(command: &mut Command, root: &Path) -> TestResult<
     path.push(std::env::var_os("PATH").ok_or("PATH unavailable")?);
     command.env("PATH", path).env("TOKAMAK_TEST_TOOL_LOG", &log);
     Ok(log)
+}
+
+#[cfg(unix)]
+fn configure_fake_gradle(command: &mut Command, root: &Path) -> TestResult<()> {
+    use std::ffi::OsString;
+
+    let bin = root.join("fake-android-tools");
+    fs::create_dir_all(&bin)?;
+    write_executable(
+        &bin.join("gradle"),
+        r#"#!/bin/sh
+set -eu
+project=
+next=
+for arg in "$@"; do
+  if [ "$next" = project ]; then
+    project=$arg
+    next=
+  elif [ "$arg" = --project-dir ]; then
+    next=project
+  fi
+done
+mkdir -p "$project/app/build/outputs/apk/debug"
+cp "$project/app/src/main/AndroidManifest.xml" "$project/app/build/outputs/apk/debug/AndroidManifest.xml"
+touch "$project/app/build/outputs/apk/debug/app-debug.apk"
+"#,
+    )?;
+    let mut path = OsString::from(bin);
+    path.push(":");
+    path.push(std::env::var_os("PATH").ok_or("PATH unavailable")?);
+    command.env("PATH", path);
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -457,6 +505,84 @@ fn builds_configured_identifier_and_version() -> TestResult {
     assert!(plist.contains("<key>CFBundleIdentifier</key><string>com.example.desktop</string>"));
     assert!(plist.contains("<key>CFBundleVersion</key><string>2.3.4</string>"));
     assert!(plist.contains("<key>CFBundleShortVersionString</key><string>2.3.4</string>"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn preserves_configured_display_name_in_apple_bundle() -> TestResult {
+    let (temporary, project, manifest) = create_inputs("ios-simulator-arm64")?;
+    fs::write(
+        project.join("tokamak.jsonc"),
+        r#"{"name":{"default":"Vigilus"}}"#,
+    )?;
+
+    let mut command = build_command("ios-simulator", &project, &manifest)?;
+    command.arg("--config").arg(project.join("tokamak.jsonc"));
+    configure_fake_apple_tools(&mut command, temporary.path())?;
+    command.assert().success();
+
+    let bundle = project.join("build/ios-simulator/vigilus.app");
+    assert!(bundle.join("vigilus").is_file());
+    let plist = fs::read_to_string(bundle.join("Info.plist"))?;
+    assert!(plist.contains("<key>CFBundleName</key><string>Vigilus</string>"));
+    assert!(plist.contains("<key>CFBundleDisplayName</key><string>Vigilus</string>"));
+    assert!(plist.contains("<key>CFBundleExecutable</key><string>vigilus</string>"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn preserves_configured_display_name_in_macos_bundle() -> TestResult {
+    let (temporary, project, manifest) = create_inputs("macos-arm64")?;
+    fs::write(
+        project.join("tokamak.jsonc"),
+        r#"{"name":{"default":"Vigilus"}}"#,
+    )?;
+
+    let mut command = build_command("macos", &project, &manifest)?;
+    command.arg("--config").arg(project.join("tokamak.jsonc"));
+    configure_fake_apple_tools(&mut command, temporary.path())?;
+    command.assert().success();
+
+    let bundle = project.join("build/macos/vigilus.app");
+    assert!(bundle.join("Contents/MacOS/vigilus").is_file());
+    let plist = fs::read_to_string(bundle.join("Contents/Info.plist"))?;
+    assert!(plist.contains("<key>CFBundleName</key><string>Vigilus</string>"));
+    assert!(plist.contains("<key>CFBundleDisplayName</key><string>Vigilus</string>"));
+    assert!(plist.contains("<key>CFBundleExecutable</key><string>vigilus</string>"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn preserves_configured_display_name_in_android_manifest() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let project = temporary.path().join("project");
+    let pack = temporary.path().join("pack");
+    fs::create_dir_all(&project)?;
+    fs::create_dir_all(&pack)?;
+    create_project(&project)?;
+    let target_pack = create_android_target_pack(&pack)?;
+    fs::write(
+        project.join("tokamak.jsonc"),
+        r#"{"name":{"default":"Vigilus & <Co> \"Pro\" 'X'"}}"#,
+    )?;
+
+    let mut command = build_command("android", &project, &target_pack)?;
+    command.arg("--config").arg(project.join("tokamak.jsonc"));
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command.assert().success();
+
+    let manifest = fs::read_to_string(
+        project.join("build/android/.tokamak/app/src/main/AndroidManifest.xml"),
+    )?;
+    assert!(
+        manifest
+            .contains("android:label=\"Vigilus &amp; &lt;Co&gt; &quot;Pro&quot; &apos;X&apos;\"")
+    );
+    assert!(!manifest.contains("android:label=\"vigilus-co-pro-x\""));
+    assert!(project.join("build/android/vigilus-co-pro-x.apk").is_file());
     Ok(())
 }
 
@@ -644,7 +770,7 @@ fn builds_windows_app_with_its_runtime_files() -> TestResult {
 }
 
 #[test]
-fn builds_with_a_normalized_configured_app_name() -> TestResult {
+fn builds_with_a_configured_display_name() -> TestResult {
     let (_temporary, project, manifest) = create_windows_inputs()?;
     fs::write(
         project.join("tokamak.jsonc"),
@@ -659,7 +785,8 @@ fn builds_with_a_normalized_configured_app_name() -> TestResult {
     assert!(bundle.join("my-app-pro.exe").is_file());
     let config: serde_json::Value =
         serde_json::from_slice(&fs::read(bundle.join("tokamak.json"))?)?;
-    assert_eq!(config["name"], "my-app-pro");
+    assert_eq!(config["name"], "My App Pro");
+    assert_eq!(config["slug"], "my-app-pro");
     assert_eq!(config["host"], "my-app-pro.tokamak.local");
     Ok(())
 }

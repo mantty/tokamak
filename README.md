@@ -87,17 +87,17 @@ The supported values are `name`, `identifier`, `version`, and `icons`:
 
 The `name` value is optional, but `name.default` is required when it is
 present. Platform names are optional and fall back to `default`; `ios` is
-used for both iOS devices and iOS simulators. Names are normalized to a
-lower-case ASCII slug for bundle filenames, application IDs, and
-`tokamak.local` hosts, so `My App` becomes `my-app`. If `name` is absent, the
-Wrangler Worker name is used. The normalized name is also used to derive an
-identifier when no identifier is configured.
+used for both iOS devices and iOS simulators. Names retain their spelling and
+capitalization for display. Tokamak derives a lower-case ASCII slug for bundle
+filenames, application IDs, and `tokamak.local` hosts, so `My App` becomes
+`my-app`. If `name` is absent, the Wrangler Worker name is used. The slug is
+also used to derive an identifier when no identifier is configured.
 
 The `identifier` value is optional, but `identifier.default` is required when
 it is present. Platform identifiers are optional and fall back to `default`.
 They are used as the Apple bundle identifier and Android application ID. If
 `identifier` is absent, Tokamak keeps deriving the identifier from the
-normalized application name. `TOKAMAK_IDENTIFIER` overrides the configured
+application slug. `TOKAMAK_IDENTIFIER` overrides the configured
 value, and `TOKAMAK_ANDROID_IDENTIFIER`, `TOKAMAK_IOS_IDENTIFIER`,
 `TOKAMAK_MACOS_IDENTIFIER`, or `TOKAMAK_WINDOWS_IDENTIFIER` override it for
 one platform. iOS simulators use the iOS variable.

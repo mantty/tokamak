@@ -94,13 +94,13 @@ impl Platform {
         }
     }
 
-    /// Output filename for an application with the given name.
+    /// Output filename for an application with the given slug.
     #[must_use]
-    pub fn output_name(self, app_name: &str) -> String {
+    pub fn output_name(self, app_slug: &str) -> String {
         match self {
-            Self::Android => format!("{app_name}.apk"),
-            Self::Windows => app_name.to_owned(),
-            Self::Ios | Self::IosSimulator | Self::Macos => format!("{app_name}.app"),
+            Self::Android => format!("{app_slug}.apk"),
+            Self::Windows => app_slug.to_owned(),
+            Self::Ios | Self::IosSimulator | Self::Macos => format!("{app_slug}.app"),
         }
     }
 

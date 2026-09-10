@@ -37,6 +37,15 @@ kotlin=$app/src/main/kotlin/com/tokamak/runtime
 plugins_root=$app/src/main/kotlin/tokamak/plugins
 icons=$input/icons/$platform
 
+xml_escape() {
+  printf '%s' "$1" |
+    sed -e 's/&/\&amp;/g' \
+      -e 's/</\&lt;/g' \
+      -e 's/>/\&gt;/g' \
+      -e 's/"/\&quot;/g' \
+      -e "s/'/\&apos;/g"
+}
+
 rm -rf "$project" "$output"
 mkdir -p "$native" "$assets" "$kotlin" "$plugins_root" "$app/src/main/res"
 cp -R "$input/app/." "$assets/"
@@ -154,9 +163,11 @@ registry=$kotlin/TokamakPluginRegistry.kt
   printf '%s\n\n' 'import android.app.Activity'
   printf '%s\n' 'internal fun tokamakPlugins(activity: Activity): List<TokamakPlugin> ='
   printf '%s\n' '    listOf('
-  for class in "${plugin_classes[@]}"; do
-    printf '        %s(activity),\n' "$class"
-  done
+  if ((${#plugin_classes[@]} > 0)); then
+    for class in "${plugin_classes[@]}"; do
+      printf '        %s(activity),\n' "$class"
+    done
+  fi
   printf '%s\n' '    )'
 } > "$registry"
 
@@ -171,11 +182,11 @@ manifest=$app/src/main/AndroidManifest.xml
       printf '  <uses-permission android:name="%s" />\n' "$(cat "$permission")"
     done
   done
+  icon_attribute=
   if [[ "$has_icon" == true ]]; then
-    printf '  <application android:label="%s" android:icon="@mipmap/ic_launcher" android:usesCleartextTraffic="false">\n' "$app_name"
-  else
-    printf '  <application android:label="%s" android:usesCleartextTraffic="false">\n' "$app_name"
+    icon_attribute=' android:icon="@mipmap/ic_launcher"'
   fi
+  printf '  <application android:label="%s"%s android:usesCleartextTraffic="false">\n' "$(xml_escape "$app_name")" "$icon_attribute"
   printf '    <meta-data android:name="tokamak.host" android:value="%s" />\n' "$host"
   if [[ -n "$dev_endpoint" ]]; then
     printf '    <meta-data android:name="tokamak.dev.endpoint" android:value="%s" />\n' "$dev_endpoint"

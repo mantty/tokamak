@@ -12,6 +12,7 @@ metadata=$input/metadata
 native_shell=$input/native-shell
 framework_root=$input/runtime/frameworks
 app_name=$(cat "$metadata/app-name")
+app_slug=$(cat "$metadata/app-slug")
 identifier=$(cat "$metadata/identifier")
 host=$(cat "$metadata/host")
 platform=$(cat "$metadata/platform")
@@ -173,7 +174,7 @@ for plugin in "$input/plugins"/*; do
   done
 done
 
-xcrun --sdk "$sdk" swiftc "${swift_args[@]}" -o "$executable_dir/$app_name"
+xcrun --sdk "$sdk" swiftc "${swift_args[@]}" -o "$executable_dir/$app_slug"
 
 xml_escape() {
   printf '%s' "$1" |
@@ -204,7 +205,8 @@ write_plist() {
     printf '%s\n' '<plist version="1.0"><dict>'
     printf '  <key>CFBundleIdentifier</key><string>%s</string>\n' "$(xml_escape "$identifier")"
     printf '  <key>CFBundleName</key><string>%s</string>\n' "$(xml_escape "$app_name")"
-    printf '  <key>CFBundleExecutable</key><string>%s</string>\n' "$(xml_escape "$app_name")"
+    printf '  <key>CFBundleDisplayName</key><string>%s</string>\n' "$(xml_escape "$app_name")"
+    printf '  <key>CFBundleExecutable</key><string>%s</string>\n' "$(xml_escape "$app_slug")"
     printf '%s\n' '  <key>CFBundlePackageType</key><string>APPL</string>'
     printf '  <key>CFBundleVersion</key><string>%s</string>\n' "$(xml_escape "$build_version")"
     printf '  <key>CFBundleShortVersionString</key><string>%s</string>\n' "$(xml_escape "$version")"

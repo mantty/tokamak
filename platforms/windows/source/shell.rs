@@ -51,6 +51,7 @@ use wry::{
 #[serde(rename_all = "camelCase")]
 struct ShellConfig {
     name: String,
+    slug: String,
     host: String,
     #[serde(rename = "devEndpoint")]
     dev_endpoint: Option<String>,
@@ -63,7 +64,7 @@ pub(crate) fn run() -> Result<()> {
     let events = event_loop.create_proxy();
     let root = executable_dir()?;
     let config = read_config(&root)?;
-    let state = state_dir(&config.name)?;
+    let state = state_dir(&config.slug)?;
     let runtime = start_runtime(&config, &root, &state, events)?;
     let identity = ClientIdentity::install(&runtime.certificates(), &config.host)?;
     let client_certificate = Arc::new(RwLock::new(identity.certificate().to_vec()));
@@ -193,18 +194,18 @@ fn load_window_icon(root: &Path) -> Result<Option<Icon>> {
 fn read_config(root: &Path) -> Result<ShellConfig> {
     let config: ShellConfig =
         serde_json::from_slice(&fs::read(root.join("tokamak.json")).context("read tokamak.json")?)?;
-    let expected = app_host(&config.name).context("tokamak.json name is not a DNS label")?;
+    let expected = app_host(&config.slug).context("tokamak.json slug is not a DNS label")?;
     if config.host == expected {
         Ok(config)
     } else {
-        bail!("tokamak.json host does not match its app name")
+        bail!("tokamak.json host does not match its app slug")
     }
 }
 
-fn state_dir(name: &str) -> Result<PathBuf> {
+fn state_dir(slug: &str) -> Result<PathBuf> {
     let root = env::var_os(concat!("LOCALAPP", "DATA"))
         .context("Windows local application data directory is unavailable")?;
-    let path = PathBuf::from(root).join(name).join("tokamak");
+    let path = PathBuf::from(root).join(slug).join("tokamak");
     fs::create_dir_all(&path)?;
     Ok(path)
 }

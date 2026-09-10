@@ -42,7 +42,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct TokamakConfig {
     /// Absolute path to the configuration file, when one was loaded.
     pub path: Option<PathBuf>,
-    /// Normalized application names, when configured.
+    /// Configured display names, when configured.
     pub name: Option<TokamakName>,
     /// Application identifiers, when configured.
     pub identifier: Option<TokamakIdentifier>,
@@ -52,23 +52,23 @@ pub struct TokamakConfig {
     pub icons: Option<TokamakIcons>,
 }
 
-/// Normalized application names for the supported platforms.
+/// Configured display names for the supported platforms.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TokamakName {
-    /// Name used when a platform-specific name is not configured.
+    /// Display name used when a platform-specific name is not configured.
     pub default: String,
-    /// Android application name override.
+    /// Android display name override.
     pub android: Option<String>,
-    /// iOS application name override, also used by iOS simulators.
+    /// iOS display name override, also used by iOS simulators.
     pub ios: Option<String>,
-    /// macOS application name override.
+    /// macOS display name override.
     pub macos: Option<String>,
-    /// Windows application name override.
+    /// Windows display name override.
     pub windows: Option<String>,
 }
 
 impl TokamakName {
-    /// Return the configured name for a platform, falling back to default.
+    /// Return the configured display name for a platform, falling back to default.
     #[must_use]
     pub fn for_platform(&self, platform: &str) -> &str {
         let platform_name = match platform {
@@ -79,6 +79,12 @@ impl TokamakName {
             _ => None,
         };
         platform_name.unwrap_or(&self.default)
+    }
+
+    /// Return the lowercase ASCII slug for a platform's display name.
+    #[must_use]
+    pub fn slug_for_platform(&self, platform: &str) -> String {
+        normalize_name(self.for_platform(platform))
     }
 }
 
@@ -248,12 +254,17 @@ struct RawTokamakIcons {
 }
 
 fn resolve_name(config_path: &Path, name: RawTokamakName) -> Result<TokamakName> {
+    validate_name(config_path, "name.default", &name.default)?;
+    validate_optional_name(config_path, "name.android", name.android.as_deref())?;
+    validate_optional_name(config_path, "name.ios", name.ios.as_deref())?;
+    validate_optional_name(config_path, "name.macos", name.macos.as_deref())?;
+    validate_optional_name(config_path, "name.windows", name.windows.as_deref())?;
     Ok(TokamakName {
-        default: normalize_name(config_path, "name.default", &name.default)?,
-        android: normalize_optional_name(config_path, "name.android", name.android)?,
-        ios: normalize_optional_name(config_path, "name.ios", name.ios)?,
-        macos: normalize_optional_name(config_path, "name.macos", name.macos)?,
-        windows: normalize_optional_name(config_path, "name.windows", name.windows)?,
+        default: name.default,
+        android: name.android,
+        ios: name.ios,
+        macos: name.macos,
+        windows: name.windows,
     })
 }
 
@@ -270,26 +281,23 @@ fn resolve_identifier(
     })
 }
 
-fn normalize_optional_name(
-    config_path: &Path,
-    field: &str,
-    value: Option<String>,
-) -> Result<Option<String>> {
-    value
-        .map(|value| normalize_name(config_path, field, &value))
-        .transpose()
+fn validate_optional_name(config_path: &Path, field: &str, value: Option<&str>) -> Result<()> {
+    if let Some(value) = value {
+        validate_name(config_path, field, value)?;
+    }
+    Ok(())
 }
 
-fn normalize_name(config_path: &Path, field: &str, value: &str) -> Result<String> {
-    let mut normalized = String::new();
-    for character in value.chars() {
-        if character.is_ascii_alphanumeric() {
-            normalized.push(character.to_ascii_lowercase());
-        } else if !normalized.is_empty() && !normalized.ends_with('-') {
-            normalized.push('-');
-        }
+fn validate_name(config_path: &Path, field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() || value != value.trim() || value.chars().any(char::is_control) {
+        return Err(Error::InvalidConfig {
+            path: config_path.to_path_buf(),
+            message: format!(
+                "{field} must be non-empty, without leading or trailing whitespace, and contain no control characters"
+            ),
+        });
     }
-    let normalized = normalized.trim_end_matches('-').to_owned();
+    let normalized = normalize_name(value);
     if normalized.is_empty() {
         return Err(Error::InvalidConfig {
             path: config_path.to_path_buf(),
@@ -302,7 +310,19 @@ fn normalize_name(config_path: &Path, field: &str, value: &str) -> Result<String
             message: format!("{field} must normalize to at most 63 characters"),
         });
     }
-    Ok(normalized)
+    Ok(())
+}
+
+fn normalize_name(value: &str) -> String {
+    let mut normalized = String::new();
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character.to_ascii_lowercase());
+        } else if !normalized.is_empty() && !normalized.ends_with('-') {
+            normalized.push('-');
+        }
+    }
+    normalized.trim_end_matches('-').to_owned()
 }
 
 fn validate_optional_value(
@@ -399,7 +419,7 @@ mod tests {
     use super::{Error, TokamakIdentifier, TokamakName, load_config, resolve_config_path};
 
     #[test]
-    fn normalizes_names_and_applies_platform_overrides() -> Result<(), Box<dyn std::error::Error>> {
+    fn preserves_names_and_provides_platform_slugs() -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
         let config_path = temporary.path().join("tokamak.jsonc");
         fs::write(
@@ -418,14 +438,16 @@ mod tests {
         assert_eq!(
             name,
             TokamakName {
-                default: "my-app".to_owned(),
-                ios: Some("myapp-pro".to_owned()),
+                default: "My App".to_owned(),
+                ios: Some("Myapp Pro".to_owned()),
                 ..TokamakName::default()
             }
         );
-        assert_eq!(name.for_platform("ios"), "myapp-pro");
-        assert_eq!(name.for_platform("ios-simulator"), "myapp-pro");
-        assert_eq!(name.for_platform("macos"), "my-app");
+        assert_eq!(name.for_platform("ios"), "Myapp Pro");
+        assert_eq!(name.for_platform("ios-simulator"), "Myapp Pro");
+        assert_eq!(name.for_platform("macos"), "My App");
+        assert_eq!(name.slug_for_platform("ios"), "myapp-pro");
+        assert_eq!(name.slug_for_platform("macos"), "my-app");
         Ok(())
     }
 
@@ -434,6 +456,19 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         let config_path = temporary.path().join("tokamak.json");
         fs::write(&config_path, r#"{"name":{"default":"!!!"}}"#)?;
+
+        assert!(matches!(
+            load_config(&config_path),
+            Err(Error::InvalidConfig { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_name_with_outer_whitespace() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let config_path = temporary.path().join("tokamak.json");
+        fs::write(&config_path, r#"{"name":{"default":" Vigilus"}}"#)?;
 
         assert!(matches!(
             load_config(&config_path),

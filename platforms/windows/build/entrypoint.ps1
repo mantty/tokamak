@@ -20,6 +20,7 @@ function Read-TokamakValue([string] $Name) {
 
 $output = [System.IO.Path]::GetFullPath($OutputDirectory)
 $appName = Read-TokamakValue "app-name"
+$appSlug = Read-TokamakValue "app-slug"
 $identifier = Read-TokamakValue "identifier"
 $appHost = Read-TokamakValue "host"
 $devEndpoint = $null
@@ -42,7 +43,7 @@ if (Test-Path $output) {
 }
 New-Item -ItemType Directory -Force -Path $app | Out-Null
 Copy-Item (Join-Path $InputDirectory "app/*") $app -Recurse -Force
-Copy-Item (Join-Path $InputDirectory "runtime/tokamak-shell-windows.exe") (Join-Path $output "$appName.exe")
+Copy-Item (Join-Path $InputDirectory "runtime/tokamak-shell-windows.exe") (Join-Path $output "$appSlug.exe")
 $icon = Join-Path $InputDirectory "icons/windows/AppIcon.ico"
 if (Test-Path -LiteralPath $icon -PathType Leaf) {
   Copy-Item -LiteralPath $icon (Join-Path $output "AppIcon.ico")
@@ -50,6 +51,7 @@ if (Test-Path -LiteralPath $icon -PathType Leaf) {
 
 $config = [ordered]@{
   name = $appName
+  slug = $appSlug
   identifier = $identifier
   host = $appHost
 }
