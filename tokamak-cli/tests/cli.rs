@@ -20,3 +20,21 @@ fn lists_supported_targets() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn accepts_ios_team_selection_for_dev_and_build() -> TestResult {
+    let project = tempfile::tempdir()?;
+    let missing_project = project.path().join("missing");
+    for (command, target) in [("dev", "DEVICE"), ("build", "ios")] {
+        let mut cmd = Command::cargo_bin("tok")?;
+        cmd.args([command, target, "--ios-team-id", "TEAM", "--project"])
+            .arg(&missing_project);
+        if command == "dev" {
+            cmd.args(["--", "pnpm", "dev"]);
+        }
+        cmd.assert()
+            .failure()
+            .stderr(contains("project directory does not exist"));
+    }
+    Ok(())
+}
