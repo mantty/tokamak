@@ -11,6 +11,10 @@ $temporary = Join-Path ([System.IO.Path]::GetTempPath()) "tokamak-installer-test
 $fixtures = Join-Path $temporary "fixtures"
 $global:TokamakInstallerFixtures = $fixtures
 $global:TokamakInstallerDownloads = @()
+$hadGithubToken = Test-Path Env:GITHUB_TOKEN
+$previousGithubToken = $env:GITHUB_TOKEN
+$hadGhToken = Test-Path Env:GH_TOKEN
+$previousGhToken = $env:GH_TOKEN
 
 try {
   $cli = Join-Path $temporary "cli"
@@ -39,6 +43,7 @@ try {
 
   function Invoke-RestMethod {
     param([string] $Uri, [hashtable] $Headers)
+    Assert-True ($Headers.Authorization -eq "Bearer ci-token") "GitHub token was not sent"
     $global:TokamakInstallerDownloads += $Uri
     @([pscustomobject]@{ tag_name = "pre.2" })
   }
@@ -55,6 +60,8 @@ try {
   }
 
   $installRoot = Join-Path $temporary "home/.local"
+  Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+  $env:GITHUB_TOKEN = "ci-token"
   $binDirectory = Join-Path $installRoot "bin"
   $obsolete = Join-Path $installRoot "share/tokamak/target-packs/obsolete"
   New-Item -ItemType Directory -Force -Path $binDirectory, $obsolete | Out-Null
@@ -80,4 +87,14 @@ try {
   Remove-Item Function:\Invoke-WebRequest -ErrorAction SilentlyContinue
   Remove-Variable TokamakInstallerFixtures -Scope Global -ErrorAction SilentlyContinue
   Remove-Variable TokamakInstallerDownloads -Scope Global -ErrorAction SilentlyContinue
+  if ($hadGithubToken) {
+    $env:GITHUB_TOKEN = $previousGithubToken
+  } else {
+    Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
+  }
+  if ($hadGhToken) {
+    $env:GH_TOKEN = $previousGhToken
+  } else {
+    Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+  }
 }

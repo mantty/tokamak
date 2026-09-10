@@ -29,6 +29,14 @@ $apiHeaders = @{
   Accept = "application/vnd.github+json"
   "X-GitHub-Api-Version" = "2022-11-28"
 }
+$githubToken = if (-not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+  $env:GH_TOKEN
+} else {
+  $env:GITHUB_TOKEN
+}
+if (-not [string]::IsNullOrWhiteSpace($githubToken)) {
+  $apiHeaders.Authorization = "Bearer $githubToken"
+}
 
 $releases = @(Invoke-RestMethod -Uri "$api/releases?per_page=1" -Headers $apiHeaders)
 if ($releases.Count -eq 0) {
