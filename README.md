@@ -250,11 +250,19 @@ cargo run -p tokamak-cli -- dev macos \
 
 ### Checks
 
+Runtime contract tests execute the same Worker in packaged QuickJS and pinned
+Cloudflare `workerd` with `nodejs_compat` and compatibility date `2026-08-25`.
+Node hosts the test runner; it is not
+the compatibility reference.
+
 Run the common checks before submitting a change:
 
 ```sh
+pnpm --dir tools/esbuild-hosts install --frozen-lockfile
+pnpm --dir tokamak/tests/quickjs_runtime install --frozen-lockfile
 cargo fmt --all --check
 cargo test -p tokamak --features native
+node --test tokamak/tests/quickjs_runtime/runtime.test.mjs
 cargo test -p tokamak-cli --lib --bin tok --test cli --test target_pack
 cargo test -p xtask
 pnpm --dir plugins lint:ts
@@ -263,3 +271,24 @@ pnpm --dir plugins test:ts
 
 Platform-specific lint and build-test commands are kept in
 [the Checks workflow](.github/workflows/test.yaml).
+
+### Packaged Worker runtime
+
+Each request owns a fresh QuickJS runtime, module graph, and temporary filesystem.
+The native runtime installs Web globals before evaluating application modules.
+Supported builtin imports resolve to runtime-owned modules; they are not bundled
+into the application. Builtin JavaScript is precompiled to bytecode when the
+runtime is built and embedded in its native library. Application builds use the
+prebuilt runtime from the target pack. Static imports, dynamic imports, and
+`process.getBuiltinModule()` share the same implementations within a request.
+
+`cloudflare:workers` exposes `env` and `waitUntil`. Its `waitUntil` uses the same
+request task queue as the handler's execution context. Runtime implementation
+modules are private. Unsupported builtin imports fail during module loading;
+`scheduler.wait()` and `passThroughOnException()` report that they are unsupported.
+
+Text decoding uses WHATWG encoding labels, streaming state, BOM handling, and
+fatal/replacement modes. Random bytes come from the operating system.
+The contract suite covers these APIs, Base64, binary bodies, and builtin identity;
+it is not a claim of complete Workers API coverage. WebAssembly is unsupported.
+Tokamak does not emulate historical Cloudflare compatibility-date modes.

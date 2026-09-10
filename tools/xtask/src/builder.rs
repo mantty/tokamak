@@ -3,10 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use tokamak::write_worker_compatibility_sources;
 use tokamak_cli::{
-    Artifact, ESBUILD_DIRECTORY, RUNTIME_DIRECTORY, RUNTIME_JAVASCRIPT_DIRECTORY, Target,
-    TargetPackManifest, write_manifest,
+    Artifact, ESBUILD_DIRECTORY, RUNTIME_DIRECTORY, Target, TargetPackManifest, write_manifest,
 };
 
 use crate::layout::WorkspaceLayout;
@@ -111,7 +109,6 @@ fn deploy_runtime(workspace: &WorkspaceLayout, pack_root: &Path) -> Result<()> {
         )
         .with_context(|| format!("copy esbuild binary for {host}"))?;
     }
-    write_worker_compatibility_sources(pack_root.join(RUNTIME_JAVASCRIPT_DIRECTORY))?;
     Ok(())
 }
 
@@ -152,7 +149,7 @@ mod tests {
         let result = validate_artifacts(
             directory.path(),
             &[Artifact {
-                kind: ArtifactKind::RuntimeJavaScriptDirectory,
+                kind: ArtifactKind::RuntimeLibrary,
                 path: "runtime".to_owned(),
             }],
         );
@@ -174,45 +171,10 @@ mod tests {
         validate_artifacts(
             directory.path(),
             &[Artifact {
-                kind: ArtifactKind::RuntimeJavaScriptDirectory,
+                kind: ArtifactKind::RuntimeLibrary,
                 path: "runtime".to_owned(),
             }],
         )?;
-        Ok(())
-    }
-
-    #[test]
-    fn materializes_feature_owned_runtime_sources() -> anyhow::Result<()> {
-        let workspace_root = tempfile::tempdir()?;
-        create_esbuild_install(workspace_root.path())?;
-        let pack_root = tempfile::tempdir()?;
-        deploy_runtime(
-            &WorkspaceLayout::from_root(workspace_root.path()),
-            pack_root.path(),
-        )?;
-
-        for path in [
-            "builtins/cloudflare-workers.mjs",
-            "events/events.mjs",
-            "globals/console.mjs",
-            "globals/process.mjs",
-            "globals/web.mjs",
-            "network/fetch.mjs",
-            "network/url.mjs",
-            "network/websocket.mjs",
-            "streams/node.mjs",
-            "streams/text.mjs",
-            "streams/web.mjs",
-        ] {
-            assert!(
-                pack_root
-                    .path()
-                    .join("tools/runtime/runtime-js")
-                    .join(path)
-                    .is_file(),
-                "missing generated runtime source {path}"
-            );
-        }
         Ok(())
     }
 

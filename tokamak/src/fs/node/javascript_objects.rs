@@ -487,7 +487,7 @@ pub(super) fn close_handle<'js>(
         vfs_call(ctx, |vfs| vfs.close(descriptor))?;
         object.set("fd", Value::new_undefined(ctx.clone()))?;
         if let Ok(Some(emit)) = object.get::<_, Option<Function>>("emit") {
-            emit.call::<_, bool>(("close",))?;
+            emit.call::<_, bool>((This(object.clone()), "close"))?;
         }
     }
     Ok(())

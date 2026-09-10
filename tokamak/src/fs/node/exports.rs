@@ -25,29 +25,10 @@ unsafe impl<'js> rquickjs::JsLifetime<'js> for VfsUserData {
     type Changed<'to> = VfsUserData;
 }
 
-/// Install the request VFS and the native Node filesystem builtins.
+/// Install the request VFS before any filesystem module is evaluated.
 pub fn install(ctx: &Ctx<'_>, vfs: &VfsHandle) -> rquickjs::Result<()> {
     ctx.store_userdata(VfsUserData(Arc::clone(vfs)))?;
-    let (fs_module, fs_evaluation) =
-        rquickjs::Module::evaluate_def::<NodeFsModule, _>(ctx.clone(), MODULE_NAME)?;
-    fs_evaluation.finish::<()>()?;
-    let (promises_module, promises_evaluation) = rquickjs::Module::evaluate_def::<
-        NodeFsPromisesModule,
-        _,
-    >(ctx.clone(), PROMISES_MODULE_NAME)?;
-    promises_evaluation.finish::<()>()?;
-
-    let process = ctx
-        .globals()
-        .get::<_, Option<Object>>("process")?
-        .map_or_else(|| Object::new(ctx.clone()), Ok)?;
-    process.set("__tokamak_node_fs", fs_module.namespace()?)?;
-    process.set("__tokamak_node_fs_promises", promises_module.namespace()?)?;
-    let get_builtin_module: Function = ctx.eval(
-        "name => name === 'node:fs' ? globalThis.process.__tokamak_node_fs : name === 'node:fs/promises' ? globalThis.process.__tokamak_node_fs_promises : undefined",
-    )?;
-    process.set("getBuiltinModule", get_builtin_module)?;
-    ctx.globals().set("process", process)
+    Ok(())
 }
 
 #[allow(clippy::wildcard_imports)]
@@ -298,7 +279,9 @@ fn export_module<'js>(
         }
 
         export_sync(ctx, exports, &object)?;
-        let promises = promise_object(ctx.clone())?;
+        let promises: Object = rquickjs::Module::import(ctx, PROMISES_MODULE_NAME)?
+            .finish::<Object>()?
+            .get("default")?;
         exports.export("promises", promises.clone())?;
         object.set("promises", promises)?;
         export_streams(ctx, exports, &object)?;
@@ -462,22 +445,6 @@ fn export_promises<'js>(
     exports: &Exports<'js>,
     object: &Object<'js>,
 ) -> rquickjs::Result<()> {
-    export_promise_functions(ctx, |name, function| {
-        exports.export(name, function.clone())?;
-        object.set(name, function)
-    })
-}
-
-fn promise_object(ctx: Ctx<'_>) -> rquickjs::Result<Object<'_>> {
-    let object = Object::new(ctx.clone())?;
-    export_promise_functions(&ctx, |name, function| object.set(name, function))?;
-    Ok(object)
-}
-
-fn export_promise_functions<'js>(
-    ctx: &Ctx<'js>,
-    mut export: impl FnMut(&str, Function<'js>) -> rquickjs::Result<()>,
-) -> rquickjs::Result<()> {
     for (name, function) in [
         ("readFile", Function::new(ctx.clone(), read_file_promise)?),
         ("writeFile", Function::new(ctx.clone(), write_file_promise)?),
@@ -520,7 +487,8 @@ fn export_promise_functions<'js>(
         ("statfs", Function::new(ctx.clone(), statfs_promise)?),
         ("utimes", Function::new(ctx.clone(), utimes_promise)?),
     ] {
-        export(name, function)?;
+        exports.export(name, function.clone())?;
+        object.set(name, function)?;
     }
     Ok(())
 }

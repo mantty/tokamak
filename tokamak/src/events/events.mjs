@@ -18,4 +18,5 @@ export class EventEmitter {
   prependOnceListener(name, listener) { return this.once(name, listener); }
 }
 
+EventEmitter.EventEmitter = EventEmitter;
 export default EventEmitter;

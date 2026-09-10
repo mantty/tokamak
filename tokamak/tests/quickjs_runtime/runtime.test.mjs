@@ -1,31 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-test("web shims preserve the Worker request and response shapes", async () => {
-  const { Headers, Request, Response } = await import("../../src/network/fetch.mjs");
-  const { ReadableStream } = await import("../../src/streams/web.mjs");
-  const { URL } = await import("../../src/network/url.mjs");
-  const headers = new Headers([["X-Test", "one"], ["x-test", "two"]]);
-  assert.equal(headers.get("x-test"), "one, two");
-  assert.deepEqual([...headers], [["x-test", "one, two"]]);
-
-  const request = new Request("https://example.test/path", { method: "post", body: "payload" });
-  assert.equal(request.method, "POST");
-  assert.equal(await request.text(), "payload");
-
-  const stream = new ReadableStream({
-    start(controller) {
-      controller.enqueue("hello");
-      controller.enqueue(" world");
-      controller.close();
-    },
-  });
-  const response = new Response(stream, { status: 201, headers });
-  assert.equal(response.status, 201);
-  assert.equal(await response.text(), "hello world");
-  assert.equal(new URL("/next", request.url).href, "https://example.test/next");
-});
-
 test("ReadableStream pulls chunks and TransformStream pipes them", async () => {
   const { ReadableStream, TransformStream } = await import("../../src/streams/web.mjs");
   let next = 0;
@@ -57,14 +32,6 @@ test("ReadableStream pulls chunks and TransformStream pipes them", async () => {
   assert.deepEqual(received, [11, 12]);
 });
 
-test("Workers builtin registration preserves the Worker environment", async () => {
-  globalThis.__tokamak_env = { FLAG: "enabled" };
-  const workers = await import("../../src/builtins/cloudflare-workers.mjs?registry");
-  assert.equal(workers.env.FLAG, "enabled");
-  assert.equal(typeof globalThis.process.getBuiltinModule("node:events").EventEmitter, "function");
-  assert.equal(typeof workers.WebSocketPair, "function");
-});
-
 test("Readable emits end after pushed data", async () => {
   const { Readable } = await import("../../src/streams/node.mjs?end-event");
   const events = [];
@@ -92,7 +59,7 @@ test("Readable emits end after pushed data", async () => {
 });
 
 test("WebSocketPair delivers Worker messages to the native bridge", async () => {
-  const { WebSocketPair } = await import("../../src/builtins/cloudflare-workers.mjs?websocket");
+  const { WebSocketPair } = await import("../../src/network/websocket.mjs");
   const pair = new WebSocketPair();
   const client = pair[0];
   const server = pair[1];
