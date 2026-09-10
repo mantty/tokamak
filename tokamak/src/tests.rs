@@ -69,6 +69,16 @@ export default {
 };
 "#;
 
+const GLOBAL_WORKER: &[u8] = br#"
+const encoded = new TextEncoder().encode("ready");
+const decoded = new TextDecoder().decode(encoded);
+export default {
+  async fetch() {
+    return new Response(decoded, { status: decoded === "ready" ? 204 : 500 });
+  },
+};
+"#;
+
 const STREAM_WORKER: &[u8] = br#"
 globalThis.Request = class Request {
   constructor(url, init = {}) {
@@ -295,6 +305,61 @@ fn loads_split_worker_modules_through_the_quickjs_loader() -> Result<(), Box<dyn
         let _: Function = load_worker(&ctx, &worker)?;
         Ok::<_, Error>(())
     })?;
+    Ok(())
+}
+
+#[test]
+fn loads_builtins_without_source_compilation() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let runtime = JsRuntime::new()?;
+    configure_worker_loader(
+        &runtime,
+        &WorkerBundle::from_modules("entry.js", directory.path(), directory.path()),
+    );
+    let context = Context::custom::<rquickjs::context::intrinsic::Promise>(&runtime)?;
+    context.with(|ctx| -> rquickjs::Result<()> {
+        ctx.globals().set("__tokamak_env", "request environment")?;
+        let module: Object = Module::import(&ctx, "cloudflare:workers")?.finish()?;
+        assert_eq!(module.get::<_, String>("env")?, "request environment");
+        let streams: Object = Module::import(&ctx, "node:stream")?.finish()?;
+        let writable: Object = streams.get("Writable")?;
+        let events: Object = Module::import(&ctx, "node:events")?.finish()?;
+        let emitter: Object = events.get("EventEmitter")?;
+        assert_eq!(writable.get_prototype(), Some(emitter));
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn initializes_web_globals_before_worker_module_evaluation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let worker =
+        WorkerBundle::from_bytecode(crate::compile_worker(GLOBAL_WORKER)?, directory.path());
+    let accepting = Arc::new(AtomicBool::new(true));
+    let lifecycle = Lifecycle::new();
+    let execution = lifecycle
+        .enter(&accepting)
+        .ok_or("request was not admitted")?;
+    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+
+    execute_request(
+        &worker,
+        &websocket_config(directory.path()),
+        Job {
+            request: websocket_request(),
+            response: response_sender,
+            websocket: None,
+        },
+        &execution,
+        &accepting,
+    )?;
+
+    let JobResponse::Http(response) = response_receiver.recv()? else {
+        return Err("Worker returned a non-HTTP response".into());
+    };
+    assert_eq!(response.status, 204);
     Ok(())
 }
 

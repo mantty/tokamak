@@ -95,16 +95,10 @@ fn valid_manifest() -> TargetPackManifest {
     TargetPackManifest {
         tokamak_version: "0.1.0".to_owned(),
         target: Target::IosArm64,
-        artifacts: vec![
-            Artifact {
-                kind: ArtifactKind::RuntimeLibrary,
-                path: "frameworks/TokamakRuntime.framework".to_owned(),
-            },
-            Artifact {
-                kind: ArtifactKind::RuntimeJavaScriptDirectory,
-                path: "runtime-js".to_owned(),
-            },
-        ],
+        artifacts: vec![Artifact {
+            kind: ArtifactKind::RuntimeLibrary,
+            path: "frameworks/TokamakRuntime.framework".to_owned(),
+        }],
         required_tools: vec!["xcode".to_owned()],
     }
 }
@@ -186,10 +180,6 @@ fn target_artifacts_describe_the_complete_pack_contract() {
                 "frameworks/TokamakRuntime.framework"
             ),
             (&ArtifactKind::NativeShellDirectory, "native-shell"),
-            (
-                &ArtifactKind::RuntimeJavaScriptDirectory,
-                "tools/runtime/runtime-js"
-            ),
             (
                 &ArtifactKind::EsbuildExecutable,
                 "tools/runtime/node_modules/esbuild/bin/esbuild"

@@ -1,6 +1,5 @@
-use super::{MODULE_NAME, NodeFsModule, NodeFsPromisesModule, PROMISES_MODULE_NAME, install};
+use super::{MODULE_NAME, PROMISES_MODULE_NAME, install};
 use crate::fs::vfs::{Bundle, VirtualFileSystem};
-use rquickjs::loader::{BuiltinResolver, ModuleLoader};
 use rquickjs::{Context, Module, Object, Promise, Runtime};
 use std::sync::{Arc, Mutex};
 
@@ -14,13 +13,9 @@ fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>
         br#"{"enabled":true}"#,
     )?;
     let runtime = Runtime::new()?;
-    runtime.set_loader(
-        BuiltinResolver::default()
-            .with_module(MODULE_NAME)
-            .with_module(PROMISES_MODULE_NAME),
-        ModuleLoader::default()
-            .with_module(MODULE_NAME, NodeFsModule)
-            .with_module(PROMISES_MODULE_NAME, NodeFsPromisesModule),
+    crate::dispatcher::configure_worker_loader(
+        &runtime,
+        &crate::quickjs::WorkerBundle::from_modules("entry.js", directory.path(), directory.path()),
     );
     let context = Context::full(&runtime)?;
     context.with(|ctx| -> Result<(), Box<dyn std::error::Error>> {
@@ -28,6 +23,7 @@ fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>
                 directory.path(),
             ))));
             install(&ctx, &vfs)?;
+            crate::compat::initialize(&ctx)?;
             let namespace: Object = Module::import(&ctx, MODULE_NAME)?.finish()?;
             let default: Object = namespace.get("default")?;
             assert!(default.get::<_, rquickjs::Function>("readFileSync").is_ok());
@@ -232,13 +228,9 @@ fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>
 fn gives_each_context_a_fresh_tmp_directory() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let runtime = Runtime::new()?;
-    runtime.set_loader(
-        BuiltinResolver::default()
-            .with_module(MODULE_NAME)
-            .with_module(PROMISES_MODULE_NAME),
-        ModuleLoader::default()
-            .with_module(MODULE_NAME, NodeFsModule)
-            .with_module(PROMISES_MODULE_NAME, NodeFsPromisesModule),
+    crate::dispatcher::configure_worker_loader(
+        &runtime,
+        &crate::quickjs::WorkerBundle::from_modules("entry.js", directory.path(), directory.path()),
     );
 
     let first = Context::full(&runtime)?;
@@ -247,6 +239,7 @@ fn gives_each_context_a_fresh_tmp_directory() -> Result<(), Box<dyn std::error::
             directory.path(),
         ))));
         install(&ctx, &vfs)?;
+        crate::compat::initialize(&ctx)?;
         ctx.eval::<(), _>(
             r#"process.getBuiltinModule("node:fs").writeFileSync("/tmp/only-here", "value")"#,
         )?;
@@ -260,6 +253,7 @@ fn gives_each_context_a_fresh_tmp_directory() -> Result<(), Box<dyn std::error::
             directory.path(),
         ))));
         install(&ctx, &vfs)?;
+        crate::compat::initialize(&ctx)?;
         let exists: bool =
             ctx.eval(r#"process.getBuiltinModule("node:fs").existsSync("/tmp/only-here")"#)?;
         assert!(!exists);
@@ -273,13 +267,9 @@ fn gives_each_context_a_fresh_tmp_directory() -> Result<(), Box<dyn std::error::
 fn exposes_native_stream_bindings() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let runtime = Runtime::new()?;
-    runtime.set_loader(
-        BuiltinResolver::default()
-            .with_module(MODULE_NAME)
-            .with_module(PROMISES_MODULE_NAME),
-        ModuleLoader::default()
-            .with_module(MODULE_NAME, NodeFsModule)
-            .with_module(PROMISES_MODULE_NAME, NodeFsPromisesModule),
+    crate::dispatcher::configure_worker_loader(
+        &runtime,
+        &crate::quickjs::WorkerBundle::from_modules("entry.js", directory.path(), directory.path()),
     );
     let context = Context::full(&runtime)?;
     context.with(|ctx| -> Result<(), Box<dyn std::error::Error>> {
@@ -287,6 +277,7 @@ fn exposes_native_stream_bindings() -> Result<(), Box<dyn std::error::Error>> {
                 directory.path(),
             ))));
             install(&ctx, &vfs)?;
+            crate::compat::initialize(&ctx)?;
             let result: String = ctx.eval(
                 r#"(() => {
                   const nativeGetBuiltinModule = process.getBuiltinModule;

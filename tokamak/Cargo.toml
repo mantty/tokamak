@@ -13,6 +13,7 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 default = []
 native = [
     "dep:base64",
+    "dep:encoding_rs",
     "dep:getrandom",
     "dep:libc",
     "dep:openssl",
@@ -25,6 +26,7 @@ test-stubs = ["native"]
 
 [dependencies]
 base64 = { workspace = true, optional = true }
+encoding_rs = { workspace = true, optional = true }
 flate2.workspace = true
 getrandom = { workspace = true, optional = true }
 jsonc-parser = { workspace = true, features = ["serde"] }
@@ -44,6 +46,9 @@ x509-parser = { workspace = true, features = ["verify"], optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[build-dependencies]
+rquickjs.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true

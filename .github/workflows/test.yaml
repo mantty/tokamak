@@ -78,6 +78,14 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --all --check
 
+      - name: Install runtime test dependencies
+        run: |
+          pnpm --dir tools/esbuild-hosts install --frozen-lockfile
+          pnpm --dir tokamak/tests/quickjs_runtime install --frozen-lockfile
+
+      - name: Test runtime JavaScript
+        run: node --test tokamak/tests/quickjs_runtime/runtime.test.mjs
+
       - name: Lint Rust
         run: |
           cargo clippy --workspace --exclude windows-shell --all-targets -- -D warnings

@@ -6,10 +6,7 @@ use assert_cmd::Command;
 use predicates::str::contains;
 use tokamak::compile_module;
 use tokamak::{PackageLayout, decompress_worker_module, read_worker_manifest};
-use tokamak_cli::{
-    ESBUILD_EXECUTABLE, MANIFEST_FILE, RUNTIME_JAVASCRIPT_DIRECTORY, Target, TargetPackManifest,
-    write_manifest,
-};
+use tokamak_cli::{ESBUILD_EXECUTABLE, MANIFEST_FILE, Target, TargetPackManifest, write_manifest};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -122,7 +119,6 @@ fn create_target_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
     let shell = root.join("native-shell");
     fs::create_dir_all(&framework)?;
     fs::create_dir_all(&shell)?;
-    fs::create_dir_all(root.join(RUNTIME_JAVASCRIPT_DIRECTORY))?;
     fs::create_dir_all(
         root.join(target.build_entrypoint_path())
             .parent()
@@ -243,7 +239,6 @@ fn create_windows_inputs() -> TestResult<(tempfile::TempDir, PathBuf, PathBuf)> 
             .ok_or("runtime path has no parent")?,
     )?;
     fs::write(pack.join(target.runtime_artifact_path()), "shell")?;
-    fs::create_dir_all(pack.join(RUNTIME_JAVASCRIPT_DIRECTORY))?;
     let entrypoint_path = target.build_entrypoint_path();
     fs::create_dir_all(
         pack.join(entrypoint_path)

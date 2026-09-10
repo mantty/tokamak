@@ -11,28 +11,29 @@ mod android_jni;
 #[cfg(all(feature = "native", target_vendor = "apple"))]
 mod apple_ffi;
 mod asset_manifest;
-mod builtins;
 #[cfg(feature = "native")]
 mod cert_generation;
 #[cfg(feature = "native")]
 mod cert_validation;
 #[cfg(feature = "native")]
 mod certificates;
+mod compiler;
 #[cfg(feature = "native")]
 mod dev_proxy;
 #[cfg(feature = "native")]
 mod dispatcher;
-mod events;
 #[cfg(feature = "native")]
 mod fs;
 #[cfg(feature = "native")]
 mod gateway;
+#[cfg(feature = "native")]
 mod globals;
 #[cfg(feature = "native")]
 mod lifecycle_events;
-mod network;
 mod packaging;
 mod quickjs;
+#[cfg(all(test, feature = "native"))]
+mod runtime_contract_tests;
 #[cfg(feature = "native")]
 mod server;
 #[cfg(all(test, feature = "native"))]
@@ -41,9 +42,9 @@ mod tests;
 pub use dev_proxy::DevProxyConfig;
 #[cfg(feature = "native")]
 pub use server::{Config, DevelopmentConfig, Runtime};
+#[cfg(feature = "native")]
 mod compat;
 mod env_vars;
-mod streams;
 mod tokamak_config;
 #[cfg(feature = "native")]
 mod transport;
@@ -54,7 +55,6 @@ use thiserror::Error as Fail;
 pub use asset_manifest::{Error as AssetManifestError, write_manifest as write_asset_manifest};
 #[cfg(feature = "native")]
 pub use certificates::{Certificates, Challenge, Decision};
-pub use compat::write_worker_compatibility_sources;
 pub use env_vars::{
     Error as WorkerEnvironmentError, WorkerEnvironment, load as load_worker_environment,
     write as write_worker_environment,

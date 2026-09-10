@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::time::Duration;
 
+use crate::compat;
 use crate::fs::VirtualFileSystem;
 use crate::fs::{
     MODULE_NAME as NODE_FS_MODULE_NAME, NodeFsModule, NodeFsPromisesModule,
@@ -17,9 +18,9 @@ use crate::gateway::{
 use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{BodyChunk, HttpRequest, HttpResponse, response_stream};
 use flate2::read::GzDecoder;
-use rquickjs::loader::{BuiltinResolver, ImportAttributes, Loader, ModuleLoader, Resolver};
+use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
-    Array, ArrayBuffer, Context, Function, Module, Object, Promise, Runtime as JsRuntime,
+    Array, ArrayBuffer, Context, Ctx, Function, Module, Object, Promise, Runtime as JsRuntime,
     TypedArray, Value,
 };
 
@@ -58,20 +59,10 @@ impl Handler for Dispatcher {
 
 pub(super) fn configure_worker_loader(runtime: &JsRuntime, worker: &WorkerBundle) {
     runtime.set_loader(
-        (
-            BuiltinResolver::default()
-                .with_module(NODE_FS_MODULE_NAME)
-                .with_module(NODE_FS_PROMISES_MODULE_NAME),
-            WorkerResolver,
-        ),
-        (
-            ModuleLoader::default()
-                .with_module(NODE_FS_MODULE_NAME, NodeFsModule)
-                .with_module(NODE_FS_PROMISES_MODULE_NAME, NodeFsPromisesModule),
-            WorkerLoader {
-                bundle: worker.clone(),
-            },
-        ),
+        WorkerResolver,
+        WorkerLoader {
+            bundle: worker.clone(),
+        },
     );
 }
 
@@ -95,8 +86,6 @@ pub(super) fn execute_request(
             response: response_sender,
             websocket,
         } = job;
-        let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(worker.vfs_bundle.clone())));
-        install(&ctx, &vfs).map_err(|error| js_error("node fs", error))?;
         let environment = serde_json::to_string(&config.environment)?;
         let descriptor = serde_json::to_string(&request)?;
         let body = request
@@ -114,6 +103,7 @@ pub(super) fn execute_request(
             .set("__tokamak_body", body)
             .map_err(|error| js_error("request body", error))?;
 
+        initialize_worker_context(&ctx, worker)?;
         let fetch = load_worker(&ctx, worker)?;
         let request: Object = ctx
             .eval("new Request(__tokamak_request.url, { method: __tokamak_request.method, headers: __tokamak_request.headers, body: __tokamak_body ? new Uint8Array(__tokamak_body) : undefined })")
@@ -123,14 +113,14 @@ pub(super) fn execute_request(
             .get("__tokamak_env")
             .map_err(|error| js_error("environment", error))?;
         let execution_context: Object = ctx
-            .eval("({ __waitUntil: [], waitUntil(value) { this.__waitUntil.push(Promise.resolve(value)); }, passThroughOnException() {} })")
+            .globals().get("__tokamak_context")
             .map_err(|error| js_error("execution context", error))?;
         let response: Promise = fetch
             .call((request, environment, execution_context.clone()))
             .map_err(|error| js_error("fetch", error))?;
         let response: Object = response
             .finish()
-            .map_err(|error| js_error("response", error))?;
+            .map_err(|error| js_exception(&ctx, "response", error))?;
         let web_socket: Option<Object> = response
             .get("webSocket")
             .map_err(|error| js_error("response WebSocket", error))?;
@@ -158,10 +148,18 @@ pub(super) fn execute_request(
                 &websocket,
                 execution,
             )?;
-            return Ok(());
+            return drain_wait_until(&ctx, &execution_context);
         }
         send_worker_response(&ctx, response, &response_sender, &execution_context)
     })
+}
+
+fn initialize_worker_context(ctx: &Ctx<'_>, worker: &WorkerBundle) -> Result<(), Error> {
+    let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(
+        worker.vfs_bundle.clone(),
+    )));
+    install(ctx, &vfs).map_err(|error| js_error("node fs", error))?;
+    compat::initialize(ctx).map_err(|error| js_exception(ctx, "runtime initialization", error))
 }
 
 pub(super) fn load_worker<'js>(
@@ -169,8 +167,8 @@ pub(super) fn load_worker<'js>(
     bundle: &WorkerBundle,
 ) -> Result<Function<'js>, Error> {
     let bytes = read_worker_module(bundle, &bundle.entry)?;
-    let module =
-        unsafe { Module::load(ctx.clone(), &bytes) }.map_err(|error| js_error("load", error))?;
+    let module = unsafe { Module::load(ctx.clone(), &bytes) }
+        .map_err(|error| js_exception(ctx, "load", error))?;
     let (module, evaluation) = module.eval().map_err(|error| js_error("evaluate", error))?;
     evaluation
         .finish::<()>()
@@ -193,8 +191,31 @@ impl Resolver for WorkerResolver {
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<String> {
-        let resolved = crate::quickjs::resolve_module_name(base, name);
-        if is_module_name(&resolved) {
+        if let Some(builtin) = compat::public_module(name) {
+            return Ok(builtin.to_owned());
+        }
+        // Runtime implementation modules are not part of the application API.
+        if name.starts_with("tokamak:") {
+            return if base.starts_with("tokamak:") || (base.is_empty() && name == compat::BOOTSTRAP)
+            {
+                Ok(name.to_owned())
+            } else {
+                Err(rquickjs::Error::new_resolving(base, name))
+            };
+        }
+        let resolved = if name.starts_with('.')
+            && let Some(base) = base.strip_prefix("tokamak:")
+        {
+            format!(
+                "tokamak:{}",
+                crate::compiler::resolve_module_name(base, name)
+            )
+        } else {
+            crate::compiler::resolve_module_name(base, name)
+        };
+        if is_module_name(&resolved)
+            && (!resolved.starts_with("tokamak:") || base.starts_with("tokamak:"))
+        {
             Ok(resolved)
         } else {
             Err(rquickjs::Error::new_resolving(base, name))
@@ -213,6 +234,28 @@ impl Loader for WorkerLoader {
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<Module<'js>> {
+        match name {
+            NODE_FS_MODULE_NAME => {
+                return Module::declare_def::<NodeFsModule, _>(ctx.clone(), name);
+            }
+            NODE_FS_PROMISES_MODULE_NAME => {
+                return Module::declare_def::<NodeFsPromisesModule, _>(ctx.clone(), name);
+            }
+            "tokamak:host" => {
+                return Module::declare_def::<crate::globals::native::HostModule, _>(
+                    ctx.clone(),
+                    name,
+                );
+            }
+            _ => {}
+        }
+        if let Some(bytecode) = compat::bytecode(name) {
+            // Builtin bytecode is compiled with the runtime during its build.
+            return unsafe { Module::load(ctx.clone(), bytecode) };
+        }
+        if name.contains(':') {
+            return Err(rquickjs::Error::new_loading(name));
+        }
         let bytes = read_worker_module(&self.bundle, name)
             .map_err(|error| rquickjs::Error::new_loading_message(name, error.to_string()))?;
         // Packaged bytecode is produced by tokamak itself and is trusted here.
@@ -380,13 +423,13 @@ fn drain_wait_until<'js>(
     execution_context: &Object<'js>,
 ) -> Result<(), Error> {
     let drain: Function = ctx
-        .eval("context => Promise.allSettled(context.__waitUntil)")
+        .eval("async context => { while (context.__waitUntil.length) await Promise.allSettled(context.__waitUntil.splice(0)); }")
         .map_err(|error| js_error("waitUntil", error))?;
     let pending: Promise = drain
         .call((execution_context.clone(),))
         .map_err(|error| js_error("waitUntil", error))?;
     pending
-        .finish::<Array>()
+        .finish::<()>()
         .map_err(|error| js_exception(ctx, "waitUntil", error))?;
     Ok(())
 }

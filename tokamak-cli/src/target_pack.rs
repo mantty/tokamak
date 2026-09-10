@@ -15,8 +15,6 @@ use thiserror::Error;
 pub const MANIFEST_FILE: &str = "target-pack.json";
 /// Common runtime tool directory inside a target pack.
 pub const RUNTIME_DIRECTORY: &str = "tools/runtime";
-/// Common runtime JavaScript directory inside a target pack.
-pub const RUNTIME_JAVASCRIPT_DIRECTORY: &str = "tools/runtime/runtime-js";
 /// Common esbuild directory inside a target pack.
 pub const ESBUILD_DIRECTORY: &str = "tools/runtime/node_modules/esbuild";
 /// Common esbuild executable inside a target pack.
@@ -302,16 +300,10 @@ impl Target {
                 path: "native-shell".to_owned(),
             });
         }
-        artifacts.extend([
-            Artifact {
-                kind: ArtifactKind::RuntimeJavaScriptDirectory,
-                path: RUNTIME_JAVASCRIPT_DIRECTORY.to_owned(),
-            },
-            Artifact {
-                kind: ArtifactKind::EsbuildExecutable,
-                path: ESBUILD_EXECUTABLE.to_owned(),
-            },
-        ]);
+        artifacts.extend([Artifact {
+            kind: ArtifactKind::EsbuildExecutable,
+            path: ESBUILD_EXECUTABLE.to_owned(),
+        }]);
         artifacts
     }
 }
@@ -367,8 +359,6 @@ pub enum ArtifactKind {
     RuntimeExecutable,
     /// Native application-shell sources compiled during an app build.
     NativeShellDirectory,
-    /// Compiled tokamak JavaScript runtime modules used by the host packer.
-    RuntimeJavaScriptDirectory,
     /// Host-side JavaScript compiler used to produce Worker bytecode.
     EsbuildExecutable,
 }

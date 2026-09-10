@@ -1,0 +1,8 @@
+{
+  "name": "tokamak-runtime-tests",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.9.0",
+  "scripts": { "reference": "node workerd-reference.mjs" },
+  "devDependencies": { "miniflare": "5.20260825.0-alpha" }
+}

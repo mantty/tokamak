@@ -64,18 +64,6 @@ fn run_esbuild(
     pack_root: &Path,
     manifest: &TargetPackManifest,
 ) -> Result<(PathBuf, PathBuf)> {
-    let runtime = artifact_path(
-        pack_root,
-        manifest,
-        &ArtifactKind::RuntimeJavaScriptDirectory,
-    )?;
-    let events = runtime_source(&runtime, "events/events.mjs", "events.mjs");
-    let stream = runtime_source(&runtime, "streams/node.mjs", "stream.mjs");
-    let builtins = runtime_source(
-        &runtime,
-        "builtins/cloudflare-workers.mjs",
-        "cloudflare-workers.mjs",
-    );
     let compiler = artifact_path(pack_root, manifest, &ArtifactKind::EsbuildExecutable)?;
     let source = layout.root().join("worker.source");
     let metafile = layout.root().join("worker.metafile.json");
@@ -98,20 +86,17 @@ fn run_esbuild(
         ])
         .arg(format!("--outdir={}", command_path(&source).display()))
         .arg(format!("--metafile={}", command_path(&metafile).display()))
-        .arg(format!(
-            "--alias:node:events={}",
-            command_path(&events).display()
-        ))
-        .arg(format!(
-            "--alias:node:stream={}",
-            command_path(&stream).display()
-        ))
+        .arg("--external:node:events")
+        .arg("--external:events")
+        .arg("--external:node:stream")
+        .arg("--external:stream")
+        .arg("--external:node:process")
+        .arg("--external:process")
+        .arg("--external:fs")
+        .arg("--external:fs/promises")
         .arg("--external:node:fs")
         .arg("--external:node:fs/promises")
-        .arg(format!(
-            "--alias:cloudflare:workers={}",
-            command_path(&builtins).display()
-        ));
+        .arg("--external:cloudflare:workers");
     for (extension, loader) in esbuild_loaders(&wrangler.rules) {
         command.arg(format!("--loader:.{extension}={loader}"));
     }
@@ -123,15 +108,6 @@ fn run_esbuild(
         bail!("Worker bundling failed with status {status}");
     }
     Ok((source, metafile))
-}
-
-fn runtime_source(runtime: &Path, current: &str, legacy: &str) -> PathBuf {
-    let current = runtime.join(current);
-    if current.is_file() {
-        current
-    } else {
-        runtime.join(legacy)
-    }
 }
 
 fn write_worker_modules(layout: &PackageLayout, source: &Path) -> Result<()> {
@@ -357,34 +333,96 @@ fn slash_path(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use super::runtime_source;
+    use super::*;
+    use std::fmt::Write as _;
+    use tokamak_cli::{Artifact, ESBUILD_EXECUTABLE, Target};
 
     #[test]
-    fn selects_the_nested_runtime_source() -> Result<(), Box<dyn std::error::Error>> {
+    fn real_bundler_keeps_runtime_modules_external() -> Result<()> {
         let directory = tempfile::tempdir()?;
-        let nested = directory.path().join("events/events.mjs");
-        fs::create_dir_all(nested.parent().ok_or("runtime source has no parent")?)?;
-        fs::write(&nested, "export {};")?;
-
-        assert_eq!(
-            runtime_source(directory.path(), "events/events.mjs", "events.mjs"),
-            nested
-        );
+        let root = directory.path();
+        let manifest = esbuild_pack(root)?;
+        let names = [
+            "node:events",
+            "events",
+            "node:stream",
+            "stream",
+            "node:process",
+            "process",
+            "node:fs",
+            "fs",
+            "node:fs/promises",
+            "fs/promises",
+            "cloudflare:workers",
+        ];
+        let mut source = String::new();
+        for (index, name) in names.iter().enumerate() {
+            writeln!(source, "export * as builtin{index} from '{name}';")?;
+        }
+        source.push_str("export async function lazy() { return import('./lazy.mjs'); }");
+        fs::write(root.join("entry.mjs"), source)?;
+        fs::write(
+            root.join("lazy.mjs"),
+            "export { env } from 'cloudflare:workers';",
+        )?;
+        fs::write(
+            root.join("wrangler.json"),
+            r#"{"name":"test-app","main":"entry.mjs"}"#,
+        )?;
+        let wrangler = tokamak::load_wrangler_config(&root.join("wrangler.json"))?;
+        let layout = PackageLayout::new(root.join("app"));
+        let (output, metadata) = run_esbuild(&layout, &wrangler, root, &manifest)?;
+        let metadata: serde_json::Value = serde_json::from_slice(&fs::read(metadata)?)?;
+        let inputs = metadata["inputs"].as_object().context("missing inputs")?;
+        assert_eq!(inputs.len(), 2, "runtime implementation was bundled");
+        let mut external = BTreeSet::new();
+        for output in metadata["outputs"]
+            .as_object()
+            .context("missing outputs")?
+            .values()
+        {
+            for import in output["imports"].as_array().context("missing imports")? {
+                if import["external"] == true {
+                    external.insert(import["path"].as_str().context("missing path")?);
+                }
+            }
+        }
+        assert_eq!(external, BTreeSet::from(names));
+        assert!(output.join("chunks").is_dir(), "lazy module was not split");
+        assert!(!root.join("tools/runtime/runtime-js").exists());
+        write_worker_modules(&layout, &output)?;
+        assert!(layout.worker_modules().join("entry.js.qjs").is_file());
         Ok(())
     }
-
-    #[test]
-    fn falls_back_to_the_flat_runtime_source() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let legacy = directory.path().join("events.mjs");
-        fs::write(&legacy, "export {};")?;
-
-        assert_eq!(
-            runtime_source(directory.path(), "events/events.mjs", "events.mjs"),
-            legacy
-        );
-        Ok(())
+    fn esbuild_pack(root: &Path) -> Result<TargetPackManifest> {
+        let host = match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("macos", "aarch64") => "darwin-arm64",
+            ("macos", "x86_64") => "darwin-x64",
+            ("linux", "x86_64") => "linux-x64",
+            ("windows", "x86_64") => "win32-x64",
+            _ => bail!("unsupported esbuild test host"),
+        };
+        let binaries = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tools/esbuild-hosts/node_modules/@esbuild")
+            .join(host);
+        copy_dir_contents(
+            &binaries,
+            &root.join("tools/runtime/node_modules/@esbuild").join(host),
+        )?;
+        let launcher = root.join(ESBUILD_EXECUTABLE);
+        fs::create_dir_all(launcher.parent().context("esbuild has no directory")?)?;
+        fs::write(
+            &launcher,
+            include_str!("../../tools/xtask/src/esbuild-launcher.cjs"),
+        )?;
+        Ok(TargetPackManifest {
+            tokamak_version: env!("CARGO_PKG_VERSION").to_owned(),
+            target: Target::WindowsX64,
+            artifacts: vec![Artifact {
+                kind: ArtifactKind::EsbuildExecutable,
+                path: ESBUILD_EXECUTABLE.to_owned(),
+            }],
+            required_tools: vec![],
+        })
     }
 }

@@ -1,6 +1,14 @@
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 import { ReadableStream } from "../streams/web.mjs";
 
+function bodyBytes(value) {
+  if (value == null) return new Uint8Array();
+  if (value instanceof ArrayBuffer) return new Uint8Array(value).slice();
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
+  if (value instanceof Blob) return value.__bytes.slice();
+  return new TextEncoder().encode(String(value));
+}
+
 export class Headers {
   constructor(init) {
     this.__values = new Map();
@@ -40,7 +48,7 @@ export class Request {
       this.url = String(input);
       this.method = String(init.method ?? "GET").toUpperCase();
       this.headers = new Headers(init.headers);
-      this.__body = init.body == null ? null : init.body instanceof Uint8Array ? init.body : String(init.body);
+      this.__body = init.body == null ? null : bodyBytes(init.body);
     }
     this.bodyUsed = false;
     this.redirect = init.redirect ?? "follow";
@@ -50,7 +58,7 @@ export class Request {
   get body() { return this.__body == null ? null : { __tokamak_body: this.__body }; }
   async text() { this.bodyUsed = true; return this.__body instanceof Uint8Array ? new TextDecoder().decode(this.__body) : this.__body ?? ""; }
   async json() { return JSON.parse(await this.text()); }
-  async arrayBuffer() { return (this.__body instanceof Uint8Array ? this.__body : new TextEncoder().encode(this.__body ?? "")).buffer; }
+  async arrayBuffer() { this.bodyUsed = true; return bodyBytes(this.__body).buffer; }
   clone() { return new Request(this); }
 }
 
@@ -64,7 +72,7 @@ export class Response {
     this.statusText = init.statusText ?? "";
     this.headers = new Headers(init.headers);
     this.__stream = body instanceof ReadableStream ? body : null;
-    this.__body = this.__stream ? null : body == null ? null : body instanceof Uint8Array ? body : String(body);
+    this.__body = this.__stream || body == null ? null : bodyBytes(body);
     this.__tokamak_body = this.__body;
     this.body = this.__stream ?? (this.__body == null ? null : { __tokamak_body: this.__body });
     this.ok = this.status >= 200 && this.status < 300;
@@ -73,20 +81,30 @@ export class Response {
     this.url = "";
     this.webSocket = init.webSocket;
   }
-  async text() {
-    if (!this.__stream) return this.__body instanceof Uint8Array ? new TextDecoder().decode(this.__body) : this.__body ?? "";
+  async text() { return new TextDecoder().decode(await this.arrayBuffer()); }
+  async arrayBuffer() {
+    if (!this.__stream) return bodyBytes(this.__body).buffer;
     const reader = this.__stream.getReader();
     const chunks = [];
-    while (true) {
-      const result = await reader.read();
-      if (result.done) break;
-      chunks.push(result.value instanceof Uint8Array ? new TextDecoder().decode(result.value) : String(result.value));
+    let length = 0;
+    try {
+      while (true) {
+        const result = await reader.read();
+        if (result.done) break;
+        if (!(result.value instanceof ArrayBuffer) && !ArrayBuffer.isView(result.value)) throw new TypeError("Response stream must contain bytes");
+        const chunk = bodyBytes(result.value);
+        chunks.push(chunk);
+        length += chunk.byteLength;
+      }
+    } finally {
+      reader.releaseLock();
     }
-    reader.releaseLock();
-    return chunks.join("");
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return bytes.buffer;
   }
   async json() { return JSON.parse(await this.text()); }
-  async arrayBuffer() { return new TextEncoder().encode(await this.text()).buffer; }
   clone() { return new Response(this.__body, { status: this.status, statusText: this.statusText, headers: this.headers }); }
   static error() { return new Response(null, { status: 0 }); }
   static redirect(url, status = 302) { return new Response(null, { status, headers: { location: url } }); }
