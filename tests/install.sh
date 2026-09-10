@@ -34,9 +34,13 @@ cat > "$temporary/fake-bin/curl" <<'EOF'
 set -euo pipefail
 output=
 url=
+authorization=
 while (($#)); do
   case "$1" in
     -H)
+      if [[ ${2:-} == Authorization:* ]]; then
+        authorization=$2
+      fi
       shift 2
       ;;
     -o)
@@ -54,6 +58,11 @@ while (($#)); do
 done
 printf '%s\n' "$url" >> "$TOKAMAK_INSTALL_LOG"
 if [[ $url == *'/releases?per_page=1' ]]; then
+  if [[ -n ${TOKAMAK_INSTALL_EXPECTED_AUTH:-} ]]; then
+    test "$authorization" = "Authorization: Bearer $TOKAMAK_INSTALL_EXPECTED_AUTH"
+  else
+    test -z "$authorization"
+  fi
   printf '[{"tag_name":"pre.2"}]\n'
 else
   cp "$TOKAMAK_INSTALL_FIXTURES/${url##*/}" "$output"
@@ -73,6 +82,7 @@ run_install() {
   local os=$1
   local architecture=$2
   local cli_host=$3
+  local github_token=${4:-}
   local home="$temporary/home-$cli_host"
   local download_log="$temporary/downloads-$cli_host"
   local output="$temporary/output-$cli_host"
@@ -86,6 +96,9 @@ run_install() {
   TOKAMAK_INSTALL_LOG="$download_log" \
   TOKAMAK_INSTALL_UNAME_S="$os" \
   TOKAMAK_INSTALL_UNAME_M="$architecture" \
+  TOKAMAK_INSTALL_EXPECTED_AUTH="$github_token" \
+  GH_TOKEN="$github_token" \
+  GITHUB_TOKEN= \
   PATH="$temporary/fake-bin:$PATH" \
     bash "$repository_root/scripts/install.sh" > "$output"
 
@@ -101,6 +114,6 @@ run_install() {
   grep -F "Add $home/.local/bin to PATH" "$output" > /dev/null
 }
 
-run_install Darwin arm64 macos-arm64
+run_install Darwin arm64 macos-arm64 ci-token
 run_install Darwin x86_64 macos-x64
 run_install Linux x86_64 linux-x64

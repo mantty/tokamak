@@ -34,6 +34,10 @@ api_headers=(
   -H 'Accept: application/vnd.github+json'
   -H 'X-GitHub-Api-Version: 2022-11-28'
 )
+github_token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+if [[ -n $github_token ]]; then
+  api_headers+=(-H "Authorization: Bearer $github_token")
+fi
 download_headers=(-H 'Accept: application/octet-stream')
 
 release="$(curl -fsSL "${api_headers[@]}" "$api/releases?per_page=1")" || fail 'could not find a tokamak release'

@@ -23,6 +23,8 @@ irm https://raw.githubusercontent.com/mantty/tokamak/main/scripts/install.ps1 | 
 The installer downloads the newest published release, including pre-releases,
 and installs the CLI and every target pack under `~/.local`. It prints the PATH
 change when `~/.local/bin` is not already available.
+It optionally uses `GH_TOKEN` or `GITHUB_TOKEN` to authenticate the GitHub
+release lookup, and otherwise keeps using the unauthenticated lookup.
 
 tokamak doesn't add any external dependencies, but you will need the toolchain for any platforms you wish to build for:
 
