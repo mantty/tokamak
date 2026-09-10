@@ -83,6 +83,8 @@ enum Command {
     },
     /// List concrete and provisionable development targets.
     Devices,
+    /// List local iOS signing identities and provisioning profiles (macOS only).
+    Certs,
     /// List runtime targets supported by this CLI.
     Targets,
 }
@@ -157,6 +159,7 @@ fn run() -> Result<()> {
             devices::list();
             Ok(())
         }
+        Command::Certs => ios_signing::list(),
         Command::Targets => {
             list_targets();
             Ok(())

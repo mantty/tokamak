@@ -796,6 +796,35 @@ fn builds_physical_ios_app() -> TestResult {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn build_explains_conflicting_automatic_and_manual_signing() -> TestResult {
+    let (_temporary, project, manifest) = create_inputs("ios-arm64")?;
+    for team_flag in [false, true] {
+        let mut command = build_command("ios", &project, &manifest)?;
+        command
+            .env_remove("TOKAMAK_IOS_TEAM_ID")
+            .env("TOKAMAK_IOS_SIGNING_IDENTITY", "IDENTITY_SHA1")
+            .env(
+                "TOKAMAK_IOS_PROVISIONING_PROFILE",
+                project.join("manual.mobileprovision"),
+            );
+        if team_flag {
+            command.args(["--ios-team-id", "TEAM"]);
+        } else {
+            command.env("TOKAMAK_IOS_TEAM_ID", "TEAM");
+        }
+        command.assert().failure().stderr(concat!(
+            "error: automatic and manual iOS signing cannot be combined.\n\n",
+            "Choose ONE signing mode:\n",
+            "  Automatic: --ios-team-id or TOKAMAK_IOS_TEAM_ID\n",
+            "  Manual:    both TOKAMAK_IOS_SIGNING_IDENTITY and\n",
+            "             TOKAMAK_IOS_PROVISIONING_PROFILE\n"
+        ));
+    }
+    Ok(())
+}
+
 #[test]
 fn builds_ios_simulator_app() -> TestResult {
     for target in ["ios-simulator-arm64", "ios-simulator-x64"] {

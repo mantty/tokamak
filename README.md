@@ -151,15 +151,29 @@ asking Xcode to provision the app when needed. No manual signing variables
 are required. If a certificate has no team name, the list identifies its
 signing identity instead and marks the team name as unavailable.
 
-For **manual signing**, omit the team flag and variable and provide both the
-identity and profile yourself. Use `security find-identity -v -p codesigning` to list
-installed signing identities and their SHA-1 selectors:
+For **manual signing**, provide both the identity and its matching profile.
+List locally installed iOS signing assets on macOS with:
 
 ```sh
-unset TOKAMAK_IOS_TEAM_ID
+tok certs
+```
+
+This read-only command lists identity names and SHA-1 selectors, plus profile
+names, paths, team IDs, app identifiers, expiration dates, and matching installed
+identities. It includes development and distribution profiles; matching means
+the identity's certificate is included in the profile, not that the pair is valid
+for every app or device. It does not create or import signing assets.
+
+Use the identity's SHA-1 and the profile's path:
+
+```sh
 export TOKAMAK_IOS_SIGNING_IDENTITY="IDENTITY_SHA1"
 export TOKAMAK_IOS_PROVISIONING_PROFILE="/path/to/profile.mobileprovision"
 ```
+
+An explicit team (`--ios-team-id` or `TOKAMAK_IOS_TEAM_ID`) and the manual pair
+are mutually exclusive. Providing both produces an error explaining the two
+choices. Manual signing uses these environment variables; it has no CLI flags.
 
 Both `tok dev` and `tok build ios` use these settings; the latter provisions
 for a generic iOS device and does not require a device ID. iOS Simulator
