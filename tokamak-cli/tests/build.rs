@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use assert_cmd::Command;
+#[cfg(target_os = "macos")]
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tokamak::compile_module;
