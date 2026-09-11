@@ -1,0 +1,16 @@
+{
+  "name": "tokamak",
+  "description": "Skills for building, running, debugging, and designing Tokamak applications.",
+  "owner": {
+    "name": "Mantty",
+    "url": "https://github.com/mantty"
+  },
+  "plugins": [
+    {
+      "name": "tokamak",
+      "source": "./ai/plugin",
+      "description": "Build, run, debug, and design applications with tokamak.",
+      "version": "0.1.0"
+    }
+  ]
+}

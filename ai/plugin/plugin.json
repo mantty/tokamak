@@ -1,0 +1,19 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "tokamak",
+  "version": "0.1.0",
+  "description": "Build, run, debug, and design applications with tokamak.",
+  "author": {
+    "name": "Mantty",
+    "url": "https://github.com/mantty"
+  },
+  "homepage": "https://github.com/mantty/tokamak",
+  "repository": "https://github.com/mantty/tokamak",
+  "license": "MIT OR Apache-2.0",
+  "keywords": [
+    "tokamak",
+    "cloudflare-workers",
+    "cross-platform",
+    "native-apps"
+  ]
+}

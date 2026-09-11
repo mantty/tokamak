@@ -34,6 +34,12 @@ tokamak doesn't add any external dependencies, but you will need the toolchain f
 | Android | Android SDK 35, Java 17, Gradle, and Bash |
 | Windows | 64-bit Windows |
 
+## AI assistant plugin
+
+This repository includes a repo-installable, skill-only plugin for Codex and
+Claude Code. See [the plugin README](ai/plugin/README.md) for installation and
+testing instructions.
+
 ## Build an application
 
 We do not (currently) support all Cloudflare bindings to additional services they offer, but by and large a basic fullstack web-app written for Cloudflare workers is all you need to build a native app.

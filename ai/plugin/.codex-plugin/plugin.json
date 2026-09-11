@@ -1,0 +1,30 @@
+{
+  "name": "tokamak",
+  "version": "0.1.0",
+  "description": "Build, run, debug, and design applications with tokamak.",
+  "author": {
+    "name": "Mantty",
+    "url": "https://github.com/mantty"
+  },
+  "homepage": "https://github.com/mantty/tokamak",
+  "repository": "https://github.com/mantty/tokamak",
+  "license": "MIT OR Apache-2.0",
+  "keywords": [
+    "tokamak",
+    "cloudflare-workers",
+    "cross-platform",
+    "native-apps"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Tokamak",
+    "shortDescription": "Build cross-platform Tokamak applications.",
+    "longDescription": "Use Tokamak's Worker-compatible runtime, CLI, target packs, native plugins, and platform-specific build workflows.",
+    "developerName": "Mantty",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": [
+      "Help me build or debug a Tokamak application."
+    ]
+  }
+}
