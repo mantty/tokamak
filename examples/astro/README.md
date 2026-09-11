@@ -36,7 +36,7 @@ cd examples/astro
 pnpm build
 TOKAMAK_TARGET_PACK_DIR=../../target/tokamak-target-packs \
   ../../target/release/tok build ios-simulator \
-  --wrangler wrangler.runtime-test.json --skip-web-build
+  --wrangler wrangler.runtime-test.json --skip-project-build
 xcrun simctl install booted build/ios-simulator/tokamak-example-astro.app
 xcrun simctl launch --terminate-running-process booted com.tokamak.tokamak-example-astro
 ```

@@ -378,8 +378,9 @@ pub struct Artifact {
 /// In addition to the paths listed here, every pack contains the fixed
 /// `build/entrypoint` builder entrypoint (or `build/entrypoint.ps1` for
 /// Windows). The CLI invokes it with `build`, an input directory, and an
-/// output path; the entrypoint owns the platform-specific project and signing
-/// work.
+/// output path, passes through the user's environment and target-pack
+/// variables, and leaves platform-specific project, signing, and packaging
+/// work to the entrypoint.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetPackManifest {

@@ -50,8 +50,8 @@ Add recovery that:
   shutdown, reporting persistent failures and stopping without orphaned
   processes or silently selecting another target.
 
-Physical iOS signing uses the same split as Xcode: an exact valid profile is
-selected when one is already installed, and otherwise `tok dev` asks
+Physical iOS signing uses the same split as Xcode: the Apple target pack selects
+an exact valid profile when one is already installed, and otherwise asks
 `xcodebuild` to update or register the profile automatically for the selected
 bundle ID and device. Set `TOKAMAK_IOS_SIGNING_IDENTITY` together with
 `TOKAMAK_IOS_PROVISIONING_PROFILE` when an explicit signing choice is required.

@@ -130,9 +130,9 @@ boundary.
 
 ### iOS signing
 
-`plist`, `sha1`, and `sha2` are used only by iOS signing code and its tests.
-Move their production dependency activation to macOS while preserving the
-portable signing-data tests as development dependencies where useful.
+`plist`, `sha1`, and `sha2` are used only by the Apple signing crate and its
+tests. Keep that dependency graph behind the Apple target-pack signing tool;
+the CLI only retains the `tok certs` facade.
 
 After platform scoping, inspect the remaining `sha2` 0.11 and RustCrypto 0.10
 duplicate graph. Do not downgrade a cryptographic crate solely to make

@@ -5,10 +5,10 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "tokamak:android": "astro build && ../../target/release/tok build android --project . --wrangler dist/server/wrangler.json --skip-web-build",
-    "tokamak:macos": "astro build && ../../target/release/tok build macos --project . --wrangler dist/server/wrangler.json --skip-web-build",
-    "tokamak:ios": "astro build && ../../target/release/tok build ios --project . --wrangler dist/server/wrangler.json --skip-web-build",
-    "tokamak:ios-simulator": "astro build && ../../target/release/tok build ios-simulator --project . --wrangler dist/server/wrangler.json --skip-web-build"
+    "tokamak:android": "astro build && ../../target/release/tok build android --project . --wrangler dist/server/wrangler.json --skip-project-build",
+    "tokamak:macos": "astro build && ../../target/release/tok build macos --project . --wrangler dist/server/wrangler.json --skip-project-build",
+    "tokamak:ios": "astro build && ../../target/release/tok build ios --project . --wrangler dist/server/wrangler.json --skip-project-build",
+    "tokamak:ios-simulator": "astro build && ../../target/release/tok build ios-simulator --project . --wrangler dist/server/wrangler.json --skip-project-build"
   },
   "dependencies": {
     "@tokamak/geolocation": "link:../../plugins/geolocation",
