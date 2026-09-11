@@ -34,7 +34,7 @@ pub(crate) fn validate_target(manifest: &TargetPackManifest, platform: Platform)
     }
 }
 
-pub(crate) fn run_web_build(project: &Path) -> Result<()> {
+pub(crate) fn run_project_build(project: &Path) -> Result<()> {
     if !project.join("package.json").is_file() {
         bail!("package.json not found in {}", project.display());
     }
@@ -70,7 +70,7 @@ pub(crate) fn package_manager(name: &'static str) -> &'static str {
     }
 }
 
-pub(crate) fn validate_web_build(config: &WranglerConfig) -> Result<()> {
+pub(crate) fn validate_project_build(config: &WranglerConfig) -> Result<()> {
     if !config.main.is_file() {
         bail!("worker main not found: {}", config.main.display());
     }
@@ -232,7 +232,7 @@ pub(crate) fn run_entrypoint(
     input: &Path,
     output: &Path,
     target: Target,
-    environment: &[(&str, &std::ffi::OsStr)],
+    environment: &std::collections::BTreeMap<String, std::ffi::OsString>,
 ) -> Result<()> {
     let entrypoint = pack_root.join(target.build_entrypoint_path());
     if !entrypoint.is_file() {
@@ -256,9 +256,7 @@ pub(crate) fn run_entrypoint(
         command.arg(command_path(&entrypoint));
         command
     };
-    for (name, value) in environment {
-        command.env(name, value);
-    }
+    command.envs(environment);
     let status = command
         .args(["build"])
         .arg(command_path(input))

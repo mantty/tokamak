@@ -1,0 +1,141 @@
+#!/bin/sh
+set -eu
+
+case "${1-}" in
+  plist)
+    input=
+    output=
+    icon_info_plist=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        plist) ;;
+        --input|--output|--icon-info-plist)
+          value=$2
+          case "$1" in
+            --input) input=$value ;;
+            --output) output=$value ;;
+            --icon-info-plist) icon_info_plist=$value ;;
+          esac
+          shift
+          ;;
+        *) echo "unknown plist option: $1" >&2; exit 2 ;;
+      esac
+      shift
+    done
+
+    app_name=$(cat "$input/metadata/app-name")
+    app_slug=$(cat "$input/metadata/app-slug")
+    identifier=$(cat "$input/metadata/identifier")
+    host=$(cat "$input/metadata/host")
+    platform=$(cat "$input/metadata/platform")
+    version=1.0
+    build_number=1
+    if [ -f "$input/metadata/version" ]; then
+      version=$(cat "$input/metadata/version")
+      build_number=$version
+    fi
+    case "$platform" in
+      ios|ios-simulator)
+        build_number=${TOKAMAK_IOS_BUILD_NUMBER:-$build_number}
+        ;;
+      macos)
+        build_number=${TOKAMAK_MACOS_BUILD_NUMBER:-$build_number}
+        ;;
+    esac
+    case "$build_number" in
+      ''|.*|*.|*..*|*[!0-9.]* )
+        echo "Apple build number must contain one to three period-separated integers: $build_number" >&2
+        exit 1
+        ;;
+    esac
+    parts=$(printf '%s' "$build_number" | awk -F. '{print NF}')
+    if [ "$parts" -gt 3 ]; then
+      echo "Apple build number must contain one to three period-separated integers: $build_number" >&2
+      exit 1
+    fi
+    {
+      printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+      printf '%s\n' '<plist version="1.0"><dict>'
+      printf '  <key>CFBundleIdentifier</key><string>%s</string>\n' "$identifier"
+      printf '  <key>CFBundleName</key><string>%s</string>\n' "$app_name"
+      printf '  <key>CFBundleDisplayName</key><string>%s</string>\n' "$app_name"
+      printf '  <key>CFBundleExecutable</key><string>%s</string>\n' "$app_slug"
+      printf '%s\n' '  <key>CFBundlePackageType</key><string>APPL</string>'
+      printf '  <key>CFBundleVersion</key><string>%s</string>\n' "$build_number"
+      printf '  <key>CFBundleShortVersionString</key><string>%s</string>\n' "$version"
+      printf '  <key>TokamakHost</key><string>%s</string>\n' "$host"
+      for plugin in "$input/plugins"/*; do
+        [ -d "$plugin" ] || continue
+        for entry in "$plugin/plist"/*; do
+          [ -d "$entry" ] || continue
+          key=$(cat "$entry/key")
+          value=$(cat "$entry/value")
+          printf '  <key>%s</key><string>%s</string>\n' "$key" "$value"
+        done
+      done
+      if [ "$platform" = macos ]; then
+        printf '%s\n' '  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>'
+        printf '%s\n' '  <key>NSHighResolutionCapable</key><true/>'
+      else
+        if [ "$platform" = ios-simulator ]; then
+          supported_platform=iPhoneSimulator
+        else
+          supported_platform=iPhoneOS
+        fi
+        printf '  <key>CFBundleSupportedPlatforms</key><array><string>%s</string></array>\n' "$supported_platform"
+        printf '%s\n' '  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>'
+        printf '%s\n' '  <key>MinimumOSVersion</key><string>17.0</string>'
+        printf '%s\n' '  <key>LSRequiresIPhoneOS</key><true/>'
+        printf '%s\n' '  <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>'
+        printf '%s\n' '  <key>UILaunchScreen</key><dict/>'
+        printf '%s\n' '  <key>UISupportedInterfaceOrientations</key><array>'
+        printf '%s\n' '    <string>UIInterfaceOrientationPortrait</string>'
+        printf '%s\n' '    <string>UIInterfaceOrientationLandscapeLeft</string>'
+        printf '%s\n' '    <string>UIInterfaceOrientationLandscapeRight</string>'
+        printf '%s\n' '  </array>'
+      fi
+      if [ -n "$icon_info_plist" ]; then
+        printf '%s\n' '  <key>CFBundleIconName</key><string>AppIcon</string>'
+      fi
+      printf '%s\n' '</dict></plist>'
+    } > "$output"
+    ;;
+  sign)
+    bundle=
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        sign) ;;
+        --project|--bundle-id|--device-id) shift ;;
+        --bundle) bundle=$2; shift ;;
+        *) echo "unknown signing option: $1" >&2; exit 2 ;;
+      esac
+      shift
+    done
+
+    if [ -n "${TOKAMAK_IOS_TEAM_ID:-}" ] && [ -n "${TOKAMAK_IOS_SIGNING_IDENTITY:-}" ]; then
+      echo 'automatic and manual iOS signing cannot be combined.' >&2
+      echo >&2
+      echo 'Choose ONE signing mode:' >&2
+      echo '  Automatic: set TOKAMAK_IOS_TEAM_ID or use --set ios-team-id=TEAM_ID' >&2
+      echo '  Manual:    set BOTH TOKAMAK_IOS_SIGNING_IDENTITY and' >&2
+      echo '             TOKAMAK_IOS_PROVISIONING_PROFILE, or use the matching --set options' >&2
+      exit 1
+    fi
+
+    identity=${TOKAMAK_IOS_SIGNING_IDENTITY-}
+    profile=${TOKAMAK_IOS_PROVISIONING_PROFILE-}
+    if [ -n "$identity" ] && [ -n "$profile" ]; then
+      cp "$profile" "$bundle/embedded.mobileprovision"
+      codesign --force --sign "$identity" "$bundle"
+    elif [ -z "$identity" ] && [ -z "$profile" ]; then
+      codesign --force --sign - "$bundle"
+    else
+      echo 'TOKAMAK_IOS_SIGNING_IDENTITY and TOKAMAK_IOS_PROVISIONING_PROFILE must be provided together' >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "usage: tokamak-apple-signing plist ... | sign ..." >&2
+    exit 2
+    ;;
+esac

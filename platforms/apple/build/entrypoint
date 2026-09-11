@@ -11,34 +11,20 @@ output=$3
 metadata=$input/metadata
 native_shell=$input/native-shell
 framework_root=$input/runtime/frameworks
-app_name=$(cat "$metadata/app-name")
 app_slug=$(cat "$metadata/app-slug")
 identifier=$(cat "$metadata/identifier")
-host=$(cat "$metadata/host")
 platform=$(cat "$metadata/platform")
 target=$(cat "$metadata/target")
-version=1.0
-build_version=1
-if [[ -f "$metadata/version" ]]; then
-  version=$(cat "$metadata/version")
-  build_version=$version
-fi
-dev_endpoint=
-dev_session_token=
-if [[ -f "$metadata/dev-endpoint" ]]; then
-  dev_endpoint=$(cat "$metadata/dev-endpoint")
-fi
-if [[ -f "$metadata/dev-session-token" ]]; then
-  dev_session_token=$(cat "$metadata/dev-session-token")
-fi
-if [[ -n "$dev_endpoint" && -z "$dev_session_token" ]] || [[ -z "$dev_endpoint" && -n "$dev_session_token" ]]; then
-  echo "development endpoint and session token must be provided together" >&2
-  exit 1
-fi
+project_dir=$(cat "$metadata/project-dir")
 output_parent=$(dirname "$output")
 module_cache=$output_parent/.tokamak/module-cache
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/tokamak-apple.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT
+apple_tool=$PWD/tools/tokamak-apple-signing
+if [[ ! -x "$apple_tool" ]]; then
+  echo "Apple target pack is missing its Apple helper: $apple_tool" >&2
+  exit 1
+fi
 
 case "$target" in
   macos-arm64)
@@ -113,13 +99,7 @@ for source in "$native_shell"/*.swift; do
   swift_sources+=("$source")
 done
 
-has_shell=false
-for source in "${swift_sources[@]}"; do
-  if [[ $(basename "$source") == TokamakShell.swift ]]; then
-    has_shell=true
-  fi
-done
-if [[ "$has_shell" != true ]]; then
+if [[ ! -f "$native_shell/TokamakShell.swift" ]]; then
   echo "Apple native shell source is missing: $native_shell/TokamakShell.swift" >&2
   exit 1
 fi
@@ -176,96 +156,24 @@ done
 
 xcrun --sdk "$sdk" swiftc "${swift_args[@]}" -o "$executable_dir/$app_slug"
 
-xml_escape() {
-  printf '%s' "$1" |
-    sed -e 's/&/\&amp;/g' \
-      -e 's/</\&lt;/g' \
-      -e 's/>/\&gt;/g' \
-      -e 's/"/\&quot;/g' \
-      -e "s/'/\&apos;/g"
-}
-
-write_plugin_plist() {
-  for plugin in "$input/plugins"/*; do
-    [[ -d "$plugin" ]] || continue
-    for entry in "$plugin/plist"/*; do
-      [[ -d "$entry" ]] || continue
-      key=$(cat "$entry/key")
-      value=$(cat "$entry/value")
-      printf '  <key>%s</key><string>%s</string>\n' \
-        "$(xml_escape "$key")" "$(xml_escape "$value")"
-    done
-  done
-}
-
-write_plist() {
-  {
-    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
-    printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
-    printf '%s\n' '<plist version="1.0"><dict>'
-    printf '  <key>CFBundleIdentifier</key><string>%s</string>\n' "$(xml_escape "$identifier")"
-    printf '  <key>CFBundleName</key><string>%s</string>\n' "$(xml_escape "$app_name")"
-    printf '  <key>CFBundleDisplayName</key><string>%s</string>\n' "$(xml_escape "$app_name")"
-    printf '  <key>CFBundleExecutable</key><string>%s</string>\n' "$(xml_escape "$app_slug")"
-    printf '%s\n' '  <key>CFBundlePackageType</key><string>APPL</string>'
-    printf '  <key>CFBundleVersion</key><string>%s</string>\n' "$(xml_escape "$build_version")"
-    printf '  <key>CFBundleShortVersionString</key><string>%s</string>\n' "$(xml_escape "$version")"
-    printf '  <key>TokamakHost</key><string>%s</string>\n' "$(xml_escape "$host")"
-    if [[ -n "$dev_endpoint" ]]; then
-      printf '  <key>TokamakDevEndpoint</key><string>%s</string>\n' "$(xml_escape "$dev_endpoint")"
-      printf '  <key>TokamakDevSessionToken</key><string>%s</string>\n' "$(xml_escape "$dev_session_token")"
-    fi
-    write_plugin_plist
-    if [[ "$platform" == macos ]]; then
-      printf '%s\n' '  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>'
-      printf '%s\n' '  <key>NSHighResolutionCapable</key><true/>'
-    else
-      if [[ "$platform" == ios-simulator ]]; then
-        supported_platform=iPhoneSimulator
-      else
-        supported_platform=iPhoneOS
-      fi
-      printf '  <key>CFBundleSupportedPlatforms</key><array><string>%s</string></array>\n' "$supported_platform"
-      printf '%s\n' '  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>'
-      printf '%s\n' '  <key>MinimumOSVersion</key><string>17.0</string>'
-      printf '%s\n' '  <key>LSRequiresIPhoneOS</key><true/>'
-      printf '%s\n' '  <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>'
-      printf '%s\n' '  <key>UILaunchScreen</key><dict/>'
-      printf '%s\n' '  <key>UISupportedInterfaceOrientations</key><array>'
-      printf '%s\n' '    <string>UIInterfaceOrientationPortrait</string>'
-      printf '%s\n' '    <string>UIInterfaceOrientationLandscapeLeft</string>'
-      printf '%s\n' '    <string>UIInterfaceOrientationLandscapeRight</string>'
-      printf '%s\n' '  </array>'
-    fi
-    printf '%s\n' '</dict></plist>'
-  } > "$contents/Info.plist"
-}
-
-write_plist
+plist_args=(plist --input "$input" --output "$contents/Info.plist")
 if [[ -f "$icon_info_plist" ]]; then
-  /usr/libexec/PlistBuddy -c "Merge $icon_info_plist" "$contents/Info.plist"
+  plist_args+=(--icon-info-plist "$icon_info_plist")
 fi
+"$apple_tool" "${plist_args[@]}"
 
 sign_bundle() {
   if [[ "$platform" == ios ]]; then
-    identity=${TOKAMAK_IOS_SIGNING_IDENTITY-}
-    profile=${TOKAMAK_IOS_PROVISIONING_PROFILE-}
-    if [[ -n "$identity" && -n "$profile" ]]; then
-      cp "$profile" "$bundle/embedded.mobileprovision"
-      decoded=$temporary/profile.plist
-      entitlements=$temporary/entitlements.plist
-      if ! security cms -D -i "$profile" > "$decoded"; then
-        openssl smime -inform der -verify -noverify -in "$profile" > "$decoded"
-      fi
-      plutil -extract Entitlements xml1 -o "$entitlements" "$decoded"
-      codesign --force --timestamp=none --sign "$identity" \
-        --generate-entitlement-der --entitlements "$entitlements" "$bundle"
-    elif [[ -z "$identity" && -z "$profile" ]]; then
-      codesign --force --timestamp=none --sign - "$bundle"
-    else
-      echo "physical iOS signing requires TOKAMAK_IOS_SIGNING_IDENTITY and TOKAMAK_IOS_PROVISIONING_PROFILE" >&2
-      exit 1
+    signing_args=(
+      sign
+      --project "$project_dir"
+      --bundle "$bundle"
+      --bundle-id "$identifier"
+    )
+    if [[ -f "$metadata/device-id" ]]; then
+      signing_args+=(--device-id "$(cat "$metadata/device-id")")
     fi
+    "$apple_tool" "${signing_args[@]}"
   else
     codesign --force --timestamp=none --sign - "$bundle"
   fi

@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use assert_cmd::Command;
+#[cfg(target_os = "macos")]
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tokamak::compile_module;
 use tokamak::{PackageLayout, decompress_worker_module, read_worker_manifest};
@@ -131,6 +133,20 @@ fn create_target_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
         root.join(target.build_entrypoint_path()),
         include_str!("../../platforms/apple/build/entrypoint"),
     )?;
+    #[cfg(unix)]
+    if matches!(
+        target,
+        Target::MacosArm64
+            | Target::MacosX64
+            | Target::IosArm64
+            | Target::IosSimulatorArm64
+            | Target::IosSimulatorX64
+    ) {
+        write_executable(
+            &root.join("tools/tokamak-apple-signing"),
+            include_str!("fixtures/apple-signing"),
+        )?;
+    }
     write_test_manifest(root, target)?;
     Ok(root.to_path_buf())
 }
@@ -285,6 +301,9 @@ cp "$input/runtime/tokamak-shell-windows.exe" "$output/$app_slug.exe"
 if [ -f "$input/icons/windows/AppIcon.ico" ]; then
   cp "$input/icons/windows/AppIcon.ico" "$output/AppIcon.ico"
 fi
+if [ -n "${TOKAMAK_WINDOWS_TEST:-}" ]; then
+  printf '%s' "$TOKAMAK_WINDOWS_TEST" > "$output/set-value"
+fi
 printf '{"name":"%s","slug":"%s","host":"%s"}\n' "$app_name" "$app_slug" "$host" > "$output/tokamak.json"
 "#
     };
@@ -301,8 +320,10 @@ fn build_command(platform: &str, project: &Path, target_pack: &Path) -> TestResu
         .arg(project)
         .arg("--target-pack")
         .arg(target_pack)
-        .arg("--skip-web-build")
-        .env("TOKAMAK_VERSION", "1.0.0");
+        .arg("--skip-project-build")
+        .env("TOKAMAK_VERSION", "1.0.0")
+        .env_remove("TOKAMAK_IOS_BUILD_NUMBER")
+        .env_remove("TOKAMAK_MACOS_BUILD_NUMBER");
     Ok(command)
 }
 
@@ -343,6 +364,9 @@ for arg in "$@"; do
   fi
 done
 mkdir -p "$project/app/build/outputs/apk/debug"
+if [ -n "${TOKAMAK_ANDROID_TEST:-}" ]; then
+  printf '%s' "$TOKAMAK_ANDROID_TEST" > "$project/target-pack-set-value"
+fi
 cp "$project/app/src/main/AndroidManifest.xml" "$project/app/build/outputs/apk/debug/AndroidManifest.xml"
 touch "$project/app/build/outputs/apk/debug/app-debug.apk"
 "#,
@@ -368,7 +392,7 @@ compile=
 partial=
 output=
 for arg in "$@"; do
-  if [ "$arg" = actool ] || [ "$arg" = swiftc ]; then
+  if [ "$arg" = actool ] || [ "$arg" = swiftc ] || [ "$arg" = simctl ] || [ "$arg" = devicectl ]; then
     mode=$arg
   elif [ "$arg" = --compile ]; then
     next=compile
@@ -397,6 +421,12 @@ case "$mode" in
     mkdir -p "$(dirname "$output")"
     printf '%s\n' '#!/bin/sh' > "$output"
     ;;
+  simctl)
+    printf '%s\n' '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-17-0":[]}}'
+    ;;
+  devicectl)
+    printf '%s\n' '{"devices":[{"identifier":"DEVICE","platform":"iOS","name":"Test iPhone"}]}'
+    ;;
   *)
     exit 1
     ;;
@@ -404,30 +434,6 @@ esac
 "#,
     )?;
     write_executable(&bin.join("codesign"), "#!/bin/sh\nexit 0\n")?;
-    write_executable(
-        &bin.join("security"),
-        r#"#!/bin/sh
-set -eu
-printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0"><dict><key>Entitlements</key><dict><key>application-identifier</key><string>TEAM.com.tokamak.demo-app</string></dict></dict></plist>'
-"#,
-    )?;
-    write_executable(
-        &bin.join("plutil"),
-        r#"#!/bin/sh
-set -eu
-output=
-next=
-for arg in "$@"; do
-  if [ "$arg" = -o ]; then
-    next=output
-  elif [ "$next" = output ]; then
-    output=$arg
-    next=
-  fi
-done
-printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0"><dict><key>application-identifier</key><string>TEAM.com.tokamak.demo-app</string></dict></plist>' > "$output"
-"#,
-    )?;
     Ok(())
 }
 
@@ -583,6 +589,29 @@ fn preserves_configured_display_name_in_android_manifest() -> TestResult {
     );
     assert!(!manifest.contains("android:label=\"vigilus-co-pro-x\""));
     assert!(project.join("build/android/vigilus-co-pro-x.apk").is_file());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn passes_target_pack_variables_to_the_android_entrypoint() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let project = temporary.path().join("project");
+    let pack = temporary.path().join("pack");
+    fs::create_dir_all(&project)?;
+    fs::create_dir_all(&pack)?;
+    create_project(&project)?;
+    let target_pack = create_android_target_pack(&pack)?;
+
+    let mut command = build_command("android", &project, &target_pack)?;
+    command.args(["--set", "android-test=passed"]);
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command.assert().success();
+
+    assert_eq!(
+        fs::read_to_string(project.join("build/android/.tokamak/target-pack-set-value"))?,
+        "passed"
+    );
     Ok(())
 }
 
@@ -769,6 +798,22 @@ fn builds_windows_app_with_its_runtime_files() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn passes_target_pack_variables_to_the_windows_entrypoint() -> TestResult {
+    let (_temporary, project, manifest) = create_windows_inputs()?;
+    build_command("windows", &project, &manifest)?
+        .args(["--set", "windows-test=passed"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read_to_string(project.join("build/windows/demo-app/set-value"))?,
+        "passed"
+    );
+    Ok(())
+}
+
 #[test]
 fn builds_with_a_configured_display_name() -> TestResult {
     let (_temporary, project, manifest) = create_windows_inputs()?;
@@ -834,7 +879,7 @@ fn requires_a_target_pack_for_app_builds() -> TestResult {
     command
         .args(["build", "macos", "--project"])
         .arg(&project)
-        .arg("--skip-web-build")
+        .arg("--skip-project-build")
         .env("TOKAMAK_VERSION", "1.0.0")
         .assert()
         .failure()
@@ -855,7 +900,7 @@ fn reads_target_pack_directory_from_tokamak_environment() -> TestResult {
     command
         .args(["build", "macos", "--project"])
         .arg(&project)
-        .arg("--skip-web-build")
+        .arg("--skip-project-build")
         .env("TOKAMAK_VERSION", "1.0.0")
         .env("TOKAMAK_TARGET_PACK_DIR", target_packs)
         .assert()
@@ -867,7 +912,7 @@ fn reads_target_pack_directory_from_tokamak_environment() -> TestResult {
 }
 
 #[test]
-fn builds_web_project_before_loading_generated_config() -> TestResult {
+fn builds_project_before_loading_generated_config() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let project = temporary.path().join("project");
     let pack = temporary.path().join("pack");
@@ -903,8 +948,14 @@ fn builds_physical_ios_app() -> TestResult {
     configure_fake_apple_tools(&mut command, temporary.path())?;
     command
         .env_remove("TOKAMAK_IOS_TEAM_ID")
-        .env("TOKAMAK_IOS_SIGNING_IDENTITY", "Apple Development: Test")
-        .env("TOKAMAK_IOS_PROVISIONING_PROFILE", &profile)
+        .args([
+            "--set",
+            "ios-build-number=5",
+            "--set",
+            "ios-signing-identity=Apple Development: Test",
+            "--set",
+        ])
+        .arg(format!("ios-provisioning-profile={}", profile.display()))
         .assert()
         .success()
         .stdout(contains("Built iOS bundle"));
@@ -918,8 +969,37 @@ fn builds_physical_ios_app() -> TestResult {
     assert!(plist.contains("UIDeviceFamily"));
     assert!(plist.contains("UILaunchScreen"));
     assert!(plist.contains("NSAllowsLocalNetworking"));
+    assert!(plist.contains("<key>CFBundleVersion</key><string>5</string>"));
+    assert!(plist.contains("<key>CFBundleShortVersionString</key><string>1.0.0</string>"));
     assert!(plist.contains("NSLocationWhenInUseUsageDescription"));
     assert!(bundle.join("embedded.mobileprovision").is_file());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn builds_macos_app_with_environment_build_number() -> TestResult {
+    let (temporary, project, manifest) = create_inputs("macos-arm64")?;
+    let mut command = build_command("macos", &project, &manifest)?;
+    command.env("TOKAMAK_MACOS_BUILD_NUMBER", "7");
+    configure_fake_apple_tools(&mut command, temporary.path())?;
+    command.assert().success();
+
+    let plist = fs::read_to_string(project.join("build/macos/demo-app.app/Contents/Info.plist"))?;
+    assert!(plist.contains("<key>CFBundleVersion</key><string>7</string>"));
+    assert!(plist.contains("<key>CFBundleShortVersionString</key><string>1.0.0</string>"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_invalid_apple_build_number() -> TestResult {
+    let (_temporary, project, manifest) = create_inputs("ios-simulator-arm64")?;
+    let mut command = build_command("ios-simulator", &project, &manifest)?;
+    command.env("TOKAMAK_IOS_BUILD_NUMBER", "0.1.2-5");
+    command.assert().failure().stderr(contains(
+        "Apple build number must contain one to three period-separated integers: 0.1.2-5",
+    ));
     Ok(())
 }
 
@@ -927,7 +1007,7 @@ fn builds_physical_ios_app() -> TestResult {
 #[test]
 fn build_explains_conflicting_automatic_and_manual_signing() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("ios-arm64")?;
-    for team_flag in [false, true] {
+    for cli_variable in [false, true] {
         let mut command = build_command("ios", &project, &manifest)?;
         command
             .env_remove("TOKAMAK_IOS_TEAM_ID")
@@ -936,19 +1016,64 @@ fn build_explains_conflicting_automatic_and_manual_signing() -> TestResult {
                 "TOKAMAK_IOS_PROVISIONING_PROFILE",
                 project.join("manual.mobileprovision"),
             );
-        if team_flag {
-            command.args(["--ios-team-id", "TEAM"]);
+        if cli_variable {
+            command.args(["--set", "ios-team-id=TEAM"]);
         } else {
             command.env("TOKAMAK_IOS_TEAM_ID", "TEAM");
         }
-        command.assert().failure().stderr(concat!(
-            "error: automatic and manual iOS signing cannot be combined.\n\n",
-            "Choose ONE signing mode:\n",
-            "  Automatic: --ios-team-id or TOKAMAK_IOS_TEAM_ID\n",
-            "  Manual:    both TOKAMAK_IOS_SIGNING_IDENTITY and\n",
-            "             TOKAMAK_IOS_PROVISIONING_PROFILE\n"
-        ));
+        command.assert().failure().stderr(
+            contains("automatic and manual iOS signing cannot be combined.")
+                .and(contains(
+                    "Automatic: set TOKAMAK_IOS_TEAM_ID or use --set ios-team-id=TEAM_ID",
+                ))
+                .and(contains(
+                    "Manual:    set BOTH TOKAMAK_IOS_SIGNING_IDENTITY and",
+                )),
+        );
     }
+    Ok(())
+}
+
+#[cfg(all(unix, target_os = "macos"))]
+#[test]
+fn dev_explains_conflicting_automatic_and_manual_signing() -> TestResult {
+    let (temporary, project, target_pack) = create_inputs("ios-arm64")?;
+    let profile = project.join("manual.mobileprovision");
+    fs::write(&profile, "profile")?;
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+
+    let mut command = Command::cargo_bin("tok")?;
+    configure_fake_apple_tools(&mut command, temporary.path())?;
+    let server = format!("http://127.0.0.1:{port}");
+    let framework = format!(
+        "require('http').createServer((_, response) => response.end()).listen({port}, '127.0.0.1')"
+    );
+    command
+        .args(["dev", "DEVICE", "--project"])
+        .arg(&project)
+        .args(["--target-pack"])
+        .arg(&target_pack)
+        .args(["--config"])
+        .arg(&project)
+        .args(["--server", &server, "--host-address", "127.0.0.1"])
+        .args(["--set", "ios-signing-identity=IDENTITY_SHA1", "--set"])
+        .arg(format!("ios-provisioning-profile={}", profile.display()))
+        .env("TOKAMAK_IOS_TEAM_ID", "TEAM")
+        .args(["--", "node", "-e"])
+        .arg(framework)
+        .assert()
+        .failure()
+        .stderr(
+            contains("automatic and manual iOS signing cannot be combined.")
+                .and(contains(
+                    "Automatic: set TOKAMAK_IOS_TEAM_ID or use --set ios-team-id=TEAM_ID",
+                ))
+                .and(contains(
+                    "Manual:    set BOTH TOKAMAK_IOS_SIGNING_IDENTITY and",
+                )),
+        );
     Ok(())
 }
 

@@ -112,7 +112,7 @@ jobs:
         with:
           toolchain: 1.96.0
           components: clippy
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,x86_64-apple-darwin
+          targets: aarch64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-darwin,x86_64-apple-ios
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2.9.2
@@ -137,7 +137,7 @@ jobs:
 
       - name: Test iOS signing
         run: |
-          cargo test -p tokamak-cli --bin tok ios_signing::tests
+          cargo test -p tokamak-apple-signing --lib
           cargo test -p tokamak-cli --test cli
 
       - name: Test Apple builds

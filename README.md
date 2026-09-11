@@ -106,7 +106,37 @@ The `version` value is optional in the configuration, but is required for
 `tok build`. Set it in the configuration or with `TOKAMAK_VERSION`; the
 environment variable takes precedence. Development builds keep their existing
 native default when no version is supplied. Apple builds use the value for
-both bundle version fields, and Android uses it as `versionName`.
+`CFBundleShortVersionString` and, by default, `CFBundleVersion`; Android uses it
+as `versionName`.
+
+Apple target packs accept an optional per-build number through target-pack
+variables. Use `ios-build-number` for iOS (including the simulator) and
+`macos-build-number` for macOS:
+
+```sh
+tok build ios --set ios-build-number=5
+TOKAMAK_MACOS_BUILD_NUMBER=7 tok build macos
+```
+
+These map to `TOKAMAK_IOS_BUILD_NUMBER` and `TOKAMAK_MACOS_BUILD_NUMBER`.
+Values must contain one to three period-separated integers. If omitted, the
+target pack continues to use the app version as the Apple build number.
+
+Apple target packs also accept an optional user-provided application plist.
+Set `ios-plist` for iOS devices and simulators, or `macos-plist` for macOS:
+
+```sh
+tok build ios --set ios-plist=native/Info.plist
+TOKAMAK_MACOS_PLIST=native/Info.plist tok build macos
+```
+
+The corresponding environment variables are `TOKAMAK_IOS_PLIST` and
+`TOKAMAK_MACOS_PLIST`. Relative paths are resolved from the project directory.
+The file may be XML or binary and must have a dictionary at its root. It is
+optional; when present, Tokamak overlays its generated application values on
+top of it, so Tokamak's identifiers, names, versions, platform metadata, and
+defaults take precedence. User-defined plist values that Tokamak does not
+generate are preserved.
 
 Each icon platform entry is optional. If the Tokamak configuration or a
 platform entry is absent, that platform keeps its existing icon behavior.
@@ -137,14 +167,16 @@ your command:
 export TOKAMAK_IOS_TEAM_ID=YOUR_TEAM_ID
 ```
 
-Alternatively, select the team for a single command with `--ios-team-id`:
+Alternatively, select the team for a single command with `--set`:
 
 ```sh
-tok dev DEVICE_ID --ios-team-id YOUR_TEAM_ID -- pnpm dev
-tok build ios --ios-team-id YOUR_TEAM_ID
+tok dev DEVICE_ID --set ios-team-id=YOUR_TEAM_ID -- pnpm dev
+tok build ios --set ios-team-id=YOUR_TEAM_ID
 ```
 
-The command-line flag takes precedence over `TOKAMAK_IOS_TEAM_ID`.
+`--set` may be repeated for multiple target-pack variables. A value such as
+`ios-team-id=YOUR_TEAM_ID` is passed to the iOS target pack as
+`TOKAMAK_IOS_TEAM_ID`.
 
 Tokamak selects the signing identity and provisioning profile for that team,
 asking Xcode to provision the app when needed. No manual signing variables
@@ -164,16 +196,29 @@ identities. It includes development and distribution profiles; matching means
 the identity's certificate is included in the profile, not that the pair is valid
 for every app or device. It does not create or import signing assets.
 
-Use the identity's SHA-1 and the profile's path:
+Use the identity's SHA-1 and the profile's path. They can be set for the shell:
 
 ```sh
 export TOKAMAK_IOS_SIGNING_IDENTITY="IDENTITY_SHA1"
 export TOKAMAK_IOS_PROVISIONING_PROFILE="/path/to/profile.mobileprovision"
 ```
 
-An explicit team (`--ios-team-id` or `TOKAMAK_IOS_TEAM_ID`) and the manual pair
-are mutually exclusive. Providing both produces an error explaining the two
-choices. Manual signing uses these environment variables; it has no CLI flags.
+Or set both for a single command:
+
+```sh
+tok dev DEVICE_ID \
+  --set ios-signing-identity=IDENTITY_SHA1 \
+  --set ios-provisioning-profile=/path/to/profile.mobileprovision \
+  -- pnpm dev
+tok build ios \
+  --set ios-signing-identity=IDENTITY_SHA1 \
+  --set ios-provisioning-profile=/path/to/profile.mobileprovision
+```
+
+An explicit team (`TOKAMAK_IOS_TEAM_ID` or `--set ios-team-id=TEAM_ID`) and the
+manual pair are mutually exclusive. Providing both produces an error explaining
+the two choices. The Apple target pack owns the signing and provisioning
+selection; `tok` passes target-pack variables through unchanged.
 
 Both `tok dev` and `tok build ios` use these settings; the latter provisions
 for a generic iOS device and does not require a device ID. iOS Simulator
@@ -215,7 +260,7 @@ pnpm --dir examples/astro run build
 tok build macos \
   --project examples/astro \
   --wrangler examples/astro/dist/server/wrangler.json \
-  --skip-web-build
+  --skip-project-build
 ```
 
 ## Contributing
@@ -254,10 +299,11 @@ The executable is written to `target/release/tok` (`tok.exe` on Windows).
 ### Build a target pack
 
 Install the Rust target, then build the runtime, native shell, and runtime tools
-for one target:
+for one target. Apple target packs also need both macOS host targets because the
+pack includes a universal host-side signing tool:
 
 ```sh
-rustup target add aarch64-apple-darwin
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
 cargo run -p xtask -- target-pack --target macos-arm64
 ```
 
@@ -280,7 +326,7 @@ cargo run -p tokamak-cli -- build macos \
   --project examples/astro \
   --wrangler examples/astro/dist/server/wrangler.json \
   --target-pack target/tokamak-target-packs/macos-arm64 \
-  --skip-web-build
+  --skip-project-build
 ```
 
 Use the local CLI in development mode with:

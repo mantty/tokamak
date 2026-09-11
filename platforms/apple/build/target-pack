@@ -12,25 +12,15 @@ output=$4
 workspace=$PWD
 
 case "$target" in
-  macos-arm64)
-    sdk=macosx
-    deployment_variable=MACOSX_DEPLOYMENT_TARGET
-    ;;
-  macos-x64)
-    sdk=macosx
-    deployment_variable=MACOSX_DEPLOYMENT_TARGET
+  macos-arm64|macos-x64)
+    export MACOSX_DEPLOYMENT_TARGET=14.0
     ;;
   ios-arm64)
-    sdk=iphoneos
-    deployment_variable=IPHONEOS_DEPLOYMENT_TARGET
+    export IPHONEOS_DEPLOYMENT_TARGET=17.0
     ;;
-  ios-simulator-arm64)
-    sdk=iphonesimulator
-    deployment_variable=IPHONESIMULATOR_DEPLOYMENT_TARGET
-    ;;
-  ios-simulator-x64)
-    sdk=iphonesimulator
-    deployment_variable=IPHONESIMULATOR_DEPLOYMENT_TARGET
+  ios-simulator-arm64|ios-simulator-x64)
+    export IPHONEOS_DEPLOYMENT_TARGET=17.0
+    export IPHONESIMULATOR_DEPLOYMENT_TARGET=17.0
     ;;
   *)
     echo "unsupported Apple target: $target" >&2
@@ -38,19 +28,26 @@ case "$target" in
     ;;
 esac
 
-export "$deployment_variable=17.0"
-if [[ "$sdk" == macosx ]]; then
-  export MACOSX_DEPLOYMENT_TARGET=14.0
-elif [[ "$sdk" == iphonesimulator ]]; then
-  export IPHONEOS_DEPLOYMENT_TARGET=17.0
-fi
-
 rm -rf "$output"
 mkdir -p \
   "$output/build" \
   "$output/frameworks/TokamakRuntime.framework/Headers" \
   "$output/frameworks/TokamakRuntime.framework/Modules" \
-  "$output/native-shell"
+  "$output/native-shell" \
+  "$output/tools"
+
+host_targets=(aarch64-apple-darwin x86_64-apple-darwin)
+for host_target in "${host_targets[@]}"; do
+  cargo build \
+    --package tokamak-apple-signing \
+    --release \
+    --target "$host_target"
+done
+
+lipo -create \
+  "$workspace/target/aarch64-apple-darwin/release/tokamak-apple-signing" \
+  "$workspace/target/x86_64-apple-darwin/release/tokamak-apple-signing" \
+  -output "$output/tools/tokamak-apple-signing"
 
 cargo build \
   --package tokamak \

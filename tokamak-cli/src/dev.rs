@@ -16,7 +16,7 @@ use tokamak::{WranglerConfig, load_wrangler_config, resolve_wrangler_config_path
 use tokamak_cli::Platform;
 
 use super::devices::PreparedDevice;
-use super::{devices, ios_signing, pipeline};
+use super::{devices, pipeline, variables};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_mins(1);
 const SERVER_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -33,7 +33,7 @@ pub(crate) struct Request {
     pub(crate) target_pack_dir: Option<PathBuf>,
     pub(crate) tokamak_config_path: PathBuf,
     pub(crate) wrangler_config_path: Option<PathBuf>,
-    pub(crate) ios_team_id: Option<String>,
+    pub(crate) set: Vec<variables::SetVariable>,
     pub(crate) server: String,
     pub(crate) host_address: Option<String>,
     pub(crate) command: Vec<std::ffi::OsString>,
@@ -50,19 +50,9 @@ pub(crate) fn run(request: &Request) -> Result<()> {
             request.project_dir.display()
         )
     })?;
-    let tokamak = pipeline::load_project_config(&request.tokamak_config_path)?;
     let wrangler = load_development_config(&project, request.wrangler_config_path.as_deref())?;
     warn_unsupported_bindings(&wrangler);
     let device = devices::prepare(&request.device_id)?;
-    let (_, app_slug) = pipeline::resolve_app(&tokamak, &wrangler.name, device.platform);
-    let identifier = pipeline::resolve_identifier(&tokamak, &app_slug, device.platform)?;
-    let signing = ios_signing::resolve(
-        device.platform,
-        &project,
-        &identifier,
-        Some(&device.id),
-        request.ios_team_id.as_deref(),
-    )?;
     let server = ServerEndpoint::parse(&request.server)?;
     let session_token = session_token()?;
     let relay_host = relay_host(&device, request.host_address.as_deref())?;
@@ -81,7 +71,6 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     let result = run_session(&mut DevelopmentSession {
         request,
         device: &device,
-        signing: signing.as_ref(),
         session_token: &session_token,
         relay: &relay,
         framework: &mut framework,
@@ -197,7 +186,6 @@ fn validate_request(request: &Request) -> Result<()> {
 struct DevelopmentSession<'a> {
     request: &'a Request,
     device: &'a PreparedDevice,
-    signing: Option<&'a ios_signing::Selection>,
     session_token: &'a str,
     relay: &'a DevRelay,
     framework: &'a mut Child,
@@ -220,8 +208,8 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
         wrangler_config_path: session.request.wrangler_config_path.clone(),
         endpoint: session.relay.device_endpoint(),
         session_token: session.session_token.to_owned(),
-        ios_signing_identity: session.signing.map(|selection| selection.identity.clone()),
-        ios_provisioning_profile: session.signing.map(|selection| selection.profile.clone()),
+        device_id: Some(session.device.id.clone()),
+        set: session.request.set.clone(),
     })?;
     if session.shutdown.requested() {
         stop_process(session.framework)?;

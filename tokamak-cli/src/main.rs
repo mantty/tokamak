@@ -3,12 +3,13 @@
 
 //! `tokamak` command line entry point.
 
+mod certs;
 mod dev;
 mod devices;
-mod ios_signing;
 mod pipeline;
 mod plugins;
 mod support;
+mod variables;
 mod worker;
 
 use std::ffi::OsString;
@@ -18,6 +19,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tokamak_cli::{Platform, Target};
+use variables::SetVariable;
 
 #[derive(Debug, Parser)]
 #[command(name = "tok", version, about = "tokamak native app tooling")]
@@ -44,12 +46,12 @@ enum Command {
         /// Path to the Wrangler configuration file.
         #[arg(short = 'w', long = "wrangler")]
         wrangler: Option<PathBuf>,
-        /// Apple team for automatic iOS signing. Overrides `TOKAMAK_IOS_TEAM_ID`.
-        #[arg(long, value_name = "TEAM_ID")]
-        ios_team_id: Option<String>,
-        /// Reuse an existing dist/ directory instead of running the web build.
+        /// Set a target-pack variable as a TOKAMAK_<PLATFORM>_<NAME> environment variable.
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        set: Vec<SetVariable>,
+        /// Use existing project build output instead of running the project's build command.
         #[arg(long)]
-        skip_web_build: bool,
+        skip_project_build: bool,
     },
     /// Run a development server against one target.
     Dev {
@@ -68,9 +70,9 @@ enum Command {
         /// Path to the Wrangler configuration file.
         #[arg(short = 'w', long = "wrangler")]
         wrangler: Option<PathBuf>,
-        /// Apple team for automatic iOS signing. Overrides `TOKAMAK_IOS_TEAM_ID`.
-        #[arg(long, value_name = "TEAM_ID")]
-        ios_team_id: Option<String>,
+        /// Set a target-pack variable as a TOKAMAK_<PLATFORM>_<NAME> environment variable.
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        set: Vec<SetVariable>,
         /// HTTP endpoint served by the framework's development command.
         #[arg(long, value_name = "URL", default_value = "http://localhost:5173")]
         server: String,
@@ -109,8 +111,8 @@ fn run() -> Result<()> {
             target_pack,
             config,
             wrangler,
-            ios_team_id,
-            skip_web_build,
+            set,
+            skip_project_build,
         } => {
             let platforms = parse_platforms(&platforms)?;
             let summaries = pipeline::run(&pipeline::BuildRequest {
@@ -119,8 +121,8 @@ fn run() -> Result<()> {
                 target_pack_dir: target_pack,
                 tokamak_config_path: config,
                 wrangler_config_path: wrangler,
-                ios_team_id,
-                skip_web_build,
+                set,
+                skip_project_build,
             })?;
             for summary in summaries {
                 println!(
@@ -137,7 +139,7 @@ fn run() -> Result<()> {
             target_pack,
             config,
             wrangler,
-            ios_team_id,
+            set,
             server,
             host_address,
             command,
@@ -148,7 +150,7 @@ fn run() -> Result<()> {
                 target_pack_dir: target_pack,
                 tokamak_config_path: config,
                 wrangler_config_path: wrangler,
-                ios_team_id,
+                set,
                 server,
                 host_address,
                 command,
@@ -159,7 +161,7 @@ fn run() -> Result<()> {
             devices::list();
             Ok(())
         }
-        Command::Certs => ios_signing::list(),
+        Command::Certs => certs::list(),
         Command::Targets => {
             list_targets();
             Ok(())
@@ -240,6 +242,24 @@ mod tests {
                 }
             }) if config.as_path() == Path::new("tokamak.jsonc")
                 && wrangler.as_path() == Path::new("dist/wrangler.json")
+        ));
+    }
+
+    #[test]
+    fn accepts_repeatable_target_pack_variables() {
+        assert!(matches!(
+            Cli::try_parse_from([
+                "tok",
+                "build",
+                "ios",
+                "--set",
+                "ios-team-id=TEAM",
+                "--set",
+                "ios-signing-identity=IDENTITY"
+            ]),
+            Ok(Cli {
+                command: Command::Build { set, .. }
+            }) if set.len() == 2
         ));
     }
 

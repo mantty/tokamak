@@ -3263,6 +3263,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokamak-apple-signing"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "plist",
+ "rcgen",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2 0.11.0",
+ "tempfile",
+ "x509-parser",
+]
+
+[[package]]
 name = "tokamak-cli"
 version = "0.1.0"
 dependencies = [
@@ -3271,20 +3287,15 @@ dependencies = [
  "clap",
  "getrandom 0.4.2",
  "netdev",
- "plist",
  "predicates",
- "rcgen",
- "security-framework",
  "serde",
  "serde_json",
- "sha1",
- "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
  "tokamak",
+ "tokamak-apple-signing",
  "tokio",
  "walkdir",
- "x509-parser",
 ]
 
 [[package]]

@@ -22,25 +22,25 @@ jobs:
         include:
           - target: macos-arm64
             runner: macos-15
-            rust_target: aarch64-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
           - target: macos-x64
             runner: macos-15
-            rust_target: x86_64-apple-darwin
+            rust_targets: x86_64-apple-darwin,aarch64-apple-darwin
           - target: ios-arm64
             runner: macos-15
-            rust_target: aarch64-apple-ios
+            rust_targets: aarch64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
           - target: ios-simulator-arm64
             runner: macos-15
-            rust_target: aarch64-apple-ios-sim
+            rust_targets: aarch64-apple-ios-sim,aarch64-apple-darwin,x86_64-apple-darwin
           - target: ios-simulator-x64
             runner: macos-15
-            rust_target: x86_64-apple-ios
+            rust_targets: x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
           - target: android-arm64
             runner: ubuntu-24.04
-            rust_target: aarch64-linux-android
+            rust_targets: aarch64-linux-android
           - target: windows-x64
             runner: windows-2025
-            rust_target: x86_64-pc-windows-msvc
+            rust_targets: x86_64-pc-windows-msvc
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.3
@@ -57,7 +57,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.96.0
-          targets: ${{ matrix.rust_target }}
+          targets: ${{ matrix.rust_targets }}
 
       - name: Configure MSVC
         if: runner.os == 'Windows'

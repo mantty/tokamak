@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "tokamak",
     "tokamak-cli",
+    "platforms/apple/signing",
     "platforms/windows",
     "tools/xtask",
 ]

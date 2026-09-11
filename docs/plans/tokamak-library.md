@@ -37,6 +37,7 @@ tokamak is pre-release. Backwards compatibility is not a goal.
 | `platforms/windows/build` | Windows target-pack recipe and app build entrypoint |
 | `tools/xtask` | maintainer-only target-pack generation |
 | `tokamak-cli/src/target_pack.rs` | target-pack manifest format and target metadata |
+| `platforms/apple/signing` | Apple signing discovery and target-pack signing tool |
 
 The root-level Worker-package modules own the Worker layout and resolve every
 path within it, so neither `tokamak-cli` nor the runtime names a file. `tokamak-cli`
@@ -44,10 +45,11 @@ writes the contract and the runtime reads it.
 
 The `tokamak` package contains the shared runtime and its Apple C and Android JNI
 bridges. Every platform shell remains under `platforms/`, regardless of its
-implementation language. The CLI stages app-specific inputs and invokes the
-uniform target-pack entrypoint; it does not own platform project generation or
-signing. Components inside `tokamak` depend on each other through narrow
-interfaces.
+implementation language. The CLI stages common app inputs and invokes the
+uniform target-pack entrypoint. Target packs own platform project generation,
+signing, and packaging; target-pack variables pass through as
+`TOKAMAK_<PLATFORM>_<NAME>` environment variables. Components inside `tokamak`
+depend on each other through narrow interfaces.
 
 ## Certificates
 
@@ -81,9 +83,11 @@ macOS and iOS use the same Swift shell and C runtime ABI. Android uses a Kotlin
 shell and JNI runtime ABI. Windows uses the Rust shell under
 `platforms/windows`. All target packs have the same boundary: a compiled tokamak
 artifact, native shell sources where the platform compiles the shell during app
-assembly, or a precompiled shell executable, and `build/entrypoint`.
-Developers need the native platform toolchain to build and sign an app; the
-Windows target pack additionally contains the precompiled Rust shell.
+assembly, or a precompiled shell executable, and the fixed build entrypoint.
+The entrypoint receives `build INPUT OUTPUT`, inherits target-pack variables, and
+owns the platform-specific build, signing, and packaging work. Developers need
+the native platform toolchain to build and sign an app; the Windows target pack
+additionally contains the precompiled Rust shell.
 
 Desktop focus, minimization, and occlusion do not suspend the tokamak runtime.
 Android and iOS likewise leave the runtime available to the operating system

@@ -29,7 +29,7 @@ Apply the following model whenever working on a tokamak application. tokamak is 
 
 ### `tok build`
 
-- Run the project's `package.json` build script unless `--skip-web-build` is explicitly used.
+- Run the project's `package.json` build script unless `--skip-project-build` is explicitly used.
 - Bundle the built Worker and assets into each requested native application under `build/<platform>`.
 - Run subsequent same-origin requests entirely through the packaged app and its embedded runtime. Do not assume a Node server, Wrangler process, internet connection, or Cloudflare account is present.
 
@@ -45,12 +45,52 @@ tok targets
 ```
 
 - Use `--server http://<host>:<port>` when the framework development server is not at `http://localhost:5173`.
-- Use `--wrangler <path>` when the relevant Wrangler file is generated outside the project root.
+- Use `-w` or `--wrangler <path>` when the relevant Wrangler file is generated outside the project root.
 - Use `--config <path>` for the optional Tokamak configuration file; it defaults to the current directory.
-- Pass `--skip-web-build` only when the framework output already exists and is current.
+- Pass `--skip-project-build` only when the project output already exists and is current.
 - Use the current native platform names: `android`, `ios`, `ios-simulator`, `macos`, and `windows`.
 - Require a `package.json` build script and a Wrangler configuration with at least `name` and `main` for a packaged build.
 - Let tokamak detect pnpm, Yarn, or npm from the project's lockfile when it runs the build.
+
+### Configuration and target-pack variables
+
+- Look for `tokamak.jsonc` in the current directory, then `tokamak.json`; the file is optional. Use `-c` or `--config` to select another file or directory.
+- JSONC permits comments and trailing commas; plain JSON is also supported.
+- The supported configuration values are `name`, `identifier`, `version`, and `icons`.
+- `name` and `identifier` use a required `default` value plus optional platform values. Platform values fall back to `default`; `ios` also applies to `ios-simulator`.
+- Display names preserve their spelling and capitalization. Tokamak derives a lower-case slug for filenames, application IDs, and local hosts. If `name` is absent, the Wrangler Worker name is used.
+- `identifier` values are used as the Apple bundle identifier and Android application ID. `TOKAMAK_IDENTIFIER` and platform-specific `TOKAMAK_ANDROID_IDENTIFIER`, `TOKAMAK_IOS_IDENTIFIER`, `TOKAMAK_MACOS_IDENTIFIER`, or `TOKAMAK_WINDOWS_IDENTIFIER` override configured identifiers; the iOS value also applies to simulators.
+- `version` is optional in configuration but required by `tok build`. `TOKAMAK_VERSION` overrides the configured value. Do not use `TOKAMAK_APP_VERSION`.
+- `icons` accepts user-created platform assets: Android `res` directories, Apple `.icon` packages for `ios`/`macos`, and Windows `.ico` files. Missing icons preserve the existing behavior. Icon paths are relative to the configuration file.
+- Use repeatable `--set NAME=VALUE` options for target-pack variables. `tokamak` maps `ios-team-id=TEAM` to `TOKAMAK_IOS_TEAM_ID`, for example, and passes target-pack variables through without interpreting platform-specific names.
+
+Examples:
+
+```sh
+tok build ios --config ./tokamak.jsonc --set ios-build-number=5
+tok build ios --set ios-plist=native/Info.plist
+TOKAMAK_MACOS_PLIST=native/Info.plist tok build macos
+```
+
+Apple target packs accept optional user-provided XML or binary application
+plists through `ios-plist`/`TOKAMAK_IOS_PLIST` and
+`macos-plist`/`TOKAMAK_MACOS_PLIST`. Relative paths are resolved from the
+project directory. The plist must have a dictionary root. Tokamak loads it
+first, then overlays generated identifiers, names, versions, platform values,
+defaults, plugin values, and icon values; user-defined values Tokamak does not
+generate are retained.
+
+Apple build numbers are target-pack variables rather than Tokamak config:
+`ios-build-number` maps to `TOKAMAK_IOS_BUILD_NUMBER` and
+`macos-build-number` maps to `TOKAMAK_MACOS_BUILD_NUMBER`. They are optional
+and use the app version by default.
+
+For physical iOS signing, use either `ios-team-id`/`TOKAMAK_IOS_TEAM_ID` for
+automatic selection or both `ios-signing-identity`/`TOKAMAK_IOS_SIGNING_IDENTITY`
+and `ios-provisioning-profile`/`TOKAMAK_IOS_PROVISIONING_PROFILE` for manual
+signing. Do not provide both modes. Use `tok certs` to inspect installed
+identities and profiles. `tok build ios` does not need a device ID; simulator
+builds do not require provisioning.
 
 ## Respect the packaged Worker contract
 

@@ -12,29 +12,20 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 tokamak = { path = "../tokamak" }
+tokamak-apple-signing = { path = "../platforms/apple/signing" }
 clap.workspace = true
 getrandom.workspace = true
 netdev.workspace = true
-plist.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha1.workspace = true
-sha2.workspace = true
-tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "signal", "sync"] }
 walkdir.workspace = true
 
-[target.'cfg(target_os = "macos")'.dependencies]
-security-framework.workspace = true
-x509-parser.workspace = true
-
 [dev-dependencies]
 assert_cmd.workspace = true
 predicates.workspace = true
-
-[target.'cfg(target_os = "macos")'.dev-dependencies]
-rcgen.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -1,4 +1,10 @@
-//! iOS signing asset discovery and development signing selection.
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+
+//! Apple target-pack plist generation and signing asset discovery.
+
+mod info_plist;
+pub use info_plist::write_info_plist;
 
 #[cfg(target_os = "macos")]
 use std::collections::BTreeMap;
@@ -12,7 +18,9 @@ use std::fs;
 use std::io::Cursor;
 #[cfg(target_os = "macos")]
 use std::io::{self, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "macos", test))]
+use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::process::{Command, Output, Stdio};
 #[cfg(any(target_os = "macos", test))]
@@ -29,25 +37,54 @@ use serde::{Deserialize, Serialize};
 use sha1::{Digest as Sha1Digest, Sha1};
 #[cfg(any(target_os = "macos", test))]
 use sha2::{Digest as Sha2Digest, Sha256};
-use tokamak_cli::Platform;
-
 /// A signing identity and provisioning profile selected for an iOS app.
+#[cfg(target_os = "macos")]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Selection {
-    pub(crate) identity: String,
-    pub(crate) profile: PathBuf,
+struct Selection {
+    identity: String,
+    profile: PathBuf,
 }
 
-/// List installed iOS signing identities and provisioning profiles without provisioning.
-pub(crate) fn list() -> Result<()> {
+/// Return installed iOS signing identities and provisioning profiles.
+///
+/// # Errors
+///
+/// Returns an error when signing assets cannot be inspected or the host is not
+/// macOS.
+pub fn inventory() -> Result<String> {
     #[cfg(target_os = "macos")]
     {
         let identities = discover_identities()?;
-        print!("{}", signing_inventory(&identities, &discover_profiles())?);
-        Ok(())
+        signing_inventory(&identities, &discover_profiles())
     }
     #[cfg(not(target_os = "macos"))]
-    bail!("iOS signing discovery requires a macOS host");
+    {
+        bail!("iOS signing discovery requires a macOS host");
+    }
+}
+
+/// Resolve and apply iOS signing to a completed application bundle.
+///
+/// # Errors
+///
+/// Returns an error when signing assets cannot be selected or the bundle
+/// cannot be signed.
+pub fn sign_ios_bundle(
+    project: &Path,
+    bundle: &Path,
+    bundle_id: &str,
+    device_id: Option<&str>,
+) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let selection = resolve_macos(project, bundle_id, device_id)?;
+        sign_bundle(bundle, &selection)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (project, bundle, bundle_id, device_id);
+        bail!("iOS signing requires a macOS host with Xcode");
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -126,33 +163,6 @@ fn signing_inventory(identities: &[Identity], profiles: &[Result<Profile>]) -> R
     Ok(output)
 }
 
-/// Resolve signing assets for an iOS app.
-///
-/// A device ID is required for development on a physical device. Builds omit
-/// it and use a generic iOS destination for automatic provisioning.
-pub(crate) fn resolve(
-    platform: Platform,
-    project: &Path,
-    bundle_id: &str,
-    device_id: Option<&str>,
-    team_id: Option<&str>,
-) -> Result<Option<Selection>> {
-    if platform != Platform::Ios {
-        return Ok(None);
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        resolve_macos(project, bundle_id, device_id, team_id).map(Some)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (project, bundle_id, device_id, team_id);
-        bail!("iOS signing requires a macOS host with Xcode");
-    }
-}
-
 #[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Debug)]
 struct Profile {
@@ -223,15 +233,10 @@ struct CachedSelection {
 }
 
 #[cfg(target_os = "macos")]
-fn resolve_macos(
-    project: &Path,
-    bundle_id: &str,
-    device_id: Option<&str>,
-    team_id: Option<&str>,
-) -> Result<Selection> {
+fn resolve_macos(project: &Path, bundle_id: &str, device_id: Option<&str>) -> Result<Selection> {
     let environment_team = env::var("TOKAMAK_IOS_TEAM_ID").ok();
-    let configured_team = configured_team_id(team_id, environment_team.as_deref())?;
-    if let Some(selection) = explicit_selection(configured_team.is_some())? {
+    let configured_team = configured_team_id(environment_team.as_deref())?;
+    if let Some(selection) = explicit_selection(configured_team.is_some(), device_id)? {
         return Ok(selection);
     }
 
@@ -309,6 +314,49 @@ fn resolve_macos(
     );
     save_cache(&cache);
     Ok(selection)
+}
+
+#[cfg(target_os = "macos")]
+fn sign_bundle(bundle: &Path, selection: &Selection) -> Result<()> {
+    let profile = fs::read(&selection.profile).with_context(|| {
+        format!(
+            "read iOS provisioning profile {}",
+            selection.profile.display()
+        )
+    })?;
+    fs::write(bundle.join("embedded.mobileprovision"), &profile)
+        .context("embed the iOS provisioning profile")?;
+
+    let profile = decode_profile(&profile).context("decode the iOS provisioning profile")?;
+    let entitlements = profile
+        .as_dictionary()
+        .and_then(|root| root.get("Entitlements"))
+        .context("provisioning profile entitlements are missing")?;
+    let temporary = tempfile::tempdir().context("create iOS signing directory")?;
+    let entitlements_path = temporary.path().join("entitlements.plist");
+    let mut file = fs::File::create(&entitlements_path).context("create iOS entitlements")?;
+    entitlements
+        .to_writer_xml(&mut file)
+        .context("write iOS signing entitlements")?;
+
+    let output = Command::new("codesign")
+        .args([
+            "--force",
+            "--timestamp=none",
+            "--sign",
+            &selection.identity,
+            "--generate-entitlement-der",
+            "--entitlements",
+        ])
+        .arg(&entitlements_path)
+        .arg(bundle)
+        .output()
+        .context("sign iOS application bundle")?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        bail!("codesign failed: {}", command_output_detail(&output));
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -459,10 +507,8 @@ fn automatic_team_id(
             .map(|team_id| format!("  {}", team_label(team_id, identities, profiles)))
             .collect::<Vec<_>>()
             .join("\n");
-        let command = device_id.map_or_else(
-            || "tok build ios --ios-team-id TEAM_ID".to_owned(),
-            |device_id| format!("tok dev {device_id} --ios-team-id TEAM_ID -- <dev-command>"),
-        );
+        let command = team_command(device_id);
+        let manual_command = manual_command(device_id);
         bail!(
             "Multiple Apple Development teams are available:\n\n  Team ID     Name\n{available}\n\n\
              Choose the team that owns this app. Replace TEAM_ID below with its ID.\n\n  \
@@ -471,11 +517,13 @@ fn automatic_team_id(
              Or select it for a single command:\n    {command}\n\n\
              Tokamak will select the signing identity and provisioning profile automatically.\n\n\
              Alternatively, use manual signing:\n\n  \
-             List installed signing identities and provisioning profiles:\n    \
+             First, list installed identities and provisioning profiles:\n    \
              tok certs\n\n  \
-             Set BOTH the identity and its matching provisioning profile:\n    \
+             Both values are required and must belong together.\n\n  \
+             Set them for this shell:\n    \
              export TOKAMAK_IOS_SIGNING_IDENTITY=\"IDENTITY_SHA1\"\n    \
-             export TOKAMAK_IOS_PROVISIONING_PROFILE=\"/path/to/profile.mobileprovision\""
+             export TOKAMAK_IOS_PROVISIONING_PROFILE=\"/path/to/profile.mobileprovision\"\n\n  \
+             Or set them for a single command:\n    {manual_command}"
         );
     }
     Ok(best[0].clone())
@@ -607,7 +655,30 @@ fn automatic_signing_error(
 }
 
 #[cfg(target_os = "macos")]
-fn explicit_selection(team_configured: bool) -> Result<Option<Selection>> {
+fn team_command(device_id: Option<&str>) -> String {
+    device_id.map_or_else(
+        || "tok build ios --set ios-team-id=TEAM_ID".to_owned(),
+        |device_id| format!("tok dev {device_id} --set ios-team-id=TEAM_ID -- <dev-command>"),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn manual_command(device_id: Option<&str>) -> String {
+    device_id.map_or_else(
+        || {
+            "tok build ios --set ios-signing-identity=IDENTITY_SHA1 \\\n    --set ios-provisioning-profile=/path/to/profile.mobileprovision"
+                .to_owned()
+        },
+        |device_id| {
+            format!(
+                "tok dev {device_id} \\\n    --set ios-signing-identity=IDENTITY_SHA1 \\\n    --set ios-provisioning-profile=/path/to/profile.mobileprovision \\\n    -- <dev-command>"
+            )
+        },
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn explicit_selection(team_configured: bool, device_id: Option<&str>) -> Result<Option<Selection>> {
     let identity = env::var("TOKAMAK_IOS_SIGNING_IDENTITY").ok();
     let profile = env::var_os("TOKAMAK_IOS_PROVISIONING_PROFILE").map(PathBuf::from);
     match (identity, profile) {
@@ -616,9 +687,16 @@ fn explicit_selection(team_configured: bool) -> Result<Option<Selection>> {
                 bail!(
                     "automatic and manual iOS signing cannot be combined.\n\n\
                      Choose ONE signing mode:\n  \
-                     Automatic: --ios-team-id or TOKAMAK_IOS_TEAM_ID\n  \
-                     Manual:    both TOKAMAK_IOS_SIGNING_IDENTITY and\n             \
-                     TOKAMAK_IOS_PROVISIONING_PROFILE"
+                     Automatic: set TOKAMAK_IOS_TEAM_ID or use --set ios-team-id=TEAM_ID\n  \
+                     Manual:    set BOTH TOKAMAK_IOS_SIGNING_IDENTITY and\n             \
+                     TOKAMAK_IOS_PROVISIONING_PROFILE, or use the matching --set options\n\n  \
+                     Automatic and manual signing cannot be combined for one command.\n\n  \
+                     Automatic example:\n    \
+                     {}\n\n  \
+                     Manual example:\n    \
+                     {}",
+                    team_command(device_id),
+                    manual_command(device_id)
                 );
             }
             if identity.trim().is_empty() {
@@ -642,16 +720,13 @@ fn explicit_selection(team_configured: bool) -> Result<Option<Selection>> {
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn configured_team_id(argument: Option<&str>, environment: Option<&str>) -> Result<Option<String>> {
-    let Some((team_id, source)) = argument
-        .map(|value| (value, "--ios-team-id"))
-        .or_else(|| environment.map(|value| (value, "TOKAMAK_IOS_TEAM_ID")))
-    else {
+fn configured_team_id(environment: Option<&str>) -> Result<Option<String>> {
+    let Some(team_id) = environment else {
         return Ok(None);
     };
     let team_id = team_id.trim();
     if team_id.is_empty() {
-        bail!("{source} must not be empty");
+        bail!("TOKAMAK_IOS_TEAM_ID must not be empty");
     }
     Ok(Some(team_id.to_owned()))
 }
@@ -1013,34 +1088,18 @@ mod tests {
     };
 
     #[test]
-    fn team_flag_overrides_the_environment() -> anyhow::Result<()> {
-        assert_eq!(
-            configured_team_id(Some(" FLAG "), Some("ENV"))?.as_deref(),
-            Some("FLAG")
-        );
-        assert_eq!(
-            configured_team_id(Some("FLAG"), Some(""))?.as_deref(),
-            Some("FLAG")
-        );
-        assert_eq!(
-            configured_team_id(None, Some(" ENV "))?.as_deref(),
-            Some("ENV")
-        );
-        assert_eq!(configured_team_id(None, None)?, None);
+    fn configured_team_id_reads_the_environment() -> anyhow::Result<()> {
+        assert_eq!(configured_team_id(Some(" ENV "))?.as_deref(), Some("ENV"));
+        assert_eq!(configured_team_id(None)?, None);
         Ok(())
     }
 
     #[test]
-    fn empty_team_selections_report_the_source_instead_of_falling_back() -> anyhow::Result<()> {
-        for (argument, environment, source) in [
-            (Some(" "), Some("ENV"), "--ios-team-id"),
-            (None, Some(" "), "TOKAMAK_IOS_TEAM_ID"),
-        ] {
-            let error = configured_team_id(argument, environment)
-                .err()
-                .context("expected an empty-team error")?;
-            assert_eq!(error.to_string(), format!("{source} must not be empty"));
-        }
+    fn empty_team_selection_reports_the_environment() -> anyhow::Result<()> {
+        let error = configured_team_id(Some(" "))
+            .err()
+            .context("expected an empty-team error")?;
+        assert_eq!(error.to_string(), "TOKAMAK_IOS_TEAM_ID must not be empty");
         Ok(())
     }
 
@@ -1179,14 +1238,17 @@ mod tests {
                 "  Set it for this shell, then rerun your command:\n",
                 "    export TOKAMAK_IOS_TEAM_ID=TEAM_ID\n\n",
                 "  Or select it for a single command:\n",
-                "    tok dev DEVICE --ios-team-id TEAM_ID -- <dev-command>\n\n",
+                "    tok dev DEVICE --set ios-team-id=TEAM_ID -- <dev-command>\n\n",
                 "Tokamak will select the signing identity and provisioning profile automatically.\n\n",
                 "Alternatively, use manual signing:\n\n",
-                "  List installed signing identities and provisioning profiles:\n",
+                "  First, list installed identities and provisioning profiles:\n",
                 "    tok certs\n\n",
-                "  Set BOTH the identity and its matching provisioning profile:\n",
+                "  Both values are required and must belong together.\n\n",
+                "  Set them for this shell:\n",
                 "    export TOKAMAK_IOS_SIGNING_IDENTITY=\"IDENTITY_SHA1\"\n",
-                "    export TOKAMAK_IOS_PROVISIONING_PROFILE=\"/path/to/profile.mobileprovision\""
+                "    export TOKAMAK_IOS_PROVISIONING_PROFILE=\"/path/to/profile.mobileprovision\"\n\n",
+                "  Or set them for a single command:\n",
+                "    tok dev DEVICE \\\n    --set ios-signing-identity=IDENTITY_SHA1 \\\n    --set ios-provisioning-profile=/path/to/profile.mobileprovision \\\n    -- <dev-command>"
             )
         );
         Ok(())
@@ -1257,7 +1319,7 @@ mod tests {
         for team in ["TEAMAAAAAA", "TEAMBBBBBB"] {
             assert!(error.contains(&format!("{team}  (team name unavailable; signing identity: Apple Development: Same Developer)")));
         }
-        assert!(error.contains("tok build ios --ios-team-id TEAM_ID"));
+        assert!(error.contains("tok build ios --set ios-team-id=TEAM_ID"));
         assert!(!error.contains("tok dev"));
         Ok(())
     }

@@ -9,7 +9,7 @@ use tokamak::{
 };
 use tokamak_cli::{MANIFEST_FILE, Platform, Target, TargetPackManifest, load_manifest};
 
-use super::{ios_signing, plugins, support, worker};
+use super::{plugins, support, variables, worker};
 
 pub(crate) struct BuildRequest {
     pub(crate) platforms: Vec<Platform>,
@@ -17,8 +17,8 @@ pub(crate) struct BuildRequest {
     pub(crate) target_pack_dir: Option<PathBuf>,
     pub(crate) tokamak_config_path: PathBuf,
     pub(crate) wrangler_config_path: Option<PathBuf>,
-    pub(crate) ios_team_id: Option<String>,
-    pub(crate) skip_web_build: bool,
+    pub(crate) set: Vec<variables::SetVariable>,
+    pub(crate) skip_project_build: bool,
 }
 
 pub(crate) struct BuildSummary {
@@ -34,8 +34,8 @@ pub(crate) struct DevelopmentRequest {
     pub(crate) wrangler_config_path: Option<PathBuf>,
     pub(crate) endpoint: String,
     pub(crate) session_token: String,
-    pub(crate) ios_signing_identity: Option<String>,
-    pub(crate) ios_provisioning_profile: Option<PathBuf>,
+    pub(crate) device_id: Option<String>,
+    pub(crate) set: Vec<variables::SetVariable>,
 }
 
 pub(crate) struct DevelopmentSummary {
@@ -45,12 +45,30 @@ pub(crate) struct DevelopmentSummary {
     pub(crate) identifier: String,
 }
 
+struct BuildContext<'a> {
+    wrangler: &'a WranglerConfig,
+    tokamak: &'a TokamakConfig,
+    plugins: &'a [plugins::Plugin],
+    version: &'a str,
+    environment: &'a std::collections::BTreeMap<String, std::ffi::OsString>,
+}
+
+struct BuildMetadata<'a> {
+    app: (&'a str, &'a str),
+    identifier: &'a str,
+    manifest: &'a TargetPackManifest,
+    version: Option<&'a str>,
+    development: Option<(&'a str, &'a str)>,
+    device_id: Option<&'a str>,
+}
+
 pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     validate_request(request)?;
+    let environment = variables::environment(&request.set)?;
     let tokamak = load_project_config(&request.tokamak_config_path)?;
     let version = required_version(&tokamak)?;
-    if !request.skip_web_build {
-        support::run_web_build(&request.project_dir)?;
+    if !request.skip_project_build {
+        support::run_project_build(&request.project_dir)?;
     }
     let config_base = if request.wrangler_config_path.is_some() {
         env::current_dir()?
@@ -60,13 +78,20 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     let config_path =
         resolve_wrangler_config_path(&config_base, request.wrangler_config_path.as_deref())?;
     let wrangler = load_wrangler_config(&config_path)?;
-    support::validate_web_build(&wrangler)?;
+    support::validate_project_build(&wrangler)?;
     let plugins = plugins::discover(&request.project_dir)?;
+    let context = BuildContext {
+        wrangler: &wrangler,
+        tokamak: &tokamak,
+        plugins: &plugins,
+        version: &version,
+        environment: &environment,
+    };
 
     request
         .platforms
         .iter()
-        .map(|platform| build_platform(request, *platform, &wrangler, &tokamak, &plugins, &version))
+        .map(|platform| build_platform(request, *platform, &context))
         .collect()
 }
 
@@ -77,6 +102,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
             request.project_dir.display()
         );
     }
+    let environment = variables::environment(&request.set)?;
     let tokamak = load_project_config(&request.tokamak_config_path)?;
     let config_base = if request.wrangler_config_path.is_some() {
         env::current_dir()?
@@ -101,25 +127,19 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
     fs::write(input.join("app/.tokamak-development"), b"")?;
     write_build_metadata(
         &input,
-        (&app_name, &app_slug),
-        &identifier,
-        &manifest,
-        version.as_deref(),
-        Some((&request.endpoint, &request.session_token)),
+        &project,
+        &BuildMetadata {
+            app: (&app_name, &app_slug),
+            identifier: &identifier,
+            manifest: &manifest,
+            version: version.as_deref(),
+            development: Some((&request.endpoint, &request.session_token)),
+            device_id: request.device_id.as_deref(),
+        },
     )
     .context("write development metadata")?;
 
     let bundle_dir = output_path(&project, request.platform, &app_slug);
-    let mut environment = Vec::new();
-    if let Some(identity) = &request.ios_signing_identity {
-        environment.push((
-            "TOKAMAK_IOS_SIGNING_IDENTITY",
-            std::ffi::OsStr::new(identity),
-        ));
-    }
-    if let Some(profile) = &request.ios_provisioning_profile {
-        environment.push(("TOKAMAK_IOS_PROVISIONING_PROFILE", profile.as_os_str()));
-    }
     support::run_entrypoint(
         &pack_root,
         &input,
@@ -160,57 +180,49 @@ fn validate_request(request: &BuildRequest) -> Result<()> {
 fn build_platform(
     request: &BuildRequest,
     platform: Platform,
-    wrangler: &WranglerConfig,
-    tokamak: &TokamakConfig,
-    plugins: &[plugins::Plugin],
-    version: &str,
+    context: &BuildContext<'_>,
 ) -> Result<BuildSummary> {
     let (input, pack_root, manifest, project) = prepare_platform_input(
         &request.project_dir,
         platform,
         request.target_pack_dir.as_deref(),
-        tokamak,
+        context.tokamak,
     )?;
 
-    worker::prepare_quickjs_app(&input.join("app"), &pack_root, &manifest, wrangler)
+    worker::prepare_quickjs_app(&input.join("app"), &pack_root, &manifest, context.wrangler)
         .context("prepare the tokamak application package")?;
-    plugins::stage(plugins, platform, &input.join("plugins"))
+    plugins::stage(context.plugins, platform, &input.join("plugins"))
         .context("stage native plugin inputs")?;
-    let (app_name, app_slug) = resolve_app(tokamak, &wrangler.name, platform);
-    let identifier = resolve_identifier(tokamak, &app_slug, platform)?;
+    let (app_name, app_slug) = resolve_app(context.tokamak, &context.wrangler.name, platform);
+    let identifier = resolve_identifier(context.tokamak, &app_slug, platform)?;
     write_build_metadata(
         &input,
-        (&app_name, &app_slug),
-        &identifier,
-        &manifest,
-        Some(version),
-        None,
+        &project,
+        &BuildMetadata {
+            app: (&app_name, &app_slug),
+            identifier: &identifier,
+            manifest: &manifest,
+            version: Some(context.version),
+            development: None,
+            device_id: None,
+        },
     )
     .context("write platform build metadata")?;
 
     let output = output_path(&project, platform, &app_slug);
-    let signing = ios_signing::resolve(
-        platform,
-        &project,
-        &identifier,
-        None,
-        request.ios_team_id.as_deref(),
-    )?;
-    let mut environment = Vec::new();
-    if let Some(selection) = signing.as_ref() {
-        environment.push(("TOKAMAK_IOS_SIGNING_IDENTITY", selection.identity.as_ref()));
-        environment.push((
-            "TOKAMAK_IOS_PROVISIONING_PROFILE",
-            selection.profile.as_os_str(),
-        ));
-    }
-    support::run_entrypoint(&pack_root, &input, &output, manifest.target, &environment)
-        .with_context(|| {
-            format!(
-                "build {} using target-pack entrypoint",
-                platform.display_name()
-            )
-        })?;
+    support::run_entrypoint(
+        &pack_root,
+        &input,
+        &output,
+        manifest.target,
+        context.environment,
+    )
+    .with_context(|| {
+        format!(
+            "build {} using target-pack entrypoint",
+            platform.display_name()
+        )
+    })?;
     Ok(BuildSummary {
         platform,
         bundle_dir: output,
@@ -409,36 +421,38 @@ fn output_path(project: &Path, platform: Platform, app_slug: &str) -> PathBuf {
     support::build_dir(project, platform).join(platform.output_name(app_slug))
 }
 
-fn write_build_metadata(
-    input: &Path,
-    app: (&str, &str),
-    identifier: &str,
-    manifest: &TargetPackManifest,
-    version: Option<&str>,
-    development: Option<(&str, &str)>,
-) -> Result<()> {
-    let (app_name, app_slug) = app;
-    let metadata = input.join("metadata");
+fn write_build_metadata(input: &Path, project: &Path, metadata: &BuildMetadata<'_>) -> Result<()> {
+    let (app_name, app_slug) = metadata.app;
+    let metadata_dir = input.join("metadata");
     let values = [
         ("app-name", app_name.to_owned()),
         ("app-slug", app_slug.to_owned()),
-        ("identifier", identifier.to_owned()),
+        ("identifier", metadata.identifier.to_owned()),
         ("host", format!("{app_slug}.tokamak.local")),
         (
             "platform",
-            manifest.target.platform().directory_name().to_owned(),
+            metadata
+                .manifest
+                .target
+                .platform()
+                .directory_name()
+                .to_owned(),
         ),
-        ("target", manifest.target.to_string()),
+        ("target", metadata.manifest.target.to_string()),
+        ("project-dir", project.display().to_string()),
     ];
     for (name, value) in values {
-        fs::write(metadata.join(name), value)?;
+        fs::write(metadata_dir.join(name), value)?;
     }
-    if let Some(version) = version {
-        fs::write(metadata.join("version"), version)?;
+    if let Some(version) = metadata.version {
+        fs::write(metadata_dir.join("version"), version)?;
     }
-    if let Some((endpoint, session_token)) = development {
-        fs::write(metadata.join("dev-endpoint"), endpoint)?;
-        fs::write(metadata.join("dev-session-token"), session_token)?;
+    if let Some((endpoint, session_token)) = metadata.development {
+        fs::write(metadata_dir.join("dev-endpoint"), endpoint)?;
+        fs::write(metadata_dir.join("dev-session-token"), session_token)?;
+    }
+    if let Some(device_id) = metadata.device_id {
+        fs::write(metadata_dir.join("device-id"), device_id)?;
     }
     Ok(())
 }
