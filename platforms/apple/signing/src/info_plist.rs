@@ -2,6 +2,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use plist::{Dictionary, Value};
@@ -20,8 +21,15 @@ const MACOS_BUILD_NUMBER_ENV: &str = "TOKAMAK_MACOS_BUILD_NUMBER";
 /// be written.
 pub fn write_info_plist(input: &Path, output: &Path, icon_info_plist: Option<&Path>) -> Result<()> {
     let metadata = Metadata::read(input)?;
+    let toolchain = ToolchainMetadata::detect(&metadata.platform)?;
     let user_plist = configured_user_plist(&metadata)?;
-    let plist = build_info_plist(input, &metadata, user_plist.as_deref(), icon_info_plist)?;
+    let plist = build_info_plist(
+        input,
+        &metadata,
+        &toolchain,
+        user_plist.as_deref(),
+        icon_info_plist,
+    )?;
     Value::Dictionary(plist)
         .to_file_xml(output)
         .with_context(|| format!("write Apple application plist {}", output.display()))
@@ -75,14 +83,127 @@ impl Metadata {
     }
 }
 
+struct ToolchainMetadata {
+    platform_name: &'static str,
+    platform_version: String,
+    sdk_build: String,
+    platform_build: String,
+    xcode: String,
+    xcode_build: String,
+}
+
+impl ToolchainMetadata {
+    fn detect(platform: &str) -> Result<Self> {
+        let platform_name = match platform {
+            "ios" => "iphoneos",
+            "ios-simulator" => "iphonesimulator",
+            "macos" => "macosx",
+            platform => bail!("unsupported Apple platform: {platform}"),
+        };
+        let platform_version =
+            command_output("xcrun", &["--sdk", platform_name, "--show-sdk-version"])?;
+        let sdk_build = command_output(
+            "xcrun",
+            &["--sdk", platform_name, "--show-sdk-build-version"],
+        )?;
+        let platform_path = command_output(
+            "xcrun",
+            &["--sdk", platform_name, "--show-sdk-platform-path"],
+        )?;
+        let platform_build = read_platform_build(Path::new(&platform_path))?;
+        let (xcode, xcode_build) =
+            parse_xcode_version(&command_output("xcodebuild", &["-version"])?)?;
+
+        Ok(Self {
+            platform_name,
+            platform_version,
+            sdk_build,
+            platform_build,
+            xcode,
+            xcode_build,
+        })
+    }
+}
+
+fn command_output(program: &str, arguments: &[&str]) -> Result<String> {
+    let command = format!("{program} {}", arguments.join(" "));
+    let output = Command::new(program)
+        .args(arguments)
+        .output()
+        .with_context(|| format!("run {command}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail.trim();
+        if detail.is_empty() {
+            bail!("{command} failed with status {}", output.status);
+        }
+        bail!("{command} failed: {detail}");
+    }
+    let value = String::from_utf8(output.stdout)
+        .with_context(|| format!("read output from {command}"))?
+        .trim()
+        .to_owned();
+    if value.is_empty() {
+        bail!("{command} returned no output");
+    }
+    Ok(value)
+}
+
+fn read_platform_build(platform_path: &Path) -> Result<String> {
+    let path = platform_path.join("version.plist");
+    let value = Value::from_file(&path)
+        .with_context(|| format!("read Apple platform plist {}", path.display()))?;
+    let dictionary = value.into_dictionary().with_context(|| {
+        format!(
+            "Apple platform plist root must be a dictionary: {}",
+            path.display()
+        )
+    })?;
+    dictionary
+        .get("ProductBuildVersion")
+        .and_then(Value::as_string)
+        .map(str::to_owned)
+        .with_context(|| {
+            format!(
+                "Apple platform plist has no ProductBuildVersion: {}",
+                path.display()
+            )
+        })
+}
+
+fn parse_xcode_version(output: &str) -> Result<(String, String)> {
+    let mut lines = output.lines();
+    let version = lines
+        .next()
+        .and_then(|line| line.strip_prefix("Xcode "))
+        .context("xcodebuild did not report an Xcode version")?;
+    let build = lines
+        .next()
+        .and_then(|line| line.strip_prefix("Build version "))
+        .context("xcodebuild did not report an Xcode build")?;
+    let mut components = version.split('.');
+    let major = components
+        .next()
+        .context("Xcode version is missing its major number")?
+        .parse::<u32>()
+        .context("Xcode version has an invalid major number")?;
+    let minor = components
+        .next()
+        .unwrap_or("0")
+        .parse::<u32>()
+        .context("Xcode version has an invalid minor number")?;
+    Ok((format!("{major}{minor}0"), build.into()))
+}
+
 fn build_info_plist(
     input: &Path,
     metadata: &Metadata,
+    toolchain: &ToolchainMetadata,
     user_plist: Option<&Path>,
     icon_info_plist: Option<&Path>,
 ) -> Result<Dictionary> {
     let mut result = Dictionary::new();
-    add_generated_plist(&mut result, metadata)?;
+    add_generated_plist(&mut result, metadata, toolchain)?;
 
     if let Some(path) = icon_info_plist {
         overlay_dictionary(&mut result, read_dictionary(path)?);
@@ -94,7 +215,11 @@ fn build_info_plist(
     Ok(result)
 }
 
-fn add_generated_plist(plist: &mut Dictionary, metadata: &Metadata) -> Result<()> {
+fn add_generated_plist(
+    plist: &mut Dictionary,
+    metadata: &Metadata,
+    toolchain: &ToolchainMetadata,
+) -> Result<()> {
     insert_string(plist, "CFBundleIdentifier", &metadata.identifier);
     insert_string(plist, "CFBundleName", &metadata.app_name);
     insert_string(plist, "CFBundleDisplayName", &metadata.app_name);
@@ -102,6 +227,17 @@ fn add_generated_plist(plist: &mut Dictionary, metadata: &Metadata) -> Result<()
     insert_string(plist, "CFBundlePackageType", "APPL");
     insert_string(plist, "CFBundleVersion", &metadata.build_number);
     insert_string(plist, "CFBundleShortVersionString", &metadata.version);
+    insert_string(plist, "DTPlatformName", toolchain.platform_name);
+    insert_string(plist, "DTPlatformVersion", &toolchain.platform_version);
+    insert_string(
+        plist,
+        "DTSDKName",
+        &format!("{}{}", toolchain.platform_name, toolchain.platform_version),
+    );
+    insert_string(plist, "DTSDKBuild", &toolchain.sdk_build);
+    insert_string(plist, "DTPlatformBuild", &toolchain.platform_build);
+    insert_string(plist, "DTXcode", &toolchain.xcode);
+    insert_string(plist, "DTXcodeBuild", &toolchain.xcode_build);
     insert_string(plist, "TokamakHost", &metadata.host);
     if let Some(endpoint) = &metadata.dev_endpoint {
         insert_string(plist, "TokamakDevEndpoint", endpoint);
@@ -321,7 +457,10 @@ fn validate_build_number(value: &str) -> Result<()> {
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use super::{Metadata, build_info_plist, resolve_user_plist, validate_build_number};
+    use super::{
+        Metadata, ToolchainMetadata, build_info_plist, parse_xcode_version, resolve_user_plist,
+        validate_build_number,
+    };
     use anyhow::Context;
     use plist::{Dictionary, Value};
 
@@ -345,6 +484,17 @@ mod tests {
             std::fs::write(metadata.join(name), value)?;
         }
         Ok(input)
+    }
+
+    fn toolchain(platform_name: &'static str) -> ToolchainMetadata {
+        ToolchainMetadata {
+            platform_name,
+            platform_version: "26.5".into(),
+            sdk_build: "23F73".into(),
+            platform_build: "PLATFORM23".into(),
+            xcode: "2650".into(),
+            xcode_build: "17F113".into(),
+        }
     }
 
     #[test]
@@ -379,7 +529,13 @@ mod tests {
         Value::Dictionary(user).to_file_binary(&user_path)?;
 
         let metadata = Metadata::read(&input)?;
-        let result = build_info_plist(&input, &metadata, Some(&user_path), None)?;
+        let result = build_info_plist(
+            &input,
+            &metadata,
+            &toolchain("iphoneos"),
+            Some(&user_path),
+            None,
+        )?;
         assert_eq!(
             result.get("CFBundleIdentifier").and_then(Value::as_string),
             Some("com.user.override")
@@ -437,7 +593,13 @@ mod tests {
         Value::Dictionary(user).to_file_xml(&user_path)?;
 
         let metadata = Metadata::read(&input)?;
-        let result = build_info_plist(&input, &metadata, Some(&user_path), None)?;
+        let result = build_info_plist(
+            &input,
+            &metadata,
+            &toolchain("iphoneos"),
+            Some(&user_path),
+            None,
+        )?;
         assert_eq!(
             result.get("PluginValue").and_then(Value::as_string),
             Some("User")
@@ -463,12 +625,24 @@ mod tests {
         Value::Dictionary(icon).to_file_xml(&icon_path)?;
 
         let metadata = Metadata::read(&input)?;
-        let result = build_info_plist(&input, &metadata, Some(&user_path), Some(&icon_path))?;
+        let result = build_info_plist(
+            &input,
+            &metadata,
+            &toolchain("macosx"),
+            Some(&user_path),
+            Some(&icon_path),
+        )?;
         assert_eq!(
             result.get("CFBundleIconName").and_then(Value::as_string),
             Some("UserIcon")
         );
-        let result = build_info_plist(&input, &metadata, None, Some(&icon_path))?;
+        let result = build_info_plist(
+            &input,
+            &metadata,
+            &toolchain("macosx"),
+            None,
+            Some(&icon_path),
+        )?;
         assert_eq!(
             result.get("CFBundleIconName").and_then(Value::as_string),
             Some("AppIcon")
@@ -481,11 +655,43 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         let input = input(temporary.path(), "macos")?;
         let metadata = Metadata::read(&input)?;
-        let result = build_info_plist(&input, &metadata, None, None)?;
+        let result = build_info_plist(&input, &metadata, &toolchain("macosx"), None, None)?;
         assert_eq!(
             result.get("CFBundleName").and_then(Value::as_string),
             Some("Demo App")
         );
+        assert_eq!(
+            result.get("DTPlatformName").and_then(Value::as_string),
+            Some("macosx")
+        );
+        assert_eq!(
+            result.get("DTSDKName").and_then(Value::as_string),
+            Some("macosx26.5")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn includes_toolchain_metadata() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let input = input(temporary.path(), "ios")?;
+        let metadata = Metadata::read(&input)?;
+        let result = build_info_plist(&input, &metadata, &toolchain("iphoneos"), None, None)?;
+        for (key, value) in [
+            ("DTPlatformName", "iphoneos"),
+            ("DTPlatformVersion", "26.5"),
+            ("DTSDKName", "iphoneos26.5"),
+            ("DTSDKBuild", "23F73"),
+            ("DTPlatformBuild", "PLATFORM23"),
+            ("DTXcode", "2650"),
+            ("DTXcodeBuild", "17F113"),
+        ] {
+            assert_eq!(
+                result.get(key).and_then(Value::as_string),
+                Some(value),
+                "missing or incorrect {key}"
+            );
+        }
         Ok(())
     }
 
@@ -512,9 +718,15 @@ mod tests {
         let user_path = temporary.path().join("User.plist");
         Value::Array(Vec::new()).to_file_xml(&user_path)?;
         let metadata = Metadata::read(&input)?;
-        let error = build_info_plist(&input, &metadata, Some(&user_path), None)
-            .err()
-            .context("expected a root dictionary error")?;
+        let error = build_info_plist(
+            &input,
+            &metadata,
+            &toolchain("iphoneos"),
+            Some(&user_path),
+            None,
+        )
+        .err()
+        .context("expected a root dictionary error")?;
         assert!(error.to_string().contains("root must be a dictionary"));
         Ok(())
     }
@@ -527,5 +739,14 @@ mod tests {
         for value in ["", "1.", ".1", "1..2", "1.2.3.4", "1.2-3"] {
             assert!(validate_build_number(value).is_err(), "accepted {value}");
         }
+    }
+
+    #[test]
+    fn parses_xcode_version_metadata() -> anyhow::Result<()> {
+        assert_eq!(
+            parse_xcode_version("Xcode 26.5\nBuild version 17F113\n")?,
+            ("2650".into(), "17F113".into())
+        );
+        Ok(())
     }
 }

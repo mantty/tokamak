@@ -141,8 +141,9 @@ The corresponding environment variables are `TOKAMAK_IOS_PLIST` and
 The file may be XML or binary and must have a dictionary at its root. It is
 optional; when present, Tokamak layers its generated application values first,
 then icon values, plugin values, and finally the user plist. User values
-therefore take precedence over all other values. Values not supplied by the
-user are preserved.
+therefore take precedence over all other values, including the SDK, platform,
+and Xcode provenance keys Apple target packs generate from the active
+toolchain. Values not supplied by the user are preserved.
 
 Each icon platform entry is optional. If the Tokamak configuration or a
 platform entry is absent, that platform keeps its existing icon behavior.

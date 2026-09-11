@@ -137,8 +137,7 @@ jobs:
 
       - name: Test iOS signing
         run: |
-          cargo test -p tokamak-apple-signing --lib
-          cargo test -p tokamak-cli --test cli
+          cargo test -p tokamak-apple-signing
 
       - name: Test Apple builds
         run: >-

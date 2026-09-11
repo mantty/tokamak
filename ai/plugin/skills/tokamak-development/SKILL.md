@@ -78,7 +78,9 @@ plists through `ios-plist`/`TOKAMAK_IOS_PLIST` and
 project directory. The plist must have a dictionary root. Tokamak layers its
 generated values first, then icon values, plugin values, and the user plist
 last; user-defined values therefore take precedence over all other values.
-Values not supplied by the user are retained.
+Values not supplied by the user are retained. Apple target packs add SDK,
+platform, and Xcode provenance keys from the active toolchain before the user
+overlay.
 
 Apple build numbers are target-pack variables rather than Tokamak config:
 `ios-build-number` maps to `TOKAMAK_IOS_BUILD_NUMBER` and
