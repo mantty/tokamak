@@ -81,17 +81,14 @@ fn build_info_plist(
     user_plist: Option<&Path>,
     icon_info_plist: Option<&Path>,
 ) -> Result<Dictionary> {
-    let mut result = match user_plist {
-        Some(path) => read_dictionary(path)?,
-        None => Dictionary::new(),
-    };
-
-    let mut generated = Dictionary::new();
-    add_plugin_plist(&mut generated, input)?;
-    add_generated_plist(&mut generated, metadata)?;
-    overlay_dictionary(&mut result, generated);
+    let mut result = Dictionary::new();
+    add_generated_plist(&mut result, metadata)?;
 
     if let Some(path) = icon_info_plist {
+        overlay_dictionary(&mut result, read_dictionary(path)?);
+    }
+    add_plugin_plist(&mut result, input)?;
+    if let Some(path) = user_plist {
         overlay_dictionary(&mut result, read_dictionary(path)?);
     }
     Ok(result)
@@ -351,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_values_overlay_user_values_and_preserve_other_typed_values() -> anyhow::Result<()>
+    fn user_values_overlay_generated_values_and_preserve_other_typed_values() -> anyhow::Result<()>
     {
         let temporary = tempfile::tempdir()?;
         let input = input(temporary.path(), "ios")?;
@@ -363,6 +360,12 @@ mod tests {
         user.insert(
             "CFBundleIdentifier".into(),
             Value::String("com.user.override".into()),
+        );
+        user.insert(
+            "UISupportedInterfaceOrientations".into(),
+            Value::Array(vec![Value::String(
+                "UIInterfaceOrientationPortraitUpsideDown".into(),
+            )]),
         );
         user.insert(
             "NSAppTransportSecurity".into(),
@@ -379,7 +382,11 @@ mod tests {
         let result = build_info_plist(&input, &metadata, Some(&user_path), None)?;
         assert_eq!(
             result.get("CFBundleIdentifier").and_then(Value::as_string),
-            Some("com.example.demo")
+            Some("com.user.override")
+        );
+        assert_eq!(
+            result.get("CFBundlePackageType").and_then(Value::as_string),
+            Some("APPL")
         );
         let transport = result
             .get("NSAppTransportSecurity")
@@ -389,7 +396,7 @@ mod tests {
             transport
                 .get("NSAllowsLocalNetworking")
                 .and_then(Value::as_boolean),
-            Some(true)
+            Some(false)
         );
         assert_eq!(
             transport
@@ -402,11 +409,48 @@ mod tests {
             Some(&[1, 2, 3][..])
         );
         assert!(result.get("UserDate").and_then(Value::as_date).is_some());
+        assert_eq!(
+            result
+                .get("UISupportedInterfaceOrientations")
+                .and_then(Value::as_array),
+            Some(&vec![Value::String(
+                "UIInterfaceOrientationPortraitUpsideDown".into(),
+            )])
+        );
         Ok(())
     }
 
     #[test]
-    fn icon_values_overlay_user_values() -> anyhow::Result<()> {
+    fn user_plist_takes_precedence_over_plugin_values() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let input = input(temporary.path(), "ios")?;
+        for (directory, key) in [("override", "PluginValue"), ("only", "PluginOnlyValue")] {
+            let entry = input.join("plugins/example/plist").join(directory);
+            std::fs::create_dir_all(&entry)?;
+            std::fs::write(entry.join("key"), key)?;
+            std::fs::write(entry.join("value"), "Plugin")?;
+        }
+
+        let user_path = temporary.path().join("User.plist");
+        let mut user = Dictionary::new();
+        user.insert("PluginValue".into(), Value::String("User".into()));
+        Value::Dictionary(user).to_file_xml(&user_path)?;
+
+        let metadata = Metadata::read(&input)?;
+        let result = build_info_plist(&input, &metadata, Some(&user_path), None)?;
+        assert_eq!(
+            result.get("PluginValue").and_then(Value::as_string),
+            Some("User")
+        );
+        assert_eq!(
+            result.get("PluginOnlyValue").and_then(Value::as_string),
+            Some("Plugin")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn user_values_overlay_icon_values() -> anyhow::Result<()> {
         let temporary = tempfile::tempdir()?;
         let input = input(temporary.path(), "macos")?;
         let user_path = temporary.path().join("User.plist");
@@ -420,6 +464,11 @@ mod tests {
 
         let metadata = Metadata::read(&input)?;
         let result = build_info_plist(&input, &metadata, Some(&user_path), Some(&icon_path))?;
+        assert_eq!(
+            result.get("CFBundleIconName").and_then(Value::as_string),
+            Some("UserIcon")
+        );
+        let result = build_info_plist(&input, &metadata, None, Some(&icon_path))?;
         assert_eq!(
             result.get("CFBundleIconName").and_then(Value::as_string),
             Some("AppIcon")

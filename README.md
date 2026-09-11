@@ -139,10 +139,10 @@ TOKAMAK_MACOS_PLIST=native/Info.plist tok build macos
 The corresponding environment variables are `TOKAMAK_IOS_PLIST` and
 `TOKAMAK_MACOS_PLIST`. Relative paths are resolved from the project directory.
 The file may be XML or binary and must have a dictionary at its root. It is
-optional; when present, Tokamak overlays its generated application values on
-top of it, so Tokamak's identifiers, names, versions, platform metadata, and
-defaults take precedence. User-defined plist values that Tokamak does not
-generate are preserved.
+optional; when present, Tokamak layers its generated application values first,
+then icon values, plugin values, and finally the user plist. User values
+therefore take precedence over all other values. Values not supplied by the
+user are preserved.
 
 Each icon platform entry is optional. If the Tokamak configuration or a
 platform entry is absent, that platform keeps its existing icon behavior.

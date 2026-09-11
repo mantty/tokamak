@@ -75,10 +75,10 @@ TOKAMAK_MACOS_PLIST=native/Info.plist tok build macos
 Apple target packs accept optional user-provided XML or binary application
 plists through `ios-plist`/`TOKAMAK_IOS_PLIST` and
 `macos-plist`/`TOKAMAK_MACOS_PLIST`. Relative paths are resolved from the
-project directory. The plist must have a dictionary root. Tokamak loads it
-first, then overlays generated identifiers, names, versions, platform values,
-defaults, plugin values, and icon values; user-defined values Tokamak does not
-generate are retained.
+project directory. The plist must have a dictionary root. Tokamak layers its
+generated values first, then icon values, plugin values, and the user plist
+last; user-defined values therefore take precedence over all other values.
+Values not supplied by the user are retained.
 
 Apple build numbers are target-pack variables rather than Tokamak config:
 `ios-build-number` maps to `TOKAMAK_IOS_BUILD_NUMBER` and
