@@ -18,7 +18,9 @@ use std::fs;
 use std::io::Cursor;
 #[cfg(target_os = "macos")]
 use std::io::{self, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "macos", test))]
+use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::process::{Command, Output, Stdio};
 #[cfg(any(target_os = "macos", test))]
@@ -36,6 +38,7 @@ use sha1::{Digest as Sha1Digest, Sha1};
 #[cfg(any(target_os = "macos", test))]
 use sha2::{Digest as Sha2Digest, Sha256};
 /// A signing identity and provisioning profile selected for an iOS app.
+#[cfg(target_os = "macos")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Selection {
     identity: String,
