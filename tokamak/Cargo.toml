@@ -12,20 +12,32 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 [features]
 default = []
 native = [
+    "dep:async-compression",
     "dep:base64",
-    "dep:brotli",
+    "dep:brotlic-sys",
     "dep:encoding_rs",
     "dep:fixed_decimal",
+    "dep:flume",
+    "dep:futures-util",
     "dep:getrandom",
+    "dep:hmac",
     "dep:icu",
     "dep:jiff",
     "dep:lol_html",
+    "dep:libz-rs-sys",
     "dep:libc",
+    "dep:md4",
+    "dep:native-tls",
     "dep:openssl",
     "dep:rcgen",
+    "dep:reqwest",
+    "dep:hyper",
     "dep:time",
     "dep:tokio",
+    "dep:tokio-util",
+    "dep:tokio-native-tls",
     "dep:url",
+    "dep:urlpattern",
     "dep:x509-parser",
     "dep:writeable",
     "dep:zstd",
@@ -33,28 +45,40 @@ native = [
 test-stubs = ["native"]
 
 [dependencies]
+async-compression = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
-brotli = { workspace = true, optional = true }
+brotlic-sys = { workspace = true, optional = true }
 encoding_rs = { workspace = true, optional = true }
 flate2.workspace = true
+flume = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
 fixed_decimal = { workspace = true, optional = true }
 icu = { workspace = true, optional = true }
 jiff = { workspace = true, optional = true }
 lol_html = { workspace = true, optional = true }
+libz-rs-sys = { workspace = true, optional = true }
 jsonc-parser = { workspace = true, features = ["serde"] }
 libc = { workspace = true, optional = true }
 mime_guess.workspace = true
+md4 = { workspace = true, optional = true }
+native-tls = { workspace = true, optional = true }
 openssl = { workspace = true, optional = true }
 rcgen = { workspace = true, features = ["pem", "x509-parser"], optional = true }
 rquickjs.workspace = true
+reqwest = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 time = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+tokio-native-tls = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
+urlpattern = { workspace = true, optional = true }
 walkdir.workspace = true
 writeable = { workspace = true, optional = true }
 x509-parser = { workspace = true, features = ["verify"], optional = true }

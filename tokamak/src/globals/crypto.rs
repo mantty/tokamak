@@ -1,5 +1,8 @@
 #![allow(clippy::needless_pass_by_value)]
 
+mod cipher;
+mod digest;
+
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use openssl::aes::{AesKey, unwrap_key as aes_unwrap_key, wrap_key as aes_wrap_key};
@@ -24,8 +27,11 @@ use serde_json::{Value as JsonValue, json};
 
 pub(super) const HOST_EXPORTS: &[&str] = &[
     "digest",
+    "cryptoCreateDigest",
     "cryptoHmac",
     "cryptoAesGcm",
+    "cryptoCreateCipher",
+    "cryptoTimingSafeEqual",
     "cryptoPbkdf2",
     "cryptoHkdf",
     "cryptoGenerateKey",
@@ -55,27 +61,72 @@ pub(super) fn export_host_functions<'js>(
 ) -> rquickjs::Result<()> {
     let export = |name: &str, function: Function<'js>| exports.export(name, function);
     export("digest", Function::new(ctx.clone(), digest)?)?;
+    export(
+        "cryptoCreateDigest",
+        Function::new(ctx.clone(), digest::create)?,
+    )?;
     export("cryptoHmac", Function::new(ctx.clone(), hmac)?)?;
     export("cryptoAesGcm", Function::new(ctx.clone(), aes_gcm)?)?;
+    export(
+        "cryptoCreateCipher",
+        Function::new(ctx.clone(), cipher::create)?,
+    )?;
+    export(
+        "cryptoTimingSafeEqual",
+        Function::new(ctx.clone(), timing_safe_equal)?,
+    )?;
     export("cryptoPbkdf2", Function::new(ctx.clone(), pbkdf2)?)?;
     export("cryptoHkdf", Function::new(ctx.clone(), hkdf)?)?;
-    export("cryptoGenerateKey", Function::new(ctx.clone(), host_generate_key)?)?;
-    export("cryptoImportKey", Function::new(ctx.clone(), host_import_key)?)?;
-    export("cryptoExportKey", Function::new(ctx.clone(), host_export_key)?)?;
+    export(
+        "cryptoGenerateKey",
+        Function::new(ctx.clone(), host_generate_key)?,
+    )?;
+    export(
+        "cryptoImportKey",
+        Function::new(ctx.clone(), host_import_key)?,
+    )?;
+    export(
+        "cryptoExportKey",
+        Function::new(ctx.clone(), host_export_key)?,
+    )?;
     export("cryptoSign", Function::new(ctx.clone(), host_sign)?)?;
     export("cryptoVerify", Function::new(ctx.clone(), host_verify)?)?;
     export("cryptoEncrypt", Function::new(ctx.clone(), host_encrypt)?)?;
     export("cryptoDecrypt", Function::new(ctx.clone(), host_decrypt)?)?;
     export("cryptoDerive", Function::new(ctx.clone(), host_derive)?)?;
-    export("cryptoCheckPrime", Function::new(ctx.clone(), host_check_prime)?)?;
-    export("cryptoGeneratePrime", Function::new(ctx.clone(), host_generate_prime)?)?;
+    export(
+        "cryptoCheckPrime",
+        Function::new(ctx.clone(), host_check_prime)?,
+    )?;
+    export(
+        "cryptoGeneratePrime",
+        Function::new(ctx.clone(), host_generate_prime)?,
+    )?;
     export("cryptoScrypt", Function::new(ctx.clone(), host_scrypt)?)?;
-    export("cryptoEcdhPublic", Function::new(ctx.clone(), host_ecdh_public)?)?;
-    export("cryptoEcdhCompute", Function::new(ctx.clone(), host_ecdh_compute)?)?;
-    export("cryptoEcdhConvert", Function::new(ctx.clone(), host_ecdh_convert)?)?;
-    export("cryptoDhParams", Function::new(ctx.clone(), host_dh_params)?)?;
-    export("cryptoDhGenerate", Function::new(ctx.clone(), host_dh_generate)?)?;
-    export("cryptoDhCompute", Function::new(ctx.clone(), host_dh_compute)?)?;
+    export(
+        "cryptoEcdhPublic",
+        Function::new(ctx.clone(), host_ecdh_public)?,
+    )?;
+    export(
+        "cryptoEcdhCompute",
+        Function::new(ctx.clone(), host_ecdh_compute)?,
+    )?;
+    export(
+        "cryptoEcdhConvert",
+        Function::new(ctx.clone(), host_ecdh_convert)?,
+    )?;
+    export(
+        "cryptoDhParams",
+        Function::new(ctx.clone(), host_dh_params)?,
+    )?;
+    export(
+        "cryptoDhGenerate",
+        Function::new(ctx.clone(), host_dh_generate)?,
+    )?;
+    export(
+        "cryptoDhCompute",
+        Function::new(ctx.clone(), host_dh_compute)?,
+    )?;
     export(
         "cryptoRsaLegacyPrivateEncrypt",
         Function::new(ctx.clone(), host_rsa_legacy_private_encrypt)?,
@@ -85,6 +136,26 @@ pub(super) fn export_host_functions<'js>(
         Function::new(ctx.clone(), host_rsa_legacy_public_decrypt)?,
     )?;
     Ok(())
+}
+
+fn timing_safe_equal<'js>(
+    ctx: Ctx<'js>,
+    left: TypedArray<'js, u8>,
+    right: TypedArray<'js, u8>,
+) -> rquickjs::Result<bool> {
+    let left = left
+        .as_bytes()
+        .ok_or_else(|| Exception::throw_type(&ctx, "Detached buffer"))?;
+    let right = right
+        .as_bytes()
+        .ok_or_else(|| Exception::throw_type(&ctx, "Detached buffer"))?;
+    if left.len() != right.len() {
+        return Err(Exception::throw_type(
+            &ctx,
+            "Input buffers must have the same byte length",
+        ));
+    }
+    Ok(openssl::memcmp::eq(left, right))
 }
 
 pub(super) fn digest<'js>(
@@ -108,8 +179,8 @@ pub(super) fn hmac<'js>(
     let message_digest = message_digest(&ctx, &algorithm)?;
     let key = bytes(&ctx, key)?;
     let input = bytes(&ctx, input)?;
-    let key =
-        PKey::hmac(&key).map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?;
+    let key = PKey::private_key_from_raw_bytes(&key, Id::HMAC)
+        .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?;
     let mut signer = Signer::new(message_digest, &key)
         .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?;
     signer
@@ -160,9 +231,8 @@ pub(super) fn hkdf<'js>(
     length: u32,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let message_digest = message_digest(&ctx, &algorithm)?;
-    let digest = Md::from_nid(message_digest.type_()).ok_or_else(|| {
-        throw_dom_exception(&ctx, "NotSupportedError", "Unsupported HKDF digest")
-    })?;
+    let digest = Md::from_nid(message_digest.type_())
+        .ok_or_else(|| throw_dom_exception(&ctx, "NotSupportedError", "Unsupported HKDF digest"))?;
     let key = bytes(&ctx, key)?;
     let salt = bytes(&ctx, salt)?;
     let info = bytes(&ctx, info)?;
@@ -173,9 +243,8 @@ pub(super) fn hkdf<'js>(
             "HKDF output is too long",
         ));
     }
-    let internal = |error: openssl::error::ErrorStack| {
-        Exception::throw_internal(&ctx, &error.to_string())
-    };
+    let internal =
+        |error: openssl::error::ErrorStack| Exception::throw_internal(&ctx, &error.to_string());
     let mut derivation = PkeyCtx::new_id(Id::HKDF).map_err(internal)?;
     derivation.derive_init().map_err(internal)?;
     derivation.set_hkdf_md(digest).map_err(internal)?;
@@ -249,7 +318,8 @@ fn aes_gcm_operation(
         additional_data,
         tag_length,
     } = params;
-    let (iv, additional_data, tag_length) = (iv.as_slice(), additional_data.as_slice(), *tag_length);
+    let (iv, additional_data, tag_length) =
+        (iv.as_slice(), additional_data.as_slice(), *tag_length);
     let tag_bytes = tag_length
         .checked_div(8)
         .filter(|length| matches!(*length, 4 | 8 | 12 | 13 | 14 | 15 | 16))
@@ -438,9 +508,8 @@ fn aes_kw_operation(
             throw_dom_exception(ctx, "DataError", "AES keys must be 128, 192, or 256 bits")
         })?;
         let mut output = vec![0; input.len() + 8];
-        let count = aes_wrap_key(&key, None, &mut output, input).map_err(|_| {
-            throw_dom_exception(ctx, "OperationError", "AES-KW wrapping failed")
-        })?;
+        let count = aes_wrap_key(&key, None, &mut output, input)
+            .map_err(|_| throw_dom_exception(ctx, "OperationError", "AES-KW wrapping failed"))?;
         output.truncate(count);
         Ok(output)
     } else {
@@ -623,10 +692,7 @@ fn host_dh_generate<'js>(
     ArrayBuffer::new_copy(ctx, &output)
 }
 
-fn host_dh_compute<'js>(
-    ctx: Ctx<'js>,
-    options: Object<'js>,
-) -> rquickjs::Result<ArrayBuffer<'js>> {
+fn host_dh_compute<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
     let output = dh_compute(&ctx, &options)?;
     ArrayBuffer::new_copy(ctx, &output)
 }
@@ -653,9 +719,10 @@ fn host_rsa_legacy_public_decrypt<'js>(
 
 fn check_prime(ctx: &Ctx<'_>, input: &[u8], options: &Object<'_>) -> rquickjs::Result<bool> {
     let checks_value: Option<u32> = options.get("checks")?;
-    let checks: i32 = checks_value.unwrap_or(0).try_into().map_err(|_| {
-        Exception::throw_range(ctx, "The value of \"checks\" is out of range")
-    })?;
+    let checks: i32 = checks_value
+        .unwrap_or(0)
+        .try_into()
+        .map_err(|_| Exception::throw_range(ctx, "The value of \"checks\" is out of range"))?;
     let candidate = BigNum::from_slice(input)
         .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
     let mut context = BigNumContext::new()
@@ -668,11 +735,14 @@ fn check_prime(ctx: &Ctx<'_>, input: &[u8], options: &Object<'_>) -> rquickjs::R
 
 fn generate_prime(ctx: &Ctx<'_>, options: &Object<'_>) -> rquickjs::Result<Vec<u8>> {
     let bits = required_u32(ctx, options, "bits")?;
-    let bits: i32 = bits.try_into().map_err(|_| {
-        Exception::throw_range(ctx, "The value of \"bits\" is out of range")
-    })?;
+    let bits: i32 = bits
+        .try_into()
+        .map_err(|_| Exception::throw_range(ctx, "The value of \"bits\" is out of range"))?;
     if bits < 2 {
-        return Err(Exception::throw_range(ctx, "The value of \"bits\" is out of range"));
+        return Err(Exception::throw_range(
+            ctx,
+            "The value of \"bits\" is out of range",
+        ));
     }
     let safe_value: Option<bool> = options.get("safe")?;
     let safe = safe_value.unwrap_or(false);
@@ -799,11 +869,7 @@ fn ecdh_compute(ctx: &Ctx<'_>, options: &Object<'_>) -> rquickjs::Result<Vec<u8>
         .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))
 }
 
-fn ecdh_convert(
-    ctx: &Ctx<'_>,
-    input: &[u8],
-    options: &Object<'_>,
-) -> rquickjs::Result<Vec<u8>> {
+fn ecdh_convert(ctx: &Ctx<'_>, input: &[u8], options: &Object<'_>) -> rquickjs::Result<Vec<u8>> {
     let curve = required_string(ctx, options, "curve")?;
     let curve = node_curve(ctx, &curve)?;
     let group = ec_group(ctx, &curve)?;
@@ -830,20 +896,19 @@ fn dh_generate(ctx: &Ctx<'_>, options: &Object<'_>) -> rquickjs::Result<Vec<u8>>
         .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
     let generator = BigNum::from_slice(&required_bytes(ctx, options, "generator")?)
         .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
-    let private = match option_bytes(ctx, options, "private")? {
-        Some(private) => BigNum::from_slice(&private)
-            .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?,
-        None => {
-            let mut private = BigNum::new()
+    let private = if let Some(private) = option_bytes(ctx, options, "private")? {
+        BigNum::from_slice(&private)
+            .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?
+    } else {
+        let mut private = BigNum::new()
+            .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
+        loop {
+            prime
+                .rand_range(&mut private)
                 .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
-            loop {
-                prime
-                    .rand_range(&mut private)
-                    .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
-                let value = private.to_vec();
-                if value.len() > 1 || value.first().is_some_and(|byte| *byte > 1) {
-                    break private;
-                }
+            let value = private.to_vec();
+            if value.len() > 1 || value.first().is_some_and(|byte| *byte > 1) {
+                break private;
             }
         }
     };
@@ -881,7 +946,11 @@ fn rsa_legacy_private_encrypt(
 ) -> rquickjs::Result<Vec<u8>> {
     let key_bytes = message_key_bytes(ctx, options)?;
     let KeyMaterial::Private(key) = parse_key(ctx, &key_bytes, options)? else {
-        return Err(throw_dom_exception(ctx, "InvalidAccessError", "A private key is required"));
+        return Err(throw_dom_exception(
+            ctx,
+            "InvalidAccessError",
+            "A private key is required",
+        ));
     };
     let rsa = key
         .rsa()
@@ -1098,6 +1167,7 @@ fn parse_jwk(ctx: &Ctx<'_>, options: &Object<'_>, kind: &str) -> rquickjs::Resul
     }
 }
 
+#[allow(clippy::many_single_char_names)] // Names follow the RSA JWK fields.
 fn parse_rsa_jwk(ctx: &Ctx<'_>, jwk: &JsonValue) -> rquickjs::Result<KeyMaterial> {
     let n = jwk_bytes(ctx, jwk, "n")?;
     let e = jwk_bytes(ctx, jwk, "e")?;
@@ -1328,11 +1398,9 @@ fn material_jwk(ctx: &Ctx<'_>, material: &KeyMaterial) -> rquickjs::Result<Vec<u
 
 fn public_jwk<T: HasPublic>(ctx: &Ctx<'_>, key: &PKey<T>) -> rquickjs::Result<JsonValue> {
     match key.id() {
-        id if id == Id::RSA => rsa_public_jwk(
-            ctx,
-            &key.rsa()
-                .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?,
-        ),
+        id if id == Id::RSA => Ok(rsa_public_jwk(&key.rsa().map_err(|error| {
+            throw_dom_exception(ctx, "OperationError", &error.to_string())
+        })?)),
         id if id == Id::EC => ec_public_jwk(ctx, key),
         id if id == Id::ED25519 => okp_public_jwk(ctx, key, "Ed25519"),
         id if id == Id::X25519 => okp_public_jwk(ctx, key, "X25519"),
@@ -1362,12 +1430,12 @@ fn private_jwk(ctx: &Ctx<'_>, key: &PKey<Private>) -> rquickjs::Result<JsonValue
     }
 }
 
-fn rsa_public_jwk<T: HasPublic>(_ctx: &Ctx<'_>, rsa: &Rsa<T>) -> rquickjs::Result<JsonValue> {
-    Ok(json!({
+fn rsa_public_jwk<T: HasPublic>(rsa: &Rsa<T>) -> JsonValue {
+    json!({
         "kty": "RSA",
         "n": URL_SAFE_NO_PAD.encode(rsa.n().to_vec()),
         "e": URL_SAFE_NO_PAD.encode(rsa.e().to_vec()),
-    }))
+    })
 }
 
 fn rsa_private_jwk(ctx: &Ctx<'_>, rsa: &Rsa<Private>) -> rquickjs::Result<JsonValue> {
@@ -1410,7 +1478,7 @@ fn ec_private_jwk(ctx: &Ctx<'_>, key: &PKey<Private>) -> rquickjs::Result<JsonVa
         "crv": curve,
         "x": URL_SAFE_NO_PAD.encode(x),
         "y": URL_SAFE_NO_PAD.encode(y),
-        "d": URL_SAFE_NO_PAD.encode(ec.private_key().to_vec_padded(size as i32).map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?),
+        "d": URL_SAFE_NO_PAD.encode(ec.private_key().to_vec_padded(i32::from(size)).map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?),
     }))
 }
 
@@ -1432,9 +1500,9 @@ fn ec_coordinates<T: HasPublic>(
         .and_then(|curve| curve_size(&curve))
         .unwrap_or(0);
     Ok((
-        x.to_vec_padded(size as i32)
+        x.to_vec_padded(i32::from(size))
             .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?,
-        y.to_vec_padded(size as i32)
+        y.to_vec_padded(i32::from(size))
             .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?,
     ))
 }
@@ -1530,34 +1598,34 @@ fn verify_key(ctx: &Ctx<'_>, signature: &[u8], options: &Object<'_>) -> rquickjs
     let md = message_digest(ctx, &hash_name)?;
     match kind.as_str() {
         "rsa" => match key {
-            KeyMaterial::Private(key) => rsa_verify(&key, md, false, 0, &message, signature),
-            KeyMaterial::Public(key) => rsa_verify(&key, md, false, 0, &message, signature),
+            KeyMaterial::Private(key) => Ok(rsa_verify(&key, md, false, 0, &message, signature)),
+            KeyMaterial::Public(key) => Ok(rsa_verify(&key, md, false, 0, &message, signature)),
         },
         "rsa-pss" => match key {
-            KeyMaterial::Private(key) => rsa_verify(
+            KeyMaterial::Private(key) => Ok(rsa_verify(
                 &key,
                 md,
                 true,
                 required_u32(ctx, options, "saltLength")?,
                 &message,
                 signature,
-            ),
-            KeyMaterial::Public(key) => rsa_verify(
+            )),
+            KeyMaterial::Public(key) => Ok(rsa_verify(
                 &key,
                 md,
                 true,
                 required_u32(ctx, options, "saltLength")?,
                 &message,
                 signature,
-            ),
+            )),
         },
         "ecdsa" => match key {
             KeyMaterial::Private(key) => ecdsa_verify(ctx, &key, &hash_name, &message, signature),
             KeyMaterial::Public(key) => ecdsa_verify(ctx, &key, &hash_name, &message, signature),
         },
         "ed25519" => match key {
-            KeyMaterial::Private(key) => ed_verify(&key, &message, signature),
-            KeyMaterial::Public(key) => ed_verify(&key, &message, signature),
+            KeyMaterial::Private(key) => Ok(ed_verify(&key, &message, signature)),
+            KeyMaterial::Public(key) => Ok(ed_verify(&key, &message, signature)),
         },
         _ => Err(throw_dom_exception(
             ctx,
@@ -1578,10 +1646,13 @@ fn rsa_sign<T: HasPrivate>(
     let mut signer = Signer::new(md, key)
         .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
     if pss {
+        let salt_length = i32::try_from(salt_length).map_err(|_| {
+            throw_dom_exception(ctx, "OperationError", "RSA-PSS salt length is too large")
+        })?;
         signer
             .set_rsa_padding(Padding::PKCS1_PSS)
-            .and_then(|_| signer.set_rsa_pss_saltlen(RsaPssSaltlen::custom(salt_length as i32)))
-            .and_then(|_| signer.set_rsa_mgf1_md(md))
+            .and_then(|()| signer.set_rsa_pss_saltlen(RsaPssSaltlen::custom(salt_length)))
+            .and_then(|()| signer.set_rsa_mgf1_md(md))
             .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
     } else {
         signer
@@ -1600,24 +1671,26 @@ fn rsa_verify<T: HasPublic>(
     salt_length: u32,
     message: &[u8],
     signature: &[u8],
-) -> rquickjs::Result<bool> {
-    let mut verifier = match Verifier::new(md, key) {
-        Ok(verifier) => verifier,
-        Err(_) => return Ok(false),
+) -> bool {
+    let Ok(mut verifier) = Verifier::new(md, key) else {
+        return false;
     };
     if pss {
+        let Ok(salt_length) = i32::try_from(salt_length) else {
+            return false;
+        };
         if verifier.set_rsa_padding(Padding::PKCS1_PSS).is_err()
             || verifier
-                .set_rsa_pss_saltlen(RsaPssSaltlen::custom(salt_length as i32))
+                .set_rsa_pss_saltlen(RsaPssSaltlen::custom(salt_length))
                 .is_err()
             || verifier.set_rsa_mgf1_md(md).is_err()
         {
-            return Ok(false);
+            return false;
         }
     } else if verifier.set_rsa_padding(Padding::PKCS1).is_err() {
-        return Ok(false);
+        return false;
     }
-    Ok(verifier.verify_oneshot(signature, message).unwrap_or(false))
+    verifier.verify_oneshot(signature, message).unwrap_or(false)
 }
 
 fn ecdsa_sign(
@@ -1639,12 +1712,12 @@ fn ecdsa_sign(
         .ok_or_else(|| throw_dom_exception(ctx, "OperationError", "Unsupported elliptic curve"))?;
     let mut output = signature
         .r()
-        .to_vec_padded(size as i32)
+        .to_vec_padded(i32::from(size))
         .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
     output.extend_from_slice(
         &signature
             .s()
-            .to_vec_padded(size as i32)
+            .to_vec_padded(i32::from(size))
             .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?,
     );
     Ok(output)
@@ -1664,6 +1737,7 @@ fn ecdsa_verify<T: HasPublic>(
         .ok()
         .and_then(|curve| curve_size(&curve))
         .ok_or_else(|| throw_dom_exception(ctx, "OperationError", "Unsupported elliptic curve"))?;
+    let size = usize::from(size);
     if signature.len() != size * 2 {
         return Ok(false);
     }
@@ -1678,19 +1752,14 @@ fn ecdsa_verify<T: HasPublic>(
     Ok(signature.verify(digest.as_ref(), &ec).unwrap_or(false))
 }
 
-fn ed_verify<T: HasPublic>(
-    key: &PKey<T>,
-    message: &[u8],
-    signature: &[u8],
-) -> rquickjs::Result<bool> {
+fn ed_verify<T: HasPublic>(key: &PKey<T>, message: &[u8], signature: &[u8]) -> bool {
     if signature.len() != 64 {
-        return Ok(false);
+        return false;
     }
-    let mut verifier = match Verifier::new_without_digest(key) {
-        Ok(verifier) => verifier,
-        Err(_) => return Ok(false),
+    let Ok(mut verifier) = Verifier::new_without_digest(key) else {
+        return false;
     };
-    Ok(verifier.verify_oneshot(signature, message).unwrap_or(false))
+    verifier.verify_oneshot(signature, message).unwrap_or(false)
 }
 
 fn encrypt_key(ctx: &Ctx<'_>, message: &[u8], options: &Object<'_>) -> rquickjs::Result<Vec<u8>> {
@@ -1748,8 +1817,8 @@ fn rsa_encrypt<T: HasPublic>(
         .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
     encrypter
         .set_rsa_padding(Padding::PKCS1_OAEP)
-        .and_then(|_| encrypter.set_rsa_oaep_md(hash))
-        .and_then(|_| encrypter.set_rsa_mgf1_md(hash))
+        .and_then(|()| encrypter.set_rsa_oaep_md(hash))
+        .and_then(|()| encrypter.set_rsa_mgf1_md(hash))
         .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
     if !label.is_empty() {
         encrypter
@@ -1781,8 +1850,8 @@ fn rsa_decrypt(
         .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
     decrypter
         .set_rsa_padding(Padding::PKCS1_OAEP)
-        .and_then(|_| decrypter.set_rsa_oaep_md(hash))
-        .and_then(|_| decrypter.set_rsa_mgf1_md(hash))
+        .and_then(|()| decrypter.set_rsa_oaep_md(hash))
+        .and_then(|()| decrypter.set_rsa_mgf1_md(hash))
         .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
     if !label.is_empty() {
         decrypter
@@ -1856,7 +1925,7 @@ fn curve_name(ctx: &Ctx<'_>, group: &openssl::ec::EcGroupRef) -> rquickjs::Resul
     }
 }
 
-fn curve_size(curve: &str) -> Option<usize> {
+fn curve_size(curve: &str) -> Option<u16> {
     match curve {
         "P-256" => Some(32),
         "P-384" => Some(48),
@@ -1979,4 +2048,29 @@ fn throw_dom_exception(ctx: &Ctx<'_>, name: &str, message: &str) -> rquickjs::Er
         Err(error) => return error,
     };
     ctx.throw(exception.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_shot_hmac_accepts_an_empty_key() -> rquickjs::Result<()> {
+        let runtime = rquickjs::Runtime::new()?;
+        let context = rquickjs::Context::full(&runtime)?;
+        context.with(|ctx| {
+            let key = TypedArray::new(ctx.clone(), Vec::<u8>::new())?;
+            let input = TypedArray::new(ctx.clone(), b"abc".to_vec())?;
+            let output = hmac(ctx.clone(), "SHA-256".into(), key, input)?;
+            let bytes = output
+                .as_bytes()
+                .ok_or_else(|| Exception::throw_message(&ctx, "detached ArrayBuffer"))?;
+            // Pinned Workerd createHmac('sha256', '').update('abc').digest('base64').
+            assert_eq!(
+                base64::engine::general_purpose::STANDARD.encode(bytes),
+                "/XrbFSwF74Dcz1Ch+kwF1aPsbalVdfwxKufF0JGDY1E="
+            );
+            Ok(())
+        })
+    }
 }

@@ -13,27 +13,37 @@ function httpServers() {
   return globalThis.__tokamak_http_servers;
 }
 
+// Matches workerd's node:http: duplicate values comma-join into one entry, and
+// set-cookie combines in `headers` but is absent from `rawHeaders`.
+function incomingHeaders(webHeaders) {
+  const headers = {};
+  const rawHeaders = [];
+  for (const [name, value] of webHeaders) {
+    headers[name] = headers[name] === undefined ? value : headers[name] + ", " + value;
+    if (name !== "set-cookie") rawHeaders.push(name, value);
+  }
+  return { headers, rawHeaders };
+}
+
 export class IncomingMessage extends Readable {
   constructor(source, localPort = 0) {
     super();
-    let resolveDone;
-    let rejectDone;
-    this.__done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
+    this.__reading = false;
+    const { headers, rawHeaders } = incomingHeaders(source.headers);
+    this.headers = headers;
     if (source?.status !== undefined) {
       this.statusCode = source.status;
       this.statusMessage = source.statusText;
-      this.headers = Object.fromEntries(source.headers);
       this.url = source.url;
       this.method = undefined;
     } else {
       const url = new URL(source.url);
       this.method = source.method;
-      this.headers = Object.fromEntries(source.headers);
       this.url = url.pathname + (url.search || "");
       this.statusCode = undefined;
       this.statusMessage = undefined;
     }
-    this.rawHeaders = Object.entries(this.headers).flatMap(([name, value]) => [name, value]);
+    this.rawHeaders = rawHeaders;
     this.rawTrailers = [];
     this.trailers = {};
     this.httpVersion = "1.1";
@@ -50,36 +60,39 @@ export class IncomingMessage extends Readable {
       localPort,
       destroy: () => this.destroy(),
     };
-    if (source?.body) void pumpIncomingBody(this, source.body, resolveDone, rejectDone);
+    if (source?.body) this.__reader = source.body.getReader();
     else {
       this.complete = true;
       this.push(null);
-      resolveDone();
     }
   }
 
+  _read() {
+    if (this.__reading || this.complete || !this.__reader) return;
+    this.__reading = true;
+    void pumpIncomingBody(this);
+  }
+
   destroy(error) {
-    this.aborted = true;
+    this.aborted = !this.complete;
     this.__reader?.cancel(error).catch(() => {});
     return super.destroy(error);
   }
 }
 
-async function pumpIncomingBody(message, body, resolveDone, rejectDone) {
+async function pumpIncomingBody(message) {
   try {
-    const reader = body.getReader();
-    message.__reader = reader;
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await message.__reader.read();
       if (done) break;
-      message.push(Buffer.from(value));
+      if (!message.push(Buffer.from(value))) return;
     }
     message.complete = true;
     message.push(null);
-    resolveDone();
   } catch (error) {
-    rejectDone(error);
     message.destroy(error);
+  } finally {
+    message.__reading = false;
   }
 }
 
@@ -166,17 +179,18 @@ export class ClientRequest extends OutgoingMessage {
     if (typeof chunk === "function") callback = chunk;
     else if (chunk !== undefined) this.write(chunk, encoding);
     this._ended = true;
-    const headers = Object.fromEntries(this.headers);
-    const body = this._body.length === 0 ? undefined : new Blob([Buffer.concat(this._body)]);
-    fetch(this.url, { method: this.method, headers, body }).then(async response => {
-      const message = new IncomingMessage(response);
-      this.emit("response", message);
-      await message.__done;
+    queueMicrotask(() => {
+      this.finished = true;
       callback?.();
       this.emit("finish");
+    });
+    const headers = Object.fromEntries(this.headers);
+    const body = this._body.length === 0 ? undefined : new Blob([Buffer.concat(this._body)]);
+    fetch(this.url, { method: this.method, headers, body }).then(response => {
+      const message = new IncomingMessage(response);
+      this.emit("response", message);
     }, error => {
       this.emit("error", error);
-      callback?.(error);
     });
     return this;
   }

@@ -1,3 +1,4 @@
+import { markHostObject } from "../globals/objects.mjs";
 function domString(value) {
   if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol value to a string");
   return String(value);
@@ -14,24 +15,23 @@ function internal(object, name, value) {
 
 const listenerStore = Symbol("event-listeners");
 
-function normalizeOptions(options) {
-  if (typeof options === "boolean") throw new TypeError("Event listener options must be an object");
+function normalizeOptions(options, method) {
+  if (typeof options === "boolean") {
+    if (options) throw new TypeError(`${method}(): useCapture must be false.`);
+    options = {};
+  }
   options ??= {};
+  if (options.capture) throw new TypeError(`${method}(): options.capture must be false.`);
   return {
-    capture: Boolean(options.capture),
     once: Boolean(options.once),
     passive: Boolean(options.passive),
     signal: options.signal ?? null,
   };
 }
 
-function captureOption(options) {
-  if (typeof options === "boolean") throw new TypeError("Event listener options must be an object");
-  return Boolean(options?.capture);
-}
-
 export class Event {
   constructor(type, options = {}) {
+    markHostObject(this);
     options ??= {};
     internal(this, "__type", domString(type));
     internal(this, "__bubbles", Boolean(options.bubbles));
@@ -144,6 +144,7 @@ exposeProperties(CloseEvent.prototype, ["wasClean", "code", "reason"]);
 
 export class EventTarget {
   constructor() {
+    markHostObject(this);
     Object.defineProperty(this, listenerStore, { value: new Map() });
   }
 
@@ -153,9 +154,9 @@ export class EventTarget {
       throw new TypeError("Event listener must be callable");
     }
     const name = domString(type);
-    const normalized = normalizeOptions(options);
+    const normalized = normalizeOptions(options, "addEventListener");
     const list = this[listenerStore].get(name) ?? [];
-    if (list.some(entry => entry.callback === callback && entry.capture === normalized.capture)) return;
+    if (list.some(entry => entry.callback === callback)) return;
     if (normalized.signal !== null && typeof normalized.signal.addEventListener !== "function") {
       throw new TypeError("Event listener signal must be an AbortSignal");
     }
@@ -164,18 +165,18 @@ export class EventTarget {
     list.push(entry);
     this[listenerStore].set(name, list);
     if (entry.signal) {
-      entry.abort = () => this.removeEventListener(name, callback, { capture: entry.capture });
+      entry.abort = () => this.removeEventListener(name, callback);
       entry.signal.addEventListener("abort", entry.abort, { once: true });
     }
   }
 
   removeEventListener(type, callback, options = {}) {
     const name = domString(type);
-    const capture = captureOption(options);
+    normalizeOptions(options, "removeEventListener");
     const list = this[listenerStore].get(name);
     if (!list) return;
     const remaining = list.filter(entry => {
-      const remove = entry.callback === callback && entry.capture === capture;
+      const remove = entry.callback === callback;
       if (remove && entry.signal && entry.abort) entry.signal.removeEventListener("abort", entry.abort);
       return !remove;
     });
@@ -196,7 +197,7 @@ export class EventTarget {
       for (const entry of [...(this[listenerStore].get(event.type) ?? [])]) {
         if (event.__immediateStopped) break;
         if (!this[listenerStore].get(event.type)?.includes(entry)) continue;
-        if (entry.once) this.removeEventListener(event.type, entry.callback, { capture: entry.capture });
+        if (entry.once) this.removeEventListener(event.type, entry.callback);
         event.__inPassive = entry.passive;
         try {
           if (typeof entry.callback === "function") entry.callback.call(this, event);
@@ -216,24 +217,26 @@ export class EventTarget {
 
 exposeProperties(EventTarget.prototype, ["addEventListener", "removeEventListener", "dispatchEvent"]);
 
-export class EventEmitter {
-  static defaultMaxListeners = 10;
-  static errorMonitor = Symbol("events.errorMonitor");
-  static EventEmitter = EventEmitter;
+export function EventEmitter(options) {
+  if (!Object.hasOwn(this, "__events")) internal(this, "__events", new Map());
+  if (!Object.hasOwn(this, "__maxListeners")) internal(this, "__maxListeners", undefined);
+  internal(this, "__captureRejections", Boolean(options?.captureRejections ?? EventEmitter.captureRejections));
+}
 
-  constructor() {
-    internal(this, "__events", new Map());
-    internal(this, "__maxListeners", undefined);
-  }
-  on(name, listener) { return this.__add(name, listener, false, false); }
-  addListener(name, listener) { return this.on(name, listener); }
-  once(name, listener) { return this.__add(name, listener, true, false); }
-  prependListener(name, listener) { return this.__add(name, listener, false, true); }
-  prependOnceListener(name, listener) { return this.__add(name, listener, true, true); }
-  off(name, listener) { return this.removeListener(name, listener); }
+EventEmitter.defaultMaxListeners = 10;
+EventEmitter.errorMonitor = Symbol("events.errorMonitor");
+EventEmitter.EventEmitter = EventEmitter;
+
+Object.assign(EventEmitter.prototype, {
+  on(name, listener) { return this.__add(name, listener, false, false); },
+  addListener(name, listener) { return this.on(name, listener); },
+  once(name, listener) { return this.__add(name, listener, true, false); },
+  prependListener(name, listener) { return this.__add(name, listener, false, true); },
+  prependOnceListener(name, listener) { return this.__add(name, listener, true, true); },
+  off(name, listener) { return this.removeListener(name, listener); },
 
   removeListener(name, listener) {
-    const list = this.__events.get(name) ?? [];
+    const list = this.__events?.get(name) ?? [];
     for (let index = 0; index < list.length; index += 1) {
       const entry = list[index];
       if (entry.listener !== listener && entry.wrapper !== listener) continue;
@@ -241,20 +244,23 @@ export class EventEmitter {
       break;
     }
     return this;
-  }
+  },
 
-  removeEventListener(name, listener) { return this.removeListener(name, listener); }
-  addEventListener(name, listener) { return this.on(name, listener); }
+  removeEventListener(name, listener) { return this.removeListener(name, listener); },
+  addEventListener(name, listener) { return this.on(name, listener); },
   removeAllListeners(name) {
-    if (name === undefined) this.__events.clear();
-    else this.__events.delete(name);
+    if (name === undefined) {
+      for (const key of [...this.__events.keys()].filter(value => value !== "removeListener")) this.removeAllListeners(key);
+      return this.removeAllListeners("removeListener");
+    }
+    for (const entry of [...(this.__events.get(name) ?? [])]) this.__removeEntry(name, entry);
     return this;
-  }
+  },
 
   emit(name, ...args) {
-    const list = [...(this.__events.get(name) ?? [])];
+    const list = [...(this.__events?.get(name) ?? [])];
     if (name === "error") {
-      for (const entry of [...(this.__events.get(EventEmitter.errorMonitor) ?? [])]) {
+      for (const entry of [...(this.__events?.get(EventEmitter.errorMonitor) ?? [])]) {
         if (entry.once) this.__removeEntry(EventEmitter.errorMonitor, entry);
         entry.listener.apply(this, args);
       }
@@ -264,18 +270,27 @@ export class EventEmitter {
     }
     for (const entry of list) {
       if (entry.once) this.__removeEntry(name, entry);
-      entry.listener.apply(this, args);
+      const value = entry.listener.apply(this, args);
+      if (this.__captureRejections && value != null && typeof value.then === "function") {
+        value.then(undefined, error => queueMicrotask(() => this.__rejected(error, name, args)));
+      }
     }
     return list.length > 0;
-  }
+  },
 
-  listeners(name) { return [...(this.__events.get(name) ?? [])].map(entry => entry.listener); }
-  rawListeners(name) { return [...(this.__events.get(name) ?? [])].map(entry => entry.wrapper ?? entry.listener); }
+  __rejected(error, name, args) {
+    const handler = this[EventEmitter.captureRejectionSymbol];
+    if (typeof handler === "function") handler.call(this, error, name, ...args);
+    else this.emit("error", error);
+  },
+
+  listeners(name) { return [...(this.__events?.get(name) ?? [])].map(entry => entry.listener); },
+  rawListeners(name) { return [...(this.__events?.get(name) ?? [])].map(entry => entry.wrapper ?? entry.listener); },
   listenerCount(name, listener) {
-    const list = this.__events.get(name) ?? [];
+    const list = this.__events?.get(name) ?? [];
     return listener === undefined ? list.length : list.filter(entry => entry.listener === listener || entry.wrapper === listener).length;
-  }
-  eventNames() { return [...this.__events.keys()]; }
+  },
+  eventNames() { return [...(this.__events?.keys() ?? [])]; },
   setMaxListeners(value) {
     const max = Number(value);
     if (Number.isNaN(max) || max < 0 || (max !== Infinity && !Number.isInteger(max))) {
@@ -283,11 +298,13 @@ export class EventEmitter {
     }
     this.__maxListeners = max;
     return this;
-  }
-  getMaxListeners() { return this.__maxListeners ?? EventEmitter.defaultMaxListeners; }
+  },
+  getMaxListeners() { return this.__maxListeners ?? EventEmitter.defaultMaxListeners; },
 
   __add(name, listener, once, prepend) {
     if (typeof listener !== "function") throw new TypeError("listener must be a function");
+    if (!Object.hasOwn(this, "__events")) internal(this, "__events", new Map());
+    if (this.__events.has("newListener")) this.emit("newListener", name, listener);
     const entry = { listener, once, wrapper: once ? (...args) => listener.apply(this, args) : listener };
     entry.wrapper.listener = listener;
     const list = this.__events.get(name) ?? [];
@@ -295,7 +312,7 @@ export class EventEmitter {
     else list.push(entry);
     this.__events.set(name, list);
     return this;
-  }
+  },
 
   __removeEntry(name, entry) {
     const list = this.__events.get(name);
@@ -303,10 +320,9 @@ export class EventEmitter {
     if (index < 0) return;
     list.splice(index, 1);
     if (list.length === 0) this.__events.delete(name);
-  }
-
-  static listenerCount(emitter, name, listener) { return emitter.listenerCount(name, listener); }
-}
+    if (this.__events.has("removeListener")) this.emit("removeListener", name, entry.listener);
+  },
+});
 
 export class EventEmitterAsyncResource extends EventEmitter {
   constructor(options = {}) {
@@ -325,6 +341,22 @@ export function once(emitter, name, options = {}) {
     return Promise.reject(new TypeError("options must be an object"));
   }
   const signal = options.signal;
+  if (typeof emitter?.once !== "function" && typeof emitter?.addEventListener === "function") {
+    return new Promise((resolve, reject) => {
+      if (signal !== undefined && signal !== null && typeof signal.addEventListener !== "function") {
+        reject(new TypeError("options.signal must be an AbortSignal"));
+        return;
+      }
+      if (signal?.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      const listener = event => { signal?.removeEventListener?.("abort", onAbort); resolve([event]); };
+      const onAbort = () => { emitter.removeEventListener(name, listener); reject(signal.reason); };
+      emitter.addEventListener(name, listener, { once: true });
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     const cleanup = () => {
@@ -429,7 +461,7 @@ EventEmitter.captureRejectionSymbol = Symbol.for("nodejs.rejection");
 EventEmitter.captureRejections = false;
 EventEmitter.getEventListeners = (emitter, name) => emitter?.listeners?.(name) ?? [];
 EventEmitter.getMaxListeners = emitter => emitter?.getMaxListeners?.() ?? EventEmitter.defaultMaxListeners;
-EventEmitter.init = () => {};
+EventEmitter.init = EventEmitter;
 Object.defineProperty(EventEmitter, "listenerCount", {
   configurable: true,
   enumerable: true,
@@ -442,6 +474,7 @@ EventEmitter.setMaxListeners = (value, ...emitters) => {
 };
 EventEmitter.usingDomains = false;
 export const defaultMaxListeners = EventEmitter.defaultMaxListeners;
+export const errorMonitor = EventEmitter.errorMonitor;
 export const listenerCount = EventEmitter.listenerCount;
 export const addAbortListener = EventEmitter.addAbortListener;
 export const captureRejectionSymbol = EventEmitter.captureRejectionSymbol;

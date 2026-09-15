@@ -1,35 +1,46 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use std::cmp::Ordering;
-use std::fmt;
+mod units;
+include!("intl/plurals_data.rs");
 
-use icu::calendar::Date;
+use std::cell::RefCell;
+use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::fmt;
+use std::thread::LocalKey;
+
+use fixed_decimal::{
+    Decimal as FixedDecimal, Sign, SignDisplay, SignedRoundingMode, UnsignedRoundingMode,
+};
+use icu::calendar::{Date, Iso};
 use icu::collator::preferences::{CollationCaseFirst, CollationNumericOrdering};
-use icu::collator::{Collator, CollatorPreferences};
-use icu::decimal::{CompactDecimalFormatter, DecimalFormatter};
-use icu::decimal::options::{DecimalFormatterOptions, GroupingStrategy};
+use icu::collator::{Collator, CollatorBorrowed, CollatorPreferences};
 use icu::datetime::fieldsets::builder::{DateFields, FieldSetBuilder, ZoneStyle};
 use icu::datetime::fieldsets::enums::CompositeFieldSet;
-use icu::datetime::options::{Length, TimePrecision};
+use icu::datetime::options::{Length, TimePrecision, YearStyle};
 use icu::datetime::preferences::HourCycle;
 use icu::datetime::{DateTimeFormatter, DateTimeFormatterPreferences};
+use icu::decimal::options::{
+    CompactDecimalFormatterOptions, DecimalFormatterOptions, GroupingStrategy,
+};
+use icu::decimal::{CompactDecimalFormatter, DecimalFormatter};
+use icu::experimental::dimension::currency::CurrencyType;
 use icu::experimental::dimension::currency::formatter::{
     CurrencyFormatter, CurrencyFormatterPreferences,
 };
-use icu::experimental::dimension::currency::CurrencyType;
-use icu::experimental::dimension::currency::options::{
-    CurrencyFormatterOptions, CurrencyUsage,
-};
+use icu::experimental::dimension::currency::options::{CurrencyFormatterOptions, CurrencyUsage};
 use icu::experimental::dimension::percent::formatter::{
     PercentFormatter, PercentFormatterPreferences,
 };
+use icu::experimental::dimension::percent::options::PercentFormatterOptions;
 use icu::experimental::relativetime::options::Numeric as RelativeNumeric;
 use icu::experimental::relativetime::{RelativeTimeFormatter, RelativeTimeFormatterOptions};
 use icu::list::ListFormatter;
 use icu::list::options::{ListFormatterOptions, ListLength};
 use icu::locale::names::{
-    DisplayNamesPreferences, LanguageIdentifierDisplayName,
-    LanguageIdentifierDisplayNameOptions, RegionDisplayName, ScriptDisplayName,
+    DisplayNamesPreferences, LanguageIdentifierDisplayName, LanguageIdentifierDisplayNameOptions,
+    RegionDisplayName, ScriptDisplayName,
 };
 use icu::locale::subtags::{Language, Region, Script};
 use icu::locale::{Locale, LocaleCanonicalizer, LocaleExpander};
@@ -37,10 +48,8 @@ use icu::plurals::{PluralCategory, PluralRules, PluralRulesWithRanges};
 use icu::segmenter::options::{SentenceBreakInvariantOptions, WordBreakInvariantOptions};
 use icu::segmenter::{GraphemeClusterSegmenter, SentenceSegmenter, WordSegmenter};
 use icu::time::ZonedDateTime;
-use icu::time::zone::{UtcOffset, ZoneNameTimestamp};
-use fixed_decimal::{
-    Decimal as FixedDecimal, Sign, SignDisplay, SignedRoundingMode, UnsignedRoundingMode,
-};
+use icu::time::zone::models::AtTime;
+use icu::time::zone::{TimeZoneInfo, UtcOffset, ZoneNameTimestamp};
 use jiff::Timestamp;
 use rquickjs::module::Exports;
 use rquickjs::{Ctx, Exception, Function};
@@ -71,23 +80,91 @@ pub(super) fn export_host_functions<'js>(
     exports: &Exports<'js>,
 ) -> rquickjs::Result<()> {
     let export = |name: &str, function: Function<'js>| exports.export(name, function);
-    export("intlCanonicalLocales", Function::new(ctx.clone(), canonical_locales)?)?;
+    export(
+        "intlCanonicalLocales",
+        Function::new(ctx.clone(), canonical_locales)?,
+    )?;
     export("intlDateTime", Function::new(ctx.clone(), date_time)?)?;
-    export("intlDateTimeParts", Function::new(ctx.clone(), date_time_parts)?)?;
+    export(
+        "intlDateTimeParts",
+        Function::new(ctx.clone(), date_time_parts)?,
+    )?;
     export("intlNumber", Function::new(ctx.clone(), number)?)?;
     export("intlNumberParts", Function::new(ctx.clone(), number_parts)?)?;
     export("intlPlural", Function::new(ctx.clone(), plural)?)?;
     export("intlPluralRange", Function::new(ctx.clone(), plural_range)?)?;
-    export("intlPluralCategories", Function::new(ctx.clone(), plural_categories)?)?;
+    export(
+        "intlPluralCategories",
+        Function::new(ctx.clone(), plural_categories)?,
+    )?;
     export("intlList", Function::new(ctx.clone(), list)?)?;
     export("intlListParts", Function::new(ctx.clone(), list_parts)?)?;
     export("intlRelative", Function::new(ctx.clone(), relative)?)?;
-    export("intlRelativeParts", Function::new(ctx.clone(), relative_parts)?)?;
-    export("intlCollatorCompare", Function::new(ctx.clone(), collator_compare)?)?;
+    export(
+        "intlRelativeParts",
+        Function::new(ctx.clone(), relative_parts)?,
+    )?;
+    export(
+        "intlCollatorCompare",
+        Function::new(ctx.clone(), collator_compare)?,
+    )?;
     export("intlSegment", Function::new(ctx.clone(), segment)?)?;
     export("intlDisplayName", Function::new(ctx.clone(), display_name)?)?;
     export("intlLocaleInfo", Function::new(ctx.clone(), locale_info)?)?;
     Ok(())
+}
+
+// Requests run on dedicated threads, so per-thread caches need no locking.
+// Keys embed the locale list and options JSON exactly as received from JS.
+const CACHE_LIMIT: usize = 64;
+
+thread_local! {
+    static COLLATORS: RefCell<HashMap<String, CollatorBorrowed<'static>>> =
+        RefCell::new(HashMap::new());
+    static DATE_TIME_FORMATTERS: RefCell<HashMap<String, DateTimeFormatter<CompositeFieldSet>>> =
+        RefCell::new(HashMap::new());
+    static DECIMAL_FORMATTERS: RefCell<HashMap<String, DecimalFormatter>> =
+        RefCell::new(HashMap::new());
+}
+
+fn with_cached<F, T>(
+    cache: &'static LocalKey<RefCell<HashMap<String, F>>>,
+    key: &str,
+    build: impl FnOnce() -> rquickjs::Result<F>,
+    apply: impl FnOnce(&F) -> T,
+) -> rquickjs::Result<T> {
+    cache.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= CACHE_LIMIT && !cache.contains_key(key) {
+            cache.clear();
+        }
+        let value = match cache.entry(key.to_owned()) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(build()?),
+        };
+        Ok(apply(value))
+    })
+}
+
+fn with_decimal_formatter<T>(
+    ctx: &Ctx<'_>,
+    locale: &Locale,
+    strategy: GroupingStrategy,
+    apply: impl FnOnce(&DecimalFormatter) -> T,
+) -> rquickjs::Result<T> {
+    let key = format!("{locale}\u{1}{strategy:?}");
+    with_cached(
+        &DECIMAL_FORMATTERS,
+        &key,
+        || {
+            DecimalFormatter::try_new(
+                locale.clone().into(),
+                DecimalFormatterOptions::from(strategy),
+            )
+            .map_err(|error| Exception::throw_range(ctx, &error.to_string()))
+        },
+        apply,
+    )
 }
 
 pub(super) fn canonical_locales(ctx: Ctx<'_>, input: String) -> rquickjs::Result<String> {
@@ -168,7 +245,7 @@ pub(super) fn plural(
     } else {
         icu::plurals::PluralRuleType::Cardinal
     });
-    let rules = PluralRules::try_new(locale.into(), options)
+    let rules = PluralRules::try_new(plural_locale(&ctx, &locale)?.into(), options)
         .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
     let decimal = value
         .to_string()
@@ -204,7 +281,7 @@ pub(super) fn plural_range(
     } else {
         icu::plurals::PluralRuleType::Cardinal
     });
-    let rules = PluralRulesWithRanges::try_new(locale.into(), options)
+    let rules = PluralRulesWithRanges::try_new(plural_locale(&ctx, &locale)?.into(), options)
         .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
     let start = plural_operand(&ctx, start)?;
     let end = plural_operand(&ctx, end)?;
@@ -224,12 +301,9 @@ pub(super) fn plural_categories(
     } else {
         icu::plurals::PluralRuleType::Cardinal
     });
-    let rules = PluralRules::try_new(locale.into(), options)
+    let rules = PluralRules::try_new(plural_locale(&ctx, &locale)?.into(), options)
         .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
-    let values = rules
-        .categories()
-        .map(plural_category)
-        .collect::<Vec<_>>();
+    let values = rules.categories().map(plural_category).collect::<Vec<_>>();
     serde_json::to_string(&values)
         .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))
 }
@@ -374,45 +448,33 @@ pub(super) fn relative_parts(
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
-    let formatted = relative(ctx.clone(), value, unit.clone(), locales.clone(), options.clone())?;
+    let formatted = relative(ctx.clone(), value, unit.clone(), locales.clone(), options)?;
     let locale = first_locale(&ctx, &locales)?
         .parse::<Locale>()
         .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
-    let options_value: Value = serde_json::from_str(&options)
-        .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
-    if options_value.get("numeric").and_then(Value::as_str) == Some("auto")
-        && value.abs() <= 1.0
-    {
-        let numeric = if value == -1.0 {
-            ["yesterday", "last week", "last month", "last quarter", "last year"]
-        } else if value == 0.0 {
-            ["today", "this week", "this month", "this quarter", "this year"]
-        } else {
-            ["tomorrow", "next week", "next month", "next quarter", "next year"]
-        };
-        let index = relative_unit_index(&unit);
-        if (value == -1.0 || value == 0.0 || value == 1.0) && index < numeric.len() {
-            return serde_json::to_string(&[("literal", formatted)])
-                .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()));
-        }
-    }
     let absolute = plural_operand(&ctx, value.abs())?;
-    let decimal_formatter = icu::decimal::DecimalFormatter::try_new(
-        locale.into(),
-        icu::decimal::options::DecimalFormatterOptions::default(),
-    )
-    .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
-    let number = decimal_formatter.format_to_string(&absolute);
+    let number = with_decimal_formatter(&ctx, &locale, GroupingStrategy::Auto, |formatter| {
+        formatter.format_to_string(&absolute)
+    })?;
     let Some(index) = formatted.find(&number) else {
-        return serde_json::to_string(&[("literal", formatted)])
-            .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()));
+        return serde_json::to_string(&[
+            serde_json::json!({ "type": "literal", "value": formatted }),
+        ])
+        .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()));
     };
     let mut parts = Vec::new();
     if index > 0 {
         parts.push(("literal", formatted[..index].to_owned()));
     }
     let number_len = number.len();
-    parts.push((if value.fract() == 0.0 { "integer" } else { "fraction" }, number));
+    parts.push((
+        if value.fract() == 0.0 {
+            "integer"
+        } else {
+            "fraction"
+        },
+        number,
+    ));
     let suffix = &formatted[index + number_len..];
     if !suffix.is_empty() {
         parts.push(("literal", suffix.to_owned()));
@@ -438,12 +500,30 @@ pub(super) fn collator_compare(
     locales: String,
     options: String,
 ) -> rquickjs::Result<i32> {
-    let locale = first_locale(&ctx, &locales)?
+    let key = format!("{locales}\u{1}{options}");
+    with_cached(
+        &COLLATORS,
+        &key,
+        || collator(&ctx, &locales, &options),
+        |collator| match collator.compare(&left, &right) {
+            Ordering::Less => -1,
+            Ordering::Equal => 0,
+            Ordering::Greater => 1,
+        },
+    )
+}
+
+fn collator(
+    ctx: &Ctx<'_>,
+    locales: &str,
+    options: &str,
+) -> rquickjs::Result<CollatorBorrowed<'static>> {
+    let locale = first_locale(ctx, locales)?
         .parse::<Locale>()
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
-    let options: Value = serde_json::from_str(&options)
-        .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
-    let mut prefs = CollatorPreferences::from(locale.clone());
+        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
+    let options: Value = serde_json::from_str(options)
+        .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?;
+    let mut prefs = CollatorPreferences::from(locale);
     prefs.numeric_ordering = match options.get("numeric").and_then(Value::as_bool) {
         Some(true) => Some(CollationNumericOrdering::True),
         Some(false) => Some(CollationNumericOrdering::False),
@@ -457,31 +537,21 @@ pub(super) fn collator_compare(
     };
     let mut collator_options = icu::collator::options::CollatorOptions::default();
     collator_options.strength = match options.get("sensitivity").and_then(Value::as_str) {
-        Some("base") => Some(icu::collator::options::Strength::Primary),
+        Some("base" | "case") => Some(icu::collator::options::Strength::Primary),
         Some("accent") => Some(icu::collator::options::Strength::Secondary),
-        Some("case") => Some(icu::collator::options::Strength::Primary),
         Some("variant") => Some(icu::collator::options::Strength::Tertiary),
         _ => None,
     };
     if options.get("sensitivity").and_then(Value::as_str) == Some("case") {
         collator_options.case_level = Some(icu::collator::options::CaseLevel::On);
     }
-    if options
-        .get("ignorePunctuation")
-        .and_then(Value::as_bool)
-        == Some(true)
-    {
+    if options.get("ignorePunctuation").and_then(Value::as_bool) == Some(true) {
         collator_options.alternate_handling =
             Some(icu::collator::options::AlternateHandling::Shifted);
         collator_options.max_variable = Some(icu::collator::options::MaxVariable::Punctuation);
     }
-    let collator = Collator::try_new(prefs, collator_options)
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
-    Ok(match collator.compare(&left, &right) {
-        Ordering::Less => -1,
-        Ordering::Equal => 0,
-        Ordering::Greater => 1,
-    })
+    Collator::try_new(prefs, collator_options)
+        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))
 }
 
 pub(super) fn segment(
@@ -491,31 +561,38 @@ pub(super) fn segment(
     granularity: String,
 ) -> rquickjs::Result<String> {
     let _locale = first_locale(&ctx, &locales)?;
-    let mut boundaries = match granularity.as_str() {
-        "grapheme" => GraphemeClusterSegmenter::new()
-            .segment_str(&text)
-            .collect::<Vec<_>>(),
-        "sentence" => SentenceSegmenter::new(SentenceBreakInvariantOptions::default())
-            .segment_str(&text)
-            .collect::<Vec<_>>(),
-        "word" => WordSegmenter::new_for_non_complex_scripts(WordBreakInvariantOptions::default())
-            .segment_str(&text)
-            .collect::<Vec<_>>(),
-        _ => return Err(Exception::throw_range(&ctx, "Invalid segmenter granularity")),
+    let (mut boundaries, word_types) = match granularity.as_str() {
+        "grapheme" => (
+            GraphemeClusterSegmenter::new()
+                .segment_str(&text)
+                .collect::<Vec<_>>(),
+            None,
+        ),
+        "sentence" => (
+            SentenceSegmenter::new(SentenceBreakInvariantOptions::default())
+                .segment_str(&text)
+                .collect::<Vec<_>>(),
+            None,
+        ),
+        "word" => {
+            let pairs =
+                WordSegmenter::new_for_non_complex_scripts(WordBreakInvariantOptions::default())
+                    .segment_str(&text)
+                    .iter_with_word_type()
+                    .collect::<Vec<_>>();
+            let boundaries = pairs.iter().map(|&(boundary, _)| boundary).collect();
+            (boundaries, Some(pairs))
+        }
+        _ => {
+            return Err(Exception::throw_range(
+                &ctx,
+                "Invalid segmenter granularity",
+            ));
+        }
     };
     if boundaries.is_empty() {
         boundaries.push(0);
     }
-    let word_types = if granularity == "word" {
-        Some(
-            WordSegmenter::new_for_non_complex_scripts(WordBreakInvariantOptions::default())
-                .segment_str(&text)
-                .iter_with_word_type()
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        None
-    };
     let values = boundaries
         .windows(2)
         .enumerate()
@@ -530,8 +607,7 @@ pub(super) fn segment(
             if let Some(word_types) = &word_types {
                 let is_word_like = word_types
                     .get(index + 1)
-                    .map(|(_, word_type)| word_type.is_word_like())
-                    .unwrap_or(false);
+                    .is_some_and(|(_, word_type)| word_type.is_word_like());
                 value["isWordLike"] = Value::Bool(is_word_like);
             }
             value
@@ -552,8 +628,14 @@ pub(super) fn display_name(
         .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
     let options: Value = serde_json::from_str(&options)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
-    let kind = options.get("type").and_then(Value::as_str).unwrap_or("language");
-    let style = options.get("style").and_then(Value::as_str).unwrap_or("long");
+    let kind = options
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("language");
+    let style = options
+        .get("style")
+        .and_then(Value::as_str)
+        .unwrap_or("long");
     let prefs = DisplayNamesPreferences::from(locale.clone());
     let value = match kind {
         "language" => {
@@ -601,11 +683,7 @@ pub(super) fn display_name(
     Ok(value)
 }
 
-pub(super) fn locale_info(
-    ctx: Ctx<'_>,
-    tag: String,
-    _options: String,
-) -> rquickjs::Result<String> {
+pub(super) fn locale_info(ctx: Ctx<'_>, tag: String, _options: String) -> rquickjs::Result<String> {
     let mut locale = tag
         .parse::<Locale>()
         .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
@@ -648,6 +726,24 @@ fn plural_operand(ctx: &Ctx<'_>, value: f64) -> rquickjs::Result<FixedDecimal> {
         .map_err(|error| Exception::throw_range(ctx, &error.to_string()))
 }
 
+fn plural_locale(ctx: &Ctx<'_>, locale: &Locale) -> rquickjs::Result<Locale> {
+    // Supplemental plural data uses subtag lookup, not display-data parent
+    // overrides (which would route sr-Latn to root instead of Serbian).
+    let name = locale.id.to_string();
+    let mut candidate = name.as_str();
+    loop {
+        if candidate != "und" && PLURAL_LOCALES.binary_search(&candidate).is_ok() {
+            return candidate
+                .parse::<Locale>()
+                .map_err(|error| Exception::throw_internal(ctx, &error.to_string()));
+        }
+        let Some((parent, _)) = candidate.rsplit_once('-') else {
+            return Ok(icu::locale::locale!("en"));
+        };
+        candidate = parent;
+    }
+}
+
 fn plural_category(category: PluralCategory) -> &'static str {
     match category {
         PluralCategory::Zero => "zero",
@@ -667,17 +763,6 @@ fn list_length(options: &Value) -> ListLength {
     }
 }
 
-fn relative_unit_index(unit: &str) -> usize {
-    match unit {
-        "day" => 0,
-        "week" => 1,
-        "month" => 2,
-        "quarter" => 3,
-        "year" => 4,
-        _ => usize::MAX,
-    }
-}
-
 fn locale_keyword(locale: &Locale, name: &str) -> Option<String> {
     let key = name.parse().ok()?;
     locale
@@ -689,6 +774,8 @@ fn locale_keyword(locale: &Locale, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+// icu4x 2.3 exposes no display-name API for calendars, currencies, or
+// date-time fields; en keeps a small table, other locales return the code.
 fn calendar_display_name(code: &str, locale: &Locale) -> String {
     if locale.id.language.to_string() == "en" {
         match code {
@@ -724,8 +811,7 @@ fn date_time_field_display_name(code: &str, locale: &Locale) -> String {
             "year" => "year",
             "quarter" => "quarter",
             "month" => "month",
-            "weekOfYear" => "week",
-            "weekOfMonth" => "week",
+            "weekOfYear" | "weekOfMonth" => "week",
             "day" => "day",
             "dayOfWeek" => "day of the week",
             "dayperiod" | "dayPeriod" => "AM/PM",
@@ -756,6 +842,33 @@ fn format_date_time(
         .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
     let options: Value = serde_json::from_str(options_json)
         .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?;
+    let input = date_time_input(ctx, milliseconds, &options)?;
+    let key = format!("{locales}\u{1}{options_json}");
+    with_cached(
+        &DATE_TIME_FORMATTERS,
+        &key,
+        || date_time_formatter(ctx, locale, &options),
+        |formatter| {
+            if parts {
+                let mut collector = PartsCollector::default();
+                formatter
+                    .format(&input)
+                    .write_to_parts(&mut collector)
+                    .map_err(|_| Exception::throw_internal(ctx, "Failed to format date parts"))?;
+                serde_json::to_string(&collector.parts)
+                    .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))
+            } else {
+                Ok(formatter.format(&input).to_string())
+            }
+        },
+    )?
+}
+
+fn date_time_input(
+    ctx: &Ctx<'_>,
+    milliseconds: f64,
+    options: &Value,
+) -> rquickjs::Result<ZonedDateTime<Iso, TimeZoneInfo<AtTime>>> {
     #[allow(clippy::cast_possible_truncation)]
     let timestamp = Timestamp::from_millisecond(milliseconds as i64)
         .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
@@ -784,8 +897,15 @@ fn format_date_time(
     let zone = icu::time::TimeZone::from_iana_id(time_zone_name)
         .with_offset(Some(offset))
         .with_zone_name_timestamp(ZoneNameTimestamp::from_epoch_seconds(timestamp.as_second()));
-    let input = ZonedDateTime { date, time, zone };
-    let field_set = field_set(ctx, &options)?;
+    Ok(ZonedDateTime { date, time, zone })
+}
+
+fn date_time_formatter(
+    ctx: &Ctx<'_>,
+    locale: Locale,
+    options: &Value,
+) -> rquickjs::Result<DateTimeFormatter<CompositeFieldSet>> {
+    let field_set = field_set(ctx, options)?;
     let mut preferences = DateTimeFormatterPreferences::from(locale);
     if let Some(hour_cycle) = options
         .get("hourCycle")
@@ -794,21 +914,14 @@ fn format_date_time(
     {
         preferences.hour_cycle = Some(hour_cycle);
     } else if let Some(hour12) = options.get("hour12").and_then(Value::as_bool) {
-        preferences.hour_cycle = Some(if hour12 { HourCycle::H12 } else { HourCycle::H23 });
+        preferences.hour_cycle = Some(if hour12 {
+            HourCycle::H12
+        } else {
+            HourCycle::H23
+        });
     }
-    let formatter = DateTimeFormatter::<CompositeFieldSet>::try_new(preferences, field_set)
-    .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
-    if parts {
-        let mut collector = PartsCollector::default();
-        formatter
-            .format(&input)
-            .write_to_parts(&mut collector)
-            .map_err(|_| Exception::throw_internal(ctx, "Failed to format date parts"))?;
-        serde_json::to_string(&collector.parts)
-            .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))
-    } else {
-        Ok(normalize_day_period_spacing(&formatter.format(&input).to_string()))
-    }
+    DateTimeFormatter::try_new(preferences, field_set)
+        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))
 }
 
 fn field_set(ctx: &Ctx<'_>, options: &Value) -> rquickjs::Result<CompositeFieldSet> {
@@ -830,6 +943,9 @@ fn field_set(ctx: &Ctx<'_>, options: &Value) -> rquickjs::Result<CompositeFieldS
         date_style.is_some() || has_date_option || (!has_time_option && time_style.is_none());
     let has_time = time_style.is_some() || has_time_option;
     let mut builder = FieldSetBuilder::new();
+    if options.get("year").and_then(Value::as_str) == Some("numeric") {
+        builder.year_style = Some(YearStyle::Full);
+    }
     builder.date_fields = if has_date {
         Some(date_fields(options, date_style))
     } else {
@@ -841,7 +957,11 @@ fn field_set(ctx: &Ctx<'_>, options: &Value) -> rquickjs::Result<CompositeFieldS
         None
     };
     builder.length = Some(length(date_style.or(time_style).or_else(|| {
-        (options.get("month").and_then(Value::as_str) == Some("long")).then_some("long")
+        match options.get("month").and_then(Value::as_str) {
+            Some("long") => Some("long"),
+            Some("numeric" | "2-digit") => Some("short"),
+            _ => None,
+        }
     })));
     if options.get("timeZoneName").is_some() || matches!(time_style, Some("long" | "full")) {
         builder.zone_style = Some(match options.get("timeZoneName").and_then(Value::as_str) {
@@ -910,8 +1030,7 @@ fn parse_hour_cycle(value: &str) -> Option<HourCycle> {
     match value {
         "h11" => Some(HourCycle::H11),
         "h12" => Some(HourCycle::H12),
-        "h23" => Some(HourCycle::H23),
-        "h24" => Some(HourCycle::H23),
+        "h23" | "h24" => Some(HourCycle::H23),
         _ => None,
     }
 }
@@ -934,9 +1053,8 @@ fn format_number_parts(
     locale: &str,
     options: &Value,
 ) -> rquickjs::Result<String> {
-    serde_json::to_string(&format_number_parts_inner(ctx, value, locale, options)?).map_err(
-        |error| Exception::throw_internal(ctx, &error.to_string()),
-    )
+    serde_json::to_string(&format_number_parts_inner(ctx, value, locale, options)?)
+        .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))
 }
 
 fn format_number_parts_inner(
@@ -1026,8 +1144,7 @@ fn fraction_digits(style: &str, options: &Value) -> (u64, u64) {
     let currency_digits = options
         .get("currency")
         .and_then(Value::as_str)
-        .map(currency_fraction_digits)
-        .unwrap_or(2);
+        .map_or(2, currency_fraction_digits);
     let default_minimum = match style {
         "currency" => currency_digits,
         _ => 0,
@@ -1048,11 +1165,13 @@ fn fraction_digits(style: &str, options: &Value) -> (u64, u64) {
     (minimum.min(100), maximum.max(minimum).min(100))
 }
 
+// icu4x ships CLDR fraction data only behind doc-hidden provider internals;
+// this table covers the common non-default currencies, the rest default to 2.
 fn currency_fraction_digits(currency: &str) -> u64 {
     match currency {
         "BHD" | "IQD" | "JOD" | "KWD" | "LYD" | "OMR" | "TND" => 3,
-        "CLP" | "ISK" | "JPY" | "KRW" | "PYG" | "RWF" | "UGX" | "VND" | "VUV" | "XAF"
-        | "XOF" | "XPF" => 0,
+        "CLP" | "ISK" | "JPY" | "KRW" | "PYG" | "RWF" | "UGX" | "VND" | "VUV" | "XAF" | "XOF"
+        | "XPF" => 0,
         _ => 2,
     }
 }
@@ -1091,31 +1210,20 @@ fn grouping_strategy(options: &Value) -> GroupingStrategy {
     }
 }
 
-fn decimal_formatter(
-    ctx: &Ctx<'_>,
-    locale: &Locale,
-    options: &Value,
-) -> rquickjs::Result<icu::decimal::DecimalFormatter> {
-    DecimalFormatter::try_new(
-        locale.clone().into(),
-        DecimalFormatterOptions::from(grouping_strategy(options)),
-    )
-    .map_err(|error| Exception::throw_range(ctx, &error.to_string()))
-}
-
 fn decimal_parts(
     ctx: &Ctx<'_>,
     locale: &Locale,
     decimal: &FixedDecimal,
     options: &Value,
 ) -> rquickjs::Result<Vec<(String, String)>> {
-    let formatter = decimal_formatter(ctx, locale, options)?;
-    let mut collector = PartsCollector::default();
-    formatter
-        .format(decimal)
-        .write_to_parts(&mut collector)
-        .map_err(|_| Exception::throw_internal(ctx, "Failed to format number parts"))?;
-    Ok(collector.parts)
+    with_decimal_formatter(ctx, locale, grouping_strategy(options), |formatter| {
+        let mut collector = PartsCollector::default();
+        formatter
+            .format(decimal)
+            .write_to_parts(&mut collector)
+            .map_err(|_| Exception::throw_internal(ctx, "Failed to format number parts"))?;
+        Ok(collector.parts)
+    })?
 }
 
 fn compact_parts(
@@ -1125,9 +1233,15 @@ fn compact_parts(
     options: &Value,
 ) -> rquickjs::Result<Vec<(String, String)>> {
     let formatter = if options.get("compactDisplay").and_then(Value::as_str) == Some("long") {
-        CompactDecimalFormatter::try_new_long(locale.clone().into(), Default::default())
+        CompactDecimalFormatter::try_new_long(
+            locale.clone().into(),
+            CompactDecimalFormatterOptions::default(),
+        )
     } else {
-        CompactDecimalFormatter::try_new_short(locale.clone().into(), Default::default())
+        CompactDecimalFormatter::try_new_short(
+            locale.clone().into(),
+            CompactDecimalFormatterOptions::default(),
+        )
     }
     .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
     let mut collector = PartsCollector::default();
@@ -1200,7 +1314,7 @@ fn percent_parts(
     options: &Value,
 ) -> rquickjs::Result<Vec<(String, String)>> {
     let preferences = PercentFormatterPreferences::from(locale.clone());
-    let formatted = PercentFormatter::try_new(preferences, Default::default())
+    let formatted = PercentFormatter::try_new(preferences, PercentFormatterOptions::default())
         .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
         .format(decimal)
         .to_string();
@@ -1229,13 +1343,11 @@ fn unit_parts(
         .get("unitDisplay")
         .and_then(Value::as_str)
         .unwrap_or("short");
-    let suffix = unit_name(unit, locale, display, decimal.absolute.is_zero());
-    let mut parts = numeric_parts;
-    if !suffix.is_empty() {
-        parts.push(("literal".to_owned(), " ".to_owned()));
-        parts.push(("unit".to_owned(), suffix));
-    }
-    Ok(parts)
+    let rules = PluralRules::try_new_cardinal(plural_locale(ctx, locale)?.into())
+        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
+    let plural = plural_category(rules.category_for(decimal));
+    let pattern = units::pattern(ctx, locale, unit, display, plural)?;
+    Ok(units::parts(&pattern, numeric_parts))
 }
 
 fn scientific_parts(
@@ -1245,7 +1357,12 @@ fn scientific_parts(
     engineering: bool,
 ) -> rquickjs::Result<Vec<(String, String)>> {
     if decimal.absolute.is_zero() {
-        return decimal_parts(ctx, locale, decimal, &serde_json::json!({"useGrouping": false}));
+        return decimal_parts(
+            ctx,
+            locale,
+            decimal,
+            &serde_json::json!({"useGrouping": false}),
+        );
     }
     let mut exponent = i32::from(decimal.absolute.nonzero_magnitude_start());
     if engineering {
@@ -1254,7 +1371,10 @@ fn scientific_parts(
     let shift = i16::try_from(exponent).unwrap_or(0);
     let mut coefficient = decimal.clone();
     coefficient.multiply_pow10(-shift);
-    coefficient.round_with_mode(-3, SignedRoundingMode::Unsigned(UnsignedRoundingMode::HalfExpand));
+    coefficient.round_with_mode(
+        -3,
+        SignedRoundingMode::Unsigned(UnsignedRoundingMode::HalfExpand),
+    );
     let mut number_options = serde_json::json!({"useGrouping": false});
     number_options["minimumFractionDigits"] = Value::from(0);
     number_options["maximumFractionDigits"] = Value::from(3);
@@ -1263,7 +1383,10 @@ fn scientific_parts(
     if exponent < 0 {
         parts.push(("exponentMinusSign".to_owned(), "-".to_owned()));
     }
-    parts.push(("exponentInteger".to_owned(), exponent.unsigned_abs().to_string()));
+    parts.push((
+        "exponentInteger".to_owned(),
+        exponent.unsigned_abs().to_string(),
+    ));
     Ok(parts)
 }
 
@@ -1311,14 +1434,6 @@ fn append_literal_parts(parts: &mut Vec<(String, String)>, value: &str) {
     }
 }
 
-fn normalize_day_period_spacing(value: &str) -> String {
-    value
-        .replace("\u{202f}am", " am")
-        .replace("\u{202f}pm", " pm")
-        .replace("\u{202f}AM", " AM")
-        .replace("\u{202f}PM", " PM")
-}
-
 fn numeric_range(value: &str) -> Option<(usize, usize)> {
     let start = value
         .char_indices()
@@ -1332,39 +1447,6 @@ fn numeric_range(value: &str) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
-fn unit_name(unit: &str, locale: &Locale, display: &str, zero: bool) -> String {
-    let language = locale.id.language.to_string();
-    let english = match (unit, display, zero) {
-        ("kilometer-per-hour", "long", false) => "kilometer per hour",
-        ("kilometer-per-hour", "long", true) => "kilometers per hour",
-        ("kilometer-per-hour", "short" | "narrow", _) => "km/h",
-        ("meter", "long", false) => "meter",
-        ("meter", "long", true) => "meters",
-        ("meter", "short" | "narrow", _) => "m",
-        ("kilometer", "long", false) => "kilometer",
-        ("kilometer", "long", true) => "kilometers",
-        ("kilometer", "short" | "narrow", _) => "km",
-        ("hour", "long", false) => "hour",
-        ("hour", "long", true) => "hours",
-        ("hour", "short" | "narrow", _) => "hr",
-        ("minute", "long", false) => "minute",
-        ("minute", "long", true) => "minutes",
-        ("minute", "short" | "narrow", _) => "min",
-        ("second", "long", false) => "second",
-        ("second", "long", true) => "seconds",
-        ("second", "short" | "narrow", _) => "sec",
-        ("celsius", "long", _) => "degrees Celsius",
-        ("celsius", "short" | "narrow", _) => "°C",
-        ("fahrenheit", "long", _) => "degrees Fahrenheit",
-        ("fahrenheit", "short" | "narrow", _) => "°F",
-        _ => unit,
-    };
-    if language == "de" && unit == "kilometer-per-hour" && display == "long" {
-        return "Kilometer pro Stunde".to_owned();
-    }
-    english.to_owned()
-}
-
 #[derive(Default)]
 struct PartsCollector {
     parts: Vec<(String, String)>,
@@ -1373,7 +1455,6 @@ struct PartsCollector {
 
 impl fmt::Write for PartsCollector {
     fn write_str(&mut self, value: &str) -> fmt::Result {
-        let value = normalize_day_period_spacing(value);
         let kind = self
             .stack
             .iter()
@@ -1384,11 +1465,9 @@ impl fmt::Write for PartsCollector {
         if let Some((last_kind, existing)) = self.parts.last_mut()
             && last_kind == kind
         {
-            existing.push_str(&value);
-        } else {
-            if !value.is_empty() {
-                self.parts.push((kind.to_owned(), value));
-            }
+            existing.push_str(value);
+        } else if !value.is_empty() {
+            self.parts.push((kind.to_owned(), value.to_owned()));
         }
         Ok(())
     }

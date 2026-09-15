@@ -255,7 +255,7 @@ function winRelative(from, to) {
   const fromParts = left.slice(winRoot(left).length).split("\\").filter(Boolean).map(value => value.toLowerCase());
   const toParts = right.slice(winRoot(right).length).split("\\").filter(Boolean);
   let common = 0;
-  while (common < fromParts.length && fromParts[common] === toParts[common].toLowerCase()) common += 1;
+  while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common].toLowerCase()) common += 1;
   return [...fromParts.slice(common).map(() => ".."), ...toParts.slice(common)].join("\\");
 }
 

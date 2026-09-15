@@ -1,9 +1,7 @@
-use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use flume::{Receiver, Sender, TryRecvError, bounded};
+use std::io::{self, Read, Write};
 use std::net::TcpStream;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread;
 use std::time::Duration;
 
@@ -11,7 +9,12 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use openssl::sha::sha1;
 use openssl::ssl::{SslAcceptor, SslMethod, SslStream, SslVerifyMode};
 use openssl::x509::X509;
+use reqwest::{
+    StatusCode,
+    header::{HeaderMap, HeaderName, HeaderValue},
+};
 use serde::Serialize;
+use tokio_util::sync::CancellationToken;
 
 use crate::gateway::{GatewayConfig, WebSocketBridge, WebSocketInbound, WebSocketOutbound};
 use crate::quickjs::Error;
@@ -29,14 +32,16 @@ pub(super) struct HttpRequest {
     pub(super) method: String,
     pub(super) target: String,
     pub(super) url: String,
-    pub(super) headers: BTreeMap<String, String>,
+    #[serde(serialize_with = "crate::network::headers::serialize")]
+    pub(super) headers: HeaderMap,
     #[serde(skip_serializing)]
     pub(super) body: Option<Vec<u8>>,
 }
 
 pub(super) struct HttpResponse {
     pub(super) status: u16,
-    pub(super) headers: BTreeMap<String, String>,
+    pub(super) status_text: String,
+    pub(super) headers: HeaderMap,
     pub(super) body: HttpBody,
 }
 
@@ -47,12 +52,12 @@ pub(super) enum HttpBody {
 
 pub(super) struct BodyStream {
     receiver: Receiver<BodyChunk>,
-    cancelled: Arc<AtomicBool>,
+    cancelled: CancellationToken,
 }
 
 impl BodyStream {
     #[cfg(test)]
-    pub(super) fn recv(&self) -> Result<BodyChunk, std::sync::mpsc::RecvError> {
+    pub(super) fn recv(&self) -> Result<BodyChunk, flume::RecvError> {
         self.receiver.recv()
     }
 }
@@ -65,29 +70,34 @@ pub(super) struct WebSocketFrame {
 
 impl HttpResponse {
     pub(super) fn text(status: u16, body: &str) -> Self {
-        let mut headers = BTreeMap::new();
+        let mut headers = HeaderMap::new();
         headers.insert(
-            "content-type".to_owned(),
-            "text/plain; charset=utf-8".to_owned(),
+            "content-type",
+            HeaderValue::from_static("text/plain; charset=utf-8"),
         );
         Self::buffered(status, headers, body.as_bytes().to_vec())
     }
 
-    pub(super) fn buffered(status: u16, headers: BTreeMap<String, String>, body: Vec<u8>) -> Self {
+    pub(super) fn buffered(status: u16, headers: HeaderMap, body: Vec<u8>) -> Self {
         Self {
             status,
+            status_text: StatusCode::from_u16(status)
+                .ok()
+                .and_then(|code| code.canonical_reason())
+                .unwrap_or("")
+                .to_owned(),
             headers,
             body: HttpBody::Buffered(body),
         }
     }
 }
 
-pub(super) fn response_stream() -> (SyncSender<BodyChunk>, Arc<AtomicBool>, HttpBody) {
-    let (sender, receiver) = sync_channel(RESPONSE_STREAM_QUEUE);
-    let cancelled = Arc::new(AtomicBool::new(false));
+pub(super) fn response_stream() -> (Sender<BodyChunk>, CancellationToken, HttpBody) {
+    let (sender, receiver) = bounded(RESPONSE_STREAM_QUEUE);
+    let cancelled = CancellationToken::new();
     (
         sender,
-        Arc::clone(&cancelled),
+        cancelled.clone(),
         HttpBody::Stream(BodyStream {
             receiver,
             cancelled,
@@ -97,7 +107,7 @@ pub(super) fn response_stream() -> (SyncSender<BodyChunk>, Arc<AtomicBool>, Http
 
 impl Drop for BodyStream {
     fn drop(&mut self) {
-        self.cancelled.store(true, Ordering::Release);
+        self.cancelled.cancel();
     }
 }
 
@@ -161,10 +171,7 @@ pub(super) fn tls_acceptor(config: &GatewayConfig) -> Result<SslAcceptor, Error>
     Ok(builder.build())
 }
 
-pub(super) fn read_request(
-    stream: &mut SslStream<TcpStream>,
-    host: &str,
-) -> Result<HttpRequest, Error> {
+pub(super) fn read_request(stream: &mut impl Read, host: &str) -> Result<HttpRequest, Error> {
     let headers = read_header_block(stream)?;
     let text = String::from_utf8_lossy(&headers);
     let mut lines = text.split("\r\n");
@@ -175,7 +182,7 @@ pub(super) fn read_request(
     if method.is_empty() {
         return Err(Error::Startup("HTTP method is missing".to_owned()));
     }
-    let mut request_headers = BTreeMap::new();
+    let mut request_headers = HeaderMap::new();
     let mut content_length = None;
     let mut chunked = false;
     for line in lines {
@@ -186,7 +193,7 @@ pub(super) fn read_request(
             continue;
         };
         let name = name.trim().to_ascii_lowercase();
-        let value = value.trim().to_owned();
+        let value = value.trim_matches([' ', '\t']).to_owned();
         if name == "content-length" {
             content_length = Some(
                 value
@@ -201,7 +208,12 @@ pub(super) fn read_request(
         {
             chunked = true;
         }
-        request_headers.insert(name, value);
+        request_headers
+            .try_append(
+                HeaderName::from_bytes(name.as_bytes()).map_err(io::Error::other)?,
+                HeaderValue::from_bytes(value.as_bytes()).map_err(io::Error::other)?,
+            )
+            .map_err(io::Error::other)?;
     }
     if chunked && content_length.is_some() {
         return Err(Error::Startup(
@@ -283,7 +295,7 @@ pub(super) fn is_websocket(request: &HttpRequest) -> bool {
     request
         .headers
         .get("upgrade")
-        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"))
 }
 
 pub(super) fn websocket_session(
@@ -722,74 +734,105 @@ fn write_response_inner(
     cancelled: Option<&AtomicBool>,
     peer: Option<&TcpStream>,
 ) -> Result<(), Error> {
-    let no_body = method.is_some_and(|method| method.eq_ignore_ascii_case("HEAD"))
-        || (100..200).contains(&response.status)
-        || matches!(response.status, 204 | 304);
-    response
-        .headers
-        .entry("connection".to_owned())
-        .or_insert_with(|| "close".to_owned());
+    let head = method.is_some_and(|method| method.eq_ignore_ascii_case("HEAD"));
+    let no_body =
+        head || (100..200).contains(&response.status) || matches!(response.status, 204 | 205 | 304);
+    if !response.headers.contains_key("connection") {
+        response
+            .headers
+            .try_insert("connection", HeaderValue::from_static("close"))
+            .map_err(io::Error::other)?;
+    }
+    if !head {
+        response.headers.remove("transfer-encoding");
+        if (100..200).contains(&response.status) || matches!(response.status, 204 | 304) {
+            response.headers.remove("content-length");
+        } else {
+            let length = match &response.body {
+                HttpBody::Buffered(body) => Some(body.len()),
+                HttpBody::Stream(_) => None,
+            };
+            if let Some(length) = length {
+                response
+                    .headers
+                    .try_insert("content-length", HeaderValue::from(length))
+                    .map_err(io::Error::other)?;
+            } else {
+                response.headers.remove("content-length");
+                response
+                    .headers
+                    .try_insert("transfer-encoding", HeaderValue::from_static("chunked"))
+                    .map_err(io::Error::other)?;
+            }
+        }
+    } else if response.status == 205
+        && !response.headers.contains_key("content-length")
+        && !response.headers.contains_key("transfer-encoding")
+    {
+        response
+            .headers
+            .try_insert("content-length", HeaderValue::from_static("0"))
+            .map_err(io::Error::other)?;
+    }
+    write_response_headers(
+        &mut stream,
+        response.status,
+        &response.status_text,
+        &response.headers,
+    )?;
+    if no_body {
+        return Ok(());
+    }
     match response.body {
         HttpBody::Buffered(body) => {
-            response
-                .headers
-                .entry("content-length".to_owned())
-                .or_insert_with(|| body.len().to_string());
-            write_response_headers(&mut stream, response.status, &response.headers)?;
-            if !no_body {
-                stream.write_all(&body)?;
-                stream.flush()?;
-            }
-            Ok(())
-        }
-        HttpBody::Stream(body) => {
-            if no_body {
-                response.headers.remove("content-length");
-                response.headers.remove("transfer-encoding");
-                write_response_headers(&mut stream, response.status, &response.headers)?;
-                return Ok(());
-            }
-            response.headers.remove("content-length");
-            response
-                .headers
-                .insert("transfer-encoding".to_owned(), "chunked".to_owned());
-            write_response_headers(&mut stream, response.status, &response.headers)?;
-            loop {
-                let chunk = match body.receiver.recv_timeout(RESPONSE_STREAM_POLL) {
-                    Ok(chunk) => chunk,
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
-                            || body.cancelled.load(Ordering::Acquire)
-                        {
-                            break;
-                        }
-                        if peer_closed(peer) {
-                            body.cancelled.store(true, Ordering::Release);
-                            return Ok(());
-                        }
-                        continue;
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                };
-                let chunk = chunk
-                    .map_err(|error| Error::Startup(format!("response stream failed: {error}")))?;
-                if !chunk.is_empty() {
-                    write!(stream, "{:X}\r\n", chunk.len())?;
-                    stream.write_all(&chunk)?;
-                    stream.write_all(b"\r\n")?;
-                    stream.flush()?;
-                }
-            }
-            if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
-                || body.cancelled.load(Ordering::Acquire)
-            {
-                return Ok(());
-            }
-            stream.write_all(b"0\r\n\r\n")?;
+            stream.write_all(&body)?;
             stream.flush()?;
             Ok(())
         }
+        HttpBody::Stream(body) => write_stream_body(stream, &body, cancelled, peer),
     }
+}
+
+fn write_stream_body(
+    mut stream: impl Write,
+    body: &BodyStream,
+    cancelled: Option<&AtomicBool>,
+    peer: Option<&TcpStream>,
+) -> Result<(), Error> {
+    loop {
+        let chunk = match body.receiver.recv_timeout(RESPONSE_STREAM_POLL) {
+            Ok(chunk) => chunk,
+            Err(flume::RecvTimeoutError::Timeout) => {
+                if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+                    || body.cancelled.is_cancelled()
+                {
+                    break;
+                }
+                if peer_closed(peer) {
+                    body.cancelled.cancel();
+                    return Ok(());
+                }
+                continue;
+            }
+            Err(flume::RecvTimeoutError::Disconnected) => break,
+        };
+        let chunk =
+            chunk.map_err(|error| Error::Startup(format!("response stream failed: {error}")))?;
+        if !chunk.is_empty() {
+            write!(stream, "{:X}\r\n", chunk.len())?;
+            stream.write_all(&chunk)?;
+            stream.write_all(b"\r\n")?;
+            stream.flush()?;
+        }
+    }
+    if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+        || body.cancelled.is_cancelled()
+    {
+        return Ok(());
+    }
+    stream.write_all(b"0\r\n\r\n")?;
+    stream.flush()?;
+    Ok(())
 }
 
 fn peer_closed(stream: Option<&TcpStream>) -> bool {
@@ -817,19 +860,15 @@ fn peer_closed(stream: Option<&TcpStream>) -> bool {
 fn write_response_headers(
     stream: &mut impl Write,
     status: u16,
-    headers: &BTreeMap<String, String>,
+    reason: &str,
+    headers: &HeaderMap,
 ) -> Result<(), Error> {
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        404 => "Not Found",
-        500 => "Internal Server Error",
-        503 => "Service Unavailable",
-        _ => "",
-    };
+    hyper::ext::ReasonPhrase::try_from(reason.as_bytes()).map_err(io::Error::other)?;
     write!(stream, "HTTP/1.1 {status} {reason}\r\n")?;
     for (name, value) in headers {
-        write!(stream, "{name}: {value}\r\n")?;
+        write!(stream, "{name}: ")?;
+        stream.write_all(value.as_bytes())?;
+        stream.write_all(b"\r\n")?;
     }
     stream.write_all(b"\r\n")?;
     stream.flush()?;
@@ -842,8 +881,8 @@ fn tls_error(error: &openssl::error::ErrorStack) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{HttpBody, HttpResponse, response_stream, write_response_inner};
-    use std::collections::BTreeMap;
+    use super::{HttpBody, HttpResponse, read_request, response_stream, write_response_inner};
+    use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
     use std::io::{self, Cursor};
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
@@ -851,8 +890,147 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn rejects_excess_response_headers_without_panicking() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for scenario in 0..3 {
+            let mut headers = HeaderMap::new();
+            if scenario != 0 {
+                headers.insert("connection", HeaderValue::from_static("close"));
+            }
+            for index in 0..30000 {
+                let name = HeaderName::from_bytes(format!("x-{index}").as_bytes())?;
+                if headers
+                    .try_insert(name, HeaderValue::from_static("v"))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            let (body, cancelled) = if scenario == 2 {
+                let (_, cancelled, body) = response_stream();
+                (body, Some(cancelled))
+            } else {
+                (HttpBody::Buffered(Vec::new()), None)
+            };
+            let response = HttpResponse {
+                status: 200,
+                status_text: "OK".to_owned(),
+                headers,
+                body,
+            };
+            let mut output = Vec::new();
+            assert!(write_response_inner(&mut output, response, None, None, None).is_err());
+            assert!(output.is_empty());
+            assert!(cancelled.is_none_or(|token| token.is_cancelled()));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reads_and_serializes_repeated_request_headers() -> Result<(), Box<dyn std::error::Error>> {
+        let mut input = Cursor::new(
+            "GET / HTTP/1.1\r\nX-Repeated: one\r\nX-Repeated: two\r\nX-Text: 東京\r\n\r\n",
+        );
+        let request = read_request(&mut input, "app.test")?;
+        let json = serde_json::to_value(request)?;
+        let pairs = json["headers"].as_array().ok_or("expected header pairs")?;
+        assert!(pairs.contains(&serde_json::json!(["x-repeated", "one"])));
+        assert!(pairs.contains(&serde_json::json!(["x-repeated", "two"])));
+        assert!(pairs.contains(&serde_json::json!(["x-text", "東京"])));
+        Ok(())
+    }
+
+    #[test]
+    fn writes_custom_status_text_without_allowing_header_injection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut response = HttpResponse::text(201, "ok");
+        response.status_text = "Created Here".to_owned();
+        let mut output = Vec::new();
+        write_response_inner(&mut output, response, None, None, None)?;
+        assert!(output.starts_with(b"HTTP/1.1 201 Created Here\r\n"));
+
+        let mut response = HttpResponse::text(200, "ok");
+        response.status_text = "OK\r\nInjected: true".to_owned();
+        let mut output = Vec::new();
+        assert!(write_response_inner(&mut output, response, None, None, None).is_err());
+        assert!(output.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn writes_duplicate_response_headers() -> Result<(), Box<dyn std::error::Error>> {
+        let headers = [
+            (
+                HeaderName::from_static("set-cookie"),
+                HeaderValue::from_static("first=1"),
+            ),
+            (
+                HeaderName::from_static("set-cookie"),
+                HeaderValue::from_static("second=2"),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let response = HttpResponse::buffered(201, headers, b"ok".to_vec());
+        let mut output = Vec::new();
+        write_response_inner(&mut output, response, None, None, None)?;
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("set-cookie: first=1\r\n"));
+        assert!(output.contains("set-cookie: second=2\r\n"));
+        assert!(output.starts_with("HTTP/1.1 201 Created\r\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn computes_response_framing_and_preserves_explicit_head_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut response = HttpResponse::text(200, "ok");
+        response
+            .headers
+            .insert("content-length", HeaderValue::from_static("99"));
+        response
+            .headers
+            .insert("transfer-encoding", HeaderValue::from_static("identity"));
+        let mut output = Vec::new();
+        write_response_inner(&mut output, response, Some("GET"), None, None)?;
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("content-length: 2\r\n"));
+        assert!(!output.contains("transfer-encoding:"));
+
+        for explicit in [false, true] {
+            let (_, cancelled, body) = response_stream();
+            let mut response = HttpResponse::text(200, "");
+            response.body = body;
+            if explicit {
+                response
+                    .headers
+                    .insert("content-length", HeaderValue::from_static("99"));
+            }
+            let mut output = Vec::new();
+            write_response_inner(&mut output, response, Some("HEAD"), None, None)?;
+            let output = String::from_utf8(output)?;
+            assert_eq!(output.contains("content-length: 99\r\n"), explicit);
+            assert!(!output.contains("transfer-encoding:"));
+            assert!(cancelled.is_cancelled());
+        }
+        for status in [204, 205, 304] {
+            let mut response = HttpResponse::text(status, "");
+            response
+                .headers
+                .insert("content-length", HeaderValue::from_static("99"));
+            let mut output = Vec::new();
+            write_response_inner(&mut output, response, Some("GET"), None, None)?;
+            let output = String::from_utf8(output)?;
+            assert_eq!(output.contains("content-length: 0\r\n"), status == 205);
+            assert!(!output.contains("content-length: 99"));
+            assert!(!output.contains("transfer-encoding:"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn writes_buffered_responses_with_a_content_length() -> Result<(), Box<dyn std::error::Error>> {
-        let response = HttpResponse::buffered(200, BTreeMap::new(), b"ok".to_vec());
+        let response = HttpResponse::buffered(200, HeaderMap::new(), b"ok".to_vec());
         let mut output = Vec::new();
 
         write_response_inner(&mut output, response, None, None, None)?;
@@ -874,7 +1052,8 @@ mod tests {
         drop(sender);
         let response = HttpResponse {
             status: 200,
-            headers: BTreeMap::new(),
+            status_text: "OK".to_owned(),
+            headers: HeaderMap::new(),
             body: HttpBody::Stream(body),
         };
         let mut output = Vec::new();
@@ -897,7 +1076,8 @@ mod tests {
         sender.send(Ok(b"body".to_vec()))?;
         let response = HttpResponse {
             status: 200,
-            headers: BTreeMap::new(),
+            status_text: "OK".to_owned(),
+            headers: HeaderMap::new(),
             body: HttpBody::Stream(body),
         };
         let mut output = Vec::new();
@@ -907,7 +1087,7 @@ mod tests {
         let output = String::from_utf8(output)?;
         assert!(!output.contains("transfer-encoding:"));
         assert!(!output.ends_with("body"));
-        assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+        assert!(cancelled.is_cancelled());
         Ok(())
     }
 
@@ -916,7 +1096,8 @@ mod tests {
         let (_sender, _cancelled, body) = response_stream();
         let response = HttpResponse {
             status: 200,
-            headers: BTreeMap::new(),
+            status_text: "OK".to_owned(),
+            headers: HeaderMap::new(),
             body,
         };
         let cancelled = std::sync::atomic::AtomicBool::new(true);
@@ -940,7 +1121,8 @@ mod tests {
         let (sender, cancelled, body) = response_stream();
         let response = HttpResponse {
             status: 200,
-            headers: BTreeMap::new(),
+            status_text: "OK".to_owned(),
+            headers: HeaderMap::new(),
             body,
         };
         let (done_sender, done_receiver) = mpsc::channel();
@@ -960,13 +1142,13 @@ mod tests {
         match done_receiver.recv_timeout(Duration::from_secs(2)) {
             Ok(result) => result?,
             Err(error) => {
-                cancelled.store(true, std::sync::atomic::Ordering::Release);
+                cancelled.cancel();
                 let _ = thread.join();
                 return Err(error.into());
             }
         }
         thread.join().map_err(|_| "response writer panicked")?;
-        assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+        assert!(cancelled.is_cancelled());
         drop(sender);
         Ok(())
     }
@@ -995,7 +1177,8 @@ mod tests {
         drop(sender);
         let response = HttpResponse {
             status: 200,
-            headers: BTreeMap::new(),
+            status_text: "OK".to_owned(),
+            headers: HeaderMap::new(),
             body: HttpBody::Stream(body),
         };
         let error = match write_response_inner(io::sink(), response, None, None, None) {

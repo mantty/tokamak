@@ -82,6 +82,10 @@ jobs:
         run: |
           pnpm --dir tools/esbuild-hosts install --frozen-lockfile
           pnpm --dir tokamak/tests/quickjs_runtime install --frozen-lockfile
+          pnpm --dir examples/astro install --frozen-lockfile
+
+      - name: Build Astro runtime fixture
+        run: pnpm --dir examples/astro build
 
       - name: Test runtime JavaScript
         run: node --test tokamak/tests/quickjs_runtime/runtime.test.mjs

@@ -1,5 +1,7 @@
+import { markHostObject } from "../globals/objects.mjs";
+import { httpStatusText } from "tokamak:host";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
-import { ReadableStream } from "../streams/web.mjs";
+import { ReadableStream, isDisturbed } from "../streams/web.mjs";
 import { ErrorEvent, Event, EventTarget, MessageEvent } from "../events/events.mjs";
 import { blobBrand, URL, URLSearchParams } from "./url.mjs";
 
@@ -103,6 +105,7 @@ function normalizeHeaderValue(value) {
 
 export class Headers {
   constructor(init) {
+    markHostObject(this, "Headers");
     hidden(this, "__values", new Map());
     if (init instanceof Headers) {
       for (const [name, values] of init.__values) this.__values.set(name, values.slice());
@@ -151,6 +154,7 @@ function headerEntries(headers) {
 
 export class Blob {
   constructor(parts = [], options = {}) {
+    markHostObject(this, "Blob");
     if (parts == null || typeof parts[Symbol.iterator] !== "function") throw new TypeError("Blob parts must be iterable");
     const chunks = [...parts].map(blobPartBytes);
     const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
@@ -182,6 +186,7 @@ export class File extends Blob {
   constructor(parts, name, options = {}) {
     if (arguments.length < 2) throw new TypeError("File name is required");
     super(parts, options);
+    markHostObject(this, "File");
     hidden(this, "__name", usvString(name));
     const modified = Number(options?.lastModified === undefined ? Date.now() : options.lastModified);
     hidden(this, "__lastModified", Number.isNaN(modified) ? 0 : modified);
@@ -201,7 +206,7 @@ function formDataValue(value, filename) {
 }
 
 export class FormData {
-  constructor() { hidden(this, "__entries", []); }
+  constructor() { markHostObject(this); hidden(this, "__entries", []); }
   append(name, value, filename) { this.__entries.push([usvString(name), formDataValue(value, filename)]); }
   set(name, value, filename) {
     const key = usvString(name);
@@ -227,7 +232,7 @@ export class FormData {
 
 export class Body {
   get body() { return this.__bodyStream; }
-  get bodyUsed() { return Boolean(this.__bodyConsumed || this.__bodyDisturbed || this.__bodyStream?.__disturbed); }
+  get bodyUsed() { return Boolean(this.__bodyConsumed || this.__bodyDisturbed || isDisturbed(this.__bodyStream)); }
   async arrayBuffer() { return (await consumeBody(this)).buffer; }
   async bytes() { return consumeBody(this); }
   async blob() {
@@ -265,6 +270,7 @@ function requestMethod(value) {
 function requestRedirect(value) {
   if (value === null) throw new TypeError("Invalid redirect mode");
   const redirect = string(value).toLowerCase();
+  if (redirect === "error") throw new TypeError('Invalid redirect value, must be one of "follow" or "manual" ("error" won\'t be implemented since it does not make sense at the edge; use "manual" and check the response status code).');
   if (!["error", "follow", "manual"].includes(redirect)) throw new TypeError("Invalid redirect mode");
   return redirect;
 }
@@ -308,9 +314,31 @@ function requestInit(request, source) {
   };
 }
 
+function transferBody(stream) {
+  const reader = stream.getReader();
+  return new ReadableStream({
+    type: "bytes",
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) { reader.releaseLock(); controller.close(); }
+        else controller.enqueue(value);
+      } catch (error) {
+        reader.releaseLock();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try { await reader.cancel(reason); }
+      finally { reader.releaseLock(); }
+    },
+  });
+}
+
 export class Request extends Body {
   constructor(input, init = {}) {
     super();
+    markHostObject(this, "Request");
     init = init ?? {};
     const source = input instanceof Request ? input : null;
     const hasBody = init.body !== undefined;
@@ -318,22 +346,14 @@ export class Request extends Body {
     const method = requestMethod(init.method === undefined ? source?.method ?? "GET" : init.method);
     let inputBody = hasBody ? init.body : source?.__body;
     let inputStream = null;
-    let copiedSource = false;
-    if (!hasBody && source?.__stream) {
-      const [first, second] = source.__stream.tee();
-      source.__stream = first;
-      source.__bodyStream = first;
-      inputBody = null;
-      inputStream = second;
-      copiedSource = true;
-    } else if (!hasBody && source && source.__body != null) {
-      inputBody = source.__body.slice();
-      copiedSource = true;
+    if (!hasBody && source?.body != null) {
+      inputBody = source.__body?.slice() ?? null;
+      inputStream = transferBody(source.body);
+      source.__bodyConsumed = true;
     }
-    if (copiedSource) source.__bodyConsumed = true;
     const serialized = inputBody instanceof FormData ? requestBody(inputBody) : null;
     if ((method === "GET" || method === "HEAD") && (inputBody != null || inputStream !== null)) throw new TypeError("Request with GET/HEAD method cannot have body");
-    const body = inputStream === null && inputBody != null ? requestBody(serialized?.body ?? inputBody) : { body: null, stream: inputStream, contentType: null };
+    const body = inputStream === null && inputBody != null ? requestBody(serialized?.body ?? inputBody) : { body: inputBody ?? null, stream: inputStream, contentType: null };
     const url = source?.url ?? new URL(input).href;
     const headers = new Headers(init.headers !== undefined ? init.headers : source?.headers);
     if ((inputBody != null || inputStream !== null) && !headers.has("content-type")) {
@@ -355,7 +375,9 @@ export class Request extends Body {
     hidden(this, "__integrity", init.integrity === undefined ? source?.integrity ?? "" : init.integrity);
     hidden(this, "__keepalive", Boolean(init.keepalive ?? source?.keepalive ?? false));
     hidden(this, "__redirect", requestRedirect(init.redirect === undefined ? source?.redirect ?? "follow" : init.redirect));
-    hidden(this, "__signal", init.signal == null ? defaultSignal() : requestSignal(init.signal));
+    const inheritedSignal = init.signal === undefined ? source?.signal : init.signal;
+    hidden(this, "__signal", inheritedSignal == null ? defaultSignal() : requestSignal(inheritedSignal));
+    hidden(this, "__signalProvided", init.signal === undefined ? source?.__signalProvided ?? false : init.signal != null);
   }
 
   get cache() { return this.__cache; }
@@ -384,17 +406,20 @@ export class Request extends Body {
 
 export class Response extends Body {
   constructor(body = null, init = {}) {
-    if (body instanceof Response) {
-      init = { status: body.status, statusText: body.statusText, headers: body.headers, url: body.url, type: body.type, redirected: body.redirected, cf: body.cf, webSocket: body.webSocket };
-      body = body.__stream ?? body.__body;
-    }
     super();
+    markHostObject(this, "Response");
     init = init ?? {};
     const serialized = body instanceof FormData ? requestBody(body) : null;
-    const status = Math.trunc(Number(init.status === undefined ? 200 : init.status));
+    const inputStatus = init.status;
+    const status = Math.trunc(Number(inputStatus === undefined ? 200 : inputStatus));
     if (!Number.isInteger(status) || status < 200 || status > 599) throw new RangeError("Invalid response status code");
-    const statusText = string(init.statusText === undefined ? "" : init.statusText);
+    if ([204, 205, 304].includes(status) && body !== null && body !== undefined) throw new TypeError("Response with null body status cannot have a body");
+    const inputStatusText = init.statusText;
+    const statusText = string(inputStatusText === undefined ? httpStatusText(status) : inputStatusText);
     if (/[\0-\x1f\x7f]/.test(statusText)) throw new TypeError("Invalid response status text");
+    const inputEncoding = init instanceof Response ? init.__encodeBody : init.encodeBody;
+    const encodeBody = inputEncoding === undefined ? "automatic" : string(inputEncoding);
+    if (encodeBody !== "automatic" && encodeBody !== "manual") throw new TypeError(`encodeBody: unexpected value: ${encodeBody}`);
     const headers = new Headers(init.headers);
     if (body != null && !(body instanceof ReadableStream) && !headers.has("content-type")) {
       const type = serialized?.contentType ?? bodyInitType(body);
@@ -404,6 +429,7 @@ export class Response extends Body {
     const bodyBytes = stream === null && body != null ? bytes(serialized?.body ?? body) : null;
     hidden(this, "__status", status);
     hidden(this, "__statusText", statusText);
+    hidden(this, "__encodeBody", encodeBody);
     hidden(this, "__headers", headers);
     hidden(this, "__stream", stream);
     hidden(this, "__body", bodyBytes);
@@ -434,7 +460,7 @@ export class Response extends Body {
   clone() {
     if (this.__error) return Response.error();
     if (this.__bodyConsumed || this.body?.locked) throw new TypeError("Body has already been used");
-    if (this.__bodyStream?.__disturbed) {
+    if (isDisturbed(this.__bodyStream)) {
       const [first, second] = this.__bodyStream.tee();
       this.__bodyStream = first;
       this.__stream = this.__stream === null ? null : first;
@@ -453,6 +479,7 @@ export class Response extends Body {
   static error() {
     const response = new Response(null);
     response.__status = 0;
+    response.__statusText = "";
     response.__ok = false;
     response.__type = "error";
     response.__error = true;
@@ -666,7 +693,7 @@ function formDataBody(form) {
 function quoteHeader(value) { return string(value).replace(/["\\\r\n]/g, character => "\\" + character); }
 
 export class Cache {
-  constructor(name = "default") { hidden(this, "__name", string(name)); }
+  constructor(name = "default") { markHostObject(this); hidden(this, "__name", string(name)); }
   async match(request, options = {}) {
     if (!options.ignoreMethod && requestMethodForCache(request) !== "GET") return undefined;
     const entry = await cacheHost("cacheMatch", [cachePath(), this.__name, cacheKey(request, options)]);
@@ -707,6 +734,7 @@ export class Cache {
 
 export class CacheStorage {
   constructor() {
+    markHostObject(this);
     this.default = new Cache();
     this.__caches = new Map([["default", this.default]]);
   }

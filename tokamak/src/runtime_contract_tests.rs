@@ -1,10 +1,11 @@
+use reqwest::header::{HeaderMap, HeaderValue};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, atomic::AtomicBool, mpsc};
+use std::sync::{Arc, atomic::AtomicBool};
 use std::thread;
 use std::time::Duration;
 
@@ -82,7 +83,7 @@ fn request(worker: &WorkerBundle, flag: &str) -> TestResult<Vec<u8>> {
     let accepting = Arc::new(AtomicBool::new(true));
     let lifecycle = Lifecycle::new();
     let execution = lifecycle.enter(&accepting).ok_or("request rejected")?;
-    let (sender, receiver) = mpsc::sync_channel(1);
+    let (sender, receiver) = flume::bounded(1);
     execute_request(
         worker,
         &config,
@@ -92,7 +93,7 @@ fn request(worker: &WorkerBundle, flag: &str) -> TestResult<Vec<u8>> {
                 method: "GET".to_owned(),
                 target: "/".to_owned(),
                 url: "https://app.tokamak.local/".to_owned(),
-                headers: BTreeMap::new(),
+                headers: HeaderMap::new(),
                 body: None,
             },
             response: sender,
@@ -112,12 +113,280 @@ fn request(worker: &WorkerBundle, flag: &str) -> TestResult<Vec<u8>> {
 }
 
 #[test]
+fn node_web_stream_adapters_close_and_flush_vectors() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("web-adapters.mjs");
+    fs::write(
+        &source,
+        r#"
+import { Writable, Duplex } from "node:stream";
+export default { async fetch() {
+  const chunks = [];
+  const writer = Writable.toWeb(new Writable({
+    write(chunk, encoding, callback) { chunks.push(...chunk); callback(); },
+  })).getWriter();
+  await writer.write(new Uint8Array([1, 2]));
+  await writer.close();
+  for (const duplex of [false, true]) {
+    const web = new WritableStream({ write(chunk) { chunks.push(...chunk); } });
+    const node = duplex ? Duplex.fromWeb({
+      readable: new ReadableStream({ start(c) { c.close(); } }), writable: web,
+    }) : Writable.fromWeb(web);
+    const complete = new Promise((resolve, reject) => { node.on("error", reject); node.on("finish", resolve); });
+    node.cork();
+    node.write(new Uint8Array([3]));
+    node.write(new Uint8Array([4]));
+    node.end();
+    await complete;
+    node.destroy();
+  }
+  const errors = [];
+  const callbacks = [];
+  for (const duplex of [false, true]) {
+    const web = new WritableStream({ write() { throw new Error("sink rejected"); } });
+    const node = duplex ? Duplex.fromWeb({
+      readable: new ReadableStream({ start(c) { c.close(); } }), writable: web,
+    }) : Writable.fromWeb(web);
+    const complete = new Promise(resolve => { node.on("error", error => errors.push(error.message)); node.on("close", resolve); });
+    node.cork();
+    node.write(new Uint8Array([3]), error => callbacks.push(error?.message));
+    node.write(new Uint8Array([4]), error => callbacks.push(error?.message));
+    node.end();
+    await complete;
+  }
+  return Response.json({ chunks, errors, callbacks });
+} };
+"#,
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("bundle"))?;
+    assert_eq!(request(&worker, "enabled")?, br#"{"chunks":[1,2,3,4,3,4],"errors":["sink rejected","sink rejected"],"callbacks":["sink rejected","sink rejected","sink rejected","sink rejected"]}"#);
+    Ok(())
+}
+
+#[test]
+fn node_web_duplex_failure_closes_the_live_peer() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("web-duplex-failure.mjs");
+    fs::write(
+        &source,
+        r#"
+import { Duplex } from "node:stream";
+export default { async fetch() {
+  const cleanup = [];
+  for (const failing of ["readable", "writable"]) {
+    let input, output;
+    const node = Duplex.fromWeb({
+      readable: new ReadableStream({
+        start(controller) { input = controller; },
+        cancel(error) { cleanup.push(["readable", error.message]); },
+      }),
+      writable: new WritableStream({
+        start(controller) { output = controller; },
+        abort(error) { cleanup.push(["writable", error.message]); },
+      }),
+    });
+    const closed = new Promise(resolve => { node.on("error", () => {}); node.on("close", resolve); });
+    (failing === "readable" ? input : output).error(new Error(failing));
+    await closed;
+  }
+  return Response.json(cleanup);
+} };
+"#,
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("bundle"))?;
+    assert_eq!(
+        request(&worker, "enabled")?,
+        br#"[["writable","readable"],["readable","writable"]]"#
+    );
+    Ok(())
+}
+
+#[test]
+fn brotli_small_output_buffers_drain_without_recursion() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("brotli-small-buffers.mjs");
+    fs::write(
+        &source,
+        r#"
+import { brotliCompressSync, createBrotliDecompress } from "node:zlib";
+import { Buffer } from "node:buffer";
+export default { async fetch() {
+  const plain = "incremental data ".repeat(8192);
+  const encoded = brotliCompressSync(plain);
+  const decoder = createBrotliDecompress({ chunkSize: 64 });
+  const chunks = [];
+  const done = new Promise((resolve, reject) => {
+    decoder.on("data", chunk => chunks.push(chunk));
+    decoder.once("end", resolve);
+    decoder.once("error", reject);
+  });
+  for (const byte of encoded) decoder.write(Buffer.from([byte]));
+  decoder.end();
+  await done;
+  return Response.json({ restored: Buffer.concat(chunks).toString() === plain });
+} };
+"#,
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("bundle"))?;
+    assert_eq!(request(&worker, "enabled")?, br#"{"restored":true}"#);
+    Ok(())
+}
+
+#[test]
+fn due_timers_preserve_order_and_microtask_checkpoints() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("timer-order.mjs");
+    fs::write(
+        &source,
+        r#"
+export default { async fetch() {
+  for (let round = 0; round < 20; round++) {
+    const order = [];
+    const done = [];
+    const cancelled = setTimeout(() => { throw new Error("cancelled timer ran"); }, 0);
+    clearTimeout(cancelled);
+    for (let i = 0; i < 50; i++) done.push(new Promise(resolve => setTimeout(() => {
+      order.push(i * 2);
+      queueMicrotask(() => order.push(i * 2 + 1));
+      resolve();
+    }, 0)));
+    await Promise.all(done);
+    if (order.length !== 100 || order.some((value, index) => value !== index)) throw new Error(JSON.stringify(order));
+  }
+  return new Response("ordered");
+} };
+"#,
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("bundle"))?;
+    assert_eq!(request(&worker, "enabled")?, b"ordered");
+    Ok(())
+}
+
+#[test]
+fn timers_progress_while_a_socket_waits_for_data() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = thread::spawn(move || -> io::Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let mut ping = [0; 4];
+        stream.read_exact(&mut ping)?;
+        thread::sleep(Duration::from_millis(100));
+        stream.write_all(b"pong")
+    });
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("socket-timer.mjs");
+    fs::write(
+        &source,
+        format!(
+            r#"
+import {{ connect }} from "node:net";
+export default {{ async fetch() {{
+  const result = await new Promise((resolve, reject) => {{
+    let timerRan = false;
+    const socket = connect({{ host: "127.0.0.1", port: {port} }}, () => {{
+      setTimeout(() => {{ timerRan = true; }}, 1);
+      socket.write("ping");
+    }});
+    socket.on("data", () => {{ socket.destroy(); resolve(timerRan); }});
+    socket.on("error", reject);
+  }});
+  return Response.json(result);
+}} }};
+"#
+        ),
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let actual = request(&worker, "first");
+    server.join().map_err(|_| "socket server panicked")??;
+    assert_eq!(actual?, b"true");
+    Ok(())
+}
+
+#[test]
+fn streaming_fetch_matches_cloudflare() -> TestResult {
+    use std::io::BufRead;
+    use std::process::Stdio;
+    let mut reference = Command::new("node")
+        .arg(fixture_root().join("http-reference.mjs"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let output = reference.stdout.take().ok_or("reference stdout missing")?;
+    let mut line = String::new();
+    io::BufReader::new(output).read_line(&mut line)?;
+    let result = (|| -> TestResult {
+        let expected: serde_json::Value = serde_json::from_str(&line)?;
+        let port = expected["port"].as_str().ok_or("reference port missing")?;
+        let directory = tempfile::tempdir()?;
+        let worker = bundle_worker(
+            &fixture_root().join("http.mjs"),
+            &directory.path().join("modules"),
+        )?;
+        let actual: serde_json::Value = serde_json::from_slice(&request(&worker, port)?)?;
+        report_contract_difference("http", Some(&actual), &expected["expected"]);
+        if actual != expected["expected"] {
+            return Err("streaming HTTP contract differs".into());
+        }
+        Ok(())
+    })();
+    drop(reference.stdin.take());
+    let status = reference.wait()?;
+    result?;
+    assert!(status.success());
+    Ok(())
+}
+
+#[test]
+fn timers_progress_while_fetch_waits_for_the_network() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let address = listener.local_addr()?;
+    let server = thread::spawn(move || -> io::Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte)?;
+            headers.push(byte[0]);
+        }
+        thread::sleep(Duration::from_millis(150));
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+    });
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("concurrent-fetch.mjs");
+    fs::write(
+        &source,
+        format!(
+            r#"
+export default {{ async fetch() {{
+  let timerRan = false;
+  const timer = setTimeout(() => {{ timerRan = true; }}, 1);
+  const response = await fetch("http://{address}");
+  await response.text();
+  clearTimeout(timer);
+  return Response.json({{ timerRan }});
+}} }};
+"#
+        ),
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let actual = request(&worker, "first");
+    server.join().map_err(|_| "upstream panicked")??;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&actual?)?,
+        serde_json::json!({ "timerRan": true })
+    );
+    Ok(())
+}
+
+#[test]
 fn packaged_globals_precede_application_modules() -> TestResult {
     let directory = tempfile::tempdir()?;
     let source = directory.path().join("startup.mjs");
     fs::write(
         &source,
-        "const decoder = new TextDecoder(); const value = decoder.decode(new TextEncoder().encode('ready')); export default { async fetch() { return new Response(value); } };",
+        "import { Readable } from 'node:stream'; const decoder = new TextDecoder(); const value = decoder.decode(new TextEncoder().encode('ready')); const signal = AbortSignal.any([]); export default { async fetch() { const chunks = []; for await (const chunk of Readable.from([value], { signal })) chunks.push(chunk); return new Response(chunks.join('')); } };",
     )?;
     let worker = bundle_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(request(&worker, "first")?, b"ready");
@@ -155,7 +424,7 @@ export default httpServerHandler(server);
     let accepting = Arc::new(AtomicBool::new(true));
     let lifecycle = Lifecycle::new();
     let execution = lifecycle.enter(&accepting).ok_or("request rejected")?;
-    let (sender, receiver) = mpsc::sync_channel(1);
+    let (sender, receiver) = flume::bounded(1);
     execute_request(
         &worker,
         &config,
@@ -165,7 +434,7 @@ export default httpServerHandler(server);
                 method: "POST".to_owned(),
                 target: "/bridge?value=1".to_owned(),
                 url: "https://app.tokamak.local/bridge?value=1".to_owned(),
-                headers: BTreeMap::new(),
+                headers: HeaderMap::new(),
                 body: Some(b"payload".to_vec()),
             },
             response: sender,
@@ -180,7 +449,7 @@ export default httpServerHandler(server);
     assert_eq!(response.status, 201);
     assert_eq!(
         response.headers.get("x-tokamak-boundary"),
-        Some(&"yes".to_owned())
+        Some(&HeaderValue::from_static("yes"))
     );
     let HttpBody::Buffered(body) = response.body else {
         return Err("unexpected stream".into());
@@ -219,8 +488,14 @@ export default class App extends WorkerEntrypoint {
     assert_eq!(response["instance"], true);
     assert_eq!(response["env"], "enabled");
     assert_eq!(response["importedEnv"], "enabled");
-    assert_eq!(response["contextExports"], serde_json::json!(["default", "named"]));
-    assert_eq!(response["importedExports"], serde_json::json!(["default", "named"]));
+    assert_eq!(
+        response["contextExports"],
+        serde_json::json!(["default", "named"])
+    );
+    assert_eq!(
+        response["importedExports"],
+        serde_json::json!(["default", "named"])
+    );
     assert_eq!(response["named"], 42);
     assert_eq!(
         response["context"],
@@ -271,6 +546,19 @@ fn report_contract_difference(
         eprintln!("Cloudflare contract: {name}: missing, expected {expected}");
         return;
     };
+    if actual == expected {
+        return;
+    }
+    if let (Some(actual), Some(expected)) = (actual.as_array(), expected.as_array()) {
+        for index in 0..actual.len().max(expected.len()) {
+            report_contract_difference(
+                &format!("{name}[{index}]"),
+                actual.get(index),
+                expected.get(index).unwrap_or(&serde_json::Value::Null),
+            );
+        }
+        return;
+    }
     let (Some(actual), Some(expected)) = (actual.as_object(), expected.as_object()) else {
         eprintln!("Cloudflare contract: {name}: actual={actual} expected={expected}");
         return;
@@ -280,11 +568,7 @@ fn report_contract_difference(
         let (actual, expected) = (actual.get(key), expected.get(key));
         if actual != expected {
             let null = serde_json::Value::Null;
-            eprintln!(
-                "Cloudflare contract: {name}.{key}: actual={} expected={}",
-                actual.unwrap_or(&null),
-                expected.unwrap_or(&null),
-            );
+            report_contract_difference(&format!("{name}.{key}"), actual, expected.unwrap_or(&null));
         }
     }
 }
@@ -363,12 +647,128 @@ fn boundary_request(
     method: &str,
     target: &str,
     body: Option<Vec<u8>>,
-) -> TestResult<(u16, BTreeMap<String, String>, Vec<u8>)> {
+) -> TestResult<(u16, HeaderMap, Vec<u8>, String)> {
     let environment = BTreeMap::from([(
         "UPSTREAM_PORT".to_owned(),
         serde_json::json!(upstream_port.to_string()),
     )]);
     fixture_request(worker, environment, None, method, target, body)
+}
+
+#[test]
+fn response_encoding_matches_cloudflare() -> TestResult {
+    use async_compression::tokio::bufread::{BrotliDecoder, GzipDecoder};
+    use tokio::io::AsyncReadExt;
+
+    let reference = Command::new("node")
+        .arg(fixture_root().join("encoding-reference.mjs"))
+        .output()?;
+    assert!(
+        reference.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reference.stderr)
+    );
+    let expected: Vec<serde_json::Value> = serde_json::from_slice(&reference.stdout)?;
+    let directory = tempfile::tempdir()?;
+    let worker = bundle_worker(
+        &fixture_root().join("encoding.mjs"),
+        &directory.path().join("modules"),
+    )?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let mut failures = Vec::new();
+    for (index, expected) in expected.iter().enumerate() {
+        let (_, headers, raw, _) = fixture_request(
+            &worker,
+            BTreeMap::new(),
+            None,
+            "GET",
+            &format!("/?case={index}"),
+            None,
+        )?;
+        let encoding = headers
+            .get("content-encoding")
+            .ok_or("missing encoding")?
+            .to_str()?;
+        let mut decoded = Vec::new();
+        let encoded = match encoding {
+            "gzip" => runtime
+                .block_on(GzipDecoder::new(raw.as_slice()).read_to_end(&mut decoded))
+                .is_ok(),
+            "br" => runtime
+                .block_on(BrotliDecoder::new(raw.as_slice()).read_to_end(&mut decoded))
+                .is_ok(),
+            _ => false,
+        };
+        let actual = serde_json::json!({ "encoding": encoding, "encoded": encoded, "body": String::from_utf8_lossy(if encoded { &decoded } else { &raw }) });
+        if actual != *expected {
+            report_contract_difference(
+                &format!("response encoding case {index}"),
+                Some(&actual),
+                expected,
+            );
+            failures.push(index);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "response encoding differs: {failures:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn worker_response_rejects_header_overflow_without_panicking() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("headers.mjs");
+    fs::write(
+        &source,
+        r#"
+export default { fetch() {
+  return new Response(null, { headers: Array.from({ length: 25000 }, (_, index) => [`x-${index}`, "value"]) });
+} };
+"#,
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let Err(error) = request(&worker, "overflow") else {
+        return Err("header limit must be reported as a request error".into());
+    };
+    assert!(error.to_string().contains("max size reached"), "{error}");
+    Ok(())
+}
+
+#[test]
+fn worker_response_preserves_duplicate_headers() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("headers.mjs");
+    fs::write(
+        &source,
+        r#"
+export default { fetch() {
+  return new Response("ok", { status: 201, statusText: "Created Here", headers: [
+    ["set-cookie", "first=1; Path=/"], ["set-cookie", "second=2; Path=/"],
+    ["content-type", "text/plain"]
+  ] });
+} };
+"#,
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let (status, headers, body, status_text) =
+        fixture_request(&worker, BTreeMap::new(), None, "GET", "/", None)?;
+    assert_eq!(status, 201);
+    assert_eq!(status_text, "Created Here");
+    assert_eq!(body, b"ok");
+    assert_eq!(
+        headers.len(),
+        3,
+        "both Set-Cookie values must reach the gateway"
+    );
+    assert_eq!(
+        headers.get_all("set-cookie").iter().collect::<Vec<_>>(),
+        ["first=1; Path=/", "second=2; Path=/"]
+    );
+    Ok(())
 }
 
 fn fixture_request(
@@ -378,21 +778,21 @@ fn fixture_request(
     method: &str,
     target: &str,
     body: Option<Vec<u8>>,
-) -> TestResult<(u16, BTreeMap<String, String>, Vec<u8>)> {
+) -> TestResult<(u16, HeaderMap, Vec<u8>, String)> {
     let directory = tempfile::tempdir()?;
     let config = RuntimeConfig {
         assets: assets.clone(),
         cache: directory.path().join("cache"),
         environment,
     };
-    let mut headers = BTreeMap::new();
+    let mut headers = HeaderMap::new();
     if body.is_some() {
         headers.insert(
-            "content-type".to_owned(),
-            "application/octet-stream".to_owned(),
+            "content-type",
+            HeaderValue::from_static("application/octet-stream"),
         );
     }
-    let (sender, receiver) = mpsc::sync_channel(1);
+    let (sender, receiver) = flume::bounded(1);
     let job = Job {
         request: HttpRequest {
             method: method.to_owned(),
@@ -409,7 +809,7 @@ fn fixture_request(
     let handle = thread::spawn(move || -> Result<(), String> {
         let service = assets
             .as_ref()
-            .map(|assets| AssetService::new(assets))
+            .map(AssetService::new)
             .transpose()
             .map_err(|error| error.to_string())?
             .map(Arc::new);
@@ -453,7 +853,12 @@ fn fixture_request(
         }
     };
     handle.join().map_err(|_| "boundary worker panicked")??;
-    Ok((response.status, response.headers, body))
+    Ok((
+        response.status,
+        response.headers,
+        body,
+        response.status_text,
+    ))
 }
 
 fn serve_gzip_upstream(listener: &TcpListener) -> Result<(), String> {
@@ -466,8 +871,7 @@ fn serve_gzip_upstream(listener: &TcpListener) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         request.push(byte[0]);
     }
-    let mut encoder =
-        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder
         .write_all(b"upstream-payload")
         .map_err(|error| error.to_string())?;
@@ -490,13 +894,27 @@ fn node_net_socket_round_trip_uses_tokamak_socket_transport() -> TestResult {
     let port = listener.local_addr()?.port();
     let server = thread::spawn(move || -> Result<(), String> {
         let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .map_err(|error| error.to_string())?;
         let mut request = [0; 4];
         stream
             .read_exact(&mut request)
             .map_err(|error| error.to_string())?;
         assert_eq!(&request, b"ping");
         stream
+            .read_exact(&mut request)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(&request, b"next");
+        stream
             .write_all(b"pong")
+            .map_err(|error| error.to_string())?;
+        stream
+            .read_exact(&mut request)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(&request, b"last");
+        stream
+            .write_all(b"done")
             .map_err(|error| error.to_string())?;
         stream
             .shutdown(Shutdown::Write)
@@ -514,8 +932,11 @@ export default { fetch() {
   return new Promise((resolve, reject) => {
     const socket = net.connect({ host: "127.0.0.1", port: Number(process.env.FLAG) });
     const chunks = [];
-    socket.on("connect", () => socket.write("ping"));
-    socket.on("data", chunk => chunks.push(new TextDecoder().decode(chunk)));
+    socket.on("connect", () => socket.write("ping", () => socket.write("next")));
+    socket.on("data", chunk => {
+      chunks.push(new TextDecoder().decode(chunk));
+      if (chunks.join("") === "pong") socket.write("last");
+    });
     socket.on("end", () => resolve(new Response(chunks.join(""))));
     socket.on("error", reject);
   });
@@ -524,7 +945,114 @@ export default { fetch() {
     )?;
     let worker = bundle_worker(&source, &directory.path().join("modules"))?;
     let body = request(&worker, &port.to_string())?;
-    assert_eq!(body, b"pong");
+    assert_eq!(body, b"pongdone");
+    server.join().map_err(|_| "socket fixture panicked")??;
+    Ok(())
+}
+
+#[test]
+fn node_socket_end_preserves_the_readable_half() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = thread::spawn(move || -> Result<(), String> {
+        let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .map_err(|error| error.to_string())?;
+        let mut request = Vec::new();
+        stream
+            .read_to_end(&mut request)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(request, b"request");
+        stream
+            .write_all(b"response after FIN")
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    });
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("socket-half-close.mjs");
+    fs::write(
+        &source,
+        r#"
+import net from "node:net";
+export default { fetch() {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: "127.0.0.1", port: Number(process.env.FLAG) });
+    let body = "";
+    socket.on("error", reject);
+    socket.on("data", chunk => { body += chunk.toString(); });
+    socket.on("close", () => resolve(new Response(body)));
+    socket.end("request");
+  });
+} };
+"#,
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let body = request(&worker, &port.to_string())?;
+    server.join().map_err(|_| "socket fixture panicked")??;
+    assert_eq!(body, b"response after FIN");
+    Ok(())
+}
+
+#[test]
+fn node_socket_stops_reading_under_backpressure() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = thread::spawn(move || -> Result<(), String> {
+        let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|error| error.to_string())?;
+        let mut request = [0; 4];
+        stream
+            .read_exact(&mut request)
+            .map_err(|error| error.to_string())?;
+        stream
+            .write_all(&vec![42; 256 * 1024])
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    });
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("socket-backpressure.mjs");
+    fs::write(
+        &source,
+        r#"
+import net from "node:net";
+export default { fetch() {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: "127.0.0.1", port: Number(process.env.FLAG), readableHighWaterMark: 1 });
+    const events = [];
+    let bytes = 0;
+    let bounded = false;
+    socket.on("error", reject);
+    socket.on("data", chunk => { bytes += chunk.length; });
+    socket.on("end", () => events.push("end"));
+    socket.on("close", () => {
+      events.push("close");
+      resolve(Response.json({ bytes, events, bounded }));
+    });
+    socket.on("connect", () => {
+      socket.pause();
+      socket.once("readable", () => {
+        const buffered = socket.readableLength;
+        const read = socket.bytesRead;
+        setTimeout(() => {
+          bounded = buffered > 0 && socket.readableLength === buffered && socket.bytesRead === read;
+          socket.resume();
+        }, 10);
+      });
+      socket.write("ping");
+    });
+  });
+} };
+"#,
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let actual: serde_json::Value = serde_json::from_slice(&request(&worker, &port.to_string())?)?;
+    assert_eq!(
+        actual,
+        serde_json::json!({ "bytes": 256 * 1024, "events": ["end", "close"], "bounded": true })
+    );
     server.join().map_err(|_| "socket fixture panicked")??;
     Ok(())
 }
@@ -536,8 +1064,7 @@ fn astro_example_renders_pages_and_serves_assets() -> TestResult {
         .ok_or("no workspace")?
         .join("examples/astro");
     if !example.join("dist/server/entry.mjs").is_file() {
-        eprintln!("skipping: examples/astro/dist is not built (run pnpm build there)");
-        return Ok(());
+        return Err("Astro runtime fixture is missing; run pnpm --dir examples/astro install --frozen-lockfile and pnpm --dir examples/astro build before testing".into());
     }
     let directory = tempfile::tempdir()?;
     let worker = bundle_worker(
@@ -551,7 +1078,7 @@ fn astro_example_renders_pages_and_serves_assets() -> TestResult {
         manifest,
         root: client,
     };
-    let (status, _, home) = fixture_request(
+    let (status, _, home, _) = fixture_request(
         &worker,
         BTreeMap::new(),
         Some(assets.clone()),
@@ -562,7 +1089,7 @@ fn astro_example_renders_pages_and_serves_assets() -> TestResult {
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&home));
     assert!(String::from_utf8(home)?.contains("<html"));
     // Prerendered pages and static files reach the worker through env.ASSETS.
-    let (status, _, about) = fixture_request(
+    let (status, _, about, _) = fixture_request(
         &worker,
         BTreeMap::new(),
         Some(assets.clone()),
@@ -572,8 +1099,14 @@ fn astro_example_renders_pages_and_serves_assets() -> TestResult {
     )?;
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&about));
     assert!(String::from_utf8(about)?.contains("About - tokamak Example"));
-    let (status, _, favicon) =
-        fixture_request(&worker, BTreeMap::new(), Some(assets), "GET", "/favicon.ico", None)?;
+    let (status, _, favicon, _) = fixture_request(
+        &worker,
+        BTreeMap::new(),
+        Some(assets),
+        "GET",
+        "/favicon.ico",
+        None,
+    )?;
     assert_eq!(status, 200);
     assert!(!favicon.is_empty());
     Ok(())

@@ -1,8 +1,7 @@
+import "./globals.mjs";
 import EventEmitter from "../events/events.mjs";
 import { installConsoleGlobal } from "../globals/console.mjs";
 import process, { installProcessGlobals } from "../globals/process.mjs";
-import { installWebGlobals } from "../globals/web.mjs";
-import { installWebSocketGlobals } from "../network/websocket.mjs";
 import { createTracing } from "./tracing.mjs";
 import streams from "../streams/node.mjs";
 import webStreams from "../streams/web.mjs";
@@ -11,6 +10,7 @@ import streamPromises from "../node/stream-promises.mjs";
 import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import assert from "../node/assert.mjs";
+import assertStrict from "../node/assert-strict.mjs";
 import asyncHooks from "../node/async-hooks.mjs";
 import buffer from "../node/buffer.mjs";
 import childProcess from "../node/child-process.mjs";
@@ -37,6 +37,8 @@ import nodeModule from "../node/module.mjs";
 import net from "../node/net.mjs";
 import os from "../node/os.mjs";
 import path from "../node/path.mjs";
+import pathPosix from "../node/path-posix.mjs";
+import pathWin32 from "../node/path-win32.mjs";
 import perfHooks from "../node/perf-hooks.mjs";
 import punycode from "../node/punycode.mjs";
 import querystring from "../node/querystring.mjs";
@@ -45,6 +47,7 @@ import readlinePromises from "../node/readline-promises.mjs";
 import repl from "../node/repl.mjs";
 import stringDecoder from "../node/string-decoder.mjs";
 import nodeTimers from "../node/timers.mjs";
+import nodeTimersPromises from "../node/timers-promises.mjs";
 import tls from "../node/tls.mjs";
 import tty from "../node/tty.mjs";
 import streamWeb from "../node/stream-web.mjs";
@@ -61,19 +64,16 @@ import internalTlsCommon from "../node/internal-tls-common.mjs";
 import internalTlsWrap from "../node/internal-tls-wrap.mjs";
 import nodeUrl from "../node/url.mjs";
 import util from "../node/util.mjs";
+import utilTypes from "../node/util-types.mjs";
 import v8 from "../node/v8.mjs";
 import vm from "../node/vm.mjs";
 import workerThreads from "../node/worker-threads.mjs";
 import wasi from "../node/wasi.mjs";
 import zlib from "../node/zlib.mjs";
 
-installWebGlobals();
-installWebSocketGlobals();
-globalThis.global = globalThis;
-delete globalThis.InternalError;
 installProcessGlobals({
   assert,
-  "assert/strict": assert,
+  "assert/strict": assertStrict,
   async_hooks: asyncHooks,
   buffer,
   child_process: childProcess,
@@ -102,8 +102,8 @@ installProcessGlobals({
   net,
   os,
   path,
-  "path/posix": path.posix,
-  "path/win32": path.win32,
+  "path/posix": pathPosix,
+  "path/win32": pathWin32,
   perf_hooks: perfHooks,
   punycode,
   stream: streams,
@@ -123,14 +123,14 @@ installProcessGlobals({
   string_decoder: stringDecoder,
   sys: util,
   timers: nodeTimers,
-  "timers/promises": nodeTimers.promises,
+  "timers/promises": nodeTimersPromises,
   tls,
   _tls_common: internalTlsCommon,
   _tls_wrap: internalTlsWrap,
   tty,
   url: nodeUrl,
   util,
-  "util/types": util.types,
+  "util/types": utilTypes,
   zlib,
   readline,
   "readline/promises": readlinePromises,

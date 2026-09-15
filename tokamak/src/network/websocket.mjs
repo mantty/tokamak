@@ -44,6 +44,7 @@ export class WebSocket extends EventTarget {
     const peer = this.__tokamak_peer;
     if (peer === undefined || this.__readyState !== 1) throw new TypeError("WebSocket is not open");
     peer.__tokamak_outbox.push({ type: "message", binary: typeof data !== "string", data: websocketData(data) });
+    peer.__tokamak_notify?.();
   }
 
   close(code = 1000, reason = "") {
@@ -55,6 +56,7 @@ export class WebSocket extends EventTarget {
     this.__readyState = 2;
     const peer = this.__tokamak_peer;
     if (peer !== undefined) peer.__tokamak_outbox.push({ type: "close", code: status, reason: text });
+    peer?.__tokamak_notify?.();
   }
 
   serializeAttachment(value) {

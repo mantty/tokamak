@@ -112,10 +112,10 @@ function assert(value, messageValue) {
 }
 
 assert.AssertionError = AssertionError;
-assert.strict = assert;
 assert.fail = messageValue => {
-  if (Array.isArray(messageValue)) throw messageValue;
-  throw new AssertionError({ operator: "fail", message: messageValue === undefined ? "Failed" : messageValue });
+  if (messageValue == null) throw new AssertionError({ operator: "fail" });
+  if (typeof messageValue === "string") throw new AssertionError({ operator: "fail", message: messageValue });
+  throw messageValue;
 };
 assert.ok = assert;
 assert.equal = (actual, expected, messageValue) => { if (!Object.is(actual, expected)) assertionFailure(actual, expected, "strictEqual", messageValue); };
@@ -148,7 +148,11 @@ assert.partialDeepStrictEqual = (actual, expected, messageValue) => {
   for (const key of Reflect.ownKeys(expected)) if (!same(actual[key], expected[key])) assertionFailure(actual, expected, "partialDeepStrictEqual", messageValue);
 };
 
-export const strict = assert;
+function strictAssert(value, messageValue) { assert(value, messageValue); }
+assert.strict = Object.assign(strictAssert, assert, { equal: assert.strictEqual, notEqual: assert.notStrictEqual, deepEqual: assert.deepStrictEqual, notDeepEqual: assert.notDeepStrictEqual });
+assert.strict.strict = assert.strict;
+
+export const strict = assert.strict;
 export const ok = assert.ok;
 export const equal = assert.equal;
 export const notEqual = assert.notEqual;
@@ -165,5 +169,6 @@ export const throws = assert.throws;
 export const doesNotThrow = assert.doesNotThrow;
 export const rejects = assert.rejects;
 export const doesNotReject = assert.doesNotReject;
+export const partialDeepStrictEqual = assert.partialDeepStrictEqual;
 export const fail = assert.fail;
 export default assert;

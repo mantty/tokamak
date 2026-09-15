@@ -2,6 +2,13 @@ import EventEmitter from "node:events";
 import streams from "node:stream";
 import processModule from "node:process";
 import { env, waitUntil } from "cloudflare:workers";
+import { streamContracts } from "./streams.mjs";
+import { cryptoContracts } from "./crypto.mjs";
+import { htmlContracts } from "./html.mjs";
+import { zlibContracts } from "./zlib.mjs";
+import { cloneContracts } from "./clone.mjs";
+import { performanceContracts } from "./performance.mjs";
+import { intlContracts } from "./intl.mjs";
 
 function errorResult(error) {
   return { error: error.name, dom: error instanceof DOMException, code: error.code ?? null };
@@ -27,6 +34,12 @@ async function detailedAsyncResult(callback) {
   catch (error) { return { ...errorResult(error), message: error.message }; }
 }
 
+// U+202F (narrow no-break space) usage varies across CLDR builds; both runtimes
+// normalize to a plain space so date/time probes compare content, not spacing.
+function normalizeIntlSpaces(value) {
+  return value.replace(/\u202F/g, " ");
+}
+
 function describeHtmlRewriterValue(value, fields = []) {
   return {
     type: typeof value,
@@ -50,6 +63,138 @@ function describeHtmlRewriterAttributes(attributes) {
 
 export async function run(handlerEnv, ctx, constructors) {
   const output = {};
+  output.streamDetails = await streamContracts();
+  output.cryptoDetails = await cryptoContracts();
+  output.htmlDetails = await htmlContracts();
+  output.zlibDetails = await zlibContracts();
+  output.cloneDetails = await cloneContracts();
+  output.performanceDetails = await performanceContracts();
+  output.intlDetails = intlContracts();
+  output.asyncContextDetails = await asyncResult(async () => {
+    const { AsyncLocalStorage } = await import("node:async_hooks");
+    const storage = new AsyncLocalStorage({ name: "scope", defaultValue: "default" });
+    const defaults = [storage.name, storage.getStore(), storage.run(undefined, () => storage.getStore()), storage.run(null, () => storage.getStore()), storage.run("inside", () => storage.exit(() => storage.getStore()))];
+    const bound = storage.run("bound", () => AsyncLocalStorage.bind(async function (...args) {
+      await Promise.resolve();
+      return { store: storage.getStore(), receiver: this?.value ?? null, args };
+    }));
+    const captured = storage.run("captured", () => AsyncLocalStorage.snapshot());
+    const snapshot = await storage.run("other", () => captured(async (...args) => {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return { store: storage.getStore(), args };
+    }, 3, 4));
+    return { defaults, bound: await bound.call({ value: 7 }, 1, 2), snapshot, restored: storage.getStore(),
+      invalidBind: result(() => AsyncLocalStorage.bind(3)), invalidSnapshot: result(() => captured(3)) };
+  });
+  output.streamTransfers = await asyncResult(async () => {
+    const chunk = new Uint8Array([1, 2, 3]);
+    const stream = new ReadableStream({ type: "bytes", start(controller) { controller.enqueue(chunk); controller.close(); } });
+    const queuedBufferLength = chunk.buffer.byteLength;
+    const reader = stream.getReader({ mode: "byob" });
+    const destination = new Uint8Array(8);
+    const read = reader.read(destination);
+    const suppliedBufferLength = destination.buffer.byteLength;
+    const value = await read;
+    return { queuedBufferLength, suppliedBufferLength, bytes: [...value.value] };
+  });
+  output.erroredPipeLocks = await asyncResult(async () => {
+    const source = new ReadableStream({ start(controller) { controller.error(new Error("source")); } });
+    let release;
+    let started;
+    const aborting = new Promise(resolve => { started = resolve; });
+    const target = new WritableStream({ abort() { started(); return new Promise(resolve => { release = resolve; }); } });
+    const completion = source.pipeTo(target).catch(error => error.message);
+    const before = [source.locked, target.locked];
+    await aborting;
+    const during = [source.locked, target.locked];
+    release();
+    const error = await completion;
+    return { before, during, after: [source.locked, target.locked], error };
+  });
+  output.webStreamAdapters = {
+    fromReadable: await asyncResult(async () => {
+      const web = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2])); controller.close(); } });
+      const node = streams.Readable.fromWeb(web);
+      const result = [];
+      for await (const chunk of node) result.push(...chunk);
+      return result;
+    }),
+    toReadable: await asyncResult(async () => {
+      const web = streams.Readable.toWeb(streams.Readable.from([new Uint8Array([3, 4])]));
+      return [...await new Response(web).bytes()];
+    }),
+    fromWritable: await asyncResult(async () => {
+      const chunks = [];
+      const web = new WritableStream({ write(chunk) { chunks.push([...chunk]); } });
+      const node = streams.Writable.fromWeb(web);
+      await new Promise((resolve, reject) => { node.on("error", reject); node.end(new Uint8Array([5, 6]), resolve); });
+      return chunks;
+    }),
+    toWritable: await asyncResult(async () => {
+      const chunks = [];
+      const node = new streams.Writable({ write(chunk, encoding, callback) { chunks.push([...chunk]); callback(); } });
+      const writer = streams.Writable.toWeb(node).getWriter();
+      await writer.write(new Uint8Array([7, 8]));
+      // Workerd 1.20260825.1 leaves this adapter's close promise pending
+      // (it passes a callback to promise-based finished). Observe the Node
+      // finish event here; Tokamak separately tests close-promise settlement.
+      const finished = new Promise((resolve, reject) => { node.on("finish", resolve); node.on("error", reject); });
+      writer.close().catch(() => {});
+      await finished;
+      return chunks;
+    }),
+  };
+  output.writableAbortSignal = await asyncResult(async () => {
+    let controller;
+    let release;
+    const events = [];
+    const stream = new WritableStream({
+      start(value) { controller = value; },
+      write() { events.push("write"); return new Promise(resolve => { release = resolve; }); },
+      abort(reason) { events.push(reason); },
+    });
+    const writer = stream.getWriter();
+    const write = writer.write("chunk");
+    await Promise.resolve();
+    const abort = writer.abort("aborted");
+    const signal = [controller.signal.aborted, controller.signal.reason];
+    const before = [...events];
+    release();
+    const writeResult = await write.then(() => "fulfilled", error => String(error));
+    await abort;
+    return { signal, before, after: events, writeResult };
+  });
+  output.eventEmitterInitialization = {
+    bare: result(() => EventEmitter()),
+    reinitialize: result(() => {
+      const emitter = new EventEmitter();
+      emitter.setMaxListeners(3);
+      emitter.on("value", () => {});
+      EventEmitter.call(emitter);
+      return [emitter.getMaxListeners(), emitter.listenerCount("value")];
+    }),
+  };
+  output.unreadHttpResponse = await asyncResult(async () => {
+    const http = await import("node:http");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response("unread");
+    try {
+      const events = [];
+      await new Promise((resolve, reject) => {
+        const request = http.request("http://example.test", response => {
+          events.push("response");
+          response.destroy();
+          resolve();
+        });
+        request.on("error", reject);
+        request.on("finish", () => events.push("finish"));
+        request.end(() => events.push("callback"));
+      });
+      return events;
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
   const globalSurface = new Set();
   for (let object = globalThis; object; object = Object.getPrototypeOf(object)) {
     for (const name of Object.getOwnPropertyNames(object)) {
@@ -342,9 +487,9 @@ export async function run(handlerEnv, ctx, constructors) {
       messagePort: result(() => structuredClone(new MessageChannel().port1)),
     },
     intl: result(() => ({
-      date: new Intl.DateTimeFormat("en-GB", {
+      date: normalizeIntlSpaces(new Intl.DateTimeFormat("en-GB", {
         dateStyle: "full", timeStyle: "long", timeZone: "Europe/London",
-      }).format(new Date("2024-07-01T12:34:56Z")),
+      }).format(new Date("2024-07-01T12:34:56Z"))),
       dateParts: new Intl.DateTimeFormat("en-GB", {
         year: "numeric", month: "long", day: "numeric", timeZone: "UTC",
       }).formatToParts(new Date("2024-07-01T12:34:56Z")).map(({ type, value }) => [type, value]),
@@ -439,6 +584,7 @@ export async function run(handlerEnv, ctx, constructors) {
         );
         const data = new TextEncoder().encode("message");
         const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, data));
+        const verifyOnly = await crypto.subtle.importKey("raw", new TextEncoder().encode("secret"), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
         return {
           type: key.type,
           algorithm: key.algorithm,
@@ -447,6 +593,8 @@ export async function run(handlerEnv, ctx, constructors) {
           length: signature.length,
           valid: await crypto.subtle.verify("HMAC", key, signature, data),
           objectForm: await crypto.subtle.verify({ name: "HMAC" }, key, signature, data),
+          ignoredHash: await crypto.subtle.verify({ name: "HMAC", hash: "SHA-1" }, key, signature, data),
+          verifyOnly: await asyncResult(() => crypto.subtle.verify({ name: "HMAC", hash: "SHA-1" }, verifyOnly, signature, data)),
           invalid: await crypto.subtle.verify("HMAC", key, signature.subarray(1), data),
         };
       } catch (error) {
@@ -691,7 +839,8 @@ export async function run(handlerEnv, ctx, constructors) {
         statusText: transformed.statusText,
         header: transformed.headers.get("x-test"),
         inputBodyUsed: input.bodyUsed,
-        chunks,
+        // Byte stream chunk boundaries are transport details, not the HTML API.
+        streamedContent: chunks.join(""),
         output: await new Response(new Blob(chunks)).text(),
       };
     }),
@@ -745,8 +894,8 @@ export async function run(handlerEnv, ctx, constructors) {
           timeZoneName: "short",
         });
         return {
-          format: formatter.format(new Date("2024-07-01T12:34:56Z")),
-          parts: formatter.formatToParts(new Date("2024-07-01T12:34:56Z")),
+          format: normalizeIntlSpaces(formatter.format(new Date("2024-07-01T12:34:56Z"))),
+          parts: formatter.formatToParts(new Date("2024-07-01T12:34:56Z")).map(part => ({ ...part, value: normalizeIntlSpaces(part.value) })),
           options: formatter.resolvedOptions(),
         };
       }),
@@ -808,7 +957,7 @@ export async function run(handlerEnv, ctx, constructors) {
           new Intl.DateTimeFormat("en-GB", { dateStyle: "full", timeZone: "UTC" }).format(new Date("2024-07-01T12:34:56Z")),
           new Intl.DateTimeFormat("en-GB", { timeStyle: "long", timeZone: "UTC" }).format(new Date("2024-07-01T12:34:56Z")),
           new Intl.DateTimeFormat("en-GB", { hour: "numeric", hour12: true, timeZone: "UTC" }).format(new Date("2024-07-01T12:34:56Z")),
-        ],
+        ].map(normalizeIntlSpaces),
         numbers: [
           new Intl.NumberFormat("de-DE", { style: "percent" }).format(-1234.5),
           new Intl.NumberFormat("de-DE", { notation: "scientific" }).format(-1234.5),
@@ -885,6 +1034,24 @@ export async function run(handlerEnv, ctx, constructors) {
       ciphertext[0] ^= 1;
       return { tampered: await failure(ciphertext), short: await failure(new Uint8Array()) };
     }),
+    cryptoRsaPss: await detailedAsyncResult(async () => {
+      const keys = await crypto.subtle.generateKey({ name: "RSA-PSS", modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+      const data = new Uint8Array([1, 2, 3]);
+      const algorithm = { name: "RSA-PSS", saltLength: 32 };
+      const signature = await crypto.subtle.sign(algorithm, keys.privateKey, data);
+      const failures = [];
+      for (const saltLength of [0x80000000, 0xffffffff]) {
+        failures.push({
+          sign: await asyncResult(async () => { await crypto.subtle.sign({ ...algorithm, saltLength }, keys.privateKey, data); return "accepted"; }),
+          verify: await asyncResult(() => crypto.subtle.verify({ ...algorithm, saltLength }, keys.publicKey, signature, data)),
+        });
+      }
+      return {
+        valid: await crypto.subtle.verify(algorithm, keys.publicKey, signature, data),
+        ignoredHash: await crypto.subtle.verify({ ...algorithm, hash: "SHA-1" }, keys.publicKey, signature, data),
+        failures,
+      };
+    }),
     cryptoDigestErrors: await asyncResult(async () => {
       try { await crypto.subtle.digest("SHA-224", new Uint8Array([1])); return null; }
       catch (error) { return errorResult(error); }
@@ -915,6 +1082,94 @@ export async function run(handlerEnv, ctx, constructors) {
     }),
   };
   const nodeCrypto = process.getBuiltinModule("node:crypto");
+  // Undetermined/invalid locales resolve unit display names to en-US in icu4x and
+  // world-English in workerd; that CLDR-root spelling is not a parity requirement,
+  // so those two locales assert structure and number parts, not the unit text.
+  const stripUnitSpelling = parts => parts.map(part => part.type === "unit" ? { type: "unit" } : part);
+  output.localizedUnits = Object.fromEntries(["en", "de", "fr", "ja", "ar", "pl", "zh-TW", "sr-Latn-RS", "en-ZZ", "und", "zz"].map(locale => [locale,
+    ["kilometer-per-hour", "meter", "celsius", "liter-per-second"].flatMap(unit => ["short", "long", "narrow"].map(unitDisplay => {
+      const formatter = new Intl.NumberFormat(locale, { style: "unit", unit, unitDisplay });
+      const tolerant = locale === "und" || locale === "zz";
+      return [0, 1, 2, 3.5].map(value => {
+        const parts = formatter.formatToParts(value);
+        return tolerant ? stripUnitSpelling(parts) : parts;
+      });
+    })),
+  ]));
+  output.localizedPlurals = Object.fromEntries(["sr", "sr-Latn", "sr-Latn-RS", "pt", "pt-PT", "pt-Latn-PT", "pl", "pl-Latn", "ja", "und", "zz"].map(locale => [
+    locale, [0, 1, 2, 3.5].map(value => new Intl.PluralRules(locale).select(value)),
+  ]));
+  output.timingSafeEqual = {
+    equal: nodeCrypto.timingSafeEqual(new Uint8Array([1, 2]), new Uint8Array([1, 2])),
+    unequal: nodeCrypto.timingSafeEqual(new Uint8Array([1, 2]), new Uint8Array([1, 3])),
+    offset: nodeCrypto.timingSafeEqual(new DataView(new Uint8Array([0, 1, 2, 3]).buffer, 1, 2), new Uint8Array([1, 2])),
+    empty: nodeCrypto.timingSafeEqual(new ArrayBuffer(0), new ArrayBuffer(0)),
+    size: result(() => nodeCrypto.timingSafeEqual(new Uint8Array(1), new Uint8Array(2))),
+    invalid: result(() => nodeCrypto.timingSafeEqual("aa", "aa")),
+  };
+  output.authenticatedCiphers = Object.fromEntries([{}, { authTagLength: 12 }, { authLengthTag: 12 }].map(options => [JSON.stringify(options), detailedResult(() => {
+    const key = new Uint8Array(32).fill(1);
+    const iv = new Uint8Array(12).fill(2);
+    const cipher = nodeCrypto.createCipheriv("aes-256-gcm", key, iv, options);
+    const padding = detailedResult(() => cipher.setAutoPadding(false));
+    cipher.setAAD(new Uint8Array([1, 2, 3]));
+    const encrypted = process.getBuiltinModule("node:buffer").Buffer.concat([
+      cipher.update(new Uint8Array(8).fill(3)),
+      cipher.update(new Uint8Array(8).fill(3)),
+    ]);
+    const final = cipher.final();
+    const tag = cipher.getAuthTag();
+    const corruptedTag = new Uint8Array(tag);
+    corruptedTag[0] ^= 1;
+    const invalidDecipher = nodeCrypto.createDecipheriv("aes-256-gcm", key, iv, options);
+    invalidDecipher.setAAD(new Uint8Array([1, 2, 3]));
+    invalidDecipher.setAuthTag(corruptedTag);
+    const unauthenticated = invalidDecipher.update(encrypted).toString("hex");
+    const authentication = result(() => { invalidDecipher.final(); return "accepted"; });
+    const decipher = nodeCrypto.createDecipheriv("aes-256-gcm", key, iv, options);
+    decipher.setAAD(new Uint8Array([1, 2, 3]));
+    decipher.setAuthTag(tag);
+    const decrypted = process.getBuiltinModule("node:buffer").Buffer.concat([
+      decipher.update(encrypted.subarray(0, 8)),
+      decipher.update(encrypted.subarray(8)),
+    ]);
+    return {
+      padding: padding === cipher ? "accepted" : padding,
+      authentication,
+      unauthenticated,
+      encrypted: encrypted.toString("hex"),
+      final: final.toString("hex"),
+      tag: tag.toString("hex"),
+      decrypted: decrypted.toString("hex"),
+      decipherFinal: decipher.final().toString("hex"),
+      secondTag: detailedResult(() => cipher.getAuthTag().toString("hex")),
+      afterFinal: detailedResult(() => cipher.update(new Uint8Array(1))),
+    };
+  })]));
+  output.emptyAuthenticatedCipher = result(() => {
+    const cipher = nodeCrypto.createCipheriv("aes-256-gcm", new Uint8Array(32), new Uint8Array(12));
+    return { final: cipher.final().toString("hex"), tag: cipher.getAuthTag().toString("hex") };
+  });
+  output.incrementalCiphers = Object.fromEntries(["cbc", "ctr"].flatMap(mode => [true, false].map(padding => {
+    const name = `${mode}-${padding}`;
+    return [name, detailedResult(() => {
+      const key = new Uint8Array(32).fill(1);
+      const iv = new Uint8Array(16).fill(2);
+      const cipher = nodeCrypto.createCipheriv(`aes-256-${mode}`, key, iv);
+      const aad = result(() => cipher.setAAD(new Uint8Array([1])));
+      cipher.setAutoPadding(padding);
+      const encrypted = [cipher.update(new Uint8Array(16).fill(3)), cipher.update(new Uint8Array(16).fill(4)), cipher.final()];
+      const decipher = nodeCrypto.createDecipheriv(`aes-256-${mode}`, key, iv);
+      decipher.setAutoPadding(padding);
+      const decrypted = encrypted.map(chunk => decipher.update(chunk));
+      decrypted.push(decipher.final());
+      return {
+        aad,
+        encrypted: encrypted.map(chunk => chunk.toString("hex")),
+        decrypted: decrypted.map(chunk => chunk.toString("hex")),
+      };
+    })];
+  })));
   const nodeBufferCtor = process.getBuiltinModule("node:buffer").Buffer;
   output.nodeCrypto = {
     subtle: typeof nodeCrypto.subtle?.digest,
@@ -1184,8 +1439,8 @@ export async function run(handlerEnv, ctx, constructors) {
     }),
     performance: result(() => ({
       prototype: Object.getOwnPropertyNames(Performance.prototype).sort(),
-      mark: (() => { const value = performance.mark("surface", { detail: { value: 1 } }); return { name: value.name, entryType: value.entryType, duration: value.duration, detail: value.detail }; })(),
-      measure: (() => { const value = performance.measure("surface-measure", "surface"); return { name: value.name, entryType: value.entryType, duration: value.duration }; })(),
+      mark: (() => { const value = performance.mark("surface", { startTime: 3, detail: { value: 1 } }); return { name: value.name, entryType: value.entryType, startTime: value.startTime, duration: value.duration, detail: value.detail }; })(),
+      measure: (() => { performance.mark("surface-end", { startTime: 7 }); const value = performance.measure("surface-measure", "surface", "surface-end"); return { name: value.name, entryType: value.entryType, startTime: value.startTime, duration: value.duration }; })(),
       eventCounts: typeof performance.eventCounts,
       nodeTiming: typeof performance.nodeTiming,
       timerify: typeof performance.timerify,
@@ -1897,6 +2152,24 @@ export async function run(handlerEnv, ctx, constructors) {
 
   // Fetch/URL contract probes.
   output.fetchUrlContracts = {
+    statusText: Array.from({ length: 400 }, (_, index) => new Response(null, { status: index + 200 }).statusText),
+    responseOptions: {
+      getterCounts: ["status", "statusText", "encodeBody"].map(name => result(() => {
+        let reads = 0;
+        const init = { get [name]() { if (++reads > 1) throw new Error("read twice"); return { status: 201, statusText: "Custom", encodeBody: "manual" }[name]; } };
+        const response = new Response(null, init);
+        return { reads, status: response.status, statusText: response.statusText };
+      })),
+      errorStatusText: [Response.error().statusText, Response.error().clone().statusText],
+      responseAsBody: await asyncResult(async () => {
+        const original = new Response("body", { status: 201, headers: { "x-test": "one" } });
+        const copy = new Response(original);
+        return { status: copy.status, text: await copy.text(), header: copy.headers.get("x-test") };
+      }),
+      nullBodyStatuses: [204, 205, 304].map(status => result(() => new Response("body", { status }))),
+      encodeBody: [undefined, "automatic", "manual", "invalid", null, 1].map(encodeBody => result(() => { new Response("body", { encodeBody }); return true; })),
+      explicitStatusText: [undefined, "", "Custom", null, "bad\ntext"].map(statusText => result(() => new Response(null, { status: 201, statusText }).statusText)),
+    },
     bodyState: await asyncResult(async () => {
       const response = new Response("body");
       const initial = { body: response.body !== null, bodyUsed: response.bodyUsed, locked: response.body.locked };
@@ -2131,7 +2404,7 @@ export async function run(handlerEnv, ctx, constructors) {
       const controller = new AbortController();
       controller.abort();
       const aborted = await asyncResult(async () => nodeTimersPromises.setTimeout(0, "never", { signal: controller.signal }));
-      return { identity: nodeTimers.promises === nodeTimersPromises, types: [typeof nodeTimers.setTimeout, typeof nodeTimers.setImmediate, typeof nodeTimersPromises.setInterval], values: [value, immediate, wait], aborted };
+      return { identity: nodeTimers.promises === nodeTimersPromises, stable: nodeTimers.promises === nodeTimers.promises, types: [typeof nodeTimers.setTimeout, typeof nodeTimers.setImmediate, typeof nodeTimersPromises.setInterval], values: [value, immediate, wait], aborted };
     }),
     os: {
       values: { EOL: nodeOs.EOL, devNull: nodeOs.devNull, arch: nodeOs.arch(), platform: nodeOs.platform(), type: nodeOs.type(), release: nodeOs.release(), version: nodeOs.version(), machine: nodeOs.machine(), endianness: nodeOs.endianness(), tmpdir: nodeOs.tmpdir(), homedir: nodeOs.homedir(), hostname: nodeOs.hostname(), availableParallelism: nodeOs.availableParallelism(), cpus: nodeOs.cpus(), loadavg: nodeOs.loadavg(), freemem: nodeOs.freemem(), totalmem: nodeOs.totalmem(), uptime: nodeOs.uptime(), networkInterfaces: nodeOs.networkInterfaces(), userInfo: nodeOs.userInfo() },
@@ -2156,6 +2429,31 @@ export async function run(handlerEnv, ctx, constructors) {
       const tracing = nodeDiagnostics.tracingChannel("node-compat-trace");
       return { subscribed, events, unsubscribed: value.hasSubscribers, tracing: Object.getOwnPropertyNames(Object.getPrototypeOf(tracing)).sort(), tracingSubscribers: tracing.hasSubscribers };
     })(),
+    asyncContext: await asyncResult(async () => {
+      const storage = new nodeAsyncHooks.AsyncLocalStorage();
+      const other = new nodeAsyncHooks.AsyncLocalStorage();
+      const result = await Promise.all(["first", "second"].map(label => storage.run(label, async () => {
+        const values = [storage.getStore()];
+        await Promise.resolve();
+        values.push(storage.getStore());
+        await new Promise(resolve => setTimeout(() => { values.push(storage.getStore()); resolve(); }, 1));
+        await Promise.reject("expected").catch(() => values.push(storage.getStore()));
+        values.push(await other.run("nested", async () => { await 0; return [storage.getStore(), other.getStore()]; }));
+        values.push(await storage.exit(async () => { await 0; return storage.getStore() ?? null; }));
+        values.push(storage.getStore());
+        return values;
+      })));
+      const resource = storage.run("resource", () => new nodeAsyncHooks.AsyncResource("test"));
+      const scope = await storage.run("caller", () => resource.runInAsyncScope(async () => { await 0; return storage.getStore(); }));
+      let resolve;
+      const pending = new Promise(done => { resolve = done; });
+      const subscriber = storage.run("subscriber", () => pending.then(() => storage.getStore()));
+      storage.run("resolver", resolve);
+      const receiver = function () { return this === globalThis ? "global" : this === null ? "null" : this?.value ?? typeof this; };
+      const boundReceivers = [undefined, null, { value: "bound" }].map(value => resource.bind(receiver, value).call({ value: "caller" }));
+      const staticBoundReceivers = [undefined, null, { value: "bound" }].map(value => nodeAsyncHooks.AsyncResource.bind(receiver, "bound", value).call({ value: "caller" }));
+      return { result, scope, subscriber: await subscriber, boundReceivers, staticBoundReceivers, outside: storage.getStore() ?? null };
+    }),
     asyncHooks: (() => {
       const storage = new nodeAsyncHooks.AsyncLocalStorage({ name: "scope" });
       const scoped = storage.run({ value: 1 }, () => ({ inside: storage.getStore(), nested: storage.run(2, () => storage.getStore()), afterNested: storage.getStore() }));
@@ -2180,12 +2478,40 @@ export async function run(handlerEnv, ctx, constructors) {
     console: { identity: nodeConsole === globalThis.console, methods: ["log", "warn", "error", "time", "timeEnd", "table", "trace"].map(name => typeof nodeConsole[name]), constructor: result(() => new nodeConsole.Console()) },
     zlib: (() => {
       const compressed = nodeZlib.gzipSync("hello");
+      const gzipBytes = [...compressed];
+      if (gzipBytes.length > 9) gzipBytes[9] = 0;
       const brotli = nodeZlib.brotliCompressSync("brotli");
       const zstd = nodeZlib.zstdCompressSync("zstd");
-      return { roundTrip: nodeZlib.gunzipSync(compressed).toString(), compressed: [...compressed], brotli: nodeZlib.brotliDecompressSync(brotli).toString(), zstd: nodeZlib.zstdDecompressSync(zstd).toString(), constants: { noFlush: nodeZlib.constants.Z_NO_FLUSH, finish: nodeZlib.constants.Z_FINISH, defaultLevel: nodeZlib.constants.Z_DEFAULT_LEVEL, gzip: nodeZlib.constants.GZIP, deflate: nodeZlib.constants.DEFLATE, raw: nodeZlib.constants.DEFLATERAW, unzip: nodeZlib.constants.UNZIP }, codes: { ok: nodeZlib.codes.Z_OK, streamEnd: nodeZlib.codes.Z_STREAM_END, dataError: nodeZlib.codes.Z_DATA_ERROR }, transforms: [typeof nodeZlib.createGzip, typeof nodeZlib.Gzip], supportedSurface: [typeof nodeZlib.brotliCompressSync, typeof nodeZlib.zstdCompressSync] };
+      return { roundTrip: nodeZlib.gunzipSync(compressed).toString(), compressed: gzipBytes, brotli: nodeZlib.brotliDecompressSync(brotli).toString(), zstd: nodeZlib.zstdDecompressSync(zstd).toString(), constants: { noFlush: nodeZlib.constants.Z_NO_FLUSH, finish: nodeZlib.constants.Z_FINISH, defaultLevel: nodeZlib.constants.Z_DEFAULT_LEVEL, gzip: nodeZlib.constants.GZIP, deflate: nodeZlib.constants.DEFLATE, raw: nodeZlib.constants.DEFLATERAW, unzip: nodeZlib.constants.UNZIP }, codes: { ok: nodeZlib.codes.Z_OK, streamEnd: nodeZlib.codes.Z_STREAM_END, dataError: nodeZlib.codes.Z_DATA_ERROR }, transforms: [typeof nodeZlib.createGzip, typeof nodeZlib.Gzip], supportedSurface: [typeof nodeZlib.brotliCompressSync, typeof nodeZlib.zstdCompressSync] };
     })(),
     net: {
       functions: [typeof nodeNet.connect, typeof nodeNet.createConnection, typeof nodeNet.createServer],
+      factoryOptions: [nodeNet.connect, nodeNet.createConnection].map(connect => {
+        const socket = connect({ host: "127.0.0.1", port: 0, allowHalfOpen: true, readableHighWaterMark: 123, writableHighWaterMark: 456 });
+        socket.on("error", () => {});
+        const options = [socket.allowHalfOpen, socket.readableHighWaterMark, socket.writableHighWaterMark];
+        socket.destroy();
+        return options;
+      }),
+      addresses: ["127.0.0.1", "256.1.2.3", "01.2.3.4", "::1", "a:b", "fe80::1%eth0", "::ffff:192.0.2.1", "1:2:3:4:5:6:7:8:9", "::", "", null, 123].map(value => [nodeNet.isIP(value), nodeNet.isIPv4(value), nodeNet.isIPv6(value)]),
+      writable: await asyncResult(async () => {
+        const socket = new nodeNet.Socket({ highWaterMark: 4 });
+        const chunks = [];
+        const events = [];
+        socket._read = () => {};
+        socket._write = (chunk, encoding, callback) => {
+          chunks.push(chunk.toString());
+          setTimeout(callback, 1);
+        };
+        socket._final = callback => callback();
+        socket.on("drain", () => events.push("drain"));
+        const finished = new Promise((resolve, reject) => { socket.on("finish", resolve); socket.on("error", reject); });
+        const writes = [socket.write("abcd"), socket.write("ef")];
+        socket.end();
+        await finished;
+        socket.destroy();
+        return { writes, chunks, events };
+      }),
       socket: result(() => {
         const socket = new nodeNet.Socket();
         return { prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(socket)).sort(), destroyed: socket.destroyed };

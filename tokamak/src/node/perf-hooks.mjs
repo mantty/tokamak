@@ -3,19 +3,12 @@ import {
   PerformanceResourceTiming, performance,
 } from "../globals/web.mjs";
 
-PerformanceObserver.supportedEntryTypes = ["measure", "mark"];
-
 export function timerify(callback) {
-  if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
-  return function (...args) { return callback.apply(this, args); };
+  return performance.timerify(callback);
 }
 
-export function eventLoopUtilization(utilization1, utilization2) {
-  if (!utilization1) return { idle: 0, active: 0, utilization: 0 };
-  if (!utilization2) return { idle: utilization1.idle ?? 0, active: utilization1.active ?? 0, utilization: utilization1.utilization ?? 0 };
-  const idle = Math.max(0, (utilization1.idle ?? 0) - (utilization2.idle ?? 0));
-  const active = Math.max(0, (utilization1.active ?? 0) - (utilization2.active ?? 0));
-  return { idle, active, utilization: idle + active === 0 ? 0 : active / (idle + active) };
+export function eventLoopUtilization() {
+  return performance.eventLoopUtilization();
 }
 
 function unsupported(name) {

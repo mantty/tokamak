@@ -23,6 +23,8 @@ mod dev_proxy;
 #[cfg(feature = "native")]
 mod dispatcher;
 #[cfg(feature = "native")]
+mod event_loop;
+#[cfg(feature = "native")]
 mod fs;
 #[cfg(feature = "native")]
 mod gateway;

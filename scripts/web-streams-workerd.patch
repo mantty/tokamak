@@ -1,0 +1,92 @@
+--- web-standard.mjs
++++ web-standard.mjs
+@@ -105,9 +105,8 @@
+ }
+ function O(e2) {
+   const t2 = e2._ownerReadableStream;
+-  "readable" === t2._state ? A(e2, new TypeError("Reader was released and can no longer be used to monitor the stream's closedness")) : (function(e3, t3) {
+-    k(e3, t3);
+-  })(e2, new TypeError("Reader was released and can no longer be used to monitor the stream's closedness")), t2._readableStreamController[q](), t2._reader = void 0, e2._ownerReadableStream = void 0;
++  if ("readable" === t2._state) A(e2, new TypeError("Reader was released and can no longer be used to monitor the stream's closedness"));
++  t2._readableStreamController[q](), t2._reader = void 0, e2._ownerReadableStream = void 0;
+ }
+ function B(e2) {
+   return new TypeError("Cannot " + e2 + " a stream using a released reader");
+@@ -1074,7 +1073,9 @@
+ }
+ function Mt(e2) {
+   const t2 = e2._ownerWritableStream, r2 = new TypeError("Writer was released and can no longer be used to monitor the stream's closedness");
+-  $t(e2, r2), It(e2, r2), t2._writer = void 0, e2._ownerWritableStream = void 0;
++  $t(e2, r2);
++  if (t2._state !== "closed" && t2._state !== "errored") It(e2, r2);
++  t2._writer = void 0, e2._ownerWritableStream = void 0;
+ }
+ function Yt(e2, t2) {
+   const r2 = e2._ownerWritableStream, o2 = r2._writableStreamController, n2 = (function(e3, t3) {
+@@ -1267,6 +1268,11 @@
+   return o(e2, "DOMException"), e2.prototype = Object.create(Error.prototype), Object.defineProperty(e2.prototype, "constructor", { value: e2, writable: true, configurable: true }), e2;
+ })();
+ function hr(e2, t2, r2, o2, n2, i2) {
++  if (e2._state === "errored" && !i2?.aborted) {
++    e2._disturbed = true;
++    const error = e2._storedError;
++    return o2 ? d(error) : m(Wt(t2, error), () => { throw error; });
++  }
+   const a2 = V(e2), s2 = Pt(t2);
+   e2._disturbed = true;
+   const l2 = new br(s2), _2 = new mr(l2);
+@@ -1525,14 +1531,14 @@
+     }
+     function w2(o3) {
+       if (f2 = true, t3 = o3, h2) {
+-        const o4 = le([t3, r2]), n3 = Mr(e3, o4);
++        const n3 = Mr(e3, o3);
+         i2(n3);
+       }
+       return b2;
+     }
+     function R2(o3) {
+       if (h2 = true, r2 = o3, f2) {
+-        const o4 = le([t3, r2]), n3 = Mr(e3, o4);
++        const n3 = Mr(e3, o3);
+         i2(n3);
+       }
+       return b2;
+@@ -1563,14 +1569,14 @@
+     }
+     function m2(t4) {
+       if (d2 = true, r2 = t4, f2) {
+-        const t5 = le([r2, o2]), n3 = Mr(e3, t5);
++        const n3 = Mr(e3, t4);
+         a2(n3);
+       }
+       return h2;
+     }
+     function p2(t4) {
+       if (f2 = true, o2 = t4, d2) {
+-        const t5 = le([r2, o2]), n3 = Mr(e3, t5);
++        const n3 = Mr(e3, t4);
+         a2(n3);
+       }
+       return h2;
+@@ -1783,8 +1789,20 @@
+   return void 0 !== e2._reader;
+ }
++const nativeCancelErrors = new WeakMap();
++export function setNativeCancelError(stream, error) {
++  nativeCancelErrors.set(stream, error);
++}
+ function Mr(t2, r2) {
+   if (t2._disturbed = true, "closed" === t2._state) return c(void 0);
+   if ("errored" === t2._state) return d(t2._storedError);
++  // Workerd native streams reject an outstanding read on cancellation, but
++  // remain closed: future reads and reader.closed still resolve normally.
++  const cancelError = nativeCancelErrors.get(t2);
++  if (cancelError && t2._reader) {
++    const error = cancelError(r2);
++    if (ee(t2._reader)) oe(t2._reader, error);
++    else bt(t2._reader, error);
++  }
+   Yr(t2);
+   const o2 = t2._reader;
+   if (void 0 !== o2 && ft(o2)) {

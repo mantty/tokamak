@@ -3,6 +3,7 @@ import { connect as connectSocket } from "../builtins/cloudflare-sockets.mjs";
 import { Duplex } from "../streams/node.mjs";
 import { Buffer } from "./buffer.mjs";
 import { unsupported } from "./unsupported.mjs";
+import { ipVersion } from "tokamak:host";
 
 const socketStates = new WeakMap();
 
@@ -36,148 +37,97 @@ function normalizeConnection(args) {
   return { options: { ...options, port, host }, callback };
 }
 
-function bytes(value, encoding) {
-  return Buffer.from(value, typeof encoding === "string" ? encoding : undefined);
-}
-
-function emitError(socket, error) {
-  if (socket.listenerCount("error") > 0) socket.emit("error", error);
-  else queueMicrotask(() => socket.emit("error", error));
+function refreshTimeout(socket, state) {
+  clearTimeout(state.timer);
+  if (state.timeout > 0 && !socket.destroyed) state.timer = setTimeout(() => socket._onTimeout(), state.timeout);
 }
 
 async function pump(socket, state) {
   try {
     await state.native.opened;
-    state.reader = state.native.readable.getReader();
-    while (!state.destroyed) {
+    state.reader ??= state.native.readable.getReader();
+    while (!socket.destroyed) {
       const { done, value } = await state.reader.read();
-      if (done) break;
+      if (done) {
+        state.readEnded = true;
+        socket.push(null);
+        return;
+      }
       state.bytesRead += value.byteLength;
-      socket.push(Buffer.from(value));
+      refreshTimeout(socket, state);
+      if (!socket.push(Buffer.from(value))) return;
     }
-    socket.push(null);
-    finish(socket, state);
   } catch (error) {
-    if (!state.destroyed) fail(socket, state, error);
+    if (!socket.destroyed) socket.destroy(error);
+  } finally {
+    state.reading = false;
   }
-}
-
-function finish(socket, state) {
-  if (state.closed) return;
-  state.closed = true;
-  state.readyState = "closed";
-  state.destroyed = true;
-  socket.emit("close");
-}
-
-function fail(socket, state, error) {
-  if (state.closed) return;
-  state.error = error;
-  destroySocket(socket, state, error);
-}
-
-function destroySocket(socket, state, error) {
-  if (state.closed) return socket;
-  state.destroyed = true;
-  state.readyState = "closed";
-  state.reader?.cancel(error).catch(() => {});
-  state.native?.close().catch(() => {});
-  state.closed = true;
-  if (error) emitError(socket, error);
-  socket.emit("close");
-  return socket;
 }
 
 function connectSocketToNode(socket, state, options, callback) {
   state.options = options;
   state.connecting = true;
-  state.readyState = "opening";
   try {
     state.native = connectSocket(
       { hostname: options.host, port: options.port },
-      { secureTransport: options.secureTransport ?? "off" },
+      { secureTransport: options.secureTransport ?? "off", allowHalfOpen: true },
     );
   } catch (error) {
-    fail(socket, state, error);
+    socket.destroy(error);
     return socket;
   }
   state.native.opened.then(() => {
-    if (state.destroyed) return;
+    if (socket.destroyed) return;
     state.connecting = false;
     state.connected = true;
-    state.readyState = "open";
-    socket.emit(options.secureTransport === "on" ? "secureConnect" : "connect");
+    refreshTimeout(socket, state);
+    socket.emit("connect");
+    if (options.secureTransport === "on") socket.emit("secureConnect");
     callback?.call(socket);
-    // Let connect listeners enqueue their first write before the blocking host
-    // read starts. The host socket bridge is synchronous by design.
-    queueMicrotask(() => void pump(socket, state));
-  }).catch(error => fail(socket, state, error));
+    socket._read();
+  }).catch(error => socket.destroy(error));
+  state.native.closed.catch(error => socket.destroy(error));
   return socket;
 }
 
-class SocketBase extends Duplex {
-  write(chunk, encoding, callback) {
-    if (typeof encoding === "function") [callback, encoding] = [encoding, undefined];
-    const state = socketStates.get(this);
-    if (state.destroyed) throw new Error("write after end");
-    const value = bytes(chunk, encoding);
-    state.writeChain = state.writeChain
-      .then(async () => {
-        await state.native?.opened;
-        if (!state.native || state.destroyed) throw new Error("Socket is not connected");
-        state.writer ??= state.native.writable.getWriter();
-        await state.writer.write(value);
-        state.bytesWritten += value.byteLength;
-        callback?.();
-        this.emit("drain");
-      })
-      .catch(error => {
-        callback?.(error);
-        if (!state.destroyed) fail(this, state, error);
-      });
-    return true;
-  }
-
-  destroy(error) { return destroySocket(this, socketStates.get(this), error); }
-}
-
-export class Socket extends SocketBase {
+export class Socket extends Duplex {
   constructor(options = {}) {
-    super();
+    super({ ...options, allowHalfOpen: options.allowHalfOpen ?? false });
     const state = {
       options: { ...options },
       secureTransport: options.secureTransport ?? "off",
       native: null,
       reader: null,
+      reading: false,
+      readEnded: false,
       writer: null,
-      writeChain: Promise.resolve(),
       connecting: false,
       connected: false,
-      destroyed: false,
       closed: false,
-      readyState: "opening",
       bytesRead: 0,
       bytesWritten: 0,
-      error: null,
+      timer: undefined,
+      timeout: 0,
     };
     socketStates.set(this, state);
-    Object.defineProperty(this, "destroyed", {
-      configurable: true,
-      enumerable: true,
-      get: () => state.destroyed,
-    });
   }
 
   get _connecting() { return socketStates.get(this).connecting; }
   get _bytesDispatched() { return socketStates.get(this).bytesWritten; }
-  get bufferSize() { return 0; }
+  get bufferSize() { return this.writableLength; }
   get bytesRead() { return socketStates.get(this).bytesRead; }
   get bytesWritten() { return socketStates.get(this).bytesWritten; }
   get localAddress() { return undefined; }
   get localFamily() { return undefined; }
   get localPort() { return undefined; }
   get pending() { return !socketStates.get(this).connected; }
-  get readyState() { return socketStates.get(this).readyState; }
+  get readyState() {
+    if (this.destroyed) return "closed";
+    if (this._connecting) return "opening";
+    if (this.readable && this.writable) return "open";
+    if (this.readable) return "readOnly";
+    return this.writable ? "writeOnly" : "closed";
+  }
   get remoteAddress() { return socketStates.get(this).options.host; }
   get remoteFamily() { return isIPv6(socketStates.get(this).options.host) ? "IPv6" : "IPv4"; }
   get remotePort() { return socketStates.get(this).options.port; }
@@ -191,42 +141,70 @@ export class Socket extends SocketBase {
   }
 
   end(chunk, encoding, callback) {
-    if (typeof chunk === "function") [callback, chunk] = [chunk, undefined];
-    else if (chunk !== undefined) this.write(chunk, encoding);
-    const state = socketStates.get(this);
-    state.writeChain.then(() => {
-      if (state.writer) return state.writer.close();
-      return state.native?.close();
-    }).then(() => {
-      if (!state.destroyed) finish(this, state);
-      callback?.();
-      this.emit("finish");
-    }).catch(error => fail(this, state, error));
-    return this;
+    return super.end(chunk, encoding, callback);
   }
 
-  destroySoon() { return this.end(); }
+  destroySoon() {
+    if (this.writableFinished) this.destroy();
+    else { this.once("finish", () => this.destroy()); this.end(); }
+    return this;
+  }
   resetAndDestroy() { return this.destroy(); }
-  pause() { return this; }
-  resume() { return this; }
+  pause() { return super.pause(); }
+  resume() { return super.resume(); }
   read(size) { return super.read(size); }
   setKeepAlive() { return this; }
   setNoDelay() { return this; }
-  setTimeout(timeout, callback) { if (callback) this.once("timeout", callback); this.__timeout = timeout; return this; }
+  setTimeout(timeout, callback) {
+    if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout < 0) throw new RangeError("Invalid socket timeout");
+    if (callback) this.once("timeout", callback);
+    const state = socketStates.get(this);
+    state.timeout = timeout;
+    refreshTimeout(this, state);
+    return this;
+  }
   ref() { return this; }
   unref() { return this; }
   address() { return this.localAddress === undefined ? null : { address: this.localAddress, family: this.localFamily, port: this.localPort }; }
-  _destroy(error, callback) { callback?.(error); }
-  _final(callback) { callback?.(); }
+  _destroy(error, callback) {
+    const state = socketStates.get(this);
+    state.closed = true;
+    state.connecting = false;
+    clearTimeout(state.timer);
+    Promise.resolve(state.native?.close()).then(() => callback(error), failure => callback(error ?? failure));
+  }
+  _final(callback) {
+    const state = socketStates.get(this);
+    Promise.resolve(state.native?.opened).then(() => {
+      if (!state.native) throw new Error("Socket is not connected");
+      state.writer ??= state.native.writable.getWriter();
+      return state.writer.close();
+    }).then(() => callback(), callback);
+  }
   _getpeername() { return this.remoteAddress === undefined ? null : { address: this.remoteAddress, family: this.remoteFamily, port: this.remotePort }; }
   _getsockname() { return this.address(); }
   _onTimeout() { this.emit("timeout"); }
-  _read() {}
+  _read() {
+    const state = socketStates.get(this);
+    if (!state.connected || this.destroyed || state.reading || state.readEnded) return;
+    state.reading = true;
+    void pump(this, state);
+  }
   _reset() {}
   _unrefTimer() {}
-  _write(chunk, encoding, callback) { this.write(chunk, encoding, callback); }
+  _write(chunk, encoding, callback) {
+    const state = socketStates.get(this);
+    const value = Buffer.from(chunk, encoding);
+    Promise.resolve(state.native?.opened).then(async () => {
+      if (!state.native || this.destroyed) throw new Error("Socket is not connected");
+      state.writer ??= state.native.writable.getWriter();
+      await state.writer.write(value);
+      state.bytesWritten += value.byteLength;
+      refreshTimeout(this, state);
+    }).then(() => callback(), callback);
+  }
   _writeGeneric(chunk, encoding, callback) { this._write(chunk, encoding, callback); }
-  _writev(chunks, callback) { for (const { chunk, encoding } of chunks) this.write(chunk, encoding); callback?.(); }
+  _writev(chunks, callback) { this._write(Buffer.concat(chunks.map(({ chunk, encoding }) => Buffer.from(chunk, encoding))), undefined, callback); }
 }
 
 export class Server extends EventEmitter {
@@ -248,8 +226,8 @@ export class SocketAddress {
 }
 
 export function connect(...args) {
-  const socket = new Socket();
   const { options, callback } = normalizeConnection(args);
+  const socket = new Socket(options);
   return connectSocketToNode(socket, socketStates.get(socket), options, callback);
 }
 
@@ -263,11 +241,10 @@ export function getDefaultAutoSelectFamilyAttemptTimeout() { return 250; }
 export function setDefaultAutoSelectFamily() {}
 export function setDefaultAutoSelectFamilyAttemptTimeout() {}
 export function isIP(value) {
-  const input = String(value);
-  return isIPv6(input) ? 6 : /^(?:\d{1,3}\.){3}\d{1,3}$/.test(input) ? 4 : 0;
+  return ipVersion(`${value}`);
 }
 export const isIPv4 = value => isIP(value) === 4;
-export const isIPv6 = value => String(value).includes(":");
+export const isIPv6 = value => isIP(value) === 6;
 
 export default {
   BlockList, Server, Socket, SocketAddress, Stream: Duplex, _normalizeArgs, connect, createConnection, createServer,

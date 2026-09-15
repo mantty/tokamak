@@ -1,4 +1,4 @@
-import { socketClose, socketConnect, socketRead, socketStartTls, socketWrite } from "tokamak:host";
+import { socketConnect } from "tokamak:host";
 import { ReadableStream, WritableStream } from "../streams/web.mjs";
 
 function deferred() {
@@ -75,15 +75,18 @@ function socketLabel(address) {
     : `${address.hostname}:${address.port}`;
 }
 
-function createState(address, mode, handle, openError, shared = undefined) {
+function createState(address, mode, native, allowHalfOpen, shared = undefined) {
   const closed = shared?.closed ?? deferred();
   const opened = deferred();
   const state = {
     address,
     mode,
     secureTransport: mode,
-    handle,
-    openError,
+    native,
+    allowHalfOpen,
+    terminated: false,
+    readEnded: false,
+    writeEnded: false,
     opened,
     closed,
     upgraded: false,
@@ -91,30 +94,36 @@ function createState(address, mode, handle, openError, shared = undefined) {
     readable: null,
     writable: null,
   };
-  if (openError === undefined) state.opened.resolve({ remoteAddress: socketLabel(address) });
-  else {
-    state.opened.reject(openError);
-    state.closed.reject(openError);
-  }
+  native.opened.then(() => state.opened.resolve({ remoteAddress: socketLabel(address) }), error => {
+    state.opened.reject(error);
+    closeState(state, error);
+  });
   const readable = new ReadableStream({
     type: "bytes",
-    pull(controller) {
+    async pull(controller) {
       if (state.transferred) {
         controller.error(new TypeError("Socket was transferred"));
         return;
       }
-      if (state.handle === 0) {
-        if (state.openError !== undefined) controller.error(state.openError);
+      if (state.terminated) {
+        if (state.error !== undefined) controller.error(state.error);
         else controller.close();
         return;
       }
       try {
-        const chunk = socketRead(state.handle);
+        await state.opened.promise;
+        const chunk = await native.read();
         if (chunk == null) {
-          closeState(state);
+          state.readEnded = true;
+          if (!allowHalfOpen && !state.writeEnded) {
+            await native.shutdown();
+            state.writeEnded = true;
+          }
+          if (state.writeEnded) closeState(state);
           controller.close();
         } else controller.enqueue(new Uint8Array(chunk));
       } catch (error) {
+        if ((state.terminated && state.error === undefined) || state.transferred) { controller.close(); return; }
         closeState(state, error);
         controller.error(error);
       }
@@ -122,12 +131,19 @@ function createState(address, mode, handle, openError, shared = undefined) {
     cancel(reason) { closeState(state, reason); },
   });
   const writable = new WritableStream({
-    write(value) {
+    async write(value) {
       if (state.transferred) throw new TypeError("Socket was transferred");
-      if (state.handle === 0) throw state.openError ?? new TypeError("Socket is closed");
-      socketWrite(state.handle, bytes(value));
+      if (state.terminated) throw state.error ?? new TypeError("Socket is closed");
+      const data = bytes(value);
+      await state.opened.promise;
+      await native.write(data);
     },
-    close() { closeState(state); },
+    async close() {
+      await state.opened.promise;
+      await native.shutdown();
+      state.writeEnded = true;
+      if (state.readEnded) closeState(state);
+    },
     abort(reason) { closeState(state, reason); },
   });
   state.readable = readable;
@@ -136,10 +152,10 @@ function createState(address, mode, handle, openError, shared = undefined) {
 }
 
 function closeState(state, reason) {
-  if (state.handle !== 0) {
-    socketClose(state.handle);
-    state.handle = 0;
-  }
+  if (state.transferred || state.terminated) return;
+  state.native.close();
+  state.terminated = true;
+  state.error = reason;
   if (reason === undefined) state.closed.resolve();
   else state.closed.reject(reason);
 }
@@ -154,10 +170,8 @@ function startTls(socket) {
   if (state.transferred) throw new TypeError("startTls has already been called on this socket, or the socket was transferred over RPC.");
   state.transferred = true;
   state.upgraded = true;
-  const handle = state.handle;
-  if (handle !== 0) socketStartTls(handle, state.address.hostname);
-  state.handle = 0;
-  const upgraded = createState(state.address, "on", handle, state.openError, state);
+  const native = state.native.startTls(state.address.hostname);
+  const upgraded = createState(state.address, "on", native, state.allowHalfOpen, state);
   return new Socket(upgraded);
 }
 
@@ -165,14 +179,8 @@ export function connect(address, options = {}) {
   if (options === null || typeof options !== "object") throw new TypeError("Socket options must be an object");
   const target = validateAddress(socketAddress(address));
   const mode = secureMode(options);
-  let handle = 0;
-  let openError;
-  try {
-    handle = socketConnect(target.hostname, target.port, mode === "on");
-  } catch (error) {
-    openError = error;
-  }
-  return new Socket(createState(target, mode, handle, openError));
+  const native = socketConnect(target.hostname, target.port, mode === "on");
+  return new Socket(createState(target, mode, native, Boolean(options.allowHalfOpen)));
 }
 
 export function internalNewHttpClient() {

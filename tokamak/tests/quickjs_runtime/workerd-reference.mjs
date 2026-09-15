@@ -13,7 +13,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({
   compatibilityDate: "2026-08-25",
   compatibilityFlags: ["nodejs_compat"],
   bindings: { FLAG: "enabled" },
-  modules: ["startup.mjs", "contracts.mjs"].map(name => ({
+  modules: ["startup.mjs", "contracts.mjs", "streams.mjs", "crypto.mjs", "html.mjs", "zlib.mjs", "clone.mjs", "performance.mjs", "intl.mjs"].map(name => ({
     type: "ESModule",
     path: `${root}/${name}`,
     contents: readFileSync(`${root}/${name}`, "utf8"),

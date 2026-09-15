@@ -130,7 +130,12 @@ function deepEqual(left, right, seen) {
   if (left instanceof RegExp) return String(left) === String(right);
   if (left instanceof Map) return left.size === right.size && [...left].every(([key, value]) => [...right].some(([otherKey, otherValue]) => deepEqual(key, otherKey, seen) && deepEqual(value, otherValue, seen)));
   if (left instanceof Set) return left.size === right.size && [...left].every(value => [...right].some(other => deepEqual(value, other, seen)));
-  if (ArrayBuffer.isView(left)) return left.byteLength === right.byteLength && deepEqual(new Uint8Array(left.buffer, left.byteOffset, left.byteLength), new Uint8Array(right.buffer, right.byteOffset, right.byteLength), seen);
+  if (ArrayBuffer.isView(left)) {
+    if (left.byteLength !== right.byteLength) return false;
+    const leftBytes = new Uint8Array(left.buffer, left.byteOffset, left.byteLength);
+    const rightBytes = new Uint8Array(right.buffer, right.byteOffset, right.byteLength);
+    return leftBytes.every((value, index) => value === rightBytes[index]);
+  }
   const leftKeys = Reflect.ownKeys(left).filter(name => Object.prototype.propertyIsEnumerable.call(left, name));
   const rightKeys = Reflect.ownKeys(right).filter(name => Object.prototype.propertyIsEnumerable.call(right, name));
   return leftKeys.length === rightKeys.length && leftKeys.every(name => rightKeys.includes(name) && deepEqual(left[name], right[name], seen));
@@ -150,7 +155,7 @@ export function promisify(original) {
     return new Promise((resolve, reject) => {
       original.call(this, ...args, (error, ...values) => {
         if (error) { reject(error); return; }
-        resolve(values.length > 1 ? values : values[0]);
+        resolve(values[0]);
       });
     });
   };

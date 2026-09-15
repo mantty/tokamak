@@ -1,125 +1,288 @@
-import { compress, decompress } from "tokamak:host";
+import { createNodeCompression } from "tokamak:host";
 import { Buffer } from "./buffer.mjs";
 import { Transform } from "../streams/node.mjs";
 
-function operation(format, decoder, input) {
-  const value = Buffer.from(input);
-  const output = Buffer.from((decoder ? decompress : compress)(format, value));
-  if (format === "gzip" && !decoder && output.length >= 10) output[9] = 19;
-  return output;
+const empty = Buffer.alloc(0);
+const flushMarker = Symbol("zlib flush");
+
+function invalidType(name, expected) {
+  return Object.assign(new TypeError('The "' + name + '" argument must be of type ' + expected), { code: "ERR_INVALID_ARG_TYPE" });
 }
 
-function callbackOperation(format, decoder, input, options, callback) {
-  if (typeof options === "function") callback = options;
-  if (typeof callback !== "function") {
-    const error = new TypeError("The \"callback\" argument must be of type function");
-    error.code = "ERR_INVALID_ARG_TYPE";
-    throw error;
+function numberOption(value, name, min, max, fallback) {
+  if (value === undefined || Number.isNaN(value)) return fallback;
+  if (typeof value !== "number") throw invalidType(name, "number");
+  if (value < min || value > max) throw Object.assign(new RangeError(name + " is out of range"), { code: "ERR_OUT_OF_RANGE" });
+  return Math.trunc(value);
+}
+
+function inputBytes(input) {
+  if (typeof input === "string") return Buffer.from(input);
+  if (input instanceof ArrayBuffer) return Buffer.from(input);
+  if (ArrayBuffer.isView(input)) return Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+  throw invalidType("buffer", "string, Buffer, TypedArray, DataView, or ArrayBuffer");
+}
+
+function codecOptions(mode, options) {
+  const minWindow = mode === 3 ? 9 : mode === 2 || mode === 4 || mode === 7 ? 0 : 8;
+  const zlibOptions = mode < 8 ? options : {};
+  const result = {
+    windowBits: numberOption(zlibOptions.windowBits, "options.windowBits", minWindow, 15, 15),
+    level: numberOption(zlibOptions.level, "options.level", -1, 9, -1),
+    memLevel: numberOption(zlibOptions.memLevel, "options.memLevel", 1, 9, 8),
+    strategy: numberOption(zlibOptions.strategy, "options.strategy", 0, 4, 0),
+    params: {},
+  };
+  if (mode === 5 && result.windowBits === 8) result.windowBits = 9;
+  if (mode >= 8 && options.params != null) {
+    for (const key of Object.keys(options.params)) {
+      const id = Number(key);
+      const max = mode < 10 ? 8 : mode === 11 ? 100 : 402;
+      if (!Number.isInteger(id) || id < 0 || id > max || Object.hasOwn(result.params, id)) {
+        throw Object.assign(new RangeError(key + " is not a valid compression parameter"), { code: mode < 10 ? "ERR_BROTLI_INVALID_PARAM" : "ERR_ZSTD_INVALID_PARAM" });
+      }
+      let value = options.params[key];
+      if (typeof value === "boolean") value = Number(value);
+      if (typeof value !== "number") throw invalidType("options.params[" + key + "]", "number");
+      if ((value | 0) !== -1) result.params[id] = value | 0;
+    }
   }
-  queueMicrotask(() => {
-    try { callback(null, operation(format, decoder, input)); }
-    catch (error) { callback(error); }
-  });
+  if (options.pledgedSrcSize !== undefined && mode === 10) {
+    result.pledgedSrcSize = numberOption(options.pledgedSrcSize, "options.pledgedSrcSize", 0, Number.MAX_SAFE_INTEGER);
+  }
+  return result;
 }
-
-export function gzip(input, options, callback) { callbackOperation("gzip", false, input, options, callback); }
-export function gunzip(input, options, callback) { callbackOperation("gzip", true, input, options, callback); }
-export function deflate(input, options, callback) { callbackOperation("deflate", false, input, options, callback); }
-export function inflate(input, options, callback) { callbackOperation("deflate", true, input, options, callback); }
-export function deflateRaw(input, options, callback) { callbackOperation("deflate-raw", false, input, options, callback); }
-export function inflateRaw(input, options, callback) { callbackOperation("deflate-raw", true, input, options, callback); }
-export const gzipSync = input => operation("gzip", false, input);
-export const gunzipSync = input => operation("gzip", true, input);
-export const deflateSync = input => operation("deflate", false, input);
-export const inflateSync = input => operation("deflate", true, input);
-export const deflateRawSync = input => operation("deflate-raw", false, input);
-export const inflateRawSync = input => operation("deflate-raw", true, input);
 
 class ZlibTransform extends Transform {
-  constructor(format, decoder, options) {
-    super(options);
-    this._format = format;
-    this._decoder = decoder;
-    this._chunks = [];
-    this.readable = true;
-    this.writable = true;
+  constructor(mode, options = {}) {
+    options ??= {};
+    if (typeof options !== "object") throw invalidType("options", "object");
+    const familyFinish = mode < 8 ? 4 : 2;
+    const maxFlush = mode < 8 ? 5 : mode < 10 ? 3 : 2;
+    const size = numberOption(options.chunkSize, "options.chunkSize", 64, Number.MAX_SAFE_INTEGER, 16384);
+    const maxOutput = numberOption(options.maxOutputLength, "options.maxOutputLength", 1, 0x7fffffff, 0x7fffffff);
+    const flush = numberOption(options.flush, "options.flush", 0, maxFlush, 0);
+    const finishFlush = numberOption(options.finishFlush, "options.finishFlush", 0, maxFlush, familyFinish);
+    const config = codecOptions(mode, options);
+    let dictionary = empty;
+    if (mode < 8 && options.dictionary !== undefined) {
+      if (!(options.dictionary instanceof ArrayBuffer) && !ArrayBuffer.isView(options.dictionary)) throw invalidType("options.dictionary", "Buffer, TypedArray, DataView, or ArrayBuffer");
+      dictionary = inputBytes(options.dictionary);
+    }
+    const codec = createNodeCompression(mode, JSON.stringify(config), dictionary);
+    super({ ...options, objectMode: false, writableObjectMode: false, readableObjectMode: false, encoding: null, autoDestroy: true });
+    this._codec = codec;
+    this._chunkSize = Math.min(size, 65536);
+    this._maxOutputLength = maxOutput;
+    this._defaultFlush = flush;
+    this._finishFlush = finishFlush;
+    this._fullFlush = mode < 8 ? 3 : 1;
+    this._maxFlush = maxFlush;
+    this._info = Boolean(options.info);
+    this._job = null;
+    this._pumping = false;
     this.bytesWritten = 0;
   }
 
-  write(chunk, encoding, callback) {
-    if (typeof encoding === "function") callback = encoding;
-    const value = Buffer.from(chunk, typeof encoding === "string" ? encoding : undefined);
-    this._chunks.push(value);
-    this.bytesWritten += value.length;
-    callback?.();
-    return true;
+  _transform(chunk, _encoding, callback) {
+    this._job = { input: chunk, offset: 0, flush: chunk[flushMarker] ?? this._defaultFlush, callback, complete: false };
+    this._pump();
   }
 
-  end(chunk, encoding, callback) {
-    if (typeof chunk === "function") callback = chunk;
-    else if (chunk !== undefined) this.write(chunk, encoding);
+  _flush(callback) {
+    this._job = { input: empty, offset: 0, flush: this._finishFlush, callback, complete: false };
+    this._pump();
+  }
+
+  _read(size) {
+    super._read(size);
+    this._pump();
+  }
+
+  _pump() {
+    if (this._pumping || !this._job) return;
+    this._pumping = true;
     try {
-      const result = operation(this._format, this._decoder, Buffer.concat(this._chunks));
-      this.push(result);
-      this.push(null);
-      this.emit("finish");
-      callback?.();
+      while (this._job) {
+        const job = this._job;
+        if (job.complete) {
+          this._job = null;
+          job.callback();
+          continue;
+        }
+        const step = this._codec.step(job.input.subarray(job.offset), job.flush, this._chunkSize);
+        job.offset += step.consumed;
+        this.bytesWritten += step.consumed;
+        job.complete = step.ended || (job.offset === job.input.length && step.output.length < this._chunkSize);
+        if (step.output.length && !this.push(Buffer.from(step.output))) break;
+        if (!job.complete && !step.consumed && !step.output.length) throw new Error("Compression made no progress");
+      }
     } catch (error) {
-      this.emit("error", error);
-      callback?.(error);
-    }
-    return this;
+      const job = this._job;
+      this._job = null;
+      if (job) job.callback(error);
+      else throw error;
+    } finally { this._pumping = false; }
   }
 
-  destroy(error) {
-    this.__destroyed = true;
-    return super.destroy(error);
+  _destroy(error, callback) {
+    this._codec?.close();
+    this._codec = null;
+    this._job = null;
+    callback(error);
+  }
+
+  flush(kind, callback) {
+    if (typeof kind === "function") { callback = kind; kind = undefined; }
+    kind = numberOption(kind, "kind", 0, this._maxFlush, this._fullFlush);
+    if (this.writableFinished) { if (callback) queueMicrotask(callback); return; }
+    if (this.writableEnded) { if (callback) this.once("end", callback); return; }
+    const marker = Buffer.alloc(0);
+    marker[flushMarker] = kind;
+    this.write(marker, callback);
+  }
+
+  params(level, strategy, callback) {
+    level = numberOption(level, "level", -1, 9, -1);
+    strategy = numberOption(strategy, "strategy", 0, 4, 0);
+    if (typeof callback !== "function") throw invalidType("callback", "function");
+    this.flush(2, error => {
+      if (error) { callback(error); return; }
+      try {
+        const output = this._codec.params(level, strategy);
+        if (output.length) this.push(Buffer.from(output));
+      }
+      catch (error) { callback(error); return; }
+      callback();
+    });
+  }
+
+  reset() { this._codec.reset(); }
+  close(callback) {
+    if (callback) {
+      if (this.closed) queueMicrotask(callback);
+      else this.once("close", callback);
+    }
+    this.destroy();
+  }
+  get bytesRead() { return this.bytesWritten; }
+  get _closed() { return this._codec === null; }
+
+  _processChunk(chunk, flush, callback) {
+    if (typeof callback === "function") {
+      this._job = { input: inputBytes(chunk), offset: 0, flush, callback, complete: false };
+      this._pump();
+      return;
+    }
+    return processSync(this, inputBytes(chunk), flush);
   }
 }
 
-export class Deflate extends ZlibTransform { constructor(options) { super("deflate", false, options); } }
-export class Inflate extends ZlibTransform { constructor(options) { super("deflate", true, options); } }
-export class Gzip extends ZlibTransform { constructor(options) { super("gzip", false, options); } }
-export class Gunzip extends ZlibTransform { constructor(options) { super("gzip", true, options); } }
-export class DeflateRaw extends ZlibTransform { constructor(options) { super("deflate-raw", false, options); } }
-export class InflateRaw extends ZlibTransform { constructor(options) { super("deflate-raw", true, options); } }
-export class Unzip extends Gunzip {}
+function processSync(engine, input, flush) {
+  const chunks = [];
+  let size = 0;
+  let offset = 0;
+  try {
+    while (true) {
+      const step = engine._codec.step(input.subarray(offset), flush, engine._chunkSize);
+      offset += step.consumed;
+      engine.bytesWritten += step.consumed;
+      size += step.output.length;
+      if (size > engine._maxOutputLength) throw new RangeError("Cannot create a Buffer larger than maxOutputLength");
+      if (step.output.length) chunks.push(Buffer.from(step.output));
+      if (step.ended || (offset === input.length && step.output.length < engine._chunkSize)) break;
+      if (!step.consumed && !step.output.length) throw new Error("Compression made no progress");
+    }
+    return Buffer.concat(chunks, size);
+  } catch (error) {
+    // Workerd's synchronous codec throws an Error; async streams additionally
+    // expose the codec code through their error event/callback.
+    delete error.code;
+    throw error;
+  } finally {
+    engine._codec.close();
+    engine._codec = null;
+  }
+}
+
+function operation(Type, input, options) {
+  const bytes = inputBytes(input);
+  const engine = new Type(options);
+  const buffer = processSync(engine, bytes, engine._finishFlush);
+  return engine._info ? { buffer, engine } : buffer;
+}
+
+function callbackOperation(Type, input, options, callback) {
+  if (typeof options === "function") { callback = options; options = undefined; }
+  if (typeof callback !== "function") throw invalidType("callback", "function");
+  const bytes = inputBytes(input);
+  const engine = new Type(options);
+  const chunks = [];
+  let size = 0;
+  let called = false;
+  const done = (error, value) => {
+    if (called) return;
+    called = true;
+    callback(error, value);
+  };
+  engine.on("data", chunk => {
+    size += chunk.length;
+    if (size > engine._maxOutputLength) engine.destroy(new RangeError("Cannot create a Buffer larger than maxOutputLength"));
+    else chunks.push(chunk);
+  });
+  engine.once("error", error => done(error));
+  engine.once("end", () => {
+    const buffer = Buffer.concat(chunks, size);
+    done(null, engine._info ? { buffer, engine } : buffer);
+  });
+  engine.end(bytes);
+}
+
+export class Deflate extends ZlibTransform { constructor(options) { super(1, options); } }
+export class Inflate extends ZlibTransform { constructor(options) { super(2, options); } }
+export class Gzip extends ZlibTransform { constructor(options) { super(3, options); } }
+export class Gunzip extends ZlibTransform { constructor(options) { super(4, options); } }
+export class DeflateRaw extends ZlibTransform { constructor(options) { super(5, options); } }
+export class InflateRaw extends ZlibTransform { constructor(options) { super(6, options); } }
+export class Unzip extends ZlibTransform { constructor(options) { super(7, options); } }
+export class BrotliDecompress extends ZlibTransform { constructor(options) { super(8, options); } }
+export class BrotliCompress extends ZlibTransform { constructor(options) { super(9, options); } }
+export class ZstdCompress extends ZlibTransform { constructor(options) { super(10, options); } }
+export class ZstdDecompress extends ZlibTransform { constructor(options) { super(11, options); } }
 
 export const createGzip = options => new Gzip(options);
+export const gzipSync = (input, options) => operation(Gzip, input, options);
+export function gzip(input, options, callback) { callbackOperation(Gzip, input, options, callback); }
 export const createGunzip = options => new Gunzip(options);
+export const gunzipSync = (input, options) => operation(Gunzip, input, options);
+export function gunzip(input, options, callback) { callbackOperation(Gunzip, input, options, callback); }
 export const createDeflate = options => new Deflate(options);
+export const deflateSync = (input, options) => operation(Deflate, input, options);
+export function deflate(input, options, callback) { callbackOperation(Deflate, input, options, callback); }
 export const createInflate = options => new Inflate(options);
+export const inflateSync = (input, options) => operation(Inflate, input, options);
+export function inflate(input, options, callback) { callbackOperation(Inflate, input, options, callback); }
 export const createDeflateRaw = options => new DeflateRaw(options);
+export const deflateRawSync = (input, options) => operation(DeflateRaw, input, options);
+export function deflateRaw(input, options, callback) { callbackOperation(DeflateRaw, input, options, callback); }
 export const createInflateRaw = options => new InflateRaw(options);
+export const inflateRawSync = (input, options) => operation(InflateRaw, input, options);
+export function inflateRaw(input, options, callback) { callbackOperation(InflateRaw, input, options, callback); }
 export const createUnzip = options => new Unzip(options);
-
-export function unzip(input, options, callback) { gunzip(input, options, callback); }
-export const unzipSync = gunzipSync;
-
-function unsupported(name) {
-  return (...args) => {
-    const error = new Error(`node:zlib ${name} is not implemented by the Tokamak host`);
-    error.code = "ERR_METHOD_NOT_IMPLEMENTED";
-    throw error;
-  };
-}
-
-export function brotliCompress(input, options, callback) { callbackOperation("brotli", false, input, options, callback); }
-export function brotliCompressSync(input) { return operation("brotli", false, input); }
-export function brotliDecompress(input, options, callback) { callbackOperation("brotli", true, input, options, callback); }
-export function brotliDecompressSync(input) { return operation("brotli", true, input); }
-export class BrotliCompress extends ZlibTransform { constructor(options) { super("brotli", false, options); } }
-export class BrotliDecompress extends ZlibTransform { constructor(options) { super("brotli", true, options); } }
+export const unzipSync = (input, options) => operation(Unzip, input, options);
+export function unzip(input, options, callback) { callbackOperation(Unzip, input, options, callback); }
 export const createBrotliCompress = options => new BrotliCompress(options);
+export const brotliCompressSync = (input, options) => operation(BrotliCompress, input, options);
+export function brotliCompress(input, options, callback) { callbackOperation(BrotliCompress, input, options, callback); }
 export const createBrotliDecompress = options => new BrotliDecompress(options);
-export function zstdCompress(input, options, callback) { callbackOperation("zstd", false, input, options, callback); }
-export function zstdCompressSync(input) { return operation("zstd", false, input); }
-export function zstdDecompress(input, options, callback) { callbackOperation("zstd", true, input, options, callback); }
-export function zstdDecompressSync(input) { return operation("zstd", true, input); }
-export class ZstdCompress extends ZlibTransform { constructor(options) { super("zstd", false, options); } }
-export class ZstdDecompress extends ZlibTransform { constructor(options) { super("zstd", true, options); } }
+export const brotliDecompressSync = (input, options) => operation(BrotliDecompress, input, options);
+export function brotliDecompress(input, options, callback) { callbackOperation(BrotliDecompress, input, options, callback); }
 export const createZstdCompress = options => new ZstdCompress(options);
+export const zstdCompressSync = (input, options) => operation(ZstdCompress, input, options);
+export function zstdCompress(input, options, callback) { callbackOperation(ZstdCompress, input, options, callback); }
 export const createZstdDecompress = options => new ZstdDecompress(options);
+export const zstdDecompressSync = (input, options) => operation(ZstdDecompress, input, options);
+export function zstdDecompress(input, options, callback) { callbackOperation(ZstdDecompress, input, options, callback); }
 
 const codeNames = ["Z_OK", "Z_STREAM_END", "Z_NEED_DICT", "Z_ERRNO", "Z_STREAM_ERROR", "Z_DATA_ERROR", "Z_MEM_ERROR", "Z_BUF_ERROR", "Z_VERSION_ERROR"];
 export const codes = Object.assign(Object.fromEntries(codeNames.map((name, index) => [name, index === 0 ? 0 : index === 1 ? 1 : index === 2 ? 2 : -index + 2])), Object.fromEntries(codeNames.map((name, index) => [index === 0 ? 0 : index === 1 ? 1 : index === 2 ? 2 : -index + 2, name])));
@@ -131,7 +294,7 @@ export const constants = {
   Z_DEFLATED: 8, Z_BEST_COMPRESSION: 9, Z_BEST_SPEED: 1, Z_DEFAULT_CHUNK: 16384, Z_DEFAULT_MEMLEVEL: 8,
   Z_DEFAULT_STRATEGY: 0, Z_DEFAULT_WINDOWBITS: 15, Z_MAX_CHUNK: 0x7fffffff, Z_MAX_MEMLEVEL: 9, Z_MAX_WINDOWBITS: 15,
   Z_MIN_CHUNK: 64, Z_MIN_MEMLEVEL: 1, Z_MIN_WINDOWBITS: 8, Z_NO_COMPRESSION: 0,
-  GUNZIP: 2, GZIP: 3, INFLATE: 0, DEFLATE: 1, INFLATERAW: 4, DEFLATERAW: 5, UNZIP: 7,
+  GUNZIP: 4, GZIP: 3, INFLATE: 2, DEFLATE: 1, INFLATERAW: 6, DEFLATERAW: 5, UNZIP: 7,
   BROTLI_OPERATION_PROCESS: 0, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_FINISH: 2, BROTLI_OPERATION_EMIT_METADATA: 3,
   BROTLI_PARAM_MODE: 0, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_SIZE_HINT: 5, BROTLI_PARAM_DISABLE_LITERAL_CONTEXT_MODELING: 4,
   BROTLI_PARAM_LGWIN: 2, BROTLI_PARAM_LGBLOCK: 3, BROTLI_PARAM_NPOSTFIX: 7, BROTLI_PARAM_NDIRECT: 8, BROTLI_PARAM_LARGE_WINDOW: 6,
@@ -220,8 +383,10 @@ const exportedConstants = Object.fromEntries(
 );
 
 export function crc32(input, value = 0) {
+  if (typeof value !== "number") throw invalidType("value", "number");
+  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) throw Object.assign(new RangeError("value is out of range"), { code: "ERR_OUT_OF_RANGE" });
   let crc = (value ^ -1) >>> 0;
-  for (const byte of Buffer.from(input)) {
+  for (const byte of inputBytes(input)) {
     crc ^= byte;
     for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
   }

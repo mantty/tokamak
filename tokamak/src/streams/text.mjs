@@ -1,3 +1,4 @@
+import { markHostObject } from "../globals/objects.mjs";
 import { createDecoder } from "tokamak:host";
 import { TextDecoderStream, TextEncoderStream, TransformStream } from "./web.mjs";
 
@@ -17,6 +18,7 @@ function utf8(code) {
 }
 
 export class TextEncoder {
+  constructor() { markHostObject(this); }
   get encoding() { return "utf-8"; }
   encode(value = "") {
     const bytes = [];
@@ -43,6 +45,7 @@ export class TextDecoder {
   #fatal;
   #ignoreBOM;
   constructor(label = "utf-8", options = {}) {
+    markHostObject(this);
     label = string(label);
     if (options === null || (typeof options !== "object" && typeof options !== "function")) throw new TypeError("Options must be an object");
     this.#fatal = Boolean(options.fatal);

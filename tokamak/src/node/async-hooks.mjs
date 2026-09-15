@@ -4,42 +4,55 @@ const resourceState = new WeakMap();
 function notImplemented(name) { throw new Error(`asyncLocalStorage.${name}() is not implemented`); }
 
 export class AsyncLocalStorage {
-  constructor(options = {}) { localStorageState.set(this, { store: undefined, name: options?.name }); }
+  constructor(options = {}) { localStorageState.set(this, { name: options?.name, defaultValue: options?.defaultValue }); }
   get name() { return localStorageState.get(this).name; }
-  getStore() { return localStorageState.get(this).store; }
+  getStore() {
+    const context = captureAsyncContext();
+    return context?.has(this) ? context.get(this) : localStorageState.get(this).defaultValue;
+  }
+  static bind(callback) {
+    if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
+    const context = captureAsyncContext();
+    return (...args) => runInAsyncContext(context, callback, undefined, args);
+  }
+  static snapshot() {
+    const context = captureAsyncContext();
+    return (callback, ...args) => {
+      if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
+      return runInAsyncContext(context, callback, undefined, args);
+    };
+  }
   disable() { return notImplemented("disable"); }
   enterWith() { return notImplemented("enterWith"); }
   run(value, callback, ...args) {
     if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
-    const state = localStorageState.get(this);
-    const previous = state.store;
-    state.store = value;
-    try { return callback(...args); }
-    finally { state.store = previous; }
+    const context = new Map(captureAsyncContext());
+    context.set(this, value);
+    return runInAsyncContext(context, callback, undefined, args);
   }
   exit(callback, ...args) {
     if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
-    const state = localStorageState.get(this);
-    const previous = state.store;
-    state.store = undefined;
-    try { return callback(...args); }
-    finally { state.store = previous; }
+    return this.run(undefined, callback, ...args);
   }
 }
 
 export class AsyncResource {
-  constructor(type) { resourceState.set(this, { type: String(type ?? ""), asyncId: 0, triggerAsyncId: 0 }); }
+  constructor(type) { resourceState.set(this, { type: String(type ?? ""), asyncId: 0, triggerAsyncId: 0, context: captureAsyncContext() }); }
   asyncId() { return resourceState.get(this).asyncId; }
   triggerAsyncId() { return resourceState.get(this).triggerAsyncId; }
-  bind(callback, thisArg) { return AsyncResource.bind(callback, thisArg ?? this); }
+  bind(callback, thisArg = globalThis) {
+    if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
+    const resource = this;
+    return function (...args) { return resource.runInAsyncScope(callback, thisArg, ...args); };
+  }
   runInAsyncScope(callback, thisArg, ...args) {
     if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
-    return callback.apply(thisArg, args);
+    return runInAsyncContext(resourceState.get(this).context, callback, thisArg, args);
   }
   emitDestroy() { return this; }
-  static bind(callback, thisArg) {
+  static bind(callback, type, thisArg = globalThis) {
     if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
-    return function (...args) { return callback.apply(thisArg ?? this, args); };
+    return new AsyncResource(type).bind(callback, thisArg);
   }
 }
 
@@ -67,3 +80,4 @@ export const asyncWrapProviders = {
 };
 
 export default { AsyncLocalStorage, AsyncResource, createHook, executionAsyncId, triggerAsyncId, executionAsyncResource, asyncWrapProviders };
+import { captureAsyncContext, runInAsyncContext } from "../builtins/async-context.mjs";

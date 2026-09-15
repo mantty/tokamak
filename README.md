@@ -357,6 +357,8 @@ Run the common checks before submitting a change:
 ```sh
 pnpm --dir tools/esbuild-hosts install --frozen-lockfile
 pnpm --dir tokamak/tests/quickjs_runtime install --frozen-lockfile
+pnpm --dir examples/astro install --frozen-lockfile
+pnpm --dir examples/astro run build
 cargo fmt --all --check
 cargo test -p tokamak --features native
 node --test tokamak/tests/quickjs_runtime/runtime.test.mjs

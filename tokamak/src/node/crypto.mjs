@@ -3,6 +3,7 @@ import { CryptoKey, crypto as webcrypto } from "../globals/web.mjs";
 import { Transform } from "../streams/node.mjs";
 import { Buffer } from "./buffer.mjs";
 import { unsupportedFunction } from "./unsupported.mjs";
+import { cryptoCreateCipher, cryptoCreateDigest, cryptoTimingSafeEqual } from "tokamak:host";
 
 const unsupportedCrypto = name => unsupportedFunction(`crypto.${name}`);
 const hashToken = Symbol("hash");
@@ -39,33 +40,43 @@ function finalizedError() {
   return error;
 }
 
+function nodeHashAlgorithm(algorithm) {
+  if (typeof algorithm !== "string") {
+    const error = new TypeError('The "algorithm" argument must be of type string');
+    error.code = "ERR_INVALID_ARG_TYPE";
+    throw error;
+  }
+  const name = getHashes().find(name => name.toLowerCase() === algorithm.toLowerCase());
+  if (!name) throw new Error("Digest method not supported");
+  if (["DSA-SHA", "DSA-SHA1", "ecdsa-with-SHA1"].includes(name)) return "SHA-1";
+  return normalizeHash(name.replace(/^RSA-/, ""));
+}
+
 export class Hash extends Transform {
-  constructor(algorithm, token) {
+  constructor(algorithm, token, handle) {
     super();
     if (token !== hashToken) throw new Error("Illegal constructor");
-    this.__algorithm = normalizeHash(algorithm);
-    this.__chunks = [];
+    this.__algorithm = algorithm;
+    this.__handle = handle ?? cryptoCreateDigest(nodeHashAlgorithm(algorithm));
     this.__finalized = false;
   }
 
   update(value, encoding) {
     if (this.__finalized) throw finalizedError();
-    this.__chunks.push(inputBytes(value, encoding));
+    this.__handle.update(inputBytes(value, encoding));
     return this;
   }
 
   digest(encoding) {
     if (this.__finalized) throw finalizedError();
     this.__finalized = true;
-    const output = Buffer.from(digest(this.__algorithm, joinChunks(this.__chunks)));
+    const output = Buffer.from(this.__handle.finish());
     return encoding === undefined ? output : output.toString(encoding);
   }
 
   copy() {
     if (this.__finalized) throw finalizedError();
-    const copy = new Hash(this.__algorithm, hashToken);
-    copy.__chunks = this.__chunks.map(chunk => Buffer.from(chunk));
-    return copy;
+    return new Hash(this.__algorithm, hashToken, this.__handle.copy());
   }
 
   _transform(chunk, encoding, callback) {
@@ -73,7 +84,10 @@ export class Hash extends Transform {
     catch (error) { callback(error); }
   }
 
-  _flush(callback) { callback(); }
+  _flush(callback) {
+    try { callback(null, this.digest()); }
+    catch (error) { callback(error); }
+  }
 }
 
 export function createHash(algorithm) { return new Hash(algorithm, hashToken); }
@@ -183,12 +197,13 @@ export function randomInt(min, max, callback) {
 }
 
 export function timingSafeEqual(left, right) {
+  for (const value of [left, right]) {
+    if (!(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value)) throw new TypeError("Input must be an ArrayBuffer or ArrayBufferView");
+  }
   if (left.byteLength !== right.byteLength) throw new TypeError("Input buffers must have the same byte length");
   const a = new Uint8Array(left.buffer ?? left, left.byteOffset ?? 0, left.byteLength);
   const b = new Uint8Array(right.buffer ?? right, right.byteOffset ?? 0, right.byteLength);
-  let result = 0;
-  for (let index = 0; index < a.length; index += 1) result |= a[index] ^ b[index];
-  return result === 0;
+  return cryptoTimingSafeEqual(a, b);
 }
 
 export function createHmac(algorithm, key) { return new Hmac(algorithm, key, hashToken); }
@@ -197,22 +212,21 @@ export class Hmac extends Transform {
   constructor(algorithm, key, token) {
     super();
     if (token !== hashToken) throw new Error("Illegal constructor");
-    this.__algorithm = normalizeHash(algorithm);
-    this.__key = inputBytes(key);
-    this.__chunks = [];
+    const bytes = key instanceof KeyObject ? keyRecord(key).bytes : inputBytes(key);
+    this.__handle = cryptoCreateDigest(nodeHashAlgorithm(algorithm), bytes);
     this.__finalized = false;
   }
 
   update(value, encoding) {
     if (this.__finalized) throw finalizedError();
-    this.__chunks.push(inputBytes(value, encoding));
+    this.__handle.update(inputBytes(value, encoding));
     return this;
   }
 
   digest(encoding) {
-    if (this.__finalized) throw finalizedError();
+    if (this.__finalized) return encoding === undefined ? Buffer.alloc(0) : "";
     this.__finalized = true;
-    const output = Buffer.from(cryptoHmac(this.__algorithm, this.__key, joinChunks(this.__chunks)));
+    const output = Buffer.from(this.__handle.finish());
     return encoding === undefined ? output : output.toString(encoding);
   }
 
@@ -221,7 +235,10 @@ export class Hmac extends Transform {
     catch (error) { callback(error); }
   }
 
-  _flush(callback) { callback(); }
+  _flush(callback) {
+    try { callback(null, this.digest()); }
+    catch (error) { callback(error); }
+  }
 }
 
 export function hash(algorithm, data, options) {
@@ -392,7 +409,6 @@ function publicPoint(jwk) {
 }
 
 const keyObjectState = new WeakMap();
-const cipherToken = Symbol("cipher");
 const signToken = Symbol("sign");
 
 function parseBundle(value) {
@@ -612,57 +628,48 @@ function cipherInput(value, encoding) {
 function cipherSpec(algorithm) {
   const match = String(algorithm).toLowerCase().match(/^aes-(128|192|256)-(gcm|cbc|ctr)$/);
   if (!match) throw new Error(`Unknown cipher: ${algorithm}`);
-  return { name: `AES-${match[2].toUpperCase()}`, keyLength: Number(match[1]) / 8, mode: match[2] };
+  return { keyLength: Number(match[1]) / 8, mode: match[2] };
 }
 
 class CipherBase extends Transform {
-  constructor(algorithm, key, iv, decrypt, token) {
-    super();
-    if (token !== cipherToken) illegalConstructor();
+  constructor(algorithm, key, iv, decrypt, options = {}) {
+    super(options);
     const spec = cipherSpec(algorithm);
     const keyBytes = key instanceof KeyObject ? keyRecord(key).bytes : inputBytes(key);
     if (keyBytes.length !== spec.keyLength) throw new RangeError("Invalid key length");
-    this.__state = { algorithm, spec, mode: spec.mode, key: Buffer.from(keyBytes), iv: Buffer.from(iv ?? []), aad: Buffer.alloc(0), authTag: null, chunks: [], tagLength: 16, decrypt, finalized: false };
-    if (spec.mode === "cbc" && this.__state.iv.length !== 16) throw new TypeError("Invalid initialization vector");
-    if (spec.mode === "ctr" && this.__state.iv.length !== 16) throw new TypeError("Invalid initialization vector");
+    const tagLength = options.authLengthTag;
+    if (spec.mode === "gcm" && tagLength !== undefined && ![4, 8, 12, 13, 14, 15, 16].includes(tagLength)) throw new Error("Invalid authentication tag length");
+    const ivBytes = inputBytes(iv);
+    if (spec.mode !== "gcm" && ivBytes.length !== 16) throw new TypeError("Invalid initialization vector");
+    if (spec.mode === "gcm" && ivBytes.length !== 12) throw new Error("Invalid initialization vector");
+    this.__tagLength = tagLength;
+    this.__handle = cryptoCreateCipher(spec.mode, !decrypt, keyBytes, ivBytes, tagLength);
   }
   update(value, inputEncoding, outputEncodingName) {
-    const state = this.__state;
-    if (state.finalized) throw finalizedError();
-    state.chunks.push(cipherInput(value, inputEncoding));
-    return outputEncoding(Buffer.alloc(0), outputEncodingName);
+    return outputEncoding(Buffer.from(this.__handle.update(cipherInput(value, inputEncoding))), outputEncodingName);
   }
   final(outputEncodingName) {
-    const state = this.__state;
-    if (state.finalized) throw finalizedError();
-    state.finalized = true;
-    let input = joinChunks(state.chunks);
-    if (state.mode === "gcm" && state.decrypt) input = Buffer.concat([input, state.authTag ?? Buffer.alloc(0)]);
-    const value = Buffer.from(cryptoAesGcm(!state.decrypt, state.key, state.iv, input, { tagLength: state.tagLength * 8, mode: state.spec.name, additionalData: state.aad }));
-    if (state.mode === "gcm" && !state.decrypt) {
-      state.authTag = Buffer.from(value.subarray(-state.tagLength));
-      return outputEncoding(Buffer.from(value.subarray(0, -state.tagLength)), outputEncodingName);
-    }
-    return outputEncoding(value, outputEncodingName);
+    return outputEncoding(Buffer.from(this.__handle.finish()), outputEncodingName);
   }
-  setAAD(value) { this.__state.aad = inputBytes(value); return this; }
-  setAutoPadding(value = true) { this.__state.autoPadding = Boolean(value); return this; }
-  getAuthTag() {
-    const state = this.__state;
-    if (!state.finalized || state.decrypt || !state.authTag) throw new Error("Invalid state for operation");
-    return Buffer.from(state.authTag);
-  }
+  setAAD(value, options = {}) { this.__handle.setAAD(inputBytes(value, options.encoding)); return this; }
+  setAutoPadding(value) { this.__handle.setAutoPadding(Boolean(value)); return this; }
+  getAuthTag() { return Buffer.from(this.__handle.getAuthTag()); }
   _transform(chunk, encoding, callback) { try { callback(null, this.update(chunk, encoding)); } catch (error) { callback(error); } }
   _flush(callback) { try { callback(null, this.final()); } catch (error) { callback(error); } }
 }
 
 export class Cipheriv extends CipherBase {
-  constructor(algorithm, key, iv, token) { super(algorithm, key, iv, false, token); }
+  constructor(algorithm, key, iv, options) { super(algorithm, key, iv, false, options); }
 }
 
 export class Decipheriv extends CipherBase {
-  constructor(algorithm, key, iv, token) { super(algorithm, key, iv, true, token); }
-  setAuthTag(value) { this.__state.authTag = inputBytes(value); this.__state.tagLength = this.__state.authTag.length; return this; }
+  constructor(algorithm, key, iv, options) { super(algorithm, key, iv, true, options); }
+  setAuthTag(value) {
+    const tag = inputBytes(value);
+    if (![4, 8, 12, 13, 14, 15, 16].includes(tag.length) || (this.__tagLength !== undefined && this.__tagLength !== tag.length)) throw new Error("Invalid authentication tag length");
+    this.__handle.setAuthTag(tag);
+    return this;
+  }
 }
 
 export class Cipher extends Cipheriv {}
@@ -838,8 +845,8 @@ export function createPublicKey(input) {
   return createAsymmetricObject(describeKey(Buffer.from(value), format, "public"));
 }
 export function createSecretKey(key, encoding) { return new SecretKeyObject(inputBytes(key, encoding), keyObjectToken); }
-export function createCipheriv(algorithm, key, iv) { return new Cipheriv(algorithm, key, iv, cipherToken); }
-export function createDecipheriv(algorithm, key, iv) { return new Decipheriv(algorithm, key, iv, cipherToken); }
+export function createCipheriv(algorithm, key, iv, options) { return new Cipheriv(algorithm, key, iv, options); }
+export function createDecipheriv(algorithm, key, iv, options) { return new Decipheriv(algorithm, key, iv, options); }
 function evpBytesToKey(password, keyLength, ivLength) {
   const output = [];
   let previous = new Uint8Array();

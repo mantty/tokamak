@@ -1,3 +1,4 @@
+import { hostObjectKinds, markHostObject } from "./globals/objects.mjs";
 import {
   intlCanonicalLocales,
   intlCollatorCompare,
@@ -22,9 +23,17 @@ const numberFields = ["minimumIntegerDigits", "minimumFractionDigits", "maximumF
 
 function localeList(locales) {
   if (locales === undefined) return [];
-  if (typeof locales === "string") return [locales];
-  if (locales === null || typeof locales[Symbol.iterator] !== "function") throw new TypeError("Invalid language tag");
-  return [...locales].map(value => String(value));
+  if (typeof locales === "string" || hostObjectKinds.get(locales) === "Intl.Locale") return [String(locales)];
+  if (locales === null) throw new TypeError("Invalid language tag");
+  const source = Object(locales), values = [];
+  const length = Math.min(Math.max(Math.trunc(+source.length) || 0, 0), Number.MAX_SAFE_INTEGER);
+  for (let i = 0; i < length; i++) {
+    if (!(i in source)) continue;
+    const value = source[i];
+    if (typeof value !== "string" && (value === null || (typeof value !== "object" && typeof value !== "function"))) throw new TypeError("Invalid language tag");
+    values.push(String(value));
+  }
+  return values;
 }
 
 function canonicalLocales(locales) {
@@ -36,9 +45,9 @@ function firstLocale(locales) {
 }
 
 function optionsObject(options) {
-  if (options === undefined || options === null) return {};
-  if (typeof options !== "object" && typeof options !== "function") throw new TypeError("Options must be an object");
-  return options;
+  if (options === undefined) return {};
+  if (options === null) throw new TypeError("Options must not be null");
+  return Object(options);
 }
 
 function optionsJson(options) {
@@ -109,10 +118,9 @@ function formatParts(host, ...args) {
 }
 
 function epochMilliseconds(value) {
-  const date = value === undefined ? new Date() : value instanceof Date ? value : new Date(value);
-  const milliseconds = date.getTime();
-  if (Number.isNaN(milliseconds)) throw new RangeError("Invalid time value");
-  return milliseconds;
+  const milliseconds = value === undefined ? Date.now() : +value;
+  if (!Number.isFinite(milliseconds) || Math.abs(milliseconds) > 8_640_000_000_000_000) throw new RangeError("Invalid time value");
+  return Math.trunc(milliseconds);
 }
 
 function dateResolvedOptions(locale, options) {
@@ -151,17 +159,18 @@ function dateResolvedOptions(locale, options) {
 }
 
 class DateTimeFormat {
+  #format;
   constructor(locales, options) {
+    markHostObject(this);
     this.__locales = canonicalLocales(locales);
     this.__locale = this.__locales[0] ?? "en-US";
     this.__options = dateOptions(options);
     if (hasTimeFields(this.__options) && this.__options.hourCycle === undefined && this.__options.hour12 === undefined) {
       this.__options.hourCycle = localeDefaultHourCycle(this.__locale);
     }
+    this.#format = value => intlDateTime(epochMilliseconds(value), JSON.stringify(this.__locales), optionsJson(this.__options));
   }
-  format(value = new Date()) {
-    return intlDateTime(epochMilliseconds(value), JSON.stringify(this.__locales), optionsJson(this.__options));
-  }
+  get format() { return this.#format; }
   formatToParts(value = new Date()) {
     return formatParts(intlDateTimeParts, epochMilliseconds(value), JSON.stringify(this.__locales), optionsJson(this.__options));
   }
@@ -210,12 +219,15 @@ function numberResolvedOptions(locale, options) {
 }
 
 class NumberFormat {
+  #format;
   constructor(locales, options) {
+    markHostObject(this);
     this.__locales = canonicalLocales(locales);
     this.__locale = this.__locales[0] ?? "en-US";
     this.__options = numberOptions(options);
+    this.#format = value => intlNumber(Number(value), JSON.stringify(this.__locales), optionsJson(this.__options));
   }
-  format(value) { return intlNumber(Number(value), JSON.stringify(this.__locales), optionsJson(this.__options)); }
+  get format() { return this.#format; }
   formatToParts(value) { return formatParts(intlNumberParts, Number(value), JSON.stringify(this.__locales), optionsJson(this.__options)); }
   formatRange(start, end) {
     const first = this.format(start);
@@ -233,6 +245,7 @@ class NumberFormat {
 
 class PluralRules {
   constructor(locales, options) {
+    markHostObject(this);
     this.__locales = canonicalLocales(locales);
     this.__locale = this.__locales[0] ?? "en-US";
     this.__options = pluralOptions(options);
@@ -274,6 +287,7 @@ function localeTagWithOptions(tag, options) {
 
 class Locale {
   constructor(tag, options) {
+    markHostObject(this, "Intl.Locale");
     this.__tag = localeTagWithOptions(tag, options);
     this.__info = localeInfo(this.__tag);
   }
@@ -303,6 +317,7 @@ class Locale {
 
 class ListFormat {
   constructor(locales, options) {
+    markHostObject(this);
     this.__locales = canonicalLocales(locales);
     this.__locale = this.__locales[0] ?? "en-US";
     this.__options = listOptions(options);
@@ -315,6 +330,7 @@ class ListFormat {
 
 class RelativeTimeFormat {
   constructor(locales, options) {
+    markHostObject(this);
     this.__locales = canonicalLocales(locales);
     this.__locale = this.__locales[0] ?? "en-US";
     this.__options = relativeOptions(options);
@@ -327,6 +343,7 @@ class RelativeTimeFormat {
 
 class Collator {
   constructor(locales, options) {
+    markHostObject(this);
     this.__locales = canonicalLocales(locales);
     this.__locale = this.__locales[0] ?? "en-US";
     const source = optionsObject(options);
@@ -346,6 +363,7 @@ class Collator {
 
 class Segmenter {
   constructor(locales, options) {
+    markHostObject(this);
     this.__locales = canonicalLocales(locales);
     this.__locale = this.__locales[0] ?? "en-US";
     this.__granularity = optionsObject(options).granularity ?? "grapheme";
@@ -368,6 +386,7 @@ class Segmenter {
 
 class DisplayNames {
   constructor(locales, options) {
+    markHostObject(this);
     this.__locales = canonicalLocales(locales);
     this.__locale = this.__locales[0] ?? "en-US";
     const source = optionsObject(options);
@@ -405,5 +424,36 @@ const intl = {
     return [...supportedValues[key]];
   },
 };
+
+function dateLocaleString(value, locales, options, required, defaults) {
+  const milliseconds = Date.prototype.getTime.call(value);
+  if (Number.isNaN(milliseconds)) return "Invalid Date";
+  const formatOptions = Object.create(optionsObject(options));
+  if (required === "date" && formatOptions.timeStyle !== undefined) throw new TypeError("timeStyle is not valid for toLocaleDateString");
+  if (required === "time" && formatOptions.dateStyle !== undefined) throw new TypeError("dateStyle is not valid for toLocaleTimeString");
+  const dateFields = ["weekday", "year", "month", "day"], timeFields = ["hour", "minute", "second", "fractionalSecondDigits"];
+  const fields = required === "date" ? dateFields : required === "time" ? timeFields : [...dateFields, ...timeFields];
+  if (formatOptions.dateStyle === undefined && formatOptions.timeStyle === undefined && fields.every(field => formatOptions[field] === undefined)) {
+    if (defaults !== "time") for (const field of ["year", "month", "day"]) formatOptions[field] = "numeric";
+    if (defaults !== "date") for (const field of ["hour", "minute", "second"]) formatOptions[field] = "numeric";
+  }
+  return new DateTimeFormat(locales, formatOptions).format(milliseconds);
+}
+
+export function installIntlGlobals() {
+  globalThis.Intl = intl;
+  Object.defineProperties(Date.prototype, {
+    toLocaleString: { configurable: true, writable: true, value: function toLocaleString(locales, options) { return dateLocaleString(this, locales, options, "any", "all"); } },
+    toLocaleDateString: { configurable: true, writable: true, value: function toLocaleDateString(locales, options) { return dateLocaleString(this, locales, options, "date", "date"); } },
+    toLocaleTimeString: { configurable: true, writable: true, value: function toLocaleTimeString(locales, options) { return dateLocaleString(this, locales, options, "time", "time"); } },
+  });
+  Object.defineProperty(Number.prototype, "toLocaleString", { configurable: true, writable: true,
+    value: function toLocaleString(locales, options) { return new NumberFormat(locales, options).format(Number.prototype.valueOf.call(this)); } });
+  Object.defineProperty(String.prototype, "localeCompare", { configurable: true, writable: true,
+    value: function localeCompare(other, locales, options) {
+      if (this == null || typeof this === "symbol" || typeof other === "symbol") throw new TypeError("Cannot convert value to string");
+      return new Collator(locales, options).compare(String(this), String(other));
+    } });
+}
 
 export { intl };

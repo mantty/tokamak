@@ -1,11 +1,19 @@
-import { decodeBase64, encodeBase64, randomBytes, detachArrayBuffer, digest, cryptoHmac, cryptoAesGcm, cryptoPbkdf2, cryptoHkdf, cryptoGenerateKey, cryptoImportKey, cryptoExportKey, cryptoSign, cryptoVerify, cryptoEncrypt, cryptoDecrypt, cryptoDerive, httpFetch } from "tokamak:host";
+import { markHostObject } from "./objects.mjs";
+import { decodeBase64, encodeBase64, randomBytes, detachArrayBuffer, digest, cryptoHmac, cryptoAesGcm, cryptoPbkdf2, cryptoHkdf, cryptoGenerateKey, cryptoImportKey, cryptoExportKey, cryptoSign, cryptoVerify, cryptoEncrypt, cryptoDecrypt, cryptoDerive, cryptoTimingSafeEqual, httpFetch } from "tokamak:host";
 import { CloseEvent, CustomEvent, ErrorEvent, Event, EventTarget, ExtendableEvent, FetchEvent, MessageChannel, MessageEvent, MessagePort, PromiseRejectionEvent, ScheduledEvent, TailEvent, TraceEvent, WebSocketRequestResponsePair } from "../events/web.mjs";
 import { Blob, Body, Cache, CacheStorage, EventSource, File, FormData, Headers, Request, Response } from "../network/fetch.mjs";
 import { HTMLRewriter } from "../network/html-rewriter.mjs";
 import { URL, URLPattern, URLSearchParams } from "../network/url.mjs";
 import { ReadableByteStreamController, ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest, ReadableStreamDefaultController, ReadableStreamDefaultReader, WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter, TransformStream, TransformStreamDefaultController, CompressionStream, DecompressionStream, ByteLengthQueuingStrategy, CountQueuingStrategy, FixedLengthStream, IdentityTransformStream } from "../streams/web.mjs";
 import { TextDecoder, TextEncoder, TextDecoderStream, TextEncoderStream } from "../streams/text.mjs";
-import { intl } from "../intl.mjs";
+import { installIntlGlobals } from "../intl.mjs";
+import { captureAsyncContext, runInAsyncContext } from "../builtins/async-context.mjs";
+import { scheduleTimer } from "tokamak:host";
+import { cryptoCreateDigest } from "tokamak:host";
+import { structuredClone } from "./structured-clone.mjs";
+import { Performance, PerformanceEntry, PerformanceMark, PerformanceMeasure, PerformanceObserver, PerformanceObserverEntryList, PerformanceResourceTiming, performance } from "./performance.mjs";
+export { Performance, PerformanceEntry, PerformanceMark, PerformanceMeasure, PerformanceObserver, PerformanceObserverEntryList, PerformanceResourceTiming };
+export { structuredClone };
 
 function hidden(object, name, value) {
   Object.defineProperty(object, name, {
@@ -19,6 +27,7 @@ function hidden(object, name, value) {
 export class DOMException extends Error {
   constructor(message = "", name = "Error") {
     super(String(message));
+    markHostObject(this, "DOMException");
     this.name = String(name);
     this.code = exceptionCode(this.name);
   }
@@ -50,7 +59,7 @@ export class AbortSignal extends EventTarget {
   get onabort() { return this.__onabort; }
   set onabort(value) { this.__onabort = value; }
   throwIfAborted() { if (this.aborted) throw this.reason; }
-  __abort(reason = new DOMException("The operation was aborted.", "AbortError")) {
+  __abort(reason = new DOMException("The operation was aborted", "AbortError")) {
     if (this.aborted) return;
     this.__aborted = true;
     this.__reason = reason;
@@ -58,7 +67,7 @@ export class AbortSignal extends EventTarget {
     this.dispatchEvent(event);
     this.__onabort?.call(this, event);
   }
-  static abort(reason = new DOMException("The operation was aborted.", "AbortError")) {
+  static abort(reason = new DOMException("The operation was aborted", "AbortError")) {
     const signal = new AbortSignal();
     signal.__abort(reason);
     return signal;
@@ -79,95 +88,11 @@ export class AbortSignal extends EventTarget {
   }
 }
 export class AbortController {
-  constructor() { hidden(this, "__signal", new AbortSignal()); }
+  constructor() { markHostObject(this); hidden(this, "__signal", new AbortSignal()); }
   get signal() { return this.__signal; }
-  abort(reason) { this.signal.__abort(reason === undefined ? new DOMException("The operation was aborted.", "AbortError") : reason); }
+  abort(reason) { this.signal.__abort(reason === undefined ? new DOMException("The operation was aborted", "AbortError") : reason); }
 }
 
-function structuredCloneValue(value, seen) {
-  if (value === null || typeof value !== "object") {
-    if (typeof value === "function" || typeof value === "symbol") throw new DOMException("Value cannot be cloned.", "DataCloneError");
-    return value;
-  }
-  const previous = seen.find(entry => entry[0] === value);
-  if (previous) return previous[1];
-  if (value instanceof Date) return new Date(value.getTime());
-  if (value instanceof RegExp) { const copy = new RegExp(value.source, value.flags); copy.lastIndex = value.lastIndex; return copy; }
-  if (value instanceof MessagePort) throw new DOMException("Could not serialize object of type \"MessagePort\". This type does not support serialization.", "DataCloneError");
-  if (value instanceof ArrayBuffer) {
-    const copy = value.slice(0);
-    seen.push([value, copy]);
-    return copy;
-  }
-  if (ArrayBuffer.isView(value)) {
-    const buffer = structuredCloneValue(value.buffer, seen);
-    return value instanceof DataView
-      ? new DataView(buffer, value.byteOffset, value.byteLength)
-      : new value.constructor(buffer, value.byteOffset, value.length);
-  }
-  if (value instanceof File) return new File([value.__bytes], value.name, { type: value.type, lastModified: value.lastModified });
-  if (value instanceof Blob) return new Blob([value.__bytes], { type: value.type });
-  if (value instanceof FormData) {
-    const copy = new FormData();
-    seen.push([value, copy]);
-    for (const [key, item] of value) copy.append(key, structuredCloneValue(item, seen));
-    return copy;
-  }
-  if (value instanceof Map) {
-    const copy = new Map();
-    seen.push([value, copy]);
-    for (const [key, item] of value) copy.set(structuredCloneValue(key, seen), structuredCloneValue(item, seen));
-    return copy;
-  }
-  if (value instanceof Set) {
-    const copy = new Set();
-    seen.push([value, copy]);
-    for (const item of value) copy.add(structuredCloneValue(item, seen));
-    return copy;
-  }
-  if (value instanceof Error) {
-    const constructors = {
-      Error,
-      EvalError,
-      RangeError,
-      ReferenceError,
-      SyntaxError,
-      TypeError,
-      URIError,
-    };
-    const Constructor = constructors[value.name] ?? Error;
-    const copy = new Constructor(value.message);
-    seen.push([value, copy]);
-    if (Object.hasOwn(value, "cause")) copy.cause = structuredCloneValue(value.cause, seen);
-    for (const key of Reflect.ownKeys(value)) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (descriptor?.enumerable) copy[key] = structuredCloneValue(value[key], seen);
-    }
-    return copy;
-  }
-  const copy = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
-  seen.push([value, copy]);
-  for (const key of Reflect.ownKeys(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor?.enumerable) copy[key] = structuredCloneValue(value[key], seen);
-  }
-  return copy;
-}
-
-export function structuredClone(value, options = {}) {
-  const transferred = [];
-  if (options != null && options.transfer !== undefined) {
-    if (options.transfer == null || typeof options.transfer[Symbol.iterator] !== "function") {
-      throw new TypeError("The transfer value must be an iterable.");
-    }
-    for (const item of options.transfer) {
-      if (item instanceof ArrayBuffer && !transferred.includes(item)) transferred.push(item);
-    }
-  }
-  const clone = structuredCloneValue(value, []);
-  for (const item of transferred) detachArrayBuffer(item);
-  return clone;
-}
 
 function exceptionCode(name) {
   const exceptionCodes = {
@@ -332,8 +257,8 @@ const subtle = {
   async sign(algorithm, key, data) {
     validateKey(key, "sign");
     const record = requireAlgorithmKey(key, algorithm);
-    if (record.algorithm.name === "HMAC") return cryptoHmac(algorithmHash(algorithm, record.algorithm.hash.name), record.data, toBytes(data));
-    const hash = ["Ed25519", "NODE-ED25519"].includes(record.algorithm.name) ? "SHA-256" : algorithmHash(algorithm);
+    if (record.algorithm.name === "HMAC") return cryptoHmac(record.algorithm.hash.name, record.data, toBytes(data));
+    const hash = record.algorithm.hash?.name ?? (["Ed25519", "NODE-ED25519"].includes(record.algorithm.name) ? "SHA-256" : algorithmHash(algorithm));
     return cryptoSign(toBytes(data), { kind: record.meta.kind, format: record.meta.format, key: record.data, hash, saltLength: record.algorithm.name === "RSA-PSS" ? requiredSaltLength(algorithm) : undefined });
   },
   async verify(algorithm, key, signature, data) {
@@ -341,11 +266,11 @@ const subtle = {
     const record = requireAlgorithmKey(key, algorithm);
     const actual = toBytes(signature);
     if (record.algorithm.name === "HMAC") {
-      const expected = new Uint8Array(await subtle.sign(algorithm, key, data));
+      const expected = new Uint8Array(cryptoHmac(record.algorithm.hash.name, record.data, toBytes(data)));
       if (expected.byteLength !== actual.byteLength) return false;
       return timingSafeEqualBytes(expected, actual);
     }
-    const hash = ["Ed25519", "NODE-ED25519"].includes(record.algorithm.name) ? "SHA-256" : algorithmHash(algorithm);
+    const hash = record.algorithm.hash?.name ?? (["Ed25519", "NODE-ED25519"].includes(record.algorithm.name) ? "SHA-256" : algorithmHash(algorithm));
     return cryptoVerify(actual, { kind: record.meta.kind, format: record.meta.format, key: record.data, hash, message: toBytes(data), saltLength: record.algorithm.name === "RSA-PSS" ? requiredSaltLength(algorithm) : undefined });
   },
   timingSafeEqual(left, right) { return timingSafeEqualBytes(toBytes(left), toBytes(right)); },
@@ -374,6 +299,7 @@ const subtle = {
 };
 
 export class SubtleCrypto {
+  constructor() { markHostObject(this); }
   encrypt(...args) { return subtle.encrypt(...args); }
   decrypt(...args) { return subtle.decrypt(...args); }
   sign(...args) { return subtle.sign(...args); }
@@ -389,9 +315,11 @@ export class SubtleCrypto {
   timingSafeEqual(...args) { return subtle.timingSafeEqual(...args); }
 }
 Object.setPrototypeOf(subtle, SubtleCrypto.prototype);
+markHostObject(subtle);
 
 export class CryptoKey {
   constructor(algorithm, extractable, usages, type, data, brand, meta) {
+    markHostObject(this);
     if (brand !== cryptoKeyBrand) throw new TypeError("Illegal constructor");
     const record = { algorithm: cloneAlgorithm(algorithm), extractable: Boolean(extractable), usages: [...usages], type, data: data.slice(), meta: { ...meta } };
     keyRecords.set(this, record);
@@ -432,9 +360,9 @@ function normalizeFormat(format) {
   if (typeof format !== "string") throw new TypeError("Key format must be a string");
   return format.toLowerCase();
 }
-function algorithmHash(algorithm, fallback) {
+function algorithmHash(algorithm) {
   const value = typeof algorithm === "object" && algorithm !== null ? algorithm.hash : undefined;
-  const name = value === undefined && fallback !== undefined ? fallback : algorithmName(value);
+  const name = algorithmName(value);
   if (!hashNames.includes(name)) throw notSupported();
   return name;
 }
@@ -506,7 +434,6 @@ function peerRecord(key) { return requireKey(key); }
 function requireAlgorithmKey(key, algorithm) {
   const record = requireKey(key);
   if (algorithmName(record.algorithm) !== algorithmName(algorithm)) throw notSupported();
-  if (record.algorithm.name === "HMAC" && algorithmHash(algorithm, record.algorithm.hash.name) !== record.algorithm.hash.name) throw notSupported();
   return record;
 }
 function toBytes(value) {
@@ -579,7 +506,12 @@ function validateHmacImportLength(algorithm, data) {
 function validateHmacLength(length) { if (!Number.isSafeInteger(length) || length < 1 || length % 8 !== 0) throw dataError("Invalid HMAC key length"); }
 function hashBlockLength(hash) { return hash === "SHA-384" || hash === "SHA-512" ? 1024 : 512; }
 function hashByteLength(hash) { return { "SHA-1": 20, "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[hash]; }
-function requiredSaltLength(algorithm) { if (algorithm === null || typeof algorithm !== "object") throw new TypeError("RSA-PSS saltLength is required"); return integer(algorithm.saltLength, "saltLength"); }
+function requiredSaltLength(algorithm) {
+  if (algorithm === null || typeof algorithm !== "object") throw new TypeError("RSA-PSS saltLength is required");
+  const length = integer(algorithm.saltLength, "saltLength");
+  if (length > 0x7fffffff) throw new TypeError("RSA-PSS saltLength is too large");
+  return length;
+}
 
 function importJwk(data, algorithm, extractable, usages, expectedName) {
   if (data === null || typeof data !== "object" || data instanceof ArrayBuffer || ArrayBuffer.isView(data) || Array.isArray(data)) {
@@ -700,10 +632,7 @@ function decryptForWrap(key, algorithm, bytes) {
   throw notSupported();
 }
 function timingSafeEqualBytes(left, right) {
-  if (left.byteLength !== right.byteLength) throw new TypeError("Input lengths must match");
-  let different = 0;
-  for (let index = 0; index < left.byteLength; index += 1) different |= left[index] ^ right[index];
-  return different === 0;
+  return cryptoTimingSafeEqual(left, right);
 }
 
 export class DigestStream extends WritableStream {
@@ -712,36 +641,36 @@ export class DigestStream extends WritableStream {
     let resolveDigest;
     let rejectDigest;
     const digestPromise = new Promise((resolve, reject) => { resolveDigest = resolve; rejectDigest = reject; });
-    const chunks = [];
+    let state = cryptoCreateDigest(name);
     let bytesWritten = 0n;
     super({
       write(chunk) {
         try {
           const bytes = toBytes(chunk);
-          chunks.push(bytes);
+          state.update(bytes);
           bytesWritten += BigInt(bytes.byteLength);
         } catch (error) {
+          state = null;
           rejectDigest(error);
           throw error;
         }
       },
       close() {
-        const input = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
-        let offset = 0;
-        for (const chunk of chunks) { input.set(chunk, offset); offset += chunk.byteLength; }
-        try { resolveDigest(digest(name, input)); }
+        try { resolveDigest(state.finish()); }
         catch (error) { rejectDigest(error); throw error; }
+        finally { state = null; }
       },
-      abort(reason) { rejectDigest(reason); },
+      abort(reason) { state = null; rejectDigest(reason); },
     });
     digestStreamRecords.set(this, { digest: digestPromise, get bytesWritten() { return bytesWritten; } });
   }
   get digest() { return digestStreamRecords.get(this).digest; }
   get bytesWritten() { return digestStreamRecords.get(this).bytesWritten; }
 }
-DigestStream.prototype[Symbol.toStringTag] = "DigestStream";
+Object.defineProperty(DigestStream.prototype, Symbol.toStringTag, { value: "DigestStream", configurable: true });
 
 export class Crypto {
+  constructor() { markHostObject(this); }
   get subtle() { return subtle; }
   get DigestStream() { return DigestStream; }
   getRandomValues(value) { return getRandomValues(value); }
@@ -755,6 +684,7 @@ let nextTimer = 1;
 
 export class Navigator {
   constructor() {
+    markHostObject(this);
     this.userAgent = "Cloudflare-Workers";
     this.platform = "";
     this.language = "en";
@@ -764,136 +694,24 @@ export class Navigator {
   sendBeacon() { return false; }
 }
 
-export class PerformanceEntry {
-  constructor(name, entryType, startTime, duration, detail = null) {
-    hidden(this, "__name", String(name));
-    hidden(this, "__entryType", String(entryType));
-    hidden(this, "__startTime", Number(startTime));
-    hidden(this, "__duration", Number(duration));
-    hidden(this, "__detail", detail);
-  }
-  get name() { return this.__name; }
-  get entryType() { return this.__entryType; }
-  get startTime() { return this.__startTime; }
-  get duration() { return this.__duration; }
-  toJSON() {
-    return { name: this.name, entryType: this.entryType, startTime: this.startTime, duration: this.duration, detail: this.detail };
-  }
-}
-
-export class PerformanceMark extends PerformanceEntry {
-  constructor(name, options = {}) { super(name, "mark", options.startTime ?? performance?.now?.() ?? 0, 0, options.detail ?? null); }
-  get detail() { return this.__detail; }
-  toJSON() { return super.toJSON(); }
-}
-
-export class PerformanceMeasure extends PerformanceEntry {
-  constructor(name, startTime = 0, duration = 0, detail = null) { super(name, "measure", startTime, duration, detail); }
-  get detail() { return this.__detail; }
-  toJSON() { return super.toJSON(); }
-}
-
-const resourceTimingBrand = Symbol("resource-timing");
-const resourceTimingFields = [
-  "connectEnd", "connectStart", "decodedBodySize", "domainLookupEnd", "domainLookupStart",
-  "encodedBodySize", "fetchStart", "initiatorType", "nextHopProtocol", "redirectEnd",
-  "redirectStart", "requestStart", "responseEnd", "responseStart", "responseStatus",
-  "secureConnectionStart", "transferSize", "workerStart",
-];
-
-export class PerformanceResourceTiming extends PerformanceEntry {
-  constructor(name, options = {}, brand) {
-    if (brand !== resourceTimingBrand) throw new TypeError("Illegal constructor");
-    super(name, "resource", options.startTime ?? 0, options.duration ?? 0);
-    this.__resourceTiming = options;
-  }
-}
-
-for (const name of resourceTimingFields) {
-  Object.defineProperty(PerformanceResourceTiming.prototype, name, {
-    configurable: true,
-    enumerable: true,
-    get() {
-      const value = this.__resourceTiming?.[name];
-      return value ?? (name === "initiatorType" || name === "nextHopProtocol" ? "" : 0);
-    },
-  });
-}
-
-export class PerformanceObserverEntryList {
-  constructor(entries = []) { this.__entries = [...entries]; }
-  getEntries() { return [...this.__entries]; }
-  getEntriesByName(name, type) { return this.__entries.filter(entry => entry.name === String(name) && (type === undefined || entry.entryType === String(type))); }
-  getEntriesByType(type) { return this.__entries.filter(entry => entry.entryType === String(type)); }
-}
-
-export class PerformanceObserver {
-  static supportedEntryTypes = ["mark", "measure", "resource"];
-  constructor(callback) { if (typeof callback !== "function") throw new TypeError("PerformanceObserver callback must be a function"); this.callback = callback; this.__observed = false; }
-  observe(options = {}) { this.__observed = true; this.entryTypes = options.entryTypes ?? [options.type]; }
-  disconnect() { this.__observed = false; }
-  takeRecords() { return []; }
-}
-
-export class Performance {
-  constructor() { this.__timeOrigin = Date.now(); this.__entries = []; }
-  get timeOrigin() { return this.__timeOrigin; }
-  now() { return Date.now() - this.__timeOrigin; }
-  mark(name, options = {}) { const mark = new PerformanceMark(name, { ...options, startTime: options.startTime ?? this.now() }); this.__entries.push(mark); return mark; }
-  measure(name, startMark, endMark, options = {}) {
-    const start = startMark === undefined ? 0 : this.__entries.findLast(entry => entry.name === startMark)?.startTime ?? 0;
-    const end = endMark === undefined ? this.now() : this.__entries.findLast(entry => entry.name === endMark)?.startTime ?? this.now();
-    const measure = new PerformanceMeasure(name, start, Math.max(0, end - start), options.detail ?? null);
-    this.__entries.push(measure);
-    return measure;
-  }
-  clearMarks(name) { this.__entries = name === undefined ? this.__entries.filter(entry => entry.entryType !== "mark") : this.__entries.filter(entry => entry.name !== String(name)); }
-  clearMeasures(name) { this.__entries = name === undefined ? this.__entries.filter(entry => entry.entryType !== "measure") : this.__entries.filter(entry => entry.name !== String(name)); }
-  clearResourceTimings() { this.__entries = this.__entries.filter(entry => entry.entryType !== "resource"); }
-  getEntries() { return [...this.__entries]; }
-  getEntriesByName(name, type) { return new PerformanceObserverEntryList(this.__entries).getEntriesByName(name, type); }
-  getEntriesByType(type) { return new PerformanceObserverEntryList(this.__entries).getEntriesByType(type); }
-  get eventCounts() { return {}; }
-  eventLoopUtilization() { return { idle: 0, active: 0, utilization: 0 }; }
-  get nodeTiming() { return {}; }
-  markResourceTiming(...args) {
-    const [timingInfo = {}, requestedUrl = ""] = args;
-    new PerformanceResourceTiming(requestedUrl, timingInfo, resourceTimingBrand);
-  }
-  setResourceTimingBufferSize() {}
-  timerify(callback) { if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function"); return (...args) => callback(...args); }
-  toJSON() { return { timeOrigin: this.timeOrigin }; }
-}
-
-const performance = new Performance();
 
 function timer(callback, timeout, repeat, args) {
   if (typeof callback !== "function") throw new TypeError("Timer callback must be a function");
   const id = nextTimer++;
   const milliseconds = Math.max(0, Math.min(2 ** 32 - 1, Number(timeout) || 0));
-  timers.set(id, { callback, args, repeat, milliseconds, due: Date.now() + milliseconds });
+  const context = captureAsyncContext();
+  const fire = () => {
+    if (repeat) timers.set(id, scheduleTimer(fire, Math.max(1, milliseconds)));
+    else timers.delete(id);
+    runInAsyncContext(context, callback, undefined, args);
+  };
+  timers.set(id, scheduleTimer(fire, milliseconds));
   return id;
 }
 
-function clearTimer(id) { timers.delete(id); }
-
-function runTimers() {
-  const now = Date.now();
-  const due = [...timers.entries()]
-    .filter(([, entry]) => entry.due <= now)
-    .sort((left, right) => left[1].due - right[1].due || left[0] - right[0]);
-  let ran = false;
-  for (const [id, entry] of due) {
-    if (timers.get(id) !== entry) continue;
-    if (entry.repeat) entry.due = Date.now() + Math.max(1, entry.milliseconds);
-    else timers.delete(id);
-    entry.callback(...entry.args);
-    ran = true;
-    break;
-  }
-  let next = Infinity;
-  for (const entry of timers.values()) next = Math.min(next, entry.due);
-  return [ran, next === Infinity ? null : Math.max(0, next - Date.now())];
+function clearTimer(id) {
+  timers.get(id)?.();
+  timers.delete(id);
 }
 
 function setTimeout(callback, timeout, ...args) { return timer(callback, timeout, false, args); }
@@ -920,22 +738,56 @@ function reportError(error) {
 async function fetch(input, init) {
   const request = new Request(input, init);
   if (request.signal.aborted) throw request.signal.reason;
-  const body = request.body === null ? new Uint8Array() : new Uint8Array(await request.arrayBuffer());
-  const response = httpFetch(
+  const task = httpFetch(
     request.url,
     request.method,
     JSON.stringify([...request.headers]),
-    body,
+    request.__body ?? request.__stream,
     request.redirect,
   );
-  if (request.signal.aborted) throw request.signal.reason;
-  return new Response(response.body, {
+  globalThis.__tokamak_context.waitUntil(task.upload);
+  if (request.body !== null) request.__bodyConsumed = true;
+  const abort = () => task.cancel();
+  request.signal.addEventListener("abort", abort, { once: true });
+  const finish = () => request.signal.removeEventListener("abort", abort);
+  let response;
+  try {
+    response = await task.response;
+    if (response.bodyless) await task.upload;
+  } catch (error) {
+    finish();
+    if (request.signal.aborted) throw fetchAbortReason(request.signal);
+    throw error;
+  }
+  if (request.signal.aborted) { task.cancel(); finish(); throw fetchAbortReason(request.signal); }
+  const body = response.bodyless ? null : new ReadableStream({
+    type: "bytes",
+    async pull(controller) {
+      try {
+        request.signal.throwIfAborted();
+        const chunk = await response.read();
+        request.signal.throwIfAborted();
+        if (chunk == null) { finish(); controller.close(); }
+        else controller.enqueue(chunk);
+      } catch (error) {
+        task.cancel(); finish();
+        controller.error(request.signal.aborted ? fetchAbortReason(request.signal) : error);
+      }
+    },
+    cancel() { task.cancel(); finish(); },
+  });
+  if (response.bodyless) finish();
+  return new Response(body, {
     status: response.status,
     statusText: response.statusText,
     headers: JSON.parse(response.headers),
     url: response.url,
     redirected: response.redirected,
   });
+}
+
+function fetchAbortReason(signal) {
+  return signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason));
 }
 
 function installWebGlobals() {
@@ -950,11 +802,11 @@ function installWebGlobals() {
     WorkerGlobalScope, ServiceWorkerGlobalScope,
     atob, btoa,
     fetch, reportError, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate,
-    __tokamak_run_timers: runTimers,
-    caches: new CacheStorage(), crypto, HTMLRewriter, Intl: intl, navigator: new Navigator(),
+    caches: new CacheStorage(), crypto, HTMLRewriter, navigator: new Navigator(),
     origin: "null", self: globalThis, Cloudflare: { compatibilityFlags: [] },
   });
   Object.setPrototypeOf(globalThis, ServiceWorkerGlobalScope.prototype);
+  installIntlGlobals();
   delete globalThis.WebAssembly;
   globalThis.performance = performance;
   globalThis.scheduler = {

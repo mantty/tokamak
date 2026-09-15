@@ -52,10 +52,16 @@ function rememberUtf8(state, input, pending) {
   remember(state, total > 1 && total === input.length - start ? input.slice(start) : input.slice(-1));
 }
 
+function utf16Chars(input) {
+  let text = "";
+  for (let index = 0; index + 1 < input.length; index += 2) text += String.fromCharCode(input[index] | (input[index + 1] << 8));
+  return text;
+}
+
 function decodeBytes(state, input) {
   if (state.encoding === "latin1") return String.fromCharCode(...input);
   if (state.encoding === "ascii") return String.fromCharCode(...input.map(value => value & 0x7f));
-  if (state.encoding === "utf16le") return new TextDecoder("utf-16le", { ignoreBOM: true }).decode(input);
+  if (state.encoding === "utf16le") return utf16Chars(input);
   if (state.encoding === "hex") return [...input].map(value => value.toString(16).padStart(2, "0")).join("");
   if (state.encoding === "base64" || state.encoding === "base64url") return Buffer.from(input).toString(state.encoding);
   return new TextDecoder("utf-8", { ignoreBOM: true }).decode(input);
@@ -89,16 +95,25 @@ export class StringDecoder {
       state.lastTotal = pending.total;
       state.lastNeed = pending.total ? pending.total - (input.length - pending.start) : 0;
       rememberUtf8(state, input, pending);
-    } else if (state.encoding === "utf16le" && input.length % 2) {
-      complete = input.length - 1;
-      state.lastTotal = 2;
-      state.lastNeed = 1;
-      remember(state, input.slice(-1));
+    } else if (state.encoding === "utf16le") {
+      complete = input.length;
+      if (complete % 2) {
+        complete -= 1;
+        state.lastNeed = 1;
+        state.lastTotal = 2;
+      } else if (complete >= 2 && (input[complete - 1] & 0xfc) === 0xd8) {
+        complete -= 2;
+        state.lastNeed = 2;
+        state.lastTotal = 4;
+      } else {
+        state.lastNeed = 0;
+        state.lastTotal = 0;
+      }
+      if (state.lastNeed) remember(state, input.slice(complete));
     } else {
       state.lastNeed = 0;
       state.lastTotal = 0;
       state.lastChar.fill(0);
-      if (state.encoding === "utf16le" && input.length) remember(state, input.slice(-2));
     }
     state.pending = input.slice(complete);
     return decodeBytes(state, input.slice(0, complete));
@@ -111,9 +126,8 @@ export class StringDecoder {
     state.pending = new Uint8Array();
     state.lastNeed = 0;
     state.lastTotal = 0;
-    if (!tail.length || state.encoding === "utf16le") return output;
+    if (!tail.length) return output;
     if (state.encoding === "utf8") return output + "\ufffd";
-    if (state.encoding === "base64" || state.encoding === "base64url") return output + decodeBytes(state, tail);
     return output + decodeBytes(state, tail);
   }
 

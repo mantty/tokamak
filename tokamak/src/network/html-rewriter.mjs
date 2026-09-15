@@ -1,5 +1,6 @@
-import { htmlRewrite } from "tokamak:host";
-import { ReadableStream } from "../streams/web.mjs";
+import { htmlRewrite, htmlValidateSelector } from "tokamak:host";
+import { ReadableStream, nativeReadableStream, nativeStreamError } from "../streams/web.mjs";
+import { captureAsyncContext, runInAsyncContext } from "../builtins/async-context.mjs";
 
 const elementStates = new WeakMap();
 const textStates = new WeakMap();
@@ -8,35 +9,56 @@ const endTagStates = new WeakMap();
 const documentEndStates = new WeakMap();
 const attributesStates = new WeakMap();
 const rewriterStates = new WeakMap();
+const doctypeStates = new WeakMap();
+const expiredTokens = new WeakSet();
 
 function contentType(options) {
   return options != null && options.html === true ? "html" : "text";
 }
 
 function contentOperation(state, name, value, options) {
-  state.operations.push({ name, value: String(value), contentType: contentType(options) });
+  const kind = contentType(options);
+  if (value instanceof ReadableStream || value instanceof Response) {
+    if (!state.resources) throw new TypeError("This HTML token requires string content");
+    const stream = value instanceof Response ? value.body : value;
+    value = stream === null ? "" : { source: state.resources.addSource(stream) };
+  } else {
+    if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
+    value = String(value);
+  }
+  applyMutation(state, { name, value, contentType: kind });
 }
 
 function requireState(states, value) {
   const state = states.get(value);
   if (state === undefined) throw new TypeError("Illegal invocation");
+  if (expiredTokens.has(value)) throw new TypeError("This content token is no longer valid. Content tokens are only valid during the execution of the relevant content handler.");
   return state;
 }
 
+function applyMutation(state, operation) {
+  Object.assign(state, state.mutate(operation));
+  if (operation.name === "setAttribute" || operation.name === "removeAttribute") state.attributeVersion++;
+}
+
+function asciiLower(value) { return String(value).replace(/[A-Z]/g, letter => letter.toLowerCase()); }
+
 function initialAttributes(properties) {
   return Array.from(properties.attributes ?? [], attribute => ({
-    name: String(Array.isArray(attribute) ? attribute[0] : attribute.name).toLowerCase(),
+    name: asciiLower(Array.isArray(attribute) ? attribute[0] : attribute.name),
     value: String(Array.isArray(attribute) ? attribute[1] : attribute.value),
   }));
 }
 
 class AttributesIterator {
-  constructor(entries) {
-    attributesStates.set(this, { entries, index: 0 });
+  constructor(owner, entries, version) {
+    attributesStates.set(this, { owner, entries, index: 0, version });
   }
 
   next() {
     const state = requireState(attributesStates, this);
+    const element = requireState(elementStates, state.owner);
+    if (state.version !== element.attributeVersion) throw new Error("The attributes have been modified during iteration");
     if (state.index === state.entries.length) return { value: undefined, done: true };
     return { value: state.entries[state.index++], done: false };
   }
@@ -47,12 +69,14 @@ class AttributesIterator {
 }
 
 class Element {
-  constructor(properties, operations) {
+  constructor(properties, mutate, resources) {
     const state = {
       attributes: initialAttributes(properties),
+      attributeVersion: 0,
       namespaceURI: properties.namespaceURI,
-      operations,
-      removed: false,
+      mutate,
+      resources,
+      removed: Boolean(properties.removed),
       tagName: String(properties.tagName),
     };
     elementStates.set(this, state);
@@ -62,16 +86,15 @@ class Element {
         get() { return requireState(elementStates, this).tagName; },
         set(value) {
           const state = requireState(elementStates, this);
-          state.tagName = String(value);
-          state.operations.push({ name: "setTagName", value: state.tagName });
+          applyMutation(state, { name: "setTagName", value: String(value) });
         },
       },
-      namespaceURI: { enumerable: true, value: state.namespaceURI },
+      namespaceURI: { enumerable: true, get() { return requireState(elementStates, this).namespaceURI; } },
       attributes: {
         enumerable: true,
         get() {
           const state = requireState(elementStates, this);
-          return new AttributesIterator(state.attributes.map(({ name, value }) => [name, value]));
+          return new AttributesIterator(this, state.attributes.map(({ name, value }) => [name, value]), state.attributeVersion);
         },
       },
       removed: { enumerable: true, get() { return requireState(elementStates, this).removed; } },
@@ -80,32 +103,28 @@ class Element {
 
   getAttribute(name) {
     const state = requireState(elementStates, this);
-    const key = String(name).toLowerCase();
+    const key = asciiLower(name);
     return state.attributes.find(attribute => attribute.name === key)?.value ?? null;
   }
 
   hasAttribute(name) {
     const state = requireState(elementStates, this);
-    const key = String(name).toLowerCase();
+    const key = asciiLower(name);
     return state.attributes.some(attribute => attribute.name === key);
   }
 
   setAttribute(name, value) {
     const state = requireState(elementStates, this);
-    const attribute = String(name).toLowerCase();
+    const attribute = asciiLower(name);
     const attributeValue = String(value);
-    const existing = state.attributes.find(item => item.name === attribute);
-    if (existing === undefined) state.attributes.push({ name: attribute, value: attributeValue });
-    else existing.value = attributeValue;
-    state.operations.push({ name: "setAttribute", attribute, value: attributeValue });
+    applyMutation(state, { name: "setAttribute", attribute, value: attributeValue });
     return this;
   }
 
   removeAttribute(name) {
     const state = requireState(elementStates, this);
-    const attribute = String(name).toLowerCase();
-    state.attributes = state.attributes.filter(item => item.name !== attribute);
-    state.operations.push({ name: "removeAttribute", attribute });
+    const attribute = asciiLower(name);
+    applyMutation(state, { name: "removeAttribute", attribute });
     return this;
   }
 
@@ -131,7 +150,6 @@ class Element {
 
   replace(value, options) {
     const state = requireState(elementStates, this);
-    state.removed = true;
     contentOperation(state, "replace", value, options);
     return this;
   }
@@ -143,28 +161,26 @@ class Element {
 
   remove() {
     const state = requireState(elementStates, this);
-    state.removed = true;
-    state.operations.push({ name: "remove" });
+    applyMutation(state, { name: "remove" });
     return this;
   }
 
   removeAndKeepContent() {
     const state = requireState(elementStates, this);
-    state.removed = true;
-    state.operations.push({ name: "removeAndKeepContent" });
+    applyMutation(state, { name: "removeAndKeepContent" });
     return this;
   }
 
   onEndTag(handler) {
     if (typeof handler !== "function") throw new TypeError("HTMLRewriter end-tag handler must be a function");
     const state = requireState(elementStates, this);
-    state.operations.push({
+    applyMutation(state, {
       name: "onEndTag",
-      handler: properties => {
-        const operations = [];
-        handler(new EndTag(properties, operations));
-        return operations;
-      },
+      handler: state.resources.addHandler(async properties => {
+        const token = new EndTag(properties, state.resources.mutate, state.resources);
+        try { await handler(token); }
+        finally { expiredTokens.add(token); }
+      }, true),
     });
   }
 
@@ -172,11 +188,12 @@ class Element {
 }
 
 class Text {
-  constructor(properties, operations) {
+  constructor(properties, mutate, resources) {
     const state = {
       lastInTextNode: Boolean(properties.lastInTextNode),
-      operations,
-      removed: false,
+      mutate,
+      resources,
+      removed: Boolean(properties.removed),
       text: String(properties.text),
     };
     textStates.set(this, state);
@@ -185,7 +202,7 @@ class Text {
         enumerable: true,
         get() { return requireState(textStates, this).text; },
       },
-      lastInTextNode: { enumerable: true, value: state.lastInTextNode },
+      lastInTextNode: { enumerable: true, get() { return requireState(textStates, this).lastInTextNode; } },
       removed: { enumerable: true, get() { return requireState(textStates, this).removed; } },
     });
   }
@@ -202,15 +219,13 @@ class Text {
 
   replace(value, options) {
     const state = requireState(textStates, this);
-    state.removed = true;
     contentOperation(state, "replace", value, options);
     return this;
   }
 
   remove() {
     const state = requireState(textStates, this);
-    state.removed = true;
-    state.operations.push({ name: "remove" });
+    applyMutation(state, { name: "remove" });
     return this;
   }
 
@@ -218,8 +233,8 @@ class Text {
 }
 
 class Comment {
-  constructor(properties, operations) {
-    const state = { operations, removed: false, text: String(properties.text) };
+  constructor(properties, mutate) {
+    const state = { mutate, removed: Boolean(properties.removed), text: String(properties.text) };
     commentStates.set(this, state);
     Object.defineProperties(this, {
       text: {
@@ -227,8 +242,7 @@ class Comment {
         get() { return requireState(commentStates, this).text; },
         set(value) {
           const state = requireState(commentStates, this);
-          state.text = String(value);
-          state.operations.push({ name: "setText", value: state.text });
+          applyMutation(state, { name: "setText", value: String(value) });
         },
       },
       removed: { enumerable: true, get() { return requireState(commentStates, this).removed; } },
@@ -247,15 +261,13 @@ class Comment {
 
   replace(value, options) {
     const state = requireState(commentStates, this);
-    state.removed = true;
     contentOperation(state, "replace", value, options);
     return this;
   }
 
   remove() {
     const state = requireState(commentStates, this);
-    state.removed = true;
-    state.operations.push({ name: "remove" });
+    applyMutation(state, { name: "remove" });
     return this;
   }
 
@@ -263,10 +275,10 @@ class Comment {
 }
 
 class EndTag {
-  constructor(properties, operations) {
-    endTagStates.set(this, { operations, removed: Boolean(properties.removed) });
+  constructor(properties, mutate, resources) {
+    endTagStates.set(this, { mutate, resources, name: String(properties.name), removed: Boolean(properties.removed) });
     Object.defineProperties(this, {
-      name: { enumerable: true, value: String(properties.name) },
+      name: { enumerable: true, get() { return requireState(endTagStates, this).name; } },
     });
   }
 
@@ -280,8 +292,7 @@ class EndTag {
 
   remove() {
     const state = requireState(endTagStates, this);
-    state.removed = true;
-    state.operations.push({ name: "remove" });
+    applyMutation(state, { name: "remove" });
   }
 
   get [Symbol.toStringTag]() { return "EndTag"; }
@@ -289,10 +300,11 @@ class EndTag {
 
 class Doctype {
   constructor(properties) {
+    doctypeStates.set(this, properties);
     Object.defineProperties(this, {
-      name: { enumerable: true, value: properties.name ?? null },
-      publicId: { enumerable: true, value: properties.publicId ?? null },
-      systemId: { enumerable: true, value: properties.systemId ?? null },
+      name: { enumerable: true, get() { return requireState(doctypeStates, this).name ?? null; } },
+      publicId: { enumerable: true, get() { return requireState(doctypeStates, this).publicId ?? null; } },
+      systemId: { enumerable: true, get() { return requireState(doctypeStates, this).systemId ?? null; } },
     });
   }
 
@@ -300,8 +312,8 @@ class Doctype {
 }
 
 class DocumentEnd {
-  constructor(_properties, operations) {
-    documentEndStates.set(this, { operations });
+  constructor(_properties, mutate) {
+    documentEndStates.set(this, { mutate });
   }
 
   append(value, options) {
@@ -314,11 +326,12 @@ class DocumentEnd {
 
 function callbackHandler(registered, name, Token) {
   const callback = registered?.[name];
-  if (typeof callback !== "function") return undefined;
-  return properties => {
-    const operations = [];
-    callback.call(registered, new Token(properties, operations));
-    return operations;
+  if (callback === undefined) return undefined;
+  if (typeof callback !== "function") throw new TypeError(`HTMLRewriter ${name} handler must be a function`);
+  return async (properties, resources) => {
+    const token = new Token(properties, resources.mutate, resources);
+    try { await callback.call(registered, token); }
+    finally { expiredTokens.add(token); }
   };
 }
 
@@ -353,6 +366,8 @@ export class HTMLRewriter {
     if (arguments.length < 2) {
       throw new TypeError("Invalid HTMLRewriter handler");
     }
+    selector = `${selector}`;
+    htmlValidateSelector(selector);
     requireState(rewriterStates, this).handlers.push({
       selector,
       handlers: captureHandlers(handlers, [["element", Element], ["text", Text], ["comments", Comment]]),
@@ -374,23 +389,114 @@ export class HTMLRewriter {
     if (response.bodyUsed || response.body?.locked) throw new TypeError("HTMLRewriter input body is already used");
     if (response.status === 0) throw new TypeError("HTMLRewriter cannot transform an error response");
     if (response.body === null) return new Response(null, responseInit(response));
-    const { handlers: registeredHandlers, documentHandlers } = state;
-    const handlers = registeredHandlers.map(({ selector, handlers: callbacks }) => ({
-      selector: String(selector),
-      ...callbacks,
-    }));
-    for (const callbacks of documentHandlers) handlers.push({ selector: "*", document: callbacks });
-    const body = new ReadableStream({
-      async start(controller) {
-        try {
-          const rewritten = htmlRewrite(await response.text(), handlers);
-          if (rewritten.length > 0) controller.enqueue(new TextEncoder().encode(rewritten));
-          controller.close();
-        } catch (error) {
-          controller.error(error);
+    const context = captureAsyncContext();
+    const callbacks = new Map();
+    const sources = new Map();
+    let nextHandler = 0;
+    let nextSource = 0;
+    const resources = {
+      mutate(operation) {
+        if (stopped) throw new TypeError("HTML rewriting has stopped");
+        try { return parser.mutate(JSON.stringify(operation)); }
+        finally { resources.retire(); }
+      },
+      retire() {
+        for (const { kind, id } of parser.releases()) {
+          if (kind === "handler") callbacks.delete(id);
+          else {
+            const source = sources.get(id);
+            if (source && !source.started) { source.reader.releaseLock(); sources.delete(id); }
+          }
         }
       },
-    });
+      addHandler(callback, once = false) {
+        const id = nextHandler++;
+        callbacks.set(id, { callback, once });
+        return id;
+      },
+      addSource(stream) {
+        const id = nextSource++;
+        sources.set(id, { reader: stream.getReader(), bytes: null, offset: 0, started: false });
+        return id;
+      },
+    };
+    const register = handlers => Object.fromEntries(Object.entries(handlers).map(([name, callback]) => [name, resources.addHandler(callback)]));
+    const handlers = state.handlers.map(({ selector, handlers }) => ({ selector: String(selector), ...register(handlers) }));
+    for (const document of state.documentHandlers) handlers.push(register(document));
+    const parser = htmlRewrite(JSON.stringify(handlers), response.headers.get("content-type") ?? "");
+    resources.addSource(response.body);
+    const input = sources.get(0);
+    input.started = true;
+    input.pending = input.reader.read();
+    // The parser consumes this promise below; avoid reporting a rejection
+    // before its first native input request arrives.
+    input.pending.catch(() => {});
+    let stopped = false;
+    const stop = async (reason, cancelSources = true) => {
+      stopped = true;
+      parser.cancel();
+      callbacks.clear();
+      const remaining = [...sources.values()];
+      sources.clear();
+      // Cleanup must not replace the original parse/handler/cancellation error.
+      await Promise.all(remaining.map(async ({ reader, started }) => {
+        // Cancelling the output leaves already-consumed input locked.
+        if (started && !cancelSources) return;
+        try { if (started) await reader.cancel(reason); } catch {}
+        finally { reader.releaseLock(); }
+      }));
+    };
+    const readSource = async id => {
+      const source = sources.get(id);
+      source.started = true;
+      while (!source.bytes || source.offset === source.bytes.byteLength) {
+        const next = await (source.pending ?? source.reader.read());
+        source.pending = null;
+        if (stopped) return null;
+        if (next.done) {
+          source.reader.releaseLock();
+          sources.delete(id);
+          return null;
+        }
+        if (next.value instanceof ArrayBuffer) source.bytes = new Uint8Array(next.value);
+        else if (ArrayBuffer.isView(next.value)) source.bytes = new Uint8Array(next.value.buffer, next.value.byteOffset, next.value.byteLength);
+        else throw new TypeError("HTMLRewriter input streams must contain bytes");
+        source.offset = 0;
+      }
+      const bytes = source.bytes.subarray(source.offset, source.offset + 65536);
+      source.offset += bytes.byteLength;
+      return bytes;
+    };
+    const pump = async controller => {
+        try {
+          while (!stopped) {
+            const event = await parser.next();
+            if (stopped) return;
+            resources.retire();
+            if (event === null) {
+              await stop();
+              controller.close();
+              controller.byobRequest?.respond(0);
+              return;
+            }
+            if (event.kind === "input") parser.reply(await readSource(event.source));
+            else if (event.kind === "token") {
+              const handler = callbacks.get(event.handler);
+              if (handler.once) callbacks.delete(event.handler);
+              await runInAsyncContext(context, handler.callback, undefined, [event.properties, resources]);
+              if (!stopped) parser.reply(undefined);
+            } else {
+              controller.enqueue(event.bytes);
+              return;
+            }
+          }
+        } catch (error) {
+          if (stopped) return;
+          await stop(error);
+          controller.error(nativeStreamError(error));
+        }
+    };
+    const body = nativeReadableStream({ type: "bytes", start: pump, pull: pump, cancel: () => stop(undefined, false) });
     return new Response(body, responseInit(response));
   }
 

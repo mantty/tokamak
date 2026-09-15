@@ -1,4 +1,6 @@
-const process = {};
+import EventEmitter from "../events/events.mjs";
+
+const process = new EventEmitter();
 export default process;
 
 export function installProcessGlobals(builtinModules) {

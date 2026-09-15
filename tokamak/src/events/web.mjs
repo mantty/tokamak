@@ -1,3 +1,4 @@
+import { markHostObject } from "../globals/objects.mjs";
 export { CloseEvent, CustomEvent, ErrorEvent, Event, EventTarget, MessageEvent } from "./events.mjs";
 
 import { Event, EventTarget, MessageEvent } from "./events.mjs";
@@ -66,6 +67,7 @@ export class TraceEvent extends Event {
 
 export class WebSocketRequestResponsePair {
   constructor(request, response) {
+    markHostObject(this);
     Object.defineProperties(this, {
       __request: { configurable: true, enumerable: false, value: request },
       __response: { configurable: true, enumerable: false, value: response },
@@ -113,6 +115,7 @@ export class MessagePort extends EventTarget {
 
 export class MessageChannel {
   constructor() {
+    markHostObject(this);
     this.port1 = new MessagePort();
     this.port2 = new MessagePort();
     this.port1.__peer = this.port2;
