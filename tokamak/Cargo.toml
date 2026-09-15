@@ -13,22 +13,35 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 default = []
 native = [
     "dep:base64",
+    "dep:brotli",
     "dep:encoding_rs",
+    "dep:fixed_decimal",
     "dep:getrandom",
+    "dep:icu",
+    "dep:jiff",
+    "dep:lol_html",
     "dep:libc",
     "dep:openssl",
     "dep:rcgen",
     "dep:time",
     "dep:tokio",
+    "dep:url",
     "dep:x509-parser",
+    "dep:writeable",
+    "dep:zstd",
 ]
 test-stubs = ["native"]
 
 [dependencies]
 base64 = { workspace = true, optional = true }
+brotli = { workspace = true, optional = true }
 encoding_rs = { workspace = true, optional = true }
 flate2.workspace = true
 getrandom = { workspace = true, optional = true }
+fixed_decimal = { workspace = true, optional = true }
+icu = { workspace = true, optional = true }
+jiff = { workspace = true, optional = true }
+lol_html = { workspace = true, optional = true }
 jsonc-parser = { workspace = true, features = ["serde"] }
 libc = { workspace = true, optional = true }
 mime_guess.workspace = true
@@ -41,8 +54,11 @@ toml.workspace = true
 thiserror.workspace = true
 time = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
 walkdir.workspace = true
+writeable = { workspace = true, optional = true }
 x509-parser = { workspace = true, features = ["verify"], optional = true }
+zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

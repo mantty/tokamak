@@ -316,11 +316,14 @@ fn loads_builtins_without_source_compilation() -> Result<(), Box<dyn std::error:
         &runtime,
         &WorkerBundle::from_modules("entry.js", directory.path(), directory.path()),
     );
-    let context = Context::custom::<rquickjs::context::intrinsic::Promise>(&runtime)?;
+    let context = Context::full(&runtime)?;
     context.with(|ctx| -> rquickjs::Result<()> {
-        ctx.globals().set("__tokamak_env", "request environment")?;
+        let environment = Object::new(ctx.clone())?;
+        environment.set("FLAG", "request environment")?;
+        ctx.globals().set("__tokamak_env", environment)?;
         let module: Object = Module::import(&ctx, "cloudflare:workers")?.finish()?;
-        assert_eq!(module.get::<_, String>("env")?, "request environment");
+        let env: Object = module.get("env")?;
+        assert_eq!(env.get::<_, String>("FLAG")?, "request environment");
         let streams: Object = Module::import(&ctx, "node:stream")?.finish()?;
         let writable: Object = streams.get("Writable")?;
         let events: Object = Module::import(&ctx, "node:events")?.finish()?;

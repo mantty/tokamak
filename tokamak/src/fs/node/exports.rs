@@ -94,10 +94,6 @@ fn declare_exports(declare: &Declarations, promises_only: bool) -> rquickjs::Res
     let names = if promises_only {
         [
             "constants",
-            "F_OK",
-            "R_OK",
-            "W_OK",
-            "X_OK",
             "readFile",
             "writeFile",
             "appendFile",
@@ -105,13 +101,6 @@ fn declare_exports(declare: &Declarations, promises_only: bool) -> rquickjs::Res
             "chmod",
             "chown",
             "cp",
-            "fchmod",
-            "fchown",
-            "fdatasync",
-            "fsync",
-            "fstat",
-            "ftruncate",
-            "futimes",
             "glob",
             "lchmod",
             "lchown",
@@ -135,6 +124,7 @@ fn declare_exports(declare: &Declarations, promises_only: bool) -> rquickjs::Res
             "statfs",
             "truncate",
             "utimes",
+            "watch",
             "FileHandle",
             "default",
         ]
@@ -242,6 +232,9 @@ fn declare_exports(declare: &Declarations, promises_only: bool) -> rquickjs::Res
             "write",
             "writeFile",
             "writev",
+            "unwatchFile",
+            "watch",
+            "watchFile",
             "promises",
             "default",
         ]
@@ -259,7 +252,7 @@ fn export_module<'js>(
     promises_only: bool,
 ) -> rquickjs::Result<()> {
     let object = Object::new(ctx.clone())?;
-    export_constants(ctx, exports, &object)?;
+    export_constants(ctx, exports, &object, promises_only)?;
     if promises_only {
         let file_handle = file_handle_constructor(ctx)?;
         exports.export("FileHandle", file_handle.clone())?;
@@ -294,16 +287,19 @@ fn export_constants<'js>(
     ctx: &Ctx<'js>,
     exports: &Exports<'js>,
     object: &Object<'js>,
+    promises_only: bool,
 ) -> rquickjs::Result<()> {
     let constants = constants(ctx.clone())?;
-    for (name, value) in [
-        ("F_OK", 0_i32),
-        ("R_OK", 4_i32),
-        ("W_OK", 2_i32),
-        ("X_OK", 1_i32),
-    ] {
-        exports.export(name, value)?;
-        object.set(name, value)?;
+    if !promises_only {
+        for (name, value) in [
+            ("F_OK", 0_i32),
+            ("R_OK", 4_i32),
+            ("W_OK", 2_i32),
+            ("X_OK", 1_i32),
+        ] {
+            exports.export(name, value)?;
+            object.set(name, value)?;
+        }
     }
     exports.export("constants", constants.clone())?;
     object.set("constants", constants)
@@ -409,7 +405,17 @@ fn export_streams<'js>(
         object,
         "createWriteStream",
         create_write_stream_export,
-    )
+    )?;
+    export_function(ctx, exports, object, "unwatchFile", unsupported_watch)?;
+    export_function(ctx, exports, object, "watch", unsupported_watch)?;
+    export_function(ctx, exports, object, "watchFile", unsupported_watch)
+}
+
+fn unsupported_watch(ctx: Ctx<'_>) -> rquickjs::Result<()> {
+    Err(Exception::throw_internal(
+        &ctx,
+        "filesystem watching is not available in the Tokamak runtime",
+    ))
 }
 
 fn stream_type_constructor<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Constructor<'js>> {
@@ -456,13 +462,6 @@ fn export_promises<'js>(
         ("chmod", Function::new(ctx.clone(), chmod_promise)?),
         ("chown", Function::new(ctx.clone(), chown_promise)?),
         ("cp", Function::new(ctx.clone(), cp_promise)?),
-        ("fchmod", Function::new(ctx.clone(), fchmod_promise)?),
-        ("fchown", Function::new(ctx.clone(), fchown_promise)?),
-        ("fdatasync", Function::new(ctx.clone(), fdatasync_promise)?),
-        ("fsync", Function::new(ctx.clone(), fsync_promise)?),
-        ("fstat", Function::new(ctx.clone(), fstat_promise)?),
-        ("ftruncate", Function::new(ctx.clone(), ftruncate_promise)?),
-        ("futimes", Function::new(ctx.clone(), futimes_promise)?),
         ("glob", Function::new(ctx.clone(), glob_promise)?),
         ("lchmod", Function::new(ctx.clone(), lchmod_promise)?),
         ("lchown", Function::new(ctx.clone(), lchown_promise)?),
@@ -486,6 +485,7 @@ fn export_promises<'js>(
         ("truncate", Function::new(ctx.clone(), truncate_promise)?),
         ("statfs", Function::new(ctx.clone(), statfs_promise)?),
         ("utimes", Function::new(ctx.clone(), utimes_promise)?),
+        ("watch", Function::new(ctx.clone(), unsupported_watch)?),
     ] {
         exports.export(name, function.clone())?;
         object.set(name, function)?;

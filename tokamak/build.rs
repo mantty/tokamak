@@ -7,10 +7,13 @@ use std::process::Command;
 
 #[path = "src/compiler.rs"]
 mod compiler;
+#[path = "src/runtime_modules.rs"]
+mod runtime_modules;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/compiler.rs");
+    println!("cargo:rerun-if-changed=src/runtime_modules.rs");
     if env::var_os("CARGO_FEATURE_NATIVE").is_some() {
         compile_builtins()?;
     }
@@ -26,20 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn compile_builtins() -> Result<(), Box<dyn std::error::Error>> {
     let output = PathBuf::from(env::var("OUT_DIR")?);
     let mut modules = String::from("const BUILTINS: &[(&str, &[u8])] = &[\n");
-    for module in [
-        "builtins/runtime.mjs",
-        "builtins/cloudflare-workers.mjs",
-        "events/events.mjs",
-        "globals/console.mjs",
-        "globals/process.mjs",
-        "globals/web.mjs",
-        "network/fetch.mjs",
-        "network/url.mjs",
-        "network/websocket.mjs",
-        "streams/node.mjs",
-        "streams/text.mjs",
-        "streams/web.mjs",
-    ] {
+    for module in runtime_modules::BUILTIN_SOURCES {
         let source = Path::new("src").join(module);
         println!("cargo:rerun-if-changed={}", source.display());
         let name = format!("tokamak:{module}");

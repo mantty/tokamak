@@ -1,8 +1,11 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{Shutdown, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, atomic::AtomicBool, mpsc};
+use std::thread;
 
 use crate::dispatcher::execute_request;
 use crate::gateway::{Job, JobResponse, Lifecycle};
@@ -39,18 +42,12 @@ fn bundle_worker(entry: &Path, output: &Path) -> TestResult<WorkerBundle> {
             "--entry-names=entry",
             "--chunk-names=chunks/[name]-[hash]",
             "--log-level=error",
-            "--external:cloudflare:workers",
-            "--external:node:events",
-            "--external:events",
-            "--external:node:stream",
-            "--external:stream",
-            "--external:node:process",
-            "--external:process",
-            "--external:node:fs",
-            "--external:fs",
-            "--external:node:fs/promises",
-            "--external:fs/promises",
         ])
+        .args(
+            crate::runtime_modules::runtime_module_names()
+                .into_iter()
+                .map(|name| format!("--external:{name}")),
+        )
         .arg(format!("--outdir={}", output.display()))
         .arg(entry)
         .output()?;
@@ -126,6 +123,111 @@ fn packaged_globals_precede_application_modules() -> TestResult {
 }
 
 #[test]
+fn node_http_handler_uses_tokamak_request_response_boundary() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("http-handler.mjs");
+    fs::write(
+        &source,
+        r#"
+import http from "node:http";
+import { httpServerHandler } from "cloudflare:node";
+
+const server = http.createServer((request, response) => {
+  const chunks = [];
+  request.on("data", chunk => chunks.push(new TextDecoder().decode(chunk)));
+  request.on("end", () => {
+    response.writeHead(201, { "x-tokamak-boundary": "yes" });
+    response.end(`${request.method} ${request.url} ${chunks.join("")}`);
+  });
+});
+
+export default httpServerHandler(server);
+"#,
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let config = RuntimeConfig {
+        assets: None,
+        cache: directory.path().join("cache"),
+        environment: BTreeMap::new(),
+    };
+    let accepting = Arc::new(AtomicBool::new(true));
+    let lifecycle = Lifecycle::new();
+    let execution = lifecycle.enter(&accepting).ok_or("request rejected")?;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    execute_request(
+        &worker,
+        &config,
+        Job {
+            request: HttpRequest {
+                method: "POST".to_owned(),
+                target: "/bridge?value=1".to_owned(),
+                url: "https://app.tokamak.local/bridge?value=1".to_owned(),
+                headers: BTreeMap::new(),
+                body: Some(b"payload".to_vec()),
+            },
+            response: sender,
+            websocket: None,
+        },
+        &execution,
+        &accepting,
+    )?;
+    let JobResponse::Http(response) = receiver.recv()? else {
+        return Err("unexpected websocket".into());
+    };
+    assert_eq!(response.status, 201);
+    assert_eq!(
+        response.headers.get("x-tokamak-boundary"),
+        Some(&"yes".to_owned())
+    );
+    let HttpBody::Buffered(body) = response.body else {
+        return Err("unexpected stream".into());
+    };
+    assert_eq!(body, b"POST /bridge?value=1 payload");
+    Ok(())
+}
+
+#[test]
+fn worker_entrypoint_receives_context_and_module_exports() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("entrypoint.mjs");
+    fs::write(
+        &source,
+        r#"
+import { env, exports, WorkerEntrypoint } from "cloudflare:workers";
+export const named = { value: 42 };
+export default class App extends WorkerEntrypoint {
+  fetch() {
+    return Response.json({
+      instance: this instanceof App,
+      env: this.env.FLAG,
+      importedEnv: env.FLAG,
+      contextExports: Object.getOwnPropertyNames(this.ctx.exports).sort(),
+      importedExports: Object.getOwnPropertyNames(exports).sort(),
+      named: exports.named.value,
+      context: Object.getOwnPropertyNames(this.ctx).sort(),
+      props: this.ctx.props,
+    });
+  }
+}
+"#,
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let response: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
+    assert_eq!(response["instance"], true);
+    assert_eq!(response["env"], "enabled");
+    assert_eq!(response["importedEnv"], "enabled");
+    assert_eq!(response["contextExports"], serde_json::json!(["default", "named"]));
+    assert_eq!(response["importedExports"], serde_json::json!(["default", "named"]));
+    assert_eq!(response["named"], 42);
+    assert_eq!(
+        response["context"],
+        serde_json::json!(["access", "cache", "exports", "props", "tracing"])
+    );
+    assert_eq!(response["props"], serde_json::json!({}));
+    Ok(())
+}
+
+#[test]
 fn bundled_worker_matches_cloudflare_node_compat() -> TestResult {
     let reference = Command::new("node")
         .arg(fixture_root().join("workerd-reference.mjs"))
@@ -142,12 +244,71 @@ fn bundled_worker_matches_cloudflare_node_compat() -> TestResult {
     let worker = bundle_worker(&fixture_root().join("startup.mjs"), directory.path())?;
     let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
     for (name, expected) in expected.as_object().ok_or("reference is not an object")? {
+        if matches!(name.as_str(), "nodeBuiltinSurfaces" | "globalClassSurfaces")
+            && actual.get(name) != Some(expected)
+            && let (Some(actual), Some(expected)) = (actual[name].as_object(), expected.as_object())
+        {
+            for module in expected.keys() {
+                if actual.get(module) != expected.get(module) {
+                    eprintln!(
+                        "Cloudflare contract: {module}: actual={} expected={}",
+                        actual.get(module).unwrap_or(&serde_json::Value::Null),
+                        expected.get(module).unwrap_or(&serde_json::Value::Null),
+                    );
+                }
+            }
+        }
         assert_eq!(
             actual.get(name),
             Some(expected),
             "Cloudflare contract: {name}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn node_net_socket_round_trip_uses_tokamak_socket_transport() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = thread::spawn(move || -> Result<(), String> {
+        let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
+        let mut request = [0; 4];
+        stream
+            .read_exact(&mut request)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(&request, b"ping");
+        stream
+            .write_all(b"pong")
+            .map_err(|error| error.to_string())?;
+        stream
+            .shutdown(Shutdown::Write)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    });
+
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("socket.mjs");
+    fs::write(
+        &source,
+        r#"
+import net from "node:net";
+export default { fetch() {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: "127.0.0.1", port: Number(process.env.FLAG) });
+    const chunks = [];
+    socket.on("connect", () => socket.write("ping"));
+    socket.on("data", chunk => chunks.push(new TextDecoder().decode(chunk)));
+    socket.on("end", () => resolve(new Response(chunks.join(""))));
+    socket.on("error", reject);
+  });
+} };
+"#,
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let body = request(&worker, &port.to_string())?;
+    assert_eq!(body, b"pong");
+    server.join().map_err(|_| "socket fixture panicked")??;
     Ok(())
 }
 

@@ -80,13 +80,14 @@ pub(super) fn execute_request(
     })));
     configure_worker_loader(&runtime, worker);
     let context = Context::full(&runtime).map_err(|error| js_error("context", error))?;
-    context.with(|ctx| -> Result<(), Error> {
+    let result = context.with(|ctx| -> Result<(), Error> {
         let Job {
             request,
             response: response_sender,
             websocket,
         } = job;
         let environment = serde_json::to_string(&config.environment)?;
+        let cache = serde_json::to_string(&config.cache.to_string_lossy().to_string())?;
         let descriptor = serde_json::to_string(&request)?;
         let body = request
             .body
@@ -95,7 +96,7 @@ pub(super) fn execute_request(
             .transpose()
             .map_err(|error| js_error("request body", error))?;
         let setup = format!(
-            "globalThis.__tokamak_env = {environment}; globalThis.__tokamak_env.ASSETS = {{ fetch: async () => new Response(null, {{ status: 404 }}) }}; globalThis.__tokamak_request = {descriptor};"
+            "globalThis.__tokamak_env = {environment}; globalThis.__tokamak_env.ASSETS = {{ fetch: async () => new Response(null, {{ status: 404 }}) }}; globalThis.__tokamak_cache = {cache}; globalThis.__tokamak_request = {descriptor};"
         );
         ctx.eval::<(), _>(setup)
             .map_err(|error| js_error("setup", error))?;
@@ -118,9 +119,7 @@ pub(super) fn execute_request(
         let response: Promise = fetch
             .call((request, environment, execution_context.clone()))
             .map_err(|error| js_error("fetch", error))?;
-        let response: Object = response
-            .finish()
-            .map_err(|error| js_exception(&ctx, "response", error))?;
+        let response: Object = finish_promise(&ctx, &response, "response")?;
         let web_socket: Option<Object> = response
             .get("webSocket")
             .map_err(|error| js_error("response WebSocket", error))?;
@@ -151,7 +150,9 @@ pub(super) fn execute_request(
             return drain_wait_until(&ctx, &execution_context);
         }
         send_worker_response(&ctx, response, &response_sender, &execution_context)
-    })
+    });
+    crate::network::cleanup_thread_sockets();
+    result
 }
 
 fn initialize_worker_context(ctx: &Ctx<'_>, worker: &WorkerBundle) -> Result<(), Error> {
@@ -170,14 +171,43 @@ pub(super) fn load_worker<'js>(
     let module = unsafe { Module::load(ctx.clone(), &bytes) }
         .map_err(|error| js_exception(ctx, "load", error))?;
     let (module, evaluation) = module.eval().map_err(|error| js_error("evaluate", error))?;
-    evaluation
-        .finish::<()>()
-        .map_err(|error| js_exception(ctx, "module initialization", error))?;
-    let worker: Object = module
+    finish_promise::<()>(ctx, &evaluation, "module initialization")?;
+    let exports = module
+        .namespace()
+        .map_err(|error| js_error("worker exports", error))?;
+    ctx.globals()
+        .set("__tokamak_exports", exports.clone())
+        .map_err(|error| js_error("worker exports", error))?;
+    let execution_context: Value = ctx
+        .globals()
+        .get("__tokamak_context")
+        .map_err(|error| js_error("execution context", error))?;
+    if let Ok(context) = Object::from_value(execution_context.clone()) {
+        context
+            .set("exports", exports.clone())
+            .map_err(|error| js_error("execution context exports", error))?;
+    }
+    let environment: Value = ctx
+        .globals()
+        .get("__tokamak_env")
+        .map_err(|error| js_error("environment", error))?;
+    let default: Value = exports
         .get("default")
         .map_err(|error| js_error("worker export", error))?;
-    worker
+    let instantiate: Function = ctx
+        .eval("(worker, context, env) => typeof worker === 'function' ? new worker(context, env) : worker")
+        .map_err(|error| js_error("worker entrypoint", error))?;
+    let worker: Object = instantiate
+        .call((default, execution_context, environment))
+        .map_err(|error| js_error("worker entrypoint", error))?;
+    let fetch: Function = worker
         .get("fetch")
+        .map_err(|error| js_error("worker fetch", error))?;
+    let invoke: Function = ctx
+        .eval("(fetch, worker) => (...args) => Promise.resolve(Reflect.apply(fetch, worker, args))")
+        .map_err(|error| js_error("worker fetch", error))?;
+    invoke
+        .call((fetch, worker))
         .map_err(|error| js_error("worker fetch", error))
 }
 
@@ -191,7 +221,7 @@ impl Resolver for WorkerResolver {
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<String> {
-        if let Some(builtin) = compat::public_module(name) {
+        if let Some(builtin) = crate::runtime_modules::public_module(name) {
             return Ok(builtin.to_owned());
         }
         // Runtime implementation modules are not part of the application API.
@@ -420,17 +450,16 @@ fn signal_websocket_ready(outgoing: &SyncSender<WebSocketOutbound>) -> Result<()
 
 fn drain_wait_until<'js>(
     ctx: &rquickjs::Ctx<'js>,
-    execution_context: &Object<'js>,
+    _execution_context: &Object<'js>,
 ) -> Result<(), Error> {
     let drain: Function = ctx
-        .eval("async context => { while (context.__waitUntil.length) await Promise.allSettled(context.__waitUntil.splice(0)); }")
+        .globals()
+        .get("__tokamak_drain_wait_until")
         .map_err(|error| js_error("waitUntil", error))?;
     let pending: Promise = drain
-        .call((execution_context.clone(),))
+        .call(())
         .map_err(|error| js_error("waitUntil", error))?;
-    pending
-        .finish::<()>()
-        .map_err(|error| js_exception(ctx, "waitUntil", error))?;
+    finish_promise::<()>(ctx, &pending, "waitUntil")?;
     Ok(())
 }
 
@@ -524,9 +553,7 @@ fn read_response_text<'js>(
     let body: Promise = read_body
         .call((response.clone(),))
         .map_err(|error| js_error("response body", error))?;
-    let body: String = body
-        .finish()
-        .map_err(|error| js_exception(ctx, "response body", error))?;
+    let body: String = finish_promise(ctx, &body, "response body")?;
     Ok(body.into_bytes())
 }
 
@@ -617,9 +644,7 @@ fn pump_response_stream_inner<'js>(
         let pending: Promise = read
             .call((reader.clone(),))
             .map_err(|error| js_error("response stream read", error))?;
-        let result: Object = pending
-            .finish()
-            .map_err(|error| js_exception(ctx, "response stream read", error))?;
+        let result: Object = finish_promise(ctx, &pending, "response stream read")?;
         let done: bool = result
             .get("done")
             .map_err(|error| js_error("response stream result", error))?;
@@ -652,9 +677,45 @@ fn cancel_response_stream<'js>(
     let Ok(pending) = cancel.call::<_, Promise>((reader.clone(),)) else {
         return;
     };
-    let _ = pending
-        .finish::<Value>()
-        .map_err(|error| js_exception(ctx, "response stream cancel", error));
+    let _ = finish_promise::<Value>(ctx, &pending, "response stream cancel");
+}
+
+fn finish_promise<'js, T: rquickjs::FromJs<'js>>(
+    ctx: &rquickjs::Ctx<'js>,
+    promise: &Promise<'js>,
+    stage: &str,
+) -> Result<T, Error> {
+    let timers: Option<Function> = ctx
+        .globals()
+        .get("__tokamak_run_timers")
+        .map_err(|error| js_error(stage, error))?;
+    loop {
+        if let Some(result) = promise.result::<T>() {
+            return result.map_err(|error| js_exception(ctx, stage, error));
+        }
+        if ctx.execute_pending_job() {
+            continue;
+        }
+        let Some(timers) = &timers else {
+            return Err(js_error(stage, "promise did not settle"));
+        };
+        let poll: Array = timers
+            .call(())
+            .map_err(|error| js_exception(ctx, stage, error))?;
+        let ran: bool = poll
+            .get(0)
+            .map_err(|error| js_exception(ctx, stage, error))?;
+        let wait: Option<u64> = poll
+            .get(1)
+            .map_err(|error| js_exception(ctx, stage, error))?;
+        if ran {
+            continue;
+        }
+        let Some(wait) = wait else {
+            return Err(js_error(stage, "promise did not settle"));
+        };
+        std::thread::sleep(Duration::from_millis(wait.clamp(1, 50)));
+    }
 }
 
 pub(super) fn asset_response(

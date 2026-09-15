@@ -1,4 +1,7 @@
 import { createDecoder } from "tokamak:host";
+import { TextDecoderStream, TextEncoderStream, TransformStream } from "./web.mjs";
+
+export { TextDecoderStream, TextEncoderStream };
 
 function string(value) {
   if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");

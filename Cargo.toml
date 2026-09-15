@@ -36,12 +36,17 @@ expect_used = "deny"
 anyhow = "1.0.102"
 assert_cmd = "2.2.2"
 base64 = "0.22.1"
+brotli = "8.0.2"
 block2 = "0.6.2"
 clap = { version = "4.6.1", features = ["derive"] }
 dispatch2 = "0.3.1"
 encoding_rs = "0.8.35"
 flate2 = { version = "1.1.8", default-features = false, features = ["rust_backend"] }
 getrandom = "0.4.2"
+fixed_decimal = "0.7.2"
+icu = { version = "2.3.1", default-features = false, features = ["compiled_data", "unstable"] }
+jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-bundle-always"] }
+lol_html = "3.0.1"
 jsonc-parser = "0.32.4"
 mime_guess = "2.0.5"
 netdev = { version = "0.46.1", default-features = false, features = ["gateway"] }
@@ -70,9 +75,12 @@ time = "0.3.47"
 tao = { version = "0.35.3", default-features = false, features = ["rwh_06"] }
 toml = "1.1.2"
 walkdir = "2.5.0"
+writeable = "0.6.4"
 wry = { version = "0.55.1", default-features = false }
 webview2-com = "0.38.2"
 windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 x509-parser = { version = "0.18.1", features = ["verify"] }
+zstd = "0.13.3"
 rquickjs = { version = "0.12.2", features = ["bindgen", "loader", "macro"] }
 tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread"] }
+url = "2.5.8"
