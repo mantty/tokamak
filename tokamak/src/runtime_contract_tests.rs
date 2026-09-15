@@ -1,15 +1,16 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, atomic::AtomicBool, mpsc};
 use std::thread;
+use std::time::Duration;
 
-use crate::dispatcher::execute_request;
+use crate::dispatcher::{AssetService, execute_request};
 use crate::gateway::{Job, JobResponse, Lifecycle};
-use crate::quickjs::{RuntimeConfig, WorkerBundle};
+use crate::quickjs::{Assets, RuntimeConfig, WorkerBundle};
 use crate::transport::{HttpBody, HttpRequest};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -245,28 +246,242 @@ fn bundled_worker_matches_cloudflare_node_compat() -> TestResult {
     let directory = tempfile::tempdir()?;
     let worker = bundle_worker(&fixture_root().join("startup.mjs"), directory.path())?;
     let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
+    let mut failures = Vec::new();
     for (name, expected) in expected.as_object().ok_or("reference is not an object")? {
-        if matches!(name.as_str(), "nodeBuiltinSurfaces" | "globalClassSurfaces")
-            && actual.get(name) != Some(expected)
-            && let (Some(actual), Some(expected)) = (actual[name].as_object(), expected.as_object())
-        {
-            for module in expected.keys() {
-                if actual.get(module) != expected.get(module) {
-                    eprintln!(
-                        "Cloudflare contract: {module}: actual={} expected={}",
-                        actual.get(module).unwrap_or(&serde_json::Value::Null),
-                        expected.get(module).unwrap_or(&serde_json::Value::Null),
-                    );
-                }
-            }
+        if actual.get(name) == Some(expected) {
+            continue;
         }
+        failures.push(name.clone());
+        report_contract_difference(name, actual.get(name), expected);
+    }
+    assert!(
+        failures.is_empty(),
+        "Cloudflare contract domains differ (details above): {failures:?}"
+    );
+    Ok(())
+}
+
+/// Prints a per-entry diff for one contract domain, keeping failures readable.
+fn report_contract_difference(
+    name: &str,
+    actual: Option<&serde_json::Value>,
+    expected: &serde_json::Value,
+) {
+    let Some(actual) = actual else {
+        eprintln!("Cloudflare contract: {name}: missing, expected {expected}");
+        return;
+    };
+    let (Some(actual), Some(expected)) = (actual.as_object(), expected.as_object()) else {
+        eprintln!("Cloudflare contract: {name}: actual={actual} expected={expected}");
+        return;
+    };
+    let extra_keys = actual.keys().filter(|key| !expected.contains_key(*key));
+    for key in expected.keys().chain(extra_keys) {
+        let (actual, expected) = (actual.get(key), expected.get(key));
+        if actual != expected {
+            let null = serde_json::Value::Null;
+            eprintln!(
+                "Cloudflare contract: {name}.{key}: actual={} expected={}",
+                actual.unwrap_or(&null),
+                expected.unwrap_or(&null),
+            );
+        }
+    }
+}
+
+#[test]
+fn every_public_module_spelling_imports() -> TestResult {
+    let names = serde_json::to_string(&crate::runtime_modules::runtime_module_names())?;
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("spellings.mjs");
+    fs::write(
+        &source,
+        format!(
+            r"const names = {names};
+export default {{ async fetch() {{
+  const empty = [];
+  for (const name of names) {{
+    const namespace = await import(name);
+    if (Object.keys(namespace).length === 0 && namespace.default === undefined) empty.push(name);
+  }}
+  return new Response(JSON.stringify(empty));
+}} }};
+"
+        ),
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    assert_eq!(request(&worker, "first")?, b"[]");
+    Ok(())
+}
+
+#[test]
+fn request_boundary_matches_cloudflare() -> TestResult {
+    let reference = Command::new("node")
+        .arg(fixture_root().join("boundary-reference.mjs"))
+        .output()?;
+    if !reference.status.success() {
+        return Err(format!(
+            "boundary reference failed: {}",
+            String::from_utf8_lossy(&reference.stderr)
+        )
+        .into());
+    }
+    let expected: serde_json::Value = serde_json::from_slice(&reference.stdout)?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let upstream = thread::spawn(move || serve_gzip_upstream(&listener));
+    let directory = tempfile::tempdir()?;
+    let worker = bundle_worker(
+        &fixture_root().join("boundary.mjs"),
+        &directory.path().join("modules"),
+    )?;
+    let echo = boundary_request(&worker, port, "POST", "/echo", Some(vec![b'x'; 70000]))?;
+    let stream = boundary_request(&worker, port, "GET", "/stream", None)?;
+    let egress = boundary_request(&worker, port, "GET", "/egress", None)?;
+    let actual = serde_json::json!({
+        "echo": serde_json::from_slice::<serde_json::Value>(&echo.2)?,
+        "stream": {
+            "body": String::from_utf8(stream.2)?,
+            "hasContentLength": stream.1.contains_key("content-length"),
+        },
+        "egress": serde_json::from_slice::<serde_json::Value>(&egress.2)?,
+    });
+    for route in ["echo", "stream", "egress"] {
         assert_eq!(
-            actual.get(name),
-            Some(expected),
-            "Cloudflare contract: {name}"
+            actual.get(route),
+            expected.get(route),
+            "boundary contract: {route}"
         );
     }
+    upstream.join().map_err(|_| "upstream fixture panicked")??;
     Ok(())
+}
+
+fn boundary_request(
+    worker: &WorkerBundle,
+    upstream_port: u16,
+    method: &str,
+    target: &str,
+    body: Option<Vec<u8>>,
+) -> TestResult<(u16, BTreeMap<String, String>, Vec<u8>)> {
+    let environment = BTreeMap::from([(
+        "UPSTREAM_PORT".to_owned(),
+        serde_json::json!(upstream_port.to_string()),
+    )]);
+    fixture_request(worker, environment, None, method, target, body)
+}
+
+fn fixture_request(
+    worker: &WorkerBundle,
+    environment: BTreeMap<String, serde_json::Value>,
+    assets: Option<Assets>,
+    method: &str,
+    target: &str,
+    body: Option<Vec<u8>>,
+) -> TestResult<(u16, BTreeMap<String, String>, Vec<u8>)> {
+    let directory = tempfile::tempdir()?;
+    let config = RuntimeConfig {
+        assets: assets.clone(),
+        cache: directory.path().join("cache"),
+        environment,
+    };
+    let mut headers = BTreeMap::new();
+    if body.is_some() {
+        headers.insert(
+            "content-type".to_owned(),
+            "application/octet-stream".to_owned(),
+        );
+    }
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let job = Job {
+        request: HttpRequest {
+            method: method.to_owned(),
+            target: target.to_owned(),
+            url: format!("https://app.tokamak.local{target}"),
+            headers,
+            body,
+        },
+        response: sender,
+        websocket: None,
+    };
+    // The worker runs on its own thread so streamed bodies can be consumed here.
+    let worker = worker.clone();
+    let handle = thread::spawn(move || -> Result<(), String> {
+        let service = assets
+            .as_ref()
+            .map(|assets| AssetService::new(assets))
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .map(Arc::new);
+        // Assets are served before the worker, matching Dispatcher::handle.
+        if let Some(service) = &service
+            && let Some(asset) = service
+                .response(&job.request)
+                .map_err(|error| error.to_string())?
+        {
+            return job
+                .response
+                .send(JobResponse::Http(asset))
+                .map_err(|error| error.to_string());
+        }
+        let accepting = Arc::new(AtomicBool::new(true));
+        let lifecycle = Lifecycle::new();
+        let execution = lifecycle
+            .enter(&accepting)
+            .ok_or("request rejected".to_owned())?;
+        execute_request(
+            &worker,
+            &config,
+            service.as_ref(),
+            job,
+            &execution,
+            &accepting,
+        )
+        .map_err(|error| error.to_string())
+    });
+    let JobResponse::Http(response) = receiver.recv_timeout(Duration::from_secs(30))? else {
+        return Err("unexpected websocket".into());
+    };
+    let body = match response.body {
+        HttpBody::Buffered(body) => body,
+        HttpBody::Stream(stream) => {
+            let mut collected = Vec::new();
+            while let Ok(chunk) = stream.recv() {
+                collected.extend(chunk.map_err(io::Error::other)?);
+            }
+            collected
+        }
+    };
+    handle.join().map_err(|_| "boundary worker panicked")??;
+    Ok((response.status, response.headers, body))
+}
+
+fn serve_gzip_upstream(listener: &TcpListener) -> Result<(), String> {
+    let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
+    let mut request = Vec::new();
+    let mut byte = [0; 1];
+    while !request.ends_with(b"\r\n\r\n") {
+        stream
+            .read_exact(&mut byte)
+            .map_err(|error| error.to_string())?;
+        request.push(byte[0]);
+    }
+    let mut encoder =
+        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(b"upstream-payload")
+        .map_err(|error| error.to_string())?;
+    let payload = encoder.finish().map_err(|error| error.to_string())?;
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        payload.len()
+    );
+    stream
+        .write_all(head.as_bytes())
+        .map_err(|error| error.to_string())?;
+    stream
+        .write_all(&payload)
+        .map_err(|error| error.to_string())
 }
 
 #[test]
@@ -311,6 +526,84 @@ export default { fetch() {
     let body = request(&worker, &port.to_string())?;
     assert_eq!(body, b"pong");
     server.join().map_err(|_| "socket fixture panicked")??;
+    Ok(())
+}
+
+#[test]
+fn astro_example_renders_pages_and_serves_assets() -> TestResult {
+    let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or("no workspace")?
+        .join("examples/astro");
+    if !example.join("dist/server/entry.mjs").is_file() {
+        eprintln!("skipping: examples/astro/dist is not built (run pnpm build there)");
+        return Ok(());
+    }
+    let directory = tempfile::tempdir()?;
+    let worker = bundle_worker(
+        &example.join("tests/startup.mjs"),
+        &directory.path().join("modules"),
+    )?;
+    let manifest = directory.path().join("asset-manifest.json");
+    let client = example.join("dist/client");
+    write_asset_manifest_for(&client, &manifest)?;
+    let assets = Assets {
+        manifest,
+        root: client,
+    };
+    let (status, _, home) = fixture_request(
+        &worker,
+        BTreeMap::new(),
+        Some(assets.clone()),
+        "GET",
+        "/",
+        None,
+    )?;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&home));
+    assert!(String::from_utf8(home)?.contains("<html"));
+    // Prerendered pages and static files reach the worker through env.ASSETS.
+    let (status, _, about) = fixture_request(
+        &worker,
+        BTreeMap::new(),
+        Some(assets.clone()),
+        "GET",
+        "/about",
+        None,
+    )?;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&about));
+    assert!(String::from_utf8(about)?.contains("About - tokamak Example"));
+    let (status, _, favicon) =
+        fixture_request(&worker, BTreeMap::new(), Some(assets), "GET", "/favicon.ico", None)?;
+    assert_eq!(status, 200);
+    assert!(!favicon.is_empty());
+    Ok(())
+}
+
+fn write_asset_manifest_for(client: &Path, manifest: &Path) -> TestResult {
+    let mut files = serde_json::Map::new();
+    for entry in walkdir::WalkDir::new(client) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(client)?
+            .to_str()
+            .ok_or("non-UTF8 asset path")?
+            .replace('\\', "/");
+        let mime = mime_guess::from_path(entry.path())
+            .first_or_octet_stream()
+            .to_string();
+        files.insert(format!("/{relative}"), serde_json::json!(mime));
+    }
+    fs::write(
+        manifest,
+        serde_json::to_vec(&serde_json::json!({
+            "files": files,
+            "htmlHandling": "auto-trailing-slash",
+        }))?,
+    )?;
     Ok(())
 }
 
