@@ -689,7 +689,7 @@ export class Cache {
       cachePath(), this.__name, cacheKey(request), {
         status: copy.status,
         statusText: copy.statusText,
-        headers: JSON.stringify(Object.fromEntries(copy.headers)),
+        headers: JSON.stringify([...copy.headers]),
         url: copy.url,
         redirected: copy.redirected,
         type: copy.type,

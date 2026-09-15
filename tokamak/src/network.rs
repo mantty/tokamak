@@ -1,5 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
-use std::io::{self, Read, Write};
+use std::collections::HashMap;
+use std::io::{self, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Mutex, OnceLock};
 use std::thread::{self, ThreadId};
@@ -31,10 +31,20 @@ pub(crate) enum Error {
     RedirectLimit,
 }
 
+/// Ordered header pairs; duplicate names (for example `set-cookie`) are preserved.
+pub(crate) type HeaderList = Vec<(String, String)>;
+
+pub(crate) fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.as_str())
+}
+
 pub(crate) struct FetchRequest {
     pub(crate) url: String,
     pub(crate) method: String,
-    pub(crate) headers: BTreeMap<String, String>,
+    pub(crate) headers: HeaderList,
     pub(crate) body: Vec<u8>,
     pub(crate) redirect: String,
 }
@@ -43,7 +53,7 @@ pub(crate) struct FetchResponse {
     pub(crate) url: String,
     pub(crate) status: u16,
     pub(crate) status_text: String,
-    pub(crate) headers: BTreeMap<String, String>,
+    pub(crate) headers: HeaderList,
     pub(crate) body: Vec<u8>,
     pub(crate) redirected: bool,
 }
@@ -78,7 +88,7 @@ pub(crate) fn fetch(request: FetchRequest) -> Result<FetchResponse, Error> {
 
 fn redirect_location(response: &FetchResponse) -> Option<String> {
     matches!(response.status, 301 | 302 | 303 | 307 | 308)
-        .then(|| response.headers.get("location").cloned())
+        .then(|| header_value(&response.headers, "location").map(str::to_owned))
         .flatten()
 }
 
@@ -95,7 +105,7 @@ fn redirected_request(
     if matches!(status, 301..=303) && request.method != "GET" && request.method != "HEAD" {
         request.method = "GET".to_owned();
         request.body.clear();
-        request.headers.remove("content-type");
+        request.headers.retain(|(name, _)| name != "content-type");
     }
     Ok(request)
 }
@@ -153,11 +163,15 @@ fn write_request(
         }
         write!(stream, "{name}: {value}\r\n")?;
     }
+    if header_value(&request.headers, "accept-encoding").is_none() {
+        write!(stream, "Accept-Encoding: gzip, deflate, br, zstd\r\n")?;
+    }
     write!(stream, "Host: {}\r\nConnection: close\r\n", host_header(url, host, port))?;
     write!(stream, "Content-Length: {}\r\n\r\n", request.body.len())?;
     stream.write_all(&request.body)?;
     stream.flush()?;
-    read_response(&mut stream, &request.method, url.to_string())
+    let mut reader = BufReader::with_capacity(SOCKET_BUFFER, stream);
+    read_response(&mut reader, &request.method, url.to_string())
 }
 
 fn request_target(url: &Url) -> String {
@@ -201,7 +215,7 @@ fn is_hop_by_hop(name: &str) -> bool {
 }
 
 fn read_response(
-    stream: &mut Connection,
+    stream: &mut impl Read,
     method: &str,
     url: String,
 ) -> Result<FetchResponse, Error> {
@@ -212,6 +226,7 @@ fn read_response(
             continue;
         }
         let body = read_body(stream, method, status, &headers)?;
+        let body = decode_body(body, &headers)?;
         return Ok(FetchResponse {
             url,
             status,
@@ -221,6 +236,53 @@ fn read_response(
             redirected: false,
         });
     }
+}
+
+/// Decodes `content-encoding` chains; an unrecognized encoding leaves the body untouched.
+fn decode_body(body: Vec<u8>, headers: &[(String, String)]) -> Result<Vec<u8>, Error> {
+    let Some(encodings) = header_value(headers, "content-encoding") else {
+        return Ok(body);
+    };
+    let encodings: Vec<&str> = encodings
+        .split(',')
+        .map(str::trim)
+        .filter(|encoding| !encoding.is_empty() && !encoding.eq_ignore_ascii_case("identity"))
+        .collect();
+    if !encodings
+        .iter()
+        .all(|encoding| matches!(*encoding, "gzip" | "x-gzip" | "deflate" | "br" | "zstd"))
+    {
+        return Ok(body);
+    }
+    let mut current = body;
+    for encoding in encodings.into_iter().rev() {
+        let mut output = Vec::new();
+        match encoding {
+            "gzip" | "x-gzip" => {
+                flate2::read::MultiGzDecoder::new(current.as_slice()).read_to_end(&mut output)?;
+            }
+            "deflate" => {
+                if flate2::read::ZlibDecoder::new(current.as_slice())
+                    .read_to_end(&mut output)
+                    .is_err()
+                {
+                    output.clear();
+                    flate2::read::DeflateDecoder::new(current.as_slice())
+                        .read_to_end(&mut output)?;
+                }
+            }
+            "br" => {
+                brotli::Decompressor::new(current.as_slice(), SOCKET_BUFFER)
+                    .read_to_end(&mut output)?;
+            }
+            _ => output = zstd::stream::decode_all(current.as_slice())?,
+        }
+        if output.len() > MAX_BODY {
+            return Err(Error::InvalidResponse("body exceeds the limit".to_owned()));
+        }
+        current = output;
+    }
+    Ok(current)
 }
 
 fn read_header_block(stream: &mut impl Read) -> Result<Vec<u8>, Error> {
@@ -238,7 +300,7 @@ fn read_header_block(stream: &mut impl Read) -> Result<Vec<u8>, Error> {
     }
 }
 
-fn parse_headers(data: &[u8]) -> Result<(u16, String, BTreeMap<String, String>), Error> {
+fn parse_headers(data: &[u8]) -> Result<(u16, String, HeaderList), Error> {
     let text = std::str::from_utf8(data)
         .map_err(|_| Error::InvalidResponse("headers are not UTF-8".to_owned()))?;
     let mut lines = text.split("\r\n");
@@ -256,20 +318,12 @@ fn parse_headers(data: &[u8]) -> Result<(u16, String, BTreeMap<String, String>),
         .parse::<u16>()
         .map_err(|_| Error::InvalidResponse("status is invalid".to_owned()))?;
     let status_text = status_parts.next().unwrap_or_default().to_owned();
-    let mut headers = BTreeMap::new();
+    let mut headers = Vec::new();
     for line in lines.take_while(|line| !line.is_empty()) {
         let (name, value) = line
             .split_once(':')
             .ok_or_else(|| Error::InvalidResponse("header is invalid".to_owned()))?;
-        let name = name.trim().to_ascii_lowercase();
-        let value = value.trim().to_owned();
-        headers
-            .entry(name)
-            .and_modify(|current: &mut String| {
-                current.push_str(", ");
-                current.push_str(&value);
-            })
-            .or_insert(value);
+        headers.push((name.trim().to_ascii_lowercase(), value.trim().to_owned()));
     }
     Ok((status, status_text, headers))
 }
@@ -278,7 +332,7 @@ fn read_body(
     stream: &mut impl Read,
     method: &str,
     status: u16,
-    headers: &BTreeMap<String, String>,
+    headers: &[(String, String)],
 ) -> Result<Vec<u8>, Error> {
     if method.eq_ignore_ascii_case("HEAD")
         || (100..200).contains(&status)
@@ -286,13 +340,12 @@ fn read_body(
     {
         return Ok(Vec::new());
     }
-    if headers
-        .get("transfer-encoding")
+    if header_value(headers, "transfer-encoding")
         .is_some_and(|value| value.split(',').any(|item| item.trim() == "chunked"))
     {
         return read_chunked_body(stream);
     }
-    if let Some(length) = headers.get("content-length") {
+    if let Some(length) = header_value(headers, "content-length") {
         let length = length
             .parse::<usize>()
             .map_err(|_| Error::InvalidResponse("content length is invalid".to_owned()))?;
@@ -397,14 +450,14 @@ static SOCKETS: OnceLock<Mutex<SocketStore>> = OnceLock::new();
 pub(crate) struct CacheEntry {
     pub(crate) status: u16,
     pub(crate) status_text: String,
-    pub(crate) headers: BTreeMap<String, String>,
+    pub(crate) headers: HeaderList,
     pub(crate) body: Vec<u8>,
     pub(crate) url: String,
     pub(crate) redirected: bool,
     pub(crate) response_type: String,
 }
 
-type CacheStore = HashMap<String, BTreeMap<String, CacheEntry>>;
+type CacheStore = HashMap<String, HashMap<String, CacheEntry>>;
 static CACHES: OnceLock<Mutex<CacheStore>> = OnceLock::new();
 
 fn sockets() -> &'static Mutex<SocketStore> {
@@ -530,17 +583,23 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
-    use super::{FetchRequest, fetch, parse_headers, read_body};
+    use super::{FetchRequest, fetch, header_value, parse_headers, read_body};
 
     #[test]
-    fn parses_http_status_and_combines_headers() -> Result<(), Box<dyn std::error::Error>> {
+    fn parses_http_status_and_preserves_repeated_headers() -> Result<(), Box<dyn std::error::Error>>
+    {
         let (status, reason, headers) = parse_headers(
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Test: one\r\nx-test: two\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: one=1\r\nset-cookie: two=2\r\n\r\n",
         )?;
         assert_eq!(status, 200);
         assert_eq!(reason, "OK");
-        assert_eq!(headers.get("content-type"), Some(&"text/plain".to_owned()));
-        assert_eq!(headers.get("x-test"), Some(&"one, two".to_owned()));
+        assert_eq!(header_value(&headers, "content-type"), Some("text/plain"));
+        let cookies: Vec<&str> = headers
+            .iter()
+            .filter(|(name, _)| name == "set-cookie")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(cookies, ["one=1", "two=2"]);
         Ok(())
     }
 
@@ -551,9 +610,7 @@ mod tests {
             &mut stream,
             "GET",
             200,
-            &[("transfer-encoding".to_owned(), "chunked".to_owned())]
-                .into_iter()
-                .collect(),
+            &[("transfer-encoding".to_owned(), "chunked".to_owned())],
         )?;
         assert_eq!(body, b"test");
         Ok(())
@@ -578,14 +635,14 @@ mod tests {
         let response = fetch(FetchRequest {
             url: format!("http://127.0.0.1:{port}/start"),
             method: "GET".to_owned(),
-            headers: std::collections::BTreeMap::new(),
+            headers: Vec::new(),
             body: Vec::new(),
             redirect: "follow".to_owned(),
         })?;
         assert_eq!(response.status, 200);
         assert_eq!(response.url, format!("http://127.0.0.1:{port}/done"));
         assert!(response.redirected);
-        assert_eq!(response.headers.get("x-test"), Some(&"value".to_owned()));
+        assert_eq!(header_value(&response.headers, "x-test"), Some("value"));
         assert_eq!(response.body, b"done");
         server.join().map_err(|_| "server thread panicked")??;
         Ok(())

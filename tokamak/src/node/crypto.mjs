@@ -1,4 +1,4 @@
-import { cryptoAesGcm, cryptoHmac, digest, randomBytes as hostRandomBytes } from "tokamak:host";
+import { cryptoAesGcm, cryptoHmac, cryptoHkdf, cryptoPbkdf2, cryptoCheckPrime, cryptoDecrypt, cryptoDhCompute, cryptoDhGenerate, cryptoDhParams, cryptoEcdhCompute, cryptoEcdhConvert, cryptoEcdhPublic, cryptoEncrypt, cryptoExportKey, cryptoGenerateKey, cryptoGeneratePrime, cryptoImportKey, cryptoRsaLegacyPrivateEncrypt, cryptoRsaLegacyPublicDecrypt, cryptoScrypt, cryptoSign, cryptoVerify, digest, randomBytes as hostRandomBytes } from "tokamak:host";
 import { CryptoKey, crypto as webcrypto } from "../globals/web.mjs";
 import { Transform } from "../streams/node.mjs";
 import { Buffer } from "./buffer.mjs";
@@ -57,7 +57,7 @@ export class Hash extends Transform {
   digest(encoding) {
     if (this.__finalized) throw finalizedError();
     this.__finalized = true;
-    const output = Buffer.from(digest(this.__algorithm, joinChunks(this.__chunks), undefined));
+    const output = Buffer.from(digest(this.__algorithm, joinChunks(this.__chunks)));
     return encoding === undefined ? output : output.toString(encoding);
   }
 
@@ -85,12 +85,19 @@ function validateRandomLength(length) {
     error.code = "ERR_OUT_OF_RANGE";
     throw error;
   }
-  if (size > 65536) throw new DOMException("The requested length exceeds 65,536 bytes.", "QuotaExceededError");
   return size;
 }
 
+// Workers rejects requests above the Web Crypto quota; matching keeps apps portable.
 export function randomBytesSync(length) {
-  return Buffer.from(hostRandomBytes(validateRandomLength(length)));
+  const size = validateRandomLength(length);
+  if (size > 65536) {
+    throw new DOMException(
+      `The requested length exceeds the quota (${size} > 65536)`,
+      "QuotaExceededError",
+    );
+  }
+  return Buffer.from(hostRandomBytes(size));
 }
 
 export function randomBytes(length, callback) {
@@ -269,8 +276,7 @@ export class DiffieHellman {
 
   computeSecret(otherPublicKey, inputEncoding, outputEncodingName) {
     if (!this.__privateKey) throw new Error("Private key is not set");
-    const output = cryptoBridge({
-      operation: "dhCompute",
+    const output = cryptoDhCompute({
       prime: this.__prime,
       generator: this.__generator,
       private: this.__privateKey,
@@ -280,7 +286,7 @@ export class DiffieHellman {
   }
 
   generateKeys(encoding) {
-    const state = parseBundle(cryptoBridge({ operation: "dhGenerate", prime: this.__prime, generator: this.__generator }));
+    const state = parseBundle(cryptoDhGenerate({ prime: this.__prime, generator: this.__generator }));
     this.__publicKey = Buffer.from(state.public);
     this.__privateKey = Buffer.from(state.private);
     return outputEncoding(this.getPublicKey(), encoding);
@@ -298,7 +304,7 @@ export class DiffieHellman {
   }
   setPrivateKey(privateKey, encoding) {
     const value = inputBytes(privateKey, encoding);
-    const state = parseBundle(cryptoBridge({ operation: "dhGenerate", prime: this.__prime, generator: this.__generator, private: value }));
+    const state = parseBundle(cryptoDhGenerate({ prime: this.__prime, generator: this.__generator, private: value }));
     this.__privateKey = Buffer.from(state.private);
     this.__publicKey = Buffer.from(state.public);
     return this;
@@ -322,8 +328,7 @@ export class ECDH {
 
   computeSecret(otherPublicKey, inputEncoding, outputEncodingName) {
     if (!this.__privateKey) throw new Error("Private key is not set");
-    const output = cryptoBridge({
-      operation: "ecdhCompute",
+    const output = cryptoEcdhCompute({
       curve: this.__curve,
       private: this.__privateKey,
       peer: inputBytes(otherPublicKey, inputEncoding),
@@ -347,23 +352,23 @@ export class ECDH {
 
   getPublicKey(encoding, format = "uncompressed") {
     if (!this.__publicKey) throw new Error("Public key is not set");
-    const value = format === "uncompressed" ? this.__publicKey : Buffer.from(cryptoBridge({ operation: "ecdhConvert", curve: this.__curve, format, }, this.__publicKey));
+    const value = format === "uncompressed" ? this.__publicKey : Buffer.from(cryptoEcdhConvert(this.__publicKey, { curve: this.__curve, format }));
     return outputEncoding(value, encoding);
   }
 
   setPrivateKey(privateKey, encoding) {
     this.__privateKey = Buffer.from(inputBytes(privateKey, encoding));
-    this.__publicKey = Buffer.from(cryptoBridge({ operation: "ecdhPublic", curve: this.__curve, private: this.__privateKey, format: "uncompressed" }));
+    this.__publicKey = Buffer.from(cryptoEcdhPublic({ curve: this.__curve, private: this.__privateKey, format: "uncompressed" }));
     return this;
   }
 
   setPublicKey(publicKey, encoding) {
-    this.__publicKey = Buffer.from(cryptoBridge({ operation: "ecdhConvert", curve: this.__curve, format: "uncompressed" }, inputBytes(publicKey, encoding)));
+    this.__publicKey = Buffer.from(cryptoEcdhConvert(inputBytes(publicKey, encoding), { curve: this.__curve, format: "uncompressed" }));
     return this;
   }
 
   static convertKey(key, curve, inputEncoding, outputEncodingName, format = "uncompressed") {
-    const value = Buffer.from(cryptoBridge({ operation: "ecdhConvert", curve: nodeCurveName(curve), format }, inputBytes(key, inputEncoding)));
+    const value = Buffer.from(cryptoEcdhConvert(inputBytes(key, inputEncoding), { curve: nodeCurveName(curve), format }));
     return outputEncoding(value, outputEncodingName);
   }
 }
@@ -389,10 +394,6 @@ function publicPoint(jwk) {
 const keyObjectState = new WeakMap();
 const cipherToken = Symbol("cipher");
 const signToken = Symbol("sign");
-
-function cryptoBridge(options, input = new Uint8Array()) {
-  return new Uint8Array(digest("SHA-256", input, options));
-}
 
 function parseBundle(value) {
   const bytes = Buffer.from(value);
@@ -430,7 +431,7 @@ function keyKind(jwk) {
 
 function keyFromJwk(jwk) {
   const kind = keyKind(jwk);
-  const bundle = parseBundle(cryptoBridge({ operation: "import", format: "jwk", kind, curve: jwk.crv, jwk: JSON.stringify(jwk) }));
+  const bundle = parseBundle(cryptoImportKey(new Uint8Array(), { format: "jwk", kind, curve: jwk.crv, jwk: JSON.stringify(jwk) }));
   const privateKey = jwk.d !== undefined;
   return createAsymmetricObject({ type: privateKey ? "private" : "public", kind, format: privateKey ? "pkcs8" : "spki", bytes: privateKey ? bundle.private : bundle.public, jwk });
 }
@@ -459,7 +460,7 @@ function describeKey(bytes, format, typeHint) {
     for (const keyFormat of formats) {
       for (const kind of candidates) {
         try {
-          const jwk = JSON.parse(new TextDecoder().decode(cryptoBridge({ operation: "export", format: "jwk", keyFormat, kind, key: bytes })));
+          const jwk = JSON.parse(new TextDecoder().decode(cryptoExportKey(new Uint8Array(), { format: "jwk", keyFormat, kind, key: bytes })));
           const privateKey = jwk.d !== undefined;
           if ((type === "private") !== privateKey) continue;
           return { kind, format: keyFormat, type: privateKey ? "private" : "public", bytes: Buffer.from(bytes), jwk };
@@ -484,7 +485,7 @@ function createAsymmetricObject(record) {
 }
 
 function hostKeyExport(record, format) {
-  return Buffer.from(cryptoBridge({ operation: "export", format, keyFormat: record.format, kind: record.kind, key: Uint8Array.from(record.bytes) }));
+  return Buffer.from(cryptoExportKey(new Uint8Array(), { format, keyFormat: record.format, kind: record.kind, key: Uint8Array.from(record.bytes) }));
 }
 
 function encodeKey(record, options) {
@@ -547,7 +548,7 @@ export class Sign extends Transform {
       const record = keyRecord(key instanceof KeyObject ? key : createPrivateKey(key));
       if (record.type !== "private") throw new TypeError("A private key is required");
       const kind = signingKind(record, options);
-      const output = Buffer.from(cryptoBridge({ operation: "sign", kind, format: record.format, key: record.bytes, hash: this.__algorithm, saltLength: options?.saltLength }, joinChunks(this.__chunks)));
+      const output = Buffer.from(cryptoSign(joinChunks(this.__chunks), { kind, format: record.format, key: record.bytes, hash: this.__algorithm, saltLength: options?.saltLength }));
       this.__finalized = true;
       const value = outputEncoding(output, typeof options === "string" ? options : undefined);
       if (callback) queueMicrotask(() => callback(null, value));
@@ -578,7 +579,7 @@ export class Verify extends Transform {
     try {
       const record = keyRecord(key instanceof KeyObject ? key : createPublicKey(key));
       const kind = signingKind(record);
-      const value = cryptoBridge({ operation: "verify", kind, format: record.format, key: record.bytes, hash: this.__algorithm, message: joinChunks(this.__chunks), saltLength: undefined }, inputBytes(signature))[0] === 1;
+      const value = cryptoVerify(inputBytes(signature), { kind, format: record.format, key: record.bytes, hash: this.__algorithm, message: joinChunks(this.__chunks), saltLength: undefined });
       this.__finalized = true;
       if (callback) queueMicrotask(() => callback(null, value));
       return callback ? undefined : value;
@@ -614,17 +615,6 @@ function cipherSpec(algorithm) {
   return { name: `AES-${match[2].toUpperCase()}`, keyLength: Number(match[1]) / 8, mode: match[2] };
 }
 
-function cipherTransform(state) {
-  const input = joinChunks(state.chunks);
-  if (state.mode === "gcm" && !state.decrypt) {
-    const value = Buffer.from(cryptoAesGcm(true, state.key, state.iv, state.aad, input, { tagLength: state.tagLength * 8, mode: "AES-GCM" }));
-    return { data: value.subarray(0, -state.tagLength), tag: value.subarray(-state.tagLength) };
-  }
-  if (state.mode === "gcm" && !state.authTag) return { data: Buffer.alloc(0), tag: null };
-  const value = Buffer.from(cryptoAesGcm(!state.decrypt, state.key, state.iv, state.aad, state.decrypt ? Buffer.concat([input, state.authTag]) : input, { tagLength: state.tagLength * 8, mode: state.spec.name }));
-  return { data: value, tag: null };
-}
-
 class CipherBase extends Transform {
   constructor(algorithm, key, iv, decrypt, token) {
     super();
@@ -632,7 +622,7 @@ class CipherBase extends Transform {
     const spec = cipherSpec(algorithm);
     const keyBytes = key instanceof KeyObject ? keyRecord(key).bytes : inputBytes(key);
     if (keyBytes.length !== spec.keyLength) throw new RangeError("Invalid key length");
-    this.__state = { algorithm, spec, mode: spec.mode, key: Buffer.from(keyBytes), iv: Buffer.from(iv ?? []), aad: Buffer.alloc(0), authTag: null, chunks: [], emitted: 0, tagLength: 16, decrypt, finalized: false };
+    this.__state = { algorithm, spec, mode: spec.mode, key: Buffer.from(keyBytes), iv: Buffer.from(iv ?? []), aad: Buffer.alloc(0), authTag: null, chunks: [], tagLength: 16, decrypt, finalized: false };
     if (spec.mode === "cbc" && this.__state.iv.length !== 16) throw new TypeError("Invalid initialization vector");
     if (spec.mode === "ctr" && this.__state.iv.length !== 16) throw new TypeError("Invalid initialization vector");
   }
@@ -640,22 +630,20 @@ class CipherBase extends Transform {
     const state = this.__state;
     if (state.finalized) throw finalizedError();
     state.chunks.push(cipherInput(value, inputEncoding));
-    const transformed = cipherTransform(state);
-    const output = transformed.data.subarray(state.emitted);
-    state.emitted = transformed.data.length;
-    if (transformed.tag) state.pendingTag = Buffer.from(transformed.tag);
-    return outputEncoding(output, outputEncodingName);
+    return outputEncoding(Buffer.alloc(0), outputEncodingName);
   }
   final(outputEncodingName) {
     const state = this.__state;
     if (state.finalized) throw finalizedError();
-    const transformed = cipherTransform(state);
-    if (transformed.tag) state.pendingTag = Buffer.from(transformed.tag);
-    const output = transformed.data.subarray(state.emitted);
-    state.emitted = transformed.data.length;
     state.finalized = true;
-    if (!state.decrypt && state.mode === "gcm") state.authTag = state.pendingTag;
-    return outputEncoding(Buffer.from(output), outputEncodingName);
+    let input = joinChunks(state.chunks);
+    if (state.mode === "gcm" && state.decrypt) input = Buffer.concat([input, state.authTag ?? Buffer.alloc(0)]);
+    const value = Buffer.from(cryptoAesGcm(!state.decrypt, state.key, state.iv, input, { tagLength: state.tagLength * 8, mode: state.spec.name, additionalData: state.aad }));
+    if (state.mode === "gcm" && !state.decrypt) {
+      state.authTag = Buffer.from(value.subarray(-state.tagLength));
+      return outputEncoding(Buffer.from(value.subarray(0, -state.tagLength)), outputEncodingName);
+    }
+    return outputEncoding(value, outputEncodingName);
   }
   setAAD(value) { this.__state.aad = inputBytes(value); return this; }
   setAutoPadding(value = true) { this.__state.autoPadding = Boolean(value); return this; }
@@ -691,7 +679,7 @@ function primeChecks(options) {
 }
 
 export function checkPrimeSync(candidate, options = {}) {
-  return cryptoBridge({ operation: "checkPrime", checks: primeChecks(options) }, inputBytes(candidate))[0] === 1;
+  return cryptoCheckPrime(inputBytes(candidate), { checks: primeChecks(options) });
 }
 
 export function checkPrime(candidate, options, callback) {
@@ -715,8 +703,7 @@ function primeSize(size) {
 
 function primeBytes(size, options = {}) {
   const bits = primeSize(size);
-  const value = cryptoBridge({
-    operation: "generatePrime",
+  const value = cryptoGeneratePrime({
     bits,
     safe: Boolean(options.safe),
     add: options.add === undefined ? undefined : inputBytes(options.add),
@@ -777,7 +764,7 @@ function integerBytes(value) {
 function diffieHellmanArgs(prime, primeEncoding, generator, generatorEncoding) {
   if (typeof prime === "number") {
     const actualGenerator = typeof primeEncoding === "number" ? primeEncoding : generator ?? 2;
-    const params = parseBundle(cryptoBridge({ operation: "dhParams", bits: prime, generator: actualGenerator }));
+    const params = parseBundle(cryptoDhParams({ bits: prime, generator: actualGenerator }));
     return { prime: Buffer.from(params.public), generator: Buffer.from(params.private) };
   }
   if (typeof primeEncoding === "number" || ArrayBuffer.isView(primeEncoding) || primeEncoding instanceof ArrayBuffer) {
@@ -857,7 +844,7 @@ function evpBytesToKey(password, keyLength, ivLength) {
   const output = [];
   let previous = new Uint8Array();
   while (output.reduce((length, value) => length + value.length, 0) < keyLength + ivLength) {
-    previous = new Uint8Array(digest("MD5", Buffer.concat([previous, inputBytes(password)]), undefined));
+    previous = new Uint8Array(digest("MD5", Buffer.concat([previous, inputBytes(password)])));
     output.push(previous);
   }
   const bytes = Buffer.concat(output);
@@ -869,15 +856,15 @@ export function createSign(algorithm) { return new Sign(algorithm, signToken); }
 export function createVerify(algorithm) { return new Verify(algorithm, signToken); }
 export function generateKeyPairSync(type, options = {}) {
   const kind = type === "rsa" || type === "rsa-pss" || type === "rsa-oaep" ? "rsa" : type === "ec" ? "ec" : type;
-  const generation = { operation: "generate", kind };
+  const generation = { kind };
   if (kind === "rsa") {
     generation.modulusLength = options.modulusLength ?? 2048;
     generation.publicExponent = inputBytes(options.publicExponent ?? new Uint8Array([1, 0, 1]));
   }
   if (kind === "ec") generation.curve = options.namedCurve === "prime256v1" ? "P-256" : options.namedCurve === "secp384r1" ? "P-384" : options.namedCurve === "secp521r1" ? "P-521" : options.namedCurve;
-  const keys = parseBundle(cryptoBridge(generation));
-  const publicJwk = JSON.parse(new TextDecoder().decode(cryptoBridge({ operation: "export", format: "jwk", keyFormat: "spki", kind, key: keys.public })));
-  const privateJwk = JSON.parse(new TextDecoder().decode(cryptoBridge({ operation: "export", format: "jwk", keyFormat: "pkcs8", kind, key: keys.private })));
+  const keys = parseBundle(cryptoGenerateKey(generation));
+  const publicJwk = JSON.parse(new TextDecoder().decode(cryptoExportKey(new Uint8Array(), { format: "jwk", keyFormat: "spki", kind, key: keys.public })));
+  const privateJwk = JSON.parse(new TextDecoder().decode(cryptoExportKey(new Uint8Array(), { format: "jwk", keyFormat: "pkcs8", kind, key: keys.private })));
   const publicKey = createAsymmetricObject({ type: "public", kind, format: "spki", bytes: keys.public, jwk: publicJwk });
   const privateKey = createAsymmetricObject({ type: "private", kind, format: "pkcs8", bytes: keys.private, jwk: privateJwk });
   if (options.publicKeyEncoding || options.privateKeyEncoding) return { publicKey: encodeKey(keyRecord(publicKey), options.publicKeyEncoding), privateKey: encodeKey(keyRecord(privateKey), options.privateKeyEncoding) };
@@ -918,21 +905,8 @@ function derivationLength(value) {
 function hkdfBytes(hash, key, salt, info, length) {
   const normalized = normalizeHash(hash);
   const size = hashByteLength(normalized);
-  if (length > size * 255) throw new RangeError("Invalid key length");
-  const prk = new Uint8Array(cryptoHmac(normalized, salt.length ? salt : new Uint8Array(size), key));
-  const output = new Uint8Array(length);
-  let previous = new Uint8Array();
-  for (let counter = 1, offset = 0; offset < length; counter += 1) {
-    const input = new Uint8Array(previous.length + info.length + 1);
-    input.set(previous);
-    input.set(info, previous.length);
-    input[input.length - 1] = counter;
-    previous = new Uint8Array(cryptoHmac(normalized, prk, input));
-    const count = Math.min(previous.length, length - offset);
-    output.set(previous.subarray(0, count), offset);
-    offset += count;
-  }
-  return output.buffer;
+  if (size && length > size * 255) throw new RangeError("Invalid key length");
+  return cryptoHkdf(normalized, key, salt, info, length);
 }
 
 export function hkdfSync(hash, key, salt, info, keylen) {
@@ -958,25 +932,7 @@ function derivationIterations(value) {
 }
 
 function pbkdf2Bytes(hash, password, salt, iterations, length) {
-  const normalized = normalizeHash(hash);
-  const size = hashByteLength(normalized);
-  const output = new Uint8Array(length);
-  const blocks = Math.ceil(length / size);
-  for (let block = 1, offset = 0; block <= blocks; block += 1) {
-    const input = new Uint8Array(salt.length + 4);
-    input.set(salt);
-    new DataView(input.buffer).setUint32(salt.length, block);
-    let value = new Uint8Array(cryptoHmac(normalized, password, input));
-    const result = value.slice();
-    for (let iteration = 1; iteration < iterations; iteration += 1) {
-      value = new Uint8Array(cryptoHmac(normalized, password, value));
-      for (let index = 0; index < result.length; index += 1) result[index] ^= value[index];
-    }
-    const count = Math.min(result.length, length - offset);
-    output.set(result.subarray(0, count), offset);
-    offset += count;
-  }
-  return output;
+  return new Uint8Array(cryptoPbkdf2(hash, password, salt, iterations, length));
 }
 
 export function pbkdf2Sync(password, salt, iterations, keylen, hash) {
@@ -1008,12 +964,12 @@ function rsaOperation(value, decrypt) {
 
 export function publicEncrypt(options, buffer) {
   const { settings, record } = rsaOperation(options, false);
-  return Buffer.from(cryptoBridge({ operation: "encrypt", kind: "rsa-oaep", format: record.format, key: record.bytes, hash: normalizeHash(settings.oaepHash ?? "sha1"), label: settings.oaepLabel ? inputBytes(settings.oaepLabel) : new Uint8Array() }, inputBytes(buffer)));
+  return Buffer.from(cryptoEncrypt(inputBytes(buffer), { kind: "rsa-oaep", format: record.format, key: record.bytes, hash: normalizeHash(settings.oaepHash ?? "sha1"), label: settings.oaepLabel ? inputBytes(settings.oaepLabel) : new Uint8Array() }));
 }
 
 export function privateDecrypt(options, buffer) {
   const { settings, record } = rsaOperation(options, true);
-  return Buffer.from(cryptoBridge({ operation: "decrypt", kind: "rsa-oaep", format: record.format, key: record.bytes, hash: normalizeHash(settings.oaepHash ?? "sha1"), label: settings.oaepLabel ? inputBytes(settings.oaepLabel) : new Uint8Array() }, inputBytes(buffer)));
+  return Buffer.from(cryptoDecrypt(inputBytes(buffer), { kind: "rsa-oaep", format: record.format, key: record.bytes, hash: normalizeHash(settings.oaepHash ?? "sha1"), label: settings.oaepLabel ? inputBytes(settings.oaepLabel) : new Uint8Array() }));
 }
 
 function legacyRsaPadding(value) {
@@ -1028,7 +984,7 @@ export function privateEncrypt(options, buffer) {
   const key = createPrivateKey(settings.key);
   const record = keyRecord(key);
   if (record.kind !== "rsa") throw new TypeError("An RSA key is required");
-  return Buffer.from(cryptoBridge({ operation: "rsaLegacyPrivateEncrypt", kind: "rsa", format: record.format, key: record.bytes, padding: legacyRsaPadding(settings.padding) }, inputBytes(buffer)));
+  return Buffer.from(cryptoRsaLegacyPrivateEncrypt(inputBytes(buffer), { kind: "rsa", format: record.format, key: record.bytes, padding: legacyRsaPadding(settings.padding) }));
 }
 export const pseudoRandomBytes = randomBytes;
 export function publicDecrypt(options, buffer) {
@@ -1036,7 +992,7 @@ export function publicDecrypt(options, buffer) {
   const key = createPublicKey(settings.key);
   const record = keyRecord(key);
   if (record.kind !== "rsa") throw new TypeError("An RSA key is required");
-  return Buffer.from(cryptoBridge({ operation: "rsaLegacyPublicDecrypt", kind: "rsa", format: record.format, key: record.bytes, padding: legacyRsaPadding(settings.padding) }, inputBytes(buffer)));
+  return Buffer.from(cryptoRsaLegacyPublicDecrypt(inputBytes(buffer), { kind: "rsa", format: record.format, key: record.bytes, padding: legacyRsaPadding(settings.padding) }));
 }
 
 function scryptSettings(options, keylen) {
@@ -1054,7 +1010,7 @@ function scryptSettings(options, keylen) {
 
 export function scryptSync(password, salt, keylen, options = {}) {
   const settings = scryptSettings(options, keylen);
-  return Buffer.from(cryptoBridge({ operation: "scrypt", salt: inputBytes(salt), ...settings }, inputBytes(password)));
+  return Buffer.from(cryptoScrypt(inputBytes(password), { salt: inputBytes(salt), ...settings }));
 }
 
 export function scrypt(password, salt, keylen, options, callback) {

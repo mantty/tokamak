@@ -1,5 +1,5 @@
 use crate::dispatcher::{
-    AssetManifest, Dispatcher, WorkerLoader, WorkerResolver, asset_response,
+    AssetManifest, AssetService, Dispatcher, WorkerLoader, WorkerResolver,
     configure_worker_loader, execute_request, load_worker,
 };
 use crate::fs::VirtualFileSystem;
@@ -157,7 +157,8 @@ fn serves_the_resolved_asset_with_its_content_type() -> Result<(), Box<dyn std::
         headers: BTreeMap::new(),
         body: None,
     };
-    let response = asset_response(&config, &request)?.ok_or("asset was not found")?;
+    let assets = AssetService::new(config.assets.as_ref().ok_or("assets were not configured")?)?;
+    let response = assets.response(&request)?.ok_or("asset was not found")?;
 
     assert_eq!(
         response.headers.get("content-type").map(String::as_str),
@@ -187,6 +188,7 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
         execute_request(
             &worker_bundle,
             &config,
+            None,
             Job {
                 request,
                 response: response_sender,
@@ -255,6 +257,7 @@ fn streams_worker_response_chunks_without_buffering_the_body()
         execute_request(
             &worker_bundle,
             &config,
+            None,
             Job {
                 request,
                 response: response_sender,
@@ -350,6 +353,7 @@ fn initializes_web_globals_before_worker_module_evaluation()
     execute_request(
         &worker,
         &websocket_config(directory.path()),
+        None,
         Job {
             request: websocket_request(),
             response: response_sender,
@@ -537,7 +541,7 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
         handler: Dispatcher::new(
             WorkerBundle::from_bytecode(Vec::new(), PathBuf::default()),
             quickjs_config,
-        ),
+        )?,
         config,
         tokio: tokio.handle().clone(),
         port: AtomicU16::new(0),
@@ -786,6 +790,7 @@ fn suspension_allows_an_active_javascript_turn_to_finish()
         execute_request(
             &worker_bundle,
             &config,
+            None,
             Job {
                 request,
                 response: response_sender,

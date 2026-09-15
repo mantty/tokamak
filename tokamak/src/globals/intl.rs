@@ -42,9 +42,53 @@ use fixed_decimal::{
     Decimal as FixedDecimal, Sign, SignDisplay, SignedRoundingMode, UnsignedRoundingMode,
 };
 use jiff::Timestamp;
-use rquickjs::{Ctx, Exception};
+use rquickjs::module::Exports;
+use rquickjs::{Ctx, Exception, Function};
 use serde_json::Value;
 use writeable::{Part, PartsWrite, Writeable};
+
+pub(super) const HOST_EXPORTS: &[&str] = &[
+    "intlCanonicalLocales",
+    "intlDateTime",
+    "intlDateTimeParts",
+    "intlNumber",
+    "intlNumberParts",
+    "intlPlural",
+    "intlPluralRange",
+    "intlPluralCategories",
+    "intlList",
+    "intlListParts",
+    "intlRelative",
+    "intlRelativeParts",
+    "intlCollatorCompare",
+    "intlSegment",
+    "intlDisplayName",
+    "intlLocaleInfo",
+];
+
+pub(super) fn export_host_functions<'js>(
+    ctx: &Ctx<'js>,
+    exports: &Exports<'js>,
+) -> rquickjs::Result<()> {
+    let export = |name: &str, function: Function<'js>| exports.export(name, function);
+    export("intlCanonicalLocales", Function::new(ctx.clone(), canonical_locales)?)?;
+    export("intlDateTime", Function::new(ctx.clone(), date_time)?)?;
+    export("intlDateTimeParts", Function::new(ctx.clone(), date_time_parts)?)?;
+    export("intlNumber", Function::new(ctx.clone(), number)?)?;
+    export("intlNumberParts", Function::new(ctx.clone(), number_parts)?)?;
+    export("intlPlural", Function::new(ctx.clone(), plural)?)?;
+    export("intlPluralRange", Function::new(ctx.clone(), plural_range)?)?;
+    export("intlPluralCategories", Function::new(ctx.clone(), plural_categories)?)?;
+    export("intlList", Function::new(ctx.clone(), list)?)?;
+    export("intlListParts", Function::new(ctx.clone(), list_parts)?)?;
+    export("intlRelative", Function::new(ctx.clone(), relative)?)?;
+    export("intlRelativeParts", Function::new(ctx.clone(), relative_parts)?)?;
+    export("intlCollatorCompare", Function::new(ctx.clone(), collator_compare)?)?;
+    export("intlSegment", Function::new(ctx.clone(), segment)?)?;
+    export("intlDisplayName", Function::new(ctx.clone(), display_name)?)?;
+    export("intlLocaleInfo", Function::new(ctx.clone(), locale_info)?)?;
+    Ok(())
+}
 
 pub(super) fn canonical_locales(ctx: Ctx<'_>, input: String) -> rquickjs::Result<String> {
     let values: Vec<String> = serde_json::from_str(&input)

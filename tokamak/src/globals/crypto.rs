@@ -2,6 +2,7 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use openssl::aes::{AesKey, unwrap_key as aes_unwrap_key, wrap_key as aes_wrap_key};
 use openssl::bn::{BigNum, BigNumContext};
 use openssl::derive::Deriver;
 use openssl::dh::Dh;
@@ -9,32 +10,93 @@ use openssl::ec::{EcGroup, EcKey, EcPoint, PointConversionForm};
 use openssl::ecdsa::EcdsaSig;
 use openssl::encrypt::{Decrypter, Encrypter};
 use openssl::hash::{MessageDigest, hash};
+use openssl::md::Md;
 use openssl::nid::Nid;
 use openssl::pkcs5;
 use openssl::pkey::{HasPrivate, HasPublic, Id, PKey, Private, Public};
+use openssl::pkey_ctx::PkeyCtx;
 use openssl::rsa::{Padding, Rsa};
 use openssl::sign::{RsaPssSaltlen, Signer, Verifier};
 use openssl::symm::{Cipher, Crypter, Mode};
-use rquickjs::{ArrayBuffer, Constructor, Ctx, Exception, Object, TypedArray, Value};
+use rquickjs::module::Exports;
+use rquickjs::{ArrayBuffer, Constructor, Ctx, Exception, Function, Object, TypedArray};
 use serde_json::{Value as JsonValue, json};
+
+pub(super) const HOST_EXPORTS: &[&str] = &[
+    "digest",
+    "cryptoHmac",
+    "cryptoAesGcm",
+    "cryptoPbkdf2",
+    "cryptoHkdf",
+    "cryptoGenerateKey",
+    "cryptoImportKey",
+    "cryptoExportKey",
+    "cryptoSign",
+    "cryptoVerify",
+    "cryptoEncrypt",
+    "cryptoDecrypt",
+    "cryptoDerive",
+    "cryptoCheckPrime",
+    "cryptoGeneratePrime",
+    "cryptoScrypt",
+    "cryptoEcdhPublic",
+    "cryptoEcdhCompute",
+    "cryptoEcdhConvert",
+    "cryptoDhParams",
+    "cryptoDhGenerate",
+    "cryptoDhCompute",
+    "cryptoRsaLegacyPrivateEncrypt",
+    "cryptoRsaLegacyPublicDecrypt",
+];
+
+pub(super) fn export_host_functions<'js>(
+    ctx: &Ctx<'js>,
+    exports: &Exports<'js>,
+) -> rquickjs::Result<()> {
+    let export = |name: &str, function: Function<'js>| exports.export(name, function);
+    export("digest", Function::new(ctx.clone(), digest)?)?;
+    export("cryptoHmac", Function::new(ctx.clone(), hmac)?)?;
+    export("cryptoAesGcm", Function::new(ctx.clone(), aes_gcm)?)?;
+    export("cryptoPbkdf2", Function::new(ctx.clone(), pbkdf2)?)?;
+    export("cryptoHkdf", Function::new(ctx.clone(), hkdf)?)?;
+    export("cryptoGenerateKey", Function::new(ctx.clone(), host_generate_key)?)?;
+    export("cryptoImportKey", Function::new(ctx.clone(), host_import_key)?)?;
+    export("cryptoExportKey", Function::new(ctx.clone(), host_export_key)?)?;
+    export("cryptoSign", Function::new(ctx.clone(), host_sign)?)?;
+    export("cryptoVerify", Function::new(ctx.clone(), host_verify)?)?;
+    export("cryptoEncrypt", Function::new(ctx.clone(), host_encrypt)?)?;
+    export("cryptoDecrypt", Function::new(ctx.clone(), host_decrypt)?)?;
+    export("cryptoDerive", Function::new(ctx.clone(), host_derive)?)?;
+    export("cryptoCheckPrime", Function::new(ctx.clone(), host_check_prime)?)?;
+    export("cryptoGeneratePrime", Function::new(ctx.clone(), host_generate_prime)?)?;
+    export("cryptoScrypt", Function::new(ctx.clone(), host_scrypt)?)?;
+    export("cryptoEcdhPublic", Function::new(ctx.clone(), host_ecdh_public)?)?;
+    export("cryptoEcdhCompute", Function::new(ctx.clone(), host_ecdh_compute)?)?;
+    export("cryptoEcdhConvert", Function::new(ctx.clone(), host_ecdh_convert)?)?;
+    export("cryptoDhParams", Function::new(ctx.clone(), host_dh_params)?)?;
+    export("cryptoDhGenerate", Function::new(ctx.clone(), host_dh_generate)?)?;
+    export("cryptoDhCompute", Function::new(ctx.clone(), host_dh_compute)?)?;
+    export(
+        "cryptoRsaLegacyPrivateEncrypt",
+        Function::new(ctx.clone(), host_rsa_legacy_private_encrypt)?,
+    )?;
+    export(
+        "cryptoRsaLegacyPublicDecrypt",
+        Function::new(ctx.clone(), host_rsa_legacy_public_decrypt)?,
+    )?;
+    Ok(())
+}
 
 pub(super) fn digest<'js>(
     ctx: Ctx<'js>,
     algorithm: String,
     input: TypedArray<'js, u8>,
-    options: Option<Object<'js>>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let input = bytes(&ctx, input)?;
-    let output = match options {
-        Some(options) => crypto_operation(&ctx, &input, &options)?,
-        None => {
-            let message_digest = message_digest(&ctx, &algorithm)?;
-            hash(message_digest, &input)
-                .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?
-                .to_vec()
-        }
-    };
-    ArrayBuffer::new_copy(ctx, &output)
+    let message_digest = message_digest(&ctx, &algorithm)?;
+    let output = hash(message_digest, &input)
+        .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?;
+    ArrayBuffer::new_copy(ctx, output)
 }
 
 pub(super) fn hmac<'js>(
@@ -59,32 +121,110 @@ pub(super) fn hmac<'js>(
     ArrayBuffer::new_copy(ctx, &output)
 }
 
+pub(super) fn pbkdf2<'js>(
+    ctx: Ctx<'js>,
+    algorithm: String,
+    password: TypedArray<'js, u8>,
+    salt: TypedArray<'js, u8>,
+    iterations: u32,
+    length: u32,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let message_digest = message_digest(&ctx, &algorithm)?;
+    let password = bytes(&ctx, password)?;
+    let salt = bytes(&ctx, salt)?;
+    if iterations == 0 {
+        return Err(throw_dom_exception(
+            &ctx,
+            "OperationError",
+            "PBKDF2 requires at least one iteration",
+        ));
+    }
+    let mut output = vec![0; length as usize];
+    pkcs5::pbkdf2_hmac(
+        &password,
+        &salt,
+        iterations as usize,
+        message_digest,
+        &mut output,
+    )
+    .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+pub(super) fn hkdf<'js>(
+    ctx: Ctx<'js>,
+    algorithm: String,
+    key: TypedArray<'js, u8>,
+    salt: TypedArray<'js, u8>,
+    info: TypedArray<'js, u8>,
+    length: u32,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let message_digest = message_digest(&ctx, &algorithm)?;
+    let digest = Md::from_nid(message_digest.type_()).ok_or_else(|| {
+        throw_dom_exception(&ctx, "NotSupportedError", "Unsupported HKDF digest")
+    })?;
+    let key = bytes(&ctx, key)?;
+    let salt = bytes(&ctx, salt)?;
+    let info = bytes(&ctx, info)?;
+    if length as usize > message_digest.size() * 255 {
+        return Err(throw_dom_exception(
+            &ctx,
+            "OperationError",
+            "HKDF output is too long",
+        ));
+    }
+    let internal = |error: openssl::error::ErrorStack| {
+        Exception::throw_internal(&ctx, &error.to_string())
+    };
+    let mut derivation = PkeyCtx::new_id(Id::HKDF).map_err(internal)?;
+    derivation.derive_init().map_err(internal)?;
+    derivation.set_hkdf_md(digest).map_err(internal)?;
+    // RFC 5869: an absent salt is a hash-length string of zeros.
+    let salt = if salt.is_empty() {
+        vec![0; message_digest.size()]
+    } else {
+        salt
+    };
+    derivation.set_hkdf_salt(&salt).map_err(internal)?;
+    derivation.set_hkdf_key(&key).map_err(internal)?;
+    derivation.add_hkdf_info(&info).map_err(internal)?;
+    let mut output = vec![0; length as usize];
+    derivation.derive(Some(&mut output)).map_err(internal)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+struct AeadParams {
+    iv: Vec<u8>,
+    additional_data: Vec<u8>,
+    tag_length: u32,
+}
+
 pub(super) fn aes_gcm<'js>(
     ctx: Ctx<'js>,
     encrypt: bool,
     key: TypedArray<'js, u8>,
     iv: TypedArray<'js, u8>,
-    additional_data: TypedArray<'js, u8>,
     input: TypedArray<'js, u8>,
-    tag_options: Value<'js>,
+    options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let key = bytes(&ctx, key)?;
-    let iv = bytes(&ctx, iv)?;
-    let additional_data = bytes(&ctx, additional_data)?;
     let input = bytes(&ctx, input)?;
-    let (tag_length, mode) = aes_options(&ctx, tag_options)?;
+    let tag_length: Option<u32> = options.get("tagLength")?;
+    let mode: Option<String> = options.get("mode")?;
+    let mode = mode.unwrap_or_else(|| "AES-GCM".to_owned());
+    let additional_data: Option<TypedArray<'js, u8>> = options.get("additionalData")?;
+    let params = AeadParams {
+        iv: bytes(&ctx, iv)?,
+        additional_data: additional_data
+            .map(|data| bytes(&ctx, data))
+            .transpose()?
+            .unwrap_or_default(),
+        tag_length: tag_length.unwrap_or(128),
+    };
     let output = match mode.as_str() {
-        "AES-GCM" => aes_gcm_operation(
-            &ctx,
-            encrypt,
-            &key,
-            &iv,
-            &additional_data,
-            &input,
-            tag_length,
-        )?,
-        "AES-CBC" => aes_cbc_operation(&ctx, encrypt, &key, &iv, &input)?,
-        "AES-CTR" => aes_ctr_operation(&ctx, &key, &iv, &input, tag_length)?,
+        "AES-GCM" => aes_gcm_operation(&ctx, encrypt, &key, &params, &input)?,
+        "AES-CBC" => aes_cbc_operation(&ctx, encrypt, &key, &params.iv, &input)?,
+        "AES-CTR" => aes_ctr_operation(&ctx, &key, &params.iv, &input, params.tag_length)?,
         "AES-KW" => aes_kw_operation(&ctx, encrypt, &key, &input)?,
         _ => {
             return Err(throw_dom_exception(
@@ -101,11 +241,15 @@ fn aes_gcm_operation(
     ctx: &Ctx<'_>,
     encrypt: bool,
     key: &[u8],
-    iv: &[u8],
-    additional_data: &[u8],
+    params: &AeadParams,
     input: &[u8],
-    tag_length: u32,
 ) -> rquickjs::Result<Vec<u8>> {
+    let AeadParams {
+        iv,
+        additional_data,
+        tag_length,
+    } = params;
+    let (iv, additional_data, tag_length) = (iv.as_slice(), additional_data.as_slice(), *tag_length);
     let tag_bytes = tag_length
         .checked_div(8)
         .filter(|length| matches!(*length, 4 | 8 | 12 | 13 | 14 | 15 | 16))
@@ -167,22 +311,6 @@ fn aes_gcm_operation(
     Ok(output)
 }
 
-fn aes_options<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<(u32, String)> {
-    if value.is_object() {
-        let object = value
-            .into_object()
-            .ok_or_else(|| Exception::throw_type(ctx, "Invalid AES options"))?;
-        let tag_length: Option<u32> = object.get("tagLength")?;
-        let mode: Option<String> = object.get("mode")?;
-        Ok((
-            tag_length.unwrap_or(128),
-            mode.unwrap_or_else(|| "AES-GCM".to_owned()),
-        ))
-    } else {
-        Ok((value.get::<u32>()?, "AES-GCM".to_owned()))
-    }
-}
-
 fn aes_cbc_operation(
     ctx: &Ctx<'_>,
     encrypt: bool,
@@ -228,46 +356,68 @@ fn aes_ctr_operation(
     input: &[u8],
     length: u32,
 ) -> rquickjs::Result<Vec<u8>> {
-    if counter.len() != 16 || !(1..=128).contains(&length) {
+    let Ok(counter) = <[u8; 16]>::try_from(counter) else {
+        return Err(throw_dom_exception(
+            ctx,
+            "OperationError",
+            "Invalid AES-CTR counter or length",
+        ));
+    };
+    if !(1..=128).contains(&length) {
         return Err(throw_dom_exception(
             ctx,
             "OperationError",
             "Invalid AES-CTR counter or length",
         ));
     }
-    let mut counter_value = [0u8; 16];
-    counter_value.copy_from_slice(counter);
-    let mut output = vec![0; input.len()];
-    for (index, chunk) in input.chunks(16).enumerate() {
-        if index > 0 && !increment_counter(&mut counter_value, length as usize) {
-            return Err(throw_dom_exception(
-                ctx,
-                "OperationError",
-                "AES-CTR counter overflow",
-            ));
-        }
-        let stream = aes_block(ctx, key, &counter_value, true)?;
-        let offset = index * 16;
-        for (position, byte) in chunk.iter().enumerate() {
-            output[offset + position] = *byte ^ stream[position];
-        }
+    // The counter wraps within its rightmost `length` bits; a repeated counter
+    // block is an error. OpenSSL increments the full 128-bit block, which is
+    // identical until a wrap, so the input is split at the wrap point.
+    if length == 128 {
+        return aes_ctr_stream(ctx, key, counter, input);
     }
+    let blocks = input.len().div_ceil(16) as u128;
+    let capacity = 1u128 << length;
+    if blocks > capacity {
+        return Err(throw_dom_exception(
+            ctx,
+            "OperationError",
+            "The AES-CTR counter block repeats",
+        ));
+    }
+    let value = u128::from_be_bytes(counter);
+    let until_wrap = capacity - (value & (capacity - 1));
+    if blocks <= until_wrap {
+        return aes_ctr_stream(ctx, key, counter, input);
+    }
+    let split = usize::try_from(until_wrap)
+        .map_err(|_| Exception::throw_internal(ctx, "AES-CTR split out of range"))?
+        * 16;
+    let mut output = aes_ctr_stream(ctx, key, counter, &input[..split])?;
+    let wrapped = (value & !(capacity - 1)).to_be_bytes();
+    output.extend(aes_ctr_stream(ctx, key, wrapped, &input[split..])?);
     Ok(output)
 }
 
-fn increment_counter(counter: &mut [u8], length: usize) -> bool {
-    for bit in 0..length {
-        let position = 127 - bit;
-        let byte = position / 8;
-        let mask = 1 << (position % 8);
-        if counter[byte] & mask != 0 {
-            counter[byte] &= !mask;
-        } else {
-            counter[byte] |= mask;
-            return true;
-        }
-    }
-    false
+fn aes_ctr_stream(
+    ctx: &Ctx<'_>,
+    key: &[u8],
+    counter: [u8; 16],
+    input: &[u8],
+) -> rquickjs::Result<Vec<u8>> {
+    let cipher = aes_cipher(key, CipherKind::Ctr, ctx)?;
+    let mut crypter = Crypter::new(cipher, Mode::Encrypt, key, Some(&counter))
+        .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
+    let mut output = vec![0; input.len() + cipher.block_size()];
+    let count = crypter
+        .update(input, &mut output)
+        .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
+    let count = count
+        + crypter
+            .finalize(&mut output[count..])
+            .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
+    output.truncate(count);
+    Ok(output)
 }
 
 fn aes_kw_operation(
@@ -283,80 +433,34 @@ fn aes_kw_operation(
             "AES-KW data must be at least 16 bytes and a multiple of 8",
         ));
     }
-    let n = if encrypt {
-        input.len() / 8
-    } else {
-        input.len() / 8 - 1
-    };
-    let mut a = if encrypt {
-        [0xa6; 8]
-    } else {
-        let mut value = [0; 8];
-        value.copy_from_slice(&input[..8]);
-        value
-    };
-    let mut r = if encrypt {
-        input
-            .chunks_exact(8)
-            .map(|chunk| chunk.to_vec())
-            .collect::<Vec<_>>()
-    } else {
-        input[8..]
-            .chunks_exact(8)
-            .map(|chunk| chunk.to_vec())
-            .collect::<Vec<_>>()
-    };
-    let mut process = |round: usize, index: usize| -> rquickjs::Result<()> {
-        let t = (n * round + index + 1) as u64;
-        let mut block = [0; 16];
-        for position in 0..8 {
-            block[position] = a[position] ^ (t >> (56 - position * 8)) as u8;
-            block[8 + position] = r[index][position];
-        }
-        let decrypted = aes_block(ctx, key, &block, encrypt)?;
-        a.copy_from_slice(&decrypted[..8]);
-        r[index].copy_from_slice(&decrypted[8..]);
-        Ok(())
-    };
     if encrypt {
-        for round in 0..6 {
-            for index in 0..n {
-                process(round, index)?;
-            }
-        }
+        let key = AesKey::new_encrypt(key).map_err(|_| {
+            throw_dom_exception(ctx, "DataError", "AES keys must be 128, 192, or 256 bits")
+        })?;
+        let mut output = vec![0; input.len() + 8];
+        let count = aes_wrap_key(&key, None, &mut output, input).map_err(|_| {
+            throw_dom_exception(ctx, "OperationError", "AES-KW wrapping failed")
+        })?;
+        output.truncate(count);
+        Ok(output)
     } else {
-        for round in (0..6).rev() {
-            for index in (0..n).rev() {
-                process(round, index)?;
-            }
-        }
+        let key = AesKey::new_decrypt(key).map_err(|_| {
+            throw_dom_exception(ctx, "DataError", "AES keys must be 128, 192, or 256 bits")
+        })?;
+        let mut output = vec![0; input.len() - 8];
+        let count = aes_unwrap_key(&key, None, &mut output, input).map_err(|_| {
+            throw_dom_exception(ctx, "OperationError", "AES-KW integrity check failed")
+        })?;
+        output.truncate(count);
+        Ok(output)
     }
-    if !encrypt && a != [0xa6; 8] {
-        return Err(throw_dom_exception(
-            ctx,
-            "OperationError",
-            "AES-KW integrity check failed",
-        ));
-    }
-    let mut output = Vec::with_capacity(if encrypt {
-        input.len() + 8
-    } else {
-        input.len() - 8
-    });
-    if encrypt {
-        output.extend_from_slice(&a);
-    }
-    for chunk in r {
-        output.extend_from_slice(&chunk);
-    }
-    Ok(output)
 }
 
 #[derive(Clone, Copy)]
 enum CipherKind {
     Gcm,
     Cbc,
-    Ecb,
+    Ctr,
 }
 
 fn aes_cipher(key: &[u8], kind: CipherKind, ctx: &Ctx<'_>) -> rquickjs::Result<Cipher> {
@@ -367,9 +471,9 @@ fn aes_cipher(key: &[u8], kind: CipherKind, ctx: &Ctx<'_>) -> rquickjs::Result<C
         (16, CipherKind::Cbc) => Cipher::aes_128_cbc(),
         (24, CipherKind::Cbc) => Cipher::aes_192_cbc(),
         (32, CipherKind::Cbc) => Cipher::aes_256_cbc(),
-        (16, CipherKind::Ecb) => Cipher::aes_128_ecb(),
-        (24, CipherKind::Ecb) => Cipher::aes_192_ecb(),
-        (32, CipherKind::Ecb) => Cipher::aes_256_ecb(),
+        (16, CipherKind::Ctr) => Cipher::aes_128_ctr(),
+        (24, CipherKind::Ctr) => Cipher::aes_192_ctr(),
+        (32, CipherKind::Ctr) => Cipher::aes_256_ctr(),
         _ => {
             return Err(throw_dom_exception(
                 ctx,
@@ -381,79 +485,173 @@ fn aes_cipher(key: &[u8], kind: CipherKind, ctx: &Ctx<'_>) -> rquickjs::Result<C
     Ok(cipher)
 }
 
-fn aes_block(
-    ctx: &Ctx<'_>,
-    key: &[u8],
-    block: &[u8; 16],
-    encrypt: bool,
-) -> rquickjs::Result<[u8; 16]> {
-    let cipher = aes_cipher(key, CipherKind::Ecb, ctx)?;
-    let mut crypter = Crypter::new(
-        cipher,
-        if encrypt {
-            Mode::Encrypt
-        } else {
-            Mode::Decrypt
-        },
-        key,
-        None,
-    )
-    .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
-    crypter.pad(false);
-    let mut output = [0; 32];
-    let count = crypter
-        .update(block, &mut output)
-        .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
-    let count = count
-        + crypter
-            .finalize(&mut output[count..])
-            .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
-    if count != 16 {
-        return Err(Exception::throw_internal(
-            ctx,
-            "AES block operation returned an invalid length",
-        ));
-    }
-    output[..16].try_into().map_err(|_| {
-        Exception::throw_internal(ctx, "AES block operation returned an invalid length")
-    })
+fn host_generate_key<'js>(
+    ctx: Ctx<'js>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let output = generate_key(&ctx, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
 }
 
-fn crypto_operation(
-    ctx: &Ctx<'_>,
-    input: &[u8],
-    options: &Object<'_>,
-) -> rquickjs::Result<Vec<u8>> {
-    let operation: String = options.get("operation")?;
-    match operation.as_str() {
-        "generate" => generate_key(ctx, options),
-        "import" => import_key(ctx, input, options),
-        "export" => export_key(ctx, input, options),
-        "sign" => sign_key(ctx, input, options),
-        "verify" => Ok(vec![u8::from(verify_key(ctx, input, options)?)]),
-        "encrypt" => encrypt_key(ctx, input, options),
-        "decrypt" => decrypt_key(ctx, input, options),
-        "derive" => derive_key(ctx, input, options),
-        "checkPrime" => check_prime(ctx, input, options),
-        "generatePrime" => generate_prime(ctx, options),
-        "scrypt" => scrypt(ctx, input, options),
-        "ecdhPublic" => ecdh_public(ctx, options),
-        "ecdhCompute" => ecdh_compute(ctx, options),
-        "ecdhConvert" => ecdh_convert(ctx, input, options),
-        "dhParams" => dh_params_generate(ctx, options),
-        "dhGenerate" => dh_generate(ctx, options),
-        "dhCompute" => dh_compute(ctx, options),
-        "rsaLegacyPrivateEncrypt" => rsa_legacy_private_encrypt(ctx, input, options),
-        "rsaLegacyPublicDecrypt" => rsa_legacy_public_decrypt(ctx, input, options),
-        _ => Err(throw_dom_exception(
-            ctx,
-            "NotSupportedError",
-            "The requested cryptographic operation is not supported",
-        )),
-    }
+fn host_import_key<'js>(
+    ctx: Ctx<'js>,
+    input: TypedArray<'js, u8>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let input = bytes(&ctx, input)?;
+    let output = import_key(&ctx, &input, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
 }
 
-fn check_prime(ctx: &Ctx<'_>, input: &[u8], options: &Object<'_>) -> rquickjs::Result<Vec<u8>> {
+fn host_export_key<'js>(
+    ctx: Ctx<'js>,
+    input: TypedArray<'js, u8>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let input = bytes(&ctx, input)?;
+    let output = export_key(&ctx, &input, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_sign<'js>(
+    ctx: Ctx<'js>,
+    input: TypedArray<'js, u8>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let input = bytes(&ctx, input)?;
+    let output = sign_key(&ctx, &input, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_verify<'js>(
+    ctx: Ctx<'js>,
+    signature: TypedArray<'js, u8>,
+    options: Object<'js>,
+) -> rquickjs::Result<bool> {
+    let signature = bytes(&ctx, signature)?;
+    verify_key(&ctx, &signature, &options)
+}
+
+fn host_encrypt<'js>(
+    ctx: Ctx<'js>,
+    input: TypedArray<'js, u8>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let input = bytes(&ctx, input)?;
+    let output = encrypt_key(&ctx, &input, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_decrypt<'js>(
+    ctx: Ctx<'js>,
+    input: TypedArray<'js, u8>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let input = bytes(&ctx, input)?;
+    let output = decrypt_key(&ctx, &input, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_derive<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let output = derive_key(&ctx, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_check_prime<'js>(
+    ctx: Ctx<'js>,
+    candidate: TypedArray<'js, u8>,
+    options: Object<'js>,
+) -> rquickjs::Result<bool> {
+    let candidate = bytes(&ctx, candidate)?;
+    check_prime(&ctx, &candidate, &options)
+}
+
+fn host_generate_prime<'js>(
+    ctx: Ctx<'js>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let output = generate_prime(&ctx, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_scrypt<'js>(
+    ctx: Ctx<'js>,
+    password: TypedArray<'js, u8>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let password = bytes(&ctx, password)?;
+    let output = scrypt(&ctx, &password, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_ecdh_public<'js>(
+    ctx: Ctx<'js>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let output = ecdh_public(&ctx, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_ecdh_compute<'js>(
+    ctx: Ctx<'js>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let output = ecdh_compute(&ctx, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_ecdh_convert<'js>(
+    ctx: Ctx<'js>,
+    input: TypedArray<'js, u8>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let input = bytes(&ctx, input)?;
+    let output = ecdh_convert(&ctx, &input, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_dh_params<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let output = dh_params_generate(&ctx, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_dh_generate<'js>(
+    ctx: Ctx<'js>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let output = dh_generate(&ctx, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_dh_compute<'js>(
+    ctx: Ctx<'js>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let output = dh_compute(&ctx, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_rsa_legacy_private_encrypt<'js>(
+    ctx: Ctx<'js>,
+    input: TypedArray<'js, u8>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let input = bytes(&ctx, input)?;
+    let output = rsa_legacy_private_encrypt(&ctx, &input, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn host_rsa_legacy_public_decrypt<'js>(
+    ctx: Ctx<'js>,
+    input: TypedArray<'js, u8>,
+    options: Object<'js>,
+) -> rquickjs::Result<ArrayBuffer<'js>> {
+    let input = bytes(&ctx, input)?;
+    let output = rsa_legacy_public_decrypt(&ctx, &input, &options)?;
+    ArrayBuffer::new_copy(ctx, &output)
+}
+
+fn check_prime(ctx: &Ctx<'_>, input: &[u8], options: &Object<'_>) -> rquickjs::Result<bool> {
     let checks_value: Option<u32> = options.get("checks")?;
     let checks: i32 = checks_value.unwrap_or(0).try_into().map_err(|_| {
         Exception::throw_range(ctx, "The value of \"checks\" is out of range")
@@ -465,7 +663,7 @@ fn check_prime(ctx: &Ctx<'_>, input: &[u8], options: &Object<'_>) -> rquickjs::R
     let prime = candidate
         .is_prime(checks, &mut context)
         .map_err(|error| throw_dom_exception(ctx, "OperationError", &error.to_string()))?;
-    Ok(vec![u8::from(prime)])
+    Ok(prime)
 }
 
 fn generate_prime(ctx: &Ctx<'_>, options: &Object<'_>) -> rquickjs::Result<Vec<u8>> {
@@ -1605,7 +1803,7 @@ fn rsa_decrypt(
     Ok(output)
 }
 
-fn derive_key(ctx: &Ctx<'_>, _input: &[u8], options: &Object<'_>) -> rquickjs::Result<Vec<u8>> {
+fn derive_key(ctx: &Ctx<'_>, options: &Object<'_>) -> rquickjs::Result<Vec<u8>> {
     let key_bytes = message_key_bytes(ctx, options)?;
     let material = parse_key(ctx, &key_bytes, options)?;
     let peer = required_option_bytes(ctx, options, "peer")?;

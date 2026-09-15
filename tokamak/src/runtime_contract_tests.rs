@@ -85,6 +85,7 @@ fn request(worker: &WorkerBundle, flag: &str) -> TestResult<Vec<u8>> {
     execute_request(
         worker,
         &config,
+        None,
         Job {
             request: HttpRequest {
                 method: "GET".to_owned(),
@@ -157,6 +158,7 @@ export default httpServerHandler(server);
     execute_request(
         &worker,
         &config,
+        None,
         Job {
             request: HttpRequest {
                 method: "POST".to_owned(),

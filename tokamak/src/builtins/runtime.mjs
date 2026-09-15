@@ -144,6 +144,19 @@ installProcessGlobals({
   wasi,
 });
 installConsoleGlobal();
+if (globalThis.__tokamak_asset && globalThis.__tokamak_env?.ASSETS === undefined) {
+  const lookup = globalThis.__tokamak_asset;
+  globalThis.__tokamak_env.ASSETS = {
+    async fetch(input) {
+      const request = input instanceof Request ? input : new Request(input);
+      if (request.method !== "GET" && request.method !== "HEAD") return new Response(null, { status: 405 });
+      const found = lookup(new URL(request.url).pathname);
+      if (!found) return new Response(null, { status: 404 });
+      const body = request.method === "HEAD" ? null : found.body;
+      return new Response(body, { status: 200, headers: { "content-type": found.contentType } });
+    },
+  };
+}
 const waitUntilValues = [];
 class ExecutionContext {
   waitUntil(value) { waitUntilValues.push(Promise.resolve(value)); }

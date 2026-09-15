@@ -1,4 +1,4 @@
-import { decodeBase64, encodeBase64, randomBytes, detachArrayBuffer, digest, cryptoHmac, cryptoAesGcm, httpFetch } from "tokamak:host";
+import { decodeBase64, encodeBase64, randomBytes, detachArrayBuffer, digest, cryptoHmac, cryptoAesGcm, cryptoPbkdf2, cryptoHkdf, cryptoGenerateKey, cryptoImportKey, cryptoExportKey, cryptoSign, cryptoVerify, cryptoEncrypt, cryptoDecrypt, cryptoDerive, httpFetch } from "tokamak:host";
 import { CloseEvent, CustomEvent, ErrorEvent, Event, EventTarget, ExtendableEvent, FetchEvent, MessageChannel, MessageEvent, MessagePort, PromiseRejectionEvent, ScheduledEvent, TailEvent, TraceEvent, WebSocketRequestResponsePair } from "../events/web.mjs";
 import { Blob, Body, Cache, CacheStorage, EventSource, File, FormData, Headers, Request, Response } from "../network/fetch.mjs";
 import { HTMLRewriter } from "../network/html-rewriter.mjs";
@@ -227,7 +227,7 @@ const ecCurves = ["P-256", "P-384", "P-521"];
 
 const subtle = {
   async digest(algorithm, data) {
-    return digest(normalizeDigest(algorithm), toBytes(data), undefined);
+    return digest(normalizeDigest(algorithm), toBytes(data));
   },
   async importKey(format, data, algorithm, extractable, usages) {
     const formatName = normalizeFormat(format);
@@ -264,7 +264,7 @@ const subtle = {
     const type = formatName === "pkcs8" ? "private" : "public";
     const bytes = toBytes(data);
     validateAsymmetricUsages(keyUsages, asymmetric.name, type);
-    const bundle = bridge({ operation: "import", format: formatName, kind: asymmetric.kind, curve: asymmetric.namedCurve, key: bytes, publicExponent: asymmetric.publicExponent });
+    const bundle = cryptoImportKey(new Uint8Array(), { format: formatName, kind: asymmetric.kind, curve: asymmetric.namedCurve, key: bytes, publicExponent: asymmetric.publicExponent });
     return asymmetricKey(importedAlgorithm(asymmetric, formatName, bytes), extractable, keyUsages, bundle, type === "private");
   },
   async exportKey(format, key) {
@@ -279,9 +279,9 @@ const subtle = {
     }
     if (formatName === "raw" && record.type !== "public") throw new DOMException("The key is not public", "InvalidAccessError");
     if (!["raw", "spki", "pkcs8", "jwk"].includes(formatName)) throw notSupported();
-    const output = bridge({ operation: "export", format: formatName, keyFormat: record.meta.private ? "pkcs8" : "spki", kind: record.meta.kind, key: record.data });
+    const output = cryptoExportKey(new Uint8Array(), { format: formatName, keyFormat: record.meta.private ? "pkcs8" : "spki", kind: record.meta.kind, key: record.data });
     if (formatName === "jwk") return addJwkMetadata(JSON.parse(new TextDecoder().decode(output)), record);
-    return output.buffer;
+    return output;
   },
   async generateKey(algorithm, extractable, usages) {
     const name = algorithmName(algorithm);
@@ -301,7 +301,7 @@ const subtle = {
     if (name === "HKDF" || name === "PBKDF2") throw notSupported();
     const asymmetric = normalizeAsymmetricAlgorithm(algorithm);
     validateAsymmetricUsages(keyUsages, name, "pair");
-    const bundle = bridge({ operation: "generate", kind: asymmetric.kind, curve: asymmetric.namedCurve, modulusLength: asymmetric.modulusLength, publicExponent: asymmetric.publicExponent });
+    const bundle = cryptoGenerateKey({ kind: asymmetric.kind, curve: asymmetric.namedCurve, modulusLength: asymmetric.modulusLength, publicExponent: asymmetric.publicExponent });
     const keys = parseBundle(bundle);
     const publicKey = createKey(asymmetric.keyAlgorithm, extractable, asymmetricPublicUsages(name, keyUsages), "public", keys.public, { kind: asymmetric.kind, format: "spki", private: false });
     const privateKey = createKey(asymmetric.keyAlgorithm, extractable, asymmetricPrivateUsages(name, keyUsages), "private", keys.private, { kind: asymmetric.kind, format: "pkcs8", private: true });
@@ -313,10 +313,10 @@ const subtle = {
     if (record.type === "secret" && symmetricNames.includes(record.algorithm.name) && record.algorithm.name !== "AES-KW") {
       const parameter = record.algorithm.name === "AES-CTR" ? algorithmBytes(algorithm, "counter") : algorithmBytes(algorithm, "iv");
       const length = record.algorithm.name === "AES-CTR" ? ctrLength(algorithm) : tagLength(algorithm);
-      return cryptoAesGcm(false, record.data, parameter, optionalBytes(algorithm?.additionalData), toBytes(data), aesOptions(length, record.algorithm.name));
+      return cryptoAesGcm(false, record.data, parameter, toBytes(data), aesOptions(length, record.algorithm.name, optionalBytes(algorithm?.additionalData)));
     }
     if (record.algorithm.name !== "RSA-OAEP") throw notSupported();
-    return bridge({ operation: "decrypt", kind: "rsa-oaep", format: record.meta.format, keyFormat: "pkcs8", key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) }, toBytes(data)).buffer;
+    return cryptoDecrypt(toBytes(data), { kind: "rsa-oaep", format: record.meta.format, keyFormat: "pkcs8", key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) });
   },
   async encrypt(algorithm, key, data) {
     validateKey(key, "encrypt");
@@ -324,17 +324,17 @@ const subtle = {
     if (record.type === "secret" && symmetricNames.includes(record.algorithm.name) && record.algorithm.name !== "AES-KW") {
       const parameter = record.algorithm.name === "AES-CTR" ? algorithmBytes(algorithm, "counter") : algorithmBytes(algorithm, "iv");
       const length = record.algorithm.name === "AES-CTR" ? ctrLength(algorithm) : tagLength(algorithm);
-      return cryptoAesGcm(true, record.data, parameter, optionalBytes(algorithm?.additionalData), toBytes(data), aesOptions(length, record.algorithm.name));
+      return cryptoAesGcm(true, record.data, parameter, toBytes(data), aesOptions(length, record.algorithm.name, optionalBytes(algorithm?.additionalData)));
     }
     if (record.algorithm.name !== "RSA-OAEP") throw notSupported();
-    return bridge({ operation: "encrypt", kind: "rsa-oaep", format: record.meta.format, keyFormat: "spki", key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) }, toBytes(data)).buffer;
+    return cryptoEncrypt(toBytes(data), { kind: "rsa-oaep", format: record.meta.format, keyFormat: "spki", key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) });
   },
   async sign(algorithm, key, data) {
     validateKey(key, "sign");
     const record = requireAlgorithmKey(key, algorithm);
     if (record.algorithm.name === "HMAC") return cryptoHmac(algorithmHash(algorithm, record.algorithm.hash.name), record.data, toBytes(data));
     const hash = ["Ed25519", "NODE-ED25519"].includes(record.algorithm.name) ? "SHA-256" : algorithmHash(algorithm);
-    return bridge({ operation: "sign", kind: record.meta.kind, format: record.meta.format, key: record.data, hash, saltLength: record.algorithm.name === "RSA-PSS" ? requiredSaltLength(algorithm) : undefined }, toBytes(data)).buffer;
+    return cryptoSign(toBytes(data), { kind: record.meta.kind, format: record.meta.format, key: record.data, hash, saltLength: record.algorithm.name === "RSA-PSS" ? requiredSaltLength(algorithm) : undefined });
   },
   async verify(algorithm, key, signature, data) {
     validateKey(key, "verify");
@@ -346,7 +346,7 @@ const subtle = {
       return timingSafeEqualBytes(expected, actual);
     }
     const hash = ["Ed25519", "NODE-ED25519"].includes(record.algorithm.name) ? "SHA-256" : algorithmHash(algorithm);
-    return bridge({ operation: "verify", kind: record.meta.kind, format: record.meta.format, key: record.data, hash, message: toBytes(data), saltLength: record.algorithm.name === "RSA-PSS" ? requiredSaltLength(algorithm) : undefined }, actual)[0] === 1;
+    return cryptoVerify(actual, { kind: record.meta.kind, format: record.meta.format, key: record.data, hash, message: toBytes(data), saltLength: record.algorithm.name === "RSA-PSS" ? requiredSaltLength(algorithm) : undefined });
   },
   timingSafeEqual(left, right) { return timingSafeEqualBytes(toBytes(left), toBytes(right)); },
   async deriveBits(algorithm, key, length) {
@@ -368,7 +368,7 @@ const subtle = {
   async unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgorithm, unwrappedKeyAlgorithm, extractable, usages) {
     validateKey(unwrappingKey, "unwrapKey");
     const bytes = await decryptForWrap(unwrappingKey, unwrapAlgorithm, toBytes(wrappedKey));
-    const source = normalizeFormat(format) === "jwk" ? parseWrappedJwk(bytes) : bytes.buffer;
+    const source = normalizeFormat(format) === "jwk" ? parseWrappedJwk(bytes) : bytes;
     return subtle.importKey(format, source, unwrappedKeyAlgorithm, extractable, usages);
   },
 };
@@ -465,9 +465,9 @@ function deriveBitsWithUsage(algorithm, key, length, usage) {
   const peer = algorithm?.public;
   if (!(peer instanceof CryptoKey) || peer.type !== "public" || peer.algorithm.name !== name) throw invalidAccess();
   if (name === "ECDH" && record.algorithm.namedCurve !== peer.algorithm.namedCurve) throw invalidAccess();
-  const output = bridge({ operation: "derive", kind: name === "X25519" ? "x25519" : "ec", format: "pkcs8", keyFormat: "pkcs8", key: record.data, peer: peerRecord(peer).data });
+  const output = cryptoDerive({ kind: name === "X25519" ? "x25519" : "ec", format: "pkcs8", keyFormat: "pkcs8", key: record.data, peer: peerRecord(peer).data });
   if (bitLength > output.byteLength * 8) throw operationError("Derived secret is shorter than requested");
-  return output.slice(0, bitLength / 8).buffer;
+  return output.slice(0, bitLength / 8);
 }
 function tagLength(algorithm) {
   const value = algorithm?.tagLength === undefined ? 128 : Number(algorithm.tagLength);
@@ -524,8 +524,7 @@ function getRandomValues(value) {
   return value;
 }
 
-function bridge(options, input = new Uint8Array()) { return new Uint8Array(digest("SHA-256", input, options)); }
-function aesOptions(tagLength, mode) { return { tagLength, mode }; }
+function aesOptions(tagLength, mode, additionalData) { return { tagLength, mode, additionalData }; }
 function createKey(algorithm, extractable, usages, type, data, meta) { return new CryptoKey(algorithm, extractable, usages, type, data, cryptoKeyBrand, meta); }
 function secretKey(algorithm, extractable, usages, data, meta) { return createKey(algorithm, extractable, usages, "secret", data, meta); }
 function parseBundle(value) {
@@ -607,7 +606,7 @@ function importJwk(data, algorithm, extractable, usages, expectedName) {
   if (asymmetric.kind === "x25519" && jwk.crv !== "X25519") throw dataError("JWK curve does not match the algorithm");
   const privateKey = jwk.d !== undefined;
   validateAsymmetricUsages(usages, asymmetric.name, privateKey ? "private" : "public");
-  const bundle = bridge({ operation: "import", format: "jwk", kind: asymmetric.kind, curve: asymmetric.namedCurve, jwk: JSON.stringify(jwk) });
+  const bundle = cryptoImportKey(new Uint8Array(), { format: "jwk", kind: asymmetric.kind, curve: asymmetric.namedCurve, jwk: JSON.stringify(jwk) });
   return asymmetricKey(importedAlgorithm(asymmetric, "jwk", jwk), extractable, usages, bundle, privateKey);
 }
 
@@ -636,7 +635,7 @@ function importedAlgorithm(asymmetric, format, data) {
   if (!["RSASSA-PKCS1-V1_5", "RSA-PSS", "RSA-OAEP"].includes(asymmetric.name)) return asymmetric;
   const jwk = format === "jwk"
     ? data
-    : JSON.parse(new TextDecoder().decode(bridge({ operation: "export", format: "jwk", keyFormat: format, kind: asymmetric.kind, key: data })));
+    : JSON.parse(new TextDecoder().decode(cryptoExportKey(new Uint8Array(), { format: "jwk", keyFormat: format, kind: asymmetric.kind, key: data })));
   const modulus = typeof jwk?.n === "string" ? base64urlDecode(jwk.n) : null;
   const publicExponent = typeof jwk?.e === "string" ? base64urlDecode(jwk.e) : null;
   if (!modulus?.byteLength || !publicExponent?.byteLength) throw dataError("Invalid RSA JWK");
@@ -658,44 +657,11 @@ function parseWrappedJwk(bytes) {
 }
 
 function hkdf(hash, key, salt, info, length) {
-  const size = hashByteLength(hash);
-  if (length / 8 > size * 255) throw operationError("HKDF output is too long");
-  const prk = new Uint8Array(cryptoHmac(hash, salt.byteLength ? salt : new Uint8Array(size), key));
-  const output = new Uint8Array(length / 8);
-  let previous = new Uint8Array();
-  let offset = 0;
-  for (let counter = 1; offset < output.length; counter += 1) {
-    const input = new Uint8Array(previous.length + info.length + 1);
-    input.set(previous);
-    input.set(info, previous.length);
-    input[input.length - 1] = counter;
-    previous = new Uint8Array(cryptoHmac(hash, prk, input));
-    const count = Math.min(previous.length, output.length - offset);
-    output.set(previous.subarray(0, count), offset);
-    offset += count;
-  }
-  return output.buffer;
+  if (length / 8 > hashByteLength(hash) * 255) throw operationError("HKDF output is too long");
+  return cryptoHkdf(hash, key, salt, info, length / 8);
 }
 function pbkdf2(hash, password, salt, iterations, length) {
-  const size = hashByteLength(hash);
-  const blocks = Math.ceil(length / 8 / size);
-  const output = new Uint8Array(length / 8);
-  let offset = 0;
-  for (let block = 1; block <= blocks; block += 1) {
-    const input = new Uint8Array(salt.length + 4);
-    input.set(salt);
-    new DataView(input.buffer).setUint32(salt.length, block);
-    let value = new Uint8Array(cryptoHmac(hash, password, input));
-    const result = value.slice();
-    for (let iteration = 1; iteration < iterations; iteration += 1) {
-      value = new Uint8Array(cryptoHmac(hash, password, value));
-      for (let index = 0; index < result.length; index += 1) result[index] ^= value[index];
-    }
-    const count = Math.min(result.length, output.length - offset);
-    output.set(result.subarray(0, count), offset);
-    offset += count;
-  }
-  return output.buffer;
+  return cryptoPbkdf2(hash, password, salt, iterations, length / 8);
 }
 function deriveLength(length) {
   const value = integer(length, "length");
@@ -713,24 +679,24 @@ function derivedKeyLength(algorithm) {
 }
 function encryptForWrap(key, algorithm, bytes) {
   const record = requireAlgorithmKey(key, algorithm);
-  if (record.algorithm.name === "AES-KW") return cryptoAesGcm(true, record.data, new Uint8Array(), new Uint8Array(), bytes, aesOptions(128, "AES-KW"));
+  if (record.algorithm.name === "AES-KW") return cryptoAesGcm(true, record.data, new Uint8Array(), bytes, aesOptions(128, "AES-KW"));
   if (record.algorithm.name === "AES-GCM" || record.algorithm.name === "AES-CBC" || record.algorithm.name === "AES-CTR") {
     const parameter = record.algorithm.name === "AES-CTR" ? algorithmBytes(algorithm, "counter") : algorithmBytes(algorithm, "iv");
     const length = record.algorithm.name === "AES-CTR" ? ctrLength(algorithm) : tagLength(algorithm);
-    return cryptoAesGcm(true, record.data, parameter, optionalBytes(algorithm?.additionalData), bytes, aesOptions(length, record.algorithm.name));
+    return cryptoAesGcm(true, record.data, parameter, bytes, aesOptions(length, record.algorithm.name, optionalBytes(algorithm?.additionalData)));
   }
-  if (record.algorithm.name === "RSA-OAEP") return bridge({ operation: "encrypt", kind: "rsa-oaep", format: record.meta.format, keyFormat: record.meta.private ? "pkcs8" : "spki", key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) }, bytes).buffer;
+  if (record.algorithm.name === "RSA-OAEP") return cryptoEncrypt(bytes, { kind: "rsa-oaep", format: record.meta.format, keyFormat: record.meta.private ? "pkcs8" : "spki", key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) });
   throw notSupported();
 }
 function decryptForWrap(key, algorithm, bytes) {
   const record = requireAlgorithmKey(key, algorithm);
-  if (record.algorithm.name === "AES-KW") return cryptoAesGcm(false, record.data, new Uint8Array(), new Uint8Array(), bytes, aesOptions(128, "AES-KW"));
+  if (record.algorithm.name === "AES-KW") return cryptoAesGcm(false, record.data, new Uint8Array(), bytes, aesOptions(128, "AES-KW"));
   if (record.algorithm.name === "AES-GCM" || record.algorithm.name === "AES-CBC" || record.algorithm.name === "AES-CTR") {
     const parameter = record.algorithm.name === "AES-CTR" ? algorithmBytes(algorithm, "counter") : algorithmBytes(algorithm, "iv");
     const length = record.algorithm.name === "AES-CTR" ? ctrLength(algorithm) : tagLength(algorithm);
-    return cryptoAesGcm(false, record.data, parameter, optionalBytes(algorithm?.additionalData), bytes, aesOptions(length, record.algorithm.name));
+    return cryptoAesGcm(false, record.data, parameter, bytes, aesOptions(length, record.algorithm.name, optionalBytes(algorithm?.additionalData)));
   }
-  if (record.algorithm.name === "RSA-OAEP") return bridge({ operation: "decrypt", kind: "rsa-oaep", format: record.meta.format, keyFormat: "pkcs8", key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) }, bytes).buffer;
+  if (record.algorithm.name === "RSA-OAEP") return cryptoDecrypt(bytes, { kind: "rsa-oaep", format: record.meta.format, keyFormat: "pkcs8", key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) });
   throw notSupported();
 }
 function timingSafeEqualBytes(left, right) {
@@ -763,7 +729,7 @@ export class DigestStream extends WritableStream {
         const input = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
         let offset = 0;
         for (const chunk of chunks) { input.set(chunk, offset); offset += chunk.byteLength; }
-        try { resolveDigest(digest(name, input, undefined)); }
+        try { resolveDigest(digest(name, input)); }
         catch (error) { rejectDigest(error); throw error; }
       },
       abort(reason) { rejectDigest(reason); },
@@ -958,7 +924,7 @@ async function fetch(input, init) {
   const response = httpFetch(
     request.url,
     request.method,
-    JSON.stringify(Object.fromEntries(request.headers)),
+    JSON.stringify([...request.headers]),
     body,
     request.redirect,
   );

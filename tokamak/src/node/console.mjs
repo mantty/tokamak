@@ -1,7 +1,10 @@
+import { writeStderr, writeStdout } from "tokamak:host";
+import { console as webConsole } from "../globals/console.mjs";
+
 function noop() {}
 
 function createConsole() {
-  const value = globalThis.console ?? {};
+  const value = webConsole;
   const methods = [
     "assert", "clear", "context", "count", "countReset", "createTask", "debug", "dir", "dirxml", "error", "group",
     "groupCollapsed", "groupEnd", "info", "log", "profile", "profileEnd", "table", "time", "timeEnd", "timeLog",
@@ -9,12 +12,11 @@ function createConsole() {
   ];
   for (const name of methods) if (typeof value[name] !== "function") value[name] = noop;
   value._ignoreErrors ??= true;
-  value._stderr ??= { write: () => true };
-  value._stdout ??= value._stderr;
+  value._stderr ??= { write(text) { writeStderr(String(text)); return true; } };
+  value._stdout ??= { write(text) { writeStdout(String(text)); return true; } };
   value._stderrErrorHandler ??= noop;
   value._stdoutErrorHandler ??= noop;
   value._times ??= new Map();
-  globalThis.console ??= value;
   return value;
 }
 
