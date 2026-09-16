@@ -31,6 +31,27 @@ Never write:
 Bad: "WebAssembly still works there through DrumBrake, V8's own wasm interpreter, built for exactly this scenario -- its source comment cites tvOS, where JIT is unavailable."
 Good: "jitless WebAssembly is supported via V8's own wasm interpreter, DrumBrake."
 
+## The vendored QuickJS engine (`rquickjs/`)
+
+The JS engine is a vendored copy of the `rquickjs-sys` crate at the repo root
+(`rquickjs/`), consumed through `[patch.crates-io]`. Its bundled QuickJS carries a
+small, deliberately minimal patch. Stay as close to upstream as is absolutely
+possible.
+
+Do not add engine changes when the behaviour can be provided from our own code.
+Before touching anything under `rquickjs/quickjs/`, provide the feature in
+`tokamak/src/...` (a host Rust function or bundled JS) and prove that works.
+Patch the engine only when a behaviour is genuinely impossible from outside it —
+because it depends on engine-internal state or an internal code path that
+user-reachable JS cannot observe or intercept — and it has been demonstrated,
+not assumed, that no external seam exists.
+
+Every existing engine change, why it is irreducible, and how to re-apply it on a
+version bump is documented in `rquickjs/PATCH.md`. Any new change must be added
+there with the same justification, and must keep the patch minimal: prefer moving
+logic out of the engine over adding to it. Grep `TOKAMAK` in the vendored source
+for inline markers.
+
 ## Contributor/User Boundary
 
 tokamak has two distinct audiences:

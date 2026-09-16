@@ -3844,7 +3844,7 @@ bool JS_IsRegisteredClass(JSRuntime *rt, JSClassID class_id)
 JSAtom JS_GetClassName(JSRuntime *rt, JSClassID class_id)
 {
     if (JS_IsRegisteredClass(rt, class_id)) {
-        return JS_DupAtomRT(rt, rt->class_array[class_id].class_name);
+        return JS_DupAtomRT(rt, rt->class_array[class_id].class_name); /* TOKAMAK: upstream JS_GetClassName dups the wrong field */
     } else {
         return JS_ATOM_NULL;
     }
@@ -14246,14 +14246,11 @@ static JSValue JS_ToStringFree(JSContext *ctx, JSValue val)
     return ret;
 }
 
-static JSValue JS_ToLocaleStringFree(JSContext *ctx, JSValue val,
-                                    int argc, JSValueConst *argv)
+static JSValue JS_ToLocaleStringFree(JSContext *ctx, JSValue val)
 {
-    JSValue args[2] = { argc > 0 ? argv[0] : JS_UNDEFINED,
-                        argc > 1 ? argv[1] : JS_UNDEFINED };
     if (JS_IsUndefined(val) || JS_IsNull(val))
         return JS_ToStringFree(ctx, val);
-    return JS_InvokeFree(ctx, val, JS_ATOM_toLocaleString, 2, args);
+    return JS_InvokeFree(ctx, val, JS_ATOM_toLocaleString, 0, NULL);
 }
 
 static JSValue JS_ToPropertyKeyInternal(JSContext *ctx, JSValueConst val,
@@ -43209,7 +43206,7 @@ static JSValue js_array_join(JSContext *ctx, JSValueConst this_val,
             goto fail;
         if (!JS_IsNull(el) && !JS_IsUndefined(el)) {
             if (toLocaleString) {
-                el = JS_ToLocaleStringFree(ctx, el, argc, argv);
+                el = JS_ToLocaleStringFree(ctx, el);
             }
             if (string_buffer_concat_value_free(b, el))
                 goto fail;
@@ -59625,7 +59622,7 @@ static JSValue js_typed_array_join(JSContext *ctx, JSValueConst this_val,
             if (JS_IsException(el))
                 goto fail;
             if (toLocaleString) {
-                el = JS_ToLocaleStringFree(ctx, el, argc, argv);
+                el = JS_ToLocaleStringFree(ctx, el);
             }
             if (string_buffer_concat_value_free(b, el))
                 goto fail;

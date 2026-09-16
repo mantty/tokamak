@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-exclude = ["vendor/rquickjs-sys-0.12.2"]
+exclude = ["rquickjs"]
 members = [
     "tokamak",
     "tokamak-cli",
@@ -16,7 +16,7 @@ rust-version = "1.96"
 version = "0.1.0"
 
 [patch.crates-io]
-rquickjs-sys = { path = "vendor/rquickjs-sys-0.12.2" }
+rquickjs-sys = { path = "rquickjs" }
 
 [profile.release]
 codegen-units = 1

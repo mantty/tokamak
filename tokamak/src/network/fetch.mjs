@@ -412,7 +412,12 @@ export class Response extends Body {
     const serialized = body instanceof FormData ? requestBody(body) : null;
     const inputStatus = init.status;
     const status = Math.trunc(Number(inputStatus === undefined ? 200 : inputStatus));
-    if (!Number.isInteger(status) || status < 200 || status > 599) throw new RangeError("Invalid response status code");
+    const webSocket = init.webSocket ?? null;
+    if (webSocket !== null) {
+      if (status !== 101) throw new RangeError("Responses with a WebSocket must have status code 101.");
+    } else if (!Number.isInteger(status) || status < 200 || status > 599) {
+      throw new RangeError("Invalid response status code");
+    }
     if ([204, 205, 304].includes(status) && body !== null && body !== undefined) throw new TypeError("Response with null body status cannot have a body");
     const inputStatusText = init.statusText;
     const statusText = string(inputStatusText === undefined ? httpStatusText(status) : inputStatusText);
@@ -440,7 +445,7 @@ export class Response extends Body {
     hidden(this, "__type", init.type ?? "default");
     hidden(this, "__url", string(init.url ?? ""));
     hidden(this, "__cf", init.cf);
-    hidden(this, "__webSocket", init.webSocket ?? null);
+    hidden(this, "__webSocket", webSocket);
     hidden(this, "__bodyConsumed", false);
     hidden(this, "__bodyDisturbed", false);
     hidden(this, "__error", false);
