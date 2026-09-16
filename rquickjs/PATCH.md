@@ -128,9 +128,34 @@ and regressed all three against the workerd differential. Bound in
 3. Before adding any *new* engine change, try to provide it from
    `tokamak/src/...` first (see `AGENTS.md`). Only patch when that is proven
    impossible, and document it here.
-4. Run `cargo test -p tokamak --features native`. The workerd differential
+4. Regenerate the committed iOS/Android bindings if the pristine header changed
+   (see **FFI bindings** below).
+5. Run `cargo test -p tokamak --features native`. The workerd differential
    (`bundled_worker_matches_cloudflare_node_compat`) and the `buffers` /
    `async_context` unit tests cover every change here.
+
+## FFI bindings (no bindgen)
+
+`rquickjs-sys` ships committed Rust FFI bindings for many targets under
+`src/bindings/` and only runs `bindgen` at build time for targets that lack them.
+Upstream ships none for iOS or Android, so this copy adds committed bindings for
+the four we build — `aarch64-apple-ios`, `aarch64-apple-ios-sim`,
+`x86_64-apple-ios`, and `aarch64-linux-android` — and the workspace no longer
+enables the crate's `bindgen` feature. Every target now uses committed bindings:
+no build needs `libclang`, the build is deterministic, and the crate's
+"using bundled bindings" notice never fires.
+
+These bindings are generated from the **pristine** header, so they exclude the
+four TOKAMAK declarations above and stay shape-compatible with the crate's own
+host bindings. Rust reaches the patched functions through hand-written `extern`
+blocks in `tokamak/src/globals/{async_context,buffers}.rs`, not these bindings.
+
+To regenerate them (only needed when a version bump changes the pristine header):
+temporarily restore the pristine `quickjs/quickjs.h`, then for each target run
+`cargo build --manifest-path rquickjs/Cargo.toml --target <T> --features update-bindings`
+(Android also needs `CC_aarch64_linux_android` and
+`CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER` pointing at the NDK clang), then
+restore the patched header.
 
 ## Build wiring
 
