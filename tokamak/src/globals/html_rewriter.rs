@@ -333,7 +333,10 @@ mod tests {
                 );
             }
             state.stop()?;
-            assert_eq!(take_releases(&state).as_array().map_or(0, Vec::len), usize::from(tag == "p"));
+            assert_eq!(
+                take_releases(&state).as_array().map_or(0, Vec::len),
+                usize::from(tag == "p")
+            );
         }
         Ok(())
     }
@@ -368,7 +371,10 @@ mod tests {
                     } else {
                         vec![b'x'; 65536]
                     };
-                    let channels = state.channels.as_ref().ok_or_else(|| "channels missing".to_owned())?;
+                    let channels = state
+                        .channels
+                        .as_ref()
+                        .ok_or_else(|| "channels missing".to_owned())?;
                     channels
                         .replies
                         .as_ref()
