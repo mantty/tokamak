@@ -23,6 +23,8 @@ mod dev_proxy;
 #[cfg(feature = "native")]
 mod dispatcher;
 #[cfg(feature = "native")]
+mod event_loop;
+#[cfg(feature = "native")]
 mod fs;
 #[cfg(feature = "native")]
 mod gateway;
@@ -30,10 +32,13 @@ mod gateway;
 mod globals;
 #[cfg(feature = "native")]
 mod lifecycle_events;
+#[cfg(feature = "native")]
+mod network;
 mod packaging;
 mod quickjs;
 #[cfg(all(test, feature = "native"))]
 mod runtime_contract_tests;
+mod runtime_modules;
 #[cfg(feature = "native")]
 mod server;
 #[cfg(all(test, feature = "native"))]
@@ -68,6 +73,7 @@ pub use packaging::{
 };
 pub use quickjs::Error as QuickJsError;
 pub use quickjs::{compile_module, compile_worker};
+pub use runtime_modules::runtime_module_names;
 pub use tokamak_config::{
     Error as TokamakConfigError, TokamakConfig, TokamakIcons, TokamakIdentifier, TokamakName,
     load_config as load_tokamak_config, resolve_config_path as resolve_tokamak_config_path,

@@ -1,6 +1,6 @@
 use crate::dispatcher::{
-    AssetManifest, Dispatcher, WorkerLoader, WorkerResolver, asset_response,
-    configure_worker_loader, execute_request, load_worker,
+    AssetManifest, AssetService, Dispatcher, WorkerLoader, WorkerResolver, configure_worker_loader,
+    execute_request, load_worker,
 };
 use crate::fs::VirtualFileSystem;
 use crate::gateway::{
@@ -11,13 +11,14 @@ use crate::gateway::{
 };
 use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{HttpBody, HttpRequest, HttpResponse, queue_websocket_message};
+use flume::{Receiver, Sender};
+use reqwest::header::HeaderMap;
 use rquickjs::{ArrayBuffer, Context, Function, Module, Object, Runtime as JsRuntime, TypedArray};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -74,7 +75,7 @@ const encoded = new TextEncoder().encode("ready");
 const decoded = new TextDecoder().decode(encoded);
 export default {
   async fetch() {
-    return new Response(decoded, { status: decoded === "ready" ? 204 : 500 });
+    return new Response(null, { status: decoded === "ready" ? 204 : 500 });
   },
 };
 "#;
@@ -154,13 +155,18 @@ fn serves_the_resolved_asset_with_its_content_type() -> Result<(), Box<dyn std::
         method: "GET".to_owned(),
         target: "/about".to_owned(),
         url: "https://example.test/about".to_owned(),
-        headers: BTreeMap::new(),
+        headers: HeaderMap::new(),
         body: None,
     };
-    let response = asset_response(&config, &request)?.ok_or("asset was not found")?;
+    let assets = AssetService::new(config.assets.as_ref().ok_or("assets were not configured")?)?;
+    let response = assets.response(&request)?.ok_or("asset was not found")?;
 
     assert_eq!(
-        response.headers.get("content-type").map(String::as_str),
+        response
+            .headers
+            .get("content-type")
+            .map(|value| value.to_str())
+            .transpose()?,
         Some("text/html")
     );
     assert!(matches!(response.body, HttpBody::Buffered(body) if body == b"about"));
@@ -175,9 +181,9 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
     let worker_bundle = WorkerBundle::from_bytecode(bundle, directory.path());
     let config = websocket_config(directory.path());
     let request = websocket_request();
-    let (response_sender, response_receiver) = mpsc::sync_channel(1);
-    let (incoming_sender, incoming_receiver) = mpsc::sync_channel(1);
-    let (outgoing_sender, outgoing_receiver) = mpsc::sync_channel(1);
+    let (response_sender, response_receiver) = flume::bounded(1);
+    let (incoming_sender, incoming_receiver) = flume::bounded(1);
+    let (outgoing_sender, outgoing_receiver) = flume::bounded(1);
     let accepting = Arc::new(AtomicBool::new(true));
     let thread = std::thread::spawn(move || {
         let lifecycle = Lifecycle::new();
@@ -187,6 +193,7 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
         execute_request(
             &worker_bundle,
             &config,
+            None,
             Job {
                 request,
                 response: response_sender,
@@ -245,7 +252,7 @@ fn streams_worker_response_chunks_without_buffering_the_body()
     let config = websocket_config(directory.path());
     let mut request = websocket_request();
     request.body = Some(vec![9, 8, 7]);
-    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    let (response_sender, response_receiver) = flume::bounded(1);
     let accepting = Arc::new(AtomicBool::new(true));
     let thread = std::thread::spawn(move || {
         let lifecycle = Lifecycle::new();
@@ -255,6 +262,7 @@ fn streams_worker_response_chunks_without_buffering_the_body()
         execute_request(
             &worker_bundle,
             &config,
+            None,
             Job {
                 request,
                 response: response_sender,
@@ -292,18 +300,27 @@ fn loads_split_worker_modules_through_the_quickjs_loader() -> Result<(), Box<dyn
     std::fs::write(directory.path().join("entry.js.qjs"), entry)?;
     std::fs::write(directory.path().join("chunks/worker.js.qjs"), chunk)?;
     let worker = WorkerBundle::from_modules("entry.js", directory.path(), directory.path());
-    let runtime = JsRuntime::new()?;
-    runtime.set_loader(
-        WorkerResolver,
-        WorkerLoader {
-            bundle: worker.clone(),
-        },
-    );
-    let context = Context::full(&runtime)?;
-
-    context.with(|ctx| {
-        let _: Function = load_worker(&ctx, &worker)?;
-        Ok::<_, Error>(())
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    executor.block_on(async {
+        let runtime = rquickjs::AsyncRuntime::new()?;
+        runtime
+            .set_loader(
+                WorkerResolver,
+                WorkerLoader {
+                    bundle: worker.clone(),
+                },
+            )
+            .await;
+        let context = rquickjs::AsyncContext::full(&runtime).await?;
+        context
+            .async_with(async |ctx| {
+                let _: Function = load_worker(&ctx, &worker).await?;
+                Ok::<_, Error>(())
+            })
+            .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     Ok(())
 }
@@ -316,16 +333,25 @@ fn loads_builtins_without_source_compilation() -> Result<(), Box<dyn std::error:
         &runtime,
         &WorkerBundle::from_modules("entry.js", directory.path(), directory.path()),
     );
-    let context = Context::custom::<rquickjs::context::intrinsic::Promise>(&runtime)?;
+    let context = Context::full(&runtime)?;
     context.with(|ctx| -> rquickjs::Result<()> {
-        ctx.globals().set("__tokamak_env", "request environment")?;
+        let environment = Object::new(ctx.clone())?;
+        environment.set("FLAG", "request environment")?;
+        ctx.globals().set("__tokamak_env", environment)?;
+        let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(crate::fs::Bundle::new(
+            directory.path(),
+        ))));
+        crate::fs::install(&ctx, &vfs)?;
+        crate::compat::initialize(&ctx)?;
         let module: Object = Module::import(&ctx, "cloudflare:workers")?.finish()?;
-        assert_eq!(module.get::<_, String>("env")?, "request environment");
+        let env: Object = module.get("env")?;
+        assert_eq!(env.get::<_, String>("FLAG")?, "request environment");
         let streams: Object = Module::import(&ctx, "node:stream")?.finish()?;
-        let writable: Object = streams.get("Writable")?;
+        let writable: rquickjs::Constructor = streams.get("Writable")?;
         let events: Object = Module::import(&ctx, "node:events")?.finish()?;
         let emitter: Object = events.get("EventEmitter")?;
-        assert_eq!(writable.get_prototype(), Some(emitter));
+        let instance: Object = writable.construct(())?;
+        assert!(instance.is_instance_of(&emitter));
         Ok(())
     })?;
     Ok(())
@@ -342,11 +368,12 @@ fn initializes_web_globals_before_worker_module_evaluation()
     let execution = lifecycle
         .enter(&accepting)
         .ok_or("request was not admitted")?;
-    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    let (response_sender, response_receiver) = flume::bounded(1);
 
     execute_request(
         &worker,
         &websocket_config(directory.path()),
+        None,
         Job {
             request: websocket_request(),
             response: response_sender,
@@ -459,8 +486,8 @@ fn exposes_bundle_tmp_and_device_operations() -> Result<(), Box<dyn std::error::
 #[test]
 fn assembles_fragmented_text_and_binary_websocket_messages()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (incoming_sender, incoming_receiver) = mpsc::sync_channel(2);
-    let (_outgoing_sender, outgoing_receiver) = mpsc::sync_channel(1);
+    let (incoming_sender, incoming_receiver) = flume::bounded(2);
+    let (_outgoing_sender, outgoing_receiver) = flume::bounded(1);
     let bridge = WebSocketBridge {
         incoming: incoming_sender,
         outgoing: outgoing_receiver,
@@ -489,9 +516,9 @@ fn request_tasks_run_concurrently_on_tokio_blocking_workers()
     let tokio = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .build()?;
-    let (started_sender, started_receiver) = mpsc::sync_channel(2);
-    let (first_release_sender, first_release_receiver) = mpsc::sync_channel(1);
-    let (second_release_sender, second_release_receiver) = mpsc::sync_channel(1);
+    let (started_sender, started_receiver) = flume::bounded(2);
+    let (first_release_sender, first_release_receiver) = flume::bounded(1);
+    let (second_release_sender, second_release_receiver) = flume::bounded(1);
 
     let first = spawn_blocking_request(&tokio, started_sender.clone(), first_release_receiver);
     let second = spawn_blocking_request(&tokio, started_sender, second_release_receiver);
@@ -534,7 +561,7 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
         handler: Dispatcher::new(
             WorkerBundle::from_bytecode(Vec::new(), PathBuf::default()),
             quickjs_config,
-        ),
+        )?,
         config,
         tokio: tokio.handle().clone(),
         port: AtomicU16::new(0),
@@ -670,8 +697,8 @@ fn suspension_drains_active_work_and_blocks_new_work_until_resume()
         .ok_or("initial execution was not admitted")?;
     lifecycle.suspend();
 
-    let (started_sender, started_receiver) = mpsc::sync_channel(1);
-    let (admitted_sender, admitted_receiver) = mpsc::sync_channel(1);
+    let (started_sender, started_receiver) = flume::bounded(1);
+    let (admitted_sender, admitted_receiver) = flume::bounded(1);
     let waiting_lifecycle = Arc::clone(&lifecycle);
     let waiting_accepting = Arc::clone(&accepting);
     let waiting = thread::spawn(move || {
@@ -710,8 +737,8 @@ fn suspension_without_active_work_blocks_until_resume()
     let lifecycle = Arc::new(Lifecycle::new());
     let accepting = Arc::new(AtomicBool::new(true));
     lifecycle.suspend();
-    let (started_sender, started_receiver) = mpsc::sync_channel(1);
-    let (admitted_sender, admitted_receiver) = mpsc::sync_channel(1);
+    let (started_sender, started_receiver) = flume::bounded(1);
+    let (admitted_sender, admitted_receiver) = flume::bounded(1);
     let waiting_lifecycle = Arc::clone(&lifecycle);
     let waiting_accepting = Arc::clone(&accepting);
     let waiting = thread::spawn(move || {
@@ -737,8 +764,8 @@ fn stopping_releases_blocked_admission() -> Result<(), Box<dyn std::error::Error
     let lifecycle = Arc::new(Lifecycle::new());
     let accepting = Arc::new(AtomicBool::new(true));
     lifecycle.suspend();
-    let (started_sender, started_receiver) = mpsc::sync_channel(1);
-    let (admitted_sender, admitted_receiver) = mpsc::sync_channel(1);
+    let (started_sender, started_receiver) = flume::bounded(1);
+    let (admitted_sender, admitted_receiver) = flume::bounded(1);
     let waiting_lifecycle = Arc::clone(&lifecycle);
     let waiting_accepting = Arc::clone(&accepting);
     let waiting = thread::spawn(move || {
@@ -767,10 +794,10 @@ fn suspension_allows_an_active_javascript_turn_to_finish()
     let worker_bundle = WorkerBundle::from_bytecode(bundle, directory.path());
     let config = websocket_config(directory.path());
     let request = websocket_request();
-    let (response_sender, response_receiver) = mpsc::sync_channel(1);
+    let (response_sender, response_receiver) = flume::bounded(1);
     let lifecycle = Arc::new(Lifecycle::new());
     let accepting = Arc::new(AtomicBool::new(true));
-    let (started_sender, started_receiver) = mpsc::sync_channel(1);
+    let (started_sender, started_receiver) = flume::bounded(1);
     let worker_lifecycle = Arc::clone(&lifecycle);
     let worker_accepting = Arc::clone(&accepting);
     let worker = thread::spawn(move || {
@@ -783,6 +810,7 @@ fn suspension_allows_an_active_javascript_turn_to_finish()
         execute_request(
             &worker_bundle,
             &config,
+            None,
             Job {
                 request,
                 response: response_sender,
@@ -810,7 +838,7 @@ fn suspension_allows_an_active_javascript_turn_to_finish()
 
 fn spawn_blocking_request(
     tokio: &tokio::runtime::Runtime,
-    started: SyncSender<()>,
+    started: Sender<()>,
     release: Receiver<()>,
 ) -> tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>> {
     tokio.spawn_blocking(move || {
@@ -833,7 +861,7 @@ fn websocket_request() -> HttpRequest {
         method: "GET".to_owned(),
         target: "/socket".to_owned(),
         url: "https://example.test/socket".to_owned(),
-        headers: BTreeMap::new(),
+        headers: HeaderMap::new(),
         body: None,
     }
 }

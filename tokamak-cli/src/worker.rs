@@ -86,17 +86,11 @@ fn run_esbuild(
         ])
         .arg(format!("--outdir={}", command_path(&source).display()))
         .arg(format!("--metafile={}", command_path(&metafile).display()))
-        .arg("--external:node:events")
-        .arg("--external:events")
-        .arg("--external:node:stream")
-        .arg("--external:stream")
-        .arg("--external:node:process")
-        .arg("--external:process")
-        .arg("--external:fs")
-        .arg("--external:fs/promises")
-        .arg("--external:node:fs")
-        .arg("--external:node:fs/promises")
-        .arg("--external:cloudflare:workers");
+        .args(
+            tokamak::runtime_module_names()
+                .into_iter()
+                .map(|name| format!("--external:{name}")),
+        );
     for (extension, loader) in esbuild_loaders(&wrangler.rules) {
         command.arg(format!("--loader:.{extension}={loader}"));
     }
@@ -342,19 +336,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let root = directory.path();
         let manifest = esbuild_pack(root)?;
-        let names = [
-            "node:events",
-            "events",
-            "node:stream",
-            "stream",
-            "node:process",
-            "process",
-            "node:fs",
-            "fs",
-            "node:fs/promises",
-            "fs/promises",
-            "cloudflare:workers",
-        ];
+        let names = tokamak::runtime_module_names();
         let mut source = String::new();
         for (index, name) in names.iter().enumerate() {
             writeln!(source, "export * as builtin{index} from '{name}';")?;
@@ -387,7 +369,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(external, BTreeSet::from(names));
+        assert_eq!(external, names.iter().copied().collect());
         assert!(output.join("chunks").is_dir(), "lazy module was not split");
         assert!(!root.join("tools/runtime/runtime-js").exists());
         write_worker_modules(&layout, &output)?;

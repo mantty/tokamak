@@ -1,3 +1,4 @@
+use flume::{Receiver, Sender};
 #[cfg(target_os = "android")]
 use std::ffi::{CString, c_char, c_int};
 use std::io::{self, Write};
@@ -5,7 +6,6 @@ use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -82,6 +82,7 @@ struct LifecycleStatus {
 pub(super) struct Lifecycle {
     status: Mutex<LifecycleStatus>,
     changed: Condvar,
+    stopped: tokio::sync::Notify,
 }
 
 pub(super) struct Execution<'a> {
@@ -106,6 +107,7 @@ impl Lifecycle {
                 active: 0,
             }),
             changed: Condvar::new(),
+            stopped: tokio::sync::Notify::new(),
         }
     }
 
@@ -119,6 +121,7 @@ impl Lifecycle {
             };
         }
         self.changed.notify_all();
+        self.stopped.notify_waiters();
     }
 
     pub(super) fn resume(&self) {
@@ -133,6 +136,7 @@ impl Lifecycle {
         let mut status = lock_status(&self.status);
         status.phase = LifecyclePhase::Stopping;
         self.changed.notify_all();
+        self.stopped.notify_waiters();
     }
 
     pub(super) fn enter<'a>(&'a self, accepting: &'a AtomicBool) -> Option<Execution<'a>> {
@@ -168,6 +172,28 @@ impl Lifecycle {
 }
 
 impl Execution<'_> {
+    pub(super) async fn paused(&self) {
+        loop {
+            let changed = self.lifecycle.stopped.notified();
+            if !self.is_running() {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    pub(super) async fn cancelled(&self) {
+        loop {
+            let stopped = self.lifecycle.stopped.notified();
+            if !self.accepting.load(Ordering::Acquire)
+                || lock_status(&self.lifecycle.status).phase == LifecyclePhase::Stopping
+            {
+                return;
+            }
+            stopped.await;
+        }
+    }
+
     pub(super) fn is_running(&self) -> bool {
         self.accepting.load(Ordering::Acquire)
             && lock_status(&self.lifecycle.status).phase == LifecyclePhase::Running
@@ -204,7 +230,7 @@ fn wait_for_change<'a>(
 
 pub(super) struct Job {
     pub(super) request: HttpRequest,
-    pub(super) response: SyncSender<JobResponse>,
+    pub(super) response: Sender<JobResponse>,
     pub(super) websocket: Option<WebSocketJob>,
 }
 
@@ -215,11 +241,11 @@ pub(super) enum JobResponse {
 
 pub(super) struct WebSocketJob {
     pub(super) incoming: Receiver<WebSocketInbound>,
-    pub(super) outgoing: SyncSender<WebSocketOutbound>,
+    pub(super) outgoing: Sender<WebSocketOutbound>,
 }
 
 pub(super) struct WebSocketBridge {
-    pub(super) incoming: SyncSender<WebSocketInbound>,
+    pub(super) incoming: Sender<WebSocketInbound>,
     pub(super) outgoing: Receiver<WebSocketOutbound>,
 }
 
@@ -240,6 +266,7 @@ impl Runtime {
         let port = listener.local_addr()?.port();
         let tokio_runtime = TokioBuilder::new_multi_thread()
             .thread_name("tokamak-tokio")
+            .enable_all()
             .build()
             .map_err(|error| Error::Startup(format!("failed to start Tokio: {error}")))?;
         let shared = Arc::new(Shared {
@@ -509,9 +536,14 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
     let request = read_request(&mut tls, &shared.config.host)?;
     let method = request.method.clone();
     let websocket = is_websocket(&request);
-    let websocket_key = request.headers.get("sec-websocket-key").cloned();
+    let websocket_key = request
+        .headers
+        .get("sec-websocket-key")
+        .map(|value| value.to_str().map(str::to_owned))
+        .transpose()
+        .map_err(std::io::Error::other)?;
     let (websocket_job, websocket_bridge) = websocket_channels(websocket);
-    let (response, result) = mpsc::sync_channel(1);
+    let (response, result) = flume::bounded(1);
     let job = Job {
         request,
         response,
@@ -544,8 +576,8 @@ fn websocket_channels(enabled: bool) -> (Option<WebSocketJob>, Option<WebSocketB
     if !enabled {
         return (None, None);
     }
-    let (incoming_sender, incoming_receiver) = mpsc::sync_channel(MAX_WEBSOCKET_QUEUE);
-    let (outgoing_sender, outgoing_receiver) = mpsc::sync_channel(MAX_WEBSOCKET_QUEUE);
+    let (incoming_sender, incoming_receiver) = flume::bounded(MAX_WEBSOCKET_QUEUE);
+    let (outgoing_sender, outgoing_receiver) = flume::bounded(MAX_WEBSOCKET_QUEUE);
     (
         Some(WebSocketJob {
             incoming: incoming_receiver,

@@ -1,11 +1,11 @@
 //! Development requests forwarded to the host framework server.
 
-use std::collections::BTreeMap;
+use flume::TryRecvError;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::TryRecvError;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -52,8 +52,8 @@ struct HostResponse {
 struct HostBody {
     upstream: UpstreamStream,
     framing: HostFraming,
-    sender: std::sync::mpsc::SyncSender<BodyChunk>,
-    cancelled: Arc<AtomicBool>,
+    sender: flume::Sender<BodyChunk>,
+    cancelled: tokio_util::sync::CancellationToken,
 }
 
 enum HostFraming {
@@ -121,7 +121,7 @@ impl DevProxy {
     fn forward_http(
         &self,
         request: &HttpRequest,
-        response: &std::sync::mpsc::SyncSender<JobResponse>,
+        response: &flume::Sender<JobResponse>,
     ) -> Result<(), Error> {
         let deadline = Instant::now() + HTTP_RETRY_TIMEOUT;
         let result = loop {
@@ -178,7 +178,7 @@ impl DevProxy {
     fn forward_websocket(
         &self,
         request: &HttpRequest,
-        response: &std::sync::mpsc::SyncSender<JobResponse>,
+        response: &flume::Sender<JobResponse>,
         websocket: &WebSocketJob,
         execution: &Execution<'_>,
     ) -> Result<(), Error> {
@@ -208,7 +208,9 @@ impl DevProxy {
         let key = request
             .headers
             .get("sec-websocket-key")
-            .ok_or_else(|| Error::Startup("WebSocket key is missing".to_owned()))?;
+            .ok_or_else(|| Error::Startup("WebSocket key is missing".to_owned()))?
+            .to_str()
+            .map_err(io::Error::other)?;
         let mut upstream = self.connect()?;
         upstream.set_timeouts(CONNECT_TIMEOUT, CONNECT_TIMEOUT)?;
         write_request(
@@ -228,7 +230,7 @@ impl DevProxy {
         if upgrade
             .headers
             .get("sec-websocket-accept")
-            .is_none_or(|actual| actual.trim() != websocket_accept(key))
+            .is_none_or(|actual| actual.as_bytes() != websocket_accept(key).as_bytes())
         {
             return Err(Error::Startup(
                 "host WebSocket upgrade returned an invalid accept key".to_owned(),
@@ -479,7 +481,10 @@ fn write_request(
     let host = request
         .headers
         .get("host")
-        .map_or(endpoint.authority.as_str(), String::as_str);
+        .map(HeaderValue::to_str)
+        .transpose()
+        .map_err(io::Error::other)?
+        .unwrap_or(endpoint.authority.as_str());
     write!(stream, "{} {} HTTP/1.1\r\n", request.method, request.target)?;
     for (name, value) in &request.headers {
         if name == "host"
@@ -488,11 +493,13 @@ fn write_request(
             || name == "x-forwarded-proto"
             || name == "x-tokamak-session"
             || (websocket && name == "sec-websocket-extensions")
-            || is_hop_by_hop(name)
+            || is_hop_by_hop(name.as_str())
         {
             continue;
         }
-        write!(stream, "{name}: {value}\r\n")?;
+        write!(stream, "{name}: ")?;
+        stream.write_all(value.as_bytes())?;
+        stream.write_all(b"\r\n")?;
     }
     write!(stream, "Host: {host}\r\n")?;
     write!(stream, "X-Forwarded-Host: {host}\r\n")?;
@@ -520,14 +527,15 @@ fn read_response(
     let text = String::from_utf8_lossy(&headers);
     let mut lines = text.split("\r\n");
     let status_line = lines.next().unwrap_or_default();
-    let mut status_parts = status_line.split_whitespace();
+    let mut status_parts = status_line.splitn(3, ' ');
     let _version = status_parts.next();
     let status: u16 = status_parts
         .next()
         .ok_or_else(|| Error::Startup("host response status is missing".to_owned()))?
         .parse()
         .map_err(|_| Error::Startup("host response status is invalid".to_owned()))?;
-    let mut response_headers = BTreeMap::new();
+    let status_text = status_parts.next().unwrap_or("").to_owned();
+    let mut response_headers = HeaderMap::new();
     let mut content_length = None;
     let mut chunked = false;
     for line in lines {
@@ -538,7 +546,7 @@ fn read_response(
             continue;
         };
         let name = name.trim().to_ascii_lowercase();
-        let value = value.trim().to_owned();
+        let value = value.trim_matches([' ', '\t']).to_owned();
         if name == "content-length" {
             content_length = Some(value.parse().map_err(|_| {
                 Error::Startup("host response content length is invalid".to_owned())
@@ -552,7 +560,12 @@ fn read_response(
             chunked = true;
         }
         if !is_hop_by_hop(&name) {
-            response_headers.insert(name, value);
+            response_headers
+                .try_append(
+                    HeaderName::from_bytes(name.as_bytes()).map_err(io::Error::other)?,
+                    HeaderValue::from_bytes(value.as_bytes()).map_err(io::Error::other)?,
+                )
+                .map_err(io::Error::other)?;
         }
     }
     if chunked {
@@ -572,10 +585,9 @@ fn read_response(
     } else {
         (Vec::new(), Some(HostFraming::CloseDelimited))
     };
-    Ok((
-        HttpResponse::buffered(status, response_headers, body),
-        framing,
-    ))
+    let mut response = HttpResponse::buffered(status, response_headers, body);
+    response.status_text = status_text;
+    Ok((response, framing))
 }
 
 fn pump_host_body(mut body: HostBody) {
@@ -655,7 +667,7 @@ fn send_host_chunk(body: &HostBody, chunk: Vec<u8>) -> bool {
 
 fn read_host_chunk(body: &mut HostBody, buffer: &mut [u8]) -> Result<Option<usize>, Error> {
     loop {
-        if body.cancelled.load(Ordering::Acquire) {
+        if body.cancelled.is_cancelled() {
             return Ok(None);
         }
         match body.upstream.read(buffer) {
@@ -758,7 +770,7 @@ fn is_hop_by_hop(name: &str) -> bool {
 }
 
 fn queue_upstream_message(
-    outgoing: &std::sync::mpsc::SyncSender<WebSocketOutbound>,
+    outgoing: &flume::Sender<WebSocketOutbound>,
     fragmented: &mut Option<(u8, Vec<u8>)>,
     final_frame: bool,
     opcode: u8,

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 test("ReadableStream pulls chunks and TransformStream pipes them", async () => {
-  const { ReadableStream, TransformStream } = await import("../../src/streams/web.mjs");
+  // Host-side smoke test for the vendored stream engine. Native extensions
+  // are exercised by the compiled Workerd differential suite.
+  const { ReadableStream, TransformStream, WritableStream } = await import("../../src/streams/web-standard.mjs");
   let next = 0;
   const source = new ReadableStream({
     pull(controller) {
@@ -17,18 +19,8 @@ test("ReadableStream pulls chunks and TransformStream pipes them", async () => {
     },
   });
   const received = [];
-  const writable = {
-    getWriter() {
-      return {
-        write(value) { received.push(value[0]); },
-        close() {},
-        abort() {},
-        releaseLock() {},
-      };
-    },
-  };
-  await source.pipeTo(transform.writable);
-  await transform.readable.pipeTo(writable);
+  const writable = new WritableStream({ write(value) { received.push(value[0]); } });
+  await source.pipeThrough(transform).pipeTo(writable);
   assert.deepEqual(received, [11, 12]);
 });
 
@@ -40,6 +32,7 @@ test("Readable emits end after pushed data", async () => {
   stream.on("end", () => events.push("end"));
   stream.push("value");
   stream.push(null);
+  await new Promise(resolve => stream.once("end", resolve));
   assert.deepEqual(events, ["data:value", "end"]);
 
   const bufferedEvents = [];
@@ -48,13 +41,16 @@ test("Readable emits end after pushed data", async () => {
   buffered.push(null);
   buffered.on("end", () => bufferedEvents.push("end"));
   buffered.on("data", (value) => bufferedEvents.push(`data:${value}`));
+  await new Promise(resolve => buffered.once("end", resolve));
   assert.deepEqual(bufferedEvents, ["data:buffered", "end"]);
 
   const ended = new Readable();
   const lateValues = [];
+  const failure = new Promise(resolve => ended.once("error", resolve));
   ended.on("data", (value) => lateValues.push(value));
   ended.push(null);
   assert.equal(ended.push("late"), false);
+  assert.equal((await failure).code, "ERR_STREAM_PUSH_AFTER_EOF");
   assert.deepEqual(lateValues, []);
 });
 

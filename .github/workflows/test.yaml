@@ -33,7 +33,9 @@ jobs:
           targets: aarch64-linux-android
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: platform-tools
 
       - name: Install Android NDK
         run: |
@@ -82,6 +84,10 @@ jobs:
         run: |
           pnpm --dir tools/esbuild-hosts install --frozen-lockfile
           pnpm --dir tokamak/tests/quickjs_runtime install --frozen-lockfile
+          pnpm --dir examples/astro install --frozen-lockfile
+
+      - name: Build Astro runtime fixture
+        run: pnpm --dir examples/astro build
 
       - name: Test runtime JavaScript
         run: node --test tokamak/tests/quickjs_runtime/runtime.test.mjs

@@ -135,7 +135,88 @@ pub fn compile_module(name: &str, source: &[u8]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::compile_worker;
-    use rquickjs::{Context, Module, Runtime};
+    use rquickjs::{ArrayBuffer, Context, Module, Runtime};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct OwnedBytes {
+        bytes: Vec<u8>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    // The vector owns its allocation until the ArrayBuffer releases this source.
+    unsafe impl rquickjs::ArrayBufferSource for OwnedBytes {
+        fn as_ptr(&self) -> *mut u8 {
+            self.bytes.as_ptr().cast_mut()
+        }
+        fn len(&self) -> usize {
+            self.bytes.len()
+        }
+    }
+
+    impl Drop for OwnedBytes {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn transferred_external_buffers_release_their_owner_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for method in ["transfer", "transferToFixedLength"] {
+            for length in [0, 2, 4, 8] {
+                let drops = Arc::new(AtomicUsize::new(0));
+                let runtime = Runtime::new()?;
+                let context = Context::full(&runtime)?;
+                context.with(|ctx| -> rquickjs::Result<()> {
+                    let source = OwnedBytes { bytes: vec![1, 2, 3, 4], drops: Arc::clone(&drops) };
+                    ctx.globals().set("original", ArrayBuffer::from_source(ctx.clone(), source)?)?;
+                    let data: Vec<u8> = ctx.eval(format!("globalThis.moved = original.{method}({length}); Array.from(new Uint8Array(moved))"))?;
+                    let expected: Vec<_> = (0..length).map(|index| if index < 4 { index + 1 } else { 0 }).collect();
+                    assert_eq!(data, expected);
+                    assert_eq!(ctx.eval::<usize, _>("original.byteLength")?, 0);
+                    ctx.globals().remove("original")?;
+                    assert_eq!(drops.load(Ordering::Relaxed), usize::from(length != 4));
+                    ctx.globals().remove("moved")?;
+                    assert_eq!(drops.load(Ordering::Relaxed), 1);
+                    Ok(())
+                })?;
+                runtime.run_gc();
+                assert_eq!(drops.load(Ordering::Relaxed), 1);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rust_vector_buffers_support_transfer_and_resize() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = Runtime::new()?;
+        let context = Context::full(&runtime)?;
+        for method in ["transfer", "transferToFixedLength"] {
+            for length in [0_u8, 2, 4, 8] {
+                context.with(|ctx| -> rquickjs::Result<()> {
+                    let mut bytes = Vec::with_capacity(31);
+                    bytes.extend_from_slice(&[1_u8, 2, 3, 4]);
+                    ctx.globals()
+                        .set("bytes", rquickjs::TypedArray::new(ctx.clone(), bytes)?)?;
+                    let transferred: Vec<u8> = ctx.eval(format!(
+                        "Array.from(new Uint8Array(bytes.buffer.{method}({length})))"
+                    ))?;
+                    let expected: Vec<_> = (0..length)
+                        .map(|index| if index < 4 { index + 1 } else { 0 })
+                        .collect();
+                    assert_eq!(transferred, expected);
+                    assert_eq!(ctx.eval::<usize, _>("bytes.byteLength")?, 0);
+                    ctx.globals().remove("bytes")?;
+                    Ok(())
+                })?;
+                runtime.run_gc();
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn compiles_and_loads_a_module_bytecode_blob() -> Result<(), Box<dyn std::error::Error>> {

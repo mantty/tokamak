@@ -27,11 +27,15 @@ fn forwards_http_and_websocket_traffic_to_the_host_server() -> TestResult {
 
     let mut http = connect_gateway(&runtime, &state)?;
     http.write_all(
-        b"POST /api HTTP/1.1\r\nHost: dev.tokamak.local\r\nContent-Length: 3\r\n\r\n\0\xff\x01",
+        "POST /api HTTP/1.1\r\nHost: dev.tokamak.local\r\nX-Repeated: café\r\nX-Repeated: 東京\r\nContent-Length: 3\r\n\r\n".as_bytes(),
     )?;
+    http.write_all(&[0, 0xff, 1])?;
     http.flush()?;
     let response = read_http_response(&mut http)?;
-    assert!(response.starts_with("HTTP/1.1 201"));
+    assert!(response.starts_with("HTTP/1.1 201 Created Here\r\n"));
+    assert!(response.contains("set-cookie: first=1\r\n"));
+    assert!(response.contains("set-cookie: second=2\r\n"));
+    assert!(response.contains("x-text: 東京\r\n"));
     assert!(response.ends_with("host response"));
 
     let mut websocket = connect_gateway(&runtime, &state)?;
@@ -204,11 +208,13 @@ fn serve_host(listener: &TcpListener) -> TestResult {
     assert!(text.starts_with("POST /api HTTP/1.1"));
     assert!(text.contains("Host: dev.tokamak.local\r\n"));
     assert!(text.contains("X-Tokamak-Session: test-session\r\n"));
+    assert!(text.contains("x-repeated: café\r\n"));
+    assert!(text.contains("x-repeated: 東京\r\n"));
     let mut body = [0; 3];
     http.read_exact(&mut body)?;
     assert_eq!(body, [0, 0xff, 1]);
     http.write_all(
-        b"HTTP/1.1 201 Created\r\nContent-Length: 13\r\nConnection: close\r\n\r\nhost response",
+        "HTTP/1.1 201 Created Here\r\nSet-Cookie: first=1\r\nSet-Cookie: second=2\r\nX-Text: 東京\r\nContent-Length: 13\r\nConnection: close\r\n\r\nhost response".as_bytes(),
     )?;
 
     let (mut websocket, _) = listener.accept()?;

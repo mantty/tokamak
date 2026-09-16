@@ -65,7 +65,7 @@ impl Runtime {
         let certificates = Arc::new(Certificates::start(state_dir.clone(), config.host.clone())?);
         let worker = packaged_worker(&config.app)?;
         validate_worker(&worker)?;
-        let handler = Dispatcher::new(worker, quickjs_config(&config.app, &state_dir)?);
+        let handler = Dispatcher::new(worker, quickjs_config(&config.app, &state_dir)?)?;
         let gateway = start_gateway(&certificates, &config.host, handler)?;
         Ok(finish_start(events, config.host, certificates, gateway))
     }
