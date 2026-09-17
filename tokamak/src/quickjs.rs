@@ -129,7 +129,8 @@ pub fn compile_worker(source: &[u8]) -> Result<Vec<u8>> {
 ///
 /// Returns an error when `QuickJS` cannot compile or serialize the module.
 pub fn compile_module(name: &str, source: &[u8]) -> Result<Vec<u8>> {
-    crate::compiler::compile_module(name, source).map_err(Error::Engine)
+    crate::compiler::compile_module(name, source, crate::compiler::SourceText::Embedded)
+        .map_err(Error::Engine)
 }
 
 #[cfg(test)]

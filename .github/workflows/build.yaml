@@ -72,7 +72,6 @@ jobs:
         run: |
           cmake --version
           nasm -v
-          perl --version
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2.9.2

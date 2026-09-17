@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use openssl::ssl::{SslConnector, SslMethod, SslStream};
+use rustls::{ClientConnection, StreamOwned};
+use rustls_pki_types::ServerName;
 
 use crate::gateway::{
     Execution, Handler, Job, JobResponse, WebSocketInbound, WebSocketJob, WebSocketOutbound,
@@ -106,13 +107,19 @@ impl DevProxy {
             })?;
         stream.set_nodelay(true)?;
         if self.endpoint.tls {
-            let connector = SslConnector::builder(SslMethod::tls())
-                .map_err(|error| Error::Startup(format!("host TLS setup failed: {error}")))?
-                .build();
-            let stream = connector
-                .connect(&self.endpoint.host, stream)
-                .map_err(|error| Error::Startup(format!("host TLS connection failed: {error}")))?;
-            Ok(UpstreamStream::Tls(stream))
+            let config = crate::tls::client_config()
+                .map_err(|error| Error::Startup(format!("host TLS setup failed: {error}")))?;
+            let name = ServerName::try_from(self.endpoint.host.clone())
+                .map_err(|error| Error::Startup(format!("host TLS setup failed: {error}")))?;
+            let connection = ClientConnection::new(config, name)
+                .map_err(|error| Error::Startup(format!("host TLS setup failed: {error}")))?;
+            let mut stream = StreamOwned::new(connection, stream);
+            while stream.conn.is_handshaking() {
+                stream.conn.complete_io(&mut stream.sock).map_err(|error| {
+                    Error::Startup(format!("host TLS connection failed: {error}"))
+                })?;
+            }
+            Ok(UpstreamStream::Tls(Box::new(stream)))
         } else {
             Ok(UpstreamStream::Plain(stream))
         }
@@ -421,7 +428,7 @@ fn parse_port(value: &str) -> Result<u16, Error> {
 
 enum UpstreamStream {
     Plain(TcpStream),
-    Tls(SslStream<TcpStream>),
+    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
 }
 
 impl UpstreamStream {

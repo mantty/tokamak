@@ -10,6 +10,11 @@ use anyhow::{Result, bail};
 use serde_json::Value;
 use tokamak_cli::Platform;
 
+#[cfg(target_os = "macos")]
+use anyhow::Context;
+#[cfg(any(target_os = "macos", test))]
+use std::path::Path;
+
 const MANAGED_IOS_NAME: &str = "tokamak iPhone";
 const MANAGED_ANDROID_NAME: &str = "tokamak-managed";
 const ANDROID_BOOT_TIMEOUT: usize = 120;
@@ -112,6 +117,84 @@ struct IosSimulatorTarget {
     state: String,
     has_been_booted: bool,
     availability_error: Option<String>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum IosSimulatorUi {
+    StandaloneSimulator(PathBuf),
+    DeviceHub(PathBuf),
+}
+
+#[cfg(target_os = "macos")]
+impl IosSimulatorUi {
+    fn path(&self) -> &Path {
+        match self {
+            Self::StandaloneSimulator(path) | Self::DeviceHub(path) => path,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::StandaloneSimulator(_) => "Simulator.app",
+            Self::DeviceHub(_) => "Device Hub",
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn ios_simulator_ui_for_developer_dir(developer_dir: &Path) -> Option<IosSimulatorUi> {
+    let standalone = developer_dir.join("Applications/Simulator.app");
+    if standalone.is_dir() {
+        return Some(IosSimulatorUi::StandaloneSimulator(standalone));
+    }
+
+    let device_hub = developer_dir.parent()?.join("Applications/DeviceHub.app");
+    device_hub
+        .is_dir()
+        .then_some(IosSimulatorUi::DeviceHub(device_hub))
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn open_ios_simulator_ui(device_id: &str) -> Result<()> {
+    let simctl = run_tool("xcrun", &["--find", "simctl"]);
+    if !simctl.available {
+        bail!("Xcode command-line tools are not installed");
+    }
+    if !simctl.success {
+        bail!(
+            "could not locate the active Xcode Simulator tools: {}",
+            tool_failure(&simctl, "xcrun --find simctl failed")
+        );
+    }
+
+    let simctl_path = Path::new(simctl.stdout.trim());
+    let Some(developer_dir) = simctl_path.ancestors().nth(3) else {
+        bail!("could not determine Xcode's developer directory from simctl's path");
+    };
+    let Some(ui) = ios_simulator_ui_for_developer_dir(developer_dir) else {
+        bail!("the active Xcode installation contains neither Simulator.app nor DeviceHub.app");
+    };
+
+    let mut command = ProcessCommand::new("open");
+    command.arg("-a").arg(ui.path());
+    if matches!(ui, IosSimulatorUi::StandaloneSimulator(_)) {
+        command
+            .args(["--args", "-CurrentDeviceUDID"])
+            .arg(device_id);
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("could not open {}", ui.name()))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail.trim();
+        if detail.is_empty() {
+            bail!("could not open {} (status {})", ui.name(), output.status);
+        }
+        bail!("could not open {}: {detail}", ui.name());
+    }
+    Ok(())
 }
 
 fn prepare_ios_simulator(selector: &str) -> Result<Option<PreparedDevice>> {
@@ -1174,12 +1257,63 @@ fn render_devices(devices: &[Device]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::{
-        Device, DeviceStatus, default_ios_device_type, latest_ios_runtime, order_devices,
+        Device, DeviceStatus, IosSimulatorUi, default_ios_device_type,
+        ios_simulator_ui_for_developer_dir, latest_ios_runtime, order_devices,
         parse_android_adb_devices, parse_android_system_images, parse_ios_simulator_devices,
         parse_ios_simulator_targets, parse_xctrace_devices, render_devices,
         select_android_system_image,
     };
+
+    #[test]
+    fn prefers_standalone_simulator_when_both_xcode_uis_exist()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let developer_dir = temp.path().join("Xcode.app/Contents/Developer");
+        let simulator = developer_dir.join("Applications/Simulator.app");
+        let device_hub = developer_dir
+            .parent()
+            .ok_or("Xcode Contents directory missing")?
+            .join("Applications/DeviceHub.app");
+        fs::create_dir_all(&simulator)?;
+        fs::create_dir_all(&device_hub)?;
+
+        assert_eq!(
+            ios_simulator_ui_for_developer_dir(&developer_dir),
+            Some(IosSimulatorUi::StandaloneSimulator(simulator))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn uses_device_hub_when_xcode_has_no_standalone_simulator()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let developer_dir = temp.path().join("Xcode.app/Contents/Developer");
+        let device_hub = developer_dir
+            .parent()
+            .ok_or("Xcode Contents directory missing")?
+            .join("Applications/DeviceHub.app");
+        fs::create_dir_all(&device_hub)?;
+
+        assert_eq!(
+            ios_simulator_ui_for_developer_dir(&developer_dir),
+            Some(IosSimulatorUi::DeviceHub(device_hub))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reports_no_simulator_ui_when_xcode_contains_neither_app()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let developer_dir = temp.path().join("Xcode.app/Contents/Developer");
+
+        assert_eq!(ios_simulator_ui_for_developer_dir(&developer_dir), None);
+        Ok(())
+    }
 
     #[test]
     fn parses_ios_simulator_devices() {

@@ -8,7 +8,7 @@ use serde::Deserialize;
 use super::{brotli::Brotli, zlib::Zlib, zstd::Zstd};
 
 #[derive(Debug)]
-pub(super) struct CodecError {
+pub(crate) struct CodecError {
     pub code: String,
     pub message: String,
 }
@@ -34,7 +34,7 @@ impl CodecError {
     }
 }
 
-pub(super) struct Step {
+pub(crate) struct Step {
     pub consumed: usize,
     pub written: usize,
     pub ended: bool,

@@ -277,7 +277,7 @@ tok build macos \
 - Rust 1.96 through `rustup`; the repository selects it with
   `rust-toolchain.toml`.
 - Node.js 22 and pnpm 9.9.
-- CMake, Clang and libclang, Perl, and the native C/C++ toolchain for your host.
+- CMake, Clang and libclang, and the native C/C++ toolchain for your host.
 
 Target-pack work additionally requires:
 

@@ -33,8 +33,9 @@ fn compile_builtins() -> Result<(), Box<dyn std::error::Error>> {
         let source = Path::new("src").join(module);
         println!("cargo:rerun-if-changed={}", source.display());
         let name = format!("tokamak:{module}");
-        let bytecode = compiler::compile_module(&name, &fs::read(&source)?)
-            .map_err(|error| format!("failed to compile {name}: {error}"))?;
+        let bytecode =
+            compiler::compile_module(&name, &fs::read(&source)?, compiler::SourceText::Stripped)
+                .map_err(|error| format!("failed to compile {name}: {error}"))?;
         let destination = output.join(format!("{module}.qjs"));
         fs::create_dir_all(destination.parent().ok_or("builtin has no directory")?)?;
         fs::write(&destination, bytecode)?;

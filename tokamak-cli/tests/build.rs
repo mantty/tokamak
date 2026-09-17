@@ -392,7 +392,7 @@ compile=
 partial=
 output=
 for arg in "$@"; do
-  if [ "$arg" = actool ] || [ "$arg" = swiftc ] || [ "$arg" = simctl ] || [ "$arg" = devicectl ]; then
+  if [ "$arg" = actool ] || [ "$arg" = swiftc ] || [ "$arg" = strip ] || [ "$arg" = simctl ] || [ "$arg" = devicectl ]; then
     mode=$arg
   elif [ "$arg" = --compile ]; then
     next=compile
@@ -420,6 +420,8 @@ case "$mode" in
   swiftc)
     mkdir -p "$(dirname "$output")"
     printf '%s\n' '#!/bin/sh' > "$output"
+    ;;
+  strip)
     ;;
   simctl)
     printf '%s\n' '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-17-0":[]}}'

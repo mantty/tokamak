@@ -13,7 +13,7 @@ use tokio::{
     net::TcpStream,
     sync::Mutex,
 };
-use tokio_native_tls::{TlsConnector, TlsStream};
+use tokio_rustls::{TlsConnector, client::TlsStream};
 use tokio_util::{either::Either, sync::CancellationToken};
 
 type Connection = Either<TcpStream, TlsStream<TcpStream>>;
@@ -148,11 +148,9 @@ impl Socket {
 }
 
 async fn tls(stream: TcpStream, host: &str) -> io::Result<TlsStream<TcpStream>> {
-    let connector = native_tls::TlsConnector::new().map_err(io::Error::other)?;
-    TlsConnector::from(connector)
-        .connect(host, stream)
-        .await
-        .map_err(io::Error::other)
+    let config = crate::tls::client_config().map_err(io::Error::other)?;
+    let name = rustls_pki_types::ServerName::try_from(host.to_owned()).map_err(io::Error::other)?;
+    TlsConnector::from(config).connect(name, stream).await
 }
 
 async fn connect(host: &str, port: u16, secure: bool) -> io::Result<Connection> {

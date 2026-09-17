@@ -16,7 +16,7 @@ use crate::quickjs::Error;
 use crate::readiness::{Readiness, Waker};
 
 use crate::transport::{
-    HttpRequest, HttpResponse, is_connect, is_websocket, read_headers, read_request, tls_acceptor,
+    HttpRequest, HttpResponse, is_connect, is_websocket, read_headers, read_request, tls_accept,
     websocket_session, write_plain_response, write_response,
 };
 
@@ -554,11 +554,8 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
     stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
     stream.flush()?;
 
-    let acceptor = tls_acceptor(&shared.config)?;
-    let mut tls = acceptor
-        .accept(stream)
-        .map_err(|error| Error::Tls(error.to_string()))?;
-    if shared.config.require_client_certificate && tls.ssl().peer_certificate().is_none() {
+    let mut tls = tls_accept(&shared.config, stream)?;
+    if shared.config.require_client_certificate && tls.conn.peer_certificates().is_none() {
         write_response(
             &mut tls,
             HttpResponse::text(403, "Client certificate required"),

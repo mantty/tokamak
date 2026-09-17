@@ -27,6 +27,8 @@ export function intlContracts() {
   result.optionPrimitives = [null, 3, true, "x"].map(options => outcome(() => { new Intl.DateTimeFormat("en", options); return true; }));
   result.dateNumbers = ["0", 0, 1n].map(value => outcome(() => new Intl.DateTimeFormat("en-GB", { dateStyle: "short", timeZone: "UTC" }).format(value)));
   result.collation = ["a", "ä", "2"].map(value => Math.sign(value.localeCompare("10", "de", { numeric: true })));
+  result.timeZoneNames = Object.fromEntries([["en-US", "America/Los_Angeles"], ["de", "Europe/Berlin"], ["ja", "Asia/Tokyo"], ["en-GB", "Australia/Sydney"]].flatMap(([locale, timeZone]) =>
+    ["short", "long"].map(timeZoneName => [`${locale} ${timeZone} ${timeZoneName}`, outcome(() => new Intl.DateTimeFormat(locale, { timeZone, timeZoneName, hour: "numeric" }).formatToParts(date).find(part => part.type === "timeZoneName").value)])));
   result.boundFormat = outcome(() => {
     const dateFormatter = new Intl.DateTimeFormat("en-GB", { dateStyle: "short", timeZone: "UTC" });
     const numberFormatter = new Intl.NumberFormat("de");

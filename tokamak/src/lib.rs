@@ -52,6 +52,8 @@ mod compat;
 mod env_vars;
 #[cfg(feature = "native")]
 mod readiness;
+#[cfg(feature = "native")]
+mod tls;
 mod tokamak_config;
 #[cfg(feature = "native")]
 mod transport;

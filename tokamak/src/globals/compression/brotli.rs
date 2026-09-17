@@ -6,13 +6,17 @@ use brotlic_sys as b;
 
 use super::node::{CodecError, Step};
 
-pub(super) enum Brotli {
+pub(crate) enum Brotli {
     Encoder(NonNull<b::BrotliEncoderState>),
     Decoder(NonNull<b::BrotliDecoderState>),
 }
 
+// SAFETY: A Brotli instance is exclusively owned and holds no thread affinity;
+// Brotli's public API allows moving an instance between threads.
+unsafe impl Send for Brotli {}
+
 impl Brotli {
-    pub(super) fn new(encode: bool, params: &BTreeMap<u32, i32>) -> Result<Self, CodecError> {
+    pub(crate) fn new(encode: bool, params: &BTreeMap<u32, i32>) -> Result<Self, CodecError> {
         let failure = || {
             CodecError::new(
                 "ERR_ZLIB_INITIALIZATION_FAILED",
@@ -58,7 +62,7 @@ impl Brotli {
         Ok(codec)
     }
 
-    pub(super) fn step(
+    pub(crate) fn step(
         &mut self,
         input: &[u8],
         output: &mut [u8],

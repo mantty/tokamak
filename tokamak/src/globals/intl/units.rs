@@ -1,11 +1,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::Read;
 use std::rc::Rc;
 
-use flate2::read::GzDecoder;
 use icu::locale::Locale;
-use icu::locale::fallback::{LocaleFallbackConfig, LocaleFallbacker};
+use icu::locale::fallback::LocaleFallbackConfig;
 use rquickjs::{Ctx, Exception};
 use serde_json::Value;
 
@@ -56,8 +54,7 @@ fn plural_pattern<'a>(patterns: &'a Value, plural: &str) -> Option<&'a str> {
 }
 
 fn locale_index(locale: &Locale) -> Option<usize> {
-    let fallbacker = LocaleFallbacker::new();
-    let config = fallbacker.for_config(LocaleFallbackConfig::default());
+    let config = super::provider::FALLBACKER.for_config(LocaleFallbackConfig::default());
     let mut iterator = config.fallback_for(locale.clone().into());
     loop {
         if iterator.get().is_unknown() {
@@ -80,12 +77,10 @@ fn locale_data(ctx: &Ctx<'_>, index: usize) -> rquickjs::Result<Rc<Value>> {
             return Ok(Rc::clone(data));
         }
         let (_, offset, length) = LOCALES[index];
-        let mut bytes = Vec::new();
-        GzDecoder::new(&DATA[offset..offset + length])
-            .read_to_end(&mut bytes)
+        let bytes = zstd::decode_all(DATA_ZST)
             .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
         let data = Rc::new(
-            serde_json::from_slice(&bytes)
+            serde_json::from_slice(&bytes[offset..offset + length])
                 .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?,
         );
         if cache.len() == 8 {
@@ -121,15 +116,16 @@ fn append(parts: &mut Vec<(String, String)>, kind: &str, text: &str) {
 fn generated_locale_patterns_are_complete() -> Result<(), Box<dyn std::error::Error>> {
     assert!(LOCALES.windows(2).all(|pair| pair[0].0 < pair[1].0));
     assert!(LOCALES.iter().any(|entry| entry.0 == "en"));
+    let data = zstd::decode_all(DATA_ZST)?;
     let mut checked = std::collections::HashSet::new();
     for &(_, offset, length) in LOCALES {
         if !checked.insert(offset) {
             continue;
         }
-        let bytes = DATA
+        let bytes = data
             .get(offset..offset + length)
             .ok_or("invalid CLDR data range")?;
-        let value: Value = serde_json::from_reader(GzDecoder::new(bytes))?;
+        let value: Value = serde_json::from_slice(bytes)?;
         for width in ["long", "short", "narrow"] {
             assert!(value[width]["per"]["other"].as_str().is_some());
             assert!(value[width]["meter"]["other"].as_str().is_some());

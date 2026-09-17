@@ -303,7 +303,7 @@ export class DiffieHellman {
   }
 
   generateKeys(encoding) {
-    const state = parseBundle(cryptoDhGenerate({ prime: this.__prime, generator: this.__generator }));
+    const state = parseBundle(cryptoDhGenerate({ prime: this.__prime, generator: this.__generator, private: this.__privateKey ?? undefined }));
     this.__publicKey = Buffer.from(state.public);
     this.__privateKey = Buffer.from(state.private);
     return outputEncoding(this.getPublicKey(), encoding);
