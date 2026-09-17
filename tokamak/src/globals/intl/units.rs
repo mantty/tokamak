@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use flate2::read::GzDecoder;
 use icu::locale::Locale;
-use icu::locale::fallback::{LocaleFallbackConfig, LocaleFallbacker};
+use icu::locale::fallback::LocaleFallbackConfig;
 use rquickjs::{Ctx, Exception};
 use serde_json::Value;
 
@@ -56,8 +56,7 @@ fn plural_pattern<'a>(patterns: &'a Value, plural: &str) -> Option<&'a str> {
 }
 
 fn locale_index(locale: &Locale) -> Option<usize> {
-    let fallbacker = LocaleFallbacker::new();
-    let config = fallbacker.for_config(LocaleFallbackConfig::default());
+    let config = super::provider::FALLBACKER.for_config(LocaleFallbackConfig::default());
     let mut iterator = config.fallback_for(locale.clone().into());
     loop {
         if iterator.get().is_unknown() {

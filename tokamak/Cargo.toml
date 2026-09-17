@@ -22,6 +22,9 @@ native = [
     "dep:getrandom",
     "dep:hmac",
     "dep:icu",
+    "dep:icu_provider",
+    "dep:icu_provider_blob",
+    "dep:icu_provider_adapters",
     "dep:jiff",
     "dep:lol_html",
     "dep:libz-rs-sys",
@@ -56,6 +59,9 @@ getrandom = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 fixed_decimal = { workspace = true, optional = true }
 icu = { workspace = true, optional = true }
+icu_provider = { workspace = true, optional = true }
+icu_provider_blob = { workspace = true, optional = true }
+icu_provider_adapters = { workspace = true, optional = true }
 jiff = { workspace = true, optional = true }
 lol_html = { workspace = true, optional = true }
 libz-rs-sys = { workspace = true, optional = true }

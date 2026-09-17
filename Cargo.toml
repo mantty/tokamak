@@ -52,7 +52,10 @@ futures-util = { version = "0.3.32", default-features = false, features = ["std"
 getrandom = "0.4.2"
 hmac = { version = "0.13.0", features = ["zeroize"] }
 fixed_decimal = "0.7.2"
-icu = { version = "2.3.1", default-features = false, features = ["compiled_data", "unstable"] }
+icu = { version = "2.3.1", default-features = false, features = ["serde", "sync", "unstable"] }
+icu_provider = "2.3.1"
+icu_provider_blob = { version = "2.3.0", features = ["alloc"] }
+icu_provider_adapters = "2.3.0"
 jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-bundle-always"] }
 lol_html = "3.0.1"
 libz-rs-sys = "=0.6.8"
