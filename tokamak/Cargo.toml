@@ -146,6 +146,10 @@ tempfile.workspace = true
 [build-dependencies]
 rquickjs.workspace = true
 
+# The system zoneinfo directory is unverified inside the iOS sandbox.
+[target.'cfg(target_os = "ios")'.dependencies]
+jiff = { workspace = true, features = ["tzdb-bundle-always"], optional = true }
+
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true
 webpki-roots = { workspace = true, optional = true }

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+pub(crate) mod brotli;
 pub(crate) mod headers;
 pub(crate) mod http;
 pub(crate) mod sockets;

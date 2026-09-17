@@ -10,9 +10,10 @@
 //! bundled blob is corrupt, which the `Intl` differential tests catch.
 //!
 //! To regenerate `icu_data.postcard` (e.g. after bumping `icu`): build the
-//! runtime, then run `icu4x-datagen` (installed with `--features unstable`) with
-//! `--markers-for-bin` pointing at a release `cdylib` build of the runtime
-//! (`cargo rustc -p tokamak --release --features native --lib --crate-type cdylib`) and
+//! runtime library, then run `icu4x-datagen` (installed with `--features unstable`)
+//! with `--markers-for-bin` pointing at it to list the markers it references,
+//! remove the four listed in `scripts/icu-excluded-markers.txt`, and run again
+//! with that list as `--markers`, `--deduplication maximal`, `--format blob` and
 //! `--locales` set to the tags in `scripts/icu-locales.txt` — the locales
 //! workerd localizes datetime names for, plus every `en-*` variant — then
 //! `zstd -19` the output to `icu_data.postcard.zst`. Keep `SUPPORTED` below in

@@ -1,4 +1,4 @@
-mod brotli;
+pub(crate) mod brotli;
 pub(super) mod http;
 pub(super) mod node;
 mod zlib;

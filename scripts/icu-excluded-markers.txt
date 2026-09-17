@@ -1,0 +1,7 @@
+# ICU4X data markers referenced by the runtime binary but unreachable at run
+# time: `timeZoneName` maps only to the specific zone styles, which never read
+# generic non-location names or exemplar cities.
+TimezoneNamesCitiesOverrideV1
+TimezoneNamesCitiesRootV1
+TimezoneNamesGenericLongV1
+TimezoneNamesGenericShortV1

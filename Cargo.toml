@@ -68,7 +68,7 @@ webpki-roots = "1"
 x25519-dalek = { version = "3", default-features = false, features = ["static_secrets", "getrandom"] }
 anyhow = "1.0.102"
 assert_cmd = "2.2.2"
-async-compression = { version = "0.4.46", features = ["tokio", "gzip", "brotli"] }
+async-compression = { version = "0.4.46", features = ["tokio", "gzip"] }
 base64 = "0.22.1"
 brotlic-sys = "=0.2.2"
 block2 = "0.6.2"
@@ -86,7 +86,7 @@ icu = { version = "2.3.1", default-features = false, features = ["serde", "sync"
 icu_provider = "2.3.1"
 icu_provider_blob = { version = "2.3.0", features = ["alloc"] }
 icu_provider_adapters = "2.3.0"
-jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-bundle-always"] }
+jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-bundle-platform", "tzdb-zoneinfo", "tzdb-concatenated"] }
 lol_html = "3.0.1"
 libz-rs-sys = "=0.6.8"
 jsonc-parser = "0.32.4"
@@ -121,7 +121,7 @@ wry = { version = "0.55.1", default-features = false }
 webview2-com = "0.38.2"
 windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 x509-parser = { version = "0.18.1", features = ["verify"] }
-zstd = "0.13.3"
+zstd = { version = "0.13.3", default-features = false, features = ["arrays"] }
 rquickjs = { version = "0.12.2", features = ["loader", "macro", "futures"] }
 tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "time", "sync", "net", "io-util", "macros"] }
 tokio-util = { version = "0.7.19", features = ["io", "rt"] }
