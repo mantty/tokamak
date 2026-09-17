@@ -10,6 +10,36 @@ build = "build.rs"
 default = []
 native = [
     "dep:async-compression",
+    "dep:aes",
+    "dep:aes-kw",
+    "dep:cbc",
+    "dep:ctr",
+    "dep:crypto-bigint",
+    "dep:crypto-primes",
+    "dep:der",
+    "dep:ed25519-dalek",
+    "dep:ghash",
+    "dep:hkdf",
+    "dep:hyper",
+    "dep:md-5",
+    "dep:p256",
+    "dep:p384",
+    "dep:p521",
+    "dep:pbkdf2",
+    "dep:pkcs8",
+    "dep:rand_core",
+    "dep:rsa",
+    "dep:rustls",
+    "dep:rustls-pki-types",
+    "dep:scrypt",
+    "dep:sha1",
+    "dep:sha2",
+    "dep:spki",
+    "dep:subtle",
+    "dep:tokio-rustls",
+    "dep:x25519-dalek",
+    "dep:rustls-platform-verifier",
+    "dep:webpki-roots",
     "dep:base64",
     "dep:brotlic-sys",
     "dep:encoding_rs",
@@ -27,15 +57,11 @@ native = [
     "dep:libz-rs-sys",
     "dep:libc",
     "dep:md4",
-    "dep:native-tls",
-    "dep:openssl",
     "dep:rcgen",
     "dep:reqwest",
-    "dep:hyper",
     "dep:time",
     "dep:tokio",
     "dep:tokio-util",
-    "dep:tokio-native-tls",
     "dep:url",
     "dep:urlpattern",
     "dep:x509-parser",
@@ -46,6 +72,34 @@ test-stubs = ["native"]
 
 [dependencies]
 async-compression = { workspace = true, optional = true }
+aes = { workspace = true, optional = true }
+aes-kw = { workspace = true, optional = true }
+cbc = { workspace = true, optional = true }
+ctr = { workspace = true, optional = true }
+crypto-bigint = { workspace = true, optional = true }
+crypto-primes = { workspace = true, optional = true }
+der = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+ghash = { workspace = true, optional = true }
+hkdf = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
+md-5 = { workspace = true, optional = true }
+p256 = { workspace = true, optional = true }
+p384 = { workspace = true, optional = true }
+p521 = { workspace = true, optional = true }
+pbkdf2 = { workspace = true, optional = true }
+pkcs8 = { workspace = true, optional = true }
+rand_core = { workspace = true, optional = true }
+rsa = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pki-types = { workspace = true, optional = true }
+scrypt = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+spki = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+x25519-dalek = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 brotlic-sys = { workspace = true, optional = true }
 encoding_rs = { workspace = true, optional = true }
@@ -66,12 +120,9 @@ jsonc-parser = { workspace = true, features = ["serde"] }
 libc = { workspace = true, optional = true }
 mime_guess.workspace = true
 md4 = { workspace = true, optional = true }
-native-tls = { workspace = true, optional = true }
-openssl = { workspace = true, optional = true }
 rcgen = { workspace = true, features = ["pem", "x509-parser"], optional = true }
 rquickjs.workspace = true
 reqwest = { workspace = true, optional = true }
-hyper = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
@@ -79,7 +130,6 @@ thiserror.workspace = true
 time = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
-tokio-native-tls = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 urlpattern = { workspace = true, optional = true }
 walkdir.workspace = true
@@ -88,6 +138,9 @@ x509-parser = { workspace = true, features = ["verify"], optional = true }
 zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
+rustls.workspace = true
+rustls-pki-types.workspace = true
+sha1.workspace = true
 tempfile.workspace = true
 
 [build-dependencies]
@@ -95,9 +148,11 @@ rquickjs.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true
+webpki-roots = { workspace = true, optional = true }
 
-[target.'cfg(target_vendor = "apple")'.dependencies]
-p256.workspace = true
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rustls-platform-verifier = { workspace = true, optional = true }
+
 
 [lints]
 workspace = true

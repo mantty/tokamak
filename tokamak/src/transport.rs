@@ -6,14 +6,13 @@ use std::thread;
 use std::time::Duration;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use openssl::sha::sha1;
-use openssl::ssl::{SslAcceptor, SslMethod, SslStream, SslVerifyMode};
-use openssl::x509::X509;
 use reqwest::{
     StatusCode,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
+use rustls::{ServerConnection, StreamOwned};
 use serde::Serialize;
+use sha1::{Digest, Sha1};
 use tokio_util::sync::CancellationToken;
 
 use crate::gateway::{GatewayConfig, WebSocketBridge, WebSocketInbound, WebSocketOutbound};
@@ -26,6 +25,7 @@ const RESPONSE_STREAM_QUEUE: usize = 8;
 const RESPONSE_STREAM_POLL: Duration = Duration::from_millis(100);
 
 pub(super) type BodyChunk = Result<Vec<u8>, String>;
+pub(super) type TlsStream = StreamOwned<ServerConnection, TcpStream>;
 
 #[derive(Serialize)]
 pub(super) struct HttpRequest {
@@ -141,34 +141,16 @@ pub(super) fn is_connect(data: &[u8], host: &str) -> bool {
             .is_some_and(|target| target.eq_ignore_ascii_case(&format!("{host}:443")))
 }
 
-pub(super) fn tls_acceptor(config: &GatewayConfig) -> Result<SslAcceptor, Error> {
-    let mut builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls())
-        .map_err(|error| tls_error(&error))?;
-    let certificate = X509::from_pem(&std::fs::read(&config.certificates.certificate)?)
-        .map_err(|error| tls_error(&error))?;
-    let private_key = openssl::pkey::PKey::private_key_from_pem(&std::fs::read(
-        &config.certificates.private_key,
-    )?)
-    .map_err(|error| tls_error(&error))?;
-    builder
-        .set_certificate(&certificate)
-        .map_err(|error| tls_error(&error))?;
-    builder
-        .set_private_key(&private_key)
-        .map_err(|error| tls_error(&error))?;
-    builder
-        .check_private_key()
-        .map_err(|error| tls_error(&error))?;
-    if config.require_client_certificate {
-        let ca = X509::from_pem(&std::fs::read(&config.certificates.ca)?)
-            .map_err(|error| tls_error(&error))?;
-        builder
-            .cert_store_mut()
-            .add_cert(ca)
-            .map_err(|error| tls_error(&error))?;
-        builder.set_verify(SslVerifyMode::PEER);
+/// Completes the TLS handshake for an accepted gateway connection.
+pub(super) fn tls_accept(config: &GatewayConfig, stream: TcpStream) -> Result<TlsStream, Error> {
+    let config =
+        crate::tls::server_config(&config.certificates, config.require_client_certificate)?;
+    let connection = ServerConnection::new(config).map_err(crate::tls::tls_error)?;
+    let mut stream = StreamOwned::new(connection, stream);
+    while stream.conn.is_handshaking() {
+        stream.conn.complete_io(&mut stream.sock)?;
     }
-    Ok(builder.build())
+    Ok(stream)
 }
 
 pub(super) fn read_request(stream: &mut impl Read, host: &str) -> Result<HttpRequest, Error> {
@@ -299,7 +281,7 @@ pub(super) fn is_websocket(request: &HttpRequest) -> bool {
 }
 
 pub(super) fn websocket_session(
-    stream: &mut SslStream<TcpStream>,
+    stream: &mut TlsStream,
     key: Option<&str>,
     bridge: &WebSocketBridge,
 ) -> Result<(), Error> {
@@ -705,7 +687,7 @@ pub(super) fn websocket_close_payload(code: u16, reason: &str) -> Result<Vec<u8>
 }
 
 pub(super) fn websocket_accept(key: &str) -> String {
-    let digest = sha1(format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes());
+    let digest = Sha1::digest(format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes());
     STANDARD.encode(digest)
 }
 
@@ -717,7 +699,7 @@ pub(super) fn write_plain_response(
 }
 
 pub(super) fn write_response(
-    stream: &mut SslStream<TcpStream>,
+    stream: &mut TlsStream,
     response: HttpResponse,
     method: &str,
     cancelled: &AtomicBool,
@@ -873,10 +855,6 @@ fn write_response_headers(
     stream.write_all(b"\r\n")?;
     stream.flush()?;
     Ok(())
-}
-
-fn tls_error(error: &openssl::error::ErrorStack) -> Error {
-    Error::Tls(error.to_string())
 }
 
 #[cfg(test)]

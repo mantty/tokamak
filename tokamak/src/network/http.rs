@@ -46,12 +46,15 @@ pub(crate) fn status_text(status: u16) -> &'static str {
     }
 }
 
-pub(crate) fn client() -> reqwest::Result<Client> {
+pub(crate) fn client() -> io::Result<Client> {
+    let tls = crate::tls::client_config().map_err(io::Error::other)?;
     Client::builder()
+        .use_preconfigured_tls((*tls).clone())
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(15))
         .no_proxy()
         .build()
+        .map_err(io::Error::other)
 }
 
 struct Request {

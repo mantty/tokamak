@@ -5,9 +5,8 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
-use openssl::pkcs12::Pkcs12;
-use openssl::pkey::PKey;
-use openssl::x509::X509;
+use p12_keystore::{Certificate, KeyStore, KeyStoreEntry, PrivateKey, PrivateKeyChain};
+use rustls_pki_types::{CertificateDer, pem::PemObject};
 use serde::Deserialize;
 use tao::event::{Event as TaoEvent, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
@@ -299,14 +298,12 @@ impl Drop for ClientIdentity {
 }
 
 fn pfx(certificate: &[u8], private_key: &[u8]) -> Result<Vec<u8>> {
-    let certificate = X509::from_der(certificate)?;
-    let private_key = PKey::private_key_from_der(private_key)?;
-    Ok(Pkcs12::builder()
-        .name("tokamak")
-        .pkey(&private_key)
-        .cert(&certificate)
-        .build2("")?
-        .to_der()?)
+    let certificate = Certificate::from_der(certificate)?;
+    let private_key = PrivateKey::from_der(private_key)?;
+    let chain = PrivateKeyChain::new("tokamak", private_key, [certificate]);
+    let mut store = KeyStore::new();
+    store.add_entry("tokamak", KeyStoreEntry::PrivateKeyChain(chain));
+    Ok(store.writer("").write()?)
 }
 
 fn import_pfx(data: &[u8]) -> Result<HCERTSTORE> {
@@ -535,10 +532,10 @@ fn certificate_matches(
     certificate: &ICoreWebView2ClientCertificate,
     expected: &[u8],
 ) -> windows::core::Result<bool> {
-    Ok(X509::from_pem(certificate_pem(certificate)?.as_bytes())
-        .ok()
-        .and_then(|certificate| certificate.to_der().ok())
-        .is_some_and(|der| der == expected))
+    Ok(
+        CertificateDer::from_pem_slice(certificate_pem(certificate)?.as_bytes())
+            .is_ok_and(|der| der.as_ref() == expected),
+    )
 }
 
 fn certificate_pem(certificate: &impl PemCertificate) -> windows::core::Result<String> {

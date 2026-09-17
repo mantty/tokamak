@@ -6,10 +6,12 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Arc;
 use std::time::Duration;
 
-use openssl::ssl::{SslConnector, SslFiletype, SslMethod};
 use rcgen::{CertificateParams, KeyPair};
+use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
 use serde_json::json;
 use tokamak::compile_worker;
 use tokamak::{
@@ -124,8 +126,6 @@ fn serves_a_packaged_worker_websocket_over_the_mtls_gateway() -> TestResult {
         &WorkerEnvironment::default(),
     )?;
     let host = HOST;
-    let client_certificate = state.join("client.cert.pem");
-    let client_key = state.join("client.key.pem");
     let mut proxy = TcpStream::connect(("127.0.0.1", runtime.port()))?;
     proxy.set_read_timeout(Some(Duration::from_secs(2)))?;
     proxy
@@ -135,12 +135,7 @@ fn serves_a_packaged_worker_websocket_over_the_mtls_gateway() -> TestResult {
         read_header_block(&mut proxy).map_err(|error| format!("proxy response: {error}"))?;
     assert!(String::from_utf8(proxy_response)?.starts_with("HTTP/1.1 200"));
 
-    let mut connector = SslConnector::builder(SslMethod::tls())?;
-    connector.set_ca_file(state.join("ca.cert.pem"))?;
-    connector.set_certificate_file(client_certificate, SslFiletype::PEM)?;
-    connector.set_private_key_file(client_key, SslFiletype::PEM)?;
-    let connector = connector.build();
-    let mut tls = connector.connect(host, proxy)?;
+    let mut tls = connect_tls(&state, host, proxy)?;
     let key = "dGhlIHNhbXBsZSBub25jZQ==";
     tls.write_all(
         format!(
@@ -358,4 +353,30 @@ fn connect(
         command.args(["", ""]);
     }
     Ok(command.output()?)
+}
+
+fn connect_tls(
+    state: &Path,
+    host: &str,
+    stream: TcpStream,
+) -> TestResult<StreamOwned<ClientConnection, TcpStream>> {
+    let mut roots = RootCertStore::empty();
+    for certificate in CertificateDer::pem_file_iter(state.join("ca.cert.pem"))? {
+        roots.add(certificate?)?;
+    }
+    let chain = CertificateDer::pem_file_iter(state.join("client.cert.pem"))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let key = PrivateKeyDer::from_pem_file(state.join("client.key.pem"))?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()?
+        .with_root_certificates(roots)
+        .with_client_auth_cert(chain, key)?;
+    let connection =
+        ClientConnection::new(Arc::new(config), ServerName::try_from(host.to_owned())?)?;
+    let mut tls = StreamOwned::new(connection, stream);
+    while tls.conn.is_handshaking() {
+        tls.conn.complete_io(&mut tls.sock)?;
+    }
+    Ok(tls)
 }
