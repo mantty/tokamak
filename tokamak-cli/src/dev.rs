@@ -19,6 +19,7 @@ use super::devices::PreparedDevice;
 use super::{devices, pipeline, variables};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_mins(1);
+const APP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(60);
 const SERVER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(any(unix, windows))]
 const PROCESS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -52,8 +53,9 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     })?;
     let wrangler = load_development_config(&project, request.wrangler_config_path.as_deref())?;
     warn_unsupported_bindings(&wrangler);
-    let device = devices::prepare(&request.device_id)?;
     let server = ServerEndpoint::parse(&request.server)?;
+    server.ensure_unused()?;
+    let device = devices::prepare(&request.device_id)?;
     let session_token = session_token()?;
     let relay_host = relay_host(&device, request.host_address.as_deref())?;
     if device.platform == Platform::Ios && request.host_address.is_none() {
@@ -216,15 +218,25 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
         return Ok(());
     }
     let mut app = launch_app(&summary, session.device, session.relay.port())?;
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+    if let Err(error) = wait_for_app_connection(
+        session.framework,
+        session.relay,
+        &session.shutdown.requested,
+        &server,
+        session.device,
+        &mut stdout,
+        APP_CONNECTION_TIMEOUT,
+    ) {
+        app.stop();
+        return Err(error);
+    }
     if session.shutdown.requested() {
         app.stop();
         stop_process(session.framework)?;
         return Ok(());
     }
-    println!(
-        "Development app is running on {} ({})",
-        session.device.id, session.device.kind
-    );
     supervise(session.framework, &mut app, session.shutdown)
 }
 
@@ -278,6 +290,44 @@ fn wait_for_server(
                 "development server did not become ready at {} within {} seconds; pass `--server` with its actual HTTP endpoint",
                 endpoint.display_url(),
                 SERVER_READY_TIMEOUT.as_secs()
+            );
+        }
+        thread::sleep(SERVER_POLL_INTERVAL);
+    }
+}
+
+fn wait_for_app_connection(
+    framework: &mut Child,
+    relay: &DevRelay,
+    shutdown_requested: &AtomicBool,
+    server: &ServerEndpoint,
+    device: &PreparedDevice,
+    output: &mut impl Write,
+    timeout: Duration,
+) -> Result<()> {
+    writeln!(output, "Waiting for the development app to connect...")?;
+    output.flush()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if shutdown_requested.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if let Some(status) = framework.try_wait()? {
+            bail!("development command exited before the app connected ({status})");
+        }
+        if relay.app_connected() {
+            writeln!(
+                output,
+                "Development app connected from {} ({})",
+                device.id, device.kind
+            )?;
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "development app did not connect to {} within {} seconds; check app startup and device connectivity",
+                server.display_url(),
+                timeout.as_secs()
             );
         }
         thread::sleep(SERVER_POLL_INTERVAL);
@@ -628,7 +678,12 @@ fn install_and_launch_ios_simulator(
             .into_iter()
             .map(String::from),
         "launch the app in the iOS Simulator",
-    )
+    )?;
+    #[cfg(target_os = "macos")]
+    if let Err(error) = devices::open_ios_simulator_ui(device_id) {
+        eprintln!("warning: could not open the iOS Simulator UI: {error:#}");
+    }
+    Ok(())
 }
 
 fn install_and_launch_ios_device(
@@ -855,6 +910,16 @@ impl ServerEndpoint {
         Err(last_error.unwrap_or_else(|| io::Error::other("development server did not resolve")))
     }
 
+    fn ensure_unused(&self) -> Result<()> {
+        if self.connect().is_ok() {
+            bail!(
+                "development server endpoint {} is already accepting connections; stop the existing server or use a different `--server` endpoint",
+                self.display_url()
+            );
+        }
+        Ok(())
+    }
+
     fn display_url(&self) -> &str {
         &self.url
     }
@@ -888,6 +953,7 @@ fn parse_authority(authority: &str) -> Result<(String, u16)> {
 struct DevRelay {
     address: SocketAddr,
     advertised_host: IpAddr,
+    app_connected: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -899,15 +965,18 @@ impl DevRelay {
             .set_nonblocking(true)
             .context("configure development relay")?;
         let address = listener.local_addr()?;
+        let app_connected = Arc::new(AtomicBool::new(false));
+        let connected = Arc::clone(&app_connected);
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
         let thread = thread::Builder::new()
             .name("tokamak-dev-relay".to_owned())
-            .spawn(move || relay_loop(listener, server, session_token, stopped))
+            .spawn(move || relay_loop(listener, server, session_token, connected, stopped))
             .context("start development relay")?;
         Ok(Self {
             address,
             advertised_host: host,
+            app_connected,
             stop,
             thread: Some(thread),
         })
@@ -922,6 +991,10 @@ impl DevRelay {
             IpAddr::V4(host) => format!("http://{host}:{}", self.port()),
             IpAddr::V6(host) => format!("http://[{host}]:{}", self.port()),
         }
+    }
+
+    fn app_connected(&self) -> bool {
+        self.app_connected.load(Ordering::Acquire)
     }
 }
 
@@ -940,6 +1013,7 @@ fn relay_loop(
     listener: TcpListener,
     server: ServerEndpoint,
     session_token: String,
+    app_connected: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::Acquire) {
@@ -947,10 +1021,13 @@ fn relay_loop(
             Ok((stream, _)) => {
                 let server = server.clone();
                 let session_token = session_token.clone();
+                let app_connected = Arc::clone(&app_connected);
                 let _ = thread::Builder::new()
                     .name("tokamak-dev-relay-connection".to_owned())
                     .spawn(move || {
-                        if let Err(error) = relay_connection(stream, &server, &session_token) {
+                        if let Err(error) =
+                            relay_connection(stream, &server, &session_token, &app_connected)
+                        {
                             eprintln!("tokamak development relay connection failed: {error}");
                         }
                     });
@@ -967,6 +1044,7 @@ fn relay_connection(
     mut downstream: TcpStream,
     server: &ServerEndpoint,
     session_token: &str,
+    app_connected: &AtomicBool,
 ) -> io::Result<()> {
     downstream.set_nonblocking(false)?;
     let initial = read_headers(&mut downstream)?;
@@ -981,6 +1059,7 @@ fn relay_connection(
     let request = rewrite_request(&initial, &server.authority)?;
     upstream.write_all(&request)?;
     upstream.flush()?;
+    app_connected.store(true, Ordering::Release);
 
     let mut downstream_read = downstream.try_clone()?;
     let mut upstream_write = upstream.try_clone()?;
@@ -1103,11 +1182,14 @@ fn header_parts(line: &[u8]) -> Option<(&[u8], &[u8])> {
 mod tests {
     use std::io::{Read, Write};
     use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
+    use std::process::Command;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
+    use std::time::Duration;
 
     use super::{
         DevRelay, PreparedDevice, ServerEndpoint, authorized, is_transient_devicectl_error,
-        parse_authority, relay_host, rewrite_request, usable_ipv4_address,
+        parse_authority, relay_host, rewrite_request, usable_ipv4_address, wait_for_app_connection,
     };
     use tokamak_cli::Platform;
 
@@ -1121,6 +1203,153 @@ mod tests {
             parse_authority("[::1]:3000").ok(),
             Some(("::1".to_owned(), 3000))
         );
+    }
+
+    #[test]
+    fn rejects_an_already_listening_development_server() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let endpoint = ServerEndpoint::parse(&format!("http://{}", listener.local_addr()?))?;
+
+        let error = endpoint.ensure_unused().unwrap_err();
+        assert!(error.to_string().contains("already accepting connections"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn waits_for_app_connection_before_reporting_ready() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let server = ServerEndpoint::parse(&format!("http://{}", listener.local_addr()?))?;
+        let relay = DevRelay::bind(
+            server.clone(),
+            "token".to_owned(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        )?;
+        let mut framework = Command::new("sleep").arg("30").spawn()?;
+        let shutdown = AtomicBool::new(false);
+        let device = PreparedDevice {
+            id: "device".to_owned(),
+            kind: "iPhone".to_owned(),
+            platform: Platform::Ios,
+        };
+        let mut output = Vec::new();
+
+        let not_ready = wait_for_app_connection(
+            &mut framework,
+            &relay,
+            &shutdown,
+            &server,
+            &device,
+            &mut output,
+            Duration::ZERO,
+        );
+        let not_ready_output = String::from_utf8(output)?;
+        assert!(not_ready_output.contains("Waiting for the development app to connect"));
+        assert!(!not_ready_output.contains("Development app connected"));
+
+        relay.app_connected.store(true, Ordering::Release);
+        let mut output = Vec::new();
+        let ready = wait_for_app_connection(
+            &mut framework,
+            &relay,
+            &shutdown,
+            &server,
+            &device,
+            &mut output,
+            Duration::ZERO,
+        );
+        let _ = framework.kill();
+        let _ = framework.wait();
+
+        assert!(
+            not_ready
+                .unwrap_err()
+                .to_string()
+                .contains("did not connect")
+        );
+        assert!(ready.is_ok());
+        assert_eq!(
+            String::from_utf8(output)?,
+            "Waiting for the development app to connect...\nDevelopment app connected from device (iPhone)\n"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stops_waiting_when_shutdown_is_requested() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let server = ServerEndpoint::parse(&format!("http://{}", listener.local_addr()?))?;
+        let relay = DevRelay::bind(
+            server.clone(),
+            "token".to_owned(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        )?;
+        let mut framework = Command::new("sleep").arg("30").spawn()?;
+        let shutdown = AtomicBool::new(true);
+        let device = PreparedDevice {
+            id: "device".to_owned(),
+            kind: "iPhone".to_owned(),
+            platform: Platform::Ios,
+        };
+        let mut output = Vec::new();
+
+        let result = wait_for_app_connection(
+            &mut framework,
+            &relay,
+            &shutdown,
+            &server,
+            &device,
+            &mut output,
+            Duration::ZERO,
+        );
+        let _ = framework.kill();
+        let _ = framework.wait();
+
+        assert!(result.is_ok());
+        assert!(!String::from_utf8(output)?.contains("Development app connected"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reports_framework_exit_while_waiting_for_app_connection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let server = ServerEndpoint::parse(&format!("http://{}", listener.local_addr()?))?;
+        let relay = DevRelay::bind(
+            server.clone(),
+            "token".to_owned(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        )?;
+        let mut framework = Command::new("true").spawn()?;
+        let _ = framework.wait()?;
+        let shutdown = AtomicBool::new(false);
+        let device = PreparedDevice {
+            id: "device".to_owned(),
+            kind: "iPhone".to_owned(),
+            platform: Platform::Ios,
+        };
+        let mut output = Vec::new();
+
+        let error = wait_for_app_connection(
+            &mut framework,
+            &relay,
+            &shutdown,
+            &server,
+            &device,
+            &mut output,
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("exited before the app connected")
+        );
+        assert!(!String::from_utf8(output)?.contains("Development app connected"));
+        Ok(())
     }
 
     #[test]
@@ -1289,6 +1518,16 @@ mod tests {
             "token".to_owned(),
             IpAddr::V4(Ipv4Addr::LOCALHOST),
         )?;
+        assert!(!relay.app_connected());
+
+        let mut unauthorized = TcpStream::connect((Ipv4Addr::LOCALHOST, relay.port()))?;
+        unauthorized.write_all(b"GET / HTTP/1.1\r\nHost: app.tokamak.local\r\n\r\n")?;
+        unauthorized.shutdown(std::net::Shutdown::Write)?;
+        let mut unauthorized_response = String::new();
+        unauthorized.read_to_string(&mut unauthorized_response)?;
+        assert!(unauthorized_response.starts_with("HTTP/1.1 401 Unauthorized"));
+        assert!(!relay.app_connected());
+
         let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, relay.port()))?;
         write!(
             client,
@@ -1299,6 +1538,7 @@ mod tests {
         client.read_to_string(&mut response)?;
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.ends_with("\r\n\r\nok"));
+        assert!(relay.app_connected());
         upstream_thread
             .join()
             .map_err(|_| "upstream thread panicked")??;

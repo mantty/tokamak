@@ -145,6 +145,7 @@ swift_args=(
   -lc++
   -lresolv
   -Xlinker -dead_strip
+  -Xlinker -no_exported_symbols
 )
 for plugin in "$input/plugins"/*; do
   [[ -d "$plugin" ]] || continue
@@ -155,6 +156,7 @@ for plugin in "$input/plugins"/*; do
 done
 
 xcrun --sdk "$sdk" swiftc "${swift_args[@]}" -o "$executable_dir/$app_slug"
+xcrun --sdk "$sdk" strip "$executable_dir/$app_slug"
 
 plist_args=(plist --input "$input" --output "$contents/Info.plist")
 if [[ -f "$icon_info_plist" ]]; then

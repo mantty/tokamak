@@ -49,12 +49,13 @@ lipo -create \
   "$workspace/target/x86_64-apple-darwin/release/tokamak-apple-signing" \
   -output "$output/tools/tokamak-apple-signing"
 
-cargo build \
+cargo rustc \
   --package tokamak \
   --release \
   --target "$rust_target" \
   --features native \
-  --lib
+  --lib \
+  --crate-type staticlib
 
 library="$workspace/target/$rust_target/release/libtokamak.a"
 if [[ ! -f "$library" ]]; then

@@ -11,7 +11,8 @@
 //!
 //! To regenerate `icu_data.postcard` (e.g. after bumping `icu`): build the
 //! runtime, then run `icu4x-datagen` (installed with `--features unstable`) with
-//! `--markers-for-bin` pointing at the release `libtokamak.dylib` and
+//! `--markers-for-bin` pointing at a release `cdylib` build of the runtime
+//! (`cargo rustc -p tokamak --release --features native --lib --crate-type cdylib`) and
 //! `--locales` set to the tags in `scripts/icu-locales.txt` — the locales
 //! workerd localizes datetime names for, plus every `en-*` variant — then
 //! `zstd -19` the output to `icu_data.postcard.zst`. Keep `SUPPORTED` below in

@@ -20,7 +20,7 @@ rquickjs-sys = { path = "rquickjs" }
 
 [profile.release]
 codegen-units = 1
-lto = "thin"
+lto = "fat"
 opt-level = "z"
 panic = "abort"
 strip = "symbols"
