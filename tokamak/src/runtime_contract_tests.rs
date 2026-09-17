@@ -657,7 +657,7 @@ fn boundary_request(
 
 #[test]
 fn response_encoding_matches_cloudflare() -> TestResult {
-    use async_compression::tokio::bufread::{BrotliDecoder, GzipDecoder};
+    use async_compression::tokio::bufread::GzipDecoder;
     use tokio::io::AsyncReadExt;
 
     let reference = Command::new("node")
@@ -697,7 +697,12 @@ fn response_encoding_matches_cloudflare() -> TestResult {
                 .block_on(GzipDecoder::new(raw.as_slice()).read_to_end(&mut decoded))
                 .is_ok(),
             "br" => runtime
-                .block_on(BrotliDecoder::new(raw.as_slice()).read_to_end(&mut decoded))
+                .block_on(
+                    crate::network::brotli::Decoder::new(Box::pin(std::io::Cursor::new(
+                        raw.clone(),
+                    )))
+                    .read_to_end(&mut decoded),
+                )
                 .is_ok(),
             _ => false,
         };

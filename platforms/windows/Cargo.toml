@@ -13,7 +13,8 @@ path = "source/main.rs"
 anyhow.workspace = true
 tokamak = { path = "../../tokamak", features = ["native"] }
 base64.workspace = true
-openssl.workspace = true
+p12-keystore.workspace = true
+rustls-pki-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tao.workspace = true

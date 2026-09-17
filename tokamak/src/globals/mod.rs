@@ -1,6 +1,6 @@
 mod async_context;
 mod buffers;
-mod compression;
+pub(crate) mod compression;
 pub(crate) use compression::http::ResponseEncoder;
 mod crypto;
 mod html_rewriter;

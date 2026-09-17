@@ -3,6 +3,7 @@
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -11,8 +12,9 @@ use std::time::{Duration, Instant};
 use std::io;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use openssl::sha::sha1;
-use openssl::ssl::{SslConnector, SslFiletype, SslMethod, SslStream};
+use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
+use sha1::{Digest, Sha1};
 use tokamak::{DevProxyConfig, DevelopmentConfig, Runtime};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -333,7 +335,10 @@ fn accept_before(listener: &TcpListener, timeout: Duration) -> TestResult<Option
     }
 }
 
-fn connect_gateway(runtime: &Runtime, state: &Path) -> TestResult<SslStream<TcpStream>> {
+fn connect_gateway(
+    runtime: &Runtime,
+    state: &Path,
+) -> TestResult<StreamOwned<ClientConnection, TcpStream>> {
     let mut proxy = TcpStream::connect(("127.0.0.1", runtime.port()))?;
     proxy
         .write_all(format!("CONNECT {HOST}:443 HTTP/1.1\r\nHost: {HOST}:443\r\n\r\n").as_bytes())?;
@@ -342,14 +347,10 @@ fn connect_gateway(runtime: &Runtime, state: &Path) -> TestResult<SslStream<TcpS
     if !String::from_utf8(response)?.starts_with("HTTP/1.1 200") {
         return Err("gateway CONNECT failed".into());
     }
-    let mut connector = SslConnector::builder(SslMethod::tls())?;
-    connector.set_ca_file(state.join("ca.cert.pem"))?;
-    connector.set_certificate_file(state.join("client.cert.pem"), SslFiletype::PEM)?;
-    connector.set_private_key_file(state.join("client.key.pem"), SslFiletype::PEM)?;
-    Ok(connector.build().connect(HOST, proxy)?)
+    connect_tls(state, HOST, proxy)
 }
 
-fn read_http_response(stream: &mut SslStream<TcpStream>) -> TestResult<String> {
+fn read_http_response(stream: &mut StreamOwned<ClientConnection, TcpStream>) -> TestResult<String> {
     let headers = read_header_block(stream)?;
     let text = String::from_utf8(headers)?;
     let length = header_value(&text, "content-length")
@@ -404,7 +405,7 @@ fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
 }
 
 fn websocket_accept(key: &str) -> String {
-    STANDARD.encode(sha1(
+    STANDARD.encode(Sha1::digest(
         format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes(),
     ))
 }
@@ -449,4 +450,30 @@ fn read_frame(stream: &mut impl Read) -> TestResult<(u8, Vec<u8>)> {
         }
     }
     Ok((header[0] & 0x0f, payload))
+}
+
+fn connect_tls(
+    state: &Path,
+    host: &str,
+    stream: TcpStream,
+) -> TestResult<StreamOwned<ClientConnection, TcpStream>> {
+    let mut roots = RootCertStore::empty();
+    for certificate in CertificateDer::pem_file_iter(state.join("ca.cert.pem"))? {
+        roots.add(certificate?)?;
+    }
+    let chain = CertificateDer::pem_file_iter(state.join("client.cert.pem"))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let key = PrivateKeyDer::from_pem_file(state.join("client.key.pem"))?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()?
+        .with_root_certificates(roots)
+        .with_client_auth_cert(chain, key)?;
+    let connection =
+        ClientConnection::new(Arc::new(config), ServerName::try_from(host.to_owned())?)?;
+    let mut tls = StreamOwned::new(connection, stream);
+    while tls.conn.is_handshaking() {
+        tls.conn.complete_io(&mut tls.sock)?;
+    }
+    Ok(tls)
 }

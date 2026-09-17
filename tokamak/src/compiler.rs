@@ -3,7 +3,21 @@ use rquickjs::{
     CatchResultExt, Context, Ctx, Module, Runtime, WriteOptions, WriteOptionsEndianness,
 };
 
-pub(crate) fn compile_module(name: &str, source: &[u8]) -> Result<Vec<u8>, String> {
+/// Whether the module's source text is written into its bytecode.
+#[allow(dead_code)] // build.rs only compiles stripped builtins
+#[derive(Clone, Copy)]
+pub(crate) enum SourceText {
+    /// Source is retained, so `Function.prototype.toString` returns it.
+    Embedded,
+    /// Source is omitted; line numbers are kept for stack traces.
+    Stripped,
+}
+
+pub(crate) fn compile_module(
+    name: &str,
+    source: &[u8],
+    source_text: SourceText,
+) -> Result<Vec<u8>, String> {
     let runtime = Runtime::new().map_err(|error| format!("runtime: {error}"))?;
     // Imports are linked by the runtime loader; compilation needs only declarations.
     runtime.set_loader(CompileResolver, CompileLoader);
@@ -15,6 +29,7 @@ pub(crate) fn compile_module(name: &str, source: &[u8]) -> Result<Vec<u8>, Strin
         module
             .write(WriteOptions {
                 endianness: WriteOptionsEndianness::Little,
+                strip_source: matches!(source_text, SourceText::Stripped),
                 ..WriteOptions::default()
             })
             .map_err(|error| format!("write: {error}"))

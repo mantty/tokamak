@@ -46,12 +46,13 @@ AR_aarch64_linux_android="$host/bin/llvm-ar" \
 RANLIB_aarch64_linux_android="$host/bin/llvm-ranlib" \
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--target=aarch64-linux-android31 --sysroot=$sysroot" \
 CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$compiler" \
-cargo build \
+cargo rustc \
   --package tokamak \
   --release \
   --target "$rust_target" \
   --features native \
-  --lib
+  --lib \
+  --crate-type cdylib
 
 library="$workspace/target/$rust_target/release/libtokamak.so"
 if [[ ! -f "$library" ]]; then

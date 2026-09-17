@@ -1,7 +1,10 @@
 #![allow(clippy::needless_pass_by_value)]
 
+mod provider;
 mod units;
 include!("intl/plurals_data.rs");
+
+use provider::{PROVIDER, resolve};
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -15,7 +18,7 @@ use fixed_decimal::{
 };
 use icu::calendar::{Date, Iso};
 use icu::collator::preferences::{CollationCaseFirst, CollationNumericOrdering};
-use icu::collator::{Collator, CollatorBorrowed, CollatorPreferences};
+use icu::collator::{Collator, CollatorPreferences};
 use icu::datetime::fieldsets::builder::{DateFields, FieldSetBuilder, ZoneStyle};
 use icu::datetime::fieldsets::enums::CompositeFieldSet;
 use icu::datetime::options::{Length, TimePrecision, YearStyle};
@@ -45,7 +48,7 @@ use icu::locale::names::{
 use icu::locale::subtags::{Language, Region, Script};
 use icu::locale::{Locale, LocaleCanonicalizer, LocaleExpander};
 use icu::plurals::{PluralCategory, PluralRules, PluralRulesWithRanges};
-use icu::segmenter::options::{SentenceBreakInvariantOptions, WordBreakInvariantOptions};
+use icu::segmenter::options::{SentenceBreakOptions, WordBreakOptions};
 use icu::segmenter::{GraphemeClusterSegmenter, SentenceSegmenter, WordSegmenter};
 use icu::time::ZonedDateTime;
 use icu::time::zone::models::AtTime;
@@ -119,7 +122,7 @@ pub(super) fn export_host_functions<'js>(
 const CACHE_LIMIT: usize = 64;
 
 thread_local! {
-    static COLLATORS: RefCell<HashMap<String, CollatorBorrowed<'static>>> =
+    static COLLATORS: RefCell<HashMap<String, Collator>> =
         RefCell::new(HashMap::new());
     static DATE_TIME_FORMATTERS: RefCell<HashMap<String, DateTimeFormatter<CompositeFieldSet>>> =
         RefCell::new(HashMap::new());
@@ -157,7 +160,8 @@ fn with_decimal_formatter<T>(
         &DECIMAL_FORMATTERS,
         &key,
         || {
-            DecimalFormatter::try_new(
+            DecimalFormatter::try_new_unstable(
+                &*PROVIDER,
                 locale.clone().into(),
                 DecimalFormatterOptions::from(strategy),
             )
@@ -170,7 +174,8 @@ fn with_decimal_formatter<T>(
 pub(super) fn canonical_locales(ctx: Ctx<'_>, input: String) -> rquickjs::Result<String> {
     let values: Vec<String> = serde_json::from_str(&input)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
-    let canonicalizer = LocaleCanonicalizer::new_extended();
+    let canonicalizer = LocaleCanonicalizer::try_new_extended_unstable(&*PROVIDER)
+        .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?;
     let mut output = Vec::with_capacity(values.len());
     for value in values {
         let mut locale = value
@@ -210,7 +215,7 @@ pub(super) fn number(
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
-    let locale = first_locale(&ctx, &locales)?;
+    let locale = resolved_locale(&ctx, &locales)?.to_string();
     let options: Value = serde_json::from_str(&options)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
     format_number(&ctx, value, &locale, &options)
@@ -222,7 +227,7 @@ pub(super) fn number_parts(
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
-    let locale = first_locale(&ctx, &locales)?;
+    let locale = resolved_locale(&ctx, &locales)?.to_string();
     let options: Value = serde_json::from_str(&options)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
     format_number_parts(&ctx, value, &locale, &options)
@@ -237,16 +242,15 @@ pub(super) fn plural(
     if !value.is_finite() {
         return Ok("other".to_owned());
     }
-    let locale = first_locale(&ctx, &locales)?
-        .parse::<Locale>()
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let locale = resolved_locale(&ctx, &locales)?;
     let options = icu::plurals::PluralRulesOptions::default().with_type(if kind == "ordinal" {
         icu::plurals::PluralRuleType::Ordinal
     } else {
         icu::plurals::PluralRuleType::Cardinal
     });
-    let rules = PluralRules::try_new(plural_locale(&ctx, &locale)?.into(), options)
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let rules =
+        PluralRules::try_new_unstable(&*PROVIDER, plural_locale(&ctx, &locale)?.into(), options)
+            .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
     let decimal = value
         .to_string()
         .parse::<icu::decimal::input::Decimal>()
@@ -273,16 +277,18 @@ pub(super) fn plural_range(
     if !start.is_finite() || !end.is_finite() {
         return Ok("other".to_owned());
     }
-    let locale = first_locale(&ctx, &locales)?
-        .parse::<Locale>()
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let locale = resolved_locale(&ctx, &locales)?;
     let options = icu::plurals::PluralRulesOptions::default().with_type(if kind == "ordinal" {
         icu::plurals::PluralRuleType::Ordinal
     } else {
         icu::plurals::PluralRuleType::Cardinal
     });
-    let rules = PluralRulesWithRanges::try_new(plural_locale(&ctx, &locale)?.into(), options)
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let rules = PluralRulesWithRanges::try_new_unstable(
+        &*PROVIDER,
+        plural_locale(&ctx, &locale)?.into(),
+        options,
+    )
+    .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
     let start = plural_operand(&ctx, start)?;
     let end = plural_operand(&ctx, end)?;
     Ok(plural_category(rules.category_for_range(&start, &end)).to_owned())
@@ -293,16 +299,15 @@ pub(super) fn plural_categories(
     locales: String,
     kind: String,
 ) -> rquickjs::Result<String> {
-    let locale = first_locale(&ctx, &locales)?
-        .parse::<Locale>()
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let locale = resolved_locale(&ctx, &locales)?;
     let options = icu::plurals::PluralRulesOptions::default().with_type(if kind == "ordinal" {
         icu::plurals::PluralRuleType::Ordinal
     } else {
         icu::plurals::PluralRuleType::Cardinal
     });
-    let rules = PluralRules::try_new(plural_locale(&ctx, &locale)?.into(), options)
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let rules =
+        PluralRules::try_new_unstable(&*PROVIDER, plural_locale(&ctx, &locale)?.into(), options)
+            .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
     let values = rules.categories().map(plural_category).collect::<Vec<_>>();
     serde_json::to_string(&values)
         .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))
@@ -316,9 +321,7 @@ pub(super) fn list(
 ) -> rquickjs::Result<String> {
     let values: Vec<String> = serde_json::from_str(&values)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
-    let locale = first_locale(&ctx, &locales)?
-        .parse::<Locale>()
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let locale = resolved_locale(&ctx, &locales)?;
     let options: Value = serde_json::from_str(&options)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
     let length = match options.get("style").and_then(Value::as_str) {
@@ -332,9 +335,13 @@ pub(super) fn list(
         .and_then(Value::as_str)
         .unwrap_or("conjunction")
     {
-        "disjunction" => ListFormatter::try_new_or(locale.into(), formatter_options),
-        "unit" => ListFormatter::try_new_unit(locale.into(), formatter_options),
-        _ => ListFormatter::try_new_and(locale.into(), formatter_options),
+        "disjunction" => {
+            ListFormatter::try_new_or_unstable(&*PROVIDER, locale.into(), formatter_options)
+        }
+        "unit" => {
+            ListFormatter::try_new_unit_unstable(&*PROVIDER, locale.into(), formatter_options)
+        }
+        _ => ListFormatter::try_new_and_unstable(&*PROVIDER, locale.into(), formatter_options),
     }
     .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
     Ok(formatter.format_to_string(values.iter().map(String::as_str)))
@@ -348,9 +355,7 @@ pub(super) fn list_parts(
 ) -> rquickjs::Result<String> {
     let values: Vec<String> = serde_json::from_str(&values)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
-    let locale = first_locale(&ctx, &locales)?
-        .parse::<Locale>()
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let locale = resolved_locale(&ctx, &locales)?;
     let options: Value = serde_json::from_str(&options)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
     let length = list_length(&options);
@@ -360,9 +365,13 @@ pub(super) fn list_parts(
         .and_then(Value::as_str)
         .unwrap_or("conjunction")
     {
-        "disjunction" => ListFormatter::try_new_or(locale.into(), formatter_options),
-        "unit" => ListFormatter::try_new_unit(locale.into(), formatter_options),
-        _ => ListFormatter::try_new_and(locale.into(), formatter_options),
+        "disjunction" => {
+            ListFormatter::try_new_or_unstable(&*PROVIDER, locale.into(), formatter_options)
+        }
+        "unit" => {
+            ListFormatter::try_new_unit_unstable(&*PROVIDER, locale.into(), formatter_options)
+        }
+        _ => ListFormatter::try_new_and_unstable(&*PROVIDER, locale.into(), formatter_options),
     }
     .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
     let mut collector = PartsCollector::default();
@@ -384,9 +393,7 @@ pub(super) fn relative(
     if !value.is_finite() {
         return Err(Exception::throw_range(&ctx, "Invalid relative time value"));
     }
-    let locale = first_locale(&ctx, &locales)?
-        .parse::<Locale>()
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let locale = resolved_locale(&ctx, &locales)?;
     let options: Value = serde_json::from_str(&options)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
     let mut formatter_options = RelativeTimeFormatterOptions::default();
@@ -397,7 +404,7 @@ pub(super) fn relative(
     };
     macro_rules! try_new {
         ($constructor:ident) => {
-            RelativeTimeFormatter::$constructor(locale.into(), formatter_options)
+            RelativeTimeFormatter::$constructor(&*PROVIDER, locale.into(), formatter_options)
         };
     }
     let formatter: RelativeTimeFormatter = match (
@@ -407,30 +414,30 @@ pub(super) fn relative(
             .and_then(Value::as_str)
             .unwrap_or("long"),
     ) {
-        ("second", "short") => try_new!(try_new_short_second),
-        ("second", "narrow") => try_new!(try_new_narrow_second),
-        ("minute", "short") => try_new!(try_new_short_minute),
-        ("minute", "narrow") => try_new!(try_new_narrow_minute),
-        ("hour", "short") => try_new!(try_new_short_hour),
-        ("hour", "narrow") => try_new!(try_new_narrow_hour),
-        ("day", "short") => try_new!(try_new_short_day),
-        ("day", "narrow") => try_new!(try_new_narrow_day),
-        ("week", "short") => try_new!(try_new_short_week),
-        ("week", "narrow") => try_new!(try_new_narrow_week),
-        ("month", "short") => try_new!(try_new_short_month),
-        ("month", "narrow") => try_new!(try_new_narrow_month),
-        ("quarter", "short") => try_new!(try_new_short_quarter),
-        ("quarter", "narrow") => try_new!(try_new_narrow_quarter),
-        ("year", "short") => try_new!(try_new_short_year),
-        ("year", "narrow") => try_new!(try_new_narrow_year),
-        ("second", _) => try_new!(try_new_long_second),
-        ("minute", _) => try_new!(try_new_long_minute),
-        ("hour", _) => try_new!(try_new_long_hour),
-        ("day", _) => try_new!(try_new_long_day),
-        ("week", _) => try_new!(try_new_long_week),
-        ("month", _) => try_new!(try_new_long_month),
-        ("quarter", _) => try_new!(try_new_long_quarter),
-        ("year", _) => try_new!(try_new_long_year),
+        ("second", "short") => try_new!(try_new_short_second_unstable),
+        ("second", "narrow") => try_new!(try_new_narrow_second_unstable),
+        ("minute", "short") => try_new!(try_new_short_minute_unstable),
+        ("minute", "narrow") => try_new!(try_new_narrow_minute_unstable),
+        ("hour", "short") => try_new!(try_new_short_hour_unstable),
+        ("hour", "narrow") => try_new!(try_new_narrow_hour_unstable),
+        ("day", "short") => try_new!(try_new_short_day_unstable),
+        ("day", "narrow") => try_new!(try_new_narrow_day_unstable),
+        ("week", "short") => try_new!(try_new_short_week_unstable),
+        ("week", "narrow") => try_new!(try_new_narrow_week_unstable),
+        ("month", "short") => try_new!(try_new_short_month_unstable),
+        ("month", "narrow") => try_new!(try_new_narrow_month_unstable),
+        ("quarter", "short") => try_new!(try_new_short_quarter_unstable),
+        ("quarter", "narrow") => try_new!(try_new_narrow_quarter_unstable),
+        ("year", "short") => try_new!(try_new_short_year_unstable),
+        ("year", "narrow") => try_new!(try_new_narrow_year_unstable),
+        ("second", _) => try_new!(try_new_long_second_unstable),
+        ("minute", _) => try_new!(try_new_long_minute_unstable),
+        ("hour", _) => try_new!(try_new_long_hour_unstable),
+        ("day", _) => try_new!(try_new_long_day_unstable),
+        ("week", _) => try_new!(try_new_long_week_unstable),
+        ("month", _) => try_new!(try_new_long_month_unstable),
+        ("quarter", _) => try_new!(try_new_long_quarter_unstable),
+        ("year", _) => try_new!(try_new_long_year_unstable),
         _ => return Err(Exception::throw_range(&ctx, "Invalid relative time unit")),
     }
     .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
@@ -449,9 +456,7 @@ pub(super) fn relative_parts(
     options: String,
 ) -> rquickjs::Result<String> {
     let formatted = relative(ctx.clone(), value, unit.clone(), locales.clone(), options)?;
-    let locale = first_locale(&ctx, &locales)?
-        .parse::<Locale>()
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let locale = resolved_locale(&ctx, &locales)?;
     let absolute = plural_operand(&ctx, value.abs())?;
     let number = with_decimal_formatter(&ctx, &locale, GroupingStrategy::Auto, |formatter| {
         formatter.format_to_string(&absolute)
@@ -505,7 +510,7 @@ pub(super) fn collator_compare(
         &COLLATORS,
         &key,
         || collator(&ctx, &locales, &options),
-        |collator| match collator.compare(&left, &right) {
+        |collator| match collator.as_borrowed().compare(&left, &right) {
             Ordering::Less => -1,
             Ordering::Equal => 0,
             Ordering::Greater => 1,
@@ -513,14 +518,8 @@ pub(super) fn collator_compare(
     )
 }
 
-fn collator(
-    ctx: &Ctx<'_>,
-    locales: &str,
-    options: &str,
-) -> rquickjs::Result<CollatorBorrowed<'static>> {
-    let locale = first_locale(ctx, locales)?
-        .parse::<Locale>()
-        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
+fn collator(ctx: &Ctx<'_>, locales: &str, options: &str) -> rquickjs::Result<Collator> {
+    let locale = resolved_locale(ctx, locales)?;
     let options: Value = serde_json::from_str(options)
         .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?;
     let mut prefs = CollatorPreferences::from(locale);
@@ -550,7 +549,7 @@ fn collator(
             Some(icu::collator::options::AlternateHandling::Shifted);
         collator_options.max_variable = Some(icu::collator::options::MaxVariable::Punctuation);
     }
-    Collator::try_new(prefs, collator_options)
+    Collator::try_new_unstable(&*PROVIDER, prefs, collator_options)
         .map_err(|error| Exception::throw_range(ctx, &error.to_string()))
 }
 
@@ -561,25 +560,42 @@ pub(super) fn segment(
     granularity: String,
 ) -> rquickjs::Result<String> {
     let _locale = first_locale(&ctx, &locales)?;
+    let range = |error: icu_provider::DataError| Exception::throw_range(&ctx, &error.to_string());
     let (mut boundaries, word_types) = match granularity.as_str() {
-        "grapheme" => (
-            GraphemeClusterSegmenter::new()
-                .segment_str(&text)
-                .collect::<Vec<_>>(),
-            None,
-        ),
-        "sentence" => (
-            SentenceSegmenter::new(SentenceBreakInvariantOptions::default())
-                .segment_str(&text)
-                .collect::<Vec<_>>(),
-            None,
-        ),
-        "word" => {
-            let pairs =
-                WordSegmenter::new_for_non_complex_scripts(WordBreakInvariantOptions::default())
+        "grapheme" => {
+            let segmenter =
+                GraphemeClusterSegmenter::try_new_unstable(&*PROVIDER).map_err(range)?;
+            (
+                segmenter
+                    .as_borrowed()
                     .segment_str(&text)
-                    .iter_with_word_type()
-                    .collect::<Vec<_>>();
+                    .collect::<Vec<_>>(),
+                None,
+            )
+        }
+        "sentence" => {
+            let segmenter =
+                SentenceSegmenter::try_new_unstable(&*PROVIDER, SentenceBreakOptions::default())
+                    .map_err(range)?;
+            (
+                segmenter
+                    .as_borrowed()
+                    .segment_str(&text)
+                    .collect::<Vec<_>>(),
+                None,
+            )
+        }
+        "word" => {
+            let segmenter = WordSegmenter::try_new_for_non_complex_scripts_unstable(
+                &*PROVIDER,
+                WordBreakOptions::default(),
+            )
+            .map_err(range)?;
+            let pairs = segmenter
+                .as_borrowed()
+                .segment_str(&text)
+                .iter_with_word_type()
+                .collect::<Vec<_>>();
             let boundaries = pairs.iter().map(|&(boundary, _)| boundary).collect();
             (boundaries, Some(pairs))
         }
@@ -623,9 +639,7 @@ pub(super) fn display_name(
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
-    let locale = first_locale(&ctx, &locales)?
-        .parse::<Locale>()
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let locale = resolved_locale(&ctx, &locales)?;
     let options: Value = serde_json::from_str(&options)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
     let kind = options
@@ -644,13 +658,15 @@ pub(super) fn display_name(
                 .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
             let id = language.into();
             let language_display = if style == "short" {
-                LanguageIdentifierDisplayName::try_new_short_light(
+                LanguageIdentifierDisplayName::try_new_short_light_unstable(
+                    &*PROVIDER,
                     prefs,
                     id,
                     LanguageIdentifierDisplayNameOptions::default(),
                 )
             } else {
-                LanguageIdentifierDisplayName::try_new_long_light(
+                LanguageIdentifierDisplayName::try_new_long_light_unstable(
+                    &*PROVIDER,
                     prefs,
                     id,
                     LanguageIdentifierDisplayNameOptions::default(),
@@ -664,16 +680,22 @@ pub(super) fn display_name(
                 .parse::<Region>()
                 .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
             if style == "short" {
-                RegionDisplayName::new_short_light_with_fallback(prefs, region).to_string()
+                RegionDisplayName::try_new_short_light_unstable(&*PROVIDER, prefs, region)
+                    .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?
+                    .to_string()
             } else {
-                RegionDisplayName::new_light_with_fallback(prefs, region).to_string()
+                RegionDisplayName::try_new_light_unstable(&*PROVIDER, prefs, region)
+                    .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?
+                    .to_string()
             }
         }
         "script" => {
             let script = code
                 .parse::<Script>()
                 .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
-            ScriptDisplayName::new_light_with_fallback(prefs, script).to_string()
+            ScriptDisplayName::try_new_light_unstable(&*PROVIDER, prefs, script)
+                .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?
+                .to_string()
         }
         "calendar" => calendar_display_name(&code, &locale),
         "currency" => currency_display_name(&code, &locale),
@@ -687,9 +709,12 @@ pub(super) fn locale_info(ctx: Ctx<'_>, tag: String, _options: String) -> rquick
     let mut locale = tag
         .parse::<Locale>()
         .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
-    LocaleCanonicalizer::new_extended().canonicalize(&mut locale);
+    LocaleCanonicalizer::try_new_extended_unstable(&*PROVIDER)
+        .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?
+        .canonicalize(&mut locale);
     let mut maximum = locale.clone();
-    let expander = LocaleExpander::new_extended();
+    let expander = LocaleExpander::try_new_extended_unstable(&*PROVIDER)
+        .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?;
     expander.maximize(&mut maximum.id);
     let mut minimum = maximum.clone();
     expander.minimize(&mut minimum.id);
@@ -717,6 +742,15 @@ fn first_locale(ctx: &Ctx<'_>, locales: &str) -> rquickjs::Result<String> {
         .next()
         .unwrap_or_else(|| "en-US".to_owned());
     Ok(value)
+}
+
+// Parses the first requested locale and maps it onto the bundled data set,
+// falling unsupported locales back to `en-US` exactly as workerd does.
+fn resolved_locale(ctx: &Ctx<'_>, locales: &str) -> rquickjs::Result<Locale> {
+    let locale = first_locale(ctx, locales)?
+        .parse::<Locale>()
+        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
+    Ok(resolve(locale))
 }
 
 fn plural_operand(ctx: &Ctx<'_>, value: f64) -> rquickjs::Result<FixedDecimal> {
@@ -837,9 +871,7 @@ fn format_date_time(
     if !milliseconds.is_finite() || milliseconds.abs() > 8_640_000_000_000_000.0 {
         return Err(Exception::throw_range(ctx, "Invalid time value"));
     }
-    let locale = first_locale(ctx, locales)?
-        .parse::<Locale>()
-        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
+    let locale = resolved_locale(ctx, locales)?;
     let options: Value = serde_json::from_str(options_json)
         .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?;
     let input = date_time_input(ctx, milliseconds, &options)?;
@@ -894,7 +926,11 @@ fn date_time_input(
         u32::from(local.nanosecond().cast_unsigned()),
     )
     .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
-    let zone = icu::time::TimeZone::from_iana_id(time_zone_name)
+    let parser = icu::time::zone::iana::IanaParser::try_new_unstable(&*PROVIDER)
+        .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
+    let zone = parser
+        .as_borrowed()
+        .parse(time_zone_name)
         .with_offset(Some(offset))
         .with_zone_name_timestamp(ZoneNameTimestamp::from_epoch_seconds(timestamp.as_second()));
     Ok(ZonedDateTime { date, time, zone })
@@ -920,7 +956,7 @@ fn date_time_formatter(
             HourCycle::H23
         });
     }
-    DateTimeFormatter::try_new(preferences, field_set)
+    DateTimeFormatter::try_new_unstable(&*PROVIDER, preferences, field_set)
         .map_err(|error| Exception::throw_range(ctx, &error.to_string()))
 }
 
@@ -1233,12 +1269,14 @@ fn compact_parts(
     options: &Value,
 ) -> rquickjs::Result<Vec<(String, String)>> {
     let formatter = if options.get("compactDisplay").and_then(Value::as_str) == Some("long") {
-        CompactDecimalFormatter::try_new_long(
+        CompactDecimalFormatter::try_new_long_unstable(
+            &*PROVIDER,
             locale.clone().into(),
             CompactDecimalFormatterOptions::default(),
         )
     } else {
-        CompactDecimalFormatter::try_new_short(
+        CompactDecimalFormatter::try_new_short_unstable(
+            &*PROVIDER,
             locale.clone().into(),
             CompactDecimalFormatterOptions::default(),
         )
@@ -1277,24 +1315,37 @@ fn currency_parts(
         .and_then(Value::as_str)
         .unwrap_or("symbol");
     let formatted = match display {
-        "code" => CurrencyFormatter::try_new_code(preferences, currency, formatter_options)
+        "code" => CurrencyFormatter::try_new_code_unstable(
+            &*PROVIDER,
+            preferences,
+            currency,
+            formatter_options,
+        )
+        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
+        .format_fixed_decimal(decimal)
+        .to_string(),
+        "name" => CurrencyFormatter::try_new_name_unstable(&*PROVIDER, preferences, currency)
             .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
             .format_fixed_decimal(decimal)
             .to_string(),
-        "name" => CurrencyFormatter::try_new_name(preferences, currency)
-            .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
-            .format_fixed_decimal(decimal)
-            .to_string(),
-        "narrowSymbol" => {
-            CurrencyFormatter::try_new_symbol_narrow(preferences, currency, formatter_options)
-                .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
-                .format_fixed_decimal(decimal)
-                .to_string()
-        }
-        _ => CurrencyFormatter::try_new_symbol(preferences, currency, formatter_options)
-            .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
-            .format_fixed_decimal(decimal)
-            .to_string(),
+        "narrowSymbol" => CurrencyFormatter::try_new_symbol_narrow_unstable(
+            &*PROVIDER,
+            preferences,
+            currency,
+            formatter_options,
+        )
+        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
+        .format_fixed_decimal(decimal)
+        .to_string(),
+        _ => CurrencyFormatter::try_new_symbol_unstable(
+            &*PROVIDER,
+            preferences,
+            currency,
+            formatter_options,
+        )
+        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
+        .format_fixed_decimal(decimal)
+        .to_string(),
     };
     let mut number_options = options.clone();
     number_options["style"] = Value::String("decimal".to_owned());
@@ -1314,10 +1365,14 @@ fn percent_parts(
     options: &Value,
 ) -> rquickjs::Result<Vec<(String, String)>> {
     let preferences = PercentFormatterPreferences::from(locale.clone());
-    let formatted = PercentFormatter::try_new(preferences, PercentFormatterOptions::default())
-        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
-        .format(decimal)
-        .to_string();
+    let formatted = PercentFormatter::try_new_unstable(
+        &*PROVIDER,
+        preferences,
+        PercentFormatterOptions::default(),
+    )
+    .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
+    .format(decimal)
+    .to_string();
     let number = decimal.clone().with_sign(Sign::None);
     let mut number_options = options.clone();
     number_options["style"] = Value::String("decimal".to_owned());
@@ -1343,8 +1398,9 @@ fn unit_parts(
         .get("unitDisplay")
         .and_then(Value::as_str)
         .unwrap_or("short");
-    let rules = PluralRules::try_new_cardinal(plural_locale(ctx, locale)?.into())
-        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
+    let rules =
+        PluralRules::try_new_cardinal_unstable(&*PROVIDER, plural_locale(ctx, locale)?.into())
+            .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
     let plural = plural_category(rules.category_for(decimal));
     let pattern = units::pattern(ctx, locale, unit, display, plural)?;
     Ok(units::parts(&pattern, numeric_parts))

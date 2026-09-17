@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::time::Duration;
 
-use async_compression::tokio::bufread::{BrotliDecoder, GzipDecoder};
+use async_compression::tokio::bufread::GzipDecoder;
 use futures_util::{
     FutureExt, TryStreamExt,
     future::{LocalBoxFuture, Shared},
@@ -46,12 +46,15 @@ pub(crate) fn status_text(status: u16) -> &'static str {
     }
 }
 
-pub(crate) fn client() -> reqwest::Result<Client> {
+pub(crate) fn client() -> io::Result<Client> {
+    let tls = crate::tls::client_config().map_err(io::Error::other)?;
     Client::builder()
+        .use_preconfigured_tls((*tls).clone())
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(15))
         .no_proxy()
         .build()
+        .map_err(io::Error::other)
 }
 
 struct Request {
@@ -381,7 +384,7 @@ fn decode_body(body: Reader, encoding: &str) -> Reader {
             decoder.multiple_members(true);
             Box::pin(decoder)
         }
-        "br" => Box::pin(BrotliDecoder::new(BufReader::new(body))),
+        "br" => Box::pin(super::brotli::Decoder::new(body)),
         _ => body,
     }
 }
