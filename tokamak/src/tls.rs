@@ -34,9 +34,12 @@ fn build_client_config() -> Result<ClientConfig, rustls::Error> {
     };
     // The platform verifier needs a JNI bootstrap on Android; bundled roots are used instead.
     #[cfg(target_os = "android")]
-    let builder = builder.with_root_certificates(RootCertStore::from_iter(
-        webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-    ));
+    let builder = builder.with_root_certificates(
+        webpki_roots::TLS_SERVER_ROOTS
+            .iter()
+            .cloned()
+            .collect::<RootCertStore>(),
+    );
     Ok(builder.with_no_client_auth())
 }
 
