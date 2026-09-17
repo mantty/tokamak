@@ -126,7 +126,7 @@ enum IosSimulatorUi {
     DeviceHub(PathBuf),
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 impl IosSimulatorUi {
     fn path(&self) -> &Path {
         match self {

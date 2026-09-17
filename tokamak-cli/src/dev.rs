@@ -19,7 +19,7 @@ use super::devices::PreparedDevice;
 use super::{devices, pipeline, variables};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_mins(1);
-const APP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(60);
+const APP_CONNECTION_TIMEOUT: Duration = Duration::from_mins(1);
 const SERVER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(any(unix, windows))]
 const PROCESS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -224,7 +224,6 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
         session.framework,
         session.relay,
         &session.shutdown.requested,
-        &server,
         session.device,
         &mut stdout,
         APP_CONNECTION_TIMEOUT,
@@ -300,7 +299,6 @@ fn wait_for_app_connection(
     framework: &mut Child,
     relay: &DevRelay,
     shutdown_requested: &AtomicBool,
-    server: &ServerEndpoint,
     device: &PreparedDevice,
     output: &mut impl Write,
     timeout: Duration,
@@ -326,7 +324,7 @@ fn wait_for_app_connection(
         if Instant::now() >= deadline {
             bail!(
                 "development app did not connect to {} within {} seconds; check app startup and device connectivity",
-                server.display_url(),
+                relay.device_endpoint(),
                 timeout.as_secs()
             );
         }
@@ -1210,8 +1208,11 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let endpoint = ServerEndpoint::parse(&format!("http://{}", listener.local_addr()?))?;
 
-        let error = endpoint.ensure_unused().unwrap_err();
-        assert!(error.to_string().contains("already accepting connections"));
+        assert!(
+            endpoint
+                .ensure_unused()
+                .is_err_and(|error| error.to_string().contains("already accepting connections"))
+        );
         Ok(())
     }
 
@@ -1220,11 +1221,7 @@ mod tests {
     fn waits_for_app_connection_before_reporting_ready() -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let server = ServerEndpoint::parse(&format!("http://{}", listener.local_addr()?))?;
-        let relay = DevRelay::bind(
-            server.clone(),
-            "token".to_owned(),
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-        )?;
+        let relay = DevRelay::bind(server, "token".to_owned(), IpAddr::V4(Ipv4Addr::LOCALHOST))?;
         let mut framework = Command::new("sleep").arg("30").spawn()?;
         let shutdown = AtomicBool::new(false);
         let device = PreparedDevice {
@@ -1238,7 +1235,6 @@ mod tests {
             &mut framework,
             &relay,
             &shutdown,
-            &server,
             &device,
             &mut output,
             Duration::ZERO,
@@ -1253,7 +1249,6 @@ mod tests {
             &mut framework,
             &relay,
             &shutdown,
-            &server,
             &device,
             &mut output,
             Duration::ZERO,
@@ -1261,12 +1256,10 @@ mod tests {
         let _ = framework.kill();
         let _ = framework.wait();
 
-        assert!(
-            not_ready
-                .unwrap_err()
-                .to_string()
-                .contains("did not connect")
-        );
+        assert!(not_ready.is_err_and(|error| {
+            let message = error.to_string();
+            message.contains("did not connect") && message.contains(&relay.device_endpoint())
+        }));
         assert!(ready.is_ok());
         assert_eq!(
             String::from_utf8(output)?,
@@ -1280,11 +1273,7 @@ mod tests {
     fn stops_waiting_when_shutdown_is_requested() -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let server = ServerEndpoint::parse(&format!("http://{}", listener.local_addr()?))?;
-        let relay = DevRelay::bind(
-            server.clone(),
-            "token".to_owned(),
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-        )?;
+        let relay = DevRelay::bind(server, "token".to_owned(), IpAddr::V4(Ipv4Addr::LOCALHOST))?;
         let mut framework = Command::new("sleep").arg("30").spawn()?;
         let shutdown = AtomicBool::new(true);
         let device = PreparedDevice {
@@ -1298,7 +1287,6 @@ mod tests {
             &mut framework,
             &relay,
             &shutdown,
-            &server,
             &device,
             &mut output,
             Duration::ZERO,
@@ -1317,11 +1305,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let server = ServerEndpoint::parse(&format!("http://{}", listener.local_addr()?))?;
-        let relay = DevRelay::bind(
-            server.clone(),
-            "token".to_owned(),
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-        )?;
+        let relay = DevRelay::bind(server, "token".to_owned(), IpAddr::V4(Ipv4Addr::LOCALHOST))?;
         let mut framework = Command::new("true").spawn()?;
         let _ = framework.wait()?;
         let shutdown = AtomicBool::new(false);
@@ -1332,22 +1316,20 @@ mod tests {
         };
         let mut output = Vec::new();
 
-        let error = wait_for_app_connection(
+        let result = wait_for_app_connection(
             &mut framework,
             &relay,
             &shutdown,
-            &server,
             &device,
             &mut output,
             Duration::from_secs(1),
-        )
-        .unwrap_err();
+        );
 
-        assert!(
+        assert!(result.is_err_and(|error| {
             error
                 .to_string()
                 .contains("exited before the app connected")
-        );
+        }));
         assert!(!String::from_utf8(output)?.contains("Development app connected"));
         Ok(())
     }
