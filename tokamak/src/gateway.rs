@@ -1,4 +1,4 @@
-use flume::{Receiver, Sender};
+use flume::{Receiver, SendError, Sender};
 #[cfg(target_os = "android")]
 use std::ffi::{CString, c_char, c_int};
 use std::io::{self, Write};
@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use tokio::runtime::{Builder as TokioBuilder, Runtime as TokioRuntime};
 
 use crate::quickjs::Error;
+use crate::readiness::{Readiness, Waker};
 
 use crate::transport::{
     HttpRequest, HttpResponse, is_connect, is_websocket, read_headers, read_request, tls_acceptor,
@@ -241,12 +242,45 @@ pub(super) enum JobResponse {
 
 pub(super) struct WebSocketJob {
     pub(super) incoming: Receiver<WebSocketInbound>,
-    pub(super) outgoing: Sender<WebSocketOutbound>,
+    pub(super) outgoing: WebSocketOutgoing,
 }
 
 pub(super) struct WebSocketBridge {
     pub(super) incoming: Sender<WebSocketInbound>,
     pub(super) outgoing: Receiver<WebSocketOutbound>,
+    pub(super) readiness: Readiness,
+}
+
+/// Queues frames for the connection thread and wakes its readiness wait.
+pub(super) struct WebSocketOutgoing {
+    // `sender` drops before `waker`, so the final wake finds the channel disconnected.
+    sender: Sender<WebSocketOutbound>,
+    waker: Waker,
+}
+
+impl WebSocketOutgoing {
+    pub(super) fn send(
+        &self,
+        frame: WebSocketOutbound,
+    ) -> Result<(), SendError<WebSocketOutbound>> {
+        self.sender.send(frame)?;
+        self.wake();
+        Ok(())
+    }
+
+    pub(super) async fn send_async(
+        &self,
+        frame: WebSocketOutbound,
+    ) -> Result<(), SendError<WebSocketOutbound>> {
+        self.sender.send_async(frame).await?;
+        self.wake();
+        Ok(())
+    }
+
+    fn wake(&self) {
+        // A failed wake delays the frame until the next socket event; the frame is still queued.
+        let _ = self.waker.wake();
+    }
 }
 
 pub(super) enum WebSocketInbound {
@@ -542,7 +576,12 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
         .map(|value| value.to_str().map(str::to_owned))
         .transpose()
         .map_err(std::io::Error::other)?;
-    let (websocket_job, websocket_bridge) = websocket_channels(websocket);
+    let (websocket_job, websocket_bridge) = if websocket {
+        let (job, bridge) = websocket_channels()?;
+        (Some(job), Some(bridge))
+    } else {
+        (None, None)
+    };
     let (response, result) = flume::bounded(1);
     let job = Job {
         request,
@@ -563,7 +602,6 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
             &mut tls,
             websocket_key.as_deref(),
             websocket_bridge
-                .as_ref()
                 .ok_or_else(|| Error::Startup("WebSocket bridge was not created".to_owned()))?,
         ),
         JobResponse::Http(response) => {
@@ -572,22 +610,23 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
     }
 }
 
-fn websocket_channels(enabled: bool) -> (Option<WebSocketJob>, Option<WebSocketBridge>) {
-    if !enabled {
-        return (None, None);
-    }
+pub(super) fn websocket_channels() -> Result<(WebSocketJob, WebSocketBridge), Error> {
     let (incoming_sender, incoming_receiver) = flume::bounded(MAX_WEBSOCKET_QUEUE);
     let (outgoing_sender, outgoing_receiver) = flume::bounded(MAX_WEBSOCKET_QUEUE);
-    (
-        Some(WebSocketJob {
-            incoming: incoming_receiver,
-            outgoing: outgoing_sender,
-        }),
-        Some(WebSocketBridge {
-            incoming: incoming_sender,
-            outgoing: outgoing_receiver,
-        }),
-    )
+    let (readiness, waker) = Readiness::new()?;
+    let job = WebSocketJob {
+        incoming: incoming_receiver,
+        outgoing: WebSocketOutgoing {
+            sender: outgoing_sender,
+            waker,
+        },
+    };
+    let bridge = WebSocketBridge {
+        incoming: incoming_sender,
+        outgoing: outgoing_receiver,
+        readiness,
+    };
+    Ok((job, bridge))
 }
 
 fn execute_job(shared: &Shared, job: Job) {

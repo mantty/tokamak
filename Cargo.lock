@@ -4117,6 +4117,7 @@ dependencies = [
  "lol_html",
  "md4",
  "mime_guess",
+ "mio",
  "native-tls",
  "openssl",
  "p256",

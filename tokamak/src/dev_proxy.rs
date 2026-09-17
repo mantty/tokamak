@@ -13,11 +13,12 @@ use openssl::ssl::{SslConnector, SslMethod, SslStream};
 
 use crate::gateway::{
     Execution, Handler, Job, JobResponse, WebSocketInbound, WebSocketJob, WebSocketOutbound,
+    WebSocketOutgoing,
 };
 use crate::quickjs::Error;
 use crate::transport::{
-    BodyChunk, HttpRequest, HttpResponse, WebSocketCodec, WebSocketRead, response_stream,
-    websocket_accept, websocket_close, websocket_close_payload,
+    BodyChunk, HttpRequest, HttpResponse, WEBSOCKET_WRITE_TIMEOUT, WebSocketCodec, WebSocketRead,
+    response_stream, websocket_accept, websocket_close, websocket_close_payload,
 };
 
 const MAX_HEADERS: usize = 64 * 1024;
@@ -27,7 +28,6 @@ const HTTP_RETRY_DELAY: Duration = Duration::from_millis(100);
 const HTTP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
 const STREAM_POLL: Duration = Duration::from_millis(100);
 const WEBSOCKET_POLL: Duration = Duration::from_millis(20);
-const WEBSOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Host development-server connection settings.
 #[derive(Clone, Debug)]
@@ -770,7 +770,7 @@ fn is_hop_by_hop(name: &str) -> bool {
 }
 
 fn queue_upstream_message(
-    outgoing: &flume::Sender<WebSocketOutbound>,
+    outgoing: &WebSocketOutgoing,
     fragmented: &mut Option<(u8, Vec<u8>)>,
     final_frame: bool,
     opcode: u8,

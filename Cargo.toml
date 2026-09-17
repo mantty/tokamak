@@ -72,6 +72,7 @@ openssl = { version = "0.10.80", features = ["vendored"] }
 plist = "1.10.0"
 jni = "0.21.1"
 libc = "0.2.186"
+mio = { version = "1.2.2", default-features = false, features = ["os-poll", "net"] }
 p256 = { version = "0.13.2", features = ["pkcs8"] }
 predicates = "3.1.3"
 rcgen = "0.14.8"

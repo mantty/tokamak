@@ -4,10 +4,9 @@ use crate::dispatcher::{
 };
 use crate::fs::VirtualFileSystem;
 use crate::gateway::{
-    GatewayCertificates, GatewayConfig, Job, JobResponse, Lifecycle, Shared, WebSocketBridge,
-    WebSocketInbound, WebSocketJob, WebSocketOutbound, bind_replacement_listener,
-    close_connections, listener_was_closed, lock_connections, probe_gateway, serve_connection,
-    wait_for_gateway,
+    GatewayCertificates, GatewayConfig, Job, JobResponse, Lifecycle, Shared, WebSocketInbound,
+    WebSocketOutbound, bind_replacement_listener, close_connections, listener_was_closed,
+    lock_connections, probe_gateway, serve_connection, wait_for_gateway, websocket_channels,
 };
 use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{HttpBody, HttpRequest, HttpResponse, queue_websocket_message};
@@ -182,8 +181,9 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
     let config = websocket_config(directory.path());
     let request = websocket_request();
     let (response_sender, response_receiver) = flume::bounded(1);
-    let (incoming_sender, incoming_receiver) = flume::bounded(1);
-    let (outgoing_sender, outgoing_receiver) = flume::bounded(1);
+    let (websocket, bridge) = websocket_channels()?;
+    let incoming_sender = bridge.incoming;
+    let outgoing_receiver = bridge.outgoing;
     let accepting = Arc::new(AtomicBool::new(true));
     let thread = std::thread::spawn(move || {
         let lifecycle = Lifecycle::new();
@@ -197,10 +197,7 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
             Job {
                 request,
                 response: response_sender,
-                websocket: Some(WebSocketJob {
-                    incoming: incoming_receiver,
-                    outgoing: outgoing_sender,
-                }),
+                websocket: Some(websocket),
             },
             &execution,
             &accepting,
@@ -486,17 +483,12 @@ fn exposes_bundle_tmp_and_device_operations() -> Result<(), Box<dyn std::error::
 #[test]
 fn assembles_fragmented_text_and_binary_websocket_messages()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (incoming_sender, incoming_receiver) = flume::bounded(2);
-    let (_outgoing_sender, outgoing_receiver) = flume::bounded(1);
-    let bridge = WebSocketBridge {
-        incoming: incoming_sender,
-        outgoing: outgoing_receiver,
-    };
+    let (incoming, incoming_receiver) = flume::bounded(2);
     let mut fragmented = None;
 
-    queue_websocket_message(&bridge, &mut fragmented, false, 0x1, b"ping ".to_vec())?;
-    queue_websocket_message(&bridge, &mut fragmented, true, 0x0, b"42".to_vec())?;
-    queue_websocket_message(&bridge, &mut fragmented, true, 0x2, vec![1, 2, 3])?;
+    queue_websocket_message(&incoming, &mut fragmented, false, 0x1, b"ping ".to_vec())?;
+    queue_websocket_message(&incoming, &mut fragmented, true, 0x0, b"42".to_vec())?;
+    queue_websocket_message(&incoming, &mut fragmented, true, 0x2, vec![1, 2, 3])?;
 
     assert!(fragmented.is_none());
     assert!(matches!(

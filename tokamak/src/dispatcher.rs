@@ -14,6 +14,7 @@ use crate::fs::{
 };
 use crate::gateway::{
     Execution, Handler, Job, JobResponse, WebSocketInbound, WebSocketJob, WebSocketOutbound,
+    WebSocketOutgoing,
 };
 use crate::globals::ResponseEncoder;
 use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
@@ -475,7 +476,7 @@ fn drain_pending_jobs(ctx: &rquickjs::Ctx<'_>) {
 async fn drain_websocket_outbox<'js>(
     client: &Object<'js>,
     take_outbox: &Function<'js>,
-    outgoing: &Sender<WebSocketOutbound>,
+    outgoing: &WebSocketOutgoing,
 ) -> Result<(), Error> {
     let messages: Array = take_outbox
         .call((client.clone(),))
@@ -526,7 +527,7 @@ async fn drain_websocket_outbox<'js>(
     Ok(())
 }
 
-async fn signal_websocket_ready(outgoing: &Sender<WebSocketOutbound>) -> Result<(), Error> {
+async fn signal_websocket_ready(outgoing: &WebSocketOutgoing) -> Result<(), Error> {
     outgoing
         .send_async(WebSocketOutbound::Ready)
         .await

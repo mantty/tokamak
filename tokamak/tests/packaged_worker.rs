@@ -6,9 +6,9 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use openssl::ssl::{SslConnector, SslFiletype, SslMethod};
+use openssl::ssl::{SslConnector, SslFiletype, SslMethod, SslStream};
 use rcgen::{CertificateParams, KeyPair};
 use serde_json::json;
 use tokamak::compile_worker;
@@ -123,35 +123,7 @@ fn serves_a_packaged_worker_websocket_over_the_mtls_gateway() -> TestResult {
         websocket_worker_source(),
         &WorkerEnvironment::default(),
     )?;
-    let host = HOST;
-    let client_certificate = state.join("client.cert.pem");
-    let client_key = state.join("client.key.pem");
-    let mut proxy = TcpStream::connect(("127.0.0.1", runtime.port()))?;
-    proxy.set_read_timeout(Some(Duration::from_secs(2)))?;
-    proxy
-        .write_all(format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n").as_bytes())?;
-    proxy.flush()?;
-    let proxy_response =
-        read_header_block(&mut proxy).map_err(|error| format!("proxy response: {error}"))?;
-    assert!(String::from_utf8(proxy_response)?.starts_with("HTTP/1.1 200"));
-
-    let mut connector = SslConnector::builder(SslMethod::tls())?;
-    connector.set_ca_file(state.join("ca.cert.pem"))?;
-    connector.set_certificate_file(client_certificate, SslFiletype::PEM)?;
-    connector.set_private_key_file(client_key, SslFiletype::PEM)?;
-    let connector = connector.build();
-    let mut tls = connector.connect(host, proxy)?;
-    let key = "dGhlIHNhbXBsZSBub25jZQ==";
-    tls.write_all(
-        format!(
-            "GET /socket HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
-        )
-        .as_bytes(),
-    )?;
-    tls.flush()?;
-    let upgrade_response = read_header_block(&mut tls)
-        .map_err(|error| format!("WebSocket upgrade response: {error}"))?;
-    assert!(String::from_utf8(upgrade_response)?.starts_with("HTTP/1.1 101"));
+    let mut tls = open_websocket(&runtime, &state)?;
 
     write_masked_frame(&mut tls, false, 0x1, b"ping ")?;
     write_masked_frame(&mut tls, true, 0x0, b"42")?;
@@ -171,6 +143,73 @@ fn serves_a_packaged_worker_websocket_over_the_mtls_gateway() -> TestResult {
         read_server_frame(&mut tls).map_err(|error| format!("close response: {error}"))?;
     assert_eq!(opcode, 0x8);
     assert_eq!(payload, [3, 232]);
+    Ok(())
+}
+
+#[test]
+fn answers_websocket_messages_without_polling_delay() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, state) = start_packaged_runtime(
+        temporary.path(),
+        websocket_worker_source(),
+        &WorkerEnvironment::default(),
+    )?;
+    let mut tls = open_websocket(&runtime, &state)?;
+
+    let mut roundtrips = Vec::new();
+    for index in 0..20 {
+        let message = format!("ping {index}");
+        let started = Instant::now();
+        write_masked_frame(&mut tls, true, 0x1, message.as_bytes())?;
+        let (_, payload) = read_server_frame(&mut tls)?;
+        roundtrips.push(started.elapsed());
+        assert_eq!(payload, format!("pong {message}").as_bytes());
+    }
+    roundtrips.sort_unstable();
+    let median = roundtrips[roundtrips.len() / 2];
+    assert!(
+        median < Duration::from_millis(15),
+        "median WebSocket roundtrip was {median:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn echoes_websocket_messages_larger_than_the_socket_buffers() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, state) = start_packaged_runtime(
+        temporary.path(),
+        websocket_worker_source(),
+        &WorkerEnvironment::default(),
+    )?;
+    let mut tls = open_websocket(&runtime, &state)?;
+
+    let payload: Vec<u8> = (0..=u8::MAX).cycle().take(1 << 20).collect();
+    write_masked_frame(&mut tls, true, 0x2, &payload)?;
+    let (opcode, echoed) = read_server_frame(&mut tls)?;
+    assert_eq!(opcode, 0x2);
+    assert!(echoed == payload, "echoed {} bytes", echoed.len());
+    Ok(())
+}
+
+#[test]
+fn closes_the_websocket_promptly_when_the_worker_fails() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, state) = start_packaged_runtime(
+        temporary.path(),
+        websocket_worker_source(),
+        &WorkerEnvironment::default(),
+    )?;
+    let mut tls = open_websocket(&runtime, &state)?;
+
+    write_masked_frame(&mut tls, true, 0x1, b"fail")?;
+    let started = Instant::now();
+    assert!(read_server_frame(&mut tls).is_err());
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "connection stayed open for {elapsed:?} after the worker failed"
+    );
     Ok(())
 }
 
@@ -266,6 +305,7 @@ export default {
     const server = pair[1];
     server.accept();
     server.addEventListener("message", (event) => {
+      if (event.data === "fail") throw new Error("worker failure");
       server.send(event.binary ? event.data : `pong ${event.data}`);
     });
     return new Response(null, { status: 101, webSocket: client });
@@ -292,17 +332,27 @@ fn write_masked_frame(
     opcode: u8,
     payload: &[u8],
 ) -> TestResult {
-    assert!(payload.len() <= 125);
-    let payload_length = u8::try_from(payload.len())?;
     let mask = [1, 2, 3, 4];
-    let mut encoded = payload.to_vec();
-    for (index, byte) in encoded.iter_mut().enumerate() {
-        *byte ^= mask[index % mask.len()];
+    let mut frame = vec![(if final_frame { 0x80 } else { 0 }) | opcode];
+    match payload.len() {
+        length @ ..=125 => frame.push(0x80 | u8::try_from(length)?),
+        length @ ..=0xFFFF => {
+            frame.push(0x80 | 0x7E);
+            frame.extend_from_slice(&u16::try_from(length)?.to_be_bytes());
+        }
+        length => {
+            frame.push(0x80 | 0x7F);
+            frame.extend_from_slice(&u64::try_from(length)?.to_be_bytes());
+        }
     }
-    stream.write_all(&[(if final_frame { 0x80 } else { 0 }) | opcode])?;
-    stream.write_all(&[0x80 | payload_length])?;
-    stream.write_all(&mask)?;
-    stream.write_all(&encoded)?;
+    frame.extend_from_slice(&mask);
+    frame.extend(
+        payload
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ mask[index % mask.len()]),
+    );
+    stream.write_all(&frame)?;
     stream.flush()?;
     Ok(())
 }
@@ -317,6 +367,10 @@ fn read_server_frame(stream: &mut impl Read) -> TestResult<(u8, Vec<u8>)> {
         let mut value = [0; 2];
         stream.read_exact(&mut value)?;
         length = usize::from(u16::from_be_bytes(value));
+    } else if length == 127 {
+        let mut value = [0; 8];
+        stream.read_exact(&mut value)?;
+        length = usize::try_from(u64::from_be_bytes(value))?;
     }
     let mut payload = vec![0; length];
     stream.read_exact(&mut payload)?;
@@ -358,4 +412,37 @@ fn connect(
         command.args(["", ""]);
     }
     Ok(command.output()?)
+}
+
+fn open_websocket(runtime: &Runtime, state: &Path) -> TestResult<SslStream<TcpStream>> {
+    let host = HOST;
+    let client_certificate = state.join("client.cert.pem");
+    let client_key = state.join("client.key.pem");
+    let mut proxy = TcpStream::connect(("127.0.0.1", runtime.port()))?;
+    proxy.set_read_timeout(Some(Duration::from_secs(2)))?;
+    proxy
+        .write_all(format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n").as_bytes())?;
+    proxy.flush()?;
+    let proxy_response =
+        read_header_block(&mut proxy).map_err(|error| format!("proxy response: {error}"))?;
+    assert!(String::from_utf8(proxy_response)?.starts_with("HTTP/1.1 200"));
+
+    let mut connector = SslConnector::builder(SslMethod::tls())?;
+    connector.set_ca_file(state.join("ca.cert.pem"))?;
+    connector.set_certificate_file(client_certificate, SslFiletype::PEM)?;
+    connector.set_private_key_file(client_key, SslFiletype::PEM)?;
+    let connector = connector.build();
+    let mut tls = connector.connect(host, proxy)?;
+    let key = "dGhlIHNhbXBsZSBub25jZQ==";
+    tls.write_all(
+        format!(
+            "GET /socket HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        )
+        .as_bytes(),
+    )?;
+    tls.flush()?;
+    let upgrade_response = read_header_block(&mut tls)
+        .map_err(|error| format!("WebSocket upgrade response: {error}"))?;
+    assert!(String::from_utf8(upgrade_response)?.starts_with("HTTP/1.1 101"));
+    Ok(tls)
 }

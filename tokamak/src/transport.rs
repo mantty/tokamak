@@ -2,8 +2,7 @@ use flume::{Receiver, Sender, TryRecvError, bounded};
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use openssl::sha::sha1;
@@ -18,12 +17,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::gateway::{GatewayConfig, WebSocketBridge, WebSocketInbound, WebSocketOutbound};
 use crate::quickjs::Error;
+use crate::readiness::Readiness;
 
 const MAX_HEADERS: usize = 64 * 1024;
 pub(super) const MAX_HTTP_BODY: usize = 250 * 1024 * 1024;
 const MAX_WEBSOCKET_BODY: usize = 16 * 1024 * 1024;
 const RESPONSE_STREAM_QUEUE: usize = 8;
 const RESPONSE_STREAM_POLL: Duration = Duration::from_millis(100);
+pub(super) const WEBSOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) type BodyChunk = Result<Vec<u8>, String>;
 
@@ -301,7 +302,7 @@ pub(super) fn is_websocket(request: &HttpRequest) -> bool {
 pub(super) fn websocket_session(
     stream: &mut SslStream<TcpStream>,
     key: Option<&str>,
-    bridge: &WebSocketBridge,
+    bridge: WebSocketBridge,
 ) -> Result<(), Error> {
     let key = key.ok_or_else(|| Error::Startup("WebSocket key is missing".to_owned()))?;
     let accept = websocket_accept(key);
@@ -310,38 +311,36 @@ pub(super) fn websocket_session(
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
     )?;
     stream.flush()?;
-    stream
-        .get_mut()
-        .set_read_timeout(Some(Duration::from_millis(20)))?;
-    stream
-        .get_mut()
-        .set_write_timeout(Some(Duration::from_secs(5)))?;
-    let mut codec = WebSocketCodec::new(&mut *stream);
-    if wait_for_websocket_ready(&mut codec, &bridge.outgoing)? {
+    let WebSocketBridge {
+        incoming,
+        outgoing,
+        mut readiness,
+    } = bridge;
+    readiness.watch(stream.get_ref())?;
+    let mut codec = WebSocketCodec::new(ReadySocket { stream, readiness });
+    if wait_for_websocket_ready(&mut codec, &outgoing)? {
         return Ok(());
     }
 
     let mut fragmented: Option<(u8, Vec<u8>)> = None;
     loop {
-        if flush_websocket_outbound(&mut codec, &bridge.outgoing)? {
+        if flush_websocket_outbound(&mut codec, &outgoing)? {
             return Ok(());
         }
         match codec.read_frame(true)? {
             WebSocketRead::Closed => return Ok(()),
-            WebSocketRead::Pending => thread::sleep(Duration::from_millis(5)),
+            WebSocketRead::Pending => codec.stream.readiness.wait(None)?,
             WebSocketRead::Frame(frame) => match frame.opcode {
                 0x8 => {
                     let (code, reason) = websocket_close(&frame.payload)?;
                     codec.write_frame(frame.opcode, &frame.payload, false)?;
-                    let _ = bridge
-                        .incoming
-                        .send(WebSocketInbound::Close { code, reason });
+                    let _ = incoming.send(WebSocketInbound::Close { code, reason });
                     return Ok(());
                 }
                 0x9 => codec.write_frame(0xA, &frame.payload, false)?,
                 0xA => {}
                 0x0..=0x2 => queue_websocket_message(
-                    bridge,
+                    &incoming,
                     &mut fragmented,
                     frame.final_frame,
                     frame.opcode,
@@ -350,6 +349,46 @@ pub(super) fn websocket_session(
                 _ => return Err(Error::Startup("invalid WebSocket opcode".to_owned())),
             },
         }
+    }
+}
+
+/// Non-blocking socket whose writes wait for readiness instead of failing.
+struct ReadySocket<S> {
+    stream: S,
+    readiness: Readiness,
+}
+
+impl<S: Write> ReadySocket<S> {
+    // OpenSSL requires a write that returned `WouldBlock` to be retried with the same buffer.
+    fn until_ready<T>(
+        &mut self,
+        mut operation: impl FnMut(&mut S) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let deadline = Instant::now() + WEBSOCKET_WRITE_TIMEOUT;
+        loop {
+            match operation(&mut self.stream) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.readiness.wait_writable(deadline)?;
+                }
+                result => return result,
+            }
+        }
+    }
+}
+
+impl<S: Read> Read for ReadySocket<S> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.stream.read(buffer)
+    }
+}
+
+impl<S: Write> Write for ReadySocket<S> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.until_ready(|stream| stream.write(buffer))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.until_ready(Write::flush)
     }
 }
 
@@ -573,7 +612,7 @@ fn parse_websocket_header(
 }
 
 pub(super) fn queue_websocket_message(
-    bridge: &WebSocketBridge,
+    incoming: &Sender<WebSocketInbound>,
     fragmented: &mut Option<(u8, Vec<u8>)>,
     final_frame: bool,
     opcode: u8,
@@ -603,8 +642,7 @@ pub(super) fn queue_websocket_message(
         _ => return Err(Error::Startup("invalid WebSocket opcode".to_owned())),
     };
     if final_frame {
-        bridge
-            .incoming
+        incoming
             .send(WebSocketInbound::Message {
                 binary: message_opcode == 0x2,
                 payload,

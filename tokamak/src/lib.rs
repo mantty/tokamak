@@ -50,6 +50,8 @@ pub use server::{Config, DevelopmentConfig, Runtime};
 #[cfg(feature = "native")]
 mod compat;
 mod env_vars;
+#[cfg(feature = "native")]
+mod readiness;
 mod tokamak_config;
 #[cfg(feature = "native")]
 mod transport;

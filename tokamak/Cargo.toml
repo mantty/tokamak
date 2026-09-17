@@ -26,6 +26,7 @@ native = [
     "dep:lol_html",
     "dep:libz-rs-sys",
     "dep:libc",
+    "dep:mio",
     "dep:md4",
     "dep:native-tls",
     "dep:openssl",
@@ -61,6 +62,7 @@ lol_html = { workspace = true, optional = true }
 libz-rs-sys = { workspace = true, optional = true }
 jsonc-parser = { workspace = true, features = ["serde"] }
 libc = { workspace = true, optional = true }
+mio = { workspace = true, optional = true }
 mime_guess.workspace = true
 md4 = { workspace = true, optional = true }
 native-tls = { workspace = true, optional = true }
