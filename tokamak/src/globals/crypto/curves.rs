@@ -222,7 +222,6 @@ pub(super) fn verify(key: &EcPublic, prehash: &[u8], signature: &[u8]) -> bool {
 }
 
 pub(super) fn agree(key: &EcSecret, peer: &EcPublic) -> Result<Vec<u8>> {
-    let mismatch = || KeyError::Operation("The peer key is on a different curve".to_owned());
     match (key, peer) {
         (EcSecret::P256(key), EcPublic::P256(peer)) => {
             Ok(shared_secret::<p256::NistP256>(key, peer))
@@ -233,7 +232,9 @@ pub(super) fn agree(key: &EcSecret, peer: &EcPublic) -> Result<Vec<u8>> {
         (EcSecret::P521(key), EcPublic::P521(peer)) => {
             Ok(shared_secret::<p521::NistP521>(key, peer))
         }
-        _ => Err(mismatch()),
+        _ => Err(KeyError::Operation(
+            "The peer key is on a different curve".to_owned(),
+        )),
     }
 }
 

@@ -6,7 +6,7 @@ use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -213,20 +213,14 @@ impl Drop for Execution<'_> {
 }
 
 fn lock_status(status: &Mutex<LifecycleStatus>) -> MutexGuard<'_, LifecycleStatus> {
-    match status.lock() {
-        Ok(status) => status,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+    status.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn wait_for_change<'a>(
     changed: &Condvar,
     status: MutexGuard<'a, LifecycleStatus>,
 ) -> MutexGuard<'a, LifecycleStatus> {
-    match changed.wait(status) {
-        Ok(status) => status,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+    changed.wait(status).unwrap_or_else(PoisonError::into_inner)
 }
 
 pub(super) struct Job {
@@ -463,10 +457,10 @@ impl Drop for ConnectionGuard {
 }
 
 pub(super) fn lock_connections(shared: &Shared) -> MutexGuard<'_, Vec<Arc<Connection>>> {
-    match shared.connections.lock() {
-        Ok(connections) => connections,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+    shared
+        .connections
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
 pub(super) fn close_connections(shared: &Shared) {
@@ -490,7 +484,7 @@ pub(super) fn probe_gateway(port: u16) -> io::Result<()> {
     stream
         .write_all(b"CONNECT tokamak-probe.invalid:443 HTTP/1.1\r\n\r\n")
         .map_err(|error| io::Error::new(error.kind(), format!("CONNECT write failed: {error}")))?;
-    let response = std::io::read_to_string(stream)
+    let response = io::read_to_string(stream)
         .map_err(|error| io::Error::new(error.kind(), format!("CONNECT read failed: {error}")))?;
     if response.starts_with("HTTP/1.1 400") && response.ends_with("\r\n\r\nBad CONNECT request") {
         Ok(())
@@ -519,14 +513,8 @@ pub(super) fn wait_for_gateway(mut port: impl FnMut() -> u16) -> io::Result<u16>
 }
 
 fn reap_finished_connections(connections: &mut Vec<JoinHandle<()>>) {
-    let mut index = 0;
-    while index < connections.len() {
-        if connections[index].is_finished() {
-            let thread = connections.swap_remove(index);
-            let _ = thread.join();
-        } else {
-            index += 1;
-        }
+    for thread in connections.extract_if(.., |thread| thread.is_finished()) {
+        let _ = thread.join();
     }
 }
 
@@ -566,14 +554,13 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
     }
     let request = read_request(&mut tls, &shared.config.host)?;
     let method = request.method.clone();
-    let websocket = is_websocket(&request);
     let websocket_key = request
         .headers
         .get("sec-websocket-key")
         .map(|value| value.to_str().map(str::to_owned))
         .transpose()
-        .map_err(std::io::Error::other)?;
-    let (websocket_job, websocket_bridge) = if websocket {
+        .map_err(io::Error::other)?;
+    let (websocket_job, websocket_bridge) = if is_websocket(&request) {
         let (job, bridge) = websocket_channels()?;
         (Some(job), Some(bridge))
     } else {

@@ -155,9 +155,6 @@ pub fn resolve_config_path(
         validate_config_extension(&path)?;
         return Ok(Some(path));
     }
-    if !path.exists() {
-        return Err(Error::ConfigNotFound(path));
-    }
     if !path.is_dir() {
         return Err(Error::ConfigNotFound(path));
     }

@@ -73,11 +73,10 @@ impl WorkerBundle {
         modules: impl Into<PathBuf>,
         bundle: impl Into<PathBuf>,
     ) -> Self {
-        let bundle = bundle.into();
         Self {
             entry: entry.into(),
             modules: modules.into(),
-            vfs_bundle: VfsBundle::new(bundle),
+            vfs_bundle: VfsBundle::new(bundle.into()),
             legacy: None,
         }
     }
@@ -85,11 +84,10 @@ impl WorkerBundle {
     /// Describe a legacy single-bytecode Worker and its read-only `/bundle`.
     #[must_use]
     pub fn from_bytecode(bytecode: Vec<u8>, bundle: impl Into<PathBuf>) -> Self {
-        let bundle = bundle.into();
         Self {
             entry: "tokamak-worker.mjs".to_owned(),
             modules: PathBuf::new(),
-            vfs_bundle: VfsBundle::new(bundle),
+            vfs_bundle: VfsBundle::new(bundle.into()),
             legacy: Some(Arc::new(bytecode)),
         }
     }

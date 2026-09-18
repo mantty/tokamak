@@ -160,11 +160,10 @@ pub(super) fn read_request(stream: &mut impl Read, host: &str) -> Result<HttpReq
     let mut lines = text.split("\r\n");
     let request_line = lines.next().unwrap_or_default();
     let mut request_parts = request_line.split_whitespace();
-    let method = request_parts.next().unwrap_or_default().to_owned();
-    let target = request_parts.next().unwrap_or("/").to_owned();
-    if method.is_empty() {
+    let Some(method) = request_parts.next() else {
         return Err(Error::Startup("HTTP method is missing".to_owned()));
-    }
+    };
+    let target = request_parts.next().unwrap_or("/");
     let mut request_headers = HeaderMap::new();
     let mut content_length = None;
     let mut chunked = false;
@@ -176,7 +175,7 @@ pub(super) fn read_request(stream: &mut impl Read, host: &str) -> Result<HttpReq
             continue;
         };
         let name = name.trim().to_ascii_lowercase();
-        let value = value.trim_matches([' ', '\t']).to_owned();
+        let value = value.trim_matches([' ', '\t']);
         if name == "content-length" {
             content_length = Some(
                 value
@@ -215,8 +214,8 @@ pub(super) fn read_request(stream: &mut impl Read, host: &str) -> Result<HttpReq
     };
     let body = (!body.is_empty()).then_some(body);
     Ok(HttpRequest {
-        method,
-        target: target.clone(),
+        method: method.to_owned(),
+        target: target.to_owned(),
         url: format!("https://{host}{target}"),
         headers: request_headers,
         body,
@@ -418,7 +417,7 @@ impl<S: Read + Write> WebSocketCodec<S> {
                 Err(error)
                     if matches!(
                         error.kind(),
-                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
                     ) =>
                 {
                     return Ok(WebSocketRead::Pending);
@@ -545,22 +544,18 @@ fn parse_websocket_header(
     let length = match second & 0x7f {
         length @ 0..=125 => usize::from(length),
         126 => {
-            if buffer.len() < offset + 2 {
+            let Some(bytes) = buffer[offset..].first_chunk::<2>() else {
                 return Ok(None);
-            }
-            let length = u16::from_be_bytes([buffer[offset], buffer[offset + 1]]);
+            };
+            let length = u16::from_be_bytes(*bytes);
             offset += 2;
             usize::from(length)
         }
         127 => {
-            if buffer.len() < offset + 8 {
+            let Some(bytes) = buffer[offset..].first_chunk::<8>() else {
                 return Ok(None);
-            }
-            let length = u64::from_be_bytes(
-                buffer[offset..offset + 8]
-                    .try_into()
-                    .map_err(|_| Error::Startup("WebSocket frame length is invalid".to_owned()))?,
-            );
+            };
+            let length = u64::from_be_bytes(*bytes);
             offset += 8;
             usize::try_from(length)
                 .map_err(|_| Error::Startup("WebSocket frame is too large".to_owned()))?
@@ -690,16 +685,16 @@ pub(super) fn websocket_close(payload: &[u8]) -> Result<(u16, String), Error> {
     if payload.is_empty() {
         return Ok((1000, String::new()));
     }
-    if payload.len() == 1 {
+    let Some((code, reason)) = payload.split_first_chunk() else {
         return Err(Error::Startup(
             "WebSocket close payload is invalid".to_owned(),
         ));
-    }
-    let code = u16::from_be_bytes([payload[0], payload[1]]);
+    };
+    let code = u16::from_be_bytes(*code);
     if !valid_websocket_close_code(code) {
         return Err(Error::Startup("WebSocket close code is invalid".to_owned()));
     }
-    let reason = std::str::from_utf8(&payload[2..])
+    let reason = std::str::from_utf8(reason)
         .map_err(|_| Error::Startup("WebSocket close reason is invalid".to_owned()))?
         .to_owned();
     Ok((code, reason))
@@ -767,23 +762,17 @@ fn write_response_inner(
         response.headers.remove("transfer-encoding");
         if (100..200).contains(&response.status) || matches!(response.status, 204 | 304) {
             response.headers.remove("content-length");
+        } else if let HttpBody::Buffered(body) = &response.body {
+            response
+                .headers
+                .try_insert("content-length", HeaderValue::from(body.len()))
+                .map_err(io::Error::other)?;
         } else {
-            let length = match &response.body {
-                HttpBody::Buffered(body) => Some(body.len()),
-                HttpBody::Stream(_) => None,
-            };
-            if let Some(length) = length {
-                response
-                    .headers
-                    .try_insert("content-length", HeaderValue::from(length))
-                    .map_err(io::Error::other)?;
-            } else {
-                response.headers.remove("content-length");
-                response
-                    .headers
-                    .try_insert("transfer-encoding", HeaderValue::from_static("chunked"))
-                    .map_err(io::Error::other)?;
-            }
+            response.headers.remove("content-length");
+            response
+                .headers
+                .try_insert("transfer-encoding", HeaderValue::from_static("chunked"))
+                .map_err(io::Error::other)?;
         }
     } else if response.status == 205
         && !response.headers.contains_key("content-length")
@@ -819,13 +808,15 @@ fn write_stream_body(
     cancelled: Option<&AtomicBool>,
     peer: Option<&TcpStream>,
 ) -> Result<(), Error> {
+    let is_cancelled = || {
+        cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+            || body.cancelled.is_cancelled()
+    };
     loop {
         let chunk = match body.receiver.recv_timeout(RESPONSE_STREAM_POLL) {
             Ok(chunk) => chunk,
             Err(flume::RecvTimeoutError::Timeout) => {
-                if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
-                    || body.cancelled.is_cancelled()
-                {
+                if is_cancelled() {
                     break;
                 }
                 if peer_closed(peer) {
@@ -845,9 +836,7 @@ fn write_stream_body(
             stream.flush()?;
         }
     }
-    if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
-        || body.cancelled.is_cancelled()
-    {
+    if is_cancelled() {
         return Ok(());
     }
     stream.write_all(b"0\r\n\r\n")?;
@@ -866,9 +855,7 @@ fn peer_closed(stream: Option<&TcpStream>) -> bool {
         Err(error)
             if matches!(
                 error.kind(),
-                std::io::ErrorKind::Interrupted
-                    | std::io::ErrorKind::TimedOut
-                    | std::io::ErrorKind::WouldBlock
+                io::ErrorKind::Interrupted | io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
             ) =>
         {
             false
@@ -899,7 +886,7 @@ fn write_response_headers(
 mod tests {
     use super::{HttpBody, HttpResponse, read_request, response_stream, write_response_inner};
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-    use std::io::{self, Cursor};
+    use std::io::{self, Cursor, Read};
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
     use std::thread;
@@ -1130,7 +1117,7 @@ mod tests {
     {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let address = listener.local_addr()?;
-        let client = TcpStream::connect(address)?;
+        let mut client = TcpStream::connect(address)?;
         let (server, _) = listener.accept()?;
         let peer = server.try_clone()?;
         peer.set_read_timeout(Some(Duration::from_millis(1)))?;
@@ -1147,11 +1134,10 @@ mod tests {
             let _ = done_sender.send(result);
         });
 
-        let mut client = client;
         let mut headers = Vec::new();
         while !headers.ends_with(b"\r\n\r\n") {
             let mut byte = [0; 1];
-            std::io::Read::read_exact(&mut client, &mut byte)?;
+            client.read_exact(&mut byte)?;
             headers.push(byte[0]);
         }
         drop(client);
@@ -1197,9 +1183,8 @@ mod tests {
             headers: HeaderMap::new(),
             body: HttpBody::Stream(body),
         };
-        let error = match write_response_inner(io::sink(), response, None, None, None) {
-            Ok(()) => return Err("stream should fail".into()),
-            Err(error) => error,
+        let Err(error) = write_response_inner(io::sink(), response, None, None, None) else {
+            return Err("stream should fail".into());
         };
         assert_eq!(
             error.to_string(),

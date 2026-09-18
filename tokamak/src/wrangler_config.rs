@@ -286,15 +286,16 @@ pub fn load_config(config_path: &Path) -> Result<WranglerConfig> {
     if !is_valid_app_name(&name) {
         return Err(Error::InvalidAppName(name));
     }
+    let assets = raw
+        .assets
+        .map(|assets| resolve_assets(&config_path, &config_dir, assets))
+        .transpose()?;
 
     Ok(WranglerConfig {
-        path: config_path.clone(),
+        path: config_path,
         name,
         main: resolve_path(&config_dir, Path::new(&main)),
-        assets: raw
-            .assets
-            .map(|assets| resolve_assets(&config_path, &config_dir, assets))
-            .transpose()?,
+        assets,
         vars: raw.vars,
         rules: raw
             .rules
@@ -416,11 +417,10 @@ fn collect_bindings(values: &BTreeMap<String, Value>) -> Vec<WranglerBinding> {
         "vectorize",
     ];
     let mut bindings = Vec::new();
-    for kind in BINDING_KINDS {
-        let Some(value) = values.get(*kind) else {
-            continue;
-        };
-        collect_binding_values(kind, value, &mut bindings);
+    for &kind in BINDING_KINDS {
+        if let Some(value) = values.get(kind) {
+            collect_binding_values(kind, value, &mut bindings);
+        }
     }
     bindings.sort_by(|left, right| left.kind.cmp(&right.kind).then(left.name.cmp(&right.name)));
     bindings
@@ -453,8 +453,8 @@ fn collect_binding_values(kind: &str, value: &Value, bindings: &mut Vec<Wrangler
                 }
             }
             let name = ["binding", "name", "queue", "dataset", "id"]
-                .iter()
-                .find_map(|key| values.get(*key).and_then(Value::as_str))
+                .into_iter()
+                .find_map(|key| values.get(key).and_then(Value::as_str))
                 .unwrap_or("<unnamed>");
             bindings.push(WranglerBinding {
                 name: name.to_owned(),
@@ -575,18 +575,15 @@ mod tests {
     }
 
     #[test]
-    fn collects_named_bindings_from_wrangler_like_shapes() {
+    fn collects_named_bindings_from_wrangler_like_shapes() -> Result<(), Box<dyn std::error::Error>>
+    {
         let values = serde_json::from_str::<BTreeMap<String, Value>>(
             r#"{
                 "kv_namespaces": [{"binding": "CACHE", "id": "cache"}],
                 "durable_objects": {"bindings": [{"name": "ROOMS", "class_name": "Room"}]},
                 "queues": {"producers": [{"binding": "EVENTS", "queue": "events"}]}
             }"#,
-        )
-        .ok();
-        let Some(values) = values else {
-            return;
-        };
+        )?;
         let bindings = collect_bindings(&values);
         assert_eq!(bindings.len(), 3);
         assert!(
@@ -604,5 +601,6 @@ mod tests {
                 .iter()
                 .any(|binding| binding.name == "EVENTS" && binding.kind == "queues")
         );
+        Ok(())
     }
 }

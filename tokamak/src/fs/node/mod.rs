@@ -5,10 +5,10 @@
 
 //! Native `node:fs` bindings for the tokamak `QuickJS` runtime.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use crate::fs::vfs::{
-    CopyOptions, DirectoryEntry, Error as VfsError, OpenOptions, Stat, VirtualFileSystem,
+    CopyOptions, DirectoryEntry, Error as VfsError, OpenOptions, Stat, VirtualFileSystem, lock,
 };
 use rquickjs::function::{IntoJsFunc, Opt, Rest, This};
 use rquickjs::module::{Declarations, Exports, ModuleDef};

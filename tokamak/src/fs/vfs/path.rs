@@ -1,6 +1,6 @@
 //! Virtual path and memory-buffer helpers.
 
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use super::{Error, ErrorKind, MAX_FILE_SIZE, MAX_PATH_LENGTH, MAX_PATH_SEGMENTS, Result};
 
@@ -72,7 +72,7 @@ pub(super) fn random_suffix(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     bytes
         .iter()
-        .map(|byte| ALPHABET[usize::from(*byte) % ALPHABET.len()] as char)
+        .map(|&byte| char::from(ALPHABET[usize::from(byte) % ALPHABET.len()]))
         .collect()
 }
 
@@ -115,9 +115,6 @@ pub(super) fn write_memory(
     Ok(input.len())
 }
 
-pub(super) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }

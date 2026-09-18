@@ -256,22 +256,20 @@ async fn send(
         let status = response.status().as_u16();
         let location = response.headers().get("location");
         let bodyless = request.method == Method::HEAD || matches!(status, 204 | 205 | 304);
-        if !matches!(status, 301 | 302 | 303 | 307 | 308)
-            || location.is_none()
-            || request.redirect == "manual"
-        {
-            return Ok(FetchResponse {
-                response,
-                redirected: count > 0,
-                bodyless,
-            });
-        }
+        let follow = matches!(status, 301 | 302 | 303 | 307 | 308) && request.redirect != "manual";
+        let location = match location {
+            Some(location) if follow => location,
+            _ => {
+                return Ok(FetchResponse {
+                    response,
+                    redirected: count > 0,
+                    bodyless,
+                });
+            }
+        };
         if count == 20 {
             return Err("Redirect limit exceeded".into());
         }
-        let Some(location) = location else {
-            unreachable!("responses without a location return above")
-        };
         request.url = request.url.join(location.to_str()?)?;
         while response.chunk().await?.is_some() {}
         upload.clone().await?;

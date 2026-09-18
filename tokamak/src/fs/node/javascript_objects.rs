@@ -83,9 +83,7 @@ pub(super) fn dir_object<'js>(
         "read",
         Function::new(ctx.clone(), move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
             let mut args = args.0;
-            let callback = args
-                .pop()
-                .and_then(|value| Function::from_value(value).ok());
+            let callback = pop_callback(&mut args);
             let result = dir_read_entry(&ctx, &read_state);
             if let Some(callback) = callback {
                 callback_values(
@@ -110,11 +108,8 @@ pub(super) fn dir_object<'js>(
     object.set(
         "close",
         Function::new(ctx.clone(), move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
-            let callback = args
-                .0
-                .last()
-                .cloned()
-                .and_then(|value| Function::from_value(value).ok());
+            let mut args = args.0;
+            let callback = pop_callback(&mut args);
             let result = dir_close(&ctx, &close_state).map(|()| Value::new_undefined(ctx.clone()));
             if let Some(callback) = callback {
                 callback_values(
@@ -299,10 +294,10 @@ pub(super) fn file_handle_object<'js>(
                     Exception::throw_message(&ctx, "EBADF: file descriptor closed")
                 })?;
                 let position = position_value(&ctx, position.0)?;
-                let mut values = Vec::with_capacity(buffers.len());
-                for index in 0..buffers.len() {
-                    values.push(bytes(&ctx, buffers.get(index)?, None)?);
-                }
+                let values = buffers
+                    .iter::<Value>()
+                    .map(|value| bytes(&ctx, value?, None))
+                    .collect::<rquickjs::Result<Vec<_>>>()?;
                 let bytes_written =
                     vfs_call(&ctx, |vfs| vfs.writev(descriptor, &values, position))?;
                 let result = Object::new(ctx.clone())?;
@@ -470,7 +465,7 @@ pub(super) fn file_handle_object<'js>(
 }
 
 pub(super) fn handle_descriptor(state: &FileHandleState) -> Option<u32> {
-    lock(&state.descriptor).as_ref().copied()
+    *lock(&state.descriptor)
 }
 
 pub(super) fn take_descriptor(state: &FileHandleState) -> Option<u32> {
@@ -595,11 +590,10 @@ pub(super) fn handle_write<'js>(
     let descriptor = handle_descriptor(state)
         .ok_or_else(|| Exception::throw_message(ctx, "EBADF: file descriptor closed"))?;
     let mut args = args.0;
-    let value = args
-        .first()
-        .cloned()
-        .ok_or_else(|| Exception::throw_type(ctx, "data is required"))?;
-    args.remove(0);
+    if args.is_empty() {
+        return Err(Exception::throw_type(ctx, "data is required"));
+    }
+    let value = args.remove(0);
     let args = normalize_write_options(ctx, value.is_string(), args)?;
     let (data, position) = write_arguments(ctx, value.clone(), args)?;
     let bytes_written = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, position))?;
@@ -649,7 +643,7 @@ pub(super) fn create_read_stream<'js>(
     };
     let bytes = read_descriptor(ctx, descriptor)?;
     let stream = stream_object(ctx, "Readable")?;
-    stream.set("path", path.clone().unwrap_or_default())?;
+    stream.set("path", path.unwrap_or_default())?;
     stream.set("fd", descriptor)?;
     stream.set("bytesRead", bytes.len())?;
     let push: Function = ctx.eval("(stream, chunk) => stream.push(chunk)")?;
@@ -689,7 +683,7 @@ pub(super) fn create_write_stream<'js>(
         vfs_call(ctx, |vfs| vfs.open(path, options))?
     };
     let stream = stream_object(ctx, "Writable")?;
-    stream.set("path", path.clone().unwrap_or_default())?;
+    stream.set("path", path.unwrap_or_default())?;
     stream.set("fd", descriptor)?;
     let state = FileHandleState {
         descriptor: Arc::new(Mutex::new(Some(descriptor))),
@@ -771,18 +765,11 @@ pub(super) fn stream_write<'js>(
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<bool> {
     let mut args = args.0;
-    let value = args
-        .first()
-        .cloned()
-        .ok_or_else(|| Exception::throw_type(ctx, "chunk is required"))?;
-    args.remove(0);
-    let callback = args
-        .last()
-        .cloned()
-        .and_then(|value| Function::from_value(value).ok());
-    if callback.is_some() {
-        args.pop();
+    if args.is_empty() {
+        return Err(Exception::throw_type(ctx, "chunk is required"));
     }
+    let value = args.remove(0);
+    let callback = pop_callback(&mut args);
     let (data, position) = if value.is_string() {
         let encoding = args
             .first()
@@ -814,14 +801,8 @@ pub(super) fn stream_end<'js>(
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<Object<'js>> {
     let mut args = args.0;
-    let callback = args
-        .last()
-        .cloned()
-        .and_then(|value| Function::from_value(value).ok());
-    if callback.is_some() {
-        args.pop();
-    }
-    if let Some(value) = args.first().cloned() {
+    let callback = pop_callback(&mut args);
+    if let Some(value) = args.into_iter().next() {
         stream_write(ctx, state, Rest(vec![value]))?;
     }
     if state.owns_descriptor
@@ -883,7 +864,8 @@ pub(super) fn stats_mode(this: &This<Object<'_>>) -> Option<u32> {
         let bigint = BigInt::from_value(mode).ok()?;
         return u32::try_from(bigint.to_i64().ok()?).ok();
     }
-    Coerced::<i64>::from_js(mode.clone().ctx(), mode)
+    let ctx = mode.ctx().clone();
+    Coerced::<i64>::from_js(&ctx, mode)
         .ok()
         .and_then(|value| u32::try_from(*value).ok())
 }
@@ -932,14 +914,16 @@ pub(super) fn dirent_is_file(this: This<Object<'_>>) -> bool {
         && this
             .0
             .get::<_, Option<String>>("type")
-            .unwrap_or(None)
+            .ok()
+            .flatten()
             .is_some_and(|kind| kind == "file")
 }
 
 pub(super) fn dirent_is_directory(this: This<Object<'_>>) -> bool {
     this.0
         .get::<_, Option<String>>("type")
-        .unwrap_or(None)
+        .ok()
+        .flatten()
         .is_some_and(|kind| kind == "directory")
 }
 
@@ -957,7 +941,8 @@ pub(super) fn dirent_is_character_device(this: This<Object<'_>>) -> bool {
 pub(super) fn dirent_is_symbolic_link(this: This<Object<'_>>) -> bool {
     this.0
         .get::<_, Option<String>>("type")
-        .unwrap_or(None)
+        .ok()
+        .flatten()
         .is_some_and(|kind| kind == "symlink")
 }
 
@@ -1092,6 +1077,7 @@ pub(super) fn glob_matches(
     _options: &FsOptions,
 ) -> rquickjs::Result<Vec<(String, DirectoryEntry)>> {
     let entries = vfs_call(ctx, |vfs| vfs.walk(cwd))?;
+    let patterns = expand_braces(pattern);
     let mut result = Vec::new();
     for (path, entry) in entries {
         let candidate = if pattern.starts_with('/') {
@@ -1102,7 +1088,7 @@ pub(super) fn glob_matches(
                 .trim_start_matches('/')
                 .to_owned()
         };
-        if expand_braces(pattern)
+        if patterns
             .iter()
             .any(|expanded| glob_match(expanded, &candidate))
         {
@@ -1153,10 +1139,11 @@ pub(super) fn segment_match(pattern: &str, value: &str) -> bool {
     let pattern = pattern.as_bytes();
     let value = value.as_bytes();
     let mut states = vec![false; value.len() + 1];
+    let mut next = vec![false; value.len() + 1];
     states[0] = true;
-    for character in pattern {
-        let mut next = vec![false; value.len() + 1];
-        if *character == b'*' {
+    for &character in pattern {
+        next.fill(false);
+        if character == b'*' {
             next[0] = states[0];
             for index in 1..=value.len() {
                 next[index] = states[index] || next[index - 1];
@@ -1164,12 +1151,18 @@ pub(super) fn segment_match(pattern: &str, value: &str) -> bool {
         } else {
             for index in 1..=value.len() {
                 next[index] =
-                    states[index - 1] && (*character == b'?' || *character == value[index - 1]);
+                    states[index - 1] && (character == b'?' || character == value[index - 1]);
             }
         }
-        states = next;
+        std::mem::swap(&mut states, &mut next);
     }
     states[value.len()]
+}
+
+/// Removes a trailing callback argument, leaving other trailing values in place.
+fn pop_callback<'js>(args: &mut Vec<Value<'js>>) -> Option<Function<'js>> {
+    args.pop_if(|value| value.is_function())
+        .and_then(Value::into_function)
 }
 
 pub(super) fn blob_object<'js>(

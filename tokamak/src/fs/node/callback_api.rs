@@ -553,9 +553,10 @@ pub(super) fn default_read_buffer<'js>(
         .map_or(16_384, |value| {
             usize::try_from(*value).unwrap_or(usize::MAX)
         });
-    let length = u32::try_from(length)
-        .map_err(|_| Exception::throw_range(ctx, "read buffer is too large"))?;
-    TypedArray::<u8>::new(ctx.clone(), vec![0; length as usize]).map(TypedArray::into_value)
+    if u32::try_from(length).is_err() {
+        return Err(Exception::throw_range(ctx, "read buffer is too large"));
+    }
+    TypedArray::<u8>::new(ctx.clone(), vec![0; length]).map(TypedArray::into_value)
 }
 
 pub(super) fn optional_u32<'js>(
@@ -679,8 +680,8 @@ pub(super) fn open_options<'js>(
             ..OpenOptions::default()
         });
     }
-    let flags: Coerced<std::string::String> = Coerced::from_js(ctx, value)?;
-    let value = flags.as_ref();
+    let flags = Coerced::<String>::from_js(ctx, value)?.0;
+    let value = flags.as_str();
     let first = value.chars().next().unwrap_or('r');
     if !matches!(first, 'r' | 'w' | 'a')
         || value

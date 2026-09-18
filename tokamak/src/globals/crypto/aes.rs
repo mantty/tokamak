@@ -125,10 +125,7 @@ fn blocks<C: BlockSizeUser>(data: &[u8]) -> Vec<Block<C>> {
 }
 
 fn flatten<C: BlockSizeUser>(blocks: &[Block<C>]) -> Vec<u8> {
-    blocks
-        .iter()
-        .flat_map(|block| block.iter().copied())
-        .collect()
+    blocks.concat()
 }
 
 struct CbcEncrypt<C: BlockCipherEncrypt> {
@@ -252,7 +249,7 @@ impl<C: BlockCipherDecrypt + KeyInit> Stream for CbcDecrypt<C> {
         }
         let last = std::mem::take(&mut self.pending);
         let mut output = self.decrypt(&last);
-        let fill = usize::from(*output.last().unwrap_or(&0));
+        let fill = usize::from(output.last().copied().unwrap_or(0));
         if fill == 0
             || fill > BLOCK
             || output[BLOCK - fill..]

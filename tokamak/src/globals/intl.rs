@@ -183,7 +183,7 @@ pub(super) fn canonical_locales(ctx: Ctx<'_>, input: String) -> rquickjs::Result
             .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
         canonicalizer.canonicalize(&mut locale);
         let value = locale.to_string();
-        if !output.iter().any(|existing| existing == &value) {
+        if !output.contains(&value) {
             output.push(value);
         }
     }
@@ -251,20 +251,8 @@ pub(super) fn plural(
     let rules =
         PluralRules::try_new_unstable(&*PROVIDER, plural_locale(&ctx, &locale)?.into(), options)
             .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
-    let decimal = value
-        .to_string()
-        .parse::<icu::decimal::input::Decimal>()
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
-    let category = rules.category_for(&decimal);
-    Ok(match category {
-        PluralCategory::Zero => "zero",
-        PluralCategory::One => "one",
-        PluralCategory::Two => "two",
-        PluralCategory::Few => "few",
-        PluralCategory::Many => "many",
-        PluralCategory::Other => "other",
-    }
-    .to_owned())
+    let decimal = plural_operand(&ctx, value)?;
+    Ok(plural_category(rules.category_for(&decimal)).to_owned())
 }
 
 pub(super) fn plural_range(
@@ -324,12 +312,7 @@ pub(super) fn list(
     let locale = resolved_locale(&ctx, &locales)?;
     let options: Value = serde_json::from_str(&options)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
-    let length = match options.get("style").and_then(Value::as_str) {
-        Some("narrow") => ListLength::Narrow,
-        Some("short") => ListLength::Short,
-        _ => ListLength::Wide,
-    };
-    let formatter_options = ListFormatterOptions::default().with_length(length);
+    let formatter_options = ListFormatterOptions::default().with_length(list_length(&options));
     let formatter = match options
         .get("type")
         .and_then(Value::as_str)
@@ -358,8 +341,7 @@ pub(super) fn list_parts(
     let locale = resolved_locale(&ctx, &locales)?;
     let options: Value = serde_json::from_str(&options)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
-    let length = list_length(&options);
-    let formatter_options = ListFormatterOptions::default().with_length(length);
+    let formatter_options = ListFormatterOptions::default().with_length(list_length(&options));
     let formatter = match options
         .get("type")
         .and_then(Value::as_str)
@@ -811,35 +793,37 @@ fn locale_keyword(locale: &Locale, name: &str) -> Option<String> {
 // icu4x 2.3 exposes no display-name API for calendars, currencies, or
 // date-time fields; en keeps a small table, other locales return the code.
 fn calendar_display_name(code: &str, locale: &Locale) -> String {
-    if locale.id.language.to_string() == "en" {
+    if locale.id.language.as_str() == "en" {
         match code {
-            "gregory" => "Gregorian Calendar".to_owned(),
-            "buddhist" => "Buddhist Calendar".to_owned(),
-            "japanese" => "Japanese Calendar".to_owned(),
-            "islamic" => "Islamic Calendar".to_owned(),
-            _ => code.to_owned(),
+            "gregory" => "Gregorian Calendar",
+            "buddhist" => "Buddhist Calendar",
+            "japanese" => "Japanese Calendar",
+            "islamic" => "Islamic Calendar",
+            _ => code,
         }
+        .to_owned()
     } else {
         code.to_owned()
     }
 }
 
 fn currency_display_name(code: &str, locale: &Locale) -> String {
-    if locale.id.language.to_string() == "en" {
+    if locale.id.language.as_str() == "en" {
         match code {
-            "GBP" => "British Pound".to_owned(),
-            "USD" => "US Dollar".to_owned(),
-            "EUR" => "Euro".to_owned(),
-            "JPY" => "Japanese Yen".to_owned(),
-            _ => code.to_owned(),
+            "GBP" => "British Pound",
+            "USD" => "US Dollar",
+            "EUR" => "Euro",
+            "JPY" => "Japanese Yen",
+            _ => code,
         }
+        .to_owned()
     } else {
         code.to_owned()
     }
 }
 
 fn date_time_field_display_name(code: &str, locale: &Locale) -> String {
-    if locale.id.language.to_string() == "en" {
+    if locale.id.language.as_str() == "en" {
         match code {
             "era" => "era",
             "year" => "year",
@@ -964,8 +948,8 @@ fn field_set(ctx: &Ctx<'_>, options: &Value) -> rquickjs::Result<CompositeFieldS
     let date_style = options.get("dateStyle").and_then(Value::as_str);
     let time_style = options.get("timeStyle").and_then(Value::as_str);
     let has_date_option = ["weekday", "year", "month", "day"]
-        .iter()
-        .any(|key| options.get(*key).is_some());
+        .into_iter()
+        .any(|key| options.get(key).is_some());
     let has_time_option = [
         "dayPeriod",
         "hour",
@@ -973,8 +957,8 @@ fn field_set(ctx: &Ctx<'_>, options: &Value) -> rquickjs::Result<CompositeFieldS
         "second",
         "fractionalSecondDigits",
     ]
-    .iter()
-    .any(|key| options.get(*key).is_some());
+    .into_iter()
+    .any(|key| options.get(key).is_some());
     let has_date =
         date_style.is_some() || has_date_option || (!has_time_option && time_style.is_none());
     let has_time = time_style.is_some() || has_time_option;
@@ -982,16 +966,8 @@ fn field_set(ctx: &Ctx<'_>, options: &Value) -> rquickjs::Result<CompositeFieldS
     if options.get("year").and_then(Value::as_str) == Some("numeric") {
         builder.year_style = Some(YearStyle::Full);
     }
-    builder.date_fields = if has_date {
-        Some(date_fields(options, date_style))
-    } else {
-        None
-    };
-    builder.time_precision = if has_time {
-        Some(time_precision(options, time_style))
-    } else {
-        None
-    };
+    builder.date_fields = has_date.then(|| date_fields(options, date_style));
+    builder.time_precision = has_time.then(|| time_precision(options, time_style));
     builder.length = Some(length(date_style.or(time_style).or_else(|| {
         match options.get("month").and_then(Value::as_str) {
             Some("long") => Some("long"),
@@ -1011,8 +987,8 @@ fn field_set(ctx: &Ctx<'_>, options: &Value) -> rquickjs::Result<CompositeFieldS
 }
 
 fn date_fields(options: &Value, style: Option<&str>) -> DateFields {
-    if style.is_some() {
-        return if style == Some("full") {
+    if let Some(style) = style {
+        return if style == "full" {
             DateFields::YMDE
         } else {
             DateFields::YMD
@@ -1303,13 +1279,13 @@ fn currency_parts(
     let currency = CurrencyType::try_from_str(code)
         .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
     let preferences = CurrencyFormatterPreferences::from(locale.clone());
-    let usage = if options.get("currencySign").and_then(Value::as_str) == Some("accounting") {
-        CurrencyUsage::Accounting
-    } else {
-        CurrencyUsage::Standard
-    };
     let mut formatter_options = CurrencyFormatterOptions::default();
-    formatter_options.usage = usage;
+    formatter_options.usage =
+        if options.get("currencySign").and_then(Value::as_str) == Some("accounting") {
+            CurrencyUsage::Accounting
+        } else {
+            CurrencyUsage::Standard
+        };
     let display = options
         .get("currencyDisplay")
         .and_then(Value::as_str)
@@ -1320,33 +1296,24 @@ fn currency_parts(
             preferences,
             currency,
             formatter_options,
-        )
-        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
-        .format_fixed_decimal(decimal)
-        .to_string(),
-        "name" => CurrencyFormatter::try_new_name_unstable(&*PROVIDER, preferences, currency)
-            .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
-            .format_fixed_decimal(decimal)
-            .to_string(),
+        ),
+        "name" => CurrencyFormatter::try_new_name_unstable(&*PROVIDER, preferences, currency),
         "narrowSymbol" => CurrencyFormatter::try_new_symbol_narrow_unstable(
             &*PROVIDER,
             preferences,
             currency,
             formatter_options,
-        )
-        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
-        .format_fixed_decimal(decimal)
-        .to_string(),
+        ),
         _ => CurrencyFormatter::try_new_symbol_unstable(
             &*PROVIDER,
             preferences,
             currency,
             formatter_options,
-        )
-        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
-        .format_fixed_decimal(decimal)
-        .to_string(),
-    };
+        ),
+    }
+    .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
+    .format_fixed_decimal(decimal)
+    .to_string();
     let mut number_options = options.clone();
     number_options["style"] = Value::String("decimal".to_owned());
     let number = decimal.clone().with_sign(Sign::None);
@@ -1431,9 +1398,11 @@ fn scientific_parts(
         -3,
         SignedRoundingMode::Unsigned(UnsignedRoundingMode::HalfExpand),
     );
-    let mut number_options = serde_json::json!({"useGrouping": false});
-    number_options["minimumFractionDigits"] = Value::from(0);
-    number_options["maximumFractionDigits"] = Value::from(3);
+    let number_options = serde_json::json!({
+        "useGrouping": false,
+        "minimumFractionDigits": 0,
+        "maximumFractionDigits": 3,
+    });
     let mut parts = decimal_parts(ctx, locale, &coefficient, &number_options)?;
     parts.push(("exponentSeparator".to_owned(), "E".to_owned()));
     if exponent < 0 {

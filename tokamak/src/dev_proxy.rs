@@ -3,7 +3,7 @@
 use flume::TryRecvError;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::io::{self, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -65,11 +65,7 @@ enum HostFraming {
 impl DevProxy {
     pub(crate) fn new(config: &DevProxyConfig) -> Result<Arc<Self>, Error> {
         let session_token = config.session_token.trim().to_owned();
-        if session_token.is_empty()
-            || session_token
-                .bytes()
-                .any(|byte| byte < b' ' || byte == 0x7f)
-        {
+        if session_token.is_empty() || session_token.bytes().any(|byte| byte.is_ascii_control()) {
             return Err(Error::Startup(
                 "development session token must be non-empty and contain no control characters"
                     .to_owned(),
@@ -82,29 +78,8 @@ impl DevProxy {
     }
 
     fn connect(&self) -> Result<UpstreamStream, Error> {
-        let addresses: Vec<_> = (self.endpoint.host.as_str(), self.endpoint.port)
-            .to_socket_addrs()?
-            .collect();
-        let mut last_error = None;
-        let stream = addresses
-            .into_iter()
-            .find_map(
-                |address| match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
-                    Ok(stream) => Some(stream),
-                    Err(error) => {
-                        last_error = Some(error);
-                        None
-                    }
-                },
-            )
-            .ok_or_else(|| {
-                last_error.unwrap_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "development endpoint did not resolve",
-                    )
-                })
-            })?;
+        let addresses = (self.endpoint.host.as_str(), self.endpoint.port).to_socket_addrs()?;
+        let stream = connect_any(addresses)?;
         stream.set_nodelay(true)?;
         if self.endpoint.tls {
             let config = crate::tls::client_config()
@@ -131,9 +106,9 @@ impl DevProxy {
         response: &flume::Sender<JobResponse>,
     ) -> Result<(), Error> {
         let deadline = Instant::now() + HTTP_RETRY_TIMEOUT;
-        let result = loop {
+        let host_response = loop {
             match self.request_http(request) {
-                Ok(result) => break result,
+                Ok(host_response) => break host_response,
                 Err(error)
                     if can_retry_http(&request.method, &error) && Instant::now() < deadline =>
                 {
@@ -142,14 +117,10 @@ impl DevProxy {
                 Err(error) => return Err(error),
             }
         };
-        let HostResponse {
-            response: result,
-            body,
-        } = result;
         response
-            .send(JobResponse::Http(result))
+            .send(JobResponse::Http(host_response.response))
             .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))?;
-        if let Some(body) = body {
+        if let Some(body) = host_response.body {
             pump_host_body(body);
         }
         Ok(())
@@ -166,19 +137,16 @@ impl DevProxy {
             false,
         )?;
         let (mut response, framing) = read_response(&mut upstream, &request.method)?;
-        let body = match framing {
-            None => None,
-            Some(framing) => {
-                let (sender, cancelled, body) = response_stream();
-                response.body = body;
-                Some(HostBody {
-                    upstream,
-                    framing,
-                    sender,
-                    cancelled,
-                })
+        let body = framing.map(|framing| {
+            let (sender, cancelled, body) = response_stream();
+            response.body = body;
+            HostBody {
+                upstream,
+                framing,
+                sender,
+                cancelled,
             }
-        };
+        });
         Ok(HostResponse { response, body })
     }
 
@@ -237,7 +205,7 @@ impl DevProxy {
         if upgrade
             .headers
             .get("sec-websocket-accept")
-            .is_none_or(|actual| actual.as_bytes() != websocket_accept(key).as_bytes())
+            .is_none_or(|actual| *actual != websocket_accept(key))
         {
             return Err(Error::Startup(
                 "host WebSocket upgrade returned an invalid accept key".to_owned(),
@@ -246,6 +214,20 @@ impl DevProxy {
         upstream.set_timeouts(WEBSOCKET_POLL, WEBSOCKET_WRITE_TIMEOUT)?;
         Ok(WebSocketCodec::new(upstream))
     }
+}
+
+fn connect_any(addresses: impl Iterator<Item = SocketAddr>) -> io::Result<TcpStream> {
+    let mut last_error = io::Error::new(
+        io::ErrorKind::NotFound,
+        "development endpoint did not resolve",
+    );
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
 }
 
 fn can_retry_http(method: &str, error: &Error) -> bool {
@@ -363,9 +345,7 @@ impl Endpoint {
             ));
         };
         if authority.is_empty()
-            || authority.contains('/')
-            || authority.contains('?')
-            || authority.contains('#')
+            || authority.contains(['/', '?', '#'])
             || authority.chars().any(char::is_whitespace)
         {
             return Err(Error::Startup(
@@ -494,13 +474,16 @@ fn write_request(
         .unwrap_or(endpoint.authority.as_str());
     write!(stream, "{} {} HTTP/1.1\r\n", request.method, request.target)?;
     for (name, value) in &request.headers {
-        if name == "host"
-            || name == "content-length"
-            || name == "x-forwarded-host"
-            || name == "x-forwarded-proto"
-            || name == "x-tokamak-session"
-            || (websocket && name == "sec-websocket-extensions")
-            || is_hop_by_hop(name.as_str())
+        let name = name.as_str();
+        if matches!(
+            name,
+            "host"
+                | "content-length"
+                | "x-forwarded-host"
+                | "x-forwarded-proto"
+                | "x-tokamak-session"
+        ) || (websocket && name == "sec-websocket-extensions")
+            || is_hop_by_hop(name)
         {
             continue;
         }
@@ -541,7 +524,7 @@ fn read_response(
         .ok_or_else(|| Error::Startup("host response status is missing".to_owned()))?
         .parse()
         .map_err(|_| Error::Startup("host response status is invalid".to_owned()))?;
-    let status_text = status_parts.next().unwrap_or("").to_owned();
+    let status_text = status_parts.next().unwrap_or_default().to_owned();
     let mut response_headers = HeaderMap::new();
     let mut content_length = None;
     let mut chunked = false;
@@ -553,7 +536,7 @@ fn read_response(
             continue;
         };
         let name = name.trim().to_ascii_lowercase();
-        let value = value.trim_matches([' ', '\t']).to_owned();
+        let value = value.trim_matches([' ', '\t']);
         if name == "content-length" {
             content_length = Some(value.parse().map_err(|_| {
                 Error::Startup("host response content length is invalid".to_owned())
@@ -614,12 +597,9 @@ fn pump_host_body(mut body: HostBody) {
 fn pump_close_delimited_body(body: &mut HostBody) -> Result<(), Error> {
     let mut buffer = [0; 16 * 1024];
     loop {
-        let Some(count) = read_host_chunk(body, &mut buffer)? else {
+        let Some(count @ 1..) = read_host_chunk(body, &mut buffer)? else {
             return Ok(());
         };
-        if count == 0 {
-            return Ok(());
-        }
         if !send_host_chunk(body, buffer[..count].to_vec()) {
             return Ok(());
         }

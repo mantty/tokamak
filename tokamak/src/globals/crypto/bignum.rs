@@ -55,17 +55,17 @@ pub(super) fn dh_parameters(bits: u32, generator: u32) -> Result<(Vec<u8>, Vec<u
     if generator < 2 {
         return Err("generator must be at least 2");
     }
-    let (modulus, residue): (u32, u32) = match generator {
+    let (modulus, residue): (u64, u64) = match generator {
         2 => (8, 7),
         5 => (5, 4),
         _ => (1, 0),
     };
-    let modulus = NonZero::new(BoxedUint::from(u64::from(modulus)))
+    let modulus = NonZero::new(BoxedUint::from(modulus))
         .into_option()
         .ok_or("invalid modulus")?;
     let prime = loop {
         let prime: BoxedUint = random_prime(&mut rng(), Flavor::Safe, bits);
-        if prime.rem_vartime(&modulus) == BoxedUint::from(u64::from(residue)) {
+        if prime.rem_vartime(&modulus) == BoxedUint::from(residue) {
             break prime;
         }
     };

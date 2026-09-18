@@ -205,7 +205,7 @@ fn mutate<'js>(ctx: &Ctx<'js>, state: &State, operation: &str) -> rquickjs::Resu
 fn parse_encoding(ctx: &Ctx<'_>, content_type: &str) -> rquickjs::Result<AsciiCompatibleEncoding> {
     let mime = content_type.parse::<mime_guess::Mime>().ok();
     let label = mime.as_ref().and_then(|mime| mime.get_param("charset"));
-    let label = label.as_ref().map_or("utf-8", |label| label.as_str());
+    let label = label.map_or("utf-8", |label| label.as_str());
     encoding_rs::Encoding::for_label_no_replacement(label.as_bytes())
         .and_then(AsciiCompatibleEncoding::new)
         .ok_or_else(|| {

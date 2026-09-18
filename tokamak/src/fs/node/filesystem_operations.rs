@@ -1,6 +1,8 @@
 #![allow(clippy::wildcard_imports)]
 
 use super::*;
+use base64::{Engine, engine::general_purpose::STANDARD};
+use std::collections::VecDeque;
 
 #[allow(clippy::struct_excessive_bools)]
 pub(super) struct FsOptions {
@@ -117,8 +119,7 @@ pub(super) fn option_property<'js>(
 }
 
 pub(super) fn path<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<String> {
-    let value: Coerced<std::string::String> = Coerced::from_js(ctx, value)?;
-    let mut path = value.as_ref().clone();
+    let mut path = Coerced::<String>::from_js(ctx, value)?.0;
     if !path.starts_with('/') {
         path = format!("/bundle/{path}");
     }
@@ -146,10 +147,10 @@ pub(super) fn path<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<S
         }
     }
     let path = format!("/{}", parts.join("/"));
-    if !["/", "/bundle", "/tmp", "/dev"]
-        .iter()
-        .any(|root| path == *root || path.starts_with(&format!("{root}/")))
-    {
+    if !["/", "/bundle", "/tmp", "/dev"].into_iter().any(|root| {
+        path.strip_prefix(root)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    }) {
         return Err(Exception::throw_message(
             ctx,
             &format!("ENOENT: no such file or directory, '{path}'"),
@@ -261,16 +262,16 @@ pub(super) fn output<'js>(
 ) -> rquickjs::Result<Value<'js>> {
     match encoding.map(str::to_ascii_lowercase).as_deref() {
         None | Some("buffer") => Ok(TypedArray::<u8>::new_copy(ctx, bytes)?.into_value()),
-        Some("base64") => Ok(base64_encode(bytes).into_js(&ctx)?),
+        Some("base64") => STANDARD.encode(bytes).into_js(&ctx),
         Some("hex") => {
             use std::fmt::Write as _;
             let mut value = String::with_capacity(bytes.len() * 2);
             for byte in bytes {
                 let _ = write!(&mut value, "{byte:02x}");
             }
-            Ok(value.into_js(&ctx)?)
+            value.into_js(&ctx)
         }
-        Some("utf8" | "utf-8") => Ok(String::from_utf8_lossy(bytes).into_owned().into_js(&ctx)?),
+        Some("utf8" | "utf-8") => String::from_utf8_lossy(bytes).into_owned().into_js(&ctx),
         Some(_) => Err(Exception::throw_type(&ctx, "unsupported encoding")),
     }
 }
@@ -645,7 +646,7 @@ pub(super) fn copy_file_sync<'js>(
     let from = path(&ctx, from)?;
     let to = path(&ctx, to)?;
     let mode = mode.0.unwrap_or_default();
-    if !matches!(mode, 0..=2) {
+    if mode > 2 {
         return Err(Exception::throw_range(&ctx, "unsupported copy mode"));
     }
     vfs_call(&ctx, |vfs| {
@@ -692,18 +693,18 @@ pub(super) fn cp_sync<'js>(
             let _ = bool::from_js(&ctx, value)?;
         }
     }
-    let mut options = parse_options(&ctx, options_value.clone())?;
-    options.force = option_property(&ctx, options_value.as_ref(), "force")?
+    let force = option_property(&ctx, options_value.as_ref(), "force")?
         .map(|value| bool::from_js(&ctx, value))
         .transpose()?
         .unwrap_or(true);
+    let options = parse_options(&ctx, options_value)?;
     vfs_call(&ctx, |vfs| {
         vfs.copy(
             &from,
             &to,
             CopyOptions {
                 recursive: options.recursive,
-                force: options.force,
+                force,
                 error_on_exist: options.error_on_exist,
                 dereference: options.dereference,
             },
@@ -775,14 +776,11 @@ pub(super) fn readv_sync<'js>(
     position: Opt<Value<'js>>,
 ) -> rquickjs::Result<u32> {
     let position = position_value(&ctx, position.0)?;
-    let mut lengths = Vec::with_capacity(buffers.len());
-    let mut writable = Vec::with_capacity(buffers.len());
-    for index in 0..buffers.len() {
-        let value: Value = buffers.get(index)?;
-        let bytes = writable_bytes(&ctx, value)?;
-        lengths.push(bytes.len);
-        writable.push(bytes);
-    }
+    let writable = buffers
+        .iter::<Value>()
+        .map(|value| writable_bytes(&ctx, value?))
+        .collect::<rquickjs::Result<Vec<_>>>()?;
+    let lengths: Vec<usize> = writable.iter().map(|bytes| bytes.len).collect();
     let chunks = vfs_call(&ctx, |vfs| vfs.readv(descriptor, &lengths, position))?;
     let mut total = 0_usize;
     for (buffer, bytes) in writable.iter().zip(chunks) {
@@ -799,11 +797,10 @@ pub(super) fn writev_sync<'js>(
     position: Opt<Value<'js>>,
 ) -> rquickjs::Result<u32> {
     let position = position_value(&ctx, position.0)?;
-    let mut values = Vec::with_capacity(buffers.len());
-    for index in 0..buffers.len() {
-        let value: Value = buffers.get(index)?;
-        values.push(bytes(&ctx, value, None)?);
-    }
+    let values = buffers
+        .iter::<Value>()
+        .map(|value| bytes(&ctx, value?, None))
+        .collect::<rquickjs::Result<Vec<_>>>()?;
     let written = vfs_call(&ctx, |vfs| vfs.writev(descriptor, &values, position))?;
     u32::try_from(written).map_err(|_| Exception::throw_range(&ctx, "write is too large"))
 }
@@ -838,16 +835,13 @@ pub(super) fn glob_sync<'js>(
     let exclude = option_property(&ctx, options_value.as_ref(), "exclude")?;
     let options = parse_options(&ctx, options_value)?;
     let patterns = if pattern.is_array() {
-        let patterns = Array::from_value(pattern)?;
-        let mut values = Vec::with_capacity(patterns.len());
-        for index in 0..patterns.len() {
-            values.push(patterns.get::<String>(index)?);
-        }
-        values
+        Array::from_value(pattern)?
+            .iter::<String>()
+            .collect::<rquickjs::Result<Vec<_>>>()?
     } else {
         vec![Coerced::<String>::from_js(&ctx, pattern)?.0]
     };
-    let cwd = options.cwd.clone().unwrap_or_else(|| "/bundle".to_owned());
+    let cwd = options.cwd.as_deref().unwrap_or("/bundle");
     let cwd = path(&ctx, cwd.into_js(&ctx)?)?;
     let mut matches: Vec<Value<'js>> = Vec::new();
     for pattern in patterns {
@@ -883,17 +877,7 @@ pub(super) fn glob_sync<'js>(
                     .into_value(),
                 );
             } else {
-                matches.push(name_value(
-                    &ctx,
-                    if pattern.starts_with('/') {
-                        &path
-                    } else {
-                        path.strip_prefix(&cwd)
-                            .unwrap_or(&path)
-                            .trim_start_matches('/')
-                    },
-                    options.encoding.as_deref(),
-                )?);
+                matches.push(name_value(&ctx, &relative, options.encoding.as_deref())?);
             }
         }
     }
@@ -933,9 +917,8 @@ pub(super) fn glob_excluded<'js>(
     }
     let patterns = Array::from_value(exclude.clone())
         .map_err(|_| Exception::throw_type(ctx, "options.exclude must be a function or array"))?;
-    for index in 0..patterns.len() {
-        let pattern: String = patterns.get(index)?;
-        if glob_match(&pattern, relative) {
+    for pattern in patterns.iter::<String>() {
+        if glob_match(&pattern?, relative) {
             return Ok(true);
         }
     }
@@ -947,9 +930,9 @@ pub(super) fn symlink_sync<'js>(
     target: Value<'js>,
     input: Value<'js>,
 ) -> rquickjs::Result<()> {
-    let target: Coerced<std::string::String> = Coerced::from_js(&ctx, target)?;
+    let target = Coerced::<String>::from_js(&ctx, target)?.0;
     let path = path(&ctx, input)?;
-    vfs_call(&ctx, |vfs| vfs.symlink(target.as_ref(), &path))
+    vfs_call(&ctx, |vfs| vfs.symlink(&target, &path))
 }
 
 pub(super) fn read_link_sync<'js>(
@@ -1038,7 +1021,6 @@ pub(super) fn read_sync_export<'js>(
     let (offset, length, position) = if let Some(value) = offset_or_options.0 {
         if value.is_object() {
             let options = value
-                .clone()
                 .try_into_object()
                 .map_err(|_| Exception::throw_type(&ctx, "read options must be an object"))?;
             (
@@ -1085,7 +1067,6 @@ pub(super) fn write_sync_export<'js>(
     let args = if let Some(value) = offset_or_options.0 {
         if value.is_object() {
             let options = value
-                .clone()
                 .try_into_object()
                 .map_err(|_| Exception::throw_type(&ctx, "write options must be an object"))?;
             let offset = options.get::<_, Option<Value>>("offset")?;
@@ -1313,9 +1294,9 @@ pub(super) fn glob_promise<'js>(
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Object<'js>> {
     let values = glob_sync(ctx.clone(), pattern, options)?;
-    let values = (0..values.len())
-        .map(|index| values.get(index))
-        .collect::<rquickjs::Result<Vec<Value>>>()?;
+    let values = values
+        .iter::<Value>()
+        .collect::<rquickjs::Result<Vec<_>>>()?;
     async_value_iterator(&ctx, values)
 }
 
@@ -1324,24 +1305,18 @@ pub(super) fn async_value_iterator<'js>(
     ctx: &Ctx<'js>,
     values: Vec<Value<'js>>,
 ) -> rquickjs::Result<Object<'js>> {
-    let state = Arc::new(Mutex::new(values));
+    let state = Arc::new(Mutex::new(VecDeque::from(values)));
     let iterator = Object::new(ctx.clone())?;
     let next_state = Arc::clone(&state);
     iterator.set(
         "next",
         Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            let mut values = lock(&next_state);
-            let value = values
-                .is_empty()
-                .then(|| Value::new_undefined(ctx.clone()))
-                .or_else(|| Some(values.remove(0)));
-            let done = value.as_ref().is_some_and(Value::is_undefined);
+            let value = lock(&next_state).pop_front();
+            let done = value.is_none();
+            let value = value.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
             let result = Object::new(ctx.clone())?;
             result.set("done", done)?;
-            result.set(
-                "value",
-                value.unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-            )?;
+            result.set("value", value)?;
             promise(ctx.clone(), Ok(result.into_value())).map(Promise::into_value)
         })?,
     )?;
@@ -1516,13 +1491,6 @@ pub(super) fn vfs_handle(ctx: &Ctx<'_>) -> rquickjs::Result<VfsHandle> {
         .ok_or_else(|| Exception::throw_internal(ctx, "tokamak VFS is not installed"))
 }
 
-pub(super) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
 pub(super) fn vfs_call<T>(
     ctx: &Ctx<'_>,
     operation: impl FnOnce(&mut VirtualFileSystem) -> crate::fs::vfs::Result<T>,
@@ -1595,27 +1563,4 @@ pub(super) fn base64_digit(value: u8) -> Option<u8> {
         b'/' => Some(63),
         _ => None,
     }
-}
-
-pub(super) fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::new();
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = chunk.get(1).copied().unwrap_or(0);
-        let third = chunk.get(2).copied().unwrap_or(0);
-        result.push(ALPHABET[(first >> 2) as usize] as char);
-        result.push(ALPHABET[((first & 3) << 4 | second >> 4) as usize] as char);
-        result.push(if chunk.len() > 1 {
-            ALPHABET[((second & 15) << 2 | third >> 6) as usize] as char
-        } else {
-            '='
-        });
-        result.push(if chunk.len() > 2 {
-            ALPHABET[(third & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    result
 }

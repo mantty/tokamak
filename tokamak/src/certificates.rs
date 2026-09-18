@@ -711,11 +711,10 @@ pub struct Certificates {
 impl Certificates {
     pub(crate) fn start(state_dir: PathBuf, host: String) -> Result<Self> {
         let bundle = CertificateBundle::ensure(&state_dir, &host, OffsetDateTime::now_utc())?;
-        let current: Shared = Arc::new(RwLock::new(bundle));
         Ok(Self {
             state_dir,
             host,
-            current,
+            current: Arc::new(RwLock::new(bundle)),
         })
     }
 

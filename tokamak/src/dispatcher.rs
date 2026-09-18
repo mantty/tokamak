@@ -21,6 +21,7 @@ use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{BodyChunk, HttpRequest, HttpResponse, response_stream};
 use flate2::read::GzDecoder;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use rquickjs::convert::List;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
     Array, ArrayBuffer, AsyncContext, AsyncRuntime, Ctx, Function, Module, Object, Promise,
@@ -57,11 +58,10 @@ impl Handler for Dispatcher {
         execution: &Execution<'_>,
         accepting: &Arc<AtomicBool>,
     ) -> Result<(), Error> {
-        let response = job.response.clone();
         if let Some(assets) = &self.assets
             && let Some(asset) = assets.response(&job.request)?
         {
-            response
+            job.response
                 .send(JobResponse::Http(asset))
                 .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))?;
             return Ok(());
@@ -169,11 +169,10 @@ async fn execute_request_async(
         send_worker_response(&ctx, response, &response_sender).await
     });
     let request = crate::event_loop::run(&runtime, &awaited, request);
-    let result = tokio::select! {
+    tokio::select! {
         result = request => result,
         () = execution.cancelled() => Err(Error::Engine("Worker execution was stopped".to_owned())),
-    };
-    result
+    }
 }
 
 async fn invoke_worker<'js>(ctx: &Ctx<'js>, worker: &WorkerBundle) -> Result<Object<'js>, Error> {
@@ -203,7 +202,7 @@ fn install_request_globals(
     assets: Option<&Arc<AssetService>>,
 ) -> Result<(), Error> {
     let environment = serde_json::to_string(&config.environment)?;
-    let cache = serde_json::to_string(&config.cache.to_string_lossy().to_string())?;
+    let cache = serde_json::to_string(&config.cache.to_string_lossy())?;
     let descriptor = serde_json::to_string(request)?;
     let body = request
         .body
@@ -252,7 +251,7 @@ pub(super) async fn load_worker<'js>(
         .globals()
         .get("__tokamak_context")
         .map_err(|error| js_error("execution context", error))?;
-    if let Ok(context) = Object::from_value(execution_context.clone()) {
+    if let Some(context) = execution_context.as_object() {
         context
             .set("exports", exports.clone())
             .map_err(|error| js_error("execution context exports", error))?;
@@ -381,7 +380,7 @@ fn read_worker_module(bundle: &WorkerBundle, name: &str) -> io::Result<Vec<u8>> 
     }
     if let Some(bytecode) = &bundle.legacy {
         if name == bundle.entry {
-            return Ok((**bytecode).clone());
+            return Ok(bytecode.to_vec());
         }
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -580,14 +579,8 @@ async fn response_from_js<'js>(
     let entries: Array = entries_fn
         .call((object,))
         .map_err(|error| js_error("response headers", error))?;
-    for entry in entries.iter::<Array>() {
-        let entry = entry.map_err(|error| js_error("response header", error))?;
-        let name: String = entry
-            .get(0)
-            .map_err(|error| js_error("response header name", error))?;
-        let value: String = entry
-            .get(1)
-            .map_err(|error| js_error("response header value", error))?;
+    for entry in entries.iter::<List<(String, String)>>() {
+        let List((name, value)) = entry.map_err(|error| js_error("response header", error))?;
         headers
             .try_append(
                 HeaderName::from_bytes(name.as_bytes()).map_err(io::Error::other)?,
@@ -608,15 +601,12 @@ async fn response_from_js<'js>(
             .transpose()?
             .flatten()
     };
-    let stream: Value = response
+    let stream: Option<Object> = response
         .get("__stream")
-        .map_err(|error| js_error("response body", error))?;
-    let body = if stream.is_null() || stream.is_undefined() {
-        JsResponseBody::Buffered(buffered_response_body(ctx, response).await?)
-    } else {
-        JsResponseBody::Stream(
-            Object::from_value(stream).map_err(|error| js_error("response stream", error))?,
-        )
+        .map_err(|error| js_error("response stream", error))?;
+    let body = match stream {
+        Some(stream) => JsResponseBody::Stream(stream),
+        None => JsResponseBody::Buffered(buffered_response_body(ctx, response).await?),
     };
     Ok(JsResponse {
         status,

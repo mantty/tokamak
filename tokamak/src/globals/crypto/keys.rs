@@ -437,7 +437,7 @@ fn jwk_string(jwk: &JsonValue, name: &str) -> Result<String> {
 }
 
 fn jwk_bytes(jwk: &JsonValue, name: &str) -> Result<Vec<u8>> {
-    Ok(URL_SAFE_NO_PAD.decode(jwk_string(jwk, name)?.as_bytes())?)
+    Ok(URL_SAFE_NO_PAD.decode(jwk_string(jwk, name)?)?)
 }
 
 /// PKCS#8 v1 for an Edwards or Montgomery key: the bare secret as a nested

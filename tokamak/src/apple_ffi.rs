@@ -342,10 +342,7 @@ fn write_error(output: *mut c_char, capacity: usize, message: &str) {
 fn x963_private_key(pkcs8_der: &[u8]) -> Option<Vec<u8>> {
     let secret = SecretKey::from_pkcs8_der(pkcs8_der).ok()?;
     let public = secret.public_key().to_sec1_bytes();
-    let mut key = Vec::with_capacity(public.len() + secret.to_bytes().len());
-    key.extend_from_slice(&public);
-    key.extend_from_slice(&secret.to_bytes());
-    Some(key)
+    Some([&public[..], &secret.to_bytes()[..]].concat())
 }
 
 impl TokamakBytes {

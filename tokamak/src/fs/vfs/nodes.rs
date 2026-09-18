@@ -1,6 +1,6 @@
 //! In-memory nodes and character devices for the virtual filesystem.
 
-use std::collections::BTreeMap;
+use std::collections::btree_map::{BTreeMap, Entry};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -170,16 +170,19 @@ impl Directory {
     }
 
     pub(super) fn insert(&self, name: String, node: Node) -> Result<()> {
-        match self {
-            Self::Memory { entries, writable } if *writable => {
-                let mut entries = lock(entries);
-                if entries.contains_key(&name) {
-                    return Err(Error::new(ErrorKind::AlreadyExists, name));
-                }
-                entries.insert(name, node);
+        let Self::Memory {
+            entries,
+            writable: true,
+        } = self
+        else {
+            return Err(Error::new(ErrorKind::ReadOnly, name));
+        };
+        match lock(entries).entry(name) {
+            Entry::Occupied(entry) => Err(Error::new(ErrorKind::AlreadyExists, entry.key())),
+            Entry::Vacant(entry) => {
+                entry.insert(node);
                 Ok(())
             }
-            _ => Err(Error::new(ErrorKind::ReadOnly, name)),
         }
     }
 

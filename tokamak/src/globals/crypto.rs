@@ -293,9 +293,8 @@ fn aes_gcm_operation(
         additional_data,
         tag_length,
     } = params;
-    let tag_bytes = tag_length
-        .checked_div(8)
-        .map(|length| length as usize)
+    let tag_bytes = usize::try_from(tag_length / 8)
+        .ok()
         .filter(|length| aes::valid_tag_length(*length))
         .ok_or_else(|| throw_dom_exception(ctx, "OperationError", "Invalid AES-GCM tag length"))?;
     let operation = |error: aes::Failure| throw_dom_exception(ctx, "OperationError", error.0);
@@ -440,9 +439,10 @@ fn host_export_key<'js>(
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let input = bytes(&ctx, input)?;
     let format = required_string(&ctx, &options, "format")?;
-    let parse_format = option_string(&options, "keyFormat")?.unwrap_or_else(|| format.clone());
+    let key_format = option_string(&options, "keyFormat")?;
+    let parse_format = key_format.as_deref().unwrap_or(format.as_str());
     let input = key_input(&ctx, &input, &options)?;
-    let material = parse_key_with_format(&ctx, &input, &options, &parse_format)?;
+    let material = parse_key_with_format(&ctx, &input, &options, parse_format)?;
     let output = match format.as_str() {
         "spki" => public_der(&ctx, &material.public())?,
         "pkcs8" => private_der(&ctx, &material)?,
@@ -624,10 +624,8 @@ fn host_scrypt<'js>(
         return Err(invalid("memory limit exceeded"));
     }
     let log_n = u8::try_from(n.trailing_zeros()).map_err(|_| invalid("N is too large"))?;
-    let (r, p) = (
-        u32::try_from(r).map_err(|_| invalid("r is too large"))?,
-        u32::try_from(p).map_err(|_| invalid("p is too large"))?,
-    );
+    let r = u32::try_from(r).map_err(|_| invalid("r is too large"))?;
+    let p = u32::try_from(p).map_err(|_| invalid("p is too large"))?;
     let params = scrypt::Params::new(log_n, r, p).map_err(|error| invalid(&error.to_string()))?;
     let mut output = vec![0; length];
     if length > 0 {
@@ -667,8 +665,8 @@ fn host_ecdh_public<'js>(
     let private = required_bytes(&ctx, &options, "private")?;
     let key =
         curves::secret_from_scalar(curve, &private).map_err(|error| operation(&ctx, &error))?;
-    let format = option_string(&options, "format")?.unwrap_or_else(|| "uncompressed".to_owned());
-    let compressed = point_format(&ctx, &format)?;
+    let format = option_string(&options, "format")?;
+    let compressed = point_format(&ctx, format.as_deref().unwrap_or("uncompressed"))?;
     ArrayBuffer::new_copy(
         ctx,
         curves::encode_point(&curves::public_of(&key), compressed),
@@ -879,19 +877,17 @@ fn bundle_private(ctx: &Ctx<'_>, key: &PrivateKey) -> rquickjs::Result<Vec<u8>> 
 }
 
 fn bundle(public: &[u8], private: Option<&[u8]>) -> rquickjs::Result<Vec<u8>> {
-    let private_len = private.map_or(0, <[u8]>::len);
+    let private = private.unwrap_or_default();
     let public_len =
         u32::try_from(public.len()).map_err(|_| rquickjs::Error::new_from_js("key", "key"))?;
     let private_len =
-        u32::try_from(private_len).map_err(|_| rquickjs::Error::new_from_js("key", "key"))?;
-    let mut output = Vec::with_capacity(9 + public.len() + private_len as usize);
+        u32::try_from(private.len()).map_err(|_| rquickjs::Error::new_from_js("key", "key"))?;
+    let mut output = Vec::with_capacity(9 + public.len() + private.len());
     output.push(1);
     output.extend_from_slice(&public_len.to_be_bytes());
     output.extend_from_slice(&private_len.to_be_bytes());
     output.extend_from_slice(public);
-    if let Some(private) = private {
-        output.extend_from_slice(private);
-    }
+    output.extend_from_slice(private);
     Ok(output)
 }
 
@@ -1064,15 +1060,14 @@ fn bytes<'js>(ctx: &Ctx<'js>, input: TypedArray<'js, u8>) -> rquickjs::Result<Ve
 }
 
 fn throw_dom_exception(ctx: &Ctx<'_>, name: &str, message: &str) -> rquickjs::Error {
-    let constructor: Constructor = match ctx.globals().get("DOMException") {
-        Ok(constructor) => constructor,
-        Err(error) => return error,
-    };
-    let exception = match constructor.construct::<_, Object>((message, name)) {
-        Ok(exception) => exception,
-        Err(error) => return error,
-    };
-    ctx.throw(exception.into())
+    let exception = ctx
+        .globals()
+        .get::<_, Constructor>("DOMException")
+        .and_then(|constructor| constructor.construct::<_, Object>((message, name)));
+    match exception {
+        Ok(exception) => ctx.throw(exception.into()),
+        Err(error) => error,
+    }
 }
 
 #[cfg(test)]

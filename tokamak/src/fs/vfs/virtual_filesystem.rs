@@ -515,6 +515,8 @@ impl VirtualFileSystem {
     /// Create a unique temporary directory below an existing parent.
     pub fn make_temp_dir(&mut self, prefix: &str) -> Result<String> {
         let (parent, name) = self.parent(prefix)?;
+        let mut components = absolute_components(prefix)?;
+        components.pop();
         let mut suffix = [0_u8; 6];
         for _ in 0..100 {
             getrandom::fill(&mut suffix).map_err(|error| {
@@ -523,10 +525,8 @@ impl VirtualFileSystem {
             let candidate = format!("{name}{}", random_suffix(&suffix));
             if parent.lookup(&candidate)?.is_none() {
                 parent.insert(candidate.clone(), Node::Directory(Directory::memory(true)))?;
-                let mut result = absolute_components(prefix)?;
-                result.pop();
-                result.push(candidate);
-                return Ok(path_from_components(&result));
+                components.push(candidate);
+                return Ok(path_from_components(&components));
             }
         }
         Err(Error::new(ErrorKind::AlreadyExists, prefix))
@@ -674,8 +674,8 @@ impl VirtualFileSystem {
         self.descriptor(descriptor)?;
         let mut offset = position;
         let mut result = Vec::with_capacity(lengths.len());
-        for length in lengths {
-            let bytes = self.read(descriptor, *length, offset)?;
+        for &length in lengths {
+            let bytes = self.read(descriptor, length, offset)?;
             if let Some(value) = &mut offset {
                 *value = value.saturating_add(bytes.len() as u64);
             }
@@ -754,8 +754,9 @@ impl VirtualFileSystem {
             } else {
                 format!("{path}/{name}", name = entry.name)
             };
-            entries.push((child.clone(), entry.clone()));
-            if entry.kind == NodeType::Directory {
+            let is_directory = entry.kind == NodeType::Directory;
+            entries.push((child.clone(), entry));
+            if is_directory {
                 self.walk_directory(&child, entries)?;
             }
         }
@@ -769,8 +770,7 @@ impl VirtualFileSystem {
             .is_ok_and(|node| matches!(node, Node::Directory(_)))
         {
             let name = absolute_components(from)?
-                .last()
-                .cloned()
+                .pop()
                 .ok_or_else(|| Error::new(ErrorKind::InvalidInput, from))?;
             return Ok(if to == "/" {
                 format!("/{name}")

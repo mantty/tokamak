@@ -82,6 +82,6 @@ impl Loader for CompileLoader {
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<Module<'js>> {
-        Module::declare(ctx.clone(), name, b"export {};" as &[u8])
+        Module::declare(ctx.clone(), name, b"export {};")
     }
 }

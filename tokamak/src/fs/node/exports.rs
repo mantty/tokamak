@@ -240,8 +240,8 @@ fn declare_exports(declare: &Declarations, promises_only: bool) -> rquickjs::Res
         ]
         .as_slice()
     };
-    for name in names {
-        declare.declare(*name)?;
+    for &name in names {
+        declare.declare(name)?;
     }
     Ok(())
 }
@@ -262,11 +262,7 @@ fn export_module<'js>(
         let dirent = dirent_constructor(ctx)?;
         let dir = dir_constructor(ctx)?;
         let stats = stats_constructor(ctx)?;
-        for (name, value) in [
-            ("Dirent", dirent.clone()),
-            ("Dir", dir.clone()),
-            ("Stats", stats.clone()),
-        ] {
+        for (name, value) in [("Dirent", dirent), ("Dir", dir), ("Stats", stats)] {
             exports.export(name, value.clone())?;
             object.set(name, value)?;
         }
@@ -361,9 +357,7 @@ fn export_callback<'js>(
     exports: &Exports<'js>,
     object: &Object<'js>,
 ) -> rquickjs::Result<()> {
-    for (name, operation) in callback_operations() {
-        let name = *name;
-        let operation = *operation;
+    for &(name, operation) in callback_operations() {
         let function = Function::new(ctx.clone(), move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
             callback_call(ctx, operation, args)
         })?;

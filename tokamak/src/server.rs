@@ -61,11 +61,13 @@ impl Runtime {
     pub fn start(config: Config, listener: impl Fn(Event) + Send + Sync + 'static) -> Result<Self> {
         let events = Events::new(listener);
         events.emit(Event::Starting);
-        let state_dir = config.state_dir.clone();
-        let certificates = Arc::new(Certificates::start(state_dir.clone(), config.host.clone())?);
+        let certificates = Arc::new(Certificates::start(
+            config.state_dir.clone(),
+            config.host.clone(),
+        )?);
         let worker = packaged_worker(&config.app)?;
         validate_worker(&worker)?;
-        let handler = Dispatcher::new(worker, quickjs_config(&config.app, &state_dir)?)?;
+        let handler = Dispatcher::new(worker, quickjs_config(&config.app, &config.state_dir)?)?;
         let gateway = start_gateway(&certificates, &config.host, handler)?;
         Ok(finish_start(events, config.host, certificates, gateway))
     }
@@ -85,8 +87,7 @@ impl Runtime {
     ) -> Result<Self> {
         let events = Events::new(listener);
         events.emit(Event::Starting);
-        let state_dir = config.state_dir.clone();
-        let certificates = Arc::new(Certificates::start(state_dir, config.host.clone())?);
+        let certificates = Arc::new(Certificates::start(config.state_dir, config.host.clone())?);
         let handler = DevProxy::new(&config.proxy)?;
         let gateway = start_gateway(&certificates, &config.host, handler)?;
         Ok(finish_start(events, config.host, certificates, gateway))

@@ -1,7 +1,7 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use rquickjs::module::Exports;
-use rquickjs::{Ctx, Exception, Function, Object, Value};
+use rquickjs::{Ctx, Exception, Function, Object};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -207,10 +207,9 @@ fn match_input(
     let parsed: StringOrInit = serde_json::from_str(input).map_err(|error| {
         Exception::throw_type(ctx, &format!("Invalid URLPattern input: {error}"))
     })?;
-    match urlpattern::quirks::process_match_input(parsed, base) {
-        Ok(processed) => Ok(processed.map(|(input, _)| input)),
-        Err(error) => Err(Exception::throw_type(ctx, &error.to_string())),
-    }
+    let processed = urlpattern::quirks::process_match_input(parsed, base)
+        .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?;
+    Ok(processed.map(|(input, _)| input))
 }
 
 fn pattern_test(
@@ -283,10 +282,8 @@ fn component_result<'js, R: urlpattern::regexp::RegExp>(
     object.set("input", result.input.as_str())?;
     let groups = Object::new(ctx.clone())?;
     for name in &component.group_name_list {
-        match result.groups.get(name) {
-            Some(Some(matched)) => groups.set(name.as_str(), matched.as_str())?,
-            _ => groups.set(name.as_str(), Value::new_undefined(ctx.clone()))?,
-        }
+        let matched = result.groups.get(name).and_then(Option::as_deref);
+        groups.set(name.as_str(), matched)?;
     }
     object.set("groups", groups)?;
     Ok(object)

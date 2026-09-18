@@ -155,7 +155,7 @@ pub(crate) fn write_atomic(
     private: bool,
 ) -> Result<()> {
     let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let temporary = directory.join(format!(".{name}.{}.{}.tmp", std::process::id(), counter));
+    let temporary = directory.join(format!(".{name}.{}.{counter}.tmp", std::process::id()));
     let result = write_temporary(&temporary, content, private)
         .and_then(|()| fs::rename(&temporary, directory.join(name)).map_err(Into::into));
     if result.is_err() {
