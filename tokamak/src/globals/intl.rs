@@ -1249,8 +1249,30 @@ fn decimal_parts(
             .format(decimal)
             .write_to_parts(&mut collector)
             .map_err(|_| Exception::throw_internal(ctx, "Failed to format number parts"))?;
-        Ok(collector.parts)
+        Ok(split_sign_marks(collector.parts))
     })?
+}
+
+/// Bidi marks around a sign are literals of their own.
+fn split_sign_marks(parts: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut result = Vec::with_capacity(parts.len());
+    for (kind, value) in parts {
+        if kind != "minusSign" && kind != "plusSign" {
+            result.push((kind, value));
+            continue;
+        }
+        let start = value.len() - value.trim_start_matches(is_bidi_mark).len();
+        let sign = value[start..].trim_end_matches(is_bidi_mark);
+        let end = start + sign.len();
+        append_literal_parts(&mut result, &value[..start]);
+        result.push((kind, sign.to_owned()));
+        append_literal_parts(&mut result, &value[end..]);
+    }
+    result
+}
+
+fn is_bidi_mark(character: char) -> bool {
+    matches!(character, '\u{200e}' | '\u{200f}' | '\u{61c}')
 }
 
 fn compact_parts(
@@ -1329,15 +1351,7 @@ fn currency_parts(
     .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
     .format_fixed_decimal(decimal)
     .to_string();
-    let mut number_options = options.clone();
-    number_options["style"] = Value::String("decimal".to_owned());
-    let number = decimal.clone().with_sign(Sign::None);
-    let numeric_parts = decimal_parts(ctx, locale, &number, &number_options)?;
-    Ok(replace_numeric_parts(
-        &formatted,
-        numeric_parts,
-        Some(("currency", code.to_owned())),
-    ))
+    affix_parts(ctx, locale, decimal, options, &formatted, "currency")
 }
 
 fn percent_parts(
@@ -1355,15 +1369,7 @@ fn percent_parts(
     .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?
     .format(decimal)
     .to_string();
-    let number = decimal.clone().with_sign(Sign::None);
-    let mut number_options = options.clone();
-    number_options["style"] = Value::String("decimal".to_owned());
-    let numeric_parts = decimal_parts(ctx, locale, &number, &number_options)?;
-    Ok(replace_numeric_parts(
-        &formatted,
-        numeric_parts,
-        Some(("percentSign", "%".to_owned())),
-    ))
+    affix_parts(ctx, locale, decimal, options, &formatted, "percentSign")
 }
 
 fn unit_parts(
@@ -1430,35 +1436,133 @@ fn scientific_parts(
     Ok(parts)
 }
 
-fn replace_numeric_parts(
+/// Parts for a formatted number whose affixes carry the sign and one `token_kind` token.
+fn affix_parts(
+    ctx: &Ctx<'_>,
+    locale: &Locale,
+    decimal: &FixedDecimal,
+    options: &Value,
+    formatted: &str,
+    token_kind: &str,
+) -> rquickjs::Result<Vec<(String, String)>> {
+    let mut number_options = options.clone();
+    number_options["style"] = Value::String("decimal".to_owned());
+    let sign = decimal_parts(ctx, locale, decimal, &number_options)?
+        .into_iter()
+        .find(|(kind, _)| kind == "minusSign" || kind == "plusSign");
+    let number = decimal.clone().with_sign(Sign::None);
+    let numeric_parts = decimal_parts(ctx, locale, &number, &number_options)?;
+    Ok(split_affixes(
+        formatted,
+        numeric_parts,
+        sign.as_ref(),
+        token_kind,
+    ))
+}
+
+fn split_affixes(
     formatted: &str,
     numeric_parts: Vec<(String, String)>,
-    trailing: Option<(&str, String)>,
+    sign: Option<&(String, String)>,
+    token_kind: &str,
 ) -> Vec<(String, String)> {
-    let Some((start, end)) = numeric_range(formatted) else {
+    let numeric_text: String = numeric_parts
+        .iter()
+        .map(|(_, value)| value.as_str())
+        .collect();
+    let span = formatted
+        .find(&numeric_text)
+        .filter(|_| !numeric_text.is_empty())
+        .map(|start| (start, start + numeric_text.len()))
+        .or_else(|| numeric_range(formatted));
+    let Some((start, end)) = span else {
         return vec![("literal".to_owned(), formatted.to_owned())];
     };
+    let parenthesised = formatted.starts_with('(') && formatted.ends_with(')');
     let mut parts = Vec::new();
-    append_prefix_parts(&mut parts, &formatted[..start]);
+    let affix = Affix {
+        sign,
+        token_kind,
+        parenthesised,
+    };
+    affix.append(&mut parts, &formatted[..start], true);
     parts.extend(numeric_parts);
-    let suffix = &formatted[end..];
-    if let Some((kind, value)) = trailing
-        && suffix.ends_with(&value)
-    {
-        append_literal_parts(&mut parts, &suffix[..suffix.len() - value.len()]);
-        parts.push((kind.to_owned(), value));
-    } else {
-        append_literal_parts(&mut parts, suffix);
-    }
+    affix.append(&mut parts, &formatted[end..], false);
     parts
 }
 
-fn append_prefix_parts(parts: &mut Vec<(String, String)>, value: &str) {
-    match value {
-        "-" => parts.push(("minusSign".to_owned(), value.to_owned())),
-        "+" => parts.push(("plusSign".to_owned(), value.to_owned())),
-        _ => append_literal_parts(parts, value),
+struct Affix<'a> {
+    sign: Option<&'a (String, String)>,
+    token_kind: &'a str,
+    parenthesised: bool,
+}
+
+impl Affix<'_> {
+    /// Splits one affix into parentheses, the sign, whitespace literals and the token.
+    fn append(&self, parts: &mut Vec<(String, String)>, affix: &str, prefix: bool) {
+        let mut rest = affix;
+        let mut opening = false;
+        let mut closing = false;
+        if prefix
+            && self.parenthesised
+            && let Some(remaining) = rest.strip_prefix('(')
+        {
+            opening = true;
+            rest = remaining;
+        }
+        if !prefix
+            && self.parenthesised
+            && let Some(remaining) = rest.strip_suffix(')')
+        {
+            closing = true;
+            rest = remaining;
+        }
+        let (outer_lead, inner, outer_trail) = split_literal_edges(rest);
+        rest = inner;
+        let mut leading_sign = None;
+        let mut trailing_sign = None;
+        if let Some((kind, value)) = self.sign {
+            if let Some(remaining) = rest.strip_prefix(value.as_str()) {
+                leading_sign = Some((kind, value));
+                rest = remaining;
+            } else if let Some(remaining) = rest.strip_suffix(value.as_str()) {
+                trailing_sign = Some((kind, value));
+                rest = remaining;
+            }
+        }
+        let (inner_lead, token, inner_trail) = split_literal_edges(rest);
+        if opening {
+            append_literal_parts(parts, "(");
+        }
+        append_literal_parts(parts, outer_lead);
+        if let Some((kind, value)) = leading_sign {
+            parts.push((kind.clone(), value.clone()));
+        }
+        append_literal_parts(parts, inner_lead);
+        if !token.is_empty() {
+            parts.push((self.token_kind.to_owned(), token.to_owned()));
+        }
+        append_literal_parts(parts, inner_trail);
+        if let Some((kind, value)) = trailing_sign {
+            parts.push((kind.clone(), value.clone()));
+        }
+        append_literal_parts(parts, outer_trail);
+        if closing {
+            append_literal_parts(parts, ")");
+        }
     }
+}
+
+/// Splits the whitespace and bidi marks off both ends of an affix segment.
+fn split_literal_edges(value: &str) -> (&str, &str, &str) {
+    let start = value.len() - value.trim_start_matches(is_affix_literal).len();
+    let inner = value[start..].trim_end_matches(is_affix_literal);
+    let end = start + inner.len();
+    (&value[..start], inner, &value[end..])
+}
+
+fn is_affix_literal(character: char) -> bool {
+    character.is_whitespace() || is_bidi_mark(character)
 }
 
 fn append_literal_parts(parts: &mut Vec<(String, String)>, value: &str) {

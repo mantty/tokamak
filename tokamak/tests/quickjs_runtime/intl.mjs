@@ -26,6 +26,17 @@ export function intlContracts() {
     const formatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", ...options });
     return [-1234.5, 1234.5].map(value => formatter.format(value));
   });
+  const partStrings = parts => parts.map(part => `${part.type}:${part.value}`);
+  result.currencyParts = Object.fromEntries(["en-US", "de-DE", "sv-SE", "ar-EG", "nl-NL"].flatMap(locale =>
+    // ICU4X places an explicit plus sign before the currency in nl-NL where V8 places it after the currency.
+    [{}, { currencyDisplay: "narrowSymbol" }, { currencyDisplay: "name" }, { currencyDisplay: "code" }, { currencySign: "accounting" }, { signDisplay: "always" }].filter(options => !(locale === "nl-NL" && options.signDisplay)).flatMap(options =>
+      [-1234.5, 1234.5].map(value => [
+        `${locale} ${JSON.stringify(options)} ${value}`,
+        partStrings(new Intl.NumberFormat(locale, { style: "currency", currency: "USD", ...options }).formatToParts(value)),
+      ]))));
+  // ICU4X formats the ar-EG percent sign as "%" where V8 uses "٪", so that locale is left out.
+  result.percentParts = Object.fromEntries(["en-US", "de-DE", "sv-SE"].map(locale =>
+    [locale, partStrings(new Intl.NumberFormat(locale, { style: "percent" }).formatToParts(-0.125))]));
   result.arrayLocaleArguments = [{ toLocaleString(...args) { return JSON.stringify(args); } }].toLocaleString("de-DE", { useGrouping: false }, "ignored");
   result.localeLists = [{ 0: "en-gb", 2: "de", length: 3 }, new Intl.Locale("en-GB"), new Set(["de"])].map(locales => outcome(() => Intl.getCanonicalLocales(locales)));
   result.optionPrimitives = [null, 3, true, "x"].map(options => outcome(() => { new Intl.DateTimeFormat("en", options); return true; }));

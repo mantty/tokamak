@@ -4,10 +4,12 @@ use crate::dispatcher::{
 };
 use crate::fs::VirtualFileSystem;
 use crate::gateway::{
-    GatewayCertificates, GatewayConfig, Job, JobResponse, Lifecycle, Shared, WebSocketInbound,
-    WebSocketOutbound, bind_replacement_listener, close_connections, listener_was_closed,
-    lock_connections, probe_gateway, serve_connection, wait_for_gateway, websocket_channels,
+    Execution, GatewayCertificates, GatewayConfig, Handler, Job, JobResponse, Lifecycle, Shared,
+    WebSocketInbound, WebSocketOutbound, bind_replacement_listener, close_connections, execute_job,
+    listener_was_closed, lock_connections, probe_gateway, serve_connection, wait_for_gateway,
+    websocket_channels,
 };
+use crate::lifecycle_events::{Event, Events};
 use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{HttpBody, HttpRequest, HttpResponse, queue_websocket_message};
 use flume::{Receiver, Sender};
@@ -570,15 +572,86 @@ fn request_tasks_run_concurrently_on_tokio_blocking_workers()
 }
 
 #[test]
-fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-{
+fn reports_handler_failures_through_the_event_listener()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    struct FailingHandler;
+    impl Handler for FailingHandler {
+        fn handle(&self, _: Job, _: &Execution<'_>) -> Result<(), Error> {
+            Err(Error::Startup("handler exploded".to_owned()))
+        }
+    }
     let tokio = tokio::runtime::Builder::new_current_thread().build()?;
-    let quickjs_config = RuntimeConfig {
-        assets: None,
-        cache: PathBuf::default(),
-        environment: BTreeMap::new(),
+    let (sink, events) = flume::unbounded();
+    let shared = Shared {
+        handler: Arc::new(FailingHandler),
+        config: gateway_config(),
+        tokio: tokio.handle().clone(),
+        port: AtomicU16::new(0),
+        accepting: Arc::new(AtomicBool::new(true)),
+        lifecycle: Lifecycle::new(),
+        connections: Mutex::new(Vec::new()),
+        events: Events::new(move |event| {
+            let _ = sink.send(event);
+        }),
     };
-    let config = GatewayConfig {
+    let (response, responses) = flume::bounded(1);
+
+    execute_job(
+        &shared,
+        Job {
+            request: request("GET", "/"),
+            response,
+            websocket: None,
+        },
+    );
+
+    let JobResponse::Http(response) = responses.try_recv()? else {
+        return Err("expected an HTTP error response".into());
+    };
+    assert_eq!(response.status, 500);
+    let events: Vec<Event> = events.try_iter().collect();
+    assert!(
+        matches!(
+            events.as_slice(),
+            [Event::RequestFailed { message }]
+                if message.starts_with("Worker error: ") && message.ends_with("handler exploded")
+        ),
+        "unexpected events: {events:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn reports_connection_failures_through_the_event_listener()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    struct UnreachableHandler;
+    impl Handler for UnreachableHandler {
+        fn handle(&self, _: Job, _: &Execution<'_>) -> Result<(), Error> {
+            Err(Error::Startup("handler must not run".to_owned()))
+        }
+    }
+    let (sink, events) = flume::unbounded();
+    let runtime = crate::gateway::Runtime::start(
+        Arc::new(UnreachableHandler),
+        gateway_config(),
+        Events::new(move |event| {
+            let _ = sink.send(event);
+        }),
+    )?;
+
+    // Hanging up before sending headers fails the connection thread's request read.
+    drop(TcpStream::connect(("127.0.0.1", runtime.port()))?);
+
+    let event = events.recv_timeout(Duration::from_secs(5))?;
+    assert!(
+        matches!(&event, Event::RequestFailed { message } if !message.is_empty()),
+        "unexpected event: {event:?}"
+    );
+    Ok(())
+}
+
+fn gateway_config() -> GatewayConfig {
+    GatewayConfig {
         certificates: GatewayCertificates {
             ca: PathBuf::default(),
             certificate: PathBuf::default(),
@@ -587,7 +660,19 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
         host: "example.test".to_owned(),
         require_client_certificate: false,
         port: 0,
+    }
+}
+
+#[test]
+fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+{
+    let tokio = tokio::runtime::Builder::new_current_thread().build()?;
+    let quickjs_config = RuntimeConfig {
+        assets: None,
+        cache: PathBuf::default(),
+        environment: BTreeMap::new(),
     };
+    let config = gateway_config();
     let shared = Arc::new(Shared {
         handler: Dispatcher::new(
             WorkerBundle::from_bytecode(Vec::new(), PathBuf::default()),
@@ -599,6 +684,7 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
         accepting: Arc::new(AtomicBool::new(true)),
         lifecycle: Lifecycle::new(),
         connections: Mutex::new(Vec::new()),
+        events: Events::new(|_| {}),
     });
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let client = TcpStream::connect(listener.local_addr()?)?;

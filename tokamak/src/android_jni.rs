@@ -231,6 +231,7 @@ fn report(event: Event) {
         Event::Resumed => log(LOG_INFO, "runtime resumed"),
         Event::CertificatesRenewed => log(LOG_INFO, "certificates renewed"),
         Event::Failed { message } => log(LOG_ERROR, &format!("runtime failed: {message}")),
+        Event::RequestFailed { message } => log(LOG_ERROR, &format!("request failed: {message}")),
     }
 }
 

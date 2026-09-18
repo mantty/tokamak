@@ -1,6 +1,4 @@
 use flume::{Receiver, SendError, Sender};
-#[cfg(target_os = "android")]
-use std::ffi::{CString, c_char, c_int};
 use std::io::{self, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -12,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use tokio::runtime::{Builder as TokioBuilder, Runtime as TokioRuntime};
 
+use crate::lifecycle_events::{Event, Events};
 use crate::quickjs::Error;
 use crate::readiness::{Readiness, Waker};
 
@@ -19,11 +18,6 @@ use crate::transport::{
     HttpRequest, HttpResponse, is_connect, is_websocket, read_header_block, read_request,
     tls_accept, websocket_session, write_plain_response, write_response,
 };
-
-#[cfg(target_os = "android")]
-unsafe extern "C" {
-    fn __android_log_write(priority: c_int, tag: *const c_char, text: *const c_char) -> c_int;
-}
 
 const MAX_WEBSOCKET_QUEUE: usize = 100;
 
@@ -65,6 +59,7 @@ pub(super) struct Shared {
     pub(super) accepting: Arc<AtomicBool>,
     pub(super) lifecycle: Lifecycle,
     pub(super) connections: Mutex<Vec<Arc<Connection>>>,
+    pub(super) events: Events,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -289,7 +284,11 @@ pub(super) enum WebSocketOutbound {
 }
 
 impl Runtime {
-    pub(crate) fn start(handler: Arc<dyn Handler>, config: GatewayConfig) -> Result<Self, Error> {
+    pub(crate) fn start(
+        handler: Arc<dyn Handler>,
+        config: GatewayConfig,
+        events: Events,
+    ) -> Result<Self, Error> {
         let listener = TcpListener::bind(("127.0.0.1", config.port))?;
         let port = listener.local_addr()?.port();
         let tokio_runtime = TokioBuilder::new_multi_thread()
@@ -305,6 +304,7 @@ impl Runtime {
             accepting: Arc::new(AtomicBool::new(true)),
             lifecycle: Lifecycle::new(),
             connections: Mutex::new(Vec::new()),
+            events,
         });
         let gateway_shared = Arc::clone(&shared);
         let gateway = thread::Builder::new()
@@ -395,7 +395,9 @@ fn gateway_loop(shared: &Arc<Shared>, mut listener: TcpListener) {
             .name("tokamak-connection".to_owned())
             .spawn(move || {
                 if let Err(error) = serve_connection(&connection_shared, stream) {
-                    report_connection_error(&error);
+                    connection_shared.events.emit(Event::RequestFailed {
+                        message: error.to_string(),
+                    });
                 }
             })
         {
@@ -613,31 +615,14 @@ pub(super) fn websocket_channels() -> Result<(WebSocketJob, WebSocketBridge), Er
     Ok((job, bridge))
 }
 
-fn execute_job(shared: &Shared, job: Job) {
+pub(super) fn execute_job(shared: &Shared, job: Job) {
     let Some(execution) = shared.lifecycle.enter(&shared.accepting) else {
         return;
     };
     let response = job.response.clone();
     if let Err(error) = shared.handler.handle(job, &execution) {
-        let _ = response.send(JobResponse::Http(HttpResponse::text(
-            500,
-            &format!("Worker error: {error}"),
-        )));
+        let message = format!("Worker error: {error}");
+        let _ = response.send(JobResponse::Http(HttpResponse::text(500, &message)));
+        shared.events.emit(Event::RequestFailed { message });
     }
-}
-
-fn report_connection_error(error: &Error) {
-    let message = format!("gateway request failed: {error}");
-    #[cfg(target_os = "android")]
-    {
-        let (Ok(tag), Ok(message)) = (CString::new("tokamak"), CString::new(message)) else {
-            return;
-        };
-        // SAFETY: both strings are valid, NUL-terminated strings for the call.
-        unsafe {
-            __android_log_write(6, tag.as_ptr(), message.as_ptr());
-        }
-    }
-    #[cfg(not(target_os = "android"))]
-    eprintln!("{message}");
 }

@@ -23,6 +23,11 @@ pub enum Event {
         /// What went wrong.
         message: String,
     },
+    /// A request or WebSocket session failed after the gateway accepted it.
+    RequestFailed {
+        /// What went wrong.
+        message: String,
+    },
 }
 
 /// Delivers events to the shell that started the runtime.

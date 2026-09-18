@@ -52,7 +52,8 @@ impl Runtime {
     /// Start the gateway and JavaScript runtime for a packaged app.
     ///
     /// Blocks until the gateway is listening. `listener` receives every
-    /// [`Event`], including those raised from background threads.
+    /// [`Event`], including those raised from background threads, so it must
+    /// return promptly and must not panic.
     ///
     /// # Errors
     ///
@@ -68,7 +69,7 @@ impl Runtime {
         let worker = packaged_worker(&config.app)?;
         validate_worker(&worker)?;
         let handler = Dispatcher::new(worker, quickjs_config(&config.app, &config.state_dir)?)?;
-        let gateway = start_gateway(&certificates, &config.host, handler)?;
+        let gateway = start_gateway(&certificates, &config.host, handler, events.clone())?;
         Ok(finish_start(events, config.host, certificates, gateway))
     }
 
@@ -89,7 +90,7 @@ impl Runtime {
         events.emit(Event::Starting);
         let certificates = Arc::new(Certificates::start(config.state_dir, config.host.clone())?);
         let handler = DevProxy::new(&config.proxy)?;
-        let gateway = start_gateway(&certificates, &config.host, handler)?;
+        let gateway = start_gateway(&certificates, &config.host, handler, events.clone())?;
         Ok(finish_start(events, config.host, certificates, gateway))
     }
 
@@ -163,10 +164,12 @@ fn start_gateway(
     certificates: &Certificates,
     host: &str,
     handler: Arc<dyn gateway::Handler>,
+    events: Events,
 ) -> Result<gateway::Runtime> {
     Ok(gateway::Runtime::start(
         handler,
         gateway_config(certificates, host),
+        events,
     )?)
 }
 
