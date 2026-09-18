@@ -1,5 +1,7 @@
 #![allow(clippy::wildcard_imports)]
 
+use std::collections::VecDeque;
+
 use super::*;
 
 pub(super) fn illegal_constructor(ctx: Ctx<'_>) -> rquickjs::Result<()> {
@@ -43,7 +45,7 @@ pub(super) fn dir_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<
 
 #[derive(Clone)]
 pub(super) struct DirState {
-    entries: Arc<Mutex<Option<Vec<DirItem>>>>,
+    entries: Arc<Mutex<Option<VecDeque<DirItem>>>>,
     path: String,
     encoding: Option<String>,
 }
@@ -65,7 +67,7 @@ pub(super) fn dir_object<'js>(
     let prototype: Option<Object> = ctx.globals().get("__tokamak_node_fs_dir_proto")?;
     let object = Object::new_proto(ctx.clone(), prototype.as_ref())?;
     let state = DirState {
-        entries: Arc::new(Mutex::new(Some(entries))),
+        entries: Arc::new(Mutex::new(Some(VecDeque::from(entries)))),
         path,
         encoding: encoding.map(ToOwned::to_owned),
     };
@@ -86,11 +88,7 @@ pub(super) fn dir_object<'js>(
             let callback = pop_callback(&mut args);
             let result = dir_read_entry(&ctx, &read_state);
             if let Some(callback) = callback {
-                callback_values(
-                    &ctx,
-                    callback,
-                    result.map(|value| vec![Value::new_null(ctx.clone()), value]),
-                )?;
+                callback_values(&ctx, callback, reply(&ctx, result))?;
                 Ok(Value::new_undefined(ctx))
             } else {
                 promise(ctx.clone(), result).map(Promise::into_value)
@@ -144,17 +142,10 @@ pub(super) fn dir_read_entry<'js>(
     ctx: &Ctx<'js>,
     state: &DirState,
 ) -> rquickjs::Result<Value<'js>> {
-    let item = {
-        let mut entries = lock(&state.entries);
-        let entries = entries
-            .as_mut()
-            .ok_or_else(|| Exception::throw_message(ctx, "ERR_DIR_CLOSED: directory is closed"))?;
-        if entries.is_empty() {
-            None
-        } else {
-            Some(entries.remove(0))
-        }
-    };
+    let item = lock(&state.entries)
+        .as_mut()
+        .ok_or_else(|| Exception::throw_message(ctx, "ERR_DIR_CLOSED: directory is closed"))?
+        .pop_front();
     if let Some(item) = item {
         dirent(
             ctx,
@@ -902,15 +893,12 @@ pub(super) fn stats_is_socket(this: This<Object<'_>>) -> bool {
     stats_type(&this).is_some_and(|mode| mode == 0o140_000)
 }
 
+fn dirent_device(this: &This<Object<'_>>) -> bool {
+    matches!(this.0.get::<_, Option<bool>>("device"), Ok(Some(true)))
+}
+
 pub(super) fn dirent_is_file(this: This<Object<'_>>) -> bool {
-    this.0
-        .get::<_, Option<Function>>("isFile")
-        .is_ok_and(|function| function.is_some())
-        && this
-            .0
-            .get::<_, Option<bool>>("device")
-            .unwrap_or(Some(false))
-            == Some(false)
+    !dirent_device(&this)
         && this
             .0
             .get::<_, Option<String>>("type")
@@ -932,10 +920,7 @@ pub(super) fn dirent_is_block_device(_: This<Object<'_>>) -> bool {
 }
 
 pub(super) fn dirent_is_character_device(this: This<Object<'_>>) -> bool {
-    this.0
-        .get::<_, Option<bool>>("device")
-        .unwrap_or(Some(false))
-        == Some(true)
+    dirent_device(&this)
 }
 
 pub(super) fn dirent_is_symbolic_link(this: This<Object<'_>>) -> bool {
@@ -961,8 +946,8 @@ pub(super) fn stat_object<'js>(
 ) -> rquickjs::Result<Object<'js>> {
     let prototype: Option<Object> = ctx.globals().get("__tokamak_node_fs_stats_proto")?;
     let object = Object::new_proto(ctx.clone(), prototype.as_ref())?;
-    let is_file = stat.kind == crate::fs::vfs::NodeType::File && !stat.device;
-    let is_directory = stat.kind == crate::fs::vfs::NodeType::Directory;
+    let is_file = stat.kind == NodeType::File && !stat.device;
+    let is_directory = stat.kind == NodeType::Directory;
     let mode: u32 = if stat.device {
         0o020_666
     } else if is_file {
@@ -1204,11 +1189,11 @@ pub(super) fn blob_object<'js>(
     Ok(object)
 }
 
-const fn node_type_name(kind: crate::fs::vfs::NodeType) -> &'static str {
+const fn node_type_name(kind: NodeType) -> &'static str {
     match kind {
-        crate::fs::vfs::NodeType::File => "file",
-        crate::fs::vfs::NodeType::Directory => "directory",
-        crate::fs::vfs::NodeType::Symlink => "symlink",
+        NodeType::File => "file",
+        NodeType::Directory => "directory",
+        NodeType::Symlink => "symlink",
     }
 }
 
@@ -1231,12 +1216,12 @@ pub(super) fn dirent<'js>(
 pub(super) fn set_type_methods<'js>(
     ctx: &Ctx<'js>,
     object: &Object<'js>,
-    kind: crate::fs::vfs::NodeType,
+    kind: NodeType,
     device: bool,
 ) -> rquickjs::Result<()> {
-    let is_file = kind == crate::fs::vfs::NodeType::File && !device;
-    let is_directory = kind == crate::fs::vfs::NodeType::Directory;
-    let is_symlink = kind == crate::fs::vfs::NodeType::Symlink;
+    let is_file = kind == NodeType::File && !device;
+    let is_directory = kind == NodeType::Directory;
+    let is_symlink = kind == NodeType::Symlink;
     object.set("isFile", Function::new(ctx.clone(), move || is_file)?)?;
     object.set(
         "isDirectory",

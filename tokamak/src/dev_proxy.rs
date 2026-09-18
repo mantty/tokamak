@@ -5,7 +5,6 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -14,16 +13,14 @@ use rustls_pki_types::ServerName;
 
 use crate::gateway::{
     Execution, Handler, Job, JobResponse, WebSocketInbound, WebSocketJob, WebSocketOutbound,
-    WebSocketOutgoing,
 };
 use crate::quickjs::Error;
 use crate::transport::{
-    BodyChunk, HttpRequest, HttpResponse, WEBSOCKET_WRITE_TIMEOUT, WebSocketCodec, WebSocketRead,
-    response_stream, websocket_accept, websocket_close, websocket_close_payload,
+    BodyChunk, HttpRequest, HttpResponse, MAX_HEADERS, WEBSOCKET_WRITE_TIMEOUT, WebSocketCodec,
+    WebSocketRead, queue_websocket_message, read_header_block, response_stream, websocket_accept,
+    websocket_close, websocket_close_payload,
 };
 
-const MAX_HEADERS: usize = 64 * 1024;
-const MAX_WEBSOCKET_BODY: usize = 16 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_RETRY_DELAY: Duration = Duration::from_millis(100);
 const HTTP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -289,7 +286,7 @@ fn proxy_websocket(
                 }
                 0x9 => codec.write_frame(0xA, &frame.payload, true)?,
                 0xA => {}
-                0x0..=0x2 => queue_upstream_message(
+                0x0..=0x2 => queue_websocket_message(
                     &websocket.outgoing,
                     &mut fragmented,
                     frame.final_frame,
@@ -303,13 +300,8 @@ fn proxy_websocket(
 }
 
 impl Handler for DevProxy {
-    fn handle(
-        &self,
-        job: Job,
-        execution: &Execution<'_>,
-        accepting: &Arc<AtomicBool>,
-    ) -> Result<(), Error> {
-        if !accepting.load(Ordering::Acquire) || !execution.is_running() {
+    fn handle(&self, job: Job, execution: &Execution<'_>) -> Result<(), Error> {
+        if !execution.is_running() {
             return Ok(());
         }
         let Job {
@@ -412,24 +404,21 @@ enum UpstreamStream {
 }
 
 impl UpstreamStream {
-    fn set_timeouts(&mut self, read: Duration, write: Duration) -> io::Result<()> {
+    fn socket(&mut self) -> &mut TcpStream {
         match self {
-            Self::Plain(stream) => {
-                stream.set_read_timeout(Some(read))?;
-                stream.set_write_timeout(Some(write))
-            }
-            Self::Tls(stream) => {
-                stream.get_mut().set_read_timeout(Some(read))?;
-                stream.get_mut().set_write_timeout(Some(write))
-            }
+            Self::Plain(stream) => stream,
+            Self::Tls(stream) => stream.get_mut(),
         }
     }
 
+    fn set_timeouts(&mut self, read: Duration, write: Duration) -> io::Result<()> {
+        let socket = self.socket();
+        socket.set_read_timeout(Some(read))?;
+        socket.set_write_timeout(Some(write))
+    }
+
     fn set_stream_timeout(&mut self) -> io::Result<()> {
-        match self {
-            Self::Plain(stream) => stream.set_read_timeout(Some(STREAM_POLL)),
-            Self::Tls(stream) => stream.get_mut().set_read_timeout(Some(STREAM_POLL)),
-        }
+        self.socket().set_read_timeout(Some(STREAM_POLL))
     }
 }
 
@@ -513,7 +502,7 @@ fn read_response(
     stream: &mut UpstreamStream,
     method: &str,
 ) -> Result<(HttpResponse, Option<HostFraming>), Error> {
-    let headers = read_header_block(stream)?;
+    let headers = read_header_block(stream, "host response headers")?;
     let text = String::from_utf8_lossy(&headers);
     let mut lines = text.split("\r\n");
     let status_line = lines.next().unwrap_or_default();
@@ -726,23 +715,6 @@ fn is_stream_timeout(error: &io::Error) -> bool {
     )
 }
 
-fn read_header_block(stream: &mut impl Read) -> Result<Vec<u8>, Error> {
-    let mut data = Vec::new();
-    loop {
-        let mut byte = [0; 1];
-        stream.read_exact(&mut byte)?;
-        data.push(byte[0]);
-        if data.len() > MAX_HEADERS {
-            return Err(Error::Startup(
-                "host response headers exceed the limit".to_owned(),
-            ));
-        }
-        if data.ends_with(b"\r\n\r\n") {
-            return Ok(data);
-        }
-    }
-}
-
 fn is_hop_by_hop(name: &str) -> bool {
     matches!(
         name,
@@ -754,51 +726,6 @@ fn is_hop_by_hop(name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
     )
-}
-
-fn queue_upstream_message(
-    outgoing: &WebSocketOutgoing,
-    fragmented: &mut Option<(u8, Vec<u8>)>,
-    final_frame: bool,
-    opcode: u8,
-    payload: Vec<u8>,
-) -> Result<(), Error> {
-    let (message_opcode, payload) = match opcode {
-        0x0 => {
-            let Some((initial_opcode, mut message)) = fragmented.take() else {
-                return Err(Error::Startup(
-                    "host WebSocket continuation has no initial frame".to_owned(),
-                ));
-            };
-            if message.len().saturating_add(payload.len()) > MAX_WEBSOCKET_BODY {
-                return Err(Error::Startup(
-                    "host WebSocket message is too large".to_owned(),
-                ));
-            }
-            message.extend_from_slice(&payload);
-            (initial_opcode, message)
-        }
-        0x1 | 0x2 => {
-            if fragmented.is_some() {
-                return Err(Error::Startup(
-                    "host WebSocket message starts before the previous message ended".to_owned(),
-                ));
-            }
-            (opcode, payload)
-        }
-        _ => return Err(Error::Startup("invalid host WebSocket opcode".to_owned())),
-    };
-    if final_frame {
-        outgoing
-            .send(WebSocketOutbound::Message {
-                binary: message_opcode == 0x2,
-                payload,
-            })
-            .map_err(|_| Error::Startup("WebSocket gateway closed".to_owned()))?;
-    } else {
-        *fragmented = Some((message_opcode, payload));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

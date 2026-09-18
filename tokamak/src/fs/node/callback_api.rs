@@ -104,32 +104,154 @@ pub(super) fn callback_call<'js>(
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<()> {
     let mut args = args.0;
-    let callback = if matches!(
+    let without_callback = matches!(
         operation,
         CallbackOperation::Close | CallbackOperation::Fsync
-    ) && args.len() == 1
-    {
-        None
-    } else {
-        let callback = args
-            .pop()
-            .ok_or_else(|| Exception::throw_type(&ctx, "callback is required"))?;
-        Some(
-            Function::from_value(callback)
-                .map_err(|_| Exception::throw_type(&ctx, "callback must be a function"))?,
-        )
-    };
-    if matches!(operation, CallbackOperation::Exists) {
-        let callback =
-            callback.ok_or_else(|| Exception::throw_type(&ctx, "callback is required"))?;
-        let input = take_arg(&ctx, &mut args)?;
-        let exists = exists_sync(ctx.clone(), input)?;
-        return callback_value(&ctx, callback, exists);
+    ) && args.len() == 1;
+    if without_callback {
+        let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
+        return match operation {
+            CallbackOperation::Close => close_sync(ctx, descriptor),
+            _ => fsync_sync(ctx, descriptor),
+        };
     }
-    match operation {
+    let callback = args
+        .pop()
+        .ok_or_else(|| Exception::throw_type(&ctx, "callback is required"))?;
+    let callback = Function::from_value(callback)
+        .map_err(|_| Exception::throw_type(&ctx, "callback must be a function"))?;
+    let result = match operation {
+        CallbackOperation::Access => {
+            let input = take_arg(&ctx, &mut args)?;
+            let mode = take_opt_u32(&ctx, &mut args)?;
+            reply(&ctx, access_sync(ctx.clone(), input, mode))
+        }
+        CallbackOperation::Exists => {
+            let input = take_arg(&ctx, &mut args)?;
+            Ok(vec![exists_sync(ctx.clone(), input)?.into_js(&ctx)?])
+        }
+        CallbackOperation::AppendFile => {
+            let input = take_arg(&ctx, &mut args)?;
+            let data = take_arg(&ctx, &mut args)?;
+            let options = take_opt_value(&mut args);
+            reply(&ctx, append_file_sync(ctx.clone(), input, data, options))
+        }
+        CallbackOperation::Chmod => {
+            let input = take_arg(&ctx, &mut args)?;
+            let mode = take_arg(&ctx, &mut args)?;
+            reply(&ctx, chmod_sync(ctx.clone(), input, mode))
+        }
+        CallbackOperation::Chown => {
+            let input = take_arg(&ctx, &mut args)?;
+            let uid = numeric_u32(&ctx, take_arg(&ctx, &mut args)?)?;
+            let gid = numeric_u32(&ctx, take_arg(&ctx, &mut args)?)?;
+            reply(&ctx, chown_sync(ctx.clone(), input, uid, gid))
+        }
+        CallbackOperation::Close => {
+            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
+            reply(&ctx, close_sync(ctx.clone(), descriptor))
+        }
+        CallbackOperation::CopyFile => {
+            let from = take_arg(&ctx, &mut args)?;
+            let to = take_arg(&ctx, &mut args)?;
+            let mode = take_opt_u32(&ctx, &mut args)?;
+            reply(&ctx, copy_file_sync(ctx.clone(), from, to, mode))
+        }
+        CallbackOperation::Cp => {
+            let from = take_arg(&ctx, &mut args)?;
+            let to = take_arg(&ctx, &mut args)?;
+            let options = take_opt_value(&mut args);
+            reply(&ctx, cp_sync(ctx.clone(), from, to, options))
+        }
+        CallbackOperation::Fchmod => {
+            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
+            let mode = take_arg(&ctx, &mut args)?;
+            reply(&ctx, fchmod_sync(ctx.clone(), descriptor, mode))
+        }
+        CallbackOperation::Fchown => {
+            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
+            let uid = numeric_u32(&ctx, take_arg(&ctx, &mut args)?)?;
+            let gid = numeric_u32(&ctx, take_arg(&ctx, &mut args)?)?;
+            reply(&ctx, fchown_sync(ctx.clone(), descriptor, uid, gid))
+        }
+        CallbackOperation::Fdatasync => {
+            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
+            reply(&ctx, fdatasync_sync(ctx.clone(), descriptor))
+        }
+        CallbackOperation::Fstat => {
+            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
+            let options = take_opt_value(&mut args);
+            reply(&ctx, fstat_sync(ctx.clone(), descriptor, options))
+        }
+        CallbackOperation::Fsync => {
+            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
+            reply(&ctx, fsync_sync(ctx.clone(), descriptor))
+        }
+        CallbackOperation::Ftruncate => {
+            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
+            let length = take_opt_u64(&ctx, &mut args)?;
+            reply(&ctx, ftruncate_sync(ctx.clone(), descriptor, length))
+        }
+        CallbackOperation::Futimes => {
+            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
+            let atime = take_arg(&ctx, &mut args)?;
+            let mtime = take_arg(&ctx, &mut args)?;
+            reply(&ctx, futimes_sync(ctx.clone(), descriptor, atime, mtime))
+        }
+        CallbackOperation::Glob => {
+            let pattern = take_arg(&ctx, &mut args)?;
+            let options = take_opt_value(&mut args);
+            reply(&ctx, glob_sync(ctx.clone(), pattern, options))
+        }
+        CallbackOperation::Lchmod => {
+            let input = take_arg(&ctx, &mut args)?;
+            let mode = take_arg(&ctx, &mut args)?;
+            reply(&ctx, lchmod_sync(ctx.clone(), input, mode))
+        }
+        CallbackOperation::Lchown => {
+            let input = take_arg(&ctx, &mut args)?;
+            let uid = numeric_u32(&ctx, take_arg(&ctx, &mut args)?)?;
+            let gid = numeric_u32(&ctx, take_arg(&ctx, &mut args)?)?;
+            reply(&ctx, lchown_sync(ctx.clone(), input, uid, gid))
+        }
+        CallbackOperation::Link => {
+            let existing = take_arg(&ctx, &mut args)?;
+            let new = take_arg(&ctx, &mut args)?;
+            reply(&ctx, link_sync(ctx.clone(), existing, new))
+        }
+        CallbackOperation::Lstat => {
+            let input = take_arg(&ctx, &mut args)?;
+            let options = take_opt_value(&mut args);
+            reply(&ctx, lstat_sync(ctx.clone(), input, options))
+        }
+        CallbackOperation::Lutimes => {
+            let input = take_arg(&ctx, &mut args)?;
+            let atime = take_arg(&ctx, &mut args)?;
+            let mtime = take_arg(&ctx, &mut args)?;
+            reply(&ctx, lutimes_sync(ctx.clone(), input, atime, mtime))
+        }
+        CallbackOperation::Mkdir => {
+            let input = take_arg(&ctx, &mut args)?;
+            let options = take_opt_value(&mut args);
+            reply(&ctx, mkdir_sync(ctx.clone(), input, options))
+        }
+        CallbackOperation::Mkdtemp => {
+            let input = take_arg(&ctx, &mut args)?;
+            let options = take_opt_value(&mut args);
+            reply(&ctx, mkdtemp_sync(ctx.clone(), input, options))
+        }
+        CallbackOperation::Open => {
+            let input = take_arg(&ctx, &mut args)?;
+            let flags = take_front_value(&mut args);
+            let mode = take_front_value(&mut args);
+            reply(&ctx, open_sync(ctx.clone(), input, Opt(flags), Opt(mode)))
+        }
+        CallbackOperation::Opendir => {
+            let input = take_arg(&ctx, &mut args)?;
+            let options = take_opt_value(&mut args);
+            reply(&ctx, opendir_sync(ctx.clone(), input, options))
+        }
         CallbackOperation::Read => {
-            let callback =
-                callback.ok_or_else(|| Exception::throw_type(&ctx, "callback is required"))?;
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
             let ReadArguments {
                 buffer,
@@ -137,313 +259,132 @@ pub(super) fn callback_call<'js>(
                 length,
                 position,
             } = normalize_read_arguments(&ctx, args)?;
-            let result = read_sync(
+            let count = read_sync(
                 ctx.clone(),
                 descriptor,
                 buffer.clone(),
                 optional_u32(&ctx, offset)?,
                 optional_u32(&ctx, length)?,
                 Opt(position),
-            )
-            .and_then(|count| {
-                Ok(vec![
-                    Value::new_null(ctx.clone()),
-                    count.into_js(&ctx)?,
-                    buffer,
-                ])
-            });
-            return callback_values(&ctx, callback, result);
-        }
-        CallbackOperation::Write => {
-            let callback =
-                callback.ok_or_else(|| Exception::throw_type(&ctx, "callback is required"))?;
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            let value = take_arg(&ctx, &mut args)?;
-            let result =
-                write_sync(ctx.clone(), descriptor, value.clone(), Rest(args)).and_then(|count| {
-                    Ok(vec![
-                        Value::new_null(ctx.clone()),
-                        count.into_js(&ctx)?,
-                        value,
-                    ])
-                });
-            return callback_values(&ctx, callback, result);
-        }
-        CallbackOperation::Readv => {
-            let callback =
-                callback.ok_or_else(|| Exception::throw_type(&ctx, "callback is required"))?;
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            let buffers = take_arg(&ctx, &mut args)?;
-            let array = Array::from_value(buffers.clone())?;
-            let position = take_opt_value(&mut args);
-            let result = readv_sync(ctx.clone(), descriptor, array, position).and_then(|count| {
-                Ok(vec![
-                    Value::new_null(ctx.clone()),
-                    count.into_js(&ctx)?,
-                    buffers,
-                ])
-            });
-            return callback_values(&ctx, callback, result);
-        }
-        CallbackOperation::Writev => {
-            let callback =
-                callback.ok_or_else(|| Exception::throw_type(&ctx, "callback is required"))?;
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            let buffers = take_arg(&ctx, &mut args)?;
-            let array = Array::from_value(buffers.clone())?;
-            let position = take_opt_value(&mut args);
-            let result = writev_sync(ctx.clone(), descriptor, array, position).and_then(|count| {
-                Ok(vec![
-                    Value::new_null(ctx.clone()),
-                    count.into_js(&ctx)?,
-                    buffers,
-                ])
-            });
-            return callback_values(&ctx, callback, result);
-        }
-        _ => {}
-    }
-    let result = match operation {
-        CallbackOperation::Access => {
-            let input = take_arg(&ctx, &mut args)?;
-            access_sync(ctx.clone(), input, take_opt_u32(&ctx, &mut args)?)
-                .map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::AppendFile => {
-            let input = take_arg(&ctx, &mut args)?;
-            let data = take_arg(&ctx, &mut args)?;
-            append_file_sync(ctx.clone(), input, data, take_opt_value(&mut args))
-                .map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Chmod => {
-            let input = take_arg(&ctx, &mut args)?;
-            let mode = take_arg(&ctx, &mut args)?;
-            chmod_sync(ctx.clone(), input, mode).map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Chown => {
-            let input = take_arg(&ctx, &mut args)?;
-            let uid = take_arg(&ctx, &mut args)?;
-            let gid = take_arg(&ctx, &mut args)?;
-            chown_sync(
-                ctx.clone(),
-                input,
-                numeric_u32(&ctx, uid)?,
-                numeric_u32(&ctx, gid)?,
-            )
-            .map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Close => {
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            close_sync(ctx.clone(), descriptor).map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::CopyFile => {
-            let from = take_arg(&ctx, &mut args)?;
-            let to = take_arg(&ctx, &mut args)?;
-            copy_file_sync(ctx.clone(), from, to, take_opt_u32(&ctx, &mut args)?)
-                .map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Cp => {
-            let from = take_arg(&ctx, &mut args)?;
-            let to = take_arg(&ctx, &mut args)?;
-            cp_sync(ctx.clone(), from, to, take_opt_value(&mut args))
-                .map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Fchmod => {
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            let mode = take_arg(&ctx, &mut args)?;
-            fchmod_sync(ctx.clone(), descriptor, mode).map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Fchown => {
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            let uid = numeric_u32(&ctx, take_arg(&ctx, &mut args)?)?;
-            let gid = numeric_u32(&ctx, take_arg(&ctx, &mut args)?)?;
-            fchown_sync(ctx.clone(), descriptor, uid, gid)
-                .map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Fdatasync => {
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            fdatasync_sync(ctx.clone(), descriptor).map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Fstat => {
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            fstat_sync(ctx.clone(), descriptor, take_opt_value(&mut args)).map(Object::into_value)
-        }
-        CallbackOperation::Fsync => {
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            fsync_sync(ctx.clone(), descriptor).map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Ftruncate => {
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            ftruncate_sync(ctx.clone(), descriptor, take_opt_u64(&ctx, &mut args)?)
-                .map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Futimes => {
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            let atime = take_arg(&ctx, &mut args)?;
-            let mtime = take_arg(&ctx, &mut args)?;
-            futimes_sync(ctx.clone(), descriptor, atime, mtime)
-                .map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Glob => {
-            let pattern = take_arg(&ctx, &mut args)?;
-            glob_sync(ctx.clone(), pattern, take_opt_value(&mut args)).map(Array::into_value)
-        }
-        CallbackOperation::Lchmod => {
-            let input = take_arg(&ctx, &mut args)?;
-            let mode = take_arg(&ctx, &mut args)?;
-            lchmod_sync(ctx.clone(), input, mode).map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Lchown => {
-            let input = take_arg(&ctx, &mut args)?;
-            let uid = numeric_u32(&ctx, take_arg(&ctx, &mut args)?)?;
-            let gid = numeric_u32(&ctx, take_arg(&ctx, &mut args)?)?;
-            lchown_sync(ctx.clone(), input, uid, gid).map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Link => {
-            let existing = take_arg(&ctx, &mut args)?;
-            let new = take_arg(&ctx, &mut args)?;
-            link_sync(ctx.clone(), existing, new).map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Lstat => {
-            let input = take_arg(&ctx, &mut args)?;
-            lstat_sync(ctx.clone(), input, take_opt_value(&mut args))
-        }
-        CallbackOperation::Lutimes => {
-            let input = take_arg(&ctx, &mut args)?;
-            let atime = take_arg(&ctx, &mut args)?;
-            let mtime = take_arg(&ctx, &mut args)?;
-            lutimes_sync(ctx.clone(), input, atime, mtime)
-                .map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Mkdir => {
-            let input = take_arg(&ctx, &mut args)?;
-            mkdir_sync(ctx.clone(), input, take_opt_value(&mut args))
-                .map(|()| Value::new_undefined(ctx.clone()))
-        }
-        CallbackOperation::Mkdtemp => {
-            let input = take_arg(&ctx, &mut args)?;
-            mkdtemp_sync(ctx.clone(), input, take_opt_value(&mut args))
-        }
-        CallbackOperation::Open => {
-            let input = take_arg(&ctx, &mut args)?;
-            let flags = take_front_value(&mut args);
-            let mode = take_front_value(&mut args);
-            open_sync(ctx.clone(), input, Opt(flags), Opt(mode))
-                .and_then(|value| value.into_js(&ctx))
-        }
-        CallbackOperation::Opendir => {
-            let input = take_arg(&ctx, &mut args)?;
-            opendir_sync(ctx.clone(), input, take_opt_value(&mut args)).map(Object::into_value)
-        }
-        CallbackOperation::Read => {
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            let buffer = take_arg(&ctx, &mut args)?;
-            let offset = take_front_u32(&ctx, &mut args)?;
-            let length = take_front_u32(&ctx, &mut args)?;
-            let position = take_front_value(&mut args);
-            read_sync(
-                ctx.clone(),
-                descriptor,
-                buffer,
-                offset,
-                length,
-                Opt(position),
-            )
-            .and_then(|count| count.into_js(&ctx))
+            );
+            reply_with_buffer(&ctx, count, buffer)
         }
         CallbackOperation::ReadFile => {
             let input = take_arg(&ctx, &mut args)?;
-            read_file_sync(ctx.clone(), input, take_opt_value(&mut args))
+            let options = take_opt_value(&mut args);
+            reply(&ctx, read_file_sync(ctx.clone(), input, options))
         }
         CallbackOperation::Readlink => {
             let input = take_arg(&ctx, &mut args)?;
-            read_link_sync(ctx.clone(), input, take_opt_value(&mut args))
+            let options = take_opt_value(&mut args);
+            reply(&ctx, read_link_sync(ctx.clone(), input, options))
         }
         CallbackOperation::Readv => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            let buffers = Array::from_value(take_arg(&ctx, &mut args)?)?;
+            let buffers = take_arg(&ctx, &mut args)?;
+            let array = Array::from_value(buffers.clone())?;
             let position = take_opt_value(&mut args);
-            readv_sync(ctx.clone(), descriptor, buffers, position)
-                .and_then(|count| count.into_js(&ctx))
+            let count = readv_sync(ctx.clone(), descriptor, array, position);
+            reply_with_buffer(&ctx, count, buffers)
         }
         CallbackOperation::Readdir => {
             let input = take_arg(&ctx, &mut args)?;
-            readdir_sync(ctx.clone(), input, take_opt_value(&mut args)).map(Array::into_value)
+            let options = take_opt_value(&mut args);
+            reply(&ctx, readdir_sync(ctx.clone(), input, options))
         }
         CallbackOperation::Realpath => {
             let input = take_arg(&ctx, &mut args)?;
-            realpath_sync(ctx.clone(), input, take_opt_value(&mut args))
+            let options = take_opt_value(&mut args);
+            reply(&ctx, realpath_sync(ctx.clone(), input, options))
         }
         CallbackOperation::Rename => {
             let from = take_arg(&ctx, &mut args)?;
             let to = take_arg(&ctx, &mut args)?;
-            rename_sync(ctx.clone(), from, to).map(|()| Value::new_undefined(ctx.clone()))
+            reply(&ctx, rename_sync(ctx.clone(), from, to))
         }
         CallbackOperation::Rm => {
             let input = take_arg(&ctx, &mut args)?;
-            rm_sync(ctx.clone(), input, take_opt_value(&mut args))
-                .map(|()| Value::new_undefined(ctx.clone()))
+            let options = take_opt_value(&mut args);
+            reply(&ctx, rm_sync(ctx.clone(), input, options))
         }
         CallbackOperation::Rmdir => {
             let input = take_arg(&ctx, &mut args)?;
-            rmdir_sync(ctx.clone(), input, take_opt_value(&mut args))
-                .map(|()| Value::new_undefined(ctx.clone()))
+            let options = take_opt_value(&mut args);
+            reply(&ctx, rmdir_sync(ctx.clone(), input, options))
         }
         CallbackOperation::Stat => {
             let input = take_arg(&ctx, &mut args)?;
-            stat_sync(ctx.clone(), input, take_opt_value(&mut args))
+            let options = take_opt_value(&mut args);
+            reply(&ctx, stat_sync(ctx.clone(), input, options))
         }
         CallbackOperation::Statfs => {
             let input = take_arg(&ctx, &mut args)?;
-            statfs_sync(ctx.clone(), input, take_opt_value(&mut args)).map(Object::into_value)
+            let options = take_opt_value(&mut args);
+            reply(&ctx, statfs_sync(ctx.clone(), input, options))
         }
         CallbackOperation::Symlink => {
             let target = take_arg(&ctx, &mut args)?;
             let input = take_arg(&ctx, &mut args)?;
-            symlink_sync(ctx.clone(), target, input).map(|()| Value::new_undefined(ctx.clone()))
+            reply(&ctx, symlink_sync(ctx.clone(), target, input))
         }
         CallbackOperation::Truncate => {
             let input = take_arg(&ctx, &mut args)?;
-            truncate_sync(ctx.clone(), input, take_opt_u64(&ctx, &mut args)?)
-                .map(|()| Value::new_undefined(ctx.clone()))
+            let length = take_opt_u64(&ctx, &mut args)?;
+            reply(&ctx, truncate_sync(ctx.clone(), input, length))
         }
         CallbackOperation::Unlink => {
             let input = take_arg(&ctx, &mut args)?;
-            unlink_sync(ctx.clone(), input).map(|()| Value::new_undefined(ctx.clone()))
+            reply(&ctx, unlink_sync(ctx.clone(), input))
         }
         CallbackOperation::Utimes => {
             let input = take_arg(&ctx, &mut args)?;
             let atime = take_arg(&ctx, &mut args)?;
             let mtime = take_arg(&ctx, &mut args)?;
-            utimes_sync(ctx.clone(), input, atime, mtime)
-                .map(|()| Value::new_undefined(ctx.clone()))
+            reply(&ctx, utimes_sync(ctx.clone(), input, atime, mtime))
         }
         CallbackOperation::Write => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
             let value = take_arg(&ctx, &mut args)?;
-            write_sync(ctx.clone(), descriptor, value, Rest(args))
-                .and_then(|count| count.into_js(&ctx))
+            let count = write_sync(ctx.clone(), descriptor, value.clone(), Rest(args));
+            reply_with_buffer(&ctx, count, value)
         }
         CallbackOperation::WriteFile => {
             let input = take_arg(&ctx, &mut args)?;
             let data = take_arg(&ctx, &mut args)?;
-            write_file_sync(ctx.clone(), input, data, take_opt_value(&mut args))
-                .map(|()| Value::new_undefined(ctx.clone()))
+            let options = take_opt_value(&mut args);
+            reply(&ctx, write_file_sync(ctx.clone(), input, data, options))
         }
         CallbackOperation::Writev => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            let buffers = Array::from_value(take_arg(&ctx, &mut args)?)?;
+            let buffers = take_arg(&ctx, &mut args)?;
+            let array = Array::from_value(buffers.clone())?;
             let position = take_opt_value(&mut args);
-            writev_sync(ctx.clone(), descriptor, buffers, position)
-                .and_then(|count| count.into_js(&ctx))
+            let count = writev_sync(ctx.clone(), descriptor, array, position);
+            reply_with_buffer(&ctx, count, buffers)
         }
-        CallbackOperation::Exists => unreachable!(),
     };
-    if let Some(callback) = callback {
-        callback_result(&ctx, callback, result)
-    } else {
-        result.map(|_| ())
-    }
+    callback_values(&ctx, callback, result)
+}
+
+/// Callback arguments for an operation result: `(null, value)`.
+pub(super) fn reply<'js>(
+    ctx: &Ctx<'js>,
+    result: rquickjs::Result<impl IntoJs<'js>>,
+) -> rquickjs::Result<Vec<Value<'js>>> {
+    Ok(vec![Value::new_null(ctx.clone()), result?.into_js(ctx)?])
+}
+
+/// Callback arguments for a buffered transfer: `(null, count, buffer)`.
+fn reply_with_buffer<'js>(
+    ctx: &Ctx<'js>,
+    count: rquickjs::Result<u32>,
+    buffer: Value<'js>,
+) -> rquickjs::Result<Vec<Value<'js>>> {
+    Ok(vec![
+        Value::new_null(ctx.clone()),
+        count?.into_js(ctx)?,
+        buffer,
+    ])
 }
 
 pub(super) fn take_arg<'js>(
@@ -469,13 +410,6 @@ pub(super) fn take_opt_u32<'js>(
     args: &mut Vec<Value<'js>>,
 ) -> rquickjs::Result<Opt<u32>> {
     optional_u32(ctx, args.pop())
-}
-
-pub(super) fn take_front_u32<'js>(
-    ctx: &Ctx<'js>,
-    args: &mut Vec<Value<'js>>,
-) -> rquickjs::Result<Opt<u32>> {
-    optional_u32(ctx, take_front_value(args))
 }
 
 pub(super) struct ReadArguments<'js> {
@@ -604,29 +538,6 @@ pub(super) fn optional_u64<'js>(
         .map(|value| Coerced::<u64>::from_js(ctx, value).map(|value| value.0))
         .transpose()
         .map(Opt)
-}
-
-pub(super) fn callback_result<'js>(
-    ctx: &Ctx<'js>,
-    callback: Function<'js>,
-    result: rquickjs::Result<Value<'js>>,
-) -> rquickjs::Result<()> {
-    callback_values(
-        ctx,
-        callback,
-        result.map(|value| vec![Value::new_null(ctx.clone()), value]),
-    )
-}
-
-pub(super) fn callback_value<'js, T>(
-    ctx: &Ctx<'js>,
-    callback: Function<'js>,
-    value: T,
-) -> rquickjs::Result<()>
-where
-    T: IntoJs<'js> + 'js,
-{
-    callback_values(ctx, callback, Ok(vec![value.into_js(ctx)?]))
 }
 
 pub(super) fn callback_values<'js>(

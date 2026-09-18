@@ -117,14 +117,14 @@ pub unsafe extern "C" fn tokamak_runtime_restore_gateway(
     }
 }
 
-/// Suspend JavaScript execution.
+/// Suspend JavaScript execution; returns whether `handle` was live.
 ///
 /// # Safety
 ///
 /// `handle` must be null or a live handle returned by [`tokamak_runtime_start`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tokamak_runtime_suspend(handle: *const c_void) -> bool {
-    unsafe { runtime(handle) }.is_some_and(|runtime| runtime.suspend().is_ok())
+    unsafe { runtime(handle) }.map(Runtime::suspend).is_some()
 }
 
 /// Resume JavaScript execution.

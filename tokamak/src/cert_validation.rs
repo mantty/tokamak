@@ -2,7 +2,7 @@
 
 use rcgen::{KeyPair, PublicKeyData};
 use time::OffsetDateTime;
-use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
+use x509_parser::{certificate::X509Certificate, parse_x509_certificate, pem::parse_x509_pem};
 
 pub(crate) fn certificate_der(pem: &str) -> Option<Vec<u8>> {
     parse_x509_pem(pem.as_bytes())
@@ -22,51 +22,51 @@ pub(crate) fn key_matches_der(key_pem: &str, key_der: &[u8]) -> bool {
 }
 
 pub(crate) fn certificate_not_before(pem: &str) -> Option<OffsetDateTime> {
-    let (_, pem) = parse_x509_pem(pem.as_bytes()).ok()?;
-    let certificate = pem.parse_x509().ok()?;
-    OffsetDateTime::from_unix_timestamp(certificate.validity().not_before.timestamp()).ok()
+    with_certificate(pem, |certificate| {
+        OffsetDateTime::from_unix_timestamp(certificate.validity().not_before.timestamp()).ok()
+    })
+    .flatten()
 }
 
 pub(crate) fn certificate_is_valid_now(pem: &str, now: OffsetDateTime) -> bool {
-    let Ok((_, pem)) = parse_x509_pem(pem.as_bytes()) else {
-        return false;
-    };
-    let Ok(cert) = pem.parse_x509() else {
-        return false;
-    };
-    let now = now.unix_timestamp();
-    let validity = cert.validity();
-    validity.not_before.timestamp() <= now && now < validity.not_after.timestamp()
+    with_certificate(pem, |certificate| {
+        let now = now.unix_timestamp();
+        let validity = certificate.validity();
+        validity.not_before.timestamp() <= now && now < validity.not_after.timestamp()
+    })
+    .unwrap_or(false)
 }
 
 pub(crate) fn certificate_matches_key(certificate_pem: &str, key_pem: &str) -> bool {
-    let Ok((_, pem)) = parse_x509_pem(certificate_pem.as_bytes()) else {
-        return false;
-    };
-    let Ok(certificate) = pem.parse_x509() else {
-        return false;
-    };
     let Ok(key) = KeyPair::from_pem(key_pem) else {
         return false;
     };
-    certificate.public_key().raw == key.subject_public_key_info()
+    with_certificate(certificate_pem, |certificate| {
+        certificate.public_key().raw == key.subject_public_key_info()
+    })
+    .unwrap_or(false)
 }
 
 pub(crate) fn certificate_is_issued_by(certificate_pem: &str, issuer_pem: &str) -> bool {
-    let Ok((_, certificate_pem)) = parse_x509_pem(certificate_pem.as_bytes()) else {
-        return false;
-    };
-    let Ok(certificate) = certificate_pem.parse_x509() else {
-        return false;
-    };
-    let Ok((_, issuer_pem)) = parse_x509_pem(issuer_pem.as_bytes()) else {
-        return false;
-    };
-    let Ok(issuer) = issuer_pem.parse_x509() else {
-        return false;
-    };
-    certificate.issuer() == issuer.subject()
-        && certificate
-            .verify_signature(Some(issuer.public_key()))
-            .is_ok()
+    with_certificate(certificate_pem, |certificate| {
+        with_certificate(issuer_pem, |issuer| {
+            certificate.issuer() == issuer.subject()
+                && certificate
+                    .verify_signature(Some(issuer.public_key()))
+                    .is_ok()
+        })
+    })
+    .flatten()
+    .unwrap_or(false)
+}
+
+/// Parse `pem` and apply `inspect` to the certificate, or `None` when it does
+/// not parse.
+pub(crate) fn with_certificate<T>(
+    pem: &str,
+    inspect: impl FnOnce(&X509Certificate<'_>) -> T,
+) -> Option<T> {
+    let (_, pem) = parse_x509_pem(pem.as_bytes()).ok()?;
+    let certificate = pem.parse_x509().ok()?;
+    Some(inspect(&certificate))
 }

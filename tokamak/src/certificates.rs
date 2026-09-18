@@ -9,7 +9,7 @@ use std::time::Duration as StdDuration;
 
 use rcgen::{Issuer, KeyPair};
 use time::{Duration, OffsetDateTime};
-use x509_parser::{extensions::GeneralName, pem::parse_x509_pem};
+use x509_parser::extensions::{GeneralName, ParsedExtension};
 
 use crate::cert_generation::{
     CertificatePaths, build_ca_certificate, build_client_certificate, build_server_certificate,
@@ -18,6 +18,7 @@ use crate::cert_generation::{
 use crate::cert_validation::{
     certificate_der, certificate_der_matches_pem, certificate_is_issued_by,
     certificate_is_valid_now, certificate_matches_key, certificate_not_before, key_matches_der,
+    with_certificate,
 };
 use crate::lifecycle_events::{Event, Events};
 use crate::{Error, Result};
@@ -232,22 +233,18 @@ impl CertificateBundle {
     }
 
     pub(crate) fn server_certificate_matches_host(&self, host: &str) -> bool {
-        let Ok((_, pem)) = parse_x509_pem(self.server_cert_pem.as_bytes()) else {
-            return false;
-        };
-        let Ok(certificate) = pem.parse_x509() else {
-            return false;
-        };
-        certificate.extensions().iter().any(|extension| {
-            let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) =
-                extension.parsed_extension()
-            else {
-                return false;
-            };
-            san.general_names
-                .iter()
-                .any(|name| matches!(name, GeneralName::DNSName(value) if *value == host))
+        with_certificate(&self.server_cert_pem, |certificate| {
+            certificate.extensions().iter().any(|extension| {
+                let ParsedExtension::SubjectAlternativeName(san) = extension.parsed_extension()
+                else {
+                    return false;
+                };
+                san.general_names
+                    .iter()
+                    .any(|name| matches!(name, GeneralName::DNSName(value) if *value == host))
+            })
         })
+        .unwrap_or(false)
     }
 
     /// Write all certificate files expected by tokamak and platform `WebViews`.
@@ -261,45 +258,26 @@ impl CertificateBundle {
         fs::create_dir_all(work_dir)?;
         #[cfg(unix)]
         crate::cert_generation::set_directory_permissions(work_dir)?;
-        remove_if_exists(work_dir.join(CertificatePaths::CACHE_MARKER))?;
-        for (name, content) in [
-            (CertificatePaths::CA_CERT_PEM, self.ca_cert_pem.as_bytes()),
-            (CertificatePaths::CA_KEY_PEM, self.ca_key_pem.as_bytes()),
-            (
-                CertificatePaths::SERVER_CERT_PEM,
-                self.server_cert_pem.as_bytes(),
-            ),
-            (
-                CertificatePaths::SERVER_KEY_PEM,
-                self.server_key_pem.as_bytes(),
-            ),
-            (
-                CertificatePaths::SERVER_IDENTITY_PEM,
-                self.server_identity_pem.as_bytes(),
-            ),
-            (
-                CertificatePaths::CLIENT_CERT_PEM,
-                self.client_cert_pem.as_bytes(),
-            ),
-            (
-                CertificatePaths::CLIENT_KEY_PEM,
-                self.client_key_pem.as_bytes(),
-            ),
-            (
-                CertificatePaths::CLIENT_KEY_DER,
-                self.client_key_der.as_slice(),
-            ),
-            (CertificatePaths::CA_CERT_DER, self.ca_cert_der.as_slice()),
-        ] {
-            write_atomic(work_dir, name, content, is_private_key(name))?;
-        }
-        write_atomic(work_dir, CertificatePaths::CACHE_MARKER, &[], true)?;
-        Ok(())
+        write_files(
+            work_dir,
+            self.authority_files().into_iter().chain(self.leaf_files()),
+        )
     }
 
     pub(crate) fn write_leaves(&self, work_dir: &Path) -> Result<()> {
-        remove_if_exists(work_dir.join(CertificatePaths::CACHE_MARKER))?;
-        for (name, content) in [
+        write_files(work_dir, self.leaf_files())
+    }
+
+    fn authority_files(&self) -> [(&str, &[u8]); 3] {
+        [
+            (CertificatePaths::CA_CERT_PEM, self.ca_cert_pem.as_bytes()),
+            (CertificatePaths::CA_KEY_PEM, self.ca_key_pem.as_bytes()),
+            (CertificatePaths::CA_CERT_DER, self.ca_cert_der.as_slice()),
+        ]
+    }
+
+    fn leaf_files(&self) -> [(&str, &[u8]); 6] {
+        [
             (
                 CertificatePaths::SERVER_CERT_PEM,
                 self.server_cert_pem.as_bytes(),
@@ -307,6 +285,10 @@ impl CertificateBundle {
             (
                 CertificatePaths::SERVER_KEY_PEM,
                 self.server_key_pem.as_bytes(),
+            ),
+            (
+                CertificatePaths::SERVER_IDENTITY_PEM,
+                self.server_identity_pem.as_bytes(),
             ),
             (
                 CertificatePaths::CLIENT_CERT_PEM,
@@ -320,15 +302,21 @@ impl CertificateBundle {
                 CertificatePaths::CLIENT_KEY_DER,
                 self.client_key_der.as_slice(),
             ),
-            (
-                CertificatePaths::SERVER_IDENTITY_PEM,
-                self.server_identity_pem.as_bytes(),
-            ),
-        ] {
-            write_atomic(work_dir, name, content, is_private_key(name))?;
-        }
-        write_atomic(work_dir, CertificatePaths::CACHE_MARKER, &[], true)
+        ]
     }
+}
+
+/// Write `files` into `work_dir`, clearing the completeness marker first and
+/// restoring it once every file is in place.
+fn write_files<'a>(
+    work_dir: &Path,
+    files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+) -> Result<()> {
+    remove_if_exists(work_dir.join(CertificatePaths::CACHE_MARKER))?;
+    for (name, content) in files {
+        write_atomic(work_dir, name, content, is_private_key(name))?;
+    }
+    write_atomic(work_dir, CertificatePaths::CACHE_MARKER, &[], true)
 }
 
 #[cfg(test)]
@@ -724,7 +712,20 @@ impl Certificates {
 
     /// Renew any certificate that is due.
     pub(crate) fn refresh(&self) -> Result<()> {
-        renew(&self.state_dir, &self.host, &self.current)
+        let bundle =
+            CertificateBundle::ensure(&self.state_dir, &self.host, OffsetDateTime::now_utc())?;
+        let mut held = self
+            .current
+            .write()
+            .map_err(|_| Error::CertificatesUnavailable)?;
+        *held = bundle;
+        Ok(())
+    }
+
+    fn next_delay(&self) -> StdDuration {
+        self.current.read().map_or(RETRY_DELAY, |held| {
+            held.renewal_delay(OffsetDateTime::now_utc())
+        })
     }
 
     /// The authority the gateway trusts for client certificates.
@@ -837,23 +838,6 @@ impl Drop for Renewal {
         if let Some(task) = self.task.take() {
             let _ = task.join();
         }
-    }
-}
-
-fn renew(state_dir: &Path, host: &str, current: &Shared) -> Result<()> {
-    let bundle = CertificateBundle::ensure(state_dir, host, OffsetDateTime::now_utc())?;
-    let mut held = current
-        .write()
-        .map_err(|_| Error::CertificatesUnavailable)?;
-    *held = bundle;
-    Ok(())
-}
-
-impl Certificates {
-    fn next_delay(&self) -> StdDuration {
-        self.current.read().map_or(RETRY_DELAY, |held| {
-            held.renewal_delay(OffsetDateTime::now_utc())
-        })
     }
 }
 

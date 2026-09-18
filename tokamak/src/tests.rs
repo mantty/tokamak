@@ -134,42 +134,84 @@ fn uses_the_resolved_asset_for_content_type() {
 #[test]
 fn serves_the_resolved_asset_with_its_content_type() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let root = directory.path();
+    let assets = asset_fixture(directory.path())?;
+
+    let response = assets
+        .response(&request("GET", "/about"))?
+        .ok_or("asset was not found")?;
+
+    assert_eq!(header(&response, "content-type"), Some("text/html"));
+    assert!(matches!(response.body, HttpBody::Buffered(body) if body == b"about"));
+    Ok(())
+}
+
+#[test]
+fn serves_asset_headers_for_head_without_reading_the_body() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let assets = asset_fixture(directory.path())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            directory.path().join("about/index.html"),
+            std::fs::Permissions::from_mode(0o000),
+        )?;
+    }
+
+    let response = assets
+        .response(&request("HEAD", "/about"))?
+        .ok_or("asset was not found")?;
+
+    assert_eq!(header(&response, "content-type"), Some("text/html"));
+    assert_eq!(header(&response, "content-length"), Some("5"));
+    assert!(matches!(response.body, HttpBody::Buffered(body) if body.is_empty()));
+    Ok(())
+}
+
+#[test]
+fn reports_a_missing_asset_file_for_get_and_head() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let assets = asset_fixture(directory.path())?;
+    std::fs::remove_file(directory.path().join("about/index.html"))?;
+
+    for method in ["GET", "HEAD"] {
+        let Err(Error::Io(error)) = assets.response(&request(method, "/about")) else {
+            return Err(format!("{method} did not report the missing file").into());
+        };
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+    Ok(())
+}
+
+fn asset_fixture(root: &Path) -> Result<AssetService, Box<dyn std::error::Error>> {
     std::fs::create_dir_all(root.join("about"))?;
     std::fs::write(
         root.join("asset-manifest.json"),
         br#"{"files":{"about/index.html":"text/html"},"htmlHandling":"auto-trailing-slash"}"#,
     )?;
     std::fs::write(root.join("about/index.html"), b"about")?;
+    Ok(AssetService::new(&Assets {
+        manifest: root.join("asset-manifest.json"),
+        root: root.to_owned(),
+    })?)
+}
 
-    let config = RuntimeConfig {
-        assets: Some(Assets {
-            manifest: root.join("asset-manifest.json"),
-            root: root.to_owned(),
-        }),
-        cache: root.join("cache"),
-        environment: BTreeMap::new(),
-    };
-    let request = HttpRequest {
-        method: "GET".to_owned(),
-        target: "/about".to_owned(),
-        url: "https://example.test/about".to_owned(),
+fn request(method: &str, path: &str) -> HttpRequest {
+    HttpRequest {
+        method: method.to_owned(),
+        target: path.to_owned(),
+        url: format!("https://example.test{path}"),
         headers: HeaderMap::new(),
         body: None,
-    };
-    let assets = AssetService::new(config.assets.as_ref().ok_or("assets were not configured")?)?;
-    let response = assets.response(&request)?.ok_or("asset was not found")?;
+    }
+}
 
-    assert_eq!(
-        response
-            .headers
-            .get("content-type")
-            .map(|value| value.to_str())
-            .transpose()?,
-        Some("text/html")
-    );
-    assert!(matches!(response.body, HttpBody::Buffered(body) if body == b"about"));
-    Ok(())
+fn header<'a>(response: &'a HttpResponse, name: &str) -> Option<&'a str> {
+    response
+        .headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
 }
 
 #[test]
@@ -179,7 +221,7 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
     let bundle = crate::compile_worker(WEBSOCKET_WORKER)?;
     let worker_bundle = WorkerBundle::from_bytecode(bundle, directory.path());
     let config = websocket_config(directory.path());
-    let request = websocket_request();
+    let request = request("GET", "/socket");
     let (response_sender, response_receiver) = flume::bounded(1);
     let (websocket, bridge) = websocket_channels()?;
     let incoming_sender = bridge.incoming;
@@ -200,7 +242,6 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
                 websocket: Some(websocket),
             },
             &execution,
-            &accepting,
         )
     });
 
@@ -247,7 +288,7 @@ fn streams_worker_response_chunks_without_buffering_the_body()
     let bundle = crate::compile_worker(STREAM_WORKER)?;
     let worker_bundle = WorkerBundle::from_bytecode(bundle, directory.path());
     let config = websocket_config(directory.path());
-    let mut request = websocket_request();
+    let mut request = request("GET", "/socket");
     request.body = Some(vec![9, 8, 7]);
     let (response_sender, response_receiver) = flume::bounded(1);
     let accepting = Arc::new(AtomicBool::new(true));
@@ -266,7 +307,6 @@ fn streams_worker_response_chunks_without_buffering_the_body()
                 websocket: None,
             },
             &execution,
-            &accepting,
         )
     });
 
@@ -372,12 +412,11 @@ fn initializes_web_globals_before_worker_module_evaluation()
         &websocket_config(directory.path()),
         None,
         Job {
-            request: websocket_request(),
+            request: request("GET", "/socket"),
             response: response_sender,
             websocket: None,
         },
         &execution,
-        &accepting,
     )?;
 
     let JobResponse::Http(response) = response_receiver.recv()? else {
@@ -558,7 +597,7 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
         tokio: tokio.handle().clone(),
         port: AtomicU16::new(0),
         accepting: Arc::new(AtomicBool::new(true)),
-        lifecycle: Arc::new(Lifecycle::new()),
+        lifecycle: Lifecycle::new(),
         connections: Mutex::new(Vec::new()),
     });
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
@@ -785,7 +824,7 @@ fn suspension_allows_an_active_javascript_turn_to_finish()
     let bundle = crate::compile_worker(SLOW_WORKER)?;
     let worker_bundle = WorkerBundle::from_bytecode(bundle, directory.path());
     let config = websocket_config(directory.path());
-    let request = websocket_request();
+    let request = request("GET", "/socket");
     let (response_sender, response_receiver) = flume::bounded(1);
     let lifecycle = Arc::new(Lifecycle::new());
     let accepting = Arc::new(AtomicBool::new(true));
@@ -809,7 +848,6 @@ fn suspension_allows_an_active_javascript_turn_to_finish()
                 websocket: None,
             },
             &execution,
-            &worker_accepting,
         )
     });
 
@@ -845,15 +883,5 @@ fn websocket_config(root: &Path) -> RuntimeConfig {
         assets: None,
         cache: root.join("cache"),
         environment: BTreeMap::new(),
-    }
-}
-
-fn websocket_request() -> HttpRequest {
-    HttpRequest {
-        method: "GET".to_owned(),
-        target: "/socket".to_owned(),
-        url: "https://example.test/socket".to_owned(),
-        headers: HeaderMap::new(),
-        body: None,
     }
 }

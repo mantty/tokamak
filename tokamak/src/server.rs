@@ -121,14 +121,9 @@ impl Runtime {
     }
 
     /// Stop new request dispatch and quiesce gateway connections.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the gateway rejects the transition.
-    pub fn suspend(&self) -> Result<()> {
+    pub fn suspend(&self) {
         self.gateway.suspend();
         self.events.emit(Event::Suspended);
-        Ok(())
     }
 
     /// Resume request dispatch, renewing certificates that fell due.

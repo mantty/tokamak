@@ -150,6 +150,36 @@ fn forwards_chunked_host_responses_as_they_arrive() -> TestResult {
 }
 
 #[test]
+fn forwards_close_delimited_host_responses_as_they_arrive() -> TestResult {
+    let (listener, runtime, temporary) = start_test_runtime()?;
+    let (release_sender, release_receiver) = mpsc::sync_channel(1);
+    let host_server = thread::spawn(move || -> TestResult {
+        let (mut host, _) = listener.accept()?;
+        read_header_block(&mut host)?;
+        host.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\npart")?;
+        host.flush()?;
+        release_receiver.recv_timeout(Duration::from_secs(2))?;
+        host.write_all(b" two!")?;
+        Ok(())
+    });
+    let state = temporary.path().join("state");
+
+    let mut http = connect_gateway(&runtime, &state)?;
+    http.write_all(b"GET /stream HTTP/1.1\r\nHost: dev.tokamak.local\r\n\r\n")?;
+    http.flush()?;
+    let headers = String::from_utf8(read_header_block(&mut http)?)?;
+    assert!(headers.contains("transfer-encoding: chunked\r\n"));
+    assert!(!headers.contains("content-length:"));
+    assert_eq!(read_chunk(&mut http)?, b"part");
+    release_sender.send(())?;
+    assert_eq!(read_chunk(&mut http)?, b" two!");
+    assert!(read_chunk(&mut http)?.is_empty());
+
+    host_server.join().map_err(|_| "host server panicked")??;
+    Ok(())
+}
+
+#[test]
 fn stops_an_idle_stream_when_the_runtime_stops() -> TestResult {
     let (listener, runtime, temporary) = start_test_runtime()?;
     let host_server = thread::spawn(move || -> TestResult {

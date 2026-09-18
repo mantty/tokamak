@@ -53,6 +53,14 @@ pub(super) fn apply_components<'a>(
     Ok(())
 }
 
+pub(crate) fn join_child(parent: &str, name: &str) -> String {
+    if parent == "/" {
+        format!("/{name}")
+    } else {
+        format!("{parent}/{name}")
+    }
+}
+
 pub(super) fn path_from_components(components: &[String]) -> String {
     if components.is_empty() {
         "/".to_owned()

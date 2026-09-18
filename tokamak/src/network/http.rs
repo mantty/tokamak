@@ -16,6 +16,7 @@ use rquickjs::{
     Ctx, Exception, Function, Object, Promise, TypedArray, Value,
     function::{Async, This},
 };
+use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 use tokio::sync::Mutex;
 use tokio_util::{io::StreamReader, sync::CancellationToken};
@@ -75,6 +76,9 @@ enum RequestBody {
     Bytes(Vec<u8>),
     Stream(Option<reqwest::Body>),
 }
+
+#[derive(Serialize)]
+struct ResponseHeaders<'a>(#[serde(serialize_with = "super::headers::serialize")] &'a HeaderMap);
 
 impl RequestBody {
     fn take(&mut self) -> io::Result<reqwest::Body> {
@@ -316,24 +320,17 @@ fn response_object<'js>(
             )
             .as_ref(),
     )?;
-    let headers: Vec<_> = response
-        .headers()
-        .iter()
-        .map(|(name, value)| (name.as_str(), String::from_utf8_lossy(value.as_bytes())))
-        .collect();
     result.set(
         "headers",
-        serde_json::to_string(&headers).map_err(|error| failure(&ctx, error))?,
+        serde_json::to_string(&ResponseHeaders(response.headers()))
+            .map_err(|error| failure(&ctx, error))?,
     )?;
-    let encoding = response
-        .headers()
-        .get("content-encoding")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .to_owned();
+    let encoding = response.headers().get("content-encoding").cloned();
     let body = StreamReader::new(response.bytes_stream().map_err(io::Error::other));
-    *reader.try_lock().map_err(|error| failure(&ctx, error))? =
-        Some(decode_body(Box::pin(body), &encoding));
+    *reader.try_lock().map_err(|error| failure(&ctx, error))? = Some(decode_body(
+        Box::pin(body),
+        encoding.as_ref().map(HeaderValue::as_bytes),
+    ));
     result.set(
         "read",
         Function::new(
@@ -375,14 +372,14 @@ fn response_object<'js>(
     Ok(result)
 }
 
-fn decode_body(body: Reader, encoding: &str) -> Reader {
+fn decode_body(body: Reader, encoding: Option<&[u8]>) -> Reader {
     match encoding {
-        "gzip" => {
+        Some(b"gzip") => {
             let mut decoder = GzipDecoder::new(BufReader::new(body));
             decoder.multiple_members(true);
             Box::pin(decoder)
         }
-        "br" => Box::pin(super::brotli::Decoder::new(body)),
+        Some(b"br") => Box::pin(super::brotli::Decoder::new(body)),
         _ => body,
     }
 }

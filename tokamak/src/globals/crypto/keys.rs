@@ -71,6 +71,7 @@ pub(super) enum PrivateKey {
     X25519(StaticSecret),
 }
 
+#[derive(Clone)]
 pub(super) enum PublicKey {
     Rsa(RsaPublicKey),
     Ec(EcPublic),
@@ -259,17 +260,6 @@ impl PublicKey {
     }
 }
 
-impl Clone for PublicKey {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Rsa(key) => Self::Rsa(key.clone()),
-            Self::Ec(key) => Self::Ec(key.clone()),
-            Self::Ed25519(key) => Self::Ed25519(*key),
-            Self::X25519(key) => Self::X25519(*key),
-        }
-    }
-}
-
 pub(super) fn from_jwk(kind: Kind, jwk: &JsonValue) -> Result<KeyMaterial> {
     let key_type = jwk
         .get("kty")
@@ -326,8 +316,9 @@ fn rsa_from_jwk(jwk: &JsonValue) -> Result<KeyMaterial> {
 fn ec_from_jwk(jwk: &JsonValue) -> Result<KeyMaterial> {
     let curve = Curve::parse(&jwk_string(jwk, "crv")?)
         .ok_or_else(|| KeyError::Data("The JWK curve is not supported".to_owned()))?;
-    let x = fixed_width(&jwk_bytes(jwk, "x")?, curve.size())?;
-    let y = fixed_width(&jwk_bytes(jwk, "y")?, curve.size())?;
+    let too_long = || KeyError::Data("The JWK coordinate is too long".to_owned());
+    let x = left_pad(&jwk_bytes(jwk, "x")?, curve.size()).ok_or_else(too_long)?;
+    let y = left_pad(&jwk_bytes(jwk, "y")?, curve.size()).ok_or_else(too_long)?;
     let mut point = vec![4];
     point.extend(x);
     point.extend(y);
@@ -420,13 +411,12 @@ pub(super) fn integer(bytes: &[u8]) -> BoxedUint {
     }
 }
 
-fn fixed_width(value: &[u8], size: usize) -> Result<Vec<u8>> {
-    if value.len() > size {
-        return Err(KeyError::Data("The JWK coordinate is too long".to_owned()));
-    }
-    let mut padded = vec![0; size - value.len()];
-    padded.extend_from_slice(value);
-    Ok(padded)
+/// Big-endian `value` zero-extended to `size` bytes, or `None` when it is longer.
+pub(super) fn left_pad(value: &[u8], size: usize) -> Option<Vec<u8>> {
+    let start = size.checked_sub(value.len())?;
+    let mut padded = vec![0; size];
+    padded[start..].copy_from_slice(value);
+    Some(padded)
 }
 
 fn jwk_string(jwk: &JsonValue, name: &str) -> Result<String> {
@@ -449,4 +439,16 @@ fn okp_pkcs8(oid: ObjectIdentifier, secret: &[u8]) -> Result<Vec<u8>> {
         parameters: None,
     };
     Ok(PrivateKeyInfoRef::new(algorithm, OctetStringRef::new(&inner)?).to_der()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::left_pad;
+
+    #[test]
+    fn left_pad_fills_leading_zeros_up_to_the_size() {
+        assert_eq!(left_pad(&[1, 2], 4), Some(vec![0, 0, 1, 2]));
+        assert_eq!(left_pad(&[1, 2], 2), Some(vec![1, 2]));
+        assert_eq!(left_pad(&[1, 2, 3], 2), None);
+    }
 }

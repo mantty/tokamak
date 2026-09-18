@@ -204,7 +204,7 @@ fn cache_put<'js>(
     Ok(())
 }
 
-fn cache_delete(_: Ctx<'_>, path: String, name: String, key: String) -> bool {
+fn cache_delete(path: String, name: String, key: String) -> bool {
     crate::network::cache_delete(&path, &name, &key)
 }
 
@@ -303,6 +303,6 @@ fn random_bytes(ctx: Ctx<'_>, length: usize) -> rquickjs::Result<TypedArray<'_, 
     TypedArray::new(ctx, bytes)
 }
 
-fn detach_array_buffer(_: Ctx<'_>, mut buffer: ArrayBuffer<'_>) {
+fn detach_array_buffer(mut buffer: ArrayBuffer<'_>) {
     buffer.detach();
 }

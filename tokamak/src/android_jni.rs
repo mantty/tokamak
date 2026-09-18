@@ -101,10 +101,8 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeSuspend(
     _: JClass,
     handle: jlong,
 ) {
-    if let Some(runtime) = runtime(handle)
-        && let Err(error) = runtime.suspend()
-    {
-        log(LOG_ERROR, &format!("suspend failed: {error}"));
+    if let Some(runtime) = runtime(handle) {
+        runtime.suspend();
     }
 }
 

@@ -1036,23 +1036,16 @@ fn optional_bytes(ctx: &Ctx<'_>, options: &Object<'_>, name: &str) -> rquickjs::
     Ok(option_bytes(ctx, options, name)?.unwrap_or_default())
 }
 
-fn option_bytes<'js>(
+fn option_bytes(
     ctx: &Ctx<'_>,
-    options: &Object<'js>,
+    options: &Object<'_>,
     name: &str,
 ) -> rquickjs::Result<Option<Vec<u8>>> {
-    let value: Option<TypedArray<'js, u8>> = options.get(name)?;
-    value
-        .map(|value| {
-            value
-                .as_bytes()
-                .map(ToOwned::to_owned)
-                .ok_or_else(|| Exception::throw_type(ctx, "Detached buffer"))
-        })
-        .transpose()
+    let value: Option<TypedArray<'_, u8>> = options.get(name)?;
+    value.map(|value| bytes(ctx, value)).transpose()
 }
 
-fn bytes<'js>(ctx: &Ctx<'js>, input: TypedArray<'js, u8>) -> rquickjs::Result<Vec<u8>> {
+fn bytes(ctx: &Ctx<'_>, input: TypedArray<'_, u8>) -> rquickjs::Result<Vec<u8>> {
     input
         .as_bytes()
         .map(ToOwned::to_owned)

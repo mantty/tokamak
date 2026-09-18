@@ -47,7 +47,9 @@ use icu::locale::names::{
 };
 use icu::locale::subtags::{Language, Region, Script};
 use icu::locale::{Locale, LocaleCanonicalizer, LocaleExpander};
-use icu::plurals::{PluralCategory, PluralRules, PluralRulesWithRanges};
+use icu::plurals::{
+    PluralCategory, PluralRuleType, PluralRules, PluralRulesOptions, PluralRulesWithRanges,
+};
 use icu::segmenter::options::{SentenceBreakOptions, WordBreakOptions};
 use icu::segmenter::{GraphemeClusterSegmenter, SentenceSegmenter, WordSegmenter};
 use icu::time::ZonedDateTime;
@@ -215,7 +217,7 @@ pub(super) fn number(
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
-    let locale = resolved_locale(&ctx, &locales)?.to_string();
+    let locale = resolved_locale(&ctx, &locales)?;
     let options: Value = serde_json::from_str(&options)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
     format_number(&ctx, value, &locale, &options)
@@ -227,7 +229,7 @@ pub(super) fn number_parts(
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
-    let locale = resolved_locale(&ctx, &locales)?.to_string();
+    let locale = resolved_locale(&ctx, &locales)?;
     let options: Value = serde_json::from_str(&options)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
     format_number_parts(&ctx, value, &locale, &options)
@@ -242,15 +244,7 @@ pub(super) fn plural(
     if !value.is_finite() {
         return Ok("other".to_owned());
     }
-    let locale = resolved_locale(&ctx, &locales)?;
-    let options = icu::plurals::PluralRulesOptions::default().with_type(if kind == "ordinal" {
-        icu::plurals::PluralRuleType::Ordinal
-    } else {
-        icu::plurals::PluralRuleType::Cardinal
-    });
-    let rules =
-        PluralRules::try_new_unstable(&*PROVIDER, plural_locale(&ctx, &locale)?.into(), options)
-            .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let rules = plural_rules(&ctx, &locales, &kind)?;
     let decimal = plural_operand(&ctx, value)?;
     Ok(plural_category(rules.category_for(&decimal)).to_owned())
 }
@@ -266,11 +260,7 @@ pub(super) fn plural_range(
         return Ok("other".to_owned());
     }
     let locale = resolved_locale(&ctx, &locales)?;
-    let options = icu::plurals::PluralRulesOptions::default().with_type(if kind == "ordinal" {
-        icu::plurals::PluralRuleType::Ordinal
-    } else {
-        icu::plurals::PluralRuleType::Cardinal
-    });
+    let options = plural_rules_options(&kind);
     let rules = PluralRulesWithRanges::try_new_unstable(
         &*PROVIDER,
         plural_locale(&ctx, &locale)?.into(),
@@ -287,15 +277,7 @@ pub(super) fn plural_categories(
     locales: String,
     kind: String,
 ) -> rquickjs::Result<String> {
-    let locale = resolved_locale(&ctx, &locales)?;
-    let options = icu::plurals::PluralRulesOptions::default().with_type(if kind == "ordinal" {
-        icu::plurals::PluralRuleType::Ordinal
-    } else {
-        icu::plurals::PluralRuleType::Cardinal
-    });
-    let rules =
-        PluralRules::try_new_unstable(&*PROVIDER, plural_locale(&ctx, &locale)?.into(), options)
-            .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let rules = plural_rules(&ctx, &locales, &kind)?;
     let values = rules.categories().map(plural_category).collect::<Vec<_>>();
     serde_json::to_string(&values)
         .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))
@@ -312,21 +294,7 @@ pub(super) fn list(
     let locale = resolved_locale(&ctx, &locales)?;
     let options: Value = serde_json::from_str(&options)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
-    let formatter_options = ListFormatterOptions::default().with_length(list_length(&options));
-    let formatter = match options
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("conjunction")
-    {
-        "disjunction" => {
-            ListFormatter::try_new_or_unstable(&*PROVIDER, locale.into(), formatter_options)
-        }
-        "unit" => {
-            ListFormatter::try_new_unit_unstable(&*PROVIDER, locale.into(), formatter_options)
-        }
-        _ => ListFormatter::try_new_and_unstable(&*PROVIDER, locale.into(), formatter_options),
-    }
-    .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let formatter = list_formatter(&ctx, locale, &options)?;
     Ok(formatter.format_to_string(values.iter().map(String::as_str)))
 }
 
@@ -341,21 +309,7 @@ pub(super) fn list_parts(
     let locale = resolved_locale(&ctx, &locales)?;
     let options: Value = serde_json::from_str(&options)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
-    let formatter_options = ListFormatterOptions::default().with_length(list_length(&options));
-    let formatter = match options
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("conjunction")
-    {
-        "disjunction" => {
-            ListFormatter::try_new_or_unstable(&*PROVIDER, locale.into(), formatter_options)
-        }
-        "unit" => {
-            ListFormatter::try_new_unit_unstable(&*PROVIDER, locale.into(), formatter_options)
-        }
-        _ => ListFormatter::try_new_and_unstable(&*PROVIDER, locale.into(), formatter_options),
-    }
-    .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    let formatter = list_formatter(&ctx, locale, &options)?;
     let mut collector = PartsCollector::default();
     formatter
         .format(values.iter().map(String::as_str))
@@ -372,12 +326,32 @@ pub(super) fn relative(
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
+    let (locale, options) = relative_inputs(&ctx, value, &locales, &options)?;
+    format_relative(&ctx, value, &unit, &locale, &options)
+}
+
+fn relative_inputs(
+    ctx: &Ctx<'_>,
+    value: f64,
+    locales: &str,
+    options: &str,
+) -> rquickjs::Result<(Locale, Value)> {
     if !value.is_finite() {
-        return Err(Exception::throw_range(&ctx, "Invalid relative time value"));
+        return Err(Exception::throw_range(ctx, "Invalid relative time value"));
     }
-    let locale = resolved_locale(&ctx, &locales)?;
-    let options: Value = serde_json::from_str(&options)
-        .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
+    let locale = resolved_locale(ctx, locales)?;
+    let options = serde_json::from_str(options)
+        .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?;
+    Ok((locale, options))
+}
+
+fn format_relative(
+    ctx: &Ctx<'_>,
+    value: f64,
+    unit: &str,
+    locale: &Locale,
+    options: &Value,
+) -> rquickjs::Result<String> {
     let mut formatter_options = RelativeTimeFormatterOptions::default();
     formatter_options.numeric = if options.get("numeric").and_then(Value::as_str) == Some("auto") {
         RelativeNumeric::Auto
@@ -386,11 +360,15 @@ pub(super) fn relative(
     };
     macro_rules! try_new {
         ($constructor:ident) => {
-            RelativeTimeFormatter::$constructor(&*PROVIDER, locale.into(), formatter_options)
+            RelativeTimeFormatter::$constructor(
+                &*PROVIDER,
+                locale.clone().into(),
+                formatter_options,
+            )
         };
     }
     let formatter: RelativeTimeFormatter = match (
-        unit.as_str(),
+        unit,
         options
             .get("style")
             .and_then(Value::as_str)
@@ -420,13 +398,13 @@ pub(super) fn relative(
         ("month", _) => try_new!(try_new_long_month_unstable),
         ("quarter", _) => try_new!(try_new_long_quarter_unstable),
         ("year", _) => try_new!(try_new_long_year_unstable),
-        _ => return Err(Exception::throw_range(&ctx, "Invalid relative time unit")),
+        _ => return Err(Exception::throw_range(ctx, "Invalid relative time unit")),
     }
-    .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+    .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
     let decimal = value
         .to_string()
         .parse::<icu::decimal::input::Decimal>()
-        .map_err(|error| Exception::throw_range(&ctx, &error.to_string()))?;
+        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
     Ok(formatter.format(decimal).to_string())
 }
 
@@ -437,8 +415,8 @@ pub(super) fn relative_parts(
     locales: String,
     options: String,
 ) -> rquickjs::Result<String> {
-    let formatted = relative(ctx.clone(), value, unit.clone(), locales.clone(), options)?;
-    let locale = resolved_locale(&ctx, &locales)?;
+    let (locale, options) = relative_inputs(&ctx, value, &locales, &options)?;
+    let formatted = format_relative(&ctx, value, &unit, &locale, &options)?;
     let absolute = plural_operand(&ctx, value.abs())?;
     let number = with_decimal_formatter(&ctx, &locale, GroupingStrategy::Auto, |formatter| {
         formatter.format_to_string(&absolute)
@@ -760,6 +738,24 @@ fn plural_locale(ctx: &Ctx<'_>, locale: &Locale) -> rquickjs::Result<Locale> {
     }
 }
 
+fn plural_rules(ctx: &Ctx<'_>, locales: &str, kind: &str) -> rquickjs::Result<PluralRules> {
+    let locale = resolved_locale(ctx, locales)?;
+    PluralRules::try_new_unstable(
+        &*PROVIDER,
+        plural_locale(ctx, &locale)?.into(),
+        plural_rules_options(kind),
+    )
+    .map_err(|error| Exception::throw_range(ctx, &error.to_string()))
+}
+
+fn plural_rules_options(kind: &str) -> PluralRulesOptions {
+    PluralRulesOptions::default().with_type(if kind == "ordinal" {
+        PluralRuleType::Ordinal
+    } else {
+        PluralRuleType::Cardinal
+    })
+}
+
 fn plural_category(category: PluralCategory) -> &'static str {
     match category {
         PluralCategory::Zero => "zero",
@@ -769,6 +765,28 @@ fn plural_category(category: PluralCategory) -> &'static str {
         PluralCategory::Many => "many",
         PluralCategory::Other => "other",
     }
+}
+
+fn list_formatter(
+    ctx: &Ctx<'_>,
+    locale: Locale,
+    options: &Value,
+) -> rquickjs::Result<ListFormatter> {
+    let formatter_options = ListFormatterOptions::default().with_length(list_length(options));
+    match options
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("conjunction")
+    {
+        "disjunction" => {
+            ListFormatter::try_new_or_unstable(&*PROVIDER, locale.into(), formatter_options)
+        }
+        "unit" => {
+            ListFormatter::try_new_unit_unstable(&*PROVIDER, locale.into(), formatter_options)
+        }
+        _ => ListFormatter::try_new_and_unstable(&*PROVIDER, locale.into(), formatter_options),
+    }
+    .map_err(|error| Exception::throw_range(ctx, &error.to_string()))
 }
 
 fn list_length(options: &Value) -> ListLength {
@@ -1050,7 +1068,7 @@ fn parse_hour_cycle(value: &str) -> Option<HourCycle> {
 fn format_number(
     ctx: &Ctx<'_>,
     value: f64,
-    locale: &str,
+    locale: &Locale,
     options: &Value,
 ) -> rquickjs::Result<String> {
     Ok(format_number_parts_inner(ctx, value, locale, options)?
@@ -1062,7 +1080,7 @@ fn format_number(
 fn format_number_parts(
     ctx: &Ctx<'_>,
     value: f64,
-    locale: &str,
+    locale: &Locale,
     options: &Value,
 ) -> rquickjs::Result<String> {
     serde_json::to_string(&format_number_parts_inner(ctx, value, locale, options)?)
@@ -1072,7 +1090,7 @@ fn format_number_parts(
 fn format_number_parts_inner(
     ctx: &Ctx<'_>,
     value: f64,
-    locale_name: &str,
+    locale: &Locale,
     options: &Value,
 ) -> rquickjs::Result<Vec<(String, String)>> {
     if value.is_nan() {
@@ -1087,9 +1105,6 @@ fn format_number_parts_inner(
         return Ok(parts);
     }
 
-    let locale = locale_name
-        .parse::<Locale>()
-        .map_err(|error| Exception::throw_range(ctx, &error.to_string()))?;
     let style = options
         .get("style")
         .and_then(Value::as_str)
@@ -1101,15 +1116,15 @@ fn format_number_parts_inner(
     let decimal = prepared_number(ctx, value, style, notation, options)?;
 
     match notation {
-        "compact" => compact_parts(ctx, &locale, &decimal, options),
+        "compact" => compact_parts(ctx, locale, &decimal, options),
         "scientific" | "engineering" => {
-            scientific_parts(ctx, &locale, &decimal, notation == "engineering")
+            scientific_parts(ctx, locale, &decimal, notation == "engineering")
         }
         _ => match style {
-            "currency" => currency_parts(ctx, &locale, &decimal, options),
-            "percent" => percent_parts(ctx, &locale, &decimal, options),
-            "unit" => unit_parts(ctx, &locale, &decimal, options),
-            _ => decimal_parts(ctx, &locale, &decimal, options),
+            "currency" => currency_parts(ctx, locale, &decimal, options),
+            "percent" => percent_parts(ctx, locale, &decimal, options),
+            "unit" => unit_parts(ctx, locale, &decimal, options),
+            _ => decimal_parts(ctx, locale, &decimal, options),
         },
     }
 }

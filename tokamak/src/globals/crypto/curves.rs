@@ -5,7 +5,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use pkcs8::{AssociatedOid, ObjectIdentifier};
 use x25519_dalek::StaticSecret;
 
-use super::keys::KeyError;
+use super::keys::{KeyError, left_pad};
 
 type Result<T> = std::result::Result<T, KeyError>;
 
@@ -144,11 +144,8 @@ pub(super) fn public_of(key: &EcSecret) -> EcPublic {
 
 /// A private scalar given as big-endian bytes, padded to the field size.
 pub(super) fn secret_from_scalar(curve: Curve, scalar: &[u8]) -> Result<EcSecret> {
-    if scalar.len() > curve.size() {
-        return Err(KeyError::Data("The private key is too long".to_owned()));
-    }
-    let mut padded = vec![0; curve.size() - scalar.len()];
-    padded.extend_from_slice(scalar);
+    let padded = left_pad(scalar, curve.size())
+        .ok_or_else(|| KeyError::Data("The private key is too long".to_owned()))?;
     Ok(for_curve!(curve, EcSecret, c => c::SecretKey::from_slice(&padded)?))
 }
 

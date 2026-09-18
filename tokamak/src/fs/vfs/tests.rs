@@ -1,6 +1,6 @@
 use super::{
     Bundle, CopyOptions, ErrorKind, MAX_PATH_LENGTH, MAX_PATH_SEGMENTS, NodeType, OpenOptions,
-    VirtualFileSystem,
+    VirtualFileSystem, join_child,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -198,4 +198,11 @@ fn supports_access_copy_links_temp_and_vectors() -> TestResult {
     );
     vfs.close(descriptor)?;
     Ok(())
+}
+
+#[test]
+fn joins_child_paths_without_doubling_the_root_separator() {
+    assert_eq!(join_child("/", "tmp"), "/tmp");
+    assert_eq!(join_child("/tmp", "data"), "/tmp/data");
+    assert_eq!(join_child("/tmp/data", "value.txt"), "/tmp/data/value.txt");
 }

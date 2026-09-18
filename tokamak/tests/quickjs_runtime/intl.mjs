@@ -22,6 +22,10 @@ export function intlContracts() {
   result.numberMethods = [1234.5, -42, 0, NaN, Infinity].map(value => value.toLocaleString("de-DE"));
   result.arrayNumbers = [1234.5, 6.7].toLocaleString("de-DE");
   result.typedNumbers = new Float64Array([1234.5, 6.7]).toLocaleString("de-DE");
+  result.currencyDisplays = [{ currencySign: "accounting" }, { currencyDisplay: "name" }, { currencyDisplay: "narrowSymbol" }].map(options => {
+    const formatter = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", ...options });
+    return [-1234.5, 1234.5].map(value => formatter.format(value));
+  });
   result.arrayLocaleArguments = [{ toLocaleString(...args) { return JSON.stringify(args); } }].toLocaleString("de-DE", { useGrouping: false }, "ignored");
   result.localeLists = [{ 0: "en-gb", 2: "de", length: 3 }, new Intl.Locale("en-GB"), new Set(["de"])].map(locales => outcome(() => Intl.getCanonicalLocales(locales)));
   result.optionPrimitives = [null, 3, true, "x"].map(options => outcome(() => { new Intl.DateTimeFormat("en", options); return true; }));

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Read};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use tokio_util::sync::CancellationToken;
 
 use crate::compat;
@@ -18,7 +18,7 @@ use crate::gateway::{
 };
 use crate::globals::ResponseEncoder;
 use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
-use crate::transport::{BodyChunk, HttpRequest, HttpResponse, response_stream};
+use crate::transport::{BodyChunk, HttpBody, HttpRequest, HttpResponse, response_stream};
 use flate2::read::GzDecoder;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rquickjs::convert::List;
@@ -52,12 +52,7 @@ impl Dispatcher {
 }
 
 impl Handler for Dispatcher {
-    fn handle(
-        &self,
-        job: Job,
-        execution: &Execution<'_>,
-        accepting: &Arc<AtomicBool>,
-    ) -> Result<(), Error> {
+    fn handle(&self, job: Job, execution: &Execution<'_>) -> Result<(), Error> {
         if let Some(assets) = &self.assets
             && let Some(asset) = assets.response(&job.request)?
         {
@@ -72,7 +67,6 @@ impl Handler for Dispatcher {
             self.assets.as_ref(),
             job,
             execution,
-            accepting,
         )
     }
 }
@@ -93,9 +87,8 @@ pub(super) fn execute_request(
     assets: Option<&Arc<AssetService>>,
     job: Job,
     execution: &Execution<'_>,
-    accepting: &Arc<AtomicBool>,
 ) -> Result<(), Error> {
-    let request = execute_request_async(worker, config, assets, job, execution, accepting);
+    let request = execute_request_async(worker, config, assets, job, execution);
     match tokio::runtime::Handle::try_current() {
         Ok(runtime) => runtime.block_on(request),
         Err(_) => tokio::runtime::Builder::new_current_thread()
@@ -111,10 +104,9 @@ async fn execute_request_async(
     assets: Option<&Arc<AssetService>>,
     job: Job,
     execution: &Execution<'_>,
-    accepting: &Arc<AtomicBool>,
 ) -> Result<(), Error> {
     let runtime = AsyncRuntime::new().map_err(|error| js_error("runtime", error))?;
-    let interrupt_accepting = Arc::clone(accepting);
+    let interrupt_accepting = execution.accepting();
     runtime
         .set_interrupt_handler(Some(Box::new(move || {
             !interrupt_accepting.load(Ordering::Acquire)
@@ -334,20 +326,20 @@ impl Loader for WorkerLoader {
         _attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<Module<'js>> {
         match name {
-            NODE_FS_MODULE_NAME => {
-                return Module::declare_def::<NodeFsModule, _>(ctx.clone(), name);
-            }
+            NODE_FS_MODULE_NAME => Module::declare_def::<NodeFsModule, _>(ctx.clone(), name),
             NODE_FS_PROMISES_MODULE_NAME => {
-                return Module::declare_def::<NodeFsPromisesModule, _>(ctx.clone(), name);
+                Module::declare_def::<NodeFsPromisesModule, _>(ctx.clone(), name)
             }
             "tokamak:host" => {
-                return Module::declare_def::<crate::globals::native::HostModule, _>(
-                    ctx.clone(),
-                    name,
-                );
+                Module::declare_def::<crate::globals::native::HostModule, _>(ctx.clone(), name)
             }
-            _ => {}
+            _ => self.load_bytecode(ctx, name),
         }
+    }
+}
+
+impl WorkerLoader {
+    fn load_bytecode<'js>(&self, ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Module<'js>> {
         if let Some(bytecode) = compat::bytecode(name) {
             // Builtin bytecode is compiled with the runtime during its build.
             return unsafe { Module::load(ctx.clone(), bytecode) };
@@ -845,21 +837,21 @@ impl AssetService {
         let Some(relative) = self.manifest.path_for(path) else {
             return Ok(None);
         };
-        let body = std::fs::read(self.root.join(&relative))?;
-        let mut response = HttpResponse::buffered(
-            200,
-            HeaderMap::new(),
-            if request.method == "HEAD" {
-                Vec::new()
-            } else {
-                body
-            },
-        );
+        let file = self.root.join(&relative);
+        let mut response = HttpResponse::buffered(200, HeaderMap::new(), Vec::new());
         response.headers.insert(
             "content-type",
             HeaderValue::from_str(&self.manifest.content_type(&relative))
                 .map_err(io::Error::other)?,
         );
+        if request.method == "HEAD" {
+            let length = std::fs::metadata(file)?.len();
+            response
+                .headers
+                .insert("content-length", HeaderValue::from(length));
+        } else {
+            response.body = HttpBody::Buffered(std::fs::read(file)?);
+        }
         Ok(Some(response))
     }
 }

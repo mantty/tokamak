@@ -16,8 +16,8 @@ use crate::quickjs::Error;
 use crate::readiness::{Readiness, Waker};
 
 use crate::transport::{
-    HttpRequest, HttpResponse, is_connect, is_websocket, read_headers, read_request, tls_accept,
-    websocket_session, write_plain_response, write_response,
+    HttpRequest, HttpResponse, is_connect, is_websocket, read_header_block, read_request,
+    tls_accept, websocket_session, write_plain_response, write_response,
 };
 
 #[cfg(target_os = "android")]
@@ -63,7 +63,7 @@ pub(super) struct Shared {
     pub(super) tokio: tokio::runtime::Handle,
     pub(super) port: AtomicU16,
     pub(super) accepting: Arc<AtomicBool>,
-    pub(super) lifecycle: Arc<Lifecycle>,
+    pub(super) lifecycle: Lifecycle,
     pub(super) connections: Mutex<Vec<Arc<Connection>>>,
 }
 
@@ -88,16 +88,11 @@ pub(super) struct Lifecycle {
 
 pub(super) struct Execution<'a> {
     lifecycle: &'a Lifecycle,
-    accepting: &'a AtomicBool,
+    accepting: &'a Arc<AtomicBool>,
 }
 
 pub(super) trait Handler: Send + Sync {
-    fn handle(
-        &self,
-        job: Job,
-        execution: &Execution<'_>,
-        accepting: &Arc<AtomicBool>,
-    ) -> Result<(), Error>;
+    fn handle(&self, job: Job, execution: &Execution<'_>) -> Result<(), Error>;
 }
 
 impl Lifecycle {
@@ -140,7 +135,7 @@ impl Lifecycle {
         self.stopped.notify_waiters();
     }
 
-    pub(super) fn enter<'a>(&'a self, accepting: &'a AtomicBool) -> Option<Execution<'a>> {
+    pub(super) fn enter<'a>(&'a self, accepting: &'a Arc<AtomicBool>) -> Option<Execution<'a>> {
         let mut status = self.wait_for_running(lock_status(&self.status), accepting)?;
         status.active += 1;
         Some(Execution {
@@ -198,6 +193,11 @@ impl Execution<'_> {
     pub(super) fn is_running(&self) -> bool {
         self.accepting.load(Ordering::Acquire)
             && lock_status(&self.lifecycle.status).phase == LifecyclePhase::Running
+    }
+
+    /// An owned handle on the accepting flag for observers that outlive this execution's borrow.
+    pub(super) fn accepting(&self) -> Arc<AtomicBool> {
+        Arc::clone(self.accepting)
     }
 }
 
@@ -303,7 +303,7 @@ impl Runtime {
             tokio: tokio_runtime.handle().clone(),
             port: AtomicU16::new(port),
             accepting: Arc::new(AtomicBool::new(true)),
-            lifecycle: Arc::new(Lifecycle::new()),
+            lifecycle: Lifecycle::new(),
             connections: Mutex::new(Vec::new()),
         });
         let gateway_shared = Arc::clone(&shared);
@@ -473,19 +473,15 @@ pub(super) fn close_connections(shared: &Shared) {
 pub(super) fn probe_gateway(port: u16) -> io::Result<()> {
     let timeout = Duration::from_millis(100);
     let address = SocketAddr::from(([127, 0, 0, 1], port));
-    let mut stream = TcpStream::connect_timeout(&address, timeout)
-        .map_err(|error| io::Error::new(error.kind(), format!("TCP connect failed: {error}")))?;
-    stream.set_read_timeout(Some(timeout)).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("setting read timeout failed: {error}"),
-        )
-    })?;
+    let mut stream =
+        TcpStream::connect_timeout(&address, timeout).map_err(describe("TCP connect failed"))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(describe("setting read timeout failed"))?;
     stream
         .write_all(b"CONNECT tokamak-probe.invalid:443 HTTP/1.1\r\n\r\n")
-        .map_err(|error| io::Error::new(error.kind(), format!("CONNECT write failed: {error}")))?;
-    let response = io::read_to_string(stream)
-        .map_err(|error| io::Error::new(error.kind(), format!("CONNECT read failed: {error}")))?;
+        .map_err(describe("CONNECT write failed"))?;
+    let response = io::read_to_string(stream).map_err(describe("CONNECT read failed"))?;
     if response.starts_with("HTTP/1.1 400") && response.ends_with("\r\n\r\nBad CONNECT request") {
         Ok(())
     } else {
@@ -494,6 +490,10 @@ pub(super) fn probe_gateway(port: u16) -> io::Result<()> {
             response.lines().next().unwrap_or("empty response")
         )))
     }
+}
+
+fn describe(context: &'static str) -> impl FnOnce(io::Error) -> io::Error {
+    move |error| io::Error::new(error.kind(), format!("{context}: {error}"))
 }
 
 pub(super) fn wait_for_gateway(mut port: impl FnMut() -> u16) -> io::Result<u16> {
@@ -534,7 +534,7 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
     if !shared.lifecycle.wait_until_running(&shared.accepting) {
         return Ok(());
     }
-    let connect = read_headers(&mut stream)?;
+    let connect = read_header_block(&mut stream, "HTTP headers")?;
     if !is_connect(&connect, &shared.config.host) {
         write_plain_response(&mut stream, HttpResponse::text(400, "Bad CONNECT request"))?;
         return Ok(());
@@ -618,7 +618,7 @@ fn execute_job(shared: &Shared, job: Job) {
         return;
     };
     let response = job.response.clone();
-    if let Err(error) = shared.handler.handle(job, &execution, &shared.accepting) {
+    if let Err(error) = shared.handler.handle(job, &execution) {
         let _ = response.send(JobResponse::Http(HttpResponse::text(
             500,
             &format!("Worker error: {error}"),

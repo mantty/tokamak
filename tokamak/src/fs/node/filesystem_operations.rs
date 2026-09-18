@@ -123,7 +123,7 @@ pub(super) fn path<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<S
     if !path.starts_with('/') {
         path = format!("/bundle/{path}");
     }
-    if path.chars().count() > crate::fs::vfs::MAX_PATH_LENGTH {
+    if path.chars().count() > MAX_PATH_LENGTH {
         return Err(Exception::throw_range(ctx, "path is too long"));
     }
     let mut parts = Vec::new();
@@ -140,7 +140,7 @@ pub(super) fn path<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<S
             }
             part => {
                 parts.push(part);
-                if parts.len() > crate::fs::vfs::MAX_PATH_SEGMENTS {
+                if parts.len() > MAX_PATH_SEGMENTS {
                     return Err(Exception::throw_range(ctx, "path has too many segments"));
                 }
             }
@@ -504,14 +504,7 @@ pub(super) fn readdir_sync<'js>(
     } else {
         vfs_call(&ctx, |vfs| vfs.read_dir(&path))?
             .into_iter()
-            .map(|entry| {
-                let entry_path = if path == "/" {
-                    format!("/{name}", name = entry.name)
-                } else {
-                    format!("{path}/{name}", name = entry.name)
-                };
-                (entry_path, entry)
-            })
+            .map(|entry| (join_child(&path, &entry.name), entry))
             .collect()
     };
     let result = Array::new(ctx.clone())?;
@@ -584,10 +577,7 @@ pub(super) fn stat_value<'js>(
     };
     match result {
         Ok(stat) => stat_object(ctx, &stat, options.bigint).map(Object::into_value),
-        Err(error)
-            if error.kind() == crate::fs::vfs::ErrorKind::NotFound
-                && !options.throw_if_no_entry =>
-        {
+        Err(error) if error.kind() == ErrorKind::NotFound && !options.throw_if_no_entry => {
             Ok(Value::new_undefined(ctx.clone()))
         }
         Err(error) => Err(vfs_exception(ctx, &error)?.throw()),
@@ -1493,7 +1483,7 @@ pub(super) fn vfs_handle(ctx: &Ctx<'_>) -> rquickjs::Result<VfsHandle> {
 
 pub(super) fn vfs_call<T>(
     ctx: &Ctx<'_>,
-    operation: impl FnOnce(&mut VirtualFileSystem) -> crate::fs::vfs::Result<T>,
+    operation: impl FnOnce(&mut VirtualFileSystem) -> VfsResult<T>,
 ) -> rquickjs::Result<T> {
     let vfs = vfs_handle(ctx)?;
     match operation(&mut lock(&vfs)) {

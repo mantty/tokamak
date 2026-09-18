@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering, fence};
 use rquickjs::module::Exports;
 use rquickjs::{Ctx, Object, Value, qjs};
 
+use super::checked;
+
 pub(super) fn export<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
     install(ctx);
     exports.export(
@@ -35,7 +37,7 @@ pub(super) fn view<'js>(ctx: Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Ob
     let (mut offset, mut length, mut tracking) = (0, 0, false);
     // SAFETY: The engine validates the view and returns an owned buffer value.
     // Metadata outputs point to live variables with C size_t/bool layouts.
-    let buffer = unsafe {
+    let buffer = checked(unsafe {
         Value::from_raw(
             ctx.clone(),
             JS_GetArrayBufferView(
@@ -46,10 +48,7 @@ pub(super) fn view<'js>(ctx: Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Ob
                 &raw mut tracking,
             ),
         )
-    };
-    if buffer.is_exception() {
-        return Err(rquickjs::Error::Exception);
-    }
+    })?;
     let info = Object::new(ctx)?;
     info.set("buffer", buffer)?;
     info.set("offset", offset)?;
@@ -138,17 +137,12 @@ pub(super) fn clone<'js>(
     if shared {
         // SAFETY: Source and destination belong to the same runtime. The engine
         // validates the class and retains the shared backing store descriptor.
-        let copied = unsafe {
+        return checked(unsafe {
             Value::from_raw(
                 ctx.clone(),
                 JS_CloneSharedArrayBuffer(ctx.as_raw().as_ptr(), value.as_raw()),
             )
-        };
-        return if copied.is_exception() {
-            Err(rquickjs::Error::Exception)
-        } else {
-            Ok(copied)
-        };
+        });
     }
     // SAFETY: No script executes in the codec. Only a live buffer is serialized,
     // and bytecode reading is disabled. The serialized bytes are always freed.
@@ -166,11 +160,7 @@ pub(super) fn clone<'js>(
         qjs::js_free(raw_ctx, bytes.cast());
         Value::from_raw(ctx, copied)
     };
-    if copied.is_exception() {
-        Err(rquickjs::Error::Exception)
-    } else {
-        Ok(copied)
-    }
+    checked(copied)
 }
 
 #[cfg(test)]

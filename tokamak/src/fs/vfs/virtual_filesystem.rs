@@ -5,12 +5,13 @@
 
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::nodes::{Directory, FileNode, Node, OpenFile, shared_devices};
 use super::path::{
-    absolute_components, checked_size, path_from_components, random_suffix, target_components,
+    absolute_components, checked_size, join_child, path_from_components, random_suffix,
+    target_components,
 };
 
 /// Maximum size of one virtual file.
@@ -126,27 +127,27 @@ pub struct Error {
 }
 
 impl Error {
-    pub(super) fn new(kind: ErrorKind, path: impl Into<String>) -> Self {
+    pub(super) fn new(kind: ErrorKind, path: impl Display) -> Self {
         Self {
             message: kind.default_message().to_owned(),
             kind,
-            path: path.into(),
+            path: path.to_string(),
         }
     }
 
     pub(super) fn with_message(
         kind: ErrorKind,
-        path: impl Into<String>,
+        path: impl Display,
         message: impl Into<String>,
     ) -> Self {
         Self {
             kind,
-            path: path.into(),
+            path: path.to_string(),
             message: message.into(),
         }
     }
 
-    pub(super) fn from_io(path: impl Into<String>, error: &std::io::Error) -> Self {
+    pub(super) fn from_io(path: impl Display, error: &std::io::Error) -> Self {
         let kind = match error.kind() {
             std::io::ErrorKind::NotFound => ErrorKind::NotFound,
             std::io::ErrorKind::PermissionDenied => ErrorKind::NotPermitted,
@@ -218,7 +219,7 @@ pub struct DirectoryEntry {
 /// The immutable bundle directory shared by virtual filesystem instances.
 #[derive(Clone, Debug)]
 pub struct Bundle {
-    pub(super) root: Arc<PathBuf>,
+    pub(super) root: Arc<Path>,
 }
 
 impl Bundle {
@@ -226,7 +227,7 @@ impl Bundle {
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
-            root: Arc::new(root.into()),
+            root: Arc::from(root.into()),
         }
     }
 }
@@ -749,11 +750,7 @@ impl VirtualFileSystem {
         entries: &mut Vec<(String, DirectoryEntry)>,
     ) -> Result<()> {
         for entry in self.read_dir(path)? {
-            let child = if path == "/" {
-                format!("/{name}", name = entry.name)
-            } else {
-                format!("{path}/{name}", name = entry.name)
-            };
+            let child = join_child(path, &entry.name);
             let is_directory = entry.kind == NodeType::Directory;
             entries.push((child.clone(), entry));
             if is_directory {
@@ -772,11 +769,7 @@ impl VirtualFileSystem {
             let name = absolute_components(from)?
                 .pop()
                 .ok_or_else(|| Error::new(ErrorKind::InvalidInput, from))?;
-            return Ok(if to == "/" {
-                format!("/{name}")
-            } else {
-                format!("{to}/{name}")
-            });
+            return Ok(join_child(to, &name));
         }
         if matches!(source, Node::Directory(_)) && destination.is_err() {
             let (_, name) = self.parent(to)?;
@@ -803,11 +796,7 @@ impl VirtualFileSystem {
             Node::Directory(directory) => {
                 let target = Directory::memory(true);
                 for entry in directory.entries()? {
-                    let child_path = if path == "/" {
-                        format!("/{name}", name = entry.name)
-                    } else {
-                        format!("{path}/{name}", name = entry.name)
-                    };
+                    let child_path = join_child(path, &entry.name);
                     let child = directory
                         .lookup(&entry.name)?
                         .ok_or_else(|| Error::new(ErrorKind::NotFound, &child_path))?;

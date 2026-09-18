@@ -1,3 +1,4 @@
+use super::checked;
 use rquickjs::{Ctx, Value, qjs};
 
 // The class name comes from the engine, not a user-controlled toStringTag.
@@ -19,11 +20,7 @@ pub(super) fn class_name<'js>(ctx: Ctx<'js>, value: Value<'js>) -> rquickjs::Res
         qjs::JS_FreeAtom(raw_ctx, atom);
         Value::from_raw(ctx, name)
     };
-    if name.is_exception() {
-        Err(rquickjs::Error::Exception)
-    } else {
-        Ok(name)
-    }
+    checked(name)
 }
 
 #[cfg(test)]

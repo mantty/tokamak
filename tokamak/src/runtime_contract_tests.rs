@@ -100,7 +100,6 @@ fn request(worker: &WorkerBundle, flag: &str) -> TestResult<Vec<u8>> {
             websocket: None,
         },
         &execution,
-        &accepting,
     )?;
     let JobResponse::Http(response) = receiver.recv()? else {
         return Err("unexpected websocket".into());
@@ -441,7 +440,6 @@ export default httpServerHandler(server);
             websocket: None,
         },
         &execution,
-        &accepting,
     )?;
     let JobResponse::Http(response) = receiver.recv()? else {
         return Err("unexpected websocket".into());
@@ -834,15 +832,8 @@ fn fixture_request(
         let execution = lifecycle
             .enter(&accepting)
             .ok_or("request rejected".to_owned())?;
-        execute_request(
-            &worker,
-            &config,
-            service.as_ref(),
-            job,
-            &execution,
-            &accepting,
-        )
-        .map_err(|error| error.to_string())
+        execute_request(&worker, &config, service.as_ref(), job, &execution)
+            .map_err(|error| error.to_string())
     });
     let JobResponse::Http(response) = receiver.recv_timeout(Duration::from_secs(30))? else {
         return Err("unexpected websocket".into());

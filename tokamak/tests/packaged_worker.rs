@@ -92,7 +92,7 @@ fn suspended_runtime_delays_new_gateway_connections_until_resume() -> TestResult
         &WorkerEnvironment::default(),
     )?;
     let host = HOST;
-    runtime.suspend()?;
+    runtime.suspend();
     let mut proxy = TcpStream::connect(("127.0.0.1", runtime.port()))?;
     proxy.set_read_timeout(Some(Duration::from_millis(100)))?;
     proxy
@@ -178,6 +178,21 @@ fn answers_websocket_messages_without_polling_delay() -> TestResult {
 
 #[test]
 fn echoes_websocket_messages_larger_than_the_socket_buffers() -> TestResult {
+    let payload: Vec<u8> = (0..=u8::MAX).cycle().take(1 << 20).collect();
+    assert_echoes(&payload, 0x2, &payload)
+}
+
+#[test]
+fn echoes_websocket_messages_with_16_bit_frame_lengths() -> TestResult {
+    let message = "x".repeat(1000);
+    assert_echoes(
+        message.as_bytes(),
+        0x1,
+        format!("pong {message}").as_bytes(),
+    )
+}
+
+fn assert_echoes(payload: &[u8], opcode: u8, expected: &[u8]) -> TestResult {
     let temporary = tempfile::tempdir()?;
     let (runtime, state) = start_packaged_runtime(
         temporary.path(),
@@ -186,11 +201,10 @@ fn echoes_websocket_messages_larger_than_the_socket_buffers() -> TestResult {
     )?;
     let mut tls = open_websocket(&runtime, &state)?;
 
-    let payload: Vec<u8> = (0..=u8::MAX).cycle().take(1 << 20).collect();
-    write_masked_frame(&mut tls, true, 0x2, &payload)?;
-    let (opcode, echoed) = read_server_frame(&mut tls)?;
-    assert_eq!(opcode, 0x2);
-    assert!(echoed == payload, "echoed {} bytes", echoed.len());
+    write_masked_frame(&mut tls, true, opcode, payload)?;
+    let (echoed_opcode, echoed) = read_server_frame(&mut tls)?;
+    assert_eq!(echoed_opcode, opcode);
+    assert!(echoed == expected, "echoed {} bytes", echoed.len());
     Ok(())
 }
 

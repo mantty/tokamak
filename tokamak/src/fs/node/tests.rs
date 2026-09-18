@@ -1,7 +1,23 @@
 use super::{MODULE_NAME, PROMISES_MODULE_NAME, install};
 use crate::fs::vfs::{Bundle, VirtualFileSystem};
-use rquickjs::{Context, Module, Object, Promise, Runtime};
+use rquickjs::{Context, Ctx, Module, Object, Promise, Runtime};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
+
+fn node_fs_runtime(root: &Path) -> rquickjs::Result<Runtime> {
+    let runtime = Runtime::new()?;
+    crate::dispatcher::configure_worker_loader(
+        &runtime,
+        &crate::quickjs::WorkerBundle::from_modules("entry.js", root, root),
+    );
+    Ok(runtime)
+}
+
+fn install_node_fs(ctx: &Ctx<'_>, root: &Path) -> rquickjs::Result<()> {
+    let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(Bundle::new(root))));
+    install(ctx, &vfs)?;
+    crate::compat::initialize(ctx)
+}
 
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -12,18 +28,10 @@ fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>
         directory.path().join("config/app.json"),
         br#"{"enabled":true}"#,
     )?;
-    let runtime = Runtime::new()?;
-    crate::dispatcher::configure_worker_loader(
-        &runtime,
-        &crate::quickjs::WorkerBundle::from_modules("entry.js", directory.path(), directory.path()),
-    );
+    let runtime = node_fs_runtime(directory.path())?;
     let context = Context::full(&runtime)?;
     context.with(|ctx| -> Result<(), Box<dyn std::error::Error>> {
-            let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(Bundle::new(
-                directory.path(),
-            ))));
-            install(&ctx, &vfs)?;
-            crate::compat::initialize(&ctx)?;
+            install_node_fs(&ctx, directory.path())?;
             let namespace: Object = Module::import(&ctx, MODULE_NAME)?.finish()?;
             let default: Object = namespace.get("default")?;
             assert!(default.get::<_, rquickjs::Function>("readFileSync").is_ok());
@@ -150,6 +158,16 @@ fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>
                   const recursiveNames = [];
                   for (let entry; (entry = recursiveDir.readSync()) !== null;) recursiveNames.push(entry.name);
                   recursiveDir.closeSync();
+                  const callbackDir = fs.opendirSync(temp);
+                  const callbackDirEntry = await new Promise((resolve, reject) => callbackDir.read(
+                    (error, entry) => error ? reject(error) : resolve(entry.name),
+                  ));
+                  const callbackDirClose = await new Promise((resolve, reject) => callbackDir.close(
+                    error => error ? reject(error) : resolve("closed"),
+                  ));
+                  const callbackDirClosedRead = await new Promise(resolve => callbackDir.read(
+                    error => resolve(error && error.message),
+                  ));
                   const handle = await fs.promises.open("/tmp/data/value.txt", "r");
                   const handleRead = await handle.read({ length: 5 });
                   await handle.close();
@@ -201,6 +219,9 @@ fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>
                     second: [...second],
                     dirEntry: dirEntry.name,
                     recursiveNames,
+                    callbackDirEntry,
+                    callbackDirClose,
+                    callbackDirClosedRead,
                     handleText: String.fromCharCode(...handleRead.buffer),
                     writeResult: writeResult.bytesWritten,
                     handleWriteText,
@@ -218,7 +239,7 @@ fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>
             })?;
             assert_eq!(
                 advanced_result,
-                r#"{"accessCode":"ENOENT","hardLink":"nested","fdAppend":"ab","matches":["hard.txt","nested.txt"],"written":4,"read":4,"first":[1,2],"second":[3,4],"dirEntry":"hard.txt","recursiveNames":["hard.txt","nested.txt"],"handleText":"hello","writeResult":5,"handleWriteText":"write!","blobText":"{\"enabled\":true}","callbackRead":{"count":3,"output":[1,2,3]},"callbackReadOptions":{"count":3,"output":[1,2,3]},"callbackReadBufferOptions":{"count":3,"output":[1,2,3]},"nativeRealpath":"/tmp/data/value.txt","bigint":"6"}"#
+                r#"{"accessCode":"ENOENT","hardLink":"nested","fdAppend":"ab","matches":["hard.txt","nested.txt"],"written":4,"read":4,"first":[1,2],"second":[3,4],"dirEntry":"hard.txt","recursiveNames":["hard.txt","nested.txt"],"callbackDirEntry":"hard.txt","callbackDirClose":"closed","callbackDirClosedRead":"ERR_DIR_CLOSED: directory is closed","handleText":"hello","writeResult":5,"handleWriteText":"write!","blobText":"{\"enabled\":true}","callbackRead":{"count":3,"output":[1,2,3]},"callbackReadOptions":{"count":3,"output":[1,2,3]},"callbackReadBufferOptions":{"count":3,"output":[1,2,3]},"nativeRealpath":"/tmp/data/value.txt","bigint":"6"}"#
             );
             Ok(())
         })
@@ -227,19 +248,11 @@ fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>
 #[test]
 fn gives_each_context_a_fresh_tmp_directory() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let runtime = Runtime::new()?;
-    crate::dispatcher::configure_worker_loader(
-        &runtime,
-        &crate::quickjs::WorkerBundle::from_modules("entry.js", directory.path(), directory.path()),
-    );
+    let runtime = node_fs_runtime(directory.path())?;
 
     let first = Context::full(&runtime)?;
     first.with(|ctx| -> Result<(), Box<dyn std::error::Error>> {
-        let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(Bundle::new(
-            directory.path(),
-        ))));
-        install(&ctx, &vfs)?;
-        crate::compat::initialize(&ctx)?;
+        install_node_fs(&ctx, directory.path())?;
         ctx.eval::<(), _>(
             r#"process.getBuiltinModule("node:fs").writeFileSync("/tmp/only-here", "value")"#,
         )?;
@@ -249,11 +262,7 @@ fn gives_each_context_a_fresh_tmp_directory() -> Result<(), Box<dyn std::error::
 
     let second = Context::full(&runtime)?;
     second.with(|ctx| -> Result<(), Box<dyn std::error::Error>> {
-        let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(Bundle::new(
-            directory.path(),
-        ))));
-        install(&ctx, &vfs)?;
-        crate::compat::initialize(&ctx)?;
+        install_node_fs(&ctx, directory.path())?;
         let exists: bool =
             ctx.eval(r#"process.getBuiltinModule("node:fs").existsSync("/tmp/only-here")"#)?;
         assert!(!exists);
@@ -266,18 +275,10 @@ fn gives_each_context_a_fresh_tmp_directory() -> Result<(), Box<dyn std::error::
 #[allow(clippy::too_many_lines)]
 fn exposes_native_stream_bindings() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let runtime = Runtime::new()?;
-    crate::dispatcher::configure_worker_loader(
-        &runtime,
-        &crate::quickjs::WorkerBundle::from_modules("entry.js", directory.path(), directory.path()),
-    );
+    let runtime = node_fs_runtime(directory.path())?;
     let context = Context::full(&runtime)?;
     context.with(|ctx| -> Result<(), Box<dyn std::error::Error>> {
-            let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(Bundle::new(
-                directory.path(),
-            ))));
-            install(&ctx, &vfs)?;
-            crate::compat::initialize(&ctx)?;
+            install_node_fs(&ctx, directory.path())?;
             let result: String = ctx.eval(
                 r#"(() => {
                   const nativeGetBuiltinModule = process.getBuiltinModule;
@@ -307,8 +308,9 @@ fn exposes_native_stream_bindings() -> Result<(), Box<dyn std::error::Error>> {
                   const fdOpen = (() => { try { fs.fstatSync(fd); return true; } catch { return false; } })();
                   fs.closeSync(fd);
                   const write = new fs.WriteStream("/tmp/stream-destination.txt");
-                  write.write("one");
-                  write.end("two");
+                  const callbacks = [];
+                  write.write("one", error => callbacks.push(["write", error]));
+                  write.end("two", error => callbacks.push(["end", error]));
                   const writeFd = fs.openSync("/tmp/stream-with-fd.txt", "w+");
                   const writeWithFd = fs.createWriteStream("/tmp/stream-with-fd.txt", { fd: writeFd });
                   writeWithFd.write("fd");
@@ -320,6 +322,7 @@ fn exposes_native_stream_bindings() -> Result<(), Box<dyn std::error::Error>> {
                     fdText,
                     fdOpen,
                     writeFdOpen,
+                    callbacks,
                     written: fs.readFileSync("/tmp/stream-destination.txt", "utf8"),
                     writtenWithFd: fs.readFileSync("/tmp/stream-with-fd.txt", "utf8"),
                   });
@@ -328,8 +331,38 @@ fn exposes_native_stream_bindings() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|error| format!("stream test failed: {error}; {:?}", ctx.catch()))?;
             assert_eq!(
                 result,
-                r#"{"text":"source!","fdText":"source","fdOpen":true,"writeFdOpen":true,"written":"onetwo","writtenWithFd":"fdstream"}"#
+                r#"{"text":"source!","fdText":"source","fdOpen":true,"writeFdOpen":true,"callbacks":[["write",null],["end",null]],"written":"onetwo","writtenWithFd":"fdstream"}"#
             );
             Ok(())
         })
+}
+
+#[test]
+fn dirent_prototype_treats_a_missing_device_flag_as_a_plain_file()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let runtime = node_fs_runtime(directory.path())?;
+    let context = Context::full(&runtime)?;
+    context.with(|ctx| -> Result<(), Box<dyn std::error::Error>> {
+        install_node_fs(&ctx, directory.path())?;
+        let result: String = ctx.eval(
+            r#"(() => {
+              const fs = process.getBuiltinModule("node:fs");
+              const entry = properties => Object.assign(Object.create(fs.Dirent.prototype), properties);
+              const file = entry({ name: "value.txt", type: "file" });
+              const device = entry({ name: "zero", type: "file", device: true });
+              const directory = entry({ name: "data", type: "directory" });
+              return JSON.stringify({
+                file: [file.isFile(), file.isCharacterDevice(), file.isDirectory()],
+                device: [device.isFile(), device.isCharacterDevice(), device.isDirectory()],
+                directory: [directory.isFile(), directory.isCharacterDevice(), directory.isDirectory()],
+              });
+            })()"#,
+        )?;
+        assert_eq!(
+            result,
+            r#"{"file":[true,false,false],"device":[false,true,false],"directory":[false,false,true]}"#
+        );
+        Ok(())
+    })
 }

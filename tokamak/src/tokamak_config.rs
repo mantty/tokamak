@@ -217,7 +217,6 @@ struct RawTokamakConfig {
     name: Option<RawTokamakName>,
     identifier: Option<RawTokamakIdentifier>,
     version: Option<String>,
-    #[serde(default)]
     icons: Option<RawTokamakIcons>,
 }
 
@@ -513,6 +512,7 @@ mod tests {
             })
         );
         assert_eq!(config.version.as_deref(), Some("1.2.3"));
+        assert_eq!(config.icons, None);
         Ok(())
     }
 

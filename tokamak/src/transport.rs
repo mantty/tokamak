@@ -14,11 +14,13 @@ use serde::Serialize;
 use sha1::{Digest, Sha1};
 use tokio_util::sync::CancellationToken;
 
-use crate::gateway::{GatewayConfig, WebSocketBridge, WebSocketInbound, WebSocketOutbound};
+use crate::gateway::{
+    GatewayConfig, WebSocketBridge, WebSocketInbound, WebSocketOutbound, WebSocketOutgoing,
+};
 use crate::quickjs::Error;
 use crate::readiness::Readiness;
 
-const MAX_HEADERS: usize = 64 * 1024;
+pub(super) const MAX_HEADERS: usize = 64 * 1024;
 pub(super) const MAX_HTTP_BODY: usize = 250 * 1024 * 1024;
 const MAX_WEBSOCKET_BODY: usize = 16 * 1024 * 1024;
 const RESPONSE_STREAM_QUEUE: usize = 8;
@@ -112,18 +114,17 @@ impl Drop for BodyStream {
     }
 }
 
-pub(super) fn read_headers(stream: &mut TcpStream) -> Result<Vec<u8>, Error> {
-    read_header_block(stream)
-}
-
-fn read_header_block(stream: &mut impl Read) -> Result<Vec<u8>, Error> {
+pub(super) fn read_header_block(
+    stream: &mut impl Read,
+    subject: &'static str,
+) -> Result<Vec<u8>, Error> {
     let mut data = Vec::new();
     loop {
         let mut byte = [0; 1];
         stream.read_exact(&mut byte)?;
         data.push(byte[0]);
         if data.len() > MAX_HEADERS {
-            return Err(Error::Startup("HTTP headers exceed the limit".to_owned()));
+            return Err(Error::Startup(format!("{subject} exceed the limit")));
         }
         if data.ends_with(b"\r\n\r\n") {
             break;
@@ -155,7 +156,7 @@ pub(super) fn tls_accept(config: &GatewayConfig, stream: TcpStream) -> Result<Tl
 }
 
 pub(super) fn read_request(stream: &mut impl Read, host: &str) -> Result<HttpRequest, Error> {
-    let headers = read_header_block(stream)?;
+    let headers = read_header_block(stream, "HTTP headers")?;
     let text = String::from_utf8_lossy(&headers);
     let mut lines = text.split("\r\n");
     let request_line = lines.next().unwrap_or_default();
@@ -588,8 +589,26 @@ fn parse_websocket_header(
     }))
 }
 
+pub(super) trait WebSocketSink {
+    fn deliver(&self, binary: bool, payload: Vec<u8>) -> Result<(), Error>;
+}
+
+impl WebSocketSink for Sender<WebSocketInbound> {
+    fn deliver(&self, binary: bool, payload: Vec<u8>) -> Result<(), Error> {
+        self.send(WebSocketInbound::Message { binary, payload })
+            .map_err(|_| Error::Startup("WebSocket worker closed".to_owned()))
+    }
+}
+
+impl WebSocketSink for WebSocketOutgoing {
+    fn deliver(&self, binary: bool, payload: Vec<u8>) -> Result<(), Error> {
+        self.send(WebSocketOutbound::Message { binary, payload })
+            .map_err(|_| Error::Startup("WebSocket gateway closed".to_owned()))
+    }
+}
+
 pub(super) fn queue_websocket_message(
-    incoming: &Sender<WebSocketInbound>,
+    sink: &impl WebSocketSink,
     fragmented: &mut Option<(u8, Vec<u8>)>,
     final_frame: bool,
     opcode: u8,
@@ -619,12 +638,7 @@ pub(super) fn queue_websocket_message(
         _ => return Err(Error::Startup("invalid WebSocket opcode".to_owned())),
     };
     if final_frame {
-        incoming
-            .send(WebSocketInbound::Message {
-                binary: message_opcode == 0x2,
-                payload,
-            })
-            .map_err(|_| Error::Startup("WebSocket worker closed".to_owned()))?;
+        sink.deliver(message_opcode == 0x2, payload)?;
     } else {
         *fragmented = Some((message_opcode, payload));
     }
