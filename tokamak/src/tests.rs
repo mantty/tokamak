@@ -4,8 +4,8 @@ use crate::dispatcher::{
 };
 use crate::fs::VirtualFileSystem;
 use crate::gateway::{
-    Execution, GatewayCertificates, GatewayConfig, Handler, Job, JobResponse, Lifecycle, Shared,
-    WebSocketInbound, WebSocketOutbound, bind_replacement_listener, close_connections, execute_job,
+    Execution, GatewayConfig, Handler, Job, JobResponse, Lifecycle, Shared, WebSocketInbound,
+    WebSocketOutbound, bind_replacement_listener, close_connections, execute_job,
     listener_was_closed, lock_connections, probe_gateway, serve_connection, wait_for_gateway,
     websocket_channels,
 };
@@ -201,6 +201,7 @@ fn asset_fixture(root: &Path) -> Result<AssetService, Box<dyn std::error::Error>
 
 fn request(method: &str, path: &str) -> HttpRequest {
     HttpRequest {
+        persistent: true,
         method: method.to_owned(),
         target: path.to_owned(),
         url: format!("https://example.test{path}"),
@@ -652,11 +653,7 @@ fn reports_connection_failures_through_the_event_listener()
 
 fn gateway_config() -> GatewayConfig {
     GatewayConfig {
-        certificates: GatewayCertificates {
-            ca: PathBuf::default(),
-            certificate: PathBuf::default(),
-            private_key: PathBuf::default(),
-        },
+        tls: Arc::new(|| Err(Error::Tls("TLS is not configured in this test".to_owned()))),
         host: "example.test".to_owned(),
         require_client_certificate: false,
         port: 0,

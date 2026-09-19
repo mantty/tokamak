@@ -6,7 +6,6 @@ use rustls::crypto::CryptoProvider;
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 
-use crate::gateway::GatewayCertificates;
 use crate::quickjs::Error;
 
 static PROVIDER: LazyLock<Arc<CryptoProvider>> =
@@ -43,39 +42,32 @@ fn build_client_config() -> Result<ClientConfig, rustls::Error> {
     Ok(builder.with_no_client_auth())
 }
 
-/// Server configuration for the gateway's certificate files, optionally
-/// requesting a client certificate issued by the gateway CA.
+/// Server configuration for the gateway's certificate PEMs, requesting (but not
+/// requiring at the TLS layer) a client certificate issued by the gateway CA.
 pub(crate) fn server_config(
-    certificates: &GatewayCertificates,
-    request_client_certificate: bool,
+    server_cert_pem: &[u8],
+    server_key_pem: &[u8],
+    ca_cert_pem: &[u8],
 ) -> Result<Arc<ServerConfig>, Error> {
-    let chain = CertificateDer::pem_file_iter(&certificates.certificate)
-        .map_err(tls_error)?
+    let chain = CertificateDer::pem_slice_iter(server_cert_pem)
         .collect::<Result<Vec<_>, _>>()
         .map_err(tls_error)?;
-    let private_key = PrivateKeyDer::from_pem_file(&certificates.private_key).map_err(tls_error)?;
-    let builder = ServerConfig::builder_with_provider(provider())
+    let private_key = PrivateKeyDer::from_pem_slice(server_key_pem).map_err(tls_error)?;
+    let mut roots = RootCertStore::empty();
+    for authority in CertificateDer::pem_slice_iter(ca_cert_pem) {
+        roots
+            .add(authority.map_err(tls_error)?)
+            .map_err(tls_error)?;
+    }
+    let verifier =
+        rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider())
+            .allow_unauthenticated()
+            .build()
+            .map_err(tls_error)?;
+    let config = ServerConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
-        .map_err(tls_error)?;
-    let builder = if request_client_certificate {
-        let mut roots = RootCertStore::empty();
-        for authority in CertificateDer::pem_file_iter(&certificates.ca).map_err(tls_error)? {
-            roots
-                .add(authority.map_err(tls_error)?)
-                .map_err(tls_error)?;
-        }
-        let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
-            Arc::new(roots),
-            provider(),
-        )
-        .allow_unauthenticated()
-        .build()
-        .map_err(tls_error)?;
-        builder.with_client_cert_verifier(verifier)
-    } else {
-        builder.with_no_client_auth()
-    };
-    let config = builder
+        .map_err(tls_error)?
+        .with_client_cert_verifier(verifier)
         .with_single_cert(chain, private_key)
         .map_err(tls_error)?;
     Ok(Arc::new(config))

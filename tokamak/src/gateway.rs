@@ -1,13 +1,13 @@
 use flume::{Receiver, SendError, Sender};
 use std::io::{self, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use rustls::ServerConfig;
 use tokio::runtime::{Builder as TokioBuilder, Runtime as TokioRuntime};
 
 use crate::lifecycle_events::{Event, Events};
@@ -15,25 +15,24 @@ use crate::quickjs::Error;
 use crate::readiness::{Readiness, Waker};
 
 use crate::transport::{
-    HttpRequest, HttpResponse, is_connect, is_websocket, read_header_block, read_request,
-    tls_accept, websocket_session, write_plain_response, write_response,
+    HttpRequest, HttpResponse, ResponseOutcome, TlsStream, is_connect, is_websocket,
+    read_header_block, read_request, tls_accept, tls_close, websocket_session,
+    write_plain_response, write_response,
 };
 
 const MAX_WEBSOCKET_QUEUE: usize = 100;
+/// How long an idle persistent connection waits for its next request.
+const KEEP_ALIVE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
-#[derive(Clone, Debug)]
+/// Supplies the TLS configuration the gateway accepts connections with.
+pub(super) type ServerTls = Arc<dyn Fn() -> Result<Arc<ServerConfig>, Error> + Send + Sync>;
+
+#[derive(Clone)]
 pub(super) struct GatewayConfig {
-    pub(super) certificates: GatewayCertificates,
+    pub(super) tls: ServerTls,
     pub(super) host: String,
     pub(super) port: u16,
     pub(super) require_client_certificate: bool,
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct GatewayCertificates {
-    pub(super) ca: PathBuf,
-    pub(super) certificate: PathBuf,
-    pub(super) private_key: PathBuf,
 }
 
 pub(crate) struct Runtime {
@@ -544,24 +543,65 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
     stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
     stream.flush()?;
 
-    let mut tls = tls_accept(&shared.config, stream)?;
+    let mut tls = tls_accept((shared.config.tls)()?, stream)?;
     if shared.config.require_client_certificate && tls.conn.peer_certificates().is_none() {
         write_response(
             &mut tls,
             HttpResponse::text(403, "Client certificate required"),
             "GET",
             &connection.cancelled,
+            false,
         )?;
-        return Ok(());
+        return tls_close(&mut tls);
     }
-    let request = read_request(&mut tls, &shared.config.host)?;
-    let method = request.method.clone();
-    let websocket_key = request
-        .headers
-        .get("sec-websocket-key")
-        .map(|value| value.to_str().map(str::to_owned))
-        .transpose()
-        .map_err(io::Error::other)?;
+    loop {
+        tls.get_ref()
+            .set_read_timeout(Some(KEEP_ALIVE_IDLE_TIMEOUT))?;
+        let Some(request) = read_request(&mut tls, &shared.config.host)? else {
+            return finish_connection(&mut tls, &connection);
+        };
+        let persistent = request.persistent;
+        let method = request.method.clone();
+        let websocket_key = request
+            .headers
+            .get("sec-websocket-key")
+            .map(|value| value.to_str().map(str::to_owned))
+            .transpose()
+            .map_err(io::Error::other)?;
+        let (response, websocket_bridge) = dispatch(shared, request)?;
+        let response = match response {
+            JobResponse::WebSocket => {
+                return websocket_session(
+                    &mut tls,
+                    websocket_key.as_deref(),
+                    websocket_bridge.ok_or_else(|| {
+                        Error::Startup("WebSocket bridge was not created".to_owned())
+                    })?,
+                );
+            }
+            JobResponse::Http(response) => response,
+        };
+        let outcome = write_response(
+            &mut tls,
+            response,
+            &method,
+            &connection.cancelled,
+            persistent,
+        )?;
+        if outcome == ResponseOutcome::Interrupted {
+            return Ok(());
+        }
+        if !persistent {
+            return finish_connection(&mut tls, &connection);
+        }
+    }
+}
+
+/// Hands a request to the JavaScript side and waits for its response.
+fn dispatch(
+    shared: &Arc<Shared>,
+    request: HttpRequest,
+) -> Result<(JobResponse, Option<WebSocketBridge>), Error> {
     let (websocket_job, websocket_bridge) = if is_websocket(&request) {
         let (job, bridge) = websocket_channels()?;
         (Some(job), Some(bridge))
@@ -583,17 +623,15 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
     let response = result
         .recv()
         .map_err(|_| Error::Startup("JavaScript request was dropped".to_owned()))?;
-    match response {
-        JobResponse::WebSocket => websocket_session(
-            &mut tls,
-            websocket_key.as_deref(),
-            websocket_bridge
-                .ok_or_else(|| Error::Startup("WebSocket bridge was not created".to_owned()))?,
-        ),
-        JobResponse::Http(response) => {
-            write_response(&mut tls, response, &method, &connection.cancelled)
-        }
+    Ok((response, websocket_bridge))
+}
+
+/// Closes the TLS session unless the runtime already shut the connection down.
+fn finish_connection(tls: &mut TlsStream, connection: &Connection) -> Result<(), Error> {
+    if connection.cancelled.load(Ordering::Acquire) {
+        return Ok(());
     }
+    tls_close(tls)
 }
 
 pub(super) fn websocket_channels() -> Result<(WebSocketJob, WebSocketBridge), Error> {

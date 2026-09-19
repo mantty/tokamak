@@ -7,7 +7,7 @@ use crate::certificates::{Certificates, Renewal};
 use crate::dev_proxy::{DevProxy, DevProxyConfig};
 use crate::dispatcher::Dispatcher;
 use crate::env_vars::load as load_environment;
-use crate::gateway::{self, GatewayCertificates, GatewayConfig};
+use crate::gateway::{self, GatewayConfig};
 use crate::lifecycle_events::{Event, Events};
 use crate::packaging::{PackageLayout, decompress_worker_bundle, read_worker_manifest};
 use crate::quickjs::{Assets, RuntimeConfig, WorkerBundle};
@@ -161,7 +161,7 @@ fn finish_start(
 }
 
 fn start_gateway(
-    certificates: &Certificates,
+    certificates: &Arc<Certificates>,
     host: &str,
     handler: Arc<dyn gateway::Handler>,
     events: Events,
@@ -209,13 +209,14 @@ fn validate_worker(worker: &WorkerBundle) -> Result<()> {
     Ok(())
 }
 
-fn gateway_config(certificates: &Certificates, host: &str) -> GatewayConfig {
+fn gateway_config(certificates: &Arc<Certificates>, host: &str) -> GatewayConfig {
+    let certificates = Arc::clone(certificates);
     GatewayConfig {
-        certificates: GatewayCertificates {
-            ca: certificates.authority_path(),
-            certificate: certificates.server_certificate_path(),
-            private_key: certificates.server_key_path(),
-        },
+        tls: Arc::new(move || {
+            certificates
+                .server_config()
+                .map_err(|error| crate::QuickJsError::Tls(error.to_string()))
+        }),
         host: host.to_owned(),
         port: 0,
         require_client_certificate: true,
@@ -243,16 +244,17 @@ mod tests {
     use super::{Config, gateway_config, quickjs_config};
     use crate::certificates::Certificates;
     use crate::packaging::PackageLayout;
+    use std::sync::Arc;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
     #[test]
     fn always_requires_a_client_certificate() -> TestResult {
         let directory = tempfile::tempdir()?;
-        let certificates = Certificates::start(
+        let certificates = Arc::new(Certificates::start(
             directory.path().to_path_buf(),
             "app.tokamak.local".to_owned(),
-        )?;
+        )?);
         let app = PackageLayout::new(directory.path());
         write_environment(&app, &WorkerEnvironment::default())?;
 

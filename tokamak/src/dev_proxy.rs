@@ -17,8 +17,8 @@ use crate::gateway::{
 use crate::quickjs::Error;
 use crate::transport::{
     BodyChunk, HttpRequest, HttpResponse, MAX_HEADERS, WEBSOCKET_WRITE_TIMEOUT, WebSocketCodec,
-    WebSocketRead, queue_websocket_message, read_header_block, response_stream, websocket_accept,
-    websocket_close, websocket_close_payload,
+    WebSocketRead, has_token, queue_websocket_message, read_header_block, response_stream,
+    websocket_accept, websocket_close, websocket_close_payload,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -531,11 +531,7 @@ fn read_response(
                 Error::Startup("host response content length is invalid".to_owned())
             })?);
         }
-        if name == "transfer-encoding"
-            && value
-                .split(',')
-                .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
-        {
+        if name == "transfer-encoding" && has_token(value, "chunked") {
             chunked = true;
         }
         if !is_hop_by_hop(&name) {

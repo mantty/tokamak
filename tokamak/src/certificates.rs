@@ -3,11 +3,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration as StdDuration;
 
 use rcgen::{Issuer, KeyPair};
+use rustls::ServerConfig;
 use time::{Duration, OffsetDateTime};
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 
@@ -694,6 +695,7 @@ pub struct Certificates {
     state_dir: PathBuf,
     host: String,
     current: Shared,
+    server_config: Mutex<Option<Arc<ServerConfig>>>,
 }
 
 impl Certificates {
@@ -703,7 +705,30 @@ impl Certificates {
             state_dir,
             host,
             current: Arc::new(RwLock::new(bundle)),
+            server_config: Mutex::new(None),
         })
+    }
+
+    /// The gateway's TLS configuration for the current server certificate, built once per renewal.
+    pub(crate) fn server_config(&self) -> Result<Arc<ServerConfig>> {
+        let mut cached = self
+            .server_config
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(config) = &*cached {
+            return Ok(Arc::clone(config));
+        }
+        let bundle = self
+            .current
+            .read()
+            .map_err(|_| Error::CertificatesUnavailable)?;
+        let config = crate::tls::server_config(
+            bundle.server_cert_pem.as_bytes(),
+            bundle.server_key_pem.as_bytes(),
+            bundle.ca_cert_pem.as_bytes(),
+        )?;
+        *cached = Some(Arc::clone(&config));
+        Ok(config)
     }
 
     pub(crate) fn start_renewal(self: &Arc<Self>, events: Events) -> Renewal {
@@ -714,11 +739,18 @@ impl Certificates {
     pub(crate) fn refresh(&self) -> Result<()> {
         let bundle =
             CertificateBundle::ensure(&self.state_dir, &self.host, OffsetDateTime::now_utc())?;
-        let mut held = self
-            .current
-            .write()
-            .map_err(|_| Error::CertificatesUnavailable)?;
-        *held = bundle;
+        {
+            let mut held = self
+                .current
+                .write()
+                .map_err(|_| Error::CertificatesUnavailable)?;
+            *held = bundle;
+        }
+        // Cleared after the bundle lock is released: `server_config` takes them in the other order.
+        *self
+            .server_config
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         Ok(())
     }
 
@@ -726,20 +758,6 @@ impl Certificates {
         self.current.read().map_or(RETRY_DELAY, |held| {
             held.renewal_delay(OffsetDateTime::now_utc())
         })
-    }
-
-    /// The authority the gateway trusts for client certificates.
-    pub(crate) fn authority_path(&self) -> PathBuf {
-        self.state_dir.join(CertificatePaths::CA_CERT_PEM)
-    }
-
-    /// The certificate and key the gateway serves.
-    pub(crate) fn server_certificate_path(&self) -> PathBuf {
-        self.state_dir.join(CertificatePaths::SERVER_CERT_PEM)
-    }
-
-    pub(crate) fn server_key_path(&self) -> PathBuf {
-        self.state_dir.join(CertificatePaths::SERVER_KEY_PEM)
     }
 
     /// Decide how a shell should answer a platform TLS challenge.
@@ -843,7 +861,9 @@ impl Drop for Renewal {
 
 #[cfg(test)]
 mod certificate_tests {
-    use super::{Certificates, Challenge, Decision};
+    use std::sync::Arc;
+
+    use super::{CertificatePaths, Certificates, Challenge, Decision};
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -852,6 +872,21 @@ mod certificate_tests {
             directory.to_path_buf(),
             "app.tokamak.local".to_owned(),
         )?)
+    }
+
+    #[test]
+    fn reuses_the_tls_server_config_until_certificates_refresh() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let certificates = certificates(directory.path())?;
+
+        let first = certificates.server_config()?;
+        let again = certificates.server_config()?;
+        assert!(Arc::ptr_eq(&first, &again));
+
+        certificates.refresh()?;
+        let renewed = certificates.server_config()?;
+        assert!(!Arc::ptr_eq(&first, &renewed));
+        Ok(())
     }
 
     #[test]
@@ -929,7 +964,8 @@ mod certificate_tests {
     fn trusts_only_the_current_server_certificate_for_the_app_host() -> TestResult {
         let directory = tempfile::tempdir()?;
         let certificates = certificates(directory.path())?;
-        let server = std::fs::read_to_string(certificates.server_certificate_path())?;
+        let server =
+            std::fs::read_to_string(directory.path().join(CertificatePaths::SERVER_CERT_PEM))?;
         let certificate = server
             .split("-----END CERTIFICATE-----")
             .next()
@@ -939,20 +975,6 @@ mod certificate_tests {
         assert!(certificates.trusts_server_certificate("app.tokamak.local", &certificate));
         assert!(!certificates.trusts_server_certificate("example.com", &certificate));
         assert!(!certificates.trusts_server_certificate("app.tokamak.local", "invalid"));
-        Ok(())
-    }
-
-    #[test]
-    fn serves_the_gateway_from_cached_paths() -> TestResult {
-        let directory = tempfile::tempdir()?;
-        let certificates = certificates(directory.path())?;
-
-        assert!(certificates.authority_path().is_file());
-        assert!(certificates.server_certificate_path().is_file());
-        assert!(certificates.server_key_path().is_file());
-        certificates.refresh()?;
-        assert!(certificates.server_certificate_path().is_file());
-        assert!(certificates.server_key_path().is_file());
         Ok(())
     }
 }

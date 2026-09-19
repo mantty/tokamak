@@ -84,6 +84,68 @@ fn starts_a_packaged_worker_with_its_declared_environment() -> TestResult {
 }
 
 #[test]
+fn keeps_the_connection_open_between_requests_until_the_client_closes_it() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, state) = start_packaged_runtime(
+        temporary.path(),
+        worker_source(),
+        &WorkerEnvironment {
+            vars: BTreeMap::from([
+                ("TEXT".to_owned(), json!("value")),
+                ("JSON".to_owned(), json!({ "enabled": true })),
+            ]),
+        },
+    )?;
+    let mut tls = connect_gateway(&runtime, &state)?;
+
+    for _ in 0..2 {
+        tls.write_all(format!("GET / HTTP/1.1\r\nHost: {HOST}\r\n\r\n").as_bytes())?;
+        tls.flush()?;
+        let response = String::from_utf8(read_header_block(&mut tls)?)?;
+        assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+        assert!(response.contains("connection: keep-alive"), "{response}");
+        assert!(
+            response.contains("x-request-connection: Keep-Alive"),
+            "{response}"
+        );
+    }
+
+    tls.write_all(
+        format!("GET / HTTP/1.1\r\nHost: {HOST}\r\nConnection: close\r\n\r\n").as_bytes(),
+    )?;
+    tls.flush()?;
+    let response = String::from_utf8(read_header_block(&mut tls)?)?;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+    assert!(response.contains("connection: close"), "{response}");
+    let mut rest = Vec::new();
+    tls.read_to_end(&mut rest)?;
+    assert!(rest.is_empty());
+    Ok(())
+}
+
+#[test]
+fn upgrades_to_a_websocket_on_a_reused_connection() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, state) = start_packaged_runtime(
+        temporary.path(),
+        websocket_worker_source(),
+        &WorkerEnvironment::default(),
+    )?;
+    let mut tls = connect_gateway(&runtime, &state)?;
+    tls.write_all(format!("GET / HTTP/1.1\r\nHost: {HOST}\r\n\r\n").as_bytes())?;
+    tls.flush()?;
+    let response = String::from_utf8(read_header_block(&mut tls)?)?;
+    assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+
+    upgrade_websocket(&mut tls)?;
+    write_masked_frame(&mut tls, true, 0x1, b"ping 1")?;
+    let (opcode, payload) = read_server_frame(&mut tls)?;
+    assert_eq!(opcode, 0x1);
+    assert_eq!(payload, b"pong ping 1");
+    Ok(())
+}
+
+#[test]
 fn suspended_runtime_delays_new_gateway_connections_until_resume() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let (runtime, _) = start_packaged_runtime(
@@ -264,11 +326,12 @@ globalThis.Request = class Request {
     this.body = init.body;
   }
 };
-const headers = new Map([["content-type", "text/plain"]]);
 export default {
-  fetch: async (_request, env, ctx) => {
+  fetch: async (request, env, ctx) => {
     ctx.waitUntil(Promise.reject(new Error("background failure")));
     const valid = env.TEXT === "value" && env.JSON?.enabled === true;
+    const connection = request.headers.find(([name]) => name === "connection")?.[1] ?? "missing";
+    const headers = new Map([["content-type", "text/plain"], ["x-request-connection", connection]]);
     return { status: valid ? 204 : 500, headers, text: async () => "" };
   }
 };
@@ -315,7 +378,8 @@ globalThis.WebSocketPair = class {
   }
 };
 export default {
-  async fetch() {
+  async fetch(request) {
+    if (!request.headers.some(([name]) => name === "upgrade")) return new Response(null, { status: 204 });
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -430,33 +494,43 @@ fn connect(
     Ok(command.output()?)
 }
 
-fn open_websocket(
+fn connect_gateway(
     runtime: &Runtime,
     state: &Path,
 ) -> TestResult<StreamOwned<ClientConnection, TcpStream>> {
-    let host = HOST;
     let mut proxy = TcpStream::connect(("127.0.0.1", runtime.port()))?;
     proxy.set_read_timeout(Some(Duration::from_secs(2)))?;
     proxy
-        .write_all(format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n").as_bytes())?;
+        .write_all(format!("CONNECT {HOST}:443 HTTP/1.1\r\nHost: {HOST}:443\r\n\r\n").as_bytes())?;
     proxy.flush()?;
     let proxy_response =
         read_header_block(&mut proxy).map_err(|error| format!("proxy response: {error}"))?;
     assert!(String::from_utf8(proxy_response)?.starts_with("HTTP/1.1 200"));
+    connect_tls(state, HOST, proxy)
+}
 
-    let mut tls = connect_tls(state, host, proxy)?;
+fn open_websocket(
+    runtime: &Runtime,
+    state: &Path,
+) -> TestResult<StreamOwned<ClientConnection, TcpStream>> {
+    let mut tls = connect_gateway(runtime, state)?;
+    upgrade_websocket(&mut tls)?;
+    Ok(tls)
+}
+
+fn upgrade_websocket(tls: &mut StreamOwned<ClientConnection, TcpStream>) -> TestResult {
     let key = "dGhlIHNhbXBsZSBub25jZQ==";
     tls.write_all(
         format!(
-            "GET /socket HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            "GET /socket HTTP/1.1\r\nHost: {HOST}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
         )
         .as_bytes(),
     )?;
     tls.flush()?;
-    let upgrade_response = read_header_block(&mut tls)
-        .map_err(|error| format!("WebSocket upgrade response: {error}"))?;
+    let upgrade_response =
+        read_header_block(tls).map_err(|error| format!("WebSocket upgrade response: {error}"))?;
     assert!(String::from_utf8(upgrade_response)?.starts_with("HTTP/1.1 101"));
-    Ok(tls)
+    Ok(())
 }
 
 fn connect_tls(

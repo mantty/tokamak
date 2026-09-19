@@ -90,6 +90,7 @@ fn request(worker: &WorkerBundle, flag: &str) -> TestResult<Vec<u8>> {
         None,
         Job {
             request: HttpRequest {
+                persistent: true,
                 method: "GET".to_owned(),
                 target: "/".to_owned(),
                 url: "https://app.tokamak.local/".to_owned(),
@@ -430,6 +431,7 @@ export default httpServerHandler(server);
         None,
         Job {
             request: HttpRequest {
+                persistent: true,
                 method: "POST".to_owned(),
                 target: "/bridge?value=1".to_owned(),
                 url: "https://app.tokamak.local/bridge?value=1".to_owned(),
@@ -798,6 +800,7 @@ fn fixture_request(
     let (sender, receiver) = flume::bounded(1);
     let job = Job {
         request: HttpRequest {
+            persistent: true,
             method: method.to_owned(),
             target: target.to_owned(),
             url: format!("https://app.tokamak.local{target}"),

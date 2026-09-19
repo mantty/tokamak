@@ -1,6 +1,7 @@
 use flume::{Receiver, Sender, TryRecvError, bounded};
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -9,14 +10,12 @@ use reqwest::{
     StatusCode,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
-use rustls::{ServerConnection, StreamOwned};
+use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use serde::Serialize;
 use sha1::{Digest, Sha1};
 use tokio_util::sync::CancellationToken;
 
-use crate::gateway::{
-    GatewayConfig, WebSocketBridge, WebSocketInbound, WebSocketOutbound, WebSocketOutgoing,
-};
+use crate::gateway::{WebSocketBridge, WebSocketInbound, WebSocketOutbound, WebSocketOutgoing};
 use crate::quickjs::Error;
 use crate::readiness::Readiness;
 
@@ -32,6 +31,9 @@ pub(super) type TlsStream = StreamOwned<ServerConnection, TcpStream>;
 
 #[derive(Serialize)]
 pub(super) struct HttpRequest {
+    /// Whether the connection stays open after the response, decided by the gateway.
+    #[serde(skip_serializing)]
+    pub(super) persistent: bool,
     pub(super) method: String,
     pub(super) target: String,
     pub(super) url: String,
@@ -118,19 +120,47 @@ pub(super) fn read_header_block(
     stream: &mut impl Read,
     subject: &'static str,
 ) -> Result<Vec<u8>, Error> {
-    let mut data = Vec::new();
+    read_optional_header_block(stream, subject)?
+        .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof).into())
+}
+
+/// Reads a header block, or `None` when the connection ends or goes idle before one begins.
+fn read_optional_header_block(
+    stream: &mut impl Read,
+    subject: &'static str,
+) -> Result<Option<Vec<u8>>, Error> {
+    let mut first = [0; 1];
+    match stream.read(&mut first) {
+        Ok(0) => return Ok(None),
+        Ok(_) => {}
+        Err(error) if connection_ended(&error) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let mut data = first.to_vec();
     loop {
+        if data.ends_with(b"\r\n\r\n") {
+            return Ok(Some(data));
+        }
         let mut byte = [0; 1];
         stream.read_exact(&mut byte)?;
         data.push(byte[0]);
         if data.len() > MAX_HEADERS {
             return Err(Error::Startup(format!("{subject} exceed the limit")));
         }
-        if data.ends_with(b"\r\n\r\n") {
-            break;
-        }
     }
-    Ok(data)
+}
+
+fn connection_ended(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::TimedOut
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::NotConnected
+    )
 }
 
 pub(super) fn is_connect(data: &[u8], host: &str) -> bool {
@@ -144,9 +174,7 @@ pub(super) fn is_connect(data: &[u8], host: &str) -> bool {
 }
 
 /// Completes the TLS handshake for an accepted gateway connection.
-pub(super) fn tls_accept(config: &GatewayConfig, stream: TcpStream) -> Result<TlsStream, Error> {
-    let config =
-        crate::tls::server_config(&config.certificates, config.require_client_certificate)?;
+pub(super) fn tls_accept(config: Arc<ServerConfig>, stream: TcpStream) -> Result<TlsStream, Error> {
     let connection = ServerConnection::new(config).map_err(crate::tls::tls_error)?;
     let mut stream = StreamOwned::new(connection, stream);
     while stream.conn.is_handshaking() {
@@ -155,8 +183,24 @@ pub(super) fn tls_accept(config: &GatewayConfig, stream: TcpStream) -> Result<Tl
     Ok(stream)
 }
 
-pub(super) fn read_request(stream: &mut impl Read, host: &str) -> Result<HttpRequest, Error> {
-    let headers = read_header_block(stream, "HTTP headers")?;
+/// Ends the TLS session cleanly so the peer sees a close rather than an abrupt disconnect.
+pub(super) fn tls_close(stream: &mut TlsStream) -> Result<(), Error> {
+    stream.conn.send_close_notify();
+    match stream.conn.complete_io(&mut stream.sock) {
+        Ok(_) => Ok(()),
+        Err(error) if connection_ended(&error) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Reads the next request, or `None` when the client closes the connection or goes idle first.
+pub(super) fn read_request(
+    stream: &mut impl Read,
+    host: &str,
+) -> Result<Option<HttpRequest>, Error> {
+    let Some(headers) = read_optional_header_block(stream, "HTTP headers")? else {
+        return Ok(None);
+    };
     let text = String::from_utf8_lossy(&headers);
     let mut lines = text.split("\r\n");
     let request_line = lines.next().unwrap_or_default();
@@ -165,6 +209,7 @@ pub(super) fn read_request(stream: &mut impl Read, host: &str) -> Result<HttpReq
         return Err(Error::Startup("HTTP method is missing".to_owned()));
     };
     let target = request_parts.next().unwrap_or("/");
+    let version = request_parts.next().unwrap_or("HTTP/1.1");
     let mut request_headers = HeaderMap::new();
     let mut content_length = None;
     let mut chunked = false;
@@ -184,11 +229,7 @@ pub(super) fn read_request(stream: &mut impl Read, host: &str) -> Result<HttpReq
                     .map_err(|_| Error::Startup("invalid content length".to_owned()))?,
             );
         }
-        if name == "transfer-encoding"
-            && value
-                .split(',')
-                .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
-        {
+        if name == "transfer-encoding" && has_token(value, "chunked") {
             chunked = true;
         }
         request_headers
@@ -214,13 +255,17 @@ pub(super) fn read_request(stream: &mut impl Read, host: &str) -> Result<HttpReq
         body
     };
     let body = (!body.is_empty()).then_some(body);
-    Ok(HttpRequest {
+    let persistent = connection_persists(version, &request_headers);
+    // Workers observe what Cloudflare's edge shows them: the connection is always kept alive.
+    request_headers.insert("connection", HeaderValue::from_static("Keep-Alive"));
+    Ok(Some(HttpRequest {
+        persistent,
         method: method.to_owned(),
         target: target.to_owned(),
         url: format!("https://{host}{target}"),
         headers: request_headers,
         body,
-    })
+    }))
 }
 
 pub(super) fn read_chunked_body(stream: &mut impl Read) -> Result<Vec<u8>, Error> {
@@ -742,7 +787,34 @@ pub(super) fn write_plain_response(
     stream: &mut TcpStream,
     response: HttpResponse,
 ) -> Result<(), Error> {
-    write_response_inner(stream, response, None, None, None)
+    write_response_inner(stream, response, None, None, None, false).map(|_| ())
+}
+
+/// HTTP/1.1 connections persist unless the client says `close`; HTTP/1.0 only with `keep-alive`.
+fn connection_persists(version: &str, headers: &HeaderMap) -> bool {
+    let connection = headers
+        .get("connection")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if version.eq_ignore_ascii_case("HTTP/1.0") {
+        has_token(connection, "keep-alive")
+    } else {
+        !has_token(connection, "close")
+    }
+}
+
+/// Whether a comma-separated header value contains `token`, ignoring case and whitespace.
+pub(super) fn has_token(value: &str, token: &str) -> bool {
+    value
+        .split(',')
+        .any(|candidate| candidate.trim().eq_ignore_ascii_case(token))
+}
+
+/// Whether a response reached the client in full or the connection was lost part way.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ResponseOutcome {
+    Complete,
+    Interrupted,
 }
 
 pub(super) fn write_response(
@@ -750,28 +822,46 @@ pub(super) fn write_response(
     response: HttpResponse,
     method: &str,
     cancelled: &AtomicBool,
-) -> Result<(), Error> {
-    let peer = stream.get_ref().try_clone()?;
-    peer.set_read_timeout(Some(Duration::from_millis(1)))?;
-    write_response_inner(stream, response, Some(method), Some(cancelled), Some(&peer))
+    persistent: bool,
+) -> Result<ResponseOutcome, Error> {
+    let peer = match response.body {
+        HttpBody::Stream(_) => {
+            let peer = stream.get_ref().try_clone()?;
+            peer.set_read_timeout(Some(Duration::from_millis(1)))?;
+            Some(peer)
+        }
+        HttpBody::Buffered(_) => None,
+    };
+    write_response_inner(
+        stream,
+        response,
+        Some(method),
+        Some(cancelled),
+        peer.as_ref(),
+        persistent,
+    )
 }
 
+// The gateway owns connection lifetime; worker-set connection headers are ignored.
 fn write_response_inner(
     mut stream: impl Write,
     mut response: HttpResponse,
     method: Option<&str>,
     cancelled: Option<&AtomicBool>,
     peer: Option<&TcpStream>,
-) -> Result<(), Error> {
+    persistent: bool,
+) -> Result<ResponseOutcome, Error> {
     let head = method.is_some_and(|method| method.eq_ignore_ascii_case("HEAD"));
     let no_body =
         head || (100..200).contains(&response.status) || matches!(response.status, 204 | 205 | 304);
-    if !response.headers.contains_key("connection") {
-        response
-            .headers
-            .try_insert("connection", HeaderValue::from_static("close"))
-            .map_err(io::Error::other)?;
-    }
+    response.headers.remove("keep-alive");
+    response
+        .headers
+        .try_insert(
+            "connection",
+            HeaderValue::from_static(if persistent { "keep-alive" } else { "close" }),
+        )
+        .map_err(io::Error::other)?;
     if !head {
         response.headers.remove("transfer-encoding");
         if (100..200).contains(&response.status) || matches!(response.status, 204 | 304) {
@@ -804,13 +894,13 @@ fn write_response_inner(
         &response.headers,
     )?;
     if no_body {
-        return Ok(());
+        return Ok(ResponseOutcome::Complete);
     }
     match response.body {
         HttpBody::Buffered(body) => {
             stream.write_all(&body)?;
             stream.flush()?;
-            Ok(())
+            Ok(ResponseOutcome::Complete)
         }
         HttpBody::Stream(body) => write_stream_body(stream, &body, cancelled, peer),
     }
@@ -821,7 +911,7 @@ fn write_stream_body(
     body: &BodyStream,
     cancelled: Option<&AtomicBool>,
     peer: Option<&TcpStream>,
-) -> Result<(), Error> {
+) -> Result<ResponseOutcome, Error> {
     let is_cancelled = || {
         cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
             || body.cancelled.is_cancelled()
@@ -835,7 +925,7 @@ fn write_stream_body(
                 }
                 if peer_closed(peer) {
                     body.cancelled.cancel();
-                    return Ok(());
+                    return Ok(ResponseOutcome::Interrupted);
                 }
                 continue;
             }
@@ -851,11 +941,11 @@ fn write_stream_body(
         }
     }
     if is_cancelled() {
-        return Ok(());
+        return Ok(ResponseOutcome::Interrupted);
     }
     stream.write_all(b"0\r\n\r\n")?;
     stream.flush()?;
-    Ok(())
+    Ok(ResponseOutcome::Complete)
 }
 
 fn peer_closed(stream: Option<&TcpStream>) -> bool {
@@ -898,13 +988,79 @@ fn write_response_headers(
 
 #[cfg(test)]
 mod tests {
-    use super::{HttpBody, HttpResponse, read_request, response_stream, write_response_inner};
+    use super::{
+        HttpBody, HttpResponse, ResponseOutcome, read_request, response_stream,
+        write_response_inner,
+    };
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
     use std::io::{self, Cursor, Read};
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn replaces_worker_connection_headers_with_the_gateway_decision()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (persistent, expected) in [
+            (true, "connection: keep-alive"),
+            (false, "connection: close"),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert("connection", HeaderValue::from_static("close"));
+            headers.insert("keep-alive", HeaderValue::from_static("timeout=5"));
+            let response = HttpResponse::buffered(200, headers, b"ok".to_vec());
+            let mut output = Vec::new();
+            write_response_inner(&mut output, response, None, None, None, persistent)?;
+            let text = String::from_utf8(output)?;
+            assert!(text.contains(expected), "{text}");
+            assert!(!text.contains("keep-alive:"), "{text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn decides_persistence_the_way_the_edge_does() -> Result<(), Box<dyn std::error::Error>> {
+        for (request, persistent) in [
+            ("GET / HTTP/1.1\r\nHost: app.test\r\n\r\n", true),
+            (
+                "GET / HTTP/1.1\r\nHost: app.test\r\nConnection: keep-alive, Close\r\n\r\n",
+                false,
+            ),
+            ("GET / HTTP/1.0\r\nHost: app.test\r\n\r\n", false),
+            (
+                "GET / HTTP/1.0\r\nHost: app.test\r\nConnection: Keep-Alive\r\n\r\n",
+                true,
+            ),
+        ] {
+            let parsed = read_request(&mut Cursor::new(request.as_bytes().to_vec()), "app.test")?
+                .ok_or("request was empty")?;
+            assert_eq!(parsed.persistent, persistent, "{request:?}");
+            assert_eq!(
+                parsed.headers.get("connection").map(HeaderValue::as_bytes),
+                Some(&b"Keep-Alive"[..])
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn treats_an_idle_timeout_as_no_request() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let _client = TcpStream::connect(listener.local_addr()?)?;
+        let (mut server, _) = listener.accept()?;
+        server.set_read_timeout(Some(Duration::from_millis(10)))?;
+        assert!(read_request(&mut server, "app.test")?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn treats_a_closed_idle_connection_as_no_request() -> Result<(), Box<dyn std::error::Error>> {
+        assert!(read_request(&mut Cursor::new(Vec::new()), "app.test")?.is_none());
+        let mut input = Cursor::new(b"GET /path HTTP/1.1\r\nHost: app.test\r\n\r\n".to_vec());
+        assert!(read_request(&mut input, "app.test")?.is_some());
+        Ok(())
+    }
 
     #[test]
     fn rejects_excess_response_headers_without_panicking() -> Result<(), Box<dyn std::error::Error>>
@@ -936,7 +1092,7 @@ mod tests {
                 body,
             };
             let mut output = Vec::new();
-            assert!(write_response_inner(&mut output, response, None, None, None).is_err());
+            assert!(write_response_inner(&mut output, response, None, None, None, false).is_err());
             assert!(output.is_empty());
             assert!(cancelled.is_none_or(|token| token.is_cancelled()));
         }
@@ -948,7 +1104,7 @@ mod tests {
         let mut input = Cursor::new(
             "GET / HTTP/1.1\r\nX-Repeated: one\r\nX-Repeated: two\r\nX-Text: 東京\r\n\r\n",
         );
-        let request = read_request(&mut input, "app.test")?;
+        let request = read_request(&mut input, "app.test")?.ok_or("request was empty")?;
         let json = serde_json::to_value(request)?;
         let pairs = json["headers"].as_array().ok_or("expected header pairs")?;
         assert!(pairs.contains(&serde_json::json!(["x-repeated", "one"])));
@@ -963,13 +1119,13 @@ mod tests {
         let mut response = HttpResponse::text(201, "ok");
         response.status_text = "Created Here".to_owned();
         let mut output = Vec::new();
-        write_response_inner(&mut output, response, None, None, None)?;
+        write_response_inner(&mut output, response, None, None, None, false)?;
         assert!(output.starts_with(b"HTTP/1.1 201 Created Here\r\n"));
 
         let mut response = HttpResponse::text(200, "ok");
         response.status_text = "OK\r\nInjected: true".to_owned();
         let mut output = Vec::new();
-        assert!(write_response_inner(&mut output, response, None, None, None).is_err());
+        assert!(write_response_inner(&mut output, response, None, None, None, false).is_err());
         assert!(output.is_empty());
         Ok(())
     }
@@ -990,7 +1146,7 @@ mod tests {
         .collect();
         let response = HttpResponse::buffered(201, headers, b"ok".to_vec());
         let mut output = Vec::new();
-        write_response_inner(&mut output, response, None, None, None)?;
+        write_response_inner(&mut output, response, None, None, None, false)?;
         let output = String::from_utf8(output)?;
         assert!(output.contains("set-cookie: first=1\r\n"));
         assert!(output.contains("set-cookie: second=2\r\n"));
@@ -1009,7 +1165,7 @@ mod tests {
             .headers
             .insert("transfer-encoding", HeaderValue::from_static("identity"));
         let mut output = Vec::new();
-        write_response_inner(&mut output, response, Some("GET"), None, None)?;
+        write_response_inner(&mut output, response, Some("GET"), None, None, false)?;
         let output = String::from_utf8(output)?;
         assert!(output.contains("content-length: 2\r\n"));
         assert!(!output.contains("transfer-encoding:"));
@@ -1024,7 +1180,7 @@ mod tests {
                     .insert("content-length", HeaderValue::from_static("99"));
             }
             let mut output = Vec::new();
-            write_response_inner(&mut output, response, Some("HEAD"), None, None)?;
+            write_response_inner(&mut output, response, Some("HEAD"), None, None, false)?;
             let output = String::from_utf8(output)?;
             assert_eq!(output.contains("content-length: 99\r\n"), explicit);
             assert!(!output.contains("transfer-encoding:"));
@@ -1036,7 +1192,7 @@ mod tests {
                 .headers
                 .insert("content-length", HeaderValue::from_static("99"));
             let mut output = Vec::new();
-            write_response_inner(&mut output, response, Some("GET"), None, None)?;
+            write_response_inner(&mut output, response, Some("GET"), None, None, false)?;
             let output = String::from_utf8(output)?;
             assert_eq!(output.contains("content-length: 0\r\n"), status == 205);
             assert!(!output.contains("content-length: 99"));
@@ -1050,7 +1206,7 @@ mod tests {
         let response = HttpResponse::buffered(200, HeaderMap::new(), b"ok".to_vec());
         let mut output = Vec::new();
 
-        write_response_inner(&mut output, response, None, None, None)?;
+        write_response_inner(&mut output, response, None, None, None, false)?;
 
         let output = String::from_utf8(output)?;
         assert!(output.contains("content-length: 2\r\n"));
@@ -1075,7 +1231,7 @@ mod tests {
         };
         let mut output = Vec::new();
 
-        write_response_inner(&mut output, response, None, None, None)?;
+        write_response_inner(&mut output, response, None, None, None, false)?;
 
         let output = String::from_utf8(output)?;
         assert!(output.contains("transfer-encoding: chunked\r\n"));
@@ -1099,7 +1255,7 @@ mod tests {
         };
         let mut output = Vec::new();
 
-        write_response_inner(&mut output, response, Some("HEAD"), None, None)?;
+        write_response_inner(&mut output, response, Some("HEAD"), None, None, false)?;
 
         let output = String::from_utf8(output)?;
         assert!(!output.contains("transfer-encoding:"));
@@ -1120,7 +1276,7 @@ mod tests {
         let cancelled = std::sync::atomic::AtomicBool::new(true);
         let mut output = Vec::new();
 
-        write_response_inner(&mut output, response, None, Some(&cancelled), None)?;
+        write_response_inner(&mut output, response, None, Some(&cancelled), None, false)?;
 
         assert!(String::from_utf8(output)?.contains("HTTP/1.1 200"));
         Ok(())
@@ -1144,7 +1300,7 @@ mod tests {
         };
         let (done_sender, done_receiver) = mpsc::channel();
         let thread = thread::spawn(move || {
-            let result = write_response_inner(server, response, None, None, Some(&peer));
+            let result = write_response_inner(server, response, None, None, Some(&peer), false);
             let _ = done_sender.send(result);
         });
 
@@ -1156,7 +1312,7 @@ mod tests {
         }
         drop(client);
         match done_receiver.recv_timeout(Duration::from_secs(2)) {
-            Ok(result) => result?,
+            Ok(result) => assert_eq!(result?, ResponseOutcome::Interrupted),
             Err(error) => {
                 cancelled.cancel();
                 let _ = thread.join();
@@ -1197,7 +1353,7 @@ mod tests {
             headers: HeaderMap::new(),
             body: HttpBody::Stream(body),
         };
-        let Err(error) = write_response_inner(io::sink(), response, None, None, None) else {
+        let Err(error) = write_response_inner(io::sink(), response, None, None, None, false) else {
             return Err("stream should fail".into());
         };
         assert_eq!(
