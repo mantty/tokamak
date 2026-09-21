@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
-import { geolocation } from "../src/index.js";
+import { location } from "../src/index.js";
 
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
 
@@ -15,7 +15,7 @@ afterEach(() => {
   }
 });
 
-void test("uses browser geolocation on the web", async () => {
+void test("uses browser location on the web", async () => {
   Object.defineProperty(globalThis, "navigator", {
     configurable: true,
     value: {
@@ -27,17 +27,17 @@ void test("uses browser geolocation on the web", async () => {
     },
   });
 
-  const position = await geolocation.getCurrentPosition();
+  const position = await location.getCurrentPosition();
 
   assert.equal(position.coords.latitude, 51.5);
   assert.equal(position.coords.longitude, -0.1);
 });
 
-void test("reports unavailable web geolocation as unsupported", async () => {
+void test("reports unavailable web location as unsupported", async () => {
   Reflect.deleteProperty(globalThis, "navigator");
 
   await assert.rejects(
-    geolocation.getCurrentPosition(),
+    location.getCurrentPosition(),
     (error: unknown) =>
       error instanceof DOMException && error.name === "NotSupportedError",
   );
@@ -48,7 +48,7 @@ for (const [code, name] of [
   [2, "NotReadableError"],
   [3, "TimeoutError"],
 ] as const) {
-  void test(`maps browser geolocation error ${String(code)}`, async () => {
+  void test(`maps browser location error ${String(code)}`, async () => {
     Object.defineProperty(globalThis, "navigator", {
       configurable: true,
       value: {
@@ -67,7 +67,7 @@ for (const [code, name] of [
     });
 
     await assert.rejects(
-      geolocation.getCurrentPosition(),
+      location.getCurrentPosition(),
       (error: unknown) => error instanceof DOMException && error.name === name,
     );
   });
@@ -94,7 +94,7 @@ void test("forwards browser watch failures", () => {
   });
   let received: DOMException | undefined;
 
-  geolocation.watchPosition(
+  location.watchPosition(
     () => assert.fail("position received"),
     (error) => { received = error; },
   );
@@ -112,7 +112,7 @@ void test("uses the native bridge and cancels watched updates", () => {
   };
   const updates: number[] = [];
 
-  const cancel = geolocation.watchPosition(
+  const cancel = location.watchPosition(
     (position) => updates.push(position.coords.latitude),
     () => assert.fail("watch failed"),
   );
@@ -139,7 +139,7 @@ void test("ignores native responses from an earlier page session", async () => {
     },
   };
 
-  const position = geolocation.getCurrentPosition();
+  const position = location.getCurrentPosition();
   const session = sent[0]?.session as string;
   const id = sent[1]?.id as number;
   globalThis.__tokamakReceive?.({
@@ -167,7 +167,7 @@ void test("preserves native DOM exception errors", async () => {
     },
   };
 
-  const position = geolocation.getCurrentPosition();
+  const position = location.getCurrentPosition();
   const session = sent[0]?.session as string;
   const id = sent[1]?.id as number;
   globalThis.__tokamakReceive?.({
@@ -200,7 +200,7 @@ void test("keeps a native watch active after an error", () => {
   const updates: number[] = [];
   const errors: string[] = [];
 
-  const cancel = geolocation.watchPosition(
+  const cancel = location.watchPosition(
     (position) => updates.push(position.coords.latitude),
     (error) => errors.push(error.name),
   );

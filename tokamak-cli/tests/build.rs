@@ -33,39 +33,39 @@ fn create_project(root: &Path) -> TestResult {
     Ok(())
 }
 
-fn install_geolocation_plugin(root: &Path) -> TestResult {
+fn install_location_plugin(root: &Path) -> TestResult {
     fs::write(
         root.join("package.json"),
-        r#"{"name":"demo-app","scripts":{"build":"echo already-built"},"dependencies":{"@tokamak/geolocation":"1.0.0"}}"#,
+        r#"{"name":"demo-app","scripts":{"build":"echo already-built"},"dependencies":{"@tokamakdev/plugin-location":"1.0.0"}}"#,
     )?;
-    let plugin = root.join("node_modules/@tokamak/geolocation");
+    let plugin = root.join("node_modules/@tokamakdev/plugin-location");
     fs::create_dir_all(plugin.join("apple"))?;
     fs::write(
-        plugin.join("apple/GeolocationPlugin.swift"),
-        include_str!("../../plugins/geolocation/apple/GeolocationPlugin.swift"),
+        plugin.join("apple/LocationPlugin.swift"),
+        include_str!("../../plugins/location/apple/LocationPlugin.swift"),
     )?;
     fs::write(
         plugin.join("tokamak-plugin.json"),
         r#"{
   "schemaVersion": 1,
-  "id": "geolocation",
+  "id": "location",
   "kind": "frontend",
   "platforms": {
     "macos": {
-      "class": "TokamakGeolocationPlugin",
-      "sources": ["apple/GeolocationPlugin.swift"],
+      "class": "TokamakLocationPlugin",
+      "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
       "plist": {"NSLocationUsageDescription": "Location test"}
     },
     "ios": {
-      "class": "TokamakGeolocationPlugin",
-      "sources": ["apple/GeolocationPlugin.swift"],
+      "class": "TokamakLocationPlugin",
+      "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
       "plist": {"NSLocationWhenInUseUsageDescription": "Location test"}
     },
     "ios-simulator": {
-      "class": "TokamakGeolocationPlugin",
-      "sources": ["apple/GeolocationPlugin.swift"],
+      "class": "TokamakLocationPlugin",
+      "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
       "plist": {"NSLocationWhenInUseUsageDescription": "Location test"}
     }
@@ -760,7 +760,7 @@ fn packages_worker_vars_as_a_normalized_manifest() -> TestResult {
 #[test]
 fn builds_declared_plugins_into_the_macos_shell() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    install_geolocation_plugin(&project)?;
+    install_location_plugin(&project)?;
 
     build_command("macos", &project, &manifest)?
         .assert()
@@ -943,7 +943,7 @@ fn builds_project_before_loading_generated_config() -> TestResult {
 #[test]
 fn builds_physical_ios_app() -> TestResult {
     let (temporary, project, manifest) = create_inputs("ios-arm64")?;
-    install_geolocation_plugin(&project)?;
+    install_location_plugin(&project)?;
     let profile = project.join("development.mobileprovision");
     fs::write(&profile, "profile")?;
     let mut command = build_command("ios", &project, &manifest)?;
@@ -1083,7 +1083,7 @@ fn dev_explains_conflicting_automatic_and_manual_signing() -> TestResult {
 fn builds_ios_simulator_app() -> TestResult {
     for target in ["ios-simulator-arm64", "ios-simulator-x64"] {
         let (_temporary, project, manifest) = create_inputs(target)?;
-        install_geolocation_plugin(&project)?;
+        install_location_plugin(&project)?;
         build_command("ios-simulator", &project, &manifest)?
             .assert()
             .success()

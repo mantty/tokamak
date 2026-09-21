@@ -249,20 +249,20 @@ mod tests {
         let root = tempfile::tempdir()?;
         fs::write(
             root.path().join("package.json"),
-            r#"{"dependencies":{"@tokamak/geolocation":"1.0.0"}}"#,
+            r#"{"dependencies":{"@tokamakdev/plugin-location":"1.0.0"}}"#,
         )?;
-        let plugin = root.path().join("node_modules/@tokamak/geolocation");
+        let plugin = root.path().join("node_modules/@tokamakdev/plugin-location");
         fs::create_dir_all(plugin.join("ios"))?;
         fs::write(plugin.join("ios/plugin.swift"), "")?;
         fs::write(
             plugin.join("tokamak-plugin.json"),
             r#"{
   "schemaVersion": 1,
-  "id": "geolocation",
+  "id": "location",
   "kind": "frontend",
   "platforms": {
     "ios": {
-      "class": "GeolocationPlugin",
+      "class": "LocationPlugin",
       "sources": ["ios/plugin.swift"],
       "frameworks": ["CoreLocation"]
     }
@@ -273,11 +273,11 @@ mod tests {
         let plugins = discover(root.path())?;
 
         assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].id, "geolocation");
+        assert_eq!(plugins[0].id, "location");
         let platform = plugins[0]
             .platform(Platform::Ios)
             .ok_or("iOS plugin is missing")?;
-        assert_eq!(platform.class, "GeolocationPlugin");
+        assert_eq!(platform.class, "LocationPlugin");
         assert_eq!(plugins[0].sources(Platform::Ios)?.len(), 1);
         Ok(())
     }
@@ -338,16 +338,16 @@ mod tests {
 
     #[test]
     fn validates_protocol_identifiers() {
-        assert!(valid_plugin_id("geolocation"));
+        assert!(valid_plugin_id("location"));
         assert!(valid_plugin_id("photo-library2"));
         assert!(!valid_plugin_id("PhotoLibrary"));
         assert!(!valid_plugin_id("2photo"));
         assert!(!valid_plugin_id("photo--library"));
         assert!(!valid_plugin_id("../photo"));
 
-        assert!(valid_qualified_name("TokamakGeolocationPlugin"));
+        assert!(valid_qualified_name("TokamakLocationPlugin"));
         assert!(valid_qualified_name(
-            "com.tokamak.plugins.geolocation.TokamakGeolocationPlugin"
+            "com.tokamak.plugins.location.TokamakLocationPlugin"
         ));
         assert!(!valid_qualified_name("com.tokamak.Location-Plugin"));
         assert!(!valid_qualified_name("com.tokamak.2Location"));

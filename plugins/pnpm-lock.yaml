@@ -29,10 +29,10 @@ importers:
 
   core: {}
 
-  geolocation:
+  location:
     dependencies:
-      '@tokamak/plugin':
-        specifier: workspace:*
+      '@tokamakdev/plugin':
+        specifier: ^0.1.0
         version: link:../core
 
 packages:

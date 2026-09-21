@@ -253,7 +253,7 @@ By default tokamak expects your server to available on `http://localhost:5173` (
 ## Example
 
 [The Astro example](examples/astro) exercises server rendering, static assets,
-navigation, WebSockets, and the native geolocation plugin.
+navigation, WebSockets, and the native location plugin.
 
 ```sh
 pnpm --dir examples/astro install --frozen-lockfile
@@ -320,8 +320,23 @@ Target packs are written to `target/tokamak-target-packs/<target>`. Run
 ### Package the plugins
 
 ```sh
-pnpm --dir plugins --filter '@tokamak/*' exec pnpm pack --pack-destination "$PWD/artifacts"
+pnpm --dir plugins --filter '@tokamakdev/*' exec pnpm pack --pack-destination "$PWD/artifacts"
 ```
+
+The shared plugin transport package must be published before a plugin that
+depends on it. To publish the first packages locally:
+
+```sh
+cd plugins/core
+npm publish --access public
+cd ../location
+npm publish --access public
+```
+
+Merges to `main` publish the tested plugin archives as `0.1.0-beta.<run>` with
+the npm `beta` dist-tag. The stable `latest` tag is not changed. npm Trusted
+Publishing must be enabled separately for each package for GitHub user
+`mantty`, repository `tokamak`, and workflow filename `build.yaml`.
 
 ### Build the example against local sources
 

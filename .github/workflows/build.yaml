@@ -186,6 +186,8 @@ jobs:
     name: Build plugins
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    outputs:
+      version: ${{ steps.package-version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.3
@@ -212,12 +214,24 @@ jobs:
           pnpm lint:ts
           pnpm test:ts
 
+      - name: Set beta versions
+        id: package-version
+        run: |
+          set -euo pipefail
+          core_version="$(node -p "require('./plugins/core/package.json').version")"
+          location_version="$(node -p "require('./plugins/location/package.json').version")"
+          test "$core_version" = "$location_version"
+          version="${core_version}-beta.${GITHUB_RUN_NUMBER}"
+          npm pkg set "version=$version" --prefix plugins/core
+          npm pkg set "version=$version" "dependencies.@tokamakdev/plugin=$version" --prefix plugins/location
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Package plugins
         working-directory: plugins
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          pnpm --filter '@tokamak/*' exec pnpm pack --pack-destination "$GITHUB_WORKSPACE/artifacts"
+          pnpm --filter '@tokamakdev/*' exec pnpm pack --pack-destination "$GITHUB_WORKSPACE/artifacts"
 
       - name: Upload plugin artifacts
         uses: actions/upload-artifact@v7.0.1
@@ -282,3 +296,52 @@ jobs:
             --notes "Automated tokamak artifacts from ${GITHUB_SHA}." \
             --prerelease \
             --target "${GITHUB_SHA}"
+
+  publish-npm:
+    name: Publish npm beta packages
+    needs:
+      - build-plugins
+      - prerelease
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Download plugin packages
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: tokamak-plugins
+          path: artifacts
+
+      - name: Publish core plugin
+        env:
+          PACKAGE_VERSION: ${{ needs.build-plugins.outputs.version }}
+        run: |
+          set -euo pipefail
+          if npm view "@tokamakdev/plugin@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "@tokamakdev/plugin@$PACKAGE_VERSION is already published"
+          else
+            npm publish "artifacts/tokamakdev-plugin-$PACKAGE_VERSION.tgz" --access public --tag beta
+          fi
+
+      - name: Publish location plugin
+        env:
+          PACKAGE_VERSION: ${{ needs.build-plugins.outputs.version }}
+        run: |
+          set -euo pipefail
+          if npm view "@tokamakdev/plugin-location@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "@tokamakdev/plugin-location@$PACKAGE_VERSION is already published"
+          else
+            npm publish "artifacts/tokamakdev-plugin-location-$PACKAGE_VERSION.tgz" --access public --tag beta
+          fi

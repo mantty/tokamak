@@ -1,4 +1,4 @@
-import { FrontendPlugin } from "@tokamak/plugin";
+import { FrontendPlugin } from "@tokamakdev/plugin";
 import * as web from "../web/index.js";
 
 export interface Coordinates {
@@ -19,9 +19,9 @@ export interface Position {
 export type PositionCallback = (position: Position) => void;
 export type PositionErrorCallback = (error: DOMException) => void;
 
-class Geolocation extends FrontendPlugin {
+class Location extends FrontendPlugin {
   constructor() {
-    super("geolocation");
+    super("location");
   }
 
   getCurrentPosition(): Promise<Position> {
@@ -41,4 +41,4 @@ class Geolocation extends FrontendPlugin {
   }
 }
 
-export const geolocation = new Geolocation();
+export const location = new Location();

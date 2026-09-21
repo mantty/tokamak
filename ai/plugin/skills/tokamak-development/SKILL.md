@@ -142,7 +142,7 @@ builds do not require provisioning.
 
 ## Use native capabilities through tokamak plugins
 
-- Import supported `@tokamak/*` frontend plugins for native capabilities instead of modeling those capabilities as Worker bindings.
+- Import supported `@tokamakdev/*` frontend plugins for native capabilities instead of modeling those capabilities as Worker bindings.
 - Call plugins from browser-side code, where the native bridge exists. Do not expect the bridge in the packaged Worker handler.
 - Preserve a plugin's web implementation or feature-detect availability when the same code also targets ordinary browsers.
 - Handle permission denial, unavailable hardware, cancellation, navigation, and page lifecycle as normal outcomes of a native capability request.

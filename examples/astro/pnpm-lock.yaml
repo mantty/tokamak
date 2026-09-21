@@ -8,15 +8,15 @@ importers:
 
   .:
     dependencies:
-      '@tokamak/geolocation':
-        specifier: link:../../plugins/geolocation
-        version: link:../../plugins/geolocation
       '@astrojs/cloudflare':
         specifier: 13.1.8
         version: 13.1.8(astro@6.1.5(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.63.0))(jiti@2.7.0)(lightningcss@1.32.0)(wrangler@4.126.0)
       '@tailwindcss/vite':
         specifier: ^4.2.2
         version: 4.3.3(vite@7.3.6(jiti@2.7.0)(lightningcss@1.32.0))
+      '@tokamakdev/plugin-location':
+        specifier: link:../../plugins/location
+        version: link:../../plugins/location
       astro:
         specifier: 6.1.5
         version: 6.1.5(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.63.0)

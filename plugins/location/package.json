@@ -1,0 +1,27 @@
+{
+  "name": "@tokamakdev/plugin-location",
+  "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mantty/tokamak.git",
+    "directory": "plugins/location"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@tokamakdev/plugin": "^0.1.0"
+  },
+  "files": [
+    "android",
+    "apple",
+    "src",
+    "web",
+    "tokamak-plugin.json",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

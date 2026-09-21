@@ -1,35 +1,35 @@
 {
   "schemaVersion": 1,
-  "id": "geolocation",
+  "id": "location",
   "kind": "frontend",
   "platforms": {
     "macos": {
-      "class": "TokamakGeolocationPlugin",
-      "sources": ["apple/GeolocationPlugin.swift"],
+      "class": "TokamakLocationPlugin",
+      "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
       "plist": {
         "NSLocationUsageDescription": "This app uses your location when you request location features."
       }
     },
     "ios": {
-      "class": "TokamakGeolocationPlugin",
-      "sources": ["apple/GeolocationPlugin.swift"],
+      "class": "TokamakLocationPlugin",
+      "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
       "plist": {
         "NSLocationWhenInUseUsageDescription": "This app uses your location when you request location features."
       }
     },
     "ios-simulator": {
-      "class": "TokamakGeolocationPlugin",
-      "sources": ["apple/GeolocationPlugin.swift"],
+      "class": "TokamakLocationPlugin",
+      "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
       "plist": {
         "NSLocationWhenInUseUsageDescription": "This app uses your location when you request location features."
       }
     },
     "android": {
-      "class": "com.tokamak.plugins.geolocation.TokamakGeolocationPlugin",
-      "sources": ["android/GeolocationPlugin.kt"],
+      "class": "com.tokamak.plugins.location.TokamakLocationPlugin",
+      "sources": ["android/LocationPlugin.kt"],
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION"

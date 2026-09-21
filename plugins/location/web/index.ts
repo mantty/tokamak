@@ -2,8 +2,8 @@ import type { Position, PositionCallback, PositionErrorCallback } from "../src/i
 
 export function getCurrentPosition(): Promise<Position> {
   return new Promise((resolve, reject) => {
-    const geolocation = browserGeolocation();
-    geolocation.getCurrentPosition(
+    const browserLocation = browserLocationApi();
+    browserLocation.getCurrentPosition(
       (position) => {
         resolve(copyPosition(position));
       },
@@ -18,8 +18,8 @@ export function watchPosition(
   next: PositionCallback,
   error: PositionErrorCallback,
 ): () => void {
-  const geolocation = browserGeolocation();
-  const id = geolocation.watchPosition(
+  const browserLocation = browserLocationApi();
+  const id = browserLocation.watchPosition(
     (position) => {
       next(copyPosition(position));
     },
@@ -28,15 +28,15 @@ export function watchPosition(
     },
   );
   return () => {
-    geolocation.clearWatch(id);
+    browserLocation.clearWatch(id);
   };
 }
 
-function browserGeolocation(): Geolocation {
+function browserLocationApi(): Geolocation {
   const root: { navigator?: { geolocation?: Geolocation } } = globalThis;
-  const geolocation = root.navigator?.geolocation;
-  if (geolocation) return geolocation;
-  throw new DOMException("Geolocation is unavailable", "NotSupportedError");
+  const browserLocation = root.navigator?.geolocation;
+  if (browserLocation) return browserLocation;
+  throw new DOMException("Location is unavailable", "NotSupportedError");
 }
 
 function copyPosition(position: GeolocationPosition): Position {

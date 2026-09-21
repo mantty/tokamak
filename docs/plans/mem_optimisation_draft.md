@@ -49,7 +49,7 @@ but its compatibility and performance are currently unmeasured.
 ## Native plugins
 
 The generated plugin registry constructs every native plugin when the WebView
-bridge starts. The geolocation plugin consequently creates a
+bridge starts. The location plugin consequently creates a
 `CLLocationManager` before the application requests location.
 
 The generated registry could hold factories rather than instances, deferring

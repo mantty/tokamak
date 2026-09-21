@@ -1,10 +1,10 @@
 import CoreLocation
 import Foundation
 
-final class TokamakGeolocationPlugin: NSObject, TokamakPlugin,
+final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   CLLocationManagerDelegate
 {
-  let id = "geolocation"
+  let id = "location"
 
   private let manager = CLLocationManager()
   private var current: [TokamakPluginReply] = []

@@ -1,4 +1,4 @@
-package com.tokamak.plugins.geolocation
+package com.tokamak.plugins.location
 
 import android.Manifest
 import android.app.Activity
@@ -14,10 +14,10 @@ import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakPluginReply
 
-internal class TokamakGeolocationPlugin(
+internal class TokamakLocationPlugin(
     private val activity: Activity,
 ) : TokamakPlugin {
-    override val id = "geolocation"
+    override val id = "location"
 
     private val manager =
         activity.getSystemService(Context.LOCATION_SERVICE) as LocationManager

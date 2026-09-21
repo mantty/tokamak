@@ -1,5 +1,5 @@
 <div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
-  <h2 class="text-lg font-semibold text-white mb-4">Geolocation</h2>
+  <h2 class="text-lg font-semibold text-white mb-4">Location</h2>
   <div class="flex items-center gap-4 mb-4">
     <button
       id="location-btn"
@@ -24,7 +24,7 @@
 </div>
 
 <script>
-  import { geolocation, type Position } from "@tokamak/geolocation";
+  import { location, type Position } from "@tokamakdev/plugin-location";
 
   const button = document.getElementById("location-btn") as HTMLButtonElement;
   const status = document.getElementById("location-status")!;
@@ -49,8 +49,8 @@
     button.disabled = true;
     status.textContent = "Requesting location...";
     try {
-      show(await geolocation.getCurrentPosition());
-      stopWatching = geolocation.watchPosition(show, showError);
+      show(await location.getCurrentPosition());
+      stopWatching = location.watchPosition(show, showError);
     } catch (error) {
       showError(
         error instanceof DOMException

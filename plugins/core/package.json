@@ -1,8 +1,17 @@
 {
-  "name": "@tokamak/plugin",
+  "name": "@tokamakdev/plugin",
   "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mantty/tokamak.git",
+    "directory": "plugins/core"
+  },
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "files": ["src"],
+  "publishConfig": {
+    "access": "public"
   }
 }
