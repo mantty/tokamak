@@ -1180,14 +1180,19 @@ fn header_parts(line: &[u8]) -> Option<(&[u8], &[u8])> {
 mod tests {
     use std::io::{Read, Write};
     use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
+    #[cfg(unix)]
     use std::process::Command;
+    #[cfg(unix)]
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
+    #[cfg(unix)]
     use std::time::Duration;
 
+    #[cfg(unix)]
+    use super::wait_for_app_connection;
     use super::{
         DevRelay, PreparedDevice, ServerEndpoint, authorized, is_transient_devicectl_error,
-        parse_authority, relay_host, rewrite_request, usable_ipv4_address, wait_for_app_connection,
+        parse_authority, relay_host, rewrite_request, usable_ipv4_address,
     };
     use tokamak_cli::Platform;
 

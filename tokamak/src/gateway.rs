@@ -22,7 +22,7 @@ use crate::transport::{
 
 const MAX_WEBSOCKET_QUEUE: usize = 100;
 /// How long an idle persistent connection waits for its next request.
-const KEEP_ALIVE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const KEEP_ALIVE_IDLE_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Supplies the TLS configuration the gateway accepts connections with.
 pub(super) type ServerTls = Arc<dyn Fn() -> Result<Arc<ServerConfig>, Error> + Send + Sync>;
