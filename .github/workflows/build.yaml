@@ -332,7 +332,7 @@ jobs:
           if npm view "@tokamakdev/plugin@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
             echo "@tokamakdev/plugin@$PACKAGE_VERSION is already published"
           else
-              npm publish "./artifacts/tokamakdev-plugin-$PACKAGE_VERSION.tgz" --access public --tag beta
+            npm publish "./artifacts/tokamakdev-plugin-$PACKAGE_VERSION.tgz" --access public --tag beta
           fi
 
       - name: Publish location plugin
@@ -343,5 +343,5 @@ jobs:
           if npm view "@tokamakdev/plugin-location@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
             echo "@tokamakdev/plugin-location@$PACKAGE_VERSION is already published"
           else
-              npm publish "./artifacts/tokamakdev-plugin-location-$PACKAGE_VERSION.tgz" --access public --tag beta
+            npm publish "./artifacts/tokamakdev-plugin-location-$PACKAGE_VERSION.tgz" --access public --tag beta
           fi
