@@ -172,10 +172,11 @@ pub fn resolve_config_path(
 /// file that names them.
 ///
 /// A file may `include` one other configuration file, absolute or relative to
-/// the including file. The including file's keys overwrite the included
-/// file's keys, so a platform object replaces the included platform object as
-/// a whole and `null` removes an included value. Only the loaded file may
-/// include: an `include` inside the included file is ignored with a warning.
+/// the including file. The including file is deep-merged onto the included
+/// one: each key overwrites the same key in the included file, platform
+/// objects merge key by key, and `null` removes an included value. Only the
+/// loaded file may include: an `include` inside the included file is ignored
+/// with a warning.
 ///
 /// # Errors
 ///
@@ -187,7 +188,7 @@ pub fn load_config(config_path: &Path) -> Result<LoadedConfig> {
     let mut warnings = Vec::new();
     if let Some(include) = object.remove("include").filter(|value| !value.is_null()) {
         let mut merged = load_include(&config_path, include, &mut warnings)?;
-        merged.extend(object);
+        overlay(&mut merged, object);
         object = merged;
     }
     let config = resolve_values(&config_path, deserialize(&config_path, object)?)?;
@@ -198,6 +199,20 @@ pub fn load_config(config_path: &Path) -> Result<LoadedConfig> {
         },
         warnings,
     })
+}
+
+/// Merge `top` onto `base`: objects merge key by key, any other value replaces.
+fn overlay(base: &mut Map<String, Value>, top: Map<String, Value>) {
+    for (key, value) in top {
+        match (base.get_mut(&key), value) {
+            (Some(Value::Object(base_object)), Value::Object(object)) => {
+                overlay(base_object, object);
+            }
+            (_, value) => {
+                base.insert(key, value);
+            }
+        }
+    }
 }
 
 /// The included file's object, validated, with its icon paths made absolute and
@@ -572,21 +587,31 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         fs::write(
             temporary.path().join("base.jsonc"),
-            r#"{ "version": "1.0.0", "ios": { "name": "Included iOS" }, "include": null }"#,
+            r#"{
+              "version": "1.0.0",
+              "ios": { "name": "Included iOS", "identifier": "com.example.ios" },
+              "android": { "name": "Included Android" },
+              "include": null,
+            }"#,
         )?;
         let loaded = load(
             &temporary.path().join("tokamak.jsonc"),
-            r#"{ "include": "base.jsonc", "version": null, "ios": null }"#,
+            r#"{ "include": "base.jsonc", "version": null, "ios": { "name": null }, "android": null }"#,
         )?;
 
         assert!(loaded.warnings.is_empty());
         assert_eq!(loaded.config.version, None);
         assert_eq!(loaded.config.name.ios, None);
+        assert_eq!(
+            loaded.config.identifier.ios.as_deref(),
+            Some("com.example.ios")
+        );
+        assert_eq!(loaded.config.name.android, None);
         Ok(())
     }
 
     #[test]
-    fn overlays_the_including_file_onto_the_included_one() -> TestResult {
+    fn deep_merges_the_including_file_onto_the_included_one() -> TestResult {
         let temporary = tempfile::tempdir()?;
         let shared_dir = temporary.path().join("shared");
         fs::create_dir(&shared_dir)?;
@@ -628,6 +653,7 @@ mod tests {
                 icon: PlatformValues {
                     default: Some(shared_dir.join("icons/AppIcon.icon")),
                     android: Some(shared_dir.join("icons/android")),
+                    ios: Some(shared_dir.join("icons/Pro.icon")),
                     windows: Some(temporary.path().join("windows/AppIcon.ico")),
                     ..PlatformValues::default()
                 },

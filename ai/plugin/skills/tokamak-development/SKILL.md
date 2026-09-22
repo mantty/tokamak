@@ -58,7 +58,7 @@ tok targets
 - JSONC permits comments and trailing commas; plain JSON is also supported.
 - The supported configuration values are `name`, `identifier`, `icon`, and `version`.
 - Top-level values are defaults; platform objects (`android`, `ios`, `macos`, `windows`) override them per platform, for example `{ "name": "My App", "ios": { "name": "My App Pro" } }`. `ios` also applies to `ios-simulator`.
-- A file may `include` one other configuration file (absolute, or relative to the including file); the including file's top-level keys overwrite the included file's, so a platform object replaces the whole included platform object. Only the loaded file may include: a nested `include` is ignored with a warning.
+- A file may `include` one other configuration file (absolute, or relative to the including file); the including file is deep-merged onto the included file (keys overwrite, platform objects merge key by key, `null` removes a value). Only the loaded file may include: a nested `include` is ignored with a warning.
 - Display names preserve their spelling and capitalization. Tokamak derives a lower-case slug for filenames, application IDs, and local hosts. If `name` is absent, the Wrangler Worker name is used.
 - `identifier` values are used as the Apple bundle identifier and Android application ID. `TOKAMAK_IDENTIFIER` and platform-specific `TOKAMAK_ANDROID_IDENTIFIER`, `TOKAMAK_IOS_IDENTIFIER`, `TOKAMAK_MACOS_IDENTIFIER`, or `TOKAMAK_WINDOWS_IDENTIFIER` override configured identifiers; the iOS value also applies to simulators.
 - `version` is optional in configuration but required by `tok build`. `TOKAMAK_VERSION` overrides the configured value. Do not use `TOKAMAK_APP_VERSION`.
