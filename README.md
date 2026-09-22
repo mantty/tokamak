@@ -114,14 +114,12 @@ so pair a default `.icon` package with `android` and `windows` overrides.
 Relative paths are resolved from the directory of the file that names them.
 
 A configuration file may `include` one other configuration file, by absolute
-path or relative to the including file. Merging is per field: `name`,
-`identifier`, `icon`, `version`, and each platform value are taken from the
-including file when set there, otherwise from the included file. A platform
-value in the included file therefore still applies when the including file
-only changes the top-level default; to change one platform, set it in that
-platform's object. Only the file tokamak loads may include: an `include`
-inside the included file is ignored with a warning. This supports layouts such
-as a shared `tokamak.jsonc` with a `tokamak.dev.jsonc` beside it:
+path or relative to the including file. The including file is overlaid onto
+the included one: each of its top-level keys replaces the same key in the
+included file, so a platform object replaces the included platform object as a
+whole, and `null` removes an included value. Only the file tokamak loads may
+include: an `include` inside the included file is ignored with a warning. This supports layouts such as a
+shared `tokamak.jsonc` with a `tokamak.dev.jsonc` beside it:
 
 ```jsonc
 // tokamak.dev.jsonc

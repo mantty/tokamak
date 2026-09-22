@@ -5,9 +5,11 @@ use std::path::{Path, PathBuf};
 
 use jsonc_parser::{ParseOptions, parse_to_serde_value};
 use serde::Deserialize;
+use serde_json::{Map, Value};
 use thiserror::Error;
 
 const CONFIG_FILE_NAMES: [&str; 2] = ["tokamak.jsonc", "tokamak.json"];
+const PLATFORMS: [&str; 4] = ["android", "ios", "macos", "windows"];
 
 /// Failures loading or validating a Tokamak configuration.
 #[derive(Debug, Error)]
@@ -79,17 +81,6 @@ impl<T> PlatformValues<T> {
             _ => &None,
         };
         value.as_ref().or(self.default.as_ref())
-    }
-
-    /// Take each field from `self`, falling back to `base` where `self` has none.
-    fn or(self, base: Self) -> Self {
-        Self {
-            default: self.default.or(base.default),
-            android: self.android.or(base.android),
-            ios: self.ios.or(base.ios),
-            macos: self.macos.or(base.macos),
-            windows: self.windows.or(base.windows),
-        }
     }
 
     /// Convert each value, telling `convert` which field it came from.
@@ -181,10 +172,10 @@ pub fn resolve_config_path(
 /// file that names them.
 ///
 /// A file may `include` one other configuration file, absolute or relative to
-/// the including file. Merging is per field: each top-level and platform value
-/// comes from the including file when set there, otherwise from the included
-/// file. Only the loaded file may include: an `include` inside the included
-/// file is ignored with a warning.
+/// the including file. The including file's keys overwrite the included
+/// file's keys, so a platform object replaces the included platform object as
+/// a whole and `null` removes an included value. Only the loaded file may
+/// include: an `include` inside the included file is ignored with a warning.
 ///
 /// # Errors
 ///
@@ -192,33 +183,34 @@ pub fn resolve_config_path(
 pub fn load_config(config_path: &Path) -> Result<LoadedConfig> {
     let config_path = absolute_path(config_path)?;
     validate_config_extension(&config_path)?;
-    let raw = parse_config(&config_path)?;
+    let mut object = parse_object(&config_path)?;
     let mut warnings = Vec::new();
-    let base = raw
-        .include
-        .as_deref()
-        .map(|include| load_include(&config_path, include, &mut warnings))
-        .transpose()?
-        .unwrap_or_default();
-    let own = resolve_values(&config_path, raw)?;
+    if let Some(include) = object.remove("include").filter(|value| !value.is_null()) {
+        let mut merged = load_include(&config_path, include, &mut warnings)?;
+        merged.extend(object);
+        object = merged;
+    }
+    let config = resolve_values(&config_path, deserialize(&config_path, object)?)?;
     Ok(LoadedConfig {
         config: TokamakConfig {
             path: Some(config_path),
-            name: own.name.or(base.name),
-            identifier: own.identifier.or(base.identifier),
-            icon: own.icon.or(base.icon),
-            version: own.version.or(base.version),
+            ..config
         },
         warnings,
     })
 }
 
+/// The included file's object, validated, with its icon paths made absolute and
+/// its own `include` dropped.
 fn load_include(
     config_path: &Path,
-    include: &str,
+    include: Value,
     warnings: &mut Vec<String>,
-) -> Result<TokamakConfig> {
-    let include = validate_value(config_path, "include", include.to_owned())?;
+) -> Result<Map<String, Value>> {
+    let Value::String(include) = include else {
+        return Err(invalid(config_path, "include must be a path string"));
+    };
+    let include = validate_value(config_path, "include", include)?;
     let include_path = resolve_path(config_dir(config_path), Path::new(&include));
     if include_path == config_path {
         return Err(invalid(
@@ -227,26 +219,57 @@ fn load_include(
         ));
     }
     validate_config_extension(&include_path)?;
-    let raw = parse_config(&include_path).map_err(|error| match error {
+    let mut object = parse_object(&include_path).map_err(|error| match error {
         Error::Io(error) => invalid(
             config_path,
             format!("include {}: {error}", include_path.display()),
         ),
         error => error,
     })?;
-    if raw.include.is_some() {
+    if object
+        .remove("include")
+        .is_some_and(|value| !value.is_null())
+    {
         warnings.push(format!(
             "{}: nested include is ignored; only the loaded file may include another",
             include_path.display()
         ));
     }
-    resolve_values(&include_path, raw)
+    let raw = deserialize(&include_path, object.clone())?;
+    resolve_values(&include_path, raw)?;
+    resolve_icon_paths(&mut object, config_dir(&include_path));
+    Ok(object)
+}
+
+/// Make the icon paths in a validated configuration object absolute against `config_dir`.
+fn resolve_icon_paths(object: &mut Map<String, Value>, config_dir: &Path) {
+    let resolve = |value: &mut Value| {
+        if let Value::String(path) = value {
+            *path = resolve_path(config_dir, Path::new(path.as_str()))
+                .to_string_lossy()
+                .into_owned();
+        }
+    };
+    if let Some(icon) = object.get_mut("icon") {
+        resolve(icon);
+    }
+    for platform in PLATFORMS {
+        if let Some(Value::Object(platform)) = object.get_mut(platform)
+            && let Some(icon) = platform.get_mut("icon")
+        {
+            resolve(icon);
+        }
+    }
+}
+
+fn deserialize(config_path: &Path, object: Map<String, Value>) -> Result<RawTokamakConfig> {
+    serde_json::from_value(Value::Object(object))
+        .map_err(|error| invalid(config_path, error.to_string()))
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawTokamakConfig {
-    include: Option<String>,
     name: Option<String>,
     identifier: Option<String>,
     icon: Option<String>,
@@ -265,11 +288,10 @@ struct RawPlatformConfig {
     icon: Option<String>,
 }
 
-/// Validate one file's values and resolve its icon paths against its directory.
+/// Validate the values and resolve relative icon paths against `config_path`'s directory.
 fn resolve_values(config_path: &Path, raw: RawTokamakConfig) -> Result<TokamakConfig> {
     let config_dir = config_dir(config_path);
     let RawTokamakConfig {
-        include: _,
         name,
         identifier,
         icon,
@@ -363,10 +385,14 @@ fn invalid(config_path: &Path, message: impl Into<String>) -> Error {
     }
 }
 
-fn parse_config(config_path: &Path) -> Result<RawTokamakConfig> {
+fn parse_object(config_path: &Path) -> Result<Map<String, Value>> {
     let content = fs::read_to_string(config_path)?;
-    parse_to_serde_value(&content, &ParseOptions::default())
-        .map_err(|error| invalid(config_path, error.to_string()))
+    let value: Value = parse_to_serde_value(&content, &ParseOptions::default())
+        .map_err(|error| invalid(config_path, error.to_string()))?;
+    match value {
+        Value::Object(object) => Ok(object),
+        _ => Err(invalid(config_path, "configuration must be a JSON object")),
+    }
 }
 
 fn validate_config_extension(config_path: &Path) -> Result<()> {
@@ -537,11 +563,30 @@ mod tests {
         assert!(
             invalid_message(&path, r#"{ "ios": { "version": "1" } }"#)?.contains("unknown field")
         );
+        assert!(invalid_message(&path, r#"{ "ios": "x" }"#)?.contains("expected struct"));
         Ok(())
     }
 
     #[test]
-    fn includes_another_file_and_merges_each_field() -> TestResult {
+    fn null_in_the_including_file_removes_an_included_value() -> TestResult {
+        let temporary = tempfile::tempdir()?;
+        fs::write(
+            temporary.path().join("base.jsonc"),
+            r#"{ "version": "1.0.0", "ios": { "name": "Included iOS" }, "include": null }"#,
+        )?;
+        let loaded = load(
+            &temporary.path().join("tokamak.jsonc"),
+            r#"{ "include": "base.jsonc", "version": null, "ios": null }"#,
+        )?;
+
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(loaded.config.version, None);
+        assert_eq!(loaded.config.name.ios, None);
+        Ok(())
+    }
+
+    #[test]
+    fn overlays_the_including_file_onto_the_included_one() -> TestResult {
         let temporary = tempfile::tempdir()?;
         let shared_dir = temporary.path().join("shared");
         fs::create_dir(&shared_dir)?;
@@ -553,6 +598,7 @@ mod tests {
               "icon": "icons/AppIcon.icon",
               "version": "1.0.0",
               "ios": { "name": "My App for iOS", "icon": "icons/Pro.icon" },
+              "android": { "icon": "icons/android" },
             }"#,
         )?;
         let loaded = load(
@@ -560,6 +606,7 @@ mod tests {
             r#"{
               "include": "shared/tokamak.jsonc",
               "name": "My Test App",
+              "ios": { "name": "My Test App for iOS" },
               "windows": { "icon": "windows/AppIcon.ico" },
             }"#,
         )?;
@@ -571,7 +618,7 @@ mod tests {
                 path: Some(temporary.path().join("tokamak.dev.jsonc")),
                 name: strings(&PlatformValues {
                     default: Some("My Test App"),
-                    ios: Some("My App for iOS"),
+                    ios: Some("My Test App for iOS"),
                     ..PlatformValues::default()
                 }),
                 identifier: strings(&PlatformValues {
@@ -580,7 +627,7 @@ mod tests {
                 }),
                 icon: PlatformValues {
                     default: Some(shared_dir.join("icons/AppIcon.icon")),
-                    ios: Some(shared_dir.join("icons/Pro.icon")),
+                    android: Some(shared_dir.join("icons/android")),
                     windows: Some(temporary.path().join("windows/AppIcon.ico")),
                     ..PlatformValues::default()
                 },
@@ -654,13 +701,26 @@ mod tests {
             invalid_message(&path, r#"{ "include": "" }"#)?
                 .starts_with("include must be a non-empty value")
         );
+        assert!(
+            invalid_message(&path, r#"{ "include": 3 }"#)?
+                .starts_with("include must be a path string")
+        );
+        assert!(invalid_message(&path, "[]")?.starts_with("configuration must be a JSON object"));
 
         fs::write(temporary.path().join("base.jsonc"), r#"{ "name": "!!!" }"#)?;
         fs::write(&path, r#"{ "include": "base.jsonc" }"#)?;
-        let Err(Error::InvalidConfig { path: reported, .. }) = load_config(&path) else {
+        let Err(Error::InvalidConfig {
+            path: reported,
+            message,
+        }) = load_config(&path)
+        else {
             return Err("invalid included file was accepted".into());
         };
         assert_eq!(reported, temporary.path().join("base.jsonc"));
+        assert!(
+            message.starts_with("name must contain an ASCII letter"),
+            "{message}"
+        );
 
         fs::write(&path, r#"{ "include": "base.yaml" }"#)?;
         assert!(matches!(
