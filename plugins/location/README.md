@@ -6,7 +6,7 @@ Add it to your project's `dependencies`; `tok` does not include plugins listed
 only in `devDependencies`:
 
 ```sh
-npm install @tokamakdev/plugin-location@beta
+npm install @tokamakdev/plugin-location
 ```
 
 ```ts

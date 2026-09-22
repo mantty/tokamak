@@ -4,7 +4,7 @@ The tokamak CLI, published from the tokamak workspace. The version is the
 workspace Cargo version, with a `-beta.N` suffix for automated pre-releases.
 
 ```sh
-npm install --save-dev @tokamakdev/tok@beta
+npm install --save-dev @tokamakdev/tok
 npx tok targets
 ```
 

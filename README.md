@@ -11,12 +11,12 @@ Create Android, iOS, macOS, Windows, and native web applications from a single c
 Add the `tok` CLI to your project:
 
 ```sh
-npm install --save-dev @tokamakdev/tok@beta
+npm install --save-dev @tokamakdev/tok
 ```
 
-With pnpm, use `pnpm add -D @tokamakdev/tok@beta`. Run it with `npx tok`
+With pnpm, use `pnpm add -D @tokamakdev/tok`. Run it with `npx tok`
 (`pnpm exec tok`) or from a `package.json` script; the examples in this README
-write `tok`. Pre-releases are published with the `beta` tag.
+write `tok`.
 
 The package installs the `tok` binary for your machine and the platform packs
 it can build. Platform packs contain the tokamak runtime and native shell for
@@ -371,7 +371,7 @@ Native capabilities are provided by npm packages such as
 `@tokamakdev/plugin-location`. Add them to your project's `dependencies`:
 
 ```sh
-npm install @tokamakdev/plugin-location@beta
+npm install @tokamakdev/plugin-location
 ```
 
 `tok build` and `tok dev` include the native code of every plugin listed in
@@ -447,7 +447,7 @@ Platform packs are written to `target/tokamak-platform-packs/<target>`. Run
 
 ### Publish to npm
 
-Merges to `main` publish every npm package with the npm `beta` dist-tag:
+Merges to `main` publish every npm package with the npm `latest` dist-tag:
 
 - the plugins as `<plugin version>-beta.<run>`;
 - `@tokamakdev/tok`, its `@tokamakdev/tok-<host>` binary packages, and the
@@ -455,11 +455,10 @@ Merges to `main` publish every npm package with the npm `beta` dist-tag:
   `<Cargo version>-beta.<run>`. `scripts/package-cli-npm.sh` packages them from
   the release build's CLI and platform-pack archives.
 
-The stable `latest` tag is not changed, except that npm sets it on a package's
-first publish. npm Trusted Publishing must be enabled separately for each
-package for GitHub user `mantty`, repository `tokamak`, and workflow filename
-`build.yaml`. A package must exist before Trusted Publishing can be enabled, so
-its first version is published locally.
+npm Trusted Publishing must be enabled separately for each package for GitHub
+user `mantty`, repository `tokamak`, and workflow filename `build.yaml`. A
+package must exist before Trusted Publishing can be enabled, so its first
+version is published locally.
 
 To package the plugins locally:
 
@@ -484,8 +483,8 @@ run's artifacts are kept for one day. For the platform packs:
 
 ```sh
 gh run download RUN_ID --repo mantty/tokamak --name tokamak-npm-platform-packs --dir artifacts
-for package in artifacts/tokamakdev-platform-*.tgz; do
-  npm publish "$package" --access public --tag beta
+for package in ./artifacts/tokamakdev-platform-*.tgz; do
+  npm publish "$package" --access public --tag latest
 done
 gh run rerun RUN_ID --repo mantty/tokamak --failed
 ```

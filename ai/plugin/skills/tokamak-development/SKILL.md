@@ -35,7 +35,7 @@ Apply the following model whenever working on a tokamak application. tokamak is 
 
 ## Install the tokamak CLI
 
-- Add the CLI to the project as a development dependency: `npm install --save-dev @tokamakdev/tok@beta` (or the project's package manager equivalent). Run it with `npx tok`, `pnpm exec tok`, or a `package.json` script.
+- Add the CLI to the project as a development dependency: `npm install --save-dev @tokamakdev/tok` (or the project's package manager equivalent). Run it with `npx tok`, `pnpm exec tok`, or a `package.json` script.
 - Expect the package to install the platform packs the machine can build as `@tokamakdev/platform-<target>` optional dependencies: every host gets `android-arm64`; macOS adds `ios-arm64` and the host-architecture `ios-simulator-*` and `macos-*` packs; Windows x64 adds `windows-x64`. Windows apps can only be built on Windows, and Apple apps only on macOS.
 - Do not install with `--omit=optional` or `--no-optional`; that omits the `tok` binary and platform packs. If `tok` reports a missing `@tokamakdev/platform-<target>` on a machine that can build it, reinstall with optional dependencies enabled.
 - Use the installer script from the tokamak README only when the project does not use npm; it installs `tok` and every platform pack under `~/.local`.
@@ -153,7 +153,7 @@ builds do not require provisioning.
 ## Use native capabilities through tokamak plugins
 
 - Import supported `@tokamakdev/*` frontend plugins for native capabilities instead of modeling those capabilities as Worker bindings.
-- Install plugins as regular `dependencies`, for example `npm install @tokamakdev/plugin-location@beta`. `tok build` and `tok dev` include native code only for plugins listed in `dependencies`, not `devDependencies`.
+- Install plugins as regular `dependencies`, for example `npm install @tokamakdev/plugin-location`. `tok build` and `tok dev` include native code only for plugins listed in `dependencies`, not `devDependencies`.
 - Call plugins from browser-side code, where the native bridge exists. Do not expect the bridge in the packaged Worker handler.
 - Preserve a plugin's web implementation or feature-detect availability when the same code also targets ordinary browsers.
 - Handle permission denial, unavailable hardware, cancellation, navigation, and page lifecycle as normal outcomes of a native capability request.
