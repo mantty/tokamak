@@ -537,6 +537,7 @@ fn warns_about_a_nested_include() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn preserves_configured_display_name_in_apple_bundle() -> TestResult {
     let (temporary, project, manifest) = create_inputs("ios-simulator-arm64")?;

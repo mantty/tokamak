@@ -290,7 +290,7 @@ jobs:
           npm install --no-audit --no-fund \
             "../artifacts/tokamakdev-tok-$PACKAGE_VERSION.tgz" \
             "../artifacts/tokamakdev-tok-linux-x64-$PACKAGE_VERSION.tgz"
-          ./node_modules/.bin/tok targets | grep -Fx linux-x64
+          ./node_modules/.bin/tok targets | grep -Fx macos-arm64
 
       - name: Upload CLI packages
         uses: actions/upload-artifact@v7.0.1
