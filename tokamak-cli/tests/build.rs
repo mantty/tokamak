@@ -890,9 +890,40 @@ fn requires_a_target_pack_for_app_builds() -> TestResult {
         .arg(&project)
         .arg("--skip-project-build")
         .env("TOKAMAK_VERSION", "1.0.0")
+        // Installed target packs under the real home directory must not satisfy the build.
+        .env("HOME", temporary.path())
+        .env("USERPROFILE", temporary.path())
         .assert()
         .failure()
         .stderr(contains("no target pack found"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn finds_target_packs_installed_in_the_home_directory() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let project = temporary.path().join("project");
+    let home = temporary.path().join("home");
+    let pack = home.join(".local/share/tokamak/target-packs/macos-arm64");
+    fs::create_dir_all(&project)?;
+    fs::create_dir_all(&pack)?;
+    create_project(&project)?;
+    create_target_pack(&pack, "macos-arm64")?;
+
+    let mut command = Command::cargo_bin("tok")?;
+    command
+        .args(["build", "macos", "--project"])
+        .arg(&project)
+        .arg("--skip-project-build")
+        .env("TOKAMAK_VERSION", "1.0.0")
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env_remove("TOKAMAK_TARGET_PACK_DIR")
+        .assert()
+        .success();
+
+    assert!(project.join("build/macos/demo-app.app").is_dir());
     Ok(())
 }
 

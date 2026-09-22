@@ -1,0 +1,26 @@
+{
+  "name": "@tokamakdev/tok-linux-x64",
+  "version": "0.0.0",
+  "description": "The tokamak CLI binary for linux x64",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mantty/tokamak.git",
+    "directory": "tokamak-cli/npm/platforms/linux-x64"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "preferUnplugged": true,
+  "files": [
+    "bin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

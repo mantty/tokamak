@@ -1,0 +1,23 @@
+{
+  "name": "@tokamakdev/tok-win32-x64",
+  "version": "0.0.0",
+  "description": "The tokamak CLI binary for win32 x64",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mantty/tokamak.git",
+    "directory": "tokamak-cli/npm/platforms/win32-x64"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "preferUnplugged": true,
+  "files": [
+    "bin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

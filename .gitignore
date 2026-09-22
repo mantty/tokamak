@@ -11,3 +11,4 @@ __pycache__/
 
 # Wrangler dev artifacts
 .wrangler/
+tokamak-cli/npm/platforms/*/bin/

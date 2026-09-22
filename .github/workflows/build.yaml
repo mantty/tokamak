@@ -241,12 +241,72 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  package-cli-npm:
+    name: Package CLI for npm
+    needs:
+      - build-cli
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.package-version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.3
+
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Check CLI launcher
+        run: node --test tokamak-cli/npm/*.test.js
+
+      - name: Download CLI artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: tokamak-cli-*
+          path: cli-archives
+          merge-multiple: true
+
+      - name: Set beta version
+        id: package-version
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          test -n "$version"
+          echo "version=${version}-beta.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Package CLI
+        run: scripts/package-cli-npm.sh "${{ steps.package-version.outputs.version }}" cli-archives artifacts
+
+      - name: Smoke-test the packed launcher
+        env:
+          PACKAGE_VERSION: ${{ steps.package-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir smoke
+          cd smoke
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund \
+            "../artifacts/tokamakdev-tok-$PACKAGE_VERSION.tgz" \
+            "../artifacts/tokamakdev-tok-linux-x64-$PACKAGE_VERSION.tgz"
+          ./node_modules/.bin/tok targets | grep -Fx linux-x64
+
+      - name: Upload CLI packages
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: tokamak-npm-cli
+          path: artifacts/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
   prerelease:
     name: Publish pre-release
     needs:
       - build-target-packs
       - build-cli
       - build-plugins
+      - package-cli-npm
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -275,6 +335,12 @@ jobs:
           name: tokamak-plugins
           path: artifacts
 
+      - name: Download CLI packages
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: tokamak-npm-cli
+          path: artifacts
+
       - name: Compute release metadata
         id: meta
         run: |
@@ -301,6 +367,7 @@ jobs:
     name: Publish npm beta packages
     needs:
       - build-plugins
+      - package-cli-npm
       - prerelease
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -324,6 +391,12 @@ jobs:
           name: tokamak-plugins
           path: artifacts
 
+      - name: Download CLI packages
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: tokamak-npm-cli
+          path: artifacts
+
       - name: Publish core plugin
         env:
           PACKAGE_VERSION: ${{ needs.build-plugins.outputs.version }}
@@ -345,3 +418,16 @@ jobs:
           else
             npm publish "./artifacts/tokamakdev-plugin-location-$PACKAGE_VERSION.tgz" --access public --tag beta
           fi
+
+      - name: Publish CLI
+        env:
+          PACKAGE_VERSION: ${{ needs.package-cli-npm.outputs.version }}
+        run: |
+          set -euo pipefail
+          for package in tok-darwin-arm64 tok-darwin-x64 tok-linux-x64 tok-win32-x64 tok; do
+            if npm view "@tokamakdev/$package@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+              echo "@tokamakdev/$package@$PACKAGE_VERSION is already published"
+            else
+              npm publish "./artifacts/tokamakdev-$package-$PACKAGE_VERSION.tgz" --access public --tag beta
+            fi
+          done

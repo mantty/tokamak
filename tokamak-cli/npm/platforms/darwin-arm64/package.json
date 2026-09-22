@@ -1,0 +1,23 @@
+{
+  "name": "@tokamakdev/tok-darwin-arm64",
+  "version": "0.0.0",
+  "description": "The tokamak CLI binary for darwin arm64",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mantty/tokamak.git",
+    "directory": "tokamak-cli/npm/platforms/darwin-arm64"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "preferUnplugged": true,
+  "files": [
+    "bin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

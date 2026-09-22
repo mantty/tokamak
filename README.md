@@ -26,6 +26,18 @@ change when `~/.local/bin` is not already available.
 It optionally uses `GH_TOKEN` or `GITHUB_TOKEN` to authenticate the GitHub
 release lookup, and otherwise keeps using the unauthenticated lookup.
 
+The CLI is also published to npm as `@tokamakdev/tok`, with the workspace
+version and a `-beta.N` suffix for pre-releases:
+
+```sh
+npm install -g @tokamakdev/tok@beta
+```
+
+The npm package contains the CLI only. `tok` uses `TOKAMAK_TARGET_PACK_DIR`
+when it is set, otherwise looks for target packs next to its executable and
+then under `~/.local/share/tokamak/target-packs`, where the installer places
+them.
+
 tokamak doesn't add any external dependencies, but you will need the toolchain for any platforms you wish to build for:
 
 | Platform | Requirements |

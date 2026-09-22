@@ -481,12 +481,12 @@ fn resolve_manifest(platform: Platform, explicit_dir: Option<&Path>) -> Result<P
         });
     }
 
-    if let Some(manifest) = bundled_manifest(target) {
+    if let Some(manifest) = bundled_manifest(target).or_else(|| installed_manifest(target)) {
         return Ok(manifest);
     }
 
     bail!(
-        "no target pack found for {target}; pass --target-pack or build one with `cargo run -p xtask -- target-pack --target {target}`"
+        "no target pack found for {target}; run the tokamak installer, pass --target-pack, or build one with `cargo run -p xtask -- target-pack --target {target}`"
     )
 }
 
@@ -497,6 +497,12 @@ fn manifest_from_root(root: &Path, target: Target) -> Result<PathBuf> {
     } else {
         bail!("target-pack manifest not found: {}", manifest.display())
     }
+}
+
+/// The manifest under the installer's per-user data directory.
+fn installed_manifest(target: Target) -> Option<PathBuf> {
+    let root = env::home_dir()?.join(".local/share/tokamak/target-packs");
+    manifest_from_root(&root, target).ok()
 }
 
 fn bundled_manifest(target: Target) -> Option<PathBuf> {

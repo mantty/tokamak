@@ -1,0 +1,30 @@
+{
+  "name": "@tokamakdev/tok",
+  "version": "0.0.0",
+  "description": "The tokamak CLI: build native apps from a Cloudflare Workers codebase",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mantty/tokamak.git",
+    "directory": "tokamak-cli/npm"
+  },
+  "bin": {
+    "tok": "bin/tok.js"
+  },
+  "files": [
+    "bin",
+    "platform.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@tokamakdev/tok-darwin-arm64": "0.0.0",
+    "@tokamakdev/tok-darwin-x64": "0.0.0",
+    "@tokamakdev/tok-linux-x64": "0.0.0",
+    "@tokamakdev/tok-win32-x64": "0.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
