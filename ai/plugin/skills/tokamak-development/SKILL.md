@@ -56,12 +56,13 @@ tok targets
 
 - Look for `tokamak.jsonc` in the current directory, then `tokamak.json`; the file is optional. Use `-c` or `--config` to select another file or directory.
 - JSONC permits comments and trailing commas; plain JSON is also supported.
-- The supported configuration values are `name`, `identifier`, `version`, and `icons`.
-- `name` and `identifier` use a required `default` value plus optional platform values. Platform values fall back to `default`; `ios` also applies to `ios-simulator`.
+- The supported configuration values are `name`, `identifier`, `icon`, and `version`.
+- Top-level values are defaults; platform objects (`android`, `ios`, `macos`, `windows`) override them per platform, for example `{ "name": "My App", "ios": { "name": "My App Pro" } }`. `ios` also applies to `ios-simulator`.
+- A file may `include` one other configuration file (absolute, or relative to the including file); the including file's values win. Only the loaded file may include: a nested `include` is ignored with a warning.
 - Display names preserve their spelling and capitalization. Tokamak derives a lower-case slug for filenames, application IDs, and local hosts. If `name` is absent, the Wrangler Worker name is used.
 - `identifier` values are used as the Apple bundle identifier and Android application ID. `TOKAMAK_IDENTIFIER` and platform-specific `TOKAMAK_ANDROID_IDENTIFIER`, `TOKAMAK_IOS_IDENTIFIER`, `TOKAMAK_MACOS_IDENTIFIER`, or `TOKAMAK_WINDOWS_IDENTIFIER` override configured identifiers; the iOS value also applies to simulators.
 - `version` is optional in configuration but required by `tok build`. `TOKAMAK_VERSION` overrides the configured value. Do not use `TOKAMAK_APP_VERSION`.
-- `icons` accepts user-created platform assets: Android `res` directories, Apple `.icon` packages for `ios`/`macos`, and Windows `.ico` files. Missing icons preserve the existing behavior. Icon paths are relative to the configuration file.
+- `icon` accepts user-created platform assets: Android `res` directories, Apple `.icon` packages for `ios`/`macos`, and Windows `.ico` files. Missing icons preserve the existing behavior. Icon paths are relative to the file that names them.
 - Use repeatable `--set NAME=VALUE` options for target-pack variables. `tokamak` maps `ios-team-id=TEAM` to `TOKAMAK_IOS_TEAM_ID`, for example, and passes target-pack variables through without interpreting platform-specific names.
 
 Examples:

@@ -69,44 +69,67 @@ tokamak looks for `tokamak.jsonc` in the current directory, followed by
 different file or directory; the option defaults to the current directory.
 JSONC comments and trailing commas are supported, and plain JSON is also valid.
 
-The supported values are `name`, `identifier`, `version`, and `icons`:
+The supported values are `name`, `identifier`, `icon`, and `version`. Top-level
+values are defaults; a platform object (`android`, `ios`, `macos`, `windows`)
+overrides them for that platform. `ios` covers iOS devices and simulators.
 
 ```jsonc
 {
-  "name": {
-    "default": "My App",
-    "ios": "Myapp Pro",
-  },
-  "identifier": {
-    "default": "com.example.myapp",
-    "ios": "com.example.myapp.ios",
-  },
+  // Defaults for every platform
+  "name": "My App",
+  "identifier": "com.example.myapp",
+  "icon": "assets/icons/AppIcon.icon",
   "version": "1.0.0",
-  "icons": {
-    "android": "assets/icons/android",
-    "ios": "assets/icons/AppIcon.icon",
-    "macos": "assets/icons/AppIcon.icon",
-    "windows": "assets/icons/windows/AppIcon.ico",
+
+  // Platform overrides
+  "ios": {
+    "name": "Myapp Pro",
+    "identifier": "com.example.myapp.ios",
+  },
+  "android": {
+    "icon": "assets/icons/android",
+  },
+  "windows": {
+    "icon": "assets/icons/windows/AppIcon.ico",
   },
 }
 ```
 
-The `name` value is optional, but `name.default` is required when it is
-present. Platform names are optional and fall back to `default`; `ios` is
-used for both iOS devices and iOS simulators. Names retain their spelling and
-capitalization for display. Tokamak derives a lower-case ASCII slug for bundle
-filenames, application IDs, and `tokamak.local` hosts, so `My App` becomes
-`my-app`. If `name` is absent, the Wrangler Worker name is used. The slug is
+Every value is optional. Names retain their spelling and capitalization for
+display. Tokamak derives a lower-case ASCII slug for bundle filenames,
+application IDs, and `tokamak.local` hosts, so `My App` becomes `my-app`. If a
+platform has no configured name, the Wrangler Worker name is used. The slug is
 also used to derive an identifier when no identifier is configured.
 
-The `identifier` value is optional, but `identifier.default` is required when
-it is present. Platform identifiers are optional and fall back to `default`.
-They are used as the Apple bundle identifier and Android application ID. If
-`identifier` is absent, Tokamak keeps deriving the identifier from the
-application slug. `TOKAMAK_IDENTIFIER` overrides the configured
-value, and `TOKAMAK_ANDROID_IDENTIFIER`, `TOKAMAK_IOS_IDENTIFIER`,
+Identifiers are used as the Apple bundle identifier and Android application ID.
+`TOKAMAK_IDENTIFIER` overrides the configured value, and
+`TOKAMAK_ANDROID_IDENTIFIER`, `TOKAMAK_IOS_IDENTIFIER`,
 `TOKAMAK_MACOS_IDENTIFIER`, or `TOKAMAK_WINDOWS_IDENTIFIER` override it for
 one platform. iOS simulators use the iOS variable.
+
+Icons are platform-specific formats: an Apple Icon Composer `.icon` package
+for iOS and macOS, a `res` directory for Android, and an `.ico` file for
+Windows. A top-level `icon` therefore only suits platforms that share a format,
+so pair a default `.icon` package with `android` and `windows` overrides.
+Relative paths are resolved from the directory of the file that names them.
+
+A configuration file may `include` one other configuration file, by absolute
+path or relative to the including file. Merging is per field: `name`,
+`identifier`, `icon`, `version`, and each platform value are taken from the
+including file when set there, otherwise from the included file. A platform
+value in the included file therefore still applies when the including file
+only changes the top-level default; to change one platform, set it in that
+platform's object. Only the file tokamak loads may include: an `include`
+inside the included file is ignored with a warning. This supports layouts such
+as a shared `tokamak.jsonc` with a `tokamak.dev.jsonc` beside it:
+
+```jsonc
+// tokamak.dev.jsonc
+{
+  "include": "../tokamak.jsonc",
+  "name": "My Test App",
+}
+```
 
 The `version` value is optional in the configuration, but is required for
 `tok build`. Set it in the configuration or with `TOKAMAK_VERSION`; the

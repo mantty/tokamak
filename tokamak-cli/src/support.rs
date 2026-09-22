@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use tokamak::{TokamakConfig, TokamakIcons, WranglerConfig};
+use tokamak::{TokamakConfig, WranglerConfig};
 use tokamak_cli::{ArtifactKind, Platform, Target, TargetPackManifest};
 use walkdir::WalkDir;
 
@@ -136,10 +136,7 @@ pub(crate) fn stage_platform_icons(
     config: &TokamakConfig,
     platform: Platform,
 ) -> Result<()> {
-    let Some(icons) = config.icons.as_ref() else {
-        return Ok(());
-    };
-    let Some(source) = icon_path(icons, platform) else {
+    let Some(source) = config.icon.for_platform(platform.directory_name()) else {
         return Ok(());
     };
 
@@ -216,15 +213,6 @@ pub(crate) fn stage_platform_icons(
         }
     }
     Ok(())
-}
-
-fn icon_path(config: &TokamakIcons, platform: Platform) -> Option<&Path> {
-    match platform {
-        Platform::Android => config.android.as_deref(),
-        Platform::Ios | Platform::IosSimulator => config.ios.as_deref(),
-        Platform::Macos => config.macos.as_deref(),
-        Platform::Windows => config.windows.as_deref(),
-    }
 }
 
 pub(crate) fn run_entrypoint(
@@ -305,7 +293,7 @@ pub(crate) fn copy_dir_contents(from: &Path, to: &Path) -> Result<()> {
 mod tests {
     use std::fs;
 
-    use tokamak::{TokamakConfig, TokamakIcons};
+    use tokamak::{PlatformValues, TokamakConfig};
     use tokamak_cli::Platform;
 
     use super::{package_manager, stage_platform_icons};
@@ -327,11 +315,11 @@ mod tests {
         let windows = temporary.path().join("icon.ico");
         fs::write(&windows, "ico")?;
         let config = TokamakConfig {
-            icons: Some(TokamakIcons {
+            icon: PlatformValues {
                 android: Some(android),
                 windows: Some(windows),
-                ..TokamakIcons::default()
-            }),
+                ..PlatformValues::default()
+            },
             ..TokamakConfig::default()
         };
 
@@ -373,11 +361,11 @@ mod tests {
         fs::create_dir(&source)?;
         fs::write(source.join("icon.json"), "icon")?;
         let config = TokamakConfig {
-            icons: Some(TokamakIcons {
+            icon: PlatformValues {
                 ios: Some(source.clone()),
                 macos: Some(source),
-                ..TokamakIcons::default()
-            }),
+                ..PlatformValues::default()
+            },
             ..TokamakConfig::default()
         };
 
@@ -401,10 +389,10 @@ mod tests {
         let source = temporary.path().join("AppIcon.invalid");
         fs::create_dir(&source)?;
         let config = TokamakConfig {
-            icons: Some(TokamakIcons {
+            icon: PlatformValues {
                 macos: Some(source),
-                ..TokamakIcons::default()
-            }),
+                ..PlatformValues::default()
+            },
             ..TokamakConfig::default()
         };
 

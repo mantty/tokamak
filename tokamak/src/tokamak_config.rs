@@ -42,93 +42,96 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct TokamakConfig {
     /// Absolute path to the configuration file, when one was loaded.
     pub path: Option<PathBuf>,
-    /// Configured display names, when configured.
-    pub name: Option<TokamakName>,
-    /// Application identifiers, when configured.
-    pub identifier: Option<TokamakIdentifier>,
+    /// Display names.
+    pub name: PlatformValues<String>,
+    /// Application identifiers.
+    pub identifier: PlatformValues<String>,
+    /// Application icon paths, absolute.
+    pub icon: PlatformValues<PathBuf>,
     /// Application version, when configured.
     pub version: Option<String>,
-    /// Platform-specific application assets.
-    pub icons: Option<TokamakIcons>,
 }
 
-/// Configured display names for the supported platforms.
+/// A configuration value with an optional default and per-platform overrides.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct TokamakName {
-    /// Display name used when a platform-specific name is not configured.
-    pub default: String,
-    /// Android display name override.
-    pub android: Option<String>,
-    /// iOS display name override, also used by iOS simulators.
-    pub ios: Option<String>,
-    /// macOS display name override.
-    pub macos: Option<String>,
-    /// Windows display name override.
-    pub windows: Option<String>,
+pub struct PlatformValues<T> {
+    /// Value used when the platform has no override.
+    pub default: Option<T>,
+    /// Android override.
+    pub android: Option<T>,
+    /// iOS override, also used by iOS simulators.
+    pub ios: Option<T>,
+    /// macOS override.
+    pub macos: Option<T>,
+    /// Windows override.
+    pub windows: Option<T>,
 }
 
-impl TokamakName {
-    /// Return the configured display name for a platform, falling back to default.
+impl<T> PlatformValues<T> {
+    /// Return the value for a platform, falling back to the default.
     #[must_use]
-    pub fn for_platform(&self, platform: &str) -> &str {
-        let platform_name = match platform {
-            "android" => self.android.as_deref(),
-            "ios" | "ios-simulator" => self.ios.as_deref(),
-            "macos" => self.macos.as_deref(),
-            "windows" => self.windows.as_deref(),
-            _ => None,
+    pub fn for_platform(&self, platform: &str) -> Option<&T> {
+        let value = match platform {
+            "android" => &self.android,
+            "ios" | "ios-simulator" => &self.ios,
+            "macos" => &self.macos,
+            "windows" => &self.windows,
+            _ => &None,
         };
-        platform_name.unwrap_or(&self.default)
+        value.as_ref().or(self.default.as_ref())
     }
 
-    /// Return the lowercase ASCII slug for a platform's display name.
-    #[must_use]
-    pub fn slug_for_platform(&self, platform: &str) -> String {
-        normalize_name(self.for_platform(platform))
+    /// Take each field from `self`, falling back to `base` where `self` has none.
+    fn or(self, base: Self) -> Self {
+        Self {
+            default: self.default.or(base.default),
+            android: self.android.or(base.android),
+            ios: self.ios.or(base.ios),
+            macos: self.macos.or(base.macos),
+            windows: self.windows.or(base.windows),
+        }
     }
-}
 
-/// Platform-specific application identifiers.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct TokamakIdentifier {
-    /// Identifier used when a platform-specific identifier is not configured.
-    pub default: String,
-    /// Android application identifier override.
-    pub android: Option<String>,
-    /// iOS application identifier override, also used by iOS simulators.
-    pub ios: Option<String>,
-    /// macOS application identifier override.
-    pub macos: Option<String>,
-    /// Windows application identifier override.
-    pub windows: Option<String>,
-}
-
-impl TokamakIdentifier {
-    /// Return the configured identifier for a platform, falling back to default.
-    #[must_use]
-    pub fn for_platform(&self, platform: &str) -> &str {
-        let platform_identifier = match platform {
-            "android" => self.android.as_deref(),
-            "ios" | "ios-simulator" => self.ios.as_deref(),
-            "macos" => self.macos.as_deref(),
-            "windows" => self.windows.as_deref(),
-            _ => None,
-        };
-        platform_identifier.unwrap_or(&self.default)
+    /// Convert each value, telling `convert` which field it came from.
+    fn try_map<U>(
+        self,
+        key: &str,
+        mut convert: impl FnMut(&str, T) -> Result<U>,
+    ) -> Result<PlatformValues<U>> {
+        let mut convert =
+            |field: String, value: Option<T>| value.map(|value| convert(&field, value)).transpose();
+        Ok(PlatformValues {
+            default: convert(key.to_owned(), self.default)?,
+            android: convert(format!("android.{key}"), self.android)?,
+            ios: convert(format!("ios.{key}"), self.ios)?,
+            macos: convert(format!("macos.{key}"), self.macos)?,
+            windows: convert(format!("windows.{key}"), self.windows)?,
+        })
     }
 }
 
-/// Platform-specific application asset paths.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct TokamakIcons {
-    /// Android `res` directory contents.
-    pub android: Option<PathBuf>,
-    /// Apple Icon Composer `.icon` package.
-    pub ios: Option<PathBuf>,
-    /// Apple Icon Composer `.icon` package.
-    pub macos: Option<PathBuf>,
-    /// Windows `.ico` file.
-    pub windows: Option<PathBuf>,
+/// A loaded configuration and its warnings.
+#[derive(Debug)]
+pub struct LoadedConfig {
+    /// The resolved configuration.
+    pub config: TokamakConfig,
+    /// Problems that did not prevent loading, each naming the file concerned.
+    pub warnings: Vec<String>,
+}
+
+/// Return the lowercase ASCII slug of a display name, as used for bundle
+/// filenames, application identifiers, and `tokamak.local` hosts.
+#[must_use]
+pub fn slug(name: &str) -> String {
+    let mut slug = String::new();
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_end_matches('-').to_owned()
 }
 
 /// Resolve a Tokamak configuration file or directory.
@@ -173,213 +176,197 @@ pub fn resolve_config_path(
 ///
 /// JSONC parsing is used for both supported extensions, so plain JSON remains
 /// valid while comments and trailing commas are available in `.jsonc` files.
-/// Relative asset paths are resolved against the configuration file directory.
+/// Top-level values are defaults; a platform object overrides them for that
+/// platform. Relative icon paths are resolved against the directory of the
+/// file that names them.
+///
+/// A file may `include` one other configuration file, absolute or relative to
+/// the including file. Merging is per field: each top-level and platform value
+/// comes from the including file when set there, otherwise from the included
+/// file. Only the loaded file may include: an `include` inside the included
+/// file is ignored with a warning.
 ///
 /// # Errors
 ///
-/// Returns an error when the file cannot be read, parsed, or validated.
-pub fn load_config(config_path: &Path) -> Result<TokamakConfig> {
+/// Returns an error when a file cannot be read, parsed, or validated.
+pub fn load_config(config_path: &Path) -> Result<LoadedConfig> {
     let config_path = absolute_path(config_path)?;
     validate_config_extension(&config_path)?;
     let raw = parse_config(&config_path)?;
-    let config_dir = config_path
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let name = raw
-        .name
-        .map(|name| resolve_name(&config_path, name))
-        .transpose()?;
-    let identifier = raw
-        .identifier
-        .map(|identifier| resolve_identifier(&config_path, identifier))
-        .transpose()?;
-    let version = raw
-        .version
-        .map(|version| validate_value(&config_path, "version", version))
-        .transpose()?;
-    let icons = raw
-        .icons
-        .map(|icons| resolve_icons(&config_path, &config_dir, icons))
-        .transpose()?;
-
-    Ok(TokamakConfig {
-        path: Some(config_path),
-        name,
-        identifier,
-        version,
-        icons,
+    let mut warnings = Vec::new();
+    let base = raw
+        .include
+        .as_deref()
+        .map(|include| load_include(&config_path, include, &mut warnings))
+        .transpose()?
+        .unwrap_or_default();
+    let own = resolve_values(&config_path, raw)?;
+    Ok(LoadedConfig {
+        config: TokamakConfig {
+            path: Some(config_path),
+            name: own.name.or(base.name),
+            identifier: own.identifier.or(base.identifier),
+            icon: own.icon.or(base.icon),
+            version: own.version.or(base.version),
+        },
+        warnings,
     })
+}
+
+fn load_include(
+    config_path: &Path,
+    include: &str,
+    warnings: &mut Vec<String>,
+) -> Result<TokamakConfig> {
+    let include = validate_value(config_path, "include", include.to_owned())?;
+    let include_path = resolve_path(config_dir(config_path), Path::new(&include));
+    if include_path == config_path {
+        return Err(invalid(
+            config_path,
+            "include must not name the file itself",
+        ));
+    }
+    validate_config_extension(&include_path)?;
+    let raw = parse_config(&include_path).map_err(|error| match error {
+        Error::Io(error) => invalid(
+            config_path,
+            format!("include {}: {error}", include_path.display()),
+        ),
+        error => error,
+    })?;
+    if raw.include.is_some() {
+        warnings.push(format!(
+            "{}: nested include is ignored; only the loaded file may include another",
+            include_path.display()
+        ));
+    }
+    resolve_values(&include_path, raw)
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawTokamakConfig {
-    name: Option<RawTokamakName>,
-    identifier: Option<RawTokamakIdentifier>,
+    include: Option<String>,
+    name: Option<String>,
+    identifier: Option<String>,
+    icon: Option<String>,
     version: Option<String>,
-    icons: Option<RawTokamakIcons>,
+    android: Option<RawPlatformConfig>,
+    ios: Option<RawPlatformConfig>,
+    macos: Option<RawPlatformConfig>,
+    windows: Option<RawPlatformConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawTokamakName {
-    default: String,
-    android: Option<String>,
-    ios: Option<String>,
-    macos: Option<String>,
-    windows: Option<String>,
+struct RawPlatformConfig {
+    name: Option<String>,
+    identifier: Option<String>,
+    icon: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawTokamakIdentifier {
-    default: String,
-    android: Option<String>,
-    ios: Option<String>,
-    macos: Option<String>,
-    windows: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawTokamakIcons {
-    android: Option<String>,
-    ios: Option<String>,
-    macos: Option<String>,
-    windows: Option<String>,
-}
-
-fn resolve_name(config_path: &Path, name: RawTokamakName) -> Result<TokamakName> {
-    validate_name(config_path, "name.default", &name.default)?;
-    validate_optional_name(config_path, "name.android", name.android.as_deref())?;
-    validate_optional_name(config_path, "name.ios", name.ios.as_deref())?;
-    validate_optional_name(config_path, "name.macos", name.macos.as_deref())?;
-    validate_optional_name(config_path, "name.windows", name.windows.as_deref())?;
-    Ok(TokamakName {
-        default: name.default,
-        android: name.android,
-        ios: name.ios,
-        macos: name.macos,
-        windows: name.windows,
+/// Validate one file's values and resolve its icon paths against its directory.
+fn resolve_values(config_path: &Path, raw: RawTokamakConfig) -> Result<TokamakConfig> {
+    let config_dir = config_dir(config_path);
+    let RawTokamakConfig {
+        include: _,
+        name,
+        identifier,
+        icon,
+        version,
+        android,
+        ios,
+        macos,
+        windows,
+    } = raw;
+    let android = android.unwrap_or_default();
+    let ios = ios.unwrap_or_default();
+    let macos = macos.unwrap_or_default();
+    let windows = windows.unwrap_or_default();
+    let name = PlatformValues {
+        default: name,
+        android: android.name,
+        ios: ios.name,
+        macos: macos.name,
+        windows: windows.name,
+    };
+    let identifier = PlatformValues {
+        default: identifier,
+        android: android.identifier,
+        ios: ios.identifier,
+        macos: macos.identifier,
+        windows: windows.identifier,
+    };
+    let icon = PlatformValues {
+        default: icon,
+        android: android.icon,
+        ios: ios.icon,
+        macos: macos.icon,
+        windows: windows.icon,
+    };
+    Ok(TokamakConfig {
+        path: None,
+        name: name.try_map("name", |field, value| {
+            validate_name(config_path, field, value)
+        })?,
+        identifier: identifier.try_map("identifier", |field, value| {
+            validate_value(config_path, field, value)
+        })?,
+        icon: icon.try_map("icon", |field, value| {
+            validate_value(config_path, field, value)
+                .map(|value| resolve_path(config_dir, Path::new(&value)))
+        })?,
+        version: version
+            .map(|version| validate_value(config_path, "version", version))
+            .transpose()?,
     })
 }
 
-fn resolve_identifier(
-    config_path: &Path,
-    identifier: RawTokamakIdentifier,
-) -> Result<TokamakIdentifier> {
-    Ok(TokamakIdentifier {
-        default: validate_value(config_path, "identifier.default", identifier.default)?,
-        android: validate_optional_value(config_path, "identifier.android", identifier.android)?,
-        ios: validate_optional_value(config_path, "identifier.ios", identifier.ios)?,
-        macos: validate_optional_value(config_path, "identifier.macos", identifier.macos)?,
-        windows: validate_optional_value(config_path, "identifier.windows", identifier.windows)?,
-    })
+fn config_dir(config_path: &Path) -> &Path {
+    config_path.parent().unwrap_or(Path::new("."))
 }
 
-fn validate_optional_name(config_path: &Path, field: &str, value: Option<&str>) -> Result<()> {
-    if let Some(value) = value {
-        validate_name(config_path, field, value)?;
+fn validate_name(config_path: &Path, field: &str, value: String) -> Result<String> {
+    let value = validate_value(config_path, field, value)?;
+    let slug = slug(&value);
+    if slug.is_empty() {
+        return Err(invalid(
+            config_path,
+            format!("{field} must contain an ASCII letter or digit"),
+        ));
     }
-    Ok(())
-}
-
-fn validate_name(config_path: &Path, field: &str, value: &str) -> Result<()> {
-    if value.trim().is_empty() || value != value.trim() || value.chars().any(char::is_control) {
-        return Err(Error::InvalidConfig {
-            path: config_path.to_path_buf(),
-            message: format!(
-                "{field} must be non-empty, without leading or trailing whitespace, and contain no control characters"
-            ),
-        });
-    }
-    let normalized = normalize_name(value);
-    if normalized.is_empty() {
-        return Err(Error::InvalidConfig {
-            path: config_path.to_path_buf(),
-            message: format!("{field} must contain an ASCII letter or digit"),
-        });
-    }
-    if normalized.len() > 63 {
-        return Err(Error::InvalidConfig {
-            path: config_path.to_path_buf(),
-            message: format!("{field} must normalize to at most 63 characters"),
-        });
-    }
-    Ok(())
-}
-
-fn normalize_name(value: &str) -> String {
-    let mut normalized = String::new();
-    for character in value.chars() {
-        if character.is_ascii_alphanumeric() {
-            normalized.push(character.to_ascii_lowercase());
-        } else if !normalized.is_empty() && !normalized.ends_with('-') {
-            normalized.push('-');
-        }
-    }
-    normalized.trim_end_matches('-').to_owned()
-}
-
-fn validate_optional_value(
-    config_path: &Path,
-    field: &str,
-    value: Option<String>,
-) -> Result<Option<String>> {
-    value
-        .map(|value| validate_value(config_path, field, value))
-        .transpose()
-}
-
-fn validate_value(config_path: &Path, field: &str, value: String) -> Result<String> {
-    if value.trim().is_empty() || value != value.trim() || value.chars().any(char::is_control) {
-        return Err(Error::InvalidConfig {
-            path: config_path.to_path_buf(),
-            message: format!(
-                "{field} must be a non-empty value without whitespace or control characters"
-            ),
-        });
+    if slug.len() > 63 {
+        return Err(invalid(
+            config_path,
+            format!("{field} slug must be at most 63 characters"),
+        ));
     }
     Ok(value)
 }
 
-fn resolve_icons(
-    config_path: &Path,
-    config_dir: &Path,
-    icons: RawTokamakIcons,
-) -> Result<TokamakIcons> {
-    Ok(TokamakIcons {
-        android: resolve_path_value(config_path, config_dir, "icons.android", icons.android)?,
-        ios: resolve_path_value(config_path, config_dir, "icons.ios", icons.ios)?,
-        macos: resolve_path_value(config_path, config_dir, "icons.macos", icons.macos)?,
-        windows: resolve_path_value(config_path, config_dir, "icons.windows", icons.windows)?,
-    })
+fn validate_value(config_path: &Path, field: &str, value: String) -> Result<String> {
+    if value.trim().is_empty() || value != value.trim() || value.chars().any(char::is_control) {
+        return Err(invalid(
+            config_path,
+            format!(
+                "{field} must be a non-empty value without surrounding whitespace or control characters"
+            ),
+        ));
+    }
+    Ok(value)
 }
 
-fn resolve_path_value(
-    config_path: &Path,
-    config_dir: &Path,
-    field: &str,
-    value: Option<String>,
-) -> Result<Option<PathBuf>> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    if value.trim().is_empty() {
-        return Err(Error::InvalidConfig {
-            path: config_path.to_path_buf(),
-            message: format!("{field} must not be empty"),
-        });
+fn invalid(config_path: &Path, message: impl Into<String>) -> Error {
+    Error::InvalidConfig {
+        path: config_path.to_path_buf(),
+        message: message.into(),
     }
-    Ok(Some(resolve_path(config_dir, Path::new(&value))))
 }
 
 fn parse_config(config_path: &Path) -> Result<RawTokamakConfig> {
     let content = fs::read_to_string(config_path)?;
-    parse_to_serde_value(&content, &ParseOptions::default()).map_err(|error| Error::InvalidConfig {
-        path: config_path.to_path_buf(),
-        message: error.to_string(),
-    })
+    parse_to_serde_value(&content, &ParseOptions::default())
+        .map_err(|error| invalid(config_path, error.to_string()))
 }
 
 fn validate_config_extension(config_path: &Path) -> Result<()> {
@@ -411,206 +398,304 @@ fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
-    use super::{Error, TokamakIdentifier, TokamakName, load_config, resolve_config_path};
+    use super::{
+        Error, LoadedConfig, PlatformValues, TokamakConfig, load_config, resolve_config_path, slug,
+    };
+
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    fn load(path: &Path, content: &str) -> TestResult<LoadedConfig> {
+        fs::write(path, content)?;
+        Ok(load_config(path)?)
+    }
+
+    fn invalid_message(path: &Path, content: &str) -> TestResult<String> {
+        fs::write(path, content)?;
+        match load_config(path) {
+            Err(Error::InvalidConfig { message, .. }) => Ok(message),
+            other => Err(format!("expected an invalid config, got {other:?}").into()),
+        }
+    }
+
+    fn strings(values: &PlatformValues<&str>) -> PlatformValues<String> {
+        PlatformValues {
+            default: values.default.map(str::to_owned),
+            android: values.android.map(str::to_owned),
+            ios: values.ios.map(str::to_owned),
+            macos: values.macos.map(str::to_owned),
+            windows: values.windows.map(str::to_owned),
+        }
+    }
 
     #[test]
-    fn preserves_names_and_provides_platform_slugs() -> Result<(), Box<dyn std::error::Error>> {
+    fn top_level_values_are_defaults_and_platform_objects_override_them() -> TestResult {
         let temporary = tempfile::tempdir()?;
-        let config_path = temporary.path().join("tokamak.jsonc");
-        fs::write(
-            &config_path,
+        let config = load(
+            &temporary.path().join("tokamak.jsonc"),
             r#"{
-                "name": {
-                    "default": "My App",
-                    "ios": "Myapp Pro",
-                },
+              // Defaults
+              "name": "My App",
+              "identifier": "com.example.myapp",
+              "icon": "assets/AppIcon.icon",
+              "version": "1.0.0",
+              "ios": { "name": "Myapp Pro", "icon": "assets/Pro.icon" },
+              "android": { "identifier": "com.example.myapp.android" },
             }"#,
-        )?;
-
-        let config = load_config(&config_path)?;
-        let name = config.name.ok_or("name was not loaded")?;
+        )?
+        .config;
 
         assert_eq!(
-            name,
-            TokamakName {
-                default: "My App".to_owned(),
-                ios: Some("Myapp Pro".to_owned()),
-                ..TokamakName::default()
+            config,
+            TokamakConfig {
+                path: Some(temporary.path().join("tokamak.jsonc")),
+                name: strings(&PlatformValues {
+                    default: Some("My App"),
+                    ios: Some("Myapp Pro"),
+                    ..PlatformValues::default()
+                }),
+                identifier: strings(&PlatformValues {
+                    default: Some("com.example.myapp"),
+                    android: Some("com.example.myapp.android"),
+                    ..PlatformValues::default()
+                }),
+                icon: PlatformValues {
+                    default: Some(temporary.path().join("assets/AppIcon.icon")),
+                    ios: Some(temporary.path().join("assets/Pro.icon")),
+                    ..PlatformValues::default()
+                },
+                version: Some("1.0.0".to_owned()),
             }
         );
-        assert_eq!(name.for_platform("ios"), "Myapp Pro");
-        assert_eq!(name.for_platform("ios-simulator"), "Myapp Pro");
-        assert_eq!(name.for_platform("macos"), "My App");
-        assert_eq!(name.slug_for_platform("ios"), "myapp-pro");
-        assert_eq!(name.slug_for_platform("macos"), "my-app");
+        assert_eq!(
+            config
+                .name
+                .for_platform("ios-simulator")
+                .map(String::as_str),
+            Some("Myapp Pro")
+        );
+        assert_eq!(
+            config.name.for_platform("macos").map(String::as_str),
+            Some("My App")
+        );
         Ok(())
     }
 
     #[test]
-    fn rejects_a_name_that_normalizes_to_nothing() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_platform_value_without_a_default_leaves_other_platforms_unset() -> TestResult {
         let temporary = tempfile::tempdir()?;
-        let config_path = temporary.path().join("tokamak.json");
-        fs::write(&config_path, r#"{"name":{"default":"!!!"}}"#)?;
+        let config = load(
+            &temporary.path().join("tokamak.json"),
+            r#"{ "ios": { "name": "Only iOS" } }"#,
+        )?
+        .config;
 
-        assert!(matches!(
-            load_config(&config_path),
-            Err(Error::InvalidConfig { .. })
-        ));
+        assert_eq!(
+            config.name.for_platform("ios").map(String::as_str),
+            Some("Only iOS")
+        );
+        assert_eq!(config.name.for_platform("android"), None);
+        assert_eq!(config.identifier, PlatformValues::default());
         Ok(())
     }
 
     #[test]
-    fn rejects_a_name_with_outer_whitespace() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        let config_path = temporary.path().join("tokamak.json");
-        fs::write(&config_path, r#"{"name":{"default":" Vigilus"}}"#)?;
+    fn slugs_names_for_hosts_and_filenames() {
+        assert_eq!(slug("My App"), "my-app");
+        assert_eq!(slug("  Über--App!! "), "ber-app");
+    }
 
-        assert!(matches!(
-            load_config(&config_path),
-            Err(Error::InvalidConfig { .. })
-        ));
+    #[test]
+    fn rejects_invalid_values_and_reports_the_field() -> TestResult {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("tokamak.jsonc");
+        let cases = [
+            (r#"{ "name": "!!!" }"#, "name must contain an ASCII letter"),
+            (
+                r#"{ "ios": { "name": " padded" } }"#,
+                "ios.name must be a non-empty value",
+            ),
+            (r#"{ "version": "" }"#, "version must be a non-empty value"),
+            (
+                r#"{ "windows": { "icon": "  " } }"#,
+                "windows.icon must be a non-empty value",
+            ),
+        ];
+        for (content, expected) in cases {
+            let message = invalid_message(&path, content)?;
+            assert!(message.starts_with(expected), "{content}: {message}");
+        }
         Ok(())
     }
 
     #[test]
-    fn requires_default_when_name_is_configured() -> Result<(), Box<dyn std::error::Error>> {
+    fn rejects_unknown_fields_at_both_levels() -> TestResult {
         let temporary = tempfile::tempdir()?;
-        let config_path = temporary.path().join("tokamak.json");
-        fs::write(&config_path, r#"{"name":{"ios":"My App"}}"#)?;
-
-        assert!(matches!(
-            load_config(&config_path),
-            Err(Error::InvalidConfig { .. })
-        ));
+        let path = temporary.path().join("tokamak.json");
+        assert!(invalid_message(&path, r#"{ "icons": {} }"#)?.contains("unknown field"));
+        assert!(
+            invalid_message(&path, r#"{ "ios": { "version": "1" } }"#)?.contains("unknown field")
+        );
         Ok(())
     }
 
     #[test]
-    fn loads_identifiers_and_version() -> Result<(), Box<dyn std::error::Error>> {
+    fn includes_another_file_and_merges_each_field() -> TestResult {
         let temporary = tempfile::tempdir()?;
-        let config_path = temporary.path().join("tokamak.json");
+        let shared_dir = temporary.path().join("shared");
+        fs::create_dir(&shared_dir)?;
         fs::write(
-            &config_path,
+            shared_dir.join("tokamak.jsonc"),
             r#"{
-                "identifier": {
-                    "default": "com.example.app",
-                    "ios": "com.example.ios",
-                },
-                "version": "1.2.3",
+              "name": "My App",
+              "identifier": "com.example.myapp",
+              "icon": "icons/AppIcon.icon",
+              "version": "1.0.0",
+              "ios": { "name": "My App for iOS", "icon": "icons/Pro.icon" },
+            }"#,
+        )?;
+        let loaded = load(
+            &temporary.path().join("tokamak.dev.jsonc"),
+            r#"{
+              "include": "shared/tokamak.jsonc",
+              "name": "My Test App",
+              "windows": { "icon": "windows/AppIcon.ico" },
             }"#,
         )?;
 
-        let config = load_config(&config_path)?;
-
+        assert!(loaded.warnings.is_empty());
         assert_eq!(
-            config.identifier,
-            Some(TokamakIdentifier {
-                default: "com.example.app".to_owned(),
-                ios: Some("com.example.ios".to_owned()),
-                ..TokamakIdentifier::default()
-            })
-        );
-        assert_eq!(config.version.as_deref(), Some("1.2.3"));
-        assert_eq!(config.icons, None);
-        Ok(())
-    }
-
-    #[test]
-    fn requires_default_when_identifier_is_configured() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        let config_path = temporary.path().join("tokamak.json");
-        fs::write(&config_path, r#"{"identifier":{"ios":"com.example.ios"}}"#)?;
-
-        assert!(matches!(
-            load_config(&config_path),
-            Err(Error::InvalidConfig { .. })
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_an_empty_version() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        let config_path = temporary.path().join("tokamak.json");
-        fs::write(&config_path, r#"{"version":"  "}"#)?;
-
-        assert!(matches!(
-            load_config(&config_path),
-            Err(Error::InvalidConfig { .. })
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn loads_jsonc_and_resolves_paths_from_its_directory() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let temporary = tempfile::tempdir()?;
-        let config_path = temporary.path().join("tokamak.jsonc");
-        fs::write(
-            &config_path,
-            r#"{
-                // Native application assets.
-                "icons": {
-                    "ios": "assets/AppIcon.icon",
+            loaded.config,
+            TokamakConfig {
+                path: Some(temporary.path().join("tokamak.dev.jsonc")),
+                name: strings(&PlatformValues {
+                    default: Some("My Test App"),
+                    ios: Some("My App for iOS"),
+                    ..PlatformValues::default()
+                }),
+                identifier: strings(&PlatformValues {
+                    default: Some("com.example.myapp"),
+                    ..PlatformValues::default()
+                }),
+                icon: PlatformValues {
+                    default: Some(shared_dir.join("icons/AppIcon.icon")),
+                    ios: Some(shared_dir.join("icons/Pro.icon")),
+                    windows: Some(temporary.path().join("windows/AppIcon.ico")),
+                    ..PlatformValues::default()
                 },
-            }"#,
+                version: Some("1.0.0".to_owned()),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn includes_by_absolute_path() -> TestResult {
+        let temporary = tempfile::tempdir()?;
+        let shared = temporary.path().join("base.json");
+        fs::write(&shared, r#"{ "version": "2.0.0" }"#)?;
+        let nested = temporary.path().join("nested");
+        fs::create_dir(&nested)?;
+        let config = load(
+            &nested.join("tokamak.jsonc"),
+            &format!(r#"{{ "include": {:?} }}"#, shared.display().to_string()),
+        )?
+        .config;
+
+        assert_eq!(config.version.as_deref(), Some("2.0.0"));
+        Ok(())
+    }
+
+    #[test]
+    fn ignores_a_nested_include_with_a_warning() -> TestResult {
+        let temporary = tempfile::tempdir()?;
+        fs::write(
+            temporary.path().join("grandparent.jsonc"),
+            r#"{ "version": "9.9.9", "name": "Grandparent" }"#,
+        )?;
+        fs::write(
+            temporary.path().join("parent.jsonc"),
+            r#"{ "include": "grandparent.jsonc", "identifier": "com.example.parent" }"#,
+        )?;
+        let loaded = load(
+            &temporary.path().join("tokamak.jsonc"),
+            r#"{ "include": "parent.jsonc", "name": "Child" }"#,
         )?;
 
-        let config = load_config(&config_path)?;
-
-        assert_eq!(config.path, Some(config_path));
         assert_eq!(
-            config.icons.and_then(|icons| icons.ios),
-            Some(temporary.path().join("assets/AppIcon.icon"))
+            loaded.warnings,
+            vec![format!(
+                "{}: nested include is ignored; only the loaded file may include another",
+                temporary.path().join("parent.jsonc").display()
+            )]
         );
+        assert_eq!(loaded.config.version, None);
+        assert_eq!(
+            loaded.config.identifier.default.as_deref(),
+            Some("com.example.parent")
+        );
+        assert_eq!(loaded.config.name.default.as_deref(), Some("Child"));
         Ok(())
     }
 
     #[test]
-    fn loads_plain_json() -> Result<(), Box<dyn std::error::Error>> {
+    fn reports_a_missing_or_invalid_include() -> TestResult {
         let temporary = tempfile::tempdir()?;
-        let config_path = temporary.path().join("tokamak.json");
-        fs::write(&config_path, r#"{"icons":{"windows":"icon.ico"}}"#)?;
-
-        let config = load_config(&config_path)?;
-
-        assert_eq!(
-            config.icons.and_then(|icons| icons.windows),
-            Some(temporary.path().join("icon.ico"))
+        let path = temporary.path().join("tokamak.jsonc");
+        let message = invalid_message(&path, r#"{ "include": "missing.jsonc" }"#)?;
+        assert!(message.starts_with("include "), "{message}");
+        assert!(message.contains("missing.jsonc"), "{message}");
+        assert!(
+            invalid_message(&path, r#"{ "include": "tokamak.jsonc" }"#)?
+                .contains("must not name the file itself")
         );
+        assert!(
+            invalid_message(&path, r#"{ "include": "" }"#)?
+                .starts_with("include must be a non-empty value")
+        );
+
+        fs::write(temporary.path().join("base.jsonc"), r#"{ "name": "!!!" }"#)?;
+        fs::write(&path, r#"{ "include": "base.jsonc" }"#)?;
+        let Err(Error::InvalidConfig { path: reported, .. }) = load_config(&path) else {
+            return Err("invalid included file was accepted".into());
+        };
+        assert_eq!(reported, temporary.path().join("base.jsonc"));
+
+        fs::write(&path, r#"{ "include": "base.yaml" }"#)?;
+        assert!(matches!(
+            load_config(&path),
+            Err(Error::UnsupportedConfigFormat(reported)) if reported == temporary.path().join("base.yaml")
+        ));
         Ok(())
     }
 
     #[test]
-    fn prefers_jsonc_over_json() -> Result<(), Box<dyn std::error::Error>> {
+    fn prefers_jsonc_over_json() -> TestResult {
         let temporary = tempfile::tempdir()?;
-        fs::write(temporary.path().join("tokamak.json"), "{}")?;
         fs::write(temporary.path().join("tokamak.jsonc"), "{}")?;
+        fs::write(temporary.path().join("tokamak.json"), "{}")?;
 
-        let path = resolve_config_path(temporary.path(), None)?;
-
-        assert_eq!(path, Some(temporary.path().join("tokamak.jsonc")));
+        assert_eq!(
+            resolve_config_path(temporary.path(), None)?,
+            Some(temporary.path().join("tokamak.jsonc"))
+        );
         Ok(())
     }
 
     #[test]
-    fn allows_an_absent_optional_config() -> Result<(), Box<dyn std::error::Error>> {
+    fn allows_an_absent_optional_config() -> TestResult {
         let temporary = tempfile::tempdir()?;
+        fs::write(temporary.path().join("tokamak.yaml"), "")?;
 
         assert_eq!(resolve_config_path(temporary.path(), None)?, None);
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_unknown_fields() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        let config_path = temporary.path().join("tokamak.json");
-        fs::write(&config_path, r#"{"unknown":true}"#)?;
-
         assert!(matches!(
-            load_config(&config_path),
-            Err(Error::InvalidConfig { .. })
+            resolve_config_path(temporary.path(), Some(Path::new("missing"))),
+            Err(Error::ConfigNotFound(_))
+        ));
+        assert!(matches!(
+            resolve_config_path(temporary.path(), Some(Path::new("tokamak.yaml"))),
+            Err(Error::UnsupportedConfigFormat(_))
         ));
         Ok(())
     }

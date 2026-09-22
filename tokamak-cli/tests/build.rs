@@ -495,10 +495,8 @@ fn builds_configured_identifier_and_version() -> TestResult {
     fs::write(
         project.join("tokamak.jsonc"),
         r#"{
-  "identifier": {
-    "default": "com.example.app",
-    "macos": "com.example.desktop"
-  },
+  "identifier": "com.example.app",
+  "macos": { "identifier": "com.example.desktop" },
   "version": "2.3.4"
 }"#,
     )?;
@@ -518,12 +516,31 @@ fn builds_configured_identifier_and_version() -> TestResult {
 
 #[cfg(unix)]
 #[test]
-fn preserves_configured_display_name_in_apple_bundle() -> TestResult {
-    let (temporary, project, manifest) = create_inputs("ios-simulator-arm64")?;
+fn warns_about_a_nested_include() -> TestResult {
+    let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
+    fs::write(project.join("base.jsonc"), r#"{ "version": "9.9.9" }"#)?;
+    fs::write(
+        project.join("parent.jsonc"),
+        r#"{ "include": "base.jsonc", "identifier": "com.example.parent" }"#,
+    )?;
     fs::write(
         project.join("tokamak.jsonc"),
-        r#"{"name":{"default":"Vigilus"}}"#,
+        r#"{ "include": "parent.jsonc", "name": "Demo App" }"#,
     )?;
+
+    let mut command = build_command("macos", &project, &manifest)?;
+    command.arg("--config").arg(project.join("tokamak.jsonc"));
+    command.assert().success().stderr(contains(format!(
+        "warning: {}: nested include is ignored",
+        project.join("parent.jsonc").display()
+    )));
+    Ok(())
+}
+
+#[test]
+fn preserves_configured_display_name_in_apple_bundle() -> TestResult {
+    let (temporary, project, manifest) = create_inputs("ios-simulator-arm64")?;
+    fs::write(project.join("tokamak.jsonc"), r#"{"name":"Vigilus"}"#)?;
 
     let mut command = build_command("ios-simulator", &project, &manifest)?;
     command.arg("--config").arg(project.join("tokamak.jsonc"));
@@ -543,10 +560,7 @@ fn preserves_configured_display_name_in_apple_bundle() -> TestResult {
 #[test]
 fn preserves_configured_display_name_in_macos_bundle() -> TestResult {
     let (temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(
-        project.join("tokamak.jsonc"),
-        r#"{"name":{"default":"Vigilus"}}"#,
-    )?;
+    fs::write(project.join("tokamak.jsonc"), r#"{"name":"Vigilus"}"#)?;
 
     let mut command = build_command("macos", &project, &manifest)?;
     command.arg("--config").arg(project.join("tokamak.jsonc"));
@@ -574,7 +588,7 @@ fn preserves_configured_display_name_in_android_manifest() -> TestResult {
     let target_pack = create_android_target_pack(&pack)?;
     fs::write(
         project.join("tokamak.jsonc"),
-        r#"{"name":{"default":"Vigilus & <Co> \"Pro\" 'X'"}}"#,
+        r#"{"name":"Vigilus & <Co> \"Pro\" 'X'"}"#,
     )?;
 
     let mut command = build_command("android", &project, &target_pack)?;
@@ -624,10 +638,8 @@ fn environment_overrides_configured_identifier_and_version() -> TestResult {
     fs::write(
         project.join("tokamak.jsonc"),
         r#"{
-  "identifier": {
-    "default": "com.example.config",
-    "macos": "com.example.config-macos"
-  },
+  "identifier": "com.example.config",
+  "macos": { "identifier": "com.example.config-macos" },
   "version": "2.3.4"
 }"#,
     )?;
@@ -674,12 +686,7 @@ fn builds_configured_apple_icon_packages() -> TestResult {
         fs::write(icon.join("icon.json"), "{}")?;
         fs::write(
             project.join("tokamak.jsonc"),
-            r#"{
-  "icons": {
-    "ios": "assets/AppIcon.icon",
-    "macos": "assets/AppIcon.icon"
-  }
-}"#,
+            r#"{ "icon": "assets/AppIcon.icon" }"#,
         )?;
 
         let mut command = build_command(platform, &project, &manifest)?;
@@ -821,7 +828,7 @@ fn builds_with_a_configured_display_name() -> TestResult {
     let (_temporary, project, manifest) = create_windows_inputs()?;
     fs::write(
         project.join("tokamak.jsonc"),
-        r#"{"name":{"default":"My App","windows":"My App Pro"}}"#,
+        r#"{"name":"My App","windows":{"name":"My App Pro"}}"#,
     )?;
 
     let mut command = build_command("windows", &project, &manifest)?;
@@ -844,7 +851,7 @@ fn builds_a_configured_windows_icon() -> TestResult {
     fs::write(project.join("AppIcon.ico"), "ico")?;
     fs::write(
         project.join("tokamak.jsonc"),
-        r#"{"icons":{"windows":"AppIcon.ico"}}"#,
+        r#"{"windows":{"icon":"AppIcon.ico"}}"#,
     )?;
 
     let mut command = build_command("windows", &project, &manifest)?;

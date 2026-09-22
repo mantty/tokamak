@@ -79,8 +79,9 @@ pub use quickjs::Error as QuickJsError;
 pub use quickjs::{compile_module, compile_worker};
 pub use runtime_modules::runtime_module_names;
 pub use tokamak_config::{
-    Error as TokamakConfigError, TokamakConfig, TokamakIcons, TokamakIdentifier, TokamakName,
-    load_config as load_tokamak_config, resolve_config_path as resolve_tokamak_config_path,
+    Error as TokamakConfigError, LoadedConfig as LoadedTokamakConfig, PlatformValues,
+    TokamakConfig, load_config as load_tokamak_config,
+    resolve_config_path as resolve_tokamak_config_path, slug,
 };
 pub use wrangler_config::{
     Error as WranglerConfigError, HtmlHandling, NotFoundHandling, WranglerAssets, WranglerBinding,

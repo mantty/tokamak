@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use tokamak::{
     TokamakConfig, WranglerConfig, load_tokamak_config, load_wrangler_config,
-    resolve_tokamak_config_path, resolve_wrangler_config_path,
+    resolve_tokamak_config_path, resolve_wrangler_config_path, slug,
 };
 use tokamak_cli::{MANIFEST_FILE, Platform, Target, TargetPackManifest, load_manifest};
 
@@ -234,14 +234,10 @@ pub(crate) fn resolve_app(
     worker_name: &str,
     platform: Platform,
 ) -> (String, String) {
-    let Some(name) = config.name.as_ref() else {
-        let worker_name = worker_name.to_owned();
-        return (worker_name.clone(), worker_name);
-    };
-    (
-        name.for_platform(platform.directory_name()).to_owned(),
-        name.slug_for_platform(platform.directory_name()),
-    )
+    match config.name.for_platform(platform.directory_name()) {
+        Some(name) => (name.clone(), slug(name)),
+        None => (worker_name.to_owned(), worker_name.to_owned()),
+    }
 }
 
 pub(crate) fn resolve_identifier(
@@ -253,10 +249,8 @@ pub(crate) fn resolve_identifier(
         value
     } else if let Some(value) = environment_value("TOKAMAK_IDENTIFIER")? {
         value
-    } else if let Some(identifier) = config.identifier.as_ref() {
-        identifier
-            .for_platform(platform.directory_name())
-            .to_owned()
+    } else if let Some(identifier) = config.identifier.for_platform(platform.directory_name()) {
+        identifier.clone()
     } else {
         default_identifier(app_slug, platform)
     };
@@ -409,12 +403,15 @@ fn prepare_platform_input(
 pub(crate) fn load_project_config(config_path: &Path) -> Result<TokamakConfig> {
     let current_dir = env::current_dir()?;
     let path = resolve_tokamak_config_path(&current_dir, Some(config_path))?;
-    path.map(|path| {
-        load_tokamak_config(&path)
-            .with_context(|| format!("load Tokamak config {}", path.display()))
-    })
-    .transpose()
-    .map(Option::unwrap_or_default)
+    let Some(path) = path else {
+        return Ok(TokamakConfig::default());
+    };
+    let loaded = load_tokamak_config(&path)
+        .with_context(|| format!("load Tokamak config {}", path.display()))?;
+    for warning in &loaded.warnings {
+        eprintln!("warning: {warning}");
+    }
+    Ok(loaded.config)
 }
 
 fn output_path(project: &Path, platform: Platform, app_slug: &str) -> PathBuf {
@@ -523,17 +520,17 @@ mod tests {
     use std::fs;
 
     use super::{resolve_app, resolve_identifier, resolve_manifest};
-    use tokamak::{TokamakConfig, TokamakIdentifier, TokamakName};
+    use tokamak::{PlatformValues, TokamakConfig};
     use tokamak_cli::{MANIFEST_FILE, Platform};
 
     #[test]
     fn resolves_configured_platform_names_and_worker_fallback() {
         let config = TokamakConfig {
-            name: Some(TokamakName {
-                default: "My App".to_owned(),
+            name: PlatformValues {
+                default: Some("My App".to_owned()),
                 ios: Some("Myapp Pro".to_owned()),
-                ..TokamakName::default()
-            }),
+                ..PlatformValues::default()
+            },
             ..TokamakConfig::default()
         };
 
@@ -555,11 +552,11 @@ mod tests {
     fn resolves_configured_identifiers_and_platform_defaults()
     -> Result<(), Box<dyn std::error::Error>> {
         let config = TokamakConfig {
-            identifier: Some(TokamakIdentifier {
-                default: "com.example.app".to_owned(),
+            identifier: PlatformValues {
+                default: Some("com.example.app".to_owned()),
                 ios: Some("com.example.ios".to_owned()),
-                ..TokamakIdentifier::default()
-            }),
+                ..PlatformValues::default()
+            },
             ..TokamakConfig::default()
         };
 
