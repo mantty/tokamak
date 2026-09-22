@@ -2,6 +2,7 @@
 
 use std::io;
 use std::net::TcpStream;
+use std::sync::Arc;
 use std::time::Instant;
 
 use mio::{Events, Interest, Poll, Token};
@@ -13,11 +14,14 @@ pub(crate) struct Readiness {
     poll: Poll,
     events: Events,
     watched: Option<mio::net::TcpStream>,
+    // On Linux the waker is an eventfd, and closing it discards any wake epoll has
+    // not delivered yet. Sharing it keeps the final wake alive until the waiter sees it.
+    _waker: Arc<mio::Waker>,
 }
 
 /// Interrupts a [`Readiness`] wait from another thread. Dropping it wakes the
 /// wait one last time so the waiter can observe that its producer is gone.
-pub(crate) struct Waker(mio::Waker);
+pub(crate) struct Waker(Arc<mio::Waker>);
 
 impl Waker {
     pub(crate) fn wake(&self) -> io::Result<()> {
@@ -34,11 +38,12 @@ impl Drop for Waker {
 impl Readiness {
     pub(crate) fn new() -> io::Result<(Self, Waker)> {
         let poll = Poll::new()?;
-        let waker = mio::Waker::new(poll.registry(), TOKEN)?;
+        let waker = Arc::new(mio::Waker::new(poll.registry(), TOKEN)?);
         let readiness = Self {
             poll,
             events: Events::with_capacity(8),
             watched: None,
+            _waker: Arc::clone(&waker),
         };
         Ok((readiness, Waker(waker)))
     }
@@ -108,6 +113,11 @@ mod tests {
         Instant::now() + Duration::from_millis(20)
     }
 
+    /// A deadline that only a missing wake-up reaches, so a regression fails instead of hanging.
+    fn eventually() -> Instant {
+        Instant::now() + Duration::from_secs(5)
+    }
+
     #[test]
     fn times_out_when_nothing_happens() -> TestResult {
         let (mut readiness, _waker, _client) = watched_pair()?;
@@ -120,9 +130,9 @@ mod tests {
     fn returns_when_woken_or_when_the_waker_is_dropped() -> TestResult {
         let (mut readiness, waker, _client) = watched_pair()?;
         waker.wake()?;
-        readiness.wait(None)?;
+        readiness.wait(Some(eventually()))?;
         drop(waker);
-        readiness.wait(None)?;
+        readiness.wait(Some(eventually()))?;
         Ok(())
     }
 
@@ -130,7 +140,7 @@ mod tests {
     fn returns_when_data_arrives() -> TestResult {
         let (mut readiness, _waker, mut client) = watched_pair()?;
         client.write_all(b"x")?;
-        readiness.wait(None)?;
+        readiness.wait(Some(eventually()))?;
         Ok(())
     }
 
