@@ -37,7 +37,7 @@ without an implementation throw `NotSupportedError`.
 ## Native build
 
 The tokamak runtime remains prebuilt. `tok build` stages plugin metadata and
-sources, then the target-pack entrypoint compiles only the native shell and
+sources, then the platform-pack entrypoint compiles only the native shell and
 plugin sources:
 
 - macOS, iOS, and iOS Simulator compile Swift sources into the application

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 4 || "$1" != build ]]; then
-  echo "usage: target-pack build TARGET RUST_TARGET OUTPUT" >&2
+  echo "usage: platform-pack build TARGET RUST_TARGET OUTPUT" >&2
   exit 2
 fi
 

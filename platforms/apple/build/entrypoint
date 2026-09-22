@@ -22,7 +22,7 @@ temporary=$(mktemp -d "${TMPDIR:-/tmp}/tokamak-apple.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT
 apple_tool=$PWD/tools/tokamak-apple-signing
 if [[ ! -x "$apple_tool" ]]; then
-  echo "Apple target pack is missing its Apple helper: $apple_tool" >&2
+  echo "Apple platform pack is missing its Apple helper: $apple_tool" >&2
   exit 1
 fi
 
@@ -67,6 +67,54 @@ fi
 icons=$input/icons/$platform
 icon_info_plist=$temporary/icon-info.plist
 
+sign_bundle() {
+  if [[ "$platform" == ios ]]; then
+    signing_args=(
+      sign
+      --project "$project_dir"
+      --bundle "$bundle"
+      --bundle-id "$identifier"
+    )
+    if [[ -f "$metadata/device-id" ]]; then
+      signing_args+=(--device-id "$(cat "$metadata/device-id")")
+    fi
+    "$apple_tool" "${signing_args[@]}"
+  else
+    codesign --force --timestamp=none --sign - "$bundle"
+  fi
+}
+
+bundle_key_file=$output_parent/.tokamak/$(basename "$output").input-key
+if [[ -f "$metadata/input-key" ]]; then
+  plist_path=
+  case "$platform" in
+    ios|ios-simulator) plist_path=${TOKAMAK_IOS_PLIST:-} ;;
+    macos) plist_path=${TOKAMAK_MACOS_PLIST:-} ;;
+  esac
+  if [[ -n "$plist_path" && "$plist_path" != /* ]]; then
+    plist_path=$project_dir/$plist_path
+  fi
+  bundle_key=$(
+    {
+      cat "$metadata/input-key"
+      shasum -a 256 "$0" "$apple_tool"
+      if [[ -n "$plist_path" ]]; then
+        shasum -a 256 "$plist_path"
+      fi
+      env | LC_ALL=C sort | sed -n '/^TOKAMAK_/p' |
+        sed '/^TOKAMAK_IOS_TEAM_ID=/d; /^TOKAMAK_IOS_SIGNING_IDENTITY=/d; /^TOKAMAK_IOS_PROVISIONING_PROFILE=/d'
+      printf '%s\n' "${DEVELOPER_DIR:-}" "$PATH"
+      xcodebuild -version
+    } | shasum -a 256 | cut -d ' ' -f 1
+  )
+  if [[ -d "$bundle" && -f "$bundle_key_file" && $(cat "$bundle_key_file") == "$bundle_key" ]]; then
+    cp "$input/app/worker-environment.json" "$app_dir/worker-environment.json"
+    sign_bundle
+    exit 0
+  fi
+fi
+
+rm -f "$bundle_key_file"
 rm -rf "$bundle"
 mkdir -p "$executable_dir" "$app_dir" "$module_cache"
 cp -R "$input/app/." "$app_dir/"
@@ -164,21 +212,8 @@ if [[ -f "$icon_info_plist" ]]; then
 fi
 "$apple_tool" "${plist_args[@]}"
 
-sign_bundle() {
-  if [[ "$platform" == ios ]]; then
-    signing_args=(
-      sign
-      --project "$project_dir"
-      --bundle "$bundle"
-      --bundle-id "$identifier"
-    )
-    if [[ -f "$metadata/device-id" ]]; then
-      signing_args+=(--device-id "$(cat "$metadata/device-id")")
-    fi
-    "$apple_tool" "${signing_args[@]}"
-  else
-    codesign --force --timestamp=none --sign - "$bundle"
-  fi
-}
-
 sign_bundle
+if [[ -n "${bundle_key:-}" ]]; then
+  mkdir -p "$(dirname "$bundle_key_file")"
+  printf '%s' "$bundle_key" > "$bundle_key_file"
+fi

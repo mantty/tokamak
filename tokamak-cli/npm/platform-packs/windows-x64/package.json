@@ -1,0 +1,23 @@
+{
+  "name": "@tokamakdev/platform-windows-x64",
+  "version": "0.0.0",
+  "description": "The tokamak platform pack for windows-x64",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mantty/tokamak.git",
+    "directory": "tokamak-cli/npm/platform-packs/windows-x64"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "preferUnplugged": true,
+  "files": [
+    "windows-x64"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

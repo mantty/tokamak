@@ -25,8 +25,8 @@ targets=(
 for target in "${targets[@]}"; do
   pack="$temporary/$target"
   mkdir -p "$pack"
-  printf '{"target":"%s"}\n' "$target" > "$pack/target-pack.json"
-  tar -czf "$fixtures/tokamak-target-pack-$target.tar.gz" -C "$pack" .
+  printf '{"target":"%s"}\n' "$target" > "$pack/platform-pack.json"
+  tar -czf "$fixtures/tokamak-platform-pack-$target.tar.gz" -C "$pack" .
 done
 
 cat > "$temporary/fake-bin/curl" <<'EOF'
@@ -86,10 +86,10 @@ run_install() {
   local home="$temporary/home-$cli_host"
   local download_log="$temporary/downloads-$cli_host"
   local output="$temporary/output-$cli_host"
-  mkdir -p "$home/.local/bin" "$home/.local/share/tokamak/target-packs/obsolete"
+  mkdir -p "$home/.local/bin" "$home/.local/share/tokamak/platform-packs/obsolete"
   printf 'old\n' > "$home/.local/bin/tok"
   chmod +x "$home/.local/bin/tok"
-  printf 'old\n' > "$home/.local/share/tokamak/target-packs/obsolete/target-pack.json"
+  printf 'old\n' > "$home/.local/share/tokamak/platform-packs/obsolete/platform-pack.json"
 
   HOME="$home" \
   TOKAMAK_INSTALL_FIXTURES="$fixtures" \
@@ -105,10 +105,10 @@ run_install() {
   test -x "$home/.local/bin/tok"
   grep -F 'echo tokamak' "$home/.local/bin/tok" > /dev/null
   for target in "${targets[@]}"; do
-    test -f "$home/.local/share/tokamak/target-packs/$target/target-pack.json"
-    grep -F "/tokamak-target-pack-$target.tar.gz" "$download_log" > /dev/null
+    test -f "$home/.local/share/tokamak/platform-packs/$target/platform-pack.json"
+    grep -F "/tokamak-platform-pack-$target.tar.gz" "$download_log" > /dev/null
   done
-  test ! -e "$home/.local/share/tokamak/target-packs/obsolete"
+  test ! -e "$home/.local/share/tokamak/platform-packs/obsolete"
   grep -F "/tokamak-cli-$cli_host.tar.gz" "$download_log" > /dev/null
   grep -F 'Installed tokamak pre.2' "$output" > /dev/null
   grep -F "Add $home/.local/bin to PATH" "$output" > /dev/null

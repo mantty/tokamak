@@ -12,7 +12,7 @@ env:
   NODE_VERSION: "22"
 
 jobs:
-  build-target-packs:
+  build-platform-packs:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
@@ -91,25 +91,25 @@ jobs:
           cache: pnpm
           cache-dependency-path: tools/esbuild-hosts/pnpm-lock.yaml
 
-      - name: Install target-pack tool dependencies
+      - name: Install platform-pack tool dependencies
         working-directory: tools/esbuild-hosts
         run: pnpm install --frozen-lockfile
 
-      - name: Build target pack
-        run: cargo run -p xtask -- target-pack --target "${{ matrix.target }}"
+      - name: Build platform pack
+        run: cargo run -p xtask -- platform-pack --target "${{ matrix.target }}"
 
       - name: Verify packaged Worker mTLS
         if: matrix.target == 'macos-arm64'
         run: cargo test -p tokamak --features native --test packaged_worker
 
-      - name: Archive target pack
-        run: tar -czf "tokamak-target-pack-${{ matrix.target }}.tar.gz" -C "target/tokamak-target-packs/${{ matrix.target }}" .
+      - name: Archive platform pack
+        run: tar -czf "tokamak-platform-pack-${{ matrix.target }}.tar.gz" -C "target/tokamak-platform-packs/${{ matrix.target }}" .
 
-      - name: Upload target pack artifact
+      - name: Upload platform pack artifact
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: tokamak-target-pack-${{ matrix.target }}
-          path: tokamak-target-pack-${{ matrix.target }}.tar.gz
+          name: tokamak-platform-pack-${{ matrix.target }}
+          path: tokamak-platform-pack-${{ matrix.target }}.tar.gz
           if-no-files-found: error
           retention-days: 1
 
@@ -245,6 +245,7 @@ jobs:
     name: Package CLI for npm
     needs:
       - build-cli
+      - build-platform-packs
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -265,7 +266,14 @@ jobs:
         uses: actions/download-artifact@v8.0.1
         with:
           pattern: tokamak-cli-*
-          path: cli-archives
+          path: archives
+          merge-multiple: true
+
+      - name: Download platform pack artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: tokamak-platform-pack-*
+          path: archives
           merge-multiple: true
 
       - name: Set beta version
@@ -277,7 +285,7 @@ jobs:
           echo "version=${version}-beta.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
 
       - name: Package CLI
-        run: scripts/package-cli-npm.sh "${{ steps.package-version.outputs.version }}" cli-archives artifacts
+        run: scripts/package-cli-npm.sh "${{ steps.package-version.outputs.version }}" archives artifacts
 
       - name: Smoke-test the packed launcher
         env:
@@ -289,21 +297,31 @@ jobs:
           npm init -y >/dev/null
           npm install --no-audit --no-fund \
             "../artifacts/tokamakdev-tok-$PACKAGE_VERSION.tgz" \
-            "../artifacts/tokamakdev-tok-linux-x64-$PACKAGE_VERSION.tgz"
+            "../artifacts/tokamakdev-tok-linux-x64-$PACKAGE_VERSION.tgz" \
+            "../artifacts/tokamakdev-platform-android-arm64-$PACKAGE_VERSION.tgz"
           ./node_modules/.bin/tok targets | grep -Fx macos-arm64
+          test -f node_modules/@tokamakdev/platform-android-arm64/android-arm64/platform-pack.json
 
       - name: Upload CLI packages
         uses: actions/upload-artifact@v7.0.1
         with:
           name: tokamak-npm-cli
-          path: artifacts/*.tgz
+          path: artifacts/tokamakdev-tok*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload platform pack packages
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: tokamak-npm-platform-packs
+          path: artifacts/tokamakdev-platform-*.tgz
           if-no-files-found: error
           retention-days: 1
 
   prerelease:
     name: Publish pre-release
     needs:
-      - build-target-packs
+      - build-platform-packs
       - build-cli
       - build-plugins
       - package-cli-npm
@@ -315,10 +333,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6.0.3
 
-      - name: Download target pack artifacts
+      - name: Download platform pack artifacts
         uses: actions/download-artifact@v8.0.1
         with:
-          pattern: tokamak-target-pack-*
+          pattern: tokamak-platform-pack-*
           path: artifacts
           merge-multiple: true
 
@@ -397,6 +415,12 @@ jobs:
           name: tokamak-npm-cli
           path: artifacts
 
+      - name: Download platform pack packages
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: tokamak-npm-platform-packs
+          path: artifacts
+
       - name: Publish core plugin
         env:
           PACKAGE_VERSION: ${{ needs.build-plugins.outputs.version }}
@@ -424,7 +448,9 @@ jobs:
           PACKAGE_VERSION: ${{ needs.package-cli-npm.outputs.version }}
         run: |
           set -euo pipefail
-          for package in tok-darwin-arm64 tok-darwin-x64 tok-linux-x64 tok-win32-x64 tok; do
+          # Optional dependencies publish before the tok package that depends on them.
+          read -ra packages <<< "$(node -p "Object.keys(require('./tokamak-cli/npm/package.json').optionalDependencies).map((name) => name.replace('@tokamakdev/', '')).join(' ')")"
+          for package in "${packages[@]}" tok; do
             if npm view "@tokamakdev/$package@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
               echo "@tokamakdev/$package@$PACKAGE_VERSION is already published"
             else

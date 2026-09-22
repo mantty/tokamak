@@ -3,9 +3,10 @@
 
 //! Shared tokamak CLI library types.
 
-mod target_pack;
+mod platform_pack;
 
-pub use target_pack::{
+pub use platform_pack::{
     Artifact, ArtifactKind, ESBUILD_DIRECTORY, ESBUILD_EXECUTABLE, MANIFEST_FILE, Platform,
-    RUNTIME_DIRECTORY, Target, TargetPackError, TargetPackManifest, load_manifest, write_manifest,
+    PlatformPackError, PlatformPackManifest, RUNTIME_DIRECTORY, Target, load_manifest,
+    write_manifest,
 };

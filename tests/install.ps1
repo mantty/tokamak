@@ -34,8 +34,8 @@ try {
   foreach ($target in $targets) {
     $pack = Join-Path $temporary $target
     New-Item -ItemType Directory -Force -Path $pack | Out-Null
-    Set-Content -LiteralPath (Join-Path $pack "target-pack.json") -Value "{`"target`":`"$target`"}"
-    & tar -czf (Join-Path $fixtures "tokamak-target-pack-$target.tar.gz") -C $pack .
+    Set-Content -LiteralPath (Join-Path $pack "platform-pack.json") -Value "{`"target`":`"$target`"}"
+    & tar -czf (Join-Path $fixtures "tokamak-platform-pack-$target.tar.gz") -C $pack .
     if ($LASTEXITCODE -ne 0) {
       throw "failed to create $target fixture"
     }
@@ -63,10 +63,10 @@ try {
   Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
   $env:GITHUB_TOKEN = "ci-token"
   $binDirectory = Join-Path $installRoot "bin"
-  $obsolete = Join-Path $installRoot "share/tokamak/target-packs/obsolete"
+  $obsolete = Join-Path $installRoot "share/tokamak/platform-packs/obsolete"
   New-Item -ItemType Directory -Force -Path $binDirectory, $obsolete | Out-Null
   Set-Content -LiteralPath (Join-Path $binDirectory "tok.exe") -Value "old"
-  Set-Content -LiteralPath (Join-Path $obsolete "target-pack.json") -Value "old"
+  Set-Content -LiteralPath (Join-Path $obsolete "platform-pack.json") -Value "old"
 
   $output = & (Join-Path $repositoryRoot "scripts/install.ps1") -InstallRoot $installRoot | Out-String
 
@@ -74,10 +74,10 @@ try {
   Assert-True (Test-Path -LiteralPath $installedCli -PathType Leaf) "CLI was not installed"
   Assert-True ((Get-Content -LiteralPath $installedCli -Raw).Contains("tokamak")) "CLI was not replaced"
   foreach ($target in $targets) {
-    Assert-True (Test-Path -LiteralPath (Join-Path $installRoot "share/tokamak/target-packs/$target/target-pack.json") -PathType Leaf) "$target was not installed"
-    Assert-True ((@($global:TokamakInstallerDownloads -match "/tokamak-target-pack-$target.tar.gz$")).Count -gt 0) "$target was not downloaded"
+    Assert-True (Test-Path -LiteralPath (Join-Path $installRoot "share/tokamak/platform-packs/$target/platform-pack.json") -PathType Leaf) "$target was not installed"
+    Assert-True ((@($global:TokamakInstallerDownloads -match "/tokamak-platform-pack-$target.tar.gz$")).Count -gt 0) "$target was not downloaded"
   }
-  Assert-True (-not (Test-Path -LiteralPath $obsolete)) "obsolete target pack was retained"
+  Assert-True (-not (Test-Path -LiteralPath $obsolete)) "obsolete platform pack was retained"
   Assert-True ((@($global:TokamakInstallerDownloads -match "/tokamak-cli-windows-x64.zip$")).Count -gt 0) "Windows CLI was not downloaded"
   Assert-True ($output.Contains("Installed tokamak pre.2")) "release tag was not reported"
   Assert-True ($output.Contains("Add $(Join-Path $installRoot 'bin') to PATH")) "PATH instruction was not reported"

@@ -1,11 +1,16 @@
 "use strict";
 
+const path = require("node:path");
+const { optionalDependencies } = require("./package.json");
+
 const PACKAGES = {
   "darwin-arm64": "@tokamakdev/tok-darwin-arm64",
   "darwin-x64": "@tokamakdev/tok-darwin-x64",
   "linux-x64": "@tokamakdev/tok-linux-x64",
   "win32-x64": "@tokamakdev/tok-win32-x64",
 };
+
+const PLATFORM_PACKS = Object.keys(optionalDependencies).filter((name) => name.startsWith("@tokamakdev/platform-"));
 
 function packageFor(platform, arch) {
   const name = PACKAGES[`${platform}-${arch}`];
@@ -23,4 +28,15 @@ function binaryPath(platform, arch, resolve) {
   }
 }
 
-module.exports = { packageFor, binaryPath };
+// npm installs only the platform packs whose os and cpu match this host.
+function platformPackRoots(resolve) {
+  return PLATFORM_PACKS.flatMap((name) => {
+    try {
+      return [path.dirname(resolve(`${name}/package.json`))];
+    } catch {
+      return [];
+    }
+  });
+}
+
+module.exports = { PLATFORM_PACKS, packageFor, binaryPath, platformPackRoots };

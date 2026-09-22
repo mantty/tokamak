@@ -105,8 +105,8 @@ jobs:
         run: |
           cargo test -p tokamak --features native
           cargo test --workspace --exclude tokamak-cli --exclude windows-shell
-          cargo test -p tokamak-cli --lib --bin tok --test cli --test target_pack
-          cargo test -p tokamak-cli --test build requires_a_target_pack_for_app_builds
+          cargo test -p tokamak-cli --lib --bin tok --test cli --test platform_pack
+          cargo test -p tokamak-cli --test build requires_a_platform_pack_for_app_builds
 
   apple:
     name: Test Apple
@@ -152,7 +152,7 @@ jobs:
         run: >-
           cargo test -p tokamak-cli --test build --
           --skip builds_windows_app_with_its_runtime_files
-          --skip requires_a_target_pack_for_app_builds
+          --skip requires_a_platform_pack_for_app_builds
 
   windows:
     name: Test Windows

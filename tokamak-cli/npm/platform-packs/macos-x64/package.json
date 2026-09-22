@@ -1,0 +1,23 @@
+{
+  "name": "@tokamakdev/platform-macos-x64",
+  "version": "0.0.0",
+  "description": "The tokamak platform pack for macos-x64",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mantty/tokamak.git",
+    "directory": "tokamak-cli/npm/platform-packs/macos-x64"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "preferUnplugged": true,
+  "files": [
+    "macos-x64"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@tokamakdev/platform-ios-simulator-x64",
+  "version": "0.0.0",
+  "description": "The tokamak platform pack for ios-simulator-x64",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mantty/tokamak.git",
+    "directory": "tokamak-cli/npm/platform-packs/ios-simulator-x64"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "preferUnplugged": true,
+  "files": [
+    "ios-simulator-x64"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

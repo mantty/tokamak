@@ -8,7 +8,9 @@ use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tokamak::compile_module;
 use tokamak::{PackageLayout, decompress_worker_module, read_worker_manifest};
-use tokamak_cli::{ESBUILD_EXECUTABLE, MANIFEST_FILE, Target, TargetPackManifest, write_manifest};
+use tokamak_cli::{
+    ESBUILD_EXECUTABLE, MANIFEST_FILE, PlatformPackManifest, Target, write_manifest,
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -83,6 +85,8 @@ fn create_unbuilt_project(root: &Path) -> TestResult {
     fs::write(
         root.join("build.cjs"),
         r#"const fs = require("node:fs");
+const count = "project-build-count";
+fs.writeFileSync(count, String(Number(fs.existsSync(count) ? fs.readFileSync(count, "utf8") : 0) + 1));
 fs.mkdirSync("dist/server", { recursive: true });
 fs.mkdirSync("dist/client", { recursive: true });
 fs.writeFileSync("dist/server/entry.mjs", "export default {};");
@@ -90,9 +94,52 @@ fs.writeFileSync("dist/client/index.html", "<html></html>");
 fs.writeFileSync("dist/server/wrangler.json", JSON.stringify({
   name: "built-app",
   main: "entry.mjs",
+  userConfigPath: "../../wrangler.jsonc",
   assets: { directory: "../client", binding: "ASSETS" }
 }));
 "#,
+    )?;
+    fs::write(
+        root.join("wrangler.jsonc"),
+        r#"{
+  "name": "built-app",
+  "vars": { "API": "default" },
+  "env": { "production": { "vars": { "API": "production" } } }
+}"#,
+    )?;
+    Ok(())
+}
+
+fn create_cacheable_project(project: &Path) -> TestResult {
+    fs::remove_dir_all(project.join("dist"))?;
+    fs::write(
+        project.join("package.json"),
+        r#"{"name":"demo-app","scripts":{"build":"node build.cjs"}}"#,
+    )?;
+    fs::write(
+        project.join("build.cjs"),
+        r"const fs = require('node:fs');
+fs.mkdirSync('build', { recursive: true });
+const count = 'build/project-build-count';
+fs.writeFileSync(count, String(Number(fs.existsSync(count) ? fs.readFileSync(count, 'utf8') : 0) + 1));
+fs.mkdirSync('dist/server', { recursive: true });
+fs.mkdirSync('dist/client', { recursive: true });
+fs.copyFileSync('source.mjs', 'dist/server/entry.mjs');
+fs.writeFileSync('dist/client/index.html', '<html></html>');
+",
+    )?;
+    fs::write(project.join("source.mjs"), "export default { value: 1 };")?;
+    fs::write(
+        project.join("wrangler.jsonc"),
+        r#"{
+  "name": "demo-app",
+  "main": "dist/server/entry.mjs",
+  "assets": { "directory": "dist/client" },
+  "env": {
+    "test": { "vars": { "API": "test", "OPTIONS": { "enabled": true } } },
+    "production": { "vars": { "API": "production" } }
+  }
+}"#,
     )?;
     Ok(())
 }
@@ -102,7 +149,7 @@ fn write_test_esbuild(root: &Path) -> TestResult {
     fs::create_dir_all(path.parent().ok_or("esbuild path has no parent")?)?;
     fs::write(
         &path,
-        "#!/usr/bin/env node\nconst fs = require('node:fs');\nconst path = require('node:path');\nconst args = process.argv.slice(2);\nconst output = args.find((arg) => arg.startsWith('--outdir=')).slice('--outdir='.length);\nconst metafile = args.find((arg) => arg.startsWith('--metafile='));\nconst input = args.at(-1);\nfs.mkdirSync(output, { recursive: true });\nfs.copyFileSync(input, path.join(output, 'entry.js'));\nif (metafile) fs.writeFileSync(metafile.slice('--metafile='.length), JSON.stringify({ inputs: { [input]: {} } }));\n",
+        "#!/usr/bin/env node\nconst fs = require('node:fs');\nconst path = require('node:path');\nconst args = process.argv.slice(2);\nconst output = args.find((arg) => arg.startsWith('--outdir=')).slice('--outdir='.length);\nconst metafile = args.find((arg) => arg.startsWith('--metafile='));\nconst input = args.at(-1);\nif (process.env.TOKAMAK_TEST_ESBUILD_LOG) fs.appendFileSync(process.env.TOKAMAK_TEST_ESBUILD_LOG, 'build\\n');\nfs.mkdirSync(output, { recursive: true });\nfs.copyFileSync(input, path.join(output, 'entry.js'));\nif (metafile) fs.writeFileSync(metafile.slice('--metafile='.length), JSON.stringify({ inputs: { [input]: {} } }));\n",
     )?;
     #[cfg(unix)]
     {
@@ -114,7 +161,7 @@ fn write_test_esbuild(root: &Path) -> TestResult {
     Ok(())
 }
 
-fn create_target_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
+fn create_platform_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
     let target_name = target;
     let target = target_name.parse::<Target>()?;
     let framework = root.join(target.runtime_artifact_path());
@@ -152,7 +199,7 @@ fn create_target_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
 }
 
 #[cfg(unix)]
-fn create_android_target_pack(root: &Path) -> TestResult<PathBuf> {
+fn create_android_platform_pack(root: &Path) -> TestResult<PathBuf> {
     let target = Target::AndroidArm64;
     fs::create_dir_all(root.join("bin"))?;
     fs::write(root.join(target.runtime_artifact_path()), "runtime")?;
@@ -172,7 +219,7 @@ fn create_android_target_pack(root: &Path) -> TestResult<PathBuf> {
 fn write_test_manifest(root: &Path, target: Target) -> TestResult {
     write_manifest(
         root.join(MANIFEST_FILE),
-        &TargetPackManifest {
+        &PlatformPackManifest {
             tokamak_version: env!("CARGO_PKG_VERSION").to_owned(),
             target,
             artifacts: target.artifacts(),
@@ -260,8 +307,8 @@ fn create_inputs(target: &str) -> TestResult<(tempfile::TempDir, PathBuf, PathBu
     fs::create_dir_all(&project)?;
     fs::create_dir_all(&pack)?;
     create_project(&project)?;
-    let target_pack = create_target_pack(&pack, target)?;
-    Ok((temporary, project, target_pack))
+    let platform_pack = create_platform_pack(&pack, target)?;
+    Ok((temporary, project, platform_pack))
 }
 
 fn create_windows_inputs() -> TestResult<(tempfile::TempDir, PathBuf, PathBuf)> {
@@ -313,13 +360,13 @@ printf '{"name":"%s","slug":"%s","host":"%s"}\n' "$app_name" "$app_slug" "$host"
     Ok((temporary, project, pack))
 }
 
-fn build_command(platform: &str, project: &Path, target_pack: &Path) -> TestResult<Command> {
+fn build_command(platform: &str, project: &Path, platform_pack: &Path) -> TestResult<Command> {
     let mut command = Command::cargo_bin("tok")?;
     command
         .args(["build", platform, "--project"])
         .arg(project)
-        .arg("--target-pack")
-        .arg(target_pack)
+        .arg("--platform-pack")
+        .arg(platform_pack)
         .arg("--skip-project-build")
         .env("TOKAMAK_VERSION", "1.0.0")
         .env_remove("TOKAMAK_IOS_BUILD_NUMBER")
@@ -365,7 +412,7 @@ for arg in "$@"; do
 done
 mkdir -p "$project/app/build/outputs/apk/debug"
 if [ -n "${TOKAMAK_ANDROID_TEST:-}" ]; then
-  printf '%s' "$TOKAMAK_ANDROID_TEST" > "$project/target-pack-set-value"
+  printf '%s' "$TOKAMAK_ANDROID_TEST" > "$project/platform-pack-set-value"
 fi
 cp "$project/app/src/main/AndroidManifest.xml" "$project/app/build/outputs/apk/debug/AndroidManifest.xml"
 touch "$project/app/build/outputs/apk/debug/app-debug.apk"
@@ -435,7 +482,17 @@ case "$mode" in
 esac
 "#,
     )?;
-    write_executable(&bin.join("codesign"), "#!/bin/sh\nexit 0\n")?;
+    write_executable(
+        &bin.join("codesign"),
+        r#"#!/bin/sh
+for bundle in "$@"; do :; done
+manifest="$bundle/app/worker-environment.json"
+if [ -f "$bundle/Contents/Resources/app/worker-environment.json" ]; then
+  manifest="$bundle/Contents/Resources/app/worker-environment.json"
+fi
+printf 'codesign-env %s\n' "$(cat "$manifest")" >> "$TOKAMAK_TEST_TOOL_LOG"
+"#,
+    )?;
     Ok(())
 }
 
@@ -586,13 +643,13 @@ fn preserves_configured_display_name_in_android_manifest() -> TestResult {
     fs::create_dir_all(&project)?;
     fs::create_dir_all(&pack)?;
     create_project(&project)?;
-    let target_pack = create_android_target_pack(&pack)?;
+    let platform_pack = create_android_platform_pack(&pack)?;
     fs::write(
         project.join("tokamak.jsonc"),
         r#"{"name":"Vigilus & <Co> \"Pro\" 'X'"}"#,
     )?;
 
-    let mut command = build_command("android", &project, &target_pack)?;
+    let mut command = build_command("android", &project, &platform_pack)?;
     command.arg("--config").arg(project.join("tokamak.jsonc"));
     configure_fake_gradle(&mut command, temporary.path())?;
     command.assert().success();
@@ -611,22 +668,22 @@ fn preserves_configured_display_name_in_android_manifest() -> TestResult {
 
 #[cfg(unix)]
 #[test]
-fn passes_target_pack_variables_to_the_android_entrypoint() -> TestResult {
+fn passes_platform_pack_variables_to_the_android_entrypoint() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let project = temporary.path().join("project");
     let pack = temporary.path().join("pack");
     fs::create_dir_all(&project)?;
     fs::create_dir_all(&pack)?;
     create_project(&project)?;
-    let target_pack = create_android_target_pack(&pack)?;
+    let platform_pack = create_android_platform_pack(&pack)?;
 
-    let mut command = build_command("android", &project, &target_pack)?;
+    let mut command = build_command("android", &project, &platform_pack)?;
     command.args(["--set", "android-test=passed"]);
     configure_fake_gradle(&mut command, temporary.path())?;
     command.assert().success();
 
     assert_eq!(
-        fs::read_to_string(project.join("build/android/.tokamak/target-pack-set-value"))?,
+        fs::read_to_string(project.join("build/android/.tokamak/platform-pack-set-value"))?,
         "passed"
     );
     Ok(())
@@ -766,6 +823,260 @@ fn packages_worker_vars_as_a_normalized_manifest() -> TestResult {
 }
 
 #[test]
+fn reuses_unchanged_build_layers_across_wrangler_environments() -> TestResult {
+    let (temporary, project, pack) = create_windows_inputs()?;
+    let esbuild_log = temporary.path().join("esbuild.log");
+    create_cacheable_project(&project)?;
+
+    let build = |environment: &str| -> TestResult {
+        let mut command = Command::cargo_bin("tok")?;
+        command
+            .args(["build", "windows", "--project"])
+            .arg(project.join("."))
+            .arg("--platform-pack")
+            .arg(&pack)
+            .args(["--build-dir", ".cache/tokamak", "--env", environment])
+            .env("TOKAMAK_VERSION", "1.0.0")
+            .env("TOKAMAK_TEST_ESBUILD_LOG", &esbuild_log)
+            .assert()
+            .success();
+        Ok(())
+    };
+    let app = project.join(".cache/tokamak/windows/demo-app/app");
+    build("test")?;
+    let test: serde_json::Value =
+        serde_json::from_slice(&fs::read(app.join("worker-environment.json"))?)?;
+    assert_eq!(test["vars"]["API"], "test");
+    assert_eq!(
+        test["vars"]["OPTIONS"],
+        serde_json::json!({ "enabled": true })
+    );
+
+    build("production")?;
+    let production: serde_json::Value =
+        serde_json::from_slice(&fs::read(app.join("worker-environment.json"))?)?;
+    assert_eq!(
+        production["vars"],
+        serde_json::json!({ "API": "production" })
+    );
+    assert_eq!(
+        fs::read_to_string(project.join("build/project-build-count"))?,
+        "1"
+    );
+    assert_eq!(fs::read_to_string(&esbuild_log)?.lines().count(), 1);
+
+    fs::remove_dir_all(project.join("dist"))?;
+    fs::remove_dir_all(project.join("build"))?;
+    build("production")?;
+    assert_eq!(
+        fs::read_to_string(project.join("build/project-build-count"))?,
+        "1"
+    );
+    assert_eq!(fs::read_to_string(&esbuild_log)?.lines().count(), 1);
+    assert!(app.join("assets/index.html").is_file());
+
+    fs::write(project.join("source.mjs"), "export default { value: 2 };")?;
+    build("production")?;
+    assert_eq!(
+        fs::read_to_string(project.join("build/project-build-count"))?,
+        "2"
+    );
+    assert_eq!(fs::read_to_string(&esbuild_log)?.lines().count(), 2);
+    assert_eq!(
+        decompress_worker_module(&fs::read(app.join("worker-modules/entry.js.qjs"))?)?,
+        compile_module("entry.js", &fs::read(project.join("source.mjs"))?)?
+    );
+    Ok(())
+}
+
+#[test]
+fn rebuilds_a_missing_project_output_in_the_default_cache() -> TestResult {
+    let (_temporary, project, pack) = create_windows_inputs()?;
+    fs::remove_dir_all(project.join("dist"))?;
+    fs::write(
+        project.join("package.json"),
+        r#"{"name":"demo-app","scripts":{"build":"node build.cjs"}}"#,
+    )?;
+    fs::write(
+        project.join("build.cjs"),
+        r"const fs = require('node:fs');
+const count = 'project-build-count';
+fs.writeFileSync(count, String(Number(fs.existsSync(count) ? fs.readFileSync(count, 'utf8') : 0) + 1));
+fs.mkdirSync('build/server', { recursive: true });
+fs.copyFileSync('source.mjs', 'build/server/entry.mjs');
+",
+    )?;
+    fs::write(project.join("source.mjs"), "export default {};")?;
+    fs::write(
+        project.join("wrangler.jsonc"),
+        r#"{"name":"demo-app","main":"build/server/entry.mjs"}"#,
+    )?;
+    let build = || -> TestResult {
+        Command::cargo_bin("tok")?
+            .args(["build", "windows", "--project"])
+            .arg(&project)
+            .arg("--platform-pack")
+            .arg(&pack)
+            .env("TOKAMAK_VERSION", "1.0.0")
+            .assert()
+            .success();
+        Ok(())
+    };
+
+    build()?;
+    fs::remove_file(project.join("build/server/entry.mjs"))?;
+    build()?;
+    assert_eq!(
+        fs::read_to_string(project.join("project-build-count"))?,
+        "2"
+    );
+    assert!(
+        project
+            .join("build/windows/demo-app/app/worker-manifest.json")
+            .is_file()
+    );
+    Ok(())
+}
+
+#[test]
+fn updates_changed_assets_without_recompiling_the_worker() -> TestResult {
+    let (temporary, project, pack) = create_windows_inputs()?;
+    let esbuild_log = temporary.path().join("esbuild.log");
+    let build = || -> TestResult {
+        build_command("windows", &project, &pack)?
+            .env("TOKAMAK_TEST_ESBUILD_LOG", &esbuild_log)
+            .assert()
+            .success();
+        Ok(())
+    };
+
+    build()?;
+    fs::write(
+        project.join("dist/client/index.html"),
+        "<html>updated</html>",
+    )?;
+    build()?;
+
+    assert_eq!(
+        fs::read_to_string(project.join("build/windows/demo-app/app/assets/index.html"))?,
+        "<html>updated</html>"
+    );
+    assert_eq!(fs::read_to_string(esbuild_log)?.lines().count(), 1);
+    Ok(())
+}
+
+#[test]
+fn ignores_unrelated_files_when_reusing_worker_modules() -> TestResult {
+    let (temporary, project, pack) = create_windows_inputs()?;
+    let esbuild_log = temporary.path().join("esbuild.log");
+    let server = project.join("dist/server");
+    fs::write(server.join("settings.json"), r#"{"feature":true}"#)?;
+    fs::write(
+        project.join("wrangler.jsonc"),
+        r#"{
+  "name": "demo-app",
+  "main": "dist/server/entry.mjs",
+  "base_dir": "dist/server",
+  "find_additional_modules": true,
+  "rules": [{ "type": "Data", "globs": ["**/*.json"] }]
+}"#,
+    )?;
+    let build = || -> TestResult {
+        build_command("windows", &project, &pack)?
+            .env("TOKAMAK_TEST_ESBUILD_LOG", &esbuild_log)
+            .assert()
+            .success();
+        Ok(())
+    };
+
+    build()?;
+    fs::write(server.join("unrelated.txt"), "changed")?;
+    build()?;
+    assert_eq!(fs::read_to_string(&esbuild_log)?.lines().count(), 1);
+
+    fs::write(server.join("settings.json"), r#"{"feature":false}"#)?;
+    build()?;
+    assert_eq!(fs::read_to_string(&esbuild_log)?.lines().count(), 2);
+    assert_eq!(
+        fs::read(project.join("build/windows/demo-app/app/bundle/settings.json"))?,
+        br#"{"feature":false}"#
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn apple_env_only_build_reuses_the_native_bundle() -> TestResult {
+    for (platform, target, environment_path) in [
+        (
+            "macos",
+            "macos-arm64",
+            "build/macos/demo-app.app/Contents/Resources/app/worker-environment.json",
+        ),
+        (
+            "ios",
+            "ios-arm64",
+            "build/ios/demo-app.app/app/worker-environment.json",
+        ),
+    ] {
+        let (temporary, project, pack) = create_inputs(target)?;
+        fs::write(
+            project.join("wrangler.jsonc"),
+            r#"{
+  "name": "demo-app",
+  "main": "dist/server/entry.mjs",
+  "env": {
+    "test": { "vars": { "API": "test" } },
+    "production": { "vars": { "API": "production" } }
+  }
+}"#,
+        )?;
+        let mut test = build_command(platform, &project, &pack)?;
+        let log = configure_fake_apple_tools(&mut test, temporary.path())?;
+        test.args(["--env", "test"]).assert().success();
+
+        let mut production = build_command(platform, &project, &pack)?;
+        configure_fake_apple_tools(&mut production, temporary.path())?;
+        if platform == "ios" {
+            let profile = project.join("release.mobileprovision");
+            fs::write(&profile, "release-profile")?;
+            production
+                .env_remove("TOKAMAK_IOS_TEAM_ID")
+                .env("TOKAMAK_IOS_SIGNING_IDENTITY", "Apple Distribution: Test")
+                .env("TOKAMAK_IOS_PROVISIONING_PROFILE", profile);
+        }
+        production.args(["--env", "production"]).assert().success();
+
+        let commands = fs::read_to_string(log)?;
+        assert_eq!(
+            commands
+                .lines()
+                .filter(|line| line.contains(" swiftc "))
+                .count(),
+            1
+        );
+        let signatures = commands
+            .lines()
+            .filter_map(|line| line.strip_prefix("codesign-env "))
+            .collect::<Vec<_>>();
+        assert_eq!(signatures.len(), 2);
+        let final_environment = fs::read_to_string(project.join(environment_path))?;
+        assert_eq!(signatures[1], final_environment.trim_end());
+        let environment: serde_json::Value = serde_json::from_str(&final_environment)?;
+        assert_eq!(environment["vars"]["API"], "production");
+        if platform == "ios" {
+            assert_eq!(
+                fs::read_to_string(
+                    project.join("build/ios/demo-app.app/embedded.mobileprovision")
+                )?,
+                "release-profile"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn builds_declared_plugins_into_the_macos_shell() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
     install_location_plugin(&project)?;
@@ -810,7 +1121,7 @@ fn builds_windows_app_with_its_runtime_files() -> TestResult {
 
 #[cfg(unix)]
 #[test]
-fn passes_target_pack_variables_to_the_windows_entrypoint() -> TestResult {
+fn passes_platform_pack_variables_to_the_windows_entrypoint() -> TestResult {
     let (_temporary, project, manifest) = create_windows_inputs()?;
     build_command("windows", &project, &manifest)?
         .args(["--set", "windows-test=passed"])
@@ -879,7 +1190,7 @@ fn requires_a_version_for_app_builds() -> TestResult {
 }
 
 #[test]
-fn requires_a_target_pack_for_app_builds() -> TestResult {
+fn requires_a_platform_pack_for_app_builds() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let project = temporary.path().join("project");
     fs::create_dir_all(&project)?;
@@ -891,26 +1202,27 @@ fn requires_a_target_pack_for_app_builds() -> TestResult {
         .arg(&project)
         .arg("--skip-project-build")
         .env("TOKAMAK_VERSION", "1.0.0")
-        // Installed target packs under the real home directory must not satisfy the build.
+        // Installed platform packs under the real home directory must not satisfy the build.
         .env("HOME", temporary.path())
         .env("USERPROFILE", temporary.path())
+        .env_remove("TOKAMAK_PLATFORM_PACK_PATH")
         .assert()
         .failure()
-        .stderr(contains("no target pack found"));
+        .stderr(contains("no platform pack found"));
     Ok(())
 }
 
 #[cfg(unix)]
 #[test]
-fn finds_target_packs_installed_in_the_home_directory() -> TestResult {
+fn finds_platform_packs_installed_in_the_home_directory() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let project = temporary.path().join("project");
     let home = temporary.path().join("home");
-    let pack = home.join(".local/share/tokamak/target-packs/macos-arm64");
+    let pack = home.join(".local/share/tokamak/platform-packs/macos-arm64");
     fs::create_dir_all(&project)?;
     fs::create_dir_all(&pack)?;
     create_project(&project)?;
-    create_target_pack(&pack, "macos-arm64")?;
+    create_platform_pack(&pack, "macos-arm64")?;
 
     let mut command = Command::cargo_bin("tok")?;
     command
@@ -920,7 +1232,8 @@ fn finds_target_packs_installed_in_the_home_directory() -> TestResult {
         .env("TOKAMAK_VERSION", "1.0.0")
         .env("HOME", &home)
         .env("USERPROFILE", &home)
-        .env_remove("TOKAMAK_TARGET_PACK_DIR")
+        // An empty path is ignored.
+        .env("TOKAMAK_PLATFORM_PACK_PATH", "")
         .assert()
         .success();
 
@@ -929,12 +1242,12 @@ fn finds_target_packs_installed_in_the_home_directory() -> TestResult {
 }
 
 #[test]
-fn reads_target_pack_directory_from_tokamak_environment() -> TestResult {
+fn reads_platform_pack_path_from_tokamak_environment() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let project = temporary.path().join("project");
-    let target_packs = temporary.path().join("target-packs");
+    let platform_packs = temporary.path().join("platform-packs");
     fs::create_dir_all(&project)?;
-    fs::create_dir_all(&target_packs)?;
+    fs::create_dir_all(&platform_packs)?;
     create_project(&project)?;
 
     let mut command = Command::cargo_bin("tok")?;
@@ -943,12 +1256,43 @@ fn reads_target_pack_directory_from_tokamak_environment() -> TestResult {
         .arg(&project)
         .arg("--skip-project-build")
         .env("TOKAMAK_VERSION", "1.0.0")
-        .env("TOKAMAK_TARGET_PACK_DIR", target_packs)
+        .env("TOKAMAK_PLATFORM_PACK_PATH", platform_packs)
         .assert()
         .failure()
         .stderr(contains(
-            "TOKAMAK_TARGET_PACK_DIR does not contain a target pack",
+            "TOKAMAK_PLATFORM_PACK_PATH does not contain a platform pack",
         ));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn searches_every_directory_in_the_platform_pack_path() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let project = temporary.path().join("project");
+    let empty = temporary.path().join("empty");
+    let platform_packs = temporary.path().join("platform-packs");
+    let pack = platform_packs.join("macos-arm64");
+    fs::create_dir_all(&project)?;
+    fs::create_dir_all(&empty)?;
+    fs::create_dir_all(&pack)?;
+    create_project(&project)?;
+    create_platform_pack(&pack, "macos-arm64")?;
+
+    let mut command = Command::cargo_bin("tok")?;
+    command
+        .args(["build", "macos", "--project"])
+        .arg(&project)
+        .arg("--skip-project-build")
+        .env("TOKAMAK_VERSION", "1.0.0")
+        .env(
+            "TOKAMAK_PLATFORM_PACK_PATH",
+            std::env::join_paths([&empty, &platform_packs])?,
+        )
+        .assert()
+        .success();
+
+    assert!(project.join("build/macos/demo-app.app").is_dir());
     Ok(())
 }
 
@@ -960,21 +1304,65 @@ fn builds_project_before_loading_generated_config() -> TestResult {
     fs::create_dir_all(&project)?;
     fs::create_dir_all(&pack)?;
     create_unbuilt_project(&project)?;
-    let target_pack = create_target_pack(&pack, "macos-arm64")?;
+    let platform_pack = create_platform_pack(&pack, "macos-arm64")?;
     let config = project.join("dist/server/wrangler.json");
 
     let mut command = Command::cargo_bin("tok")?;
     command
         .args(["build", "macos", "--project"])
         .arg(&project)
-        .arg("--target-pack")
-        .arg(target_pack)
+        .arg("--platform-pack")
+        .arg(platform_pack)
         .arg("--wrangler")
         .arg(config)
         .env("TOKAMAK_VERSION", "1.0.0");
     command.assert().success();
 
     assert!(project.join("build/macos/built-app.app").is_dir());
+    Ok(())
+}
+
+#[test]
+fn builds_named_environment_from_generated_wrangler_config() -> TestResult {
+    let (temporary, project, pack) = create_windows_inputs()?;
+    fs::remove_dir_all(project.join("dist"))?;
+    create_unbuilt_project(&project)?;
+    let esbuild_log = temporary.path().join("esbuild.log");
+    let build = || -> TestResult {
+        Command::cargo_bin("tok")?
+            .args(["build", "windows", "--project"])
+            .arg(&project)
+            .arg("--platform-pack")
+            .arg(&pack)
+            .arg("--wrangler")
+            .arg(project.join("dist/server/wrangler.json"))
+            .args(["--env", "production"])
+            .env("TOKAMAK_VERSION", "1.0.0")
+            .env("TOKAMAK_TEST_ESBUILD_LOG", &esbuild_log)
+            .assert()
+            .success();
+        Ok(())
+    };
+    build()?;
+    fs::write(
+        project.join("wrangler.jsonc"),
+        r#"{
+  "name": "built-app",
+  "vars": { "API": "default" },
+  "env": { "production": { "vars": { "API": "promoted" } } }
+}"#,
+    )?;
+    build()?;
+
+    let environment: serde_json::Value = serde_json::from_slice(&fs::read(
+        project.join("build/windows/built-app/app/worker-environment.json"),
+    )?)?;
+    assert_eq!(environment["vars"]["API"], "promoted");
+    assert_eq!(
+        fs::read_to_string(project.join("project-build-count"))?,
+        "1"
+    );
+    assert_eq!(fs::read_to_string(esbuild_log)?.lines().count(), 1);
     Ok(())
 }
 
@@ -1078,7 +1466,7 @@ fn build_explains_conflicting_automatic_and_manual_signing() -> TestResult {
 #[cfg(all(unix, target_os = "macos"))]
 #[test]
 fn dev_explains_conflicting_automatic_and_manual_signing() -> TestResult {
-    let (temporary, project, target_pack) = create_inputs("ios-arm64")?;
+    let (temporary, project, platform_pack) = create_inputs("ios-arm64")?;
     let profile = project.join("manual.mobileprovision");
     fs::write(&profile, "profile")?;
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
@@ -1094,8 +1482,8 @@ fn dev_explains_conflicting_automatic_and_manual_signing() -> TestResult {
     command
         .args(["dev", "DEVICE", "--project"])
         .arg(&project)
-        .args(["--target-pack"])
-        .arg(&target_pack)
+        .args(["--platform-pack"])
+        .arg(&platform_pack)
         .args(["--config"])
         .arg(&project)
         .args(["--server", &server, "--host-address", "127.0.0.1"])
@@ -1289,23 +1677,23 @@ fn rejects_wrangler_names_outside_dns_label_bounds() -> TestResult {
 }
 
 #[test]
-fn rejects_target_pack_for_another_platform() -> TestResult {
+fn rejects_platform_pack_for_another_platform() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("ios-arm64")?;
     build_command("macos", &project, &manifest)?
         .assert()
         .failure()
-        .stderr(contains("target pack ios-arm64 cannot build macOS"));
+        .stderr(contains("platform pack ios-arm64 cannot build macOS"));
     Ok(())
 }
 
 #[test]
-fn rejects_target_pack_for_another_cli_version() -> TestResult {
-    let (_temporary, project, target_pack) = create_inputs("macos-arm64")?;
-    let manifest_path = target_pack.join(MANIFEST_FILE);
+fn rejects_platform_pack_for_another_cli_version() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
+    let manifest_path = platform_pack.join(MANIFEST_FILE);
     let target = Target::MacosArm64;
     write_manifest(
         &manifest_path,
-        &TargetPackManifest {
+        &PlatformPackManifest {
             tokamak_version: "9.9.9".to_owned(),
             target,
             artifacts: target.artifacts(),
@@ -1317,9 +1705,9 @@ fn rejects_target_pack_for_another_cli_version() -> TestResult {
         },
     )?;
 
-    build_command("macos", &project, &target_pack)?
+    build_command("macos", &project, &platform_pack)?
         .assert()
         .failure()
-        .stderr(contains("target pack was built for tokamak 9.9.9"));
+        .stderr(contains("platform pack was built for tokamak 9.9.9"));
     Ok(())
 }

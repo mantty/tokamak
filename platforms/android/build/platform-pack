@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 4 || "$1" != build ]]; then
-  echo "usage: target-pack build TARGET RUST_TARGET OUTPUT" >&2
+  echo "usage: platform-pack build TARGET RUST_TARGET OUTPUT" >&2
   exit 2
 fi
 
@@ -20,7 +20,7 @@ ndk=$(printenv ANDROID_NDK_HOME 2>/dev/null || true)
 if [[ ! -d "$ndk" ]]; then
   sdk_root=$(printenv ANDROID_HOME 2>/dev/null || printenv ANDROID_SDK_ROOT 2>/dev/null || true)
   if [[ -z "$sdk_root" ]]; then
-    echo "set ANDROID_NDK_HOME or ANDROID_HOME to build Android target packs" >&2
+    echo "set ANDROID_NDK_HOME or ANDROID_HOME to build Android platform packs" >&2
     exit 1
   fi
   ndk=$(find "$sdk_root/ndk" -mindepth 1 -maxdepth 1 -type d -print | sort | tail -n 1)

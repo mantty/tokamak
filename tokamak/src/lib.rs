@@ -86,7 +86,8 @@ pub use tokamak_config::{
 pub use wrangler_config::{
     Error as WranglerConfigError, HtmlHandling, NotFoundHandling, WranglerAssets, WranglerBinding,
     WranglerConfig, WranglerModuleType, WranglerRule, app_host, is_valid_app_name,
-    load_config as load_wrangler_config, resolve_config_path as resolve_wrangler_config_path,
+    load_config as load_wrangler_config, load_config_for_env as load_wrangler_config_for_env,
+    resolve_config_path as resolve_wrangler_config_path,
 };
 
 /// Runtime result type.

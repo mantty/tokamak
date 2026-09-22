@@ -50,7 +50,7 @@ Add recovery that:
   shutdown, reporting persistent failures and stopping without orphaned
   processes or silently selecting another target.
 
-Physical iOS signing uses the same split as Xcode: the Apple target pack selects
+Physical iOS signing uses the same split as Xcode: the Apple platform pack selects
 an exact valid profile when one is already installed, and otherwise asks
 `xcodebuild` to update or register the profile automatically for the selected
 bundle ID and device. Set `TOKAMAK_IOS_SIGNING_IDENTITY` together with
@@ -62,7 +62,7 @@ The initial development build, installation, and launch are implemented. The
 remaining lifecycle work is to watch native shell and native-plugin inputs
 while the framework process continues running.
 
-When such an input changes, tokamak should rebuild the same target pack,
+When such an input changes, tokamak should rebuild the same platform pack,
 reinstall/relaunch the selected target, and preserve the existing framework
 server, relay, and target selection. JavaScript, styles, public assets, and
 supported Worker edits must continue using the framework's HMR/reload path
@@ -77,7 +77,7 @@ remaining work above:
   requests, and browser WebSockets through the device WebView;
 - plain Vite plus the Cloudflare Worker environment;
 - the agreed vinext/Next Cloudflare setup;
-- host targets on macOS, Windows, and Linux where a target pack exists;
+- host targets on macOS, Windows, and Linux where a platform pack exists;
 - iOS Simulator, physical iOS, Android emulator, and supported physical
   Android targets;
 - unsupported Wrangler bindings producing one readable warning block while

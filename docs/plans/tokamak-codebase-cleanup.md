@@ -34,14 +34,14 @@ Do not create a module for a single helper merely to reduce a line count. A
 new file should own a coherent responsibility and have a narrow visibility
 boundary.
 
-## 2. Move target-pack recipes behind the platform boundary
+## 2. Move platform-pack recipes behind the platform boundary
 
-`tools/xtask/src/builder.rs` is now a generic target-pack orchestrator.
-The public target-pack API in `tokamak-cli/src/lib.rs` owns canonical target metadata;
+`tools/xtask/src/builder.rs` is now a generic platform-pack orchestrator.
+The public platform-pack API in `tokamak-cli/src/lib.rs` owns canonical target metadata;
 platform recipes own toolchain setup, runtime packaging, shell source paths,
 entrypoints, and required tools.
 
-The maintainer tool should remain the generic target-pack orchestrator. Each
+The maintainer tool should remain the generic platform-pack orchestrator. Each
 platform should own the metadata and recipe needed to prepare its pack, while
 the common tool should only:
 
@@ -55,10 +55,10 @@ prevents the maintainer tool from becoming a second platform abstraction.
 
 ## 3. Remove duplicate platform/target mappings
 
-The platform and target relationships now live in the private `target_pack`
+The platform and target relationships now live in the private `platform_pack`
 module inside the CLI library. The CLI and maintainer tooling consume
 `Platform` and `Target` metadata instead of defining duplicate enums and
-matches. The on-disk manifest and CLI command remain `target-pack`.
+matches. The on-disk manifest and CLI command remain `platform-pack`.
 
 ## 4. Narrow the CLI build modules
 
@@ -67,20 +67,20 @@ matches. The on-disk manifest and CLI command remain `target-pack`.
 
 - project/package discovery;
 - package-manager selection;
-- target-pack validation;
+- platform-pack validation;
 - staging and recursive copying;
 - output-directory naming; and
 - entrypoint process execution.
 
 Separate those concerns into small modules with names that describe their
-ownership. The pipeline should read as a sequence of app preparation, target
+ownership. The pipeline should read as a sequence of app preparation, platform
 pack staging, and entrypoint invocation; it should not contain platform build
 policy.
 
 ## 5. Centralise workspace and pack-layout paths
 
-The target-pack builder owns one `WorkspaceLayout` for repository and staging
-paths. Platform recipes own their source paths, while target-pack tests use the
+The platform-pack builder owns one `WorkspaceLayout` for repository and staging
+paths. Platform recipes own their source paths, while platform-pack tests use the
 same manifest and artifact path contract as production.
 
 The builder uses one `WorkspaceLayout` for repository and pack paths, while
@@ -89,7 +89,7 @@ manifest and entrypoint contract as production.
 
 ## 6. Reduce fixture-heavy integration tests
 
-`tokamak-cli/tests/build.rs` contains fixture construction, fake target-pack creation,
+`tokamak-cli/tests/build.rs` contains fixture construction, fake platform-pack creation,
 fake shell entrypoints, and nineteen build behaviours in one file.
 `tokamak/tests/packaged_worker.rs` similarly combines runtime setup, certificate
 material, HTTP framing, WebSocket framing, and assertions.
@@ -105,17 +105,17 @@ duplicating fake pack construction in every test.
 All platforms now put shell sources under `source/`. The source root is not
 coupled to the implementation language.
 
-Each platform keeps its shell source, target-pack recipe, app build entrypoint,
+Each platform keeps its shell source, platform-pack recipe, app build entrypoint,
 and platform metadata under its own directory.
 
-## 8. Keep the target-pack API narrow
+## 8. Keep the platform-pack API narrow
 
-The manifest contract lives in `tokamak-cli/src/target_pack.rs`, while the maintainer
+The manifest contract lives in `tokamak-cli/src/platform_pack.rs`, while the maintainer
 build logic lives in `tools/xtask/src/builder.rs`. `tokamak-cli/src/lib.rs` re-exports
-only the target-pack types, constants, and functions needed by the CLI and
+only the platform-pack types, constants, and functions needed by the CLI and
 maintainer tooling; it does not expose the CLI's build modules.
 
-The on-disk `target-pack.json` name and CLI terminology are unchanged.
+The on-disk `platform-pack.json` name and CLI terminology are unchanged.
 
 ## 9. Audit visibility after the structural split
 
@@ -128,7 +128,7 @@ In particular:
   `fs/node`;
 - keep Apple/Android bridge modules private because their ABI symbols are the
   interface, not Rust module paths; and
-- retain public target-pack types only where the CLI or maintainer tooling
+- retain public platform-pack types only where the CLI or maintainer tooling
   consumes them.
 
 Prefer `pub(crate)` or private items over adding re-exports to make a moved
@@ -149,7 +149,7 @@ from one canonical QuickJS architecture plan.
 
 1. ~~Split VFS and native `node:fs` around their existing public boundaries.~~
 2. ~~Split the QuickJS gateway and certificate bundle implementations.~~
-3. ~~Move target-pack recipes into platform-owned descriptors and centralise
+3. ~~Move platform-pack recipes into platform-owned descriptors and centralise
    pack paths.~~
 4. ~~Collapse the duplicate target/platform mapping.~~ Narrow CLI support.
 5. Reorganise fixtures and narrow the remaining CLI build modules.

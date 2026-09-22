@@ -19,6 +19,13 @@
     "node": ">=18"
   },
   "optionalDependencies": {
+    "@tokamakdev/platform-android-arm64": "0.0.0",
+    "@tokamakdev/platform-ios-arm64": "0.0.0",
+    "@tokamakdev/platform-ios-simulator-arm64": "0.0.0",
+    "@tokamakdev/platform-ios-simulator-x64": "0.0.0",
+    "@tokamakdev/platform-macos-arm64": "0.0.0",
+    "@tokamakdev/platform-macos-x64": "0.0.0",
+    "@tokamakdev/platform-windows-x64": "0.0.0",
     "@tokamakdev/tok-darwin-arm64": "0.0.0",
     "@tokamakdev/tok-darwin-x64": "0.0.0",
     "@tokamakdev/tok-linux-x64": "0.0.0",

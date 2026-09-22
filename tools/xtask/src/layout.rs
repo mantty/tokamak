@@ -20,15 +20,15 @@ impl WorkspaceLayout {
         &self.root
     }
 
-    pub(crate) fn target_pack(&self, target: Target) -> PathBuf {
+    pub(crate) fn platform_pack(&self, target: Target) -> PathBuf {
         self.root
-            .join("target/tokamak-target-packs")
+            .join("target/tokamak-platform-packs")
             .join(target.to_string())
     }
 
     pub(crate) fn recipe_output(&self, target: Target) -> PathBuf {
         self.root
-            .join("target/tokamak-target-pack-staging")
+            .join("target/tokamak-platform-pack-staging")
             .join(target.to_string())
     }
 
@@ -38,7 +38,7 @@ impl WorkspaceLayout {
             .join("platforms")
             .join(platform.repository_directory_name())
             .join("build")
-            .join(platform.target_pack_recipe_file_name())
+            .join(platform.platform_pack_recipe_file_name())
     }
 
     pub(crate) fn esbuild_host_package(&self, host: &str) -> PathBuf {
@@ -53,7 +53,7 @@ impl WorkspaceLayout {
     }
 
     pub(crate) fn manifest(&self, target: Target) -> PathBuf {
-        self.target_pack(target).join(MANIFEST_FILE)
+        self.platform_pack(target).join(MANIFEST_FILE)
     }
 }
 
@@ -71,20 +71,20 @@ mod tests {
         };
 
         assert_eq!(
-            layout.target_pack(Target::MacosArm64),
-            Path::new("/workspace/tokamak/target/tokamak-target-packs/macos-arm64")
+            layout.platform_pack(Target::MacosArm64),
+            Path::new("/workspace/tokamak/target/tokamak-platform-packs/macos-arm64")
         );
         assert_eq!(
             layout.platform_recipe(Target::AndroidArm64),
-            Path::new("/workspace/tokamak/platforms/android/build/target-pack")
+            Path::new("/workspace/tokamak/platforms/android/build/platform-pack")
         );
         assert_eq!(
             layout.platform_recipe(Target::IosArm64),
-            Path::new("/workspace/tokamak/platforms/apple/build/target-pack")
+            Path::new("/workspace/tokamak/platforms/apple/build/platform-pack")
         );
         assert_eq!(
             layout.platform_recipe(Target::WindowsX64),
-            Path::new("/workspace/tokamak/platforms/windows/build/target-pack.ps1")
+            Path::new("/workspace/tokamak/platforms/windows/build/platform-pack.ps1")
         );
         assert_eq!(
             layout.esbuild_host_package("win32-x64"),

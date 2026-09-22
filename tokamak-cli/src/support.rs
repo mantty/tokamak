@@ -6,12 +6,12 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use tokamak::{TokamakConfig, WranglerConfig};
-use tokamak_cli::{ArtifactKind, Platform, Target, TargetPackManifest};
+use tokamak_cli::{ArtifactKind, Platform, PlatformPackManifest, Target};
 use walkdir::WalkDir;
 
 pub(crate) fn artifact_path(
     pack_root: &Path,
-    manifest: &TargetPackManifest,
+    manifest: &PlatformPackManifest,
     kind: &ArtifactKind,
 ) -> Result<PathBuf> {
     manifest
@@ -19,15 +19,15 @@ pub(crate) fn artifact_path(
         .iter()
         .find(|artifact| artifact.kind == *kind)
         .map(|artifact| pack_root.join(&artifact.path))
-        .with_context(|| format!("target pack missing {kind:?} artifact"))
+        .with_context(|| format!("platform pack missing {kind:?} artifact"))
 }
 
-pub(crate) fn validate_target(manifest: &TargetPackManifest, platform: Platform) -> Result<()> {
+pub(crate) fn validate_target(manifest: &PlatformPackManifest, platform: Platform) -> Result<()> {
     if platform.accepts(manifest.target) {
         Ok(())
     } else {
         bail!(
-            "target pack {} cannot build {}",
+            "platform pack {} cannot build {}",
             manifest.target,
             platform.display_name()
         );
@@ -82,10 +82,6 @@ pub(crate) fn validate_project_build(config: &WranglerConfig) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn build_dir(project: &Path, platform: Platform) -> PathBuf {
-    project.join("build").join(platform.directory_name())
-}
-
 pub(crate) fn command_path(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {
@@ -111,7 +107,7 @@ pub(crate) fn reset_path(path: &Path) -> Result<()> {
 pub(crate) fn stage_platform_artifacts(
     input: &Path,
     pack_root: &Path,
-    manifest: &TargetPackManifest,
+    manifest: &PlatformPackManifest,
 ) -> Result<()> {
     let target = manifest.target;
     let runtime = artifact_path(pack_root, manifest, &target.runtime_artifact_kind())?;
@@ -225,7 +221,7 @@ pub(crate) fn run_entrypoint(
     let entrypoint = pack_root.join(target.build_entrypoint_path());
     if !entrypoint.is_file() {
         bail!(
-            "target pack is missing its build entrypoint: {}",
+            "platform pack is missing its build entrypoint: {}",
             entrypoint.display()
         );
     }
@@ -255,7 +251,7 @@ pub(crate) fn run_entrypoint(
     if status.success() {
         Ok(())
     } else {
-        bail!("target-pack build entrypoint failed with status {status}")
+        bail!("platform-pack build entrypoint failed with status {status}")
     }
 }
 

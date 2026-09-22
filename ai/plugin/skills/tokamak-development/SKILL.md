@@ -29,9 +29,16 @@ Apply the following model whenever working on a tokamak application. tokamak is 
 
 ### `tok build`
 
-- Run the project's `package.json` build script unless `--skip-project-build` is explicitly used.
+- Run the project's `package.json` build script when cached output is missing or stale.
 - Bundle the built Worker and assets into each requested native application under `build/<platform>`.
 - Run subsequent same-origin requests entirely through the packaged app and its embedded runtime. Do not assume a Node server, Wrangler process, internet connection, or Cloudflare account is present.
+
+## Install the tokamak CLI
+
+- Add the CLI to the project as a development dependency: `npm install --save-dev @tokamakdev/tok@beta` (or the project's package manager equivalent). Run it with `npx tok`, `pnpm exec tok`, or a `package.json` script.
+- Expect the package to install the platform packs the machine can build as `@tokamakdev/platform-<target>` optional dependencies: every host gets `android-arm64`; macOS adds `ios-arm64` and the host-architecture `ios-simulator-*` and `macos-*` packs; Windows x64 adds `windows-x64`. Windows apps can only be built on Windows, and Apple apps only on macOS.
+- Do not install with `--omit=optional` or `--no-optional`; that omits the `tok` binary and platform packs. If `tok` reports a missing `@tokamakdev/platform-<target>` on a machine that can build it, reinstall with optional dependencies enabled.
+- Use the installer script from the tokamak README only when the project does not use npm; it installs `tok` and every platform pack under `~/.local`.
 
 ## Use the tokamak CLI
 
@@ -47,23 +54,25 @@ tok targets
 - Use `--server http://<host>:<port>` when the framework development server is not at `http://localhost:5173`.
 - Use `-w` or `--wrangler <path>` when the relevant Wrangler file is generated outside the project root.
 - Use `--config <path>` for the optional Tokamak configuration file; it defaults to the current directory.
-- Pass `--skip-project-build` only when the project output already exists and is current.
+- Normal cache reuse needs no flag; use `--skip-project-build` only for current output built outside tokamak.
+- `--env NAME` selects Wrangler `env.NAME.vars`; omit it for top-level `vars`. Named vars do not inherit; strings and JSON work. Generated configs with `userConfigPath` use source vars.
+- `build/` caches output by default (`--build-dir PATH` overrides). In GitHub Actions, cache it by OS and tested commit across merge and promotion workflows on the same branch; promote with `tok build ios --env production`. Missing/stale inputs rebuild; Apple env/signing-only changes re-sign without recompiling the shell.
 - Use the current native platform names: `android`, `ios`, `ios-simulator`, `macos`, and `windows`.
 - Require a `package.json` build script and a Wrangler configuration with at least `name` and `main` for a packaged build.
 - Let tokamak detect pnpm, Yarn, or npm from the project's lockfile when it runs the build.
 
-### Configuration and target-pack variables
+### Configuration and platform-pack variables
 
 - Look for `tokamak.jsonc` in the current directory, then `tokamak.json`; the file is optional. Use `-c` or `--config` to select another file or directory.
 - JSONC permits comments and trailing commas; plain JSON is also supported.
 - The supported configuration values are `name`, `identifier`, `icon`, and `version`.
-- Top-level values are defaults; platform objects (`android`, `ios`, `macos`, `windows`) override them per platform, for example `{ "name": "My App", "ios": { "name": "My App Pro" } }`. `ios` also applies to `ios-simulator`.
+- Top-level values are defaults; platform objects (`android`, `ios`, `macos`, `windows`) override `name`, `identifier`, or `icon` per platform, for example `{ "name": "My App", "ios": { "name": "My App Pro" } }`. `ios` also applies to `ios-simulator`. `version` is top-level only, and unknown keys are rejected.
 - A file may `include` one other configuration file (absolute, or relative to the including file); the including file is deep-merged onto the included file (keys overwrite, platform objects merge key by key, `null` removes a value). Only the loaded file may include: a nested `include` is ignored with a warning.
 - Display names preserve their spelling and capitalization. Tokamak derives a lower-case slug for filenames, application IDs, and local hosts. If `name` is absent, the Wrangler Worker name is used.
 - `identifier` values are used as the Apple bundle identifier and Android application ID. `TOKAMAK_IDENTIFIER` and platform-specific `TOKAMAK_ANDROID_IDENTIFIER`, `TOKAMAK_IOS_IDENTIFIER`, `TOKAMAK_MACOS_IDENTIFIER`, or `TOKAMAK_WINDOWS_IDENTIFIER` override configured identifiers; the iOS value also applies to simulators.
 - `version` is optional in configuration but required by `tok build`. `TOKAMAK_VERSION` overrides the configured value. Do not use `TOKAMAK_APP_VERSION`.
 - `icon` accepts user-created platform assets: Android `res` directories, Apple `.icon` packages for `ios`/`macos`, and Windows `.ico` files. Missing icons preserve the existing behavior. Icon paths are relative to the file that names them.
-- Use repeatable `--set NAME=VALUE` options for target-pack variables. `tokamak` maps `ios-team-id=TEAM` to `TOKAMAK_IOS_TEAM_ID`, for example, and passes target-pack variables through without interpreting platform-specific names.
+- Use repeatable `--set NAME=VALUE` options for platform-pack variables. `tokamak` maps `ios-team-id=TEAM` to `TOKAMAK_IOS_TEAM_ID`, for example, and passes platform-pack variables through without interpreting platform-specific names.
 
 Examples:
 
@@ -73,17 +82,17 @@ tok build ios --set ios-plist=native/Info.plist
 TOKAMAK_MACOS_PLIST=native/Info.plist tok build macos
 ```
 
-Apple target packs accept optional user-provided XML or binary application
+Apple platform packs accept optional user-provided XML or binary application
 plists through `ios-plist`/`TOKAMAK_IOS_PLIST` and
 `macos-plist`/`TOKAMAK_MACOS_PLIST`. Relative paths are resolved from the
 project directory. The plist must have a dictionary root. Tokamak layers its
 generated values first, then icon values, plugin values, and the user plist
 last; user-defined values therefore take precedence over all other values.
-Values not supplied by the user are retained. Apple target packs add SDK,
+Values not supplied by the user are retained. Apple platform packs add SDK,
 platform, and Xcode provenance keys from the active toolchain before the user
 overlay.
 
-Apple build numbers are target-pack variables rather than Tokamak config:
+Apple build numbers are platform-pack variables rather than Tokamak config:
 `ios-build-number` maps to `TOKAMAK_IOS_BUILD_NUMBER` and
 `macos-build-number` maps to `TOKAMAK_MACOS_BUILD_NUMBER`. They are optional
 and use the app version by default.
@@ -144,6 +153,7 @@ builds do not require provisioning.
 ## Use native capabilities through tokamak plugins
 
 - Import supported `@tokamakdev/*` frontend plugins for native capabilities instead of modeling those capabilities as Worker bindings.
+- Install plugins as regular `dependencies`, for example `npm install @tokamakdev/plugin-location@beta`. `tok build` and `tok dev` include native code only for plugins listed in `dependencies`, not `devDependencies`.
 - Call plugins from browser-side code, where the native bridge exists. Do not expect the bridge in the packaged Worker handler.
 - Preserve a plugin's web implementation or feature-detect availability when the same code also targets ordinary browsers.
 - Handle permission denial, unavailable hardware, cancellation, navigation, and page lifecycle as normal outcomes of a native capability request.

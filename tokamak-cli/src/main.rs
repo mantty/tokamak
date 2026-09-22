@@ -3,6 +3,7 @@
 
 //! `tokamak` command line entry point.
 
+mod cache;
 mod certs;
 mod dev;
 mod devices;
@@ -37,16 +38,22 @@ enum Command {
         /// App project directory.
         #[arg(long, default_value = ".")]
         project: PathBuf,
-        /// Target-pack directory containing target-pack.json.
-        #[arg(long = "target-pack")]
-        target_pack: Option<PathBuf>,
+        /// Build output and cache directory, relative to the project by default.
+        #[arg(long = "build-dir")]
+        build_dir: Option<PathBuf>,
+        /// Platform-pack directory containing platform-pack.json.
+        #[arg(long = "platform-pack")]
+        platform_pack: Option<PathBuf>,
         /// Tokamak configuration file or directory. Defaults to the current directory.
         #[arg(short = 'c', long = "config", default_value = ".")]
         config: PathBuf,
         /// Path to the Wrangler configuration file.
         #[arg(short = 'w', long = "wrangler")]
         wrangler: Option<PathBuf>,
-        /// Set a target-pack variable as a TOKAMAK_<PLATFORM>_<NAME> environment variable.
+        /// Named Wrangler environment. Defaults to top-level values.
+        #[arg(short = 'e', long = "env")]
+        env: Option<String>,
+        /// Set a platform-pack variable as a TOKAMAK_<PLATFORM>_<NAME> environment variable.
         #[arg(long = "set", value_name = "NAME=VALUE")]
         set: Vec<SetVariable>,
         /// Use existing project build output instead of running the project's build command.
@@ -61,16 +68,16 @@ enum Command {
         /// App project directory.
         #[arg(long, default_value = ".")]
         project: PathBuf,
-        /// Target-pack directory containing target-pack.json.
-        #[arg(long = "target-pack")]
-        target_pack: Option<PathBuf>,
+        /// Platform-pack directory containing platform-pack.json.
+        #[arg(long = "platform-pack")]
+        platform_pack: Option<PathBuf>,
         /// Tokamak configuration file or directory. Defaults to the current directory.
         #[arg(short = 'c', long = "config", default_value = ".")]
         config: PathBuf,
         /// Path to the Wrangler configuration file.
         #[arg(short = 'w', long = "wrangler")]
         wrangler: Option<PathBuf>,
-        /// Set a target-pack variable as a TOKAMAK_<PLATFORM>_<NAME> environment variable.
+        /// Set a platform-pack variable as a TOKAMAK_<PLATFORM>_<NAME> environment variable.
         #[arg(long = "set", value_name = "NAME=VALUE")]
         set: Vec<SetVariable>,
         /// HTTP endpoint served by the framework's development command.
@@ -108,9 +115,11 @@ fn run() -> Result<()> {
         Command::Build {
             platforms,
             project,
-            target_pack,
+            build_dir,
+            platform_pack,
             config,
             wrangler,
+            env,
             set,
             skip_project_build,
         } => {
@@ -118,9 +127,11 @@ fn run() -> Result<()> {
             let summaries = pipeline::run(&pipeline::BuildRequest {
                 platforms,
                 project_dir: project,
-                target_pack_dir: target_pack,
+                build_dir,
+                platform_pack_dir: platform_pack,
                 tokamak_config_path: config,
                 wrangler_config_path: wrangler,
+                wrangler_env: env,
                 set,
                 skip_project_build,
             })?;
@@ -136,7 +147,7 @@ fn run() -> Result<()> {
         Command::Dev {
             device_id,
             project,
-            target_pack,
+            platform_pack,
             config,
             wrangler,
             set,
@@ -147,7 +158,7 @@ fn run() -> Result<()> {
             let request = dev::Request {
                 device_id,
                 project_dir: project,
-                target_pack_dir: target_pack,
+                platform_pack_dir: platform_pack,
                 tokamak_config_path: config,
                 wrangler_config_path: wrangler,
                 set,
@@ -246,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_repeatable_target_pack_variables() {
+    fn accepts_repeatable_platform_pack_variables() {
         assert!(matches!(
             Cli::try_parse_from([
                 "tok",

@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-//! Target-pack metadata and validation for `tokamak` runtime artifacts.
+//! Platform-pack metadata and validation for `tokamak` runtime artifacts.
 
 use std::fmt;
 use std::fs;
@@ -11,17 +11,17 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
-/// Target-pack manifest filename.
-pub const MANIFEST_FILE: &str = "target-pack.json";
-/// Common runtime tool directory inside a target pack.
+/// Platform-pack manifest filename.
+pub const MANIFEST_FILE: &str = "platform-pack.json";
+/// Common runtime tool directory inside a platform pack.
 pub const RUNTIME_DIRECTORY: &str = "tools/runtime";
-/// Common esbuild directory inside a target pack.
+/// Common esbuild directory inside a platform pack.
 pub const ESBUILD_DIRECTORY: &str = "tools/runtime/node_modules/esbuild";
-/// Common esbuild executable inside a target pack.
+/// Common esbuild executable inside a platform pack.
 pub const ESBUILD_EXECUTABLE: &str = "tools/runtime/node_modules/esbuild/bin/esbuild";
-/// Fixed path of the target-pack build entrypoint.
+/// Fixed path of the platform-pack build entrypoint.
 pub const BUILD_ENTRYPOINT: &str = "build/entrypoint";
-/// Windows target-pack build entrypoint path, retaining PowerShell's
+/// Windows platform-pack build entrypoint path, retaining PowerShell's
 /// required script extension.
 pub const WINDOWS_BUILD_ENTRYPOINT: &str = "build/entrypoint.ps1";
 
@@ -72,13 +72,13 @@ impl Platform {
         }
     }
 
-    /// Platform-owned target-pack recipe filename.
+    /// Platform-pack recipe filename.
     #[must_use]
-    pub const fn target_pack_recipe_file_name(self) -> &'static str {
+    pub const fn platform_pack_recipe_file_name(self) -> &'static str {
         if matches!(self, Self::Windows) {
-            "target-pack.ps1"
+            "platform-pack.ps1"
         } else {
-            "target-pack"
+            "platform-pack"
         }
     }
 
@@ -115,24 +115,24 @@ impl Platform {
     /// # Errors
     ///
     /// Returns an error when the platform cannot be built on this host.
-    pub fn default_target(self) -> Result<Target, TargetPackError> {
+    pub fn default_target(self) -> Result<Target, PlatformPackError> {
         match self {
             Self::Android => Ok(Target::AndroidArm64),
             Self::Ios => Ok(Target::IosArm64),
             Self::IosSimulator if cfg!(target_arch = "aarch64") => Ok(Target::IosSimulatorArm64),
             Self::IosSimulator if cfg!(target_arch = "x86_64") => Ok(Target::IosSimulatorX64),
-            Self::IosSimulator => Err(TargetPackError::UnsupportedHost(
+            Self::IosSimulator => Err(PlatformPackError::UnsupportedHost(
                 "iOS Simulator builds require an Intel or Apple Silicon host",
             )),
             Self::Macos if cfg!(target_arch = "aarch64") => Ok(Target::MacosArm64),
             Self::Macos if cfg!(target_arch = "x86_64") => Ok(Target::MacosX64),
-            Self::Macos => Err(TargetPackError::UnsupportedHost(
+            Self::Macos => Err(PlatformPackError::UnsupportedHost(
                 "macOS builds require an Intel or Apple Silicon host",
             )),
             Self::Windows if cfg!(all(target_os = "windows", target_arch = "x86_64")) => {
                 Ok(Target::WindowsX64)
             }
-            Self::Windows => Err(TargetPackError::UnsupportedHost(
+            Self::Windows => Err(PlatformPackError::UnsupportedHost(
                 "Windows builds require a 64-bit Windows host",
             )),
         }
@@ -146,14 +146,14 @@ impl Platform {
 }
 
 impl FromStr for Platform {
-    type Err = TargetPackError;
+    type Err = PlatformPackError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::ALL
             .iter()
             .copied()
             .find(|platform| platform.directory_name() == value)
-            .ok_or_else(|| TargetPackError::UnknownPlatform(value.to_owned()))
+            .ok_or_else(|| PlatformPackError::UnknownPlatform(value.to_owned()))
     }
 }
 
@@ -226,7 +226,7 @@ impl Target {
         }
     }
 
-    /// Target-pack build entrypoint path.
+    /// Platform-pack build entrypoint path.
     #[must_use]
     pub const fn build_entrypoint_path(self) -> &'static str {
         if matches!(self, Self::WindowsX64) {
@@ -246,7 +246,7 @@ impl Target {
         }
     }
 
-    /// Runtime artifact path relative to the target-pack root.
+    /// Runtime artifact path relative to the platform-pack root.
     #[must_use]
     pub const fn runtime_artifact_path(self) -> &'static str {
         match self.platform() {
@@ -270,14 +270,14 @@ impl Target {
         }
     }
 
-    /// Whether the target pack contains shell sources for the application
+    /// Whether the platform pack contains shell sources for the application
     /// build entrypoint to compile.
     #[must_use]
     pub const fn has_native_shell(self) -> bool {
         !matches!(self, Self::WindowsX64)
     }
 
-    /// Host tools required to build an application from this target pack.
+    /// Host tools required to build an application from this platform pack.
     #[must_use]
     pub const fn required_tools(self) -> &'static [&'static str] {
         match self.platform() {
@@ -287,7 +287,7 @@ impl Target {
         }
     }
 
-    /// Artifact contract for this target pack.
+    /// Artifact contract for this platform pack.
     #[must_use]
     pub fn artifacts(self) -> Vec<Artifact> {
         let mut artifacts = vec![Artifact {
@@ -334,21 +334,21 @@ impl<'de> Deserialize<'de> for Target {
 }
 
 impl FromStr for Target {
-    type Err = TargetPackError;
+    type Err = PlatformPackError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::ALL
             .iter()
             .copied()
             .find(|target| target.manifest_name() == value)
-            .ok_or_else(|| TargetPackError::UnknownTarget(value.to_owned()))
+            .ok_or_else(|| PlatformPackError::UnknownTarget(value.to_owned()))
     }
 }
 
-/// Artifact categories that a target pack can expose to the CLI.
+/// Artifact categories that a platform pack can expose to the CLI.
 ///
 /// Unknown artifact kinds intentionally fail deserialization. Additive artifact
-/// kinds require a new CLI/target-pack release before older CLIs can consume
+/// kinds require a new CLI/platform-pack release before older CLIs can consume
 /// them.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -363,28 +363,28 @@ pub enum ArtifactKind {
     EsbuildExecutable,
 }
 
-/// A single file or directory provided by a target pack.
+/// A single file or directory provided by a platform pack.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Artifact {
     /// The artifact role.
     pub kind: ArtifactKind,
-    /// Path relative to the target-pack root.
+    /// Path relative to the platform-pack root.
     pub path: String,
 }
 
-/// Manifest included in each `tokamak` target pack.
+/// Manifest included in each `tokamak` platform pack.
 ///
 /// In addition to the paths listed here, every pack contains the fixed
 /// `build/entrypoint` builder entrypoint (or `build/entrypoint.ps1` for
 /// Windows). The CLI invokes it with `build`, an input directory, and an
-/// output path, passes through the user's environment and target-pack
+/// output path, passes through the user's environment and platform-pack
 /// variables, and leaves platform-specific project, signing, and packaging
 /// work to the entrypoint.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TargetPackManifest {
-    /// `tokamak` release version that produced the target pack.
+pub struct PlatformPackManifest {
+    /// `tokamak` release version that produced the platform pack.
     pub tokamak_version: String,
     /// Native platform target.
     pub target: Target,
@@ -394,20 +394,20 @@ pub struct TargetPackManifest {
     pub required_tools: Vec<String>,
 }
 
-impl TargetPackManifest {
-    /// Validate the manifest contract before a CLI consumes the target pack.
+impl PlatformPackManifest {
+    /// Validate the manifest contract before a CLI consumes the platform pack.
     ///
     /// # Errors
     ///
     /// Returns an error when required fields are missing or an artifact path
     /// escapes the pack root.
-    pub fn validate(&self) -> Result<(), TargetPackError> {
+    pub fn validate(&self) -> Result<(), PlatformPackError> {
         if self.tokamak_version.trim().is_empty() {
-            return Err(TargetPackError::MissingVersion);
+            return Err(PlatformPackError::MissingVersion);
         }
 
         if self.artifacts.is_empty() {
-            return Err(TargetPackError::MissingArtifacts);
+            return Err(PlatformPackError::MissingArtifacts);
         }
 
         for artifact in &self.artifacts {
@@ -417,17 +417,17 @@ impl TargetPackManifest {
         Ok(())
     }
 
-    /// Validate that a CLI version can consume this target pack.
+    /// Validate that a CLI version can consume this platform pack.
     ///
     /// # Errors
     ///
     /// Returns an error when the CLI version does not equal the tokamak version
     /// recorded in the manifest.
-    pub fn validate_cli_version(&self, cli_version: &str) -> Result<(), TargetPackError> {
+    pub fn validate_cli_version(&self, cli_version: &str) -> Result<(), PlatformPackError> {
         if self.tokamak_version == cli_version {
             Ok(())
         } else {
-            Err(TargetPackError::IncompatibleTokamakVersion {
+            Err(PlatformPackError::IncompatibleTokamakVersion {
                 required: self.tokamak_version.clone(),
                 actual: cli_version.to_owned(),
             })
@@ -435,21 +435,21 @@ impl TargetPackManifest {
     }
 }
 
-/// Load a target-pack manifest from JSON.
+/// Load a platform-pack manifest from JSON.
 ///
 /// # Errors
 ///
 /// Returns an error when the file cannot be read, the JSON cannot be parsed,
-/// or the decoded manifest violates the target-pack contract.
-pub fn load_manifest(path: impl AsRef<Path>) -> Result<TargetPackManifest, TargetPackError> {
+/// or the decoded manifest violates the platform-pack contract.
+pub fn load_manifest(path: impl AsRef<Path>) -> Result<PlatformPackManifest, PlatformPackError> {
     let path = path.as_ref();
     let content = fs::read_to_string(path)?;
     let manifest = serde_json::from_str(&content)?;
-    TargetPackManifest::validate(&manifest)?;
+    PlatformPackManifest::validate(&manifest)?;
     Ok(manifest)
 }
 
-/// Write a target-pack manifest as pretty JSON.
+/// Write a platform-pack manifest as pretty JSON.
 ///
 /// # Errors
 ///
@@ -457,17 +457,17 @@ pub fn load_manifest(path: impl AsRef<Path>) -> Result<TargetPackManifest, Targe
 /// serialized, or the destination file cannot be written.
 pub fn write_manifest(
     path: impl AsRef<Path>,
-    manifest: &TargetPackManifest,
-) -> Result<(), TargetPackError> {
+    manifest: &PlatformPackManifest,
+) -> Result<(), PlatformPackError> {
     manifest.validate()?;
     let content = serde_json::to_string_pretty(manifest)?;
     fs::write(path.as_ref(), content)?;
     Ok(())
 }
 
-/// Target-pack parsing and validation failures.
+/// Platform-pack parsing and validation failures.
 #[derive(Debug, Error)]
-pub enum TargetPackError {
+pub enum PlatformPackError {
     /// Unknown target name.
     #[error("unknown target '{0}'")]
     UnknownTarget(String),
@@ -480,22 +480,22 @@ pub enum TargetPackError {
     /// `tokamak` version was empty.
     #[error("tokamakVersion must not be empty")]
     MissingVersion,
-    /// The target pack requires a different tokamak/CLI version.
-    #[error("target pack was built for tokamak {required}, but this CLI is {actual}")]
+    /// The platform pack requires a different tokamak/CLI version.
+    #[error("platform pack was built for tokamak {required}, but this CLI is {actual}")]
     IncompatibleTokamakVersion {
-        /// tokamak version recorded in the target pack.
+        /// tokamak version recorded in the platform pack.
         required: String,
-        /// CLI version that attempted to consume the target pack.
+        /// CLI version that attempted to consume the platform pack.
         actual: String,
     },
     /// Manifest had no artifacts.
-    #[error("target pack must contain at least one artifact")]
+    #[error("platform pack must contain at least one artifact")]
     MissingArtifacts,
     /// Artifact path was empty.
     #[error("artifact path must not be empty")]
     EmptyArtifactPath,
     /// Artifact path was absolute or escaped the pack root.
-    #[error("artifact path must stay inside the target pack: {0}")]
+    #[error("artifact path must stay inside the platform pack: {0}")]
     UnsafeArtifactPath(String),
     /// File IO failed.
     #[error(transparent)]
@@ -505,20 +505,20 @@ pub enum TargetPackError {
     Json(#[from] serde_json::Error),
 }
 
-fn validate_relative_path(path: &str) -> Result<(), TargetPackError> {
+fn validate_relative_path(path: &str) -> Result<(), PlatformPackError> {
     if path.is_empty() {
-        return Err(TargetPackError::EmptyArtifactPath);
+        return Err(PlatformPackError::EmptyArtifactPath);
     }
 
     if path.contains('\\') || has_windows_drive_prefix(path) {
-        return Err(TargetPackError::UnsafeArtifactPath(path.to_owned()));
+        return Err(PlatformPackError::UnsafeArtifactPath(path.to_owned()));
     }
 
     for component in Path::new(path).components() {
         match component {
             Component::Normal(_) | Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(TargetPackError::UnsafeArtifactPath(path.to_owned()));
+                return Err(PlatformPackError::UnsafeArtifactPath(path.to_owned()));
             }
         }
     }

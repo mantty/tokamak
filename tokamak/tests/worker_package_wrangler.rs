@@ -4,7 +4,7 @@ use std::path::Path;
 use serde_json::json;
 use tokamak::{
     HtmlHandling, NotFoundHandling, WranglerConfigError, WranglerModuleType, load_wrangler_config,
-    resolve_wrangler_config_path,
+    load_wrangler_config_for_env, resolve_wrangler_config_path,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -281,6 +281,104 @@ not_found_handling = "404-page"
     assert_eq!(assets.not_found_handling, NotFoundHandling::Page404);
     assert_eq!(config.vars.get("TEXT"), Some(&json!("value")));
     assert_eq!(config.vars.get("JSON"), Some(&json!({ "enabled": true })));
+    Ok(())
+}
+
+#[test]
+fn selects_named_jsonc_vars_without_inheriting_top_level_vars() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let config = temporary.path().join("wrangler.jsonc");
+    fs::write(
+        &config,
+        r#"{
+  "name": "demo-app",
+  "main": "dist/worker.mjs",
+  "vars": { "API": "default", "TOP_ONLY": true },
+  "env": {
+    "test": { "vars": { "API": "test", "JSON": { "enabled": true } } },
+    "production": { "vars": { "API": "production" } }
+  }
+}"#,
+    )?;
+
+    let default = load_wrangler_config_for_env(&config, None)?;
+    let test = load_wrangler_config_for_env(&config, Some("test"))?;
+    let production = load_wrangler_config_for_env(&config, Some("production"))?;
+    assert_eq!(default.vars.get("TOP_ONLY"), Some(&json!(true)));
+    assert_eq!(test.vars.get("API"), Some(&json!("test")));
+    assert_eq!(test.vars.get("JSON"), Some(&json!({ "enabled": true })));
+    assert!(!test.vars.contains_key("TOP_ONLY"));
+    assert_eq!(production.vars.get("API"), Some(&json!("production")));
+    assert_eq!(test.main, default.main);
+    assert_eq!(test.name, default.name);
+    assert!(matches!(
+        load_wrangler_config_for_env(&config, Some("missing")),
+        Err(WranglerConfigError::EnvironmentNotFound { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn selects_named_toml_json_vars() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let config = temporary.path().join("wrangler.toml");
+    fs::write(
+        &config,
+        r#"
+name = "demo-app"
+main = "dist/worker.mjs"
+
+[vars]
+API = "default"
+
+[env.production.vars]
+API = "production"
+JSON = { enabled = true, count = 3 }
+"#,
+    )?;
+
+    let production = load_wrangler_config_for_env(&config, Some("production"))?;
+    assert_eq!(production.vars.get("API"), Some(&json!("production")));
+    assert_eq!(
+        production.vars.get("JSON"),
+        Some(&json!({ "enabled": true, "count": 3 }))
+    );
+    Ok(())
+}
+
+#[test]
+fn selects_vars_from_the_source_of_a_generated_wrangler_config() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let source = temporary.path().join("wrangler.jsonc");
+    let generated_dir = temporary.path().join("dist/server");
+    fs::create_dir_all(&generated_dir)?;
+    fs::write(
+        &source,
+        r#"{
+  "name": "demo-app",
+  "vars": { "API": "default" },
+  "env": { "production": { "vars": { "API": "production", "JSON": { "ok": true } } } }
+}"#,
+    )?;
+    let generated = generated_dir.join("wrangler.json");
+    fs::write(
+        &generated,
+        serde_json::to_vec(&json!({
+            "name": "demo-app",
+            "main": "entry.mjs",
+            "userConfigPath": source,
+            "env": {
+                "production": { "main": "production.mjs", "vars": { "API": "stale" } }
+            }
+        }))?,
+    )?;
+
+    let default = load_wrangler_config_for_env(&generated, None)?;
+    let production = load_wrangler_config_for_env(&generated, Some("production"))?;
+    assert_eq!(default.vars.get("API"), Some(&json!("default")));
+    assert_eq!(production.vars.get("API"), Some(&json!("production")));
+    assert_eq!(production.vars.get("JSON"), Some(&json!({ "ok": true })));
+    assert_eq!(production.main, generated_dir.join("production.mjs"));
     Ok(())
 }
 

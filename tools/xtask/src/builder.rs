@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use tokamak_cli::{
-    Artifact, ESBUILD_DIRECTORY, RUNTIME_DIRECTORY, Target, TargetPackManifest, write_manifest,
+    Artifact, ESBUILD_DIRECTORY, PlatformPackManifest, RUNTIME_DIRECTORY, Target, write_manifest,
 };
 
 use crate::layout::WorkspaceLayout;
@@ -14,27 +14,27 @@ const ESBUILD_HOSTS: &[&str] = &["darwin-arm64", "darwin-x64", "linux-x64", "win
 const ESBUILD_LAUNCHER: &str = include_str!("esbuild-launcher.cjs");
 const ESBUILD_LICENSE: &str = include_str!("esbuild-license.txt");
 
-pub(crate) fn build_source_target_pack(target: Target) -> Result<PathBuf> {
+pub(crate) fn build_source_platform_pack(target: Target) -> Result<PathBuf> {
     let workspace = WorkspaceLayout::from_source()
         .context("source workspace is unavailable; run this command from a tokamak checkout")?;
-    build_source_target_pack_at(&workspace, target)
+    build_source_platform_pack_at(&workspace, target)
 }
 
-fn build_source_target_pack_at(workspace: &WorkspaceLayout, target: Target) -> Result<PathBuf> {
-    let pack_dir = workspace.target_pack(target);
+fn build_source_platform_pack_at(workspace: &WorkspaceLayout, target: Target) -> Result<PathBuf> {
+    let pack_dir = workspace.platform_pack(target);
     let recipe_output = workspace.recipe_output(target);
     reset_dir(&pack_dir)?;
     reset_dir(&recipe_output)?;
 
     run_platform_recipe(workspace, target, &recipe_output)?;
-    copy_dir_contents(&recipe_output, &pack_dir).context("copy platform target-pack artifacts")?;
+    copy_dir_contents(&recipe_output, &pack_dir).context("copy platform-pack artifacts")?;
     fs::remove_dir_all(&recipe_output)?;
 
     deploy_runtime(workspace, &pack_dir)?;
     let artifacts = target.artifacts();
     validate_artifacts(&pack_dir, &artifacts)?;
 
-    let manifest = TargetPackManifest {
+    let manifest = PlatformPackManifest {
         tokamak_version: env!("CARGO_PKG_VERSION").to_owned(),
         target,
         artifacts,
@@ -52,10 +52,7 @@ fn build_source_target_pack_at(workspace: &WorkspaceLayout, target: Target) -> R
 fn run_platform_recipe(workspace: &WorkspaceLayout, target: Target, output: &Path) -> Result<()> {
     let recipe = workspace.platform_recipe(target);
     if !recipe.is_file() {
-        bail!(
-            "platform target-pack recipe is missing: {}",
-            recipe.display()
-        );
+        bail!("platform-pack recipe is missing: {}", recipe.display());
     }
 
     let mut command = if recipe
@@ -82,7 +79,7 @@ fn run_platform_recipe(workspace: &WorkspaceLayout, target: Target, output: &Pat
         Ok(())
     } else {
         bail!(
-            "platform target-pack recipe failed with status {status}: {}",
+            "platform-pack recipe failed with status {status}: {}",
             recipe.display()
         )
     }
@@ -116,7 +113,10 @@ fn validate_artifacts(root: &Path, artifacts: &[Artifact]) -> Result<()> {
     for artifact in artifacts {
         let path = root.join(&artifact.path);
         if !path.exists() {
-            bail!("target-pack artifact was not produced: {}", path.display());
+            bail!(
+                "platform-pack artifact was not produced: {}",
+                path.display()
+            );
         }
     }
     Ok(())
@@ -157,7 +157,7 @@ mod tests {
         assert!(result.is_err_and(|error| {
             error
                 .to_string()
-                .contains("target-pack artifact was not produced")
+                .contains("platform-pack artifact was not produced")
         }));
         Ok(())
     }

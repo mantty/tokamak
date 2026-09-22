@@ -131,7 +131,7 @@ boundary.
 ### iOS signing
 
 `plist`, `sha1`, and `sha2` are used only by the Apple signing crate and its
-tests. Keep that dependency graph behind the Apple target-pack signing tool;
+tests. Keep that dependency graph behind the Apple platform-pack signing tool;
 the CLI only retains the `tok certs` facade.
 
 After platform scoping, inspect the remaining `sha2` 0.11 and RustCrypto 0.10
@@ -176,7 +176,7 @@ For each completed item:
 1. compare the affected `cargo tree` count and duplicate graph with this
    baseline;
 2. run formatting and Clippy for every affected host and target;
-3. run the base `tokamak`, native runtime, CLI, target-pack, and platform build
+3. run the base `tokamak`, native runtime, CLI, platform-pack, and platform build
    tests affected by the dependency;
 4. verify the `Validate` CI gate remains the required aggregate result; and
 5. compare both cold-cache and restored-cache CI durations.

@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "Tokamak",
     "shortDescription": "Build cross-platform Tokamak applications.",
-    "longDescription": "Use Tokamak's Worker-compatible runtime, CLI, target packs, native plugins, and platform-specific build workflows.",
+    "longDescription": "Use Tokamak's Worker-compatible runtime, CLI, platform packs, native plugins, and platform-specific build workflows.",
     "developerName": "Mantty",
     "category": "Productivity",
     "capabilities": [],

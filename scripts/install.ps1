@@ -50,12 +50,12 @@ if ($tag -notmatch "^[A-Za-z0-9._-]+$") {
 $releaseUrl = "https://github.com/$repository/releases/download/$tag"
 $temporary = Join-Path ([System.IO.Path]::GetTempPath()) "tokamak-install-$([guid]::NewGuid())"
 $stagedCli = $null
-$stagedTargetPacks = $null
+$stagedPlatformPacks = $null
 
 try {
   $cliDirectory = Join-Path $temporary "cli"
-  $targetPacks = Join-Path $temporary "target-packs"
-  New-Item -ItemType Directory -Force -Path $cliDirectory, $targetPacks | Out-Null
+  $platformPacks = Join-Path $temporary "platform-packs"
+  New-Item -ItemType Directory -Force -Path $cliDirectory, $platformPacks | Out-Null
 
   Write-Output "Downloading tokamak $tag for windows-x64..."
   $cliArchive = Join-Path $temporary "tokamak-cli-windows-x64.zip"
@@ -67,33 +67,33 @@ try {
   }
 
   foreach ($target in $targets) {
-    Write-Output "Downloading target pack $target..."
-    $archive = Join-Path $temporary "tokamak-target-pack-$target.tar.gz"
-    $destination = Join-Path $targetPacks $target
+    Write-Output "Downloading platform pack $target..."
+    $archive = Join-Path $temporary "tokamak-platform-pack-$target.tar.gz"
+    $destination = Join-Path $platformPacks $target
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
-    Invoke-WebRequest -UseBasicParsing -Uri "$releaseUrl/tokamak-target-pack-$target.tar.gz" -OutFile $archive
+    Invoke-WebRequest -UseBasicParsing -Uri "$releaseUrl/tokamak-platform-pack-$target.tar.gz" -OutFile $archive
     & tar -xzf $archive -C $destination
     if ($LASTEXITCODE -ne 0) {
       throw "failed to extract $target"
     }
-    if (-not (Test-Path -LiteralPath (Join-Path $destination "target-pack.json") -PathType Leaf)) {
-      throw "$target archive does not contain target-pack.json"
+    if (-not (Test-Path -LiteralPath (Join-Path $destination "platform-pack.json") -PathType Leaf)) {
+      throw "$target archive does not contain platform-pack.json"
     }
   }
 
   $InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot)
   $binDirectory = Join-Path $InstallRoot "bin"
   $shareDirectory = Join-Path $InstallRoot "share/tokamak"
-  $targetPackDirectory = Join-Path $shareDirectory "target-packs"
+  $platformPackDirectory = Join-Path $shareDirectory "platform-packs"
   New-Item -ItemType Directory -Force -Path $binDirectory, $shareDirectory | Out-Null
 
   $stagedCli = Join-Path $binDirectory ".tokamak-install-$PID.exe"
-  $stagedTargetPacks = Join-Path $shareDirectory ".target-packs-install-$PID"
+  $stagedPlatformPacks = Join-Path $shareDirectory ".platform-packs-install-$PID"
   Copy-Item -LiteralPath $cli -Destination $stagedCli
-  Copy-Item -LiteralPath $targetPacks -Destination $stagedTargetPacks -Recurse
-  Remove-Item -LiteralPath $targetPackDirectory -Recurse -Force -ErrorAction SilentlyContinue
-  Move-Item -LiteralPath $stagedTargetPacks -Destination $targetPackDirectory
-  $stagedTargetPacks = $null
+  Copy-Item -LiteralPath $platformPacks -Destination $stagedPlatformPacks -Recurse
+  Remove-Item -LiteralPath $platformPackDirectory -Recurse -Force -ErrorAction SilentlyContinue
+  Move-Item -LiteralPath $stagedPlatformPacks -Destination $platformPackDirectory
+  $stagedPlatformPacks = $null
   $installedCli = Join-Path $binDirectory "tok.exe"
   Remove-Item -LiteralPath $installedCli -Force -ErrorAction SilentlyContinue
   Move-Item -LiteralPath $stagedCli -Destination $installedCli
@@ -101,7 +101,7 @@ try {
 
   Write-Output ""
   Write-Output "Installed tokamak $tag in $binDirectory"
-  Write-Output "Installed target packs in $targetPackDirectory"
+  Write-Output "Installed platform packs in $platformPackDirectory"
   if (@($env:Path -split [System.IO.Path]::PathSeparator) -notcontains $binDirectory) {
     Write-Output "Add $binDirectory to PATH, then open a new terminal."
   }
@@ -111,7 +111,7 @@ try {
   if ($stagedCli) {
     Remove-Item -LiteralPath $stagedCli -Force -ErrorAction SilentlyContinue
   }
-  if ($stagedTargetPacks) {
-    Remove-Item -LiteralPath $stagedTargetPacks -Recurse -Force -ErrorAction SilentlyContinue
+  if ($stagedPlatformPacks) {
+    Remove-Item -LiteralPath $stagedPlatformPacks -Recurse -Force -ErrorAction SilentlyContinue
   }
 }

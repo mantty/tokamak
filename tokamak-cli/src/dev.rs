@@ -31,7 +31,7 @@ const RELAY_HEADER_LIMIT: usize = 64 * 1024;
 pub(crate) struct Request {
     pub(crate) device_id: String,
     pub(crate) project_dir: PathBuf,
-    pub(crate) target_pack_dir: Option<PathBuf>,
+    pub(crate) platform_pack_dir: Option<PathBuf>,
     pub(crate) tokamak_config_path: PathBuf,
     pub(crate) wrangler_config_path: Option<PathBuf>,
     pub(crate) set: Vec<variables::SetVariable>,
@@ -205,7 +205,7 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
     let summary = pipeline::run_development(&pipeline::DevelopmentRequest {
         platform: session.device.platform,
         project_dir: session.request.project_dir.clone(),
-        target_pack_dir: session.request.target_pack_dir.clone(),
+        platform_pack_dir: session.request.platform_pack_dir.clone(),
         tokamak_config_path: session.request.tokamak_config_path.clone(),
         wrangler_config_path: session.request.wrangler_config_path.clone(),
         endpoint: session.relay.device_endpoint(),

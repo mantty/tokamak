@@ -11,11 +11,11 @@ pnpm install --frozen-lockfile
 pnpm run build
 ```
 
-Build a target pack from the tokamak workspace, then package it:
+Build a platform pack from the tokamak workspace, then package it:
 
 ```sh
-cargo run -p xtask -- target-pack --target macos-arm64
-TOKAMAK_TARGET_PACK_DIR=../../target/tokamak-target-packs \
+cargo run -p xtask -- platform-pack --target macos-arm64
+TOKAMAK_PLATFORM_PACK_PATH=../../target/tokamak-platform-packs \
   cargo run -p tokamak-cli -- build macos --project . --wrangler dist/server/wrangler.json
 ```
 
@@ -31,10 +31,10 @@ Worker. Run it in a packaged simulator app, not `tok dev`:
 ```sh
 # From the tokamak workspace:
 cargo build -p tokamak-cli --release
-cargo run -p xtask -- target-pack --target ios-simulator-arm64
+cargo run -p xtask -- platform-pack --target ios-simulator-arm64
 cd examples/astro
 pnpm build
-TOKAMAK_TARGET_PACK_DIR=../../target/tokamak-target-packs \
+TOKAMAK_PLATFORM_PACK_PATH=../../target/tokamak-platform-packs \
   ../../target/release/tok build ios-simulator \
   --wrangler wrangler.runtime-test.json --skip-project-build
 xcrun simctl install booted build/ios-simulator/tokamak-example-astro.app

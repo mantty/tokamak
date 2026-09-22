@@ -8,7 +8,35 @@ Create Android, iOS, macOS, Windows, and native web applications from a single c
 
 ## Install
 
-On macOS, Linux, or WSL:
+Add the `tok` CLI to your project:
+
+```sh
+npm install --save-dev @tokamakdev/tok@beta
+```
+
+With pnpm, use `pnpm add -D @tokamakdev/tok@beta`. Run it with `npx tok`
+(`pnpm exec tok`) or from a `package.json` script; the examples in this README
+write `tok`. Pre-releases are published with the `beta` tag.
+
+The package installs the `tok` binary for your machine and the platform packs
+it can build. Platform packs contain the tokamak runtime and native shell for
+one target:
+
+| Machine | Platform packs |
+| --- | --- |
+| macOS, Apple silicon | `android-arm64`, `ios-arm64`, `ios-simulator-arm64`, `macos-arm64` |
+| macOS, Intel | `android-arm64`, `ios-arm64`, `ios-simulator-x64`, `macos-x64` |
+| Windows x64 | `android-arm64`, `windows-x64` |
+| Linux x64 | `android-arm64` |
+
+Each platform pack is an optional dependency named
+`@tokamakdev/platform-<target>`, so an install that omits optional
+dependencies (`--omit=optional`, `--no-optional`) leaves them out.
+
+### Installer script
+
+If you do not use npm, the installer script installs `tok` and every platform
+pack for your user account. On macOS, Linux, or WSL:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mantty/tokamak/main/scripts/install.sh | bash
@@ -21,22 +49,26 @@ irm https://raw.githubusercontent.com/mantty/tokamak/main/scripts/install.ps1 | 
 ```
 
 The installer downloads the newest published release, including pre-releases,
-and installs the CLI and every target pack under `~/.local`. It prints the PATH
+and installs the CLI and every platform pack under `~/.local`. It prints the PATH
 change when `~/.local/bin` is not already available.
 It optionally uses `GH_TOKEN` or `GITHUB_TOKEN` to authenticate the GitHub
 release lookup, and otherwise keeps using the unauthenticated lookup.
 
-The CLI is also published to npm as `@tokamakdev/tok`, with the workspace
-version and a `-beta.N` suffix for pre-releases:
+### Platform pack lookup
 
-```sh
-npm install -g @tokamakdev/tok@beta
-```
+`tok` uses the first of:
 
-The npm package contains the CLI only. `tok` uses `TOKAMAK_TARGET_PACK_DIR`
-when it is set, otherwise looks for target packs next to its executable and
-then under `~/.local/share/tokamak/target-packs`, where the installer places
-them.
+1. the directory passed with `--platform-pack`;
+2. `TOKAMAK_PLATFORM_PACK_PATH`, a list of directories that each contain
+   `<target>/platform-pack.json`, separated by `:` (`;` on Windows);
+3. `platform-packs` directories installed alongside the `tok` executable;
+4. `~/.local/share/tokamak/platform-packs`, where the installer places them.
+
+When `tok` runs from the npm package, its launcher sets
+`TOKAMAK_PLATFORM_PACK_PATH` to the platform packs installed with it, unless
+the variable is already set.
+
+### Platform toolchains
 
 tokamak doesn't add any external dependencies, but you will need the toolchain for any platforms you wish to build for:
 
@@ -74,6 +106,54 @@ tok build macos --wrangler dist/server/wrangler.json
 Platforms are `android`, `ios`, `ios-simulator`, `macos`, and `windows`.
 Multiple platforms can be comma-separated, for example `macos,android`.
 
+### Wrangler environments and build reuse
+
+`--env NAME` selects `env.NAME.vars` from `wrangler.json`, `.jsonc`, or `.toml`;
+omit it for top-level `vars`. Named vars do not inherit top-level vars. Values
+can be strings or JSON.
+
+```jsonc
+{
+  "name": "my-app",
+  "main": "dist/server/entry.mjs",
+  "vars": { "API_URL": "https://api.example.com" },
+  "env": {
+    "test": { "vars": { "API_URL": "https://test-api.example.com", "OPTIONS": { "preview": true } } },
+    "production": { "vars": { "API_URL": "https://api.example.com" } }
+  }
+}
+```
+
+```sh
+tok build ios --env test
+tok build ios --env production
+```
+
+For generated Wrangler files, pass `--wrangler PATH`; `userConfigPath` supplies
+vars from the source config. Never put secrets in packaged `vars`.
+
+`build/` holds output and reusable build data; `--build-dir PATH` moves both.
+An empty or stale cache builds normally. Changing only vars on Apple updates
+the bundled environment file and re-signs without recompiling the shell.
+
+GitHub Actions: use these steps in both a merge build and a later promotion
+workflow on the default branch. Promotion takes the tested commit as a
+`workflow_dispatch` input named `sha` and uses `--env production` in the final step.
+
+```yaml
+- uses: actions/checkout@v6
+  with:
+    ref: ${{ inputs.sha || github.sha }}
+- uses: actions/cache@v4
+  with:
+    path: build/
+    key: tokamak-ios-${{ runner.os }}-${{ inputs.sha || github.sha }}
+- run: tok build ios --env test
+```
+
+Install `tok` and project dependencies before the build step; upload the signed
+output separately.
+
 ### Tokamak configuration
 
 tokamak looks for `tokamak.jsonc` in the current directory, followed by
@@ -83,7 +163,9 @@ JSONC comments and trailing commas are supported, and plain JSON is also valid.
 
 The supported values are `name`, `identifier`, `icon`, and `version`. Top-level
 values are defaults; a platform object (`android`, `ios`, `macos`, `windows`)
-overrides them for that platform. `ios` covers iOS devices and simulators.
+overrides `name`, `identifier`, or `icon` for that platform. `version` is
+top-level only. `ios` covers iOS devices and simulators. Unknown keys are
+rejected.
 
 ```jsonc
 {
@@ -148,7 +230,7 @@ native default when no version is supplied. Apple builds use the value for
 `CFBundleShortVersionString` and, by default, `CFBundleVersion`; Android uses it
 as `versionName`.
 
-Apple target packs accept an optional per-build number through target-pack
+Apple platform packs accept an optional per-build number through platform-pack
 variables. Use `ios-build-number` for iOS (including the simulator) and
 `macos-build-number` for macOS:
 
@@ -159,9 +241,9 @@ TOKAMAK_MACOS_BUILD_NUMBER=7 tok build macos
 
 These map to `TOKAMAK_IOS_BUILD_NUMBER` and `TOKAMAK_MACOS_BUILD_NUMBER`.
 Values must contain one to three period-separated integers. If omitted, the
-target pack continues to use the app version as the Apple build number.
+platform pack continues to use the app version as the Apple build number.
 
-Apple target packs also accept an optional user-provided application plist.
+Apple platform packs also accept an optional user-provided application plist.
 Set `ios-plist` for iOS devices and simulators, or `macos-plist` for macOS:
 
 ```sh
@@ -175,7 +257,7 @@ The file may be XML or binary and must have a dictionary at its root. It is
 optional; when present, Tokamak layers its generated application values first,
 then icon values, plugin values, and finally the user plist. User values
 therefore take precedence over all other values, including the SDK, platform,
-and Xcode provenance keys Apple target packs generate from the active
+and Xcode provenance keys Apple platform packs generate from the active
 toolchain. Values not supplied by the user are preserved.
 
 Each icon platform entry is optional. If the Tokamak configuration or a
@@ -214,8 +296,8 @@ tok dev DEVICE_ID --set ios-team-id=YOUR_TEAM_ID -- pnpm dev
 tok build ios --set ios-team-id=YOUR_TEAM_ID
 ```
 
-`--set` may be repeated for multiple target-pack variables. A value such as
-`ios-team-id=YOUR_TEAM_ID` is passed to the iOS target pack as
+`--set` may be repeated for multiple platform-pack variables. A value such as
+`ios-team-id=YOUR_TEAM_ID` is passed to the iOS platform pack as
 `TOKAMAK_IOS_TEAM_ID`.
 
 Tokamak selects the signing identity and provisioning profile for that team,
@@ -257,8 +339,8 @@ tok build ios \
 
 An explicit team (`TOKAMAK_IOS_TEAM_ID` or `--set ios-team-id=TEAM_ID`) and the
 manual pair are mutually exclusive. Providing both produces an error explaining
-the two choices. The Apple target pack owns the signing and provisioning
-selection; `tok` passes target-pack variables through unchanged.
+the two choices. The Apple platform pack owns the signing and provisioning
+selection; `tok` passes platform-pack variables through unchanged.
 
 Both `tok dev` and `tok build ios` use these settings; the latter provisions
 for a generic iOS device and does not require a device ID. iOS Simulator
@@ -282,6 +364,19 @@ tok dev macos --project ./my-app -- pnpm dev
 ```
 
 By default tokamak expects your server to available on `http://localhost:5173` (vite's default port). Use `--server` when the framework uses another port.
+
+## Native plugins
+
+Native capabilities are provided by npm packages such as
+`@tokamakdev/plugin-location`. Add them to your project's `dependencies`:
+
+```sh
+npm install @tokamakdev/plugin-location@beta
+```
+
+`tok build` and `tok dev` include the native code of every plugin listed in
+`dependencies`; plugins listed only in `devDependencies` are not included. Call
+plugins from browser code. Each plugin's README describes its API.
 
 ## Example
 
@@ -312,7 +407,7 @@ tok build macos \
 - Node.js 22 and pnpm 9.9.
 - CMake, Clang and libclang, and the native C/C++ toolchain for your host.
 
-Target-pack work additionally requires:
+Platform-pack work additionally requires:
 
 | Target | Requirements |
 | --- | --- |
@@ -336,28 +431,44 @@ cargo build --release -p tokamak-cli
 
 The executable is written to `target/release/tok` (`tok.exe` on Windows).
 
-### Build a target pack
+### Build a platform pack
 
 Install the Rust target, then build the runtime, native shell, and runtime tools
-for one target. Apple target packs also need both macOS host targets because the
+for one target. Apple platform packs also need both macOS host targets because the
 pack includes a universal host-side signing tool:
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-cargo run -p xtask -- target-pack --target macos-arm64
+cargo run -p xtask -- platform-pack --target macos-arm64
 ```
 
-Target packs are written to `target/tokamak-target-packs/<target>`. Run
+Platform packs are written to `target/tokamak-platform-packs/<target>`. Run
 `cargo run -p tokamak-cli -- targets` to list supported targets.
 
-### Package the plugins
+### Publish to npm
+
+Merges to `main` publish every npm package with the npm `beta` dist-tag:
+
+- the plugins as `<plugin version>-beta.<run>`;
+- `@tokamakdev/tok`, its `@tokamakdev/tok-<host>` binary packages, and the
+  `@tokamakdev/platform-<target>` platform packs as
+  `<Cargo version>-beta.<run>`. `scripts/package-cli-npm.sh` packages them from
+  the release build's CLI and platform-pack archives.
+
+The stable `latest` tag is not changed, except that npm sets it on a package's
+first publish. npm Trusted Publishing must be enabled separately for each
+package for GitHub user `mantty`, repository `tokamak`, and workflow filename
+`build.yaml`. A package must exist before Trusted Publishing can be enabled, so
+its first version is published locally.
+
+To package the plugins locally:
 
 ```sh
 pnpm --dir plugins --filter '@tokamakdev/*' exec pnpm pack --pack-destination "$PWD/artifacts"
 ```
 
 The shared plugin transport package must be published before a plugin that
-depends on it. To publish the first packages locally:
+depends on it. To publish the first plugin packages locally:
 
 ```sh
 cd plugins/core
@@ -366,21 +477,29 @@ cd ../location
 npm publish --access public
 ```
 
-Merges to `main` publish the tested plugin archives as `0.1.0-beta.<run>` with
-the npm `beta` dist-tag. The stable `latest` tag is not changed. npm Trusted
-Publishing must be enabled separately for each package for GitHub user
-`mantty`, repository `tokamak`, and workflow filename `build.yaml`.
+A new CLI or platform-pack package fails to publish from its first
+`Build and Pre-Release` run. Publish that run's packages locally, enable
+Trusted Publishing for each new package, then re-run the failed job. The
+run's artifacts are kept for one day. For the platform packs:
+
+```sh
+gh run download RUN_ID --repo mantty/tokamak --name tokamak-npm-platform-packs --dir artifacts
+for package in artifacts/tokamakdev-platform-*.tgz; do
+  npm publish "$package" --access public --tag beta
+done
+gh run rerun RUN_ID --repo mantty/tokamak --failed
+```
 
 ### Build the example against local sources
 
-After building a target pack:
+After building a platform pack:
 
 ```sh
 pnpm --dir examples/astro run build
 cargo run -p tokamak-cli -- build macos \
   --project examples/astro \
   --wrangler examples/astro/dist/server/wrangler.json \
-  --target-pack target/tokamak-target-packs/macos-arm64 \
+  --platform-pack target/tokamak-platform-packs/macos-arm64 \
   --skip-project-build
 ```
 
@@ -389,7 +508,7 @@ Use the local CLI in development mode with:
 ```sh
 cargo run -p tokamak-cli -- dev macos \
   --project examples/astro \
-  --target-pack target/tokamak-target-packs/macos-arm64 \
+  --platform-pack target/tokamak-platform-packs/macos-arm64 \
   -- pnpm dev
 ```
 
@@ -410,7 +529,7 @@ pnpm --dir examples/astro run build
 cargo fmt --all --check
 cargo test -p tokamak --features native
 node --test tokamak/tests/quickjs_runtime/runtime.test.mjs
-cargo test -p tokamak-cli --lib --bin tok --test cli --test target_pack
+cargo test -p tokamak-cli --lib --bin tok --test cli --test platform_pack
 cargo test -p xtask
 pnpm --dir plugins lint:ts
 pnpm --dir plugins test:ts
@@ -426,7 +545,7 @@ The native runtime installs Web globals before evaluating application modules.
 Supported builtin imports resolve to runtime-owned modules; they are not bundled
 into the application. Builtin JavaScript is precompiled to bytecode when the
 runtime is built and embedded in its native library. Application builds use the
-prebuilt runtime from the target pack. Static imports, dynamic imports, and
+prebuilt runtime from the platform pack. Static imports, dynamic imports, and
 `process.getBuiltinModule()` share the same implementations within a request.
 
 `cloudflare:workers` exposes `env` and `waitUntil`. Its `waitUntil` uses the same

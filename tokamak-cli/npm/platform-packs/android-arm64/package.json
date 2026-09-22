@@ -1,0 +1,17 @@
+{
+  "name": "@tokamakdev/platform-android-arm64",
+  "version": "0.0.0",
+  "description": "The tokamak platform pack for android-arm64",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mantty/tokamak.git",
+    "directory": "tokamak-cli/npm/platform-packs/android-arm64"
+  },
+  "preferUnplugged": true,
+  "files": [
+    "android-arm64"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

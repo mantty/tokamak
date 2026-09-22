@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-//! Host-side Apple signing tool shipped in Apple target packs.
+//! Host-side Apple signing tool shipped in Apple platform packs.
 
 use std::ffi::OsString;
 use std::path::PathBuf;

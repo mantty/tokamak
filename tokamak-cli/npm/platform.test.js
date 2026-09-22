@@ -1,9 +1,11 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { test } = require("node:test");
 
-const { binaryPath, packageFor } = require("./platform.js");
+const { PLATFORM_PACKS, binaryPath, packageFor, platformPackRoots } = require("./platform.js");
 
 test("maps supported platforms to their binary packages", () => {
   assert.equal(packageFor("darwin", "arm64"), "@tokamakdev/tok-darwin-arm64");
@@ -32,4 +34,22 @@ test("explains a missing platform package", () => {
     throw new Error("Cannot find module");
   };
   assert.throws(() => binaryPath("darwin", "arm64", resolve), /@tokamakdev\/tok-darwin-arm64 is not installed/);
+});
+
+test("lists every platform-pack package as an optional dependency", () => {
+  const targets = fs.readdirSync(path.join(__dirname, "platform-packs")).sort();
+  assert.deepEqual(PLATFORM_PACKS, targets.map((target) => `@tokamakdev/platform-${target}`));
+});
+
+test("returns the directories of installed platform packs", () => {
+  const installed = new Set(["@tokamakdev/platform-android-arm64", "@tokamakdev/platform-windows-x64"]);
+  const resolve = (request) => {
+    const name = request.slice(0, -"/package.json".length);
+    if (!installed.has(name)) throw new Error("Cannot find module");
+    return `/modules/${request}`;
+  };
+  assert.deepEqual(platformPackRoots(resolve), [
+    "/modules/@tokamakdev/platform-android-arm64",
+    "/modules/@tokamakdev/platform-windows-x64",
+  ]);
 });

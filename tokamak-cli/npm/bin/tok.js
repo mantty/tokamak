@@ -2,7 +2,8 @@
 "use strict";
 
 const { spawnSync } = require("node:child_process");
-const { binaryPath } = require("../platform.js");
+const path = require("node:path");
+const { binaryPath, platformPackRoots } = require("../platform.js");
 
 let binary;
 try {
@@ -16,7 +17,13 @@ try {
 // so the launcher only waits for it.
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {});
 
-const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
+const env = { ...process.env };
+if (!env.TOKAMAK_PLATFORM_PACK_PATH) {
+  const roots = platformPackRoots(require.resolve);
+  if (roots.length > 0) env.TOKAMAK_PLATFORM_PACK_PATH = roots.join(path.delimiter);
+}
+
+const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit", env });
 if (result.error) {
   console.error(`could not run ${binary}: ${result.error.message}`);
   process.exit(1);

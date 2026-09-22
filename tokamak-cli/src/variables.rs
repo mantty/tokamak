@@ -1,4 +1,4 @@
-//! Target-pack environment overrides.
+//! Platform-pack environment overrides.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use anyhow::{Result, bail};
 
-/// A command-line target-pack variable.
+/// A command-line platform-pack variable.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SetVariable {
     key: String,

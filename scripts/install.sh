@@ -48,48 +48,48 @@ tag="$(printf '%s\n' "$release" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]
 release_url="https://github.com/$repository/releases/download/$tag"
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/tokamak-install.XXXXXXXX")"
 staged_cli=
-staged_target_packs=
+staged_platform_packs=
 cleanup() {
   rm -rf "$temporary"
   [[ -z $staged_cli ]] || rm -f "$staged_cli"
-  [[ -z $staged_target_packs ]] || rm -rf "$staged_target_packs"
+  [[ -z $staged_platform_packs ]] || rm -rf "$staged_platform_packs"
 }
 trap cleanup EXIT
 
 printf 'Downloading tokamak %s for %s...\n' "$tag" "$cli_host"
-mkdir -p "$temporary/cli" "$temporary/target-packs"
+mkdir -p "$temporary/cli" "$temporary/platform-packs"
 cli_archive="$temporary/tokamak-cli.tar.gz"
 curl -fsSL "${download_headers[@]}" "$release_url/tokamak-cli-$cli_host.tar.gz" -o "$cli_archive"
 tar -xzf "$cli_archive" -C "$temporary/cli"
 [[ -f $temporary/cli/tok ]] || fail 'CLI archive does not contain tok'
 
 for target in "${targets[@]}"; do
-  printf 'Downloading target pack %s...\n' "$target"
-  archive="$temporary/tokamak-target-pack-$target.tar.gz"
-  destination="$temporary/target-packs/$target"
+  printf 'Downloading platform pack %s...\n' "$target"
+  archive="$temporary/tokamak-platform-pack-$target.tar.gz"
+  destination="$temporary/platform-packs/$target"
   mkdir -p "$destination"
-  curl -fsSL "${download_headers[@]}" "$release_url/tokamak-target-pack-$target.tar.gz" -o "$archive"
+  curl -fsSL "${download_headers[@]}" "$release_url/tokamak-platform-pack-$target.tar.gz" -o "$archive"
   tar -xzf "$archive" -C "$destination"
-  [[ -f $destination/target-pack.json ]] || fail "$target archive does not contain target-pack.json"
+  [[ -f $destination/platform-pack.json ]] || fail "$target archive does not contain platform-pack.json"
 done
 
 bin_dir="$HOME/.local/bin"
 share_dir="$HOME/.local/share/tokamak"
-target_pack_dir="$share_dir/target-packs"
+platform_pack_dir="$share_dir/platform-packs"
 mkdir -p "$bin_dir" "$share_dir"
 
 staged_cli="$bin_dir/.tokamak-install-$$"
-staged_target_packs="$share_dir/.target-packs-install-$$"
+staged_platform_packs="$share_dir/.platform-packs-install-$$"
 install -m 755 "$temporary/cli/tok" "$staged_cli"
-cp -R "$temporary/target-packs" "$staged_target_packs"
-rm -rf "$target_pack_dir"
-mv "$staged_target_packs" "$target_pack_dir"
-staged_target_packs=
+cp -R "$temporary/platform-packs" "$staged_platform_packs"
+rm -rf "$platform_pack_dir"
+mv "$staged_platform_packs" "$platform_pack_dir"
+staged_platform_packs=
 mv -f "$staged_cli" "$bin_dir/tok"
 staged_cli=
 
 printf '\nInstalled tokamak %s in %s\n' "$tag" "$bin_dir"
-printf 'Installed target packs in %s\n' "$target_pack_dir"
+printf 'Installed platform packs in %s\n' "$platform_pack_dir"
 case ":${PATH:-}:" in
   *":$bin_dir:"*) ;;
   *)

@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 if ($Command -ne "build" -or $Target -ne "windows-x64" -or $RustTarget -ne "x86_64-pc-windows-msvc" -or [string]::IsNullOrWhiteSpace($Output)) {
-  throw "usage: target-pack.ps1 build windows-x64 x86_64-pc-windows-msvc OUTPUT"
+  throw "usage: platform-pack.ps1 build windows-x64 x86_64-pc-windows-msvc OUTPUT"
 }
 
 $workspace = (Get-Location).Path

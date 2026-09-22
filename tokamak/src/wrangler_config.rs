@@ -49,6 +49,16 @@ pub enum Error {
     /// A Wrangler name cannot be used as a tokamak app identity.
     #[error("wrangler config name is not a safe app name: {0}")]
     InvalidAppName(String),
+    /// The requested environment is not declared in the Wrangler configuration.
+    #[error(
+        "wrangler environment '{name}' not found in {path}; define env.{name} or omit --env to use top-level values"
+    )]
+    EnvironmentNotFound {
+        /// Path to the configuration file.
+        path: PathBuf,
+        /// Requested environment name.
+        name: String,
+    },
 }
 
 /// Result type for Wrangler configuration operations.
@@ -61,6 +71,8 @@ const CONFIG_FILE_NAMES: [&str; 3] = ["wrangler.json", "wrangler.jsonc", "wrangl
 pub struct WranglerConfig {
     /// Absolute path to the config file that was parsed.
     pub path: PathBuf,
+    /// Original Wrangler file whose `vars` supply packaged environment values.
+    pub vars_source: PathBuf,
     /// Top-level Worker name used as the tokamak application identity.
     pub name: String,
     /// Worker entrypoint, resolved relative to the config file directory.
@@ -270,8 +282,21 @@ pub fn resolve_config_path(
 /// unsupported format, omits a field tokamak needs to package a Worker, or uses a
 /// name that cannot identify a tokamak application.
 pub fn load_config(config_path: &Path) -> Result<WranglerConfig> {
+    load_config_for_env(config_path, None)
+}
+
+/// Load the top-level or a named Wrangler environment.
+///
+/// # Errors
+///
+/// Returns an error when the configuration is invalid or the named environment
+/// does not exist.
+pub fn load_config_for_env(
+    config_path: &Path,
+    environment: Option<&str>,
+) -> Result<WranglerConfig> {
     let config_path = absolute_path(config_path)?;
-    let raw = parse_config(&config_path)?;
+    let (raw, source) = select_environment(parse_config(&config_path)?, &config_path, environment)?;
     let config_dir = config_path
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
@@ -292,6 +317,7 @@ pub fn load_config(config_path: &Path) -> Result<WranglerConfig> {
         .transpose()?;
 
     Ok(WranglerConfig {
+        vars_source: source.unwrap_or_else(|| config_path.clone()),
         path: config_path,
         name,
         main: resolve_path(&config_dir, Path::new(&main)),
@@ -299,10 +325,11 @@ pub fn load_config(config_path: &Path) -> Result<WranglerConfig> {
         vars: raw.vars,
         rules: raw
             .rules
+            .unwrap_or_default()
             .into_iter()
             .map(resolve_rule)
             .collect::<Result<Vec<_>>>()?,
-        find_additional_modules: raw.find_additional_modules,
+        find_additional_modules: raw.find_additional_modules.unwrap_or_default(),
         base_dir: resolve_path(
             &config_dir,
             raw.base_dir
@@ -322,13 +349,62 @@ struct RawWranglerConfig {
     assets: Option<RawWranglerAssets>,
     #[serde(default)]
     vars: BTreeMap<String, Value>,
-    #[serde(default)]
-    rules: Vec<RawWranglerRule>,
-    #[serde(default)]
-    find_additional_modules: bool,
+    rules: Option<Vec<RawWranglerRule>>,
+    find_additional_modules: Option<bool>,
     base_dir: Option<String>,
+    #[serde(default)]
+    env: BTreeMap<String, RawWranglerConfig>,
     #[serde(flatten)]
     other: BTreeMap<String, Value>,
+}
+
+fn select_environment(
+    mut raw: RawWranglerConfig,
+    config_path: &Path,
+    environment: Option<&str>,
+) -> Result<(RawWranglerConfig, Option<PathBuf>)> {
+    let source = raw
+        .other
+        .get("userConfigPath")
+        .and_then(Value::as_str)
+        .map(|path| {
+            resolve_path(
+                config_path.parent().unwrap_or(Path::new(".")),
+                Path::new(path),
+            )
+        });
+    if let Some(name) = environment {
+        if let Some(selected) = raw.env.remove(name) {
+            raw.name = selected.name.or(raw.name);
+            raw.main = selected.main.or(raw.main);
+            raw.assets = selected.assets.or(raw.assets);
+            raw.rules = selected.rules.or(raw.rules);
+            raw.find_additional_modules = selected
+                .find_additional_modules
+                .or(raw.find_additional_modules);
+            raw.base_dir = selected.base_dir.or(raw.base_dir);
+            raw.vars = selected.vars;
+            raw.other = selected.other;
+        } else if source.is_none() {
+            return Err(Error::EnvironmentNotFound {
+                path: config_path.to_path_buf(),
+                name: name.to_owned(),
+            });
+        }
+        if let Some(source) = source.as_ref() {
+            raw.vars = parse_config(source)?
+                .env
+                .remove(name)
+                .ok_or_else(|| Error::EnvironmentNotFound {
+                    path: source.clone(),
+                    name: name.to_owned(),
+                })?
+                .vars;
+        }
+    } else if let Some(source) = source.as_ref() {
+        raw.vars = parse_config(source)?.vars;
+    }
+    Ok((raw, source))
 }
 
 #[derive(Debug, Deserialize)]

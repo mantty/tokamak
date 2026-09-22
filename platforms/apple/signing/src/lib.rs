@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-//! Apple target-pack plist generation and signing asset discovery.
+//! Apple platform-pack plist generation and signing asset discovery.
 
 mod info_plist;
 pub use info_plist::write_info_plist;

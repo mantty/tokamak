@@ -43,7 +43,7 @@ features deferred by the compatibility contract.
 - Compile the Worker to QuickJS bytecode during `tok build` and load that
   bytecode per request.
 - Use the same pinned `rquickjs` and QuickJS-NG revision in `tokamak-cli` and the
-  target runtime. Target packs record `tokamakVersion`; the CLI accepts a pack
+  target runtime. Platform packs record `tokamakVersion`; the CLI accepts a pack
   only when that value exactly matches the CLI's package version.
 - Schedule each request on the shared Tokio runtime. Keep its QuickJS runtime,
   context, and JavaScript execution on one Tokio blocking task.
@@ -60,7 +60,7 @@ features deferred by the compatibility contract.
 - Do not add a JavaScript-engine abstraction, a production dual-backend mode,
   N-API, dynamic native modules, or a third-party add-on ABI.
 
-App users consume a prebuilt tokamak CLI and target packs. QuickJS-NG, `qjsc`,
+App users consume a prebuilt tokamak CLI and platform packs. QuickJS-NG, `qjsc`,
 Rust, a C compiler, and bindgen require no separate user installation.
 
 ## Architecture
@@ -328,8 +328,8 @@ ownership does not depend on it because each runtime has one `RequestState`.
 | Root-level Worker-package modules | Package Worker bytecode, source map, environment, and `/bundle` manifest. |
 | Runtime JavaScript | Remove all `bare-*` dependencies as features move. |
 | Worker packer | Emit bundled ESM; remove the CommonJS worklet and `bare-pack`. |
-| `tools/xtask` | Build target packs and write their tokamak version. |
-| Native shells | Keep the ABI and co-locate each platform build entrypoint with its shell. The CLI invokes the fixed target-pack entrypoint convention. |
+| `tools/xtask` | Build platform packs and write their tokamak version. |
+| Native shells | Keep the ABI and co-locate each platform build entrypoint with its shell. The CLI invokes the fixed platform-pack entrypoint convention. |
 | CI | Build the pinned engine for every target and package only prebuilt artifacts for users. |
 
 ## Implementation sequence
@@ -403,12 +403,12 @@ dependency at the same time.
 
 ### 6. Integrate and cut over
 
-1. Update app layout, CLI packing, target-pack manifest contract, artifacts,
+1. Update app layout, CLI packing, platform-pack manifest contract, artifacts,
    and licenses.
 2. Build and start the Astro example through the normal package scripts on
    macOS, iOS Simulator, and Android emulator.
 3. Build physical iOS, both simulator architectures, both macOS
-   architectures, Android arm64, and Windows x64 target packs.
+   architectures, Android arm64, and Windows x64 platform packs.
 4. Switch `tokamak` directly to `tokamak/src/quickjs`.
 5. Delete the top-level `bare/` directory, `tokamak-bare`, BareKit, `bare-pack`,
    Bare packaging, and unused `bare-*` dependencies. Do not add a top-level
@@ -420,7 +420,7 @@ dependency at the same time.
 - Differential fixtures compare tokamak with pinned workerd/Miniflare behaviour,
   including values, errors, headers, streams, cancellation, and lifetimes.
 - Bytecode produced by each supported host CLI loads on every target available
-  from that host. Target packs whose `tokamakVersion` differs from the running
+  from that host. Platform packs whose `tokamakVersion` differs from the running
   CLI's package version fail during build.
 - Every builtin is tested through static import, its supported unprefixed
   form, and `process.getBuiltinModule()`.
@@ -459,7 +459,7 @@ dependency at the same time.
 - Current Workers and Node behaviour, including `Intl`, does not regress.
 - The existing Astro app runs unchanged on macOS, iOS Simulator, and Android
   emulator using the normal package scripts.
-- Every supported target pack builds from pinned sources.
+- Every supported platform pack builds from pinned sources.
 - The local mTLS gateway, streaming HTTP, WebSockets, assets, cache, suspend,
   resume, and shutdown retain their current behaviour.
 - `node:fs` matches the Workers VFS contract and cannot access host storage.

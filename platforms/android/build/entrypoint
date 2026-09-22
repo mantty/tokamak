@@ -46,7 +46,7 @@ xml_escape() {
       -e "s/'/\&apos;/g"
 }
 
-rm -rf "$project" "$output"
+rm -rf "$app/src/main/assets" "$app/src/main/jniLibs" "$app/src/main/kotlin" "$app/src/main/res" "$output"
 mkdir -p "$native" "$assets" "$kotlin" "$plugins_root" "$app/src/main/res"
 cp -R "$input/app/." "$assets/"
 cp "$input/runtime/libtokamak.so" "$native/libtokamak.so"

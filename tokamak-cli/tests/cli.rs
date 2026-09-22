@@ -46,7 +46,7 @@ fn lists_supported_targets() -> TestResult {
 }
 
 #[test]
-fn accepts_target_pack_variables_for_dev_and_build() -> TestResult {
+fn accepts_platform_pack_variables_for_dev_and_build() -> TestResult {
     let project = tempfile::tempdir()?;
     let missing_project = project.path().join("missing");
     for (command, target) in [("dev", "DEVICE"), ("build", "ios")] {

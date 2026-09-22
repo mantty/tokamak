@@ -30,14 +30,14 @@ tokamak is pre-release. Backwards compatibility is not a goal.
 | `tokamak/src/android_jni.rs`, `tokamak/src/apple_ffi.rs` | target-specific runtime bridges |
 | `tokamak-cli` | user-facing native app packaging |
 | `platforms/apple/source` | Swift shell, C ABI header, and module map |
-| `platforms/apple/build` | Apple target-pack recipe and app build entrypoint |
+| `platforms/apple/build` | Apple platform-pack recipe and app build entrypoint |
 | `platforms/android/source` | Kotlin shell sources |
-| `platforms/android/build` | Android target-pack recipe and app build entrypoint |
+| `platforms/android/build` | Android platform-pack recipe and app build entrypoint |
 | `platforms/windows/source` | Rust Windows application shell |
-| `platforms/windows/build` | Windows target-pack recipe and app build entrypoint |
-| `tools/xtask` | maintainer-only target-pack generation |
-| `tokamak-cli/src/target_pack.rs` | target-pack manifest format and target metadata |
-| `platforms/apple/signing` | Apple signing discovery and target-pack signing tool |
+| `platforms/windows/build` | Windows platform-pack recipe and app build entrypoint |
+| `tools/xtask` | maintainer-only platform-pack generation |
+| `tokamak-cli/src/platform_pack.rs` | platform-pack manifest format and target metadata |
+| `platforms/apple/signing` | Apple signing discovery and platform-pack signing tool |
 
 The root-level Worker-package modules own the Worker layout and resolve every
 path within it, so neither `tokamak-cli` nor the runtime names a file. `tokamak-cli`
@@ -46,8 +46,8 @@ writes the contract and the runtime reads it.
 The `tokamak` package contains the shared runtime and its Apple C and Android JNI
 bridges. Every platform shell remains under `platforms/`, regardless of its
 implementation language. The CLI stages common app inputs and invokes the
-uniform target-pack entrypoint. Target packs own platform project generation,
-signing, and packaging; target-pack variables pass through as
+uniform platform-pack entrypoint. Platform packs own platform project generation,
+signing, and packaging; platform-pack variables pass through as
 `TOKAMAK_<PLATFORM>_<NAME>` environment variables. Components inside `tokamak`
 depend on each other through narrow interfaces.
 
@@ -81,12 +81,12 @@ gateway after mobile foreground transitions when the listener changed ports.
 
 macOS and iOS use the same Swift shell and C runtime ABI. Android uses a Kotlin
 shell and JNI runtime ABI. Windows uses the Rust shell under
-`platforms/windows`. All target packs have the same boundary: a compiled tokamak
+`platforms/windows`. All platform packs have the same boundary: a compiled tokamak
 artifact, native shell sources where the platform compiles the shell during app
 assembly, or a precompiled shell executable, and the fixed build entrypoint.
-The entrypoint receives `build INPUT OUTPUT`, inherits target-pack variables, and
+The entrypoint receives `build INPUT OUTPUT`, inherits platform-pack variables, and
 owns the platform-specific build, signing, and packaging work. Developers need
-the native platform toolchain to build and sign an app; the Windows target pack
+the native platform toolchain to build and sign an app; the Windows platform pack
 additionally contains the precompiled Rust shell.
 
 Desktop focus, minimization, and occlusion do not suspend the tokamak runtime.

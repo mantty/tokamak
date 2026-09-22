@@ -2,8 +2,8 @@ use std::fs;
 use std::str::FromStr;
 
 use tokamak_cli::{
-    Artifact, ArtifactKind, Platform, Target, TargetPackError, TargetPackManifest, load_manifest,
-    write_manifest,
+    Artifact, ArtifactKind, Platform, PlatformPackError, PlatformPackManifest, Target,
+    load_manifest, write_manifest,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -23,7 +23,7 @@ const TARGET_METADATA: &[TargetMetadata] = &[
         Target::AndroidArm64,
         "aarch64-linux-android",
         "android",
-        "target-pack",
+        "platform-pack",
         "bin/libtokamak.so",
         "runtime/libtokamak.so",
         true,
@@ -33,7 +33,7 @@ const TARGET_METADATA: &[TargetMetadata] = &[
         Target::IosArm64,
         "aarch64-apple-ios",
         "apple",
-        "target-pack",
+        "platform-pack",
         "frameworks/TokamakRuntime.framework",
         "runtime/frameworks/TokamakRuntime.framework",
         true,
@@ -43,7 +43,7 @@ const TARGET_METADATA: &[TargetMetadata] = &[
         Target::IosSimulatorArm64,
         "aarch64-apple-ios-sim",
         "apple",
-        "target-pack",
+        "platform-pack",
         "frameworks/TokamakRuntime.framework",
         "runtime/frameworks/TokamakRuntime.framework",
         true,
@@ -53,7 +53,7 @@ const TARGET_METADATA: &[TargetMetadata] = &[
         Target::IosSimulatorX64,
         "x86_64-apple-ios",
         "apple",
-        "target-pack",
+        "platform-pack",
         "frameworks/TokamakRuntime.framework",
         "runtime/frameworks/TokamakRuntime.framework",
         true,
@@ -63,7 +63,7 @@ const TARGET_METADATA: &[TargetMetadata] = &[
         Target::MacosArm64,
         "aarch64-apple-darwin",
         "apple",
-        "target-pack",
+        "platform-pack",
         "frameworks/TokamakRuntime.framework",
         "runtime/frameworks/TokamakRuntime.framework",
         true,
@@ -73,7 +73,7 @@ const TARGET_METADATA: &[TargetMetadata] = &[
         Target::MacosX64,
         "x86_64-apple-darwin",
         "apple",
-        "target-pack",
+        "platform-pack",
         "frameworks/TokamakRuntime.framework",
         "runtime/frameworks/TokamakRuntime.framework",
         true,
@@ -83,7 +83,7 @@ const TARGET_METADATA: &[TargetMetadata] = &[
         Target::WindowsX64,
         "x86_64-pc-windows-msvc",
         "windows",
-        "target-pack.ps1",
+        "platform-pack.ps1",
         "bin/tokamak-shell-windows.exe",
         "runtime/tokamak-shell-windows.exe",
         false,
@@ -91,8 +91,8 @@ const TARGET_METADATA: &[TargetMetadata] = &[
     ),
 ];
 
-fn valid_manifest() -> TargetPackManifest {
-    TargetPackManifest {
+fn valid_manifest() -> PlatformPackManifest {
+    PlatformPackManifest {
         tokamak_version: "0.1.0".to_owned(),
         target: Target::IosArm64,
         artifacts: vec![Artifact {
@@ -109,7 +109,7 @@ fn assert_unsafe_artifact_path(path: &str) {
 
     assert!(matches!(
         manifest.validate(),
-        Err(TargetPackError::UnsafeArtifactPath(rejected)) if rejected == path
+        Err(PlatformPackError::UnsafeArtifactPath(rejected)) if rejected == path
     ));
 }
 
@@ -125,7 +125,7 @@ fn parses_known_targets_and_rejects_unknown_targets() {
     assert_eq!(Target::WindowsX64.to_string(), "windows-x64");
     assert!(matches!(
         Target::from_str("ios-armv7"),
-        Err(TargetPackError::UnknownTarget(target)) if target == "ios-armv7"
+        Err(PlatformPackError::UnknownTarget(target)) if target == "ios-armv7"
     ));
 }
 
@@ -157,7 +157,7 @@ fn exposes_canonical_build_metadata_for_every_target() {
         let platform = target.platform();
         assert_eq!(target.rust_target(), rust_target);
         assert_eq!(platform.repository_directory_name(), repository_directory);
-        assert_eq!(platform.target_pack_recipe_file_name(), recipe);
+        assert_eq!(platform.platform_pack_recipe_file_name(), recipe);
         assert_eq!(target.runtime_artifact_path(), runtime_artifact);
         assert_eq!(target.runtime_staging_path(), runtime_staging);
         assert_eq!(target.has_native_shell(), has_native_shell);
@@ -215,7 +215,7 @@ fn rejects_blank_tokamak_versions() {
 
     assert!(matches!(
         manifest.validate(),
-        Err(TargetPackError::MissingVersion)
+        Err(PlatformPackError::MissingVersion)
     ));
 }
 
@@ -230,7 +230,7 @@ fn rejects_a_different_cli_version() {
     let manifest = valid_manifest();
     assert!(matches!(
         manifest.validate_cli_version("0.1.1"),
-        Err(TargetPackError::IncompatibleTokamakVersion { required, actual })
+        Err(PlatformPackError::IncompatibleTokamakVersion { required, actual })
             if required == "0.1.0" && actual == "0.1.1"
     ));
 }
@@ -242,7 +242,7 @@ fn rejects_manifests_without_artifacts() {
 
     assert!(matches!(
         manifest.validate(),
-        Err(TargetPackError::MissingArtifacts)
+        Err(PlatformPackError::MissingArtifacts)
     ));
 }
 
@@ -253,7 +253,7 @@ fn rejects_empty_artifact_paths() {
 
     assert!(matches!(
         manifest.validate(),
-        Err(TargetPackError::EmptyArtifactPath)
+        Err(PlatformPackError::EmptyArtifactPath)
     ));
 }
 
@@ -283,7 +283,7 @@ fn rejects_windows_absolute_artifact_paths_on_any_host() {
 #[test]
 fn round_trips_manifest_json_without_losing_contract_fields() -> TestResult {
     let temp_dir = tempfile::tempdir()?;
-    let manifest_path = temp_dir.path().join("target-pack.json");
+    let manifest_path = temp_dir.path().join("platform-pack.json");
     let manifest = valid_manifest();
 
     write_manifest(&manifest_path, &manifest)?;
@@ -303,7 +303,7 @@ fn round_trips_manifest_json_without_losing_contract_fields() -> TestResult {
 #[test]
 fn load_manifest_rejects_contract_invalid_json() -> TestResult {
     let temp_dir = tempfile::tempdir()?;
-    let manifest_path = temp_dir.path().join("target-pack.json");
+    let manifest_path = temp_dir.path().join("platform-pack.json");
     fs::write(
         &manifest_path,
         r#"{
@@ -316,7 +316,7 @@ fn load_manifest_rejects_contract_invalid_json() -> TestResult {
 
     assert!(matches!(
         load_manifest(&manifest_path),
-        Err(TargetPackError::UnsafeArtifactPath(path)) if path == "../tokamak-runtime"
+        Err(PlatformPackError::UnsafeArtifactPath(path)) if path == "../tokamak-runtime"
     ));
 
     Ok(())

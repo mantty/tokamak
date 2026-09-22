@@ -1,4 +1,4 @@
-// The fake toolchain commands use POSIX shell scripts; Apple target-pack CI runs on macOS.
+// The fake toolchain commands use POSIX shell scripts; Apple platform-pack CI runs on macOS.
 #![cfg(unix)]
 
 use std::fs;

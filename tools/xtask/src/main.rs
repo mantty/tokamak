@@ -22,8 +22,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Build a target pack from the current tokamak workspace.
-    TargetPack {
+    /// Build a platform pack from the current tokamak workspace.
+    PlatformPack {
         /// Runtime target to build.
         #[arg(long)]
         target: Target,
@@ -43,9 +43,9 @@ fn main() -> ExitCode {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::TargetPack { target } => {
-            let manifest = builder::build_source_target_pack(target)?;
-            println!("Built target pack: {}", manifest.display());
+        Command::PlatformPack { target } => {
+            let manifest = builder::build_source_platform_pack(target)?;
+            println!("Built platform pack: {}", manifest.display());
         }
     }
     Ok(())

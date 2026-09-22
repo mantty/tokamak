@@ -1,0 +1,20 @@
+{
+  "name": "@tokamakdev/platform-ios-arm64",
+  "version": "0.0.0",
+  "description": "The tokamak platform pack for ios-arm64",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mantty/tokamak.git",
+    "directory": "tokamak-cli/npm/platform-packs/ios-arm64"
+  },
+  "os": [
+    "darwin"
+  ],
+  "preferUnplugged": true,
+  "files": [
+    "ios-arm64"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
