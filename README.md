@@ -135,6 +135,7 @@ vars from the source config. Never put secrets in packaged `vars`.
 `build/` holds output and reusable build data; `--build-dir PATH` moves both.
 An empty or stale cache builds normally. Changing only vars on Apple updates
 the bundled environment file and re-signs without recompiling the shell.
+Changing only the Apple build number rewrites the plist and re-signs likewise.
 
 GitHub Actions: use these steps in both a merge build and a later promotion
 workflow on the default branch. Promotion takes the tested commit as a

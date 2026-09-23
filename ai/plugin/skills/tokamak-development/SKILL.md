@@ -56,7 +56,7 @@ tok targets
 - Use `--config <path>` for the optional Tokamak configuration file; it defaults to the current directory.
 - Normal cache reuse needs no flag; use `--skip-project-build` only for current output built outside tokamak.
 - `--env NAME` selects Wrangler `env.NAME.vars`; omit it for top-level `vars`. Named vars do not inherit; strings and JSON work. Generated configs with `userConfigPath` use source vars.
-- `build/` caches output by default (`--build-dir PATH` overrides). In GitHub Actions, cache it by OS and tested commit across merge and promotion workflows on the same branch; promote with `tok build ios --env production`. Missing/stale inputs rebuild; Apple env/signing-only changes re-sign without recompiling the shell.
+- `build/` caches output by default (`--build-dir PATH` overrides). In GitHub Actions, cache it by OS and tested commit across merge and promotion workflows on the same branch; promote with `tok build ios --env production`. Missing/stale inputs rebuild; Apple env, signing, and build-number changes refresh the bundle and re-sign without recompiling the shell.
 - Use the current native platform names: `android`, `ios`, `ios-simulator`, `macos`, and `windows`.
 - Require a `package.json` build script and a Wrangler configuration with at least `name` and `main` for a packaged build.
 - Let tokamak detect pnpm, Yarn, or npm from the project's lockfile when it runs the build.

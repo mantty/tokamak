@@ -65,7 +65,16 @@ else
   app_dir=$bundle/app
 fi
 icons=$input/icons/$platform
-icon_info_plist=$temporary/icon-info.plist
+icon_info_plist=$output_parent/.tokamak/$(basename "$output").icon-info.plist
+
+write_plist() {
+  plist_args=(plist --input "$input" --output "$temporary/Info.plist")
+  if [[ -d "$icons/AppIcon.icon" ]]; then
+    plist_args+=(--icon-info-plist "$icon_info_plist")
+  fi
+  "$apple_tool" "${plist_args[@]}"
+  cp "$temporary/Info.plist" "$contents/Info.plist"
+}
 
 sign_bundle() {
   if [[ "$platform" == ios ]]; then
@@ -102,19 +111,20 @@ if [[ -f "$metadata/input-key" ]]; then
         shasum -a 256 "$plist_path"
       fi
       env | LC_ALL=C sort | sed -n '/^TOKAMAK_/p' |
-        sed '/^TOKAMAK_IOS_TEAM_ID=/d; /^TOKAMAK_IOS_SIGNING_IDENTITY=/d; /^TOKAMAK_IOS_PROVISIONING_PROFILE=/d'
+        sed '/^TOKAMAK_IOS_TEAM_ID=/d; /^TOKAMAK_IOS_SIGNING_IDENTITY=/d; /^TOKAMAK_IOS_PROVISIONING_PROFILE=/d; /^TOKAMAK_IOS_BUILD_NUMBER=/d; /^TOKAMAK_MACOS_BUILD_NUMBER=/d'
       printf '%s\n' "${DEVELOPER_DIR:-}" "$PATH"
       xcodebuild -version
     } | shasum -a 256 | cut -d ' ' -f 1
   )
-  if [[ -d "$bundle" && -f "$bundle_key_file" && $(cat "$bundle_key_file") == "$bundle_key" ]]; then
+  if [[ -d "$bundle" && -f "$bundle_key_file" && $(cat "$bundle_key_file") == "$bundle_key" && ( ! -d "$icons/AppIcon.icon" || -f "$icon_info_plist" ) ]]; then
+    write_plist
     cp "$input/app/worker-environment.json" "$app_dir/worker-environment.json"
     sign_bundle
     exit 0
   fi
 fi
 
-rm -f "$bundle_key_file"
+rm -f "$bundle_key_file" "$icon_info_plist"
 rm -rf "$bundle"
 mkdir -p "$executable_dir" "$app_dir" "$module_cache"
 cp -R "$input/app/." "$app_dir/"
@@ -206,11 +216,7 @@ done
 xcrun --sdk "$sdk" swiftc "${swift_args[@]}" -o "$executable_dir/$app_slug"
 xcrun --sdk "$sdk" strip "$executable_dir/$app_slug"
 
-plist_args=(plist --input "$input" --output "$contents/Info.plist")
-if [[ -f "$icon_info_plist" ]]; then
-  plist_args+=(--icon-info-plist "$icon_info_plist")
-fi
-"$apple_tool" "${plist_args[@]}"
+write_plist
 
 sign_bundle
 if [[ -n "${bundle_key:-}" ]]; then

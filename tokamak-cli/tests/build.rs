@@ -1076,6 +1076,87 @@ fn apple_env_only_build_reuses_the_native_bundle() -> TestResult {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn apple_build_number_change_reuses_the_native_bundle() -> TestResult {
+    for (platform, target) in [
+        ("macos", "macos-arm64"),
+        ("ios", "ios-arm64"),
+        ("ios-simulator", "ios-simulator-arm64"),
+    ] {
+        let (temporary, project, pack) = create_inputs(target)?;
+        fs::write(
+            project.join("wrangler.jsonc"),
+            r#"{"name":"demo-app","main":"dist/server/entry.mjs","env":{"test":{"vars":{"API":"test"}},"production":{"vars":{"API":"production"}}}}"#,
+        )?;
+        let icon = project.join("assets/AppIcon.icon");
+        fs::create_dir_all(&icon)?;
+        fs::write(icon.join("icon.json"), "{}")?;
+        let config = project.join("tokamak.jsonc");
+        fs::write(&config, r#"{"icon":"assets/AppIcon.icon"}"#)?;
+        let build_number = if platform == "macos" {
+            "TOKAMAK_MACOS_BUILD_NUMBER"
+        } else {
+            "TOKAMAK_IOS_BUILD_NUMBER"
+        };
+
+        let build = |number, environment| -> TestResult {
+            let mut command = build_command(platform, &project, &pack)?;
+            configure_fake_apple_tools(&mut command, temporary.path())?;
+            command
+                .arg("--config")
+                .arg(&config)
+                .env(build_number, number)
+                .args(["--env", environment])
+                .assert()
+                .success();
+            Ok(())
+        };
+        build("1", "test")?;
+        build("2", "production")?;
+        build("3", "production")?;
+
+        let commands = fs::read_to_string(temporary.path().join("apple-tool.log"))?;
+        assert_eq!(
+            commands
+                .lines()
+                .filter(|line| line.contains(" swiftc "))
+                .count(),
+            1
+        );
+        assert_eq!(
+            commands
+                .lines()
+                .filter(|line| line.contains(" actool "))
+                .count(),
+            1
+        );
+        let signatures = commands
+            .lines()
+            .filter_map(|line| line.strip_prefix("codesign-env "))
+            .collect::<Vec<_>>();
+        assert_eq!(signatures.len(), 3);
+        let bundle = project.join(format!("build/{platform}/demo-app.app"));
+        let plist = fs::read_to_string(bundle.join(if platform == "macos" {
+            "Contents/Info.plist"
+        } else {
+            "Info.plist"
+        }))?;
+        assert!(plist.contains("<key>CFBundleVersion</key><string>3</string>"));
+        assert!(plist.contains("<key>CFBundleIconName</key><string>AppIcon</string>"));
+        let app_dir = bundle.join(if platform == "macos" {
+            "Contents/Resources/app"
+        } else {
+            "app"
+        });
+        let final_environment = fs::read_to_string(app_dir.join("worker-environment.json"))?;
+        assert_eq!(signatures[2], final_environment.trim_end());
+        let environment: serde_json::Value = serde_json::from_str(&final_environment)?;
+        assert_eq!(environment["vars"]["API"], "production");
+    }
+    Ok(())
+}
+
 #[test]
 fn builds_declared_plugins_into_the_macos_shell() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
