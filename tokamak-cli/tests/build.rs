@@ -1544,10 +1544,15 @@ fn build_explains_conflicting_automatic_and_manual_signing() -> TestResult {
     Ok(())
 }
 
+/// `tok dev` for an iOS device with both automatic and manual signing, which
+/// the platform-pack entrypoint rejects.
 #[cfg(all(unix, target_os = "macos"))]
-#[test]
-fn dev_explains_conflicting_automatic_and_manual_signing() -> TestResult {
-    let (temporary, project, platform_pack) = create_inputs("ios-arm64")?;
+fn conflicting_signing_dev_command(
+    temporary: &Path,
+    project: &Path,
+    platform_pack: &Path,
+    project_arg: &Path,
+) -> TestResult<Command> {
     let profile = project.join("manual.mobileprovision");
     fs::write(&profile, "profile")?;
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
@@ -1555,24 +1560,46 @@ fn dev_explains_conflicting_automatic_and_manual_signing() -> TestResult {
     drop(listener);
 
     let mut command = Command::cargo_bin("tok")?;
-    configure_fake_apple_tools(&mut command, temporary.path())?;
+    configure_fake_apple_tools(&mut command, temporary)?;
     let server = format!("http://127.0.0.1:{port}");
     let framework = format!(
         "require('http').createServer((_, response) => response.end()).listen({port}, '127.0.0.1')"
     );
     command
         .args(["dev", "DEVICE", "--project"])
-        .arg(&project)
+        .arg(project_arg)
         .args(["--platform-pack"])
-        .arg(&platform_pack)
+        .arg(platform_pack)
         .args(["--config"])
-        .arg(&project)
+        .arg(project)
         .args(["--server", &server, "--host-address", "127.0.0.1"])
         .args(["--set", "ios-signing-identity=IDENTITY_SHA1", "--set"])
         .arg(format!("ios-provisioning-profile={}", profile.display()))
         .env("TOKAMAK_IOS_TEAM_ID", "TEAM")
         .args(["--", "node", "-e"])
-        .arg(framework)
+        .arg(framework);
+    Ok(command)
+}
+
+#[cfg(all(unix, target_os = "macos"))]
+#[test]
+fn dev_runs_the_entrypoint_for_a_relative_project_directory() -> TestResult {
+    let (temporary, project, platform_pack) = create_inputs("ios-arm64")?;
+    conflicting_signing_dev_command(temporary.path(), &project, &platform_pack, Path::new("."))?
+        .current_dir(&project)
+        .assert()
+        .failure()
+        .stderr(contains(
+            "automatic and manual iOS signing cannot be combined.",
+        ));
+    Ok(())
+}
+
+#[cfg(all(unix, target_os = "macos"))]
+#[test]
+fn dev_explains_conflicting_automatic_and_manual_signing() -> TestResult {
+    let (temporary, project, platform_pack) = create_inputs("ios-arm64")?;
+    conflicting_signing_dev_command(temporary.path(), &project, &platform_pack, &project)?
         .assert()
         .failure()
         .stderr(

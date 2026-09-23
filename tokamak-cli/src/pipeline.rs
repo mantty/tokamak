@@ -137,9 +137,17 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
     let (app_name, app_slug) = resolve_app(&tokamak, &wrangler.name, request.platform);
     let identifier = resolve_identifier(&tokamak, &app_slug, request.platform)?;
     let version = resolve_version(&tokamak)?;
+    let build_dir = fs::canonicalize(&request.project_dir)
+        .with_context(|| {
+            format!(
+                "resolve project directory: {}",
+                request.project_dir.display()
+            )
+        })?
+        .join("build");
     let (input, pack_root, manifest, project) = prepare_platform_input(
         &request.project_dir,
-        &request.project_dir.join("build"),
+        &build_dir,
         request.platform,
         request.platform_pack_dir.as_deref(),
         &tokamak,
@@ -161,7 +169,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
     )
     .context("write development metadata")?;
 
-    let bundle_dir = output_path(&project.join("build"), request.platform, &app_slug);
+    let bundle_dir = output_path(&build_dir, request.platform, &app_slug);
     support::run_entrypoint(
         &pack_root,
         &input,
