@@ -2,8 +2,7 @@
 
 Location for Tokamak applications and the web.
 
-Add it to your project's `dependencies`; `tok` does not include plugins listed
-only in `devDependencies`:
+Add it to your project's dependencies:
 
 ```sh
 npm install @tokamakdev/plugin-location

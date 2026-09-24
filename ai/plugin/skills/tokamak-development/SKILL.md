@@ -29,7 +29,7 @@ Apply the following model whenever working on a tokamak application. tokamak is 
 
 ### `tok build`
 
-- Run the project's `package.json` build script when cached output is missing or stale.
+- Run the project's build command.
 - Bundle the built Worker and assets into each requested native application under `build/<platform>`.
 - Run subsequent same-origin requests entirely through the packaged app and its embedded runtime. Do not assume a Node server, Wrangler process, internet connection, or Cloudflare account is present.
 
@@ -54,19 +54,19 @@ tok targets
 - Use `--server http://<host>:<port>` when the framework development server is not at `http://localhost:5173`.
 - Use `-w` or `--wrangler <path>` when the relevant Wrangler file is generated outside the project root.
 - Use `--config <path>` for the optional Tokamak configuration file; it defaults to the current directory.
-- Normal cache reuse needs no flag; use `--skip-project-build` only for current output built outside tokamak.
+- Use `--skip-project-build` only for current output built outside tokamak.
 - `--env NAME` selects Wrangler `env.NAME.vars`; omit it for top-level `vars`. Named vars do not inherit; strings and JSON work. Generated configs with `userConfigPath` use source vars.
 - `build/` caches output by default (`--build-dir PATH` overrides). In GitHub Actions, cache it by OS and tested commit across merge and promotion workflows on the same branch; promote with `tok build ios --env production`. Missing/stale inputs rebuild; Apple env, signing, and build-number changes refresh the bundle and re-sign without recompiling the shell.
 - Use the current native platform names: `android`, `ios`, `ios-simulator`, `macos`, and `windows`.
-- Require a `package.json` build script and a Wrangler configuration with at least `name` and `main` for a packaged build.
-- Let tokamak detect pnpm, Yarn, or npm from the project's lockfile when it runs the build.
+- Require a build command and a Wrangler configuration with at least `name` and `main` for a packaged build.
+- Without `build`, tokamak runs the `package.json` build script with pnpm, Yarn, or npm, chosen from the project's lockfile. Set `build` to a shell command when the project needs a different one, such as a monorepo task runner that also builds shared workspace packages.
 
 ### Configuration and platform-pack variables
 
 - Look for `tokamak.jsonc` in the current directory, then `tokamak.json`; the file is optional. Use `-c` or `--config` to select another file or directory.
 - JSONC permits comments and trailing commas; plain JSON is also supported.
-- The supported configuration values are `name`, `identifier`, `icon`, and `version`.
-- Top-level values are defaults; platform objects (`android`, `ios`, `macos`, `windows`) override `name`, `identifier`, or `icon` per platform, for example `{ "name": "My App", "ios": { "name": "My App Pro" } }`. `ios` also applies to `ios-simulator`. `version` is top-level only, and unknown keys are rejected.
+- The supported configuration values are `name`, `identifier`, `icon`, `version`, and `build`.
+- Top-level values are defaults; platform objects (`android`, `ios`, `macos`, `windows`) override `name`, `identifier`, or `icon` per platform, for example `{ "name": "My App", "ios": { "name": "My App Pro" } }`. `ios` also applies to `ios-simulator`. `version` and `build` are top-level only, and unknown keys are rejected.
 - A file may `include` one other configuration file (absolute, or relative to the including file); the including file is deep-merged onto the included file (keys overwrite, platform objects merge key by key, `null` removes a value). Only the loaded file may include: a nested `include` is ignored with a warning.
 - Display names preserve their spelling and capitalization. Tokamak derives a lower-case slug for filenames, application IDs, and local hosts. If `name` is absent, the Wrangler Worker name is used.
 - `identifier` values are used as the Apple bundle identifier and Android application ID. `TOKAMAK_IDENTIFIER` and platform-specific `TOKAMAK_ANDROID_IDENTIFIER`, `TOKAMAK_IOS_IDENTIFIER`, `TOKAMAK_MACOS_IDENTIFIER`, or `TOKAMAK_WINDOWS_IDENTIFIER` override configured identifiers; the iOS value also applies to simulators.
@@ -153,7 +153,7 @@ builds do not require provisioning.
 ## Use native capabilities through tokamak plugins
 
 - Import supported `@tokamakdev/*` frontend plugins for native capabilities instead of modeling those capabilities as Worker bindings.
-- Install plugins as regular `dependencies`, for example `npm install @tokamakdev/plugin-location`. `tok build` and `tok dev` include native code only for plugins listed in `dependencies`, not `devDependencies`.
+- Install plugins as project dependencies, for example `npm install @tokamakdev/plugin-location`. `tok build` and `tok dev` include native code for plugins listed in `dependencies`, `devDependencies`, or `peerDependencies`, found in the nearest `node_modules` of the project or a parent directory.
 - Call plugins from browser-side code, where the native bridge exists. Do not expect the bridge in the packaged Worker handler.
 - Preserve a plugin's web implementation or feature-detect availability when the same code also targets ordinary browsers.
 - Handle permission denial, unavailable hardware, cancellation, navigation, and page lifecycle as normal outcomes of a native capability request.

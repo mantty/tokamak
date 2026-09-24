@@ -34,9 +34,46 @@ pub(crate) fn validate_target(manifest: &PlatformPackManifest, platform: Platfor
     }
 }
 
-pub(crate) fn run_project_build(project: &Path) -> Result<()> {
+pub(crate) fn run_project_build(project: &Path, command: Option<&str>) -> Result<()> {
+    let mut build = match command {
+        Some(command) => shell_command(command),
+        None => package_build_command(project)?,
+    };
+    let status = build
+        .current_dir(project)
+        .status()
+        .with_context(|| format!("failed to run {}", build.get_program().to_string_lossy()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("project build failed with status {status}")
+    }
+}
+
+#[cfg(not(windows))]
+fn shell_command(command: &str) -> Command {
+    let mut shell = Command::new("sh");
+    shell.arg("-c").arg(command);
+    shell
+}
+
+#[cfg(windows)]
+fn shell_command(command: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+
+    let mut shell = Command::new("cmd");
+    shell
+        .args(["/d", "/s", "/c"])
+        .raw_arg(format!("\"{command}\""));
+    shell
+}
+
+fn package_build_command(project: &Path) -> Result<Command> {
     if !project.join("package.json").is_file() {
-        bail!("package.json not found in {}", project.display());
+        bail!(
+            "package.json not found in {}; add one or set `build` in the Tokamak configuration",
+            project.display()
+        );
     }
     let (program, arguments): (&str, &[&str]) = if project.join("pnpm-lock.yaml").is_file() {
         (package_manager("pnpm"), &["run", "build"])
@@ -45,16 +82,9 @@ pub(crate) fn run_project_build(project: &Path) -> Result<()> {
     } else {
         (package_manager("npm"), &["run", "build"])
     };
-    let status = Command::new(program)
-        .args(arguments)
-        .current_dir(project)
-        .status()
-        .with_context(|| format!("failed to run {program}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!("{program} build failed with status {status}")
-    }
+    let mut build = Command::new(program);
+    build.args(arguments);
+    Ok(build)
 }
 
 pub(crate) fn package_manager(name: &'static str) -> &'static str {

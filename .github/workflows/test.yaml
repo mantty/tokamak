@@ -193,6 +193,7 @@ jobs:
           cargo test -p tokamak-cli --bin tok selects_platform_package_manager_commands
           cargo test -p tokamak-cli --test build builds_windows_app_with_its_runtime_files
           cargo test -p tokamak-cli --test build builds_with_a_configured_display_name
+          cargo test -p tokamak-cli --test build runs_the_configured_build_command_in_the_project_directory
 
   validate:
     name: Validate

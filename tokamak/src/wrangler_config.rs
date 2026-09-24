@@ -71,8 +71,6 @@ const CONFIG_FILE_NAMES: [&str; 3] = ["wrangler.json", "wrangler.jsonc", "wrangl
 pub struct WranglerConfig {
     /// Absolute path to the config file that was parsed.
     pub path: PathBuf,
-    /// Original Wrangler file whose `vars` supply packaged environment values.
-    pub vars_source: PathBuf,
     /// Top-level Worker name used as the tokamak application identity.
     pub name: String,
     /// Worker entrypoint, resolved relative to the config file directory.
@@ -296,7 +294,7 @@ pub fn load_config_for_env(
     environment: Option<&str>,
 ) -> Result<WranglerConfig> {
     let config_path = absolute_path(config_path)?;
-    let (raw, source) = select_environment(parse_config(&config_path)?, &config_path, environment)?;
+    let raw = select_environment(parse_config(&config_path)?, &config_path, environment)?;
     let config_dir = config_path
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
@@ -317,7 +315,6 @@ pub fn load_config_for_env(
         .transpose()?;
 
     Ok(WranglerConfig {
-        vars_source: source.unwrap_or_else(|| config_path.clone()),
         path: config_path,
         name,
         main: resolve_path(&config_dir, Path::new(&main)),
@@ -362,7 +359,7 @@ fn select_environment(
     mut raw: RawWranglerConfig,
     config_path: &Path,
     environment: Option<&str>,
-) -> Result<(RawWranglerConfig, Option<PathBuf>)> {
+) -> Result<RawWranglerConfig> {
     let source = raw
         .other
         .get("userConfigPath")
@@ -404,7 +401,7 @@ fn select_environment(
     } else if let Some(source) = source.as_ref() {
         raw.vars = parse_config(source)?.vars;
     }
-    Ok((raw, source))
+    Ok(raw)
 }
 
 #[derive(Debug, Deserialize)]

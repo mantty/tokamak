@@ -88,10 +88,11 @@ testing instructions.
 
 We do not (currently) support all Cloudflare bindings to additional services they offer, but by and large a basic fullstack web-app written for Cloudflare workers is all you need to build a native app.
 
-Your project must have a `package.json` build script and a Wrangler config with
-at least `name` and `main`. tokamak runs the build with pnpm, Yarn, or npm based on
-the project's lockfile, then writes the native bundle under `build/<platform>`.
-The optional Tokamak configuration file is described below.
+Your project needs a build command and a Wrangler config with at least `name`
+and `main`. tokamak runs `build` from the optional Tokamak configuration file
+described below or, when that is not set, the `package.json` build script with
+pnpm, Yarn, or npm based on the project's lockfile. It then writes the native
+bundle under `build/<platform>`.
 
 ```sh
 tok build macos --project ./my-app
@@ -162,11 +163,15 @@ tokamak looks for `tokamak.jsonc` in the current directory, followed by
 different file or directory; the option defaults to the current directory.
 JSONC comments and trailing commas are supported, and plain JSON is also valid.
 
-The supported values are `name`, `identifier`, `icon`, and `version`. Top-level
-values are defaults; a platform object (`android`, `ios`, `macos`, `windows`)
-overrides `name`, `identifier`, or `icon` for that platform. `version` is
-top-level only. `ios` covers iOS devices and simulators. Unknown keys are
-rejected.
+The supported values are `name`, `identifier`, `icon`, `version`, and `build`.
+Top-level values are defaults; a platform object (`android`, `ios`, `macos`,
+`windows`) overrides `name`, `identifier`, or `icon` for that platform. `version`
+and `build` are top-level only. `ios` covers iOS devices and simulators. Unknown
+keys are rejected.
+
+`build` is a shell command that `tok build` runs in the project directory, for
+example `turbo run build --filter=my-app` in a monorepo whose shared packages
+need building first.
 
 ```jsonc
 {
@@ -376,8 +381,10 @@ npm install @tokamakdev/plugin-location
 ```
 
 `tok build` and `tok dev` include the native code of every plugin listed in
-`dependencies`; plugins listed only in `devDependencies` are not included. Call
-plugins from browser code. Each plugin's README describes its API.
+`dependencies`, `devDependencies`, or `peerDependencies`. tokamak finds each
+package as Node does, in the nearest `node_modules` of the project or a parent
+directory, so plugins installed at a workspace root are included. Call plugins
+from browser code. Each plugin's README describes its API.
 
 ## Example
 

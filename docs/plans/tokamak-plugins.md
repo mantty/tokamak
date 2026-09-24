@@ -9,8 +9,9 @@ normal web implementation.
 
 ## Package contract
 
-An app declares a plugin by adding its package to `dependencies`. No separate
-tokamak configuration is required.
+An app declares a plugin by adding its package to `dependencies`,
+`devDependencies`, or `peerDependencies`. No separate tokamak configuration is
+required.
 
 A frontend plugin package contains:
 
@@ -29,7 +30,8 @@ its frontend bridge.
 
 `tokamak-plugin.json` declares the plugin ID, kind, platform sources, native class,
 linked Apple frameworks, Info.plist values, and Android permissions. tokamak
-discovers manifests from the app's direct dependencies.
+discovers manifests from the app's direct dependencies, resolved from the
+nearest `node_modules` of the app or a parent directory.
 
 A platform omitted from the manifest has no native implementation. Calls made
 without an implementation throw `NotSupportedError`.

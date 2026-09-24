@@ -85,8 +85,6 @@ fn create_unbuilt_project(root: &Path) -> TestResult {
     fs::write(
         root.join("build.cjs"),
         r#"const fs = require("node:fs");
-const count = "project-build-count";
-fs.writeFileSync(count, String(Number(fs.existsSync(count) ? fs.readFileSync(count, "utf8") : 0) + 1));
 fs.mkdirSync("dist/server", { recursive: true });
 fs.mkdirSync("dist/client", { recursive: true });
 fs.writeFileSync("dist/server/entry.mjs", "export default {};");
@@ -105,40 +103,6 @@ fs.writeFileSync("dist/server/wrangler.json", JSON.stringify({
   "name": "built-app",
   "vars": { "API": "default" },
   "env": { "production": { "vars": { "API": "production" } } }
-}"#,
-    )?;
-    Ok(())
-}
-
-fn create_cacheable_project(project: &Path) -> TestResult {
-    fs::remove_dir_all(project.join("dist"))?;
-    fs::write(
-        project.join("package.json"),
-        r#"{"name":"demo-app","scripts":{"build":"node build.cjs"}}"#,
-    )?;
-    fs::write(
-        project.join("build.cjs"),
-        r"const fs = require('node:fs');
-fs.mkdirSync('build', { recursive: true });
-const count = 'build/project-build-count';
-fs.writeFileSync(count, String(Number(fs.existsSync(count) ? fs.readFileSync(count, 'utf8') : 0) + 1));
-fs.mkdirSync('dist/server', { recursive: true });
-fs.mkdirSync('dist/client', { recursive: true });
-fs.copyFileSync('source.mjs', 'dist/server/entry.mjs');
-fs.writeFileSync('dist/client/index.html', '<html></html>');
-",
-    )?;
-    fs::write(project.join("source.mjs"), "export default { value: 1 };")?;
-    fs::write(
-        project.join("wrangler.jsonc"),
-        r#"{
-  "name": "demo-app",
-  "main": "dist/server/entry.mjs",
-  "assets": { "directory": "dist/client" },
-  "env": {
-    "test": { "vars": { "API": "test", "OPTIONS": { "enabled": true } } },
-    "production": { "vars": { "API": "production" } }
-  }
 }"#,
     )?;
     Ok(())
@@ -826,17 +790,21 @@ fn packages_worker_vars_as_a_normalized_manifest() -> TestResult {
 fn reuses_unchanged_build_layers_across_wrangler_environments() -> TestResult {
     let (temporary, project, pack) = create_windows_inputs()?;
     let esbuild_log = temporary.path().join("esbuild.log");
-    create_cacheable_project(&project)?;
-
+    fs::write(
+        project.join("wrangler.jsonc"),
+        r#"{
+  "name": "demo-app",
+  "main": "dist/server/entry.mjs",
+  "assets": { "directory": "dist/client" },
+  "env": {
+    "test": { "vars": { "API": "test", "OPTIONS": { "enabled": true } } },
+    "production": { "vars": { "API": "production" } }
+  }
+}"#,
+    )?;
     let build = |environment: &str| -> TestResult {
-        let mut command = Command::cargo_bin("tok")?;
-        command
-            .args(["build", "windows", "--project"])
-            .arg(project.join("."))
-            .arg("--platform-pack")
-            .arg(&pack)
+        build_command("windows", &project, &pack)?
             .args(["--build-dir", ".cache/tokamak", "--env", environment])
-            .env("TOKAMAK_VERSION", "1.0.0")
             .env("TOKAMAK_TEST_ESBUILD_LOG", &esbuild_log)
             .assert()
             .success();
@@ -859,81 +827,15 @@ fn reuses_unchanged_build_layers_across_wrangler_environments() -> TestResult {
         production["vars"],
         serde_json::json!({ "API": "production" })
     );
-    assert_eq!(
-        fs::read_to_string(project.join("build/project-build-count"))?,
-        "1"
-    );
     assert_eq!(fs::read_to_string(&esbuild_log)?.lines().count(), 1);
 
-    fs::remove_dir_all(project.join("dist"))?;
-    fs::remove_dir_all(project.join("build"))?;
+    let entry = project.join("dist/server/entry.mjs");
+    fs::write(&entry, "export default { value: 2 };")?;
     build("production")?;
-    assert_eq!(
-        fs::read_to_string(project.join("build/project-build-count"))?,
-        "1"
-    );
-    assert_eq!(fs::read_to_string(&esbuild_log)?.lines().count(), 1);
-    assert!(app.join("assets/index.html").is_file());
-
-    fs::write(project.join("source.mjs"), "export default { value: 2 };")?;
-    build("production")?;
-    assert_eq!(
-        fs::read_to_string(project.join("build/project-build-count"))?,
-        "2"
-    );
     assert_eq!(fs::read_to_string(&esbuild_log)?.lines().count(), 2);
     assert_eq!(
         decompress_worker_module(&fs::read(app.join("worker-modules/entry.js.qjs"))?)?,
-        compile_module("entry.js", &fs::read(project.join("source.mjs"))?)?
-    );
-    Ok(())
-}
-
-#[test]
-fn rebuilds_a_missing_project_output_in_the_default_cache() -> TestResult {
-    let (_temporary, project, pack) = create_windows_inputs()?;
-    fs::remove_dir_all(project.join("dist"))?;
-    fs::write(
-        project.join("package.json"),
-        r#"{"name":"demo-app","scripts":{"build":"node build.cjs"}}"#,
-    )?;
-    fs::write(
-        project.join("build.cjs"),
-        r"const fs = require('node:fs');
-const count = 'project-build-count';
-fs.writeFileSync(count, String(Number(fs.existsSync(count) ? fs.readFileSync(count, 'utf8') : 0) + 1));
-fs.mkdirSync('build/server', { recursive: true });
-fs.copyFileSync('source.mjs', 'build/server/entry.mjs');
-",
-    )?;
-    fs::write(project.join("source.mjs"), "export default {};")?;
-    fs::write(
-        project.join("wrangler.jsonc"),
-        r#"{"name":"demo-app","main":"build/server/entry.mjs"}"#,
-    )?;
-    let build = || -> TestResult {
-        Command::cargo_bin("tok")?
-            .args(["build", "windows", "--project"])
-            .arg(&project)
-            .arg("--platform-pack")
-            .arg(&pack)
-            .env("TOKAMAK_VERSION", "1.0.0")
-            .assert()
-            .success();
-        Ok(())
-    };
-
-    build()?;
-    fs::remove_file(project.join("build/server/entry.mjs"))?;
-    build()?;
-    assert_eq!(
-        fs::read_to_string(project.join("project-build-count"))?,
-        "2"
-    );
-    assert!(
-        project
-            .join("build/windows/demo-app/app/worker-manifest.json")
-            .is_file()
+        compile_module("entry.js", &fs::read(&entry)?)?
     );
     Ok(())
 }
@@ -1163,6 +1065,25 @@ fn builds_declared_plugins_into_the_macos_shell() -> TestResult {
     install_location_plugin(&project)?;
 
     build_command("macos", &project, &manifest)?
+        .assert()
+        .success();
+
+    let plist = fs::read_to_string(project.join("build/macos/demo-app.app/Contents/Info.plist"))?;
+    assert!(plist.contains("<key>NSLocationUsageDescription</key><string>Location test</string>"));
+    Ok(())
+}
+
+#[test]
+fn builds_plugins_installed_above_a_relative_project_directory() -> TestResult {
+    let (temporary, project, manifest) = create_inputs("macos-arm64")?;
+    install_location_plugin(&project)?;
+    fs::rename(
+        project.join("node_modules"),
+        temporary.path().join("node_modules"),
+    )?;
+
+    build_command("macos", Path::new("."), &manifest)?
+        .current_dir(&project)
         .assert()
         .success();
 
@@ -1404,6 +1325,63 @@ fn builds_project_before_loading_generated_config() -> TestResult {
 }
 
 #[test]
+fn runs_the_configured_build_command_in_the_project_directory() -> TestResult {
+    let (temporary, project, pack) = create_windows_inputs()?;
+    fs::remove_dir_all(project.join("dist"))?;
+    fs::remove_file(project.join("package.json"))?;
+    fs::write(
+        project.join("server.cjs"),
+        "const fs = require('node:fs');\nfs.mkdirSync('dist/server', { recursive: true });\nfs.writeFileSync('dist/server/entry.mjs', 'export default {};');\n",
+    )?;
+    fs::write(
+        project.join("client.cjs"),
+        "const fs = require('node:fs');\nfs.mkdirSync('dist/client', { recursive: true });\nfs.writeFileSync('dist/client/index.html', '<html>built</html>');\n",
+    )?;
+    let config = temporary.path().join("tokamak.jsonc");
+    fs::write(
+        &config,
+        r#"{ "version": "1.0.0", "build": "node server.cjs && node client.cjs" }"#,
+    )?;
+
+    Command::cargo_bin("tok")?
+        .current_dir(temporary.path())
+        .args(["build", "windows", "--project"])
+        .arg(&project)
+        .arg("--platform-pack")
+        .arg(&pack)
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read_to_string(project.join("build/windows/demo-app/app/assets/index.html"))?,
+        "<html>built</html>"
+    );
+    Ok(())
+}
+
+#[test]
+fn stops_when_the_configured_build_command_fails() -> TestResult {
+    let (temporary, project, pack) = create_windows_inputs()?;
+    let config = temporary.path().join("tokamak.jsonc");
+    fs::write(&config, r#"{ "version": "1.0.0", "build": "exit 3" }"#)?;
+
+    Command::cargo_bin("tok")?
+        .args(["build", "windows", "--project"])
+        .arg(&project)
+        .arg("--platform-pack")
+        .arg(&pack)
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .failure()
+        .stderr(contains("project build failed"));
+    assert!(!project.join("build/windows/demo-app").exists());
+    Ok(())
+}
+
+#[test]
 fn builds_named_environment_from_generated_wrangler_config() -> TestResult {
     let (temporary, project, pack) = create_windows_inputs()?;
     fs::remove_dir_all(project.join("dist"))?;
@@ -1439,10 +1417,6 @@ fn builds_named_environment_from_generated_wrangler_config() -> TestResult {
         project.join("build/windows/built-app/app/worker-environment.json"),
     )?)?;
     assert_eq!(environment["vars"]["API"], "promoted");
-    assert_eq!(
-        fs::read_to_string(project.join("project-build-count"))?,
-        "1"
-    );
     assert_eq!(fs::read_to_string(esbuild_log)?.lines().count(), 1);
     Ok(())
 }

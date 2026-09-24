@@ -52,6 +52,8 @@ pub struct TokamakConfig {
     pub icon: PlatformValues<PathBuf>,
     /// Application version, when configured.
     pub version: Option<String>,
+    /// Shell command that builds the project, when configured.
+    pub build: Option<String>,
 }
 
 /// A configuration value with an optional default and per-platform overrides.
@@ -289,6 +291,7 @@ struct RawTokamakConfig {
     identifier: Option<String>,
     icon: Option<String>,
     version: Option<String>,
+    build: Option<String>,
     android: Option<RawPlatformConfig>,
     ios: Option<RawPlatformConfig>,
     macos: Option<RawPlatformConfig>,
@@ -311,6 +314,7 @@ fn resolve_values(config_path: &Path, raw: RawTokamakConfig) -> Result<TokamakCo
         identifier,
         icon,
         version,
+        build,
         android,
         ios,
         macos,
@@ -355,6 +359,9 @@ fn resolve_values(config_path: &Path, raw: RawTokamakConfig) -> Result<TokamakCo
         })?,
         version: version
             .map(|version| validate_value(config_path, "version", version))
+            .transpose()?,
+        build: build
+            .map(|build| validate_value(config_path, "build", build))
             .transpose()?,
     })
 }
@@ -481,6 +488,7 @@ mod tests {
               "identifier": "com.example.myapp",
               "icon": "assets/AppIcon.icon",
               "version": "1.0.0",
+              "build": "pnpm run build:native",
               "ios": { "name": "Myapp Pro", "icon": "assets/Pro.icon" },
               "android": { "identifier": "com.example.myapp.android" },
             }"#,
@@ -507,6 +515,7 @@ mod tests {
                     ..PlatformValues::default()
                 },
                 version: Some("1.0.0".to_owned()),
+                build: Some("pnpm run build:native".to_owned()),
             }
         );
         assert_eq!(
@@ -558,6 +567,7 @@ mod tests {
                 "ios.name must be a non-empty value",
             ),
             (r#"{ "version": "" }"#, "version must be a non-empty value"),
+            (r#"{ "build": " " }"#, "build must be a non-empty value"),
             (
                 r#"{ "windows": { "icon": "  " } }"#,
                 "windows.icon must be a non-empty value",
@@ -658,6 +668,7 @@ mod tests {
                     ..PlatformValues::default()
                 },
                 version: Some("1.0.0".to_owned()),
+                build: None,
             }
         );
         Ok(())

@@ -44,12 +44,14 @@ struct PluginManifest {
 }
 
 pub(crate) fn discover(project: &Path) -> Result<Vec<Plugin>> {
-    let dependencies = dependencies(project)?;
+    let project = fs::canonicalize(project)?;
     let mut plugins = Vec::new();
     let mut ids = BTreeSet::new();
 
-    for dependency in dependencies {
-        let root = project.join("node_modules").join(&dependency);
+    for dependency in dependencies(&project)? {
+        let Some(root) = package_root(&project, &dependency) else {
+            continue;
+        };
         let manifest = root.join(MANIFEST);
         if !manifest.is_file() {
             continue;
@@ -147,16 +149,25 @@ pub(crate) fn stage(plugins: &[Plugin], platform: Platform, destination: &Path) 
     Ok(())
 }
 
-fn dependencies(project: &Path) -> Result<Vec<String>> {
-    let package: serde_json::Value =
-        serde_json::from_slice(&fs::read(project.join("package.json"))?)?;
-    let Some(dependencies) = package
-        .get("dependencies")
-        .and_then(|value| value.as_object())
-    else {
-        return Ok(Vec::new());
-    };
-    Ok(dependencies.keys().cloned().collect())
+fn dependencies(project: &Path) -> Result<BTreeSet<String>> {
+    let path = project.join("package.json");
+    if !path.is_file() {
+        return Ok(BTreeSet::new());
+    }
+    let package: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+    Ok(["dependencies", "devDependencies", "peerDependencies"]
+        .into_iter()
+        .filter_map(|field| package.get(field)?.as_object())
+        .flat_map(|dependencies| dependencies.keys().cloned())
+        .collect())
+}
+
+/// The nearest `node_modules/<name>` in `project` or an ancestor, as Node resolves it.
+fn package_root(project: &Path, name: &str) -> Option<PathBuf> {
+    project
+        .ancestors()
+        .map(|directory| directory.join("node_modules").join(name))
+        .find(|root| root.is_dir())
 }
 
 fn load(root: &Path, path: &Path) -> Result<Plugin> {
@@ -238,11 +249,32 @@ fn valid_qualified_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
     use super::{discover, valid_plugin_id, valid_qualified_name};
     use tokamak_cli::Platform;
 
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    fn write_plugin(root: &Path, id: &str) -> TestResult {
+        fs::create_dir_all(root.join("ios"))?;
+        fs::write(root.join("ios/Plugin.swift"), "")?;
+        let manifest = serde_json::json!({
+            "schemaVersion": 1,
+            "id": id,
+            "kind": "frontend",
+            "platforms": { "ios": { "class": "Plugin", "sources": ["ios/Plugin.swift"] } },
+        });
+        fs::write(root.join("tokamak-plugin.json"), manifest.to_string())?;
+        Ok(())
+    }
+
+    fn discovered_ids(project: &Path) -> TestResult<Vec<String>> {
+        Ok(discover(project)?
+            .into_iter()
+            .map(|plugin| plugin.id)
+            .collect())
+    }
 
     #[test]
     fn discovers_frontend_plugins_from_dependencies() -> TestResult {
@@ -279,6 +311,68 @@ mod tests {
             .ok_or("iOS plugin is missing")?;
         assert_eq!(platform.class, "LocationPlugin");
         assert_eq!(plugins[0].sources(Platform::Ios)?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn discovers_plugins_from_dev_and_peer_dependencies() -> TestResult {
+        let root = tempfile::tempdir()?;
+        fs::write(
+            root.path().join("package.json"),
+            r#"{"devDependencies":{"camera":"1.0.0"},"peerDependencies":{"location":"1.0.0"}}"#,
+        )?;
+        write_plugin(&root.path().join("node_modules/camera"), "camera")?;
+        write_plugin(&root.path().join("node_modules/location"), "location")?;
+
+        assert_eq!(discovered_ids(root.path())?, ["camera", "location"]);
+        Ok(())
+    }
+
+    #[test]
+    fn resolves_each_dependency_to_its_nearest_node_modules_copy() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        let app = workspace.path().join("apps/app");
+        fs::create_dir_all(&app)?;
+        fs::write(
+            app.join("package.json"),
+            r#"{"dependencies":{"camera":"1.0.0","location":"2.0.0"}}"#,
+        )?;
+        write_plugin(&workspace.path().join("node_modules/camera"), "camera")?;
+        write_plugin(
+            &workspace.path().join("node_modules/location"),
+            "hoisted-location",
+        )?;
+        write_plugin(&app.join("node_modules/location"), "location")?;
+
+        assert_eq!(discovered_ids(&app)?, ["camera", "location"]);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovers_workspace_plugins_linked_into_an_ancestor_node_modules() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        let app = workspace.path().join("apps/app");
+        fs::create_dir_all(&app)?;
+        fs::write(
+            app.join("package.json"),
+            r#"{"dependencies":{"@acme/location":"workspace:*"}}"#,
+        )?;
+        let package = workspace.path().join("packages/location");
+        write_plugin(&package, "location")?;
+        fs::create_dir_all(workspace.path().join("node_modules/@acme"))?;
+        std::os::unix::fs::symlink(
+            &package,
+            workspace.path().join("node_modules/@acme/location"),
+        )?;
+
+        let plugins = discover(&app)?;
+
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(
+            plugins[0].sources(Platform::Ios)?,
+            [fs::canonicalize(package.join("ios/Plugin.swift"))?]
+        );
         Ok(())
     }
 

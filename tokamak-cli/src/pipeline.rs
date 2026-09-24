@@ -74,10 +74,8 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     let environment = variables::environment(&request.set)?;
     let tokamak = load_project_config(&request.tokamak_config_path)?;
     let version = required_version(&tokamak)?;
-    let mut before = None;
-    if !request.skip_project_build && !cache::project_is_current(&project, &build_dir)? {
-        before = Some(cache::project_files(&project, &build_dir)?);
-        support::run_project_build(&project)?;
+    if !request.skip_project_build {
+        support::run_project_build(&project, tokamak.build.as_deref())?;
     }
     let wrangler = load_wrangler(
         &request.project_dir,
@@ -85,9 +83,6 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         request.wrangler_env.as_deref(),
     )?;
     support::validate_project_build(&wrangler)?;
-    if let Some(before) = before.as_ref() {
-        cache::record_project_build(&project, &build_dir, &wrangler, before)?;
-    }
     let plugins = plugins::discover(&request.project_dir)?;
     let context = BuildContext {
         build_dir: &build_dir,
