@@ -1571,6 +1571,20 @@ fn dev_runs_the_entrypoint_for_a_relative_project_directory() -> TestResult {
 
 #[cfg(all(unix, target_os = "macos"))]
 #[test]
+fn dev_selects_an_ios_device_when_android_devices_cannot_be_queried() -> TestResult {
+    let (temporary, project, platform_pack) = create_inputs("ios-arm64")?;
+    conflicting_signing_dev_command(temporary.path(), &project, &platform_pack, &project)?
+        .env("ANDROID_ADB_SERVER_PORT", "0")
+        .assert()
+        .failure()
+        .stderr(contains(
+            "automatic and manual iOS signing cannot be combined.",
+        ));
+    Ok(())
+}
+
+#[cfg(all(unix, target_os = "macos"))]
+#[test]
 fn dev_explains_conflicting_automatic_and_manual_signing() -> TestResult {
     let (temporary, project, platform_pack) = create_inputs("ios-arm64")?;
     conflicting_signing_dev_command(temporary.path(), &project, &platform_pack, &project)?

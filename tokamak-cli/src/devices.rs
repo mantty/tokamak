@@ -71,7 +71,8 @@ pub(super) fn prepare(selector: &str) -> Result<PreparedDevice> {
         "android" => return prepare_managed_android(),
         _ => {}
     }
-    if let Some(device) = prepare_android_device(selector)? {
+    let adb = run_android_tool("adb", "platform-tools", &["devices", "-l"]);
+    if let Some(device) = prepare_android_device(selector, &adb)? {
         return Ok(device);
     }
     if let Some(device) = prepare_ios_simulator(selector)? {
@@ -81,6 +82,13 @@ pub(super) fn prepare(selector: &str) -> Result<PreparedDevice> {
         return Ok(device);
     }
 
+    // A failed Android query matters only when no other platform has the device.
+    if adb.available && !adb.success {
+        bail!(
+            "device `{selector}` was not found; unable to query Android devices: {}",
+            tool_failure(&adb, "adb devices failed")
+        );
+    }
     bail!("device `{selector}` was not found; run `tok devices` to list available targets");
 }
 
@@ -404,7 +412,7 @@ fn create_managed_android_avd() -> Result<()> {
     Ok(())
 }
 
-fn prepare_android_device(selector: &str) -> Result<Option<PreparedDevice>> {
+fn prepare_android_device(selector: &str, adb: &ToolOutput) -> Result<Option<PreparedDevice>> {
     let emulator = run_android_tool("emulator", "emulator", &["-list-avds"]);
     if emulator.success
         && parse_android_avds(&emulator.stdout)
@@ -414,15 +422,8 @@ fn prepare_android_device(selector: &str) -> Result<Option<PreparedDevice>> {
         return prepare_android_avd(selector).map(Some);
     }
 
-    let adb = run_android_tool("adb", "platform-tools", &["devices", "-l"]);
-    if !adb.available {
-        return Ok(None);
-    }
     if !adb.success {
-        bail!(
-            "unable to query Android devices: {}",
-            tool_failure(&adb, "adb devices failed")
-        );
+        return Ok(None);
     }
     if let Some(device) = parse_android_adb_devices(&adb.stdout)
         .into_iter()
