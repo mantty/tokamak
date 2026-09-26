@@ -502,6 +502,11 @@ private final class TokamakController {
     self.dataStore = dataStore
     self.proxyPort = port
     configuration.websiteDataStore = dataStore
+    // Video plays within the page, and media starts without a tap.
+    #if os(iOS)
+      configuration.allowsInlineMediaPlayback = true
+    #endif
+    configuration.mediaTypesRequiringUserActionForPlayback = []
 
     let pluginBridge = TokamakPluginBridge(
       host: runtime.host,
