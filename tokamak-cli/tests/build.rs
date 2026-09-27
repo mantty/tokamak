@@ -1620,6 +1620,13 @@ fn builds_ios_simulator_app() -> TestResult {
         let plist = fs::read_to_string(bundle.join("Info.plist"))?;
         assert!(plist.contains("iPhoneSimulator"));
         assert!(plist.contains("NSLocationWhenInUseUsageDescription"));
+        let executable = String::from_utf8_lossy(&fs::read(bundle.join("demo-app"))?).into_owned();
+        assert!(executable.contains(
+            "<key>application-identifier</key>\n  <string>com.tokamak.demo-app</string>"
+        ));
+        assert!(executable.contains(
+            "<key>keychain-access-groups</key>\n  <array>\n    <string>com.tokamak.demo-app</string>"
+        ));
     }
     Ok(())
 }

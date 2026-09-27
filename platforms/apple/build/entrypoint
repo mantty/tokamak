@@ -213,6 +213,27 @@ for plugin in "$input/plugins"/*; do
   done
 done
 
+# Simulator builds carry the entitlements a development profile grants a
+# device build. The simulator reads them from the executable, not the signature.
+if [[ "$platform" == ios-simulator ]]; then
+  simulator_entitlements=$temporary/simulator.entitlements
+  cat > "$simulator_entitlements" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>application-identifier</key>
+  <string>$identifier</string>
+  <key>keychain-access-groups</key>
+  <array>
+    <string>$identifier</string>
+  </array>
+</dict>
+</plist>
+EOF
+  swift_args+=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker "$simulator_entitlements")
+fi
+
 xcrun --sdk "$sdk" swiftc "${swift_args[@]}" -o "$executable_dir/$app_slug"
 xcrun --sdk "$sdk" strip "$executable_dir/$app_slug"
 
