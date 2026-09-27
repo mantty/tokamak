@@ -675,6 +675,53 @@ fn checks_android_api_levels_with_lint() -> TestResult {
 
 #[cfg(unix)]
 #[test]
+fn merges_the_app_android_manifest_while_it_is_set() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+    let user_manifest = r#"<manifest xmlns:android="http://schemas.android.com/apk/res/android"><uses-permission android:name="android.permission.CAMERA" /></manifest>"#;
+    fs::create_dir_all(project.join("native"))?;
+    fs::write(project.join("native/AndroidManifest.xml"), user_manifest)?;
+    let app = project.join("build/android/.tokamak/app");
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    command.args(["--set", "android-manifest=native/AndroidManifest.xml"]);
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command.assert().success();
+
+    assert_eq!(
+        fs::read_to_string(app.join("user/AndroidManifest.xml"))?,
+        user_manifest
+    );
+    assert!(
+        fs::read_to_string(app.join("build.gradle"))?
+            .contains("addStaticManifestFile(file('user/AndroidManifest.xml').path)")
+    );
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command.assert().success();
+
+    assert!(!app.join("user").exists());
+    assert!(!fs::read_to_string(app.join("build.gradle"))?.contains("addStaticManifestFile"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_a_missing_app_android_manifest() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    command.args(["--set", "android-manifest=native/AndroidManifest.xml"]);
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command
+        .assert()
+        .failure()
+        .stderr(contains("android-manifest file is missing"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn environment_overrides_configured_identifier_and_version() -> TestResult {
     let (temporary, project, manifest) = create_inputs("macos-arm64")?;
     fs::write(
