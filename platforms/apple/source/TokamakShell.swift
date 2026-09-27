@@ -290,6 +290,18 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
     return nil
   }
 
+  /// The app's own usage descriptions cover its origin; other origins keep
+  /// WebKit's prompt.
+  func webView(
+    _ webView: WKWebView,
+    requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+    initiatedByFrame frame: WKFrameInfo,
+    type: WKMediaCaptureType,
+    decisionHandler: @escaping (WKPermissionDecision) -> Void
+  ) {
+    decisionHandler(isAppOrigin(origin) ? .grant : .prompt)
+  }
+
   func webView(
     _ webView: WKWebView,
     didReceive challenge: URLAuthenticationChallenge,
@@ -336,6 +348,12 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
       return false
     }
     return url.port == nil || url.port == 443
+  }
+
+  private func isAppOrigin(_ origin: WKSecurityOrigin) -> Bool {
+    origin.protocol.caseInsensitiveCompare("https") == .orderedSame
+      && origin.host.caseInsensitiveCompare(runtime.host) == .orderedSame
+      && (origin.port == 0 || origin.port == 443)
   }
 
   private func openExternal(_ url: URL) {
