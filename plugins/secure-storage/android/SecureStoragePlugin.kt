@@ -156,7 +156,9 @@ internal class TokamakSecureStoragePlugin(
     }
 
     private fun get(request: JSONObject, reply: TokamakPluginReply) {
-        val stored = read(file(request.requireString("name")))
+        val name = request.requireString("name")
+        val prompt = request.optionalString("prompt")
+        val stored = read(file(name))
         if (stored == null) {
             reply(Result.success(null))
             return
@@ -176,7 +178,7 @@ internal class TokamakSecureStoragePlugin(
         val authenticators =
             if (credential) Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL
             else Authenticators.BIOMETRIC_STRONG
-        authenticate(authenticators, request.optionalString("prompt"), unwrap, stored, reply)
+        authenticate(authenticators, prompt, unwrap, stored, reply)
     }
 
     /** Authorises [unwrap] with the device owner's authentication, then replies with the opened value. */
