@@ -219,11 +219,13 @@ jobs:
         run: |
           set -euo pipefail
           core_version="$(node -p "require('./plugins/core/package.json').version")"
-          location_version="$(node -p "require('./plugins/location/package.json').version")"
-          test "$core_version" = "$location_version"
           version="${core_version}-beta.${GITHUB_RUN_NUMBER}"
           npm pkg set "version=$version" --prefix plugins/core
-          npm pkg set "version=$version" "dependencies.@tokamakdev/plugin=$version" --prefix plugins/location
+          for manifest in plugins/*/tokamak-plugin.json; do
+            plugin="$(dirname "$manifest")"
+            test "$(node -p "require('./$plugin/package.json').version")" = "$core_version"
+            npm pkg set "version=$version" "dependencies.@tokamakdev/plugin=$version" --prefix "$plugin"
+          done
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Package plugins
