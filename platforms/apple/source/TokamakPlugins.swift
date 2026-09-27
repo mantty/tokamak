@@ -91,12 +91,9 @@ final class TokamakPluginBridge: NSObject, WKScriptMessageHandler {
     _ userContentController: WKUserContentController,
     didReceive message: WKScriptMessage
   ) {
-    let origin = message.frameInfo.securityOrigin
     guard
       message.frameInfo.isMainFrame,
-      origin.protocol == "https",
-      origin.host == host,
-      origin.port == 0 || origin.port == 443,
+      message.frameInfo.securityOrigin.isAppOrigin(host),
       let encoded = message.body as? String,
       let data = encoded.data(using: .utf8),
       let request = try? JSONSerialization.jsonObject(with: data)
@@ -194,9 +191,7 @@ final class TokamakPluginBridge: NSObject, WKScriptMessageHandler {
       JSONSerialization.isValidJSONObject(response),
       let data = try? JSONSerialization.data(withJSONObject: response),
       let json = String(data: data, encoding: .utf8),
-      webView?.url?.scheme == "https",
-      webView?.url?.host == host,
-      webView?.url?.port == nil || webView?.url?.port == 443
+      webView?.url?.isAppOrigin(host) == true
     else {
       return
     }

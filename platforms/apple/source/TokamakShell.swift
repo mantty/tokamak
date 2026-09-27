@@ -239,7 +239,7 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
       return
     }
 
-    if isAppOrigin(url) {
+    if url.isAppOrigin(runtime.host) {
       if navigationAction.targetFrame == nil {
         webView.load(navigationAction.request)
         decisionHandler(.cancel)
@@ -266,7 +266,7 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
       return
     }
 
-    if isAppOrigin(url) {
+    if url.isAppOrigin(runtime.host) {
       decisionHandler(.allow)
     } else {
       openExternal(url)
@@ -282,7 +282,7 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
   ) -> WKWebView? {
     _ = (configuration, windowFeatures)
     guard let url = navigationAction.request.url else { return nil }
-    if isAppOrigin(url) {
+    if url.isAppOrigin(runtime.host) {
       webView.load(navigationAction.request)
     } else {
       openExternal(url)
@@ -299,7 +299,7 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
     type: WKMediaCaptureType,
     decisionHandler: @escaping (WKPermissionDecision) -> Void
   ) {
-    decisionHandler(isAppOrigin(origin) ? .grant : .prompt)
+    decisionHandler(origin.isAppOrigin(runtime.host) ? .grant : .prompt)
   }
 
   func webView(
@@ -338,22 +338,6 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
     withError error: Error
   ) {
     print("tokamak WebView navigation failed: \(error)")
-  }
-
-  private func isAppOrigin(_ url: URL) -> Bool {
-    guard
-      url.scheme?.caseInsensitiveCompare("https") == .orderedSame,
-      url.host?.caseInsensitiveCompare(runtime.host) == .orderedSame
-    else {
-      return false
-    }
-    return url.port == nil || url.port == 443
-  }
-
-  private func isAppOrigin(_ origin: WKSecurityOrigin) -> Bool {
-    origin.protocol.caseInsensitiveCompare("https") == .orderedSame
-      && origin.host.caseInsensitiveCompare(runtime.host) == .orderedSame
-      && (origin.port == 0 || origin.port == 443)
   }
 
   private func openExternal(_ url: URL) {
