@@ -264,7 +264,9 @@ optional; when present, Tokamak layers its generated application values first,
 then icon values, plugin values, and finally the user plist. User values
 therefore take precedence over all other values, including the SDK, platform,
 and Xcode provenance keys Apple platform packs generate from the active
-toolchain. Values not supplied by the user are preserved.
+toolchain. Values not supplied by the user are preserved. Plugins that set a
+key to the same value share it; when plugins set different values for a key,
+the build fails unless the user plist sets that key.
 
 Each icon platform entry is optional. If the Tokamak configuration or a
 platform entry is absent, that platform keeps its existing icon behavior.

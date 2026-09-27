@@ -90,7 +90,8 @@ generated values first, then icon values, plugin values, and the user plist
 last; user-defined values therefore take precedence over all other values.
 Values not supplied by the user are retained. Apple platform packs add SDK,
 platform, and Xcode provenance keys from the active toolchain before the user
-overlay.
+overlay. When plugins set different values for the same key, the build fails
+unless the user plist sets that key.
 
 Apple build numbers are platform-pack variables rather than Tokamak config:
 `ios-build-number` maps to `TOKAMAK_IOS_BUILD_NUMBER` and
