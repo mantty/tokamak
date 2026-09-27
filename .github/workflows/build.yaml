@@ -423,27 +423,21 @@ jobs:
           name: tokamak-npm-platform-packs
           path: artifacts
 
-      - name: Publish core plugin
+      - name: Publish plugins
         env:
           PACKAGE_VERSION: ${{ needs.build-plugins.outputs.version }}
         run: |
           set -euo pipefail
-          if npm view "@tokamakdev/plugin@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
-            echo "@tokamakdev/plugin@$PACKAGE_VERSION is already published"
-          else
-            npm publish "./artifacts/tokamakdev-plugin-$PACKAGE_VERSION.tgz" --access public --tag latest
-          fi
-
-      - name: Publish location plugin
-        env:
-          PACKAGE_VERSION: ${{ needs.build-plugins.outputs.version }}
-        run: |
-          set -euo pipefail
-          if npm view "@tokamakdev/plugin-location@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
-            echo "@tokamakdev/plugin-location@$PACKAGE_VERSION is already published"
-          else
-            npm publish "./artifacts/tokamakdev-plugin-location-$PACKAGE_VERSION.tgz" --access public --tag latest
-          fi
+          # The core package publishes before the plugins that depend on it.
+          for directory in plugins/core $(dirname plugins/*/tokamak-plugin.json); do
+            name="$(node -p "require('./$directory/package.json').name")"
+            if npm view "$name@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+              echo "$name@$PACKAGE_VERSION is already published"
+            else
+              tarball="${name#@}"
+              npm publish "./artifacts/${tarball/\//-}-$PACKAGE_VERSION.tgz" --access public --tag latest
+            fi
+          done
 
       - name: Publish CLI
         env:
