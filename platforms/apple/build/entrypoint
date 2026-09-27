@@ -222,8 +222,8 @@ for plugin in "$input/plugins"/*; do
   done
 done
 
-# Simulator builds carry the entitlements a development profile grants a
-# device build. The simulator reads them from the executable, not the signature.
+# Simulator builds embed application-identifier and keychain-access-groups in
+# __TEXT,__entitlements, where the simulator reads them.
 if [[ "$platform" == ios-simulator ]]; then
   simulator_entitlements=$temporary/simulator.entitlements
   cat > "$simulator_entitlements" <<EOF

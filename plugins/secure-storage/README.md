@@ -14,7 +14,7 @@ import { secureStorage } from "@tokamakdev/plugin-secure-storage";
 await secureStorage.set("identity/encryption", base64Value, {
   // Required: "whenUnlocked" or "afterFirstUnlock".
   readable: "whenUnlocked",
-  // Omitted: reads need no authentication.
+  // Reads need no authentication when omitted.
   authentication: "biometricsOrPasscode",
 });
 
@@ -50,6 +50,8 @@ the platform's default prompt is shown.
 | `InvalidStateError` | The requested authentication is not set up on the device |
 | `NotAllowedError` | The user cancelled or failed authentication, or the device is locked |
 | `NotReadableError` | A stored value can no longer be decrypted |
+| `TypeError` | An argument is missing or has an unsupported value |
+| `OperationError` | The platform reported another failure |
 
 `get` resolves `null` when the name has no stored value.
 
@@ -62,8 +64,8 @@ the platform's default prompt is shown.
   (`macos-team-id`). Ad-hoc signed builds throw `NotSupportedError`.
 - **Android:** values are encrypted with a per-value Android Keystore key and
   stored in the app's no-backup directory. They are deleted on uninstall.
-  `whenUnlocked` requires API 28, `biometrics` and `currentBiometrics` require
-  API 28, and `biometricsOrPasscode` requires API 30.
+  `whenUnlocked`, `biometrics` and `currentBiometrics` require API 28;
+  `biometricsOrPasscode` requires API 30.
 - **Web and Windows:** no implementation; calls throw `NotSupportedError`.
 
 Removing the device passcode or screen lock makes values stored with

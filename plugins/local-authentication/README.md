@@ -23,7 +23,7 @@ Both methods accept `biometricsOrPasscode` (Face ID, Touch ID or fingerprint,
 falling back to the device passcode, PIN, pattern or password) or `biometrics`.
 
 `status` reports whether the device can perform the authentication now.
-`notEnrolled` means the hardware exists but no biometric or passcode is set up.
+`notEnrolled` means no biometric or passcode is set up.
 
 `authenticate` resolves when the device owner authenticates. It rejects with
 `NotAllowedError` when the user cancels or fails, `InvalidStateError` when the

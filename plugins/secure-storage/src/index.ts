@@ -8,7 +8,7 @@ export type Authentication = "biometricsOrPasscode" | "biometrics" | "currentBio
 
 export interface SetOptions {
   readonly readable: Readable;
-  /** Omitted: reads need no authentication. */
+  /** Reads need no authentication when omitted. */
   readonly authentication?: Authentication;
 }
 
