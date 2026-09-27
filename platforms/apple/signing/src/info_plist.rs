@@ -312,13 +312,10 @@ fn add_plugin_plist(
     metadata: &Metadata,
     user: Option<&Dictionary>,
 ) -> Result<()> {
-    let mut first_values = BTreeMap::<String, PluginPlistValue>::new();
-    for value in plugin_plist_values(input)? {
-        let Some(first) = first_values.get(&value.key) else {
-            insert_string(plist, &value.key, &value.value);
-            first_values.insert(value.key.clone(), value);
-            continue;
-        };
+    let values = plugin_plist_values(input)?;
+    let mut first_values = BTreeMap::new();
+    for value in &values {
+        let first: &PluginPlistValue = first_values.entry(&value.key).or_insert(value);
         if first.value != value.value && !user.is_some_and(|user| user.contains_key(&value.key)) {
             bail!(
                 "plugins '{}' and '{}' set different values for Info.plist key '{}'; set it in the plist named by {}",
@@ -328,6 +325,7 @@ fn add_plugin_plist(
                 user_plist_variable(&metadata.platform)?
             );
         }
+        insert_string(plist, &first.key, &first.value);
     }
     Ok(())
 }
@@ -713,6 +711,36 @@ mod tests {
             "plugins 'local-authentication' and 'secure-storage' set different values for \
              Info.plist key 'NSFaceIDUsageDescription'; set it in the plist named by \
              TOKAMAK_IOS_PLIST"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_app_plist_without_the_key_does_not_resolve_a_conflict() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let input = input(temporary.path(), "ios")?;
+        plugin_value(
+            &input,
+            "local-authentication",
+            "NSFaceIDUsageDescription",
+            "One",
+        )?;
+        plugin_value(&input, "secure-storage", "NSFaceIDUsageDescription", "Two")?;
+        let user_path = temporary.path().join("User.plist");
+        let mut user = Dictionary::new();
+        user.insert("OtherKey".into(), Value::String("App".into()));
+        Value::Dictionary(user).to_file_xml(&user_path)?;
+
+        let metadata = Metadata::read(&input)?;
+        assert!(
+            build_info_plist(
+                &input,
+                &metadata,
+                &toolchain("iphoneos"),
+                Some(&user_path),
+                None
+            )
+            .is_err()
         );
         Ok(())
     }
