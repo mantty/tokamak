@@ -493,7 +493,7 @@ struct PermissionPrompt {
     caption: &'static str,
 }
 
-/// The shell asks about these requests from the app origin; WebView2 decides the rest.
+/// The shell asks the user about these requests from the app origin; others keep the default.
 fn app_permission_prompt(
     kind: COREWEBVIEW2_PERMISSION_KIND,
     uri: &str,
