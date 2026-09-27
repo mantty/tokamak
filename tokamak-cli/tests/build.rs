@@ -77,6 +77,35 @@ fn install_location_plugin(root: &Path) -> TestResult {
     Ok(())
 }
 
+fn install_key_flow_plugins(root: &Path) -> TestResult {
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"demo-app","scripts":{"build":"echo already-built"},"dependencies":{"@tokamakdev/plugin-secure-storage":"1.0.0","@tokamakdev/plugin-local-authentication":"1.0.0"}}"#,
+    )?;
+    for (package, manifest, source_name, source) in [
+        (
+            "plugin-secure-storage",
+            include_str!("../../plugins/secure-storage/tokamak-plugin.json"),
+            "SecureStoragePlugin.swift",
+            include_str!("../../plugins/secure-storage/apple/SecureStoragePlugin.swift"),
+        ),
+        (
+            "plugin-local-authentication",
+            include_str!("../../plugins/local-authentication/tokamak-plugin.json"),
+            "LocalAuthenticationPlugin.swift",
+            include_str!(
+                "../../plugins/local-authentication/apple/LocalAuthenticationPlugin.swift"
+            ),
+        ),
+    ] {
+        let plugin = root.join("node_modules/@tokamakdev").join(package);
+        fs::create_dir_all(plugin.join("apple"))?;
+        fs::write(plugin.join("tokamak-plugin.json"), manifest)?;
+        fs::write(plugin.join("apple").join(source_name), source)?;
+    }
+    Ok(())
+}
+
 fn create_unbuilt_project(root: &Path) -> TestResult {
     fs::write(
         root.join("package.json"),
@@ -264,6 +293,17 @@ protocol TokamakPlugin: AnyObject {
     arguments: Any,
     reply: @escaping TokamakPluginReply
   ) -> (() -> Void)
+}
+
+extension TokamakPlugin {
+  func subscribe(
+    method: String,
+    arguments: Any,
+    reply: @escaping TokamakPluginReply
+  ) -> (() -> Void) {
+    reply(.failure(.notSupported("\(id).\(method) is not supported")))
+    return {}
+  }
 }
 
 @main struct App { static func main() {} }
@@ -1788,13 +1828,63 @@ fn builds_ios_simulator_app() -> TestResult {
         let plist = fs::read_to_string(bundle.join("Info.plist"))?;
         assert!(plist.contains("iPhoneSimulator"));
         assert!(plist.contains("NSLocationWhenInUseUsageDescription"));
-        let executable = String::from_utf8_lossy(&fs::read(bundle.join("demo-app"))?).into_owned();
-        assert!(executable.contains(
-            "<key>application-identifier</key>\n  <string>com.tokamak.demo-app</string>"
-        ));
-        assert!(executable.contains(
-            "<key>keychain-access-groups</key>\n  <array>\n    <string>com.tokamak.demo-app</string>"
-        ));
+        assert_eq!(
+            simulator_entitlements(&bundle.join("demo-app"))?,
+            serde_json::json!({
+                "application-identifier": "com.tokamak.demo-app",
+                "keychain-access-groups": ["com.tokamak.demo-app"],
+            })
+        );
+    }
+    Ok(())
+}
+
+/// The entitlements the simulator reads from the executable's `__TEXT,__entitlements` section.
+fn simulator_entitlements(executable: &Path) -> TestResult<serde_json::Value> {
+    let section = executable.with_extension("entitlements");
+    let status = ProcessCommand::new("xcrun")
+        .args(["segedit"])
+        .arg(executable)
+        .args(["-extract", "__TEXT", "__entitlements"])
+        .arg(&section)
+        .status()?;
+    if !status.success() {
+        return Err(format!("entitlements extraction failed with {status}").into());
+    }
+    let output = ProcessCommand::new("plutil")
+        .args(["-convert", "json", "-o", "-"])
+        .arg(&section)
+        .output()?;
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+#[test]
+fn builds_secure_storage_and_local_authentication_into_apple_shells() -> TestResult {
+    for (platform, target, bundle, plist) in [
+        (
+            "ios-simulator",
+            "ios-simulator-arm64",
+            "build/ios-simulator/demo-app.app",
+            "Info.plist",
+        ),
+        (
+            "macos",
+            "macos-arm64",
+            "build/macos/demo-app.app",
+            "Contents/Info.plist",
+        ),
+    ] {
+        let (_temporary, project, manifest) = create_inputs(target)?;
+        install_key_flow_plugins(&project)?;
+        build_command(platform, &project, &manifest)?
+            .assert()
+            .success();
+
+        let plist = fs::read_to_string(project.join(bundle).join(plist))?;
+        assert_eq!(
+            plist.contains("<key>NSFaceIDUsageDescription</key>"),
+            platform == "ios-simulator"
+        );
     }
     Ok(())
 }
