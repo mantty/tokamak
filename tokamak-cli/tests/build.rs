@@ -77,6 +77,35 @@ fn install_location_plugin(root: &Path) -> TestResult {
     Ok(())
 }
 
+fn install_key_flow_plugins(root: &Path) -> TestResult {
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"demo-app","scripts":{"build":"echo already-built"},"dependencies":{"@tokamakdev/plugin-secure-storage":"1.0.0","@tokamakdev/plugin-local-authentication":"1.0.0"}}"#,
+    )?;
+    for (package, manifest, source_name, source) in [
+        (
+            "plugin-secure-storage",
+            include_str!("../../plugins/secure-storage/tokamak-plugin.json"),
+            "SecureStoragePlugin.swift",
+            include_str!("../../plugins/secure-storage/apple/SecureStoragePlugin.swift"),
+        ),
+        (
+            "plugin-local-authentication",
+            include_str!("../../plugins/local-authentication/tokamak-plugin.json"),
+            "LocalAuthenticationPlugin.swift",
+            include_str!(
+                "../../plugins/local-authentication/apple/LocalAuthenticationPlugin.swift"
+            ),
+        ),
+    ] {
+        let plugin = root.join("node_modules/@tokamakdev").join(package);
+        fs::create_dir_all(plugin.join("apple"))?;
+        fs::write(plugin.join("tokamak-plugin.json"), manifest)?;
+        fs::write(plugin.join("apple").join(source_name), source)?;
+    }
+    Ok(())
+}
+
 fn create_unbuilt_project(root: &Path) -> TestResult {
     fs::write(
         root.join("package.json"),
@@ -180,6 +209,49 @@ fn create_android_platform_pack(root: &Path) -> TestResult<PathBuf> {
     Ok(root.to_path_buf())
 }
 
+#[cfg(unix)]
+fn create_android_inputs() -> TestResult<(tempfile::TempDir, PathBuf, PathBuf)> {
+    let temporary = tempfile::tempdir()?;
+    let project = temporary.path().join("project");
+    let pack = temporary.path().join("pack");
+    fs::create_dir_all(&project)?;
+    fs::create_dir_all(&pack)?;
+    create_project(&project)?;
+    let platform_pack = create_android_platform_pack(&pack)?;
+    Ok((temporary, project, platform_pack))
+}
+
+#[cfg(unix)]
+fn install_android_plugins(root: &Path, plugins: &[(&str, &[&str])]) -> TestResult {
+    let dependencies: serde_json::Map<_, _> = plugins
+        .iter()
+        .map(|(id, _)| ((*id).to_owned(), "1.0.0".into()))
+        .collect();
+    fs::write(
+        root.join("package.json"),
+        serde_json::json!({ "name": "demo-app", "dependencies": dependencies }).to_string(),
+    )?;
+    for (id, permissions) in plugins {
+        let plugin = root.join("node_modules").join(id);
+        fs::create_dir_all(plugin.join("android"))?;
+        fs::write(plugin.join("android/Plugin.kt"), "")?;
+        let manifest = serde_json::json!({
+            "schemaVersion": 1,
+            "id": id,
+            "kind": "frontend",
+            "platforms": {
+                "android": {
+                    "class": format!("test.{}.Plugin", id.replace('-', "")),
+                    "sources": ["android/Plugin.kt"],
+                    "permissions": permissions,
+                }
+            }
+        });
+        fs::write(plugin.join("tokamak-plugin.json"), manifest.to_string())?;
+    }
+    Ok(())
+}
+
 fn write_test_manifest(root: &Path, target: Target) -> TestResult {
     write_manifest(
         root.join(MANIFEST_FILE),
@@ -221,6 +293,17 @@ protocol TokamakPlugin: AnyObject {
     arguments: Any,
     reply: @escaping TokamakPluginReply
   ) -> (() -> Void)
+}
+
+extension TokamakPlugin {
+  func subscribe(
+    method: String,
+    arguments: Any,
+    reply: @escaping TokamakPluginReply
+  ) -> (() -> Void) {
+    reply(.failure(.notSupported("\(id).\(method) is not supported")))
+    return {}
+  }
 }
 
 @main struct App { static func main() {} }
@@ -334,7 +417,8 @@ fn build_command(platform: &str, project: &Path, platform_pack: &Path) -> TestRe
         .arg("--skip-project-build")
         .env("TOKAMAK_VERSION", "1.0.0")
         .env_remove("TOKAMAK_IOS_BUILD_NUMBER")
-        .env_remove("TOKAMAK_MACOS_BUILD_NUMBER");
+        .env_remove("TOKAMAK_MACOS_BUILD_NUMBER")
+        .env_remove("TOKAMAK_MACOS_TEAM_ID");
     Ok(command)
 }
 
@@ -374,6 +458,7 @@ for arg in "$@"; do
     next=project
   fi
 done
+printf '%s\n' "$*" > "$project/gradle-arguments"
 mkdir -p "$project/app/build/outputs/apk/debug"
 if [ -n "${TOKAMAK_ANDROID_TEST:-}" ]; then
   printf '%s' "$TOKAMAK_ANDROID_TEST" > "$project/platform-pack-set-value"
@@ -601,13 +686,7 @@ fn preserves_configured_display_name_in_macos_bundle() -> TestResult {
 #[cfg(unix)]
 #[test]
 fn preserves_configured_display_name_in_android_manifest() -> TestResult {
-    let temporary = tempfile::tempdir()?;
-    let project = temporary.path().join("project");
-    let pack = temporary.path().join("pack");
-    fs::create_dir_all(&project)?;
-    fs::create_dir_all(&pack)?;
-    create_project(&project)?;
-    let platform_pack = create_android_platform_pack(&pack)?;
+    let (temporary, project, platform_pack) = create_android_inputs()?;
     fs::write(
         project.join("tokamak.jsonc"),
         r#"{"name":"Vigilus & <Co> \"Pro\" 'X'"}"#,
@@ -633,13 +712,7 @@ fn preserves_configured_display_name_in_android_manifest() -> TestResult {
 #[cfg(unix)]
 #[test]
 fn passes_platform_pack_variables_to_the_android_entrypoint() -> TestResult {
-    let temporary = tempfile::tempdir()?;
-    let project = temporary.path().join("project");
-    let pack = temporary.path().join("pack");
-    fs::create_dir_all(&project)?;
-    fs::create_dir_all(&pack)?;
-    create_project(&project)?;
-    let platform_pack = create_android_platform_pack(&pack)?;
+    let (temporary, project, platform_pack) = create_android_inputs()?;
 
     let mut command = build_command("android", &project, &platform_pack)?;
     command.args(["--set", "android-test=passed"]);
@@ -650,6 +723,104 @@ fn passes_platform_pack_variables_to_the_android_entrypoint() -> TestResult {
         fs::read_to_string(project.join("build/android/.tokamak/platform-pack-set-value"))?,
         "passed"
     );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn checks_android_api_levels_with_lint() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command.assert().success();
+
+    let gradle = project.join("build/android/.tokamak");
+    let build_script = fs::read_to_string(gradle.join("app/build.gradle"))?;
+    assert!(build_script.contains("checkOnly 'NewApi'"));
+    assert!(build_script.contains("abortOnError true"));
+    let arguments = fs::read_to_string(gradle.join("gradle-arguments"))?;
+    assert!(arguments.contains(":app:lintDebug :app:assembleDebug"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn merges_the_app_android_manifest_while_it_is_set() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+    let user_manifest = r#"<manifest xmlns:android="http://schemas.android.com/apk/res/android"><uses-permission android:name="android.permission.CAMERA" /></manifest>"#;
+    fs::create_dir_all(project.join("native"))?;
+    fs::write(project.join("native/AndroidManifest.xml"), user_manifest)?;
+    let app = project.join("build/android/.tokamak/app");
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    command.args(["--set", "android-manifest=native/AndroidManifest.xml"]);
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command.assert().success();
+
+    assert_eq!(
+        fs::read_to_string(app.join("user/AndroidManifest.xml"))?,
+        user_manifest
+    );
+    assert!(
+        fs::read_to_string(app.join("build.gradle"))?
+            .contains("addStaticManifestFile(file('user/AndroidManifest.xml').path)")
+    );
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command.assert().success();
+
+    assert!(!app.join("user").exists());
+    assert!(!fs::read_to_string(app.join("build.gradle"))?.contains("addStaticManifestFile"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_a_missing_app_android_manifest() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    command.args(["--set", "android-manifest=native/AndroidManifest.xml"]);
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command
+        .assert()
+        .failure()
+        .stderr(contains("android-manifest file is missing"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn writes_each_android_permission_once() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+    install_android_plugins(
+        &project,
+        &[
+            ("storage", &["android.permission.USE_BIOMETRIC"]),
+            (
+                "authentication",
+                &[
+                    "android.permission.USE_BIOMETRIC",
+                    "android.permission.INTERNET",
+                ],
+            ),
+        ],
+    )?;
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command.assert().success();
+
+    let manifest = fs::read_to_string(
+        project.join("build/android/.tokamak/app/src/main/AndroidManifest.xml"),
+    )?;
+    assert_eq!(
+        manifest.matches("android.permission.USE_BIOMETRIC").count(),
+        1
+    );
+    assert_eq!(manifest.matches("android.permission.INTERNET").count(), 1);
     Ok(())
 }
 
@@ -975,6 +1146,43 @@ fn apple_env_only_build_reuses_the_native_bundle() -> TestResult {
             );
         }
     }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_team_signing_changes_without_rebuilding_the_bundle() -> TestResult {
+    let (temporary, project, pack) = create_inputs("macos-arm64")?;
+    let profile = project.join("build/macos/demo-app.app/Contents/embedded.provisionprofile");
+
+    let mut team_signed = build_command("macos", &project, &pack)?;
+    let log = configure_fake_apple_tools(&mut team_signed, temporary.path())?;
+    team_signed
+        .env("TOKAMAK_MACOS_TEAM_ID", "TEAM")
+        .assert()
+        .success();
+    assert_eq!(fs::read_to_string(&profile)?, "TEAM");
+
+    let mut ad_hoc = build_command("macos", &project, &pack)?;
+    configure_fake_apple_tools(&mut ad_hoc, temporary.path())?;
+    ad_hoc.assert().success();
+    assert!(!profile.exists());
+
+    let commands = fs::read_to_string(log)?;
+    assert_eq!(
+        commands
+            .lines()
+            .filter(|line| line.contains(" swiftc "))
+            .count(),
+        1
+    );
+    assert_eq!(
+        commands
+            .lines()
+            .filter(|line| line.starts_with("codesign-env "))
+            .count(),
+        2
+    );
     Ok(())
 }
 
@@ -1620,6 +1828,63 @@ fn builds_ios_simulator_app() -> TestResult {
         let plist = fs::read_to_string(bundle.join("Info.plist"))?;
         assert!(plist.contains("iPhoneSimulator"));
         assert!(plist.contains("NSLocationWhenInUseUsageDescription"));
+        assert_eq!(
+            simulator_entitlements(&bundle.join("demo-app"))?,
+            serde_json::json!({
+                "application-identifier": "com.tokamak.demo-app",
+                "keychain-access-groups": ["com.tokamak.demo-app"],
+            })
+        );
+    }
+    Ok(())
+}
+
+/// The entitlements the simulator reads from the executable's `__TEXT,__entitlements` section.
+fn simulator_entitlements(executable: &Path) -> TestResult<serde_json::Value> {
+    let section = executable.with_extension("entitlements");
+    let status = ProcessCommand::new("xcrun")
+        .args(["segedit"])
+        .arg(executable)
+        .args(["-extract", "__TEXT", "__entitlements"])
+        .arg(&section)
+        .status()?;
+    if !status.success() {
+        return Err(format!("entitlements extraction failed with {status}").into());
+    }
+    let output = ProcessCommand::new("plutil")
+        .args(["-convert", "json", "-o", "-"])
+        .arg(&section)
+        .output()?;
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+#[test]
+fn builds_secure_storage_and_local_authentication_into_apple_shells() -> TestResult {
+    for (platform, target, bundle, plist) in [
+        (
+            "ios-simulator",
+            "ios-simulator-arm64",
+            "build/ios-simulator/demo-app.app",
+            "Info.plist",
+        ),
+        (
+            "macos",
+            "macos-arm64",
+            "build/macos/demo-app.app",
+            "Contents/Info.plist",
+        ),
+    ] {
+        let (_temporary, project, manifest) = create_inputs(target)?;
+        install_key_flow_plugins(&project)?;
+        build_command(platform, &project, &manifest)?
+            .assert()
+            .success();
+
+        let plist = fs::read_to_string(project.join(bundle).join(plist))?;
+        assert_eq!(
+            plist.contains("<key>NSFaceIDUsageDescription</key>"),
+            platform == "ios-simulator"
+        );
     }
     Ok(())
 }

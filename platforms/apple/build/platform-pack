@@ -72,5 +72,7 @@ cp "$workspace/platforms/apple/source/TokamakShell.swift" \
   "$output/native-shell/TokamakShell.swift"
 cp "$workspace/platforms/apple/source/TokamakPlugins.swift" \
   "$output/native-shell/TokamakPlugins.swift"
+cp "$workspace/platforms/apple/source/TokamakOrigin.swift" \
+  "$output/native-shell/TokamakOrigin.swift"
 cp "$workspace/platforms/apple/build/entrypoint" \
   "$output/build/entrypoint"

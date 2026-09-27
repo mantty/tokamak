@@ -26,6 +26,7 @@ private const val UNSUPPORTED =
 class TokamakActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var pluginBridge: TokamakPluginBridge
+    private lateinit var chromeClient: TokamakWebChromeClient
     private var runtime: TokamakRuntime? = null
     private var proxyPort: Int? = null
     private var restoreGeneration = 0L
@@ -38,6 +39,8 @@ class TokamakActivity : Activity() {
             settings.domStorageEnabled = true
             settings.setSupportMultipleWindows(false)
         }
+        chromeClient = TokamakWebChromeClient(this, appHost())
+        webView.webChromeClient = chromeClient
         pluginBridge = TokamakPluginBridge(this, appHost(), tokamakPlugins(this))
         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
             pluginBridge.install(webView)
@@ -76,6 +79,7 @@ class TokamakActivity : Activity() {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        chromeClient.onRequestPermissionsResult(requestCode)
         pluginBridge.onRequestPermissionsResult(requestCode, permissions, grantResults)
     }
 

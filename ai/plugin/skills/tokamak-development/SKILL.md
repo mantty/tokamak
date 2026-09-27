@@ -90,7 +90,18 @@ generated values first, then icon values, plugin values, and the user plist
 last; user-defined values therefore take precedence over all other values.
 Values not supplied by the user are retained. Apple platform packs add SDK,
 platform, and Xcode provenance keys from the active toolchain before the user
-overlay.
+overlay. When plugins set different values for the same key, the build fails
+unless the user plist sets that key.
+
+The Android platform pack accepts an optional user-provided partial
+`AndroidManifest.xml` through `android-manifest`/`TOKAMAK_ANDROID_MANIFEST`,
+for example to declare `android.permission.CAMERA` for `getUserMedia`.
+Relative paths are resolved from the project directory. The Android Gradle
+Plugin's manifest merger combines it with the generated manifest, and the user
+file has the higher priority: elements merge by key, a conflicting attribute
+fails the build unless the user file marks it with
+`tools:replace="android:<attribute>"`, and `tools:node="remove"` removes an
+element, including a plugin's permission.
 
 Apple build numbers are platform-pack variables rather than Tokamak config:
 `ios-build-number` maps to `TOKAMAK_IOS_BUILD_NUMBER` and
@@ -103,6 +114,14 @@ and `ios-provisioning-profile`/`TOKAMAK_IOS_PROVISIONING_PROFILE` for manual
 signing. Do not provide both modes. Use `tok certs` to inspect installed
 identities and profiles. `tok build ios` does not need a device ID; simulator
 builds do not require provisioning.
+
+macOS builds are ad-hoc signed unless `macos-team-id`/`TOKAMAK_MACOS_TEAM_ID`
+is set. With a team, Tokamak signs with a macOS development profile for that
+team that includes this Mac, provisioning through Xcode when needed. Team
+signing enables the data protection keychain, which the secure storage plugin
+requires on macOS; such builds run only on Macs registered to the team.
+Distribution signing (Developer ID, hardened runtime, notarisation) is not
+covered.
 
 ## Respect the packaged Worker contract
 
@@ -158,6 +177,9 @@ builds do not require provisioning.
 - Preserve a plugin's web implementation or feature-detect availability when the same code also targets ordinary browsers.
 - Handle permission denial, unavailable hardware, cancellation, navigation, and page lifecycle as normal outcomes of a native capability request.
 - Inspect the installed plugin package before inventing a method, event, permission, or platform fallback.
+- First-party plugins are `@tokamakdev/plugin-location`, `@tokamakdev/plugin-secure-storage` (device-only secrets, optionally bound to Face ID, fingerprint or passcode) and `@tokamakdev/plugin-local-authentication` (device owner checks the app performs when it chooses).
+- Camera and microphone use the standard `getUserMedia` API, not a plugin. Declare them per platform: `NSCameraUsageDescription`/`NSMicrophoneUsageDescription` in the `ios-plist` or `macos-plist` file, and `android.permission.CAMERA`/`android.permission.RECORD_AUDIO` in the `android-manifest` file.
+- Android builds run lint's `NewApi` check over shell and plugin Kotlin. Guard calls to APIs newer than the minimum SDK with a direct `Build.VERSION.SDK_INT` comparison; an unguarded call fails the build.
 
 ## Preserve user intent
 

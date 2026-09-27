@@ -62,11 +62,15 @@ Both bridges accept messages only from the main frame at the exact
 function that stops native updates.
 
 Values crossing the bridge are JSON-compatible primitives, objects, and
-arrays. Native errors retain their DOM exception name and message.
+arrays. Native errors retain their DOM exception name and message. Plugins
+reply from any thread; the bridges deliver replies on the main thread.
 Each page load has a distinct bridge session. Navigation cancels native
 subscriptions and late responses from the previous page are ignored.
 
-## First plugin
+Plugins that set an Info.plist key to the same value share it. When plugins
+set different values, the build fails unless the app's plist sets that key.
+
+## Plugins
 
 `@tokamakdev/plugin-location` supports:
 
@@ -76,6 +80,11 @@ subscriptions and late responses from the previous page are ignored.
 Web uses `navigator.geolocation`. macOS, iOS, and iOS Simulator use
 `CoreLocation`. Android uses `LocationManager`. Windows uses WebView2's
 location implementation, with consent restricted to the app origin.
+
+`@tokamakdev/plugin-secure-storage` stores device-only strings by name, in the
+Keychain on Apple platforms and with per-value Android Keystore keys on
+Android. `@tokamakdev/plugin-local-authentication` reports and performs device
+owner authentication. Neither has a web implementation.
 
 ## Deferred
 

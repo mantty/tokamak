@@ -48,9 +48,9 @@ export abstract class FrontendPlugin {
   }
 
   protected call<T>(method: string, arguments_: unknown = null): Promise<T> {
-    const transport = requireNativeTransport();
-    const id = nextRequestId++;
     return new Promise<T>((resolve, reject) => {
+      const transport = requireNativeTransport();
+      const id = nextRequestId++;
       pending.set(id, {
         kind: "call",
         resolve: (value) => {

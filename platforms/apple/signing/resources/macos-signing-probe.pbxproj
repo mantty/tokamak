@@ -1,0 +1,19 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+		111111111111111111111111 = {isa = PBXBuildFile; fileRef = 222222222222222222222222; };
+		222222222222222222222222 = {isa = PBXFileReference; lastKnownFileType = sourcecode.objc; path = main.m; sourceTree = "<group>"; };
+		333333333333333333333333 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TokamakSigningProbe.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		444444444444444444444444 = {isa = PBXGroup; children = (222222222222222222222222, 555555555555555555555555); sourceTree = "<group>"; };
+		555555555555555555555555 = {isa = PBXGroup; children = (333333333333333333333333); name = Products; sourceTree = "<group>"; };
+		666666666666666666666666 = {isa = PBXNativeTarget; buildConfigurationList = AAAAAAAAAAAAAAAAAAAAAAAA; buildPhases = (888888888888888888888888); buildRules = (); dependencies = (); name = TokamakSigningProbe; productName = TokamakSigningProbe; productReference = 333333333333333333333333; productType = "com.apple.product-type.application"; };
+		999999999999999999999999 = {isa = PBXProject; attributes = { TargetAttributes = { 666666666666666666666666 = { ProvisioningStyle = Automatic; }; }; }; buildConfigurationList = AAAAAAAAAAAAAAAAAAAAAAAA; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; mainGroup = 444444444444444444444444; productRefGroup = 555555555555555555555555; projectDirPath = ""; projectRoot = ""; targets = (666666666666666666666666); };
+		888888888888888888888888 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (111111111111111111111111); runOnlyForDeploymentPostprocessing = 0; };
+		BBBBBBBBBBBBBBBBBBBBBBBB = {isa = XCBuildConfiguration; buildSettings = { CODE_SIGN_ENTITLEMENTS = TokamakSigningProbe.entitlements; CODE_SIGN_IDENTITY = "Apple Development"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = "__TOKAMAK_BUNDLE_ID__"; PRODUCT_NAME = TokamakSigningProbe; SDKROOT = macosx; }; name = Debug; };
+		AAAAAAAAAAAAAAAAAAAAAAAA = {isa = XCConfigurationList; buildConfigurations = (BBBBBBBBBBBBBBBBBBBBBBBB); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+	};
+	rootObject = 999999999999999999999999;
+}

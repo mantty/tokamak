@@ -104,7 +104,6 @@ impl Plugin {
 
 pub(crate) fn stage(plugins: &[Plugin], platform: Platform, destination: &Path) -> Result<()> {
     fs::create_dir_all(destination)?;
-    let mut plist_values = BTreeMap::new();
 
     for plugin in plugins {
         let Some(native) = plugin.platform(platform) else {
@@ -135,11 +134,6 @@ pub(crate) fn stage(plugins: &[Plugin], platform: Platform, destination: &Path) 
             fs::write(root.join("permissions").join(index.to_string()), permission)?;
         }
         for (index, (key, value)) in native.plist.iter().enumerate() {
-            if let Some(existing) = plist_values.insert(key, value)
-                && existing != value
-            {
-                bail!("plugins define conflicting values for Apple plist key '{key}'");
-            }
             let entry = root.join("plist").join(index.to_string());
             fs::create_dir_all(&entry)?;
             fs::write(entry.join("key"), key)?;

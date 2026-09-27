@@ -29,7 +29,19 @@ importers:
 
   core: {}
 
+  local-authentication:
+    dependencies:
+      '@tokamakdev/plugin':
+        specifier: ^0.1.0
+        version: link:../core
+
   location:
+    dependencies:
+      '@tokamakdev/plugin':
+        specifier: ^0.1.0
+        version: link:../core
+
+  secure-storage:
     dependencies:
       '@tokamakdev/plugin':
         specifier: ^0.1.0

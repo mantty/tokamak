@@ -264,7 +264,39 @@ optional; when present, Tokamak layers its generated application values first,
 then icon values, plugin values, and finally the user plist. User values
 therefore take precedence over all other values, including the SDK, platform,
 and Xcode provenance keys Apple platform packs generate from the active
-toolchain. Values not supplied by the user are preserved.
+toolchain. Values not supplied by the user are preserved. Plugins that set a
+key to the same value share it; when plugins set different values for a key,
+the build fails unless the user plist sets that key.
+
+The Android platform pack accepts an optional user-provided partial
+`AndroidManifest.xml` through `android-manifest`:
+
+```sh
+tok build android --set android-manifest=native/AndroidManifest.xml
+```
+
+```xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+  <uses-permission android:name="android.permission.CAMERA" />
+  <application android:allowBackup="false" />
+</manifest>
+```
+
+The corresponding environment variable is `TOKAMAK_ANDROID_MANIFEST`. Relative
+paths are resolved from the project directory. The Android Gradle Plugin's
+manifest merger combines the file with the generated manifest, which includes
+plugin permissions. The user file has the higher priority:
+
+- Elements are combined by key, for example `<uses-permission>` by
+  `android:name`. An element declared in both files appears once.
+- An attribute the generated manifest does not set is added.
+- An attribute the generated manifest sets to a different value fails the
+  build, and the merger's error names the attribute. Adding
+  `tools:replace="android:<attribute>"` to the element in the user file
+  replaces the generated value.
+- `tools:node="remove"` on an element in the user file removes it from the
+  merged manifest, including a permission a plugin declares.
 
 Each icon platform entry is optional. If the Tokamak configuration or a
 platform entry is absent, that platform keeps its existing icon behavior.
@@ -352,6 +384,20 @@ Both `tok dev` and `tok build ios` use these settings; the latter provisions
 for a generic iOS device and does not require a device ID. iOS Simulator
 builds do not require provisioning.
 
+macOS builds are ad-hoc signed unless a team is set with `macos-team-id`
+(`TOKAMAK_MACOS_TEAM_ID`):
+
+```sh
+tok build macos --set macos-team-id=YOUR_TEAM_ID
+```
+
+Tokamak then signs with an Apple Development identity and a macOS development
+profile for that team that includes this Mac, asking Xcode to register the Mac
+and provision the app when no installed profile matches. Team-signed builds can
+use the data protection keychain, which `@tokamakdev/plugin-secure-storage`
+requires on macOS. They run only on Macs registered to the team. Distribution
+signing (Developer ID, the hardened runtime, and notarisation) is not covered.
+
 ## Development
 
 tokamak supports dev mode with HMR via wrangler and vite, proxying to a device for native capabilities.
@@ -373,8 +419,9 @@ By default tokamak expects your server to available on `http://localhost:5173` (
 
 ## Native plugins
 
-Native capabilities are provided by npm packages such as
-`@tokamakdev/plugin-location`. Add them to your project's `dependencies`:
+Native capabilities are provided by npm packages: `@tokamakdev/plugin-location`,
+`@tokamakdev/plugin-secure-storage` and `@tokamakdev/plugin-local-authentication`.
+Add them to your project's `dependencies`:
 
 ```sh
 npm install @tokamakdev/plugin-location
@@ -385,6 +432,25 @@ npm install @tokamakdev/plugin-location
 package as Node does, in the nearest `node_modules` of the project or a parent
 directory, so plugins installed at a workspace root are included. Call plugins
 from browser code. Each plugin's README describes its API.
+
+Android builds run lint's `NewApi` check over the shell and plugin sources. A
+call to an API newer than the app's minimum SDK fails the build, naming the
+file, line and required API level, unless a `Build.VERSION.SDK_INT` check
+guards it.
+
+### Camera and microphone
+
+Pages use `getUserMedia`. The shells grant camera and microphone requests from
+the app origin once the app has declared them, and the operating system asks
+the user on first use. Other origins keep the WebView's default behavior, and a
+refused request rejects with `NotAllowedError`.
+
+| Platform | Declaration |
+|---|---|
+| iOS | `NSCameraUsageDescription` and `NSMicrophoneUsageDescription` in the `ios-plist` file |
+| macOS | The same keys in the `macos-plist` file |
+| Android | `android.permission.CAMERA` and `android.permission.RECORD_AUDIO` in the `android-manifest` file |
+| Windows | None; the shell asks the user, as it does for location |
 
 ## Example
 

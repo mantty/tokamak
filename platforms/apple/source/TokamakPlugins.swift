@@ -91,12 +91,9 @@ final class TokamakPluginBridge: NSObject, WKScriptMessageHandler {
     _ userContentController: WKUserContentController,
     didReceive message: WKScriptMessage
   ) {
-    let origin = message.frameInfo.securityOrigin
     guard
       message.frameInfo.isMainFrame,
-      origin.protocol == "https",
-      origin.host == host,
-      origin.port == 0 || origin.port == 443,
+      message.frameInfo.securityOrigin.isAppOrigin(host),
       let encoded = message.body as? String,
       let data = encoded.data(using: .utf8),
       let request = try? JSONSerialization.jsonObject(with: data)
@@ -160,7 +157,18 @@ final class TokamakPluginBridge: NSObject, WKScriptMessageHandler {
     }
   }
 
+  /// Plugins reply from any thread; delivery happens on the main thread.
   private func send(
+    key: RequestKey,
+    result: Result<Any?, TokamakPluginError>,
+    done: Bool
+  ) {
+    DispatchQueue.main.async { [weak self] in
+      self?.deliver(key: key, result: result, done: done)
+    }
+  }
+
+  private func deliver(
     key: RequestKey,
     result: Result<Any?, TokamakPluginError>,
     done: Bool
@@ -182,23 +190,12 @@ final class TokamakPluginBridge: NSObject, WKScriptMessageHandler {
     guard
       JSONSerialization.isValidJSONObject(response),
       let data = try? JSONSerialization.data(withJSONObject: response),
-      let json = String(data: data, encoding: .utf8)
+      let json = String(data: data, encoding: .utf8),
+      webView?.url?.isAppOrigin(host) == true
     else {
       return
     }
-    DispatchQueue.main.async { [weak self] in
-      guard
-        let self,
-        self.webView?.url?.scheme == "https",
-        self.webView?.url?.host == self.host,
-        self.webView?.url?.port == nil || self.webView?.url?.port == 443
-      else {
-        return
-      }
-      self.webView?.evaluateJavaScript(
-        "globalThis.__tokamakReceive?.(\(json))"
-      )
-    }
+    webView?.evaluateJavaScript("globalThis.__tokamakReceive?.(\(json))")
   }
 
   private static func bootstrap(host: String) -> String {

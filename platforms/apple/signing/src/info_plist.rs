@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -202,15 +203,16 @@ fn build_info_plist(
     user_plist: Option<&Path>,
     icon_info_plist: Option<&Path>,
 ) -> Result<Dictionary> {
+    let user = user_plist.map(read_dictionary).transpose()?;
     let mut result = Dictionary::new();
     add_generated_plist(&mut result, metadata, toolchain)?;
 
     if let Some(path) = icon_info_plist {
         overlay_dictionary(&mut result, read_dictionary(path)?);
     }
-    add_plugin_plist(&mut result, input)?;
-    if let Some(path) = user_plist {
-        overlay_dictionary(&mut result, read_dictionary(path)?);
+    add_plugin_plist(&mut result, input, metadata, user.as_ref())?;
+    if let Some(user) = user {
+        overlay_dictionary(&mut result, user);
     }
     Ok(result)
 }
@@ -302,49 +304,84 @@ fn add_generated_plist(
     Ok(())
 }
 
-fn add_plugin_plist(plist: &mut Dictionary, input: &Path) -> Result<()> {
-    let plugins = input.join("plugins");
-    if !plugins.is_dir() {
-        return Ok(());
-    }
-
-    let mut plugin_directories = fs::read_dir(&plugins)
-        .with_context(|| format!("read staged Apple plugins {}", plugins.display()))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()
-        .with_context(|| format!("read staged Apple plugins {}", plugins.display()))?;
-    plugin_directories.retain(|path| path.is_dir());
-    plugin_directories.sort();
-
-    for plugin in plugin_directories {
-        let plist_directory = plugin.join("plist");
-        if !plist_directory.is_dir() {
-            continue;
+/// Plugins that set a key to the same value share it. Different values need
+/// the app's plist to choose one.
+fn add_plugin_plist(
+    plist: &mut Dictionary,
+    input: &Path,
+    metadata: &Metadata,
+    user: Option<&Dictionary>,
+) -> Result<()> {
+    let values = plugin_plist_values(input)?;
+    let mut first_values = BTreeMap::new();
+    for value in &values {
+        let first: &PluginPlistValue = first_values.entry(&value.key).or_insert(value);
+        if first.value != value.value && !user.is_some_and(|user| user.contains_key(&value.key)) {
+            bail!(
+                "plugins '{}' and '{}' set different values for Info.plist key '{}'; set it in the plist named by {}",
+                first.plugin,
+                value.plugin,
+                value.key,
+                user_plist_variable(&metadata.platform)?
+            );
         }
-        let mut entries = fs::read_dir(&plist_directory)
-            .with_context(|| format!("read plugin plist {}", plist_directory.display()))?
-            .map(|entry| entry.map(|entry| entry.path()))
-            .collect::<std::io::Result<Vec<_>>>()
-            .with_context(|| format!("read plugin plist {}", plist_directory.display()))?;
-        entries.retain(|path| path.is_dir());
-        entries.sort();
-
-        for entry in entries {
-            let key = read_required(&entry.join("key"))?;
-            let value = read_required(&entry.join("value"))?;
-            insert_string(plist, &key, &value);
-        }
+        insert_string(plist, &first.key, &first.value);
     }
     Ok(())
 }
 
+struct PluginPlistValue {
+    plugin: String,
+    key: String,
+    value: String,
+}
+
+fn plugin_plist_values(input: &Path) -> Result<Vec<PluginPlistValue>> {
+    let mut values = Vec::new();
+    for plugin in sorted_directories(&input.join("plugins"))? {
+        let id = plugin
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("staged plugin directory name must be UTF-8")?
+            .to_owned();
+        for entry in sorted_directories(&plugin.join("plist"))? {
+            values.push(PluginPlistValue {
+                plugin: id.clone(),
+                key: read_required(&entry.join("key"))?,
+                value: read_required(&entry.join("value"))?,
+            });
+        }
+    }
+    Ok(values)
+}
+
+fn sorted_directories(path: &Path) -> Result<Vec<PathBuf>> {
+    if !path.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut directories = fs::read_dir(path)
+        .and_then(|entries| {
+            entries
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<std::io::Result<Vec<_>>>()
+        })
+        .with_context(|| format!("read {}", path.display()))?;
+    directories.retain(|path| path.is_dir());
+    directories.sort();
+    Ok(directories)
+}
+
 fn configured_user_plist(metadata: &Metadata) -> Result<Option<PathBuf>> {
-    let variable = match metadata.platform.as_str() {
-        "ios" | "ios-simulator" => IOS_PLIST_ENV,
-        "macos" => MACOS_PLIST_ENV,
-        platform => bail!("unsupported Apple platform: {platform}"),
-    };
+    let variable = user_plist_variable(&metadata.platform)?;
     resolve_user_plist(&metadata.project_dir, variable, env::var_os(variable))
+}
+
+fn user_plist_variable(platform: &str) -> Result<&'static str> {
+    match platform {
+        "ios" | "ios-simulator" => Ok(IOS_PLIST_ENV),
+        "macos" => Ok(MACOS_PLIST_ENV),
+        platform => bail!("unsupported Apple platform: {platform}"),
+    }
 }
 
 fn resolve_user_plist(
@@ -607,6 +644,139 @@ mod tests {
         assert_eq!(
             result.get("PluginOnlyValue").and_then(Value::as_string),
             Some("Plugin")
+        );
+        Ok(())
+    }
+
+    fn plugin_value(
+        input: &std::path::Path,
+        plugin: &str,
+        key: &str,
+        value: &str,
+    ) -> anyhow::Result<()> {
+        let entry = input.join("plugins").join(plugin).join("plist/0");
+        std::fs::create_dir_all(&entry)?;
+        std::fs::write(entry.join("key"), key)?;
+        std::fs::write(entry.join("value"), value)?;
+        Ok(())
+    }
+
+    #[test]
+    fn plugins_share_an_identical_value() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let input = input(temporary.path(), "ios")?;
+        plugin_value(
+            &input,
+            "local-authentication",
+            "NSFaceIDUsageDescription",
+            "Face ID",
+        )?;
+        plugin_value(
+            &input,
+            "secure-storage",
+            "NSFaceIDUsageDescription",
+            "Face ID",
+        )?;
+
+        let metadata = Metadata::read(&input)?;
+        let result = build_info_plist(&input, &metadata, &toolchain("iphoneos"), None, None)?;
+        assert_eq!(
+            result
+                .get("NSFaceIDUsageDescription")
+                .and_then(Value::as_string),
+            Some("Face ID")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_different_plugin_values_the_app_does_not_set() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let input = input(temporary.path(), "ios")?;
+        plugin_value(
+            &input,
+            "local-authentication",
+            "NSFaceIDUsageDescription",
+            "One",
+        )?;
+        plugin_value(&input, "secure-storage", "NSFaceIDUsageDescription", "Two")?;
+
+        let metadata = Metadata::read(&input)?;
+        let Err(error) = build_info_plist(&input, &metadata, &toolchain("iphoneos"), None, None)
+        else {
+            anyhow::bail!("different plugin values were accepted");
+        };
+        assert_eq!(
+            error.to_string(),
+            "plugins 'local-authentication' and 'secure-storage' set different values for \
+             Info.plist key 'NSFaceIDUsageDescription'; set it in the plist named by \
+             TOKAMAK_IOS_PLIST"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_app_plist_without_the_key_does_not_resolve_a_conflict() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let input = input(temporary.path(), "ios")?;
+        plugin_value(
+            &input,
+            "local-authentication",
+            "NSFaceIDUsageDescription",
+            "One",
+        )?;
+        plugin_value(&input, "secure-storage", "NSFaceIDUsageDescription", "Two")?;
+        let user_path = temporary.path().join("User.plist");
+        let mut user = Dictionary::new();
+        user.insert("OtherKey".into(), Value::String("App".into()));
+        Value::Dictionary(user).to_file_xml(&user_path)?;
+
+        let metadata = Metadata::read(&input)?;
+        assert!(
+            build_info_plist(
+                &input,
+                &metadata,
+                &toolchain("iphoneos"),
+                Some(&user_path),
+                None
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_app_plist_chooses_between_different_plugin_values() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let input = input(temporary.path(), "macos")?;
+        plugin_value(
+            &input,
+            "local-authentication",
+            "NSFaceIDUsageDescription",
+            "One",
+        )?;
+        plugin_value(&input, "secure-storage", "NSFaceIDUsageDescription", "Two")?;
+        let user_path = temporary.path().join("User.plist");
+        let mut user = Dictionary::new();
+        user.insert(
+            "NSFaceIDUsageDescription".into(),
+            Value::String("App".into()),
+        );
+        Value::Dictionary(user).to_file_xml(&user_path)?;
+
+        let metadata = Metadata::read(&input)?;
+        let result = build_info_plist(
+            &input,
+            &metadata,
+            &toolchain("macosx"),
+            Some(&user_path),
+            None,
+        )?;
+        assert_eq!(
+            result
+                .get("NSFaceIDUsageDescription")
+                .and_then(Value::as_string),
+            Some("App")
         );
         Ok(())
     }

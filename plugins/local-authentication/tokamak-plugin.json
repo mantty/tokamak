@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "local-authentication",
+  "kind": "frontend",
+  "platforms": {
+    "macos": {
+      "class": "TokamakLocalAuthenticationPlugin",
+      "sources": ["apple/LocalAuthenticationPlugin.swift"],
+      "frameworks": ["LocalAuthentication"]
+    },
+    "ios": {
+      "class": "TokamakLocalAuthenticationPlugin",
+      "sources": ["apple/LocalAuthenticationPlugin.swift"],
+      "frameworks": ["LocalAuthentication"],
+      "plist": {
+        "NSFaceIDUsageDescription": "This app uses Face ID to confirm your identity."
+      }
+    },
+    "ios-simulator": {
+      "class": "TokamakLocalAuthenticationPlugin",
+      "sources": ["apple/LocalAuthenticationPlugin.swift"],
+      "frameworks": ["LocalAuthentication"],
+      "plist": {
+        "NSFaceIDUsageDescription": "This app uses Face ID to confirm your identity."
+      }
+    },
+    "android": {
+      "class": "com.tokamak.plugins.localauthentication.TokamakLocalAuthenticationPlugin",
+      "sources": ["android/LocalAuthenticationPlugin.kt"],
+      "permissions": ["android.permission.USE_BIOMETRIC"]
+    }
+  }
+}

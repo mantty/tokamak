@@ -29,6 +29,17 @@ if [[ -n "$dev_endpoint" && -z "$dev_session_token" ]] || [[ -z "$dev_endpoint" 
   echo "development endpoint and session token must be provided together" >&2
   exit 1
 fi
+user_manifest=
+if [[ -n "${TOKAMAK_ANDROID_MANIFEST:-}" ]]; then
+  user_manifest=$TOKAMAK_ANDROID_MANIFEST
+  if [[ "$user_manifest" != /* ]]; then
+    user_manifest=$(cat "$metadata/project-dir")/$user_manifest
+  fi
+  if [[ ! -f "$user_manifest" ]]; then
+    echo "android-manifest file is missing: $user_manifest" >&2
+    exit 1
+  fi
+fi
 project=$(dirname "$output")/.tokamak
 app=$project/app
 native=$app/src/main/jniLibs/arm64-v8a
@@ -46,7 +57,7 @@ xml_escape() {
       -e "s/'/\&apos;/g"
 }
 
-rm -rf "$app/src/main/assets" "$app/src/main/jniLibs" "$app/src/main/kotlin" "$app/src/main/res" "$output"
+rm -rf "$app/src/main/assets" "$app/src/main/jniLibs" "$app/src/main/kotlin" "$app/src/main/res" "$app/user" "$output"
 mkdir -p "$native" "$assets" "$kotlin" "$plugins_root" "$app/src/main/res"
 cp -R "$input/app/." "$assets/"
 cp "$input/runtime/libtokamak.so" "$native/libtokamak.so"
@@ -146,6 +157,11 @@ android {
     sourceCompatibility JavaVersion.VERSION_17
     targetCompatibility JavaVersion.VERSION_17
   }
+
+  lint {
+    checkOnly 'NewApi'
+    abortOnError true
+  }
 }
 
 kotlin {
@@ -156,6 +172,19 @@ dependencies {
   implementation 'androidx.webkit:webkit:1.12.1'
 }
 EOF
+
+if [[ -n "$user_manifest" ]]; then
+  mkdir -p "$app/user"
+  cp "$user_manifest" "$app/user/AndroidManifest.xml"
+  cat >> "$project/app/build.gradle" <<'EOF'
+
+androidComponents {
+  onVariants(selector().all()) { variant ->
+    variant.sources.manifests.addStaticManifestFile(file('user/AndroidManifest.xml').path)
+  }
+}
+EOF
+fi
 
 registry=$kotlin/TokamakPluginRegistry.kt
 {
@@ -174,13 +203,13 @@ registry=$kotlin/TokamakPluginRegistry.kt
 manifest=$app/src/main/AndroidManifest.xml
 {
   printf '%s\n' '<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
-  printf '%s\n' '  <uses-permission android:name="android.permission.INTERNET" />'
-  for plugin in "$input/plugins"/*; do
-    [[ -d "$plugin" ]] || continue
-    for permission in "$plugin/permissions"/*; do
-      [[ -f "$permission" ]] || continue
-      printf '  <uses-permission android:name="%s" />\n' "$(cat "$permission")"
+  {
+    printf '%s\n' android.permission.INTERNET
+    for permission in "$input/plugins"/*/permissions/*; do
+      printf '%s\n' "$(cat "$permission")"
     done
+  } | sort -u | while IFS= read -r permission; do
+    printf '  <uses-permission android:name="%s" />\n' "$permission"
   done
   icon_attribute=
   if [[ "$has_icon" == true ]]; then
@@ -202,6 +231,6 @@ manifest=$app/src/main/AndroidManifest.xml
   printf '%s\n' '</manifest>'
 } > "$manifest"
 
-gradle --no-daemon :app:assembleDebug --project-dir "$project"
+gradle --no-daemon :app:lintDebug :app:assembleDebug --project-dir "$project"
 mkdir -p "$(dirname "$output")"
 cp "$app/build/outputs/apk/debug/app-debug.apk" "$output"

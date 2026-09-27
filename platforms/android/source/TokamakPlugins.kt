@@ -91,14 +91,7 @@ internal class TokamakPluginBridge(
         isMainFrame: Boolean,
         replyProxy: JavaScriptReplyProxy,
     ) {
-        if (
-            !isMainFrame ||
-                sourceOrigin.scheme != "https" ||
-                sourceOrigin.host != host ||
-                (sourceOrigin.port != -1 && sourceOrigin.port != 443)
-        ) {
-            return
-        }
+        if (!isMainFrame || !sourceOrigin.isAppOrigin(host)) return
         val request = runCatching { JSONObject(message.data ?: return) }.getOrNull() ?: return
         val session = request.optString("session")
         if (session.isEmpty()) return
@@ -158,6 +151,13 @@ internal class TokamakPluginBridge(
         key: RequestKey,
         result: Result<Any?>,
         done: Boolean,
+    ) = activity.runOnUiThread { deliver(replyProxy, key, result, done) }
+
+    private fun deliver(
+        replyProxy: JavaScriptReplyProxy,
+        key: RequestKey,
+        result: Result<Any?>,
+        done: Boolean,
     ) {
         if (activeSession != key.session) return
         val error = result.exceptionOrNull()
@@ -176,8 +176,6 @@ internal class TokamakPluginBridge(
                 JSONObject().put("name", name).put("message", error.message ?: name),
             )
         }
-        activity.runOnUiThread {
-            if (activeSession == key.session) replyProxy.postMessage(response.toString())
-        }
+        replyProxy.postMessage(response.toString())
     }
 }
