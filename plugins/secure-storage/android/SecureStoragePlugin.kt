@@ -110,10 +110,7 @@ internal class TokamakSecureStoragePlugin(
 
     private fun requireAuthentication(spec: KeyGenParameterSpec.Builder, wireName: String) {
         val authentication =
-            Authentication.entries.firstOrNull { it.wireName == wireName }
-                ?: throw typeError(
-                    "authentication must be \"biometricsOrPasscode\", \"biometrics\" or \"currentBiometrics\"",
-                )
+            Authentication.entries.firstOrNull { it.wireName == wireName } ?: throw unknownAuthentication()
         requireAvailable(authentication.authenticators)
         spec.setUserAuthenticationRequired(true)
             .setUserAuthenticationParameters(0, authentication.keyTypes)
@@ -315,6 +312,11 @@ internal class TokamakSecureStoragePlugin(
 
         fun typeError(message: String) = TokamakPluginError("TypeError", message)
 
+        fun unknownAuthentication() =
+            typeError("authentication must be \"biometricsOrPasscode\", \"biometrics\" or \"currentBiometrics\"")
+
+        fun locked() = TokamakPluginError("NotAllowedError", "The device must be unlocked to read this value")
+
         fun notReadable() =
             TokamakPluginError("NotReadableError", "The stored value can no longer be decrypted")
 
@@ -330,8 +332,7 @@ internal class TokamakSecureStoragePlugin(
                 is BadPaddingException,
                 is IllegalBlockSizeException,
                 -> notReadable()
-                is UserNotAuthenticatedException ->
-                    TokamakPluginError("NotAllowedError", "The device must be unlocked to read this value")
+                is UserNotAuthenticatedException -> locked()
                 else -> TokamakPluginError("OperationError", error.message ?: error.javaClass.name)
             }
     }
