@@ -203,13 +203,13 @@ registry=$kotlin/TokamakPluginRegistry.kt
 manifest=$app/src/main/AndroidManifest.xml
 {
   printf '%s\n' '<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
-  printf '%s\n' '  <uses-permission android:name="android.permission.INTERNET" />'
-  for plugin in "$input/plugins"/*; do
-    [[ -d "$plugin" ]] || continue
-    for permission in "$plugin/permissions"/*; do
-      [[ -f "$permission" ]] || continue
-      printf '  <uses-permission android:name="%s" />\n' "$(cat "$permission")"
+  {
+    printf '%s\n' android.permission.INTERNET
+    for permission in "$input/plugins"/*/permissions/*; do
+      printf '%s\n' "$(cat "$permission")"
     done
+  } | sort -u | while IFS= read -r permission; do
+    printf '  <uses-permission android:name="%s" />\n' "$permission"
   done
   icon_attribute=
   if [[ "$has_icon" == true ]]; then

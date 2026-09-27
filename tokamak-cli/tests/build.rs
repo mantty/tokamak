@@ -192,6 +192,37 @@ fn create_android_inputs() -> TestResult<(tempfile::TempDir, PathBuf, PathBuf)> 
     Ok((temporary, project, platform_pack))
 }
 
+#[cfg(unix)]
+fn install_android_plugins(root: &Path, plugins: &[(&str, &[&str])]) -> TestResult {
+    let dependencies: serde_json::Map<_, _> = plugins
+        .iter()
+        .map(|(id, _)| ((*id).to_owned(), "1.0.0".into()))
+        .collect();
+    fs::write(
+        root.join("package.json"),
+        serde_json::json!({ "name": "demo-app", "dependencies": dependencies }).to_string(),
+    )?;
+    for (id, permissions) in plugins {
+        let plugin = root.join("node_modules").join(id);
+        fs::create_dir_all(plugin.join("android"))?;
+        fs::write(plugin.join("android/Plugin.kt"), "")?;
+        let manifest = serde_json::json!({
+            "schemaVersion": 1,
+            "id": id,
+            "kind": "frontend",
+            "platforms": {
+                "android": {
+                    "class": format!("test.{}.Plugin", id.replace('-', "")),
+                    "sources": ["android/Plugin.kt"],
+                    "permissions": permissions,
+                }
+            }
+        });
+        fs::write(plugin.join("tokamak-plugin.json"), manifest.to_string())?;
+    }
+    Ok(())
+}
+
 fn write_test_manifest(root: &Path, target: Target) -> TestResult {
     write_manifest(
         root.join(MANIFEST_FILE),
@@ -717,6 +748,39 @@ fn rejects_a_missing_app_android_manifest() -> TestResult {
         .assert()
         .failure()
         .stderr(contains("android-manifest file is missing"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn writes_each_android_permission_once() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+    install_android_plugins(
+        &project,
+        &[
+            ("storage", &["android.permission.USE_BIOMETRIC"]),
+            (
+                "authentication",
+                &[
+                    "android.permission.USE_BIOMETRIC",
+                    "android.permission.INTERNET",
+                ],
+            ),
+        ],
+    )?;
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command.assert().success();
+
+    let manifest = fs::read_to_string(
+        project.join("build/android/.tokamak/app/src/main/AndroidManifest.xml"),
+    )?;
+    assert_eq!(
+        manifest.matches("android.permission.USE_BIOMETRIC").count(),
+        1
+    );
+    assert_eq!(manifest.matches("android.permission.INTERNET").count(), 1);
     Ok(())
 }
 
