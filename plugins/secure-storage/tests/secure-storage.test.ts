@@ -58,6 +58,7 @@ void test("stores a value with its options", async () => {
       value: "c2VjcmV0",
       readable: "whenUnlocked",
       authentication: "biometricsOrPasscode",
+      thisDeviceOnly: true,
     },
   });
   respond(sent, { value: null });
@@ -65,15 +66,19 @@ void test("stores a value with its options", async () => {
   await stored;
 });
 
-void test("stores a value without authentication", async () => {
+void test("stores a restorable value without authentication", async () => {
   const sent = connectNative();
 
-  const stored = secureStorage.set("identity", "c2VjcmV0", { readable: "afterFirstUnlock" });
+  const stored = secureStorage.set("identity", "c2VjcmV0", {
+    readable: "afterFirstUnlock",
+    thisDeviceOnly: false,
+  });
   assert.deepEqual(lastCall(sent).arguments, {
     name: "identity",
     value: "c2VjcmV0",
     readable: "afterFirstUnlock",
     authentication: null,
+    thisDeviceOnly: false,
   });
   respond(sent, { value: null });
 
@@ -116,6 +121,26 @@ void test("deletes a value", async () => {
   respond(sent, { value: null });
 
   await deleted;
+});
+
+void test("lists the stored names", async () => {
+  const sent = connectNative();
+
+  const names = secureStorage.keys();
+  assert.deepEqual(lastCall(sent), { plugin: "secure-storage", method: "keys", arguments: null });
+  respond(sent, { value: ["device", "identity"] });
+
+  assert.deepEqual(await names, ["device", "identity"]);
+});
+
+void test("clears every value", async () => {
+  const sent = connectNative();
+
+  const cleared = secureStorage.clear();
+  assert.deepEqual(lastCall(sent), { plugin: "secure-storage", method: "clear", arguments: null });
+  respond(sent, { value: null });
+
+  await cleared;
 });
 
 void test("preserves native errors", async () => {
