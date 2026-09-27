@@ -15,7 +15,6 @@ private const val TAG = "tokamak"
 private const val HOST_METADATA = "tokamak.host"
 private const val DEV_ENDPOINT_METADATA = "tokamak.dev.endpoint"
 private const val DEV_SESSION_TOKEN_METADATA = "tokamak.dev.session-token"
-private const val STARTING = "<!doctype html><title>Starting</title>"
 private const val FAILED =
     "<!doctype html><title>tokamak</title><h1>App failed to start</h1><p>See logcat for details.</p>"
 private const val UNSUPPORTED =
@@ -50,7 +49,6 @@ class TokamakActivity : Activity() {
             show(UNSUPPORTED)
             return
         }
-        show(STARTING)
         Thread(::startRuntime, "tokamak-startup").start()
     }
 
