@@ -72,6 +72,11 @@ internal class TokamakSecureStoragePlugin(
             runCatching(operation).onFailure { reply(Result.failure(pluginError(it))) }
         }
 
+    private fun onUiThread(reply: TokamakPluginReply, operation: () -> Unit) =
+        activity.runOnUiThread {
+            runCatching(operation).onFailure { reply(Result.failure(pluginError(it))) }
+        }
+
     private fun set(request: JSONObject) {
         val name = request.requireString("name")
         val value = request.requireString("value")
@@ -176,9 +181,10 @@ internal class TokamakSecureStoragePlugin(
         reply: TokamakPluginReply,
     ) {
         val callback = PromptCallback(reply) { execute(reply) { reply(Result.success(open(stored, unwrap))) } }
+        val title = prompt?.takeIf { it.isNotEmpty() } ?: activity.applicationInfo.loadLabel(activity.packageManager)
         val dialog =
             BiometricPrompt.Builder(activity)
-                .setTitle(prompt ?: activity.applicationInfo.loadLabel(activity.packageManager))
+                .setTitle(title)
                 .setAllowedAuthenticators(authenticators)
         if ((authenticators and Authenticators.DEVICE_CREDENTIAL) == 0) {
             dialog.setNegativeButton(
@@ -186,7 +192,7 @@ internal class TokamakSecureStoragePlugin(
                 activity.mainExecutor,
             ) { _, _ -> reply(Result.failure(cancelled())) }
         }
-        activity.runOnUiThread {
+        onUiThread(reply) {
             dialog.build().authenticate(
                 BiometricPrompt.CryptoObject(unwrap),
                 CancellationSignal(),

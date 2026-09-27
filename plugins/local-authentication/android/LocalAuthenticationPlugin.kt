@@ -18,31 +18,28 @@ internal class TokamakLocalAuthenticationPlugin(
     private val biometrics = activity.getSystemService(BiometricManager::class.java)
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
-        if (method != "status" && method != "authenticate") {
-            super.call(method, arguments, reply)
-            return
-        }
-        val request = arguments as? JSONObject
-        val wireName = request?.opt("authentication") as? String
-        val authenticators = Authentication.entries.firstOrNull { it.wireName == wireName }?.authenticators
-        val prompt = request?.opt("prompt") as? String
-        when {
-            authenticators == null ->
-                reply(typeError("authentication must be \"biometricsOrPasscode\" or \"biometrics\""))
-            method == "status" -> reply(Result.success(status(authenticators)))
-            prompt.isNullOrEmpty() -> reply(typeError("prompt must be a non-empty string"))
-            else -> authenticate(authenticators, prompt, reply)
+        when (method) {
+            "status" -> respond(reply) { reply(Result.success(status(request(arguments)))) }
+            "authenticate" -> respond(reply) { authenticate(request(arguments), reply) }
+            else -> super.call(method, arguments, reply)
         }
     }
 
-    private fun status(authenticators: Int): String =
-        when (biometrics.canAuthenticate(authenticators)) {
+    private fun respond(reply: TokamakPluginReply, operation: () -> Unit) {
+        runCatching(operation).onFailure { reply(Result.failure(pluginError(it))) }
+    }
+
+    private fun status(request: JSONObject): String =
+        when (biometrics.canAuthenticate(authenticators(request))) {
             BiometricManager.BIOMETRIC_SUCCESS -> "available"
             BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "notEnrolled"
             else -> "unavailable"
         }
 
-    private fun authenticate(authenticators: Int, prompt: String, reply: TokamakPluginReply) {
+    private fun authenticate(request: JSONObject, reply: TokamakPluginReply) {
+        val authenticators = authenticators(request)
+        val prompt = request.requireString("prompt")
+        if (prompt.isEmpty()) throw typeError("prompt must be a non-empty string")
         val callback = PromptCallback(reply) { reply(Result.success(null)) }
         val dialog =
             BiometricPrompt.Builder(activity)
@@ -59,6 +56,20 @@ internal class TokamakLocalAuthenticationPlugin(
         dialog.build().authenticate(CancellationSignal(), activity.mainExecutor, callback)
     }
 
+    private fun authenticators(request: JSONObject): Int {
+        val wireName = request.optionalString("authentication")
+        return Authentication.entries.firstOrNull { it.wireName == wireName }?.authenticators
+            ?: throw typeError("authentication must be \"biometricsOrPasscode\" or \"biometrics\"")
+    }
+
+    private fun request(arguments: Any?): JSONObject =
+        arguments as? JSONObject ?: throw typeError("$id arguments must be an object")
+
+    private fun JSONObject.requireString(name: String): String =
+        optionalString(name) ?: throw typeError("$name must be a string")
+
+    private fun JSONObject.optionalString(name: String): String? = opt(name) as? String
+
     private enum class Authentication(val wireName: String, val authenticators: Int) {
         BIOMETRICS_OR_PASSCODE(
             "biometricsOrPasscode",
@@ -68,7 +79,11 @@ internal class TokamakLocalAuthenticationPlugin(
     }
 
     private companion object {
-        fun typeError(message: String): Result<Any?> = Result.failure(TokamakPluginError("TypeError", message))
+        fun typeError(message: String) = TokamakPluginError("TypeError", message)
+
+        fun pluginError(error: Throwable): TokamakPluginError =
+            error as? TokamakPluginError
+                ?: TokamakPluginError("OperationError", error.message ?: error.javaClass.name)
     }
 }
 
