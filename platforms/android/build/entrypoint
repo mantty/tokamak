@@ -146,6 +146,11 @@ android {
     sourceCompatibility JavaVersion.VERSION_17
     targetCompatibility JavaVersion.VERSION_17
   }
+
+  lint {
+    checkOnly 'NewApi'
+    abortOnError true
+  }
 }
 
 kotlin {
@@ -202,6 +207,6 @@ manifest=$app/src/main/AndroidManifest.xml
   printf '%s\n' '</manifest>'
 } > "$manifest"
 
-gradle --no-daemon :app:assembleDebug --project-dir "$project"
+gradle --no-daemon :app:lintDebug :app:assembleDebug --project-dir "$project"
 mkdir -p "$(dirname "$output")"
 cp "$app/build/outputs/apk/debug/app-debug.apk" "$output"

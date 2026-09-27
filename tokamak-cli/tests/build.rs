@@ -180,6 +180,18 @@ fn create_android_platform_pack(root: &Path) -> TestResult<PathBuf> {
     Ok(root.to_path_buf())
 }
 
+#[cfg(unix)]
+fn create_android_inputs() -> TestResult<(tempfile::TempDir, PathBuf, PathBuf)> {
+    let temporary = tempfile::tempdir()?;
+    let project = temporary.path().join("project");
+    let pack = temporary.path().join("pack");
+    fs::create_dir_all(&project)?;
+    fs::create_dir_all(&pack)?;
+    create_project(&project)?;
+    let platform_pack = create_android_platform_pack(&pack)?;
+    Ok((temporary, project, platform_pack))
+}
+
 fn write_test_manifest(root: &Path, target: Target) -> TestResult {
     write_manifest(
         root.join(MANIFEST_FILE),
@@ -375,6 +387,7 @@ for arg in "$@"; do
     next=project
   fi
 done
+printf '%s\n' "$*" > "$project/gradle-arguments"
 mkdir -p "$project/app/build/outputs/apk/debug"
 if [ -n "${TOKAMAK_ANDROID_TEST:-}" ]; then
   printf '%s' "$TOKAMAK_ANDROID_TEST" > "$project/platform-pack-set-value"
@@ -602,13 +615,7 @@ fn preserves_configured_display_name_in_macos_bundle() -> TestResult {
 #[cfg(unix)]
 #[test]
 fn preserves_configured_display_name_in_android_manifest() -> TestResult {
-    let temporary = tempfile::tempdir()?;
-    let project = temporary.path().join("project");
-    let pack = temporary.path().join("pack");
-    fs::create_dir_all(&project)?;
-    fs::create_dir_all(&pack)?;
-    create_project(&project)?;
-    let platform_pack = create_android_platform_pack(&pack)?;
+    let (temporary, project, platform_pack) = create_android_inputs()?;
     fs::write(
         project.join("tokamak.jsonc"),
         r#"{"name":"Vigilus & <Co> \"Pro\" 'X'"}"#,
@@ -634,13 +641,7 @@ fn preserves_configured_display_name_in_android_manifest() -> TestResult {
 #[cfg(unix)]
 #[test]
 fn passes_platform_pack_variables_to_the_android_entrypoint() -> TestResult {
-    let temporary = tempfile::tempdir()?;
-    let project = temporary.path().join("project");
-    let pack = temporary.path().join("pack");
-    fs::create_dir_all(&project)?;
-    fs::create_dir_all(&pack)?;
-    create_project(&project)?;
-    let platform_pack = create_android_platform_pack(&pack)?;
+    let (temporary, project, platform_pack) = create_android_inputs()?;
 
     let mut command = build_command("android", &project, &platform_pack)?;
     command.args(["--set", "android-test=passed"]);
@@ -651,6 +652,24 @@ fn passes_platform_pack_variables_to_the_android_entrypoint() -> TestResult {
         fs::read_to_string(project.join("build/android/.tokamak/platform-pack-set-value"))?,
         "passed"
     );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn checks_android_api_levels_with_lint() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command.assert().success();
+
+    let gradle = project.join("build/android/.tokamak");
+    let build_script = fs::read_to_string(gradle.join("app/build.gradle"))?;
+    assert!(build_script.contains("checkOnly 'NewApi'"));
+    assert!(build_script.contains("abortOnError true"));
+    let arguments = fs::read_to_string(gradle.join("gradle-arguments"))?;
+    assert!(arguments.contains(":app:lintDebug :app:assembleDebug"));
     Ok(())
 }
 
