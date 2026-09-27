@@ -27,7 +27,7 @@ internal class TokamakWebViewClient(
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
         pluginBridge.close()
         val uri = Uri.parse(url)
-        if (!isAppOrigin(uri)) {
+        if (!uri.isAppOrigin(host)) {
             view.stopLoading()
             openExternal(uri)
         }
@@ -37,7 +37,7 @@ internal class TokamakWebViewClient(
         view: WebView,
         request: WebResourceRequest,
     ): Boolean {
-        if (!request.isForMainFrame || isAppOrigin(request.url)) return false
+        if (!request.isForMainFrame || request.url.isAppOrigin(host)) return false
         openExternal(request.url)
         return true
     }
@@ -66,11 +66,6 @@ internal class TokamakWebViewClient(
         }
         request.proceed(privateKey, arrayOf(certificate))
     }
-
-    private fun isAppOrigin(uri: Uri): Boolean =
-        uri.scheme.equals("https", ignoreCase = true) &&
-            uri.host?.equals(host, ignoreCase = true) == true &&
-            (uri.port == -1 || uri.port == 443)
 
     private fun openExternal(uri: Uri) {
         runCatching {

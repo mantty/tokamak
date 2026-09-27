@@ -91,14 +91,7 @@ internal class TokamakPluginBridge(
         isMainFrame: Boolean,
         replyProxy: JavaScriptReplyProxy,
     ) {
-        if (
-            !isMainFrame ||
-                sourceOrigin.scheme != "https" ||
-                sourceOrigin.host != host ||
-                (sourceOrigin.port != -1 && sourceOrigin.port != 443)
-        ) {
-            return
-        }
+        if (!isMainFrame || !sourceOrigin.isAppOrigin(host)) return
         val request = runCatching { JSONObject(message.data ?: return) }.getOrNull() ?: return
         val session = request.optString("session")
         if (session.isEmpty()) return
