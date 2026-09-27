@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 
-use tokamak_apple_signing::{inventory, sign_ios_bundle, write_info_plist};
+use tokamak_apple_signing::{inventory, sign_ios_bundle, sign_macos_bundle, write_info_plist};
 
 fn main() -> ExitCode {
     match run() {
@@ -38,7 +38,7 @@ fn run() -> Result<()> {
         Some("plist") => plist(arguments),
         Some("sign") => sign(arguments),
         _ => bail!(
-            "usage: tokamak-apple-signing inventory | plist --input INPUT --output OUTPUT [--icon-info-plist PATH] | sign --project PROJECT --bundle BUNDLE --bundle-id ID [--device-id DEVICE]"
+            "usage: tokamak-apple-signing inventory | plist --input INPUT --output OUTPUT [--icon-info-plist PATH] | sign --platform ios|macos --project PROJECT --bundle BUNDLE --bundle-id ID [--device-id DEVICE]"
         ),
     }
 }
@@ -69,6 +69,7 @@ fn plist(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {
 }
 
 fn sign(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {
+    let mut platform = None;
     let mut project = None;
     let mut bundle = None;
     let mut bundle_id = None;
@@ -84,6 +85,7 @@ fn sign(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {
             .into_string()
             .map_err(|_| anyhow::anyhow!("signing arguments must be valid UTF-8"))?;
         match argument.as_str() {
+            "--platform" => platform = Some(value),
             "--project" => project = Some(PathBuf::from(value)),
             "--bundle" => bundle = Some(PathBuf::from(value)),
             "--bundle-id" => bundle_id = Some(value),
@@ -92,8 +94,14 @@ fn sign(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {
         }
     }
 
+    let platform = platform.context("signing requires --platform")?;
     let project = project.context("signing requires --project")?;
     let bundle = bundle.context("signing requires --bundle")?;
     let bundle_id = bundle_id.context("signing requires --bundle-id")?;
-    sign_ios_bundle(&project, &bundle, &bundle_id, device_id.as_deref())
+    match (platform.as_str(), device_id) {
+        ("ios", device_id) => sign_ios_bundle(&project, &bundle, &bundle_id, device_id.as_deref()),
+        ("macos", None) => sign_macos_bundle(&project, &bundle, &bundle_id),
+        ("macos", Some(_)) => bail!("macOS signing does not take --device-id"),
+        (platform, _) => bail!("unknown signing platform: {platform}"),
+    }
 }

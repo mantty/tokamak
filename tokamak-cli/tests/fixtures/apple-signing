@@ -102,15 +102,23 @@ case "${1-}" in
     ;;
   sign)
     bundle=
+    platform=
     while [ "$#" -gt 0 ]; do
       case "$1" in
         sign) ;;
         --project|--bundle-id|--device-id) shift ;;
+        --platform) platform=$2; shift ;;
         --bundle) bundle=$2; shift ;;
         *) echo "unknown signing option: $1" >&2; exit 2 ;;
       esac
       shift
     done
+
+    if [ "$platform" = macos ]; then
+      printf '%s' "$TOKAMAK_MACOS_TEAM_ID" > "$bundle/Contents/embedded.provisionprofile"
+      codesign --force --sign "Apple Development" "$bundle"
+      exit 0
+    fi
 
     if [ -n "${TOKAMAK_IOS_TEAM_ID:-}" ] && [ -n "${TOKAMAK_IOS_SIGNING_IDENTITY:-}" ]; then
       echo 'automatic and manual iOS signing cannot be combined.' >&2

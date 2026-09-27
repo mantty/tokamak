@@ -80,6 +80,7 @@ sign_bundle() {
   if [[ "$platform" == ios ]]; then
     signing_args=(
       sign
+      --platform ios
       --project "$project_dir"
       --bundle "$bundle"
       --bundle-id "$identifier"
@@ -88,7 +89,15 @@ sign_bundle() {
       signing_args+=(--device-id "$(cat "$metadata/device-id")")
     fi
     "$apple_tool" "${signing_args[@]}"
+  elif [[ "$platform" == macos && -n "${TOKAMAK_MACOS_TEAM_ID:-}" ]]; then
+    "$apple_tool" sign \
+      --platform macos \
+      --project "$project_dir" \
+      --bundle "$bundle" \
+      --bundle-id "$identifier"
   else
+    # Ad-hoc signatures carry no provisioning profile.
+    rm -f "$contents/embedded.provisionprofile"
     codesign --force --timestamp=none --sign - "$bundle"
   fi
 }
@@ -111,7 +120,7 @@ if [[ -f "$metadata/input-key" ]]; then
         shasum -a 256 "$plist_path"
       fi
       env | LC_ALL=C sort | sed -n '/^TOKAMAK_/p' |
-        sed '/^TOKAMAK_IOS_TEAM_ID=/d; /^TOKAMAK_IOS_SIGNING_IDENTITY=/d; /^TOKAMAK_IOS_PROVISIONING_PROFILE=/d; /^TOKAMAK_IOS_BUILD_NUMBER=/d; /^TOKAMAK_MACOS_BUILD_NUMBER=/d'
+        sed '/^TOKAMAK_IOS_TEAM_ID=/d; /^TOKAMAK_IOS_SIGNING_IDENTITY=/d; /^TOKAMAK_IOS_PROVISIONING_PROFILE=/d; /^TOKAMAK_MACOS_TEAM_ID=/d; /^TOKAMAK_IOS_BUILD_NUMBER=/d; /^TOKAMAK_MACOS_BUILD_NUMBER=/d'
       printf '%s\n' "${DEVELOPER_DIR:-}" "$PATH"
       xcodebuild -version
     } | shasum -a 256 | cut -d ' ' -f 1

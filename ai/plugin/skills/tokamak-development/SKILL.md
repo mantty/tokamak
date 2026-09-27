@@ -105,6 +105,14 @@ signing. Do not provide both modes. Use `tok certs` to inspect installed
 identities and profiles. `tok build ios` does not need a device ID; simulator
 builds do not require provisioning.
 
+macOS builds are ad-hoc signed unless `macos-team-id`/`TOKAMAK_MACOS_TEAM_ID`
+is set. With a team, Tokamak signs with a macOS development profile for that
+team that includes this Mac, provisioning through Xcode when needed. Team
+signing enables the data protection keychain, which the secure storage plugin
+requires on macOS; such builds run only on Macs registered to the team.
+Distribution signing (Developer ID, hardened runtime, notarisation) is not
+covered.
+
 ## Respect the packaged Worker contract
 
 - Export a default Worker object with a `fetch(request, env, ctx)` handler, directly or through a compatible framework adapter.

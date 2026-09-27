@@ -334,7 +334,8 @@ fn build_command(platform: &str, project: &Path, platform_pack: &Path) -> TestRe
         .arg("--skip-project-build")
         .env("TOKAMAK_VERSION", "1.0.0")
         .env_remove("TOKAMAK_IOS_BUILD_NUMBER")
-        .env_remove("TOKAMAK_MACOS_BUILD_NUMBER");
+        .env_remove("TOKAMAK_MACOS_BUILD_NUMBER")
+        .env_remove("TOKAMAK_MACOS_TEAM_ID");
     Ok(command)
 }
 
@@ -975,6 +976,43 @@ fn apple_env_only_build_reuses_the_native_bundle() -> TestResult {
             );
         }
     }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_team_signing_changes_without_rebuilding_the_bundle() -> TestResult {
+    let (temporary, project, pack) = create_inputs("macos-arm64")?;
+    let profile = project.join("build/macos/demo-app.app/Contents/embedded.provisionprofile");
+
+    let mut team_signed = build_command("macos", &project, &pack)?;
+    let log = configure_fake_apple_tools(&mut team_signed, temporary.path())?;
+    team_signed
+        .env("TOKAMAK_MACOS_TEAM_ID", "TEAM")
+        .assert()
+        .success();
+    assert_eq!(fs::read_to_string(&profile)?, "TEAM");
+
+    let mut ad_hoc = build_command("macos", &project, &pack)?;
+    configure_fake_apple_tools(&mut ad_hoc, temporary.path())?;
+    ad_hoc.assert().success();
+    assert!(!profile.exists());
+
+    let commands = fs::read_to_string(log)?;
+    assert_eq!(
+        commands
+            .lines()
+            .filter(|line| line.contains(" swiftc "))
+            .count(),
+        1
+    );
+    assert_eq!(
+        commands
+            .lines()
+            .filter(|line| line.starts_with("codesign-env "))
+            .count(),
+        2
+    );
     Ok(())
 }
 

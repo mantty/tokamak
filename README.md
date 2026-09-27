@@ -354,6 +354,20 @@ Both `tok dev` and `tok build ios` use these settings; the latter provisions
 for a generic iOS device and does not require a device ID. iOS Simulator
 builds do not require provisioning.
 
+macOS builds are ad-hoc signed unless a team is set with `macos-team-id`
+(`TOKAMAK_MACOS_TEAM_ID`):
+
+```sh
+tok build macos --set macos-team-id=YOUR_TEAM_ID
+```
+
+Tokamak then signs with an Apple Development identity and a macOS development
+profile for that team that includes this Mac, asking Xcode to register the Mac
+and provision the app when no installed profile matches. Team-signed builds can
+use the data protection keychain, which `@tokamakdev/plugin-secure-storage`
+requires on macOS. They run only on Macs registered to the team. Distribution
+signing (Developer ID, the hardened runtime, and notarisation) is not covered.
+
 ## Development
 
 tokamak supports dev mode with HMR via wrangler and vite, proxying to a device for native capabilities.
