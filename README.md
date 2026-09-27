@@ -375,8 +375,9 @@ By default tokamak expects your server to available on `http://localhost:5173` (
 
 ## Native plugins
 
-Native capabilities are provided by npm packages such as
-`@tokamakdev/plugin-location`. Add them to your project's `dependencies`:
+Native capabilities are provided by npm packages: `@tokamakdev/plugin-location`,
+`@tokamakdev/plugin-secure-storage` and `@tokamakdev/plugin-local-authentication`.
+Add them to your project's `dependencies`:
 
 ```sh
 npm install @tokamakdev/plugin-location
@@ -387,6 +388,20 @@ npm install @tokamakdev/plugin-location
 package as Node does, in the nearest `node_modules` of the project or a parent
 directory, so plugins installed at a workspace root are included. Call plugins
 from browser code. Each plugin's README describes its API.
+
+### Camera and microphone
+
+Pages use `getUserMedia`. The shells grant camera and microphone requests from
+the app origin once the app has declared them, and the operating system asks
+the user on first use. Other origins keep the WebView's default behavior, and a
+refused request rejects with `NotAllowedError`.
+
+| Platform | Declaration |
+|---|---|
+| iOS | `NSCameraUsageDescription` and `NSMicrophoneUsageDescription` in the `ios-plist` file |
+| macOS | The same keys in the `macos-plist` file |
+| Android | `android.permission.CAMERA` and `android.permission.RECORD_AUDIO` in the `android-manifest` file |
+| Windows | None; the shell asks the user, as it does for location |
 
 ## Example
 

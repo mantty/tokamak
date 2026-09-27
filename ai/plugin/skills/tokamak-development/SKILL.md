@@ -159,6 +159,8 @@ builds do not require provisioning.
 - Preserve a plugin's web implementation or feature-detect availability when the same code also targets ordinary browsers.
 - Handle permission denial, unavailable hardware, cancellation, navigation, and page lifecycle as normal outcomes of a native capability request.
 - Inspect the installed plugin package before inventing a method, event, permission, or platform fallback.
+- First-party plugins are `@tokamakdev/plugin-location`, `@tokamakdev/plugin-secure-storage` (device-only secrets, optionally bound to Face ID, fingerprint or passcode) and `@tokamakdev/plugin-local-authentication` (device owner checks the app performs when it chooses).
+- Camera and microphone use the standard `getUserMedia` API, not a plugin. Declare them per platform: `NSCameraUsageDescription`/`NSMicrophoneUsageDescription` in the `ios-plist` or `macos-plist` file, and `android.permission.CAMERA`/`android.permission.RECORD_AUDIO` in the `android-manifest` file.
 
 ## Preserve user intent
 
