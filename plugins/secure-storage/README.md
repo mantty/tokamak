@@ -1,0 +1,70 @@
+# @tokamakdev/plugin-secure-storage
+
+Secret storage that stays on the device, for Tokamak applications.
+
+Add it to your project's dependencies:
+
+```sh
+npm install @tokamakdev/plugin-secure-storage
+```
+
+```ts
+import { secureStorage } from "@tokamakdev/plugin-secure-storage";
+
+await secureStorage.set("identity/encryption", base64Value, {
+  // Required: "whenUnlocked" or "afterFirstUnlock".
+  readable: "whenUnlocked",
+  // Omitted: reads need no authentication.
+  authentication: "biometricsOrPasscode",
+});
+
+// string | null
+const value = await secureStorage.get("identity/encryption", {
+  prompt: "Confirm it's you to link a new device",
+});
+
+await secureStorage.delete("identity/encryption");
+```
+
+Values are strings; encode binary values before storing them. Only the app can
+read them, and they are never included in synced credential stores or restored
+to another device.
+
+`authentication` binds a value to the device's secure hardware, so it cannot be
+decrypted until the device owner authenticates:
+
+| `authentication` | Reads accept | After a biometric enrolment change |
+|---|---|---|
+| `biometricsOrPasscode` | Face ID, Touch ID or fingerprint; passcode, PIN, pattern or password | Readable |
+| `biometrics` | Face ID, Touch ID or fingerprint | Readable |
+| `currentBiometrics` | Face ID, Touch ID or fingerprint enrolled when the value was stored | Permanently unreadable |
+
+`prompt` is the reason shown in the system authentication prompt. Without it,
+the platform's default prompt is shown.
+
+## Errors
+
+| Name | When |
+|---|---|
+| `NotSupportedError` | The platform, build or OS version cannot enforce the options |
+| `InvalidStateError` | The requested authentication is not set up on the device |
+| `NotAllowedError` | The user cancelled or failed authentication, or the device is locked |
+| `NotReadableError` | A stored value can no longer be decrypted |
+
+`get` resolves `null` when the name has no stored value.
+
+## Platforms
+
+- **iOS:** Keychain items with `ThisDeviceOnly` accessibility. They are included
+  in encrypted backups but restore only to the same device, and they survive
+  deleting and reinstalling the app.
+- **macOS:** the data protection keychain, which requires a team-signed build
+  (`macos-team-id`). Ad-hoc signed builds throw `NotSupportedError`.
+- **Android:** values are encrypted with a per-value Android Keystore key and
+  stored in the app's no-backup directory. They are deleted on uninstall.
+  `whenUnlocked` requires API 28, `biometrics` and `currentBiometrics` require
+  API 28, and `biometricsOrPasscode` requires API 30.
+- **Web and Windows:** no implementation; calls throw `NotSupportedError`.
+
+Removing the device passcode or screen lock makes values stored with
+`authentication` permanently unreadable on Android.

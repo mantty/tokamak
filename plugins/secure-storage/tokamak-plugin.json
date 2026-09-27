@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "secure-storage",
+  "kind": "frontend",
+  "platforms": {
+    "macos": {
+      "class": "TokamakSecureStoragePlugin",
+      "sources": ["apple/SecureStoragePlugin.swift"],
+      "frameworks": ["LocalAuthentication", "Security"]
+    },
+    "ios": {
+      "class": "TokamakSecureStoragePlugin",
+      "sources": ["apple/SecureStoragePlugin.swift"],
+      "frameworks": ["LocalAuthentication", "Security"],
+      "plist": {
+        "NSFaceIDUsageDescription": "This app uses Face ID to confirm your identity."
+      }
+    },
+    "ios-simulator": {
+      "class": "TokamakSecureStoragePlugin",
+      "sources": ["apple/SecureStoragePlugin.swift"],
+      "frameworks": ["LocalAuthentication", "Security"],
+      "plist": {
+        "NSFaceIDUsageDescription": "This app uses Face ID to confirm your identity."
+      }
+    },
+    "android": {
+      "class": "com.tokamak.plugins.securestorage.TokamakSecureStoragePlugin",
+      "sources": ["android/SecureStoragePlugin.kt"],
+      "permissions": ["android.permission.USE_BIOMETRIC"]
+    }
+  }
+}
