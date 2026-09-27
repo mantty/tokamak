@@ -29,7 +29,7 @@ final class TokamakLocalAuthenticationPlugin: TokamakPlugin {
     if LAContext().canEvaluatePolicy(policy, error: &error) {
       return "available"
     }
-    switch error.flatMap({ LAError.Code(rawValue: $0.code) }) {
+    switch (error as? LAError)?.code {
     case .biometryNotEnrolled, .passcodeNotSet:
       return "notEnrolled"
     default:
@@ -43,6 +43,10 @@ final class TokamakLocalAuthenticationPlugin: TokamakPlugin {
     reply: @escaping TokamakPluginReply
   ) {
     let context = LAContext()
+    if policy == .deviceOwnerAuthenticationWithBiometrics {
+      // Hides the passcode fallback button, which this policy cannot use.
+      context.localizedFallbackTitle = ""
+    }
     context.evaluatePolicy(policy, localizedReason: prompt) { success, error in
       // A deallocated context cancels its evaluation.
       withExtendedLifetime(context) {
@@ -57,7 +61,7 @@ final class TokamakLocalAuthenticationPlugin: TokamakPlugin {
     case .biometryNotEnrolled, .passcodeNotSet:
       return TokamakPluginError(name: "InvalidStateError", message: message)
     case .biometryNotAvailable:
-      return TokamakPluginError(name: "NotSupportedError", message: message)
+      return .notSupported(message)
     default:
       return TokamakPluginError(name: "NotAllowedError", message: message)
     }

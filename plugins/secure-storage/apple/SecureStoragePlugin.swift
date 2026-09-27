@@ -9,6 +9,10 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
   /// Keychain calls block while the system authentication prompt is shown.
   private let queue = DispatchQueue(label: "tokamak.secure-storage")
 
+  private static let teamSigningRequired = TokamakPluginError.notSupported(
+    "Secure storage requires a team-signed build"
+  )
+
   #if os(macOS)
     /// macOS grants the data protection keychain only to apps whose provisioning
     /// profile provides an application identifier.
@@ -36,29 +40,32 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
   ) throws(TokamakPluginError) -> Any? {
     #if os(macOS)
       // Unentitled reads report errSecItemNotFound rather than a missing entitlement.
-      guard Self.hasApplicationIdentifier else {
-        throw .notSupported("Secure storage requires a team-signed build")
-      }
+      guard Self.hasApplicationIdentifier else { throw Self.teamSigningRequired }
     #endif
     switch method {
     case "set":
       try set(
-        string(arguments, "name"),
-        value: string(arguments, "value"),
-        readable: string(arguments, "readable"),
-        authentication: arguments["authentication"] as? String
+        requiredString(arguments, "name"),
+        value: requiredString(arguments, "value"),
+        readable: requiredString(arguments, "readable"),
+        authentication: optionalString(arguments, "authentication")
       )
       return nil
     case "get":
-      return try get(string(arguments, "name"), prompt: arguments["prompt"] as? String)
+      return try get(
+        requiredString(arguments, "name"),
+        prompt: optionalString(arguments, "prompt")
+      )
     case "delete":
-      try delete(string(arguments, "name"))
+      try delete(requiredString(arguments, "name"))
       return nil
     default:
       throw .notSupported("\(id).\(method) is not supported")
     }
   }
 
+  /// Replaces an existing value only once the new item can be added, so a
+  /// failed write keeps the old value.
   private func set(
     _ name: String,
     value: String,
@@ -73,8 +80,12 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     } else {
       item[kSecAttrAccessible] = accessibility
     }
-    try delete(name)
-    try check(SecItemAdd(item as CFDictionary, nil))
+    var status = SecItemAdd(item as CFDictionary, nil)
+    if status == errSecDuplicateItem {
+      try delete(name)
+      status = SecItemAdd(item as CFDictionary, nil)
+    }
+    try check(status)
   }
 
   private func get(_ name: String, prompt: String?) throws(TokamakPluginError) -> String? {
@@ -138,7 +149,7 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     switch readable {
     case "whenUnlocked": kSecAttrAccessibleWhenUnlockedThisDeviceOnly
     case "afterFirstUnlock": kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-    default: throw invalidArgument("readable", readable)
+    default: throw unsupportedArgument("readable", readable)
     }
   }
 
@@ -151,28 +162,33 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
       case "biometricsOrPasscode": (.userPresence, .deviceOwnerAuthentication)
       case "biometrics": (.biometryAny, .deviceOwnerAuthenticationWithBiometrics)
       case "currentBiometrics": (.biometryCurrentSet, .deviceOwnerAuthenticationWithBiometrics)
-      default: throw invalidArgument("authentication", authentication)
+      default: throw unsupportedArgument("authentication", authentication)
       }
-    var error: NSError?
-    guard LAContext().canEvaluatePolicy(policy, error: &error) else {
-      throw TokamakPluginError(
-        name: "InvalidStateError",
-        message: error?.localizedDescription ?? "Authentication is not set up"
-      )
-    }
+    try requireSetUp(policy)
     guard let control = SecAccessControlCreateWithFlags(nil, accessibility, flags, nil) else {
       throw TokamakPluginError(name: "OperationError", message: "Access control is unavailable")
     }
     return control
   }
 
+  private func requireSetUp(_ policy: LAPolicy) throws(TokamakPluginError) {
+    var error: NSError?
+    if LAContext().canEvaluatePolicy(policy, error: &error) {
+      return
+    }
+    let message = error?.localizedDescription ?? "Authentication is unavailable"
+    if (error as? LAError)?.code == .biometryNotAvailable {
+      throw .notSupported(message)
+    }
+    throw TokamakPluginError(name: "InvalidStateError", message: message)
+  }
+
   private func check(_ status: OSStatus) throws(TokamakPluginError) {
+    guard status != errSecSuccess else { return }
     let message = SecCopyErrorMessageString(status, nil) as String? ?? "Keychain error \(status)"
     switch status {
-    case errSecSuccess:
-      return
     case errSecMissingEntitlement:
-      throw .notSupported("Secure storage requires a team-signed build")
+      throw Self.teamSigningRequired
     case errSecUserCanceled, errSecAuthFailed, errSecInteractionNotAllowed:
       throw TokamakPluginError(name: "NotAllowedError", message: message)
     default:
@@ -180,7 +196,7 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     }
   }
 
-  private func string(
+  private func requiredString(
     _ arguments: [String: Any],
     _ key: String
   ) throws(TokamakPluginError) -> String {
@@ -190,7 +206,16 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     return value
   }
 
-  private func invalidArgument(_ key: String, _ value: String) -> TokamakPluginError {
+  /// Missing and null arguments are nil; other non-string values are rejected.
+  private func optionalString(
+    _ arguments: [String: Any],
+    _ key: String
+  ) throws(TokamakPluginError) -> String? {
+    guard let value = arguments[key], !(value is NSNull) else { return nil }
+    return try requiredString(arguments, key)
+  }
+
+  private func unsupportedArgument(_ key: String, _ value: String) -> TokamakPluginError {
     TokamakPluginError(name: "TypeError", message: "\(key) '\(value)' is not supported")
   }
 }
