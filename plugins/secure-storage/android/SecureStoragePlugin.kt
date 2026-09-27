@@ -102,18 +102,19 @@ internal class TokamakSecureStoragePlugin(
                 ?: throw typeError(
                     "authentication must be \"biometricsOrPasscode\", \"biometrics\" or \"currentBiometrics\"",
                 )
-        when (biometrics.canAuthenticate(authentication.authenticators)) {
-            BiometricManager.BIOMETRIC_SUCCESS -> Unit
-            BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED ->
-                throw TokamakPluginError(
-                    "InvalidStateError",
-                    "The requested authentication is not set up on this device",
-                )
-            else -> throw TokamakPluginError.notSupported("This device cannot perform the requested authentication")
-        }
+        requireAvailable(authentication.authenticators)
         spec.setUserAuthenticationRequired(true)
             .setUserAuthenticationParameters(0, authentication.keyTypes)
             .setInvalidatedByBiometricEnrollment(authentication.invalidatedByEnrollment)
+    }
+
+    private fun requireAvailable(authenticators: Int) {
+        when (biometrics.canAuthenticate(authenticators)) {
+            BiometricManager.BIOMETRIC_SUCCESS -> Unit
+            BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE ->
+                throw TokamakPluginError.notSupported("This device cannot perform the requested authentication")
+            else -> throw notSetUp()
+        }
     }
 
     private fun generatePublicKey(spec: KeyGenParameterSpec.Builder): PublicKey {
@@ -297,6 +298,9 @@ internal class TokamakSecureStoragePlugin(
             TokamakPluginError("NotReadableError", "The stored value can no longer be decrypted")
 
         fun cancelled() = TokamakPluginError("NotAllowedError", "Authentication was cancelled")
+
+        fun notSetUp() =
+            TokamakPluginError("InvalidStateError", "The requested authentication is not set up on this device")
 
         fun pluginError(error: Throwable): TokamakPluginError =
             when (error) {

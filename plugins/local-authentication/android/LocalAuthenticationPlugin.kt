@@ -40,6 +40,7 @@ internal class TokamakLocalAuthenticationPlugin(
         val authenticators = authenticators(request)
         val prompt = request.requireString("prompt")
         if (prompt.isEmpty()) throw typeError("prompt must be a non-empty string")
+        requireAvailable(authenticators)
         val callback = PromptCallback(reply) { reply(Result.success(null)) }
         val dialog =
             BiometricPrompt.Builder(activity)
@@ -54,6 +55,15 @@ internal class TokamakLocalAuthenticationPlugin(
             }
         }
         dialog.build().authenticate(CancellationSignal(), activity.mainExecutor, callback)
+    }
+
+    private fun requireAvailable(authenticators: Int) {
+        when (biometrics.canAuthenticate(authenticators)) {
+            BiometricManager.BIOMETRIC_SUCCESS -> Unit
+            BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE ->
+                throw TokamakPluginError.notSupported("This device cannot perform the requested authentication")
+            else -> throw notSetUp()
+        }
     }
 
     private fun authenticators(request: JSONObject): Int {
@@ -85,6 +95,9 @@ internal class TokamakLocalAuthenticationPlugin(
 
     private companion object {
         fun typeError(message: String) = TokamakPluginError("TypeError", message)
+
+        fun notSetUp() =
+            TokamakPluginError("InvalidStateError", "The requested authentication is not set up on this device")
 
         fun pluginError(error: Throwable): TokamakPluginError =
             error as? TokamakPluginError
