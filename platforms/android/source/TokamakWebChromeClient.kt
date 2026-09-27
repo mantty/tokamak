@@ -21,21 +21,21 @@ internal class TokamakWebChromeClient(
 ) : WebChromeClient() {
     private val waiting = mutableListOf<PermissionRequest>()
 
+    /** The permissions the open permission dialog asks for; empty while none is open. */
+    private var asking = emptySet<String>()
+
     override fun onPermissionRequest(request: PermissionRequest) {
-        val permissions = request.resources.map(RESOURCE_PERMISSIONS::get)
-        if (!request.origin.isAppOrigin(host) || null in permissions) {
+        val supported = request.resources.all(RESOURCE_PERMISSIONS::containsKey)
+        if (!request.origin.isAppOrigin(host) || !supported) {
             request.deny()
             return
         }
-        val missing = permissions.filterNotNull().filterNot(::isGranted)
-        if (missing.isEmpty()) {
+        if (missingPermissions(request).isEmpty()) {
             request.grant(request.resources)
             return
         }
         waiting += request
-        if (waiting.size == 1) {
-            activity.requestPermissions(missing.toTypedArray(), MEDIA_PERMISSION_REQUEST)
-        }
+        if (asking.isEmpty()) askForMissingPermissions()
     }
 
     override fun onPermissionRequestCanceled(request: PermissionRequest) {
@@ -44,15 +44,25 @@ internal class TokamakWebChromeClient(
 
     fun onRequestPermissionsResult(requestCode: Int) {
         if (requestCode != MEDIA_PERMISSION_REQUEST) return
-        val requests = waiting.toList()
-        waiting.clear()
-        requests.forEach(::decide)
+        val answered = waiting.filter { asking.containsAll(missingPermissions(it)) }
+        waiting -= answered
+        answered.forEach(::decide)
+        askForMissingPermissions()
+    }
+
+    private fun askForMissingPermissions() {
+        asking = waiting.flatMap(::missingPermissions).toSet()
+        if (asking.isNotEmpty()) {
+            activity.requestPermissions(asking.toTypedArray(), MEDIA_PERMISSION_REQUEST)
+        }
     }
 
     private fun decide(request: PermissionRequest) {
-        val granted = request.resources.all { isGranted(RESOURCE_PERMISSIONS.getValue(it)) }
-        if (granted) request.grant(request.resources) else request.deny()
+        if (missingPermissions(request).isEmpty()) request.grant(request.resources) else request.deny()
     }
+
+    private fun missingPermissions(request: PermissionRequest): List<String> =
+        request.resources.map(RESOURCE_PERMISSIONS::getValue).filterNot(::isGranted)
 
     private fun isGranted(permission: String): Boolean =
         activity.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
