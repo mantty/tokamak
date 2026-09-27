@@ -18,7 +18,8 @@ use tokamak::{
     app_host, frontend_url,
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+    COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+    COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
     COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
     COREWEBVIEW2_PERMISSION_STATE_DENY, COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW,
     COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL, ICoreWebView2, ICoreWebView2_5,
@@ -470,11 +471,11 @@ fn permission_challenge(
         let uri = webview_string(|value| unsafe { args.Uri(value) })?;
         let mut kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
         unsafe { args.PermissionKind(&raw mut kind) }?;
-        if !is_app_geolocation_request(kind, &uri, &host) {
+        let Some(prompt) = app_permission_prompt(kind, &uri, &host) else {
             return Ok(());
-        }
-        let message = HSTRING::from(format!("{name} wants to access your location."));
-        let caption = HSTRING::from("Location access");
+        };
+        let message = HSTRING::from(format!("{name} wants to {}.", prompt.request));
+        let caption = HSTRING::from(prompt.caption);
         let state = if unsafe { MessageBoxW(None, &message, &caption, MB_YESNO | MB_ICONQUESTION) }
             == IDYES
         {
@@ -486,8 +487,28 @@ fn permission_challenge(
     }
 }
 
-fn is_app_geolocation_request(kind: COREWEBVIEW2_PERMISSION_KIND, uri: &str, host: &str) -> bool {
-    kind == COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION && is_app_origin(uri, host)
+#[derive(Debug, PartialEq)]
+struct PermissionPrompt {
+    request: &'static str,
+    caption: &'static str,
+}
+
+/// The shell asks about these requests from the app origin; WebView2 decides the rest.
+fn app_permission_prompt(
+    kind: COREWEBVIEW2_PERMISSION_KIND,
+    uri: &str,
+    host: &str,
+) -> Option<PermissionPrompt> {
+    if !is_app_origin(uri, host) {
+        return None;
+    }
+    let (request, caption) = match kind {
+        COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION => ("access your location", "Location access"),
+        COREWEBVIEW2_PERMISSION_KIND_CAMERA => ("use your camera", "Camera access"),
+        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE => ("use your microphone", "Microphone access"),
+        _ => return None,
+    };
+    Some(PermissionPrompt { request, caption })
 }
 
 fn is_app_origin(uri: &str, host: &str) -> bool {
@@ -573,8 +594,9 @@ mod tests {
     use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS;
 
     use super::{
-        COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION, browser_arguments, is_app_geolocation_request,
-        is_app_origin,
+        COREWEBVIEW2_PERMISSION_KIND_CAMERA, COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, PermissionPrompt, app_permission_prompt,
+        browser_arguments, is_app_origin,
     };
 
     #[test]
@@ -610,26 +632,51 @@ mod tests {
     }
 
     #[test]
-    fn permits_only_the_app_origin_to_request_location() {
-        assert!(is_app_geolocation_request(
-            COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
-            "https://app.tokamak.local/",
-            "app.tokamak.local",
-        ));
-        assert!(!is_app_geolocation_request(
-            COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+    fn prompts_for_location_camera_and_microphone_from_the_app_origin() {
+        let app = "https://app.tokamak.local/";
+        let host = "app.tokamak.local";
+        assert_eq!(
+            app_permission_prompt(COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION, app, host),
+            Some(PermissionPrompt {
+                request: "access your location",
+                caption: "Location access",
+            })
+        );
+        assert_eq!(
+            app_permission_prompt(COREWEBVIEW2_PERMISSION_KIND_CAMERA, app, host),
+            Some(PermissionPrompt {
+                request: "use your camera",
+                caption: "Camera access",
+            })
+        );
+        assert_eq!(
+            app_permission_prompt(COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, app, host),
+            Some(PermissionPrompt {
+                request: "use your microphone",
+                caption: "Microphone access",
+            })
+        );
+    }
+
+    #[test]
+    fn leaves_other_origins_and_permissions_to_webview2() {
+        let host = "app.tokamak.local";
+        for uri in [
             "https://other.tokamak.local/",
-            "app.tokamak.local",
-        ));
-        assert!(!is_app_geolocation_request(
-            COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
             "https://app.tokamak.local:444/",
-            "app.tokamak.local",
-        ));
-        assert!(!is_app_geolocation_request(
-            COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
-            "https://app.tokamak.local/",
-            "app.tokamak.local",
-        ));
+        ] {
+            assert_eq!(
+                app_permission_prompt(COREWEBVIEW2_PERMISSION_KIND_CAMERA, uri, host),
+                None
+            );
+        }
+        assert_eq!(
+            app_permission_prompt(
+                COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
+                "https://app.tokamak.local/",
+                host
+            ),
+            None
+        );
     }
 }
