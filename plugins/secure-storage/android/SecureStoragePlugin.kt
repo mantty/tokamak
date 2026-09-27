@@ -245,7 +245,12 @@ internal class TokamakSecureStoragePlugin(
     private fun JSONObject.requireString(name: String): String =
         optionalString(name) ?: throw typeError("$name must be a string")
 
-    private fun JSONObject.optionalString(name: String): String? = opt(name) as? String
+    private fun JSONObject.optionalString(name: String): String? =
+        when (val value = opt(name)) {
+            null, JSONObject.NULL -> null
+            is String -> value
+            else -> throw typeError("$name must be a string")
+        }
 
     private enum class Authentication(
         val wireName: String,
