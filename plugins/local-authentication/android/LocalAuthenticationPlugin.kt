@@ -23,7 +23,8 @@ internal class TokamakLocalAuthenticationPlugin(
             return
         }
         val request = arguments as? JSONObject
-        val authenticators = AUTHENTICATORS[request?.opt("authentication") as? String]
+        val wireName = request?.opt("authentication") as? String
+        val authenticators = Authentication.entries.firstOrNull { it.wireName == wireName }?.authenticators
         val prompt = request?.opt("prompt") as? String
         when {
             authenticators == null ->
@@ -42,16 +43,7 @@ internal class TokamakLocalAuthenticationPlugin(
         }
 
     private fun authenticate(authenticators: Int, prompt: String, reply: TokamakPluginReply) {
-        val callback =
-            object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    reply(Result.success(null))
-                }
-
-                override fun onAuthenticationError(code: Int, message: CharSequence) {
-                    reply(Result.failure(authenticationError(code, message)))
-                }
-            }
+        val callback = PromptCallback(reply) { reply(Result.success(null)) }
         val dialog =
             BiometricPrompt.Builder(activity)
                 .setTitle(prompt)
@@ -67,31 +59,43 @@ internal class TokamakLocalAuthenticationPlugin(
         dialog.build().authenticate(CancellationSignal(), activity.mainExecutor, callback)
     }
 
+    private enum class Authentication(val wireName: String, val authenticators: Int) {
+        BIOMETRICS_OR_PASSCODE(
+            "biometricsOrPasscode",
+            Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL,
+        ),
+        BIOMETRICS("biometrics", Authenticators.BIOMETRIC_STRONG),
+    }
+
     private companion object {
-        val AUTHENTICATORS =
-            mapOf(
-                "biometricsOrPasscode" to (Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL),
-                "biometrics" to Authenticators.BIOMETRIC_STRONG,
-            )
-
         fun typeError(message: String): Result<Any?> = Result.failure(TokamakPluginError("TypeError", message))
-
-        fun authenticationError(code: Int, message: CharSequence): TokamakPluginError {
-            val name =
-                when (code) {
-                    BiometricPrompt.BIOMETRIC_ERROR_CANCELED,
-                    BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED,
-                    BiometricPrompt.BIOMETRIC_ERROR_TIMEOUT,
-                    BiometricPrompt.BIOMETRIC_ERROR_LOCKOUT,
-                    BiometricPrompt.BIOMETRIC_ERROR_LOCKOUT_PERMANENT,
-                    -> "NotAllowedError"
-                    BiometricPrompt.BIOMETRIC_ERROR_NO_BIOMETRICS,
-                    BiometricPrompt.BIOMETRIC_ERROR_NO_DEVICE_CREDENTIAL,
-                    -> "InvalidStateError"
-                    BiometricPrompt.BIOMETRIC_ERROR_HW_NOT_PRESENT -> "NotSupportedError"
-                    else -> "OperationError"
-                }
-            return TokamakPluginError(name, message.toString())
-        }
     }
 }
+
+private class PromptCallback(
+    private val reply: TokamakPluginReply,
+    private val succeeded: () -> Unit,
+) : BiometricPrompt.AuthenticationCallback() {
+    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = succeeded()
+
+    override fun onAuthenticationError(code: Int, message: CharSequence) =
+        reply(Result.failure(authenticationError(code, message)))
+}
+
+private fun authenticationError(code: Int, message: CharSequence) =
+    TokamakPluginError(
+        when (code) {
+            BiometricPrompt.BIOMETRIC_ERROR_CANCELED,
+            BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED,
+            BiometricPrompt.BIOMETRIC_ERROR_TIMEOUT,
+            BiometricPrompt.BIOMETRIC_ERROR_LOCKOUT,
+            BiometricPrompt.BIOMETRIC_ERROR_LOCKOUT_PERMANENT,
+            -> "NotAllowedError"
+            BiometricPrompt.BIOMETRIC_ERROR_NO_BIOMETRICS,
+            BiometricPrompt.BIOMETRIC_ERROR_NO_DEVICE_CREDENTIAL,
+            -> "InvalidStateError"
+            BiometricPrompt.BIOMETRIC_ERROR_HW_NOT_PRESENT -> "NotSupportedError"
+            else -> "OperationError"
+        },
+        message.toString(),
+    )
