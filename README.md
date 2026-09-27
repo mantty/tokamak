@@ -268,6 +268,36 @@ toolchain. Values not supplied by the user are preserved. Plugins that set a
 key to the same value share it; when plugins set different values for a key,
 the build fails unless the user plist sets that key.
 
+The Android platform pack accepts an optional user-provided partial
+`AndroidManifest.xml` through `android-manifest`:
+
+```sh
+tok build android --set android-manifest=native/AndroidManifest.xml
+```
+
+```xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+  <uses-permission android:name="android.permission.CAMERA" />
+  <application android:allowBackup="false" />
+</manifest>
+```
+
+The corresponding environment variable is `TOKAMAK_ANDROID_MANIFEST`. Relative
+paths are resolved from the project directory. The Android Gradle Plugin's
+manifest merger combines the file with the generated manifest, which includes
+plugin permissions. The user file has the higher priority:
+
+- Elements are combined by key, for example `<uses-permission>` by
+  `android:name`. An element declared in both files appears once.
+- An attribute the generated manifest does not set is added.
+- An attribute the generated manifest sets to a different value fails the
+  build, and the merger's error names the attribute. Adding
+  `tools:replace="android:<attribute>"` to the element in the user file
+  replaces the generated value.
+- `tools:node="remove"` on an element in the user file removes it from the
+  merged manifest, including a permission a plugin declares.
+
 Each icon platform entry is optional. If the Tokamak configuration or a
 platform entry is absent, that platform keeps its existing icon behavior.
 
@@ -402,6 +432,11 @@ npm install @tokamakdev/plugin-location
 package as Node does, in the nearest `node_modules` of the project or a parent
 directory, so plugins installed at a workspace root are included. Call plugins
 from browser code. Each plugin's README describes its API.
+
+Android builds run lint's `NewApi` check over the shell and plugin sources. A
+call to an API newer than the app's minimum SDK fails the build, naming the
+file, line and required API level, unless a `Build.VERSION.SDK_INT` check
+guards it.
 
 ### Camera and microphone
 
