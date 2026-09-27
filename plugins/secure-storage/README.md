@@ -46,7 +46,7 @@ the platform's default prompt is shown.
 
 | Name | When |
 |---|---|
-| `NotSupportedError` | The platform, build or OS version cannot enforce the options |
+| `NotSupportedError` | The platform, build or device cannot enforce the options |
 | `InvalidStateError` | The requested authentication is not set up on the device |
 | `NotAllowedError` | The user cancelled or failed authentication, or the device is locked |
 | `NotReadableError` | A stored value can no longer be decrypted |
@@ -64,8 +64,6 @@ the platform's default prompt is shown.
   (`macos-team-id`). Ad-hoc signed builds throw `NotSupportedError`.
 - **Android:** values are encrypted with a per-value Android Keystore key and
   stored in the app's no-backup directory. They are deleted on uninstall.
-  `whenUnlocked`, `biometrics` and `currentBiometrics` require API 28;
-  `biometricsOrPasscode` requires API 30.
 - **Web and Windows:** no implementation; calls throw `NotSupportedError`.
 
 Removing the device passcode or screen lock makes values stored with

@@ -27,8 +27,8 @@ falling back to the device passcode, PIN, pattern or password) or `biometrics`.
 
 `authenticate` resolves when the device owner authenticates. It rejects with
 `NotAllowedError` when the user cancels or fails, `InvalidStateError` when the
-authentication is not set up, and `NotSupportedError` when the device or OS
-version cannot perform it.
+authentication is not set up, and `NotSupportedError` when the device cannot
+perform it.
 
 `authenticate` checks the device owner when the app asks; it does not protect
 any data. To bind a stored value to authentication, use
@@ -38,6 +38,5 @@ any data. To bind a stored value to authentication, use
 
 - **iOS and macOS:** LocalAuthentication. On macOS, `biometricsOrPasscode`
   accepts Touch ID or the account password.
-- **Android:** the platform `BiometricPrompt`. `biometrics` requires API 28 and
-  `biometricsOrPasscode` requires API 29.
+- **Android:** the platform `BiometricPrompt`.
 - **Web and Windows:** no implementation; calls throw `NotSupportedError`.
