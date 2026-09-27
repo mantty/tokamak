@@ -160,7 +160,18 @@ final class TokamakPluginBridge: NSObject, WKScriptMessageHandler {
     }
   }
 
+  /// Plugins reply from any thread; delivery happens on the main thread.
   private func send(
+    key: RequestKey,
+    result: Result<Any?, TokamakPluginError>,
+    done: Bool
+  ) {
+    DispatchQueue.main.async { [weak self] in
+      self?.deliver(key: key, result: result, done: done)
+    }
+  }
+
+  private func deliver(
     key: RequestKey,
     result: Result<Any?, TokamakPluginError>,
     done: Bool
@@ -182,23 +193,14 @@ final class TokamakPluginBridge: NSObject, WKScriptMessageHandler {
     guard
       JSONSerialization.isValidJSONObject(response),
       let data = try? JSONSerialization.data(withJSONObject: response),
-      let json = String(data: data, encoding: .utf8)
+      let json = String(data: data, encoding: .utf8),
+      webView?.url?.scheme == "https",
+      webView?.url?.host == host,
+      webView?.url?.port == nil || webView?.url?.port == 443
     else {
       return
     }
-    DispatchQueue.main.async { [weak self] in
-      guard
-        let self,
-        self.webView?.url?.scheme == "https",
-        self.webView?.url?.host == self.host,
-        self.webView?.url?.port == nil || self.webView?.url?.port == 443
-      else {
-        return
-      }
-      self.webView?.evaluateJavaScript(
-        "globalThis.__tokamakReceive?.(\(json))"
-      )
-    }
+    webView?.evaluateJavaScript("globalThis.__tokamakReceive?.(\(json))")
   }
 
   private static func bootstrap(host: String) -> String {
