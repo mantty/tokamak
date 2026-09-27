@@ -24,11 +24,19 @@ const value = await secureStorage.get("identity/encryption", {
 });
 
 await secureStorage.delete("identity/encryption");
+
+// string[], sorted
+const names = await secureStorage.keys();
+
+await secureStorage.clear();
 ```
 
 Values are strings; encode binary values before storing them. Only the app can
-read them, and they are never included in synced credential stores or restored
-to another device.
+read them, and they are never synced to other devices.
+
+By default a backup restores a value only to the device that stored it. Set
+`thisDeviceOnly: false` to let a backup restore it to a new device, where the
+platform supports that.
 
 `authentication` binds a value to the device's secure hardware, so it cannot be
 decrypted until the device owner authenticates:
@@ -57,13 +65,15 @@ the platform's default prompt is shown.
 
 ## Platforms
 
-- **iOS:** Keychain items with `ThisDeviceOnly` accessibility. They are included
-  in encrypted backups but restore only to the same device, and they survive
-  deleting and reinstalling the app.
+- **iOS:** Keychain items, which survive deleting and reinstalling the app.
+  They are included in encrypted backups; `thisDeviceOnly` values restore only
+  to the same device.
 - **macOS:** the data protection keychain, which requires a team-signed build
   (`macos-team-id`). Ad-hoc signed builds throw `NotSupportedError`.
 - **Android:** values are encrypted with a per-value Android Keystore key and
   stored in the app's no-backup directory. They are deleted on uninstall.
+  Keystore keys never leave the device, so `thisDeviceOnly: false` throws
+  `NotSupportedError`.
 - **Web and Windows:** no implementation; calls throw `NotSupportedError`.
 
 Removing the device passcode or screen lock makes values stored with

@@ -15,6 +15,9 @@ import android.util.AtomicFile
 import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakPluginReply
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
 import java.io.FileNotFoundException
 import java.security.KeyFactory
@@ -65,6 +68,11 @@ internal class TokamakSecureStoragePlugin(
                 delete(request(arguments).requireString("name"))
                 reply(Result.success(null))
             }
+            "keys" -> execute(reply) { reply(Result.success(keys())) }
+            "clear" -> execute(reply) {
+                clear()
+                reply(Result.success(null))
+            }
             else -> super.call(method, arguments, reply)
         }
     }
@@ -88,6 +96,9 @@ internal class TokamakSecureStoragePlugin(
                 "afterFirstUnlock" -> false
                 else -> throw typeError("readable must be \"whenUnlocked\" or \"afterFirstUnlock\"")
             }
+        if (!request.requireBoolean("thisDeviceOnly")) {
+            throw TokamakPluginError.notSupported("Android keeps secure storage values on this device")
+        }
         val keyId = ByteArray(KEY_ID_SIZE).also(random::nextBytes)
         val spec =
             KeyGenParameterSpec.Builder(alias(keyId), KeyProperties.PURPOSE_DECRYPT)
@@ -97,10 +108,10 @@ internal class TokamakSecureStoragePlugin(
                 .setUnlockedDeviceRequired(unlockedDeviceRequired)
         request.optionalString("authentication")?.let { requireAuthentication(spec, it) }
         val file = file(name)
-        val previousAlias = read(file)?.let(::storedAlias)
+        val previousAlias = read(file)?.let { alias(it.keyId) }
         val publicKey = generatePublicKey(spec)
         try {
-            write(file, keyId + seal(value, publicKey))
+            write(file, seal(name, keyId, value, publicKey).encode())
         } catch (error: Throwable) {
             keyStore.deleteEntry(alias(keyId))
             throw error
@@ -141,7 +152,7 @@ internal class TokamakSecureStoragePlugin(
             .generatePublic(X509EncodedKeySpec(keyPair.public.encoded))
     }
 
-    private fun seal(value: String, publicKey: PublicKey): ByteArray {
+    private fun seal(name: String, keyId: ByteArray, value: String, publicKey: PublicKey): StoredValue {
         val dataKey = KeyGenerator.getInstance("AES").apply { init(DATA_KEY_SIZE) }.generateKey()
         val iv = ByteArray(IV_SIZE).also(random::nextBytes)
         val sealed =
@@ -152,7 +163,7 @@ internal class TokamakSecureStoragePlugin(
             Cipher.getInstance(WRAP)
                 .apply { init(Cipher.ENCRYPT_MODE, publicKey, OAEP) }
                 .doFinal(dataKey.encoded)
-        return wrapped + iv + sealed
+        return StoredValue(name, keyId, wrapped, iv, sealed)
     }
 
     private fun get(request: JSONObject, reply: TokamakPluginReply) {
@@ -164,7 +175,7 @@ internal class TokamakSecureStoragePlugin(
             return
         }
         val privateKey =
-            keyStore.getKey(storedAlias(stored), null) as? PrivateKey
+            keyStore.getKey(alias(stored.keyId), null) as? PrivateKey
                 ?: throw notReadable()
         val unwrap = Cipher.getInstance(WRAP).apply { init(Cipher.DECRYPT_MODE, privateKey, OAEP) }
         val info =
@@ -186,7 +197,7 @@ internal class TokamakSecureStoragePlugin(
         authenticators: Int,
         prompt: String?,
         unwrap: Cipher,
-        stored: ByteArray,
+        stored: StoredValue,
         reply: TokamakPluginReply,
     ) {
         val callback = PromptCallback(reply) { execute(reply) { reply(Result.success(open(stored, unwrap))) } }
@@ -211,26 +222,38 @@ internal class TokamakSecureStoragePlugin(
         }
     }
 
-    /** Opens a stored value laid out as key ID, wrapped data key, IV, then sealed value. */
-    private fun open(stored: ByteArray, unwrap: Cipher): String {
-        val dataKey = SecretKeySpec(unwrap.doFinal(stored, KEY_ID_SIZE, WRAPPED_KEY_SIZE), "AES")
-        val iv = stored.copyOfRange(IV_START, SEALED_START)
+    private fun open(stored: StoredValue, unwrap: Cipher): String {
+        val dataKey = SecretKeySpec(unwrap.doFinal(stored.wrappedKey), "AES")
         return Cipher.getInstance(SEAL)
-            .apply { init(Cipher.DECRYPT_MODE, dataKey, GCMParameterSpec(TAG_SIZE, iv)) }
-            .doFinal(stored, SEALED_START, stored.size - SEALED_START)
+            .apply { init(Cipher.DECRYPT_MODE, dataKey, GCMParameterSpec(TAG_SIZE, stored.iv)) }
+            .doFinal(stored.sealed)
             .decodeToString()
     }
 
     private fun delete(name: String) {
         val file = file(name)
-        val alias = read(file)?.let(::storedAlias) ?: return
+        val stored = read(file) ?: return
         AtomicFile(file).delete()
-        keyStore.deleteEntry(alias)
+        keyStore.deleteEntry(alias(stored.keyId))
     }
 
-    private fun read(file: File): ByteArray? =
+    /** AtomicFile's in-progress and backup files carry a suffix; value files have none. */
+    private fun keys(): List<String> =
+        directory.listFiles { file -> '.' !in file.name }
+            .orEmpty()
+            .mapNotNull { read(it)?.name }
+            .sorted()
+
+    private fun clear() {
+        directory.deleteRecursively()
+        keyStore.aliases().toList()
+            .filter { it.startsWith(ALIAS_PREFIX) }
+            .forEach(keyStore::deleteEntry)
+    }
+
+    private fun read(file: File): StoredValue? =
         try {
-            AtomicFile(file).readFully()
+            StoredValue.decode(AtomicFile(file).readFully())
         } catch (_: FileNotFoundException) {
             null
         }
@@ -251,9 +274,7 @@ internal class TokamakSecureStoragePlugin(
     private fun file(name: String) =
         File(directory, MessageDigest.getInstance("SHA-256").digest(name.toByteArray()).toHex())
 
-    private fun alias(keyId: ByteArray) = "tokamak-secure-storage-${keyId.toHex()}"
-
-    private fun storedAlias(stored: ByteArray) = alias(stored.copyOf(KEY_ID_SIZE))
+    private fun alias(keyId: ByteArray) = ALIAS_PREFIX + keyId.toHex()
 
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
@@ -262,6 +283,9 @@ internal class TokamakSecureStoragePlugin(
 
     private fun JSONObject.requireString(name: String): String =
         optionalString(name) ?: throw typeError("$name must be a string")
+
+    private fun JSONObject.requireBoolean(name: String): Boolean =
+        opt(name) as? Boolean ?: throw typeError("$name must be a boolean")
 
     private fun JSONObject.optionalString(name: String): String? =
         when (val value = opt(name)) {
@@ -298,13 +322,8 @@ internal class TokamakSecureStoragePlugin(
 
     private companion object {
         const val KEYSTORE = "AndroidKeyStore"
-        const val KEY_SIZE = 2048
-        const val KEY_ID_SIZE = 16
-        const val WRAPPED_KEY_SIZE = KEY_SIZE / 8
+        const val ALIAS_PREFIX = "tokamak-secure-storage-"
         const val DATA_KEY_SIZE = 256
-        const val IV_SIZE = 12
-        const val IV_START = KEY_ID_SIZE + WRAPPED_KEY_SIZE
-        const val SEALED_START = IV_START + IV_SIZE
         const val TAG_SIZE = 128
         const val WRAP = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding"
         const val SEAL = "AES/GCM/NoPadding"
@@ -337,6 +356,47 @@ internal class TokamakSecureStoragePlugin(
                 is UserNotAuthenticatedException -> locked()
                 else -> TokamakPluginError("OperationError", error.message ?: error.javaClass.name)
             }
+    }
+}
+
+private const val KEY_SIZE = 2048
+private const val KEY_ID_SIZE = 16
+private const val WRAPPED_KEY_SIZE = KEY_SIZE / 8
+private const val IV_SIZE = 12
+
+/** A value's file: its name, key ID, wrapped data key, IV, then sealed value. */
+private class StoredValue(
+    val name: String,
+    val keyId: ByteArray,
+    val wrappedKey: ByteArray,
+    val iv: ByteArray,
+    val sealed: ByteArray,
+) {
+    fun encode(): ByteArray {
+        val bytes = ByteArrayOutputStream()
+        DataOutputStream(bytes).run {
+            writeUTF(name)
+            write(keyId)
+            write(wrappedKey)
+            write(iv)
+            write(sealed)
+        }
+        return bytes.toByteArray()
+    }
+
+    companion object {
+        fun decode(bytes: ByteArray): StoredValue =
+            DataInputStream(bytes.inputStream()).run {
+                StoredValue(
+                    name = readUTF(),
+                    keyId = readExactly(KEY_ID_SIZE),
+                    wrappedKey = readExactly(WRAPPED_KEY_SIZE),
+                    iv = readExactly(IV_SIZE),
+                    sealed = readBytes(),
+                )
+            }
+
+        private fun DataInputStream.readExactly(size: Int) = ByteArray(size).also(::readFully)
     }
 }
 
