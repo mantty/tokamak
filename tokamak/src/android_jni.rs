@@ -135,6 +135,29 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStop(
     drop(unsafe { Box::from_raw(handle as *mut Runtime) });
 }
 
+/// Run the Worker's `event` handler with a JSON `payload`, blocking until it
+/// settles. Returns the handler's JSON result, or null when the Worker has no
+/// such handler; throws when the handler fails.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeDispatch<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass,
+    handle: jlong,
+    event: JString,
+    payload: JString,
+) -> JString<'local> {
+    match dispatch(&mut env, handle, &event, &payload) {
+        Ok(Some(result)) => env
+            .new_string(result)
+            .unwrap_or_else(|_| JString::from(JObject::null())),
+        Ok(None) => JString::from(JObject::null()),
+        Err(message) => {
+            let _ = env.throw_new(FAILURE, message);
+            JString::from(JObject::null())
+        }
+    }
+}
+
 /// Return the authority a server certificate for `host` must chain to, or
 /// null when tokamak does not vouch for the host.
 #[unsafe(no_mangle)]
@@ -221,6 +244,21 @@ fn start_development(
         },
     };
     Runtime::start_development(config, report).map_err(|error| error.to_string())
+}
+
+fn dispatch(
+    env: &mut JNIEnv,
+    handle: jlong,
+    event: &JString,
+    payload: &JString,
+) -> Result<Option<String>, String> {
+    let runtime = runtime(handle).ok_or("tokamak runtime is unavailable")?;
+    let event = text(env, event)?;
+    let payload = serde_json::from_str(&text(env, payload)?).map_err(|error| error.to_string())?;
+    let result = runtime
+        .dispatch(&event, payload)
+        .map_err(|error| error.to_string())?;
+    Ok(result.map(|value| value.to_string()))
 }
 
 fn report(event: Event) {

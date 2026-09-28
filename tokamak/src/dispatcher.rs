@@ -69,6 +69,22 @@ impl Handler for Dispatcher {
             execution,
         )
     }
+
+    fn dispatch(
+        &self,
+        event: &str,
+        payload: &serde_json::Value,
+        execution: &Execution<'_>,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        block_on(execute_event(
+            &self.worker,
+            &self.config,
+            self.assets.as_ref(),
+            event,
+            payload,
+            execution,
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -88,23 +104,27 @@ pub(super) fn execute_request(
     job: Job,
     execution: &Execution<'_>,
 ) -> Result<(), Error> {
-    let request = execute_request_async(worker, config, assets, job, execution);
+    block_on(execute_request_async(
+        worker, config, assets, job, execution,
+    ))
+}
+
+fn block_on<T>(future: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
     match tokio::runtime::Handle::try_current() {
-        Ok(runtime) => runtime.block_on(request),
+        Ok(runtime) => runtime.block_on(future),
         Err(_) => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(request),
+            .block_on(future),
     }
 }
 
-async fn execute_request_async(
+/// A fresh `QuickJS` runtime that loads the Worker's modules and stops when
+/// `execution` stops accepting work.
+async fn worker_runtime(
     worker: &WorkerBundle,
-    config: &RuntimeConfig,
-    assets: Option<&Arc<AssetService>>,
-    job: Job,
     execution: &Execution<'_>,
-) -> Result<(), Error> {
+) -> Result<(AsyncRuntime, AsyncContext), Error> {
     let runtime = AsyncRuntime::new().map_err(|error| js_error("runtime", error))?;
     let interrupt_accepting = execution.accepting();
     runtime
@@ -123,6 +143,17 @@ async fn execute_request_async(
     let context = AsyncContext::full(&runtime)
         .await
         .map_err(|error| js_error("context", error))?;
+    Ok((runtime, context))
+}
+
+async fn execute_request_async(
+    worker: &WorkerBundle,
+    config: &RuntimeConfig,
+    assets: Option<&Arc<AssetService>>,
+    job: Job,
+    execution: &Execution<'_>,
+) -> Result<(), Error> {
+    let (runtime, context) = worker_runtime(worker, execution).await?;
     let awaited = crate::event_loop::AwaitedPromise::default();
     let request = context.async_with(async |ctx| -> Result<(), Error> {
         ctx.store_userdata(awaited.clone())
@@ -132,7 +163,8 @@ async fn execute_request_async(
             response: response_sender,
             websocket,
         } = job;
-        install_request_globals(&ctx, config, &request, assets)?;
+        install_worker_globals(&ctx, config, assets)?;
+        install_request(&ctx, &request)?;
         initialize_worker_context(&ctx, worker)?;
         let response = invoke_worker(&ctx, worker).await?;
         let web_socket: Option<Object> = response
@@ -167,11 +199,72 @@ async fn execute_request_async(
     }
 }
 
+/// Run the Worker's `event` handler with `payload`; `None` when the Worker
+/// does not export one.
+async fn execute_event(
+    worker: &WorkerBundle,
+    config: &RuntimeConfig,
+    assets: Option<&Arc<AssetService>>,
+    event: &str,
+    payload: &serde_json::Value,
+    execution: &Execution<'_>,
+) -> Result<Option<serde_json::Value>, Error> {
+    let (runtime, context) = worker_runtime(worker, execution).await?;
+    let awaited = crate::event_loop::AwaitedPromise::default();
+    let invocation = context.async_with(async |ctx| -> Result<Option<serde_json::Value>, Error> {
+        ctx.store_userdata(awaited.clone())
+            .map_err(|error| js_error("event loop", error))?;
+        install_worker_globals(&ctx, config, assets)?;
+        initialize_worker_context(&ctx, worker)?;
+        let entrypoint = load_worker(&ctx, worker).await?;
+        let Some(handler) = worker_method(&ctx, &entrypoint, event)? else {
+            return Ok(None);
+        };
+        let payload = ctx
+            .json_parse(serde_json::to_string(payload)?)
+            .map_err(|error| js_error("event payload", error))?;
+        let (environment, execution_context) = worker_arguments(&ctx)?;
+        let result: Promise = handler
+            .call((payload, environment, execution_context))
+            .map_err(|error| js_exception(&ctx, "event handler", error))?;
+        let result: Value = finish_promise(&ctx, &result, "event handler").await?;
+        let result = ctx
+            .json_stringify(result)
+            .map_err(|error| js_exception(&ctx, "event result", error))?
+            .map(|json| json.to_string())
+            .transpose()
+            .map_err(|error| js_error("event result", error))?;
+        drain_wait_until(&ctx).await?;
+        Ok(Some(match result {
+            Some(json) => serde_json::from_str(&json)?,
+            None => serde_json::Value::Null,
+        }))
+    });
+    let invocation = crate::event_loop::run(&runtime, &awaited, invocation);
+    tokio::select! {
+        result = invocation => result,
+        () = execution.cancelled() => Err(Error::Engine("Worker execution was stopped".to_owned())),
+    }
+}
+
 async fn invoke_worker<'js>(ctx: &Ctx<'js>, worker: &WorkerBundle) -> Result<Object<'js>, Error> {
-    let fetch = load_worker(ctx, worker).await?;
+    let entrypoint = load_worker(ctx, worker).await?;
+    let fetch = worker_method(ctx, &entrypoint, "fetch")?.ok_or_else(|| {
+        Error::Engine("worker fetch: the Worker does not export fetch".to_owned())
+    })?;
     let request: Object = ctx
         .eval("new Request(__tokamak_request.url, { method: __tokamak_request.method, headers: __tokamak_request.headers, body: __tokamak_body ? new Uint8Array(__tokamak_body) : undefined })")
         .map_err(|error| js_error("request", error))?;
+    let (environment, execution_context) = worker_arguments(ctx)?;
+    let response: Promise = fetch
+        .call((request, environment, execution_context))
+        .map_err(|error| js_error("fetch", error))?;
+    let response: Object = finish_promise(ctx, &response, "response").await?;
+    Ok(response)
+}
+
+/// The `env` and `ctx` arguments every Worker handler receives.
+fn worker_arguments<'js>(ctx: &Ctx<'js>) -> Result<(Object<'js>, Object<'js>), Error> {
     let environment: Object = ctx
         .globals()
         .get("__tokamak_env")
@@ -180,21 +273,27 @@ async fn invoke_worker<'js>(ctx: &Ctx<'js>, worker: &WorkerBundle) -> Result<Obj
         .globals()
         .get("__tokamak_context")
         .map_err(|error| js_error("execution context", error))?;
-    let response: Promise = fetch
-        .call((request, environment, execution_context))
-        .map_err(|error| js_error("fetch", error))?;
-    let response: Object = finish_promise(ctx, &response, "response").await?;
-    Ok(response)
+    Ok((environment, execution_context))
 }
 
-fn install_request_globals(
+fn install_worker_globals(
     ctx: &Ctx<'_>,
     config: &RuntimeConfig,
-    request: &HttpRequest,
     assets: Option<&Arc<AssetService>>,
 ) -> Result<(), Error> {
     let environment = serde_json::to_string(&config.environment)?;
     let cache = serde_json::to_string(&config.cache.to_string_lossy())?;
+    ctx.eval::<(), _>(format!(
+        "globalThis.__tokamak_env = {environment}; globalThis.__tokamak_cache = {cache};"
+    ))
+    .map_err(|error| js_error("setup", error))?;
+    if let Some(assets) = assets {
+        install_asset_lookup(ctx, assets)?;
+    }
+    Ok(())
+}
+
+fn install_request(ctx: &Ctx<'_>, request: &HttpRequest) -> Result<(), Error> {
     let descriptor = serde_json::to_string(request)?;
     let body = request
         .body
@@ -202,18 +301,11 @@ fn install_request_globals(
         .map(|body| ArrayBuffer::new_copy(ctx.clone(), body))
         .transpose()
         .map_err(|error| js_error("request body", error))?;
-    let setup = format!(
-        "globalThis.__tokamak_env = {environment}; globalThis.__tokamak_cache = {cache}; globalThis.__tokamak_request = {descriptor};"
-    );
-    ctx.eval::<(), _>(setup)
+    ctx.eval::<(), _>(format!("globalThis.__tokamak_request = {descriptor};"))
         .map_err(|error| js_error("setup", error))?;
     ctx.globals()
         .set("__tokamak_body", body)
-        .map_err(|error| js_error("request body", error))?;
-    if let Some(assets) = assets {
-        install_asset_lookup(ctx, assets)?;
-    }
-    Ok(())
+        .map_err(|error| js_error("request body", error))
 }
 
 fn initialize_worker_context(ctx: &Ctx<'_>, worker: &WorkerBundle) -> Result<(), Error> {
@@ -224,10 +316,12 @@ fn initialize_worker_context(ctx: &Ctx<'_>, worker: &WorkerBundle) -> Result<(),
     compat::initialize(ctx).map_err(|error| js_exception(ctx, "runtime initialization", error))
 }
 
+/// Evaluate the Worker's entry module and return its default export, constructed
+/// when it is a class.
 pub(super) async fn load_worker<'js>(
     ctx: &rquickjs::Ctx<'js>,
     bundle: &WorkerBundle,
-) -> Result<Function<'js>, Error> {
+) -> Result<Object<'js>, Error> {
     let bytes = read_worker_module(bundle, &bundle.entry)?;
     let module = unsafe { Module::load(ctx.clone(), &bytes) }
         .map_err(|error| js_exception(ctx, "load", error))?;
@@ -258,18 +352,27 @@ pub(super) async fn load_worker<'js>(
     let instantiate: Function = ctx
         .eval("(worker, context, env) => typeof worker === 'function' ? new worker(context, env) : worker")
         .map_err(|error| js_error("worker entrypoint", error))?;
-    let worker: Object = instantiate
+    instantiate
         .call((default, execution_context, environment))
-        .map_err(|error| js_error("worker entrypoint", error))?;
-    let fetch: Function = worker
-        .get("fetch")
-        .map_err(|error| js_error("worker fetch", error))?;
-    let invoke: Function = ctx
-        .eval("(fetch, worker) => (...args) => Promise.resolve(Reflect.apply(fetch, worker, args))")
-        .map_err(|error| js_error("worker fetch", error))?;
-    invoke
-        .call((fetch, worker))
-        .map_err(|error| js_error("worker fetch", error))
+        .map_err(|error| js_error("worker entrypoint", error))
+}
+
+/// The entrypoint's `name` handler bound to it, returning a promise; `None`
+/// when the entrypoint has no such method.
+fn worker_method<'js>(
+    ctx: &Ctx<'js>,
+    entrypoint: &Object<'js>,
+    name: &str,
+) -> Result<Option<Function<'js>>, Error> {
+    let bind: Function = ctx
+        .eval(
+            "(worker, name) => typeof worker[name] === 'function' \
+                ? (...args) => Promise.resolve(Reflect.apply(worker[name], worker, args)) \
+                : undefined",
+        )
+        .map_err(|error| js_error("worker method", error))?;
+    bind.call((entrypoint.clone(), name))
+        .map_err(|error| js_error("worker method", error))
 }
 
 pub(super) struct WorkerResolver;

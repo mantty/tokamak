@@ -14,6 +14,10 @@ const DECISION_DEFAULT: c_int = 0;
 const DECISION_CANCEL: c_int = 1;
 const DECISION_USE: c_int = 2;
 
+const DISPATCH_HANDLED: c_int = 0;
+const DISPATCH_UNHANDLED: c_int = 1;
+const DISPATCH_FAILED: c_int = 2;
+
 /// An owned byte buffer returned across the C ABI.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -147,6 +151,45 @@ pub unsafe extern "C" fn tokamak_runtime_resume(handle: *const c_void) -> bool {
 pub unsafe extern "C" fn tokamak_runtime_stop(handle: *mut c_void) {
     if !handle.is_null() {
         drop(unsafe { Box::from_raw(handle.cast::<Runtime>()) });
+    }
+}
+
+/// Run the Worker's `event` handler with a JSON `payload`, blocking until it
+/// settles.
+///
+/// Returns `TOKAMAK_DISPATCH_HANDLED` with the handler's JSON result in
+/// `result`, `TOKAMAK_DISPATCH_UNHANDLED` when the Worker has no such handler,
+/// or `TOKAMAK_DISPATCH_FAILED` with a message in `error`.
+///
+/// # Safety
+///
+/// `handle` must be live, `event` and `payload` must be NUL-terminated UTF-8
+/// strings, `result` must be writable, and `error` must be writable for
+/// `error_len` bytes when non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tokamak_runtime_dispatch(
+    handle: *const c_void,
+    event: *const c_char,
+    payload: *const c_char,
+    result: *mut TokamakBytes,
+    error: *mut c_char,
+    error_len: usize,
+) -> c_int {
+    if result.is_null() {
+        return DISPATCH_FAILED;
+    }
+    unsafe { result.write(TokamakBytes::empty()) };
+    let outcome = unsafe { dispatch(handle, event, payload) };
+    match outcome {
+        Ok(Some(json)) => {
+            unsafe { result.write(TokamakBytes::from_vec(json.into_bytes())) };
+            DISPATCH_HANDLED
+        }
+        Ok(None) => DISPATCH_UNHANDLED,
+        Err(message) => {
+            write_error(error, error_len, &message);
+            DISPATCH_FAILED
+        }
     }
 }
 
@@ -303,6 +346,21 @@ unsafe fn start_development(
         },
     };
     Runtime::start_development(config, report).map_err(|error| error.to_string())
+}
+
+unsafe fn dispatch(
+    handle: *const c_void,
+    event: *const c_char,
+    payload: *const c_char,
+) -> Result<Option<String>, String> {
+    let runtime = unsafe { runtime(handle) }.ok_or("runtime is unavailable")?;
+    let event = unsafe { text(event) }.ok_or("event name is not valid UTF-8")?;
+    let payload = unsafe { text(payload) }.ok_or("event payload is not valid UTF-8")?;
+    let payload = serde_json::from_str(payload).map_err(|error| error.to_string())?;
+    let result = runtime
+        .dispatch(event, payload)
+        .map_err(|error| error.to_string())?;
+    Ok(result.map(|value| value.to_string()))
 }
 
 fn report(event: Event) {

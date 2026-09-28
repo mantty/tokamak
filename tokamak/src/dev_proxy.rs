@@ -315,6 +315,17 @@ impl Handler for DevProxy {
             self.forward_http(&request, &response)
         }
     }
+
+    fn dispatch(
+        &self,
+        event: &str,
+        _: &serde_json::Value,
+        _: &Execution<'_>,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        Err(Error::Engine(format!(
+            "the Worker's {event} handler does not run in development"
+        )))
+    }
 }
 
 #[derive(Clone, Debug)]
