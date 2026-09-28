@@ -211,8 +211,10 @@ fn create_android_platform_pack(root: &Path) -> TestResult<PathBuf> {
     let target = Target::AndroidArm64;
     fs::create_dir_all(root.join("bin"))?;
     fs::write(root.join(target.runtime_artifact_path()), "runtime")?;
-    fs::create_dir_all(root.join("native-shell"))?;
-    fs::File::create(root.join("native-shell/TokamakActivity.kt"))?;
+    fs::create_dir_all(root.join("native-shell/app"))?;
+    fs::create_dir_all(root.join("native-shell/plugin"))?;
+    fs::File::create(root.join("native-shell/app/TokamakActivity.kt"))?;
+    fs::File::create(root.join("native-shell/plugin/TokamakPlugin.kt"))?;
     let entrypoint = root.join(target.build_entrypoint_path());
     fs::create_dir_all(entrypoint.parent().ok_or("entrypoint path has no parent")?)?;
     fs::write(
@@ -325,8 +327,11 @@ struct TokamakPluginError: Error {
 
 typealias TokamakPluginReply = (Result<Any?, TokamakPluginError>) -> Void
 
+final class TokamakHost {}
+
 protocol TokamakPlugin: AnyObject {
   var id: String { get }
+  init(host: TokamakHost)
   func call(method: String, arguments: Any, reply: @escaping TokamakPluginReply)
   func subscribe(
     method: String,

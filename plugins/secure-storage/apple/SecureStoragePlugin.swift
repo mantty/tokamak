@@ -9,6 +9,8 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
   /// Keychain calls block while the system authentication prompt is shown.
   private let queue = DispatchQueue(label: "tokamak.secure-storage")
 
+  init(host: TokamakHost) {}
+
   private static let teamSigningRequired = TokamakPluginError.notSupported(
     "Secure storage requires a team-signed build"
   )

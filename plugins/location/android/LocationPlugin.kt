@@ -1,7 +1,6 @@
 package com.tokamak.plugins.location
 
 import android.Manifest
-import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
@@ -10,17 +9,19 @@ import android.location.LocationManager
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.Looper
+import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakPluginReply
 
-internal class TokamakLocationPlugin(
-    private val activity: Activity,
+class TokamakLocationPlugin(
+    private val host: TokamakHost,
 ) : TokamakPlugin {
     override val id = "location"
 
+    private val context = host.context
     private val manager =
-        activity.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val permissionRequests = mutableListOf<(Boolean) -> Unit>()
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
@@ -71,6 +72,7 @@ internal class TokamakLocationPlugin(
             action(true)
             return
         }
+        val activity = host.activity ?: return action(false)
         permissionRequests.add(action)
         if (permissionRequests.size > 1) return
         activity.requestPermissions(
@@ -83,9 +85,9 @@ internal class TokamakLocationPlugin(
     }
 
     private fun hasPermission(): Boolean =
-        activity.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+        context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED ||
-            activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
 
     private fun currentPosition(reply: TokamakPluginReply) {
@@ -101,7 +103,7 @@ internal class TokamakLocationPlugin(
             manager.getCurrentLocation(
                 provider,
                 CancellationSignal(),
-                activity.mainExecutor,
+                context.mainExecutor,
             ) { location ->
                 if (location == null) reply(unavailable("Location is unavailable"))
                 else reply(Result.success(position(location)))

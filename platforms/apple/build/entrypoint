@@ -184,11 +184,11 @@ done
 registry=$temporary/TokamakPluginRegistry.swift
 {
   printf '%s\n\n' 'import Foundation'
-  printf '%s\n' 'func tokamakPlugins() -> [any TokamakPlugin] {'
+  printf '%s\n' 'func tokamakPlugins(host: TokamakHost) -> [any TokamakPlugin] {'
   printf '%s\n' '  ['
   for plugin in "$input/plugins"/*; do
     [[ -d "$plugin" ]] || continue
-    printf '    %s(),\n' "$(cat "$plugin/class")"
+    printf '    %s(host: host),\n' "$(cat "$plugin/class")"
   done
   printf '%s\n' '  ]'
   printf '%s\n' '}'

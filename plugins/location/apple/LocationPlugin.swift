@@ -10,7 +10,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private var current: [TokamakPluginReply] = []
   private var watchers: [UUID: TokamakPluginReply] = [:]
 
-  override init() {
+  init(host: TokamakHost) {
     super.init()
     manager.delegate = self
     manager.desiredAccuracy = kCLLocationAccuracyBest

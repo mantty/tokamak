@@ -8,53 +8,14 @@ import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import org.json.JSONObject
 
-internal class TokamakPluginError(
-    val errorName: String,
-    message: String,
-) : Exception(message) {
-    companion object {
-        fun notSupported(message: String) = TokamakPluginError("NotSupportedError", message)
-    }
-}
-
-internal typealias TokamakPluginReply = (Result<Any?>) -> Unit
-
-internal interface TokamakPlugin {
-    val id: String
-
-    fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
-        reply(Result.failure(TokamakPluginError.notSupported("$id.$method is not supported")))
-    }
-
-    fun subscribe(
-        method: String,
-        arguments: Any?,
-        reply: TokamakPluginReply,
-    ): () -> Unit {
-        reply(Result.failure(TokamakPluginError.notSupported("$id.$method is not supported")))
-        return {}
-    }
-
-    fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) = Unit
-}
-
+/** Carries calls and subscriptions between the page and the app's plugins. */
 internal class TokamakPluginBridge(
     private val activity: Activity,
     private val host: String,
-    plugins: List<TokamakPlugin>,
+    private val plugins: Map<String, TokamakPlugin>,
 ) : WebViewCompat.WebMessageListener {
     private data class RequestKey(val session: String, val id: Int)
 
-    private val plugins =
-        buildMap {
-            plugins.forEach { plugin ->
-                check(put(plugin.id, plugin) == null) { "Duplicate plugin ID" }
-            }
-        }
     private val cancellations = mutableMapOf<RequestKey, () -> Unit>()
     private var activeSession: String? = null
 
@@ -72,16 +33,6 @@ internal class TokamakPluginBridge(
         val cancelAll = cancellations.values.toList()
         cancellations.clear()
         cancelAll.forEach { it() }
-    }
-
-    fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) {
-        plugins.values.forEach {
-            it.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        }
     }
 
     override fun onPostMessage(

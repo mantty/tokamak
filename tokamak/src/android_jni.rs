@@ -120,21 +120,6 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeResume(
     }
 }
 
-/// Stop the runtime and release the handle.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStop(
-    _: JNIEnv,
-    _: JClass,
-    handle: jlong,
-) {
-    if handle == 0 {
-        return;
-    }
-    // SAFETY: `handle` came from `Box::into_raw` in `nativeStart` and the
-    // Kotlin shell stops a runtime once.
-    drop(unsafe { Box::from_raw(handle as *mut Runtime) });
-}
-
 /// Run the Worker's `event` handler with a JSON `payload`, blocking until it
 /// settles. Returns the handler's JSON result, or null when the Worker has no
 /// such handler; throws when the handler fails.
@@ -277,8 +262,8 @@ fn runtime<'handle>(handle: jlong) -> Option<&'handle Runtime> {
     if handle == 0 {
         return None;
     }
-    // SAFETY: `handle` came from `Box::into_raw` in `nativeStart` and stays
-    // valid until `nativeStop`.
+    // SAFETY: `handle` came from `Box::into_raw` in `nativeStart` and the
+    // runtime lives for the rest of the process.
     Some(unsafe { &*(handle as *const Runtime) })
 }
 
