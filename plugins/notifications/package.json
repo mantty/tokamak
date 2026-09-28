@@ -1,0 +1,29 @@
+{
+  "name": "@tokamakdev/plugin-notifications",
+  "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mantty/tokamak.git",
+    "directory": "plugins/notifications"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./service-worker": "./service-worker/index.ts"
+  },
+  "dependencies": {
+    "@tokamakdev/plugin": "^0.1.0"
+  },
+  "files": [
+    "android",
+    "apple",
+    "service-worker",
+    "src",
+    "web",
+    "tokamak-plugin.json",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

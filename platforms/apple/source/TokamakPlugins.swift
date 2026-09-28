@@ -12,8 +12,11 @@ struct TokamakPluginError: Error {
 
 typealias TokamakPluginReply = (Result<Any?, TokamakPluginError>) -> Void
 
+/// A native plugin, created once per process when the app launches.
 protocol TokamakPlugin: AnyObject {
   var id: String { get }
+
+  init(host: TokamakHost)
 
   func call(
     method: String,
@@ -26,6 +29,17 @@ protocol TokamakPlugin: AnyObject {
     arguments: Any,
     reply: @escaping TokamakPluginReply
   ) -> (() -> Void)
+
+  func didRegisterForRemoteNotifications(deviceToken: Data)
+
+  func didFailToRegisterForRemoteNotifications(error: Error)
+
+  /// Handles a remote notification delivered to the app, calling `completion`
+  /// once when finished with it.
+  func didReceiveRemoteNotification(
+    _ userInfo: [AnyHashable: Any],
+    completion: @escaping (TokamakBackgroundResult) -> Void
+  )
 }
 
 extension TokamakPlugin {
@@ -44,6 +58,17 @@ extension TokamakPlugin {
   ) -> (() -> Void) {
     reply(.failure(.notSupported("\(id).\(method) is not supported")))
     return {}
+  }
+
+  func didRegisterForRemoteNotifications(deviceToken: Data) {}
+
+  func didFailToRegisterForRemoteNotifications(error: Error) {}
+
+  func didReceiveRemoteNotification(
+    _ userInfo: [AnyHashable: Any],
+    completion: @escaping (TokamakBackgroundResult) -> Void
+  ) {
+    completion(.noData)
   }
 }
 

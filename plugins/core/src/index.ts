@@ -73,7 +73,7 @@ export abstract class FrontendPlugin {
     });
   }
 
-  protected subscribe(
+  protected listen(
     method: string,
     next: (value: unknown) => void,
     error: (error: DOMException) => void,

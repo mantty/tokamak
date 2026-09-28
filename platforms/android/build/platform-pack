@@ -61,6 +61,6 @@ if [[ ! -f "$library" ]]; then
 fi
 
 cp "$library" "$output/bin/libtokamak.so"
-cp "$workspace/platforms/android/source/"* "$output/native-shell/"
+cp -R "$workspace/platforms/android/source/." "$output/native-shell/"
 cp "$workspace/platforms/android/build/entrypoint" \
   "$output/build/entrypoint"

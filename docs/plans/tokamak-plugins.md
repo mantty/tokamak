@@ -1,6 +1,6 @@
 # tokamak plugins
 
-Status: frontend plugin foundation implemented
+Status: plugin foundation implemented
 
 ## Purpose
 
@@ -13,7 +13,7 @@ An app declares a plugin by adding its package to `dependencies`,
 `devDependencies`, or `peerDependencies`. No separate tokamak configuration is
 required.
 
-A frontend plugin package contains:
+A plugin package contains:
 
 ```text
 <package>/
@@ -28,10 +28,14 @@ The TypeScript entrypoint is the API imported by app code. It calls the web
 implementation in a browser and the native implementation when tokamak provides
 its frontend bridge.
 
-`tokamak-plugin.json` declares the plugin ID, kind, platform sources, native class,
-linked Apple frameworks, Info.plist values, and Android permissions. tokamak
-discovers manifests from the app's direct dependencies, resolved from the
-nearest `node_modules` of the app or a parent directory.
+`tokamak-plugin.json` declares the plugin ID and, per platform, the native
+class and sources. Apple platforms may add linked frameworks and an Info.plist
+file (`"plist": "apple/Info.plist"`). Android may add permissions, an
+`AndroidManifest.xml` file (`"manifest"`) and Maven dependencies
+(`"dependencies": ["group:artifact:version"]`). tokamak discovers manifests
+from the app's direct dependencies, resolved from the nearest `node_modules` of
+the app or a parent directory, and copies each declared file into the build
+without reading it.
 
 A platform omitted from the manifest has no native implementation. Calls made
 without an implementation throw `NotSupportedError`.
@@ -43,12 +47,36 @@ sources, then the platform-pack entrypoint compiles only the native shell and
 plugin sources:
 
 - macOS, iOS, and iOS Simulator compile Swift sources into the application
-  executable and link declared system frameworks.
-- Android compiles Kotlin sources into the application and merges declared
-  permissions into its manifest.
+  executable and link declared system frameworks. The Apple helper merges each
+  plugin's Info.plist by key path.
+- Android builds each plugin as a Gradle library module that depends on a
+  plugin API module (`TokamakPlugin`, `TokamakHost` and their types) and the
+  plugin's declared dependencies. The plugin's manifest merges below the app's.
+  Declared permissions go into the app's manifest.
 
 tokamak generates one registry per application, so plugins do not need manual
 shell registration.
+
+## Plugin lifetime
+
+Each platform has one `TokamakHost` per process: `TokamakHost` on Apple
+platforms and the `TokamakApplication` on Android. It owns the runtime and the
+plugins, which it creates once, before any page loads: during launch on Apple
+platforms, and on first use on Android, including when the system starts the
+app in the background. A plugin receives the host in its constructor
+(`init(host:)` in Swift, a constructor parameter in Kotlin).
+
+- Apple plugins receive app events through optional protocol methods: remote
+  notification registration results, and remote notifications with a
+  completion to call once.
+- Android plugins receive the activity's launch intent and later intents
+  through `onIntent`, permission results, and reach the activity through
+  `host.activity`.
+- `host.dispatch` runs a method of the Worker's default export with a JSON
+  payload and returns its JSON result, or reports that the Worker has no such
+  method. Each dispatch uses a fresh JavaScript runtime and waits for
+  `ctx.waitUntil` work, as a request does, until the timeout the plugin gives,
+  which fits the platform's background budget.
 
 ## Frontend calls
 
@@ -67,8 +95,9 @@ reply from any thread; the bridges deliver replies on the main thread.
 Each page load has a distinct bridge session. Navigation cancels native
 subscriptions and late responses from the previous page are ignored.
 
-Plugins that set an Info.plist key to the same value share it. When plugins
-set different values, the build fails unless the app's plist sets that key.
+Plugin Info.plist files merge onto the generated values: dictionaries by key,
+arrays as a union. A different value at the same key path fails the build
+unless the app's plist sets that key path.
 
 ## Plugins
 
@@ -86,13 +115,16 @@ Keychain on Apple platforms and with per-value Android Keystore keys on
 Android. `@tokamakdev/plugin-local-authentication` reports and performs device
 owner authentication. Neither has a web implementation.
 
+`@tokamakdev/plugin-notifications` shows, schedules and receives notifications
+on Apple platforms, Android and the web, and dispatches data-only push messages
+to the Worker's `push` handler.
+
 ## Deferred
 
-- Backend plugins and Bare worker bindings.
+- Worker bindings provided by plugins.
 - Native plugin artifact manifests for languages other than the shell's Swift
   or Kotlin.
-- Entitlements and platform metadata beyond string Info.plist values, Apple
-  frameworks, and Android permissions.
+- Plugin entitlements files.
 - Plugin API compatibility declarations.
 - Compiled ESM and declaration files for npm releases.
-- Background capability dispatch with no page or worker request in flight.
+- Windows plugins.

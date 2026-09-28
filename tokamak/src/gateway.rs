@@ -87,6 +87,17 @@ pub(super) struct Execution<'a> {
 
 pub(super) trait Handler: Send + Sync {
     fn handle(&self, job: Job, execution: &Execution<'_>) -> Result<(), Error>;
+
+    /// Run the Worker's `event` handler with `payload`, returning its result;
+    /// `None` when the Worker does not handle `event`. Fails when the handler
+    /// has not settled within `timeout`.
+    fn dispatch(
+        &self,
+        event: &str,
+        payload: &serde_json::Value,
+        timeout: Duration,
+        execution: &Execution<'_>,
+    ) -> Result<Option<serde_json::Value>, Error>;
 }
 
 impl Lifecycle {
@@ -332,6 +343,32 @@ impl Runtime {
 
     pub(crate) fn resume(&self) {
         self.shared.lifecycle.resume();
+    }
+
+    /// Run a Worker event on the JavaScript executor, blocking until it settles
+    /// or `timeout` passes.
+    pub(crate) fn dispatch(
+        &self,
+        event: &str,
+        payload: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        let (result, outcome) = flume::bounded(1);
+        let shared = Arc::clone(&self.shared);
+        let event = event.to_owned();
+        drop(self.shared.tokio.spawn_blocking(move || {
+            let Some(execution) = shared.lifecycle.enter(&shared.accepting) else {
+                return;
+            };
+            let _ = result.send(
+                shared
+                    .handler
+                    .dispatch(&event, &payload, timeout, &execution),
+            );
+        }));
+        outcome.recv().map_err(|_| {
+            Error::Engine("the runtime stopped before the Worker event ran".to_owned())
+        })?
     }
 }
 

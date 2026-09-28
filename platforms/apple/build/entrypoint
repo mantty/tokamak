@@ -89,33 +89,32 @@ sign_bundle() {
       signing_args+=(--device-id "$(cat "$metadata/device-id")")
     fi
     "$apple_tool" "${signing_args[@]}"
-  elif [[ "$platform" == macos && -n "${TOKAMAK_MACOS_TEAM_ID:-}" ]]; then
+  elif [[ "$platform" == macos ]]; then
     "$apple_tool" sign \
       --platform macos \
       --project "$project_dir" \
       --bundle "$bundle" \
       --bundle-id "$identifier"
   else
-    # Ad-hoc signatures carry no provisioning profile.
-    rm -f "$contents/embedded.provisionprofile"
     codesign --force --timestamp=none --sign - "$bundle"
   fi
 }
 
 bundle_key_file=$output_parent/.tokamak/$(basename "$output").input-key
 if [[ -f "$metadata/input-key" ]]; then
-  plist_path=
   case "$platform" in
-    ios|ios-simulator) plist_path=${TOKAMAK_IOS_PLIST:-} ;;
-    macos) plist_path=${TOKAMAK_MACOS_PLIST:-} ;;
+    ios|ios-simulator) app_files=("${TOKAMAK_IOS_PLIST:-}" "${TOKAMAK_IOS_ENTITLEMENTS:-}") ;;
+    macos) app_files=("${TOKAMAK_MACOS_PLIST:-}" "${TOKAMAK_MACOS_ENTITLEMENTS:-}") ;;
   esac
   bundle_key=$(
     {
       cat "$metadata/input-key"
       shasum -a 256 "$0" "$apple_tool"
-      if [[ -n "$plist_path" ]]; then
-        shasum -a 256 "$plist_path"
-      fi
+      for app_file in "${app_files[@]}"; do
+        if [[ -n "$app_file" ]]; then
+          shasum -a 256 "$app_file"
+        fi
+      done
       env | LC_ALL=C sort | sed -n '/^TOKAMAK_/p' |
         sed '/^TOKAMAK_IOS_TEAM_ID=/d; /^TOKAMAK_IOS_SIGNING_IDENTITY=/d; /^TOKAMAK_IOS_PROVISIONING_PROFILE=/d; /^TOKAMAK_MACOS_TEAM_ID=/d; /^TOKAMAK_IOS_BUILD_NUMBER=/d; /^TOKAMAK_MACOS_BUILD_NUMBER=/d'
       printf '%s\n' "${DEVELOPER_DIR:-}" "$PATH"
@@ -185,11 +184,11 @@ done
 registry=$temporary/TokamakPluginRegistry.swift
 {
   printf '%s\n\n' 'import Foundation'
-  printf '%s\n' 'func tokamakPlugins() -> [any TokamakPlugin] {'
+  printf '%s\n' 'func tokamakPlugins(host: TokamakHost) -> [any TokamakPlugin] {'
   printf '%s\n' '  ['
   for plugin in "$input/plugins"/*; do
     [[ -d "$plugin" ]] || continue
-    printf '    %s(),\n' "$(cat "$plugin/class")"
+    printf '    %s(host: host),\n' "$(cat "$plugin/class")"
   done
   printf '%s\n' '  ]'
   printf '%s\n' '}'
@@ -219,24 +218,11 @@ for plugin in "$input/plugins"/*; do
   done
 done
 
-# Simulator builds embed application-identifier and keychain-access-groups in
-# __TEXT,__entitlements, where the simulator reads them.
+# Simulator builds embed their entitlements in __TEXT,__entitlements, where
+# the simulator reads them.
 if [[ "$platform" == ios-simulator ]]; then
   simulator_entitlements=$temporary/simulator.entitlements
-  cat > "$simulator_entitlements" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>application-identifier</key>
-  <string>$identifier</string>
-  <key>keychain-access-groups</key>
-  <array>
-    <string>$identifier</string>
-  </array>
-</dict>
-</plist>
-EOF
+  "$apple_tool" simulator-entitlements --identifier "$identifier" --output "$simulator_entitlements"
   swift_args+=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker "$simulator_entitlements")
 fi
 

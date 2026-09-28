@@ -2,56 +2,38 @@ package com.tokamak.runtime
 
 import java.io.File
 
-/** The tokamak runtime running in this process. */
-internal class TokamakRuntime private constructor(private var handle: Long) {
-    private val lock = Any()
-
+/** The tokamak runtime, running for the life of the process. */
+internal class TokamakRuntime private constructor(private val handle: Long) {
     /** The loopback port the gateway bound. */
     val port: Int
-        get() = synchronized(lock) { nativePort(requireHandle()) }
+        get() = nativePort(handle)
 
-    fun restoreGateway(): Int = synchronized(lock) {
-        nativeRestoreGateway(requireHandle())
-    }
+    fun restoreGateway(): Int = nativeRestoreGateway(handle)
 
-    fun suspend() = synchronized(lock) {
-        handle.takeIf { it != 0L }?.let(::nativeSuspend)
-    }
+    fun suspend() = nativeSuspend(handle)
 
-    fun resume() = synchronized(lock) {
-        handle.takeIf { it != 0L }?.let(::nativeResume)
-    }
+    fun resume() = nativeResume(handle)
 
-    fun stop() = synchronized(lock) {
-        if (handle == 0L) return
-        val stopped = handle
-        handle = 0
-        nativeStop(stopped)
-    }
+    /**
+     * Runs the Worker's [event] handler with a JSON [payload], blocking until it settles or
+     * [timeoutMillis] passes. Returns the handler's JSON result, or null when the Worker has
+     * no such handler.
+     */
+    fun dispatch(event: String, payload: String, timeoutMillis: Long): String? =
+        nativeDispatch(handle, event, payload, timeoutMillis)
 
     /**
      * The authority a server certificate for [host] must chain to, or null
      * when tokamak does not vouch for the host.
      */
-    fun serverAuthority(host: String): ByteArray? = synchronized(lock) {
-        handle.takeIf { it != 0L }?.let { nativeServerAuthority(it, host) }
-    }
+    fun serverAuthority(host: String): ByteArray? = nativeServerAuthority(handle, host)
 
     /**
      * The client certificate and PKCS#8 private key, both DER, to present for
      * [host]. Null when tokamak cannot authenticate the connection.
      */
     fun clientIdentity(host: String, previousFailures: Int): Array<ByteArray>? =
-        synchronized(lock) {
-            handle.takeIf { it != 0L }?.let {
-                nativeClientIdentity(it, host, previousFailures)
-            }
-        }
-
-    private fun requireHandle(): Long {
-        check(handle != 0L) { "tokamak runtime has stopped" }
-        return handle
-    }
+        nativeClientIdentity(handle, host, previousFailures)
 
     companion object {
         init {
@@ -95,7 +77,12 @@ internal class TokamakRuntime private constructor(private var handle: Long) {
         private external fun nativeResume(handle: Long)
 
         @JvmStatic
-        private external fun nativeStop(handle: Long)
+        private external fun nativeDispatch(
+            handle: Long,
+            event: String,
+            payload: String,
+            timeoutMillis: Long,
+        ): String?
 
         @JvmStatic
         private external fun nativeServerAuthority(handle: Long, host: String): ByteArray?

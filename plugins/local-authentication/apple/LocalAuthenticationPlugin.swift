@@ -4,6 +4,8 @@ import LocalAuthentication
 final class TokamakLocalAuthenticationPlugin: TokamakPlugin {
   let id = "local-authentication"
 
+  init(host: TokamakHost) {}
+
   func call(
     method: String,
     arguments: Any,

@@ -4,6 +4,10 @@
       "kind": "string",
       "description": "CFBundleVersion, one to three period-separated integers; defaults to the app version"
     },
+    "entitlements": {
+      "kind": "path",
+      "description": "Entitlements plist layered over the provisioning profile's entitlements at signing"
+    },
     "plist": {
       "kind": "path",
       "description": "Info.plist whose values take precedence over generated and plugin values"
@@ -25,6 +29,10 @@
     "build-number": {
       "kind": "string",
       "description": "CFBundleVersion, one to three period-separated integers; defaults to the app version"
+    },
+    "entitlements": {
+      "kind": "path",
+      "description": "Entitlements plist layered over the provisioning profile's entitlements at signing"
     },
     "plist": {
       "kind": "path",

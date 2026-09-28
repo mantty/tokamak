@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::certificates::{Certificates, Renewal};
 use crate::dev_proxy::{DevProxy, DevProxyConfig};
@@ -113,6 +114,26 @@ impl Runtime {
     /// Returns an error when the gateway does not recover within its timeout.
     pub fn restore_gateway(&self) -> Result<u16> {
         Ok(self.gateway.restore_gateway()?)
+    }
+
+    /// Run the Worker's `event` handler with `payload` and wait for it to
+    /// settle, including work passed to `ctx.waitUntil`, for up to `timeout`.
+    ///
+    /// Returns the handler's JSON result, `null` when it returns nothing, or
+    /// `None` when the Worker has no `event` handler.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the handler throws or does not settle within
+    /// `timeout`, its result is not JSON, or the runtime cannot run Worker
+    /// code, as in development.
+    pub fn dispatch(
+        &self,
+        event: &str,
+        payload: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<Option<serde_json::Value>> {
+        Ok(self.gateway.dispatch(event, payload, timeout)?)
     }
 
     /// Certificate material for the shell's TLS challenge callbacks.

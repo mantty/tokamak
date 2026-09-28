@@ -64,14 +64,11 @@ case "${1-}" in
       printf '  <key>CFBundleVersion</key><string>%s</string>\n' "$build_number"
       printf '  <key>CFBundleShortVersionString</key><string>%s</string>\n' "$version"
       printf '  <key>TokamakHost</key><string>%s</string>\n' "$host"
-      for plugin in "$input/plugins"/*; do
-        [ -d "$plugin" ] || continue
-        for entry in "$plugin/plist"/*; do
-          [ -d "$entry" ] || continue
-          key=$(cat "$entry/key")
-          value=$(cat "$entry/value")
-          printf '  <key>%s</key><string>%s</string>\n' "$key" "$value"
-        done
+      for plugin_plist in "$input/plugins"/*/Info.plist; do
+        [ -f "$plugin_plist" ] || continue
+        plutil -convert xml1 -o - "$plugin_plist" |
+          sed -e '1,/^<dict>$/d' -e '/^<\/dict>$/,$d' | tr -d '\n\t'
+        printf '\n'
       done
       if [ "$platform" = macos ]; then
         printf '%s\n' '  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>'
@@ -114,9 +111,13 @@ case "${1-}" in
       shift
     done
 
-    if [ "$platform" = macos ]; then
+    if [ "$platform" = macos ] && [ -n "${TOKAMAK_MACOS_TEAM_ID:-}" ]; then
       printf '%s' "$TOKAMAK_MACOS_TEAM_ID" > "$bundle/Contents/embedded.provisionprofile"
       codesign --force --sign "Apple Development" "$bundle"
+      exit 0
+    elif [ "$platform" = macos ]; then
+      rm -f "$bundle/Contents/embedded.provisionprofile"
+      codesign --force --sign - "$bundle"
       exit 0
     fi
 
@@ -142,8 +143,22 @@ case "${1-}" in
       exit 1
     fi
     ;;
+  simulator-entitlements)
+    identifier=$3
+    output=$5
+    {
+      printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+      printf '%s\n' '<plist version="1.0"><dict>'
+      printf '  <key>application-identifier</key><string>%s</string>\n' "$identifier"
+      printf '  <key>keychain-access-groups</key><array><string>%s</string></array>\n' "$identifier"
+      printf '%s\n' '</dict></plist>'
+    } > "$output"
+    if [ -n "${TOKAMAK_IOS_ENTITLEMENTS:-}" ]; then
+      /usr/libexec/PlistBuddy -c "Merge $TOKAMAK_IOS_ENTITLEMENTS" "$output" >/dev/null
+    fi
+    ;;
   *)
-    echo "usage: tokamak-apple-signing plist ... | sign ..." >&2
+    echo "usage: tokamak-apple-signing plist ... | sign ... | simulator-entitlements ..." >&2
     exit 2
     ;;
 esac

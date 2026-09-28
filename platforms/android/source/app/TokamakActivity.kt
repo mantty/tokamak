@@ -1,7 +1,7 @@
 package com.tokamak.runtime
 
 import android.app.Activity
-import android.content.pm.PackageManager
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.view.ViewGroup
@@ -9,20 +9,18 @@ import android.view.WindowInsets
 import android.webkit.WebView
 import android.widget.FrameLayout
 import androidx.webkit.WebViewFeature
-import java.io.File
 
 private const val TAG = "tokamak"
-private const val HOST_METADATA = "tokamak.host"
-private const val DEV_ENDPOINT_METADATA = "tokamak.dev.endpoint"
-private const val DEV_SESSION_TOKEN_METADATA = "tokamak.dev.session-token"
 private const val FAILED =
     "<!doctype html><title>tokamak</title><h1>App failed to start</h1><p>See logcat for details.</p>"
 private const val UNSUPPORTED =
     "<!doctype html><title>tokamak</title><h1>Unsupported WebView</h1>" +
         "<p>This device's WebView cannot serve the app's secure origin.</p>"
 
-/** The tokamak application: owns the window, WebView, and runtime lifecycle. */
+/** The tokamak window: shows the app's WebView over the process's runtime. */
 class TokamakActivity : Activity() {
+    private val tokamak: TokamakApplication
+        get() = application as TokamakApplication
     private lateinit var webView: WebView
     private lateinit var pluginBridge: TokamakPluginBridge
     private lateinit var chromeClient: TokamakWebChromeClient
@@ -33,23 +31,33 @@ class TokamakActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        tokamak.activity = this
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.setSupportMultipleWindows(false)
         }
-        chromeClient = TokamakWebChromeClient(this, appHost())
+        chromeClient = TokamakWebChromeClient(this, tokamak.appHost)
         webView.webChromeClient = chromeClient
-        pluginBridge = TokamakPluginBridge(this, appHost(), tokamakPlugins(this))
+        pluginBridge = TokamakPluginBridge(this, tokamak.appHost, tokamak.plugins)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
             pluginBridge.install(webView)
         }
         setContentView(webViewContainer())
+        // A recreated activity or one reopened from Recents carries an intent plugins have had.
+        val launchedFromHistory = intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (savedInstanceState == null && !launchedFromHistory) deliver(intent)
         if (!proxyIsSupported()) {
             show(UNSUPPORTED)
             return
         }
         Thread(::startRuntime, "tokamak-startup").start()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        deliver(intent)
     }
 
     override fun onResume() {
@@ -62,12 +70,11 @@ class TokamakActivity : Activity() {
     override fun onDestroy() {
         destroyed = true
         restoreGeneration += 1
+        if (tokamak.activity === this) tokamak.activity = null
         TokamakProxy.release(this)
         pluginBridge.close()
         webView.stopLoading()
         webView.destroy()
-        runtime?.stop()
-        runtime = null
         super.onDestroy()
     }
 
@@ -78,32 +85,22 @@ class TokamakActivity : Activity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         chromeClient.onRequestPermissionsResult(requestCode)
-        pluginBridge.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        tokamak.plugins.values.forEach {
+            it.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        }
+    }
+
+    private fun deliver(intent: Intent) {
+        tokamak.plugins.values.forEach { it.onIntent(intent) }
     }
 
     private fun startRuntime() {
-        val started = runCatching { startConfiguredRuntime() }
+        val started = runCatching { tokamak.runtime }
         runOnUiThread { finishStart(started) }
     }
 
-    private fun startConfiguredRuntime(): TokamakRuntime {
-        val metadata = packageManager
-            .getApplicationInfo(packageName, PackageManager.GET_META_DATA)
-            .metaData
-        val endpoint = metadata?.getString(DEV_ENDPOINT_METADATA)
-        val sessionToken = metadata?.getString(DEV_SESSION_TOKEN_METADATA)
-        return if (!endpoint.isNullOrEmpty() && !sessionToken.isNullOrEmpty()) {
-            TokamakRuntime.startDevelopment(stateDir(), appHost(), endpoint, sessionToken)
-        } else {
-            TokamakRuntime.start(unpackApp(), stateDir(), appHost())
-        }
-    }
-
     private fun finishStart(started: Result<TokamakRuntime>) {
-        if (destroyed) {
-            started.getOrNull()?.stop()
-            return
-        }
+        if (destroyed) return
         val runtime = started.getOrElse { error ->
             Log.e(TAG, "tokamak failed to start", error)
             show(FAILED)
@@ -111,7 +108,7 @@ class TokamakActivity : Activity() {
         }
         this.runtime = runtime
         proxyPort = runtime.port
-        TokamakProxy.acquire(this, appHost(), runtime.port)
+        TokamakProxy.acquire(this, tokamak.appHost, runtime.port)
     }
 
     private fun restoreGateway(runtime: TokamakRuntime, generation: Long) {
@@ -128,7 +125,7 @@ class TokamakActivity : Activity() {
                         if (port != runtime.port) return@onSuccess
                         if (port != proxyPort) {
                             proxyPort = port
-                            TokamakProxy.acquire(this, appHost(), port)
+                            TokamakProxy.acquire(this, tokamak.appHost, port)
                         }
                     }
                     .onFailure { error ->
@@ -141,8 +138,9 @@ class TokamakActivity : Activity() {
     internal fun proxyReady() {
         if (destroyed) return
         val runtime = runtime ?: return
-        webView.webViewClient = TokamakWebViewClient(this, appHost(), runtime, pluginBridge)
-        webView.loadUrl("https://${appHost()}/")
+        webView.webViewClient =
+            TokamakWebViewClient(this, tokamak.appHost, runtime, pluginBridge)
+        webView.loadUrl("https://${tokamak.appHost}/")
     }
 
     private fun proxyIsSupported(): Boolean =
@@ -167,35 +165,4 @@ class TokamakActivity : Activity() {
                 insets
             }
         }
-
-    /** Copy the packaged app out of the APK so the runtime can read it as files. */
-    private fun unpackApp(): File {
-        val app = File(filesDir, "tokamak/app")
-        app.deleteRecursively()
-        copyAsset("app", app)
-        return app
-    }
-
-    private fun copyAsset(source: String, destination: File) {
-        val entries = assets.list(source) ?: emptyArray()
-        if (entries.isEmpty()) {
-            destination.parentFile?.mkdirs()
-            assets.open(source).use { input ->
-                destination.outputStream().use(input::copyTo)
-            }
-            return
-        }
-        destination.mkdirs()
-        for (entry in entries) copyAsset("$source/$entry", File(destination, entry))
-    }
-
-    private fun stateDir(): File = File(filesDir, "tokamak/state").apply { mkdirs() }
-
-    private fun appHost(): String {
-        val info = packageManager.getApplicationInfo(packageName, PackageManager.GET_META_DATA)
-        return requireNotNull(info.metaData?.getString(HOST_METADATA)) {
-            "$HOST_METADATA is required"
-        }
-    }
-
 }

@@ -33,11 +33,11 @@ impl Drop for PromiseWait {
     }
 }
 
-pub(crate) async fn run(
+pub(crate) async fn run<T>(
     runtime: &AsyncRuntime,
     awaited: &AwaitedPromise,
-    request: impl Future<Output = Result<(), Error>>,
-) -> Result<(), Error> {
+    request: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
     let mut request = pin!(request);
     poll_fn(|cx| {
         if let Poll::Ready(result) = request.as_mut().poll(cx) {

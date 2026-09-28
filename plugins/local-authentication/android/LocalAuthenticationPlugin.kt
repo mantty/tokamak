@@ -1,21 +1,21 @@
 package com.tokamak.plugins.localauthentication
 
-import android.app.Activity
 import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricManager.Authenticators
 import android.hardware.biometrics.BiometricPrompt
 import android.os.CancellationSignal
+import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakPluginReply
 import org.json.JSONObject
 
-internal class TokamakLocalAuthenticationPlugin(
-    private val activity: Activity,
+class TokamakLocalAuthenticationPlugin(
+    private val host: TokamakHost,
 ) : TokamakPlugin {
     override val id = "local-authentication"
 
-    private val biometrics = activity.getSystemService(BiometricManager::class.java)
+    private val biometrics = host.context.getSystemService(BiometricManager::class.java)
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
         when (method) {
@@ -41,6 +41,7 @@ internal class TokamakLocalAuthenticationPlugin(
         val prompt = request.requireString("prompt")
         if (prompt.isEmpty()) throw typeError("prompt must be a non-empty string")
         requireAvailable(authenticators)
+        val activity = host.activity ?: throw notVisible()
         val callback = PromptCallback(reply) { reply(Result.success(null)) }
         val dialog =
             BiometricPrompt.Builder(activity)
@@ -98,6 +99,9 @@ internal class TokamakLocalAuthenticationPlugin(
 
         fun notSetUp() =
             TokamakPluginError("InvalidStateError", "The requested authentication is not set up on this device")
+
+        fun notVisible() =
+            TokamakPluginError("InvalidStateError", "The app has no activity to show the authentication prompt in")
 
         fun pluginError(error: Throwable): TokamakPluginError =
             error as? TokamakPluginError

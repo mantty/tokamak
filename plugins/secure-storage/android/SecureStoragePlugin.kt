@@ -1,6 +1,5 @@
 package com.tokamak.plugins.securestorage
 
-import android.app.Activity
 import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricManager.Authenticators
 import android.hardware.biometrics.BiometricPrompt
@@ -12,6 +11,7 @@ import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import android.security.keystore.UserNotAuthenticatedException
 import android.util.AtomicFile
+import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakPluginReply
@@ -46,15 +46,16 @@ import org.json.JSONObject
  * carries the value's unlock and authentication requirements. Every write uses a new key
  * pair, identified in the value's file, so a failed write leaves the previous value readable.
  */
-internal class TokamakSecureStoragePlugin(
-    private val activity: Activity,
+class TokamakSecureStoragePlugin(
+    private val host: TokamakHost,
 ) : TokamakPlugin {
     override val id = "secure-storage"
 
+    private val context = host.context
     private val worker = Executors.newSingleThreadExecutor()
-    private val directory = File(activity.noBackupFilesDir, "tokamak-secure-storage")
+    private val directory = File(context.noBackupFilesDir, "tokamak-secure-storage")
     private val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-    private val biometrics = activity.getSystemService(BiometricManager::class.java)
+    private val biometrics = context.getSystemService(BiometricManager::class.java)
     private val random = SecureRandom()
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
@@ -83,7 +84,7 @@ internal class TokamakSecureStoragePlugin(
         }
 
     private fun onUiThread(reply: TokamakPluginReply, operation: () -> Unit) =
-        activity.runOnUiThread {
+        context.mainExecutor.execute {
             runCatching(operation).onFailure { reply(Result.failure(pluginError(it))) }
         }
 
@@ -200,8 +201,9 @@ internal class TokamakSecureStoragePlugin(
         stored: StoredValue,
         reply: TokamakPluginReply,
     ) {
+        val activity = host.activity ?: throw notVisible()
         val callback = PromptCallback(reply) { execute(reply) { reply(Result.success(open(stored, unwrap))) } }
-        val title = prompt?.takeIf { it.isNotEmpty() } ?: activity.applicationInfo.loadLabel(activity.packageManager)
+        val title = prompt?.takeIf { it.isNotEmpty() } ?: context.applicationInfo.loadLabel(context.packageManager)
         val dialog =
             BiometricPrompt.Builder(activity)
                 .setTitle(title)
@@ -345,6 +347,9 @@ internal class TokamakSecureStoragePlugin(
 
         fun notSetUp() =
             TokamakPluginError("InvalidStateError", "The requested authentication is not set up on this device")
+
+        fun notVisible() =
+            TokamakPluginError("InvalidStateError", "The app has no activity to show the authentication prompt in")
 
         fun pluginError(error: Throwable): TokamakPluginError =
             when (error) {

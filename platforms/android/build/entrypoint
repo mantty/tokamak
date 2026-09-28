@@ -42,7 +42,8 @@ app=$project/app
 native=$app/src/main/jniLibs/arm64-v8a
 assets=$app/src/main/assets/app
 kotlin=$app/src/main/kotlin/com/tokamak/runtime
-plugins_root=$app/src/main/kotlin/tokamak/plugins
+plugin_api=$project/tokamak-plugin
+plugin_modules=$project/plugins
 icons=$input/icons/$platform
 
 xml_escape() {
@@ -54,11 +55,22 @@ xml_escape() {
       -e "s/'/\&apos;/g"
 }
 
-rm -rf "$app/src/main/assets" "$app/src/main/jniLibs" "$app/src/main/kotlin" "$app/src/main/res" "$app/user" "$output"
-mkdir -p "$native" "$assets" "$kotlin" "$plugins_root" "$app/src/main/res"
+rm -rf "$app/src/main/assets" "$app/src/main/jniLibs" "$app/src/main/kotlin" "$app/src/main/res" "$app/user" "$plugin_api" "$plugin_modules" "$output"
+mkdir -p "$native" "$assets" "$kotlin" "$app/src/main/res" "$plugin_api/src/main/kotlin"
 cp -R "$input/app/." "$assets/"
 cp "$input/runtime/libtokamak.so" "$native/libtokamak.so"
-cp -R "$input/native-shell/." "$kotlin/"
+cp -R "$input/native-shell/app/." "$kotlin/"
+cp -R "$input/native-shell/plugin/." "$plugin_api/src/main/kotlin/"
+cat > "$plugin_api/build.gradle" <<'EOF'
+plugins {
+  id 'com.android.library'
+  id 'org.jetbrains.kotlin.android'
+}
+
+android {
+  namespace 'com.tokamak.runtime.plugin'
+}
+EOF
 
 has_icon=false
 if [[ -d "$icons" ]]; then
@@ -72,19 +84,18 @@ if [[ -d "$icons" ]]; then
   has_icon=true
 fi
 
+# Each plugin is a library module, so its manifest merges below the app's and
+# its dependencies stay its own.
 shopt -s nullglob
-plugin_classes=()
-for plugin in "$input/plugins"/*; do
-  [[ -d "$plugin" ]] || continue
+for plugin in "$input/plugins"/*/; do
   plugin_id=$(basename "$plugin")
-  plugin_classes+=("$(cat "$plugin/class")")
-  plugin_sources=$plugins_root/$plugin_id
-  mkdir -p "$plugin_sources"
+  module=$plugin_modules/$plugin_id
+  mkdir -p "$module/src/main/kotlin"
   for source in "$plugin/sources"/*; do
     [[ -f "$source" ]] || continue
     case "$source" in
       *.kt)
-        cp "$source" "$plugin_sources/$(basename "$source")"
+        cp "$source" "$module/src/main/kotlin/$(basename "$source")"
         ;;
       *)
         echo "Android plugin source must be Kotlin: $source" >&2
@@ -92,6 +103,24 @@ for plugin in "$input/plugins"/*; do
         ;;
     esac
   done
+  if [[ -f "$plugin/AndroidManifest.xml" ]]; then
+    cp "$plugin/AndroidManifest.xml" "$module/src/main/AndroidManifest.xml"
+  fi
+  {
+    printf '%s\n' 'plugins {'
+    printf '%s\n' "  id 'com.android.library'"
+    printf '%s\n' "  id 'org.jetbrains.kotlin.android'"
+    printf '%s\n\n' '}'
+    printf '%s\n' 'android {'
+    printf "  namespace 'tokamak.plugins.%s'\n" "${plugin_id//-/_}"
+    printf '%s\n\n' '}'
+    printf '%s\n' 'dependencies {'
+    printf '%s\n' "  implementation project(':tokamak-plugin')"
+    for dependency in "$plugin/dependencies"/*; do
+      printf "  implementation '%s'\n" "$(cat "$dependency")"
+    done
+    printf '%s\n' '}'
+  } > "$module/build.gradle"
 done
 
 mkdir -p "$project/app/src/main"
@@ -111,13 +140,42 @@ dependencyResolutionManagement {
   }
 }
 rootProject.name = 'tokamak'
-include ':app'
+include ':app', ':tokamak-plugin'
 EOF
+for plugin in "$input/plugins"/*/; do
+  printf "include ':plugins:%s'\n" "$(basename "$plugin")" >> "$project/settings.gradle"
+done
 
 cat > "$project/build.gradle" <<'EOF'
 plugins {
   id 'com.android.application' version '8.7.3' apply false
+  id 'com.android.library' version '8.7.3' apply false
   id 'org.jetbrains.kotlin.android' version '2.1.0' apply false
+}
+
+subprojects {
+  plugins.withId('com.android.library') {
+    android {
+      compileSdk 35
+      defaultConfig {
+        minSdk 31
+      }
+      sourceSets {
+        main {
+          kotlin.srcDirs += 'src/main/kotlin'
+        }
+      }
+      compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+      }
+    }
+  }
+  plugins.withId('org.jetbrains.kotlin.android') {
+    kotlin {
+      jvmToolchain(17)
+    }
+  }
 }
 EOF
 
@@ -158,17 +216,18 @@ android {
   lint {
     checkOnly 'NewApi'
     abortOnError true
+    checkDependencies true
   }
-}
-
-kotlin {
-  jvmToolchain(17)
 }
 
 dependencies {
   implementation 'androidx.webkit:webkit:1.12.1'
-}
+  implementation project(':tokamak-plugin')
 EOF
+for plugin in "$input/plugins"/*/; do
+  printf "  implementation project(':plugins:%s')\n" "$(basename "$plugin")" >> "$project/app/build.gradle"
+done
+printf '%s\n' '}' >> "$project/app/build.gradle"
 
 if [[ -n "$user_manifest" ]]; then
   mkdir -p "$app/user"
@@ -186,14 +245,11 @@ fi
 registry=$kotlin/TokamakPluginRegistry.kt
 {
   printf '%s\n\n' 'package com.tokamak.runtime'
-  printf '%s\n\n' 'import android.app.Activity'
-  printf '%s\n' 'internal fun tokamakPlugins(activity: Activity): List<TokamakPlugin> ='
+  printf '%s\n' 'internal fun tokamakPlugins(host: TokamakHost): List<TokamakPlugin> ='
   printf '%s\n' '    listOf('
-  if ((${#plugin_classes[@]} > 0)); then
-    for class in "${plugin_classes[@]}"; do
-      printf '        %s(activity),\n' "$class"
-    done
-  fi
+  for plugin in "$input/plugins"/*/; do
+    printf '        %s(host),\n' "$(cat "$plugin/class")"
+  done
   printf '%s\n' '    )'
 } > "$registry"
 
@@ -212,7 +268,7 @@ manifest=$app/src/main/AndroidManifest.xml
   if [[ "$has_icon" == true ]]; then
     icon_attribute=' android:icon="@mipmap/ic_launcher"'
   fi
-  printf '  <application android:label="%s"%s android:usesCleartextTraffic="false">\n' "$(xml_escape "$app_name")" "$icon_attribute"
+  printf '  <application android:name=".TokamakApplication" android:label="%s"%s android:usesCleartextTraffic="false">\n' "$(xml_escape "$app_name")" "$icon_attribute"
   printf '    <meta-data android:name="tokamak.host" android:value="%s" />\n' "$host"
   if [[ -n "$dev_endpoint" ]]; then
     printf '    <meta-data android:name="tokamak.dev.endpoint" android:value="%s" />\n' "$dev_endpoint"

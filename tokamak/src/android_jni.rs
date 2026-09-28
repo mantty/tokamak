@@ -5,6 +5,7 @@
 
 use std::ffi::{CString, c_char, c_int};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::packaging::PackageLayout;
 use crate::{Challenge, Config, Decision, Event, Runtime};
@@ -120,19 +121,29 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeResume(
     }
 }
 
-/// Stop the runtime and release the handle.
+/// Run the Worker's `event` handler with a JSON `payload`, blocking until it
+/// settles or `timeout_millis` passes. Returns the handler's JSON result, or
+/// null when the Worker has no such handler; throws when the handler fails.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStop(
-    _: JNIEnv,
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeDispatch<'local>(
+    mut env: JNIEnv<'local>,
     _: JClass,
     handle: jlong,
-) {
-    if handle == 0 {
-        return;
+    event: JString,
+    payload: JString,
+    timeout_millis: jlong,
+) -> JString<'local> {
+    let timeout = Duration::from_millis(u64::try_from(timeout_millis).unwrap_or(0));
+    match dispatch(&mut env, handle, &event, &payload, timeout) {
+        Ok(Some(result)) => env
+            .new_string(result)
+            .unwrap_or_else(|_| JString::from(JObject::null())),
+        Ok(None) => JString::from(JObject::null()),
+        Err(message) => {
+            let _ = env.throw_new(FAILURE, message);
+            JString::from(JObject::null())
+        }
     }
-    // SAFETY: `handle` came from `Box::into_raw` in `nativeStart` and the
-    // Kotlin shell stops a runtime once.
-    drop(unsafe { Box::from_raw(handle as *mut Runtime) });
 }
 
 /// Return the authority a server certificate for `host` must chain to, or
@@ -223,6 +234,22 @@ fn start_development(
     Runtime::start_development(config, report).map_err(|error| error.to_string())
 }
 
+fn dispatch(
+    env: &mut JNIEnv,
+    handle: jlong,
+    event: &JString,
+    payload: &JString,
+    timeout: Duration,
+) -> Result<Option<String>, String> {
+    let runtime = runtime(handle).ok_or("tokamak runtime is unavailable")?;
+    let event = text(env, event)?;
+    let payload = serde_json::from_str(&text(env, payload)?).map_err(|error| error.to_string())?;
+    let result = runtime
+        .dispatch(&event, payload, timeout)
+        .map_err(|error| error.to_string())?;
+    Ok(result.map(|value| value.to_string()))
+}
+
 fn report(event: Event) {
     match event {
         Event::Starting => log(LOG_INFO, "runtime starting"),
@@ -239,8 +266,8 @@ fn runtime<'handle>(handle: jlong) -> Option<&'handle Runtime> {
     if handle == 0 {
         return None;
     }
-    // SAFETY: `handle` came from `Box::into_raw` in `nativeStart` and stays
-    // valid until `nativeStop`.
+    // SAFETY: `handle` came from `Box::into_raw` in `nativeStart` and the
+    // runtime lives for the rest of the process.
     Some(unsafe { &*(handle as *const Runtime) })
 }
 

@@ -47,30 +47,41 @@ fn install_location_plugin(root: &Path) -> TestResult {
         plugin.join("apple/LocationPlugin.swift"),
         include_str!("../../plugins/location/apple/LocationPlugin.swift"),
     )?;
+    for (name, key) in [
+        ("macos", "NSLocationUsageDescription"),
+        ("ios", "NSLocationWhenInUseUsageDescription"),
+    ] {
+        fs::write(
+            plugin.join(format!("apple/{name}.plist")),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>{key}</key><string>Location test</string></dict></plist>"#
+            ),
+        )?;
+    }
     fs::write(
         plugin.join("tokamak-plugin.json"),
         r#"{
   "schemaVersion": 1,
   "id": "location",
-  "kind": "frontend",
   "platforms": {
     "macos": {
       "class": "TokamakLocationPlugin",
       "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
-      "plist": {"NSLocationUsageDescription": "Location test"}
+      "plist": "apple/macos.plist"
     },
     "ios": {
       "class": "TokamakLocationPlugin",
       "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
-      "plist": {"NSLocationWhenInUseUsageDescription": "Location test"}
+      "plist": "apple/ios.plist"
     },
     "ios-simulator": {
       "class": "TokamakLocationPlugin",
       "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
-      "plist": {"NSLocationWhenInUseUsageDescription": "Location test"}
+      "plist": "apple/ios.plist"
     }
   }
 }"#,
@@ -83,12 +94,13 @@ fn install_key_flow_plugins(root: &Path) -> TestResult {
         root.join("package.json"),
         r#"{"name":"demo-app","scripts":{"build":"echo already-built"},"dependencies":{"@tokamakdev/plugin-secure-storage":"1.0.0","@tokamakdev/plugin-local-authentication":"1.0.0"}}"#,
     )?;
-    for (package, manifest, source_name, source) in [
+    for (package, manifest, source_name, source, plist) in [
         (
             "plugin-secure-storage",
             include_str!("../../plugins/secure-storage/tokamak-plugin.json"),
             "SecureStoragePlugin.swift",
             include_str!("../../plugins/secure-storage/apple/SecureStoragePlugin.swift"),
+            include_str!("../../plugins/secure-storage/apple/Info.plist"),
         ),
         (
             "plugin-local-authentication",
@@ -97,12 +109,14 @@ fn install_key_flow_plugins(root: &Path) -> TestResult {
             include_str!(
                 "../../plugins/local-authentication/apple/LocalAuthenticationPlugin.swift"
             ),
+            include_str!("../../plugins/local-authentication/apple/Info.plist"),
         ),
     ] {
         let plugin = root.join("node_modules/@tokamakdev").join(package);
         fs::create_dir_all(plugin.join("apple"))?;
         fs::write(plugin.join("tokamak-plugin.json"), manifest)?;
         fs::write(plugin.join("apple").join(source_name), source)?;
+        fs::write(plugin.join("apple/Info.plist"), plist)?;
     }
     Ok(())
 }
@@ -197,8 +211,10 @@ fn create_android_platform_pack(root: &Path) -> TestResult<PathBuf> {
     let target = Target::AndroidArm64;
     fs::create_dir_all(root.join("bin"))?;
     fs::write(root.join(target.runtime_artifact_path()), "runtime")?;
-    fs::create_dir_all(root.join("native-shell"))?;
-    fs::File::create(root.join("native-shell/TokamakActivity.kt"))?;
+    fs::create_dir_all(root.join("native-shell/app"))?;
+    fs::create_dir_all(root.join("native-shell/plugin"))?;
+    fs::File::create(root.join("native-shell/app/TokamakActivity.kt"))?;
+    fs::File::create(root.join("native-shell/plugin/TokamakPlugin.kt"))?;
     let entrypoint = root.join(target.build_entrypoint_path());
     fs::create_dir_all(entrypoint.parent().ok_or("entrypoint path has no parent")?)?;
     fs::write(
@@ -239,7 +255,6 @@ fn install_android_plugins(root: &Path, plugins: &[(&str, &[&str])]) -> TestResu
         let manifest = serde_json::json!({
             "schemaVersion": 1,
             "id": id,
-            "kind": "frontend",
             "platforms": {
                 "android": {
                     "class": format!("test.{}.Plugin", id.replace('-', "")),
@@ -312,8 +327,11 @@ struct TokamakPluginError: Error {
 
 typealias TokamakPluginReply = (Result<Any?, TokamakPluginError>) -> Void
 
+final class TokamakHost {}
+
 protocol TokamakPlugin: AnyObject {
   var id: String { get }
+  init(host: TokamakHost)
   func call(method: String, arguments: Any, reply: @escaping TokamakPluginReply)
   func subscribe(
     method: String,
@@ -937,6 +955,50 @@ fn rejects_a_missing_app_android_manifest() -> TestResult {
         .assert()
         .failure()
         .stderr(contains("Android manifest file is missing"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn builds_each_android_plugin_as_a_library_module() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+    install_android_plugins(&project, &[("alerts", &[])])?;
+    let plugin = project.join("node_modules/alerts");
+    let plugin_manifest = r#"<manifest><application><service android:name="test.alerts.Service" /></application></manifest>"#;
+    fs::write(plugin.join("android/AndroidManifest.xml"), plugin_manifest)?;
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(plugin.join("tokamak-plugin.json"))?)?;
+    manifest["platforms"]["android"]["manifest"] = "android/AndroidManifest.xml".into();
+    manifest["platforms"]["android"]["dependencies"] =
+        serde_json::json!(["com.example:messaging:1.2.3"]);
+    fs::write(plugin.join("tokamak-plugin.json"), manifest.to_string())?;
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command.assert().success();
+
+    let gradle = project.join("build/android/.tokamak");
+    let module = gradle.join("plugins/alerts");
+    assert_eq!(
+        fs::read_to_string(module.join("src/main/AndroidManifest.xml"))?,
+        plugin_manifest
+    );
+    assert!(module.join("src/main/kotlin/0-Plugin.kt").is_file());
+    let module_script = fs::read_to_string(module.join("build.gradle"))?;
+    assert!(module_script.contains("implementation project(':tokamak-plugin')"));
+    assert!(module_script.contains("implementation 'com.example:messaging:1.2.3'"));
+    assert!(
+        fs::read_to_string(gradle.join("settings.gradle"))?.contains("include ':plugins:alerts'")
+    );
+    let app_script = fs::read_to_string(gradle.join("app/build.gradle"))?;
+    assert!(app_script.contains("implementation project(':plugins:alerts')"));
+    assert!(app_script.contains("checkDependencies true"));
+    assert!(
+        fs::read_to_string(
+            gradle.join("app/src/main/kotlin/com/tokamak/runtime/TokamakPluginRegistry.kt")
+        )?
+        .contains("test.alerts.Plugin(host),")
+    );
     Ok(())
 }
 
@@ -1989,6 +2051,32 @@ fn builds_ios_simulator_app() -> TestResult {
             })
         );
     }
+    Ok(())
+}
+
+#[test]
+fn embeds_declared_entitlements_in_simulator_builds() -> TestResult {
+    let (_temporary, project, manifest) = create_inputs("ios-simulator-arm64")?;
+    fs::write(
+        project.join("App.entitlements"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>aps-environment</key><string>development</string></dict></plist>"#,
+    )?;
+
+    build_command("ios-simulator", &project, &manifest)?
+        .current_dir(&project)
+        .args(["--ios-entitlements", "App.entitlements"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        simulator_entitlements(&project.join("build/ios-simulator/demo-app.app/demo-app"))?,
+        serde_json::json!({
+            "application-identifier": "com.tokamak.demo-app",
+            "keychain-access-groups": ["com.tokamak.demo-app"],
+            "aps-environment": "development",
+        })
+    );
     Ok(())
 }
 
