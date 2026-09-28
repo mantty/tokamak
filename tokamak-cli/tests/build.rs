@@ -2005,6 +2005,32 @@ fn builds_ios_simulator_app() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn embeds_declared_entitlements_in_simulator_builds() -> TestResult {
+    let (_temporary, project, manifest) = create_inputs("ios-simulator-arm64")?;
+    fs::write(
+        project.join("App.entitlements"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>aps-environment</key><string>development</string></dict></plist>"#,
+    )?;
+
+    build_command("ios-simulator", &project, &manifest)?
+        .current_dir(&project)
+        .args(["--ios-entitlements", "App.entitlements"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        simulator_entitlements(&project.join("build/ios-simulator/demo-app.app/demo-app"))?,
+        serde_json::json!({
+            "application-identifier": "com.tokamak.demo-app",
+            "keychain-access-groups": ["com.tokamak.demo-app"],
+            "aps-environment": "development",
+        })
+    );
+    Ok(())
+}
+
 /// The entitlements the simulator reads from the executable's `__TEXT,__entitlements` section.
 fn simulator_entitlements(executable: &Path) -> TestResult<serde_json::Value> {
     let section = executable.with_extension("entitlements");

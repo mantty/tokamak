@@ -3,13 +3,16 @@
 
 //! Host-side Apple signing tool shipped in Apple platform packs.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 
-use tokamak_apple_signing::{inventory, sign_ios_bundle, sign_macos_bundle, write_info_plist};
+use tokamak_apple_signing::{
+    inventory, sign_ios_bundle, sign_macos_bundle, write_info_plist, write_simulator_entitlements,
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -37,71 +40,101 @@ fn run() -> Result<()> {
         }
         Some("plist") => plist(arguments),
         Some("sign") => sign(arguments),
+        Some("simulator-entitlements") => simulator_entitlements(arguments),
         _ => bail!(
-            "usage: tokamak-apple-signing inventory | plist --input INPUT --output OUTPUT [--icon-info-plist PATH] | sign --platform ios|macos --project PROJECT --bundle BUNDLE --bundle-id ID [--device-id DEVICE]"
+            "usage: tokamak-apple-signing inventory | plist --input INPUT --output OUTPUT [--icon-info-plist PATH] | sign --platform ios|macos --project PROJECT --bundle BUNDLE --bundle-id ID [--device-id DEVICE] | simulator-entitlements --identifier ID --output OUTPUT"
         ),
     }
 }
 
-fn plist(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {
-    let mut input = None;
-    let mut output = None;
-    let mut icon_info_plist = None;
-    while let Some(argument) = arguments.next() {
-        let argument = argument
-            .into_string()
-            .map_err(|_| anyhow::anyhow!("plist arguments must be valid UTF-8"))?;
-        let value = arguments
-            .next()
-            .context("a value is required for each plist option")?
-            .into_string()
-            .map_err(|_| anyhow::anyhow!("plist arguments must be valid UTF-8"))?;
-        match argument.as_str() {
-            "--input" => input = Some(PathBuf::from(value)),
-            "--output" => output = Some(PathBuf::from(value)),
-            "--icon-info-plist" => icon_info_plist = Some(PathBuf::from(value)),
-            _ => bail!("unknown plist option: {argument}"),
-        }
-    }
-    let input = input.context("plist requires --input")?;
-    let output = output.context("plist requires --output")?;
-    write_info_plist(&input, &output, icon_info_plist.as_deref())
+fn plist(arguments: impl Iterator<Item = OsString>) -> Result<()> {
+    let mut options = Options::parse(
+        "plist",
+        arguments,
+        &["--input", "--output", "--icon-info-plist"],
+    )?;
+    let input = options.required("--input")?;
+    let output = options.required("--output")?;
+    let icon_info_plist = options.optional("--icon-info-plist").map(PathBuf::from);
+    write_info_plist(
+        Path::new(&input),
+        Path::new(&output),
+        icon_info_plist.as_deref(),
+    )
 }
 
-fn sign(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {
-    let mut platform = None;
-    let mut project = None;
-    let mut bundle = None;
-    let mut bundle_id = None;
-    let mut device_id = None;
-
-    while let Some(argument) = arguments.next() {
-        let argument = argument
-            .into_string()
-            .map_err(|_| anyhow::anyhow!("signing arguments must be valid UTF-8"))?;
-        let value = arguments
-            .next()
-            .context("a value is required for each signing option")?
-            .into_string()
-            .map_err(|_| anyhow::anyhow!("signing arguments must be valid UTF-8"))?;
-        match argument.as_str() {
-            "--platform" => platform = Some(value),
-            "--project" => project = Some(PathBuf::from(value)),
-            "--bundle" => bundle = Some(PathBuf::from(value)),
-            "--bundle-id" => bundle_id = Some(value),
-            "--device-id" => device_id = Some(value),
-            _ => bail!("unknown signing option: {argument}"),
-        }
-    }
-
-    let platform = platform.context("signing requires --platform")?;
-    let project = project.context("signing requires --project")?;
-    let bundle = bundle.context("signing requires --bundle")?;
-    let bundle_id = bundle_id.context("signing requires --bundle-id")?;
-    match (platform.as_str(), device_id) {
+fn sign(arguments: impl Iterator<Item = OsString>) -> Result<()> {
+    let mut options = Options::parse(
+        "signing",
+        arguments,
+        &[
+            "--platform",
+            "--project",
+            "--bundle",
+            "--bundle-id",
+            "--device-id",
+        ],
+    )?;
+    let platform = options.required("--platform")?;
+    let project = PathBuf::from(options.required("--project")?);
+    let bundle = PathBuf::from(options.required("--bundle")?);
+    let bundle_id = options.required("--bundle-id")?;
+    match (platform.as_str(), options.optional("--device-id")) {
         ("ios", device_id) => sign_ios_bundle(&project, &bundle, &bundle_id, device_id.as_deref()),
         ("macos", None) => sign_macos_bundle(&project, &bundle, &bundle_id),
         ("macos", Some(_)) => bail!("macOS signing does not take --device-id"),
         (platform, _) => bail!("unknown signing platform: {platform}"),
+    }
+}
+
+fn simulator_entitlements(arguments: impl Iterator<Item = OsString>) -> Result<()> {
+    let mut options = Options::parse(
+        "simulator-entitlements",
+        arguments,
+        &["--identifier", "--output"],
+    )?;
+    let identifier = options.required("--identifier")?;
+    let output = options.required("--output")?;
+    write_simulator_entitlements(&identifier, Path::new(&output))
+}
+
+/// A subcommand's `--name value` options.
+struct Options {
+    command: &'static str,
+    values: BTreeMap<String, String>,
+}
+
+impl Options {
+    fn parse(
+        command: &'static str,
+        mut arguments: impl Iterator<Item = OsString>,
+        names: &[&str],
+    ) -> Result<Self> {
+        let text = |value: OsString| {
+            value
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("{command} arguments must be valid UTF-8"))
+        };
+        let mut values = BTreeMap::new();
+        while let Some(name) = arguments.next() {
+            let name = text(name)?;
+            if !names.contains(&name.as_str()) {
+                bail!("unknown {command} option: {name}");
+            }
+            let value = arguments
+                .next()
+                .with_context(|| format!("a value is required for each {command} option"))?;
+            values.insert(name, text(value)?);
+        }
+        Ok(Self { command, values })
+    }
+
+    fn required(&mut self, name: &str) -> Result<String> {
+        self.optional(name)
+            .with_context(|| format!("{} requires {name}", self.command))
+    }
+
+    fn optional(&mut self, name: &str) -> Option<String> {
+        self.values.remove(name)
     }
 }

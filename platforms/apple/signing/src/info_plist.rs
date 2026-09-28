@@ -462,7 +462,9 @@ fn read_dictionary(path: &Path) -> Result<Dictionary> {
         .ok_or_else(|| anyhow::anyhow!("Apple plist root must be a dictionary: {}", path.display()))
 }
 
-fn overlay_dictionary(destination: &mut Dictionary, source: Dictionary) {
+/// Overlay `source` onto `destination`: dictionaries merge by key and any
+/// other value replaces.
+pub(crate) fn overlay_dictionary(destination: &mut Dictionary, source: Dictionary) {
     for (key, value) in source {
         match (destination.get_mut(&key), value) {
             (Some(Value::Dictionary(destination)), Value::Dictionary(source)) => {
