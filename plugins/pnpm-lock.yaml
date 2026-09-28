@@ -41,6 +41,12 @@ importers:
         specifier: ^0.1.0
         version: link:../core
 
+  notifications:
+    dependencies:
+      '@tokamakdev/plugin':
+        specifier: ^0.1.0
+        version: link:../core
+
   secure-storage:
     dependencies:
       '@tokamakdev/plugin':

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "notifications",
+  "platforms": {
+    "macos": {
+      "class": "TokamakNotificationsPlugin",
+      "sources": ["apple/NotificationContent.swift", "apple/NotificationsPlugin.swift"],
+      "frameworks": ["UserNotifications"]
+    },
+    "ios": {
+      "class": "TokamakNotificationsPlugin",
+      "sources": ["apple/NotificationContent.swift", "apple/NotificationsPlugin.swift"],
+      "frameworks": ["UserNotifications"],
+      "plist": "apple/Info.plist"
+    },
+    "ios-simulator": {
+      "class": "TokamakNotificationsPlugin",
+      "sources": ["apple/NotificationContent.swift", "apple/NotificationsPlugin.swift"],
+      "frameworks": ["UserNotifications"],
+      "plist": "apple/Info.plist"
+    }
+  }
+}
