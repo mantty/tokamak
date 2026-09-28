@@ -163,11 +163,12 @@ tokamak looks for `tokamak.jsonc` in the current directory, followed by
 different file or directory; the option defaults to the current directory.
 JSONC comments and trailing commas are supported, and plain JSON is also valid.
 
-The supported values are `name`, `identifier`, `icon`, `version`, and `build`.
-Top-level values are defaults; a platform object (`android`, `ios`, `macos`,
-`windows`) overrides `name`, `identifier`, or `icon` for that platform. `version`
-and `build` are top-level only. `ios` covers iOS devices and simulators. Unknown
-keys are rejected.
+The top-level keys are `name`, `identifier`, `icon`, `version`, and `build`;
+other top-level keys are rejected. They are defaults for every platform. A
+platform object (`android`, `ios`, `macos`, `windows`) overrides `name`,
+`identifier`, or `icon` for that platform, and its other keys are settings for
+that platform's pack. `version` and `build` are top-level only. `ios` covers
+iOS devices and simulators.
 
 `build` is a shell command that `tok build` runs in the project directory, for
 example `turbo run build --filter=my-app` in a monorepo whose shared packages
@@ -181,10 +182,11 @@ need building first.
   "icon": "assets/icons/AppIcon.icon",
   "version": "1.0.0",
 
-  // Platform overrides
+  // Platform overrides and platform-pack settings
   "ios": {
     "name": "Myapp Pro",
     "identifier": "com.example.myapp.ios",
+    "plist": "native/Info.plist",
   },
   "android": {
     "icon": "assets/icons/android",
@@ -200,18 +202,12 @@ display. Tokamak derives a lower-case ASCII slug for bundle filenames,
 application IDs, and `tokamak.local` hosts, so `My App` becomes `my-app`. If a
 platform has no configured name, the Wrangler Worker name is used. The slug is
 also used to derive an identifier when no identifier is configured.
-
 Identifiers are used as the Apple bundle identifier and Android application ID.
-`TOKAMAK_IDENTIFIER` overrides the configured value, and
-`TOKAMAK_ANDROID_IDENTIFIER`, `TOKAMAK_IOS_IDENTIFIER`,
-`TOKAMAK_MACOS_IDENTIFIER`, or `TOKAMAK_WINDOWS_IDENTIFIER` override it for
-one platform. iOS simulators use the iOS variable.
 
 Icons are platform-specific formats: an Apple Icon Composer `.icon` package
 for iOS and macOS, a `res` directory for Android, and an `.ico` file for
 Windows. A top-level `icon` therefore only suits platforms that share a format,
 so pair a default `.icon` package with `android` and `windows` overrides.
-Relative paths are resolved from the directory of the file that names them.
 
 A configuration file may `include` one other configuration file, by absolute
 path or relative to the including file. The including file is deep-merged
@@ -229,51 +225,65 @@ shared `tokamak.jsonc` with a `tokamak.dev.jsonc` beside it:
 }
 ```
 
-The `version` value is optional in the configuration, but is required for
-`tok build`. Set it in the configuration or with `TOKAMAK_VERSION`; the
-environment variable takes precedence. Development builds keep their existing
-native default when no version is supplied. Apple builds use the value for
-`CFBundleShortVersionString` and, by default, `CFBundleVersion`; Android uses it
-as `versionName`.
+The `version` value is required for `tok build`. Development builds keep their
+existing native default when no version is supplied. Apple builds use it for
+`CFBundleShortVersionString` and, by default, `CFBundleVersion`; Android uses
+it as `versionName`.
 
-Apple platform packs accept an optional per-build number through platform-pack
-variables. Use `ios-build-number` for iOS (including the simulator) and
-`macos-build-number` for macOS:
+### Settings
+
+Every setting can be given as a command-line option, an environment variable,
+or a configuration key. A setting has the same name in each:
+
+| Setting | Option | Environment variable | Configuration |
+|---|---|---|---|
+| Top-level | `--version` | `TOKAMAK_VERSION` | `version` |
+| Platform | `--ios-plist` | `TOKAMAK_IOS_PLIST` | `ios.plist` |
+
+An option takes precedence over an environment variable, which takes precedence
+over the configuration. Within each source, a platform's own value takes
+precedence over a top-level one, so `--ios-identifier` overrides
+`--identifier`.
+
+- **Top-level settings:** `name`, `identifier`, `icon`, `version`, and `build`
+  (`build` only for `tok build`).
+- **Platform settings:** `name`, `identifier`, and `icon` for each platform,
+  which tokamak validates, plus the settings that platform's pack declares.
+  `tok build <platform> --help` and `tok dev <platform> --help` list them. A
+  setting the pack does not declare is an error for the platform being built;
+  settings for other platforms are ignored.
+- **Values:** option and environment values are strings. Configuration values
+  may be strings, numbers, or booleans.
+- **Relative paths:** paths in options and environment variables are relative
+  to the current directory. Paths in a configuration file are relative to that
+  file's directory.
+
+The platform packs accept these settings:
+
+| Setting | Platforms | Value |
+|---|---|---|
+| `build-number` | `ios`, `macos` | `CFBundleVersion`: one to three period-separated integers; defaults to the app version |
+| `plist` | `ios`, `macos` | Application plist layered over generated values |
+| `team-id` | `ios`, `macos` | Apple Development team for signing |
+| `signing-identity` | `ios` | Identity SHA-1 for manual signing |
+| `provisioning-profile` | `ios` | Provisioning profile for manual signing |
+| `manifest` | `android` | Partial `AndroidManifest.xml` merged over the generated manifest |
 
 ```sh
-tok build ios --set ios-build-number=5
-TOKAMAK_MACOS_BUILD_NUMBER=7 tok build macos
-```
-
-These map to `TOKAMAK_IOS_BUILD_NUMBER` and `TOKAMAK_MACOS_BUILD_NUMBER`.
-Values must contain one to three period-separated integers. If omitted, the
-platform pack continues to use the app version as the Apple build number.
-
-Apple platform packs also accept an optional user-provided application plist.
-Set `ios-plist` for iOS devices and simulators, or `macos-plist` for macOS:
-
-```sh
-tok build ios --set ios-plist=native/Info.plist
+tok build ios --ios-build-number 5
 TOKAMAK_MACOS_PLIST=native/Info.plist tok build macos
 ```
 
-The corresponding environment variables are `TOKAMAK_IOS_PLIST` and
-`TOKAMAK_MACOS_PLIST`. Relative paths are resolved from the project directory.
-The file may be XML or binary and must have a dictionary at its root. It is
-optional; when present, Tokamak layers its generated application values first,
-then icon values, plugin values, and finally the user plist. User values
-therefore take precedence over all other values, including the SDK, platform,
-and Xcode provenance keys Apple platform packs generate from the active
-toolchain. Values not supplied by the user are preserved. Plugins that set a
-key to the same value share it; when plugins set different values for a key,
-the build fails unless the user plist sets that key.
+The application plist may be XML or binary and must have a dictionary at its
+root. Tokamak layers its generated application values first, then icon values,
+plugin values, and finally the application plist. Its values therefore take
+precedence over all other values, including the SDK, platform, and Xcode
+provenance keys Apple platform packs generate from the active toolchain.
+Values it does not supply are preserved. Plugins that set a key to the same
+value share it; when plugins set different values for a key, the build fails
+unless the application plist sets that key.
 
-The Android platform pack accepts an optional user-provided partial
-`AndroidManifest.xml` through `android-manifest`:
-
-```sh
-tok build android --set android-manifest=native/AndroidManifest.xml
-```
+The Android manifest is a partial `AndroidManifest.xml`:
 
 ```xml
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -283,20 +293,19 @@ tok build android --set android-manifest=native/AndroidManifest.xml
 </manifest>
 ```
 
-The corresponding environment variable is `TOKAMAK_ANDROID_MANIFEST`. Relative
-paths are resolved from the project directory. The Android Gradle Plugin's
-manifest merger combines the file with the generated manifest, which includes
-plugin permissions. The user file has the higher priority:
+The Android Gradle Plugin's manifest merger combines it with the generated
+manifest, which includes plugin permissions. The application manifest has the
+higher priority:
 
 - Elements are combined by key, for example `<uses-permission>` by
   `android:name`. An element declared in both files appears once.
 - An attribute the generated manifest does not set is added.
 - An attribute the generated manifest sets to a different value fails the
   build, and the merger's error names the attribute. Adding
-  `tools:replace="android:<attribute>"` to the element in the user file
-  replaces the generated value.
-- `tools:node="remove"` on an element in the user file removes it from the
-  merged manifest, including a permission a plugin declares.
+  `tools:replace="android:<attribute>"` to the element in the application
+  manifest replaces the generated value.
+- `tools:node="remove"` on an element in the application manifest removes it
+  from the merged manifest, including a permission a plugin declares.
 
 Each icon platform entry is optional. If the Tokamak configuration or a
 platform entry is absent, that platform keeps its existing icon behavior.
@@ -312,34 +321,24 @@ platform entry is absent, that platform keeps its existing icon behavior.
 
 The Apple `.icon` package must be created by Icon Composer and kept as a
 package directory; do not point to a flattened export. Apple builds compile
-the package into the platform bundle.
+the package into the platform bundle. Invalid paths or platform formats fail
+the native build.
 
-Relative paths are resolved from the directory containing the Tokamak
-configuration file. Invalid paths or platform formats fail the native build.
+### Signing
 
 Physical iOS builds use automatic development signing by default. Tokamak
 selects an available Apple Development team automatically. If the choice is
 ambiguous, it lists the team names from the signing certificates and their
-IDs. Choose the team that owns your app. Set its ID for your shell and rerun
-your command:
+IDs. Choose the team that owns your app and set it as `ios.team-id`, with
+`TOKAMAK_IOS_TEAM_ID`, or for a single command:
 
 ```sh
-export TOKAMAK_IOS_TEAM_ID=YOUR_TEAM_ID
+tok dev DEVICE_ID --ios-team-id YOUR_TEAM_ID -- pnpm dev
+tok build ios --ios-team-id YOUR_TEAM_ID
 ```
-
-Alternatively, select the team for a single command with `--set`:
-
-```sh
-tok dev DEVICE_ID --set ios-team-id=YOUR_TEAM_ID -- pnpm dev
-tok build ios --set ios-team-id=YOUR_TEAM_ID
-```
-
-`--set` may be repeated for multiple platform-pack variables. A value such as
-`ios-team-id=YOUR_TEAM_ID` is passed to the iOS platform pack as
-`TOKAMAK_IOS_TEAM_ID`.
 
 Tokamak selects the signing identity and provisioning profile for that team,
-asking Xcode to provision the app when needed. No manual signing variables
+asking Xcode to provision the app when needed. No manual signing settings
 are required. If a certificate has no team name, the list identifies its
 signing identity instead and marks the team name as unavailable.
 
@@ -356,39 +355,26 @@ identities. It includes development and distribution profiles; matching means
 the identity's certificate is included in the profile, not that the pair is valid
 for every app or device. It does not create or import signing assets.
 
-Use the identity's SHA-1 and the profile's path. They can be set for the shell:
+Use the identity's SHA-1 and the profile's path:
 
 ```sh
-export TOKAMAK_IOS_SIGNING_IDENTITY="IDENTITY_SHA1"
-export TOKAMAK_IOS_PROVISIONING_PROFILE="/path/to/profile.mobileprovision"
-```
-
-Or set both for a single command:
-
-```sh
-tok dev DEVICE_ID \
-  --set ios-signing-identity=IDENTITY_SHA1 \
-  --set ios-provisioning-profile=/path/to/profile.mobileprovision \
-  -- pnpm dev
 tok build ios \
-  --set ios-signing-identity=IDENTITY_SHA1 \
-  --set ios-provisioning-profile=/path/to/profile.mobileprovision
+  --ios-signing-identity IDENTITY_SHA1 \
+  --ios-provisioning-profile /path/to/profile.mobileprovision
 ```
 
-An explicit team (`TOKAMAK_IOS_TEAM_ID` or `--set ios-team-id=TEAM_ID`) and the
-manual pair are mutually exclusive. Providing both produces an error explaining
-the two choices. The Apple platform pack owns the signing and provisioning
-selection; `tok` passes platform-pack variables through unchanged.
+An explicit team and the manual pair are mutually exclusive. Providing both
+produces an error explaining the two choices. The Apple platform pack owns the
+signing and provisioning selection.
 
 Both `tok dev` and `tok build ios` use these settings; the latter provisions
 for a generic iOS device and does not require a device ID. iOS Simulator
 builds do not require provisioning.
 
-macOS builds are ad-hoc signed unless a team is set with `macos-team-id`
-(`TOKAMAK_MACOS_TEAM_ID`):
+macOS builds are ad-hoc signed unless `macos.team-id` is set:
 
 ```sh
-tok build macos --set macos-team-id=YOUR_TEAM_ID
+tok build macos --macos-team-id YOUR_TEAM_ID
 ```
 
 Tokamak then signs with an Apple Development identity and a macOS development
@@ -447,9 +433,9 @@ refused request rejects with `NotAllowedError`.
 
 | Platform | Declaration |
 |---|---|
-| iOS | `NSCameraUsageDescription` and `NSMicrophoneUsageDescription` in the `ios-plist` file |
-| macOS | The same keys in the `macos-plist` file |
-| Android | `android.permission.CAMERA` and `android.permission.RECORD_AUDIO` in the `android-manifest` file |
+| iOS | `NSCameraUsageDescription` and `NSMicrophoneUsageDescription` in the `ios.plist` file |
+| macOS | The same keys in the `macos.plist` file |
+| Android | `android.permission.CAMERA` and `android.permission.RECORD_AUDIO` in the `android.manifest` file |
 | Windows | None; the shell asks the user, as it does for location |
 
 ## Example
@@ -518,6 +504,13 @@ cargo run -p xtask -- platform-pack --target macos-arm64
 
 Platform packs are written to `target/tokamak-platform-packs/<target>`. Run
 `cargo run -p tokamak-cli -- targets` to list supported targets.
+
+Each pack declares the settings it accepts in
+`platforms/<pack>/build/variables.json`, keyed by platform. A setting has a
+`kind` (`string`, or `path` for a path tokamak makes absolute) and a one-line
+`description` for `--help`. The build writes the target platform's declarations
+into `platform-pack.json`, and `tok` passes each setting to the entrypoint as
+`TOKAMAK_<PLATFORM>_<KEY>`.
 
 ### Publish to npm
 

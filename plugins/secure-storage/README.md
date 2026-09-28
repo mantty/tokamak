@@ -69,7 +69,7 @@ the platform's default prompt is shown.
   They are included in encrypted backups; `thisDeviceOnly` values restore only
   to the same device.
 - **macOS:** the data protection keychain, which requires a team-signed build
-  (`macos-team-id`). Ad-hoc signed builds throw `NotSupportedError`.
+  (`macos.team-id`). Ad-hoc signed builds throw `NotSupportedError`.
 - **Android:** values are encrypted with a per-value Android Keystore key and
   stored in the app's no-backup directory. They are deleted on uninstall.
   Keystore keys never leave the device, so `thisDeviceOnly: false` throws
