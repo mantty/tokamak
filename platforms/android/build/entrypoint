@@ -32,11 +32,8 @@ fi
 user_manifest=
 if [[ -n "${TOKAMAK_ANDROID_MANIFEST:-}" ]]; then
   user_manifest=$TOKAMAK_ANDROID_MANIFEST
-  if [[ "$user_manifest" != /* ]]; then
-    user_manifest=$(cat "$metadata/project-dir")/$user_manifest
-  fi
   if [[ ! -f "$user_manifest" ]]; then
-    echo "android-manifest file is missing: $user_manifest" >&2
+    echo "Android manifest file is missing: $user_manifest" >&2
     exit 1
   fi
 fi

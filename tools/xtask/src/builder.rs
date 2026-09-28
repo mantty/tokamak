@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use tokamak_cli::{
-    Artifact, ESBUILD_DIRECTORY, PlatformPackManifest, RUNTIME_DIRECTORY, Target, write_manifest,
+    Artifact, ESBUILD_DIRECTORY, PackVariable, PlatformPackManifest, RUNTIME_DIRECTORY, Target,
+    write_manifest,
 };
 
 use crate::layout::WorkspaceLayout;
@@ -43,7 +45,9 @@ fn build_source_platform_pack_at(workspace: &WorkspaceLayout, target: Target) ->
             .iter()
             .map(|tool| (*tool).to_owned())
             .collect(),
+        variables: target_variables(&workspace.platform_variables(target), target)?,
     };
+    manifest.validate()?;
     let manifest_path = workspace.manifest(target);
     write_manifest(&manifest_path, &manifest)?;
     Ok(manifest_path)
@@ -109,6 +113,22 @@ fn deploy_runtime(workspace: &WorkspaceLayout, pack_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The variables a pack declares for `target`'s platform namespace.
+fn target_variables(path: &Path, target: Target) -> Result<BTreeMap<String, PackVariable>> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("read platform-pack variables {}", path.display()))?;
+    let mut namespaces: BTreeMap<String, BTreeMap<String, PackVariable>> =
+        serde_json::from_str(&content)
+            .with_context(|| format!("parse platform-pack variables {}", path.display()))?;
+    let namespace = target.platform().namespace();
+    namespaces.remove(namespace).with_context(|| {
+        format!(
+            "platform-pack variables {} do not declare the {namespace} namespace",
+            path.display()
+        )
+    })
+}
+
 fn validate_artifacts(root: &Path, artifacts: &[Artifact]) -> Result<()> {
     for artifact in artifacts {
         let path = root.join(&artifact.path);
@@ -138,10 +158,38 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    use super::{deploy_runtime, validate_artifacts};
-    use tokamak_cli::{Artifact, ArtifactKind, ESBUILD_EXECUTABLE};
+    use anyhow::Context;
+
+    use super::{deploy_runtime, target_variables, validate_artifacts};
+    use tokamak_cli::{Artifact, ArtifactKind, ESBUILD_EXECUTABLE, Target, VariableKind};
 
     use crate::layout::WorkspaceLayout;
+
+    #[test]
+    fn selects_the_variables_for_the_target_namespace() -> anyhow::Result<()> {
+        let workspace = WorkspaceLayout::from_source().context("source workspace")?;
+        let simulator = target_variables(
+            &workspace.platform_variables(Target::IosSimulatorArm64),
+            Target::IosSimulatorArm64,
+        )?;
+        let macos = target_variables(
+            &workspace.platform_variables(Target::MacosArm64),
+            Target::MacosArm64,
+        )?;
+        let windows = target_variables(
+            &workspace.platform_variables(Target::WindowsX64),
+            Target::WindowsX64,
+        )?;
+
+        assert_eq!(
+            simulator.get("plist").map(|variable| variable.kind),
+            Some(VariableKind::Path)
+        );
+        assert!(simulator.contains_key("provisioning-profile"));
+        assert!(!macos.contains_key("provisioning-profile"));
+        assert!(windows.is_empty());
+        Ok(())
+    }
 
     #[test]
     fn rejects_missing_pack_artifacts() -> anyhow::Result<()> {

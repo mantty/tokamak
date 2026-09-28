@@ -41,6 +41,14 @@ impl WorkspaceLayout {
             .join(platform.platform_pack_recipe_file_name())
     }
 
+    /// Variables the platform's packs accept, by platform namespace.
+    pub(crate) fn platform_variables(&self, target: Target) -> PathBuf {
+        self.root
+            .join("platforms")
+            .join(target.platform().repository_directory_name())
+            .join("build/variables.json")
+    }
+
     pub(crate) fn esbuild_host_package(&self, host: &str) -> PathBuf {
         self.root
             .join("tools/esbuild-hosts/node_modules/@esbuild")
@@ -85,6 +93,10 @@ mod tests {
         assert_eq!(
             layout.platform_recipe(Target::WindowsX64),
             Path::new("/workspace/tokamak/platforms/windows/build/platform-pack.ps1")
+        );
+        assert_eq!(
+            layout.platform_variables(Target::IosSimulatorArm64),
+            Path::new("/workspace/tokamak/platforms/apple/build/variables.json")
         );
         assert_eq!(
             layout.esbuild_host_package("win32-x64"),

@@ -29,6 +29,16 @@ fn cert_inventory_requires_a_macos_host() -> TestResult {
 }
 
 #[test]
+fn prints_its_version() -> TestResult {
+    Command::cargo_bin("tok")?
+        .arg("version")
+        .assert()
+        .success()
+        .stdout(format!("tok {}\n", env!("CARGO_PKG_VERSION")));
+    Ok(())
+}
+
+#[test]
 fn lists_supported_targets() -> TestResult {
     let mut cmd = Command::cargo_bin("tok")?;
 
@@ -51,7 +61,7 @@ fn accepts_platform_pack_variables_for_dev_and_build() -> TestResult {
     let missing_project = project.path().join("missing");
     for (command, target) in [("dev", "DEVICE"), ("build", "ios")] {
         let mut cmd = Command::cargo_bin("tok")?;
-        cmd.args([command, target, "--set", "ios-team-id=TEAM", "--project"])
+        cmd.args([command, target, "--ios-team-id", "TEAM", "--project"])
             .arg(&missing_project);
         if command == "dev" {
             cmd.args(["--", "pnpm", "dev"]);

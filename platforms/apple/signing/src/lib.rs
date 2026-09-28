@@ -858,8 +858,8 @@ fn automatic_signing_error(
 #[cfg(target_os = "macos")]
 fn team_command(device_id: Option<&str>) -> String {
     device_id.map_or_else(
-        || "tok build ios --set ios-team-id=TEAM_ID".to_owned(),
-        |device_id| format!("tok dev {device_id} --set ios-team-id=TEAM_ID -- <dev-command>"),
+        || "tok build ios --ios-team-id TEAM_ID".to_owned(),
+        |device_id| format!("tok dev {device_id} --ios-team-id TEAM_ID -- <dev-command>"),
     )
 }
 
@@ -867,12 +867,12 @@ fn team_command(device_id: Option<&str>) -> String {
 fn manual_command(device_id: Option<&str>) -> String {
     device_id.map_or_else(
         || {
-            "tok build ios --set ios-signing-identity=IDENTITY_SHA1 \\\n    --set ios-provisioning-profile=/path/to/profile.mobileprovision"
+            "tok build ios --ios-signing-identity IDENTITY_SHA1 \\\n    --ios-provisioning-profile /path/to/profile.mobileprovision"
                 .to_owned()
         },
         |device_id| {
             format!(
-                "tok dev {device_id} \\\n    --set ios-signing-identity=IDENTITY_SHA1 \\\n    --set ios-provisioning-profile=/path/to/profile.mobileprovision \\\n    -- <dev-command>"
+                "tok dev {device_id} \\\n    --ios-signing-identity IDENTITY_SHA1 \\\n    --ios-provisioning-profile /path/to/profile.mobileprovision \\\n    -- <dev-command>"
             )
         },
     )
@@ -888,9 +888,9 @@ fn explicit_selection(team_configured: bool, device_id: Option<&str>) -> Result<
                 bail!(
                     "automatic and manual iOS signing cannot be combined.\n\n\
                      Choose ONE signing mode:\n  \
-                     Automatic: set TOKAMAK_IOS_TEAM_ID or use --set ios-team-id=TEAM_ID\n  \
+                     Automatic: set TOKAMAK_IOS_TEAM_ID or use --ios-team-id TEAM_ID\n  \
                      Manual:    set BOTH TOKAMAK_IOS_SIGNING_IDENTITY and\n             \
-                     TOKAMAK_IOS_PROVISIONING_PROFILE, or use the matching --set options\n\n  \
+                     TOKAMAK_IOS_PROVISIONING_PROFILE, or use the matching options\n\n  \
                      Automatic and manual signing cannot be combined for one command.\n\n  \
                      Automatic example:\n    \
                      {}\n\n  \
@@ -1494,7 +1494,7 @@ mod tests {
                 "  Set it for this shell, then rerun your command:\n",
                 "    export TOKAMAK_IOS_TEAM_ID=TEAM_ID\n\n",
                 "  Or select it for a single command:\n",
-                "    tok dev DEVICE --set ios-team-id=TEAM_ID -- <dev-command>\n\n",
+                "    tok dev DEVICE --ios-team-id TEAM_ID -- <dev-command>\n\n",
                 "Tokamak will select the signing identity and provisioning profile automatically.\n\n",
                 "Alternatively, use manual signing:\n\n",
                 "  First, list installed identities and provisioning profiles:\n",
@@ -1504,7 +1504,7 @@ mod tests {
                 "    export TOKAMAK_IOS_SIGNING_IDENTITY=\"IDENTITY_SHA1\"\n",
                 "    export TOKAMAK_IOS_PROVISIONING_PROFILE=\"/path/to/profile.mobileprovision\"\n\n",
                 "  Or set them for a single command:\n",
-                "    tok dev DEVICE \\\n    --set ios-signing-identity=IDENTITY_SHA1 \\\n    --set ios-provisioning-profile=/path/to/profile.mobileprovision \\\n    -- <dev-command>"
+                "    tok dev DEVICE \\\n    --ios-signing-identity IDENTITY_SHA1 \\\n    --ios-provisioning-profile /path/to/profile.mobileprovision \\\n    -- <dev-command>"
             )
         );
         Ok(())
@@ -1579,7 +1579,7 @@ mod tests {
         for team in ["TEAMAAAAAA", "TEAMBBBBBB"] {
             assert!(error.contains(&format!("{team}  (team name unavailable; signing identity: Apple Development: Same Developer)")));
         }
-        assert!(error.contains("tok build ios --set ios-team-id=TEAM_ID"));
+        assert!(error.contains("tok build ios --ios-team-id TEAM_ID"));
         assert!(!error.contains("tok dev"));
         Ok(())
     }

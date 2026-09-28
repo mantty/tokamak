@@ -3,6 +3,7 @@
 
 //! Platform-pack metadata and validation for `tokamak` runtime artifacts.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Component, Path};
@@ -10,6 +11,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
+use tokamak::{SHARED_PLATFORM_KEYS, is_valid_key};
 
 /// Platform-pack manifest filename.
 pub const MANIFEST_FILE: &str = "platform-pack.json";
@@ -57,6 +59,18 @@ impl Platform {
             Self::Android => "android",
             Self::Ios => "ios",
             Self::IosSimulator => "ios-simulator",
+            Self::Macos => "macos",
+            Self::Windows => "windows",
+        }
+    }
+
+    /// Prefix of the platform's options, environment variables, and
+    /// configuration object; iOS devices and simulators share `ios`.
+    #[must_use]
+    pub const fn namespace(self) -> &'static str {
+        match self {
+            Self::Android => "android",
+            Self::Ios | Self::IosSimulator => "ios",
             Self::Macos => "macos",
             Self::Windows => "windows",
         }
@@ -392,6 +406,29 @@ pub struct PlatformPackManifest {
     pub artifacts: Vec<Artifact>,
     /// Host tools required to consume this pack locally.
     pub required_tools: Vec<String>,
+    /// Variables the pack accepts, by name.
+    pub variables: BTreeMap<String, PackVariable>,
+}
+
+/// A variable a platform pack accepts, set as `--<platform>-<name>`,
+/// `TOKAMAK_<PLATFORM>_<NAME>`, or `<platform>.<name>` in the Tokamak configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackVariable {
+    /// How the CLI passes the value.
+    pub kind: VariableKind,
+    /// One-line description shown by `--help`.
+    pub description: String,
+}
+
+/// How the CLI passes a variable's value to the platform pack.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VariableKind {
+    /// The value is passed unchanged.
+    String,
+    /// A relative path is made absolute against the directory it is relative to.
+    Path,
 }
 
 impl PlatformPackManifest {
@@ -412,6 +449,10 @@ impl PlatformPackManifest {
 
         for artifact in &self.artifacts {
             validate_relative_path(&artifact.path)?;
+        }
+
+        for (name, variable) in &self.variables {
+            validate_variable(name, variable)?;
         }
 
         Ok(())
@@ -497,12 +538,36 @@ pub enum PlatformPackError {
     /// Artifact path was absolute or escaped the pack root.
     #[error("artifact path must stay inside the platform pack: {0}")]
     UnsafeArtifactPath(String),
+    /// Variable name was not lowercase words joined by hyphens.
+    #[error("variable name must be lowercase words joined by hyphens: {0}")]
+    InvalidVariableName(String),
+    /// Variable name belongs to a key the CLI validates itself.
+    #[error("variable name is reserved for the CLI: {0}")]
+    ReservedVariableName(String),
+    /// Variable had no description.
+    #[error("variable must have a description: {0}")]
+    MissingVariableDescription(String),
     /// File IO failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
     /// JSON parsing or serialization failed.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+}
+
+fn validate_variable(name: &str, variable: &PackVariable) -> Result<(), PlatformPackError> {
+    if !is_valid_key(name) {
+        return Err(PlatformPackError::InvalidVariableName(name.to_owned()));
+    }
+    if SHARED_PLATFORM_KEYS.contains(&name) {
+        return Err(PlatformPackError::ReservedVariableName(name.to_owned()));
+    }
+    if variable.description.trim().is_empty() {
+        return Err(PlatformPackError::MissingVariableDescription(
+            name.to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_relative_path(path: &str) -> Result<(), PlatformPackError> {

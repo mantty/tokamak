@@ -9,7 +9,7 @@ use tokamak::{
 };
 use tokamak_cli::{MANIFEST_FILE, Platform, PlatformPackManifest, Target, load_manifest};
 
-use super::{cache, plugins, support, variables, worker};
+use super::{cache, plugins, settings, support, worker};
 
 pub(crate) struct BuildRequest {
     pub(crate) platforms: Vec<Platform>,
@@ -19,7 +19,8 @@ pub(crate) struct BuildRequest {
     pub(crate) tokamak_config_path: PathBuf,
     pub(crate) wrangler_config_path: Option<PathBuf>,
     pub(crate) wrangler_env: Option<String>,
-    pub(crate) set: Vec<variables::SetVariable>,
+    pub(crate) top: settings::TopOptions,
+    pub(crate) platform_options: settings::PlatformOptions,
     pub(crate) skip_project_build: bool,
 }
 
@@ -37,7 +38,8 @@ pub(crate) struct DevelopmentRequest {
     pub(crate) endpoint: String,
     pub(crate) session_token: String,
     pub(crate) device_id: Option<String>,
-    pub(crate) set: Vec<variables::SetVariable>,
+    pub(crate) top: settings::TopOptions,
+    pub(crate) platform_options: settings::PlatformOptions,
 }
 
 pub(crate) struct DevelopmentSummary {
@@ -50,10 +52,9 @@ pub(crate) struct DevelopmentSummary {
 struct BuildContext<'a> {
     build_dir: &'a Path,
     wrangler: &'a WranglerConfig,
-    tokamak: &'a TokamakConfig,
+    sources: &'a settings::Sources<'a>,
     plugins: &'a [plugins::Plugin],
     version: &'a str,
-    environment: &'a std::collections::BTreeMap<String, std::ffi::OsString>,
 }
 
 struct BuildMetadata<'a> {
@@ -71,11 +72,19 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     let build_dir = project.join(request.build_dir.as_deref().unwrap_or(Path::new("build")));
     fs::create_dir_all(&build_dir)?;
     let build_dir = fs::canonicalize(build_dir)?;
-    let environment = variables::environment(&request.set)?;
     let tokamak = load_project_config(&request.tokamak_config_path)?;
-    let version = required_version(&tokamak)?;
+    let current_dir = env::current_dir()?;
+    let sources = settings::Sources {
+        top: &request.top,
+        platform: &request.platform_options,
+        config: &tokamak,
+        environment: &environment_value,
+        current_dir: &current_dir,
+    };
+    let version = required_version(&sources)?;
     if !request.skip_project_build {
-        support::run_project_build(&project, tokamak.build.as_deref())?;
+        let command = settings::build_command(&sources)?;
+        support::run_project_build(&project, command.as_deref())?;
     }
     let wrangler = load_wrangler(
         &request.project_dir,
@@ -87,10 +96,9 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     let context = BuildContext {
         build_dir: &build_dir,
         wrangler: &wrangler,
-        tokamak: &tokamak,
+        sources: &sources,
         plugins: &plugins,
         version: &version,
-        environment: &environment,
     };
 
     request
@@ -121,17 +129,29 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
             request.project_dir.display()
         );
     }
-    let environment = variables::environment(&request.set)?;
     let tokamak = load_project_config(&request.tokamak_config_path)?;
+    let current_dir = env::current_dir()?;
+    let sources = settings::Sources {
+        top: &request.top,
+        platform: &request.platform_options,
+        config: &tokamak,
+        environment: &environment_value,
+        current_dir: &current_dir,
+    };
+    let (pack_root, manifest) =
+        load_platform_pack(request.platform, request.platform_pack_dir.as_deref())?;
+    let platform_settings = settings::resolve(&sources, request.platform, &manifest)?;
     let wrangler = load_wrangler(
         &request.project_dir,
         request.wrangler_config_path.as_deref(),
         None,
     )?;
     let plugins = plugins::discover(&request.project_dir)?;
-    let (app_name, app_slug) = resolve_app(&tokamak, &wrangler.name, request.platform);
-    let identifier = resolve_identifier(&tokamak, &app_slug, request.platform)?;
-    let version = resolve_version(&tokamak)?;
+    let (app_name, app_slug) = resolve_app(platform_settings.name.as_deref(), &wrangler.name);
+    let identifier = resolve_identifier(platform_settings.identifier, &app_slug, request.platform)?;
+    let version = settings::version(&sources)?
+        .map(|version| validate_version("version", version))
+        .transpose()?;
     let build_dir = fs::canonicalize(&request.project_dir)
         .with_context(|| {
             format!(
@@ -140,12 +160,12 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
             )
         })?
         .join("build");
-    let (input, pack_root, manifest, project) = prepare_platform_input(
+    let (input, project) = prepare_platform_input(
         &request.project_dir,
         &build_dir,
         request.platform,
-        request.platform_pack_dir.as_deref(),
-        &tokamak,
+        (&pack_root, &manifest),
+        platform_settings.icon.as_deref(),
     )?;
     plugins::stage(&plugins, request.platform, &input.join("plugins"))
         .context("stage native plugin inputs")?;
@@ -170,7 +190,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
         &input,
         &bundle_dir,
         manifest.target,
-        &environment,
+        &platform_settings.pack_environment,
     )
     .with_context(|| {
         format!(
@@ -207,12 +227,14 @@ fn build_platform(
     platform: Platform,
     context: &BuildContext<'_>,
 ) -> Result<BuildSummary> {
-    let (input, pack_root, manifest, project) = prepare_platform_input(
+    let (pack_root, manifest) = load_platform_pack(platform, request.platform_pack_dir.as_deref())?;
+    let platform_settings = settings::resolve(context.sources, platform, &manifest)?;
+    let (input, project) = prepare_platform_input(
         &request.project_dir,
         context.build_dir,
         platform,
-        request.platform_pack_dir.as_deref(),
-        context.tokamak,
+        (&pack_root, &manifest),
+        platform_settings.icon.as_deref(),
     )?;
 
     let worker_cache = context
@@ -230,8 +252,9 @@ fn build_platform(
     .context("prepare the tokamak application package")?;
     plugins::stage(context.plugins, platform, &input.join("plugins"))
         .context("stage native plugin inputs")?;
-    let (app_name, app_slug) = resolve_app(context.tokamak, &context.wrangler.name, platform);
-    let identifier = resolve_identifier(context.tokamak, &app_slug, platform)?;
+    let (app_name, app_slug) =
+        resolve_app(platform_settings.name.as_deref(), &context.wrangler.name);
+    let identifier = resolve_identifier(platform_settings.identifier, &app_slug, platform)?;
     write_build_metadata(
         &input,
         &project,
@@ -264,7 +287,7 @@ fn build_platform(
         &input,
         &output,
         manifest.target,
-        context.environment,
+        &platform_settings.pack_environment,
     )
     .with_context(|| {
         format!(
@@ -278,51 +301,30 @@ fn build_platform(
     })
 }
 
-pub(crate) fn resolve_app(
-    config: &TokamakConfig,
-    worker_name: &str,
-    platform: Platform,
-) -> (String, String) {
-    match config.name.for_platform(platform.directory_name()) {
-        Some(name) => (name.clone(), slug(name)),
+/// The display name and its slug, falling back to the Worker name.
+fn resolve_app(name: Option<&str>, worker_name: &str) -> (String, String) {
+    match name {
+        Some(name) => (name.to_owned(), slug(name)),
         None => (worker_name.to_owned(), worker_name.to_owned()),
     }
 }
 
-pub(crate) fn resolve_identifier(
-    config: &TokamakConfig,
+fn resolve_identifier(
+    identifier: Option<String>,
     app_slug: &str,
     platform: Platform,
 ) -> Result<String> {
-    let value = if let Some(value) = environment_value(platform_identifier_env(platform))? {
-        value
-    } else if let Some(value) = environment_value("TOKAMAK_IDENTIFIER")? {
-        value
-    } else if let Some(identifier) = config.identifier.for_platform(platform.directory_name()) {
-        identifier.clone()
-    } else {
-        default_identifier(app_slug, platform)
-    };
-    validate_platform_identifier(platform, value)
+    let identifier = identifier.unwrap_or_else(|| default_identifier(app_slug, platform));
+    validate_platform_identifier(platform, identifier)
 }
 
-pub(crate) fn resolve_version(config: &TokamakConfig) -> Result<Option<String>> {
-    if let Some(value) = environment_value("TOKAMAK_VERSION")? {
-        return Ok(Some(validate_version("TOKAMAK_VERSION", value)?));
-    }
-    config
-        .version
-        .as_ref()
-        .map(|value| validate_version("version", value.clone()))
-        .transpose()
-}
-
-fn required_version(config: &TokamakConfig) -> Result<String> {
-    resolve_version(config)?.ok_or_else(|| {
+fn required_version(sources: &settings::Sources<'_>) -> Result<String> {
+    let version = settings::version(sources)?.ok_or_else(|| {
         anyhow::anyhow!(
-            "tokamak version is required for `tok build`; set `version` in tokamak.jsonc or TOKAMAK_VERSION"
+            "tokamak version is required for `tok build`; set --version, TOKAMAK_VERSION, or `version` in tokamak.jsonc"
         )
-    })
+    })?;
+    validate_version("version", version)
 }
 
 fn environment_value(name: &str) -> Result<Option<String>> {
@@ -330,15 +332,6 @@ fn environment_value(name: &str) -> Result<Option<String>> {
         Ok(value) => Ok(Some(value)),
         Err(env::VarError::NotPresent) => Ok(None),
         Err(env::VarError::NotUnicode(_)) => bail!("{name} must contain valid UTF-8"),
-    }
-}
-
-fn platform_identifier_env(platform: Platform) -> &'static str {
-    match platform {
-        Platform::Android => "TOKAMAK_ANDROID_IDENTIFIER",
-        Platform::Ios | Platform::IosSimulator => "TOKAMAK_IOS_IDENTIFIER",
-        Platform::Macos => "TOKAMAK_MACOS_IDENTIFIER",
-        Platform::Windows => "TOKAMAK_WINDOWS_IDENTIFIER",
     }
 }
 
@@ -410,13 +403,11 @@ fn validate_version(field: &str, value: String) -> Result<String> {
     Ok(value)
 }
 
-fn prepare_platform_input(
-    project_dir: &Path,
-    build_dir: &Path,
+/// The root and manifest of the platform pack that builds `platform`.
+pub(crate) fn load_platform_pack(
     platform: Platform,
     platform_pack_dir: Option<&Path>,
-    tokamak: &TokamakConfig,
-) -> Result<(PathBuf, PathBuf, PlatformPackManifest, PathBuf)> {
+) -> Result<(PathBuf, PlatformPackManifest)> {
     let manifest_path = fs::canonicalize(resolve_manifest(platform, platform_pack_dir)?)?;
     let manifest = load_manifest(&manifest_path)
         .with_context(|| format!("invalid platform pack: {}", manifest_path.display()))?;
@@ -428,6 +419,16 @@ fn prepare_platform_input(
         .parent()
         .context("platform-pack manifest must have a parent directory")?
         .to_path_buf();
+    Ok((pack_root, manifest))
+}
+
+fn prepare_platform_input(
+    project_dir: &Path,
+    build_dir: &Path,
+    platform: Platform,
+    (pack_root, manifest): (&Path, &PlatformPackManifest),
+    icon: Option<&Path>,
+) -> Result<(PathBuf, PathBuf)> {
     let project = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project directory: {}", project_dir.display()))?;
     let staging = build_dir.join(".tokamak").join(platform.directory_name());
@@ -441,11 +442,11 @@ fn prepare_platform_input(
         )
     })?;
     fs::create_dir_all(input.join("app"))?;
-    support::stage_platform_artifacts(&input, &pack_root, &manifest)
+    support::stage_platform_artifacts(&input, pack_root, manifest)
         .context("stage platform-pack platform artifacts")?;
-    support::stage_platform_icons(&input, tokamak, platform)
+    support::stage_platform_icons(&input, icon, platform)
         .context("stage Tokamak application assets")?;
-    Ok((input, pack_root, manifest, project))
+    Ok((input, project))
 }
 
 pub(crate) fn load_project_config(config_path: &Path) -> Result<TokamakConfig> {
@@ -572,68 +573,40 @@ mod tests {
     use std::fs;
 
     use super::{resolve_app, resolve_identifier, resolve_manifest};
-    use tokamak::{PlatformValues, TokamakConfig};
     use tokamak_cli::{MANIFEST_FILE, Platform};
 
     #[test]
-    fn resolves_configured_platform_names_and_worker_fallback() {
-        let config = TokamakConfig {
-            name: PlatformValues {
-                default: Some("My App".to_owned()),
-                ios: Some("Myapp Pro".to_owned()),
-                ..PlatformValues::default()
-            },
-            ..TokamakConfig::default()
-        };
-
+    fn resolves_names_with_the_worker_name_as_fallback() {
         assert_eq!(
-            resolve_app(&config, "worker-name", Platform::Ios),
+            resolve_app(Some("Myapp Pro"), "worker-name"),
             ("Myapp Pro".to_owned(), "myapp-pro".to_owned())
         );
         assert_eq!(
-            resolve_app(&config, "worker-name", Platform::Macos),
-            ("My App".to_owned(), "my-app".to_owned())
-        );
-        assert_eq!(
-            resolve_app(&TokamakConfig::default(), "worker-name", Platform::Windows),
+            resolve_app(None, "worker-name"),
             ("worker-name".to_owned(), "worker-name".to_owned())
         );
     }
 
     #[test]
-    fn resolves_configured_identifiers_and_platform_defaults()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let config = TokamakConfig {
-            identifier: PlatformValues {
-                default: Some("com.example.app".to_owned()),
-                ios: Some("com.example.ios".to_owned()),
-                ..PlatformValues::default()
-            },
-            ..TokamakConfig::default()
-        };
-
+    fn resolves_identifiers_with_platform_defaults() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            resolve_identifier(&config, "demo-app", Platform::Ios)?,
+            resolve_identifier(
+                Some("com.example.ios".to_owned()),
+                "demo-app",
+                Platform::Ios
+            )?,
             "com.example.ios"
         );
         assert_eq!(
-            resolve_identifier(&config, "demo-app", Platform::Macos)?,
-            "com.example.app"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn preserves_platform_identifier_fallbacks() -> Result<(), Box<dyn std::error::Error>> {
-        let config = TokamakConfig::default();
-
-        assert_eq!(
-            resolve_identifier(&config, "demo-app", Platform::Android)?,
+            resolve_identifier(None, "demo-app", Platform::Android)?,
             "com.tokamak.demo_app"
         );
         assert_eq!(
-            resolve_identifier(&config, "demo-app", Platform::Ios)?,
+            resolve_identifier(None, "demo-app", Platform::Ios)?,
             "com.tokamak.demo-app"
+        );
+        assert!(
+            resolve_identifier(Some("com..app".to_owned()), "demo-app", Platform::Ios).is_err()
         );
         Ok(())
     }

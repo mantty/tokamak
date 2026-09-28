@@ -9,29 +9,65 @@ mod dev;
 mod devices;
 mod pipeline;
 mod plugins;
+mod settings;
 mod support;
-mod variables;
 mod worker;
 
+use std::env;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use settings::{PlatformOptions, TopOptions};
 use tokamak_cli::{Platform, Target};
-use variables::SetVariable;
+
+const BUILD_PLATFORM_HELP: &str = "Platform options: run `tok build <platforms> --help` to list the options each platform accepts.";
+const DEV_PLATFORM_HELP: &str =
+    "Platform options: run `tok dev <platform> --help` to list the options the platform accepts.";
 
 #[derive(Debug, Parser)]
-#[command(name = "tok", version, about = "tokamak native app tooling")]
+#[command(name = "tok", about = "tokamak native app tooling")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
 }
 
+/// Top-level application settings. Each can also be set with an environment
+/// variable or in the Tokamak configuration.
+#[derive(Debug, Args)]
+struct AppOptions {
+    /// Display name for every platform [`TOKAMAK_NAME`, `name`].
+    #[arg(long)]
+    name: Option<String>,
+    /// Application identifier for every platform [`TOKAMAK_IDENTIFIER`, `identifier`].
+    #[arg(long)]
+    identifier: Option<String>,
+    /// Icon for every platform [`TOKAMAK_ICON`, `icon`].
+    #[arg(long, value_name = "PATH")]
+    icon: Option<String>,
+    /// App version [`TOKAMAK_VERSION`, `version`].
+    #[arg(long)]
+    version: Option<String>,
+}
+
+impl AppOptions {
+    fn into_top_options(self, build: Option<String>) -> TopOptions {
+        TopOptions {
+            name: self.name,
+            identifier: self.identifier,
+            icon: self.icon,
+            version: self.version,
+            build,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Build native app bundles for one or more platforms.
+    #[command(after_help = BUILD_PLATFORM_HELP)]
     Build {
         /// Comma-separated platform families to build.
         platforms: String,
@@ -53,14 +89,17 @@ enum Command {
         /// Named Wrangler environment. Defaults to top-level values.
         #[arg(short = 'e', long = "env")]
         env: Option<String>,
-        /// Set a platform-pack variable as a TOKAMAK_<PLATFORM>_<NAME> environment variable.
-        #[arg(long = "set", value_name = "NAME=VALUE")]
-        set: Vec<SetVariable>,
+        #[command(flatten)]
+        app: AppOptions,
+        /// Command that builds the project [`TOKAMAK_BUILD`, `build`].
+        #[arg(long = "build", value_name = "COMMAND")]
+        build_command: Option<String>,
         /// Use existing project build output instead of running the project's build command.
         #[arg(long)]
         skip_project_build: bool,
     },
     /// Run a development server against one target.
+    #[command(after_help = DEV_PLATFORM_HELP)]
     Dev {
         /// Device selector (for example, macos, ios, android, or a native ID).
         #[arg(value_name = "DEVICE_ID")]
@@ -77,9 +116,8 @@ enum Command {
         /// Path to the Wrangler configuration file.
         #[arg(short = 'w', long = "wrangler")]
         wrangler: Option<PathBuf>,
-        /// Set a platform-pack variable as a TOKAMAK_<PLATFORM>_<NAME> environment variable.
-        #[arg(long = "set", value_name = "NAME=VALUE")]
-        set: Vec<SetVariable>,
+        #[command(flatten)]
+        app: AppOptions,
         /// HTTP endpoint served by the framework's development command.
         #[arg(long, value_name = "URL", default_value = "http://localhost:5173")]
         server: String,
@@ -96,6 +134,8 @@ enum Command {
     Certs,
     /// List runtime targets supported by this CLI.
     Targets,
+    /// Print the version of this CLI.
+    Version,
 }
 
 fn main() -> ExitCode {
@@ -109,7 +149,9 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let (arguments, platform_options) = split_arguments(env::args_os().collect())?;
+    let matches = command(&arguments).get_matches_from(arguments);
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
 
     match cli.command {
         Command::Build {
@@ -120,7 +162,8 @@ fn run() -> Result<()> {
             config,
             wrangler,
             env,
-            set,
+            app,
+            build_command,
             skip_project_build,
         } => {
             let platforms = parse_platforms(&platforms)?;
@@ -132,7 +175,8 @@ fn run() -> Result<()> {
                 tokamak_config_path: config,
                 wrangler_config_path: wrangler,
                 wrangler_env: env,
-                set,
+                top: app.into_top_options(build_command),
+                platform_options,
                 skip_project_build,
             })?;
             for summary in summaries {
@@ -150,7 +194,7 @@ fn run() -> Result<()> {
             platform_pack,
             config,
             wrangler,
-            set,
+            app,
             server,
             host_address,
             command,
@@ -161,7 +205,8 @@ fn run() -> Result<()> {
                 platform_pack_dir: platform_pack,
                 tokamak_config_path: config,
                 wrangler_config_path: wrangler,
-                set,
+                top: app.into_top_options(None),
+                platform_options,
                 server,
                 host_address,
                 command,
@@ -177,7 +222,78 @@ fn run() -> Result<()> {
             list_targets();
             Ok(())
         }
+        Command::Version => {
+            println!("tok {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
     }
+}
+
+/// Split platform options from the arguments of the commands that take them.
+fn split_arguments(arguments: Vec<OsString>) -> Result<(Vec<OsString>, PlatformOptions)> {
+    let takes_platform_options = arguments
+        .get(1)
+        .is_some_and(|command| command == "build" || command == "dev");
+    if takes_platform_options {
+        settings::split_platform_options(arguments)
+    } else {
+        Ok((arguments, PlatformOptions::default()))
+    }
+}
+
+/// The argument parser; `--help` for named platforms lists their options.
+fn command(arguments: &[OsString]) -> clap::Command {
+    let command = Cli::command();
+    let is_help = |argument: &&OsString| *argument == "--help" || *argument == "-h";
+    if !arguments
+        .iter()
+        .take_while(|argument| *argument != "--")
+        .any(|argument| is_help(&argument))
+    {
+        return command;
+    }
+    let without_help = arguments.iter().filter(|argument| !is_help(argument));
+    let Ok(cli) = Cli::try_parse_from(without_help) else {
+        return command;
+    };
+    match cli.command {
+        Command::Build {
+            platforms,
+            platform_pack,
+            ..
+        } => match parse_platforms(&platforms) {
+            Ok(platforms) => command.mut_subcommand("build", |build| {
+                build.after_help(platforms_help(&platforms, platform_pack.as_deref()))
+            }),
+            Err(_) => command,
+        },
+        Command::Dev {
+            device_id,
+            platform_pack,
+            ..
+        } => match device_id.parse::<Platform>() {
+            Ok(platform) => command.mut_subcommand("dev", |dev| {
+                dev.after_help(platforms_help(&[platform], platform_pack.as_deref()))
+            }),
+            Err(_) => command,
+        },
+        _ => command,
+    }
+}
+
+fn platforms_help(platforms: &[Platform], platform_pack: Option<&Path>) -> String {
+    platforms
+        .iter()
+        .map(|platform| {
+            let pack = pipeline::load_platform_pack(*platform, platform_pack);
+            let manifest = pack
+                .as_ref()
+                .map(|(_, manifest)| manifest)
+                .map_err(|error| format!("{error:#}"));
+            settings::platform_help(*platform, manifest)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn parse_platforms(value: &str) -> Result<Vec<Platform>> {
@@ -200,7 +316,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Cli, Command, Platform, parse_platforms};
+    use super::{Cli, Command, Platform, parse_platforms, split_arguments};
 
     #[test]
     fn parses_comma_separated_platforms() {
@@ -257,21 +373,55 @@ mod tests {
     }
 
     #[test]
-    fn accepts_repeatable_platform_pack_variables() {
+    fn accepts_top_level_application_options() {
         assert!(matches!(
             Cli::try_parse_from([
                 "tok",
                 "build",
                 "ios",
-                "--set",
-                "ios-team-id=TEAM",
-                "--set",
-                "ios-signing-identity=IDENTITY"
+                "--identifier",
+                "com.example.app",
+                "--version",
+                "1.2.0",
+                "--build",
+                "pnpm build"
             ]),
             Ok(Cli {
-                command: Command::Build { set, .. }
-            }) if set.len() == 2
+                command: Command::Build { app, build_command, .. }
+            }) if app.identifier.as_deref() == Some("com.example.app")
+                && app.version.as_deref() == Some("1.2.0")
+                && build_command.as_deref() == Some("pnpm build")
         ));
+    }
+
+    #[test]
+    fn splits_platform_options_only_for_build_and_dev() -> anyhow::Result<()> {
+        let arguments = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
+        let (remaining, _) = split_arguments(arguments(&[
+            "tok",
+            "build",
+            "ios",
+            "--ios-plist",
+            "Info.plist",
+        ]))?;
+        assert_eq!(remaining, arguments(&["tok", "build", "ios"]));
+        let (remaining, _) = split_arguments(arguments(&["tok", "targets", "--ios-plist", "x"]))?;
+        assert_eq!(
+            remaining,
+            arguments(&["tok", "targets", "--ios-plist", "x"])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prints_the_version_with_a_subcommand() {
+        assert!(matches!(
+            Cli::try_parse_from(["tok", "version"]),
+            Ok(Cli {
+                command: Command::Version
+            })
+        ));
+        assert!(Cli::try_parse_from(["tok", "--version"]).is_err());
     }
 
     #[test]

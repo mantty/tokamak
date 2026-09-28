@@ -1,0 +1,8 @@
+{
+  "android": {
+    "manifest": {
+      "kind": "path",
+      "description": "Partial AndroidManifest.xml merged over the generated manifest"
+    }
+  }
+}

@@ -109,9 +109,6 @@ if [[ -f "$metadata/input-key" ]]; then
     ios|ios-simulator) plist_path=${TOKAMAK_IOS_PLIST:-} ;;
     macos) plist_path=${TOKAMAK_MACOS_PLIST:-} ;;
   esac
-  if [[ -n "$plist_path" && "$plist_path" != /* ]]; then
-    plist_path=$project_dir/$plist_path
-  fi
   bundle_key=$(
     {
       cat "$metadata/input-key"

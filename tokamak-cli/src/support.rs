@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use tokamak::{TokamakConfig, WranglerConfig};
+use tokamak::WranglerConfig;
 use tokamak_cli::{ArtifactKind, Platform, PlatformPackManifest, Target};
 use walkdir::WalkDir;
 
@@ -159,10 +159,10 @@ pub(crate) fn stage_platform_artifacts(
 
 pub(crate) fn stage_platform_icons(
     input: &Path,
-    config: &TokamakConfig,
+    source: Option<&Path>,
     platform: Platform,
 ) -> Result<()> {
-    let Some(source) = config.icon.for_platform(platform.directory_name()) else {
+    let Some(source) = source else {
         return Ok(());
     };
 
@@ -319,7 +319,6 @@ pub(crate) fn copy_dir_contents(from: &Path, to: &Path) -> Result<()> {
 mod tests {
     use std::fs;
 
-    use tokamak::{PlatformValues, TokamakConfig};
     use tokamak_cli::Platform;
 
     use super::{package_manager, stage_platform_icons};
@@ -340,24 +339,16 @@ mod tests {
         fs::write(android.join("mipmap-mdpi/ic_launcher.png"), "png")?;
         let windows = temporary.path().join("icon.ico");
         fs::write(&windows, "ico")?;
-        let config = TokamakConfig {
-            icon: PlatformValues {
-                android: Some(android),
-                windows: Some(windows),
-                ..PlatformValues::default()
-            },
-            ..TokamakConfig::default()
-        };
 
         let android_input = temporary.path().join("android-input");
-        stage_platform_icons(&android_input, &config, Platform::Android)?;
+        stage_platform_icons(&android_input, Some(&android), Platform::Android)?;
         assert_eq!(
             fs::read_to_string(android_input.join("icons/android/mipmap-mdpi/ic_launcher.png"))?,
             "png"
         );
 
         let windows_input = temporary.path().join("windows-input");
-        stage_platform_icons(&windows_input, &config, Platform::Windows)?;
+        stage_platform_icons(&windows_input, Some(&windows), Platform::Windows)?;
         assert_eq!(
             fs::read_to_string(windows_input.join("icons/windows/AppIcon.ico"))?,
             "ico"
@@ -370,11 +361,7 @@ mod tests {
     {
         let temporary = tempfile::tempdir()?;
 
-        stage_platform_icons(
-            &temporary.path().join("input"),
-            &TokamakConfig::default(),
-            Platform::Macos,
-        )?;
+        stage_platform_icons(&temporary.path().join("input"), None, Platform::Macos)?;
 
         assert!(!temporary.path().join("input").exists());
         Ok(())
@@ -386,18 +373,10 @@ mod tests {
         let source = temporary.path().join("Brand.icon");
         fs::create_dir(&source)?;
         fs::write(source.join("icon.json"), "icon")?;
-        let config = TokamakConfig {
-            icon: PlatformValues {
-                ios: Some(source.clone()),
-                macos: Some(source),
-                ..PlatformValues::default()
-            },
-            ..TokamakConfig::default()
-        };
 
         for platform in [Platform::Ios, Platform::Macos] {
             let input = temporary.path().join(platform.directory_name());
-            stage_platform_icons(&input, &config, platform)?;
+            stage_platform_icons(&input, Some(&source), platform)?;
             assert_eq!(
                 fs::read_to_string(input.join(format!(
                     "icons/{}/AppIcon.icon/icon.json",
@@ -414,17 +393,12 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         let source = temporary.path().join("AppIcon.invalid");
         fs::create_dir(&source)?;
-        let config = TokamakConfig {
-            icon: PlatformValues {
-                macos: Some(source),
-                ..PlatformValues::default()
-            },
-            ..TokamakConfig::default()
-        };
 
-        let Err(error) =
-            stage_platform_icons(&temporary.path().join("input"), &config, Platform::Macos)
-        else {
+        let Err(error) = stage_platform_icons(
+            &temporary.path().join("input"),
+            Some(&source),
+            Platform::Macos,
+        ) else {
             return Err(std::io::Error::other("non-.icon package was accepted").into());
         };
         assert!(error.to_string().contains("must use the .icon format"));
