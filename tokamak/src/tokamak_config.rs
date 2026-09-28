@@ -1,5 +1,6 @@
 //! Tokamak application configuration loading.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,6 +11,9 @@ use thiserror::Error;
 
 const CONFIG_FILE_NAMES: [&str; 2] = ["tokamak.jsonc", "tokamak.json"];
 const PLATFORMS: [&str; 4] = ["android", "ios", "macos", "windows"];
+
+/// Keys a platform object shares with the top level; tokamak validates them.
+pub const SHARED_PLATFORM_KEYS: [&str; 3] = ["name", "identifier", "icon"];
 
 /// Failures loading or validating a Tokamak configuration.
 #[derive(Debug, Error)]
@@ -54,6 +58,33 @@ pub struct TokamakConfig {
     pub version: Option<String>,
     /// Shell command that builds the project, when configured.
     pub build: Option<String>,
+    /// Values for each platform's pack, by platform then key.
+    pub pack_values: BTreeMap<String, BTreeMap<String, PackValue>>,
+}
+
+/// A value a platform object passes to its platform pack.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackValue {
+    /// The value; numbers and booleans are written as strings.
+    pub value: String,
+    /// Directory of the file that set the value, for resolving a relative path.
+    pub directory: PathBuf,
+}
+
+/// Values taken from one file's platform objects; `None` records a `null`.
+type TakenPackValues = BTreeMap<String, BTreeMap<String, Option<PackValue>>>;
+
+/// Whether `key` is lowercase ASCII words joined by single hyphens, the form of
+/// every configuration key, command-line option, and platform-pack variable.
+#[must_use]
+pub fn is_valid_key(key: &str) -> bool {
+    key.starts_with(|character: char| character.is_ascii_lowercase())
+        && key.split('-').all(|word| {
+            !word.is_empty()
+                && word
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+        })
 }
 
 /// A configuration value with an optional default and per-platform overrides.
@@ -171,7 +202,8 @@ pub fn resolve_config_path(
 /// valid while comments and trailing commas are available in `.jsonc` files.
 /// Top-level values are defaults; a platform object overrides them for that
 /// platform. Relative icon paths are resolved against the directory of the
-/// file that names them.
+/// file that names them. Other platform-object keys are values for that
+/// platform's pack, each recorded with the directory of the file that set it.
 ///
 /// A file may `include` one other configuration file, absolute or relative to
 /// the including file. The including file is deep-merged onto the included
@@ -187,20 +219,100 @@ pub fn load_config(config_path: &Path) -> Result<LoadedConfig> {
     let config_path = absolute_path(config_path)?;
     validate_config_extension(&config_path)?;
     let mut object = parse_object(&config_path)?;
+    let top_pack_values = take_pack_values(&config_path, &mut object)?;
+    let mut pack_values = BTreeMap::new();
     let mut warnings = Vec::new();
     if let Some(include) = object.remove("include").filter(|value| !value.is_null()) {
-        let mut merged = load_include(&config_path, include, &mut warnings)?;
+        let (mut merged, included_pack_values) =
+            load_include(&config_path, include, &mut warnings)?;
         overlay(&mut merged, object);
         object = merged;
+        overlay_pack_values(&mut pack_values, included_pack_values);
     }
+    overlay_pack_values(&mut pack_values, top_pack_values);
     let config = resolve_values(&config_path, deserialize(&config_path, object)?)?;
     Ok(LoadedConfig {
         config: TokamakConfig {
             path: Some(config_path),
+            pack_values,
             ..config
         },
         warnings,
     })
+}
+
+/// Merge `top` onto `base`: a value replaces, and `None` removes.
+fn overlay_pack_values(
+    base: &mut BTreeMap<String, BTreeMap<String, PackValue>>,
+    top: TakenPackValues,
+) {
+    for (platform, values) in top {
+        let platform_values = base.entry(platform).or_default();
+        for (key, value) in values {
+            match value {
+                Some(value) => platform_values.insert(key, value),
+                None => platform_values.remove(&key),
+            };
+        }
+    }
+    base.retain(|_, values| !values.is_empty());
+}
+
+/// Remove the platform-pack values from each platform object in `object`.
+fn take_pack_values(
+    config_path: &Path,
+    object: &mut Map<String, Value>,
+) -> Result<TakenPackValues> {
+    let mut taken = BTreeMap::new();
+    for platform in PLATFORMS {
+        if let Some(Value::Object(platform_object)) = object.get_mut(platform) {
+            let values = take_platform_pack_values(config_path, platform, platform_object)?;
+            taken.insert(platform.to_owned(), values);
+        }
+    }
+    Ok(taken)
+}
+
+fn take_platform_pack_values(
+    config_path: &Path,
+    platform: &str,
+    platform_object: &mut Map<String, Value>,
+) -> Result<BTreeMap<String, Option<PackValue>>> {
+    let mut values = BTreeMap::new();
+    for (key, value) in std::mem::take(platform_object) {
+        if SHARED_PLATFORM_KEYS.contains(&key.as_str()) {
+            platform_object.insert(key, value);
+            continue;
+        }
+        let field = format!("{platform}.{key}");
+        if !is_valid_key(&key) {
+            return Err(invalid(
+                config_path,
+                format!("{field} must be lowercase words joined by hyphens"),
+            ));
+        }
+        values.insert(key, pack_value(config_path, &field, value)?);
+    }
+    Ok(values)
+}
+
+fn pack_value(config_path: &Path, field: &str, value: Value) -> Result<Option<PackValue>> {
+    let value = match value {
+        Value::Null => return Ok(None),
+        Value::String(value) => value,
+        Value::Number(number) => number.to_string(),
+        Value::Bool(flag) => flag.to_string(),
+        Value::Array(_) | Value::Object(_) => {
+            return Err(invalid(
+                config_path,
+                format!("{field} must be a string, number, or boolean"),
+            ));
+        }
+    };
+    Ok(Some(PackValue {
+        value: validate_value(config_path, field, value)?,
+        directory: config_dir(config_path).to_path_buf(),
+    }))
 }
 
 /// Merge `top` onto `base`: objects merge key by key, any other value replaces.
@@ -218,12 +330,12 @@ fn overlay(base: &mut Map<String, Value>, top: Map<String, Value>) {
 }
 
 /// The included file's object, validated, with its icon paths made absolute and
-/// its own `include` dropped.
+/// its own `include` dropped, and its platform-pack values.
 fn load_include(
     config_path: &Path,
     include: Value,
     warnings: &mut Vec<String>,
-) -> Result<Map<String, Value>> {
+) -> Result<(Map<String, Value>, TakenPackValues)> {
     let Value::String(include) = include else {
         return Err(invalid(config_path, "include must be a path string"));
     };
@@ -252,10 +364,11 @@ fn load_include(
             include_path.display()
         ));
     }
+    let pack_values = take_pack_values(&include_path, &mut object)?;
     let raw = deserialize(&include_path, object.clone())?;
     resolve_values(&include_path, raw)?;
     resolve_icon_paths(&mut object, config_dir(&include_path));
-    Ok(object)
+    Ok((object, pack_values))
 }
 
 /// Make the icon paths in a validated configuration object absolute against `config_dir`.
@@ -363,6 +476,7 @@ fn resolve_values(config_path: &Path, raw: RawTokamakConfig) -> Result<TokamakCo
         build: build
             .map(|build| validate_value(config_path, "build", build))
             .transpose()?,
+        pack_values: BTreeMap::new(),
     })
 }
 
@@ -370,22 +484,25 @@ fn config_dir(config_path: &Path) -> &Path {
     config_path.parent().unwrap_or(Path::new("."))
 }
 
+/// Why `name` cannot be an app display name, when it cannot.
+#[must_use]
+pub fn app_name_problem(name: &str) -> Option<&'static str> {
+    let slug = slug(name);
+    if slug.is_empty() {
+        Some("must contain an ASCII letter or digit")
+    } else if slug.len() > 63 {
+        Some("slug must be at most 63 characters")
+    } else {
+        None
+    }
+}
+
 fn validate_name(config_path: &Path, field: &str, value: String) -> Result<String> {
     let value = validate_value(config_path, field, value)?;
-    let slug = slug(&value);
-    if slug.is_empty() {
-        return Err(invalid(
-            config_path,
-            format!("{field} must contain an ASCII letter or digit"),
-        ));
+    match app_name_problem(&value) {
+        Some(problem) => Err(invalid(config_path, format!("{field} {problem}"))),
+        None => Ok(value),
     }
-    if slug.len() > 63 {
-        return Err(invalid(
-            config_path,
-            format!("{field} slug must be at most 63 characters"),
-        ));
-    }
-    Ok(value)
 }
 
 fn validate_value(config_path: &Path, field: &str, value: String) -> Result<String> {
@@ -445,11 +562,13 @@ fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::Path;
 
     use super::{
-        Error, LoadedConfig, PlatformValues, TokamakConfig, load_config, resolve_config_path, slug,
+        Error, LoadedConfig, PackValue, PlatformValues, TokamakConfig, is_valid_key, load_config,
+        resolve_config_path, slug,
     };
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -516,6 +635,7 @@ mod tests {
                 },
                 version: Some("1.0.0".to_owned()),
                 build: Some("pnpm run build:native".to_owned()),
+                pack_values: BTreeMap::new(),
             }
         );
         assert_eq!(
@@ -581,15 +701,119 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_fields_at_both_levels() -> TestResult {
+    fn rejects_unknown_top_level_fields() -> TestResult {
         let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("tokamak.json");
+        let path = temporary.path().join("tokamak.jsonc");
         assert!(invalid_message(&path, r#"{ "icons": {} }"#)?.contains("unknown field"));
-        assert!(
-            invalid_message(&path, r#"{ "ios": { "version": "1" } }"#)?.contains("unknown field")
-        );
-        assert!(invalid_message(&path, r#"{ "ios": "x" }"#)?.contains("expected struct"));
         Ok(())
+    }
+
+    fn pack_value(value: &str, directory: &Path) -> PackValue {
+        PackValue {
+            value: value.to_owned(),
+            directory: directory.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn passes_other_platform_keys_to_the_pack() -> TestResult {
+        let temporary = tempfile::tempdir()?;
+        let config = load(
+            &temporary.path().join("tokamak.jsonc"),
+            r#"{
+              "ios": { "name": "iOS App", "plist": "native/Info.plist", "build-number": 5 },
+              "macos": { "hardened-runtime": true },
+            }"#,
+        )?
+        .config;
+
+        assert_eq!(config.name.ios.as_deref(), Some("iOS App"));
+        assert_eq!(
+            config.pack_values,
+            BTreeMap::from([
+                (
+                    "ios".to_owned(),
+                    BTreeMap::from([
+                        ("build-number".to_owned(), pack_value("5", temporary.path())),
+                        (
+                            "plist".to_owned(),
+                            pack_value("native/Info.plist", temporary.path())
+                        ),
+                    ])
+                ),
+                (
+                    "macos".to_owned(),
+                    BTreeMap::from([(
+                        "hardened-runtime".to_owned(),
+                        pack_value("true", temporary.path())
+                    )])
+                ),
+            ])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn included_pack_values_keep_their_directory_and_can_be_removed() -> TestResult {
+        let temporary = tempfile::tempdir()?;
+        let shared_dir = temporary.path().join("shared");
+        fs::create_dir_all(&shared_dir)?;
+        fs::write(
+            shared_dir.join("tokamak.jsonc"),
+            r#"{
+              "ios": { "plist": "Info.plist", "team-id": "SHARED" },
+              "android": { "manifest": "AndroidManifest.xml" },
+            }"#,
+        )?;
+        let config = load(
+            &temporary.path().join("tokamak.jsonc"),
+            r#"{
+              "include": "shared/tokamak.jsonc",
+              "ios": { "team-id": "APP" },
+              "android": { "manifest": null },
+            }"#,
+        )?
+        .config;
+
+        assert_eq!(
+            config.pack_values,
+            BTreeMap::from([(
+                "ios".to_owned(),
+                BTreeMap::from([
+                    ("plist".to_owned(), pack_value("Info.plist", &shared_dir)),
+                    ("team-id".to_owned(), pack_value("APP", temporary.path())),
+                ])
+            )])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_pack_keys_and_values() -> TestResult {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("tokamak.jsonc");
+        assert_eq!(
+            invalid_message(&path, r#"{ "ios": { "Plist": "Info.plist" } }"#)?,
+            "ios.Plist must be lowercase words joined by hyphens"
+        );
+        assert_eq!(
+            invalid_message(&path, r#"{ "ios": { "plist": ["Info.plist"] } }"#)?,
+            "ios.plist must be a string, number, or boolean"
+        );
+        assert!(invalid_message(&path, r#"{ "ios": { "plist": " " } }"#)?.starts_with("ios.plist"));
+        Ok(())
+    }
+
+    #[test]
+    fn keys_are_lowercase_words_joined_by_hyphens() {
+        for key in ["plist", "team-id", "build-number", "a1-b2"] {
+            assert!(is_valid_key(key), "rejected {key}");
+        }
+        for key in [
+            "", "Plist", "team_id", "-plist", "plist-", "team--id", "1plist",
+        ] {
+            assert!(!is_valid_key(key), "accepted {key}");
+        }
     }
 
     #[test]
@@ -669,6 +893,7 @@ mod tests {
                 },
                 version: Some("1.0.0".to_owned()),
                 build: None,
+                pack_values: BTreeMap::new(),
             }
         );
         Ok(())
