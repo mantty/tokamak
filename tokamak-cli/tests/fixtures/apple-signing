@@ -64,14 +64,11 @@ case "${1-}" in
       printf '  <key>CFBundleVersion</key><string>%s</string>\n' "$build_number"
       printf '  <key>CFBundleShortVersionString</key><string>%s</string>\n' "$version"
       printf '  <key>TokamakHost</key><string>%s</string>\n' "$host"
-      for plugin in "$input/plugins"/*; do
-        [ -d "$plugin" ] || continue
-        for entry in "$plugin/plist"/*; do
-          [ -d "$entry" ] || continue
-          key=$(cat "$entry/key")
-          value=$(cat "$entry/value")
-          printf '  <key>%s</key><string>%s</string>\n' "$key" "$value"
-        done
+      for plugin_plist in "$input/plugins"/*/Info.plist; do
+        [ -f "$plugin_plist" ] || continue
+        plutil -convert xml1 -o - "$plugin_plist" |
+          sed -e '1,/^<dict>$/d' -e '/^<\/dict>$/,$d' | tr -d '\n\t'
+        printf '\n'
       done
       if [ "$platform" = macos ]; then
         printf '%s\n' '  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>'

@@ -208,7 +208,7 @@ fn build_info_plist(
     if let Some(path) = icon_info_plist {
         overlay_dictionary(&mut result, read_dictionary(path)?);
     }
-    add_plugin_plist(&mut result, input, metadata, user.as_ref())?;
+    add_plugin_plists(&mut result, input, metadata, user.as_ref())?;
     if let Some(user) = user {
         overlay_dictionary(&mut result, user);
     }
@@ -302,55 +302,105 @@ fn add_generated_plist(
     Ok(())
 }
 
-/// Plugins that set a key to the same value share it. Different values need
-/// the app's plist to choose one.
-fn add_plugin_plist(
+/// Merge each plugin's Info.plist, in plugin ID order, onto the generated
+/// values. Dictionaries merge by key and arrays merge as an ordered union. A
+/// different value at a key path fails the build unless the app's plist sets
+/// that key path.
+fn add_plugin_plists(
     plist: &mut Dictionary,
     input: &Path,
     metadata: &Metadata,
     user: Option<&Dictionary>,
 ) -> Result<()> {
-    let values = plugin_plist_values(input)?;
-    let mut first_values = BTreeMap::new();
-    for value in &values {
-        let first: &PluginPlistValue = first_values.entry(&value.key).or_insert(value);
-        if first.value != value.value && !user.is_some_and(|user| user.contains_key(&value.key)) {
-            bail!(
-                "plugins '{}' and '{}' set different values for Info.plist key '{}'; set it in the plist named by {}",
-                first.plugin,
-                value.plugin,
-                value.key,
-                user_plist_variable(&metadata.platform)?
-            );
+    let mut merge = PluginMerge {
+        origins: BTreeMap::new(),
+        user,
+        user_setting: user_plist_setting(&metadata.platform)?,
+    };
+    for plugin in sorted_directories(&input.join("plugins"))? {
+        let path = plugin.join("Info.plist");
+        if !path.is_file() {
+            continue;
         }
-        insert_string(plist, &first.key, &first.value);
+        let id = plugin
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("staged plugin directory name must be UTF-8")?;
+        let values = read_dictionary(&path).with_context(|| format!("plugin '{id}' Info.plist"))?;
+        merge.dictionary(plist, values, &mut Vec::new(), id)?;
     }
     Ok(())
 }
 
-struct PluginPlistValue {
-    plugin: String,
-    key: String,
-    value: String,
+struct PluginMerge<'a> {
+    /// The plugin that set each key path; unlisted values are tokamak's.
+    origins: BTreeMap<Vec<String>, String>,
+    user: Option<&'a Dictionary>,
+    user_setting: &'static str,
 }
 
-fn plugin_plist_values(input: &Path) -> Result<Vec<PluginPlistValue>> {
-    let mut values = Vec::new();
-    for plugin in sorted_directories(&input.join("plugins"))? {
-        let id = plugin
-            .file_name()
-            .and_then(|name| name.to_str())
-            .context("staged plugin directory name must be UTF-8")?
-            .to_owned();
-        for entry in sorted_directories(&plugin.join("plist"))? {
-            values.push(PluginPlistValue {
-                plugin: id.clone(),
-                key: read_required(&entry.join("key"))?,
-                value: read_required(&entry.join("value"))?,
-            });
+impl PluginMerge<'_> {
+    fn dictionary(
+        &mut self,
+        destination: &mut Dictionary,
+        source: Dictionary,
+        path: &mut Vec<String>,
+        plugin: &str,
+    ) -> Result<()> {
+        for (key, value) in source {
+            path.push(key.clone());
+            match (destination.get_mut(&key), value) {
+                (None, value) => {
+                    self.origins.insert(path.clone(), plugin.to_owned());
+                    destination.insert(key, value);
+                }
+                (Some(Value::Dictionary(existing)), Value::Dictionary(values)) => {
+                    self.dictionary(existing, values, path, plugin)?;
+                }
+                (Some(Value::Array(existing)), Value::Array(values)) => {
+                    for value in values {
+                        if !existing.contains(&value) {
+                            existing.push(value);
+                        }
+                    }
+                }
+                (Some(existing), value) if *existing == value || self.user_sets(path) => {}
+                (Some(_), _) => bail!(
+                    "{} and plugin '{plugin}' set different values for Info.plist key '{}'; set it in the app's {} file",
+                    self.origin(path),
+                    path.join(":"),
+                    self.user_setting
+                ),
+            }
+            path.pop();
         }
+        Ok(())
     }
-    Ok(values)
+
+    fn origin(&self, path: &[String]) -> String {
+        (1..=path.len())
+            .rev()
+            .find_map(|length| self.origins.get(&path[..length]))
+            .map_or_else(
+                || "tokamak".to_owned(),
+                |plugin| format!("plugin '{plugin}'"),
+            )
+    }
+
+    /// Whether the app's plist sets `path`, or replaces a value above it.
+    fn user_sets(&self, path: &[String]) -> bool {
+        let Some(mut dictionary) = self.user else {
+            return false;
+        };
+        for key in path {
+            match dictionary.get(key) {
+                None => return false,
+                Some(Value::Dictionary(child)) => dictionary = child,
+                Some(_) => return true,
+            }
+        }
+        true
+    }
 }
 
 fn sorted_directories(path: &Path) -> Result<Vec<PathBuf>> {
@@ -378,6 +428,14 @@ fn user_plist_variable(platform: &str) -> Result<&'static str> {
     match platform {
         "ios" | "ios-simulator" => Ok(IOS_PLIST_ENV),
         "macos" => Ok(MACOS_PLIST_ENV),
+        platform => bail!("unsupported Apple platform: {platform}"),
+    }
+}
+
+fn user_plist_setting(platform: &str) -> Result<&'static str> {
+    match platform {
+        "ios" | "ios-simulator" => Ok("ios.plist"),
+        "macos" => Ok("macos.plist"),
         platform => bail!("unsupported Apple platform: {platform}"),
     }
 }
@@ -481,6 +539,7 @@ fn validate_build_number(value: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::time::{Duration, SystemTime};
 
     use super::{
@@ -598,30 +657,64 @@ mod tests {
         Ok(())
     }
 
+    fn plugin_plist(
+        input: &std::path::Path,
+        plugin: &str,
+        values: &[(&str, Value)],
+    ) -> anyhow::Result<()> {
+        let directory = input.join("plugins").join(plugin);
+        std::fs::create_dir_all(&directory)?;
+        let dictionary: Dictionary = values
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), value.clone()))
+            .collect();
+        Value::Dictionary(dictionary).to_file_xml(directory.join("Info.plist"))?;
+        Ok(())
+    }
+
+    fn user_plist(root: &std::path::Path, values: &[(&str, Value)]) -> anyhow::Result<PathBuf> {
+        let path = root.join("User.plist");
+        let dictionary: Dictionary = values
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), value.clone()))
+            .collect();
+        Value::Dictionary(dictionary).to_file_xml(&path)?;
+        Ok(path)
+    }
+
+    fn string(value: &str) -> Value {
+        Value::String(value.into())
+    }
+
+    fn array(values: &[&str]) -> Value {
+        Value::Array(values.iter().copied().map(string).collect())
+    }
+
+    fn build(
+        input: &std::path::Path,
+        platform: &'static str,
+        user: Option<&std::path::Path>,
+    ) -> anyhow::Result<Dictionary> {
+        let metadata = Metadata::read(input)?;
+        build_info_plist(input, &metadata, &toolchain(platform), user, None)
+    }
+
     #[test]
     fn user_plist_takes_precedence_over_plugin_values() -> anyhow::Result<()> {
         let temporary = tempfile::tempdir()?;
         let input = input(temporary.path(), "ios")?;
-        for (directory, key) in [("override", "PluginValue"), ("only", "PluginOnlyValue")] {
-            let entry = input.join("plugins/example/plist").join(directory);
-            std::fs::create_dir_all(&entry)?;
-            std::fs::write(entry.join("key"), key)?;
-            std::fs::write(entry.join("value"), "Plugin")?;
-        }
-
-        let user_path = temporary.path().join("User.plist");
-        let mut user = Dictionary::new();
-        user.insert("PluginValue".into(), Value::String("User".into()));
-        Value::Dictionary(user).to_file_xml(&user_path)?;
-
-        let metadata = Metadata::read(&input)?;
-        let result = build_info_plist(
+        plugin_plist(
             &input,
-            &metadata,
-            &toolchain("iphoneos"),
-            Some(&user_path),
-            None,
+            "example",
+            &[
+                ("PluginValue", string("Plugin")),
+                ("PluginOnlyValue", string("Plugin")),
+            ],
         )?;
+        let user = user_plist(temporary.path(), &[("PluginValue", string("User"))])?;
+
+        let result = build(&input, "iphoneos", Some(&user))?;
+
         assert_eq!(
             result.get("PluginValue").and_then(Value::as_string),
             Some("User")
@@ -633,38 +726,20 @@ mod tests {
         Ok(())
     }
 
-    fn plugin_value(
-        input: &std::path::Path,
-        plugin: &str,
-        key: &str,
-        value: &str,
-    ) -> anyhow::Result<()> {
-        let entry = input.join("plugins").join(plugin).join("plist/0");
-        std::fs::create_dir_all(&entry)?;
-        std::fs::write(entry.join("key"), key)?;
-        std::fs::write(entry.join("value"), value)?;
-        Ok(())
-    }
-
     #[test]
     fn plugins_share_an_identical_value() -> anyhow::Result<()> {
         let temporary = tempfile::tempdir()?;
         let input = input(temporary.path(), "ios")?;
-        plugin_value(
-            &input,
-            "local-authentication",
-            "NSFaceIDUsageDescription",
-            "Face ID",
-        )?;
-        plugin_value(
-            &input,
-            "secure-storage",
-            "NSFaceIDUsageDescription",
-            "Face ID",
-        )?;
+        for plugin in ["local-authentication", "secure-storage"] {
+            plugin_plist(
+                &input,
+                plugin,
+                &[("NSFaceIDUsageDescription", string("Face ID"))],
+            )?;
+        }
 
-        let metadata = Metadata::read(&input)?;
-        let result = build_info_plist(&input, &metadata, &toolchain("iphoneos"), None, None)?;
+        let result = build(&input, "iphoneos", None)?;
+
         assert_eq!(
             result
                 .get("NSFaceIDUsageDescription")
@@ -675,27 +750,120 @@ mod tests {
     }
 
     #[test]
+    fn plugins_merge_arrays_as_an_ordered_union_and_dictionaries_by_key() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let input = input(temporary.path(), "ios")?;
+        let mut first_transport = Dictionary::new();
+        first_transport.insert(
+            "NSAllowsArbitraryLoadsInWebContent".into(),
+            Value::Boolean(true),
+        );
+        plugin_plist(
+            &input,
+            "audio",
+            &[
+                (
+                    "UIBackgroundModes",
+                    array(&["audio", "remote-notification"]),
+                ),
+                ("NSAppTransportSecurity", Value::Dictionary(first_transport)),
+            ],
+        )?;
+        plugin_plist(
+            &input,
+            "notifications",
+            &[(
+                "UIBackgroundModes",
+                array(&["remote-notification", "fetch"]),
+            )],
+        )?;
+
+        let result = build(&input, "iphoneos", None)?;
+
+        assert_eq!(
+            result.get("UIBackgroundModes"),
+            Some(&array(&["audio", "remote-notification", "fetch"]))
+        );
+        let transport = result
+            .get("NSAppTransportSecurity")
+            .and_then(Value::as_dictionary)
+            .context("transport dictionary")?;
+        assert_eq!(
+            transport.get("NSAllowsLocalNetworking"),
+            Some(&Value::Boolean(true))
+        );
+        assert_eq!(
+            transport.get("NSAllowsArbitraryLoadsInWebContent"),
+            Some(&Value::Boolean(true))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_app_plist_replaces_a_merged_array() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let input = input(temporary.path(), "ios")?;
+        plugin_plist(
+            &input,
+            "notifications",
+            &[("UIBackgroundModes", array(&["remote-notification"]))],
+        )?;
+        let user = user_plist(
+            temporary.path(),
+            &[("UIBackgroundModes", array(&["audio"]))],
+        )?;
+
+        let result = build(&input, "iphoneos", Some(&user))?;
+
+        assert_eq!(result.get("UIBackgroundModes"), Some(&array(&["audio"])));
+        Ok(())
+    }
+
+    #[test]
     fn rejects_different_plugin_values_the_app_does_not_set() -> anyhow::Result<()> {
         let temporary = tempfile::tempdir()?;
         let input = input(temporary.path(), "ios")?;
-        plugin_value(
+        plugin_plist(
             &input,
             "local-authentication",
-            "NSFaceIDUsageDescription",
-            "One",
+            &[("NSFaceIDUsageDescription", string("One"))],
         )?;
-        plugin_value(&input, "secure-storage", "NSFaceIDUsageDescription", "Two")?;
+        plugin_plist(
+            &input,
+            "secure-storage",
+            &[("NSFaceIDUsageDescription", string("Two"))],
+        )?;
 
-        let metadata = Metadata::read(&input)?;
-        let Err(error) = build_info_plist(&input, &metadata, &toolchain("iphoneos"), None, None)
-        else {
+        let Err(error) = build(&input, "iphoneos", None) else {
             anyhow::bail!("different plugin values were accepted");
         };
         assert_eq!(
             error.to_string(),
-            "plugins 'local-authentication' and 'secure-storage' set different values for \
-             Info.plist key 'NSFaceIDUsageDescription'; set it in the plist named by \
-             TOKAMAK_IOS_PLIST"
+            "plugin 'local-authentication' and plugin 'secure-storage' set different values \
+             for Info.plist key 'NSFaceIDUsageDescription'; set it in the app's ios.plist file"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_plugin_value_that_differs_from_a_generated_value() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let input = input(temporary.path(), "macos")?;
+        let mut transport = Dictionary::new();
+        transport.insert("NSAllowsLocalNetworking".into(), Value::Boolean(false));
+        plugin_plist(
+            &input,
+            "network",
+            &[("NSAppTransportSecurity", Value::Dictionary(transport))],
+        )?;
+
+        let Err(error) = build(&input, "macosx", None) else {
+            anyhow::bail!("a plugin replaced a generated value");
+        };
+        assert_eq!(
+            error.to_string(),
+            "tokamak and plugin 'network' set different values for Info.plist key \
+             'NSAppTransportSecurity:NSAllowsLocalNetworking'; set it in the app's macos.plist file"
         );
         Ok(())
     }
@@ -704,29 +872,19 @@ mod tests {
     fn an_app_plist_without_the_key_does_not_resolve_a_conflict() -> anyhow::Result<()> {
         let temporary = tempfile::tempdir()?;
         let input = input(temporary.path(), "ios")?;
-        plugin_value(
+        plugin_plist(
             &input,
             "local-authentication",
-            "NSFaceIDUsageDescription",
-            "One",
+            &[("NSFaceIDUsageDescription", string("One"))],
         )?;
-        plugin_value(&input, "secure-storage", "NSFaceIDUsageDescription", "Two")?;
-        let user_path = temporary.path().join("User.plist");
-        let mut user = Dictionary::new();
-        user.insert("OtherKey".into(), Value::String("App".into()));
-        Value::Dictionary(user).to_file_xml(&user_path)?;
+        plugin_plist(
+            &input,
+            "secure-storage",
+            &[("NSFaceIDUsageDescription", string("Two"))],
+        )?;
+        let user = user_plist(temporary.path(), &[("OtherKey", string("App"))])?;
 
-        let metadata = Metadata::read(&input)?;
-        assert!(
-            build_info_plist(
-                &input,
-                &metadata,
-                &toolchain("iphoneos"),
-                Some(&user_path),
-                None
-            )
-            .is_err()
-        );
+        assert!(build(&input, "iphoneos", Some(&user)).is_err());
         Ok(())
     }
 
@@ -734,35 +892,44 @@ mod tests {
     fn the_app_plist_chooses_between_different_plugin_values() -> anyhow::Result<()> {
         let temporary = tempfile::tempdir()?;
         let input = input(temporary.path(), "macos")?;
-        plugin_value(
+        plugin_plist(
             &input,
             "local-authentication",
-            "NSFaceIDUsageDescription",
-            "One",
+            &[("NSFaceIDUsageDescription", string("One"))],
         )?;
-        plugin_value(&input, "secure-storage", "NSFaceIDUsageDescription", "Two")?;
-        let user_path = temporary.path().join("User.plist");
-        let mut user = Dictionary::new();
-        user.insert(
-            "NSFaceIDUsageDescription".into(),
-            Value::String("App".into()),
-        );
-        Value::Dictionary(user).to_file_xml(&user_path)?;
-
-        let metadata = Metadata::read(&input)?;
-        let result = build_info_plist(
+        plugin_plist(
             &input,
-            &metadata,
-            &toolchain("macosx"),
-            Some(&user_path),
-            None,
+            "secure-storage",
+            &[("NSFaceIDUsageDescription", string("Two"))],
         )?;
+        let user = user_plist(
+            temporary.path(),
+            &[("NSFaceIDUsageDescription", string("App"))],
+        )?;
+
+        let result = build(&input, "macosx", Some(&user))?;
+
         assert_eq!(
             result
                 .get("NSFaceIDUsageDescription")
                 .and_then(Value::as_string),
             Some("App")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_plugin_plist_without_a_dictionary_root() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let input = input(temporary.path(), "ios")?;
+        let directory = input.join("plugins/broken");
+        std::fs::create_dir_all(&directory)?;
+        Value::Array(Vec::new()).to_file_xml(directory.join("Info.plist"))?;
+
+        let Err(error) = build(&input, "iphoneos", None) else {
+            anyhow::bail!("a plugin plist without a dictionary root was accepted");
+        };
+        assert!(format!("{error:#}").starts_with("plugin 'broken' Info.plist: "));
         Ok(())
     }
 

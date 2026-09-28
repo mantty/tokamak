@@ -47,30 +47,41 @@ fn install_location_plugin(root: &Path) -> TestResult {
         plugin.join("apple/LocationPlugin.swift"),
         include_str!("../../plugins/location/apple/LocationPlugin.swift"),
     )?;
+    for (name, key) in [
+        ("macos", "NSLocationUsageDescription"),
+        ("ios", "NSLocationWhenInUseUsageDescription"),
+    ] {
+        fs::write(
+            plugin.join(format!("apple/{name}.plist")),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>{key}</key><string>Location test</string></dict></plist>"#
+            ),
+        )?;
+    }
     fs::write(
         plugin.join("tokamak-plugin.json"),
         r#"{
   "schemaVersion": 1,
   "id": "location",
-  "kind": "frontend",
   "platforms": {
     "macos": {
       "class": "TokamakLocationPlugin",
       "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
-      "plist": {"NSLocationUsageDescription": "Location test"}
+      "plist": "apple/macos.plist"
     },
     "ios": {
       "class": "TokamakLocationPlugin",
       "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
-      "plist": {"NSLocationWhenInUseUsageDescription": "Location test"}
+      "plist": "apple/ios.plist"
     },
     "ios-simulator": {
       "class": "TokamakLocationPlugin",
       "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
-      "plist": {"NSLocationWhenInUseUsageDescription": "Location test"}
+      "plist": "apple/ios.plist"
     }
   }
 }"#,
@@ -83,12 +94,13 @@ fn install_key_flow_plugins(root: &Path) -> TestResult {
         root.join("package.json"),
         r#"{"name":"demo-app","scripts":{"build":"echo already-built"},"dependencies":{"@tokamakdev/plugin-secure-storage":"1.0.0","@tokamakdev/plugin-local-authentication":"1.0.0"}}"#,
     )?;
-    for (package, manifest, source_name, source) in [
+    for (package, manifest, source_name, source, plist) in [
         (
             "plugin-secure-storage",
             include_str!("../../plugins/secure-storage/tokamak-plugin.json"),
             "SecureStoragePlugin.swift",
             include_str!("../../plugins/secure-storage/apple/SecureStoragePlugin.swift"),
+            include_str!("../../plugins/secure-storage/apple/Info.plist"),
         ),
         (
             "plugin-local-authentication",
@@ -97,12 +109,14 @@ fn install_key_flow_plugins(root: &Path) -> TestResult {
             include_str!(
                 "../../plugins/local-authentication/apple/LocalAuthenticationPlugin.swift"
             ),
+            include_str!("../../plugins/local-authentication/apple/Info.plist"),
         ),
     ] {
         let plugin = root.join("node_modules/@tokamakdev").join(package);
         fs::create_dir_all(plugin.join("apple"))?;
         fs::write(plugin.join("tokamak-plugin.json"), manifest)?;
         fs::write(plugin.join("apple").join(source_name), source)?;
+        fs::write(plugin.join("apple/Info.plist"), plist)?;
     }
     Ok(())
 }
@@ -239,7 +253,6 @@ fn install_android_plugins(root: &Path, plugins: &[(&str, &[&str])]) -> TestResu
         let manifest = serde_json::json!({
             "schemaVersion": 1,
             "id": id,
-            "kind": "frontend",
             "platforms": {
                 "android": {
                     "class": format!("test.{}.Plugin", id.replace('-', "")),

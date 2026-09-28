@@ -1,31 +1,24 @@
 {
   "schemaVersion": 1,
   "id": "location",
-  "kind": "frontend",
   "platforms": {
     "macos": {
       "class": "TokamakLocationPlugin",
       "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
-      "plist": {
-        "NSLocationUsageDescription": "This app uses your location when you request location features."
-      }
+      "plist": "apple/macos/Info.plist"
     },
     "ios": {
       "class": "TokamakLocationPlugin",
       "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
-      "plist": {
-        "NSLocationWhenInUseUsageDescription": "This app uses your location when you request location features."
-      }
+      "plist": "apple/ios/Info.plist"
     },
     "ios-simulator": {
       "class": "TokamakLocationPlugin",
       "sources": ["apple/LocationPlugin.swift"],
       "frameworks": ["CoreLocation"],
-      "plist": {
-        "NSLocationWhenInUseUsageDescription": "This app uses your location when you request location features."
-      }
+      "plist": "apple/ios/Info.plist"
     },
     "android": {
       "class": "com.tokamak.plugins.location.TokamakLocationPlugin",
