@@ -124,9 +124,9 @@ case "${1-}" in
       echo 'automatic and manual iOS signing cannot be combined.' >&2
       echo >&2
       echo 'Choose ONE signing mode:' >&2
-      echo '  Automatic: set TOKAMAK_IOS_TEAM_ID or use --set ios-team-id=TEAM_ID' >&2
+      echo '  Automatic: set TOKAMAK_IOS_TEAM_ID or use --ios-team-id TEAM_ID' >&2
       echo '  Manual:    set BOTH TOKAMAK_IOS_SIGNING_IDENTITY and' >&2
-      echo '             TOKAMAK_IOS_PROVISIONING_PROFILE, or use the matching --set options' >&2
+      echo '             TOKAMAK_IOS_PROVISIONING_PROFILE, or use the matching options' >&2
       exit 1
     fi
 

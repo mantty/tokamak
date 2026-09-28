@@ -6,7 +6,7 @@
 mod platform_pack;
 
 pub use platform_pack::{
-    Artifact, ArtifactKind, ESBUILD_DIRECTORY, ESBUILD_EXECUTABLE, MANIFEST_FILE, Platform,
-    PlatformPackError, PlatformPackManifest, RUNTIME_DIRECTORY, Target, load_manifest,
-    write_manifest,
+    Artifact, ArtifactKind, ESBUILD_DIRECTORY, ESBUILD_EXECUTABLE, MANIFEST_FILE, PackVariable,
+    Platform, PlatformPackError, PlatformPackManifest, RUNTIME_DIRECTORY, Target, VariableKind,
+    load_manifest, write_manifest,
 };

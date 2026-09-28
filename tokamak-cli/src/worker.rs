@@ -478,6 +478,7 @@ mod tests {
                 path: ESBUILD_EXECUTABLE.to_owned(),
             }],
             required_tools: vec![],
+            variables: std::collections::BTreeMap::new(),
         })
     }
 }

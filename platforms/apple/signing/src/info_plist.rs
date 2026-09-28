@@ -42,7 +42,6 @@ struct Metadata {
     identifier: String,
     host: String,
     platform: String,
-    project_dir: PathBuf,
     version: String,
     build_number: String,
     dev_endpoint: Option<String>,
@@ -75,7 +74,6 @@ impl Metadata {
             identifier: read_required(&metadata.join("identifier"))?,
             host: read_required(&metadata.join("host"))?,
             platform,
-            project_dir: PathBuf::from(read_required(&metadata.join("project-dir"))?),
             version,
             build_number,
             dev_endpoint,
@@ -373,7 +371,7 @@ fn sorted_directories(path: &Path) -> Result<Vec<PathBuf>> {
 
 fn configured_user_plist(metadata: &Metadata) -> Result<Option<PathBuf>> {
     let variable = user_plist_variable(&metadata.platform)?;
-    resolve_user_plist(&metadata.project_dir, variable, env::var_os(variable))
+    user_plist_path(variable, env::var_os(variable))
 }
 
 fn user_plist_variable(platform: &str) -> Result<&'static str> {
@@ -384,11 +382,7 @@ fn user_plist_variable(platform: &str) -> Result<&'static str> {
     }
 }
 
-fn resolve_user_plist(
-    project_dir: &Path,
-    variable: &str,
-    value: Option<OsString>,
-) -> Result<Option<PathBuf>> {
+fn user_plist_path(variable: &str, value: Option<OsString>) -> Result<Option<PathBuf>> {
     let Some(value) = value else {
         return Ok(None);
     };
@@ -396,11 +390,6 @@ fn resolve_user_plist(
     if path.as_os_str().is_empty() {
         bail!("{variable} must not be empty");
     }
-    let path = if path.is_absolute() {
-        path
-    } else {
-        project_dir.join(path)
-    };
     if !path.is_file() {
         bail!("{variable} does not point to a file: {}", path.display());
     }
@@ -495,7 +484,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::{
-        Metadata, ToolchainMetadata, build_info_plist, parse_xcode_version, resolve_user_plist,
+        Metadata, ToolchainMetadata, build_info_plist, parse_xcode_version, user_plist_path,
         validate_build_number,
     };
     use anyhow::Context;
@@ -512,10 +501,6 @@ mod tests {
             ("identifier", "com.example.demo"),
             ("host", "demo-app.tokamak.local"),
             ("platform", platform),
-            (
-                "project-dir",
-                root.to_str().context("temporary path is UTF-8")?,
-            ),
             ("version", "1.2.3"),
         ] {
             std::fs::write(metadata.join(name), value)?;
@@ -866,18 +851,15 @@ mod tests {
     }
 
     #[test]
-    fn user_plist_path_is_relative_to_the_project() -> anyhow::Result<()> {
+    fn resolves_a_user_plist_file() -> anyhow::Result<()> {
         let temporary = tempfile::tempdir()?;
         let plist = temporary.path().join("Info.plist");
         std::fs::write(&plist, b"plist")?;
         assert_eq!(
-            resolve_user_plist(
-                temporary.path(),
-                "TOKAMAK_IOS_PLIST",
-                Some("Info.plist".into()),
-            )?,
+            user_plist_path("TOKAMAK_IOS_PLIST", Some(plist.clone().into()))?,
             Some(plist)
         );
+        assert!(user_plist_path("TOKAMAK_IOS_PLIST", Some(temporary.path().into())).is_err());
         Ok(())
     }
 

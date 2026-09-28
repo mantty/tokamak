@@ -61,67 +61,62 @@ tok targets
 - Require a build command and a Wrangler configuration with at least `name` and `main` for a packaged build.
 - Without `build`, tokamak runs the `package.json` build script with pnpm, Yarn, or npm, chosen from the project's lockfile. Set `build` to a shell command when the project needs a different one, such as a monorepo task runner that also builds shared workspace packages.
 
-### Configuration and platform-pack variables
+### Configuration and settings
 
 - Look for `tokamak.jsonc` in the current directory, then `tokamak.json`; the file is optional. Use `-c` or `--config` to select another file or directory.
 - JSONC permits comments and trailing commas; plain JSON is also supported.
-- The supported configuration values are `name`, `identifier`, `icon`, `version`, and `build`.
-- Top-level values are defaults; platform objects (`android`, `ios`, `macos`, `windows`) override `name`, `identifier`, or `icon` per platform, for example `{ "name": "My App", "ios": { "name": "My App Pro" } }`. `ios` also applies to `ios-simulator`. `version` and `build` are top-level only, and unknown keys are rejected.
+- Top-level keys are `name`, `identifier`, `icon`, `version`, and `build`; other top-level keys are rejected. They are defaults for every platform.
+- Platform objects (`android`, `ios`, `macos`, `windows`) override `name`, `identifier`, or `icon` per platform, for example `{ "name": "My App", "ios": { "name": "My App Pro" } }`. Their other keys are settings for that platform's pack. `ios` also applies to `ios-simulator`. `version` and `build` are top-level only.
 - A file may `include` one other configuration file (absolute, or relative to the including file); the including file is deep-merged onto the included file (keys overwrite, platform objects merge key by key, `null` removes a value). Only the loaded file may include: a nested `include` is ignored with a warning.
 - Display names preserve their spelling and capitalization. Tokamak derives a lower-case slug for filenames, application IDs, and local hosts. If `name` is absent, the Wrangler Worker name is used.
-- `identifier` values are used as the Apple bundle identifier and Android application ID. `TOKAMAK_IDENTIFIER` and platform-specific `TOKAMAK_ANDROID_IDENTIFIER`, `TOKAMAK_IOS_IDENTIFIER`, `TOKAMAK_MACOS_IDENTIFIER`, or `TOKAMAK_WINDOWS_IDENTIFIER` override configured identifiers; the iOS value also applies to simulators.
-- `version` is optional in configuration but required by `tok build`. `TOKAMAK_VERSION` overrides the configured value. Do not use `TOKAMAK_APP_VERSION`.
-- `icon` accepts user-created platform assets: Android `res` directories, Apple `.icon` packages for `ios`/`macos`, and Windows `.ico` files. Missing icons preserve the existing behavior. Icon paths are relative to the file that names them.
-- Use repeatable `--set NAME=VALUE` options for platform-pack variables. `tokamak` maps `ios-team-id=TEAM` to `TOKAMAK_IOS_TEAM_ID`, for example, and passes platform-pack variables through without interpreting platform-specific names.
+- `identifier` values are used as the Apple bundle identifier and Android application ID.
+- `version` is required by `tok build`. Do not use `TOKAMAK_APP_VERSION`.
+- `icon` accepts user-created platform assets: Android `res` directories, Apple `.icon` packages for `ios`/`macos`, and Windows `.ico` files. Missing icons preserve the existing behavior.
+- Every setting is a command-line option, an environment variable, or a configuration key, with the same name in each: `--version`/`TOKAMAK_VERSION`/`version`, and `--ios-plist`/`TOKAMAK_IOS_PLIST`/`ios.plist`. Options beat environment variables, which beat the configuration; within a source, a platform's own value beats a top-level one.
+- tokamak validates `name`, `identifier`, `icon`, `version`, and `build`. Every other platform setting belongs to the platform pack, which declares it; `tok build <platform> --help` lists a platform's settings. An undeclared setting for the platform being built is an error; settings for other platforms are ignored. Do not invent platform settings.
+- Relative paths in options and environment variables are relative to the current directory; relative paths in a configuration file are relative to that file.
+- `tok version` prints the CLI version; `--version` sets the app version.
 
 Examples:
 
 ```sh
-tok build ios --config ./tokamak.jsonc --set ios-build-number=5
-tok build ios --set ios-plist=native/Info.plist
+tok build ios --config ./tokamak.jsonc --ios-build-number 5
+tok build ios --ios-plist native/Info.plist
 TOKAMAK_MACOS_PLIST=native/Info.plist tok build macos
 ```
 
-Apple platform packs accept optional user-provided XML or binary application
-plists through `ios-plist`/`TOKAMAK_IOS_PLIST` and
-`macos-plist`/`TOKAMAK_MACOS_PLIST`. Relative paths are resolved from the
-project directory. The plist must have a dictionary root. Tokamak layers its
-generated values first, then icon values, plugin values, and the user plist
-last; user-defined values therefore take precedence over all other values.
-Values not supplied by the user are retained. Apple platform packs add SDK,
-platform, and Xcode provenance keys from the active toolchain before the user
-overlay. When plugins set different values for the same key, the build fails
-unless the user plist sets that key.
+Apple platform packs accept optional XML or binary application plists through
+`ios.plist` and `macos.plist`. The plist must have a dictionary root. Tokamak
+layers its generated values first, then icon values, plugin values, and the
+application plist last; its values therefore take precedence over all other
+values. Values it does not supply are retained. Apple platform packs add SDK,
+platform, and Xcode provenance keys from the active toolchain before the
+application plist overlay. When plugins set different values for the same key,
+the build fails unless the application plist sets that key.
 
-The Android platform pack accepts an optional user-provided partial
-`AndroidManifest.xml` through `android-manifest`/`TOKAMAK_ANDROID_MANIFEST`,
-for example to declare `android.permission.CAMERA` for `getUserMedia`.
-Relative paths are resolved from the project directory. The Android Gradle
-Plugin's manifest merger combines it with the generated manifest, and the user
-file has the higher priority: elements merge by key, a conflicting attribute
-fails the build unless the user file marks it with
-`tools:replace="android:<attribute>"`, and `tools:node="remove"` removes an
-element, including a plugin's permission.
+The Android platform pack accepts an optional partial `AndroidManifest.xml`
+through `android.manifest`, for example to declare `android.permission.CAMERA`
+for `getUserMedia`. The Android Gradle Plugin's manifest merger combines it with
+the generated manifest, and the application manifest has the higher priority:
+elements merge by key, a conflicting attribute fails the build unless the
+application manifest marks it with `tools:replace="android:<attribute>"`, and
+`tools:node="remove"` removes an element, including a plugin's permission.
 
-Apple build numbers are platform-pack variables rather than Tokamak config:
-`ios-build-number` maps to `TOKAMAK_IOS_BUILD_NUMBER` and
-`macos-build-number` maps to `TOKAMAK_MACOS_BUILD_NUMBER`. They are optional
-and use the app version by default.
+Apple build numbers are the `ios.build-number` and `macos.build-number`
+settings. They are optional and use the app version by default.
 
-For physical iOS signing, use either `ios-team-id`/`TOKAMAK_IOS_TEAM_ID` for
-automatic selection or both `ios-signing-identity`/`TOKAMAK_IOS_SIGNING_IDENTITY`
-and `ios-provisioning-profile`/`TOKAMAK_IOS_PROVISIONING_PROFILE` for manual
-signing. Do not provide both modes. Use `tok certs` to inspect installed
-identities and profiles. `tok build ios` does not need a device ID; simulator
-builds do not require provisioning.
+For physical iOS signing, use either `ios.team-id` for automatic selection or
+both `ios.signing-identity` and `ios.provisioning-profile` for manual signing.
+Do not provide both modes. Use `tok certs` to inspect installed identities and
+profiles. `tok build ios` does not need a device ID; simulator builds do not
+require provisioning.
 
-macOS builds are ad-hoc signed unless `macos-team-id`/`TOKAMAK_MACOS_TEAM_ID`
-is set. With a team, Tokamak signs with a macOS development profile for that
-team that includes this Mac, provisioning through Xcode when needed. Team
-signing enables the data protection keychain, which the secure storage plugin
-requires on macOS; such builds run only on Macs registered to the team.
-Distribution signing (Developer ID, hardened runtime, notarisation) is not
-covered.
+macOS builds are ad-hoc signed unless `macos.team-id` is set. With a team,
+Tokamak signs with a macOS development profile for that team that includes
+this Mac, provisioning through Xcode when needed. Team signing enables the data
+protection keychain, which the secure storage plugin requires on macOS; such
+builds run only on Macs registered to the team. Distribution signing (Developer
+ID, hardened runtime, notarisation) is not covered.
 
 ## Respect the packaged Worker contract
 
@@ -178,7 +173,7 @@ covered.
 - Handle permission denial, unavailable hardware, cancellation, navigation, and page lifecycle as normal outcomes of a native capability request.
 - Inspect the installed plugin package before inventing a method, event, permission, or platform fallback.
 - First-party plugins are `@tokamakdev/plugin-location`, `@tokamakdev/plugin-secure-storage` (device-only secrets, optionally bound to Face ID, fingerprint or passcode) and `@tokamakdev/plugin-local-authentication` (device owner checks the app performs when it chooses).
-- Camera and microphone use the standard `getUserMedia` API, not a plugin. Declare them per platform: `NSCameraUsageDescription`/`NSMicrophoneUsageDescription` in the `ios-plist` or `macos-plist` file, and `android.permission.CAMERA`/`android.permission.RECORD_AUDIO` in the `android-manifest` file.
+- Camera and microphone use the standard `getUserMedia` API, not a plugin. Declare them per platform: `NSCameraUsageDescription`/`NSMicrophoneUsageDescription` in the `ios.plist` or `macos.plist` file, and `android.permission.CAMERA`/`android.permission.RECORD_AUDIO` in the `android.manifest` file.
 - Android builds run lint's `NewApi` check over shell and plugin Kotlin. Guard calls to APIs newer than the minimum SDK with a direct `Build.VERSION.SDK_INT` comparison; an unguarded call fails the build.
 
 ## Preserve user intent

@@ -1,9 +1,10 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::str::FromStr;
 
 use tokamak_cli::{
-    Artifact, ArtifactKind, Platform, PlatformPackError, PlatformPackManifest, Target,
-    load_manifest, write_manifest,
+    Artifact, ArtifactKind, PackVariable, Platform, PlatformPackError, PlatformPackManifest,
+    Target, VariableKind, load_manifest, write_manifest,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -100,6 +101,13 @@ fn valid_manifest() -> PlatformPackManifest {
             path: "frameworks/TokamakRuntime.framework".to_owned(),
         }],
         required_tools: vec!["xcode".to_owned()],
+        variables: BTreeMap::from([(
+            "plist".to_owned(),
+            PackVariable {
+                kind: VariableKind::Path,
+                description: "Info.plist values layered over the generated plist".to_owned(),
+            },
+        )]),
     }
 }
 
@@ -247,6 +255,44 @@ fn rejects_manifests_without_artifacts() {
 }
 
 #[test]
+fn ios_devices_and_simulators_share_a_namespace() {
+    let namespaces = Platform::ALL
+        .iter()
+        .map(|platform| platform.namespace())
+        .collect::<Vec<_>>();
+    assert_eq!(namespaces, ["android", "ios", "ios", "macos", "windows"]);
+}
+
+#[test]
+fn rejects_invalid_variables() {
+    for (name, description) in [
+        ("Plist", "Info.plist values"),
+        ("team_id", "Signing team"),
+        ("identifier", "Bundle identifier"),
+        ("plist", " "),
+    ] {
+        let mut manifest = valid_manifest();
+        manifest.variables = BTreeMap::from([(
+            name.to_owned(),
+            PackVariable {
+                kind: VariableKind::String,
+                description: description.to_owned(),
+            },
+        )]);
+        let result = manifest.validate();
+        assert!(
+            matches!(
+                result,
+                Err(PlatformPackError::InvalidVariableName(ref rejected)
+                    | PlatformPackError::ReservedVariableName(ref rejected)
+                    | PlatformPackError::MissingVariableDescription(ref rejected)) if rejected == name
+            ),
+            "accepted {name}: {result:?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_empty_artifact_paths() {
     let mut manifest = valid_manifest();
     manifest.artifacts[0].path.clear();
@@ -290,6 +336,7 @@ fn round_trips_manifest_json_without_losing_contract_fields() -> TestResult {
     let json = fs::read_to_string(&manifest_path)?;
     assert!(json.contains("\"target\": \"ios-arm64\""));
     assert!(json.contains("\"tokamakVersion\": \"0.1.0\""));
+    assert!(json.contains("\"kind\": \"path\""));
     assert!(!json.contains("requiredCliVersion"));
     assert!(!json.contains("schemaVersion"));
     assert!(!json.contains("sha256"));
@@ -310,7 +357,8 @@ fn load_manifest_rejects_contract_invalid_json() -> TestResult {
   "tokamakVersion": "0.1.0",
   "target": "ios-arm64",
   "artifacts": [{"kind": "runtimeLibrary", "path": "../tokamak-runtime"}],
-  "requiredTools": []
+  "requiredTools": [],
+  "variables": {}
 }"#,
     )?;
 

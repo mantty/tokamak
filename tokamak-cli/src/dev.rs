@@ -16,7 +16,7 @@ use tokamak::{WranglerConfig, load_wrangler_config, resolve_wrangler_config_path
 use tokamak_cli::Platform;
 
 use super::devices::PreparedDevice;
-use super::{devices, pipeline, variables};
+use super::{devices, pipeline, settings};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_mins(1);
 const APP_CONNECTION_TIMEOUT: Duration = Duration::from_mins(1);
@@ -34,7 +34,8 @@ pub(crate) struct Request {
     pub(crate) platform_pack_dir: Option<PathBuf>,
     pub(crate) tokamak_config_path: PathBuf,
     pub(crate) wrangler_config_path: Option<PathBuf>,
-    pub(crate) set: Vec<variables::SetVariable>,
+    pub(crate) top: settings::TopOptions,
+    pub(crate) platform_options: settings::PlatformOptions,
     pub(crate) server: String,
     pub(crate) host_address: Option<String>,
     pub(crate) command: Vec<std::ffi::OsString>,
@@ -211,7 +212,8 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
         endpoint: session.relay.device_endpoint(),
         session_token: session.session_token.to_owned(),
         device_id: Some(session.device.id.clone()),
-        set: session.request.set.clone(),
+        top: session.request.top.clone(),
+        platform_options: session.request.platform_options.clone(),
     })?;
     if session.shutdown.requested() {
         stop_process(session.framework)?;

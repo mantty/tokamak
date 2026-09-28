@@ -3,13 +3,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use assert_cmd::Command;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tokamak::compile_module;
 use tokamak::{PackageLayout, decompress_worker_module, read_worker_manifest};
 use tokamak_cli::{
-    ESBUILD_EXECUTABLE, MANIFEST_FILE, PlatformPackManifest, Target, write_manifest,
+    ESBUILD_EXECUTABLE, MANIFEST_FILE, PackVariable, PlatformPackManifest, Target, VariableKind,
+    write_manifest,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -255,18 +256,44 @@ fn install_android_plugins(root: &Path, plugins: &[(&str, &[&str])]) -> TestResu
 fn write_test_manifest(root: &Path, target: Target) -> TestResult {
     write_manifest(
         root.join(MANIFEST_FILE),
-        &PlatformPackManifest {
-            tokamak_version: env!("CARGO_PKG_VERSION").to_owned(),
-            target,
-            artifacts: target.artifacts(),
-            required_tools: target
-                .required_tools()
-                .iter()
-                .map(|tool| (*tool).to_owned())
-                .collect(),
-        },
+        &test_manifest(target, env!("CARGO_PKG_VERSION"))?,
     )?;
     Ok(())
+}
+
+/// A manifest declaring the pack's real variables and `test`, which fake
+/// entrypoints write out.
+fn test_manifest(target: Target, tokamak_version: &str) -> TestResult<PlatformPackManifest> {
+    let declarations = match target.platform().repository_directory_name() {
+        "apple" => include_str!("../../platforms/apple/build/variables.json"),
+        "android" => include_str!("../../platforms/android/build/variables.json"),
+        _ => include_str!("../../platforms/windows/build/variables.json"),
+    };
+    let mut namespaces: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, PackVariable>,
+    > = serde_json::from_str(declarations)?;
+    let mut variables = namespaces
+        .remove(target.platform().namespace())
+        .ok_or("the pack does not declare its namespace")?;
+    variables.insert(
+        "test".to_owned(),
+        PackVariable {
+            kind: VariableKind::String,
+            description: "Written out by fake entrypoints".to_owned(),
+        },
+    );
+    Ok(PlatformPackManifest {
+        tokamak_version: tokamak_version.to_owned(),
+        target,
+        artifacts: target.artifacts(),
+        required_tools: target
+            .required_tools()
+            .iter()
+            .map(|tool| (*tool).to_owned())
+            .collect(),
+        variables,
+    })
 }
 
 fn write_test_shell(shell: &Path) -> TestResult {
@@ -715,7 +742,7 @@ fn passes_platform_pack_variables_to_the_android_entrypoint() -> TestResult {
     let (temporary, project, platform_pack) = create_android_inputs()?;
 
     let mut command = build_command("android", &project, &platform_pack)?;
-    command.args(["--set", "android-test=passed"]);
+    command.args(["--android-test", "passed"]);
     configure_fake_gradle(&mut command, temporary.path())?;
     command.assert().success();
 
@@ -723,6 +750,124 @@ fn passes_platform_pack_variables_to_the_android_entrypoint() -> TestResult {
         fs::read_to_string(project.join("build/android/.tokamak/platform-pack-set-value"))?,
         "passed"
     );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn passes_options_then_environment_then_configured_values_to_the_entrypoint() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+    fs::write(
+        project.join("tokamak.jsonc"),
+        r#"{ "android": { "test": "configured" } }"#,
+    )?;
+    let set_value = project.join("build/android/.tokamak/platform-pack-set-value");
+    let build = |configure: &dyn Fn(&mut Command)| -> TestResult<String> {
+        let mut command = build_command("android", &project, &platform_pack)?;
+        command
+            .arg("--config")
+            .arg(project.join("tokamak.jsonc"))
+            .env_remove("TOKAMAK_ANDROID_TEST");
+        configure(&mut command);
+        configure_fake_gradle(&mut command, temporary.path())?;
+        command.assert().success();
+        Ok(fs::read_to_string(&set_value)?)
+    };
+
+    assert_eq!(build(&|_| {})?, "configured");
+    assert_eq!(
+        build(&|command| {
+            command.env("TOKAMAK_ANDROID_TEST", "environment");
+        })?,
+        "environment"
+    );
+    assert_eq!(
+        build(&|command| {
+            command
+                .env("TOKAMAK_ANDROID_TEST", "environment")
+                .args(["--android-test", "option"]);
+        })?,
+        "option"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_keys_the_platform_pack_does_not_declare() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+    fs::write(
+        project.join("tokamak.jsonc"),
+        r#"{ "android": { "tset": "x" }, "ios": { "tset": "ignored" } }"#,
+    )?;
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    command.arg("--config").arg(project.join("tokamak.jsonc"));
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command
+        .assert()
+        .failure()
+        .stderr(contains("unknown key android.tset in"));
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    command.args(["--android-manifset", "AndroidManifest.xml"]);
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command.assert().failure().stderr(contains(
+        "unknown option --android-manifset; Android accepts",
+    ));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn lists_the_platform_pack_options_in_build_help() -> TestResult {
+    let (_temporary, _project, platform_pack) = create_android_inputs()?;
+    Command::cargo_bin("tok")?
+        .args(["build", "android", "--platform-pack"])
+        .arg(&platform_pack)
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(
+            contains(
+                "Android options (also TOKAMAK_ANDROID_<KEY>, or android.<key> in tokamak.jsonc):",
+            )
+            .and(contains("--android-identifier <VALUE>"))
+            .and(contains("--android-manifest <PATH>"))
+            .and(contains("--android-test <VALUE>")),
+        );
+    Command::cargo_bin("tok")?
+        .args(["dev", "android", "--platform-pack"])
+        .arg(&platform_pack)
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--android-manifest <PATH>"));
+    Command::cargo_bin("tok")?
+        .args(["build", "--help"])
+        .assert()
+        .success()
+        .stdout(contains(
+            "run `tok build <platforms> --help` to list the options",
+        ));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn checks_settings_before_building_the_project() -> TestResult {
+    let (_temporary, project, platform_pack) = create_android_inputs()?;
+    Command::cargo_bin("tok")?
+        .args(["build", "android", "--project"])
+        .arg(&project)
+        .arg("--platform-pack")
+        .arg(&platform_pack)
+        .args(["--version", "1.0.0", "--build", "touch project-built"])
+        .args(["--android-manifset", "AndroidManifest.xml"])
+        .assert()
+        .failure()
+        .stderr(contains("unknown option --android-manifset"));
+    assert!(!project.join("project-built").exists());
     Ok(())
 }
 
@@ -754,7 +899,9 @@ fn merges_the_app_android_manifest_while_it_is_set() -> TestResult {
     let app = project.join("build/android/.tokamak/app");
 
     let mut command = build_command("android", &project, &platform_pack)?;
-    command.args(["--set", "android-manifest=native/AndroidManifest.xml"]);
+    command
+        .current_dir(&project)
+        .args(["--android-manifest", "native/AndroidManifest.xml"]);
     configure_fake_gradle(&mut command, temporary.path())?;
     command.assert().success();
 
@@ -782,12 +929,14 @@ fn rejects_a_missing_app_android_manifest() -> TestResult {
     let (temporary, project, platform_pack) = create_android_inputs()?;
 
     let mut command = build_command("android", &project, &platform_pack)?;
-    command.args(["--set", "android-manifest=native/AndroidManifest.xml"]);
+    command
+        .current_dir(&project)
+        .args(["--android-manifest", "native/AndroidManifest.xml"]);
     configure_fake_gradle(&mut command, temporary.path())?;
     command
         .assert()
         .failure()
-        .stderr(contains("android-manifest file is missing"));
+        .stderr(contains("Android manifest file is missing"));
     Ok(())
 }
 
@@ -1334,7 +1483,7 @@ fn builds_windows_app_with_its_runtime_files() -> TestResult {
 fn passes_platform_pack_variables_to_the_windows_entrypoint() -> TestResult {
     let (_temporary, project, manifest) = create_windows_inputs()?;
     build_command("windows", &project, &manifest)?
-        .args(["--set", "windows-test=passed"])
+        .args(["--windows-test", "passed"])
         .assert()
         .success();
 
@@ -1641,13 +1790,13 @@ fn builds_physical_ios_app() -> TestResult {
     command
         .env_remove("TOKAMAK_IOS_TEAM_ID")
         .args([
-            "--set",
-            "ios-build-number=5",
-            "--set",
-            "ios-signing-identity=Apple Development: Test",
-            "--set",
+            "--ios-build-number",
+            "5",
+            "--ios-signing-identity",
+            "Apple Development: Test",
+            "--ios-provisioning-profile",
         ])
-        .arg(format!("ios-provisioning-profile={}", profile.display()))
+        .arg(&profile)
         .assert()
         .success()
         .stdout(contains("Built iOS bundle"));
@@ -1709,14 +1858,14 @@ fn build_explains_conflicting_automatic_and_manual_signing() -> TestResult {
                 project.join("manual.mobileprovision"),
             );
         if cli_variable {
-            command.args(["--set", "ios-team-id=TEAM"]);
+            command.args(["--ios-team-id", "TEAM"]);
         } else {
             command.env("TOKAMAK_IOS_TEAM_ID", "TEAM");
         }
         command.assert().failure().stderr(
             contains("automatic and manual iOS signing cannot be combined.")
                 .and(contains(
-                    "Automatic: set TOKAMAK_IOS_TEAM_ID or use --set ios-team-id=TEAM_ID",
+                    "Automatic: set TOKAMAK_IOS_TEAM_ID or use --ios-team-id TEAM_ID",
                 ))
                 .and(contains(
                     "Manual:    set BOTH TOKAMAK_IOS_SIGNING_IDENTITY and",
@@ -1755,8 +1904,12 @@ fn conflicting_signing_dev_command(
         .args(["--config"])
         .arg(project)
         .args(["--server", &server, "--host-address", "127.0.0.1"])
-        .args(["--set", "ios-signing-identity=IDENTITY_SHA1", "--set"])
-        .arg(format!("ios-provisioning-profile={}", profile.display()))
+        .args([
+            "--ios-signing-identity",
+            "IDENTITY_SHA1",
+            "--ios-provisioning-profile",
+        ])
+        .arg(&profile)
         .env("TOKAMAK_IOS_TEAM_ID", "TEAM")
         .args(["--", "node", "-e"])
         .arg(framework);
@@ -1801,7 +1954,7 @@ fn dev_explains_conflicting_automatic_and_manual_signing() -> TestResult {
         .stderr(
             contains("automatic and manual iOS signing cannot be combined.")
                 .and(contains(
-                    "Automatic: set TOKAMAK_IOS_TEAM_ID or use --set ios-team-id=TEAM_ID",
+                    "Automatic: set TOKAMAK_IOS_TEAM_ID or use --ios-team-id TEAM_ID",
                 ))
                 .and(contains(
                     "Manual:    set BOTH TOKAMAK_IOS_SIGNING_IDENTITY and",
@@ -2051,20 +2204,7 @@ fn rejects_platform_pack_for_another_platform() -> TestResult {
 fn rejects_platform_pack_for_another_cli_version() -> TestResult {
     let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
     let manifest_path = platform_pack.join(MANIFEST_FILE);
-    let target = Target::MacosArm64;
-    write_manifest(
-        &manifest_path,
-        &PlatformPackManifest {
-            tokamak_version: "9.9.9".to_owned(),
-            target,
-            artifacts: target.artifacts(),
-            required_tools: target
-                .required_tools()
-                .iter()
-                .map(|tool| (*tool).to_owned())
-                .collect(),
-        },
-    )?;
+    write_manifest(&manifest_path, &test_manifest(Target::MacosArm64, "9.9.9")?)?;
 
     build_command("macos", &project, &platform_pack)?
         .assert()
