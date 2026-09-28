@@ -18,6 +18,22 @@
       "sources": ["apple/NotificationContent.swift", "apple/NotificationsPlugin.swift"],
       "frameworks": ["UserNotifications"],
       "plist": "apple/Info.plist"
+    },
+    "android": {
+      "class": "com.tokamak.plugins.notifications.TokamakNotificationsPlugin",
+      "sources": [
+        "android/NotificationsPlugin.kt",
+        "android/Content.kt",
+        "android/Notifier.kt",
+        "android/Schedule.kt",
+        "android/Push.kt"
+      ],
+      "manifest": "android/AndroidManifest.xml",
+      "dependencies": ["com.google.firebase:firebase-messaging:25.1.3"],
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.RECEIVE_BOOT_COMPLETED"
+      ]
     }
   }
 }

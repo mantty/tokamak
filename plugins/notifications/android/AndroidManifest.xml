@@ -1,0 +1,30 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <provider
+        android:name="com.tokamak.plugins.notifications.TokamakFirebaseInitializer"
+        android:authorities="${applicationId}.tokamak-firebase"
+        android:exported="false" />
+    <service
+        android:name="com.tokamak.plugins.notifications.TokamakPushService"
+        android:exported="false">
+      <intent-filter>
+        <action android:name="com.google.firebase.MESSAGING_EVENT" />
+      </intent-filter>
+    </service>
+    <receiver
+        android:name="com.tokamak.plugins.notifications.TokamakAlarmReceiver"
+        android:exported="false" />
+    <receiver
+        android:name="com.tokamak.plugins.notifications.TokamakBootReceiver"
+        android:exported="false">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+      </intent-filter>
+    </receiver>
+    <meta-data android:name="firebase_messaging_auto_init_enabled" android:value="false" />
+    <meta-data
+        android:name="com.google.firebase.messaging.default_notification_channel_id"
+        android:value="tokamak.notifications" />
+  </application>
+</manifest>
