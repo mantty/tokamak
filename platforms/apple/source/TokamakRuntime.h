@@ -40,8 +40,9 @@ bool tokamak_runtime_suspend(const void *runtime);
 bool tokamak_runtime_resume(const void *runtime);
 void tokamak_runtime_stop(void *runtime);
 int32_t tokamak_runtime_dispatch(const void *runtime, const char *event,
-                              const char *payload, TokamakBytes *result,
-                              char *error, size_t error_len);
+                              const char *payload, uint64_t timeout_ms,
+                              TokamakBytes *result, char *error,
+                              size_t error_len);
 
 int32_t tokamak_runtime_server_authority(const void *runtime, const char *host,
                                       TokamakBytes *authority);

@@ -44,7 +44,9 @@ class TokamakActivity : Activity() {
             pluginBridge.install(webView)
         }
         setContentView(webViewContainer())
-        deliver(intent)
+        // A recreated activity or one reopened from Recents carries an intent plugins have had.
+        val launchedFromHistory = intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (savedInstanceState == null && !launchedFromHistory) deliver(intent)
         if (!proxyIsSupported()) {
             show(UNSUPPORTED)
             return

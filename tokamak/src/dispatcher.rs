@@ -4,6 +4,7 @@ use std::io::{self, Read};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::compat;
@@ -74,16 +75,63 @@ impl Handler for Dispatcher {
         &self,
         event: &str,
         payload: &serde_json::Value,
+        timeout: Duration,
         execution: &Execution<'_>,
     ) -> Result<Option<serde_json::Value>, Error> {
-        block_on(execute_event(
-            &self.worker,
-            &self.config,
-            self.assets.as_ref(),
-            event,
-            payload,
-            execution,
-        ))
+        block_on(self.execute_event(event, payload, timeout, execution))
+    }
+}
+
+impl Dispatcher {
+    /// Run the Worker's `event` handler with `payload`, stopping it after
+    /// `timeout`; `None` when the Worker does not export one.
+    async fn execute_event(
+        &self,
+        event: &str,
+        payload: &serde_json::Value,
+        timeout: Duration,
+        execution: &Execution<'_>,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        let (runtime, context) = worker_runtime(&self.worker, execution).await?;
+        let awaited = crate::event_loop::AwaitedPromise::default();
+        let invocation =
+            context.async_with(async |ctx| -> Result<Option<serde_json::Value>, Error> {
+                ctx.store_userdata(awaited.clone())
+                    .map_err(|error| js_error("event loop", error))?;
+                install_worker_globals(&ctx, &self.config, self.assets.as_ref())?;
+                initialize_worker_context(&ctx, &self.worker)?;
+                let entrypoint = load_worker(&ctx, &self.worker).await?;
+                let Some(handler) = worker_method(&ctx, &entrypoint, event)? else {
+                    return Ok(None);
+                };
+                let payload = ctx
+                    .json_parse(serde_json::to_string(payload)?)
+                    .map_err(|error| js_error("event payload", error))?;
+                let (environment, execution_context) = worker_arguments(&ctx)?;
+                let result: Promise = handler
+                    .call((payload, environment, execution_context))
+                    .map_err(|error| js_exception(&ctx, "event handler", error))?;
+                let result: Value = finish_promise(&ctx, &result, "event handler").await?;
+                let result = ctx
+                    .json_stringify(result)
+                    .map_err(|error| js_exception(&ctx, "event result", error))?
+                    .map(|json| json.to_string())
+                    .transpose()
+                    .map_err(|error| js_error("event result", error))?;
+                drain_wait_until(&ctx).await?;
+                Ok(Some(match result {
+                    Some(json) => serde_json::from_str(&json)?,
+                    None => serde_json::Value::Null,
+                }))
+            });
+        let invocation = crate::event_loop::run(&runtime, &awaited, invocation);
+        tokio::select! {
+            result = invocation => result,
+            () = execution.cancelled() => Err(Error::Engine("Worker execution was stopped".to_owned())),
+            () = tokio::time::sleep(timeout) => Err(Error::Engine(format!(
+                "the Worker's {event} handler did not finish within {timeout:?}"
+            ))),
+        }
     }
 }
 
@@ -195,54 +243,6 @@ async fn execute_request_async(
     let request = crate::event_loop::run(&runtime, &awaited, request);
     tokio::select! {
         result = request => result,
-        () = execution.cancelled() => Err(Error::Engine("Worker execution was stopped".to_owned())),
-    }
-}
-
-/// Run the Worker's `event` handler with `payload`; `None` when the Worker
-/// does not export one.
-async fn execute_event(
-    worker: &WorkerBundle,
-    config: &RuntimeConfig,
-    assets: Option<&Arc<AssetService>>,
-    event: &str,
-    payload: &serde_json::Value,
-    execution: &Execution<'_>,
-) -> Result<Option<serde_json::Value>, Error> {
-    let (runtime, context) = worker_runtime(worker, execution).await?;
-    let awaited = crate::event_loop::AwaitedPromise::default();
-    let invocation = context.async_with(async |ctx| -> Result<Option<serde_json::Value>, Error> {
-        ctx.store_userdata(awaited.clone())
-            .map_err(|error| js_error("event loop", error))?;
-        install_worker_globals(&ctx, config, assets)?;
-        initialize_worker_context(&ctx, worker)?;
-        let entrypoint = load_worker(&ctx, worker).await?;
-        let Some(handler) = worker_method(&ctx, &entrypoint, event)? else {
-            return Ok(None);
-        };
-        let payload = ctx
-            .json_parse(serde_json::to_string(payload)?)
-            .map_err(|error| js_error("event payload", error))?;
-        let (environment, execution_context) = worker_arguments(&ctx)?;
-        let result: Promise = handler
-            .call((payload, environment, execution_context))
-            .map_err(|error| js_exception(&ctx, "event handler", error))?;
-        let result: Value = finish_promise(&ctx, &result, "event handler").await?;
-        let result = ctx
-            .json_stringify(result)
-            .map_err(|error| js_exception(&ctx, "event result", error))?
-            .map(|json| json.to_string())
-            .transpose()
-            .map_err(|error| js_error("event result", error))?;
-        drain_wait_until(&ctx).await?;
-        Ok(Some(match result {
-            Some(json) => serde_json::from_str(&json)?,
-            None => serde_json::Value::Null,
-        }))
-    });
-    let invocation = crate::event_loop::run(&runtime, &awaited, invocation);
-    tokio::select! {
-        result = invocation => result,
         () = execution.cancelled() => Err(Error::Engine("Worker execution was stopped".to_owned())),
     }
 }

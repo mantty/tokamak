@@ -15,10 +15,12 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
     fun resume() = nativeResume(handle)
 
     /**
-     * Runs the Worker's [event] handler with a JSON [payload], blocking until it settles.
-     * Returns the handler's JSON result, or null when the Worker has no such handler.
+     * Runs the Worker's [event] handler with a JSON [payload], blocking until it settles or
+     * [timeoutMillis] passes. Returns the handler's JSON result, or null when the Worker has
+     * no such handler.
      */
-    fun dispatch(event: String, payload: String): String? = nativeDispatch(handle, event, payload)
+    fun dispatch(event: String, payload: String, timeoutMillis: Long): String? =
+        nativeDispatch(handle, event, payload, timeoutMillis)
 
     /**
      * The authority a server certificate for [host] must chain to, or null
@@ -75,7 +77,12 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
         private external fun nativeResume(handle: Long)
 
         @JvmStatic
-        private external fun nativeDispatch(handle: Long, event: String, payload: String): String?
+        private external fun nativeDispatch(
+            handle: Long,
+            event: String,
+            payload: String,
+            timeoutMillis: Long,
+        ): String?
 
         @JvmStatic
         private external fun nativeServerAuthority(handle: Long, host: String): ByteArray?

@@ -38,7 +38,8 @@ class TokamakApplication : Application(), TokamakHost {
         requireNotNull(metadata()?.getString(HOST_METADATA)) { "$HOST_METADATA is required" }
     }
 
-    override fun dispatch(event: String, payload: String): String? = runtime.dispatch(event, payload)
+    override fun dispatch(event: String, payload: String, timeoutMillis: Long): String? =
+        runtime.dispatch(event, payload, timeoutMillis)
 
     override fun plugin(id: String): TokamakPlugin? = plugins[id]
 
@@ -56,11 +57,15 @@ class TokamakApplication : Application(), TokamakHost {
     private fun metadata() =
         packageManager.getApplicationInfo(packageName, PackageManager.GET_META_DATA).metaData
 
-    /** Copy the packaged app out of the APK so the runtime can read it as files. */
+    /** Copy the packaged app out of the APK once per install, so the runtime can read it as files. */
     private fun unpackApp(): File {
         val app = File(filesDir, "tokamak/app")
+        val unpacked = File(filesDir, "tokamak/app.installed")
+        val installed = packageManager.getPackageInfo(packageName, 0).lastUpdateTime.toString()
+        if (unpacked.isFile && unpacked.readText() == installed) return app
         app.deleteRecursively()
         copyAsset("app", app)
+        unpacked.writeText(installed)
         return app
     }
 

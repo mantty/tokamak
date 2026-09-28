@@ -11,6 +11,8 @@ private let subscriptionKey = "tokamak.notifications.subscription"
 private let showInForegroundKey = "tokamak.notifications.show-in-foreground"
 /// The system keeps only the soonest 64 pending requests.
 private let pendingLimit = 64
+/// The system allows about 30 seconds for a background remote notification.
+private let pushTimeout: TimeInterval = 25
 private let shown: UNNotificationPresentationOptions = [.banner, .list, .sound]
 
 #if os(iOS)
@@ -76,9 +78,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       case "getSubscription":
         reply(.success(defaults.dictionary(forKey: subscriptionKey)))
       case "unsubscribe":
-        unregisterForRemoteNotifications()
-        defaults.removeObject(forKey: subscriptionKey)
-        defaults.removeObject(forKey: showInForegroundKey)
+        unsubscribe()
         reply(.success(nil))
       default:
         throw .notSupported("\(id).\(method) is not supported")
@@ -150,7 +150,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       return
     }
     emit("onMessage", fields.message)
-    host.dispatch(event: "push", payload: fields.message) { result in
+    host.dispatch(event: "push", payload: fields.message, timeout: pushTimeout) { result in
       switch result {
       case .success(.handled(let returned)):
         self.show(returned) { completion(.newData) }
@@ -291,6 +291,18 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     defaults.set(options["showInForeground"] as? Bool ?? false, forKey: showInForegroundKey)
     registering.append(reply)
     registerForRemoteNotifications()
+  }
+
+  /// Stops push delivery, failing a `subscribe` still waiting for its token.
+  private func unsubscribe() {
+    unregisterForRemoteNotifications()
+    defaults.removeObject(forKey: subscriptionKey)
+    defaults.removeObject(forKey: showInForegroundKey)
+    let replies = registering
+    registering.removeAll()
+    for reply in replies {
+      reply(.failure(TokamakPluginError(name: "AbortError", message: "unsubscribe was called")))
+    }
   }
 
   private func registerForRemoteNotifications() {

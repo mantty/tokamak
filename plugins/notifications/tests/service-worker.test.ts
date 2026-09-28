@@ -80,7 +80,7 @@ void test("shows a pushed notification and forwards the message to open pages", 
   const payload = { id: "m1", title: "Hi", body: "There", data: { url: "/inbox" } };
 
   await run((event) => {
-    handlePush({ ...event, data: { json: () => payload } });
+    handlePush({ ...event, data: { text: () => JSON.stringify(payload) } });
   });
 
   assert.deepEqual(registration.shown.map(({ title, body, tag }) => ({ title, body, tag })), [
@@ -95,12 +95,22 @@ void test("normalises a push payload with missing fields", async () => {
   windows = [page];
 
   await run((event) => {
-    handlePush({ ...event, data: { json: () => ({ title: 3, data: [1] }) } });
+    handlePush({ ...event, data: { text: () => JSON.stringify({ title: 3, data: [1] }) } });
   });
 
   const posted = page.posted[0] as { message: { id: string; title: null; body: null; data: object } };
   assert.equal(typeof posted.message.id, "string");
   assert.deepEqual({ ...posted.message, id: "" }, { id: "", title: null, body: null, data: {} });
+});
+
+void test("shows a push payload that is not JSON as the body", async () => {
+  await run((event) => {
+    handlePush({ ...event, data: { text: () => "Plain text" } });
+  });
+
+  assert.deepEqual(registration.shown.map(({ title, body }) => ({ title, body })), [
+    { title: "", body: "Plain text" },
+  ]);
 });
 
 function clicked(data: unknown) {

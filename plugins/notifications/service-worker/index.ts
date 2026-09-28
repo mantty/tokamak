@@ -16,7 +16,7 @@ interface ExtendableEvent {
 }
 
 interface PushEvent extends ExtendableEvent {
-  readonly data: { json(): unknown } | null;
+  readonly data: { text(): string } | null;
 }
 
 interface NotificationEvent extends ExtendableEvent {
@@ -49,7 +49,7 @@ const scope = globalThis as unknown as ServiceWorkerScope;
  * forwards the message to open pages.
  */
 export function handlePush(event: PushEvent): void {
-  event.waitUntil(showAndForward(message(event.data?.json())));
+  event.waitUntil(showAndForward(message(payload(event.data?.text()))));
 }
 
 /**
@@ -114,6 +114,16 @@ async function post(message: ServiceWorkerMessage): Promise<void> {
 
 function windows(): Promise<WindowClient[]> {
   return scope.clients.matchAll({ type: "window", includeUncontrolled: true });
+}
+
+/** A push payload's JSON, or its text as the body when it is not JSON. */
+function payload(text: string | undefined): unknown {
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { body: text };
+  }
 }
 
 /** The message in a push payload; every field is optional. */

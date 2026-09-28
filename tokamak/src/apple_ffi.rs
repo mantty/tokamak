@@ -5,6 +5,7 @@
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::path::PathBuf;
 use std::ptr;
+use std::time::Duration;
 
 use crate::packaging::PackageLayout;
 use crate::{Challenge, Config, Decision, Event, Runtime};
@@ -155,7 +156,7 @@ pub unsafe extern "C" fn tokamak_runtime_stop(handle: *mut c_void) {
 }
 
 /// Run the Worker's `event` handler with a JSON `payload`, blocking until it
-/// settles.
+/// settles or `timeout_ms` passes.
 ///
 /// Returns `TOKAMAK_DISPATCH_HANDLED` with the handler's JSON result in
 /// `result`, `TOKAMAK_DISPATCH_UNHANDLED` when the Worker has no such handler,
@@ -171,6 +172,7 @@ pub unsafe extern "C" fn tokamak_runtime_dispatch(
     handle: *const c_void,
     event: *const c_char,
     payload: *const c_char,
+    timeout_ms: u64,
     result: *mut TokamakBytes,
     error: *mut c_char,
     error_len: usize,
@@ -179,7 +181,8 @@ pub unsafe extern "C" fn tokamak_runtime_dispatch(
         return DISPATCH_FAILED;
     }
     unsafe { result.write(TokamakBytes::empty()) };
-    let outcome = unsafe { dispatch(handle, event, payload) };
+    let timeout = Duration::from_millis(timeout_ms);
+    let outcome = unsafe { dispatch(handle, event, payload, timeout) };
     match outcome {
         Ok(Some(json)) => {
             unsafe { result.write(TokamakBytes::from_vec(json.into_bytes())) };
@@ -352,13 +355,14 @@ unsafe fn dispatch(
     handle: *const c_void,
     event: *const c_char,
     payload: *const c_char,
+    timeout: Duration,
 ) -> Result<Option<String>, String> {
     let runtime = unsafe { runtime(handle) }.ok_or("runtime is unavailable")?;
     let event = unsafe { text(event) }.ok_or("event name is not valid UTF-8")?;
     let payload = unsafe { text(payload) }.ok_or("event payload is not valid UTF-8")?;
     let payload = serde_json::from_str(payload).map_err(|error| error.to_string())?;
     let result = runtime
-        .dispatch(event, payload)
+        .dispatch(event, payload, timeout)
         .map_err(|error| error.to_string())?;
     Ok(result.map(|value| value.to_string()))
 }

@@ -5,6 +5,7 @@
 
 use std::ffi::{CString, c_char, c_int};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::packaging::PackageLayout;
 use crate::{Challenge, Config, Decision, Event, Runtime};
@@ -121,8 +122,8 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeResume(
 }
 
 /// Run the Worker's `event` handler with a JSON `payload`, blocking until it
-/// settles. Returns the handler's JSON result, or null when the Worker has no
-/// such handler; throws when the handler fails.
+/// settles or `timeout_millis` passes. Returns the handler's JSON result, or
+/// null when the Worker has no such handler; throws when the handler fails.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeDispatch<'local>(
     mut env: JNIEnv<'local>,
@@ -130,8 +131,10 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeDispatch<'l
     handle: jlong,
     event: JString,
     payload: JString,
+    timeout_millis: jlong,
 ) -> JString<'local> {
-    match dispatch(&mut env, handle, &event, &payload) {
+    let timeout = Duration::from_millis(u64::try_from(timeout_millis).unwrap_or(0));
+    match dispatch(&mut env, handle, &event, &payload, timeout) {
         Ok(Some(result)) => env
             .new_string(result)
             .unwrap_or_else(|_| JString::from(JObject::null())),
@@ -236,12 +239,13 @@ fn dispatch(
     handle: jlong,
     event: &JString,
     payload: &JString,
+    timeout: Duration,
 ) -> Result<Option<String>, String> {
     let runtime = runtime(handle).ok_or("tokamak runtime is unavailable")?;
     let event = text(env, event)?;
     let payload = serde_json::from_str(&text(env, payload)?).map_err(|error| error.to_string())?;
     let result = runtime
-        .dispatch(&event, payload)
+        .dispatch(&event, payload, timeout)
         .map_err(|error| error.to_string())?;
     Ok(result.map(|value| value.to_string()))
 }

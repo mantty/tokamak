@@ -376,6 +376,9 @@ export default {
   broken() {
     throw new Error("handler exploded");
   },
+  slow() {
+    return new Promise((resolve) => setTimeout(resolve, 5000));
+  },
 };
 "#;
 
@@ -383,6 +386,15 @@ fn dispatch_event(
     source: &[u8],
     event: &str,
     payload: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error>> {
+    dispatch_event_within(source, event, payload, Duration::from_secs(5))
+}
+
+fn dispatch_event_within(
+    source: &[u8],
+    event: &str,
+    payload: &serde_json::Value,
+    timeout: Duration,
 ) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::from_bytecode(crate::compile_worker(source)?, directory.path());
@@ -396,7 +408,7 @@ fn dispatch_event(
     let execution = lifecycle
         .enter(&accepting)
         .ok_or("event was not admitted")?;
-    Ok(dispatcher.dispatch(event, payload, &execution)?)
+    Ok(dispatcher.dispatch(event, payload, timeout, &execution)?)
 }
 
 #[test]
@@ -442,6 +454,27 @@ fn reports_an_event_handler_failure() -> Result<(), Box<dyn std::error::Error>> 
         return Err("the failing handler succeeded".into());
     };
     assert!(error.to_string().contains("handler exploded"), "{error}");
+    Ok(())
+}
+
+#[test]
+fn stops_an_event_handler_that_outlasts_its_timeout() -> Result<(), Box<dyn std::error::Error>> {
+    let started = std::time::Instant::now();
+
+    let Err(error) = dispatch_event_within(
+        EVENT_WORKER,
+        "slow",
+        &serde_json::Value::Null,
+        Duration::from_millis(50),
+    ) else {
+        return Err("the slow handler finished".into());
+    };
+
+    assert!(
+        error.to_string().contains("did not finish within 50ms"),
+        "{error}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
     Ok(())
 }
 
@@ -681,6 +714,7 @@ fn reports_handler_failures_through_the_event_listener()
             &self,
             _: &str,
             _: &serde_json::Value,
+            _: Duration,
             _: &Execution<'_>,
         ) -> Result<Option<serde_json::Value>, Error> {
             Err(Error::Startup("handler exploded".to_owned()))
@@ -740,6 +774,7 @@ fn reports_connection_failures_through_the_event_listener()
             &self,
             _: &str,
             _: &serde_json::Value,
+            _: Duration,
             _: &Execution<'_>,
         ) -> Result<Option<serde_json::Value>, Error> {
             Err(Error::Startup("handler must not run".to_owned()))
@@ -778,6 +813,7 @@ fn dispatches_worker_events_through_the_gateway_executor()
             &self,
             event: &str,
             payload: &serde_json::Value,
+            _: Duration,
             execution: &Execution<'_>,
         ) -> Result<Option<serde_json::Value>, Error> {
             assert!(execution.is_running());
@@ -789,7 +825,11 @@ fn dispatches_worker_events_through_the_gateway_executor()
     let runtime =
         crate::gateway::Runtime::start(Arc::new(EchoHandler), gateway_config(), Events::new(drop))?;
 
-    let result = runtime.dispatch("push", serde_json::json!({ "id": "1" }))?;
+    let result = runtime.dispatch(
+        "push",
+        serde_json::json!({ "id": "1" }),
+        Duration::from_secs(1),
+    )?;
 
     assert_eq!(
         result,

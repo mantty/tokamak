@@ -10,10 +10,9 @@ import org.json.JSONObject
 
 internal const val CHANNEL = "tokamak.notifications"
 internal const val OPENED_EXTRA = "com.tokamak.notifications.opened"
-private const val ID_EXTRA = "com.tokamak.notifications.id"
 private const val DATA_EXTRA = "com.tokamak.notifications.data"
 
-/** Every notification the plugin posts shares this ID and is told apart by its tag. */
+/** The plugin and FCM post every notification with this ID, telling them apart by tag. */
 private const val NOTIFICATION_ID = 0
 
 /** Posts, lists and removes the app's notifications on the default channel. */
@@ -40,21 +39,16 @@ internal class Notifier(private val context: Context) {
                 .setContentText(content.body)
                 .setAutoCancel(true)
                 .setContentIntent(launch(content.id, opened))
-                .addExtras(
-                    Bundle().apply {
-                        putString(ID_EXTRA, content.id)
-                        putString(DATA_EXTRA, content.data.toString())
-                    },
-                )
+                .addExtras(Bundle().apply { putString(DATA_EXTRA, content.data.toString()) })
                 .build()
         manager.notify(content.id, NOTIFICATION_ID, notification)
     }
 
-    /** Shown notifications the plugin posted, as the page sees them. */
+    /** The app's shown notifications, identified by tag, as the page sees them. */
     fun delivered(): List<JSONObject> =
         manager.activeNotifications.mapNotNull { shown ->
+            val id = shown.tag?.takeIf { shown.id == NOTIFICATION_ID } ?: return@mapNotNull null
             val extras = shown.notification.extras
-            val id = extras.getString(ID_EXTRA) ?: return@mapNotNull null
             JSONObject()
                 .put("id", id)
                 .put("title", extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: "")

@@ -33,11 +33,13 @@ final class TokamakHost {
   }
 
   /// Runs the Worker's `event` handler with a JSON-serialisable `payload`,
-  /// including work it passes to `ctx.waitUntil`. Call it on the main thread;
-  /// `completion` runs on the main thread.
+  /// including work it passes to `ctx.waitUntil`, and stops it after
+  /// `timeout`. Call it on the main thread; `completion` runs on the main
+  /// thread.
   func dispatch(
     event: String,
     payload: Any,
+    timeout: TimeInterval,
     completion: @escaping (Result<TokamakEventOutcome, Error>) -> Void
   ) {
     whenStarted { result in
@@ -46,7 +48,9 @@ final class TokamakHost {
         completion(.failure(error))
       case .success(let runtime):
         DispatchQueue.global(qos: .userInitiated).async {
-          let outcome = Result { try runtime.dispatch(event: event, payload: payload) }
+          let outcome = Result {
+            try runtime.dispatch(event: event, payload: payload, timeout: timeout)
+          }
           DispatchQueue.main.async { completion(outcome) }
         }
       }
@@ -237,8 +241,12 @@ final class RuntimeHandle {
     return port
   }
 
-  /// Runs the Worker's `event` handler, blocking until it settles.
-  func dispatch(event: String, payload: Any) throws -> TokamakEventOutcome {
+  /// Runs the Worker's `event` handler, blocking until it settles or
+  /// `timeout` passes.
+  func dispatch(event: String, payload: Any, timeout: TimeInterval) throws -> TokamakEventOutcome {
+    guard JSONSerialization.isValidJSONObject([payload]) else {
+      throw RuntimeError.runtime("the \(event) payload is not JSON")
+    }
     let payload = String(
       decoding: try JSONSerialization.data(withJSONObject: payload, options: .fragmentsAllowed),
       as: UTF8.self
@@ -248,7 +256,15 @@ final class RuntimeHandle {
     let status = event.withCString { event in
       payload.withCString { payload in
         error.withUnsafeMutableBufferPointer { error in
-          tokamak_runtime_dispatch(handle, event, payload, &result, error.baseAddress, error.count)
+          tokamak_runtime_dispatch(
+            handle,
+            event,
+            payload,
+            UInt64(timeout * 1000),
+            &result,
+            error.baseAddress,
+            error.count
+          )
         }
       }
     }

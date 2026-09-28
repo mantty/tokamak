@@ -320,6 +320,7 @@ impl Handler for DevProxy {
         &self,
         event: &str,
         _: &serde_json::Value,
+        _: Duration,
         _: &Execution<'_>,
     ) -> Result<Option<serde_json::Value>, Error> {
         Err(Error::Engine(format!(

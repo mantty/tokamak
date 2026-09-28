@@ -22,6 +22,9 @@ private const val SUBSCRIBED = "subscribed"
 private const val TOKEN = "token"
 private const val SHOW_IN_FOREGROUND = "show-in-foreground"
 private const val PERMISSION_REQUEST = 0x4E07
+
+/** FCM allows about 10 seconds for a message, including starting the app. */
+private const val PUSH_TIMEOUT_MILLIS = 8_000L
 private const val FCM_MESSAGE_ID_EXTRA = "google.message_id"
 private val LISTENERS = setOf("onMessage", "onNotificationOpened", "onSubscriptionChange")
 
@@ -100,8 +103,9 @@ class TokamakNotificationsPlugin(
         emit("onNotificationOpened", opened)
     }
 
+    /** Reports a replaced token; `subscribe` reports the first. */
     internal fun onNewToken(token: String) {
-        val previous = preferences.getString(TOKEN, null)
+        val previous = preferences.getString(TOKEN, null) ?: return
         if (!preferences.getBoolean(SUBSCRIBED, false) || token == previous) return
         preferences.edit().putString(TOKEN, token).apply()
         context.mainExecutor.execute { emit("onSubscriptionChange", fcmSubscription(token)) }
@@ -117,7 +121,7 @@ class TokamakNotificationsPlugin(
             if (preferences.getBoolean(SHOW_IN_FOREGROUND, false)) notifier.post(content(message), "push")
             return
         }
-        runCatching { host.dispatch("push", message.toString()) }
+        runCatching { host.dispatch("push", message.toString(), PUSH_TIMEOUT_MILLIS) }
             .onSuccess { result -> result?.let(::showReturned) }
             .onFailure { Log.w("tokamak", "the Worker's push handler failed", it) }
     }
@@ -200,11 +204,14 @@ class TokamakNotificationsPlugin(
             .apply()
         messaging.isAutoInitEnabled = true
         messaging.token.addOnCompleteListener { task ->
-            if (task.isSuccessful) {
-                preferences.edit().putString(TOKEN, task.result).apply()
-                reply(Result.success(fcmSubscription(task.result)))
-            } else {
-                reply(Result.failure(operationError(task.exception)))
+            when {
+                !preferences.getBoolean(SUBSCRIBED, false) ->
+                    reply(Result.failure(TokamakPluginError("AbortError", "unsubscribe was called")))
+                task.isSuccessful -> {
+                    preferences.edit().putString(TOKEN, task.result).apply()
+                    reply(Result.success(fcmSubscription(task.result)))
+                }
+                else -> reply(Result.failure(operationError(task.exception)))
             }
         }
     }

@@ -75,7 +75,8 @@ app in the background. A plugin receives the host in its constructor
 - `host.dispatch` runs a method of the Worker's default export with a JSON
   payload and returns its JSON result, or reports that the Worker has no such
   method. Each dispatch uses a fresh JavaScript runtime and waits for
-  `ctx.waitUntil` work, as a request does.
+  `ctx.waitUntil` work, as a request does, until the timeout the plugin gives,
+  which fits the platform's background budget.
 
 ## Frontend calls
 

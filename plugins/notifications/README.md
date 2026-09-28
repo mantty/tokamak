@@ -41,7 +41,8 @@ notifications.onSubscriptionChange((subscription) => {
   `QuotaExceededError`. The web does not support scheduling.
 - `getScheduled()` lists scheduled notifications not yet shown, and
   `getDelivered()` lists shown notifications still in the notification centre.
-- `remove(id)` removes a scheduled or shown notification.
+- `remove(id)` removes a scheduled or shown notification. On Android, the id
+  of a push notification FCM showed is its `tag`.
 
 Showing or scheduling a notification with the `id` of another replaces it.
 
@@ -145,9 +146,9 @@ The platforms limit background delivery:
 
 | Platform | The server sends | Limits |
 |---|---|---|
-| iOS | `content-available: 1` with `apns-push-type: background` and `apns-priority: 5` | The system throttles delivery and may drop messages, and delivers nothing after the user force-quits the app until they open it. The handler has about 30 seconds. |
+| iOS | `content-available: 1` with `apns-push-type: background` and `apns-priority: 5` | The system throttles delivery and may drop messages, and delivers nothing after the user force-quits the app until they open it. The plugin stops the handler after 25 seconds, within the system's 30. |
 | macOS | As iOS | Delivered while the app is running. |
-| Android | A `data` message with `priority: high` | Nothing is delivered after the app is force-stopped. FCM gives the handler a short time to finish. |
+| Android | A `data` message with `priority: high` | Nothing is delivered after the app is force-stopped. The plugin stops the handler after 8 seconds, within FCM's 10, which include starting the app. |
 
 The web does not support data-only messages: browsers require every push
 message to show a notification.
