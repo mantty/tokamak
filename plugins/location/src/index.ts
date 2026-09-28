@@ -33,7 +33,7 @@ class Location extends FrontendPlugin {
 
   watchPosition(next: PositionCallback, error: PositionErrorCallback): () => void {
     if (this.hasNativeTransport) {
-      return this.subscribe("watchPosition", (position) => {
+      return this.listen("watchPosition", (position) => {
         next(position as Position);
       }, error);
     }
