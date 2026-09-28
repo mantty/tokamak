@@ -87,12 +87,20 @@ TOKAMAK_MACOS_PLIST=native/Info.plist tok build macos
 
 Apple platform packs accept optional XML or binary application plists through
 `ios.plist` and `macos.plist`. The plist must have a dictionary root. Tokamak
-layers its generated values first, then icon values, plugin values, and the
-application plist last; its values therefore take precedence over all other
-values. Values it does not supply are retained. Apple platform packs add SDK,
-platform, and Xcode provenance keys from the active toolchain before the
-application plist overlay. When plugins set different values for the same key,
-the build fails unless the application plist sets that key.
+layers its generated values first, then icon values, each plugin's plist, and
+the application plist last. Plugin plists merge dictionaries by key and arrays
+as a union; a different value at the same key path fails the build unless the
+application plist sets that key path. The application plist overlays
+everything, replacing arrays and other non-dictionary values, so an app that
+sets `UIBackgroundModes` must list the modes its plugins need.
+
+`ios.entitlements` and `macos.entitlements` name entitlements plists layered
+over the provisioning profile's entitlements at signing. Each declared
+entitlement must be permitted by the profile; automatic signing provisions a
+profile that permits them. Declare `aps-environment` (iOS) or
+`com.apple.developer.aps-environment` (macOS) for push notifications; signing
+uses the profile's value. Entitlements that need a profile require
+`macos.team-id` on macOS.
 
 The Android platform pack accepts an optional partial `AndroidManifest.xml`
 through `android.manifest`, for example to declare `android.permission.CAMERA`
@@ -121,6 +129,7 @@ ID, hardened runtime, notarisation) is not covered.
 ## Respect the packaged Worker contract
 
 - Export a default Worker object with a `fetch(request, env, ctx)` handler, directly or through a compatible framework adapter.
+- Native builds also call other methods of the default export for plugin events, such as `push(message, env, ctx)` for a data-only push notification from `@tokamakdev/plugin-notifications`, including when the system starts the app in the background. Each call gets a fresh runtime like a request. Cloudflare never calls these methods and `tok dev` does not run them.
 - Use standard request and response semantics and same-origin routes between the frontend and packaged Worker.
 - Expect a fresh JavaScript runtime and module graph for each packaged HTTP request. Do not use module globals, singleton objects, or in-memory caches as durable state across requests.
 - Treat a WebSocket Worker context as lasting only for that WebSocket connection.
@@ -172,7 +181,8 @@ ID, hardened runtime, notarisation) is not covered.
 - Preserve a plugin's web implementation or feature-detect availability when the same code also targets ordinary browsers.
 - Handle permission denial, unavailable hardware, cancellation, navigation, and page lifecycle as normal outcomes of a native capability request.
 - Inspect the installed plugin package before inventing a method, event, permission, or platform fallback.
-- First-party plugins are `@tokamakdev/plugin-location`, `@tokamakdev/plugin-secure-storage` (device-only secrets, optionally bound to Face ID, fingerprint or passcode) and `@tokamakdev/plugin-local-authentication` (device owner checks the app performs when it chooses).
+- First-party plugins are `@tokamakdev/plugin-location`, `@tokamakdev/plugin-secure-storage` (device-only secrets, optionally bound to Face ID, fingerprint or passcode), `@tokamakdev/plugin-local-authentication` (device owner checks the app performs when it chooses) and `@tokamakdev/plugin-notifications` (local and push notifications on every platform, including the web).
+- Push needs per-platform declarations: `aps-environment` in the `ios.entitlements` file, `com.apple.developer.aps-environment` in the `macos.entitlements` file with `macos.team-id`, the Firebase project values as `<meta-data>` in the `android.manifest` file, and a service worker using the plugin's helper on the web. The app's server stores subscriptions and sends through APNs, FCM or Web Push.
 - Camera and microphone use the standard `getUserMedia` API, not a plugin. Declare them per platform: `NSCameraUsageDescription`/`NSMicrophoneUsageDescription` in the `ios.plist` or `macos.plist` file, and `android.permission.CAMERA`/`android.permission.RECORD_AUDIO` in the `android.manifest` file.
 - Android builds run lint's `NewApi` check over shell and plugin Kotlin. Guard calls to APIs newer than the minimum SDK with a direct `Build.VERSION.SDK_INT` comparison; an unguarded call fails the build.
 

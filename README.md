@@ -264,6 +264,7 @@ The platform packs accept these settings:
 |---|---|---|
 | `build-number` | `ios`, `macos` | `CFBundleVersion`: one to three period-separated integers; defaults to the app version |
 | `plist` | `ios`, `macos` | Application plist layered over generated values |
+| `entitlements` | `ios`, `macos` | Entitlements plist layered over the provisioning profile's entitlements |
 | `team-id` | `ios`, `macos` | Apple Development team for signing |
 | `signing-identity` | `ios` | Identity SHA-1 for manual signing |
 | `provisioning-profile` | `ios` | Provisioning profile for manual signing |
@@ -276,12 +277,29 @@ TOKAMAK_MACOS_PLIST=native/Info.plist tok build macos
 
 The application plist may be XML or binary and must have a dictionary at its
 root. Tokamak layers its generated application values first, then icon values,
-plugin values, and finally the application plist. Its values therefore take
-precedence over all other values, including the SDK, platform, and Xcode
-provenance keys Apple platform packs generate from the active toolchain.
-Values it does not supply are preserved. Plugins that set a key to the same
-value share it; when plugins set different values for a key, the build fails
-unless the application plist sets that key.
+each plugin's plist, and finally the application plist:
+
+- A plugin's plist merges onto the layers before it. Dictionaries merge by key,
+  and arrays merge as a union, so two plugins can each add a
+  `UIBackgroundModes` value. A different value at the same key path fails the
+  build, naming the key path and both sources, unless the application plist
+  sets that key path.
+- The application plist overlays everything: dictionaries merge, and any other
+  value, including an array, replaces. Its values therefore take precedence
+  over all other values, including the SDK, platform, and Xcode provenance keys
+  Apple platform packs generate from the active toolchain.
+
+The entitlements file is a plist with a dictionary root. Signing uses the
+provisioning profile's entitlements overlaid with the file's, with the plist
+overlay rules. Each declared entitlement must be one the profile permits: the
+same value, `*`, or a prefix wildcard such as `TEAMID.*`. Automatic signing
+selects a profile that permits every declared entitlement and asks Xcode to
+provision one when none does, which enables the matching capabilities on the
+App ID. Manual signing fails when the profile does not permit one. The
+`aps-environment` entitlements take the profile's value. iOS Simulator builds
+embed the declared entitlements in the executable. macOS builds without a team
+are signed with the file as given, and fail when it declares an entitlement
+only a provisioning profile can authorise.
 
 The Android manifest is a partial `AndroidManifest.xml`:
 
@@ -294,8 +312,8 @@ The Android manifest is a partial `AndroidManifest.xml`:
 ```
 
 The Android Gradle Plugin's manifest merger combines it with the generated
-manifest, which includes plugin permissions. The application manifest has the
-higher priority:
+manifest, which includes plugin permissions, and each plugin's own manifest.
+The application manifest has the highest priority:
 
 - Elements are combined by key, for example `<uses-permission>` by
   `android:name`. An element declared in both files appears once.
@@ -406,8 +424,9 @@ By default tokamak expects your server to available on `http://localhost:5173` (
 ## Native plugins
 
 Native capabilities are provided by npm packages: `@tokamakdev/plugin-location`,
-`@tokamakdev/plugin-secure-storage` and `@tokamakdev/plugin-local-authentication`.
-Add them to your project's `dependencies`:
+`@tokamakdev/plugin-secure-storage`, `@tokamakdev/plugin-local-authentication`
+and `@tokamakdev/plugin-notifications`. Add them to your project's
+`dependencies`:
 
 ```sh
 npm install @tokamakdev/plugin-location
@@ -418,6 +437,12 @@ npm install @tokamakdev/plugin-location
 package as Node does, in the nearest `node_modules` of the project or a parent
 directory, so plugins installed at a workspace root are included. Call plugins
 from browser code. Each plugin's README describes its API.
+
+A plugin can also run Worker code: native builds call a method on the Worker's
+default export for an event the plugin receives, such as `push` for a
+data-only push notification. The method receives the event's value, `env`
+and `ctx`, like `fetch`. Cloudflare never calls these methods, so the same
+Worker deploys unchanged, and `tok dev` does not run them.
 
 Android builds run lint's `NewApi` check over the shell and plugin sources. A
 call to an API newer than the app's minimum SDK fails the build, naming the
@@ -543,10 +568,10 @@ cd ../location
 npm publish --access public
 ```
 
-A new CLI or platform-pack package fails to publish from its first
-`Build and Pre-Release` run. Publish that run's packages locally, enable
-Trusted Publishing for each new package, then re-run the failed job. The
-run's artifacts are kept for one day. For the platform packs:
+A new plugin, CLI or platform-pack package fails to publish from its first
+`Build and Pre-Release` run. Publish that run's new packages locally, enable
+Trusted Publishing for each, then re-run the failed job. The run's artifacts
+are kept for one day. For the platform packs:
 
 ```sh
 gh run download RUN_ID --repo mantty/tokamak --name tokamak-npm-platform-packs --dir artifacts
@@ -555,6 +580,10 @@ for package in ./artifacts/tokamakdev-platform-*.tgz; do
 done
 gh run rerun RUN_ID --repo mantty/tokamak --failed
 ```
+
+For a plugin, download the `tokamak-plugins` artifact instead and publish the
+new plugin's tarball, for example
+`./artifacts/tokamakdev-plugin-notifications-<version>.tgz`.
 
 ### Build the example against local sources
 

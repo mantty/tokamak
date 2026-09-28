@@ -960,6 +960,50 @@ fn rejects_a_missing_app_android_manifest() -> TestResult {
 
 #[cfg(unix)]
 #[test]
+fn builds_each_android_plugin_as_a_library_module() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+    install_android_plugins(&project, &[("alerts", &[])])?;
+    let plugin = project.join("node_modules/alerts");
+    let plugin_manifest = r#"<manifest><application><service android:name="test.alerts.Service" /></application></manifest>"#;
+    fs::write(plugin.join("android/AndroidManifest.xml"), plugin_manifest)?;
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(plugin.join("tokamak-plugin.json"))?)?;
+    manifest["platforms"]["android"]["manifest"] = "android/AndroidManifest.xml".into();
+    manifest["platforms"]["android"]["dependencies"] =
+        serde_json::json!(["com.example:messaging:1.2.3"]);
+    fs::write(plugin.join("tokamak-plugin.json"), manifest.to_string())?;
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    configure_fake_gradle(&mut command, temporary.path())?;
+    command.assert().success();
+
+    let gradle = project.join("build/android/.tokamak");
+    let module = gradle.join("plugins/alerts");
+    assert_eq!(
+        fs::read_to_string(module.join("src/main/AndroidManifest.xml"))?,
+        plugin_manifest
+    );
+    assert!(module.join("src/main/kotlin/0-Plugin.kt").is_file());
+    let module_script = fs::read_to_string(module.join("build.gradle"))?;
+    assert!(module_script.contains("implementation project(':tokamak-plugin')"));
+    assert!(module_script.contains("implementation 'com.example:messaging:1.2.3'"));
+    assert!(
+        fs::read_to_string(gradle.join("settings.gradle"))?.contains("include ':plugins:alerts'")
+    );
+    let app_script = fs::read_to_string(gradle.join("app/build.gradle"))?;
+    assert!(app_script.contains("implementation project(':plugins:alerts')"));
+    assert!(app_script.contains("checkDependencies true"));
+    assert!(
+        fs::read_to_string(
+            gradle.join("app/src/main/kotlin/com/tokamak/runtime/TokamakPluginRegistry.kt")
+        )?
+        .contains("test.alerts.Plugin(host),")
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn writes_each_android_permission_once() -> TestResult {
     let (temporary, project, platform_pack) = create_android_inputs()?;
     install_android_plugins(

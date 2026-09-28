@@ -382,7 +382,7 @@ export default {
 fn dispatch_event(
     source: &[u8],
     event: &str,
-    payload: serde_json::Value,
+    payload: &serde_json::Value,
 ) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::from_bytecode(crate::compile_worker(source)?, directory.path());
@@ -396,7 +396,7 @@ fn dispatch_event(
     let execution = lifecycle
         .enter(&accepting)
         .ok_or("event was not admitted")?;
-    Ok(dispatcher.dispatch(event, &payload, &execution)?)
+    Ok(dispatcher.dispatch(event, payload, &execution)?)
 }
 
 #[test]
@@ -404,7 +404,7 @@ fn runs_a_worker_event_handler_with_its_payload_environment_and_context()
 -> Result<(), Box<dyn std::error::Error>> {
     let started = std::time::Instant::now();
 
-    let result = dispatch_event(EVENT_WORKER, "push", serde_json::json!({ "title": "Hi" }))?;
+    let result = dispatch_event(EVENT_WORKER, "push", &serde_json::json!({ "title": "Hi" }))?;
 
     assert_eq!(
         result,
@@ -421,7 +421,7 @@ fn runs_a_worker_event_handler_with_its_payload_environment_and_context()
 fn reports_an_event_handler_that_returns_nothing_as_null() -> Result<(), Box<dyn std::error::Error>>
 {
     assert_eq!(
-        dispatch_event(EVENT_WORKER, "quiet", serde_json::Value::Null)?,
+        dispatch_event(EVENT_WORKER, "quiet", &serde_json::Value::Null)?,
         Some(serde_json::Value::Null)
     );
     Ok(())
@@ -430,7 +430,7 @@ fn reports_an_event_handler_that_returns_nothing_as_null() -> Result<(), Box<dyn
 #[test]
 fn reports_a_missing_event_handler() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
-        dispatch_event(EVENT_WORKER, "scheduled", serde_json::Value::Null)?,
+        dispatch_event(EVENT_WORKER, "scheduled", &serde_json::Value::Null)?,
         None
     );
     Ok(())
@@ -438,7 +438,7 @@ fn reports_a_missing_event_handler() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn reports_an_event_handler_failure() -> Result<(), Box<dyn std::error::Error>> {
-    let Err(error) = dispatch_event(EVENT_WORKER, "broken", serde_json::Value::Null) else {
+    let Err(error) = dispatch_event(EVENT_WORKER, "broken", &serde_json::Value::Null) else {
         return Err("the failing handler succeeded".into());
     };
     assert!(error.to_string().contains("handler exploded"), "{error}");
@@ -447,15 +447,15 @@ fn reports_an_event_handler_failure() -> Result<(), Box<dyn std::error::Error>> 
 
 #[test]
 fn runs_event_handlers_on_class_entrypoints() -> Result<(), Box<dyn std::error::Error>> {
-    let worker = br#"
+    let worker = br"
 export default class {
   constructor(ctx, env) { this.env = env; }
   fetch() {}
   push(message) { return `${message} ${this.env.FLAG}`; }
 }
-"#;
+";
     assert_eq!(
-        dispatch_event(worker, "push", serde_json::json!("switched"))?,
+        dispatch_event(worker, "push", &serde_json::json!("switched"))?,
         Some(serde_json::json!("switched on"))
     );
     Ok(())
