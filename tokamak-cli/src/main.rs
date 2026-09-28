@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use settings::{PlatformOptions, TopOptions};
 use tokamak_cli::{Platform, Target};
 
@@ -32,36 +32,6 @@ const DEV_PLATFORM_HELP: &str =
 struct Cli {
     #[command(subcommand)]
     command: Command,
-}
-
-/// Top-level application settings. Each can also be set with an environment
-/// variable or in the Tokamak configuration.
-#[derive(Debug, Args)]
-struct AppOptions {
-    /// Display name for every platform [`TOKAMAK_NAME`, `name`].
-    #[arg(long)]
-    name: Option<String>,
-    /// Application identifier for every platform [`TOKAMAK_IDENTIFIER`, `identifier`].
-    #[arg(long)]
-    identifier: Option<String>,
-    /// Icon for every platform [`TOKAMAK_ICON`, `icon`].
-    #[arg(long, value_name = "PATH")]
-    icon: Option<String>,
-    /// App version [`TOKAMAK_VERSION`, `version`].
-    #[arg(long)]
-    version: Option<String>,
-}
-
-impl AppOptions {
-    fn into_top_options(self, build: Option<String>) -> TopOptions {
-        TopOptions {
-            name: self.name,
-            identifier: self.identifier,
-            icon: self.icon,
-            version: self.version,
-            build,
-        }
-    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -90,7 +60,7 @@ enum Command {
         #[arg(short = 'e', long = "env")]
         env: Option<String>,
         #[command(flatten)]
-        app: AppOptions,
+        top: TopOptions,
         /// Command that builds the project [`TOKAMAK_BUILD`, `build`].
         #[arg(long = "build", value_name = "COMMAND")]
         build_command: Option<String>,
@@ -117,7 +87,7 @@ enum Command {
         #[arg(short = 'w', long = "wrangler")]
         wrangler: Option<PathBuf>,
         #[command(flatten)]
-        app: AppOptions,
+        top: TopOptions,
         /// HTTP endpoint served by the framework's development command.
         #[arg(long, value_name = "URL", default_value = "http://localhost:5173")]
         server: String,
@@ -162,7 +132,7 @@ fn run() -> Result<()> {
             config,
             wrangler,
             env,
-            app,
+            top,
             build_command,
             skip_project_build,
         } => {
@@ -175,7 +145,10 @@ fn run() -> Result<()> {
                 tokamak_config_path: config,
                 wrangler_config_path: wrangler,
                 wrangler_env: env,
-                top: app.into_top_options(build_command),
+                top: TopOptions {
+                    build: build_command,
+                    ..top
+                },
                 platform_options,
                 skip_project_build,
             })?;
@@ -194,7 +167,7 @@ fn run() -> Result<()> {
             platform_pack,
             config,
             wrangler,
-            app,
+            top,
             server,
             host_address,
             command,
@@ -205,7 +178,7 @@ fn run() -> Result<()> {
                 platform_pack_dir: platform_pack,
                 tokamak_config_path: config,
                 wrangler_config_path: wrangler,
-                top: app.into_top_options(None),
+                top,
                 platform_options,
                 server,
                 host_address,
@@ -245,39 +218,39 @@ fn split_arguments(arguments: Vec<OsString>) -> Result<(Vec<OsString>, PlatformO
 fn command(arguments: &[OsString]) -> clap::Command {
     let command = Cli::command();
     let is_help = |argument: &&OsString| *argument == "--help" || *argument == "-h";
-    if !arguments
+    let asks_for_help = arguments
         .iter()
         .take_while(|argument| *argument != "--")
-        .any(|argument| is_help(&argument))
-    {
+        .any(|argument| is_help(&argument));
+    if !asks_for_help {
         return command;
     }
     let without_help = arguments.iter().filter(|argument| !is_help(argument));
     let Ok(cli) = Cli::try_parse_from(without_help) else {
         return command;
     };
-    match cli.command {
+    let (subcommand, platforms, platform_pack) = match cli.command {
         Command::Build {
             platforms,
             platform_pack,
             ..
-        } => match parse_platforms(&platforms) {
-            Ok(platforms) => command.mut_subcommand("build", |build| {
-                build.after_help(platforms_help(&platforms, platform_pack.as_deref()))
-            }),
-            Err(_) => command,
-        },
+        } => ("build", parse_platforms(&platforms).ok(), platform_pack),
         Command::Dev {
             device_id,
             platform_pack,
             ..
-        } => match device_id.parse::<Platform>() {
-            Ok(platform) => command.mut_subcommand("dev", |dev| {
-                dev.after_help(platforms_help(&[platform], platform_pack.as_deref()))
-            }),
-            Err(_) => command,
-        },
-        _ => command,
+        } => (
+            "dev",
+            device_id.parse().ok().map(|platform| vec![platform]),
+            platform_pack,
+        ),
+        _ => return command,
+    };
+    match platforms {
+        Some(platforms) => command.mut_subcommand(subcommand, |subcommand| {
+            subcommand.after_help(platforms_help(&platforms, platform_pack.as_deref()))
+        }),
+        None => command,
     }
 }
 
@@ -387,9 +360,9 @@ mod tests {
                 "pnpm build"
             ]),
             Ok(Cli {
-                command: Command::Build { app, build_command, .. }
-            }) if app.identifier.as_deref() == Some("com.example.app")
-                && app.version.as_deref() == Some("1.2.0")
+                command: Command::Build { top, build_command, .. }
+            }) if top.identifier.as_deref() == Some("com.example.app")
+                && top.version.as_deref() == Some("1.2.0")
                 && build_command.as_deref() == Some("pnpm build")
         ));
     }

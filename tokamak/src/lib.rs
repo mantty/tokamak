@@ -82,6 +82,7 @@ pub use tokamak_config::{
     Error as TokamakConfigError, LoadedConfig as LoadedTokamakConfig, PackValue, PlatformValues,
     SHARED_PLATFORM_KEYS, TokamakConfig, app_name_problem, is_valid_key,
     load_config as load_tokamak_config, resolve_config_path as resolve_tokamak_config_path, slug,
+    value_problem,
 };
 pub use wrangler_config::{
     Error as WranglerConfigError, HtmlHandling, NotFoundHandling, WranglerAssets, WranglerBinding,

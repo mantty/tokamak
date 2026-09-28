@@ -1,19 +1,24 @@
 //! Application settings from command-line options, environment variables, and
 //! the Tokamak configuration.
 //!
-//! A key has the same name in each source: `--ios-plist`, `TOKAMAK_IOS_PLIST`,
-//! and `ios.plist`. Options take precedence over environment variables, which
-//! take precedence over the configuration. Within a source, a platform's own
-//! value takes precedence over a top-level one. The CLI validates the keys it
-//! owns; every other key belongs to a platform pack, which declares it.
+//! A setting has the same name in each source: `--<platform>-<key>`,
+//! `TOKAMAK_<PLATFORM>_<KEY>`, and `<platform>.<key>`, or `--<key>`,
+//! `TOKAMAK_<KEY>`, and `<key>` at the top level. Options take precedence over
+//! environment variables, which take precedence over the configuration. Within
+//! a source, a platform's own value takes precedence over a top-level one. The
+//! CLI validates the keys it owns; every other key belongs to a platform pack,
+//! which declares it.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::env;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
-use tokamak::{SHARED_PLATFORM_KEYS, TokamakConfig, app_name_problem, is_valid_key};
+use anyhow::{Result, bail};
+use clap::Args;
+use tokamak::{SHARED_PLATFORM_KEYS, TokamakConfig, app_name_problem, is_valid_key, value_problem};
 use tokamak_cli::{Platform, PlatformPackManifest, VariableKind};
 
 /// Keys every platform shares with the top level, with their kind and description.
@@ -23,13 +28,23 @@ const SHARED_OPTIONS: [(&str, VariableKind, &str); 3] = [
     ("icon", VariableKind::Path, "Icon in the platform's format"),
 ];
 
-/// Top-level values from command-line options.
-#[derive(Clone, Debug, Default)]
+/// Top-level settings from command-line options.
+#[derive(Args, Clone, Debug, Default)]
 pub(crate) struct TopOptions {
+    /// Display name for every platform [`TOKAMAK_NAME`, `name`].
+    #[arg(long)]
     pub(crate) name: Option<String>,
+    /// Application identifier for every platform [`TOKAMAK_IDENTIFIER`, `identifier`].
+    #[arg(long)]
     pub(crate) identifier: Option<String>,
+    /// Icon for every platform [`TOKAMAK_ICON`, `icon`].
+    #[arg(long, value_name = "PATH")]
     pub(crate) icon: Option<String>,
+    /// App version [`TOKAMAK_VERSION`, `version`].
+    #[arg(long)]
     pub(crate) version: Option<String>,
+    /// Project build command, which only `tok build` takes.
+    #[arg(skip)]
     pub(crate) build: Option<String>,
 }
 
@@ -38,8 +53,11 @@ pub(crate) struct TopOptions {
 pub(crate) struct PlatformOptions(BTreeMap<String, BTreeMap<String, String>>);
 
 impl PlatformOptions {
-    fn get(&self, namespace: &str, key: &str) -> Option<&String> {
-        self.0.get(namespace)?.get(key)
+    fn value(&self, namespace: &str, key: &str) -> Result<Option<String>> {
+        let value = self.0.get(namespace).and_then(|values| values.get(key));
+        value
+            .map(|value| valid(&format!("--{namespace}-{key}"), value.clone()))
+            .transpose()
     }
 
     fn keys(&self, namespace: &str) -> impl Iterator<Item = &String> {
@@ -58,8 +76,34 @@ pub(crate) struct Sources<'a> {
     pub(crate) current_dir: &'a Path,
 }
 
+impl<'a> Sources<'a> {
+    /// Sources that read the process environment.
+    pub(crate) fn new(
+        top: &'a TopOptions,
+        platform: &'a PlatformOptions,
+        config: &'a TokamakConfig,
+        current_dir: &'a Path,
+    ) -> Self {
+        Self {
+            top,
+            platform,
+            config,
+            environment: &process_environment,
+            current_dir,
+        }
+    }
+}
+
+fn process_environment(name: &str) -> Result<Option<String>> {
+    match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => bail!("{name} must contain valid UTF-8"),
+    }
+}
+
 /// Settings for one platform.
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct PlatformSettings {
     pub(crate) name: Option<String>,
     pub(crate) identifier: Option<String>,
@@ -69,7 +113,8 @@ pub(crate) struct PlatformSettings {
 }
 
 /// Split `--<platform>-<key> <value>` and `--<platform>-<key>=<value>` options
-/// out of `arguments`, which stop at `--`. Other arguments keep their order.
+/// out of `arguments`, which stop at `--`. Other arguments keep their order. A
+/// separate value may not start with `-`, as with other options.
 pub(crate) fn split_platform_options(
     arguments: Vec<OsString>,
 ) -> Result<(Vec<OsString>, PlatformOptions)> {
@@ -82,34 +127,33 @@ pub(crate) fn split_platform_options(
             remaining.extend(arguments);
             break;
         }
-        let Some((namespace, key, value)) = platform_option(&argument) else {
+        let text = argument.to_string_lossy();
+        let Some((namespace, key, value)) = platform_option(&text) else {
             remaining.push(argument);
             continue;
         };
+        let option = format!("--{namespace}-{key}");
+        if matches!(text, Cow::Owned(_)) {
+            bail!("{option} must be valid UTF-8");
+        }
         if !is_valid_key(&key) {
-            bail!(
-                "--{namespace}-{key} is not a valid option; keys are lowercase words joined by hyphens"
-            );
+            bail!("{option} is not a valid option; keys are lowercase words joined by hyphens");
         }
         let value = match value {
             Some(value) => value,
-            None => arguments
-                .next()
-                .filter(|value| value != "--")
-                .and_then(|value| value.into_string().ok())
-                .with_context(|| format!("--{namespace}-{key} requires a value"))?,
+            None => separate_value(arguments.next(), &option)?,
         };
         let values = options.0.entry(namespace.to_owned()).or_default();
-        if values.insert(key.clone(), value).is_some() {
-            bail!("--{namespace}-{key} is given more than once");
+        if values.insert(key, value).is_some() {
+            bail!("{option} is given more than once");
         }
     }
     Ok((remaining, options))
 }
 
 /// The namespace, key, and inline value of a platform option.
-fn platform_option(argument: &OsString) -> Option<(&'static str, String, Option<String>)> {
-    let option = argument.to_str()?.strip_prefix("--")?;
+fn platform_option(argument: &str) -> Option<(&'static str, String, Option<String>)> {
+    let option = argument.strip_prefix("--")?;
     let (name, value) = match option.split_once('=') {
         Some((name, value)) => (name, Some(value.to_owned())),
         None => (option, None),
@@ -121,16 +165,37 @@ fn platform_option(argument: &OsString) -> Option<(&'static str, String, Option<
     })
 }
 
+fn separate_value(value: Option<OsString>, option: &str) -> Result<String> {
+    let Some(value) = value.filter(|value| !value.to_string_lossy().starts_with('-')) else {
+        bail!("{option} requires a value");
+    };
+    match value.into_string() {
+        Ok(value) => Ok(value),
+        Err(_) => bail!("{option} must be valid UTF-8"),
+    }
+}
+
 /// The app version: `--version`, `TOKAMAK_VERSION`, or `version`.
 pub(crate) fn version(sources: &Sources<'_>) -> Result<Option<String>> {
-    let value = top_value(sources, "version", sources.top.version.as_ref())?;
-    Ok(value.or_else(|| sources.config.version.clone()))
+    let (source, value) = match top_value(sources, "version", sources.top.version.as_ref())? {
+        Some(value) => value,
+        None => match &sources.config.version {
+            Some(version) => ("version".to_owned(), version.clone()),
+            None => return Ok(None),
+        },
+    };
+    if value.contains('\'') {
+        bail!("{source} must not contain quotes");
+    }
+    Ok(Some(value))
 }
 
 /// The project build command: `--build`, `TOKAMAK_BUILD`, or `build`.
 pub(crate) fn build_command(sources: &Sources<'_>) -> Result<Option<String>> {
     let value = top_value(sources, "build", sources.top.build.as_ref())?;
-    Ok(value.or_else(|| sources.config.build.clone()))
+    Ok(value
+        .map(|(_, value)| value)
+        .or_else(|| sources.config.build.clone()))
 }
 
 /// Resolve `platform`'s settings, rejecting keys its pack does not declare.
@@ -139,7 +204,8 @@ pub(crate) fn resolve(
     platform: Platform,
     manifest: &PlatformPackManifest,
 ) -> Result<PlatformSettings> {
-    let config_platform = platform.directory_name();
+    let namespace = platform.namespace();
+    let config = sources.config;
     let name = shared_value(sources, platform, "name", sources.top.name.as_ref())?;
     if let Some(problem) = name.as_deref().and_then(app_name_problem) {
         bail!("{} name {problem}", platform.display_name());
@@ -152,27 +218,27 @@ pub(crate) fn resolve(
     )?;
     let icon = shared_value(sources, platform, "icon", sources.top.icon.as_ref())?;
     Ok(PlatformSettings {
-        name: name.or_else(|| sources.config.name.for_platform(config_platform).cloned()),
-        identifier: identifier.or_else(|| {
-            sources
-                .config
-                .identifier
-                .for_platform(config_platform)
-                .cloned()
-        }),
+        name: name.or_else(|| config.name.for_platform(namespace).cloned()),
+        identifier: identifier.or_else(|| config.identifier.for_platform(namespace).cloned()),
         icon: icon
             .map(|icon| sources.current_dir.join(icon))
-            .or_else(|| sources.config.icon.for_platform(config_platform).cloned()),
+            .or_else(|| config.icon.for_platform(namespace).cloned()),
         pack_environment: pack_environment(sources, platform, manifest)?,
     })
 }
 
-/// A top-level key's option or environment value.
-fn top_value(sources: &Sources<'_>, key: &str, option: Option<&String>) -> Result<Option<String>> {
+/// A top-level key's option or environment value, with where it came from.
+fn top_value(
+    sources: &Sources<'_>,
+    key: &str,
+    option: Option<&String>,
+) -> Result<Option<(String, String)>> {
+    let source = format!("--{key}");
     if let Some(value) = option {
-        return valid(&format!("--{key}"), value.clone()).map(Some);
+        return Ok(Some((source.clone(), valid(&source, value.clone())?)));
     }
-    environment_value(sources, &environment_name(None, key))
+    let name = environment_name(None, key);
+    Ok(environment_value(sources, &name)?.map(|value| (name, value)))
 }
 
 /// A shared key's option or environment value: the platform's own, then the top-level one.
@@ -183,8 +249,8 @@ fn shared_value(
     top_option: Option<&String>,
 ) -> Result<Option<String>> {
     let namespace = platform.namespace();
-    if let Some(value) = sources.platform.get(namespace, key) {
-        return valid(&format!("--{namespace}-{key}"), value.clone()).map(Some);
+    if let Some(value) = sources.platform.value(namespace, key)? {
+        return Ok(Some(value));
     }
     if let Some(value) = top_option {
         return valid(&format!("--{key}"), value.clone()).map(Some);
@@ -231,19 +297,24 @@ fn pack_value(
     key: &str,
     environment_name: &str,
 ) -> Result<Option<(String, PathBuf)>> {
-    if let Some(value) = sources.platform.get(namespace, key) {
-        let value = valid(&format!("--{namespace}-{key}"), value.clone())?;
-        return Ok(Some((value, sources.current_dir.to_path_buf())));
+    let from_current_dir = |value| (value, sources.current_dir.to_path_buf());
+    if let Some(value) = sources.platform.value(namespace, key)? {
+        return Ok(Some(from_current_dir(value)));
     }
     if let Some(value) = environment_value(sources, environment_name)? {
-        return Ok(Some((value, sources.current_dir.to_path_buf())));
+        return Ok(Some(from_current_dir(value)));
     }
     let configured = sources
         .config
         .pack_values
         .get(namespace)
         .and_then(|values| values.get(key));
-    Ok(configured.map(|configured| (configured.value.clone(), configured.directory.clone())))
+    Ok(configured.map(|configured| {
+        (
+            configured.value.clone(),
+            configured.directory().to_path_buf(),
+        )
+    }))
 }
 
 fn reject_undeclared_keys(
@@ -252,7 +323,7 @@ fn reject_undeclared_keys(
     manifest: &PlatformPackManifest,
 ) -> Result<()> {
     let namespace = platform.namespace();
-    let declared = |key: &String| manifest.variables.contains_key(key);
+    let declared = |key: &str| manifest.variables.contains_key(key);
     if let Some(key) = sources
         .platform
         .keys(namespace)
@@ -264,19 +335,14 @@ fn reject_undeclared_keys(
         );
     }
     let configured = sources.config.pack_values.get(namespace);
-    if let Some(key) = configured
+    if let Some((key, value)) = configured
         .into_iter()
-        .flat_map(BTreeMap::keys)
-        .find(|key| !declared(key))
+        .flatten()
+        .find(|(key, _)| !declared(key))
     {
-        let path = sources
-            .config
-            .path
-            .as_deref()
-            .unwrap_or(Path::new("tokamak.jsonc"));
         bail!(
             "unknown key {namespace}.{key} in {}; {}",
-            path.display(),
+            value.file.display(),
             accepted_options(platform, manifest)
         );
     }
@@ -305,15 +371,13 @@ fn environment_name(namespace: Option<&str>, key: &str) -> String {
 
 /// A value from an option or environment variable, held to the configuration's rules.
 fn valid(source: &str, value: String) -> Result<String> {
-    if value.trim().is_empty() || value != value.trim() || value.chars().any(char::is_control) {
-        bail!(
-            "{source} must be a non-empty value without surrounding whitespace or control characters"
-        );
+    match value_problem(&value) {
+        Some(problem) => bail!("{source} {problem}"),
+        None => Ok(value),
     }
-    Ok(value)
 }
 
-/// `--help` text listing a platform's options, or why they cannot be listed.
+/// `--help` text listing a platform's options, noting when its pack cannot be loaded.
 pub(crate) fn platform_help(
     platform: Platform,
     manifest: std::result::Result<&PlatformPackManifest, String>,
@@ -324,17 +388,12 @@ pub(crate) fn platform_help(
         platform.display_name(),
         namespace.to_ascii_uppercase()
     );
-    let manifest = match manifest {
-        Ok(manifest) => manifest,
-        Err(error) => {
-            let _ = writeln!(help, "  the platform pack could not be loaded: {error}");
-            return help;
-        }
-    };
-    let pack_options = manifest
-        .variables
-        .iter()
-        .map(|(key, variable)| (key.as_str(), variable.kind, variable.description.as_str()));
+    let pack_options = manifest.as_ref().ok().into_iter().flat_map(|manifest| {
+        manifest
+            .variables
+            .iter()
+            .map(|(key, variable)| (key.as_str(), variable.kind, variable.description.as_str()))
+    });
     let rows = SHARED_OPTIONS
         .into_iter()
         .chain(pack_options)
@@ -353,6 +412,12 @@ pub(crate) fn platform_help(
         .unwrap_or(0);
     for (option, description) in rows {
         let _ = writeln!(help, "  {option:width$}  {description}");
+    }
+    if let Err(error) = manifest {
+        let _ = writeln!(
+            help,
+            "  The platform pack's options are unavailable: {error}"
+        );
     }
     help
 }
@@ -409,10 +474,10 @@ mod tests {
     ) -> BTreeMap<String, BTreeMap<String, PackValue>> {
         let values = values
             .iter()
-            .map(|(key, value, directory)| {
+            .map(|(key, value, file)| {
                 let value = PackValue {
                     value: (*value).to_owned(),
-                    directory: PathBuf::from(directory),
+                    file: PathBuf::from(file),
                 };
                 ((*key).to_owned(), value)
             })
@@ -486,14 +551,25 @@ mod tests {
             ])
         );
         assert_eq!(
-            options.get("ios", "plist").map(String::as_str),
+            options.value("ios", "plist")?.as_deref(),
             Some("Info.plist")
         );
         assert_eq!(
-            options.get("android", "manifest").map(String::as_str),
+            options.value("android", "manifest")?.as_deref(),
             Some("AndroidManifest.xml")
         );
-        assert_eq!(options.get("ios", "team-id"), None);
+        assert_eq!(options.value("ios", "team-id")?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn keeps_equals_signs_and_leading_hyphens_in_inline_values() -> Result<()> {
+        let options = platform_options(&["--ios-team-id=a=b", "--ios-plist=-Info.plist"])?;
+        assert_eq!(options.value("ios", "team-id")?.as_deref(), Some("a=b"));
+        assert_eq!(
+            options.value("ios", "plist")?.as_deref(),
+            Some("-Info.plist")
+        );
         Ok(())
     }
 
@@ -502,6 +578,11 @@ mod tests {
         for (values, message) in [
             (&["--ios-plist"][..], "--ios-plist requires a value"),
             (&["--ios-plist", "--"][..], "--ios-plist requires a value"),
+            (
+                &["--ios-plist", "--help"][..],
+                "--ios-plist requires a value",
+            ),
+            (&["--ios-", "x"][..], "--ios- is not a valid option"),
             (
                 &["--ios-plist=a", "--ios-plist=b"][..],
                 "--ios-plist is given more than once",
@@ -516,6 +597,21 @@ mod tests {
                 "{values:?}: {error:?}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_platform_options_that_are_not_utf8() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let invalid = OsString::from_vec(b"--ios-plist=\xff".to_vec());
+        let error = split_platform_options(vec![invalid]).map(|_| ());
+        assert!(error.is_err_and(|error| error.to_string() == "--ios-plist must be valid UTF-8"));
+
+        let invalid = OsString::from_vec(b"\xff".to_vec());
+        let error =
+            split_platform_options(vec![OsString::from("--ios-plist"), invalid]).map(|_| ());
+        assert!(error.is_err_and(|error| error.to_string() == "--ios-plist must be valid UTF-8"));
     }
 
     #[test]
@@ -601,6 +697,16 @@ mod tests {
             fixture.resolve(Platform::Macos)?.icon,
             Some(PathBuf::from("/work/icons/App.icon"))
         );
+        fixture.top.icon = Some("top/App.icon".to_owned());
+        fixture.platform = platform_options(&["--macos-icon", "macos/App.icon"])?;
+        assert_eq!(
+            fixture.resolve(Platform::Macos)?.icon,
+            Some(PathBuf::from("/work/macos/App.icon"))
+        );
+        assert_eq!(
+            fixture.resolve(Platform::Ios)?.icon,
+            Some(PathBuf::from("/work/top/App.icon"))
+        );
         Ok(())
     }
 
@@ -628,8 +734,8 @@ mod tests {
         fixture.config.pack_values = pack_values(
             "ios",
             &[
-                ("plist", "native/Info.plist", "/config"),
-                ("team-id", "CONFIG", "/config"),
+                ("plist", "native/Info.plist", "/config/tokamak.jsonc"),
+                ("team-id", "CONFIG", "/config/tokamak.jsonc"),
             ],
         );
         let environment = |settings: PlatformSettings| settings.pack_environment;
@@ -674,8 +780,8 @@ mod tests {
         assert!(fixture.resolve(Platform::Macos).is_ok());
 
         fixture.platform = PlatformOptions::default();
-        fixture.config.path = Some(PathBuf::from("/config/tokamak.jsonc"));
-        fixture.config.pack_values = pack_values("macos", &[("plsit", "Info.plist", "/config")]);
+        fixture.config.pack_values =
+            pack_values("macos", &[("plsit", "Info.plist", "/config/tokamak.jsonc")]);
         assert!(fixture.resolve(Platform::Macos).is_err_and(|error| {
             error
                 .to_string()
@@ -701,6 +807,24 @@ mod tests {
         assert_eq!(fixture.with(build_command)?.as_deref(), Some("turbo build"));
         fixture.top.version = Some("3.0.0".to_owned());
         assert_eq!(fixture.with(version)?.as_deref(), Some("3.0.0"));
+        fixture.top.build = Some("make".to_owned());
+        assert_eq!(fixture.with(build_command)?.as_deref(), Some("make"));
+        fixture.environment.remove("TOKAMAK_VERSION");
+        fixture.top.version = None;
+        fixture.config.version = Some("1.0'".to_owned());
+        assert!(
+            fixture
+                .with(version)
+                .is_err_and(|error| error.to_string() == "version must not contain quotes")
+        );
+        fixture
+            .environment
+            .insert("TOKAMAK_VERSION".to_owned(), " 2".to_owned());
+        assert!(
+            fixture
+                .with(version)
+                .is_err_and(|error| error.to_string().starts_with("TOKAMAK_VERSION must be"))
+        );
         Ok(())
     }
 
@@ -717,8 +841,11 @@ mod tests {
         assert!(help.contains("\n  --ios-team-id <VALUE>     Signing team\n"));
 
         let help = platform_help(Platform::Android, Err("no platform pack found".to_owned()));
+        assert!(help.contains("\n  --android-identifier <VALUE>  Application identifier\n"));
         assert!(
-            help.ends_with("  the platform pack could not be loaded: no platform pack found\n")
+            help.ends_with(
+                "  The platform pack's options are unavailable: no platform pack found\n"
+            )
         );
     }
 }

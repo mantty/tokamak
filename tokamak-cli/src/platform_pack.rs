@@ -427,7 +427,8 @@ pub struct PackVariable {
 pub enum VariableKind {
     /// The value is passed unchanged.
     String,
-    /// A relative path is made absolute against the directory it is relative to.
+    /// A relative path is made absolute against the current directory, or the
+    /// directory of the configuration file that set it.
     Path,
 }
 

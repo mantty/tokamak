@@ -67,12 +67,22 @@ pub struct TokamakConfig {
 pub struct PackValue {
     /// The value; numbers and booleans are written as strings.
     pub value: String,
-    /// Directory of the file that set the value, for resolving a relative path.
-    pub directory: PathBuf,
+    /// The configuration file that set the value; a relative path is relative
+    /// to its directory.
+    pub file: PathBuf,
 }
 
-/// Values taken from one file's platform objects; `None` records a `null`.
-type TakenPackValues = BTreeMap<String, BTreeMap<String, Option<PackValue>>>;
+impl PackValue {
+    /// The directory a relative path value is relative to.
+    #[must_use]
+    pub fn directory(&self) -> &Path {
+        config_dir(&self.file)
+    }
+}
+
+/// Values taken from one file's platform objects. `None` records a `null`,
+/// which removes an included value or, for a whole platform, all of them.
+type TakenPackValues = BTreeMap<String, Option<BTreeMap<String, Option<PackValue>>>>;
 
 /// Whether `key` is lowercase ASCII words joined by single hyphens, the form of
 /// every configuration key, command-line option, and platform-pack variable.
@@ -103,12 +113,13 @@ pub struct PlatformValues<T> {
 }
 
 impl<T> PlatformValues<T> {
-    /// Return the value for a platform, falling back to the default.
+    /// Return the value for a platform namespace (`android`, `ios`, `macos`, or
+    /// `windows`), falling back to the default.
     #[must_use]
     pub fn for_platform(&self, platform: &str) -> Option<&T> {
         let value = match platform {
             "android" => &self.android,
-            "ios" | "ios-simulator" => &self.ios,
+            "ios" => &self.ios,
             "macos" => &self.macos,
             "windows" => &self.windows,
             _ => &None,
@@ -203,7 +214,7 @@ pub fn resolve_config_path(
 /// Top-level values are defaults; a platform object overrides them for that
 /// platform. Relative icon paths are resolved against the directory of the
 /// file that names them. Other platform-object keys are values for that
-/// platform's pack, each recorded with the directory of the file that set it.
+/// platform's pack, each recorded with the file that set it.
 ///
 /// A file may `include` one other configuration file, absolute or relative to
 /// the including file. The including file is deep-merged onto the included
@@ -247,6 +258,10 @@ fn overlay_pack_values(
     top: TakenPackValues,
 ) {
     for (platform, values) in top {
+        let Some(values) = values else {
+            base.remove(&platform);
+            continue;
+        };
         let platform_values = base.entry(platform).or_default();
         for (key, value) in values {
             match value {
@@ -265,10 +280,16 @@ fn take_pack_values(
 ) -> Result<TakenPackValues> {
     let mut taken = BTreeMap::new();
     for platform in PLATFORMS {
-        if let Some(Value::Object(platform_object)) = object.get_mut(platform) {
-            let values = take_platform_pack_values(config_path, platform, platform_object)?;
-            taken.insert(platform.to_owned(), values);
-        }
+        let values = match object.get_mut(platform) {
+            Some(Value::Object(platform_object)) => Some(take_platform_pack_values(
+                config_path,
+                platform,
+                platform_object,
+            )?),
+            Some(Value::Null) => None,
+            _ => continue,
+        };
+        taken.insert(platform.to_owned(), values);
     }
     Ok(taken)
 }
@@ -311,7 +332,7 @@ fn pack_value(config_path: &Path, field: &str, value: Value) -> Result<Option<Pa
     };
     Ok(Some(PackValue {
         value: validate_value(config_path, field, value)?,
-        directory: config_dir(config_path).to_path_buf(),
+        file: config_path.to_path_buf(),
     }))
 }
 
@@ -505,16 +526,18 @@ fn validate_name(config_path: &Path, field: &str, value: String) -> Result<Strin
     }
 }
 
+/// Why `value` cannot be a setting value, when it cannot.
+#[must_use]
+pub fn value_problem(value: &str) -> Option<&'static str> {
+    (value.trim().is_empty() || value != value.trim() || value.chars().any(char::is_control))
+        .then_some("must be a non-empty value without surrounding whitespace or control characters")
+}
+
 fn validate_value(config_path: &Path, field: &str, value: String) -> Result<String> {
-    if value.trim().is_empty() || value != value.trim() || value.chars().any(char::is_control) {
-        return Err(invalid(
-            config_path,
-            format!(
-                "{field} must be a non-empty value without surrounding whitespace or control characters"
-            ),
-        ));
+    match value_problem(&value) {
+        Some(problem) => Err(invalid(config_path, format!("{field} {problem}"))),
+        None => Ok(value),
     }
-    Ok(value)
 }
 
 fn invalid(config_path: &Path, message: impl Into<String>) -> Error {
@@ -639,10 +662,7 @@ mod tests {
             }
         );
         assert_eq!(
-            config
-                .name
-                .for_platform("ios-simulator")
-                .map(String::as_str),
+            config.name.for_platform("ios").map(String::as_str),
             Some("Myapp Pro")
         );
         assert_eq!(
@@ -705,21 +725,23 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         let path = temporary.path().join("tokamak.jsonc");
         assert!(invalid_message(&path, r#"{ "icons": {} }"#)?.contains("unknown field"));
+        assert!(invalid_message(&path, r#"{ "ios": "x" }"#)?.contains("invalid type"));
         Ok(())
     }
 
-    fn pack_value(value: &str, directory: &Path) -> PackValue {
+    fn pack_value(value: &str, file: &Path) -> PackValue {
         PackValue {
             value: value.to_owned(),
-            directory: directory.to_path_buf(),
+            file: file.to_path_buf(),
         }
     }
 
     #[test]
     fn passes_other_platform_keys_to_the_pack() -> TestResult {
         let temporary = tempfile::tempdir()?;
+        let file = temporary.path().join("tokamak.jsonc");
         let config = load(
-            &temporary.path().join("tokamak.jsonc"),
+            &file,
             r#"{
               "ios": { "name": "iOS App", "plist": "native/Info.plist", "build-number": 5 },
               "macos": { "hardened-runtime": true },
@@ -734,19 +756,13 @@ mod tests {
                 (
                     "ios".to_owned(),
                     BTreeMap::from([
-                        ("build-number".to_owned(), pack_value("5", temporary.path())),
-                        (
-                            "plist".to_owned(),
-                            pack_value("native/Info.plist", temporary.path())
-                        ),
+                        ("build-number".to_owned(), pack_value("5", &file)),
+                        ("plist".to_owned(), pack_value("native/Info.plist", &file)),
                     ])
                 ),
                 (
                     "macos".to_owned(),
-                    BTreeMap::from([(
-                        "hardened-runtime".to_owned(),
-                        pack_value("true", temporary.path())
-                    )])
+                    BTreeMap::from([("hardened-runtime".to_owned(), pack_value("true", &file))])
                 ),
             ])
         );
@@ -754,23 +770,27 @@ mod tests {
     }
 
     #[test]
-    fn included_pack_values_keep_their_directory_and_can_be_removed() -> TestResult {
+    fn included_pack_values_keep_their_file_and_can_be_removed() -> TestResult {
         let temporary = tempfile::tempdir()?;
         let shared_dir = temporary.path().join("shared");
         fs::create_dir_all(&shared_dir)?;
+        let shared = shared_dir.join("tokamak.jsonc");
         fs::write(
-            shared_dir.join("tokamak.jsonc"),
+            &shared,
             r#"{
               "ios": { "plist": "Info.plist", "team-id": "SHARED" },
               "android": { "manifest": "AndroidManifest.xml" },
+              "macos": { "plist": "Info.plist" },
             }"#,
         )?;
+        let file = temporary.path().join("tokamak.jsonc");
         let config = load(
-            &temporary.path().join("tokamak.jsonc"),
+            &file,
             r#"{
               "include": "shared/tokamak.jsonc",
               "ios": { "team-id": "APP" },
               "android": { "manifest": null },
+              "macos": null,
             }"#,
         )?
         .config;
@@ -780,8 +800,8 @@ mod tests {
             BTreeMap::from([(
                 "ios".to_owned(),
                 BTreeMap::from([
-                    ("plist".to_owned(), pack_value("Info.plist", &shared_dir)),
-                    ("team-id".to_owned(), pack_value("APP", temporary.path())),
+                    ("plist".to_owned(), pack_value("Info.plist", &shared)),
+                    ("team-id".to_owned(), pack_value("APP", &file)),
                 ])
             )])
         );

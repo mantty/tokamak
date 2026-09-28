@@ -16,7 +16,7 @@ npm install --save-dev @tokamakdev/tok
 
 With pnpm, use `pnpm add -D @tokamakdev/tok`. Run it with `npx tok`
 (`pnpm exec tok`) or from a `package.json` script; the examples in this README
-write `tok`.
+write `tok`. `tok version` prints the installed version.
 
 The package installs the `tok` binary for your machine and the platform packs
 it can build. Platform packs contain the tokamak runtime and native shell for

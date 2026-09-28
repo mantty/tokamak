@@ -371,7 +371,7 @@ fn sorted_directories(path: &Path) -> Result<Vec<PathBuf>> {
 
 fn configured_user_plist(metadata: &Metadata) -> Result<Option<PathBuf>> {
     let variable = user_plist_variable(&metadata.platform)?;
-    resolve_user_plist(variable, env::var_os(variable))
+    user_plist_path(variable, env::var_os(variable))
 }
 
 fn user_plist_variable(platform: &str) -> Result<&'static str> {
@@ -382,8 +382,7 @@ fn user_plist_variable(platform: &str) -> Result<&'static str> {
     }
 }
 
-/// tok passes the path absolute.
-fn resolve_user_plist(variable: &str, value: Option<OsString>) -> Result<Option<PathBuf>> {
+fn user_plist_path(variable: &str, value: Option<OsString>) -> Result<Option<PathBuf>> {
     let Some(value) = value else {
         return Ok(None);
     };
@@ -485,7 +484,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::{
-        Metadata, ToolchainMetadata, build_info_plist, parse_xcode_version, resolve_user_plist,
+        Metadata, ToolchainMetadata, build_info_plist, parse_xcode_version, user_plist_path,
         validate_build_number,
     };
     use anyhow::Context;
@@ -502,10 +501,6 @@ mod tests {
             ("identifier", "com.example.demo"),
             ("host", "demo-app.tokamak.local"),
             ("platform", platform),
-            (
-                "project-dir",
-                root.to_str().context("temporary path is UTF-8")?,
-            ),
             ("version", "1.2.3"),
         ] {
             std::fs::write(metadata.join(name), value)?;
@@ -861,10 +856,10 @@ mod tests {
         let plist = temporary.path().join("Info.plist");
         std::fs::write(&plist, b"plist")?;
         assert_eq!(
-            resolve_user_plist("TOKAMAK_IOS_PLIST", Some(plist.clone().into()))?,
+            user_plist_path("TOKAMAK_IOS_PLIST", Some(plist.clone().into()))?,
             Some(plist)
         );
-        assert!(resolve_user_plist("TOKAMAK_IOS_PLIST", Some(temporary.path().into())).is_err());
+        assert!(user_plist_path("TOKAMAK_IOS_PLIST", Some(temporary.path().into())).is_err());
         Ok(())
     }
 

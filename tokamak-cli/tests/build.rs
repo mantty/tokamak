@@ -837,12 +837,37 @@ fn lists_the_platform_pack_options_in_build_help() -> TestResult {
             .and(contains("--android-test <VALUE>")),
         );
     Command::cargo_bin("tok")?
+        .args(["dev", "android", "--platform-pack"])
+        .arg(&platform_pack)
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--android-manifest <PATH>"));
+    Command::cargo_bin("tok")?
         .args(["build", "--help"])
         .assert()
         .success()
         .stdout(contains(
             "run `tok build <platforms> --help` to list the options",
         ));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn checks_settings_before_building_the_project() -> TestResult {
+    let (_temporary, project, platform_pack) = create_android_inputs()?;
+    Command::cargo_bin("tok")?
+        .args(["build", "android", "--project"])
+        .arg(&project)
+        .arg("--platform-pack")
+        .arg(&platform_pack)
+        .args(["--version", "1.0.0", "--build", "touch project-built"])
+        .args(["--android-manifset", "AndroidManifest.xml"])
+        .assert()
+        .failure()
+        .stderr(contains("unknown option --android-manifset"));
+    assert!(!project.join("project-built").exists());
     Ok(())
 }
 

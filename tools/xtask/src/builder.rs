@@ -45,7 +45,7 @@ fn build_source_platform_pack_at(workspace: &WorkspaceLayout, target: Target) ->
             .iter()
             .map(|tool| (*tool).to_owned())
             .collect(),
-        variables: target_variables(&workspace.platform_variables(target), target)?,
+        variables: target_variables(workspace, target)?,
     };
     manifest.validate()?;
     let manifest_path = workspace.manifest(target);
@@ -114,7 +114,12 @@ fn deploy_runtime(workspace: &WorkspaceLayout, pack_root: &Path) -> Result<()> {
 }
 
 /// The variables a pack declares for `target`'s platform namespace.
-fn target_variables(path: &Path, target: Target) -> Result<BTreeMap<String, PackVariable>> {
+fn target_variables(
+    workspace: &WorkspaceLayout,
+    target: Target,
+) -> Result<BTreeMap<String, PackVariable>> {
+    let path = workspace.platform_variables(target);
+    let path = path.as_path();
     let content = fs::read_to_string(path)
         .with_context(|| format!("read platform-pack variables {}", path.display()))?;
     let mut namespaces: BTreeMap<String, BTreeMap<String, PackVariable>> =
@@ -168,18 +173,9 @@ mod tests {
     #[test]
     fn selects_the_variables_for_the_target_namespace() -> anyhow::Result<()> {
         let workspace = WorkspaceLayout::from_source().context("source workspace")?;
-        let simulator = target_variables(
-            &workspace.platform_variables(Target::IosSimulatorArm64),
-            Target::IosSimulatorArm64,
-        )?;
-        let macos = target_variables(
-            &workspace.platform_variables(Target::MacosArm64),
-            Target::MacosArm64,
-        )?;
-        let windows = target_variables(
-            &workspace.platform_variables(Target::WindowsX64),
-            Target::WindowsX64,
-        )?;
+        let simulator = target_variables(&workspace, Target::IosSimulatorArm64)?;
+        let macos = target_variables(&workspace, Target::MacosArm64)?;
+        let windows = target_variables(&workspace, Target::WindowsX64)?;
 
         assert_eq!(
             simulator.get("plist").map(|variable| variable.kind),

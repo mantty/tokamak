@@ -52,9 +52,16 @@ pub(crate) struct DevelopmentSummary {
 struct BuildContext<'a> {
     build_dir: &'a Path,
     wrangler: &'a WranglerConfig,
-    sources: &'a settings::Sources<'a>,
     plugins: &'a [plugins::Plugin],
     version: &'a str,
+}
+
+/// A platform whose pack is loaded and whose settings are resolved.
+struct PlatformBuild {
+    platform: Platform,
+    pack_root: PathBuf,
+    manifest: PlatformPackManifest,
+    settings: settings::PlatformSettings,
 }
 
 struct BuildMetadata<'a> {
@@ -74,14 +81,20 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     let build_dir = fs::canonicalize(build_dir)?;
     let tokamak = load_project_config(&request.tokamak_config_path)?;
     let current_dir = env::current_dir()?;
-    let sources = settings::Sources {
-        top: &request.top,
-        platform: &request.platform_options,
-        config: &tokamak,
-        environment: &environment_value,
-        current_dir: &current_dir,
-    };
+    let sources = settings::Sources::new(
+        &request.top,
+        &request.platform_options,
+        &tokamak,
+        &current_dir,
+    );
     let version = required_version(&sources)?;
+    let builds = request
+        .platforms
+        .iter()
+        .map(|platform| {
+            prepare_platform_build(*platform, request.platform_pack_dir.as_deref(), &sources)
+        })
+        .collect::<Result<Vec<_>>>()?;
     if !request.skip_project_build {
         let command = settings::build_command(&sources)?;
         support::run_project_build(&project, command.as_deref())?;
@@ -96,16 +109,29 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     let context = BuildContext {
         build_dir: &build_dir,
         wrangler: &wrangler,
-        sources: &sources,
         plugins: &plugins,
         version: &version,
     };
 
-    request
-        .platforms
+    builds
         .iter()
-        .map(|platform| build_platform(request, *platform, &context))
+        .map(|build| build_platform(request, build, &context))
         .collect()
+}
+
+fn prepare_platform_build(
+    platform: Platform,
+    platform_pack_dir: Option<&Path>,
+    sources: &settings::Sources<'_>,
+) -> Result<PlatformBuild> {
+    let (pack_root, manifest) = load_platform_pack(platform, platform_pack_dir)?;
+    let settings = settings::resolve(sources, platform, &manifest)?;
+    Ok(PlatformBuild {
+        platform,
+        pack_root,
+        manifest,
+        settings,
+    })
 }
 
 fn load_wrangler(
@@ -131,13 +157,12 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
     }
     let tokamak = load_project_config(&request.tokamak_config_path)?;
     let current_dir = env::current_dir()?;
-    let sources = settings::Sources {
-        top: &request.top,
-        platform: &request.platform_options,
-        config: &tokamak,
-        environment: &environment_value,
-        current_dir: &current_dir,
-    };
+    let sources = settings::Sources::new(
+        &request.top,
+        &request.platform_options,
+        &tokamak,
+        &current_dir,
+    );
     let (pack_root, manifest) =
         load_platform_pack(request.platform, request.platform_pack_dir.as_deref())?;
     let platform_settings = settings::resolve(&sources, request.platform, &manifest)?;
@@ -149,9 +174,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
     let plugins = plugins::discover(&request.project_dir)?;
     let (app_name, app_slug) = resolve_app(platform_settings.name.as_deref(), &wrangler.name);
     let identifier = resolve_identifier(platform_settings.identifier, &app_slug, request.platform)?;
-    let version = settings::version(&sources)?
-        .map(|version| validate_version("version", version))
-        .transpose()?;
+    let version = settings::version(&sources)?;
     let build_dir = fs::canonicalize(&request.project_dir)
         .with_context(|| {
             format!(
@@ -224,16 +247,21 @@ fn validate_request(request: &BuildRequest) -> Result<()> {
 
 fn build_platform(
     request: &BuildRequest,
-    platform: Platform,
+    build: &PlatformBuild,
     context: &BuildContext<'_>,
 ) -> Result<BuildSummary> {
-    let (pack_root, manifest) = load_platform_pack(platform, request.platform_pack_dir.as_deref())?;
-    let platform_settings = settings::resolve(context.sources, platform, &manifest)?;
+    let PlatformBuild {
+        platform,
+        pack_root,
+        manifest,
+        settings: platform_settings,
+    } = build;
+    let platform = *platform;
     let (input, project) = prepare_platform_input(
         &request.project_dir,
         context.build_dir,
         platform,
-        (&pack_root, &manifest),
+        (pack_root, manifest),
         platform_settings.icon.as_deref(),
     )?;
 
@@ -245,8 +273,8 @@ fn build_platform(
     worker::prepare_quickjs_app(
         &input.join("app"),
         &worker_cache,
-        &pack_root,
-        &manifest,
+        pack_root,
+        manifest,
         context.wrangler,
     )
     .context("prepare the tokamak application package")?;
@@ -254,14 +282,14 @@ fn build_platform(
         .context("stage native plugin inputs")?;
     let (app_name, app_slug) =
         resolve_app(platform_settings.name.as_deref(), &context.wrangler.name);
-    let identifier = resolve_identifier(platform_settings.identifier, &app_slug, platform)?;
+    let identifier = resolve_identifier(platform_settings.identifier.clone(), &app_slug, platform)?;
     write_build_metadata(
         &input,
         &project,
         &BuildMetadata {
             app: (&app_name, &app_slug),
             identifier: &identifier,
-            manifest: &manifest,
+            manifest,
             version: Some(context.version),
             development: None,
             device_id: None,
@@ -283,7 +311,7 @@ fn build_platform(
 
     let output = output_path(context.build_dir, platform, &app_slug);
     support::run_entrypoint(
-        &pack_root,
+        pack_root,
         &input,
         &output,
         manifest.target,
@@ -319,20 +347,11 @@ fn resolve_identifier(
 }
 
 fn required_version(sources: &settings::Sources<'_>) -> Result<String> {
-    let version = settings::version(sources)?.ok_or_else(|| {
+    settings::version(sources)?.ok_or_else(|| {
         anyhow::anyhow!(
             "tokamak version is required for `tok build`; set --version, TOKAMAK_VERSION, or `version` in tokamak.jsonc"
         )
-    })?;
-    validate_version("version", version)
-}
-
-fn environment_value(name: &str) -> Result<Option<String>> {
-    match env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(env::VarError::NotUnicode(_)) => bail!("{name} must contain valid UTF-8"),
-    }
+    })
 }
 
 fn default_identifier(app_slug: &str, platform: Platform) -> String {
@@ -388,19 +407,6 @@ fn validate_platform_identifier(platform: Platform, identifier: String) -> Resul
             platform.display_name()
         )
     }
-}
-
-fn validate_version(field: &str, value: String) -> Result<String> {
-    if value.trim().is_empty()
-        || value != value.trim()
-        || value.chars().any(char::is_control)
-        || value.contains('\'')
-    {
-        bail!(
-            "{field} must be a non-empty version without whitespace, quotes, or control characters"
-        )
-    }
-    Ok(value)
 }
 
 /// The root and manifest of the platform pack that builds `platform`.
