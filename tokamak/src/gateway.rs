@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 use reqwest::header::{HeaderMap, HeaderValue};
 use rustls::ServerConfig;
 use tokio::runtime::{Builder as TokioBuilder, Runtime as TokioRuntime};
-use tokio_util::sync::CancellationToken;
 
 use crate::lifecycle_events::{Event, Events};
 use crate::quickjs::Error;
@@ -223,8 +222,6 @@ pub(super) struct Job {
     pub(super) request: HttpRequest,
     pub(super) response: Sender<JobResponse>,
     pub(super) websocket: Option<WebSocketJob>,
-    /// Present when the runtime itself calls the Worker; cancelled when the call fails.
-    pub(super) runtime_call: Option<CancellationToken>,
 }
 
 pub(super) enum JobResponse {
@@ -340,17 +337,16 @@ impl Runtime {
 
     /// Posts JSON `body` to the Worker's `/tokamak/<name>` endpoint and returns
     /// the response body, failing unless the Worker responds 200 within
-    /// `timeout`. A failed call stops the Worker invocation.
+    /// `timeout`.
     pub(crate) fn call(&self, name: &str, body: &str, timeout: Duration) -> Result<Vec<u8>, Error> {
+        let deadline = Instant::now() + timeout;
         let request = call_request(&self.shared.config.host, name, body)?;
         let path = request.target.clone();
-        let failed = CancellationToken::new();
         let (response, result) = flume::bounded(1);
         let job = Job {
             request,
             response,
             websocket: None,
-            runtime_call: Some(failed.clone()),
         };
         let shared = Arc::clone(&self.shared);
         drop(
@@ -358,44 +354,30 @@ impl Runtime {
                 .tokio
                 .spawn_blocking(move || execute_job(&shared, job)),
         );
-        call_response(&result, &path, timeout).inspect_err(|_| failed.cancel())
+        let response = match result.recv_deadline(deadline) {
+            Ok(JobResponse::Http(response)) => response,
+            Ok(JobResponse::WebSocket) => {
+                return Err(Error::Call(format!("{path} returned a WebSocket")));
+            }
+            Err(flume::RecvTimeoutError::Timeout) => {
+                return Err(Error::Call(format!(
+                    "{path} did not respond within {timeout:?}"
+                )));
+            }
+            Err(flume::RecvTimeoutError::Disconnected) => {
+                return Err(Error::Call(format!(
+                    "the runtime stopped before {path} ran"
+                )));
+            }
+        };
+        if response.status != 200 {
+            return Err(Error::Call(format!("{path} responded {}", response.status)));
+        }
+        response
+            .body
+            .read_to_end(deadline)
+            .map_err(|error| Error::Call(format!("{path} response failed: {error}")))
     }
-}
-
-/// The body of a runtime call's response, failing unless it is a 200 that
-/// ends within `timeout`.
-fn call_response(
-    result: &Receiver<JobResponse>,
-    path: &str,
-    timeout: Duration,
-) -> Result<Vec<u8>, Error> {
-    let deadline = Instant::now() + timeout;
-    let response = match result.recv_deadline(deadline) {
-        Ok(JobResponse::Http(response)) => response,
-        Ok(JobResponse::WebSocket) => {
-            return Err(Error::Engine(format!("POST {path} returned a WebSocket")));
-        }
-        Err(flume::RecvTimeoutError::Timeout) => {
-            return Err(Error::Engine(format!(
-                "POST {path} did not respond within {timeout:?}"
-            )));
-        }
-        Err(flume::RecvTimeoutError::Disconnected) => {
-            return Err(Error::Engine(format!(
-                "the runtime stopped before POST {path} ran"
-            )));
-        }
-    };
-    if response.status != 200 {
-        return Err(Error::Engine(format!(
-            "POST {path} responded {}",
-            response.status
-        )));
-    }
-    response
-        .body
-        .read_to_end(deadline)
-        .map_err(|error| Error::Engine(format!("POST {path} failed: {error}")))
 }
 
 /// The request for a runtime call to `/tokamak/<name>`.
@@ -405,9 +387,7 @@ fn call_request(host: &str, name: &str, body: &str) -> Result<HttpRequest, Error
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
     {
-        return Err(Error::Engine(format!(
-            "invalid runtime call name: {name:?}"
-        )));
+        return Err(Error::Call(format!("invalid runtime call name: {name:?}")));
     }
     let target = format!("/tokamak/{name}");
     let mut headers = HeaderMap::new();
@@ -704,7 +684,6 @@ fn dispatch(
         request,
         response,
         websocket: websocket_job,
-        runtime_call: None,
     };
     let execution_shared = Arc::clone(shared);
     drop(
@@ -749,13 +728,6 @@ pub(super) fn execute_job(shared: &Shared, job: Job) {
     let Some(execution) = shared.lifecycle.enter(&shared.accepting) else {
         return;
     };
-    if job
-        .runtime_call
-        .as_ref()
-        .is_some_and(CancellationToken::is_cancelled)
-    {
-        return;
-    }
     let response = job.response.clone();
     if let Err(error) = shared.handler.handle(job, &execution) {
         let message = format!("Worker error: {error}");

@@ -47,7 +47,6 @@ pub struct Runtime {
     _renewal: Renewal,
     events: Events,
     gateway: gateway::Runtime,
-    development: bool,
 }
 
 impl Runtime {
@@ -72,13 +71,7 @@ impl Runtime {
         validate_worker(&worker)?;
         let handler = Dispatcher::new(worker, quickjs_config(&config.app, &config.state_dir)?)?;
         let gateway = start_gateway(&certificates, &config.host, handler, events.clone())?;
-        Ok(finish_start(
-            events,
-            config.host,
-            certificates,
-            gateway,
-            false,
-        ))
+        Ok(finish_start(events, config.host, certificates, gateway))
     }
 
     /// Start a runtime that forwards requests to a host development server.
@@ -99,13 +92,7 @@ impl Runtime {
         let certificates = Arc::new(Certificates::start(config.state_dir, config.host.clone())?);
         let handler = DevProxy::new(&config.proxy)?;
         let gateway = start_gateway(&certificates, &config.host, handler, events.clone())?;
-        Ok(finish_start(
-            events,
-            config.host,
-            certificates,
-            gateway,
-            true,
-        ))
+        Ok(finish_start(events, config.host, certificates, gateway))
     }
 
     /// The host the `WebView` loads.
@@ -130,22 +117,13 @@ impl Runtime {
     }
 
     /// Post JSON `body` to the Worker's `/tokamak/<name>` endpoint and return
-    /// the response body. In development, a failed call is also reported as
-    /// [`Event::CallFailed`].
+    /// the response body.
     ///
     /// # Errors
     ///
     /// Returns an error unless the Worker responds 200 within `timeout`.
     pub fn call(&self, name: &str, body: &str, timeout: Duration) -> Result<Vec<u8>> {
-        let result = self.gateway.call(name, body, timeout);
-        if self.development
-            && let Err(error) = &result
-        {
-            self.events.emit(Event::CallFailed {
-                message: error.to_string(),
-            });
-        }
-        Ok(result?)
+        Ok(self.gateway.call(name, body, timeout)?)
     }
 
     /// Certificate material for the shell's TLS challenge callbacks.
@@ -179,7 +157,6 @@ fn finish_start(
     host: String,
     certificates: Arc<Certificates>,
     gateway: gateway::Runtime,
-    development: bool,
 ) -> Runtime {
     let renewal = certificates.start_renewal(events.clone());
     events.emit(Event::Listening {
@@ -191,7 +168,6 @@ fn finish_start(
         _renewal: renewal,
         events,
         gateway,
-        development,
     }
 }
 
@@ -258,14 +234,19 @@ fn gateway_config(certificates: &Arc<Certificates>, host: &str) -> GatewayConfig
     }
 }
 
+/// Set to "true" in a packaged app's Worker environment.
+const RUNTIME_MARKER: &str = "TOKAMAK_RUNTIME";
+
 fn quickjs_config(app: &PackageLayout, state_dir: &Path) -> Result<RuntimeConfig> {
+    let mut environment = load_environment(app)?.vars;
+    environment.insert(RUNTIME_MARKER.to_owned(), "true".into());
     Ok(RuntimeConfig {
         assets: app.serves_assets().then(|| Assets {
             manifest: app.asset_manifest(),
             root: app.assets(),
         }),
         cache: state_dir.join("cache"),
-        environment: load_environment(app)?.vars,
+        environment,
     })
 }
 
@@ -330,6 +311,21 @@ mod tests {
                 .environment
                 .get("JSON"),
             Some(&json!({ "enabled": true }))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn marks_a_packaged_worker_environment() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let app = PackageLayout::new(directory.path());
+        write_environment(&app, &WorkerEnvironment::default())?;
+
+        assert_eq!(
+            quickjs_config(&app, directory.path())?
+                .environment
+                .get("TOKAMAK_RUNTIME"),
+            Some(&json!("true"))
         );
         Ok(())
     }

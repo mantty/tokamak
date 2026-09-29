@@ -28,12 +28,6 @@ pub enum Event {
         /// What went wrong.
         message: String,
     },
-    /// A call the runtime made into the Worker did not get a 200 response.
-    /// Reported in development.
-    CallFailed {
-        /// What went wrong.
-        message: String,
-    },
 }
 
 /// Delivers events to the shell that started the runtime.

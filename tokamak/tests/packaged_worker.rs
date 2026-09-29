@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rcgen::{CertificateParams, KeyPair};
@@ -15,7 +15,7 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject
 use serde_json::json;
 use tokamak::compile_worker;
 use tokamak::{
-    Config, Event, PackageLayout, Runtime, WorkerEnvironment, compress_worker_bundle,
+    Config, PackageLayout, Runtime, WorkerEnvironment, compress_worker_bundle,
     write_worker_environment,
 };
 
@@ -292,34 +292,17 @@ fn closes_the_websocket_promptly_when_the_worker_fails() -> TestResult {
 }
 
 #[test]
-fn reports_failed_runtime_calls_only_in_development() -> TestResult {
+fn marks_the_worker_environment_of_a_packaged_app() -> TestResult {
     let temporary = tempfile::tempdir()?;
-    let (events, received) = mpsc::channel();
-    let (runtime, _) = start_packaged_runtime_reporting(
+    let (runtime, _) = start_packaged_runtime(
         temporary.path(),
-        br"export default { fetch: () => new Response(null, { status: 404 }) };",
+        br"export default { fetch: (request, env) => Response.json([env.TOKAMAK_RUNTIME, process.env.TOKAMAK_RUNTIME]) };",
         &WorkerEnvironment::default(),
-        move |event| {
-            let _ = events.send(event);
-        },
     )?;
 
-    let Err(error) = runtime.call("push", "{}", Duration::from_secs(5)) else {
-        return Err("the call succeeded".into());
-    };
+    let body = runtime.call("check", "{}", Duration::from_secs(5))?;
 
-    assert!(
-        error
-            .to_string()
-            .contains("POST /tokamak/push responded 404"),
-        "{error}"
-    );
-    assert!(
-        !received
-            .try_iter()
-            .any(|event| matches!(event, Event::CallFailed { .. })),
-        "a packaged runtime reported the failed call"
-    );
+    assert_eq!(body, br#"["true","true"]"#);
     Ok(())
 }
 
@@ -327,15 +310,6 @@ fn start_packaged_runtime(
     temporary: &Path,
     worker: &[u8],
     environment: &WorkerEnvironment,
-) -> TestResult<(Runtime, PathBuf)> {
-    start_packaged_runtime_reporting(temporary, worker, environment, |_| {})
-}
-
-fn start_packaged_runtime_reporting(
-    temporary: &Path,
-    worker: &[u8],
-    environment: &WorkerEnvironment,
-    events: impl Fn(Event) + Send + Sync + 'static,
 ) -> TestResult<(Runtime, PathBuf)> {
     let app = PackageLayout::new(temporary.join("app"));
     fs::create_dir_all(app.root())?;
@@ -352,7 +326,7 @@ fn start_packaged_runtime_reporting(
             state_dir: state.clone(),
             host: HOST.to_owned(),
         },
-        events,
+        |_| {},
     )?;
     Ok((runtime, state))
 }

@@ -155,7 +155,22 @@ fn forwards_runtime_calls_to_the_host_server() -> TestResult {
 }
 
 #[test]
-fn reports_a_failed_runtime_call_in_development() -> TestResult {
+fn fails_a_runtime_call_the_host_server_does_not_answer() -> TestResult {
+    let (_listener, runtime, _temporary) = start_test_runtime()?;
+
+    let Err(error) = runtime.call("push", "{}", Duration::from_millis(200)) else {
+        return Err("the call succeeded".into());
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "/tokamak/push did not respond within 200ms"
+    );
+    Ok(())
+}
+
+#[test]
+fn drops_a_host_response_that_arrives_after_the_call_timed_out() -> TestResult {
     let (events, received) = mpsc::channel();
     let (listener, runtime, _temporary) = start_test_runtime_reporting(move |event| {
         let _ = events.send(event);
@@ -164,57 +179,23 @@ fn reports_a_failed_runtime_call_in_development() -> TestResult {
         let (mut call, _) = listener.accept()?;
         call.set_read_timeout(Some(Duration::from_secs(2)))?;
         read_header_block(&mut call)?;
-        call.write_all(
-            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        )?;
+        thread::sleep(Duration::from_millis(400));
+        call.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnull")?;
         Ok(())
     });
 
-    let Err(error) = runtime.call("push", "{}", Duration::from_secs(2)) else {
-        return Err("the call succeeded".into());
-    };
-
+    let result = runtime.call("push", "{}", Duration::from_millis(200));
     host_server.join().map_err(|_| "host server panicked")??;
-    assert!(
-        error
-            .to_string()
-            .contains("POST /tokamak/push responded 404"),
-        "{error}"
-    );
-    let reported = received
-        .try_iter()
-        .find_map(|event| match event {
-            Event::CallFailed { message } => Some(message),
-            _ => None,
-        })
-        .ok_or("the failed call was not reported")?;
-    assert_eq!(reported, error.to_string());
-    Ok(())
-}
 
-#[test]
-fn fails_a_runtime_call_the_host_server_does_not_answer() -> TestResult {
-    let (events, received) = mpsc::channel();
-    let (_listener, runtime, _temporary) = start_test_runtime_reporting(move |event| {
-        let _ = events.send(event);
-    })?;
-
-    let Err(error) = runtime.call("push", "{}", Duration::from_millis(200)) else {
-        return Err("the call succeeded".into());
-    };
-
-    assert!(
-        error
-            .to_string()
-            .contains("POST /tokamak/push did not respond within 200ms"),
-        "{error}"
-    );
-    assert!(
-        received
-            .try_iter()
-            .any(|event| matches!(event, Event::CallFailed { .. })),
-        "the failed call was not reported"
-    );
+    assert!(result.is_err());
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while let Ok(event) = received.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    {
+        assert!(
+            !matches!(event, Event::RequestFailed { .. }),
+            "the late response was reported: {event:?}"
+        );
+    }
     Ok(())
 }
 

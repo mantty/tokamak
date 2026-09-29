@@ -15,7 +15,6 @@ use jni::sys::{jint, jlong};
 
 const LOG_TAG: &str = "tokamak";
 const LOG_INFO: c_int = 4;
-const LOG_WARN: c_int = 5;
 const LOG_ERROR: c_int = 6;
 const FAILURE: &str = "java/lang/IllegalStateException";
 
@@ -256,7 +255,6 @@ fn report(event: Event) {
         Event::CertificatesRenewed => log(LOG_INFO, "certificates renewed"),
         Event::Failed { message } => log(LOG_ERROR, &format!("runtime failed: {message}")),
         Event::RequestFailed { message } => log(LOG_ERROR, &format!("request failed: {message}")),
-        Event::CallFailed { message } => log(LOG_WARN, &format!("call failed: {message}")),
     }
 }
 

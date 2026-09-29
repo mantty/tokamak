@@ -367,7 +367,6 @@ fn report(event: Event) {
         Event::CertificatesRenewed => eprintln!("tokamak certificates renewed"),
         Event::Failed { message } => eprintln!("tokamak runtime failed: {message}"),
         Event::RequestFailed { message } => eprintln!("tokamak request failed: {message}"),
-        Event::CallFailed { message } => eprintln!("tokamak call failed: {message}"),
     }
 }
 

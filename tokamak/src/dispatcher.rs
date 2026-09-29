@@ -137,7 +137,6 @@ async fn execute_request_async(
     job: Job,
     execution: &Execution<'_>,
 ) -> Result<(), Error> {
-    let call_failed = job.runtime_call.clone().unwrap_or_default();
     let (runtime, context) = worker_runtime(worker, execution).await?;
     let awaited = crate::event_loop::AwaitedPromise::default();
     let request = context.async_with(async |ctx| -> Result<(), Error> {
@@ -147,10 +146,9 @@ async fn execute_request_async(
             request,
             response: response_sender,
             websocket,
-            runtime_call,
         } = job;
         install_worker_globals(&ctx, config, assets)?;
-        install_request(&ctx, &request, runtime_call.is_some())?;
+        install_request(&ctx, &request)?;
         initialize_worker_context(&ctx, worker)?;
         let response = invoke_worker(&ctx, worker).await?;
         let web_socket: Option<Object> = response
@@ -182,7 +180,6 @@ async fn execute_request_async(
     tokio::select! {
         result = request => result,
         () = execution.cancelled() => Err(Error::Engine("Worker execution was stopped".to_owned())),
-        () = call_failed.cancelled() => Err(Error::Engine("the runtime call failed".to_owned())),
     }
 }
 
@@ -224,8 +221,7 @@ fn install_worker_globals(
     Ok(())
 }
 
-/// Installs the request, and whether the runtime made it, for the Worker invocation.
-fn install_request(ctx: &Ctx<'_>, request: &HttpRequest, runtime_call: bool) -> Result<(), Error> {
+fn install_request(ctx: &Ctx<'_>, request: &HttpRequest) -> Result<(), Error> {
     let descriptor = serde_json::to_string(request)?;
     let body = request
         .body
@@ -233,10 +229,8 @@ fn install_request(ctx: &Ctx<'_>, request: &HttpRequest, runtime_call: bool) -> 
         .map(|body| ArrayBuffer::new_copy(ctx.clone(), body))
         .transpose()
         .map_err(|error| js_error("request body", error))?;
-    ctx.eval::<(), _>(format!(
-        "globalThis.__tokamak_request = {descriptor}; globalThis.__tokamak_runtime_call = {runtime_call};"
-    ))
-    .map_err(|error| js_error("setup", error))?;
+    ctx.eval::<(), _>(format!("globalThis.__tokamak_request = {descriptor};"))
+        .map_err(|error| js_error("setup", error))?;
     ctx.globals()
         .set("__tokamak_body", body)
         .map_err(|error| js_error("request body", error))
@@ -694,27 +688,26 @@ async fn send_worker_response<'js>(
         mut encoder,
         body,
     } = response;
+    // A caller that stopped waiting gets no response, and `waitUntil` work still finishes.
     match body {
         JsResponseBody::Buffered(body) if encoder.is_none() => {
             let mut response = HttpResponse::buffered(status, headers, body);
             response.status_text = status_text;
-            response_sender
+            let _ = response_sender
                 .send_async(JobResponse::Http(response))
-                .await
-                .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))?;
+                .await;
             drain_wait_until(ctx).await
         }
         body => {
             let (sender, cancelled, output) = response_stream();
-            response_sender
+            let _ = response_sender
                 .send_async(JobResponse::Http(HttpResponse {
                     status,
                     status_text,
                     headers,
                     body: output,
                 }))
-                .await
-                .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))?;
+                .await;
             let result = match body {
                 JsResponseBody::Buffered(bytes) => {
                     send_response_chunk(&bytes, true, &mut encoder, &sender).await

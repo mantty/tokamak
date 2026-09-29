@@ -243,7 +243,6 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
                 request,
                 response: response_sender,
                 websocket: Some(websocket),
-                runtime_call: None,
             },
             &execution,
         )
@@ -309,7 +308,6 @@ fn streams_worker_response_chunks_without_buffering_the_body()
                 request,
                 response: response_sender,
                 websocket: None,
-                runtime_call: None,
             },
             &execution,
         )
@@ -379,12 +377,17 @@ export default {
       ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 50)).then(() => fetch(notify)));
       return Response.json(null);
     }
+    if (path === "/tokamak/late") {
+      const { notify } = await request.json();
+      ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 400)).then(() => fetch(notify)));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return Response.json(null);
+    }
     return Response.json({
       method: request.method,
       path,
       type: request.headers.get("content-type"),
       body: await request.text(),
-      runtimeCall: globalThis.__tokamak_runtime_call,
     });
   },
 };
@@ -418,44 +421,8 @@ fn posts_a_runtime_call_to_the_worker_fetch_handler()
             "path": "/tokamak/push",
             "type": "application/json",
             "body": r#"{"id":"1"}"#,
-            "runtimeCall": true,
         })
     );
-    Ok(())
-}
-
-#[test]
-fn marks_only_runtime_calls() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let worker = WorkerBundle::from_bytecode(crate::compile_worker(CALL_WORKER)?, directory.path());
-    let (response_sender, response_receiver) = flume::bounded(1);
-    let accepting = Arc::new(AtomicBool::new(true));
-    let lifecycle = Lifecycle::new();
-    let execution = lifecycle
-        .enter(&accepting)
-        .ok_or("request was not admitted")?;
-
-    execute_request(
-        &worker,
-        &websocket_config(directory.path()),
-        None,
-        Job {
-            request: request("POST", "/tokamak/push"),
-            response: response_sender,
-            websocket: None,
-            runtime_call: None,
-        },
-        &execution,
-    )?;
-
-    let JobResponse::Http(response) = response_receiver.try_recv()? else {
-        return Err("Worker returned a non-HTTP response".into());
-    };
-    let body = response
-        .body
-        .read_to_end(std::time::Instant::now() + Duration::from_secs(1))?;
-    let body: serde_json::Value = serde_json::from_slice(&body)?;
-    assert_eq!(body["runtimeCall"], false);
     Ok(())
 }
 
@@ -465,12 +432,7 @@ fn fails_a_runtime_call_the_worker_does_not_answer_with_200()
     let Err(error) = call_worker("missing", Duration::from_secs(5)) else {
         return Err("the call succeeded".into());
     };
-    assert!(
-        error
-            .to_string()
-            .contains("POST /tokamak/missing responded 404"),
-        "{error}"
-    );
+    assert_eq!(error.to_string(), "/tokamak/missing responded 404");
     Ok(())
 }
 
@@ -480,20 +442,15 @@ fn fails_a_runtime_call_the_worker_throws_in()
     let Err(error) = call_worker("broken", Duration::from_secs(5)) else {
         return Err("the call succeeded".into());
     };
-    assert!(
-        error
-            .to_string()
-            .contains("POST /tokamak/broken responded 500"),
-        "{error}"
-    );
+    assert_eq!(error.to_string(), "/tokamak/broken responded 500");
     Ok(())
 }
 
-#[test]
-fn runs_wait_until_work_after_a_runtime_call_responds()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// A URL whose first request's line arrives on the returned receiver.
+fn notify_listener()
+-> Result<(String, flume::Receiver<String>), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let notify = format!("http://127.0.0.1:{}/done", listener.local_addr()?.port());
+    let url = format!("http://127.0.0.1:{}/done", listener.local_addr()?.port());
     let (arrived, arrival) = flume::bounded(1);
     thread::spawn(move || -> io::Result<()> {
         let (mut stream, _) = listener.accept()?;
@@ -502,6 +459,13 @@ fn runs_wait_until_work_after_a_runtime_call_responds()
         let _ = arrived.send(line);
         stream.write_all(b"HTTP/1.1 204 No Content\r\n\r\n")
     });
+    Ok((url, arrival))
+}
+
+#[test]
+fn runs_wait_until_work_after_a_runtime_call_responds()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (notify, arrival) = notify_listener()?;
     let (runtime, _directory) = call_runtime()?;
 
     let body = runtime.call(
@@ -519,6 +483,31 @@ fn runs_wait_until_work_after_a_runtime_call_responds()
 }
 
 #[test]
+fn runs_wait_until_work_after_a_runtime_call_times_out()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (notify, arrival) = notify_listener()?;
+    let (runtime, _directory) = call_runtime()?;
+
+    let Err(error) = runtime.call(
+        "late",
+        &serde_json::json!({ "notify": notify }).to_string(),
+        Duration::from_millis(100),
+    ) else {
+        return Err("the call succeeded".into());
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "/tokamak/late did not respond within 100ms"
+    );
+    assert_eq!(
+        arrival.recv_timeout(Duration::from_secs(5))?,
+        "GET /done HTTP/1.1\r\n"
+    );
+    Ok(())
+}
+
+#[test]
 fn fails_a_runtime_call_that_outlasts_its_timeout()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let started = std::time::Instant::now();
@@ -527,11 +516,9 @@ fn fails_a_runtime_call_that_outlasts_its_timeout()
         return Err("the call succeeded".into());
     };
 
-    assert!(
-        error
-            .to_string()
-            .contains("POST /tokamak/slow did not respond within 100ms"),
-        "{error}"
+    assert_eq!(
+        error.to_string(),
+        "/tokamak/slow did not respond within 100ms"
     );
     assert!(started.elapsed() < Duration::from_secs(2));
     Ok(())
@@ -605,7 +592,6 @@ fn initializes_web_globals_before_worker_module_evaluation()
             request: request("GET", "/socket"),
             response: response_sender,
             websocket: None,
-            runtime_call: None,
         },
         &execution,
     )?;
@@ -791,7 +777,6 @@ fn reports_handler_failures_through_the_event_listener()
             request: request("GET", "/"),
             response,
             websocket: None,
-            runtime_call: None,
         },
     );
 
@@ -837,63 +822,6 @@ fn reports_connection_failures_through_the_event_listener()
         matches!(&event, Event::RequestFailed { message } if !message.is_empty()),
         "unexpected event: {event:?}"
     );
-    Ok(())
-}
-
-#[test]
-fn abandons_a_runtime_call_that_outlasts_its_timeout()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    struct AbandonedHandler(Sender<bool>);
-    impl Handler for AbandonedHandler {
-        fn handle(&self, job: Job, _: &Execution<'_>) -> Result<(), Error> {
-            let abandoned = job
-                .runtime_call
-                .ok_or(Error::Startup("not a runtime call".to_owned()))?;
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            while !abandoned.is_cancelled() && std::time::Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(5));
-            }
-            let _ = self.0.send(abandoned.is_cancelled());
-            Ok(())
-        }
-    }
-    let (sender, abandoned) = flume::bounded(1);
-    let runtime = crate::gateway::Runtime::start(
-        Arc::new(AbandonedHandler(sender)),
-        gateway_config(),
-        Events::new(drop),
-    )?;
-
-    let result = runtime.call("push", "{}", Duration::from_millis(50));
-
-    assert!(result.is_err());
-    assert!(abandoned.recv_timeout(Duration::from_secs(5))?);
-    Ok(())
-}
-
-#[test]
-fn drops_a_runtime_call_that_failed_while_suspended()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    struct RecordingHandler(Sender<()>);
-    impl Handler for RecordingHandler {
-        fn handle(&self, _: Job, _: &Execution<'_>) -> Result<(), Error> {
-            let _ = self.0.send(());
-            Ok(())
-        }
-    }
-    let (sender, handled) = flume::unbounded();
-    let runtime = crate::gateway::Runtime::start(
-        Arc::new(RecordingHandler(sender)),
-        gateway_config(),
-        Events::new(drop),
-    )?;
-    runtime.suspend();
-
-    let result = runtime.call("push", "{}", Duration::from_millis(50));
-    runtime.resume();
-
-    assert!(result.is_err());
-    assert!(handled.recv_timeout(Duration::from_millis(300)).is_err());
     Ok(())
 }
 
@@ -1175,7 +1103,6 @@ fn suspension_allows_an_active_javascript_turn_to_finish()
                 request,
                 response: response_sender,
                 websocket: None,
-                runtime_call: None,
             },
             &execution,
         )

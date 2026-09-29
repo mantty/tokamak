@@ -114,10 +114,12 @@ impl DevProxy {
                 Err(error) => return Err(error),
             }
         };
-        response
+        // A caller that stopped waiting gets no response.
+        if response
             .send(JobResponse::Http(host_response.response))
-            .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))?;
-        if let Some(body) = host_response.body {
+            .is_ok()
+            && let Some(body) = host_response.body
+        {
             pump_host_body(body);
         }
         Ok(())
@@ -308,7 +310,6 @@ impl Handler for DevProxy {
             request,
             response,
             websocket,
-            runtime_call: _,
         } = job;
         if let Some(websocket) = websocket {
             self.forward_websocket(&request, &response, &websocket, execution)
