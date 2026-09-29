@@ -160,6 +160,57 @@ workflow on the default branch. Promotion takes the tested commit as a
 Install `tok` and project dependencies before the build step; upload the signed
 output separately.
 
+### Storage
+
+A packaged app's Worker gets D1 bindings backed by SQLite databases on the
+device. Declare them in the Wrangler configuration as for Cloudflare; the
+Worker uses the same `D1Database` API, so the code deploys to Cloudflare
+unchanged. The data stays on the device and is not synced with the Cloudflare
+databases the bindings name.
+
+```jsonc
+{
+  "d1_databases": [{ "binding": "DB", "database_name": "app", "database_id": "…" }]
+}
+```
+
+- A binding's store is created empty the first time the Worker uses it. The
+  store is identified by `database_id`, or by the binding name when there is
+  none. `tok build` rejects an identifier that is not a safe file name.
+- When the app starts, it deletes the stores no binding names, so removing a
+  binding, or pointing it at another database, removes its data from the device.
+- `tok build` packages each database's migrations, found as
+  `wrangler d1 migrations apply` finds them: `migrations_dir` (default
+  `migrations`, relative to the Wrangler configuration that declares it) and
+  `migrations_pattern`. The first query in each app launch applies the
+  migrations not yet recorded in `migrations_table` (default `d1_migrations`),
+  in order, each in its own transaction. A failed migration rolls back, and
+  queries on its binding reject with its error until a later launch applies it.
+- D1 behaves as local D1 does: the same SQLite version and features, the same
+  refusals (such as `BEGIN`, `ATTACH`, temporary tables and names beginning
+  `_cf_`), and the same results, errors and metadata. `batch()` runs in one
+  transaction and `dump()` rejects. D1's per-query limits apply; its account
+  limits do not.
+- A write whose promise resolves is on disk. Requests use a store concurrently,
+  and storage work runs off the JavaScript thread.
+
+Stores are in the app's private data directory:
+
+| Platform | Directory |
+| --- | --- |
+| iOS, macOS | `Application Support/<bundle identifier>/tokamak/storage` |
+| Android | The app's files directory, `tokamak/storage` |
+| Windows | `%LOCALAPPDATA%\<app>\tokamak\storage` |
+
+Uninstalling the app removes them. Device backups include them: iOS and macOS
+back up Application Support, and Android's Auto Backup includes the files
+directory unless the app's `android.manifest` file opts out. Auto Backup stops
+backing up an app whose data exceeds 25 MB.
+
+`tok dev` runs the Worker in the framework's development server, where Wrangler
+provides D1 from the project's `.wrangler/state`, so development data stays on
+the development machine.
+
 ### Tokamak configuration
 
 tokamak looks for `tokamak.jsonc` in the current directory, followed by
@@ -541,6 +592,13 @@ Each pack declares the settings it accepts in
 into `platform-pack.json`, and `tok` passes each setting to the entrypoint as
 `TOKAMAK_<PLATFORM>_<KEY>`.
 
+### SQLite
+
+The runtime's SQLite is generated into the vendored `libsqlite3-sys` crate with
+the version, workerd patches and options that D1 uses.
+`libsqlite3-sys/TOKAMAK.md` describes them, and
+`cargo run -p xtask -- sqlite` regenerates the source.
+
 ### Publish to npm
 
 Merges to `main` publish every npm package with the npm `latest` dist-tag:
@@ -640,6 +698,7 @@ Platform-specific lint and build-test commands are kept in
 ### Packaged Worker runtime
 
 Each request owns a fresh QuickJS runtime, module graph, and temporary filesystem.
+Storage bindings share their stores between requests.
 The native runtime installs Web globals before evaluating application modules.
 Supported builtin imports resolve to runtime-owned modules; they are not bundled
 into the application. Builtin JavaScript is precompiled to bytecode when the

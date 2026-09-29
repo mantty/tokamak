@@ -24,7 +24,7 @@ Apply the following model whenever working on a tokamak application. tokamak is 
 - Run the framework development command on the development computer.
 - Build and launch a native development shell on the selected device, simulator, emulator, or desktop.
 - Proxy the shell's secure app origin to the host development server, including WebSocket traffic, so framework HMR can work inside the native shell.
-- Expect server-side behavior during `tok dev` to come from the framework's host process. Do not use development mode as proof that a Worker API or Cloudflare binding exists in the packaged tokamak runtime.
+- Expect server-side behavior during `tok dev` to come from the framework's host process. Do not use development mode as proof that a Worker API or Cloudflare binding exists in the packaged tokamak runtime. D1 data in development lives in Wrangler's local state on the development machine, not on the device.
 - Expect native frontend plugins to remain available through the development shell.
 
 ### `tok build`
@@ -131,7 +131,7 @@ ID, hardened runtime, notarisation) is not covered.
 - Export a default Worker object with a `fetch(request, env, ctx)` handler, directly or through a compatible framework adapter.
 - Native builds post plugin events to endpoints under `/tokamak/` that the Worker's `fetch` serves, such as `POST /tokamak/push` for a data-only push notification from `@tokamakdev/plugin-notifications`, including when the system starts the app in the background. Serve it with `handlePushRequest` from `@tokamakdev/plugin-notifications/worker`. The helper accepts requests in built apps, where the runtime sets `TOKAMAK_RUNTIME` in `env` and `process.env`, and in development, and responds 404 on Cloudflare. `tok dev` delivers the posts to the development server.
 - Use standard request and response semantics and same-origin routes between the frontend and packaged Worker.
-- Expect a fresh JavaScript runtime and module graph for each packaged HTTP request. Do not use module globals, singleton objects, or in-memory caches as durable state across requests.
+- Expect a fresh JavaScript runtime and module graph for each packaged HTTP request. Do not use module globals, singleton objects, or in-memory caches as durable state across requests; use a D1 binding.
 - Treat a WebSocket Worker context as lasting only for that WebSocket connection.
 - Treat the packaged `node:fs` view as request-scoped: `/bundle` contains read-only packaged files and `/tmp` is fresh for the request. Do not use it for persistent application data.
 - Check tokamak's current support before relying on a specific Cloudflare Worker or Node API. Similar syntax is not evidence that every Cloudflare or Node behavior exists.
@@ -141,7 +141,8 @@ ID, hardened runtime, notarisation) is not covered.
 - Treat Wrangler `vars` containing text or JSON as the supported Worker environment values.
 - Treat Wrangler static assets as files packaged and routed by tokamak before Worker dispatch.
 - Do not treat `env.ASSETS` as a full Cloudflare asset service; tokamak's static asset router is the supported path and `env.ASSETS.fetch()` is not currently implemented as an asset lookup.
-- Do not dereference Cloudflare service bindings on a tokamak native path. tokamak does not currently provide bindings such as D1, KV, R2, Durable Objects, Queues, service bindings, Vectorize, Hyperdrive, Workers AI, Browser Rendering, Images, dispatch namespaces, mTLS, Pipelines, rate limiting, Secrets Store, Email Routing, or Analytics Engine.
+- Use D1 bindings for Worker data on native targets. A packaged app backs each `d1_databases` binding with a SQLite database on the device, created on first use and migrated on launch from the binding's `migrations_dir` and `migrations_pattern`, as `wrangler d1 migrations apply` would. It behaves as local D1 does, including its refusals and limits. The data is local to the device: it is not synced with the Cloudflare database the binding names, and removing or repointing the binding deletes it at the next launch.
+- Do not dereference other Cloudflare bindings on a tokamak native path. tokamak does not currently provide bindings such as KV, R2, Durable Objects, Queues, service bindings, Vectorize, Hyperdrive, Workers AI, Browser Rendering, Images, dispatch namespaces, mTLS, Pipelines, rate limiting, Secrets Store, Email Routing, or Analytics Engine.
 - Allow a portable project to declare Cloudflare-only bindings for its web deployment only when native execution does not depend on them.
 - Never put a secret in a Wrangler `var` or any other packaged application file. Values and server code shipped in a native app are on the user's device and must be considered inspectable.
 
