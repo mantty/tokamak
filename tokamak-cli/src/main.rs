@@ -10,6 +10,7 @@ mod devices;
 mod pipeline;
 mod plugins;
 mod settings;
+mod storage;
 mod support;
 mod worker;
 

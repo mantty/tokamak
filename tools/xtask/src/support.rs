@@ -33,3 +33,14 @@ pub(crate) fn copy_dir_contents(from: &Path, to: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+/// An empty directory at `path`, replacing whatever was there.
+pub(crate) fn reset_dir(path: &Path) -> Result<()> {
+    if path.is_symlink() || path.is_file() {
+        fs::remove_file(path)?;
+    } else if path.is_dir() {
+        fs::remove_dir_all(path)?;
+    }
+    fs::create_dir_all(path)?;
+    Ok(())
+}

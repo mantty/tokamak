@@ -15,7 +15,7 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject
 use serde_json::json;
 use tokamak::compile_worker;
 use tokamak::{
-    Config, PackageLayout, Runtime, WorkerEnvironment, compress_worker_bundle,
+    Config, PackageLayout, Runtime, StorageBinding, WorkerEnvironment, compress_worker_bundle,
     write_worker_environment,
 };
 
@@ -33,6 +33,7 @@ fn starts_a_packaged_worker_with_its_declared_environment() -> TestResult {
                 ("TEXT".to_owned(), json!("value")),
                 ("JSON".to_owned(), json!({ "enabled": true })),
             ]),
+            storage: Vec::new(),
         },
     )?;
     let host = HOST;
@@ -94,6 +95,7 @@ fn keeps_the_connection_open_between_requests_until_the_client_closes_it() -> Te
                 ("TEXT".to_owned(), json!("value")),
                 ("JSON".to_owned(), json!({ "enabled": true })),
             ]),
+            storage: Vec::new(),
         },
     )?;
     let mut tls = connect_gateway(&runtime, &state)?;
@@ -306,6 +308,64 @@ fn marks_the_worker_environment_of_a_packaged_app() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn keeps_d1_data_across_runtime_restarts() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let environment = d1_environment(&[]);
+    let (runtime, _) = start_packaged_runtime(temporary.path(), d1_worker_source(), &environment)?;
+    runtime.call("setup", "{}", Duration::from_secs(5))?;
+    runtime.call("hit", "{}", Duration::from_secs(5))?;
+    drop(runtime);
+
+    let (restarted, _) =
+        start_packaged_runtime(temporary.path(), d1_worker_source(), &environment)?;
+
+    assert_eq!(restarted.call("count", "{}", Duration::from_secs(5))?, b"1");
+    Ok(())
+}
+
+#[test]
+fn serves_concurrent_d1_writes() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, _) =
+        start_packaged_runtime(temporary.path(), d1_worker_source(), &d1_environment(&[]))?;
+    runtime.call("setup", "{}", Duration::from_secs(5))?;
+
+    let writes: Vec<_> = std::thread::scope(|scope| {
+        let writers: Vec<_> = (0..16)
+            .map(|_| scope.spawn(|| runtime.call("hit", "{}", Duration::from_secs(30)).is_ok()))
+            .collect();
+        writers
+            .into_iter()
+            .map(|writer| writer.join().unwrap_or(false))
+            .collect()
+    });
+
+    assert!(writes.iter().all(|written| *written), "{writes:?}");
+
+    assert_eq!(runtime.call("count", "{}", Duration::from_secs(5))?, b"16");
+    Ok(())
+}
+
+#[test]
+fn applies_packaged_migrations_before_the_first_query() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let app = PackageLayout::new(temporary.path().join("app"));
+    fs::create_dir_all(app.d1_migrations("DB"))?;
+    fs::write(
+        app.d1_migrations("DB").join("0001_hits.sql"),
+        "CREATE TABLE hits (n INTEGER);\nINSERT INTO hits VALUES (1);",
+    )?;
+    let (runtime, _) = start_packaged_runtime(
+        temporary.path(),
+        d1_worker_source(),
+        &d1_environment(&["0001_hits.sql"]),
+    )?;
+
+    assert_eq!(runtime.call("count", "{}", Duration::from_secs(5))?, b"1");
+    Ok(())
+}
+
 fn start_packaged_runtime(
     temporary: &Path,
     worker: &[u8],
@@ -324,11 +384,37 @@ fn start_packaged_runtime(
         Config {
             app,
             state_dir: state.clone(),
+            storage_dir: temporary.join("storage"),
             host: HOST.to_owned(),
         },
         |_| {},
     )?;
     Ok((runtime, state))
+}
+
+fn d1_environment(migrations: &[&str]) -> WorkerEnvironment {
+    WorkerEnvironment {
+        vars: BTreeMap::new(),
+        storage: vec![StorageBinding::D1 {
+            name: "DB".to_owned(),
+            id: "app".to_owned(),
+            migrations_table: "d1_migrations".to_owned(),
+            migrations: migrations.iter().map(|name| (*name).to_owned()).collect(),
+        }],
+    }
+}
+
+fn d1_worker_source() -> &'static [u8] {
+    br#"
+export default {
+  async fetch(request, env) {
+    const { pathname } = new URL(request.url);
+    if (pathname === "/tokamak/setup") await env.DB.exec("CREATE TABLE IF NOT EXISTS hits (n INTEGER)");
+    if (pathname === "/tokamak/hit") await env.DB.prepare("INSERT INTO hits VALUES (?)").bind(1).run();
+    return Response.json(await env.DB.prepare("SELECT count(*) AS count FROM hits").first("count"));
+  },
+};
+"#
 }
 
 fn worker_source() -> &'static [u8] {

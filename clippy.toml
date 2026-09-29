@@ -1,3 +1,4 @@
 cognitive-complexity-threshold = 15
 too-many-arguments-threshold = 6
 too-many-lines-threshold = 80
+doc-valid-idents = ["SQLite", ".."]

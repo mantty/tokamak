@@ -1,6 +1,6 @@
 //! Application lifecycle and packaged-worker startup.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,6 +12,7 @@ use crate::gateway::{self, GatewayConfig};
 use crate::lifecycle_events::{Event, Events};
 use crate::packaging::{PackageLayout, decompress_worker_bundle, read_worker_manifest};
 use crate::quickjs::{Assets, RuntimeConfig, WorkerBundle};
+use crate::storage::Storage;
 
 use crate::Result;
 
@@ -22,6 +23,8 @@ pub struct Config {
     pub app: PackageLayout,
     /// Writable per-app directory holding generated certificates.
     pub state_dir: PathBuf,
+    /// Writable per-app directory holding the stores behind storage bindings.
+    pub storage_dir: PathBuf,
     /// Stable HTTPS host the shell's `WebView` loads.
     pub host: String,
 }
@@ -69,7 +72,7 @@ impl Runtime {
         )?);
         let worker = packaged_worker(&config.app)?;
         validate_worker(&worker)?;
-        let handler = Dispatcher::new(worker, quickjs_config(&config.app, &config.state_dir)?)?;
+        let handler = Dispatcher::new(worker, quickjs_config(&config)?)?;
         let gateway = start_gateway(&certificates, &config.host, handler, events.clone())?;
         Ok(finish_start(events, config.host, certificates, gateway))
     }
@@ -237,16 +240,20 @@ fn gateway_config(certificates: &Arc<Certificates>, host: &str) -> GatewayConfig
 /// Set to "true" in a packaged app's Worker environment.
 const RUNTIME_MARKER: &str = "TOKAMAK_RUNTIME";
 
-fn quickjs_config(app: &PackageLayout, state_dir: &Path) -> Result<RuntimeConfig> {
-    let mut environment = load_environment(app)?.vars;
-    environment.insert(RUNTIME_MARKER.to_owned(), "true".into());
+fn quickjs_config(config: &Config) -> Result<RuntimeConfig> {
+    let app = &config.app;
+    let environment = load_environment(app)?;
+    let storage = Storage::open(&config.storage_dir, app, &environment.storage)?;
+    let mut vars = environment.vars;
+    vars.insert(RUNTIME_MARKER.to_owned(), "true".into());
     Ok(RuntimeConfig {
         assets: app.serves_assets().then(|| Assets {
             manifest: app.asset_manifest(),
             root: app.assets(),
         }),
-        cache: state_dir.join("cache"),
-        environment,
+        cache: config.state_dir.join("cache"),
+        environment: vars,
+        storage: (!storage.is_empty()).then(|| Arc::new(storage)),
     })
 }
 
@@ -258,6 +265,15 @@ mod tests {
     use serde_json::json;
 
     use super::{Config, gateway_config, quickjs_config};
+
+    fn config(root: &std::path::Path) -> Config {
+        Config {
+            app: PackageLayout::new(root),
+            state_dir: root.join("state"),
+            storage_dir: root.join("storage"),
+            host: "example.tokamak.local".to_owned(),
+        }
+    }
     use crate::certificates::Certificates;
     use crate::packaging::PackageLayout;
     use std::sync::Arc;
@@ -287,11 +303,11 @@ mod tests {
         let app = PackageLayout::new(directory.path());
         write_environment(&app, &WorkerEnvironment::default())?;
 
-        assert!(quickjs_config(&app, directory.path())?.assets.is_none());
+        assert!(quickjs_config(&config(directory.path()))?.assets.is_none());
 
         std::fs::write(app.asset_manifest(), "{}")?;
 
-        assert!(quickjs_config(&app, directory.path())?.assets.is_some());
+        assert!(quickjs_config(&config(directory.path()))?.assets.is_some());
         Ok(())
     }
 
@@ -303,11 +319,12 @@ mod tests {
             &app,
             &WorkerEnvironment {
                 vars: BTreeMap::from([("JSON".to_owned(), json!({ "enabled": true }))]),
+                storage: Vec::new(),
             },
         )?;
 
         assert_eq!(
-            quickjs_config(&app, directory.path())?
+            quickjs_config(&config(directory.path()))?
                 .environment
                 .get("JSON"),
             Some(&json!({ "enabled": true }))
@@ -322,7 +339,7 @@ mod tests {
         write_environment(&app, &WorkerEnvironment::default())?;
 
         assert_eq!(
-            quickjs_config(&app, directory.path())?
+            quickjs_config(&config(directory.path()))?
                 .environment
                 .get("TOKAMAK_RUNTIME"),
             Some(&json!("true"))
@@ -332,11 +349,7 @@ mod tests {
 
     #[test]
     fn describes_where_an_app_lives() {
-        let config = Config {
-            app: PackageLayout::new("/apps/example"),
-            state_dir: "/state".into(),
-            host: "example.tokamak.local".to_owned(),
-        };
+        let config = config(std::path::Path::new("/apps/example"));
 
         assert_eq!(
             config.app.worker_bundle(),

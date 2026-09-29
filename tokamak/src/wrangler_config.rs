@@ -46,6 +46,16 @@ pub enum Error {
         /// Name of the missing field.
         field: &'static str,
     },
+    /// A storage binding is not valid.
+    #[error("invalid {kind} binding in {path}: {message}")]
+    InvalidStorageBinding {
+        /// Path to the configuration file.
+        path: PathBuf,
+        /// Wrangler configuration key that declares the binding.
+        kind: &'static str,
+        /// What is wrong with the binding.
+        message: String,
+    },
     /// A Wrangler name cannot be used as a tokamak app identity.
     #[error("wrangler config name is not a safe app name: {0}")]
     InvalidAppName(String),
@@ -85,8 +95,61 @@ pub struct WranglerConfig {
     pub find_additional_modules: bool,
     /// Directory against which additional-module globs are evaluated.
     pub base_dir: PathBuf,
-    /// Named Cloudflare bindings declared by the configuration.
+    /// Named Cloudflare bindings, other than storage, declared by the configuration.
     pub bindings: Vec<WranglerBinding>,
+    /// Storage bindings declared by the configuration.
+    pub storage: Vec<WranglerStorage>,
+}
+
+/// A storage binding declared in a Wrangler configuration, with the store
+/// it names resolved as local Wrangler resolves it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WranglerStorage {
+    /// A `d1_databases` entry.
+    D1 {
+        /// `binding`.
+        name: String,
+        /// `database_id`, or the binding name.
+        id: String,
+        /// Where the database's migrations are.
+        migrations: WranglerMigrations,
+    },
+}
+
+impl WranglerStorage {
+    /// Binding name in the Worker's `env`.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        let Self::D1 { name, .. } = self;
+        name
+    }
+
+    /// Identifier of the store the binding names.
+    #[must_use]
+    pub fn store(&self) -> &str {
+        let Self::D1 { id, .. } = self;
+        id
+    }
+
+    /// The Wrangler configuration key that declares the binding.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::D1 { .. } => "d1_databases",
+        }
+    }
+}
+
+/// A D1 binding's migrations settings.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WranglerMigrations {
+    /// `migrations_dir`, resolved against the configuration file that
+    /// declares it.
+    pub directory: PathBuf,
+    /// `migrations_pattern`, relative to `directory`.
+    pub pattern: String,
+    /// `migrations_table`.
+    pub table: String,
 }
 
 /// A named binding declared in a Wrangler configuration.
@@ -313,6 +376,7 @@ pub fn load_config_for_env(
         .assets
         .map(|assets| resolve_assets(&config_path, &config_dir, assets))
         .transpose()?;
+    let storage = collect_storage(&config_path, &config_dir, &raw.other)?;
 
     Ok(WranglerConfig {
         path: config_path,
@@ -335,6 +399,7 @@ pub fn load_config_for_env(
                 .or_else(|| Path::new(&main).parent())
                 .unwrap_or(Path::new(".")),
         ),
+        storage,
         bindings: collect_bindings(&raw.other),
     })
 }
@@ -468,12 +533,107 @@ fn resolve_rule(rule: RawWranglerRule) -> Result<WranglerRule> {
     })
 }
 
+#[derive(Deserialize)]
+struct RawD1Database {
+    binding: Option<String>,
+    database_id: Option<String>,
+    migrations_dir: Option<String>,
+    migrations_pattern: Option<String>,
+    migrations_table: Option<String>,
+}
+
+fn collect_storage(
+    config_path: &Path,
+    config_dir: &Path,
+    values: &BTreeMap<String, Value>,
+) -> Result<Vec<WranglerStorage>> {
+    let invalid = |message: String| Error::InvalidStorageBinding {
+        path: config_path.to_path_buf(),
+        kind: "d1_databases",
+        message,
+    };
+    let Some(databases) = values.get("d1_databases") else {
+        return Ok(Vec::new());
+    };
+    Vec::<RawD1Database>::deserialize(databases)
+        .map_err(|error| invalid(error.to_string()))?
+        .into_iter()
+        .map(|raw| resolve_d1(config_dir, raw).map_err(invalid))
+        .collect()
+}
+
+fn resolve_d1(
+    config_dir: &Path,
+    raw: RawD1Database,
+) -> std::result::Result<WranglerStorage, String> {
+    let name = raw
+        .binding
+        .filter(|binding| !binding.is_empty())
+        .ok_or("every binding needs a non-empty \"binding\" name")?;
+    let pattern = match (&raw.migrations_dir, raw.migrations_pattern) {
+        (_, None) => "*.sql".to_owned(),
+        (Some(directory), Some(pattern)) => pattern_within(directory, &pattern)?,
+        (None, Some(pattern)) => {
+            return Err(format!(
+                "migrations_pattern \"{pattern}\" needs migrations_dir"
+            ));
+        }
+    };
+    let directory = raw
+        .migrations_dir
+        .unwrap_or_else(|| "migrations".to_owned());
+    Ok(WranglerStorage::D1 {
+        id: raw.database_id.unwrap_or_else(|| name.clone()),
+        name,
+        migrations: WranglerMigrations {
+            directory: resolve_path(config_dir, Path::new(&directory)),
+            pattern,
+            table: raw
+                .migrations_table
+                .unwrap_or_else(|| "d1_migrations".to_owned()),
+        },
+    })
+}
+
+/// `pattern`, which Wrangler requires to lie within `directory`, relative to
+/// `directory`.
+fn pattern_within(directory: &str, pattern: &str) -> std::result::Result<String, String> {
+    let directory = normalize_relative_path(directory);
+    let pattern = normalize_relative_path(pattern);
+    if directory == "." {
+        return Ok(pattern);
+    }
+    pattern
+        .strip_prefix(&format!("{directory}/"))
+        .map(str::to_owned)
+        .ok_or_else(|| format!("migrations_pattern \"{pattern}\" must start with \"{directory}/\""))
+}
+
+/// A relative path with forward slashes and without `.` segments, as
+/// Wrangler normalizes migrations settings before comparing them.
+fn normalize_relative_path(path: &str) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in path.split(['/', '\\']) {
+        match segment {
+            "" | "." => {}
+            ".." if segments.last().is_some_and(|last| *last != "..") => {
+                segments.pop();
+            }
+            segment => segments.push(segment),
+        }
+    }
+    if segments.is_empty() {
+        ".".to_owned()
+    } else {
+        segments.join("/")
+    }
+}
+
 fn collect_bindings(values: &BTreeMap<String, Value>) -> Vec<WranglerBinding> {
     const BINDING_KINDS: &[&str] = &[
         "ai",
         "analytics_engine_datasets",
         "browser",
-        "d1_databases",
         "dispatch_namespaces",
         "durable_objects",
         "hyperdrive",
@@ -625,7 +785,14 @@ mod tests {
 
     use serde_json::Value;
 
-    use super::{app_host, collect_bindings, is_valid_app_name};
+    use std::fs;
+
+    use super::{
+        Error, WranglerMigrations, WranglerStorage, app_host, collect_bindings, is_valid_app_name,
+        load_config_for_env, normalize_relative_path, pattern_within,
+    };
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     #[test]
     fn accepts_one_lower_case_dns_label() {
@@ -648,8 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn collects_named_bindings_from_wrangler_like_shapes() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn collects_named_bindings_from_wrangler_like_shapes() -> TestResult {
         let values = serde_json::from_str::<BTreeMap<String, Value>>(
             r#"{
                 "kv_namespaces": [{"binding": "CACHE", "id": "cache"}],
@@ -675,5 +841,115 @@ mod tests {
                 .any(|binding| binding.name == "EVENTS" && binding.kind == "queues")
         );
         Ok(())
+    }
+
+    #[test]
+    fn resolves_d1_bindings_with_local_wrangler_fallbacks() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let config = directory.path().join("wrangler.jsonc");
+        fs::write(
+            &config,
+            r#"{
+                "name": "app",
+                "main": "worker.js",
+                "kv_namespaces": [{ "binding": "SETTINGS", "id": "abc" }],
+                "d1_databases": [
+                    { "binding": "DB", "database_name": "app", "database_id": "db-id", "migrations_dir": "db/migrations", "migrations_table": "applied" },
+                    { "binding": "LOCAL" }
+                ]
+            }"#,
+        )?;
+
+        let loaded = load_config_for_env(&config, None)?;
+
+        assert_eq!(
+            loaded.storage,
+            vec![
+                WranglerStorage::D1 {
+                    name: "DB".to_owned(),
+                    id: "db-id".to_owned(),
+                    migrations: WranglerMigrations {
+                        directory: directory.path().join("db/migrations"),
+                        pattern: "*.sql".to_owned(),
+                        table: "applied".to_owned(),
+                    },
+                },
+                WranglerStorage::D1 {
+                    name: "LOCAL".to_owned(),
+                    id: "LOCAL".to_owned(),
+                    migrations: WranglerMigrations {
+                        directory: directory.path().join("migrations"),
+                        pattern: "*.sql".to_owned(),
+                        table: "d1_migrations".to_owned(),
+                    },
+                },
+            ]
+        );
+        assert_eq!(loaded.bindings.len(), 1);
+        assert_eq!(loaded.bindings[0].kind, "kv_namespaces");
+        Ok(())
+    }
+
+    #[test]
+    fn takes_storage_bindings_from_the_selected_environment() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let config = directory.path().join("wrangler.json");
+        fs::write(
+            &config,
+            r#"{
+                "name": "app",
+                "main": "worker.js",
+                "d1_databases": [{ "binding": "TOP", "database_id": "top" }],
+                "env": { "production": { "d1_databases": [{ "binding": "PROD", "database_id": "prod" }] } }
+            }"#,
+        )?;
+
+        let loaded = load_config_for_env(&config, Some("production"))?;
+
+        assert_eq!(
+            loaded
+                .storage
+                .iter()
+                .map(WranglerStorage::store)
+                .collect::<Vec<_>>(),
+            ["prod"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_storage_binding_without_a_name() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let config = directory.path().join("wrangler.json");
+        fs::write(
+            &config,
+            r#"{ "name": "app", "main": "worker.js", "d1_databases": [{ "database_id": "db" }] }"#,
+        )?;
+
+        let Err(Error::InvalidStorageBinding { kind, .. }) = load_config_for_env(&config, None)
+        else {
+            return Err("a nameless binding was accepted".into());
+        };
+        assert_eq!(kind, "d1_databases");
+        Ok(())
+    }
+
+    #[test]
+    fn requires_migrations_patterns_within_their_directory() {
+        assert_eq!(
+            pattern_within("./drizzle", "drizzle/*/migration.sql").as_deref(),
+            Ok("*/migration.sql")
+        );
+        assert_eq!(pattern_within(".", "sql/*.sql").as_deref(), Ok("sql/*.sql"));
+        assert!(pattern_within("db", "other/*.sql").is_err());
+    }
+
+    #[test]
+    fn normalizes_relative_paths_as_wrangler_does() {
+        assert_eq!(normalize_relative_path("./migrations/"), "migrations");
+        assert_eq!(normalize_relative_path("db\\migrations"), "db/migrations");
+        assert_eq!(normalize_relative_path("a/../b"), "b");
+        assert_eq!(normalize_relative_path("../../db"), "../../db");
+        assert_eq!(normalize_relative_path("./"), ".");
     }
 }

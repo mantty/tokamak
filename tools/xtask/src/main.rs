@@ -5,6 +5,7 @@
 
 mod builder;
 mod layout;
+mod sqlite;
 mod support;
 
 use std::process::ExitCode;
@@ -28,6 +29,8 @@ enum Command {
         #[arg(long)]
         target: Target,
     },
+    /// Regenerate the SQLite source in the vendored libsqlite3-sys.
+    Sqlite,
 }
 
 fn main() -> ExitCode {
@@ -47,6 +50,7 @@ fn run() -> Result<()> {
             let manifest = builder::build_source_platform_pack(target)?;
             println!("Built platform pack: {}", manifest.display());
         }
+        Command::Sqlite => sqlite::regenerate()?,
     }
     Ok(())
 }

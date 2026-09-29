@@ -10,7 +10,7 @@ use tokamak_cli::{
 };
 
 use crate::layout::WorkspaceLayout;
-use crate::support::copy_dir_contents;
+use crate::support::{copy_dir_contents, reset_dir};
 
 const ESBUILD_HOSTS: &[&str] = &["darwin-arm64", "darwin-x64", "linux-x64", "win32-x64"];
 const ESBUILD_LAUNCHER: &str = include_str!("esbuild-launcher.cjs");
@@ -144,16 +144,6 @@ fn validate_artifacts(root: &Path, artifacts: &[Artifact]) -> Result<()> {
             );
         }
     }
-    Ok(())
-}
-
-fn reset_dir(path: &Path) -> Result<()> {
-    if path.is_symlink() || path.is_file() {
-        fs::remove_file(path)?;
-    } else if path.is_dir() {
-        fs::remove_dir_all(path)?;
-    }
-    fs::create_dir_all(path)?;
     Ok(())
 }
 

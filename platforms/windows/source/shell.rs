@@ -163,6 +163,7 @@ fn start_runtime(
             Config {
                 app: PackageLayout::new(root.join("app")),
                 state_dir: state.join("runtime"),
+                storage_dir: state.join("storage"),
                 host: config.host.clone(),
             },
             move |event| {

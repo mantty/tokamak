@@ -45,11 +45,12 @@ pub struct TokamakIdentity {
 pub unsafe extern "C" fn tokamak_runtime_start(
     packaged_dir: *const c_char,
     state_dir: *const c_char,
+    storage_dir: *const c_char,
     host: *const c_char,
     error: *mut c_char,
     error_len: usize,
 ) -> *mut c_void {
-    let result = unsafe { start(packaged_dir, state_dir, host) };
+    let result = unsafe { start(packaged_dir, state_dir, storage_dir, host) };
     match result {
         Ok(runtime) => Box::into_raw(Box::new(runtime)).cast(),
         Err(message) => {
@@ -303,6 +304,7 @@ pub unsafe extern "C" fn tokamak_identity_free(identity: TokamakIdentity) {
 unsafe fn start(
     packaged_dir: *const c_char,
     state_dir: *const c_char,
+    storage_dir: *const c_char,
     host: *const c_char,
 ) -> Result<Runtime, String> {
     let config = Config {
@@ -311,6 +313,9 @@ unsafe fn start(
         ),
         state_dir: PathBuf::from(
             unsafe { text(state_dir) }.ok_or("state directory is not valid UTF-8")?,
+        ),
+        storage_dir: PathBuf::from(
+            unsafe { text(storage_dir) }.ok_or("storage directory is not valid UTF-8")?,
         ),
         host: unsafe { text(host) }
             .ok_or("app host is not valid UTF-8")?

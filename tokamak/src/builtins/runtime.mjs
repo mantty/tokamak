@@ -157,6 +157,11 @@ if (globalThis.__tokamak_asset && globalThis.__tokamak_env?.ASSETS === undefined
     },
   };
 }
+const storage = globalThis.__tokamak_storage ?? [];
+if (storage.length) {
+  const { createD1Database } = await import("../storage/d1.mjs");
+  for (const { name } of storage) globalThis.__tokamak_env[name] = createD1Database(name);
+}
 const waitUntilValues = [];
 class ExecutionContext {
   waitUntil(value) { waitUntilValues.push(Promise.resolve(value)); }

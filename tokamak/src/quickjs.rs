@@ -99,16 +99,16 @@ impl WorkerBundle {
 
 /// Configuration passed to packaged `QuickJS` requests.
 #[cfg(feature = "native")]
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeConfig {
+#[derive(Clone, Debug)]
+pub(crate) struct RuntimeConfig {
     /// Optional static asset service.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub assets: Option<Assets>,
+    pub(crate) assets: Option<Assets>,
     /// Directory containing the app-private Worker cache.
-    pub cache: PathBuf,
+    pub(crate) cache: PathBuf,
     /// Text and JSON Worker environment bindings.
-    pub environment: BTreeMap<String, Value>,
+    pub(crate) environment: BTreeMap<String, Value>,
+    /// The stores behind storage bindings, when the app has any.
+    pub(crate) storage: Option<Arc<crate::storage::Storage>>,
 }
 
 /// Compile a bundled Worker module to `QuickJS` bytecode.
