@@ -116,8 +116,8 @@ Android. `@tokamakdev/plugin-local-authentication` reports and performs device
 owner authentication. Neither has a web implementation.
 
 `@tokamakdev/plugin-notifications` shows, schedules and receives notifications
-on Apple platforms, Android and the web, and dispatches data-only push messages
-to the Worker's `push` handler.
+on Apple platforms, Android and the web, and posts data-only push messages to
+the Worker's `/tokamak/push` endpoint.
 
 ## Deferred
 
