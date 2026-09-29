@@ -57,6 +57,8 @@ fn deletes_stores_no_binding_names() -> TestResult {
         "d1/removed.sqlite-shm",
         "d1/stray.txt",
         "d1/nested",
+        "kv/kept.sqlite-wal",
+        "kv/old.sqlite",
     ] {
         assert!(!root.join(removed).exists(), "{removed}");
     }

@@ -20,7 +20,7 @@ use rusqlite::{Connection, TransactionState};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 
-use super::{lock, sqlite};
+use super::{Open, lock, sqlite};
 use authorizer::Decision;
 use statement::{Output, Param, Value};
 
@@ -87,9 +87,8 @@ struct Access {
     deadline: Mutex<Option<Instant>>,
 }
 
-impl D1Database {
-    /// Open the database at `path`, creating it when absent.
-    pub(crate) fn open(path: &Path) -> Result<Self, String> {
+impl Open for D1Database {
+    fn open(path: &Path) -> Result<Self, String> {
         let open = || -> rusqlite::Result<Session> {
             let connection = sqlite::open(path)?;
             let version = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -106,7 +105,9 @@ impl D1Database {
             session: Mutex::new(session),
         })
     }
+}
 
+impl D1Database {
     /// Answer a request to the D1 service's `/query` or `/execute` endpoint.
     ///
     /// `body` is the JSON of one query or several, which run in one

@@ -43,6 +43,13 @@ pub struct WorkerEnvironment {
     rename_all_fields = "camelCase"
 )]
 pub enum StorageBinding {
+    /// A KV namespace.
+    Kv {
+        /// Binding name in the Worker's `env`.
+        name: String,
+        /// Namespace identifier.
+        id: String,
+    },
     /// A D1 database.
     D1 {
         /// Binding name in the Worker's `env`.
@@ -61,15 +68,17 @@ impl StorageBinding {
     /// Binding name in the Worker's `env`.
     #[must_use]
     pub fn name(&self) -> &str {
-        let Self::D1 { name, .. } = self;
-        name
+        match self {
+            Self::Kv { name, .. } | Self::D1 { name, .. } => name,
+        }
     }
 
     /// Identifier of the store the binding names.
     #[must_use]
     pub fn store(&self) -> &str {
-        let Self::D1 { id, .. } = self;
-        id
+        match self {
+            Self::Kv { id, .. } | Self::D1 { id, .. } => id,
+        }
     }
 }
 

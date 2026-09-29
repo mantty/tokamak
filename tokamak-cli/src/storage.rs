@@ -27,11 +27,31 @@ pub(crate) fn package(
 }
 
 fn package_binding(binding: &WranglerStorage, layout: &PackageLayout) -> Result<StorageBinding> {
-    let WranglerStorage::D1 {
-        name,
-        id,
-        migrations,
-    } = binding;
+    Ok(match binding {
+        WranglerStorage::Kv { name, id } => StorageBinding::Kv {
+            name: name.clone(),
+            id: id.clone(),
+        },
+        WranglerStorage::D1 {
+            name,
+            id,
+            migrations,
+        } => StorageBinding::D1 {
+            name: name.clone(),
+            id: id.clone(),
+            migrations_table: migrations.table.clone(),
+            migrations: package_migrations(name, migrations, layout)?,
+        },
+    })
+}
+
+/// Copy a D1 binding's migrations into `layout`, returning their names in
+/// the order they apply.
+fn package_migrations(
+    name: &str,
+    migrations: &WranglerMigrations,
+    layout: &PackageLayout,
+) -> Result<Vec<String>> {
     let names = migration_names(migrations)
         .with_context(|| format!("find the migrations of D1 binding {name}"))?;
     for migration in &names {
@@ -40,12 +60,7 @@ fn package_binding(binding: &WranglerStorage, layout: &PackageLayout) -> Result<
             layout.d1_migrations(name).join(migration),
         )?;
     }
-    Ok(StorageBinding::D1 {
-        name: name.clone(),
-        id: id.clone(),
-        migrations_table: migrations.table.clone(),
-        migrations: names,
-    })
+    Ok(names)
 }
 
 /// Binding names must be unique, and a kind's store identifiers must be
@@ -207,6 +222,7 @@ mod tests {
         let config = wrangler(
             root,
             r#"{ "name": "app", "main": "worker.js",
+                 "kv_namespaces": [{ "binding": "SESSION" }],
                  "d1_databases": [{ "binding": "DB", "database_id": "db", "migrations_dir": "drizzle", "migrations_pattern": "drizzle/*/migration.sql" }] }"#,
         )?;
         let layout = PackageLayout::new(root.join("app"));
@@ -215,15 +231,21 @@ mod tests {
 
         assert_eq!(
             bindings,
-            [StorageBinding::D1 {
-                name: "DB".to_owned(),
-                id: "db".to_owned(),
-                migrations_table: "d1_migrations".to_owned(),
-                migrations: vec![
-                    "0000_b/migration.sql".to_owned(),
-                    "0001_a/migration.sql".to_owned()
-                ],
-            }]
+            [
+                StorageBinding::Kv {
+                    name: "SESSION".to_owned(),
+                    id: "SESSION".to_owned(),
+                },
+                StorageBinding::D1 {
+                    name: "DB".to_owned(),
+                    id: "db".to_owned(),
+                    migrations_table: "d1_migrations".to_owned(),
+                    migrations: vec![
+                        "0000_b/migration.sql".to_owned(),
+                        "0001_a/migration.sql".to_owned()
+                    ],
+                }
+            ]
         );
         assert_eq!(
             fs::read_to_string(layout.d1_migrations("DB").join("0001_a/migration.sql"))?,
@@ -249,6 +271,10 @@ mod tests {
             (
                 r#""d1_databases": [{ "binding": "A", "database_id": "app" }, { "binding": "B", "database_id": "App" }]"#,
                 "differ only in case",
+            ),
+            (
+                r#""kv_namespaces": [{ "binding": "A", "id": "x" }], "d1_databases": [{ "binding": "A", "database_id": "y" }]"#,
+                "more than one binding is named A",
             ),
         ] {
             let config = wrangler(

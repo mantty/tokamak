@@ -6,7 +6,7 @@ use serde_json::{Value as Json, json};
 use super::authorizer::TRANSACTION_REFUSED;
 use super::statement::{self, Param};
 use super::{D1Database, Migrations, is_blank};
-use crate::storage::lock;
+use crate::storage::{Open, lock};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 

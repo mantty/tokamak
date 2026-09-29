@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use jsonc_parser::{ParseOptions, parse_to_serde_value};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use thiserror::Error;
 
@@ -105,6 +106,13 @@ pub struct WranglerConfig {
 /// it names resolved as local Wrangler resolves it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WranglerStorage {
+    /// A `kv_namespaces` entry.
+    Kv {
+        /// `binding`.
+        name: String,
+        /// `id`, or the binding name.
+        id: String,
+    },
     /// A `d1_databases` entry.
     D1 {
         /// `binding`.
@@ -120,21 +128,24 @@ impl WranglerStorage {
     /// Binding name in the Worker's `env`.
     #[must_use]
     pub fn name(&self) -> &str {
-        let Self::D1 { name, .. } = self;
-        name
+        match self {
+            Self::Kv { name, .. } | Self::D1 { name, .. } => name,
+        }
     }
 
     /// Identifier of the store the binding names.
     #[must_use]
     pub fn store(&self) -> &str {
-        let Self::D1 { id, .. } = self;
-        id
+        match self {
+            Self::Kv { id, .. } | Self::D1 { id, .. } => id,
+        }
     }
 
     /// The Wrangler configuration key that declares the binding.
     #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {
+            Self::Kv { .. } => "kv_namespaces",
             Self::D1 { .. } => "d1_databases",
         }
     }
@@ -534,6 +545,12 @@ fn resolve_rule(rule: RawWranglerRule) -> Result<WranglerRule> {
 }
 
 #[derive(Deserialize)]
+struct RawKvNamespace {
+    binding: Option<String>,
+    id: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct RawD1Database {
     binding: Option<String>,
     database_id: Option<String>,
@@ -547,29 +564,57 @@ fn collect_storage(
     config_dir: &Path,
     values: &BTreeMap<String, Value>,
 ) -> Result<Vec<WranglerStorage>> {
+    let mut storage = storage_of_kind(config_path, values, "kv_namespaces", resolve_kv)?;
+    storage.extend(storage_of_kind(
+        config_path,
+        values,
+        "d1_databases",
+        |raw| resolve_d1(config_dir, raw),
+    )?);
+    Ok(storage)
+}
+
+/// The bindings of one kind, each resolved from its configuration entry.
+fn storage_of_kind<T: DeserializeOwned>(
+    config_path: &Path,
+    values: &BTreeMap<String, Value>,
+    kind: &'static str,
+    resolve: impl Fn(T) -> std::result::Result<WranglerStorage, String>,
+) -> Result<Vec<WranglerStorage>> {
     let invalid = |message: String| Error::InvalidStorageBinding {
         path: config_path.to_path_buf(),
-        kind: "d1_databases",
+        kind,
         message,
     };
-    let Some(databases) = values.get("d1_databases") else {
+    let Some(entries) = values.get(kind) else {
         return Ok(Vec::new());
     };
-    Vec::<RawD1Database>::deserialize(databases)
+    Vec::<T>::deserialize(entries)
         .map_err(|error| invalid(error.to_string()))?
         .into_iter()
-        .map(|raw| resolve_d1(config_dir, raw).map_err(invalid))
+        .map(|raw| resolve(raw).map_err(invalid))
         .collect()
+}
+
+fn binding_name(binding: Option<String>) -> std::result::Result<String, String> {
+    binding
+        .filter(|binding| !binding.is_empty())
+        .ok_or_else(|| "every binding needs a non-empty \"binding\" name".to_owned())
+}
+
+fn resolve_kv(raw: RawKvNamespace) -> std::result::Result<WranglerStorage, String> {
+    let name = binding_name(raw.binding)?;
+    Ok(WranglerStorage::Kv {
+        id: raw.id.unwrap_or_else(|| name.clone()),
+        name,
+    })
 }
 
 fn resolve_d1(
     config_dir: &Path,
     raw: RawD1Database,
 ) -> std::result::Result<WranglerStorage, String> {
-    let name = raw
-        .binding
-        .filter(|binding| !binding.is_empty())
-        .ok_or("every binding needs a non-empty \"binding\" name")?;
+    let name = binding_name(raw.binding)?;
     let pattern = match (&raw.migrations_dir, raw.migrations_pattern) {
         (_, None) => "*.sql".to_owned(),
         (Some(directory), Some(pattern)) => pattern_within(directory, &pattern)?,
@@ -638,7 +683,6 @@ fn collect_bindings(values: &BTreeMap<String, Value>) -> Vec<WranglerBinding> {
         "durable_objects",
         "hyperdrive",
         "images",
-        "kv_namespaces",
         "mtls_certificates",
         "pipelines",
         "queues",
@@ -818,7 +862,7 @@ mod tests {
     fn collects_named_bindings_from_wrangler_like_shapes() -> TestResult {
         let values = serde_json::from_str::<BTreeMap<String, Value>>(
             r#"{
-                "kv_namespaces": [{"binding": "CACHE", "id": "cache"}],
+                "r2_buckets": [{"binding": "FILES", "bucket_name": "files"}],
                 "durable_objects": {"bindings": [{"name": "ROOMS", "class_name": "Room"}]},
                 "queues": {"producers": [{"binding": "EVENTS", "queue": "events"}]}
             }"#,
@@ -828,7 +872,7 @@ mod tests {
         assert!(
             bindings
                 .iter()
-                .any(|binding| { binding.name == "CACHE" && binding.kind == "kv_namespaces" })
+                .any(|binding| { binding.name == "FILES" && binding.kind == "r2_buckets" })
         );
         assert!(
             bindings
@@ -844,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_d1_bindings_with_local_wrangler_fallbacks() -> TestResult {
+    fn resolves_storage_bindings_with_local_wrangler_fallbacks() -> TestResult {
         let directory = tempfile::tempdir()?;
         let config = directory.path().join("wrangler.jsonc");
         fs::write(
@@ -852,7 +896,8 @@ mod tests {
             r#"{
                 "name": "app",
                 "main": "worker.js",
-                "kv_namespaces": [{ "binding": "SETTINGS", "id": "abc" }],
+                "kv_namespaces": [{ "binding": "SETTINGS", "id": "abc", "preview_id": "p" }, { "binding": "SESSION" }],
+                "r2_buckets": [{ "binding": "FILES", "bucket_name": "files" }],
                 "d1_databases": [
                     { "binding": "DB", "database_name": "app", "database_id": "db-id", "migrations_dir": "db/migrations", "migrations_table": "applied" },
                     { "binding": "LOCAL" }
@@ -865,6 +910,14 @@ mod tests {
         assert_eq!(
             loaded.storage,
             vec![
+                WranglerStorage::Kv {
+                    name: "SETTINGS".to_owned(),
+                    id: "abc".to_owned(),
+                },
+                WranglerStorage::Kv {
+                    name: "SESSION".to_owned(),
+                    id: "SESSION".to_owned(),
+                },
                 WranglerStorage::D1 {
                     name: "DB".to_owned(),
                     id: "db-id".to_owned(),
@@ -886,7 +939,7 @@ mod tests {
             ]
         );
         assert_eq!(loaded.bindings.len(), 1);
-        assert_eq!(loaded.bindings[0].kind, "kv_namespaces");
+        assert_eq!(loaded.bindings[0].kind, "r2_buckets");
         Ok(())
     }
 

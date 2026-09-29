@@ -105,8 +105,117 @@ async function d1Contracts(db) {
   return results;
 }
 
+function streamOf(...chunks) {
+  return new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } });
+}
+
+async function streamText(stream) {
+  return new Response(stream).text();
+}
+
+function mapEntries(value) {
+  return value instanceof Map ? { map: [...value.entries()] } : value;
+}
+
+async function kvContracts(kv) {
+  const results = {};
+  const record = async (name, callback) => { results[name] = mapEntries(await outcome(callback)); };
+  const now = () => Math.floor(Date.now() / 1000);
+  await record("putText", () => kv.put("text", "héllo"));
+  await record("getText", () => kv.get("text"));
+  await record("getTypes", async () => ({
+    text: await kv.get("text", "text"),
+    buffer: [...new Uint8Array(await kv.get("text", "arrayBuffer"))],
+    stream: await streamText(await kv.get("text", { type: "stream" })),
+    missing: await kv.get("missing"),
+  }));
+  await record("putJson", () => kv.put("json", JSON.stringify({ a: [1, 2] }), { metadata: { tag: "t", n: 1 } }));
+  await record("getJson", () => kv.get("json", { type: "json", cacheTtl: 60 }));
+  await record("withMetadata", () => kv.getWithMetadata("json", "json"));
+  await record("withoutMetadata", () => kv.getWithMetadata("text"));
+  await record("missingWithMetadata", () => kv.getWithMetadata("missing"));
+  await record("badJson", () => kv.get("text", "json").then(() => "parsed", error => error.name));
+  await record("unknownType", () => kv.get("text", "blob"));
+  await record("unknownTypeMissing", () => kv.get("missing", "blob"));
+  await record("cacheTtl", () => kv.get("text", { cacheTtl: 10 }));
+  await record("putBuffer", async () => {
+    await kv.put("buffer", new Uint8Array([0, 255, 1]).buffer);
+    await kv.put("view", new Uint8Array([9, 8, 7, 6]).subarray(1, 3));
+    await kv.put("stream", streamOf(new TextEncoder().encode("ab"), new TextEncoder().encode("cd")));
+    await kv.put("number", 42);
+    return [
+      [...new Uint8Array(await kv.get("buffer", "arrayBuffer"))],
+      [...new Uint8Array(await kv.get("view", "arrayBuffer"))],
+      await kv.get("stream"),
+      await kv.get("number"),
+      await kv.get("buffer"),
+    ];
+  });
+  await record("putObject", () => kv.put("object", {}));
+  await record("emptyKey", () => kv.get(""));
+  await record("dotKey", () => kv.put(".", "x"));
+  await record("dotDotKey", () => kv.delete(".."));
+  await record("longKey", () => kv.get("é".repeat(257)));
+  await record("longPutKey", () => kv.put("k".repeat(513), "x"));
+  await record("specialKey", async () => { await kv.put("a/b?c#d%20 e", "special"); return kv.get("a/b?c#d%20 e"); });
+  await record("ttlZero", () => kv.put("ttl", "x", { expirationTtl: 0 }));
+  await record("ttlShort", () => kv.put("ttl", "x", { expirationTtl: 30 }));
+  await record("expirationPast", () => kv.put("ttl", "x", { expiration: 1000 }));
+  await record("expirationSoon", async () => {
+    try { await kv.put("ttl", "x", { expiration: now() + 10 }); return "stored"; }
+    catch (error) { return error.message.replace(/of \d+\./, "of N."); }
+  });
+  await record("metadataLarge", () => kv.put("meta", "x", { metadata: "m".repeat(1100) }));
+  await record("valueLarge", () => kv.put("large", new Uint8Array(25 * 1024 * 1024 + 1)));
+  await record("expiring", async () => {
+    await kv.put("expiring", "x", { expirationTtl: 3600, metadata: [1] });
+    await kv.put("absolute", "y", { expiration: now() + 120 });
+    const { keys } = await kv.list({ prefix: "expir" });
+    const absolute = (await kv.list({ prefix: "absolute" })).keys[0];
+    return {
+      keys: keys.map(({ expiration, ...key }) => ({ ...key, ttl: Math.abs(expiration - now() - 3600) <= 2 })),
+      absolute: Math.abs(absolute.expiration - now() - 120) <= 2,
+      value: await kv.get("expiring"),
+    };
+  });
+  await record("delete", async () => { await kv.delete("text"); await kv.delete("never"); return kv.get("text"); });
+  await record("list", async () => {
+    for (const key of ["list/b", "list/a", "list/é", "list/z", "list/A", "list/\u{1F600}", "lisu"]) await kv.put(key, key, { metadata: key.length });
+    return kv.list({ prefix: "list/" });
+  });
+  await record("listPages", async () => {
+    const first = await kv.list({ prefix: "list/", limit: 2 });
+    const second = await kv.list({ prefix: "list/", limit: 2, cursor: first.cursor });
+    const rest = await kv.list({ prefix: "list/", cursor: second.cursor });
+    return { first: { ...first, cursor: typeof first.cursor }, second: second.keys.map(key => key.name), rest: rest.keys.map(key => key.name), complete: rest.list_complete };
+  });
+  await record("listAll", async () => (await kv.list()).keys.map(key => key.name));
+  await record("listLimitZero", async () => (await kv.list({ limit: 0, prefix: "list/" })).keys.length);
+  await record("listLimitLarge", () => kv.list({ limit: 1001 }));
+  await record("listPrefixLong", () => kv.list({ prefix: "p".repeat(513) }));
+  await record("listNullOptions", async () => (await kv.list({ prefix: null, cursor: null })).list_complete);
+  await record("bulk", async () => {
+    await kv.put("1", "one");
+    await kv.put("bulk-json", "{\"x\":1}", { metadata: { m: true } });
+    return {
+      text: mapEntries(await kv.get(["list/a", "missing", "1", "list/b", "list/a"])),
+      json: mapEntries(await kv.get(["bulk-json", "missing"], "json")),
+      metadata: mapEntries(await kv.getWithMetadata(["bulk-json", "list/a", "missing"], { type: "json" }).catch(error => error.message)),
+      metadataText: mapEntries(await kv.getWithMetadata(["bulk-json", "missing"])),
+    };
+  });
+  await record("bulkTooMany", () => kv.get(Array.from({ length: 101 }, (_, index) => `k${index}`)));
+  await record("bulkEmpty", () => kv.get([]));
+  await record("bulkType", () => kv.get(["list/a"], "arrayBuffer"));
+  await record("bulkBadJson", () => kv.get(["list/a"], "json"));
+  await record("bulkBadKey", () => kv.get(["ok", ""]));
+  await record("invalidText", async () => { await kv.put("invalid", new Uint8Array([0xff, 0x61])); return kv.get("invalid"); });
+  await record("shape", () => Object.getOwnPropertyNames(Object.getPrototypeOf(kv)).sort());
+  return results;
+}
+
 export default {
   async fetch(request, env) {
-    return Response.json({ d1: await d1Contracts(env.DB) });
+    return Response.json({ d1: await d1Contracts(env.DB), kv: await kvContracts(env.KV) });
   },
 };
