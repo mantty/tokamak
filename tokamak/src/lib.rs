@@ -41,6 +41,8 @@ mod runtime_contract_tests;
 mod runtime_modules;
 #[cfg(feature = "native")]
 mod server;
+#[cfg(feature = "native")]
+mod storage;
 #[cfg(all(test, feature = "native"))]
 mod tests;
 #[cfg(feature = "native")]
@@ -65,8 +67,8 @@ pub use asset_manifest::{Error as AssetManifestError, write_manifest as write_as
 #[cfg(feature = "native")]
 pub use certificates::{Certificates, Challenge, Decision};
 pub use env_vars::{
-    Error as WorkerEnvironmentError, WorkerEnvironment, load as load_worker_environment,
-    write as write_worker_environment,
+    Error as WorkerEnvironmentError, StorageBinding, WorkerEnvironment,
+    load as load_worker_environment, store_id_problem, write as write_worker_environment,
 };
 #[cfg(feature = "native")]
 pub use lifecycle_events::Event;
@@ -86,8 +88,9 @@ pub use tokamak_config::{
 };
 pub use wrangler_config::{
     Error as WranglerConfigError, HtmlHandling, NotFoundHandling, WranglerAssets, WranglerBinding,
-    WranglerConfig, WranglerModuleType, WranglerRule, app_host, is_valid_app_name,
-    load_config as load_wrangler_config, load_config_for_env as load_wrangler_config_for_env,
+    WranglerConfig, WranglerMigrations, WranglerModuleType, WranglerRule, WranglerStorage,
+    app_host, is_valid_app_name, load_config as load_wrangler_config,
+    load_config_for_env as load_wrangler_config_for_env,
     resolve_config_path as resolve_wrangler_config_path,
 };
 

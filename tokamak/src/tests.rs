@@ -842,6 +842,7 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
         assets: None,
         cache: PathBuf::default(),
         environment: BTreeMap::new(),
+        storage: None,
     };
     let config = gateway_config();
     let shared = Arc::new(Shared {
@@ -1140,5 +1141,6 @@ fn websocket_config(root: &Path) -> RuntimeConfig {
         assets: None,
         cache: root.join("cache"),
         environment: BTreeMap::new(),
+        storage: None,
     }
 }

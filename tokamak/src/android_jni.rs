@@ -29,9 +29,10 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStart(
     _: JClass,
     packaged_dir: JString,
     state_dir: JString,
+    storage_dir: JString,
     host: JString,
 ) -> jlong {
-    match start(&mut env, &packaged_dir, &state_dir, &host) {
+    match start(&mut env, &packaged_dir, &state_dir, &storage_dir, &host) {
         Ok(runtime) => Box::into_raw(Box::new(runtime)) as jlong,
         Err(message) => {
             log(LOG_ERROR, &format!("runtime startup failed: {message}"));
@@ -202,11 +203,13 @@ fn start(
     env: &mut JNIEnv,
     packaged_dir: &JString,
     state_dir: &JString,
+    storage_dir: &JString,
     host: &JString,
 ) -> Result<Runtime, String> {
     let config = Config {
         app: PackageLayout::new(text(env, packaged_dir)?),
         state_dir: PathBuf::from(text(env, state_dir)?),
+        storage_dir: PathBuf::from(text(env, storage_dir)?),
         host: text(env, host)?,
     };
     Runtime::start(config, report).map_err(|error| error.to_string())

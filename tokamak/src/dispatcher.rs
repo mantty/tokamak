@@ -18,6 +18,7 @@ use crate::gateway::{
 };
 use crate::globals::ResponseEncoder;
 use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
+use crate::storage::StorageHandle;
 use crate::transport::{BodyChunk, HttpBody, HttpRequest, HttpResponse, response_stream};
 use flate2::read::GzDecoder;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -211,12 +212,20 @@ fn install_worker_globals(
 ) -> Result<(), Error> {
     let environment = serde_json::to_string(&config.environment)?;
     let cache = serde_json::to_string(&config.cache.to_string_lossy())?;
+    let storage = config
+        .storage
+        .as_ref()
+        .map_or("[]", |storage| storage.installed());
     ctx.eval::<(), _>(format!(
-        "globalThis.__tokamak_env = {environment}; globalThis.__tokamak_cache = {cache};"
+        "globalThis.__tokamak_env = {environment}; globalThis.__tokamak_cache = {cache}; globalThis.__tokamak_storage = {storage};"
     ))
     .map_err(|error| js_error("setup", error))?;
     if let Some(assets) = assets {
         install_asset_lookup(ctx, assets)?;
+    }
+    if let Some(storage) = &config.storage {
+        ctx.store_userdata(StorageHandle(Arc::clone(storage)))
+            .map_err(|error| js_error("storage", error))?;
     }
     Ok(())
 }

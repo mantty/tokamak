@@ -10,8 +10,11 @@ use std::thread;
 use std::time::Duration;
 
 use crate::dispatcher::{AssetService, execute_request};
+use crate::env_vars::StorageBinding;
 use crate::gateway::{Job, JobResponse, Lifecycle};
+use crate::packaging::PackageLayout;
 use crate::quickjs::{Assets, RuntimeConfig, WorkerBundle};
+use crate::storage::Storage;
 use crate::transport::{HttpBody, HttpRequest};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -79,14 +82,19 @@ fn request(worker: &WorkerBundle, flag: &str) -> TestResult<Vec<u8>> {
         assets: None,
         cache: directory.path().join("cache"),
         environment: BTreeMap::from([("FLAG".to_owned(), serde_json::json!(flag))]),
+        storage: None,
     };
+    request_with(worker, &config)
+}
+
+fn request_with(worker: &WorkerBundle, config: &RuntimeConfig) -> TestResult<Vec<u8>> {
     let accepting = Arc::new(AtomicBool::new(true));
     let lifecycle = Lifecycle::new();
     let execution = lifecycle.enter(&accepting).ok_or("request rejected")?;
     let (sender, receiver) = flume::bounded(1);
     execute_request(
         worker,
-        &config,
+        config,
         None,
         Job {
             request: HttpRequest {
@@ -420,6 +428,7 @@ export default httpServerHandler(server);
         assets: None,
         cache: directory.path().join("cache"),
         environment: BTreeMap::new(),
+        storage: None,
     };
     let accepting = Arc::new(AtomicBool::new(true));
     let lifecycle = Lifecycle::new();
@@ -507,20 +516,31 @@ export default class App extends WorkerEntrypoint {
 
 #[test]
 fn bundled_worker_matches_cloudflare_node_compat() -> TestResult {
+    let expected = node_reference("workerd-reference.mjs")?;
+    let directory = tempfile::tempdir()?;
+    let worker = bundle_worker(&fixture_root().join("startup.mjs"), directory.path())?;
+    let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
+    assert_contract_domains(&expected, &actual)
+}
+
+/// The JSON a reference script prints after running a fixture in workerd.
+fn node_reference(script: &str) -> TestResult<serde_json::Value> {
     let reference = Command::new("node")
-        .arg(fixture_root().join("workerd-reference.mjs"))
+        .arg(fixture_root().join(script))
         .output()?;
     if !reference.status.success() {
         return Err(format!(
-            "workerd reference failed: {}",
+            "{script} failed: {}",
             String::from_utf8_lossy(&reference.stderr)
         )
         .into());
     }
-    let expected: serde_json::Value = serde_json::from_slice(&reference.stdout)?;
-    let directory = tempfile::tempdir()?;
-    let worker = bundle_worker(&fixture_root().join("startup.mjs"), directory.path())?;
-    let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
+    Ok(serde_json::from_slice(&reference.stdout)?)
+}
+
+/// Assert that every domain of `actual` equals `expected`, printing each
+/// difference.
+fn assert_contract_domains(expected: &serde_json::Value, actual: &serde_json::Value) -> TestResult {
     let mut failures = Vec::new();
     for (name, expected) in expected.as_object().ok_or("reference is not an object")? {
         if actual.get(name) == Some(expected) {
@@ -574,6 +594,34 @@ fn report_contract_difference(
 }
 
 #[test]
+fn storage_bindings_match_cloudflare() -> TestResult {
+    let expected = node_reference("storage-reference.mjs")?;
+    let directory = tempfile::tempdir()?;
+    let worker = bundle_worker(
+        &fixture_root().join("storage.mjs"),
+        &directory.path().join("worker"),
+    )?;
+    let bindings = [StorageBinding::D1 {
+        name: "DB".to_owned(),
+        id: "DB".to_owned(),
+        migrations_table: "d1_migrations".to_owned(),
+        migrations: Vec::new(),
+    }];
+    let config = RuntimeConfig {
+        assets: None,
+        cache: directory.path().join("cache"),
+        environment: BTreeMap::new(),
+        storage: Some(Arc::new(Storage::open(
+            &directory.path().join("storage"),
+            &PackageLayout::new(directory.path()),
+            &bindings,
+        )?)),
+    };
+    let actual: serde_json::Value = serde_json::from_slice(&request_with(&worker, &config)?)?;
+    assert_contract_domains(&expected, &actual)
+}
+
+#[test]
 fn every_public_module_spelling_imports() -> TestResult {
     let names = serde_json::to_string(&crate::runtime_modules::runtime_module_names())?;
     let directory = tempfile::tempdir()?;
@@ -600,17 +648,7 @@ export default {{ async fetch() {{
 
 #[test]
 fn request_boundary_matches_cloudflare() -> TestResult {
-    let reference = Command::new("node")
-        .arg(fixture_root().join("boundary-reference.mjs"))
-        .output()?;
-    if !reference.status.success() {
-        return Err(format!(
-            "boundary reference failed: {}",
-            String::from_utf8_lossy(&reference.stderr)
-        )
-        .into());
-    }
-    let expected: serde_json::Value = serde_json::from_slice(&reference.stdout)?;
+    let expected = node_reference("boundary-reference.mjs")?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let upstream = thread::spawn(move || serve_gzip_upstream(&listener));
@@ -789,6 +827,7 @@ fn fixture_request(
         assets: assets.clone(),
         cache: directory.path().join("cache"),
         environment,
+        storage: None,
     };
     let mut headers = HeaderMap::new();
     if body.is_some() {

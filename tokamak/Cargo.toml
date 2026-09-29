@@ -60,6 +60,7 @@ native = [
     "dep:md4",
     "dep:rcgen",
     "dep:reqwest",
+    "dep:rusqlite",
     "dep:time",
     "dep:tokio",
     "dep:tokio-util",
@@ -125,6 +126,7 @@ md4 = { workspace = true, optional = true }
 rcgen = { workspace = true, features = ["pem", "x509-parser"], optional = true }
 rquickjs.workspace = true
 reqwest = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

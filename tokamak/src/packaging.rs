@@ -16,6 +16,7 @@ const WORKER_ENVIRONMENT: &str = "worker-environment.json";
 const ASSET_MANIFEST: &str = "asset-manifest.json";
 const ASSETS: &str = "assets";
 const BUNDLE: &str = "bundle";
+const D1_MIGRATIONS: &str = "d1-migrations";
 const WORKER_BUNDLE_HEADER: &[u8] = b"TOKAMAK-QJS-GZIP\x01";
 
 /// Failures reading or writing packaged Worker bytecode and manifests.
@@ -93,6 +94,12 @@ impl PackageLayout {
     #[must_use]
     pub fn bundle(&self) -> PathBuf {
         self.root.join(BUNDLE)
+    }
+
+    /// The migrations packaged for the D1 binding named `binding`.
+    #[must_use]
+    pub fn d1_migrations(&self, binding: &str) -> PathBuf {
+        self.root.join(D1_MIGRATIONS).join(binding)
     }
 
     /// Whether the packaged app serves static assets.
@@ -236,6 +243,10 @@ mod tests {
         assert_eq!(
             layout.bundle(),
             std::path::Path::new("/apps/example/bundle")
+        );
+        assert_eq!(
+            layout.d1_migrations("DB"),
+            std::path::Path::new("/apps/example/d1-migrations/DB")
         );
     }
 
