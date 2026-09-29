@@ -109,7 +109,7 @@ predicates = "3.1.3"
 rcgen = "0.14.8"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "stream"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+serde_json = { version = "1.0.150", features = ["raw_value"] }
 sha2 = { version = "0.11.0", features = ["oid"] }
 security-framework = "3.7.0"
 tempfile = "3.27.0"
@@ -125,7 +125,7 @@ windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Security_
 x509-parser = { version = "0.18.1", features = ["verify"] }
 zstd = { version = "0.13.3", default-features = false, features = ["arrays"] }
 rquickjs = { version = "0.12.2", features = ["loader", "macro", "futures"] }
-rusqlite = { version = "0.40.2", default-features = false, features = ["blob", "bundled", "hooks", "limits"] }
+rusqlite = { version = "0.40.2", default-features = false, features = ["blob", "bundled", "fallible_uint", "hooks", "limits"] }
 tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "time", "sync", "net", "io-util", "macros"] }
 tokio-util = { version = "0.7.19", features = ["io", "rt"] }
 url = "2.5.8"

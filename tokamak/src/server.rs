@@ -243,7 +243,12 @@ const RUNTIME_MARKER: &str = "TOKAMAK_RUNTIME";
 fn quickjs_config(config: &Config) -> Result<RuntimeConfig> {
     let app = &config.app;
     let environment = load_environment(app)?;
-    let storage = Storage::open(&config.storage_dir, app, &environment.storage)?;
+    let storage = Storage::open(
+        &config.storage_dir,
+        &config.state_dir.join("storage"),
+        app,
+        &environment.storage,
+    )?;
     let mut vars = environment.vars;
     vars.insert(RUNTIME_MARKER.to_owned(), "true".into());
     Ok(RuntimeConfig {

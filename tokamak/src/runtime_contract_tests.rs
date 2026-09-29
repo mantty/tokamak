@@ -612,6 +612,10 @@ fn storage_bindings_match_cloudflare() -> TestResult {
             name: "KV".to_owned(),
             id: "KV".to_owned(),
         },
+        StorageBinding::R2 {
+            name: "R2".to_owned(),
+            id: "R2".to_owned(),
+        },
     ];
     let config = RuntimeConfig {
         assets: None,
@@ -619,12 +623,74 @@ fn storage_bindings_match_cloudflare() -> TestResult {
         environment: BTreeMap::new(),
         storage: Some(Arc::new(Storage::open(
             &directory.path().join("storage"),
+            &directory.path().join("scratch"),
             &PackageLayout::new(directory.path()),
             &bindings,
         )?)),
     };
     let actual: serde_json::Value = serde_json::from_slice(&request_with(&worker, &config)?)?;
     assert_contract_domains(&expected, &actual)
+}
+
+#[test]
+fn r2_stores_fetched_bodies_of_known_length() -> TestResult {
+    let plain = TcpListener::bind("127.0.0.1:0")?;
+    let encoded = TcpListener::bind("127.0.0.1:0")?;
+    let (plain_address, encoded_address) = (plain.local_addr()?, encoded.local_addr()?);
+    let server = thread::spawn(move || -> Result<(), String> {
+        let (mut stream, _) = plain.accept().map_err(|error| error.to_string())?;
+        let mut request = [0; 1024];
+        let _ = stream
+            .read(&mut request)
+            .map_err(|error| error.to_string())?;
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
+            .map_err(|error| error.to_string())?;
+        serve_gzip_upstream(&encoded)
+    });
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("fetched.mjs");
+    fs::write(
+        &source,
+        format!(
+            r#"
+export default {{ async fetch(request, env) {{
+  const plain = await env.FILES.put("plain", (await fetch("http://{plain_address}")).body);
+  const encoded = await env.FILES.put("encoded", (await fetch("http://{encoded_address}")).body).catch(error => error.message);
+  return Response.json({{ size: plain.size, text: await (await env.FILES.get("plain")).text(), encoded }});
+}} }};
+"#
+        ),
+    )?;
+    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let bindings = [StorageBinding::R2 {
+        name: "FILES".to_owned(),
+        id: "files".to_owned(),
+    }];
+    let config = RuntimeConfig {
+        assets: None,
+        cache: directory.path().join("cache"),
+        environment: BTreeMap::new(),
+        storage: Some(Arc::new(Storage::open(
+            &directory.path().join("storage"),
+            &directory.path().join("scratch"),
+            &PackageLayout::new(directory.path()),
+            &bindings,
+        )?)),
+    };
+
+    let actual = request_with(&worker, &config);
+    server.join().map_err(|_| "upstream panicked")??;
+
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&actual?)?,
+        serde_json::json!({
+            "size": 5,
+            "text": "hello",
+            "encoded": "Provided readable stream must have a known length (request/response body or readable half of FixedLengthStream)",
+        })
+    );
+    Ok(())
 }
 
 #[test]

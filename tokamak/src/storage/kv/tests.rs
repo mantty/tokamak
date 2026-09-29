@@ -1,5 +1,5 @@
-use super::{Entry, Key, KvNamespace, prefix_end};
-use crate::storage::Open;
+use super::{Entry, Key, KvNamespace};
+use crate::storage::{Location, Open};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -7,7 +7,10 @@ const NOW: i64 = 1_000_000;
 
 fn namespace() -> TestResult<(tempfile::TempDir, KvNamespace)> {
     let directory = tempfile::tempdir()?;
-    let namespace = KvNamespace::open(&directory.path().join("kv.sqlite"))?;
+    let namespace = KvNamespace::open(&Location {
+        path: directory.path().join("kv.sqlite"),
+        scratch: directory.path().join("scratch"),
+    })?;
     Ok((directory, namespace))
 }
 
@@ -98,13 +101,4 @@ fn lists_keys_in_byte_order_by_prefix_and_page() -> TestResult {
         2
     );
     Ok(())
-}
-
-#[test]
-fn bounds_a_prefix_by_its_next_string() {
-    assert_eq!(prefix_end("ab").as_deref(), Some("ac"));
-    assert_eq!(prefix_end("a\u{D7FF}").as_deref(), Some("a\u{E000}"));
-    assert_eq!(prefix_end("a\u{10FFFF}").as_deref(), Some("b"));
-    assert_eq!(prefix_end("\u{10FFFF}"), None);
-    assert_eq!(prefix_end(""), None);
 }

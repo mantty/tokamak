@@ -326,11 +326,17 @@ fn response_object<'js>(
             .map_err(|error| failure(&ctx, error))?,
     )?;
     let encoding = response.headers().get("content-encoding").cloned();
+    let length = response.content_length();
     let body = StreamReader::new(response.bytes_stream().map_err(io::Error::other));
-    *reader.try_lock().map_err(|error| failure(&ctx, error))? = Some(decode_body(
+    let (body, length) = decode_body(
         Box::pin(body),
         encoding.as_ref().map(HeaderValue::as_bytes),
-    ));
+        length,
+    );
+    if let Some(length) = length {
+        result.set("length", length)?;
+    }
+    *reader.try_lock().map_err(|error| failure(&ctx, error))? = Some(body);
     result.set(
         "read",
         Function::new(
@@ -372,15 +378,21 @@ fn response_object<'js>(
     Ok(result)
 }
 
-fn decode_body(body: Reader, encoding: Option<&[u8]>) -> Reader {
+/// The body decoded from `encoding`, and its `length` when decoding leaves
+/// the body unchanged.
+fn decode_body(
+    body: Reader,
+    encoding: Option<&[u8]>,
+    length: Option<u64>,
+) -> (Reader, Option<u64>) {
     match encoding {
         Some(b"gzip") => {
             let mut decoder = GzipDecoder::new(BufReader::new(body));
             decoder.multiple_members(true);
-            Box::pin(decoder)
+            (Box::pin(decoder), None)
         }
-        Some(b"br") => Box::pin(super::brotli::Decoder::new(body)),
-        _ => body,
+        Some(b"br") => (Box::pin(super::brotli::Decoder::new(body)), None),
+        _ => (body, length),
     }
 }
 

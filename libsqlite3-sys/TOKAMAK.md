@@ -40,3 +40,17 @@ options, and writes the three files here. It needs `curl`, `unzip`, `patch`,
 `make` and a C compiler. To move to another SQLite release, update the pin in
 `tools/xtask/src/sqlite.rs` to the version workerd builds and replace
 `patches/` with workerd's patches for it.
+
+## Size
+
+SQLite, with the D1 service built on it, added this much to the runtime in
+release builds for each platform pack's target:
+
+| Target | Runtime binary | Before (bytes) | After (bytes) | Added |
+|---|---|---|---|---|
+| Android arm64 | `libtokamak.so` | 9,706,008 | 10,719,952 | 1,014 KB |
+| Windows x64 | `tokamak-shell-windows.exe` | 13,485,056 | 14,458,368 | 973 KB |
+| macOS arm64 | A linked app's executable | 8,307,024 | 9,135,104 | 828 KB |
+| iOS arm64 | `TokamakRuntime` static library | 21,271,840 | 22,938,368 | 1,667 KB |
+
+Apple packs ship a static library, which linking an app trims.

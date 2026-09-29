@@ -4,7 +4,7 @@ import { CloseEvent, CustomEvent, ErrorEvent, Event, EventTarget, ExtendableEven
 import { Blob, Body, Cache, CacheStorage, EventSource, File, FormData, Headers, Request, Response } from "../network/fetch.mjs";
 import { HTMLRewriter } from "../network/html-rewriter.mjs";
 import { URL, URLPattern, URLSearchParams } from "../network/url.mjs";
-import { ReadableByteStreamController, ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest, ReadableStreamDefaultController, ReadableStreamDefaultReader, WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter, TransformStream, TransformStreamDefaultController, CompressionStream, DecompressionStream, ByteLengthQueuingStrategy, CountQueuingStrategy, FixedLengthStream, IdentityTransformStream } from "../streams/web.mjs";
+import { ReadableByteStreamController, ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest, ReadableStreamDefaultController, ReadableStreamDefaultReader, WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter, TransformStream, TransformStreamDefaultController, CompressionStream, DecompressionStream, ByteLengthQueuingStrategy, CountQueuingStrategy, FixedLengthStream, IdentityTransformStream, setStreamLength } from "../streams/web.mjs";
 import { TextDecoder, TextEncoder, TextDecoderStream, TextEncoderStream } from "../streams/text.mjs";
 import { installIntlGlobals } from "../intl.mjs";
 import { captureAsyncContext, runInAsyncContext } from "../builtins/async-context.mjs";
@@ -777,6 +777,7 @@ async function fetch(input, init) {
     cancel() { task.cancel(); finish(); },
   });
   if (response.bodyless) finish();
+  if (body !== null && response.length != null) setStreamLength(body, response.length);
   return new Response(body, {
     status: response.status,
     statusText: response.statusText,

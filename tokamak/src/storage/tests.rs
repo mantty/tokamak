@@ -16,6 +16,13 @@ fn d1(name: &str, id: &str, migrations: &[&str]) -> StorageBinding {
     }
 }
 
+fn r2(name: &str, id: &str) -> StorageBinding {
+    StorageBinding::R2 {
+        name: name.to_owned(),
+        id: id.to_owned(),
+    }
+}
+
 fn touch(root: &Path, files: &[&str]) -> TestResult {
     for file in files {
         let path = root.join(file);
@@ -39,16 +46,27 @@ fn deletes_stores_no_binding_names() -> TestResult {
             "d1/removed.sqlite-shm",
             "d1/stray.txt",
             "d1/nested/file",
+            "r2/files/metadata.sqlite",
+            "r2/old/metadata.sqlite",
+            "r2/old.sqlite",
+            "scratch/r2/files/part",
+            "scratch/r2/old/part",
         ],
     )?;
 
     Storage::open(
         root,
+        &root.join("scratch"),
         &PackageLayout::new(root.join("app")),
-        &[d1("DB", "kept", &[])],
+        &[d1("DB", "kept", &[]), r2("FILES", "files")],
     )?;
 
-    for kept in ["d1/kept.sqlite", "d1/kept.sqlite-wal"] {
+    for kept in [
+        "d1/kept.sqlite",
+        "d1/kept.sqlite-wal",
+        "r2/files/metadata.sqlite",
+        "scratch/r2/files/part",
+    ] {
         assert!(root.join(kept).exists(), "{kept}");
     }
     for removed in [
@@ -59,6 +77,9 @@ fn deletes_stores_no_binding_names() -> TestResult {
         "d1/nested",
         "kv/kept.sqlite-wal",
         "kv/old.sqlite",
+        "r2/old",
+        "r2/old.sqlite",
+        "scratch/r2/old",
     ] {
         assert!(!root.join(removed).exists(), "{removed}");
     }
@@ -71,6 +92,7 @@ fn rejects_an_identifier_unsafe_as_a_file_name() -> TestResult {
 
     let result = Storage::open(
         directory.path(),
+        &directory.path().join("scratch"),
         &PackageLayout::new(directory.path()),
         &[d1("DB", "../escape", &[])],
     );
@@ -84,6 +106,7 @@ fn shares_a_database_between_bindings_naming_it() -> TestResult {
     let directory = tempfile::tempdir()?;
     let storage = Storage::open(
         directory.path(),
+        &directory.path().join("scratch"),
         &PackageLayout::new(directory.path()),
         &[d1("DB", "app", &[]), d1("READER", "app", &[])],
     )?;
@@ -109,6 +132,7 @@ fn fails_every_query_after_a_failed_migration() -> TestResult {
     fs::write(app.d1_migrations("DB").join("0001.sql"), "CREATE TABLE t (")?;
     let storage = Storage::open(
         &directory.path().join("storage"),
+        &directory.path().join("scratch"),
         &app,
         &[d1("DB", "app", &["0001.sql"])],
     )?;
@@ -133,7 +157,8 @@ fn keeps_data_across_processes() -> TestResult {
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     let bindings = [d1("DB", "app", &[])];
-    let first = Storage::open(root, &PackageLayout::new(root), &bindings)?;
+    let scratch = root.join("scratch");
+    let first = Storage::open(root, &scratch, &PackageLayout::new(root), &bindings)?;
     first.d1_query(
         "DB",
         r#"{"sql":"CREATE TABLE t (x); INSERT INTO t VALUES (1)"}"#,
@@ -141,7 +166,7 @@ fn keeps_data_across_processes() -> TestResult {
     );
     drop(first);
 
-    let second = Storage::open(root, &PackageLayout::new(root), &bindings)?;
+    let second = Storage::open(root, &scratch, &PackageLayout::new(root), &bindings)?;
     let (body, _) = second.d1_query("DB", r#"{"sql":"SELECT x FROM t"}"#, "NONE");
 
     assert!(body.contains(r#""results":[{"x":1}]"#), "{body}");

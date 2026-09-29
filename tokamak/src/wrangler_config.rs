@@ -122,6 +122,13 @@ pub enum WranglerStorage {
         /// Where the database's migrations are.
         migrations: WranglerMigrations,
     },
+    /// An `r2_buckets` entry.
+    R2 {
+        /// `binding`.
+        name: String,
+        /// `bucket_name`, or the binding name.
+        id: String,
+    },
 }
 
 impl WranglerStorage {
@@ -129,7 +136,7 @@ impl WranglerStorage {
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
-            Self::Kv { name, .. } | Self::D1 { name, .. } => name,
+            Self::Kv { name, .. } | Self::D1 { name, .. } | Self::R2 { name, .. } => name,
         }
     }
 
@@ -137,7 +144,7 @@ impl WranglerStorage {
     #[must_use]
     pub fn store(&self) -> &str {
         match self {
-            Self::Kv { id, .. } | Self::D1 { id, .. } => id,
+            Self::Kv { id, .. } | Self::D1 { id, .. } | Self::R2 { id, .. } => id,
         }
     }
 
@@ -147,6 +154,7 @@ impl WranglerStorage {
         match self {
             Self::Kv { .. } => "kv_namespaces",
             Self::D1 { .. } => "d1_databases",
+            Self::R2 { .. } => "r2_buckets",
         }
     }
 }
@@ -551,6 +559,12 @@ struct RawKvNamespace {
 }
 
 #[derive(Deserialize)]
+struct RawR2Bucket {
+    binding: Option<String>,
+    bucket_name: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct RawD1Database {
     binding: Option<String>,
     database_id: Option<String>,
@@ -570,6 +584,12 @@ fn collect_storage(
         values,
         "d1_databases",
         |raw| resolve_d1(config_dir, raw),
+    )?);
+    storage.extend(storage_of_kind(
+        config_path,
+        values,
+        "r2_buckets",
+        resolve_r2,
     )?);
     Ok(storage)
 }
@@ -606,6 +626,14 @@ fn resolve_kv(raw: RawKvNamespace) -> std::result::Result<WranglerStorage, Strin
     let name = binding_name(raw.binding)?;
     Ok(WranglerStorage::Kv {
         id: raw.id.unwrap_or_else(|| name.clone()),
+        name,
+    })
+}
+
+fn resolve_r2(raw: RawR2Bucket) -> std::result::Result<WranglerStorage, String> {
+    let name = binding_name(raw.binding)?;
+    Ok(WranglerStorage::R2 {
+        id: raw.bucket_name.unwrap_or_else(|| name.clone()),
         name,
     })
 }
@@ -686,7 +714,6 @@ fn collect_bindings(values: &BTreeMap<String, Value>) -> Vec<WranglerBinding> {
         "mtls_certificates",
         "pipelines",
         "queues",
-        "r2_buckets",
         "rate_limiting",
         "secrets_store_secrets",
         "send_email",
@@ -862,7 +889,7 @@ mod tests {
     fn collects_named_bindings_from_wrangler_like_shapes() -> TestResult {
         let values = serde_json::from_str::<BTreeMap<String, Value>>(
             r#"{
-                "r2_buckets": [{"binding": "FILES", "bucket_name": "files"}],
+                "vectorize": [{"binding": "INDEX", "index_name": "index"}],
                 "durable_objects": {"bindings": [{"name": "ROOMS", "class_name": "Room"}]},
                 "queues": {"producers": [{"binding": "EVENTS", "queue": "events"}]}
             }"#,
@@ -872,7 +899,7 @@ mod tests {
         assert!(
             bindings
                 .iter()
-                .any(|binding| { binding.name == "FILES" && binding.kind == "r2_buckets" })
+                .any(|binding| { binding.name == "INDEX" && binding.kind == "vectorize" })
         );
         assert!(
             bindings
@@ -897,7 +924,8 @@ mod tests {
                 "name": "app",
                 "main": "worker.js",
                 "kv_namespaces": [{ "binding": "SETTINGS", "id": "abc", "preview_id": "p" }, { "binding": "SESSION" }],
-                "r2_buckets": [{ "binding": "FILES", "bucket_name": "files" }],
+                "r2_buckets": [{ "binding": "FILES", "bucket_name": "files" }, { "binding": "UPLOADS" }],
+                "queues": { "producers": [{ "binding": "EVENTS", "queue": "events" }] },
                 "d1_databases": [
                     { "binding": "DB", "database_name": "app", "database_id": "db-id", "migrations_dir": "db/migrations", "migrations_table": "applied" },
                     { "binding": "LOCAL" }
@@ -936,10 +964,18 @@ mod tests {
                         table: "d1_migrations".to_owned(),
                     },
                 },
+                WranglerStorage::R2 {
+                    name: "FILES".to_owned(),
+                    id: "files".to_owned(),
+                },
+                WranglerStorage::R2 {
+                    name: "UPLOADS".to_owned(),
+                    id: "UPLOADS".to_owned(),
+                },
             ]
         );
         assert_eq!(loaded.bindings.len(), 1);
-        assert_eq!(loaded.bindings[0].kind, "r2_buckets");
+        assert_eq!(loaded.bindings[0].kind, "queues");
         Ok(())
     }
 

@@ -162,7 +162,7 @@ output separately.
 
 ### Storage
 
-A packaged app's Worker gets KV and D1 bindings backed by storage on the
+A packaged app's Worker gets KV, D1 and R2 bindings backed by storage on the
 device. Declare them in the Wrangler configuration as for Cloudflare; the
 Worker uses the same APIs, so the code deploys to Cloudflare unchanged. The
 data stays on the device and is not synced with the Cloudflare resources the
@@ -171,7 +171,8 @@ bindings name.
 ```jsonc
 {
   "kv_namespaces": [{ "binding": "SETTINGS", "id": "0f2ac74b498b48028cb68387c421e279" }],
-  "d1_databases": [{ "binding": "DB", "database_name": "app", "database_id": "…" }]
+  "d1_databases": [{ "binding": "DB", "database_name": "app", "database_id": "…" }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "app-files" }]
 }
 ```
 
@@ -179,10 +180,12 @@ bindings name.
 | --- | --- | --- |
 | `kv_namespaces` | `KVNamespace` | A SQLite database per namespace |
 | `d1_databases` | `D1Database` | A SQLite database per database |
+| `r2_buckets` | `R2Bucket` | A file per object, with metadata in a SQLite database per bucket |
 
 - A binding's store is created empty the first time the Worker uses it. The
-  store is identified by the resource the binding names, `id` for KV and
-  `database_id` for D1, or by the binding name when there is none. `tok build`
+  store is identified by the resource the binding names, `id` for KV,
+  `database_id` for D1 and `bucket_name` for R2, or by the binding name when
+  there is none. `tok build`
   rejects an identifier that is not a safe file name.
 - When the app starts, it deletes the stores no binding names, so removing a
   binding, or pointing it at another resource, removes its data from the device.
@@ -215,6 +218,31 @@ transaction and `dump()` rejects.
 not yet recorded in `migrations_table` (default `d1_migrations`), in order, each
 in its own transaction. A failed migration rolls back, and queries on its
 binding reject with its error until a later launch applies it.
+
+#### R2
+
+`head`, `get` (with `range` and `onlyIf`, as options or headers), `put`, `delete`
+(of one key or many), `list` (with `prefix`, `delimiter`, `cursor`,
+`startAfter`, `limit` and `include`) and multipart uploads behave as local R2
+does, including their errors. Objects carry R2's etags, checksums and HTTP
+metadata, and bodies stream from and to disk. `put` verifies a checksum it is
+given, and a failed `onlyIf` returns `null` from `put` and the object without
+its body from `get`.
+
+Three behaviours follow Cloudflare where local R2 differs: objects have a
+`storageClass`, `Standard` unless `put` sets one; `list` returns
+`httpMetadata` and `customMetadata` only when `include` asks for them; and
+metadata limits apply to multipart uploads. Customer-provided encryption keys
+(`ssecKey`) are rejected, since device storage is encrypted by the operating
+system.
+
+As on Cloudflare, a `ReadableStream` written to R2 must have a known length:
+a request or response body, or the readable side of a `FixedLengthStream`.
+
+A replaced object reads as either its old or its new version, never a mixture.
+Parts of multipart uploads in progress are kept with the runtime's temporary
+state, outside backups. If the system removes a part, `complete` fails with
+R2's missing-part error.
 
 #### Where data lives
 
