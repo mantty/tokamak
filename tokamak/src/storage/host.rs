@@ -1,5 +1,6 @@
-//! Native functions the storage bindings' JavaScript calls. Storage work runs
-//! on the blocking thread pool, so it never blocks JavaScript.
+//! The `tokamak:storage` module: native functions the storage bindings'
+//! JavaScript calls. Storage work runs on the blocking thread pool, so it
+//! never blocks JavaScript.
 
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,7 +10,7 @@ use super::r2::{BodyReader, BodyWriter, Failure, R2Bucket, Read};
 use super::{Storage, lock};
 use rquickjs::class::Trace;
 use rquickjs::function::Async;
-use rquickjs::module::Exports;
+use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{Class, Ctx, Exception, Function, JsLifetime, Object, TypedArray};
 
 /// A packaged app's storage, installed into each request's context.
@@ -22,8 +23,62 @@ unsafe impl<'js> rquickjs::JsLifetime<'js> for StorageHandle {
     type Changed<'to> = StorageHandle;
 }
 
-/// Names `export_host_functions` exports from `tokamak:host`.
-pub(crate) const HOST_EXPORTS: &[&str] = &[
+/// The `tokamak:storage` module.
+pub(super) struct HostModule;
+
+impl ModuleDef for HostModule {
+    fn declare(declarations: &Declarations) -> rquickjs::Result<()> {
+        for name in HOST_EXPORTS {
+            declarations.declare(*name)?;
+        }
+        Ok(())
+    }
+
+    fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
+        exports.export("d1Query", Function::new(ctx.clone(), Async(d1_query))?)?;
+        exports.export("kvGet", Function::new(ctx.clone(), Async(kv_get))?)?;
+        exports.export("kvGetMany", Function::new(ctx.clone(), Async(kv_get_many))?)?;
+        exports.export("kvPut", Function::new(ctx.clone(), Async(kv_put))?)?;
+        exports.export("kvDelete", Function::new(ctx.clone(), Async(kv_delete))?)?;
+        exports.export("kvList", Function::new(ctx.clone(), Async(kv_list))?)?;
+        exports.export("r2Head", Function::new(ctx.clone(), Async(r2_head))?)?;
+        exports.export("r2Get", Function::new(ctx.clone(), Async(r2_get))?)?;
+        exports.export("r2Read", Function::new(ctx.clone(), Async(r2_read))?)?;
+        exports.export("r2CloseBody", Function::new(ctx.clone(), r2_close_body)?)?;
+        exports.export(
+            "r2ObjectWriter",
+            Function::new(ctx.clone(), Async(r2_object_writer))?,
+        )?;
+        exports.export(
+            "r2PartWriter",
+            Function::new(ctx.clone(), Async(r2_part_writer))?,
+        )?;
+        exports.export("r2Write", Function::new(ctx.clone(), Async(r2_write))?)?;
+        exports.export("r2Put", Function::new(ctx.clone(), Async(r2_put))?)?;
+        exports.export("r2Delete", Function::new(ctx.clone(), Async(r2_delete))?)?;
+        exports.export("r2List", Function::new(ctx.clone(), Async(r2_list))?)?;
+        exports.export(
+            "r2CreateUpload",
+            Function::new(ctx.clone(), Async(r2_create_upload))?,
+        )?;
+        exports.export(
+            "r2UploadPart",
+            Function::new(ctx.clone(), Async(r2_upload_part))?,
+        )?;
+        exports.export(
+            "r2CompleteUpload",
+            Function::new(ctx.clone(), Async(r2_complete_upload))?,
+        )?;
+        exports.export(
+            "r2AbortUpload",
+            Function::new(ctx.clone(), Async(r2_abort_upload))?,
+        )?;
+        Ok(())
+    }
+}
+
+/// Names the module exports.
+const HOST_EXPORTS: &[&str] = &[
     "d1Query",
     "kvGet",
     "kvGetMany",
@@ -60,51 +115,6 @@ pub(crate) struct Reader {
 pub(crate) struct Writer {
     #[qjs(skip_trace)]
     body: Arc<Mutex<Option<BodyWriter>>>,
-}
-
-pub(crate) fn export_host_functions<'js>(
-    ctx: &Ctx<'js>,
-    exports: &Exports<'js>,
-) -> rquickjs::Result<()> {
-    exports.export("d1Query", Function::new(ctx.clone(), Async(d1_query))?)?;
-    exports.export("kvGet", Function::new(ctx.clone(), Async(kv_get))?)?;
-    exports.export("kvGetMany", Function::new(ctx.clone(), Async(kv_get_many))?)?;
-    exports.export("kvPut", Function::new(ctx.clone(), Async(kv_put))?)?;
-    exports.export("kvDelete", Function::new(ctx.clone(), Async(kv_delete))?)?;
-    exports.export("kvList", Function::new(ctx.clone(), Async(kv_list))?)?;
-    exports.export("r2Head", Function::new(ctx.clone(), Async(r2_head))?)?;
-    exports.export("r2Get", Function::new(ctx.clone(), Async(r2_get))?)?;
-    exports.export("r2Read", Function::new(ctx.clone(), Async(r2_read))?)?;
-    exports.export("r2CloseBody", Function::new(ctx.clone(), r2_close_body)?)?;
-    exports.export(
-        "r2ObjectWriter",
-        Function::new(ctx.clone(), Async(r2_object_writer))?,
-    )?;
-    exports.export(
-        "r2PartWriter",
-        Function::new(ctx.clone(), Async(r2_part_writer))?,
-    )?;
-    exports.export("r2Write", Function::new(ctx.clone(), Async(r2_write))?)?;
-    exports.export("r2Put", Function::new(ctx.clone(), Async(r2_put))?)?;
-    exports.export("r2Delete", Function::new(ctx.clone(), Async(r2_delete))?)?;
-    exports.export("r2List", Function::new(ctx.clone(), Async(r2_list))?)?;
-    exports.export(
-        "r2CreateUpload",
-        Function::new(ctx.clone(), Async(r2_create_upload))?,
-    )?;
-    exports.export(
-        "r2UploadPart",
-        Function::new(ctx.clone(), Async(r2_upload_part))?,
-    )?;
-    exports.export(
-        "r2CompleteUpload",
-        Function::new(ctx.clone(), Async(r2_complete_upload))?,
-    )?;
-    exports.export(
-        "r2AbortUpload",
-        Function::new(ctx.clone(), Async(r2_abort_upload))?,
-    )?;
-    Ok(())
 }
 
 /// Resolve to `{ body, bookmark }`: a D1 service response for `binding`.

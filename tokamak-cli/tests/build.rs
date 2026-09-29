@@ -36,6 +36,19 @@ fn create_project(root: &Path) -> TestResult {
     Ok(())
 }
 
+fn declare_storage(root: &Path) -> TestResult {
+    fs::write(
+        root.join("wrangler.jsonc"),
+        r#"{
+  "name": "demo-app",
+  "main": "dist/server/entry.mjs",
+  "assets": { "directory": "dist/client", "binding": "ASSETS" },
+  "kv_namespaces": [{ "binding": "SESSION", "id": "session" }]
+}"#,
+    )?;
+    Ok(())
+}
+
 fn install_location_plugin(root: &Path) -> TestResult {
     fs::write(
         root.join("package.json"),
@@ -209,8 +222,10 @@ fn create_platform_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
 #[cfg(unix)]
 fn create_android_platform_pack(root: &Path) -> TestResult<PathBuf> {
     let target = Target::AndroidArm64;
-    fs::create_dir_all(root.join("bin"))?;
-    fs::write(root.join(target.runtime_artifact_path()), "runtime")?;
+    let runtime = root.join(target.runtime_artifact_path());
+    fs::create_dir_all(&runtime)?;
+    fs::write(runtime.join("libtokamak.a"), "runtime")?;
+    fs::write(runtime.join("link-libraries"), "-llog")?;
     fs::create_dir_all(root.join("native-shell/app"))?;
     fs::create_dir_all(root.join("native-shell/plugin"))?;
     fs::File::create(root.join("native-shell/app/TokamakActivity.kt"))?;
@@ -360,7 +375,10 @@ extension TokamakPlugin {
 fn create_test_framework(root: &Path, target: &str) -> TestResult {
     let source = root.join("runtime.c");
     let object = root.join("runtime.o");
-    fs::write(&source, "void tokamak_test(void) {}")?;
+    fs::write(
+        &source,
+        "void tokamak_test(void) {}\nconst char tokamak_storage = 0;",
+    )?;
 
     let (sdk, triple) = match target {
         "macos-arm64" => ("macosx", "arm64-apple-macos14.0"),
@@ -408,15 +426,9 @@ fn create_windows_inputs() -> TestResult<(tempfile::TempDir, PathBuf, PathBuf)> 
     let project = temporary.path().join("project");
     let pack = temporary.path().join("pack");
     fs::create_dir_all(&project)?;
-    fs::create_dir_all(pack.join("bin"))?;
     create_project(&project)?;
     let target = Target::WindowsX64;
-    fs::create_dir_all(
-        pack.join(target.runtime_artifact_path())
-            .parent()
-            .ok_or("runtime path has no parent")?,
-    )?;
-    fs::write(pack.join(target.runtime_artifact_path()), "shell")?;
+    create_windows_runtime(&pack.join(target.runtime_artifact_path()))?;
     let entrypoint_path = target.build_entrypoint_path();
     fs::create_dir_all(
         pack.join(entrypoint_path)
@@ -436,7 +448,7 @@ host=$(cat "$input/metadata/host")
 rm -rf "$output"
 mkdir -p "$output/app"
 cp -R "$input/app/." "$output/app/"
-cp "$input/runtime/tokamak-shell-windows.exe" "$output/$app_slug.exe"
+cp "$input/runtime/TokamakRuntime/tokamak.lib" "$output/$app_slug.exe"
 if [ -f "$input/icons/windows/AppIcon.ico" ]; then
   cp "$input/icons/windows/AppIcon.ico" "$output/AppIcon.ico"
 fi
@@ -450,6 +462,59 @@ printf '{"name":"%s","slug":"%s","host":"%s"}\n' "$app_name" "$app_slug" "$host"
     write_test_esbuild(&pack)?;
     write_test_manifest(&pack, target)?;
     Ok((temporary, project, pack))
+}
+
+/// A runtime library for the Windows entrypoint to link, whose app exits
+/// with 0 while it exports the storage part and 1 otherwise.
+const WINDOWS_TEST_RUNTIME: &str = r#"
+#[unsafe(export_name = "tokamak_storage")]
+pub static STORAGE: u8 = 0;
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetModuleHandleW(name: *const u16) -> *mut u8;
+    fn GetProcAddress(module: *mut u8, name: *const u8) -> *mut u8;
+}
+
+#[unsafe(export_name = "wWinMain")]
+pub extern "system" fn win_main(_: *mut u8, _: *mut u8, _: *mut u16, _: i32) -> i32 {
+    let storage = unsafe {
+        GetProcAddress(GetModuleHandleW(std::ptr::null()), c"tokamak_storage".as_ptr().cast())
+    };
+    i32::from(storage.is_null())
+}
+"#;
+
+fn create_windows_runtime(runtime: &Path) -> TestResult {
+    fs::create_dir_all(runtime)?;
+    if cfg!(not(windows)) {
+        fs::write(runtime.join("tokamak.lib"), "runtime")?;
+        fs::write(runtime.join("link-libraries"), "")?;
+        return Ok(());
+    }
+    let source = runtime.join("runtime.rs");
+    fs::write(&source, WINDOWS_TEST_RUNTIME)?;
+    let libraries = runtime.join("link-libraries");
+    let status = ProcessCommand::new("rustc")
+        .args(["--edition", "2024", "--crate-type", "staticlib", "-o"])
+        .arg(runtime.join("tokamak.lib"))
+        .arg("--print")
+        .arg(format!("native-static-libs={}", libraries.display()))
+        .arg(&source)
+        .status()?;
+    if !status.success() {
+        return Err(format!("test runtime compilation failed with {status}").into());
+    }
+    fs::remove_file(source)?;
+    Ok(())
+}
+
+/// Whether `binary` contains SQLite, which writes this header into every
+/// database.
+fn contains_sqlite(binary: &[u8]) -> bool {
+    binary
+        .windows(15)
+        .any(|window| window == b"SQLite format 3")
 }
 
 fn build_command(platform: &str, project: &Path, platform_pack: &Path) -> TestResult<Command> {
@@ -481,6 +546,29 @@ fn configure_fake_apple_tools(command: &mut Command, root: &Path) -> TestResult<
     path.push(std::env::var_os("PATH").ok_or("PATH unavailable")?);
     command.env("PATH", path).env("TOKAMAK_TEST_TOOL_LOG", &log);
     Ok(log)
+}
+
+/// Fake Gradle and a fake NDK compiler, whose link writes an empty library.
+#[cfg(unix)]
+fn configure_fake_android_tools(command: &mut Command, root: &Path) -> TestResult<()> {
+    configure_fake_gradle(command, root)?;
+    let ndk = root.join("fake-ndk");
+    let compiler = ndk.join("toolchains/llvm/prebuilt/host/bin");
+    fs::create_dir_all(&compiler)?;
+    write_executable(
+        &compiler.join("aarch64-linux-android31-clang"),
+        r#"#!/bin/sh
+set -eu
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then
+    : > "$2"
+  fi
+  shift
+done
+"#,
+    )?;
+    command.env("ANDROID_NDK_HOME", ndk);
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -598,6 +686,27 @@ fn write_executable(path: &Path, contents: &str) -> TestResult {
     let mut permissions = fs::metadata(path)?.permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[test]
+fn links_storage_into_the_macos_executable_while_the_app_declares_it() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
+    let executable = project.join("build/macos/demo-app.app/Contents/MacOS/demo-app");
+    let exports_storage = || -> TestResult<bool> {
+        build_command("macos", &project, &platform_pack)?
+            .assert()
+            .success();
+        let symbols = ProcessCommand::new("nm")
+            .arg("-gU")
+            .arg(&executable)
+            .output()?;
+        Ok(String::from_utf8(symbols.stdout)?.contains("_tokamak_storage"))
+    };
+
+    assert!(!exports_storage()?);
+    declare_storage(&project)?;
+    assert!(exports_storage()?);
     Ok(())
 }
 
@@ -739,7 +848,7 @@ fn preserves_configured_display_name_in_android_manifest() -> TestResult {
 
     let mut command = build_command("android", &project, &platform_pack)?;
     command.arg("--config").arg(project.join("tokamak.jsonc"));
-    configure_fake_gradle(&mut command, temporary.path())?;
+    configure_fake_android_tools(&mut command, temporary.path())?;
     command.assert().success();
 
     let manifest = fs::read_to_string(
@@ -756,12 +865,82 @@ fn preserves_configured_display_name_in_android_manifest() -> TestResult {
 
 #[cfg(unix)]
 #[test]
+fn links_storage_into_the_android_runtime_while_the_app_declares_it() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+    let exports = project.join("build/android/.tokamak/tokamak-exports.map");
+    let build = || -> TestResult<String> {
+        let mut command = build_command("android", &project, &platform_pack)?;
+        configure_fake_android_tools(&mut command, temporary.path())?;
+        command.assert().success();
+        Ok(fs::read_to_string(&exports)?)
+    };
+
+    let without_storage = build()?;
+    assert!(without_storage.contains("    Java_*;\n"));
+    assert!(!without_storage.contains("tokamak_storage"));
+    declare_storage(&project)?;
+    let with_storage = build()?;
+    assert!(with_storage.contains("    Java_*;\n"));
+    assert!(with_storage.contains("    tokamak_storage;\n"));
+    assert!(
+        project
+            .join("build/android/.tokamak/app/src/main/jniLibs/arm64-v8a/libtokamak.so")
+            .is_file()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "needs an Android platform pack at TOKAMAK_TEST_ANDROID_PACK and an NDK at ANDROID_NDK_HOME"]
+fn links_storage_from_the_android_platform_pack_while_the_app_declares_it() -> TestResult {
+    let platform_pack = PathBuf::from(std::env::var("TOKAMAK_TEST_ANDROID_PACK")?);
+    let ndk = PathBuf::from(std::env::var("ANDROID_NDK_HOME")?);
+    let toolchain = fs::read_dir(ndk.join("toolchains/llvm/prebuilt"))?
+        .next()
+        .ok_or("the NDK has no prebuilt toolchain")??
+        .path();
+    let temporary = tempfile::tempdir()?;
+    let project = temporary.path().join("project");
+    fs::create_dir_all(&project)?;
+    create_project(&project)?;
+    let library =
+        project.join("build/android/.tokamak/app/src/main/jniLibs/arm64-v8a/libtokamak.so");
+    let links_storage = || -> TestResult<(bool, bool)> {
+        let mut command = build_command("android", &project, &platform_pack)?;
+        configure_fake_gradle(&mut command, temporary.path())?;
+        command.assert().success();
+        let symbols = ProcessCommand::new(toolchain.join("bin/llvm-nm"))
+            .args(["--dynamic", "--defined-only"])
+            .arg(&library)
+            .output()?;
+        if !symbols.status.success() {
+            return Err(format!("llvm-nm failed with {}", symbols.status).into());
+        }
+        let symbols = String::from_utf8(symbols.stdout)?;
+        assert!(symbols.contains(" Java_"), "{symbols}");
+        let contents = fs::read(&library)?;
+        println!("{}: {} bytes", library.display(), contents.len());
+        Ok((
+            symbols.contains(tokamak::STORAGE_ENTRY_POINT),
+            contains_sqlite(&contents),
+        ))
+    };
+
+    assert_eq!(links_storage()?, (false, false));
+    declare_storage(&project)?;
+    assert_eq!(links_storage()?, (true, true));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn passes_platform_pack_variables_to_the_android_entrypoint() -> TestResult {
     let (temporary, project, platform_pack) = create_android_inputs()?;
 
     let mut command = build_command("android", &project, &platform_pack)?;
     command.args(["--android-test", "passed"]);
-    configure_fake_gradle(&mut command, temporary.path())?;
+    configure_fake_android_tools(&mut command, temporary.path())?;
     command.assert().success();
 
     assert_eq!(
@@ -787,7 +966,7 @@ fn passes_options_then_environment_then_configured_values_to_the_entrypoint() ->
             .arg(project.join("tokamak.jsonc"))
             .env_remove("TOKAMAK_ANDROID_TEST");
         configure(&mut command);
-        configure_fake_gradle(&mut command, temporary.path())?;
+        configure_fake_android_tools(&mut command, temporary.path())?;
         command.assert().success();
         Ok(fs::read_to_string(&set_value)?)
     };
@@ -821,7 +1000,7 @@ fn rejects_keys_the_platform_pack_does_not_declare() -> TestResult {
 
     let mut command = build_command("android", &project, &platform_pack)?;
     command.arg("--config").arg(project.join("tokamak.jsonc"));
-    configure_fake_gradle(&mut command, temporary.path())?;
+    configure_fake_android_tools(&mut command, temporary.path())?;
     command
         .assert()
         .failure()
@@ -829,7 +1008,7 @@ fn rejects_keys_the_platform_pack_does_not_declare() -> TestResult {
 
     let mut command = build_command("android", &project, &platform_pack)?;
     command.args(["--android-manifset", "AndroidManifest.xml"]);
-    configure_fake_gradle(&mut command, temporary.path())?;
+    configure_fake_android_tools(&mut command, temporary.path())?;
     command.assert().failure().stderr(contains(
         "unknown option --android-manifset; Android accepts",
     ));
@@ -895,7 +1074,7 @@ fn checks_android_api_levels_with_lint() -> TestResult {
     let (temporary, project, platform_pack) = create_android_inputs()?;
 
     let mut command = build_command("android", &project, &platform_pack)?;
-    configure_fake_gradle(&mut command, temporary.path())?;
+    configure_fake_android_tools(&mut command, temporary.path())?;
     command.assert().success();
 
     let gradle = project.join("build/android/.tokamak");
@@ -920,7 +1099,7 @@ fn merges_the_app_android_manifest_while_it_is_set() -> TestResult {
     command
         .current_dir(&project)
         .args(["--android-manifest", "native/AndroidManifest.xml"]);
-    configure_fake_gradle(&mut command, temporary.path())?;
+    configure_fake_android_tools(&mut command, temporary.path())?;
     command.assert().success();
 
     assert_eq!(
@@ -933,7 +1112,7 @@ fn merges_the_app_android_manifest_while_it_is_set() -> TestResult {
     );
 
     let mut command = build_command("android", &project, &platform_pack)?;
-    configure_fake_gradle(&mut command, temporary.path())?;
+    configure_fake_android_tools(&mut command, temporary.path())?;
     command.assert().success();
 
     assert!(!app.join("user").exists());
@@ -950,7 +1129,7 @@ fn rejects_a_missing_app_android_manifest() -> TestResult {
     command
         .current_dir(&project)
         .args(["--android-manifest", "native/AndroidManifest.xml"]);
-    configure_fake_gradle(&mut command, temporary.path())?;
+    configure_fake_android_tools(&mut command, temporary.path())?;
     command
         .assert()
         .failure()
@@ -974,7 +1153,7 @@ fn builds_each_android_plugin_as_a_library_module() -> TestResult {
     fs::write(plugin.join("tokamak-plugin.json"), manifest.to_string())?;
 
     let mut command = build_command("android", &project, &platform_pack)?;
-    configure_fake_gradle(&mut command, temporary.path())?;
+    configure_fake_android_tools(&mut command, temporary.path())?;
     command.assert().success();
 
     let gradle = project.join("build/android/.tokamak");
@@ -1021,7 +1200,7 @@ fn writes_each_android_permission_once() -> TestResult {
     )?;
 
     let mut command = build_command("android", &project, &platform_pack)?;
-    configure_fake_gradle(&mut command, temporary.path())?;
+    configure_fake_android_tools(&mut command, temporary.path())?;
     command.assert().success();
 
     let manifest = fs::read_to_string(
@@ -1537,6 +1716,61 @@ fn builds_windows_app_with_its_runtime_files() -> TestResult {
     let config: serde_json::Value =
         serde_json::from_slice(&fs::read(bundle.join("tokamak.json"))?)?;
     assert_eq!(config["host"], "demo-app.tokamak.local");
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn links_storage_into_the_windows_executable_while_the_app_declares_it() -> TestResult {
+    let (_temporary, project, platform_pack) = create_windows_inputs()?;
+    let run = || -> TestResult<Option<i32>> {
+        // Outside a developer shell, the entrypoint finds the linker itself.
+        build_command("windows", &project, &platform_pack)?
+            .env_remove("VSCMD_ARG_TGT_ARCH")
+            .assert()
+            .success();
+        let executable = project.join("build/windows/demo-app/demo-app.exe");
+        Ok(ProcessCommand::new(executable).status()?.code())
+    };
+
+    assert_eq!(run()?, Some(1));
+    declare_storage(&project)?;
+    assert_eq!(run()?, Some(0));
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "needs a Windows platform pack at TOKAMAK_TEST_WINDOWS_PACK"]
+fn links_storage_from_the_windows_platform_pack_while_the_app_declares_it() -> TestResult {
+    let platform_pack = PathBuf::from(std::env::var("TOKAMAK_TEST_WINDOWS_PACK")?);
+    let temporary = tempfile::tempdir()?;
+    let project = temporary.path().join("project");
+    fs::create_dir_all(&project)?;
+    create_project(&project)?;
+    let executable = project.join("build/windows/demo-app/demo-app.exe");
+    let links_storage = || -> TestResult<(bool, bool)> {
+        build_command("windows", &project, &platform_pack)?
+            .assert()
+            .success();
+        let exports = ProcessCommand::new("dumpbin")
+            .args(["/NOLOGO", "/EXPORTS"])
+            .arg(&executable)
+            .output()?;
+        if !exports.status.success() {
+            return Err(format!("dumpbin failed with {}", exports.status).into());
+        }
+        let contents = fs::read(&executable)?;
+        println!("{}: {} bytes", executable.display(), contents.len());
+        Ok((
+            String::from_utf8_lossy(&exports.stdout).contains(tokamak::STORAGE_ENTRY_POINT),
+            contains_sqlite(&contents),
+        ))
+    };
+
+    assert_eq!(links_storage()?, (false, false));
+    declare_storage(&project)?;
+    assert_eq!(links_storage()?, (true, true));
     Ok(())
 }
 

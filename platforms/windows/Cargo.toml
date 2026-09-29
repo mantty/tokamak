@@ -5,9 +5,8 @@ license.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
-[[bin]]
-name = "tokamak-shell-windows"
-path = "source/main.rs"
+[lib]
+path = "source/lib.rs"
 
 [target.'cfg(windows)'.dependencies]
 anyhow.workspace = true

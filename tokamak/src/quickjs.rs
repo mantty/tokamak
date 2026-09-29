@@ -108,7 +108,7 @@ pub(crate) struct RuntimeConfig {
     /// Text and JSON Worker environment bindings.
     pub(crate) environment: BTreeMap<String, Value>,
     /// The stores behind storage bindings, when the app has any.
-    pub(crate) storage: Option<Arc<crate::storage::Storage>>,
+    pub(crate) storage: Option<Arc<dyn crate::linked::StorageRuntime>>,
 }
 
 /// Compile a bundled Worker module to `QuickJS` bytecode.

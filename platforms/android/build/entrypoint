@@ -45,6 +45,50 @@ kotlin=$app/src/main/kotlin/com/tokamak/runtime
 plugin_api=$project/tokamak-plugin
 plugin_modules=$project/plugins
 icons=$input/icons/$platform
+# The oldest Android API level the app supports.
+min_sdk=31
+
+# The Android NDK's compiler, which links the runtime into the app.
+android_linker() {
+  local ndk=${ANDROID_NDK_HOME:-}
+  local sdk_root=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}
+  if [[ ! -d "$ndk" && -n "$sdk_root" && -d "$sdk_root/ndk" ]]; then
+    ndk=$(find "$sdk_root/ndk" -mindepth 1 -maxdepth 1 -type d -print | sort | tail -n 1)
+  fi
+  local compiler
+  for compiler in "$ndk"/toolchains/llvm/prebuilt/*/bin/aarch64-linux-android"$min_sdk"-clang; do
+    if [[ -x "$compiler" ]]; then
+      printf '%s' "$compiler"
+      return
+    fi
+  done
+  echo "Android builds link the tokamak runtime with the Android NDK, which is not installed." >&2
+  echo "Install it with Android Studio's SDK Manager (SDK Tools > NDK) or \`sdkmanager \"ndk;29.0.14206865\"\`, or set ANDROID_NDK_HOME." >&2
+  exit 1
+}
+
+# Link the runtime into libtokamak.so, exporting the JNI functions and the
+# entry points of the runtime parts the app links.
+link_runtime() {
+  local runtime=$input/runtime/TokamakRuntime
+  local exports=$project/tokamak-exports.map
+  local compiler libraries
+  compiler=$(android_linker)
+  {
+    printf '{\n  global:\n    Java_*;\n'
+    sed 's/.*/    &;/' "$metadata/exported-symbols"
+    printf '  local:\n    *;\n};\n'
+  } > "$exports"
+  read -r -a libraries <<< "$(< "$runtime/link-libraries")"
+  "$compiler" -shared -o "$native/libtokamak.so" \
+    -Wl,-soname,libtokamak.so \
+    -Wl,--whole-archive "$runtime/libtokamak.a" -Wl,--no-whole-archive \
+    -Wl,--version-script="$exports" \
+    -Wl,--gc-sections -Wl,--as-needed -Wl,--eh-frame-hdr \
+    -Wl,-z,noexecstack -Wl,-z,relro,-z,now -Wl,-z,max-page-size=16384 \
+    -Wl,--strip-all \
+    "${libraries[@]}"
+}
 
 xml_escape() {
   printf '%s' "$1" |
@@ -58,7 +102,7 @@ xml_escape() {
 rm -rf "$app/src/main/assets" "$app/src/main/jniLibs" "$app/src/main/kotlin" "$app/src/main/res" "$app/user" "$plugin_api" "$plugin_modules" "$output"
 mkdir -p "$native" "$assets" "$kotlin" "$app/src/main/res" "$plugin_api/src/main/kotlin"
 cp -R "$input/app/." "$assets/"
-cp "$input/runtime/libtokamak.so" "$native/libtokamak.so"
+link_runtime
 cp -R "$input/native-shell/app/." "$kotlin/"
 cp -R "$input/native-shell/plugin/." "$plugin_api/src/main/kotlin/"
 cat > "$plugin_api/build.gradle" <<'EOF'
@@ -146,7 +190,7 @@ for plugin in "$input/plugins"/*/; do
   printf "include ':plugins:%s'\n" "$(basename "$plugin")" >> "$project/settings.gradle"
 done
 
-cat > "$project/build.gradle" <<'EOF'
+cat > "$project/build.gradle" <<EOF
 plugins {
   id 'com.android.application' version '8.7.3' apply false
   id 'com.android.library' version '8.7.3' apply false
@@ -158,7 +202,7 @@ subprojects {
     android {
       compileSdk 35
       defaultConfig {
-        minSdk 31
+        minSdk $min_sdk
       }
       sourceSets {
         main {
@@ -192,7 +236,7 @@ android {
 
   defaultConfig {
     applicationId '$identifier'
-    minSdk 31
+    minSdk $min_sdk
     targetSdk 35
     versionCode 1
     versionName '$version'

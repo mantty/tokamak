@@ -33,6 +33,8 @@ mod globals;
 #[cfg(feature = "native")]
 mod lifecycle_events;
 #[cfg(feature = "native")]
+mod linked;
+#[cfg(feature = "native")]
 mod network;
 mod packaging;
 mod quickjs;
@@ -93,6 +95,10 @@ pub use wrangler_config::{
     load_config_for_env as load_wrangler_config_for_env,
     resolve_config_path as resolve_wrangler_config_path,
 };
+
+/// The symbol the runtime's storage part exports its entry point as. An app
+/// links the part only when its executable exports this symbol.
+pub const STORAGE_ENTRY_POINT: &str = "tokamak_storage";
 
 /// Runtime result type.
 pub type Result<T> = std::result::Result<T, Error>;

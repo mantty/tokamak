@@ -1,18 +1,20 @@
 //! Application lifecycle and packaged-worker startup.
 
-use std::path::PathBuf;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::certificates::{Certificates, Renewal};
 use crate::dev_proxy::{DevProxy, DevProxyConfig};
 use crate::dispatcher::Dispatcher;
-use crate::env_vars::load as load_environment;
+use crate::env_vars::{StorageBinding, load as load_environment};
 use crate::gateway::{self, GatewayConfig};
 use crate::lifecycle_events::{Event, Events};
+use crate::linked::StorageRuntime;
 use crate::packaging::{PackageLayout, decompress_worker_bundle, read_worker_manifest};
 use crate::quickjs::{Assets, RuntimeConfig, WorkerBundle};
-use crate::storage::Storage;
 
 use crate::Result;
 
@@ -243,12 +245,7 @@ const RUNTIME_MARKER: &str = "TOKAMAK_RUNTIME";
 fn quickjs_config(config: &Config) -> Result<RuntimeConfig> {
     let app = &config.app;
     let environment = load_environment(app)?;
-    let storage = Storage::open(
-        &config.storage_dir,
-        &config.state_dir.join("storage"),
-        app,
-        &environment.storage,
-    )?;
+    let storage = open_storage(config, &environment.storage)?;
     let mut vars = environment.vars;
     vars.insert(RUNTIME_MARKER.to_owned(), "true".into());
     Ok(RuntimeConfig {
@@ -258,15 +255,47 @@ fn quickjs_config(config: &Config) -> Result<RuntimeConfig> {
         }),
         cache: config.state_dir.join("cache"),
         environment: vars,
-        storage: (!storage.is_empty()).then(|| Arc::new(storage)),
+        storage,
     })
+}
+
+/// The stores the app's storage `bindings` name. An app without storage
+/// bindings keeps no stores, so its storage directories are removed.
+fn open_storage(
+    config: &Config,
+    bindings: &[StorageBinding],
+) -> Result<Option<Arc<dyn StorageRuntime>>> {
+    let scratch = config.state_dir.join("storage");
+    if bindings.is_empty() {
+        remove_directory(&config.storage_dir)?;
+        remove_directory(&scratch)?;
+        return Ok(None);
+    }
+    let entry = crate::linked::storage().ok_or_else(|| {
+        io::Error::other(
+            "the app declares storage bindings, but its runtime was linked without storage",
+        )
+    })?;
+    Ok(Some((entry.open)(
+        &config.storage_dir,
+        &scratch,
+        &config.app,
+        bindings,
+    )?))
+}
+
+fn remove_directory(directory: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(directory) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::env_vars::{WorkerEnvironment, write as write_environment};
+    use crate::env_vars::{StorageBinding, WorkerEnvironment, write as write_environment};
     use serde_json::json;
 
     use super::{Config, gateway_config, quickjs_config};
@@ -334,6 +363,57 @@ mod tests {
                 .get("JSON"),
             Some(&json!({ "enabled": true }))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn removes_the_stores_of_an_app_without_storage_bindings() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let app = PackageLayout::new(directory.path());
+        write_environment(&app, &WorkerEnvironment::default())?;
+        let config = config(directory.path());
+        std::fs::create_dir_all(config.storage_dir.join("d1"))?;
+        std::fs::write(config.storage_dir.join("d1/app.sqlite"), "")?;
+        std::fs::create_dir_all(config.state_dir.join("storage/r2/files"))?;
+        std::fs::create_dir_all(config.state_dir.join("cache"))?;
+
+        let runtime = quickjs_config(&config)?;
+
+        assert!(runtime.storage.is_none());
+        assert!(!config.storage_dir.exists());
+        assert!(!config.state_dir.join("storage").exists());
+        assert!(config.state_dir.join("cache").is_dir());
+        assert!(quickjs_config(&config)?.storage.is_none());
+        Ok(())
+    }
+
+    // Unit test executables do not export the storage part's entry point, as
+    // an app without storage bindings does not.
+    #[test]
+    fn refuses_storage_bindings_when_linked_without_storage() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let app = PackageLayout::new(directory.path());
+        write_environment(
+            &app,
+            &WorkerEnvironment {
+                vars: BTreeMap::new(),
+                storage: vec![StorageBinding::Kv {
+                    name: "SESSION".to_owned(),
+                    id: "session".to_owned(),
+                }],
+            },
+        )?;
+        let config = config(directory.path());
+        std::fs::create_dir_all(config.storage_dir.join("kv"))?;
+        std::fs::write(config.storage_dir.join("kv/session.sqlite"), "")?;
+
+        let error = quickjs_config(&config).err().ok_or("storage opened")?;
+
+        assert!(
+            error.to_string().contains("linked without storage"),
+            "{error}"
+        );
+        assert!(config.storage_dir.join("kv/session.sqlite").is_file());
         Ok(())
     }
 

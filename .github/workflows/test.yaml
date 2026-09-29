@@ -47,7 +47,6 @@ jobs:
             echo "AR_aarch64_linux_android=${toolchain}/bin/llvm-ar"
             echo "RANLIB_aarch64_linux_android=${toolchain}/bin/llvm-ranlib"
             echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android31 --sysroot=${toolchain}/sysroot"
-            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${toolchain}/bin/aarch64-linux-android31-clang"
           } >> "${GITHUB_ENV}"
 
       - name: Cache Rust
@@ -184,14 +183,17 @@ jobs:
 
       - name: Lint Windows Rust
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           cargo clippy -p tokamak-cli --all-targets -- -D warnings
           cargo clippy -p windows-shell --all-targets -- -D warnings
 
       - name: Test Windows Rust
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           cargo test -p windows-shell
           cargo test -p tokamak-cli --bin tok selects_platform_package_manager_commands
           cargo test -p tokamak-cli --test build builds_windows_app_with_its_runtime_files
+          cargo test -p tokamak-cli --test build links_storage_into_the_windows_executable_while_the_app_declares_it
           cargo test -p tokamak-cli --test build builds_with_a_configured_display_name
           cargo test -p tokamak-cli --test build runs_the_configured_build_command_in_the_project_directory
 

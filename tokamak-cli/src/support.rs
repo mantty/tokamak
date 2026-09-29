@@ -140,13 +140,9 @@ pub(crate) fn stage_platform_artifacts(
     manifest: &PlatformPackManifest,
 ) -> Result<()> {
     let target = manifest.target;
-    let runtime = artifact_path(pack_root, manifest, &target.runtime_artifact_kind())?;
+    let runtime = artifact_path(pack_root, manifest, &ArtifactKind::RuntimeLibrary)?;
     let destination = input.join(target.runtime_staging_path());
-    if runtime.is_dir() {
-        copy_dir_contents(&runtime, &destination)?;
-    } else {
-        copy_file(runtime, destination)?;
-    }
+    copy_dir_contents(&runtime, &destination)?;
 
     if target.has_native_shell() {
         copy_dir_contents(

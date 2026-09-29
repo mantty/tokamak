@@ -43,14 +43,12 @@ options, and writes the three files here. It needs `curl`, `unzip`, `patch`,
 
 ## Size
 
-SQLite, with the D1 service built on it, added this much to the runtime in
-release builds for each platform pack's target:
+`tok build` links storage, and SQLite with it, into an app only when the app's
+Wrangler configuration declares a storage binding. Linking it adds this much
+to a release build:
 
-| Target | Runtime binary | Before (bytes) | After (bytes) | Added |
+| Target | Binary | Without storage (bytes) | With storage (bytes) | Added |
 |---|---|---|---|---|
-| Android arm64 | `libtokamak.so` | 9,706,008 | 10,719,952 | 1,014 KB |
-| Windows x64 | `tokamak-shell-windows.exe` | 13,485,056 | 14,458,368 | 973 KB |
-| macOS arm64 | A linked app's executable | 8,307,024 | 9,135,104 | 828 KB |
-| iOS arm64 | `TokamakRuntime` static library | 21,271,840 | 22,938,368 | 1,667 KB |
-
-Apple packs ship a static library, which linking an app trims.
+| Android arm64 | `libtokamak.so` | 9,314,288 | 10,491,840 | 1,150 KB |
+| iOS Simulator arm64 | The app's executable | 8,528,864 | 9,521,936 | 970 KB |
+| macOS arm64 | The app's executable | 8,277,872 | 9,270,992 | 970 KB |

@@ -1,4 +1,4 @@
-import { kvDelete, kvGet, kvGetMany, kvList, kvPut } from "tokamak:host";
+import { kvDelete, kvGet, kvGetMany, kvList, kvPut } from "tokamak:storage";
 import { bodyStream } from "../network/fetch.mjs";
 
 const MAX_KEY_LENGTH = 512;

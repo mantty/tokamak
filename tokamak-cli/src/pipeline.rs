@@ -71,6 +71,9 @@ struct BuildMetadata<'a> {
     version: Option<&'a str>,
     development: Option<(&'a str, &'a str)>,
     device_id: Option<&'a str>,
+    /// The entry points of the optional runtime parts the app links, which
+    /// its executable exports.
+    exported_symbols: &'a [&'a str],
 }
 
 pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
@@ -203,6 +206,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
             version: version.as_deref(),
             development: Some((&request.endpoint, &request.session_token)),
             device_id: request.device_id.as_deref(),
+            exported_symbols: &[],
         },
     )
     .context("write development metadata")?;
@@ -293,6 +297,7 @@ fn build_platform(
             version: Some(context.version),
             development: None,
             device_id: None,
+            exported_symbols: exported_symbols(context.wrangler),
         },
     )
     .context("write platform build metadata")?;
@@ -494,6 +499,14 @@ fn write_build_metadata(input: &Path, project: &Path, metadata: &BuildMetadata<'
         ),
         ("target", metadata.manifest.target.to_string()),
         ("project-dir", project.display().to_string()),
+        (
+            "exported-symbols",
+            metadata
+                .exported_symbols
+                .iter()
+                .flat_map(|symbol| [*symbol, "\n"])
+                .collect(),
+        ),
     ];
     for (name, value) in values {
         fs::write(metadata_dir.join(name), value)?;
@@ -509,6 +522,16 @@ fn write_build_metadata(input: &Path, project: &Path, metadata: &BuildMetadata<'
         fs::write(metadata_dir.join("device-id"), device_id)?;
     }
     Ok(())
+}
+
+/// The entry points of the optional runtime parts an app with `wrangler`'s
+/// bindings links.
+fn exported_symbols(wrangler: &WranglerConfig) -> &'static [&'static str] {
+    if wrangler.storage.is_empty() {
+        &[]
+    } else {
+        &[tokamak::STORAGE_ENTRY_POINT]
+    }
 }
 
 const PLATFORM_PACK_PATH_ENV: &str = "TOKAMAK_PLATFORM_PACK_PATH";
@@ -578,8 +601,40 @@ fn bundled_manifest(target: Target) -> Option<PathBuf> {
 mod tests {
     use std::fs;
 
-    use super::{resolve_app, resolve_identifier, resolve_manifest};
+    use super::{exported_symbols, resolve_app, resolve_identifier, resolve_manifest};
     use tokamak_cli::{MANIFEST_FILE, Platform};
+
+    #[test]
+    fn exports_the_storage_entry_point_while_any_storage_binding_is_declared()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("wrangler.jsonc");
+        for (bindings, symbols) in [
+            ("", &[][..]),
+            (
+                r#", "kv_namespaces": [{ "binding": "KV", "id": "kv" }]"#,
+                &["tokamak_storage"][..],
+            ),
+            (
+                r#", "d1_databases": [{ "binding": "DB", "database_id": "db" }]"#,
+                &["tokamak_storage"][..],
+            ),
+            (
+                r#", "r2_buckets": [{ "binding": "FILES", "bucket_name": "files" }]"#,
+                &["tokamak_storage"][..],
+            ),
+        ] {
+            fs::write(
+                &path,
+                format!(r#"{{ "name": "app", "main": "worker.js"{bindings} }}"#),
+            )?;
+            assert_eq!(
+                exported_symbols(&tokamak::load_wrangler_config(&path)?),
+                symbols
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn resolves_names_with_the_worker_name_as_fallback() {

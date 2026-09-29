@@ -39,28 +39,32 @@ if [[ ! -x "$compiler" ]]; then
 fi
 
 rm -rf "$output"
-mkdir -p "$output/bin" "$output/build" "$output/native-shell"
+runtime="$output/lib/TokamakRuntime"
+mkdir -p "$runtime" "$output/build" "$output/native-shell"
+libraries="$workspace/target/$rust_target/release/tokamak-link-libraries"
 
 CC_aarch64_linux_android="$compiler" \
 AR_aarch64_linux_android="$host/bin/llvm-ar" \
 RANLIB_aarch64_linux_android="$host/bin/llvm-ranlib" \
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--target=aarch64-linux-android31 --sysroot=$sysroot" \
-CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$compiler" \
 cargo rustc \
   --package tokamak \
   --release \
   --target "$rust_target" \
   --features native \
   --lib \
-  --crate-type cdylib
+  --crate-type staticlib \
+  -- --print "native-static-libs=$libraries"
 
-library="$workspace/target/$rust_target/release/libtokamak.so"
-if [[ ! -f "$library" ]]; then
+library="$workspace/target/$rust_target/release/libtokamak.a"
+if [[ ! -f "$library" || ! -f "$libraries" ]]; then
   echo "tokamak runtime library was not produced: $library" >&2
   exit 1
 fi
 
-cp "$library" "$output/bin/libtokamak.so"
+# App builds link the runtime with these system libraries.
+cp "$library" "$runtime/libtokamak.a"
+cp "$libraries" "$runtime/link-libraries"
 cp -R "$workspace/platforms/android/source/." "$output/native-shell/"
 cp "$workspace/platforms/android/build/entrypoint" \
   "$output/build/entrypoint"

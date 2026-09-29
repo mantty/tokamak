@@ -1,5 +1,8 @@
 //! The stores behind a packaged app's storage bindings, in the app's private
 //! data directory.
+//!
+//! The rest of the runtime reaches it only through [`ENTRY`], and its
+//! JavaScript only through `bindings.mjs`.
 
 mod d1;
 mod host;
@@ -14,15 +17,33 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
+use rquickjs::{Ctx, Module};
 use serde::Serialize;
 
 use crate::env_vars::{StorageBinding, store_id_problem};
+use crate::linked::{OpenedStorage, StorageEntry, StorageRuntime};
 use crate::packaging::PackageLayout;
 use d1::{D1Database, Migrations};
 use kv::KvNamespace;
 use r2::R2Bucket;
 
-pub(crate) use host::{HOST_EXPORTS, StorageHandle, export_host_functions};
+use host::{HostModule, StorageHandle};
+
+include!(concat!(env!("OUT_DIR"), "/storage_builtins.rs"));
+
+/// The storage part's entry point, exported as [`crate::STORAGE_ENTRY_POINT`].
+#[unsafe(export_name = "tokamak_storage")]
+static ENTRY: StorageEntry = StorageEntry { open };
+
+/// The stores `bindings` name, as the runtime uses them.
+fn open(
+    directory: &Path,
+    scratch: &Path,
+    app: &PackageLayout,
+    bindings: &[StorageBinding],
+) -> OpenedStorage {
+    Ok(Arc::new(Storage::open(directory, scratch, app, bindings)?))
+}
 
 /// Directory of each kind of store.
 const KV: &str = "kv";
@@ -154,17 +175,6 @@ impl Storage {
         })
     }
 
-    /// Whether no binding names a store.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.bindings.is_empty()
-    }
-
-    /// The bindings for the Worker's `env`, as a JSON array of `name` and
-    /// `type`.
-    pub(crate) fn installed(&self) -> &str {
-        &self.installed
-    }
-
     /// Answer a D1 service request for the binding `name`, returning the
     /// response body and the database's bookmark.
     ///
@@ -207,6 +217,24 @@ impl Storage {
             return Err(format!("{name} is not an R2 binding"));
         };
         bucket.get()
+    }
+}
+
+impl StorageRuntime for Storage {
+    fn attach(self: Arc<Self>, ctx: &Ctx<'_>) -> rquickjs::Result<()> {
+        let bindings = ctx.json_parse(self.installed.as_str())?;
+        ctx.globals().set("__tokamak_storage", bindings)?;
+        ctx.store_userdata(StorageHandle(self))?;
+        Ok(())
+    }
+
+    fn module<'js>(&self, ctx: &Ctx<'js>, name: &str) -> Option<rquickjs::Result<Module<'js>>> {
+        if name == "tokamak:storage" {
+            return Some(Module::declare_def::<HostModule, _>(ctx.clone(), name));
+        }
+        let bytecode = crate::compat::find_bytecode(STORAGE_BUILTINS, name)?;
+        // Builtin bytecode is compiled with the runtime during its build.
+        Some(unsafe { Module::load(ctx.clone(), bytecode) })
     }
 }
 

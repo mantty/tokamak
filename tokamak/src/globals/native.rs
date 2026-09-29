@@ -44,7 +44,6 @@ impl ModuleDef for HostModule {
             .iter()
             .chain(super::intl::HOST_EXPORTS)
             .chain(super::url::HOST_EXPORTS)
-            .chain(crate::storage::HOST_EXPORTS)
         {
             exports.declare(*name)?;
         }
@@ -89,7 +88,6 @@ impl ModuleDef for HostModule {
         super::crypto::export_host_functions(ctx, exports)?;
         super::intl::export_host_functions(ctx, exports)?;
         super::url::export_host_functions(ctx, exports)?;
-        crate::storage::export_host_functions(ctx, exports)?;
         exports.export(
             "ipVersion",
             Function::new(ctx.clone(), |input: String| {
