@@ -52,12 +52,11 @@ interface TokamakHost {
     val activity: Activity?
 
     /**
-     * Runs the Worker's [event] handler with a JSON [payload], including work it passes to
-     * `ctx.waitUntil`, and returns the handler's JSON result; null when the Worker has no
-     * handler for [event]. Starts the runtime when it is not running. Blocks, so call it
-     * off the main thread; throws when the handler fails or runs longer than [timeoutMillis].
+     * Posts the JSON [body] to the Worker's `/tokamak/<name>` endpoint and returns the
+     * response body. Starts the runtime when it is not running. Blocks, so call it off the main
+     * thread; throws unless the Worker responds 200 within [timeoutMillis].
      */
-    fun dispatch(event: String, payload: String, timeoutMillis: Long): String?
+    fun call(name: String, body: String, timeoutMillis: Long): String
 
     /** The plugin with [id], or null when the app does not include it. */
     fun plugin(id: String): TokamakPlugin?

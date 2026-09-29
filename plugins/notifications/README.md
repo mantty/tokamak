@@ -119,36 +119,66 @@ Every field is optional.
 
 ### Data-only messages
 
-A message without a title or body runs the Worker's `push` handler in native
-builds, whether the app is in the foreground, in the background, or started by
-the message:
+In native builds, the plugin posts a message without a title or body to the
+Worker's `/tokamak/push` endpoint, whether the app is in the foreground, in the
+background, or started by the message. `handlePushRequest` serves the endpoint.
+Route `POST /tokamak/push` to it, in a plain Worker:
 
-```js
+```ts
+import { handlePushRequest } from "@tokamakdev/plugin-notifications/worker";
+
 export default {
   async fetch(request, env, ctx) {
+    if (new URL(request.url).pathname === "/tokamak/push") {
+      return handlePushRequest<{ itemId: string }>(request, async (message) => {
+        const item = await fetch(`https://api.example.com/items/${message.data.itemId}`);
+        // Return a notification to show it, or return nothing.
+        return { id: `item-${message.data.itemId}`, title: "New item", body: (await item.json()).summary };
+      });
+    }
     // ...
-  },
-
-  async push(message, env, ctx) {
-    const item = await fetch(`https://api.example.com/items/${message.data.id}`);
-    // Return a notification to show it, or return nothing.
-    return { id: `item-${message.data.id}`, title: "New item", body: (await item.json()).summary };
   },
 };
 ```
 
-`message` is the `Message`; `env` and `ctx` are the Worker's usual arguments.
-A returned notification is shown as `show` shows one. The page also receives
-the message through `onMessage` while it is loaded. Cloudflare never calls
-`push`, and `tok dev` does not run it.
+or in a framework's server route, such as `src/pages/tokamak/push.ts` in Astro:
+
+```ts
+import type { APIRoute } from "astro";
+import { handlePushRequest } from "@tokamakdev/plugin-notifications/worker";
+
+export const POST: APIRoute = ({ request }) =>
+  handlePushRequest<{ itemId: string }>(request, (message) => {
+    // ...
+  });
+```
+
+`message` is the `Message`, with `data` of the type argument's type, which is
+not checked; FCM delivers every `data` value as a string. A returned
+notification is shown as `show` shows one. The page also receives the message
+through `onMessage` while it is loaded.
+
+`handlePushRequest` accepts requests in a tokamak app, where
+`process.env.TOKAMAK_RUNTIME` is `"true"`, and in development, where
+`process.env.NODE_ENV` is `development`, as in the development server `tok dev`
+delivers messages to. It responds 404 otherwise, so the endpoint serves nothing
+on Cloudflare. A build made with `NODE_ENV=development`, or a Worker that
+declares `TOKAMAK_RUNTIME` itself, accepts every request.
+
+Each attempt waits up to 2 seconds for a 200 response. After a failure, the
+plugin tries again 1 second later, up to three attempts, while an attempt can
+finish within the plugin's time for the message. A handler can run more than
+once for one message, and an attempt that timed out keeps running. The plugin
+logs each failed attempt to the device log as
+`push notification failed: <reason>`.
 
 The platforms limit background delivery:
 
 | Platform | The server sends | Limits |
 |---|---|---|
-| iOS | `content-available: 1` with `apns-push-type: background` and `apns-priority: 5` | The system throttles delivery and may drop messages, and delivers nothing after the user force-quits the app until they open it. The plugin stops the handler after 25 seconds, within the system's 30. |
+| iOS | `content-available: 1` with `apns-push-type: background` and `apns-priority: 5` | The system throttles delivery and may drop messages, and delivers nothing after the user force-quits the app until they open it. The plugin's time for a message is 25 seconds, within the system's 30. |
 | macOS | As iOS | Delivered while the app is running. |
-| Android | A `data` message with `priority: high` | Nothing is delivered after the app is force-stopped. The plugin stops the handler after 8 seconds, within FCM's 10, which include starting the app. |
+| Android | A `data` message with `priority: high` | Nothing is delivered after the app is force-stopped. The plugin's time for a message is 8 seconds, within FCM's 10, which include starting the app. |
 
 The web does not support data-only messages: browsers require every push
 message to show a notification.

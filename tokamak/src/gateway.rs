@@ -7,6 +7,7 @@ use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use reqwest::header::{HeaderMap, HeaderValue};
 use rustls::ServerConfig;
 use tokio::runtime::{Builder as TokioBuilder, Runtime as TokioRuntime};
 
@@ -87,17 +88,6 @@ pub(super) struct Execution<'a> {
 
 pub(super) trait Handler: Send + Sync {
     fn handle(&self, job: Job, execution: &Execution<'_>) -> Result<(), Error>;
-
-    /// Run the Worker's `event` handler with `payload`, returning its result;
-    /// `None` when the Worker does not handle `event`. Fails when the handler
-    /// has not settled within `timeout`.
-    fn dispatch(
-        &self,
-        event: &str,
-        payload: &serde_json::Value,
-        timeout: Duration,
-        execution: &Execution<'_>,
-    ) -> Result<Option<serde_json::Value>, Error>;
 }
 
 impl Lifecycle {
@@ -345,31 +335,75 @@ impl Runtime {
         self.shared.lifecycle.resume();
     }
 
-    /// Run a Worker event on the JavaScript executor, blocking until it settles
-    /// or `timeout` passes.
-    pub(crate) fn dispatch(
-        &self,
-        event: &str,
-        payload: serde_json::Value,
-        timeout: Duration,
-    ) -> Result<Option<serde_json::Value>, Error> {
-        let (result, outcome) = flume::bounded(1);
+    /// Posts JSON `body` to the Worker's `/tokamak/<name>` endpoint and returns
+    /// the response body, failing unless the Worker responds 200 within
+    /// `timeout`.
+    pub(crate) fn call(&self, name: &str, body: &str, timeout: Duration) -> Result<Vec<u8>, Error> {
+        let deadline = Instant::now() + timeout;
+        let request = call_request(&self.shared.config.host, name, body)?;
+        let path = request.target.clone();
+        let (response, result) = flume::bounded(1);
+        let job = Job {
+            request,
+            response,
+            websocket: None,
+        };
         let shared = Arc::clone(&self.shared);
-        let event = event.to_owned();
-        drop(self.shared.tokio.spawn_blocking(move || {
-            let Some(execution) = shared.lifecycle.enter(&shared.accepting) else {
-                return;
-            };
-            let _ = result.send(
-                shared
-                    .handler
-                    .dispatch(&event, &payload, timeout, &execution),
-            );
-        }));
-        outcome.recv().map_err(|_| {
-            Error::Engine("the runtime stopped before the Worker event ran".to_owned())
-        })?
+        drop(
+            self.shared
+                .tokio
+                .spawn_blocking(move || execute_job(&shared, job)),
+        );
+        let response = match result.recv_deadline(deadline) {
+            Ok(JobResponse::Http(response)) => response,
+            Ok(JobResponse::WebSocket) => {
+                return Err(Error::Call(format!("{path} returned a WebSocket")));
+            }
+            Err(flume::RecvTimeoutError::Timeout) => {
+                return Err(Error::Call(format!(
+                    "{path} did not respond within {timeout:?}"
+                )));
+            }
+            Err(flume::RecvTimeoutError::Disconnected) => {
+                return Err(Error::Call(format!(
+                    "the runtime stopped before {path} ran"
+                )));
+            }
+        };
+        if response.status != 200 {
+            return Err(Error::Call(format!("{path} responded {}", response.status)));
+        }
+        response
+            .body
+            .read_to_end(deadline)
+            .map_err(|error| Error::Call(format!("{path} response failed: {error}")))
     }
+}
+
+/// The request for a runtime call to `/tokamak/<name>`.
+fn call_request(host: &str, name: &str, body: &str) -> Result<HttpRequest, Error> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(Error::Call(format!("invalid runtime call name: {name:?}")));
+    }
+    let target = format!("/tokamak/{name}");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "host",
+        HeaderValue::from_str(host).map_err(io::Error::other)?,
+    );
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    Ok(HttpRequest {
+        persistent: false,
+        method: "POST".to_owned(),
+        url: format!("https://{host}{target}"),
+        target,
+        headers,
+        body: Some(body.as_bytes().to_vec()),
+    })
 }
 
 impl Drop for Runtime {

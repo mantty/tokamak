@@ -11,12 +11,6 @@ enum {
   TOKAMAK_DECISION_USE = 2,
 };
 
-enum {
-  TOKAMAK_DISPATCH_HANDLED = 0,
-  TOKAMAK_DISPATCH_UNHANDLED = 1,
-  TOKAMAK_DISPATCH_FAILED = 2,
-};
-
 typedef struct {
   uint8_t *data;
   size_t len;
@@ -39,10 +33,10 @@ uint16_t tokamak_runtime_restore_gateway(const void *runtime, char *error,
 bool tokamak_runtime_suspend(const void *runtime);
 bool tokamak_runtime_resume(const void *runtime);
 void tokamak_runtime_stop(void *runtime);
-int32_t tokamak_runtime_dispatch(const void *runtime, const char *event,
-                              const char *payload, uint64_t timeout_ms,
-                              TokamakBytes *result, char *error,
-                              size_t error_len);
+bool tokamak_runtime_call(const void *runtime, const char *name,
+                          const char *body, uint64_t timeout_ms,
+                          TokamakBytes *response, char *error,
+                          size_t error_len);
 
 int32_t tokamak_runtime_server_authority(const void *runtime, const char *host,
                                       TokamakBytes *authority);

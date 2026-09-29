@@ -114,10 +114,12 @@ impl DevProxy {
                 Err(error) => return Err(error),
             }
         };
-        response
+        // A caller that stopped waiting gets no response.
+        if response
             .send(JobResponse::Http(host_response.response))
-            .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))?;
-        if let Some(body) = host_response.body {
+            .is_ok()
+            && let Some(body) = host_response.body
+        {
             pump_host_body(body);
         }
         Ok(())
@@ -314,18 +316,6 @@ impl Handler for DevProxy {
         } else {
             self.forward_http(&request, &response)
         }
-    }
-
-    fn dispatch(
-        &self,
-        event: &str,
-        _: &serde_json::Value,
-        _: Duration,
-        _: &Execution<'_>,
-    ) -> Result<Option<serde_json::Value>, Error> {
-        Err(Error::Engine(format!(
-            "the Worker's {event} handler does not run in development"
-        )))
     }
 }
 

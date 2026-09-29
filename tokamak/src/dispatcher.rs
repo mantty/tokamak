@@ -4,7 +4,6 @@ use std::io::{self, Read};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::compat;
@@ -69,69 +68,6 @@ impl Handler for Dispatcher {
             job,
             execution,
         )
-    }
-
-    fn dispatch(
-        &self,
-        event: &str,
-        payload: &serde_json::Value,
-        timeout: Duration,
-        execution: &Execution<'_>,
-    ) -> Result<Option<serde_json::Value>, Error> {
-        block_on(self.execute_event(event, payload, timeout, execution))
-    }
-}
-
-impl Dispatcher {
-    /// Run the Worker's `event` handler with `payload`, stopping it after
-    /// `timeout`; `None` when the Worker does not export one.
-    async fn execute_event(
-        &self,
-        event: &str,
-        payload: &serde_json::Value,
-        timeout: Duration,
-        execution: &Execution<'_>,
-    ) -> Result<Option<serde_json::Value>, Error> {
-        let (runtime, context) = worker_runtime(&self.worker, execution).await?;
-        let awaited = crate::event_loop::AwaitedPromise::default();
-        let invocation =
-            context.async_with(async |ctx| -> Result<Option<serde_json::Value>, Error> {
-                ctx.store_userdata(awaited.clone())
-                    .map_err(|error| js_error("event loop", error))?;
-                install_worker_globals(&ctx, &self.config, self.assets.as_ref())?;
-                initialize_worker_context(&ctx, &self.worker)?;
-                let entrypoint = load_worker(&ctx, &self.worker).await?;
-                let Some(handler) = worker_method(&ctx, &entrypoint, event)? else {
-                    return Ok(None);
-                };
-                let payload = ctx
-                    .json_parse(serde_json::to_string(payload)?)
-                    .map_err(|error| js_error("event payload", error))?;
-                let (environment, execution_context) = worker_arguments(&ctx)?;
-                let result: Promise = handler
-                    .call((payload, environment, execution_context))
-                    .map_err(|error| js_exception(&ctx, "event handler", error))?;
-                let result: Value = finish_promise(&ctx, &result, "event handler").await?;
-                let result = ctx
-                    .json_stringify(result)
-                    .map_err(|error| js_exception(&ctx, "event result", error))?
-                    .map(|json| json.to_string())
-                    .transpose()
-                    .map_err(|error| js_error("event result", error))?;
-                drain_wait_until(&ctx).await?;
-                Ok(Some(match result {
-                    Some(json) => serde_json::from_str(&json)?,
-                    None => serde_json::Value::Null,
-                }))
-            });
-        let invocation = crate::event_loop::run(&runtime, &awaited, invocation);
-        tokio::select! {
-            result = invocation => result,
-            () = execution.cancelled() => Err(Error::Engine("Worker execution was stopped".to_owned())),
-            () = tokio::time::sleep(timeout) => Err(Error::Engine(format!(
-                "the Worker's {event} handler did not finish within {timeout:?}"
-            ))),
-        }
     }
 }
 
@@ -249,22 +185,10 @@ async fn execute_request_async(
 
 async fn invoke_worker<'js>(ctx: &Ctx<'js>, worker: &WorkerBundle) -> Result<Object<'js>, Error> {
     let entrypoint = load_worker(ctx, worker).await?;
-    let fetch = worker_method(ctx, &entrypoint, "fetch")?.ok_or_else(|| {
-        Error::Engine("worker fetch: the Worker does not export fetch".to_owned())
-    })?;
+    let fetch = worker_fetch(ctx, &entrypoint)?;
     let request: Object = ctx
         .eval("new Request(__tokamak_request.url, { method: __tokamak_request.method, headers: __tokamak_request.headers, body: __tokamak_body ? new Uint8Array(__tokamak_body) : undefined })")
         .map_err(|error| js_error("request", error))?;
-    let (environment, execution_context) = worker_arguments(ctx)?;
-    let response: Promise = fetch
-        .call((request, environment, execution_context))
-        .map_err(|error| js_error("fetch", error))?;
-    let response: Object = finish_promise(ctx, &response, "response").await?;
-    Ok(response)
-}
-
-/// The `env` and `ctx` arguments every Worker handler receives.
-fn worker_arguments<'js>(ctx: &Ctx<'js>) -> Result<(Object<'js>, Object<'js>), Error> {
     let environment: Object = ctx
         .globals()
         .get("__tokamak_env")
@@ -273,7 +197,11 @@ fn worker_arguments<'js>(ctx: &Ctx<'js>) -> Result<(Object<'js>, Object<'js>), E
         .globals()
         .get("__tokamak_context")
         .map_err(|error| js_error("execution context", error))?;
-    Ok((environment, execution_context))
+    let response: Promise = fetch
+        .call((request, environment, execution_context))
+        .map_err(|error| js_error("fetch", error))?;
+    let response: Object = finish_promise(ctx, &response, "response").await?;
+    Ok(response)
 }
 
 fn install_worker_globals(
@@ -357,22 +285,19 @@ pub(super) async fn load_worker<'js>(
         .map_err(|error| js_error("worker entrypoint", error))
 }
 
-/// The entrypoint's `name` handler bound to it, returning a promise; `None`
-/// when the entrypoint has no such method.
-fn worker_method<'js>(
-    ctx: &Ctx<'js>,
-    entrypoint: &Object<'js>,
-    name: &str,
-) -> Result<Option<Function<'js>>, Error> {
+/// The entrypoint's `fetch` handler bound to it, returning a promise.
+fn worker_fetch<'js>(ctx: &Ctx<'js>, entrypoint: &Object<'js>) -> Result<Function<'js>, Error> {
     let bind: Function = ctx
         .eval(
-            "(worker, name) => typeof worker[name] === 'function' \
-                ? (...args) => Promise.resolve(Reflect.apply(worker[name], worker, args)) \
+            "(worker) => typeof worker.fetch === 'function' \
+                ? (...args) => Promise.resolve(worker.fetch(...args)) \
                 : undefined",
         )
-        .map_err(|error| js_error("worker method", error))?;
-    bind.call((entrypoint.clone(), name))
-        .map_err(|error| js_error("worker method", error))
+        .map_err(|error| js_error("worker fetch", error))?;
+    let fetch: Option<Function> = bind
+        .call((entrypoint.clone(),))
+        .map_err(|error| js_error("worker fetch", error))?;
+    fetch.ok_or_else(|| Error::Engine("worker fetch: the Worker does not export fetch".to_owned()))
 }
 
 pub(super) struct WorkerResolver;
@@ -763,27 +688,26 @@ async fn send_worker_response<'js>(
         mut encoder,
         body,
     } = response;
+    // A caller that stopped waiting gets no response, and `waitUntil` work still finishes.
     match body {
         JsResponseBody::Buffered(body) if encoder.is_none() => {
             let mut response = HttpResponse::buffered(status, headers, body);
             response.status_text = status_text;
-            response_sender
+            let _ = response_sender
                 .send_async(JobResponse::Http(response))
-                .await
-                .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))?;
+                .await;
             drain_wait_until(ctx).await
         }
         body => {
             let (sender, cancelled, output) = response_stream();
-            response_sender
+            let _ = response_sender
                 .send_async(JobResponse::Http(HttpResponse {
                     status,
                     status_text,
                     headers,
                     body: output,
                 }))
-                .await
-                .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))?;
+                .await;
             let result = match body {
                 JsResponseBody::Buffered(bytes) => {
                     send_response_chunk(&bytes, true, &mut encoder, &sender).await

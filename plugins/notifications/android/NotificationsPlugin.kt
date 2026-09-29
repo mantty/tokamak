@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
@@ -24,7 +25,10 @@ private const val SHOW_IN_FOREGROUND = "show-in-foreground"
 private const val PERMISSION_REQUEST = 0x4E07
 
 /** FCM allows about 10 seconds for a message, including starting the app. */
-private const val PUSH_TIMEOUT_MILLIS = 8_000L
+private const val PUSH_DEADLINE_MILLIS = 8_000L
+private const val PUSH_ATTEMPTS = 3
+private const val PUSH_ATTEMPT_TIMEOUT_MILLIS = 2_000L
+private const val PUSH_RETRY_DELAY_MILLIS = 1_000L
 private const val FCM_MESSAGE_ID_EXTRA = "google.message_id"
 private val LISTENERS = setOf("onMessage", "onNotificationOpened", "onSubscriptionChange")
 
@@ -112,8 +116,8 @@ class TokamakNotificationsPlugin(
     }
 
     /**
-     * Delivers an FCM message to the page. Runs the Worker's `push` handler for a data-only
-     * message and shows the notification it returns. FCM calls this off the main thread.
+     * Delivers an FCM message to the page. Posts a data-only message to the Worker's push
+     * endpoint and shows the notification it returns. FCM calls this off the main thread.
      */
     internal fun onMessageReceived(message: JSONObject, visible: Boolean) {
         context.mainExecutor.execute { emit("onMessage", message) }
@@ -121,15 +125,38 @@ class TokamakNotificationsPlugin(
             if (preferences.getBoolean(SHOW_IN_FOREGROUND, false)) notifier.post(content(message), "push")
             return
         }
-        runCatching { host.dispatch("push", message.toString(), PUSH_TIMEOUT_MILLIS) }
-            .onSuccess { result -> result?.let(::showReturned) }
-            .onFailure { Log.w("tokamak", "the Worker's push handler failed", it) }
+        val deadline = SystemClock.elapsedRealtime() + PUSH_DEADLINE_MILLIS
+        runCatching { deliverPush(message.toString(), attempt = 1, deadline = deadline) }
+            .onSuccess(::showReturned)
     }
 
-    private fun showReturned(result: String) {
-        val returned = JSONTokener(result).nextValue() as? JSONObject ?: return
-        runCatching { notifier.post(Content.parse(returned, scheduled = false), "local") }
-            .onFailure { Log.w("tokamak", "the Worker's push handler returned an invalid notification", it) }
+    /**
+     * Posts [body] to `/tokamak/push`, logging each failed attempt and retrying while another
+     * attempt can finish before [deadline].
+     */
+    private fun deliverPush(
+        body: String,
+        attempt: Int,
+        deadline: Long,
+    ): String =
+        try {
+            host.call("push", body, PUSH_ATTEMPT_TIMEOUT_MILLIS)
+        } catch (error: Exception) {
+            Log.w("tokamak", "push notification failed: ${error.message}")
+            val retryEnds = SystemClock.elapsedRealtime() + PUSH_RETRY_DELAY_MILLIS + PUSH_ATTEMPT_TIMEOUT_MILLIS
+            if (attempt == PUSH_ATTEMPTS || retryEnds > deadline) throw error
+            Thread.sleep(PUSH_RETRY_DELAY_MILLIS)
+            deliverPush(body, attempt + 1, deadline)
+        }
+
+    /** Shows the notification a push response returns, if any. */
+    private fun showReturned(response: String) {
+        if (response.isEmpty()) return
+        runCatching {
+            val returned = JSONTokener(response).nextValue()
+            if (returned == JSONObject.NULL) return
+            notifier.post(Content.parse(returned as JSONObject, scheduled = false), "local")
+        }.onFailure { Log.w("tokamak", "the push response is not a notification", it) }
     }
 
     private fun emit(method: String, value: JSONObject) {

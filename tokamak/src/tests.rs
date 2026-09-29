@@ -365,132 +365,177 @@ fn loads_split_worker_modules_through_the_quickjs_loader() -> Result<(), Box<dyn
     Ok(())
 }
 
-const EVENT_WORKER: &[u8] = br#"
+const CALL_WORKER: &[u8] = br#"
 export default {
-  fetch() {},
-  push(message, env, ctx) {
-    ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 50)));
-    return { title: message.title, flag: env.FLAG, context: typeof ctx.waitUntil };
-  },
-  quiet() {},
-  broken() {
-    throw new Error("handler exploded");
-  },
-  slow() {
-    return new Promise((resolve) => setTimeout(resolve, 5000));
+  async fetch(request, env, ctx) {
+    const path = new URL(request.url).pathname;
+    if (path === "/tokamak/missing") return new Response(null, { status: 404 });
+    if (path === "/tokamak/broken") throw new Error("handler exploded");
+    if (path === "/tokamak/slow") await new Promise((resolve) => setTimeout(resolve, 5000));
+    if (path === "/tokamak/later") {
+      const { notify } = await request.json();
+      ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 50)).then(() => fetch(notify)));
+      return Response.json(null);
+    }
+    if (path === "/tokamak/late") {
+      const { notify } = await request.json();
+      ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 400)).then(() => fetch(notify)));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return Response.json(null);
+    }
+    return Response.json({
+      method: request.method,
+      path,
+      type: request.headers.get("content-type"),
+      body: await request.text(),
+    });
   },
 };
 "#;
 
-fn dispatch_event(
-    source: &[u8],
-    event: &str,
-    payload: &serde_json::Value,
-) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error>> {
-    dispatch_event_within(source, event, payload, Duration::from_secs(5))
-}
-
-fn dispatch_event_within(
-    source: &[u8],
-    event: &str,
-    payload: &serde_json::Value,
-    timeout: Duration,
-) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error>> {
+fn call_runtime()
+-> Result<(crate::gateway::Runtime, tempfile::TempDir), Box<dyn std::error::Error + Send + Sync>> {
     let directory = tempfile::tempdir()?;
-    let worker = WorkerBundle::from_bytecode(crate::compile_worker(source)?, directory.path());
-    let mut config = websocket_config(directory.path());
-    config
-        .environment
-        .insert("FLAG".to_owned(), serde_json::json!("on"));
-    let dispatcher = Dispatcher::new(worker, config)?;
-    let accepting = Arc::new(AtomicBool::new(true));
-    let lifecycle = Lifecycle::new();
-    let execution = lifecycle
-        .enter(&accepting)
-        .ok_or("event was not admitted")?;
-    Ok(dispatcher.dispatch(event, payload, timeout, &execution)?)
+    let worker = WorkerBundle::from_bytecode(crate::compile_worker(CALL_WORKER)?, directory.path());
+    let dispatcher = Dispatcher::new(worker, websocket_config(directory.path()))?;
+    let runtime = crate::gateway::Runtime::start(dispatcher, gateway_config(), Events::new(drop))?;
+    Ok((runtime, directory))
+}
+
+fn call_worker(
+    name: &str,
+    timeout: Duration,
+) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+    let (runtime, _directory) = call_runtime()?;
+    let body = runtime.call(name, r#"{"id":"1"}"#, timeout)?;
+    Ok(serde_json::from_slice(&body)?)
 }
 
 #[test]
-fn runs_a_worker_event_handler_with_its_payload_environment_and_context()
--> Result<(), Box<dyn std::error::Error>> {
-    let started = std::time::Instant::now();
-
-    let result = dispatch_event(EVENT_WORKER, "push", &serde_json::json!({ "title": "Hi" }))?;
-
+fn posts_a_runtime_call_to_the_worker_fetch_handler()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     assert_eq!(
-        result,
-        Some(serde_json::json!({ "title": "Hi", "flag": "on", "context": "function" }))
-    );
-    assert!(
-        started.elapsed() >= Duration::from_millis(50),
-        "the event settled before its waitUntil work"
+        call_worker("push", Duration::from_secs(5))?,
+        serde_json::json!({
+            "method": "POST",
+            "path": "/tokamak/push",
+            "type": "application/json",
+            "body": r#"{"id":"1"}"#,
+        })
     );
     Ok(())
 }
 
 #[test]
-fn reports_an_event_handler_that_returns_nothing_as_null() -> Result<(), Box<dyn std::error::Error>>
-{
-    assert_eq!(
-        dispatch_event(EVENT_WORKER, "quiet", &serde_json::Value::Null)?,
-        Some(serde_json::Value::Null)
-    );
-    Ok(())
-}
-
-#[test]
-fn reports_a_missing_event_handler() -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(
-        dispatch_event(EVENT_WORKER, "scheduled", &serde_json::Value::Null)?,
-        None
-    );
-    Ok(())
-}
-
-#[test]
-fn reports_an_event_handler_failure() -> Result<(), Box<dyn std::error::Error>> {
-    let Err(error) = dispatch_event(EVENT_WORKER, "broken", &serde_json::Value::Null) else {
-        return Err("the failing handler succeeded".into());
+fn fails_a_runtime_call_the_worker_does_not_answer_with_200()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Err(error) = call_worker("missing", Duration::from_secs(5)) else {
+        return Err("the call succeeded".into());
     };
-    assert!(error.to_string().contains("handler exploded"), "{error}");
+    assert_eq!(error.to_string(), "/tokamak/missing responded 404");
     Ok(())
 }
 
 #[test]
-fn stops_an_event_handler_that_outlasts_its_timeout() -> Result<(), Box<dyn std::error::Error>> {
-    let started = std::time::Instant::now();
+fn fails_a_runtime_call_the_worker_throws_in()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Err(error) = call_worker("broken", Duration::from_secs(5)) else {
+        return Err("the call succeeded".into());
+    };
+    assert_eq!(error.to_string(), "/tokamak/broken responded 500");
+    Ok(())
+}
 
-    let Err(error) = dispatch_event_within(
-        EVENT_WORKER,
-        "slow",
-        &serde_json::Value::Null,
-        Duration::from_millis(50),
+/// A URL whose first request's line arrives on the returned receiver.
+fn notify_listener()
+-> Result<(String, flume::Receiver<String>), Box<dyn std::error::Error + Send + Sync>> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let url = format!("http://127.0.0.1:{}/done", listener.local_addr()?.port());
+    let (arrived, arrival) = flume::bounded(1);
+    thread::spawn(move || -> io::Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line)?;
+        let _ = arrived.send(line);
+        stream.write_all(b"HTTP/1.1 204 No Content\r\n\r\n")
+    });
+    Ok((url, arrival))
+}
+
+#[test]
+fn runs_wait_until_work_after_a_runtime_call_responds()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (notify, arrival) = notify_listener()?;
+    let (runtime, _directory) = call_runtime()?;
+
+    let body = runtime.call(
+        "later",
+        &serde_json::json!({ "notify": notify }).to_string(),
+        Duration::from_secs(5),
+    )?;
+
+    assert_eq!(body, b"null");
+    assert_eq!(
+        arrival.recv_timeout(Duration::from_secs(5))?,
+        "GET /done HTTP/1.1\r\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn runs_wait_until_work_after_a_runtime_call_times_out()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (notify, arrival) = notify_listener()?;
+    let (runtime, _directory) = call_runtime()?;
+
+    let Err(error) = runtime.call(
+        "late",
+        &serde_json::json!({ "notify": notify }).to_string(),
+        Duration::from_millis(100),
     ) else {
-        return Err("the slow handler finished".into());
+        return Err("the call succeeded".into());
     };
 
-    assert!(
-        error.to_string().contains("did not finish within 50ms"),
-        "{error}"
+    assert_eq!(
+        error.to_string(),
+        "/tokamak/late did not respond within 100ms"
+    );
+    assert_eq!(
+        arrival.recv_timeout(Duration::from_secs(5))?,
+        "GET /done HTTP/1.1\r\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn fails_a_runtime_call_that_outlasts_its_timeout()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let started = std::time::Instant::now();
+
+    let Err(error) = call_worker("slow", Duration::from_millis(100)) else {
+        return Err("the call succeeded".into());
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "/tokamak/slow did not respond within 100ms"
     );
     assert!(started.elapsed() < Duration::from_secs(2));
     Ok(())
 }
 
 #[test]
-fn runs_event_handlers_on_class_entrypoints() -> Result<(), Box<dyn std::error::Error>> {
-    let worker = br"
-export default class {
-  constructor(ctx, env) { this.env = env; }
-  fetch() {}
-  push(message) { return `${message} ${this.env.FLAG}`; }
-}
-";
-    assert_eq!(
-        dispatch_event(worker, "push", &serde_json::json!("switched"))?,
-        Some(serde_json::json!("switched on"))
-    );
+fn refuses_a_runtime_call_name_that_is_not_a_path_segment()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for name in ["", "push/../admin", "push?x=1"] {
+        let Err(error) = call_worker(name, Duration::from_secs(5)) else {
+            return Err(format!("the call to {name:?} succeeded").into());
+        };
+        assert!(
+            error.to_string().contains("invalid runtime call name"),
+            "{error}"
+        );
+    }
     Ok(())
 }
 
@@ -709,16 +754,6 @@ fn reports_handler_failures_through_the_event_listener()
         fn handle(&self, _: Job, _: &Execution<'_>) -> Result<(), Error> {
             Err(Error::Startup("handler exploded".to_owned()))
         }
-
-        fn dispatch(
-            &self,
-            _: &str,
-            _: &serde_json::Value,
-            _: Duration,
-            _: &Execution<'_>,
-        ) -> Result<Option<serde_json::Value>, Error> {
-            Err(Error::Startup("handler exploded".to_owned()))
-        }
     }
     let tokio = tokio::runtime::Builder::new_current_thread().build()?;
     let (sink, events) = flume::unbounded();
@@ -769,16 +804,6 @@ fn reports_connection_failures_through_the_event_listener()
         fn handle(&self, _: Job, _: &Execution<'_>) -> Result<(), Error> {
             Err(Error::Startup("handler must not run".to_owned()))
         }
-
-        fn dispatch(
-            &self,
-            _: &str,
-            _: &serde_json::Value,
-            _: Duration,
-            _: &Execution<'_>,
-        ) -> Result<Option<serde_json::Value>, Error> {
-            Err(Error::Startup("handler must not run".to_owned()))
-        }
     }
     let (sink, events) = flume::unbounded();
     let runtime = crate::gateway::Runtime::start(
@@ -796,44 +821,6 @@ fn reports_connection_failures_through_the_event_listener()
     assert!(
         matches!(&event, Event::RequestFailed { message } if !message.is_empty()),
         "unexpected event: {event:?}"
-    );
-    Ok(())
-}
-
-#[test]
-fn dispatches_worker_events_through_the_gateway_executor()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    struct EchoHandler;
-    impl Handler for EchoHandler {
-        fn handle(&self, _: Job, _: &Execution<'_>) -> Result<(), Error> {
-            Err(Error::Startup("handler must not run".to_owned()))
-        }
-
-        fn dispatch(
-            &self,
-            event: &str,
-            payload: &serde_json::Value,
-            _: Duration,
-            execution: &Execution<'_>,
-        ) -> Result<Option<serde_json::Value>, Error> {
-            assert!(execution.is_running());
-            Ok(Some(
-                serde_json::json!({ "event": event, "payload": payload }),
-            ))
-        }
-    }
-    let runtime =
-        crate::gateway::Runtime::start(Arc::new(EchoHandler), gateway_config(), Events::new(drop))?;
-
-    let result = runtime.dispatch(
-        "push",
-        serde_json::json!({ "id": "1" }),
-        Duration::from_secs(1),
-    )?;
-
-    assert_eq!(
-        result,
-        Some(serde_json::json!({ "event": "push", "payload": { "id": "1" } }))
     );
     Ok(())
 }

@@ -18,11 +18,11 @@ export interface ScheduledNotification extends NotificationContent {
 }
 
 /** A received push message. A data-only message has no title or body. */
-export interface Message {
+export interface Message<Data extends object = Record<string, unknown>> {
   readonly id: string;
   readonly title: string | null;
   readonly body: string | null;
-  readonly data: Record<string, unknown>;
+  readonly data: Data;
 }
 
 export interface OpenedNotification extends Message {

@@ -15,10 +15,6 @@ const DECISION_DEFAULT: c_int = 0;
 const DECISION_CANCEL: c_int = 1;
 const DECISION_USE: c_int = 2;
 
-const DISPATCH_HANDLED: c_int = 0;
-const DISPATCH_UNHANDLED: c_int = 1;
-const DISPATCH_FAILED: c_int = 2;
-
 /// An owned byte buffer returned across the C ABI.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -155,43 +151,40 @@ pub unsafe extern "C" fn tokamak_runtime_stop(handle: *mut c_void) {
     }
 }
 
-/// Run the Worker's `event` handler with a JSON `payload`, blocking until it
-/// settles or `timeout_ms` passes.
+/// Post JSON `body` to the Worker's `/tokamak/<name>` endpoint, blocking for
+/// up to `timeout_ms`.
 ///
-/// Returns `TOKAMAK_DISPATCH_HANDLED` with the handler's JSON result in
-/// `result`, `TOKAMAK_DISPATCH_UNHANDLED` when the Worker has no such handler,
-/// or `TOKAMAK_DISPATCH_FAILED` with a message in `error`.
+/// Returns true with the response body in `response` when the Worker responds
+/// 200, or false with a message in `error`.
 ///
 /// # Safety
 ///
-/// `handle` must be live, `event` and `payload` must be NUL-terminated UTF-8
-/// strings, `result` must be writable, and `error` must be writable for
+/// `handle` must be live, `name` and `body` must be NUL-terminated UTF-8
+/// strings, `response` must be writable, and `error` must be writable for
 /// `error_len` bytes when non-null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn tokamak_runtime_dispatch(
+pub unsafe extern "C" fn tokamak_runtime_call(
     handle: *const c_void,
-    event: *const c_char,
-    payload: *const c_char,
+    name: *const c_char,
+    body: *const c_char,
     timeout_ms: u64,
-    result: *mut TokamakBytes,
+    response: *mut TokamakBytes,
     error: *mut c_char,
     error_len: usize,
-) -> c_int {
-    if result.is_null() {
-        return DISPATCH_FAILED;
+) -> bool {
+    if response.is_null() {
+        return false;
     }
-    unsafe { result.write(TokamakBytes::empty()) };
+    unsafe { response.write(TokamakBytes::empty()) };
     let timeout = Duration::from_millis(timeout_ms);
-    let outcome = unsafe { dispatch(handle, event, payload, timeout) };
-    match outcome {
-        Ok(Some(json)) => {
-            unsafe { result.write(TokamakBytes::from_vec(json.into_bytes())) };
-            DISPATCH_HANDLED
+    match unsafe { call(handle, name, body, timeout) } {
+        Ok(body) => {
+            unsafe { response.write(TokamakBytes::from_vec(body)) };
+            true
         }
-        Ok(None) => DISPATCH_UNHANDLED,
         Err(message) => {
             write_error(error, error_len, &message);
-            DISPATCH_FAILED
+            false
         }
     }
 }
@@ -351,20 +344,18 @@ unsafe fn start_development(
     Runtime::start_development(config, report).map_err(|error| error.to_string())
 }
 
-unsafe fn dispatch(
+unsafe fn call(
     handle: *const c_void,
-    event: *const c_char,
-    payload: *const c_char,
+    name: *const c_char,
+    body: *const c_char,
     timeout: Duration,
-) -> Result<Option<String>, String> {
+) -> Result<Vec<u8>, String> {
     let runtime = unsafe { runtime(handle) }.ok_or("runtime is unavailable")?;
-    let event = unsafe { text(event) }.ok_or("event name is not valid UTF-8")?;
-    let payload = unsafe { text(payload) }.ok_or("event payload is not valid UTF-8")?;
-    let payload = serde_json::from_str(payload).map_err(|error| error.to_string())?;
-    let result = runtime
-        .dispatch(event, payload, timeout)
-        .map_err(|error| error.to_string())?;
-    Ok(result.map(|value| value.to_string()))
+    let name = unsafe { text(name) }.ok_or("call name is not valid UTF-8")?;
+    let body = unsafe { text(body) }.ok_or("call body is not valid UTF-8")?;
+    runtime
+        .call(name, body, timeout)
+        .map_err(|error| error.to_string())
 }
 
 fn report(event: Event) {

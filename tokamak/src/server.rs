@@ -116,24 +116,14 @@ impl Runtime {
         Ok(self.gateway.restore_gateway()?)
     }
 
-    /// Run the Worker's `event` handler with `payload` and wait for it to
-    /// settle, including work passed to `ctx.waitUntil`, for up to `timeout`.
-    ///
-    /// Returns the handler's JSON result, `null` when it returns nothing, or
-    /// `None` when the Worker has no `event` handler.
+    /// Post JSON `body` to the Worker's `/tokamak/<name>` endpoint and return
+    /// the response body.
     ///
     /// # Errors
     ///
-    /// Returns an error when the handler throws or does not settle within
-    /// `timeout`, its result is not JSON, or the runtime cannot run Worker
-    /// code, as in development.
-    pub fn dispatch(
-        &self,
-        event: &str,
-        payload: serde_json::Value,
-        timeout: Duration,
-    ) -> Result<Option<serde_json::Value>> {
-        Ok(self.gateway.dispatch(event, payload, timeout)?)
+    /// Returns an error unless the Worker responds 200 within `timeout`.
+    pub fn call(&self, name: &str, body: &str, timeout: Duration) -> Result<Vec<u8>> {
+        Ok(self.gateway.call(name, body, timeout)?)
     }
 
     /// Certificate material for the shell's TLS challenge callbacks.
@@ -244,14 +234,19 @@ fn gateway_config(certificates: &Arc<Certificates>, host: &str) -> GatewayConfig
     }
 }
 
+/// Set to "true" in a packaged app's Worker environment.
+const RUNTIME_MARKER: &str = "TOKAMAK_RUNTIME";
+
 fn quickjs_config(app: &PackageLayout, state_dir: &Path) -> Result<RuntimeConfig> {
+    let mut environment = load_environment(app)?.vars;
+    environment.insert(RUNTIME_MARKER.to_owned(), "true".into());
     Ok(RuntimeConfig {
         assets: app.serves_assets().then(|| Assets {
             manifest: app.asset_manifest(),
             root: app.assets(),
         }),
         cache: state_dir.join("cache"),
-        environment: load_environment(app)?.vars,
+        environment,
     })
 }
 
@@ -316,6 +311,21 @@ mod tests {
                 .environment
                 .get("JSON"),
             Some(&json!({ "enabled": true }))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn marks_a_packaged_worker_environment() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let app = PackageLayout::new(directory.path());
+        write_environment(&app, &WorkerEnvironment::default())?;
+
+        assert_eq!(
+            quickjs_config(&app, directory.path())?
+                .environment
+                .get("TOKAMAK_RUNTIME"),
+            Some(&json!("true"))
         );
         Ok(())
     }

@@ -9,7 +9,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./service-worker": "./service-worker/index.ts"
+    "./service-worker": "./service-worker/index.ts",
+    "./worker": "./worker/index.ts"
   },
   "dependencies": {
     "@tokamakdev/plugin": "^0.1.0"
@@ -20,6 +21,7 @@
     "service-worker",
     "src",
     "web",
+    "worker",
     "tokamak-plugin.json",
     "README.md"
   ],

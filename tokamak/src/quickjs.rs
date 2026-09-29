@@ -42,6 +42,10 @@ pub enum Error {
     #[cfg(feature = "native")]
     #[error("QuickJS startup failed: {0}")]
     Startup(String),
+    /// A runtime call into the Worker failed.
+    #[cfg(feature = "native")]
+    #[error("{0}")]
+    Call(String),
 }
 
 /// Static asset service paths.

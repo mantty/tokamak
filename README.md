@@ -133,6 +133,10 @@ tok build ios --env production
 For generated Wrangler files, pass `--wrangler PATH`; `userConfigPath` supplies
 vars from the source config. Never put secrets in packaged `vars`.
 
+Built apps also set `TOKAMAK_RUNTIME` to `"true"` in the Worker's `env` and
+`process.env`. Plugin helpers use it to serve the runtime's calls to endpoints
+under `/tokamak/`.
+
 `build/` holds output and reusable build data; `--build-dir PATH` moves both.
 An empty or stale cache builds normally. Changing only vars on Apple updates
 the bundled environment file and re-signs without recompiling the shell.
@@ -438,11 +442,11 @@ package as Node does, in the nearest `node_modules` of the project or a parent
 directory, so plugins installed at a workspace root are included. Call plugins
 from browser code. Each plugin's README describes its API.
 
-A plugin can also run Worker code: native builds call a method on the Worker's
-default export for an event the plugin receives, such as `push` for a
-data-only push notification. The method receives the event's value, `env`
-and `ctx`, like `fetch`. Cloudflare never calls these methods, so the same
-Worker deploys unchanged, and `tok dev` does not run them.
+A plugin can also run Worker code: native builds post an event the plugin
+receives, such as a data-only push notification, to an endpoint under
+`/tokamak/` that the Worker's `fetch` serves with the plugin's helper. In
+`tok dev` the post reaches the development server. The helper responds 404 on
+Cloudflare, so the same Worker deploys unchanged.
 
 Android builds run lint's `NewApi` check over the shell and plugin sources. A
 call to an API newer than the app's minimum SDK fails the build, naming the

@@ -291,6 +291,21 @@ fn closes_the_websocket_promptly_when_the_worker_fails() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn marks_the_worker_environment_of_a_packaged_app() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, _) = start_packaged_runtime(
+        temporary.path(),
+        br"export default { fetch: (request, env) => Response.json([env.TOKAMAK_RUNTIME, process.env.TOKAMAK_RUNTIME]) };",
+        &WorkerEnvironment::default(),
+    )?;
+
+    let body = runtime.call("check", "{}", Duration::from_secs(5))?;
+
+    assert_eq!(body, br#"["true","true"]"#);
+    Ok(())
+}
+
 fn start_packaged_runtime(
     temporary: &Path,
     worker: &[u8],
