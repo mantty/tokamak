@@ -129,7 +129,7 @@ ID, hardened runtime, notarisation) is not covered.
 ## Respect the packaged Worker contract
 
 - Export a default Worker object with a `fetch(request, env, ctx)` handler, directly or through a compatible framework adapter.
-- Native builds post plugin events to endpoints under `/tokamak/` that the Worker's `fetch` serves, such as `POST /tokamak/push` for a data-only push notification from `@tokamakdev/plugin-notifications`, including when the system starts the app in the background. Serve it with `handlePushRequest` from `@tokamakdev/plugin-notifications/worker`. The helper accepts only posts from the tokamak runtime, or any request in development, and responds 404 on Cloudflare. `tok dev` delivers the posts to the development server.
+- Native builds post plugin events to endpoints under `/tokamak/` that the Worker's `fetch` serves, such as `POST /tokamak/push` for a data-only push notification from `@tokamakdev/plugin-notifications`, including when the system starts the app in the background. Serve it with `handlePushRequest` from `@tokamakdev/plugin-notifications/worker`. The helper accepts requests in built apps, where the runtime sets `TOKAMAK_RUNTIME` in `env` and `process.env`, and in development, and responds 404 on Cloudflare. `tok dev` delivers the posts to the development server.
 - Use standard request and response semantics and same-origin routes between the frontend and packaged Worker.
 - Expect a fresh JavaScript runtime and module graph for each packaged HTTP request. Do not use module globals, singleton objects, or in-memory caches as durable state across requests.
 - Treat a WebSocket Worker context as lasting only for that WebSocket connection.

@@ -1,31 +1,28 @@
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { beforeEach, test } from "node:test";
 
-import { acceptsRuntimeCall } from "../src/worker.js";
+import { acceptsRuntimeCalls } from "../src/worker.js";
 
-const nodeEnv = process.env.NODE_ENV;
-
-afterEach(() => {
-  Reflect.deleteProperty(globalThis, "__tokamak_runtime_call");
-  process.env.NODE_ENV = nodeEnv;
-});
-
-void test("accepts a call the runtime made", () => {
+beforeEach(() => {
   process.env.NODE_ENV = "production";
-  globalThis.__tokamak_runtime_call = true;
-
-  assert.equal(acceptsRuntimeCall(), true);
+  Reflect.deleteProperty(process.env, "TOKAMAK_RUNTIME");
 });
 
-void test("accepts any request in development", () => {
+void test("accepts calls in a tokamak app", () => {
+  process.env.TOKAMAK_RUNTIME = "true";
+
+  assert.equal(acceptsRuntimeCalls(), true);
+});
+
+void test("accepts calls in development", () => {
   process.env.NODE_ENV = "development";
 
-  assert.equal(acceptsRuntimeCall(), true);
+  assert.equal(acceptsRuntimeCalls(), true);
 });
 
-void test("refuses other requests", () => {
-  process.env.NODE_ENV = "production";
-  globalThis.__tokamak_runtime_call = false;
+void test("refuses calls elsewhere", () => {
+  assert.equal(acceptsRuntimeCalls(), false);
 
-  assert.equal(acceptsRuntimeCall(), false);
+  process.env.TOKAMAK_RUNTIME = "1";
+  assert.equal(acceptsRuntimeCalls(), false);
 });

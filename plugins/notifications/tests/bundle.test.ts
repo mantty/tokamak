@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { afterEach, test } from "node:test";
+import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { rollup } from "rollup";
@@ -38,19 +38,16 @@ function push(): Request {
   return new Request("https://app.tokamak.local/tokamak/push", { method: "POST", body: "{}" });
 }
 
-afterEach(() => {
-  Reflect.deleteProperty(globalThis, "__tokamak_runtime_call");
-});
-
 void test("keeps the runtime call check in a production Rollup 4.63.0 bundle", async () => {
   const code = await productionBundle();
   const bundled = (await import(`data:text/javascript,${encodeURIComponent(code)}`)) as {
     handlePushRequest: typeof handlePushRequest;
   };
   const accept = () => ({ id: "accepted", title: "Accepted" });
+  Reflect.deleteProperty(process.env, "TOKAMAK_RUNTIME");
 
   assert.equal((await bundled.handlePushRequest(push(), accept)).status, 404);
 
-  globalThis.__tokamak_runtime_call = true;
+  process.env.TOKAMAK_RUNTIME = "true";
   assert.equal((await bundled.handlePushRequest(push(), accept)).status, 200);
 });

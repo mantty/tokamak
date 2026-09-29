@@ -128,12 +128,11 @@ class TokamakNotificationsPlugin(
         val deadline = SystemClock.elapsedRealtime() + PUSH_DEADLINE_MILLIS
         runCatching { deliverPush(message.toString(), attempt = 1, deadline = deadline) }
             .onSuccess(::showReturned)
-            .onFailure { Log.w("tokamak", "push delivery failed", it) }
     }
 
     /**
-     * Posts [body] to `/tokamak/push`, retrying a failed attempt while another can finish
-     * before [deadline].
+     * Posts [body] to `/tokamak/push`, logging each failed attempt and retrying while another
+     * attempt can finish before [deadline].
      */
     private fun deliverPush(
         body: String,
@@ -143,6 +142,7 @@ class TokamakNotificationsPlugin(
         try {
             host.call("push", body, PUSH_ATTEMPT_TIMEOUT_MILLIS)
         } catch (error: Exception) {
+            Log.w("tokamak", "push notification failed: ${error.message}")
             val retryEnds = SystemClock.elapsedRealtime() + PUSH_RETRY_DELAY_MILLIS + PUSH_ATTEMPT_TIMEOUT_MILLIS
             if (attempt == PUSH_ATTEMPTS || retryEnds > deadline) throw error
             Thread.sleep(PUSH_RETRY_DELAY_MILLIS)

@@ -1,4 +1,4 @@
-import { acceptsRuntimeCall } from "@tokamakdev/plugin/worker";
+import { acceptsRuntimeCalls } from "@tokamakdev/plugin/worker";
 
 import type { Message, NotificationContent } from "../src/index.js";
 
@@ -9,14 +9,14 @@ export type PushHandler<Data extends object = Record<string, unknown>> =
 
 /**
  * Serves `POST /tokamak/push`: runs `handler` with the data-only push message the tokamak
- * runtime delivers and responds with the notification it returns. Responds 404 to any other
- * request.
+ * runtime delivers and responds with the notification it returns. Responds 404 outside a
+ * tokamak app and development.
  */
 export async function handlePushRequest<Data extends object = Record<string, unknown>>(
   request: Request,
   handler: PushHandler<Data>,
 ): Promise<Response> {
-  if (!acceptsRuntimeCall()) return new Response(null, { status: 404 });
+  if (!acceptsRuntimeCalls()) return new Response(null, { status: 404 });
   const message = (await request.json()) as Message<Data>;
   return Response.json((await handler(message)) ?? null);
 }

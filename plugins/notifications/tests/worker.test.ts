@@ -1,18 +1,13 @@
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, test } from "node:test";
+import { beforeEach, test } from "node:test";
 
 import { handlePushRequest } from "../worker/index.js";
 
-const nodeEnv = process.env.NODE_ENV;
 const message = { id: "m1", title: null, body: null, data: { itemId: "42" } };
 
 beforeEach(() => {
   process.env.NODE_ENV = "production";
-});
-
-afterEach(() => {
-  Reflect.deleteProperty(globalThis, "__tokamak_runtime_call");
-  process.env.NODE_ENV = nodeEnv;
+  Reflect.deleteProperty(process.env, "TOKAMAK_RUNTIME");
 });
 
 function push(): Request {
@@ -24,7 +19,7 @@ function push(): Request {
 }
 
 void test("runs the handler with the message and responds with its notification", async () => {
-  globalThis.__tokamak_runtime_call = true;
+  process.env.TOKAMAK_RUNTIME = "true";
 
   const response = await handlePushRequest<{ itemId: string }>(push(), (received) => {
     assert.deepEqual(received, message);
@@ -36,7 +31,7 @@ void test("runs the handler with the message and responds with its notification"
 });
 
 void test("responds null when the handler returns nothing", async () => {
-  globalThis.__tokamak_runtime_call = true;
+  process.env.TOKAMAK_RUNTIME = "true";
 
   const response = await handlePushRequest(push(), async () => {});
 
@@ -44,7 +39,7 @@ void test("responds null when the handler returns nothing", async () => {
   assert.equal(await response.json(), null);
 });
 
-void test("responds 404 without running the handler outside a runtime call", async () => {
+void test("responds 404 without running the handler outside a tokamak app", async () => {
   let ran = false;
 
   const response = await handlePushRequest(push(), () => {

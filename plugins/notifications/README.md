@@ -158,16 +158,19 @@ not checked; FCM delivers every `data` value as a string. A returned
 notification is shown as `show` shows one. The page also receives the message
 through `onMessage` while it is loaded.
 
-`handlePushRequest` accepts requests the tokamak runtime makes, and every
-request when `process.env.NODE_ENV` is `development`, as in the development
-server `tok dev` delivers messages to. It responds 404 to other requests, so
-the endpoint serves nothing on Cloudflare. A build made with
-`NODE_ENV=development` accepts every request.
+`handlePushRequest` accepts requests in a tokamak app, where
+`process.env.TOKAMAK_RUNTIME` is `"true"`, and in development, where
+`process.env.NODE_ENV` is `development`, as in the development server `tok dev`
+delivers messages to. It responds 404 otherwise, so the endpoint serves nothing
+on Cloudflare. A build made with `NODE_ENV=development`, or a Worker that
+declares `TOKAMAK_RUNTIME` itself, accepts every request.
 
 Each attempt waits up to 2 seconds for a 200 response. After a failure, the
 plugin tries again 1 second later, up to three attempts, while an attempt can
 finish within the plugin's time for the message. A handler can run more than
-once for one message. In `tok dev`, the runtime logs each failed attempt.
+once for one message, and an attempt that timed out keeps running. The plugin
+logs each failed attempt to the device log as
+`push notification failed: <reason>`.
 
 The platforms limit background delivery:
 

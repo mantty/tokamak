@@ -133,6 +133,10 @@ tok build ios --env production
 For generated Wrangler files, pass `--wrangler PATH`; `userConfigPath` supplies
 vars from the source config. Never put secrets in packaged `vars`.
 
+Built apps also set `TOKAMAK_RUNTIME` to `"true"` in the Worker's `env` and
+`process.env`. Plugin helpers use it to serve the runtime's calls to endpoints
+under `/tokamak/`.
+
 `build/` holds output and reusable build data; `--build-dir PATH` moves both.
 An empty or stale cache builds normally. Changing only vars on Apple updates
 the bundled environment file and re-signs without recompiling the shell.

@@ -157,15 +157,14 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       switch result {
       case .success(let response):
         self.show(response) { completion(.newData) }
-      case .failure(let error):
-        print("tokamak push delivery failed: \(error)")
+      case .failure:
         completion(.failed)
       }
     }
   }
 
-  /// Posts `message` to `/tokamak/push`, retrying a failed attempt while
-  /// another can finish before `deadline`.
+  /// Posts `message` to `/tokamak/push`, logging each failed attempt and
+  /// retrying while another attempt can finish before `deadline`.
   private func deliverPush(
     _ message: [String: Any],
     attempt: Int,
@@ -173,6 +172,9 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     completion: @escaping (Result<Data, Error>) -> Void
   ) {
     host.call("push", body: message, timeout: pushAttemptTimeout) { result in
+      if case .failure(let error) = result {
+        print("push notification failed: \(error)")
+      }
       let retryEnds = Date() + pushRetryDelay + pushAttemptTimeout
       guard case .failure = result, attempt < pushAttempts, retryEnds <= deadline else {
         completion(result)
