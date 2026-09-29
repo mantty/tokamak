@@ -16,6 +16,32 @@ export {
 
 delete WritableStreamDefaultController.prototype.abortReason;
 const nativePair = Symbol("native-transform-pair");
+const streamLengths = new WeakMap();
+
+// Record that `stream` delivers exactly `length` bytes.
+export function setStreamLength(stream, length) {
+  streamLengths.set(stream, length);
+  return stream;
+}
+
+// The number of bytes `stream` delivers, when known.
+export function streamLength(stream) {
+  return streamLengths.get(stream);
+}
+
+// Both branches of a tee deliver the bytes of the stream they split.
+const teeBranches = ReadableStream.prototype.tee;
+Object.defineProperty(ReadableStream.prototype, "tee", {
+  ...Object.getOwnPropertyDescriptor(ReadableStream.prototype, "tee"),
+  value: {
+    tee() {
+      const branches = teeBranches.call(this);
+      const length = streamLengths.get(this);
+      if (length !== undefined) for (const branch of branches) streamLengths.set(branch, length);
+      return branches;
+    },
+  }.tee,
+});
 
 export function nativeStreamError(reason) {
   if (reason !== null && typeof reason === "object") {
@@ -259,6 +285,7 @@ export class FixedLengthStream extends IdentityTransformStream {
     catch { throw new TypeError("Expected a non-negative length fitting in uint64"); }
     if (remaining < 0n || remaining > 0xffffffffffffffffn) throw new TypeError("Expected a non-negative length fitting in uint64");
     super(nativePair, { remaining, strategy });
+    setStreamLength(this.readable, Number(remaining));
   }
 }
 Object.defineProperty(IdentityTransformStream.prototype, Symbol.toStringTag, { value: "IdentityTransformStream", configurable: true });

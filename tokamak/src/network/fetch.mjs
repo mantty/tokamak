@@ -1,7 +1,7 @@
 import { markHostObject } from "../globals/objects.mjs";
 import { httpStatusText } from "tokamak:host";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
-import { ReadableStream, isDisturbed } from "../streams/web.mjs";
+import { ReadableStream, isDisturbed, setStreamLength } from "../streams/web.mjs";
 import { ErrorEvent, Event, EventTarget, MessageEvent } from "../events/events.mjs";
 import { blobBrand, URL, URLSearchParams } from "./url.mjs";
 
@@ -54,8 +54,7 @@ function bodyStream(value, onUse) {
     if (data.byteLength > 0) controller.enqueue(data.slice());
     controller.close();
   } });
-  stream.__bodyBytes = data;
-  return stream;
+  return setStreamLength(stream, data.byteLength);
 }
 
 function consumeStream(stream) {
@@ -904,4 +903,4 @@ async function consumeEventSource(source, stream, closeWhenDone) {
   }
 }
 
-export { bodyStream, bytes };
+export { bodyStream, bytes, consumeStream };

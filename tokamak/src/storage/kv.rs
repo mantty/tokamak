@@ -4,16 +4,14 @@
 //! the largest allocation the SQLite build makes.
 
 use std::io::{Read, Write};
-use std::path::Path;
 use std::sync::Mutex;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use rusqlite::blob::ZeroBlob;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
-use super::{Open, lock, sqlite};
+use super::keys::{cursor, cursor_key, prefix_end};
+use super::{Location, Open, SQLITE_FILES, lock, sqlite};
 
 /// Entries in key order; `value` is last so records can end in a zero blob.
 const SCHEMA: &str = "
@@ -59,8 +57,11 @@ pub(crate) struct Key {
 }
 
 impl Open for KvNamespace {
-    fn open(path: &Path) -> Result<Self, String> {
-        let connection = sqlite::open(path).map_err(|error| error.to_string())?;
+    const SUFFIX: &'static str = ".sqlite";
+    const FILES: &'static [&'static str] = &SQLITE_FILES;
+
+    fn open(location: &Location) -> Result<Self, String> {
+        let connection = sqlite::open(&location.path).map_err(|error| error.to_string())?;
         connection
             .execute_batch(SCHEMA)
             .map_err(|error| error.to_string())?;
@@ -127,30 +128,26 @@ impl KvNamespace {
     }
 
     /// Up to `limit` unexpired keys beginning with `prefix`, after the key
-    /// `cursor` encodes.
+    /// `page_cursor` encodes.
     pub(crate) fn list(
         &self,
         prefix: &str,
-        cursor: &str,
+        page_cursor: &str,
         limit: usize,
         now: i64,
     ) -> Result<Page, String> {
-        let after = STANDARD
-            .decode(cursor)
-            .ok()
-            .and_then(|key| String::from_utf8(key).ok())
-            .unwrap_or_default();
+        let after = cursor_key(page_cursor).unwrap_or_default();
         let end = prefix_end(prefix);
         let connection = lock(&self.connection);
         let mut keys = list_keys(&connection, prefix, end.as_deref(), &after, limit, now)
             .map_err(|error| error.to_string())?;
-        let cursor = (keys.len() > limit).then(|| {
+        let next = (keys.len() > limit).then(|| {
             keys.truncate(limit);
-            keys.last().map(|key| STANDARD.encode(&key.name))
+            keys.last().map(|key| cursor(&key.name))
         });
         Ok(Page {
             keys,
-            cursor: cursor.flatten(),
+            cursor: next.flatten(),
         })
     }
 }
@@ -216,21 +213,6 @@ fn list_keys(
             .query_map(params![prefix, after, now, limit], key)?
             .collect(),
     }
-}
-
-/// The least string greater than every string beginning with `prefix`, or
-/// none when no string is. Keys order by UTF-8 bytes, which is code point
-/// order.
-fn prefix_end(prefix: &str) -> Option<String> {
-    let mut characters: Vec<char> = prefix.chars().collect();
-    while let Some(last) = characters.pop() {
-        let next = (u32::from(last) + 1..=u32::from(char::MAX)).find_map(char::from_u32);
-        if let Some(next) = next {
-            characters.push(next);
-            return Some(characters.into_iter().collect());
-        }
-    }
-    None
 }
 
 #[cfg(test)]

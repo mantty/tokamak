@@ -42,6 +42,10 @@ fn package_binding(binding: &WranglerStorage, layout: &PackageLayout) -> Result<
             migrations_table: migrations.table.clone(),
             migrations: package_migrations(name, migrations, layout)?,
         },
+        WranglerStorage::R2 { name, id } => StorageBinding::R2 {
+            name: name.clone(),
+            id: id.clone(),
+        },
     })
 }
 
@@ -223,6 +227,7 @@ mod tests {
             root,
             r#"{ "name": "app", "main": "worker.js",
                  "kv_namespaces": [{ "binding": "SESSION" }],
+                 "r2_buckets": [{ "binding": "FILES", "bucket_name": "files" }],
                  "d1_databases": [{ "binding": "DB", "database_id": "db", "migrations_dir": "drizzle", "migrations_pattern": "drizzle/*/migration.sql" }] }"#,
         )?;
         let layout = PackageLayout::new(root.join("app"));
@@ -244,6 +249,10 @@ mod tests {
                         "0000_b/migration.sql".to_owned(),
                         "0001_a/migration.sql".to_owned()
                     ],
+                },
+                StorageBinding::R2 {
+                    name: "FILES".to_owned(),
+                    id: "files".to_owned(),
                 }
             ]
         );
@@ -275,6 +284,10 @@ mod tests {
             (
                 r#""kv_namespaces": [{ "binding": "A", "id": "x" }], "d1_databases": [{ "binding": "A", "database_id": "y" }]"#,
                 "more than one binding is named A",
+            ),
+            (
+                r#""r2_buckets": [{ "binding": "A", "bucket_name": "files" }, { "binding": "B", "bucket_name": "Files" }]"#,
+                "r2_buckets stores `files` and `Files` differ only in case",
             ),
         ] {
             let config = wrangler(

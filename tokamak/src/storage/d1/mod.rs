@@ -20,7 +20,7 @@ use rusqlite::{Connection, TransactionState};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 
-use super::{Open, lock, sqlite};
+use super::{Location, Open, SQLITE_FILES, lock, sqlite};
 use authorizer::Decision;
 use statement::{Output, Param, Value};
 
@@ -88,9 +88,12 @@ struct Access {
 }
 
 impl Open for D1Database {
-    fn open(path: &Path) -> Result<Self, String> {
+    const SUFFIX: &'static str = ".sqlite";
+    const FILES: &'static [&'static str] = &SQLITE_FILES;
+
+    fn open(location: &Location) -> Result<Self, String> {
         let open = || -> rusqlite::Result<Session> {
-            let connection = sqlite::open(path)?;
+            let connection = sqlite::open(&location.path)?;
             let version = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
             let access = Arc::new(Access::default());
             secure(&connection, &access)?;

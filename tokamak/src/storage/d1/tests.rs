@@ -6,13 +6,16 @@ use serde_json::{Value as Json, json};
 use super::authorizer::TRANSACTION_REFUSED;
 use super::statement::{self, Param};
 use super::{D1Database, Migrations, is_blank};
-use crate::storage::{Open, lock};
+use crate::storage::{Location, Open, lock};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 fn database() -> TestResult<(tempfile::TempDir, D1Database)> {
     let directory = tempfile::tempdir()?;
-    let database = D1Database::open(&directory.path().join("d1.sqlite"))?;
+    let database = D1Database::open(&Location {
+        path: directory.path().join("d1.sqlite"),
+        scratch: directory.path().join("scratch"),
+    })?;
     Ok((directory, database))
 }
 

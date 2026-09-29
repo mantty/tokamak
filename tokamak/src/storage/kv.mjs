@@ -1,4 +1,5 @@
 import { kvDelete, kvGet, kvGetMany, kvList, kvPut } from "tokamak:host";
+import { bodyStream } from "../network/fetch.mjs";
 
 const MAX_KEY_LENGTH = 512;
 const MAX_VALUE_LENGTH = 25 * 1024 * 1024;
@@ -67,7 +68,7 @@ function decode(bytes, type) {
     case "text": return new TextDecoder().decode(bytes);
     case "json": return JSON.parse(new TextDecoder().decode(bytes));
     case "arrayBuffer": return bytes.buffer;
-    case "stream": return new ReadableStream({ type: "bytes", start(controller) { controller.enqueue(bytes); controller.close(); } });
+    case "stream": return bodyStream(bytes);
     default: throw new TypeError(`Unknown response type. ${RESPONSE_TYPES}`);
   }
 }

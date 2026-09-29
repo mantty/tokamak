@@ -366,6 +366,105 @@ fn applies_packaged_migrations_before_the_first_query() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn keeps_r2_objects_across_restarts_and_removes_unrecorded_bodies() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let environment = r2_environment();
+    let (runtime, state) =
+        start_packaged_runtime(temporary.path(), r2_worker_source(), &environment)?;
+    runtime.call(
+        "put",
+        r#"{"key":"kept","value":"hello"}"#,
+        Duration::from_secs(5),
+    )?;
+    drop(runtime);
+    let objects = temporary.path().join("storage/r2/files/objects");
+    let parts = state.join("storage/r2/files");
+    fs::write(objects.join("unrecorded"), "partial")?;
+    fs::write(parts.join("unrecorded"), "partial")?;
+
+    let (restarted, _) =
+        start_packaged_runtime(temporary.path(), r2_worker_source(), &environment)?;
+
+    assert_eq!(
+        restarted.call("get", r#"{"key":"kept"}"#, Duration::from_secs(5))?,
+        b"hello"
+    );
+    assert!(!objects.join("unrecorded").exists());
+    assert!(!parts.join("unrecorded").exists());
+    assert_eq!(fs::read_dir(&objects)?.count(), 1);
+    Ok(())
+}
+
+#[test]
+fn replaces_r2_objects_whole_under_concurrent_writes() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, _) =
+        start_packaged_runtime(temporary.path(), r2_worker_source(), &r2_environment())?;
+
+    let writes: Vec<_> = std::thread::scope(|scope| {
+        let writers: Vec<_> = (0..16)
+            .map(|writer| {
+                let runtime = &runtime;
+                scope.spawn(move || {
+                    let value = format!("{writer:02}").repeat(50_000);
+                    let body = json!({ "key": "shared", "value": value }).to_string();
+                    runtime.call("put", &body, Duration::from_secs(30)).is_ok()
+                })
+            })
+            .collect();
+        writers
+            .into_iter()
+            .map(|writer| writer.join().unwrap_or(false))
+            .collect()
+    });
+
+    assert!(writes.iter().all(|written| *written), "{writes:?}");
+    let value = runtime.call("get", r#"{"key":"shared"}"#, Duration::from_secs(5))?;
+    assert_eq!(value.len(), 100_000);
+    assert!(value.chunks(2).all(|pair| pair == &value[..2]));
+    let objects = temporary.path().join("storage/r2/files/objects");
+    assert_eq!(fs::read_dir(objects)?.count(), 1);
+    Ok(())
+}
+
+#[test]
+fn stores_request_bodies_in_r2() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, _) =
+        start_packaged_runtime(temporary.path(), r2_worker_source(), &r2_environment())?;
+
+    let size = runtime.call("upload", r#"{"file":"contents"}"#, Duration::from_secs(5))?;
+
+    assert_eq!(size, b"19");
+    assert_eq!(
+        runtime.call("get", r#"{"key":"upload"}"#, Duration::from_secs(5))?,
+        br#"{"file":"contents"}"#
+    );
+    Ok(())
+}
+
+#[test]
+fn follows_cloudflare_where_local_r2_differs() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, _) =
+        start_packaged_runtime(temporary.path(), r2_worker_source(), &r2_environment())?;
+
+    let body = runtime.call("cloudflare", "{}", Duration::from_secs(5))?;
+
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body)?,
+        json!({
+            "storageClasses": ["InfrequentAccess", "Standard", "InfrequentAccess"],
+            "listedMetadata": [null, null],
+            "writeHttpMetadata": "HTTP metadata unknown for key `class`. Did you forget to add 'httpMetadata' to `include` when listing?",
+            "encryptionKey": "Customer-provided encryption keys (ssecKey) are not supported: device storage is encrypted by the operating system.",
+            "uploadMetadata": "createMultipartUpload: Your metadata headers exceed the maximum allowed metadata size. (10012)",
+        })
+    );
+    Ok(())
+}
+
 fn start_packaged_runtime(
     temporary: &Path,
     worker: &[u8],
@@ -402,6 +501,47 @@ fn d1_environment(migrations: &[&str]) -> WorkerEnvironment {
             migrations: migrations.iter().map(|name| (*name).to_owned()).collect(),
         }],
     }
+}
+
+fn r2_environment() -> WorkerEnvironment {
+    WorkerEnvironment {
+        vars: BTreeMap::new(),
+        storage: vec![StorageBinding::R2 {
+            name: "FILES".to_owned(),
+            id: "files".to_owned(),
+        }],
+    }
+}
+
+fn r2_worker_source() -> &'static [u8] {
+    br#"
+async function cloudflare(files) {
+  const infrequent = await files.put("class", "x", { storageClass: "InfrequentAccess" });
+  const standard = await files.put("standard", "x");
+  const listed = (await files.list({ prefix: "class" })).objects[0];
+  let writeHttpMetadata;
+  try { listed.writeHttpMetadata(new Headers()); } catch (error) { writeHttpMetadata = error.message; }
+  return {
+    storageClasses: [infrequent.storageClass, standard.storageClass, (await files.head("class")).storageClass],
+    listedMetadata: [listed.httpMetadata, listed.customMetadata],
+    writeHttpMetadata,
+    encryptionKey: await files.put("key", "x", { ssecKey: "0".repeat(64) }).catch(error => error.message),
+    uploadMetadata: await files.createMultipartUpload("upload", { customMetadata: { a: "\u0100".repeat(1024) } }).catch(error => error.message),
+  };
+}
+
+export default {
+  async fetch(request, env) {
+    const name = new URL(request.url).pathname.slice("/tokamak/".length);
+    if (name === "upload") return Response.json((await env.FILES.put("upload", request.body)).size);
+    if (name === "cloudflare") return Response.json(await cloudflare(env.FILES));
+    const input = await request.json();
+    if (name === "put") return Response.json((await env.FILES.put(input.key, input.value)).etag);
+    const object = await env.FILES.get(input.key);
+    return new Response(object === null ? "missing" : object.body);
+  },
+};
+"#
 }
 
 fn d1_worker_source() -> &'static [u8] {

@@ -62,6 +62,13 @@ pub enum StorageBinding {
         /// directory, in the order they apply.
         migrations: Vec<String>,
     },
+    /// An R2 bucket.
+    R2 {
+        /// Binding name in the Worker's `env`.
+        name: String,
+        /// Bucket name.
+        id: String,
+    },
 }
 
 impl StorageBinding {
@@ -69,7 +76,7 @@ impl StorageBinding {
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
-            Self::Kv { name, .. } | Self::D1 { name, .. } => name,
+            Self::Kv { name, .. } | Self::D1 { name, .. } | Self::R2 { name, .. } => name,
         }
     }
 
@@ -77,7 +84,7 @@ impl StorageBinding {
     #[must_use]
     pub fn store(&self) -> &str {
         match self {
-            Self::Kv { id, .. } | Self::D1 { id, .. } => id,
+            Self::Kv { id, .. } | Self::D1 { id, .. } | Self::R2 { id, .. } => id,
         }
     }
 }

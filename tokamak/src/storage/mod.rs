@@ -3,7 +3,9 @@
 
 mod d1;
 mod host;
+mod keys;
 mod kv;
+mod r2;
 mod sqlite;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,12 +20,14 @@ use crate::env_vars::{StorageBinding, store_id_problem};
 use crate::packaging::PackageLayout;
 use d1::{D1Database, Migrations};
 use kv::KvNamespace;
+use r2::R2Bucket;
 
 pub(crate) use host::{HOST_EXPORTS, StorageHandle, export_host_functions};
 
 /// Directory of each kind of store.
 const KV: &str = "kv";
 const D1: &str = "d1";
+const R2: &str = "r2";
 
 /// Files of a store kept in one SQLite database.
 const SQLITE_FILES: [&str; 4] = [".sqlite", ".sqlite-wal", ".sqlite-shm", ".sqlite-journal"];
@@ -45,17 +49,32 @@ enum Binding {
         /// The outcome of applying `migrations` in this process.
         migrated: OnceLock<Result<(), String>>,
     },
+    R2(Arc<Store<R2Bucket>>),
 }
 
-/// A store opened from its file.
+/// A store opened from its location.
 trait Open: Sized {
-    fn open(path: &Path) -> Result<Self, String>;
+    /// The suffix that follows a store's ID in the name of its location.
+    const SUFFIX: &'static str;
+    /// The suffixes that follow a store's ID in the names of its entries in
+    /// its kind's directory.
+    const FILES: &'static [&'static str];
+
+    fn open(location: &Location) -> Result<Self, String>;
 }
 
-/// A store's file and, once used, the store.
+/// Where a store keeps its data, and a directory for its temporary files,
+/// which device backups leave out.
+#[derive(Debug)]
+struct Location {
+    path: PathBuf,
+    scratch: PathBuf,
+}
+
+/// A store's location and, once used, the store.
 #[derive(Debug)]
 struct Store<T> {
-    path: PathBuf,
+    location: Location,
     opened: Mutex<Option<Arc<T>>>,
 }
 
@@ -68,10 +87,12 @@ struct Installed<'a> {
 }
 
 impl Storage {
-    /// The stores `bindings` name in `directory`, after deleting every store
-    /// there that no binding names.
+    /// The stores `bindings` name in `directory`, with their temporary files
+    /// in `scratch`, after deleting every store in either that no binding
+    /// names.
     pub(crate) fn open(
         directory: &Path,
+        scratch: &Path,
         app: &PackageLayout,
         bindings: &[StorageBinding],
     ) -> io::Result<Self> {
@@ -87,16 +108,17 @@ impl Storage {
                 ));
             }
         }
-        for kind in [KV, D1] {
-            let named = bindings.iter().filter(|binding| kind_of(binding) == kind);
-            remove_unnamed_stores(&directory.join(kind), named)?;
-        }
-        let mut namespaces = Stores::new(directory.join(KV));
-        let mut databases = Stores::new(directory.join(D1));
+        let mut namespaces = Stores::new(directory, scratch, KV);
+        let mut databases = Stores::new(directory, scratch, D1);
+        let mut buckets = Stores::new(directory, scratch, R2);
+        namespaces.remove_unnamed(bindings)?;
+        databases.remove_unnamed(bindings)?;
+        buckets.remove_unnamed(bindings)?;
         let mut entries = BTreeMap::new();
         for binding in bindings {
             let entry = match binding {
                 StorageBinding::Kv { id, .. } => Binding::Kv(namespaces.get(id)),
+                StorageBinding::R2 { id, .. } => Binding::R2(buckets.get(id)),
                 StorageBinding::D1 {
                     name,
                     id,
@@ -121,6 +143,7 @@ impl Storage {
                 kind: match binding {
                     Binding::Kv(_) => KV,
                     Binding::D1 { .. } => D1,
+                    Binding::R2(_) => R2,
                 },
             })
             .collect();
@@ -177,27 +200,58 @@ impl Storage {
         };
         namespace.get()
     }
+
+    /// The R2 bucket the binding `name` names.
+    pub(crate) fn r2(&self, name: &str) -> Result<Arc<R2Bucket>, String> {
+        let Some(Binding::R2(bucket)) = self.bindings.get(name) else {
+            return Err(format!("{name} is not an R2 binding"));
+        };
+        bucket.get()
+    }
 }
 
 /// The stores of one kind, each shared by the bindings that name it.
 struct Stores<T> {
+    kind: &'static str,
     directory: PathBuf,
+    scratch: PathBuf,
     by_id: BTreeMap<String, Arc<Store<T>>>,
 }
 
-impl<T> Stores<T> {
-    fn new(directory: PathBuf) -> Self {
+impl<T: Open> Stores<T> {
+    fn new(directory: &Path, scratch: &Path, kind: &'static str) -> Self {
         Self {
-            directory,
+            kind,
+            directory: directory.join(kind),
+            scratch: scratch.join(kind),
             by_id: BTreeMap::new(),
         }
     }
 
+    /// Delete every store of this kind that none of `bindings` names.
+    fn remove_unnamed(&self, bindings: &[StorageBinding]) -> io::Result<()> {
+        let named: BTreeSet<&str> = bindings
+            .iter()
+            .filter(|binding| kind_of(binding) == self.kind)
+            .map(StorageBinding::store)
+            .collect();
+        remove_entries(&self.directory, |name| {
+            T::FILES
+                .iter()
+                .filter_map(|suffix| name.strip_suffix(suffix))
+                .any(|store| named.contains(store))
+        })?;
+        remove_entries(&self.scratch, |name| named.contains(name))
+    }
+
     fn get(&mut self, id: &str) -> Arc<Store<T>> {
-        let path = self.directory.join(format!("{id}.sqlite"));
+        let location = Location {
+            path: self.directory.join(format!("{id}{}", T::SUFFIX)),
+            scratch: self.scratch.join(id),
+        };
         Arc::clone(self.by_id.entry(id.to_owned()).or_insert_with(|| {
             Arc::new(Store {
-                path,
+                location,
                 opened: Mutex::new(None),
             })
         }))
@@ -211,10 +265,10 @@ impl<T: Open> Store<T> {
         if let Some(store) = opened.as_ref() {
             return Ok(Arc::clone(store));
         }
-        if let Some(directory) = self.path.parent() {
+        if let Some(directory) = self.location.path.parent() {
             fs::create_dir_all(directory).map_err(|error| error.to_string())?;
         }
-        let store = Arc::new(T::open(&self.path)?);
+        let store = Arc::new(T::open(&self.location)?);
         *opened = Some(Arc::clone(&store));
         Ok(store)
     }
@@ -224,6 +278,7 @@ fn kind_of(binding: &StorageBinding) -> &'static str {
     match binding {
         StorageBinding::Kv { .. } => KV,
         StorageBinding::D1 { .. } => D1,
+        StorageBinding::R2 { .. } => R2,
     }
 }
 
@@ -231,12 +286,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Delete every file in `directory` that belongs to no store `bindings` name.
-fn remove_unnamed_stores<'a>(
-    directory: &Path,
-    bindings: impl Iterator<Item = &'a StorageBinding>,
-) -> io::Result<()> {
-    let named: BTreeSet<&str> = bindings.map(StorageBinding::store).collect();
+/// Delete every entry of `directory` whose name `keep` rejects.
+fn remove_entries(directory: &Path, keep: impl Fn(&str) -> bool) -> io::Result<()> {
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -244,16 +295,7 @@ fn remove_unnamed_stores<'a>(
     };
     for entry in entries {
         let entry = entry?;
-        let keep = entry
-            .file_name()
-            .to_str()
-            .and_then(|file| {
-                SQLITE_FILES
-                    .iter()
-                    .find_map(|suffix| file.strip_suffix(suffix))
-            })
-            .is_some_and(|store| named.contains(store));
-        if keep {
+        if entry.file_name().to_str().is_some_and(&keep) {
             continue;
         }
         let path = entry.path();

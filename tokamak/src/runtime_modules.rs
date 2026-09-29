@@ -91,6 +91,7 @@ pub(crate) const BUILTIN_SOURCES: &[&str] = &[
     "storage/d1.mjs",
     "storage/d1-api.mjs",
     "storage/kv.mjs",
+    "storage/r2.mjs",
     "storage/tracing-helpers.mjs",
     "storage/wrapped-binding.mjs",
     "streams/node.mjs",

@@ -151,7 +151,6 @@ fn warn_unsupported_bindings(config: &WranglerConfig) {
 
 fn unsupported_binding_reason(kind: &str) -> &'static str {
     match kind {
-        "r2_buckets" => "tokamak development does not provide R2",
         "durable_objects" => "tokamak development does not provide Durable Objects",
         "queues" => "tokamak development does not provide Queues",
         "services" => "tokamak development does not provide service bindings",
