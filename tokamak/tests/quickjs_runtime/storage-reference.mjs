@@ -14,6 +14,8 @@ const mf = new Miniflare(convertV4MiniflareOptions({
   compatibilityFlags: ["nodejs_compat"],
   d1Databases: ["DB"],
   d1Persist: join(state, "d1"),
+  kvNamespaces: ["KV"],
+  kvPersist: join(state, "kv"),
   modules: [{ type: "ESModule", path: `${root}/storage.mjs`, contents: readFileSync(`${root}/storage.mjs`, "utf8") }],
 }));
 try {

@@ -158,9 +158,13 @@ if (globalThis.__tokamak_asset && globalThis.__tokamak_env?.ASSETS === undefined
   };
 }
 const storage = globalThis.__tokamak_storage ?? [];
-if (storage.length) {
+if (storage.some(({ type }) => type === "kv")) {
+  const { KVNamespace } = await import("../storage/kv.mjs");
+  for (const { name, type } of storage) if (type === "kv") globalThis.__tokamak_env[name] = new KVNamespace(name);
+}
+if (storage.some(({ type }) => type === "d1")) {
   const { createD1Database } = await import("../storage/d1.mjs");
-  for (const { name } of storage) globalThis.__tokamak_env[name] = createD1Database(name);
+  for (const { name, type } of storage) if (type === "d1") globalThis.__tokamak_env[name] = createD1Database(name);
 }
 const waitUntilValues = [];
 class ExecutionContext {

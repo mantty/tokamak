@@ -601,12 +601,18 @@ fn storage_bindings_match_cloudflare() -> TestResult {
         &fixture_root().join("storage.mjs"),
         &directory.path().join("worker"),
     )?;
-    let bindings = [StorageBinding::D1 {
-        name: "DB".to_owned(),
-        id: "DB".to_owned(),
-        migrations_table: "d1_migrations".to_owned(),
-        migrations: Vec::new(),
-    }];
+    let bindings = [
+        StorageBinding::D1 {
+            name: "DB".to_owned(),
+            id: "DB".to_owned(),
+            migrations_table: "d1_migrations".to_owned(),
+            migrations: Vec::new(),
+        },
+        StorageBinding::Kv {
+            name: "KV".to_owned(),
+            id: "KV".to_owned(),
+        },
+    ];
     let config = RuntimeConfig {
         assets: None,
         cache: directory.path().join("cache"),

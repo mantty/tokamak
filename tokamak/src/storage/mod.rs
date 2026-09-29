@@ -3,6 +3,7 @@
 
 mod d1;
 mod host;
+mod kv;
 mod sqlite;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,10 +17,12 @@ use serde::Serialize;
 use crate::env_vars::{StorageBinding, store_id_problem};
 use crate::packaging::PackageLayout;
 use d1::{D1Database, Migrations};
+use kv::KvNamespace;
 
 pub(crate) use host::{HOST_EXPORTS, StorageHandle, export_host_functions};
 
-/// Directory of the D1 databases.
+/// Directory of each kind of store.
+const KV: &str = "kv";
 const D1: &str = "d1";
 
 /// Files of a store kept in one SQLite database.
@@ -28,24 +31,32 @@ const SQLITE_FILES: [&str; 4] = [".sqlite", ".sqlite-wal", ".sqlite-shm", ".sqli
 /// The stores a packaged app's bindings name, each opened on first use.
 #[derive(Debug)]
 pub(crate) struct Storage {
-    bindings: BTreeMap<String, D1Binding>,
+    bindings: BTreeMap<String, Binding>,
     /// The bindings for the Worker's `env`, as JSON for the bootstrap.
     installed: String,
 }
 
 #[derive(Debug)]
-struct D1Binding {
-    database: Arc<Database>,
-    migrations: Migrations,
-    /// The outcome of applying `migrations` in this process.
-    migrated: OnceLock<Result<(), String>>,
+enum Binding {
+    Kv(Arc<Store<KvNamespace>>),
+    D1 {
+        database: Arc<Store<D1Database>>,
+        migrations: Migrations,
+        /// The outcome of applying `migrations` in this process.
+        migrated: OnceLock<Result<(), String>>,
+    },
 }
 
-/// A D1 database file and, once used, its connection.
+/// A store opened from its file.
+trait Open: Sized {
+    fn open(path: &Path) -> Result<Self, String>;
+}
+
+/// A store's file and, once used, the store.
 #[derive(Debug)]
-struct Database {
+struct Store<T> {
     path: PathBuf,
-    opened: Mutex<Option<Arc<D1Database>>>,
+    opened: Mutex<Option<Arc<T>>>,
 }
 
 /// A binding the Worker's `env` receives.
@@ -76,39 +87,42 @@ impl Storage {
                 ));
             }
         }
-        remove_unnamed_stores(&directory.join(D1), bindings)?;
-        let mut databases: BTreeMap<&str, Arc<Database>> = BTreeMap::new();
+        for kind in [KV, D1] {
+            let named = bindings.iter().filter(|binding| kind_of(binding) == kind);
+            remove_unnamed_stores(&directory.join(kind), named)?;
+        }
+        let mut namespaces = Stores::new(directory.join(KV));
+        let mut databases = Stores::new(directory.join(D1));
         let mut entries = BTreeMap::new();
-        for StorageBinding::D1 {
-            name,
-            id,
-            migrations_table,
-            migrations,
-        } in bindings
-        {
-            let database = databases.entry(id).or_insert_with(|| {
-                Arc::new(Database {
-                    path: directory.join(D1).join(format!("{id}.sqlite")),
-                    opened: Mutex::new(None),
-                })
-            });
-            let migrations = Migrations {
-                directory: app.d1_migrations(name),
-                names: migrations.clone(),
-                table: migrations_table.clone(),
-            };
-            entries.insert(
-                name.clone(),
-                D1Binding {
-                    database: Arc::clone(database),
+        for binding in bindings {
+            let entry = match binding {
+                StorageBinding::Kv { id, .. } => Binding::Kv(namespaces.get(id)),
+                StorageBinding::D1 {
+                    name,
+                    id,
+                    migrations_table,
                     migrations,
+                } => Binding::D1 {
+                    database: databases.get(id),
+                    migrations: Migrations {
+                        directory: app.d1_migrations(name),
+                        names: migrations.clone(),
+                        table: migrations_table.clone(),
+                    },
                     migrated: OnceLock::new(),
                 },
-            );
+            };
+            entries.insert(binding.name().to_owned(), entry);
         }
         let installed: Vec<Installed<'_>> = entries
-            .keys()
-            .map(|name| Installed { name, kind: D1 })
+            .iter()
+            .map(|(name, binding)| Installed {
+                name,
+                kind: match binding {
+                    Binding::Kv(_) => KV,
+                    Binding::D1 { .. } => D1,
+                },
+            })
             .collect();
         let installed = serde_json::to_string(&installed).map_err(io::Error::other)?;
         Ok(Self {
@@ -141,32 +155,75 @@ impl Storage {
     }
 
     fn d1(&self, name: &str) -> Result<Arc<D1Database>, String> {
-        let binding = self
-            .bindings
-            .get(name)
-            .ok_or_else(|| format!("{name} is not a D1 binding"))?;
-        let database = binding.database.get()?;
-        binding
-            .migrated
-            .get_or_init(|| database.migrate(&binding.migrations))
+        let Some(Binding::D1 {
+            database,
+            migrations,
+            migrated,
+        }) = self.bindings.get(name)
+        else {
+            return Err(format!("{name} is not a D1 binding"));
+        };
+        let database = database.get()?;
+        migrated
+            .get_or_init(|| database.migrate(migrations))
             .clone()?;
         Ok(database)
     }
+
+    /// The KV namespace the binding `name` names.
+    pub(crate) fn kv(&self, name: &str) -> Result<Arc<KvNamespace>, String> {
+        let Some(Binding::Kv(namespace)) = self.bindings.get(name) else {
+            return Err(format!("{name} is not a KV binding"));
+        };
+        namespace.get()
+    }
 }
 
-impl Database {
-    /// The open database, opening it when this is its first use.
-    fn get(&self) -> Result<Arc<D1Database>, String> {
+/// The stores of one kind, each shared by the bindings that name it.
+struct Stores<T> {
+    directory: PathBuf,
+    by_id: BTreeMap<String, Arc<Store<T>>>,
+}
+
+impl<T> Stores<T> {
+    fn new(directory: PathBuf) -> Self {
+        Self {
+            directory,
+            by_id: BTreeMap::new(),
+        }
+    }
+
+    fn get(&mut self, id: &str) -> Arc<Store<T>> {
+        let path = self.directory.join(format!("{id}.sqlite"));
+        Arc::clone(self.by_id.entry(id.to_owned()).or_insert_with(|| {
+            Arc::new(Store {
+                path,
+                opened: Mutex::new(None),
+            })
+        }))
+    }
+}
+
+impl<T: Open> Store<T> {
+    /// The open store, opening it when this is its first use.
+    fn get(&self) -> Result<Arc<T>, String> {
         let mut opened = lock(&self.opened);
-        if let Some(database) = opened.as_ref() {
-            return Ok(Arc::clone(database));
+        if let Some(store) = opened.as_ref() {
+            return Ok(Arc::clone(store));
         }
         if let Some(directory) = self.path.parent() {
             fs::create_dir_all(directory).map_err(|error| error.to_string())?;
         }
-        let database = Arc::new(D1Database::open(&self.path)?);
-        *opened = Some(Arc::clone(&database));
-        Ok(database)
+        let store = Arc::new(T::open(&self.path)?);
+        *opened = Some(Arc::clone(&store));
+        Ok(store)
+    }
+}
+
+fn kind_of(binding: &StorageBinding) -> &'static str {
+    match binding {
+        StorageBinding::Kv { .. } => KV,
+        StorageBinding::D1 { .. } => D1,
     }
 }
 
@@ -174,9 +231,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Delete every file in `directory` that belongs to no named store.
-fn remove_unnamed_stores(directory: &Path, bindings: &[StorageBinding]) -> io::Result<()> {
-    let named: BTreeSet<&str> = bindings.iter().map(StorageBinding::store).collect();
+/// Delete every file in `directory` that belongs to no store `bindings` name.
+fn remove_unnamed_stores<'a>(
+    directory: &Path,
+    bindings: impl Iterator<Item = &'a StorageBinding>,
+) -> io::Result<()> {
+    let named: BTreeSet<&str> = bindings.map(StorageBinding::store).collect();
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
