@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-exclude = ["rquickjs"]
+exclude = ["libsqlite3-sys", "rquickjs"]
 members = [
     "tokamak",
     "tokamak-cli",
@@ -16,6 +16,7 @@ rust-version = "1.96"
 version = "0.1.1"
 
 [patch.crates-io]
+libsqlite3-sys = { path = "libsqlite3-sys" }
 rquickjs-sys = { path = "rquickjs" }
 
 [profile.release]
@@ -124,6 +125,7 @@ windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Security_
 x509-parser = { version = "0.18.1", features = ["verify"] }
 zstd = { version = "0.13.3", default-features = false, features = ["arrays"] }
 rquickjs = { version = "0.12.2", features = ["loader", "macro", "futures"] }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "hooks", "limits"] }
 tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "time", "sync", "net", "io-util", "macros"] }
 tokio-util = { version = "0.7.19", features = ["io", "rt"] }
 url = "2.5.8"

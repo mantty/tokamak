@@ -1,0 +1,247 @@
+diff -u5 -r sqlite-src-pristine/src/shell.c.in sqlite-src-modified/src/shell.c.in
+--- sqlite-src-pristine/src/shell.c.in	2026-08-19 19:37:52
++++ sqlite-src-modified/src/shell.c.in	2026-08-19 21:03:33
+@@ -2942,10 +2942,15 @@
+     cli_printf(out,
+            "Number of times run:                 %d\n", iCur);
+     iCur = sqlite3_stmt_status(pArg->pStmt, SQLITE_STMTSTATUS_MEMUSED, bReset);
+     cli_printf(out,
+            "Memory used by prepared stmt:        %d\n", iCur);
++
++    iCur = sqlite3_stmt_status(pArg->pStmt, LIBSQL_STMTSTATUS_ROWS_READ, bReset);
++    sqlite3_fprintf(pArg->out, "Rows read:                           %d\n", iCur);
++    iCur = sqlite3_stmt_status(pArg->pStmt, LIBSQL_STMTSTATUS_ROWS_WRITTEN, bReset);
++    sqlite3_fprintf(pArg->out, "Rows written:                        %d\n", iCur);
+   }
+ 
+ #ifdef __linux__
+   displayLinuxIoStats(pArg->out);
+ #endif
+diff -u5 -r sqlite-src-pristine/src/sqlite.h.in sqlite-src-modified/src/sqlite.h.in
+--- sqlite-src-pristine/src/sqlite.h.in	2026-08-19 19:37:52
++++ sqlite-src-modified/src/sqlite.h.in	2026-08-19 21:02:27
+@@ -9298,20 +9298,32 @@
+ ** used to store the prepared statement.  ^This value is not actually
+ ** a counter, and so the resetFlg parameter to sqlite3_stmt_status()
+ ** is ignored when the opcode is SQLITE_STMTSTATUS_MEMUSED.
+ ** </dd>
+ ** </dl>
++**
++** [[LIBSQL_STMTSTATUS_ROWS_READ]]
++** [[LIBSQL_STMTSTATUS_ROWS_WRITTEN]] 
++** <dt>LIBSQL_STMTSTATUS_ROWS_READ<br>
++** LIBSQL_STMTSTATUS_ROWS_WRITTEN</dt>
++** <dd>^LIBSQL_STMTSTATUS_ROWS_READ is the number of rows read when executing
++** this statement. LIBSQL_STMTSTATUS_ROWS_WRITTEN value is the number of
++** rows written.
+ */
+ #define SQLITE_STMTSTATUS_FULLSCAN_STEP     1
+ #define SQLITE_STMTSTATUS_SORT              2
+ #define SQLITE_STMTSTATUS_AUTOINDEX         3
+ #define SQLITE_STMTSTATUS_VM_STEP           4
+ #define SQLITE_STMTSTATUS_REPREPARE         5
+ #define SQLITE_STMTSTATUS_RUN               6
+ #define SQLITE_STMTSTATUS_FILTER_MISS       7
+ #define SQLITE_STMTSTATUS_FILTER_HIT        8
+ #define SQLITE_STMTSTATUS_MEMUSED           99
++
++#define LIBSQL_STMTSTATUS_BASE              1024
++#define LIBSQL_STMTSTATUS_ROWS_READ         LIBSQL_STMTSTATUS_BASE + 1
++#define LIBSQL_STMTSTATUS_ROWS_WRITTEN      LIBSQL_STMTSTATUS_BASE + 2
+ 
+ /*
+ ** CAPI3REF: Custom Page Cache Object
+ **
+ ** The sqlite3_pcache type is opaque.  It is implemented by
+diff -u5 -r sqlite-src-pristine/src/vdbe.c sqlite-src-modified/src/vdbe.c
+--- sqlite-src-pristine/src/vdbe.c	2026-08-19 19:37:52
++++ sqlite-src-modified/src/vdbe.c	2026-08-19 21:02:27
+@@ -3804,10 +3804,11 @@
+   if( pOp->p3 ){
+     nEntry = sqlite3BtreeRowCountEst(pCrsr);
+   }else{
+     nEntry = 0;  /* Not needed.  Only used to silence a warning. */
+     rc = sqlite3BtreeCount(db, pCrsr, &nEntry);
++    p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE] += nEntry;
+     if( rc ) goto abort_due_to_error;
+   }
+   pOut = out2Prerelease(p, pOp);
+   pOut->u.i = nEntry;
+   goto check_for_interrupt;
+@@ -4969,10 +4970,11 @@
+     if( eqOnly && r.eqSeen==0 ){
+       assert( res!=0 );
+       goto seek_not_found;
+     }
+   }
++  p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE]++;
+ #ifdef SQLITE_TEST
+   sqlite3_search_count++;
+ #endif
+   if( oc>=OP_SeekGE ){  assert( oc==OP_SeekGE || oc==OP_SeekGT );
+     if( res<0 || (res==0 && oc==OP_SeekGT) ){
+@@ -5539,10 +5541,11 @@
+   pC->nullRow = 0;
+   pC->cacheStatus = CACHE_STALE;
+   pC->deferredMoveto = 0;
+   VdbeBranchTaken(res!=0,2);
+   pC->seekResult = res;
++  p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE]++;
+   if( res!=0 ){
+     assert( rc==SQLITE_OK );
+     if( pOp->p2==0 ){
+       rc = SQLITE_CORRUPT_BKPT;
+     }else{
+@@ -5796,10 +5799,11 @@
+   }
+   if( pOp->p5 & OPFLAG_ISNOOP ) break;
+ #endif
+ 
+   assert( (pOp->p5 & OPFLAG_LASTROWID)==0 || (pOp->p5 & OPFLAG_NCHANGE)!=0 );
++  if (!pC->isEphemeral) p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_WRITTEN - LIBSQL_STMTSTATUS_BASE]++;
+   if( pOp->p5 & OPFLAG_NCHANGE ){
+     p->nChange++;
+     if( pOp->p5 & OPFLAG_LASTROWID ) db->lastRowid = x.nKey;
+   }
+   assert( (pData->flags & (MEM_Blob|MEM_Str))!=0 || pData->n==0 );
+@@ -5989,10 +5993,11 @@
+   pC->seekResult = 0;
+   if( rc ) goto abort_due_to_error;
+ 
+   /* Invoke the update-hook if required. */
+   if( opflags & OPFLAG_NCHANGE ){
++    if (!pC->isEphemeral) p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_WRITTEN - LIBSQL_STMTSTATUS_BASE]++;
+     p->nChange++;
+     if( db->xUpdateCallback && ALWAYS(pTab!=0) && HasRowid(pTab) ){
+       db->xUpdateCallback(db->pUpdateArg, SQLITE_DELETE, zDb, pTab->zName,
+           pC->movetoTarget);
+       assert( pC->iDb>=0 );
+@@ -6276,10 +6281,11 @@
+   rc = sqlite3BtreeLast(pCrsr, &res);
+   pC->nullRow = (u8)res;
+   pC->deferredMoveto = 0;
+   pC->cacheStatus = CACHE_STALE;
+   if( rc ) goto abort_due_to_error;
++  p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE]++;
+   if( pOp->p2>0 ){
+     VdbeBranchTaken(res!=0,2);
+     if( res ) goto jump_to_p2;
+   }
+   break;
+@@ -6395,10 +6401,11 @@
+     pC->deferredMoveto = 0;
+     pC->cacheStatus = CACHE_STALE;
+   }
+   if( rc ) goto abort_due_to_error;
+   pC->nullRow = (u8)res;
++  p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE]++;
+   if( pOp->p2>0 ){
+     VdbeBranchTaken(res!=0,2);
+     if( res ) goto jump_to_p2;
+   }
+   break;
+@@ -6526,10 +6533,11 @@
+   pC->cacheStatus = CACHE_STALE;
+   VdbeBranchTaken(rc==SQLITE_OK,2);
+   if( rc==SQLITE_OK ){
+     pC->nullRow = 0;
+     p->aCounter[pOp->p5]++;
++    p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE]++;
+ #ifdef SQLITE_TEST
+     sqlite3_search_count++;
+ #endif
+     goto jump_to_p2_and_check_for_interrupt;
+   }
+@@ -6577,10 +6585,11 @@
+   assert( pC!=0 );
+   assert( !isSorter(pC) );
+   pIn2 = &aMem[pOp->p2];
+   assert( (pIn2->flags & MEM_Blob) || (pOp->p5 & OPFLAG_PREFORMAT) );
+   if( pOp->p5 & OPFLAG_NCHANGE ) p->nChange++;
++  if (!pC->isEphemeral) p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_WRITTEN - LIBSQL_STMTSTATUS_BASE]++;
+   assert( pC->eCurType==CURTYPE_BTREE );
+   assert( pC->isTable==0 );
+   rc = ExpandBlob(pIn2);
+   if( rc ) goto abort_due_to_error;
+   x.nKey = pIn2->n;
+@@ -6983,10 +6992,11 @@
+   assert( p->readOnly==0 );
+   assert( DbMaskTest(p->btreeMask, pOp->p2) );
+   rc = sqlite3BtreeClearTable(db->aDb[pOp->p2].pBt, (u32)pOp->p1, &nChange);
+   if( pOp->p3 ){
+     p->nChange += nChange;
++    p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_WRITTEN - LIBSQL_STMTSTATUS_BASE] += nChange;
+     if( pOp->p3>0 ){
+       assert( memIsValid(&aMem[pOp->p3]) );
+       memAboutToChange(p, &aMem[pOp->p3]);
+       aMem[pOp->p3].u.i += nChange;
+     }
+@@ -8630,10 +8640,11 @@
+   ** some other method is next invoked on the save virtual table cursor.
+   */
+   rc = pModule->xNext(pCur->uc.pVCur);
+   sqlite3VtabImportErrmsg(p, pVtab);
+   if( rc ) goto abort_due_to_error;
++  p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_READ - LIBSQL_STMTSTATUS_BASE]++;
+   res = pModule->xEof(pCur->uc.pVCur);
+   VdbeBranchTaken(!res,2);
+   if( !res ){
+     /* If there is data, jump to P2 */
+     goto jump_to_p2_and_check_for_interrupt;
+@@ -8752,10 +8763,11 @@
+         rc = SQLITE_OK;
+       }else{
+         p->errorAction = ((pOp->p5==OE_Replace) ? OE_Abort : pOp->p5);
+       }
+     }else{
++      p->aLibsqlCounter[LIBSQL_STMTSTATUS_ROWS_WRITTEN - LIBSQL_STMTSTATUS_BASE]++;
+       p->nChange++;
+     }
+     if( rc ) goto abort_due_to_error;
+   }
+   break;
+diff -u5 -r sqlite-src-pristine/src/vdbeInt.h sqlite-src-modified/src/vdbeInt.h
+--- sqlite-src-pristine/src/vdbeInt.h	2026-08-19 19:37:52
++++ sqlite-src-modified/src/vdbeInt.h	2026-08-19 21:02:27
+@@ -508,10 +508,11 @@
+   bft bIsReader:1;        /* True for statements that read */
+   bft haveEqpOps:1;       /* Bytecode supports EXPLAIN QUERY PLAN */
+   yDbMask btreeMask;      /* Bitmask of db->aDb[] entries referenced */
+   yDbMask lockMask;       /* Subset of btreeMask that requires a lock */
+   u32 aCounter[9];        /* Counters used by sqlite3_stmt_status() */
++  u32 aLibsqlCounter[3];  /* libSQL extension: Counters used by sqlite3_stmt_status()*/
+   char *zSql;             /* Text of the SQL statement that generated this */
+ #ifdef SQLITE_ENABLE_NORMALIZE
+   char *zNormSql;         /* Normalization of the associated SQL statement */
+   DblquoteStr *pDblStr;   /* List of double-quoted string literals */
+ #endif
+diff -u5 -r sqlite-src-pristine/src/vdbeapi.c sqlite-src-modified/src/vdbeapi.c
+--- sqlite-src-pristine/src/vdbeapi.c	2026-08-19 19:37:52
++++ sqlite-src-modified/src/vdbeapi.c	2026-08-19 21:02:27
+@@ -2112,11 +2112,11 @@
+ int sqlite3_stmt_status(sqlite3_stmt *pStmt, int op, int resetFlag){
+   Vdbe *pVdbe = (Vdbe*)pStmt;
+   u32 v;
+ #ifdef SQLITE_ENABLE_API_ARMOR
+   if( !pStmt
+-   || (op!=SQLITE_STMTSTATUS_MEMUSED && (op<0||op>=ArraySize(pVdbe->aCounter)))
++   || (op!=SQLITE_STMTSTATUS_MEMUSED && (op<0||(op>=ArraySize(pVdbe->aCounter)&&op<LIBSQL_STMTSTATUS_BASE)))
+   ){
+     (void)SQLITE_MISUSE_BKPT;
+     return 0;
+   }
+ #endif
+@@ -2129,10 +2129,13 @@
+     db->lookaside.pEnd = db->lookaside.pStart;
+     sqlite3VdbeDelete(pVdbe);
+     db->pnBytesFreed = 0;
+     db->lookaside.pEnd = db->lookaside.pTrueEnd;
+     sqlite3_mutex_leave(db->mutex);
++  }else if( op>=LIBSQL_STMTSTATUS_BASE ){
++    v = pVdbe->aLibsqlCounter[op - LIBSQL_STMTSTATUS_BASE];
++    if( resetFlag ) pVdbe->aLibsqlCounter[op - LIBSQL_STMTSTATUS_BASE] = 0;
+   }else{
+     v = pVdbe->aCounter[op];
+     if( resetFlag ) pVdbe->aCounter[op] = 0;
+   }
+   return (int)v;
