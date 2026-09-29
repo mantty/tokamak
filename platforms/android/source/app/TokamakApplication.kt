@@ -38,8 +38,8 @@ class TokamakApplication : Application(), TokamakHost {
         requireNotNull(metadata()?.getString(HOST_METADATA)) { "$HOST_METADATA is required" }
     }
 
-    override fun dispatch(event: String, payload: String, timeoutMillis: Long): String? =
-        runtime.dispatch(event, payload, timeoutMillis)
+    override fun call(name: String, body: String, timeoutMillis: Long): String =
+        runtime.call(name, body, timeoutMillis)
 
     override fun plugin(id: String): TokamakPlugin? = plugins[id]
 

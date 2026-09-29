@@ -15,6 +15,7 @@ use jni::sys::{jint, jlong};
 
 const LOG_TAG: &str = "tokamak";
 const LOG_INFO: c_int = 4;
+const LOG_WARN: c_int = 5;
 const LOG_ERROR: c_int = 6;
 const FAILURE: &str = "java/lang/IllegalStateException";
 
@@ -121,29 +122,25 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeResume(
     }
 }
 
-/// Run the Worker's `event` handler with a JSON `payload`, blocking until it
-/// settles or `timeout_millis` passes. Returns the handler's JSON result, or
-/// null when the Worker has no such handler; throws when the handler fails.
+/// Post JSON `body` to the Worker's `/tokamak/<name>` endpoint, blocking for
+/// up to `timeout_millis`. Returns the response body; throws unless the Worker
+/// responds 200.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeDispatch<'local>(
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeCall<'local>(
     mut env: JNIEnv<'local>,
     _: JClass,
     handle: jlong,
-    event: JString,
-    payload: JString,
+    name: JString,
+    body: JString,
     timeout_millis: jlong,
 ) -> JString<'local> {
     let timeout = Duration::from_millis(u64::try_from(timeout_millis).unwrap_or(0));
-    match dispatch(&mut env, handle, &event, &payload, timeout) {
-        Ok(Some(result)) => env
-            .new_string(result)
-            .unwrap_or_else(|_| JString::from(JObject::null())),
-        Ok(None) => JString::from(JObject::null()),
-        Err(message) => {
-            let _ = env.throw_new(FAILURE, message);
-            JString::from(JObject::null())
-        }
-    }
+    let result = call(&mut env, handle, &name, &body, timeout)
+        .and_then(|body| env.new_string(body).map_err(|error| error.to_string()));
+    result.unwrap_or_else(|message| {
+        let _ = env.throw_new(FAILURE, message);
+        JString::from(JObject::null())
+    })
 }
 
 /// Return the authority a server certificate for `host` must chain to, or
@@ -234,20 +231,20 @@ fn start_development(
     Runtime::start_development(config, report).map_err(|error| error.to_string())
 }
 
-fn dispatch(
+fn call(
     env: &mut JNIEnv,
     handle: jlong,
-    event: &JString,
-    payload: &JString,
+    name: &JString,
+    body: &JString,
     timeout: Duration,
-) -> Result<Option<String>, String> {
+) -> Result<String, String> {
     let runtime = runtime(handle).ok_or("tokamak runtime is unavailable")?;
-    let event = text(env, event)?;
-    let payload = serde_json::from_str(&text(env, payload)?).map_err(|error| error.to_string())?;
-    let result = runtime
-        .dispatch(&event, payload, timeout)
+    let name = text(env, name)?;
+    let body = text(env, body)?;
+    let response = runtime
+        .call(&name, &body, timeout)
         .map_err(|error| error.to_string())?;
-    Ok(result.map(|value| value.to_string()))
+    String::from_utf8(response).map_err(|error| error.to_string())
 }
 
 fn report(event: Event) {
@@ -259,6 +256,7 @@ fn report(event: Event) {
         Event::CertificatesRenewed => log(LOG_INFO, "certificates renewed"),
         Event::Failed { message } => log(LOG_ERROR, &format!("runtime failed: {message}")),
         Event::RequestFailed { message } => log(LOG_ERROR, &format!("request failed: {message}")),
+        Event::CallFailed { message } => log(LOG_WARN, &format!("call failed: {message}")),
     }
 }
 

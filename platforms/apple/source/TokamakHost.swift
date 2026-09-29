@@ -32,15 +32,15 @@ final class TokamakHost {
     }
   }
 
-  /// Runs the Worker's `event` handler with a JSON-serialisable `payload`,
-  /// including work it passes to `ctx.waitUntil`, and stops it after
-  /// `timeout`. Call it on the main thread; `completion` runs on the main
-  /// thread.
-  func dispatch(
-    event: String,
-    payload: Any,
+  /// Posts `body`, JSON-serialisable, to the Worker's `/tokamak/<name>`
+  /// endpoint and returns the response body. Fails unless the Worker responds
+  /// 200 within `timeout`. Call it on the main thread; `completion` runs on
+  /// the main thread.
+  func call(
+    _ name: String,
+    body: Any,
     timeout: TimeInterval,
-    completion: @escaping (Result<TokamakEventOutcome, Error>) -> Void
+    completion: @escaping (Result<Data, Error>) -> Void
   ) {
     whenStarted { result in
       switch result {
@@ -48,9 +48,7 @@ final class TokamakHost {
         completion(.failure(error))
       case .success(let runtime):
         DispatchQueue.global(qos: .userInitiated).async {
-          let outcome = Result {
-            try runtime.dispatch(event: event, payload: payload, timeout: timeout)
-          }
+          let outcome = Result { try runtime.call(name, body: body, timeout: timeout) }
           DispatchQueue.main.async { completion(outcome) }
         }
       }
@@ -102,14 +100,6 @@ final class TokamakHost {
       callback(result)
     }
   }
-}
-
-/// What a Worker event handler did.
-enum TokamakEventOutcome {
-  /// The handler's result, decoded from JSON; `NSNull` when it returned nothing.
-  case handled(Any)
-  /// The Worker has no handler for the event.
-  case unhandled
 }
 
 /// What a plugin did with a background event, reported to the system.
@@ -241,49 +231,39 @@ final class RuntimeHandle {
     return port
   }
 
-  /// Runs the Worker's `event` handler, blocking until it settles or
-  /// `timeout` passes.
-  func dispatch(event: String, payload: Any, timeout: TimeInterval) throws -> TokamakEventOutcome {
-    guard JSONSerialization.isValidJSONObject([payload]) else {
-      throw RuntimeError.runtime("the \(event) payload is not JSON")
+  /// Posts `body` to the Worker's `/tokamak/<name>` endpoint, blocking until
+  /// it responds 200 or `timeout` passes.
+  func call(_ name: String, body: Any, timeout: TimeInterval) throws -> Data {
+    guard JSONSerialization.isValidJSONObject([body]) else {
+      throw RuntimeError.runtime("the \(name) call body is not JSON")
     }
-    let payload = String(
-      decoding: try JSONSerialization.data(withJSONObject: payload, options: .fragmentsAllowed),
+    let body = String(
+      decoding: try JSONSerialization.data(withJSONObject: body, options: .fragmentsAllowed),
       as: UTF8.self
     )
-    var result = TokamakBytes(data: nil, len: 0)
+    var response = TokamakBytes(data: nil, len: 0)
     var error = [CChar](repeating: 0, count: 1024)
-    let status = event.withCString { event in
-      payload.withCString { payload in
+    let succeeded = name.withCString { name in
+      body.withCString { body in
         error.withUnsafeMutableBufferPointer { error in
-          tokamak_runtime_dispatch(
+          tokamak_runtime_call(
             handle,
-            event,
-            payload,
+            name,
+            body,
             UInt64(timeout * 1000),
-            &result,
+            &response,
             error.baseAddress,
             error.count
           )
         }
       }
     }
-    defer { tokamak_bytes_free(result) }
-    switch status {
-    case Int32(TOKAMAK_DISPATCH_HANDLED):
-      guard let bytes = result.data else {
-        throw RuntimeError.runtime("the Worker event result is missing")
-      }
-      return .handled(
-        try JSONSerialization.jsonObject(
-          with: Data(bytes: bytes, count: result.len),
-          options: .fragmentsAllowed
-        ))
-    case Int32(TOKAMAK_DISPATCH_UNHANDLED):
-      return .unhandled
-    default:
+    defer { tokamak_bytes_free(response) }
+    guard succeeded else {
       throw RuntimeError.runtime(String(cString: error))
     }
+    guard let bytes = response.data else { return Data() }
+    return Data(bytes: bytes, count: response.len)
   }
 
   func serverAuthority(

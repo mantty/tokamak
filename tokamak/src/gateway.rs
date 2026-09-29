@@ -7,8 +7,10 @@ use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use reqwest::header::{HeaderMap, HeaderValue};
 use rustls::ServerConfig;
 use tokio::runtime::{Builder as TokioBuilder, Runtime as TokioRuntime};
+use tokio_util::sync::CancellationToken;
 
 use crate::lifecycle_events::{Event, Events};
 use crate::quickjs::Error;
@@ -87,17 +89,6 @@ pub(super) struct Execution<'a> {
 
 pub(super) trait Handler: Send + Sync {
     fn handle(&self, job: Job, execution: &Execution<'_>) -> Result<(), Error>;
-
-    /// Run the Worker's `event` handler with `payload`, returning its result;
-    /// `None` when the Worker does not handle `event`. Fails when the handler
-    /// has not settled within `timeout`.
-    fn dispatch(
-        &self,
-        event: &str,
-        payload: &serde_json::Value,
-        timeout: Duration,
-        execution: &Execution<'_>,
-    ) -> Result<Option<serde_json::Value>, Error>;
 }
 
 impl Lifecycle {
@@ -232,6 +223,8 @@ pub(super) struct Job {
     pub(super) request: HttpRequest,
     pub(super) response: Sender<JobResponse>,
     pub(super) websocket: Option<WebSocketJob>,
+    /// Present when the runtime itself calls the Worker; cancelled when the call fails.
+    pub(super) runtime_call: Option<CancellationToken>,
 }
 
 pub(super) enum JobResponse {
@@ -345,31 +338,92 @@ impl Runtime {
         self.shared.lifecycle.resume();
     }
 
-    /// Run a Worker event on the JavaScript executor, blocking until it settles
-    /// or `timeout` passes.
-    pub(crate) fn dispatch(
-        &self,
-        event: &str,
-        payload: serde_json::Value,
-        timeout: Duration,
-    ) -> Result<Option<serde_json::Value>, Error> {
-        let (result, outcome) = flume::bounded(1);
+    /// Posts JSON `body` to the Worker's `/tokamak/<name>` endpoint and returns
+    /// the response body, failing unless the Worker responds 200 within
+    /// `timeout`. A failed call stops the Worker invocation.
+    pub(crate) fn call(&self, name: &str, body: &str, timeout: Duration) -> Result<Vec<u8>, Error> {
+        let request = call_request(&self.shared.config.host, name, body)?;
+        let path = request.target.clone();
+        let failed = CancellationToken::new();
+        let (response, result) = flume::bounded(1);
+        let job = Job {
+            request,
+            response,
+            websocket: None,
+            runtime_call: Some(failed.clone()),
+        };
         let shared = Arc::clone(&self.shared);
-        let event = event.to_owned();
-        drop(self.shared.tokio.spawn_blocking(move || {
-            let Some(execution) = shared.lifecycle.enter(&shared.accepting) else {
-                return;
-            };
-            let _ = result.send(
-                shared
-                    .handler
-                    .dispatch(&event, &payload, timeout, &execution),
-            );
-        }));
-        outcome.recv().map_err(|_| {
-            Error::Engine("the runtime stopped before the Worker event ran".to_owned())
-        })?
+        drop(
+            self.shared
+                .tokio
+                .spawn_blocking(move || execute_job(&shared, job)),
+        );
+        call_response(&result, &path, timeout).inspect_err(|_| failed.cancel())
     }
+}
+
+/// The body of a runtime call's response, failing unless it is a 200 that
+/// ends within `timeout`.
+fn call_response(
+    result: &Receiver<JobResponse>,
+    path: &str,
+    timeout: Duration,
+) -> Result<Vec<u8>, Error> {
+    let deadline = Instant::now() + timeout;
+    let response = match result.recv_deadline(deadline) {
+        Ok(JobResponse::Http(response)) => response,
+        Ok(JobResponse::WebSocket) => {
+            return Err(Error::Engine(format!("POST {path} returned a WebSocket")));
+        }
+        Err(flume::RecvTimeoutError::Timeout) => {
+            return Err(Error::Engine(format!(
+                "POST {path} did not respond within {timeout:?}"
+            )));
+        }
+        Err(flume::RecvTimeoutError::Disconnected) => {
+            return Err(Error::Engine(format!(
+                "the runtime stopped before POST {path} ran"
+            )));
+        }
+    };
+    if response.status != 200 {
+        return Err(Error::Engine(format!(
+            "POST {path} responded {}",
+            response.status
+        )));
+    }
+    response
+        .body
+        .read_to_end(deadline)
+        .map_err(|error| Error::Engine(format!("POST {path} failed: {error}")))
+}
+
+/// The request for a runtime call to `/tokamak/<name>`.
+fn call_request(host: &str, name: &str, body: &str) -> Result<HttpRequest, Error> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(Error::Engine(format!(
+            "invalid runtime call name: {name:?}"
+        )));
+    }
+    let target = format!("/tokamak/{name}");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "host",
+        HeaderValue::from_str(host).map_err(io::Error::other)?,
+    );
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    Ok(HttpRequest {
+        persistent: false,
+        method: "POST".to_owned(),
+        url: format!("https://{host}{target}"),
+        target,
+        headers,
+        body: Some(body.as_bytes().to_vec()),
+    })
 }
 
 impl Drop for Runtime {
@@ -650,6 +704,7 @@ fn dispatch(
         request,
         response,
         websocket: websocket_job,
+        runtime_call: None,
     };
     let execution_shared = Arc::clone(shared);
     drop(
@@ -694,6 +749,13 @@ pub(super) fn execute_job(shared: &Shared, job: Job) {
     let Some(execution) = shared.lifecycle.enter(&shared.accepting) else {
         return;
     };
+    if job
+        .runtime_call
+        .as_ref()
+        .is_some_and(CancellationToken::is_cancelled)
+    {
+        return;
+    }
     let response = job.response.clone();
     if let Err(error) = shared.handler.handle(job, &execution) {
         let message = format!("Worker error: {error}");

@@ -15,7 +15,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
 use sha1::{Digest, Sha1};
-use tokamak::{DevProxyConfig, DevelopmentConfig, Runtime};
+use tokamak::{DevProxyConfig, DevelopmentConfig, Event, Runtime};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -119,6 +119,106 @@ fn does_not_retry_post_after_an_upstream_disconnect() -> TestResult {
 }
 
 #[test]
+fn forwards_runtime_calls_to_the_host_server() -> TestResult {
+    let (listener, runtime, _temporary) = start_test_runtime()?;
+    let host_server = thread::spawn(move || -> TestResult<String> {
+        let (mut call, _) = listener.accept()?;
+        call.set_read_timeout(Some(Duration::from_secs(2)))?;
+        let headers = String::from_utf8(read_header_block(&mut call)?)?;
+        let mut body = [0; 10];
+        call.read_exact(&mut body)?;
+        call.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnull",
+        )?;
+        Ok(format!("{headers}{}", String::from_utf8(body.to_vec())?))
+    });
+
+    let response = runtime.call("push", r#"{"id":"1"}"#, Duration::from_secs(2))?;
+
+    let request = host_server.join().map_err(|_| "host server panicked")??;
+    assert!(
+        request.starts_with("POST /tokamak/push HTTP/1.1\r\n"),
+        "{request}"
+    );
+    assert!(
+        request.contains("content-type: application/json\r\n"),
+        "{request}"
+    );
+    assert!(request.contains("Host: dev.tokamak.local\r\n"), "{request}");
+    assert!(
+        request.contains("X-Tokamak-Session: test-session\r\n"),
+        "{request}"
+    );
+    assert!(request.ends_with(r#"{"id":"1"}"#), "{request}");
+    assert_eq!(response, b"null");
+    Ok(())
+}
+
+#[test]
+fn reports_a_failed_runtime_call_in_development() -> TestResult {
+    let (events, received) = mpsc::channel();
+    let (listener, runtime, _temporary) = start_test_runtime_reporting(move |event| {
+        let _ = events.send(event);
+    })?;
+    let host_server = thread::spawn(move || -> TestResult {
+        let (mut call, _) = listener.accept()?;
+        call.set_read_timeout(Some(Duration::from_secs(2)))?;
+        read_header_block(&mut call)?;
+        call.write_all(
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )?;
+        Ok(())
+    });
+
+    let Err(error) = runtime.call("push", "{}", Duration::from_secs(2)) else {
+        return Err("the call succeeded".into());
+    };
+
+    host_server.join().map_err(|_| "host server panicked")??;
+    assert!(
+        error
+            .to_string()
+            .contains("POST /tokamak/push responded 404"),
+        "{error}"
+    );
+    let reported = received
+        .try_iter()
+        .find_map(|event| match event {
+            Event::CallFailed { message } => Some(message),
+            _ => None,
+        })
+        .ok_or("the failed call was not reported")?;
+    assert_eq!(reported, error.to_string());
+    Ok(())
+}
+
+#[test]
+fn fails_a_runtime_call_the_host_server_does_not_answer() -> TestResult {
+    let (events, received) = mpsc::channel();
+    let (_listener, runtime, _temporary) = start_test_runtime_reporting(move |event| {
+        let _ = events.send(event);
+    })?;
+
+    let Err(error) = runtime.call("push", "{}", Duration::from_millis(200)) else {
+        return Err("the call succeeded".into());
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("POST /tokamak/push did not respond within 200ms"),
+        "{error}"
+    );
+    assert!(
+        received
+            .try_iter()
+            .any(|event| matches!(event, Event::CallFailed { .. })),
+        "the failed call was not reported"
+    );
+    Ok(())
+}
+
+#[test]
 fn forwards_chunked_host_responses_as_they_arrive() -> TestResult {
     let (listener, runtime, temporary) = start_test_runtime()?;
     let (release_sender, release_receiver) = mpsc::sync_channel(1);
@@ -215,6 +315,12 @@ fn stops_an_idle_stream_when_the_runtime_stops() -> TestResult {
 }
 
 fn start_test_runtime() -> TestResult<(TcpListener, Runtime, tempfile::TempDir)> {
+    start_test_runtime_reporting(|_| {})
+}
+
+fn start_test_runtime_reporting(
+    events: impl Fn(Event) + Send + Sync + 'static,
+) -> TestResult<(TcpListener, Runtime, tempfile::TempDir)> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let endpoint = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
     let temporary = tempfile::tempdir()?;
@@ -227,7 +333,7 @@ fn start_test_runtime() -> TestResult<(TcpListener, Runtime, tempfile::TempDir)>
                 session_token: "test-session".to_owned(),
             },
         },
-        |_| {},
+        events,
     )?;
     Ok((listener, runtime, temporary))
 }

@@ -12,7 +12,10 @@ private let showInForegroundKey = "tokamak.notifications.show-in-foreground"
 /// The system keeps only the soonest 64 pending requests.
 private let pendingLimit = 64
 /// The system allows about 30 seconds for a background remote notification.
-private let pushTimeout: TimeInterval = 25
+private let pushDeadline: TimeInterval = 25
+private let pushAttempts = 3
+private let pushAttemptTimeout: TimeInterval = 2
+private let pushRetryDelay: TimeInterval = 1
 private let shown: UNNotificationPresentationOptions = [.banner, .list, .sound]
 
 #if os(iOS)
@@ -138,7 +141,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     }
   }
 
-  /// Runs the Worker's `push` handler for a data-only message, showing the
+  /// Posts a data-only message to the Worker's push endpoint, showing the
   /// notification it returns.
   func didReceiveRemoteNotification(
     _ userInfo: [AnyHashable: Any],
@@ -150,15 +153,33 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       return
     }
     emit("onMessage", fields.message)
-    host.dispatch(event: "push", payload: fields.message, timeout: pushTimeout) { result in
+    deliverPush(fields.message, attempt: 1, deadline: Date() + pushDeadline) { result in
       switch result {
-      case .success(.handled(let returned)):
-        self.show(returned) { completion(.newData) }
-      case .success(.unhandled):
-        completion(.noData)
+      case .success(let response):
+        self.show(response) { completion(.newData) }
       case .failure(let error):
-        print("tokamak push handler failed: \(error)")
+        print("tokamak push delivery failed: \(error)")
         completion(.failed)
+      }
+    }
+  }
+
+  /// Posts `message` to `/tokamak/push`, retrying a failed attempt while
+  /// another can finish before `deadline`.
+  private func deliverPush(
+    _ message: [String: Any],
+    attempt: Int,
+    deadline: Date,
+    completion: @escaping (Result<Data, Error>) -> Void
+  ) {
+    host.call("push", body: message, timeout: pushAttemptTimeout) { result in
+      let retryEnds = Date() + pushRetryDelay + pushAttemptTimeout
+      guard case .failure = result, attempt < pushAttempts, retryEnds <= deadline else {
+        completion(result)
+        return
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + pushRetryDelay) {
+        self.deliverPush(message, attempt: attempt + 1, deadline: deadline, completion: completion)
       }
     }
   }
@@ -256,14 +277,16 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     }
   }
 
-  /// Shows a notification a Worker handler returned, then calls `completion`.
-  private func show(_ returned: Any, completion: @escaping () -> Void) {
-    guard !(returned is NSNull) else {
+  /// Shows the notification a push response returns, if any.
+  private func show(_ response: Data, completion: @escaping () -> Void) {
+    let returned = try? JSONSerialization.jsonObject(with: response, options: .fragmentsAllowed)
+    guard !response.isEmpty, !(returned is NSNull) else {
       completion()
       return
     }
-    guard let request = try? TokamakNotificationRequest(returned, scheduled: false) else {
-      print("tokamak push handler returned an invalid notification")
+    guard let returned, let request = try? TokamakNotificationRequest(returned, scheduled: false)
+    else {
+      print("tokamak push response is not a notification")
       completion()
       return
     }

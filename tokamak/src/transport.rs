@@ -60,6 +60,30 @@ pub(super) struct BodyStream {
     cancelled: CancellationToken,
 }
 
+impl HttpBody {
+    /// The whole body, failing when it has not ended by `deadline`.
+    pub(super) fn read_to_end(self, deadline: Instant) -> Result<Vec<u8>, Error> {
+        let stream = match self {
+            Self::Buffered(body) => return Ok(body),
+            Self::Stream(stream) => stream,
+        };
+        let mut body = Vec::new();
+        loop {
+            match stream.receiver.recv_deadline(deadline) {
+                Ok(chunk) => {
+                    body.extend(chunk.map_err(|error| {
+                        Error::Startup(format!("response stream failed: {error}"))
+                    })?);
+                }
+                Err(flume::RecvTimeoutError::Disconnected) => return Ok(body),
+                Err(flume::RecvTimeoutError::Timeout) => {
+                    return Err(io::Error::from(io::ErrorKind::TimedOut).into());
+                }
+            }
+        }
+    }
+}
+
 impl BodyStream {
     #[cfg(test)]
     pub(super) fn recv(&self) -> Result<BodyChunk, flume::RecvError> {

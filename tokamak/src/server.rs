@@ -47,6 +47,7 @@ pub struct Runtime {
     _renewal: Renewal,
     events: Events,
     gateway: gateway::Runtime,
+    development: bool,
 }
 
 impl Runtime {
@@ -71,7 +72,13 @@ impl Runtime {
         validate_worker(&worker)?;
         let handler = Dispatcher::new(worker, quickjs_config(&config.app, &config.state_dir)?)?;
         let gateway = start_gateway(&certificates, &config.host, handler, events.clone())?;
-        Ok(finish_start(events, config.host, certificates, gateway))
+        Ok(finish_start(
+            events,
+            config.host,
+            certificates,
+            gateway,
+            false,
+        ))
     }
 
     /// Start a runtime that forwards requests to a host development server.
@@ -92,7 +99,13 @@ impl Runtime {
         let certificates = Arc::new(Certificates::start(config.state_dir, config.host.clone())?);
         let handler = DevProxy::new(&config.proxy)?;
         let gateway = start_gateway(&certificates, &config.host, handler, events.clone())?;
-        Ok(finish_start(events, config.host, certificates, gateway))
+        Ok(finish_start(
+            events,
+            config.host,
+            certificates,
+            gateway,
+            true,
+        ))
     }
 
     /// The host the `WebView` loads.
@@ -116,24 +129,23 @@ impl Runtime {
         Ok(self.gateway.restore_gateway()?)
     }
 
-    /// Run the Worker's `event` handler with `payload` and wait for it to
-    /// settle, including work passed to `ctx.waitUntil`, for up to `timeout`.
-    ///
-    /// Returns the handler's JSON result, `null` when it returns nothing, or
-    /// `None` when the Worker has no `event` handler.
+    /// Post JSON `body` to the Worker's `/tokamak/<name>` endpoint and return
+    /// the response body. In development, a failed call is also reported as
+    /// [`Event::CallFailed`].
     ///
     /// # Errors
     ///
-    /// Returns an error when the handler throws or does not settle within
-    /// `timeout`, its result is not JSON, or the runtime cannot run Worker
-    /// code, as in development.
-    pub fn dispatch(
-        &self,
-        event: &str,
-        payload: serde_json::Value,
-        timeout: Duration,
-    ) -> Result<Option<serde_json::Value>> {
-        Ok(self.gateway.dispatch(event, payload, timeout)?)
+    /// Returns an error unless the Worker responds 200 within `timeout`.
+    pub fn call(&self, name: &str, body: &str, timeout: Duration) -> Result<Vec<u8>> {
+        let result = self.gateway.call(name, body, timeout);
+        if self.development
+            && let Err(error) = &result
+        {
+            self.events.emit(Event::CallFailed {
+                message: error.to_string(),
+            });
+        }
+        Ok(result?)
     }
 
     /// Certificate material for the shell's TLS challenge callbacks.
@@ -167,6 +179,7 @@ fn finish_start(
     host: String,
     certificates: Arc<Certificates>,
     gateway: gateway::Runtime,
+    development: bool,
 ) -> Runtime {
     let renewal = certificates.start_renewal(events.clone());
     events.emit(Event::Listening {
@@ -178,6 +191,7 @@ fn finish_start(
         _renewal: renewal,
         events,
         gateway,
+        development,
     }
 }
 

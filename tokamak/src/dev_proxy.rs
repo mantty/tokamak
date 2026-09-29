@@ -308,24 +308,13 @@ impl Handler for DevProxy {
             request,
             response,
             websocket,
+            runtime_call: _,
         } = job;
         if let Some(websocket) = websocket {
             self.forward_websocket(&request, &response, &websocket, execution)
         } else {
             self.forward_http(&request, &response)
         }
-    }
-
-    fn dispatch(
-        &self,
-        event: &str,
-        _: &serde_json::Value,
-        _: Duration,
-        _: &Execution<'_>,
-    ) -> Result<Option<serde_json::Value>, Error> {
-        Err(Error::Engine(format!(
-            "the Worker's {event} handler does not run in development"
-        )))
     }
 }
 

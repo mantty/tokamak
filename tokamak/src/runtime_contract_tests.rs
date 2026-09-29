@@ -99,6 +99,7 @@ fn request(worker: &WorkerBundle, flag: &str) -> TestResult<Vec<u8>> {
             },
             response: sender,
             websocket: None,
+            runtime_call: None,
         },
         &execution,
     )?;
@@ -440,6 +441,7 @@ export default httpServerHandler(server);
             },
             response: sender,
             websocket: None,
+            runtime_call: None,
         },
         &execution,
     )?;
@@ -809,6 +811,7 @@ fn fixture_request(
         },
         response: sender,
         websocket: None,
+        runtime_call: None,
     };
     // The worker runs on its own thread so streamed bodies can be consumed here.
     let worker = worker.clone();
