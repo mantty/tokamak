@@ -1,5 +1,8 @@
 [env]
 MACOSX_DEPLOYMENT_TARGET = "13.0"
+# MSVC's /OPT:REF drops only COMDATs. /Gw makes each C global one, so an app
+# link drops the C code, such as SQLite, that only an unlinked part uses.
+CFLAGS_x86_64_pc_windows_msvc = "/Gw"
 # SQLite compile options, read by libsqlite3-sys and by `cargo run -p xtask --
 # sqlite`, which generates libsqlite3-sys/sqlite3 with them. Lines: D1's
 # features; libsqlite3-sys defaults D1 lacks; what D1 refuses or tokamak never
