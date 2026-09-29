@@ -17,8 +17,8 @@ use crate::gateway::{
     WebSocketOutgoing,
 };
 use crate::globals::ResponseEncoder;
+use crate::linked::StorageRuntime;
 use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
-use crate::storage::StorageHandle;
 use crate::transport::{BodyChunk, HttpBody, HttpRequest, HttpResponse, response_stream};
 use flate2::read::GzDecoder;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -78,6 +78,7 @@ pub(super) fn configure_worker_loader(runtime: &rquickjs::Runtime, worker: &Work
         WorkerResolver,
         WorkerLoader {
             bundle: worker.clone(),
+            storage: None,
         },
     );
 }
@@ -108,6 +109,7 @@ fn block_on<T>(future: impl Future<Output = Result<T, Error>>) -> Result<T, Erro
 /// `execution` stops accepting work.
 async fn worker_runtime(
     worker: &WorkerBundle,
+    storage: Option<&Arc<dyn StorageRuntime>>,
     execution: &Execution<'_>,
 ) -> Result<(AsyncRuntime, AsyncContext), Error> {
     let runtime = AsyncRuntime::new().map_err(|error| js_error("runtime", error))?;
@@ -122,6 +124,7 @@ async fn worker_runtime(
             WorkerResolver,
             WorkerLoader {
                 bundle: worker.clone(),
+                storage: storage.cloned(),
             },
         )
         .await;
@@ -138,7 +141,7 @@ async fn execute_request_async(
     job: Job,
     execution: &Execution<'_>,
 ) -> Result<(), Error> {
-    let (runtime, context) = worker_runtime(worker, execution).await?;
+    let (runtime, context) = worker_runtime(worker, config.storage.as_ref(), execution).await?;
     let awaited = crate::event_loop::AwaitedPromise::default();
     let request = context.async_with(async |ctx| -> Result<(), Error> {
         ctx.store_userdata(awaited.clone())
@@ -212,19 +215,16 @@ fn install_worker_globals(
 ) -> Result<(), Error> {
     let environment = serde_json::to_string(&config.environment)?;
     let cache = serde_json::to_string(&config.cache.to_string_lossy())?;
-    let storage = config
-        .storage
-        .as_ref()
-        .map_or("[]", |storage| storage.installed());
     ctx.eval::<(), _>(format!(
-        "globalThis.__tokamak_env = {environment}; globalThis.__tokamak_cache = {cache}; globalThis.__tokamak_storage = {storage};"
+        "globalThis.__tokamak_env = {environment}; globalThis.__tokamak_cache = {cache};"
     ))
     .map_err(|error| js_error("setup", error))?;
     if let Some(assets) = assets {
         install_asset_lookup(ctx, assets)?;
     }
     if let Some(storage) = &config.storage {
-        ctx.store_userdata(StorageHandle(Arc::clone(storage)))
+        Arc::clone(storage)
+            .attach(ctx)
             .map_err(|error| js_error("storage", error))?;
     }
     Ok(())
@@ -353,6 +353,9 @@ impl Resolver for WorkerResolver {
 
 pub(super) struct WorkerLoader {
     pub(super) bundle: WorkerBundle,
+    /// The stores the storage modules reach, when the app has storage
+    /// bindings.
+    pub(super) storage: Option<Arc<dyn StorageRuntime>>,
 }
 
 impl Loader for WorkerLoader {
@@ -370,7 +373,11 @@ impl Loader for WorkerLoader {
             "tokamak:host" => {
                 Module::declare_def::<crate::globals::native::HostModule, _>(ctx.clone(), name)
             }
-            _ => self.load_bytecode(ctx, name),
+            _ => {
+                let storage = self.storage.as_ref();
+                let module = storage.and_then(|storage| storage.module(ctx, name));
+                module.unwrap_or_else(|| self.load_bytecode(ctx, name))
+            }
         }
     }
 }

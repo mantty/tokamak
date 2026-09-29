@@ -194,6 +194,10 @@ registry=$temporary/TokamakPluginRegistry.swift
   printf '%s\n' '}'
 } > "$registry"
 
+# The executable exports only the entry points of the runtime parts the app
+# links.
+exported_symbols=$temporary/exported-symbols
+sed 's/^/_/' "$metadata/exported-symbols" > "$exported_symbols"
 swift_args=(
   "${swift_sources[@]}"
   "$registry"
@@ -208,7 +212,7 @@ swift_args=(
   -lc++
   -lresolv
   -Xlinker -dead_strip
-  -Xlinker -no_exported_symbols
+  -Xlinker -exported_symbols_list -Xlinker "$exported_symbols"
 )
 for plugin in "$input/plugins"/*; do
   [[ -d "$plugin" ]] || continue
@@ -227,7 +231,8 @@ if [[ "$platform" == ios-simulator ]]; then
 fi
 
 xcrun --sdk "$sdk" swiftc "${swift_args[@]}" -o "$executable_dir/$app_slug"
-xcrun --sdk "$sdk" strip "$executable_dir/$app_slug"
+# Local symbols go; the exported entry points of linked parts stay.
+xcrun --sdk "$sdk" strip -x "$executable_dir/$app_slug"
 
 write_plist
 

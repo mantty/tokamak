@@ -88,16 +88,23 @@ pub(crate) const BUILTIN_SOURCES: &[&str] = &[
     "node/worker-threads.mjs",
     "node/zlib.mjs",
     "node/test.mjs",
+    "streams/node.mjs",
+    "streams/text.mjs",
+    "streams/web.mjs",
+    "streams/web-standard.mjs",
+];
+
+/// The storage bindings' JavaScript modules, compiled into the storage part,
+/// which only apps that declare storage bindings link.
+#[allow(dead_code)]
+pub(crate) const STORAGE_SOURCES: &[&str] = &[
+    "storage/bindings.mjs",
     "storage/d1.mjs",
     "storage/d1-api.mjs",
     "storage/kv.mjs",
     "storage/r2.mjs",
     "storage/tracing-helpers.mjs",
     "storage/wrapped-binding.mjs",
-    "streams/node.mjs",
-    "streams/text.mjs",
-    "streams/web.mjs",
-    "streams/web-standard.mjs",
 ];
 
 #[allow(dead_code)]

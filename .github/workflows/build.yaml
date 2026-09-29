@@ -98,6 +98,20 @@ jobs:
       - name: Build platform pack
         run: cargo run -p xtask -- platform-pack --target "${{ matrix.target }}"
 
+      - name: Verify Android storage linking
+        if: matrix.target == 'android-arm64'
+        env:
+          TOKAMAK_TEST_ANDROID_PACK: ${{ github.workspace }}/target/tokamak-platform-packs/android-arm64
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
+          cargo test -p tokamak-cli --test build links_storage_from_the_android_platform_pack_while_the_app_declares_it -- --ignored --nocapture
+
+      - name: Verify Windows storage linking
+        if: matrix.target == 'windows-x64'
+        env:
+          TOKAMAK_TEST_WINDOWS_PACK: ${{ github.workspace }}/target/tokamak-platform-packs/windows-x64
+        run: cargo test -p tokamak-cli --test build links_storage_from_the_windows_platform_pack_while_the_app_declares_it -- --ignored --nocapture
+
       - name: Verify packaged Worker mTLS
         if: matrix.target == 'macos-arm64'
         run: cargo test -p tokamak --features native --test packaged_worker

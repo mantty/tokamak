@@ -18,19 +18,23 @@ if ($Command -ne "build" -or $Target -ne "windows-x64" -or $RustTarget -ne "x86_
 $workspace = (Get-Location).Path
 $output = [System.IO.Path]::GetFullPath($Output)
 
-& cargo build --package windows-shell --release --target $RustTarget
+$libraries = Join-Path $workspace "target/$RustTarget/release/tokamak-link-libraries"
+& cargo rustc --package windows-shell --release --target $RustTarget --lib --crate-type staticlib -- --print "native-static-libs=$libraries"
 if ($LASTEXITCODE -ne 0) {
   throw "Windows app shell build failed with status $LASTEXITCODE"
 }
 
-$executable = Join-Path $workspace "target/$RustTarget/release/tokamak-shell-windows.exe"
-if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-  throw "Windows app shell was not produced: $executable"
+$library = Join-Path $workspace "target/$RustTarget/release/windows_shell.lib"
+if (-not (Test-Path -LiteralPath $library -PathType Leaf) -or -not (Test-Path -LiteralPath $libraries -PathType Leaf)) {
+  throw "Windows app shell library was not produced: $library"
 }
 
 if (Test-Path -LiteralPath $output) {
   Remove-Item -Recurse -Force $output
 }
-New-Item -ItemType Directory -Force -Path (Join-Path $output "bin"), (Join-Path $output "build") | Out-Null
-Copy-Item $executable (Join-Path $output "bin/tokamak-shell-windows.exe")
+$runtime = Join-Path $output "lib/TokamakRuntime"
+New-Item -ItemType Directory -Force -Path $runtime, (Join-Path $output "build") | Out-Null
+# App builds link the shell and runtime with these system libraries.
+Copy-Item $library (Join-Path $runtime "tokamak.lib")
+Copy-Item $libraries (Join-Path $runtime "link-libraries")
 Copy-Item (Join-Path $workspace "platforms/windows/build/entrypoint.ps1") (Join-Path $output "build/entrypoint.ps1")

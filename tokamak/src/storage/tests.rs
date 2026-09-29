@@ -118,7 +118,7 @@ fn shares_a_database_between_bindings_naming_it() -> TestResult {
     assert!(body.contains(r#""results":[{"count(*)":0}]"#), "{body}");
     assert_eq!(bookmark, "00000001");
     assert_eq!(
-        storage.installed(),
+        storage.installed,
         r#"[{"name":"DB","type":"d1"},{"name":"READER","type":"d1"}]"#
     );
     Ok(())

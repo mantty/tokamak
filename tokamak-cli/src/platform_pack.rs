@@ -250,22 +250,11 @@ impl Target {
         }
     }
 
-    /// Runtime artifact kind produced for this target.
-    #[must_use]
-    pub const fn runtime_artifact_kind(self) -> ArtifactKind {
-        if matches!(self, Self::WindowsX64) {
-            ArtifactKind::RuntimeExecutable
-        } else {
-            ArtifactKind::RuntimeLibrary
-        }
-    }
-
     /// Runtime artifact path relative to the platform-pack root.
     #[must_use]
     pub const fn runtime_artifact_path(self) -> &'static str {
         match self.platform() {
-            Platform::Android => "bin/libtokamak.so",
-            Platform::Windows => "bin/tokamak-shell-windows.exe",
+            Platform::Android | Platform::Windows => "lib/TokamakRuntime",
             Platform::Ios | Platform::IosSimulator | Platform::Macos => {
                 "frameworks/TokamakRuntime.framework"
             }
@@ -276,8 +265,7 @@ impl Target {
     #[must_use]
     pub const fn runtime_staging_path(self) -> &'static str {
         match self.platform() {
-            Platform::Android => "runtime/libtokamak.so",
-            Platform::Windows => "runtime/tokamak-shell-windows.exe",
+            Platform::Android | Platform::Windows => "runtime/TokamakRuntime",
             Platform::Ios | Platform::IosSimulator | Platform::Macos => {
                 "runtime/frameworks/TokamakRuntime.framework"
             }
@@ -305,7 +293,7 @@ impl Target {
     #[must_use]
     pub fn artifacts(self) -> Vec<Artifact> {
         let mut artifacts = vec![Artifact {
-            kind: self.runtime_artifact_kind(),
+            kind: ArtifactKind::RuntimeLibrary,
             path: self.runtime_artifact_path().to_owned(),
         }];
         if self.has_native_shell() {
@@ -367,10 +355,8 @@ impl FromStr for Target {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ArtifactKind {
-    /// Precompiled runtime library or framework.
+    /// Precompiled runtime library or framework, which an app build links.
     RuntimeLibrary,
-    /// Precompiled native application-shell executable.
-    RuntimeExecutable,
     /// Native application-shell sources compiled during an app build.
     NativeShellDirectory,
     /// Host-side JavaScript compiler used to produce Worker bytecode.

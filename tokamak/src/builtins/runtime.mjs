@@ -157,17 +157,8 @@ if (globalThis.__tokamak_asset && globalThis.__tokamak_env?.ASSETS === undefined
     },
   };
 }
-// The binding constructor of each kind of store, loaded when an app uses it.
-const storageBindings = {
-  kv: async () => { const { KVNamespace } = await import("../storage/kv.mjs"); return name => new KVNamespace(name); },
-  d1: async () => (await import("../storage/d1.mjs")).createD1Database,
-  r2: async () => { const { R2Bucket } = await import("../storage/r2.mjs"); return name => new R2Bucket(name); },
-};
-const storage = globalThis.__tokamak_storage ?? [];
-for (const type of new Set(storage.map(binding => binding.type))) {
-  const create = await storageBindings[type]();
-  for (const { name } of storage.filter(binding => binding.type === type)) globalThis.__tokamak_env[name] = create(name);
-}
+// The storage part attaches the app's storage bindings when it has any.
+if (globalThis.__tokamak_storage) await (await import("../storage/bindings.mjs")).install(globalThis.__tokamak_env, globalThis.__tokamak_storage);
 const waitUntilValues = [];
 class ExecutionContext {
   waitUntil(value) { waitUntilValues.push(Promise.resolve(value)); }

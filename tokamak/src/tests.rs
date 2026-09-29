@@ -350,6 +350,7 @@ fn loads_split_worker_modules_through_the_quickjs_loader() -> Result<(), Box<dyn
                 WorkerResolver,
                 WorkerLoader {
                     bundle: worker.clone(),
+                    storage: None,
                 },
             )
             .await;

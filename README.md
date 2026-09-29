@@ -75,8 +75,8 @@ tokamak doesn't add any external dependencies, but you will need the toolchain f
 | Platform | Requirements |
 | --- | --- |
 | macOS and iOS | macOS with Xcode; physical iOS devices must be registered for development in Xcode |
-| Android | Android SDK 35, Java 17, Gradle, and Bash |
-| Windows | 64-bit Windows |
+| Android | Android SDK 35 and NDK, Java 17, Gradle, and Bash |
+| Windows | 64-bit Windows with Visual Studio or Visual Studio Build Tools, with the "Desktop development with C++" workload |
 
 ## AI assistant plugin
 
@@ -194,6 +194,9 @@ bindings name.
   JavaScript thread.
 - Each item's limits are Cloudflare's, so an item that fits on the device fits
   on Cloudflare. Account limits do not apply.
+- `tok build` links storage, and SQLite with it, into the app only when the
+  Wrangler configuration declares a storage binding. An app without one is
+  about 1 MB smaller.
 
 #### KV
 
