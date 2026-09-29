@@ -555,11 +555,13 @@ fn terminate_process_tree(child: &mut Child) -> Result<()> {
     Ok(())
 }
 
+// `--` ends kill's options, so it reads the group as a process ID; procps-ng
+// 4.0.4 reads `-1234` after a signal as `-1`, which signals every process.
 #[cfg(unix)]
 fn process_group_is_running(pid: u32) -> bool {
     let group = format!("-{pid}");
     ProcessCommand::new("kill")
-        .args(["-0", &group])
+        .args(["-0", "--", &group])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -571,7 +573,7 @@ fn send_process_group_signal(pid: u32, signal: &str) {
     let group = format!("-{pid}");
     let flag = format!("-{signal}");
     let _ = ProcessCommand::new("kill")
-        .args([flag.as_str(), group.as_str()])
+        .args([flag.as_str(), "--", group.as_str()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
@@ -1187,13 +1189,36 @@ mod tests {
     #[cfg(unix)]
     use std::time::Duration;
 
-    #[cfg(unix)]
-    use super::wait_for_app_connection;
     use super::{
         DevRelay, PreparedDevice, ServerEndpoint, authorized, is_transient_devicectl_error,
         parse_authority, relay_host, rewrite_request, usable_ipv4_address,
     };
+    #[cfg(unix)]
+    use super::{
+        configure_process_group, process_group_is_running, stop_process, wait_for_app_connection,
+    };
     use tokamak_cli::Platform;
+
+    #[cfg(unix)]
+    #[test]
+    fn stops_only_the_process_group_it_names() -> Result<(), Box<dyn std::error::Error>> {
+        let spawn = || {
+            let mut command = Command::new("sleep");
+            command.arg("30");
+            configure_process_group(&mut command);
+            command.spawn()
+        };
+        let mut stopped = spawn()?;
+        let mut other = spawn()?;
+
+        assert!(process_group_is_running(stopped.id()));
+        stop_process(&mut stopped)?;
+
+        assert!(!process_group_is_running(stopped.id()));
+        assert!(process_group_is_running(other.id()));
+        stop_process(&mut other)?;
+        Ok(())
+    }
 
     #[test]
     fn parses_server_authorities() {
