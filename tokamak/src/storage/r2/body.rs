@@ -222,13 +222,15 @@ impl Pending {
         Ok((file, Self(Some(path))))
     }
 
-    /// Sync `file`, opened on this file, and its directory entry to disk.
+    /// Sync `file`, opened on this file, to disk, with the directory entry
+    /// that names it where directories can be synced.
     pub(super) fn sync(&self, file: &File) -> io::Result<()> {
         file.sync_all()?;
-        match self.0.as_deref().and_then(Path::parent) {
-            Some(directory) => sync_directory(directory),
-            None => Ok(()),
+        #[cfg(unix)]
+        if let Some(directory) = self.0.as_deref().and_then(Path::parent) {
+            File::open(directory)?.sync_all()?;
         }
+        Ok(())
     }
 
     pub(super) fn keep(mut self) {
@@ -242,16 +244,4 @@ impl Drop for Pending {
             let _ = fs::remove_file(path);
         }
     }
-}
-
-/// Sync `directory`, so the files created in it survive a crash.
-#[cfg(unix)]
-fn sync_directory(directory: &Path) -> io::Result<()> {
-    File::open(directory)?.sync_all()
-}
-
-/// Directories cannot be opened for syncing on Windows.
-#[cfg(not(unix))]
-fn sync_directory(_directory: &Path) -> io::Result<()> {
-    Ok(())
 }
