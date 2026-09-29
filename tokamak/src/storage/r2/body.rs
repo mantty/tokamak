@@ -226,8 +226,9 @@ impl Pending {
     /// that names it where directories can be synced.
     pub(super) fn sync(&self, file: &File) -> io::Result<()> {
         file.sync_all()?;
-        #[cfg(unix)]
-        if let Some(directory) = self.0.as_deref().and_then(Path::parent) {
+        if cfg!(unix)
+            && let Some(directory) = self.0.as_deref().and_then(Path::parent)
+        {
             File::open(directory)?.sync_all()?;
         }
         Ok(())
