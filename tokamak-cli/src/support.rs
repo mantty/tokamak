@@ -315,6 +315,65 @@ pub(crate) fn copy_dir_contents(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether `path`, with forward slashes, matches the glob `pattern`.
+pub(crate) fn glob_matches(pattern: &str, path: &str) -> bool {
+    let pattern = pattern.trim_start_matches("./");
+    let path = path.trim_start_matches("./");
+    let pattern = pattern.split('/').collect::<Vec<_>>();
+    let path = path.split('/').collect::<Vec<_>>();
+    glob_segments(&pattern, &path)
+}
+
+fn glob_segments(pattern: &[&str], path: &[&str]) -> bool {
+    match pattern {
+        [] => path.is_empty(),
+        ["**", rest @ ..] => {
+            glob_segments(rest, path) || (!path.is_empty() && glob_segments(pattern, &path[1..]))
+        }
+        [segment, rest @ ..] => {
+            !path.is_empty() && segment_matches(segment, path[0]) && glob_segments(rest, &path[1..])
+        }
+    }
+}
+
+fn segment_matches(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let value = value.as_bytes();
+    let mut states = vec![(0, 0)];
+    while let Some((pattern_index, value_index)) = states.pop() {
+        if pattern_index == pattern.len() {
+            if value_index == value.len() {
+                return true;
+            }
+            continue;
+        }
+        match pattern[pattern_index] {
+            b'*' => {
+                states.push((pattern_index + 1, value_index));
+                if value_index < value.len() {
+                    states.push((pattern_index, value_index + 1));
+                }
+            }
+            b'?' if value_index < value.len() => {
+                states.push((pattern_index + 1, value_index + 1));
+            }
+            character if value_index < value.len() && character == value[value_index] => {
+                states.push((pattern_index + 1, value_index + 1));
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// `path` with forward slashes.
+pub(crate) fn slash_path(path: &Path) -> Result<String> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", path.display()))?;
+    Ok(path.replace(std::path::MAIN_SEPARATOR, "/"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
