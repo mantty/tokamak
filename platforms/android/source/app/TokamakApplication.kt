@@ -50,7 +50,7 @@ class TokamakApplication : Application(), TokamakHost {
         return if (!endpoint.isNullOrEmpty() && !sessionToken.isNullOrEmpty()) {
             TokamakRuntime.startDevelopment(stateDir(), appHost, endpoint, sessionToken)
         } else {
-            TokamakRuntime.start(unpackApp(), stateDir(), appHost)
+            TokamakRuntime.start(unpackApp(), stateDir(), storageDir(), appHost)
         }
     }
 
@@ -59,8 +59,8 @@ class TokamakApplication : Application(), TokamakHost {
 
     /** Copy the packaged app out of the APK once per install, so the runtime can read it as files. */
     private fun unpackApp(): File {
-        val app = File(filesDir, "tokamak/app")
-        val unpacked = File(filesDir, "tokamak/app.installed")
+        val app = File(noBackupFilesDir, "tokamak/app")
+        val unpacked = File(noBackupFilesDir, "tokamak/app.installed")
         val installed = packageManager.getPackageInfo(packageName, 0).lastUpdateTime.toString()
         if (unpacked.isFile && unpacked.readText() == installed) return app
         app.deleteRecursively()
@@ -82,5 +82,16 @@ class TokamakApplication : Application(), TokamakHost {
         for (entry in entries) copyAsset("$source/$entry", File(destination, entry))
     }
 
-    private fun stateDir(): File = File(filesDir, "tokamak/state").apply { mkdirs() }
+    /** Runtime state, which backups leave out. */
+    private fun stateDir(): File = File(noBackupFilesDir, "tokamak/state").apply { mkdirs() }
+
+    /**
+     * Stores behind storage bindings, which Auto Backup includes. tokamak keeps nothing else in the
+     * files directory, so everything else under `tokamak` there is removed.
+     */
+    private fun storageDir(): File {
+        val root = File(filesDir, "tokamak")
+        root.listFiles()?.filter { it.name != "storage" }?.forEach { it.deleteRecursively() }
+        return File(root, "storage").apply { mkdirs() }
+    }
 }

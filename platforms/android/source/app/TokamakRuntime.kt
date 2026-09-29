@@ -40,8 +40,13 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
         }
 
         /** Start the runtime, throwing when it cannot serve the app. */
-        fun start(packagedDir: File, stateDir: File, host: String): TokamakRuntime =
-            TokamakRuntime(nativeStart(packagedDir.path, stateDir.path, host))
+        fun start(
+            packagedDir: File,
+            stateDir: File,
+            storageDir: File,
+            host: String,
+        ): TokamakRuntime =
+            TokamakRuntime(nativeStart(packagedDir.path, stateDir.path, storageDir.path, host))
 
         /** Start the runtime against a host development server. */
         fun startDevelopment(
@@ -53,7 +58,12 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             TokamakRuntime(nativeStartDevelopment(stateDir.path, host, endpoint, sessionToken))
 
         @JvmStatic
-        private external fun nativeStart(packagedDir: String, stateDir: String, host: String): Long
+        private external fun nativeStart(
+            packagedDir: String,
+            stateDir: String,
+            storageDir: String,
+            host: String,
+        ): Long
 
         @JvmStatic
         private external fun nativeStartDevelopment(

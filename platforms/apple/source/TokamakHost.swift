@@ -182,17 +182,21 @@ final class RuntimeHandle {
       guard let bundle else {
         throw RuntimeError.configuration("app bundle resources are unavailable")
       }
+      let storage = try Self.storageDirectory()
       handle = bundle.path.withCString { bundlePath in
         state.path.withCString { statePath in
-          appHost.withCString { appHost in
-            error.withUnsafeMutableBufferPointer { error in
-              tokamak_runtime_start(
-                bundlePath,
-                statePath,
-                appHost,
-                error.baseAddress,
-                error.count
-              )
+          storage.path.withCString { storagePath in
+            appHost.withCString { appHost in
+              error.withUnsafeMutableBufferPointer { error in
+                tokamak_runtime_start(
+                  bundlePath,
+                  statePath,
+                  storagePath,
+                  appHost,
+                  error.baseAddress,
+                  error.count
+                )
+              }
             }
           }
         }
@@ -332,21 +336,31 @@ final class RuntimeHandle {
     )
   }
 
+  /// Stores behind storage bindings, which device backups include.
+  private static func storageDirectory() throws -> URL {
+    let storage = try appDirectory(.applicationSupportDirectory)
+      .appendingPathComponent("tokamak/storage", isDirectory: true)
+    try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+    return storage
+  }
+
   private static func stateDirectory() throws -> URL {
+    let state = try appDirectory(.cachesDirectory)
+    try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+    return state
+  }
+
+  /// This app's folder in the user's `directory`.
+  private static func appDirectory(_ directory: FileManager.SearchPathDirectory) throws -> URL {
     guard let identifier = Bundle.main.bundleIdentifier else {
       throw RuntimeError.configuration("CFBundleIdentifier is required")
     }
-    let root = try FileManager.default.url(
-      for: .cachesDirectory,
+    return try FileManager.default.url(
+      for: directory,
       in: .userDomainMask,
       appropriateFor: nil,
       create: true
     )
-    let state = root.appendingPathComponent(identifier, isDirectory: true)
-    try FileManager.default.createDirectory(
-      at: state,
-      withIntermediateDirectories: true
-    )
-    return state
+    .appendingPathComponent(identifier, isDirectory: true)
   }
 }
