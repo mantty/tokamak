@@ -52,3 +52,4 @@ to a release build:
 | Android arm64 | `libtokamak.so` | 9,314,288 | 10,491,840 | 1,150 KB |
 | iOS Simulator arm64 | The app's executable | 8,528,864 | 9,521,936 | 970 KB |
 | macOS arm64 | The app's executable | 8,277,872 | 9,270,992 | 970 KB |
+| Windows x64 | The app's executable | 10,808,832 | 12,040,704 | 1,203 KB |
