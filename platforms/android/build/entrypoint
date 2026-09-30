@@ -40,7 +40,7 @@ if [[ -n "$dev_endpoint" ]]; then
   task=Debug
 fi
 signing=debug
-if [[ -n "${TOKAMAK_ANDROID_KEYSTORE:-}" ]]; then
+if [[ "$variant" == release && -n "${TOKAMAK_ANDROID_KEYSTORE:-}" ]]; then
   if [[ ! -f "$TOKAMAK_ANDROID_KEYSTORE" ]]; then
     echo "Android keystore is missing: $TOKAMAK_ANDROID_KEYSTORE" >&2
     exit 1
@@ -50,6 +50,9 @@ if [[ -n "${TOKAMAK_ANDROID_KEYSTORE:-}" ]]; then
     exit 1
   fi
   signing=release
+elif [[ "$variant" == release && -n "${TOKAMAK_ANDROID_KEY_ALIAS:-}${TOKAMAK_ANDROID_KEYSTORE_PASSWORD:-}${TOKAMAK_ANDROID_KEY_PASSWORD:-}" ]]; then
+  echo "Android key-alias and passwords need a keystore" >&2
+  exit 1
 fi
 user_manifest=
 if [[ -n "${TOKAMAK_ANDROID_MANIFEST:-}" ]]; then
@@ -374,9 +377,8 @@ manifest=$app/src/main/AndroidManifest.xml
     '</manifest>'
 } > "$manifest"
 
-# R8 keeps the runtime's classes whole, since native code calls into them,
-# and keeps every name, so class names in errors and stack traces stay real.
-printf '%s\n' '-keep class com.tokamak.runtime.** { *; }' '-dontobfuscate' > "$app/tokamak-rules.pro"
+# R8 keeps every name, so class names in errors and stack traces stay real.
+printf '%s\n' '-dontobfuscate' > "$app/tokamak-rules.pro"
 
 gradle --no-daemon ":app:lint$task" ":app:assemble$task" --project-dir "$project"
 mkdir -p "$(dirname "$output")"

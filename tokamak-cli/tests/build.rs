@@ -528,7 +528,11 @@ fn build_command(platform: &str, project: &Path, platform_pack: &Path) -> TestRe
         .env("TOKAMAK_VERSION", "1.0.0")
         .env_remove("TOKAMAK_IOS_BUILD_NUMBER")
         .env_remove("TOKAMAK_MACOS_BUILD_NUMBER")
-        .env_remove("TOKAMAK_MACOS_TEAM_ID");
+        .env_remove("TOKAMAK_MACOS_TEAM_ID")
+        .env_remove("TOKAMAK_ANDROID_KEYSTORE")
+        .env_remove("TOKAMAK_ANDROID_KEYSTORE_PASSWORD")
+        .env_remove("TOKAMAK_ANDROID_KEY_ALIAS")
+        .env_remove("TOKAMAK_ANDROID_KEY_PASSWORD");
     Ok(command)
 }
 
@@ -1107,7 +1111,7 @@ fn shrinks_release_builds_and_signs_them_with_the_debug_key_by_default() -> Test
     assert!(!build_script.contains("signingConfigs {"));
     assert_eq!(
         fs::read_to_string(app.join("tokamak-rules.pro"))?,
-        "-keep class com.tokamak.runtime.** { *; }\n-dontobfuscate\n"
+        "-dontobfuscate\n"
     );
     assert!(project.join("build/android/demo-app.apk").is_file());
     Ok(())
@@ -1132,15 +1136,79 @@ fn signs_release_builds_with_the_configured_keystore() -> TestResult {
         Ok(command)
     };
 
-    build(None)?.assert().failure().stderr(contains(
-        "an Android keystore needs key-alias and keystore-password",
-    ));
+    let missing = "an Android keystore needs key-alias and keystore-password";
+    build(None)?.assert().failure().stderr(contains(missing));
+    build(Some("release"))?
+        .env_remove("TOKAMAK_ANDROID_KEYSTORE_PASSWORD")
+        .assert()
+        .failure()
+        .stderr(contains(missing));
+    build(Some("release"))?
+        .env(
+            "TOKAMAK_ANDROID_KEYSTORE",
+            temporary.path().join("missing.keystore"),
+        )
+        .assert()
+        .failure()
+        .stderr(contains("Android keystore is missing"));
     build(Some("release"))?.assert().success();
 
     let build_script = fs::read_to_string(project.join("build/android/.tokamak/app/build.gradle"))?;
     assert!(build_script.contains("signingConfig signingConfigs.release"));
     assert!(build_script.contains("storeFile file(System.getenv('TOKAMAK_ANDROID_KEYSTORE'))"));
+    assert!(build_script.contains(
+        "keyPassword System.getenv('TOKAMAK_ANDROID_KEY_PASSWORD') ?: System.getenv('TOKAMAK_ANDROID_KEYSTORE_PASSWORD')"
+    ));
     assert!(!build_script.contains("secret"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_android_signing_settings_without_a_keystore() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+    let mut command = build_command("android", &project, &platform_pack)?;
+    command.env("TOKAMAK_ANDROID_KEY_ALIAS", "release");
+    configure_fake_android_tools(&mut command, temporary.path())?;
+
+    command
+        .assert()
+        .failure()
+        .stderr(contains("Android key-alias and passwords need a keystore"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn builds_development_android_apps_as_debug_builds() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+    let mut command = build_command("android", &project, &platform_pack)?;
+    configure_fake_android_tools(&mut command, temporary.path())?;
+    command.assert().success();
+    let input = project.join("build/.tokamak/android/input");
+    fs::write(input.join("metadata/dev-endpoint"), "http://127.0.0.1:9")?;
+    fs::write(input.join("metadata/dev-session-token"), "token")?;
+    let output = temporary.path().join("development/app.apk");
+
+    // Development builds ignore release signing settings.
+    let mut entrypoint = Command::new("bash");
+    entrypoint
+        .arg(platform_pack.join(Target::AndroidArm64.build_entrypoint_path()))
+        .arg("build")
+        .arg(&input)
+        .arg(&output)
+        .env(
+            "TOKAMAK_ANDROID_KEYSTORE",
+            temporary.path().join("missing.keystore"),
+        );
+    configure_fake_android_tools(&mut entrypoint, temporary.path())?;
+    entrypoint.assert().success();
+
+    let gradle = temporary.path().join("development/.tokamak");
+    let arguments = fs::read_to_string(gradle.join("gradle-arguments"))?;
+    assert!(arguments.contains(":app:lintDebug :app:assembleDebug"));
+    assert!(fs::read_to_string(gradle.join("app/build.gradle"))?.contains("signingConfigs.debug"));
+    assert!(output.is_file());
     Ok(())
 }
 
