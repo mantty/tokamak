@@ -779,24 +779,15 @@ fn parse_config(config_path: &Path) -> Result<RawWranglerConfig> {
         .extension()
         .and_then(|extension| extension.to_str());
 
-    match extension {
-        Some("json" | "jsonc") => parse_jsonc_config(config_path, &content),
-        Some("toml") => parse_toml_config(config_path, &content),
-        _ => Err(Error::UnsupportedConfigFormat(config_path.to_path_buf())),
-    }
-}
-
-fn parse_jsonc_config(config_path: &Path, content: &str) -> Result<RawWranglerConfig> {
-    parse_to_serde_value(content, &ParseOptions::default()).map_err(|error| Error::InvalidConfig {
+    let parsed = match extension {
+        Some("json" | "jsonc") => parse_to_serde_value(&content, &ParseOptions::default())
+            .map_err(|error| error.to_string()),
+        Some("toml") => toml::from_str(&content).map_err(|error| error.to_string()),
+        _ => return Err(Error::UnsupportedConfigFormat(config_path.to_path_buf())),
+    };
+    parsed.map_err(|message| Error::InvalidConfig {
         path: config_path.to_path_buf(),
-        message: error.to_string(),
-    })
-}
-
-fn parse_toml_config(config_path: &Path, content: &str) -> Result<RawWranglerConfig> {
-    toml::from_str(content).map_err(|error| Error::InvalidConfig {
-        path: config_path.to_path_buf(),
-        message: error.to_string(),
+        message,
     })
 }
 

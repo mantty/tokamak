@@ -10,38 +10,44 @@ use std::io::Write;
 
 pub(crate) struct HostModule;
 
+super::host_functions! {
+    pub(super),
+    "asyncContextGet" => super::async_context::get,
+    "asyncContextSet" => super::async_context::set,
+    "createDecoder" => create_decoder,
+    "encodeBase64" => encode_base64,
+    "decodeBase64" => decode_base64,
+    "randomBytes" => random_bytes,
+    "detachArrayBuffer" => detach_array_buffer,
+    "objectClass" => super::objects::class_name,
+    "createCompression" => super::compression::create,
+    "createNodeCompression" => super::compression::node::create,
+    "htmlRewrite" => super::html_rewriter::rewrite_html,
+    "htmlValidateSelector" => super::html_rewriter::validate_selector,
+    "httpStatusText" => crate::network::http::status_text,
+    "socketConnect" => crate::network::sockets::start,
+    "ipVersion" => |input: String| crate::network::sockets::ip_version(&input),
+    "cacheMatch" => cache_match,
+    "cachePut" => cache_put,
+    "cacheDelete" => cache_delete,
+    "writeStdout" => |text: String| write_flushed(&mut std::io::stdout().lock(), &text),
+    "writeStderr" => |text: String| write_flushed(&mut std::io::stderr().lock(), &text),
+}
+
+/// Exports that `evaluate` constructs itself.
+const CONSTRUCTED_EXPORTS: [&str; 4] = [
+    "cloneArrayBuffer",
+    "arrayBufferView",
+    "scheduleTimer",
+    "httpFetch",
+];
+
 impl ModuleDef for HostModule {
     fn declare(exports: &Declarations) -> rquickjs::Result<()> {
-        for name in [
-            "asyncContextGet",
-            "asyncContextSet",
-            "scheduleTimer",
-            "createDecoder",
-            "encodeBase64",
-            "decodeBase64",
-            "randomBytes",
-            "detachArrayBuffer",
-            "objectClass",
-            "cloneArrayBuffer",
-            "arrayBufferView",
-            "createCompression",
-            "createNodeCompression",
-            "htmlRewrite",
-            "htmlValidateSelector",
-            "httpFetch",
-            "httpStatusText",
-            "socketConnect",
-            "ipVersion",
-            "cacheMatch",
-            "cachePut",
-            "cacheDelete",
-            "writeStdout",
-            "writeStderr",
-        ] {
-            exports.declare(name)?;
-        }
-        for name in super::crypto::HOST_EXPORTS
+        for name in CONSTRUCTED_EXPORTS
             .iter()
+            .chain(HOST_EXPORTS)
+            .chain(super::crypto::HOST_EXPORTS)
             .chain(super::intl::HOST_EXPORTS)
             .chain(super::url::HOST_EXPORTS)
         {
@@ -52,56 +58,11 @@ impl ModuleDef for HostModule {
 
     fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
         super::buffers::export(ctx, exports)?;
-        exports.export(
-            "asyncContextGet",
-            Function::new(ctx.clone(), super::async_context::get)?,
-        )?;
-        exports.export(
-            "asyncContextSet",
-            Function::new(ctx.clone(), super::async_context::set)?,
-        )?;
-        exports.export("createDecoder", Function::new(ctx.clone(), create_decoder)?)?;
         exports.export("scheduleTimer", super::timers::scheduler(ctx.clone())?)?;
-        exports.export("encodeBase64", Function::new(ctx.clone(), encode_base64)?)?;
-        exports.export("decodeBase64", Function::new(ctx.clone(), decode_base64)?)?;
-        exports.export(
-            "httpStatusText",
-            Function::new(ctx.clone(), crate::network::http::status_text)?,
-        )?;
-        exports.export("randomBytes", Function::new(ctx.clone(), random_bytes)?)?;
-        exports.export(
-            "objectClass",
-            Function::new(ctx.clone(), super::objects::class_name)?,
-        )?;
-        exports.export(
-            "detachArrayBuffer",
-            Function::new(ctx.clone(), detach_array_buffer)?,
-        )?;
-        exports.export(
-            "createCompression",
-            Function::new(ctx.clone(), super::compression::create)?,
-        )?;
-        exports.export(
-            "createNodeCompression",
-            Function::new(ctx.clone(), super::compression::node::create)?,
-        )?;
+        export_host_functions(ctx, exports)?;
         super::crypto::export_host_functions(ctx, exports)?;
         super::intl::export_host_functions(ctx, exports)?;
         super::url::export_host_functions(ctx, exports)?;
-        exports.export(
-            "ipVersion",
-            Function::new(ctx.clone(), |input: String| {
-                crate::network::sockets::ip_version(&input)
-            })?,
-        )?;
-        exports.export(
-            "htmlRewrite",
-            Function::new(ctx.clone(), super::html_rewriter::rewrite_html)?,
-        )?;
-        exports.export(
-            "htmlValidateSelector",
-            Function::new(ctx.clone(), super::html_rewriter::validate_selector)?,
-        )?;
         let client = crate::network::http::client()
             .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
         exports.export(
@@ -118,29 +79,13 @@ impl ModuleDef for HostModule {
                 },
             )?,
         )?;
-        exports.export(
-            "socketConnect",
-            Function::new(ctx.clone(), crate::network::sockets::start)?,
-        )?;
-        exports.export("cacheMatch", Function::new(ctx.clone(), cache_match)?)?;
-        exports.export("cachePut", Function::new(ctx.clone(), cache_put)?)?;
-        exports.export("cacheDelete", Function::new(ctx.clone(), cache_delete)?)?;
-        exports.export("writeStdout", Function::new(ctx.clone(), write_stdout)?)?;
-        exports.export("writeStderr", Function::new(ctx.clone(), write_stderr)?)?;
         Ok(())
     }
 }
 
-fn write_stdout(text: String) {
-    let mut stdout = std::io::stdout().lock();
-    let _ = stdout.write_all(text.as_bytes());
-    let _ = stdout.flush();
-}
-
-fn write_stderr(text: String) {
-    let mut stderr = std::io::stderr().lock();
-    let _ = stderr.write_all(text.as_bytes());
-    let _ = stderr.flush();
+fn write_flushed(output: &mut dyn Write, text: &str) {
+    let _ = output.write_all(text.as_bytes());
+    let _ = output.flush();
 }
 
 fn cache_match(

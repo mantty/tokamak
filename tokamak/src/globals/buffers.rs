@@ -4,20 +4,14 @@ use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering, fence};
 
 use rquickjs::module::Exports;
-use rquickjs::{Ctx, Object, Value, qjs};
+use rquickjs::{Ctx, Function, Object, Value, qjs};
 
 use super::checked;
 
 pub(super) fn export<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
     install(ctx);
-    exports.export(
-        "cloneArrayBuffer",
-        rquickjs::Function::new(ctx.clone(), clone)?,
-    )?;
-    exports.export(
-        "arrayBufferView",
-        rquickjs::Function::new(ctx.clone(), view)?,
-    )?;
+    exports.export("cloneArrayBuffer", Function::new(ctx.clone(), clone)?)?;
+    exports.export("arrayBufferView", Function::new(ctx.clone(), view)?)?;
     Ok(())
 }
 

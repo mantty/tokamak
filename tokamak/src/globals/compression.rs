@@ -93,12 +93,6 @@ pub(super) fn create<'js>(
                     .ok_or_else(|| Exception::throw_type(&ctx, "Detached compression input"))?
                     .to_vec();
                 let mut remaining = input.as_slice();
-                if ended && !remaining.is_empty() {
-                    return Err(Exception::throw_type(
-                        &ctx,
-                        "Trailing bytes after end of compressed data",
-                    ));
-                }
                 let mut output = [0; 16384];
                 while !ended {
                     let (consumed, written, status) = codec
@@ -112,14 +106,8 @@ pub(super) fn create<'js>(
                         )?,))?;
                     }
                     ended = status == Status::StreamEnd;
-                    if ended && !remaining.is_empty() {
-                        return Err(Exception::throw_type(
-                            &ctx,
-                            "Trailing bytes after end of compressed data",
-                        ));
-                    }
-                    if consumed == 0 && written == 0 {
-                        if finish && !ended {
+                    if !ended && consumed == 0 && written == 0 {
+                        if finish {
                             return Err(Exception::throw_type(
                                 &ctx,
                                 "Called close() on a decompression stream with incomplete data",
@@ -127,6 +115,12 @@ pub(super) fn create<'js>(
                         }
                         break;
                     }
+                }
+                if ended && !remaining.is_empty() {
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        "Trailing bytes after end of compressed data",
+                    ));
                 }
                 Ok(())
             },
