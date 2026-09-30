@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 pub(crate) mod brotli;
 pub(crate) mod headers;
 pub(crate) mod http;
@@ -22,8 +22,11 @@ pub(crate) struct CacheEntry {
 type CacheStore = HashMap<String, HashMap<String, CacheEntry>>;
 static CACHES: OnceLock<Mutex<CacheStore>> = OnceLock::new();
 
-fn caches() -> &'static Mutex<CacheStore> {
-    CACHES.get_or_init(|| Mutex::new(HashMap::new()))
+fn caches() -> MutexGuard<'static, CacheStore> {
+    CACHES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
 fn cache_scope(path: &str, name: &str) -> String {
@@ -32,25 +35,19 @@ fn cache_scope(path: &str, name: &str) -> String {
 
 pub(crate) fn cache_match(path: &str, name: &str, key: &str) -> Option<CacheEntry> {
     caches()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&cache_scope(path, name))
         .and_then(|entries| entries.get(key).cloned())
 }
 
 pub(crate) fn cache_put(path: &str, name: &str, key: String, entry: CacheEntry) {
     caches()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .entry(cache_scope(path, name))
         .or_default()
         .insert(key, entry);
 }
 
 pub(crate) fn cache_delete(path: &str, name: &str, key: &str) -> bool {
-    let mut caches = caches()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut caches = caches();
     let scope = cache_scope(path, name);
     let Some(entries) = caches.get_mut(&scope) else {
         return false;

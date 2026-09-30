@@ -75,8 +75,7 @@ impl Runtime {
         let worker = packaged_worker(&config.app)?;
         validate_worker(&worker)?;
         let handler = Dispatcher::new(worker, quickjs_config(&config)?)?;
-        let gateway = start_gateway(&certificates, &config.host, handler, events.clone())?;
-        Ok(finish_start(events, config.host, certificates, gateway))
+        finish_start(events, config.host, certificates, handler)
     }
 
     /// Start a runtime that forwards requests to a host development server.
@@ -96,8 +95,7 @@ impl Runtime {
         events.emit(Event::Starting);
         let certificates = Arc::new(Certificates::start(config.state_dir, config.host.clone())?);
         let handler = DevProxy::new(&config.proxy)?;
-        let gateway = start_gateway(&certificates, &config.host, handler, events.clone())?;
-        Ok(finish_start(events, config.host, certificates, gateway))
+        finish_start(events, config.host, certificates, handler)
     }
 
     /// The host the `WebView` loads.
@@ -157,36 +155,26 @@ impl Runtime {
     }
 }
 
+/// Start the gateway serving `handler`, then certificate renewal.
 fn finish_start(
     events: Events,
     host: String,
     certificates: Arc<Certificates>,
-    gateway: gateway::Runtime,
-) -> Runtime {
+    handler: Arc<dyn gateway::Handler>,
+) -> Result<Runtime> {
+    let config = gateway_config(&certificates, &host);
+    let gateway = gateway::Runtime::start(handler, config, events.clone())?;
     let renewal = certificates.start_renewal(events.clone());
     events.emit(Event::Listening {
         port: gateway.port(),
     });
-    Runtime {
+    Ok(Runtime {
         host,
         certificates,
         _renewal: renewal,
         events,
         gateway,
-    }
-}
-
-fn start_gateway(
-    certificates: &Arc<Certificates>,
-    host: &str,
-    handler: Arc<dyn gateway::Handler>,
-    events: Events,
-) -> Result<gateway::Runtime> {
-    Ok(gateway::Runtime::start(
-        handler,
-        gateway_config(certificates, host),
-        events,
-    )?)
+    })
 }
 
 fn packaged_worker(app: &PackageLayout) -> Result<WorkerBundle> {
@@ -204,25 +192,16 @@ fn packaged_worker(app: &PackageLayout) -> Result<WorkerBundle> {
 }
 
 fn validate_worker(worker: &WorkerBundle) -> Result<()> {
-    if worker.entry.is_empty() {
-        return Err(crate::QuickJsError::Startup("Worker entry module is empty".to_owned()).into());
-    }
-    if let Some(bytecode) = &worker.legacy {
-        if bytecode.is_empty() {
-            return Err(crate::QuickJsError::Startup("Worker bytecode is empty".to_owned()).into());
+    let entry_module = worker.modules.join(format!("{}.qjs", worker.entry));
+    let message = match &worker.legacy {
+        _ if worker.entry.is_empty() => "Worker entry module is empty".to_owned(),
+        Some(bytecode) if bytecode.is_empty() => "Worker bytecode is empty".to_owned(),
+        None if !entry_module.is_file() => {
+            format!("Worker entry module is missing: {}", worker.entry)
         }
-    } else if !worker
-        .modules
-        .join(format!("{}.qjs", worker.entry))
-        .is_file()
-    {
-        return Err(crate::QuickJsError::Startup(format!(
-            "Worker entry module is missing: {}",
-            worker.entry
-        ))
-        .into());
-    }
-    Ok(())
+        _ => return Ok(()),
+    };
+    Err(crate::QuickJsError::Startup(message).into())
 }
 
 fn gateway_config(certificates: &Arc<Certificates>, host: &str) -> GatewayConfig {

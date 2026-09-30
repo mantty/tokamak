@@ -78,15 +78,10 @@ impl AsyncRead for Decoder {
                 }
                 continue;
             }
-            match this.fill(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                Poll::Ready(Ok(0)) => {
-                    let written = this.decode(buf.initialize_unfilled(), FINISH)?;
-                    buf.advance(written);
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(Ok(_)) => {}
+            if std::task::ready!(this.fill(cx))? == 0 {
+                let written = this.decode(buf.initialize_unfilled(), FINISH)?;
+                buf.advance(written);
+                return Poll::Ready(Ok(()));
             }
         }
     }

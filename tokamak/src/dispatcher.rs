@@ -19,9 +19,11 @@ use crate::gateway::{
 use crate::globals::ResponseEncoder;
 use crate::linked::StorageRuntime;
 use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
-use crate::transport::{BodyChunk, HttpBody, HttpRequest, HttpResponse, response_stream};
+use crate::transport::{
+    BodyChunk, HttpBody, HttpRequest, HttpResponse, append_header, response_stream,
+};
 use flate2::read::GzDecoder;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderValue};
 use rquickjs::convert::List;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{
@@ -57,10 +59,10 @@ impl Handler for Dispatcher {
         if let Some(assets) = &self.assets
             && let Some(asset) = assets.response(&job.request)?
         {
-            job.response
+            return job
+                .response
                 .send(JobResponse::Http(asset))
-                .map_err(|_| Error::Startup("HTTP response receiver closed".to_owned()))?;
-            return Ok(());
+                .map_err(|_| Error::startup("HTTP response receiver closed"));
         }
         execute_request(
             &self.worker,
@@ -174,7 +176,7 @@ async fn execute_request_async(
             response_sender
                 .send_async(JobResponse::WebSocket)
                 .await
-                .map_err(|_| Error::Startup("WebSocket response receiver closed".to_owned()))?;
+                .map_err(|_| Error::startup("WebSocket response receiver closed"))?;
             websocket_loop(&ctx, &web_socket, &receive, &close, &websocket, execution).await?;
             return drain_wait_until(&ctx).await;
         }
@@ -204,8 +206,7 @@ async fn invoke_worker<'js>(ctx: &Ctx<'js>, worker: &WorkerBundle) -> Result<Obj
     let response: Promise = fetch
         .call((request, environment, execution_context))
         .map_err(|error| js_error("fetch", error))?;
-    let response: Object = finish_promise(ctx, &response, "response").await?;
-    Ok(response)
+    finish_promise(ctx, &response, "response").await
 }
 
 fn install_worker_globals(
@@ -256,7 +257,7 @@ fn initialize_worker_context(ctx: &Ctx<'_>, worker: &WorkerBundle) -> Result<(),
 /// Evaluate the Worker's entry module and return its default export, constructed
 /// when it is a class.
 pub(super) async fn load_worker<'js>(
-    ctx: &rquickjs::Ctx<'js>,
+    ctx: &Ctx<'js>,
     bundle: &WorkerBundle,
 ) -> Result<Object<'js>, Error> {
     let bytes = read_worker_module(bundle, &bundle.entry)?;
@@ -286,9 +287,11 @@ pub(super) async fn load_worker<'js>(
     let default: Value = exports
         .get("default")
         .map_err(|error| js_error("worker export", error))?;
-    let instantiate: Function = ctx
-        .eval("(worker, context, env) => typeof worker === 'function' ? new worker(context, env) : worker")
-        .map_err(|error| js_error("worker entrypoint", error))?;
+    let instantiate = eval_function(
+        ctx,
+        "(worker, context, env) => typeof worker === 'function' ? new worker(context, env) : worker",
+        "worker entrypoint",
+    )?;
     instantiate
         .call((default, execution_context, environment))
         .map_err(|error| js_error("worker entrypoint", error))
@@ -296,13 +299,13 @@ pub(super) async fn load_worker<'js>(
 
 /// The entrypoint's `fetch` handler bound to it, returning a promise.
 fn worker_fetch<'js>(ctx: &Ctx<'js>, entrypoint: &Object<'js>) -> Result<Function<'js>, Error> {
-    let bind: Function = ctx
-        .eval(
-            "(worker) => typeof worker.fetch === 'function' \
-                ? (...args) => Promise.resolve(worker.fetch(...args)) \
-                : undefined",
-        )
-        .map_err(|error| js_error("worker fetch", error))?;
+    let bind = eval_function(
+        ctx,
+        "(worker) => typeof worker.fetch === 'function' \
+            ? (...args) => Promise.resolve(worker.fetch(...args)) \
+            : undefined",
+        "worker fetch",
+    )?;
     let fetch: Option<Function> = bind
         .call((entrypoint.clone(),))
         .map_err(|error| js_error("worker fetch", error))?;
@@ -314,7 +317,7 @@ pub(super) struct WorkerResolver;
 impl Resolver for WorkerResolver {
     fn resolve<'js>(
         &mut self,
-        _ctx: &rquickjs::Ctx<'js>,
+        _ctx: &Ctx<'js>,
         base: &str,
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
@@ -361,7 +364,7 @@ pub(super) struct WorkerLoader {
 impl Loader for WorkerLoader {
     fn load<'js>(
         &mut self,
-        ctx: &rquickjs::Ctx<'js>,
+        ctx: &Ctx<'js>,
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<Module<'js>> {
@@ -434,7 +437,7 @@ fn read_worker_module(bundle: &WorkerBundle, name: &str) -> io::Result<Vec<u8>> 
 }
 
 async fn websocket_loop<'js>(
-    ctx: &rquickjs::Ctx<'js>,
+    ctx: &Ctx<'js>,
     client: &Object<'js>,
     receive: &Function<'js>,
     close: &Function<'js>,
@@ -448,14 +451,14 @@ async fn websocket_loop<'js>(
     client
         .set("__tokamak_notify", notify)
         .map_err(|error| js_error("WebSocket notification", error))?;
-    let take_outbox: Function = ctx
-        .eval(
-            "socket => { const outbox = socket.__tokamak_outbox; socket.__tokamak_outbox = []; return outbox; }",
-        )
-        .map_err(|error| js_error("WebSocket outbox", error))?;
+    let take_outbox = eval_function(
+        ctx,
+        "socket => { const outbox = socket.__tokamak_outbox; socket.__tokamak_outbox = []; return outbox; }",
+        "WebSocket outbox",
+    )?;
     drain_pending_jobs(ctx);
     drain_websocket_outbox(client, &take_outbox, &websocket.outgoing).await?;
-    signal_websocket_ready(&websocket.outgoing).await?;
+    send_outbound(&websocket.outgoing, WebSocketOutbound::Ready).await?;
 
     loop {
         if !execution.is_running() {
@@ -497,14 +500,14 @@ async fn websocket_loop<'js>(
         };
         drain_pending_jobs(ctx);
         drain_websocket_outbox(client, &take_outbox, &websocket.outgoing).await?;
-        signal_websocket_ready(&websocket.outgoing).await?;
+        send_outbound(&websocket.outgoing, WebSocketOutbound::Ready).await?;
         if should_close {
             return Ok(());
         }
     }
 }
 
-fn drain_pending_jobs(ctx: &rquickjs::Ctx<'_>) {
+fn drain_pending_jobs(ctx: &Ctx<'_>) {
     while ctx.execute_pending_job() {}
 }
 
@@ -521,7 +524,7 @@ async fn drain_websocket_outbox<'js>(
         let message_type: String = entry
             .get("type")
             .map_err(|error| js_error("WebSocket outbox type", error))?;
-        match message_type.as_str() {
+        let frame = match message_type.as_str() {
             "message" => {
                 let binary: bool = entry
                     .get("binary")
@@ -539,10 +542,7 @@ async fn drain_websocket_outbox<'js>(
                         .map_err(|error| js_error("WebSocket outbox data", error))?;
                     data.into_bytes()
                 };
-                outgoing
-                    .send_async(WebSocketOutbound::Message { binary, payload })
-                    .await
-                    .map_err(|_| Error::Startup("WebSocket connection closed".to_owned()))?;
+                WebSocketOutbound::Message { binary, payload }
             }
             "close" => {
                 let code: u16 = entry
@@ -551,25 +551,26 @@ async fn drain_websocket_outbox<'js>(
                 let reason: String = entry
                     .get("reason")
                     .map_err(|error| js_error("WebSocket close reason", error))?;
-                outgoing
-                    .send_async(WebSocketOutbound::Close { code, reason })
-                    .await
-                    .map_err(|_| Error::Startup("WebSocket connection closed".to_owned()))?;
+                WebSocketOutbound::Close { code, reason }
             }
             _ => return Err(Error::Engine("unknown WebSocket outbox entry".to_owned())),
-        }
+        };
+        send_outbound(outgoing, frame).await?;
     }
     Ok(())
 }
 
-async fn signal_websocket_ready(outgoing: &WebSocketOutgoing) -> Result<(), Error> {
+async fn send_outbound(
+    outgoing: &WebSocketOutgoing,
+    frame: WebSocketOutbound,
+) -> Result<(), Error> {
     outgoing
-        .send_async(WebSocketOutbound::Ready)
+        .send_async(frame)
         .await
-        .map_err(|_| Error::Startup("WebSocket connection closed".to_owned()))
+        .map_err(|_| Error::startup("WebSocket connection closed"))
 }
 
-async fn drain_wait_until(ctx: &rquickjs::Ctx<'_>) -> Result<(), Error> {
+async fn drain_wait_until(ctx: &Ctx<'_>) -> Result<(), Error> {
     let drain: Function = ctx
         .globals()
         .get("__tokamak_drain_wait_until")
@@ -577,8 +578,7 @@ async fn drain_wait_until(ctx: &rquickjs::Ctx<'_>) -> Result<(), Error> {
     let pending: Promise = drain
         .call(())
         .map_err(|error| js_error("waitUntil", error))?;
-    finish_promise::<()>(ctx, &pending, "waitUntil").await?;
-    Ok(())
+    finish_promise(ctx, &pending, "waitUntil").await
 }
 
 struct JsResponse<'js> {
@@ -595,7 +595,7 @@ enum JsResponseBody<'js> {
 }
 
 async fn response_from_js<'js>(
-    ctx: &rquickjs::Ctx<'js>,
+    ctx: &Ctx<'js>,
     response: &Object<'js>,
 ) -> Result<JsResponse<'js>, Error> {
     let status: u16 = response
@@ -609,20 +609,13 @@ async fn response_from_js<'js>(
     let object: Object = response
         .get("headers")
         .map_err(|error| js_error("response headers", error))?;
-    let entries_fn: Function = ctx
-        .eval("headers => Array.from(headers)")
-        .map_err(|error| js_error("response headers", error))?;
+    let entries_fn = eval_function(ctx, "headers => Array.from(headers)", "response headers")?;
     let entries: Array = entries_fn
         .call((object,))
         .map_err(|error| js_error("response headers", error))?;
     for entry in entries.iter::<List<(String, String)>>() {
         let List((name, value)) = entry.map_err(|error| js_error("response header", error))?;
-        headers
-            .try_append(
-                HeaderName::from_bytes(name.as_bytes()).map_err(io::Error::other)?,
-                HeaderValue::from_bytes(value.as_bytes()).map_err(io::Error::other)?,
-            )
-            .map_err(io::Error::other)?;
+        append_header(&mut headers, &name, &value)?;
     }
     let encoding: Option<String> = response
         .get("__encodeBody")
@@ -654,7 +647,7 @@ async fn response_from_js<'js>(
 }
 
 async fn buffered_response_body<'js>(
-    ctx: &rquickjs::Ctx<'js>,
+    ctx: &Ctx<'js>,
     response: &Object<'js>,
 ) -> Result<Vec<u8>, Error> {
     let value: Value = response
@@ -663,28 +656,18 @@ async fn buffered_response_body<'js>(
     if value.is_null() {
         return Ok(Vec::new());
     }
-    if let Ok(body) = TypedArray::<u8>::from_value(value.clone()) {
-        return body
-            .as_bytes()
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| Error::Engine("response body was detached".to_owned()));
-    }
-    if let Some(body) = ArrayBuffer::from_value(value) {
-        return body
-            .as_bytes()
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| Error::Engine("response body was detached".to_owned()));
-    }
-    read_response_text(ctx, response).await
+    let bytes = if let Ok(body) = TypedArray::<u8>::from_value(value.clone()) {
+        body.as_bytes().map(ToOwned::to_owned)
+    } else if let Some(body) = ArrayBuffer::from_value(value) {
+        body.as_bytes().map(ToOwned::to_owned)
+    } else {
+        return read_response_text(ctx, response).await;
+    };
+    bytes.ok_or_else(|| Error::Engine("response body was detached".to_owned()))
 }
 
-async fn read_response_text<'js>(
-    ctx: &rquickjs::Ctx<'js>,
-    response: &Object<'js>,
-) -> Result<Vec<u8>, Error> {
-    let read_body: Function = ctx
-        .eval("response => response.text()")
-        .map_err(|error| js_error("response body", error))?;
+async fn read_response_text<'js>(ctx: &Ctx<'js>, response: &Object<'js>) -> Result<Vec<u8>, Error> {
+    let read_body = eval_function(ctx, "response => response.text()", "response body")?;
     let body: Promise = read_body
         .call((response.clone(),))
         .map_err(|error| js_error("response body", error))?;
@@ -693,7 +676,7 @@ async fn read_response_text<'js>(
 }
 
 async fn send_worker_response<'js>(
-    ctx: &rquickjs::Ctx<'js>,
+    ctx: &Ctx<'js>,
     response: JsResponse<'js>,
     response_sender: &Sender<JobResponse>,
 ) -> Result<(), Error> {
@@ -741,35 +724,33 @@ async fn send_worker_response<'js>(
 }
 
 async fn pump_response_stream<'js>(
-    ctx: &rquickjs::Ctx<'js>,
+    ctx: &Ctx<'js>,
     stream: Object<'js>,
     encoder: &mut Option<ResponseEncoder>,
     sender: &Sender<BodyChunk>,
     cancelled: &CancellationToken,
 ) -> Result<(), Error> {
-    let get_reader: Function = ctx
-        .eval("stream => stream.getReader()")
-        .map_err(|error| js_error("response stream reader", error))?;
+    let get_reader = eval_function(
+        ctx,
+        "stream => stream.getReader()",
+        "response stream reader",
+    )?;
     let reader: Object = get_reader
         .call((stream,))
         .map_err(|error| js_error("response stream reader", error))?;
-    let read: Function = ctx
-        .eval("reader => reader.read()")
-        .map_err(|error| js_error("response stream read", error))?;
-    let cancel: Function = ctx
-        .eval("reader => reader.cancel()")
-        .map_err(|error| js_error("response stream cancel", error))?;
-    let to_bytes: Function = ctx
-        .eval(
-            "value => {\
-                if (typeof value === 'string') return new TextEncoder().encode(value);\
-                if (value instanceof Uint8Array) return value;\
-                if (value instanceof ArrayBuffer) return new Uint8Array(value);\
-                if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);\
-                throw new TypeError('response stream chunks must be byte-oriented');\
-            }",
-        )
-        .map_err(|error| js_error("response stream chunk", error))?;
+    let read = eval_function(ctx, "reader => reader.read()", "response stream read")?;
+    let cancel = eval_function(ctx, "reader => reader.cancel()", "response stream cancel")?;
+    let to_bytes = eval_function(
+        ctx,
+        "value => {\
+            if (typeof value === 'string') return new TextEncoder().encode(value);\
+            if (value instanceof Uint8Array) return value;\
+            if (value instanceof ArrayBuffer) return new Uint8Array(value);\
+            if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);\
+            throw new TypeError('response stream chunks must be byte-oriented');\
+        }",
+        "response stream chunk",
+    )?;
     loop {
         if cancelled.is_cancelled() {
             cancel_response_stream(ctx, &cancel, &reader).await;
@@ -833,11 +814,7 @@ async fn send_response_chunk(
     }
 }
 
-async fn cancel_response_stream<'js>(
-    ctx: &rquickjs::Ctx<'js>,
-    cancel: &Function<'js>,
-    reader: &Object<'js>,
-) {
+async fn cancel_response_stream<'js>(ctx: &Ctx<'js>, cancel: &Function<'js>, reader: &Object<'js>) {
     let Ok(pending) = cancel.call::<_, Promise>((reader.clone(),)) else {
         return;
     };
@@ -845,7 +822,7 @@ async fn cancel_response_stream<'js>(
 }
 
 async fn finish_promise<'js, T: rquickjs::FromJs<'js>>(
-    ctx: &rquickjs::Ctx<'js>,
+    ctx: &Ctx<'js>,
     promise: &Promise<'js>,
     stage: &'static str,
 ) -> Result<T, Error> {
@@ -975,11 +952,16 @@ impl AssetManifest {
     }
 }
 
+/// The function `source` evaluates to.
+fn eval_function<'js>(ctx: &Ctx<'js>, source: &str, stage: &str) -> Result<Function<'js>, Error> {
+    ctx.eval(source).map_err(|error| js_error(stage, error))
+}
+
 fn js_error(stage: &str, error: impl std::fmt::Display) -> Error {
     Error::Engine(format!("{stage}: {error}"))
 }
 
-fn js_exception(ctx: &rquickjs::Ctx<'_>, stage: &str, error: impl std::fmt::Display) -> Error {
+fn js_exception(ctx: &Ctx<'_>, stage: &str, error: impl std::fmt::Display) -> Error {
     let value = ctx.catch();
     let detail = value.as_exception().map_or_else(
         || error.to_string(),
