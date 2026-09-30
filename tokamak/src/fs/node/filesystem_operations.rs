@@ -818,7 +818,7 @@ pub(super) fn glob_sync<'js>(
     pattern: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
-    glob_values(&ctx, pattern, options.0)?.into_js(&ctx)
+    glob_array(&ctx, pattern, options.0).map(Array::into_value)
 }
 
 pub(super) fn glob_promise<'js>(
@@ -826,16 +826,18 @@ pub(super) fn glob_promise<'js>(
     pattern: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Object<'js>> {
-    let values = glob_values(&ctx, pattern, options.0)?;
+    let values = glob_array(&ctx, pattern, options.0)?
+        .iter::<Value>()
+        .collect::<rquickjs::Result<Vec<_>>>()?;
     async_value_iterator(&ctx, values)
 }
 
 /// The matches of `pattern`, as names or dirents.
-fn glob_values<'js>(
+fn glob_array<'js>(
     ctx: &Ctx<'js>,
     pattern: Value<'js>,
     options_value: Option<Value<'js>>,
-) -> rquickjs::Result<Vec<Value<'js>>> {
+) -> rquickjs::Result<Array<'js>> {
     let exclude = option_property(ctx, options_value.as_ref(), "exclude")?;
     let options = parse_options(ctx, options_value)?;
     let patterns = if pattern.is_array() {
@@ -871,7 +873,11 @@ fn glob_values<'js>(
             });
         }
     }
-    Ok(matches)
+    let result = Array::new(ctx.clone())?;
+    for (index, value) in matches.into_iter().enumerate() {
+        result.set(index, value)?;
+    }
+    Ok(result)
 }
 
 /// `path` as a glob `pattern` sees it: absolute for absolute patterns, else relative to `cwd`.
