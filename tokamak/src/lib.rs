@@ -114,6 +114,14 @@ pub enum Error {
     #[cfg(feature = "native")]
     #[error(transparent)]
     Certificate(#[from] x509_cert::builder::Error),
+    /// A certificate did not encode or decode.
+    #[cfg(feature = "native")]
+    #[error(transparent)]
+    CertificateEncoding(#[from] x509_cert::der::Error),
+    /// A certificate's private key did not encode or decode.
+    #[cfg(feature = "native")]
+    #[error(transparent)]
+    CertificateKey(#[from] p256::pkcs8::Error),
     /// The JavaScript runtime failed to start or change state.
     #[cfg(feature = "native")]
     #[error(transparent)]

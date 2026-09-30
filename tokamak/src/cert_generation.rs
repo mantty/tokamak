@@ -33,8 +33,29 @@ use crate::Result;
 pub(super) type BuildResult<T> = std::result::Result<T, BuildError>;
 
 const DAY: Duration = Duration::from_hours(24);
-const CA_VALIDITY_DAYS: u32 = 3_650;
-const LEAF_VALIDITY_DAYS: u32 = 90;
+
+/// The serial number, validity and basic constraint of a kind of certificate.
+struct Kind {
+    serial: u64,
+    validity_days: u32,
+    ca: bool,
+}
+
+const AUTHORITY: Kind = Kind {
+    serial: 1,
+    validity_days: 3_650,
+    ca: true,
+};
+const SERVER: Kind = Kind {
+    serial: 2,
+    validity_days: 90,
+    ca: false,
+};
+const CLIENT: Kind = Kind {
+    serial: 3,
+    validity_days: 90,
+    ca: false,
+};
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A certificate's issuer: its subject name and signing key.
@@ -43,8 +64,8 @@ pub(super) struct Issuer<'a> {
     pub(super) key: &'a SigningKey,
 }
 
-/// The subject and issuer of a certificate; its extensions are added in order
-/// by the builder.
+/// The subject and issuer of a certificate. Its extensions are added to the
+/// builder instead.
 struct Names {
     subject: Name,
     issuer: Name,
@@ -76,9 +97,9 @@ pub(super) fn build_ca_certificate(key: &SigningKey, now: SystemTime) -> BuildRe
         name: name.clone(),
         key,
     };
-    let mut builder = certificate_builder(name, &issuer, key, 1, now, CA_VALIDITY_DAYS)?;
+    let mut builder = certificate_builder(name, &issuer, key, &AUTHORITY, now)?;
     builder.add_extension(&KeyUsage(KeyUsages::KeyCertSign | KeyUsages::CRLSign))?;
-    finish(builder, key, &issuer, true)
+    builder.build::<_, DerSignature>(key)
 }
 
 /// A certificate for the gateway serving `host`, issued by `issuer`.
@@ -88,8 +109,8 @@ pub(super) fn build_server_certificate(
     host: &str,
     now: SystemTime,
 ) -> BuildResult<Certificate> {
-    let mut builder =
-        certificate_builder(common_name(host)?, issuer, key, 2, now, LEAF_VALIDITY_DAYS)?;
+    let subject = common_name(host)?;
+    let mut builder = certificate_builder(subject, issuer, key, &SERVER, now)?;
     builder.add_extension(&SubjectAltName(vec![
         GeneralName::DnsName(Ia5String::new(host)?),
         GeneralName::DnsName(Ia5String::new("localhost")?),
@@ -98,7 +119,7 @@ pub(super) fn build_server_certificate(
     builder.add_extension(&ExtendedKeyUsage(vec![
         const_oid::db::rfc5280::ID_KP_SERVER_AUTH,
     ]))?;
-    finish(builder, key, issuer, false)
+    builder.build::<_, DerSignature>(issuer.key)
 }
 
 /// A client-authentication certificate issued by `issuer`.
@@ -108,22 +129,23 @@ pub(super) fn build_client_certificate(
     now: SystemTime,
 ) -> BuildResult<Certificate> {
     let subject = common_name("tokamak client")?;
-    let mut builder = certificate_builder(subject, issuer, key, 3, now, LEAF_VALIDITY_DAYS)?;
+    let mut builder = certificate_builder(subject, issuer, key, &CLIENT, now)?;
     builder.add_extension(&ExtendedKeyUsage(vec![
         const_oid::db::rfc5280::ID_KP_CLIENT_AUTH,
     ]))?;
-    finish(builder, key, issuer, false)
+    builder.build::<_, DerSignature>(issuer.key)
 }
 
-/// The distinguished name holding only the common name `value`.
-fn common_name(value: &str) -> BuildResult<Name> {
+/// The distinguished name holding only the common name `value`, as a
+/// `UTF8String`. A `Name` is only built by decoding one.
+fn common_name(value: &str) -> der::Result<Name> {
     let attribute = AttributeTypeAndValue {
         oid: const_oid::db::rfc4519::CN,
         value: Any::encode_from(&Utf8StringRef::new(value)?)?,
     };
     let mut names = RdnSequence::default();
     names.push(RelativeDistinguishedName::try_from(vec![attribute])?);
-    Ok(Name::from_der(&names.to_der()?)?)
+    Name::from_der(&names.to_der()?)
 }
 
 /// A new ECDSA P-256 signing key.
@@ -133,56 +155,47 @@ pub(super) fn generate_key() -> SigningKey {
 }
 
 /// `key` as PKCS#8, in PEM and DER.
-pub(super) fn encode_key(key: &SigningKey) -> BuildResult<(String, Vec<u8>)> {
-    let der = key.to_pkcs8_der().map_err(spki::Error::from)?;
-    let pem = der
-        .to_pem("PRIVATE KEY", LineEnding::LF)
-        .map_err(spki::Error::from)?;
+pub(super) fn encode_key(key: &SigningKey) -> p256::pkcs8::Result<(String, Vec<u8>)> {
+    let der = key.to_pkcs8_der()?;
+    let pem = der.to_pem("PRIVATE KEY", LineEnding::LF)?;
     Ok((pem.to_string(), der.as_bytes().to_vec()))
 }
 
 /// `certificate` in PEM.
-pub(super) fn certificate_pem(certificate: &Certificate) -> BuildResult<String> {
+pub(super) fn certificate_pem(certificate: &Certificate) -> der::Result<String> {
     use der::EncodePem;
-    Ok(certificate.to_pem(LineEnding::LF)?)
+    certificate.to_pem(LineEnding::LF)
 }
 
+/// A builder for a certificate of `key`, with its validity, key identifier
+/// and basic constraints.
 fn certificate_builder(
     subject: Name,
     issuer: &Issuer<'_>,
     key: &SigningKey,
-    serial: u64,
+    kind: &Kind,
     now: SystemTime,
-    validity_days: u32,
 ) -> BuildResult<CertificateBuilder<Names>> {
     let validity = Validity::new(
         Time::try_from(now - DAY)?,
-        Time::try_from(now + DAY * validity_days)?,
+        Time::try_from(now + DAY * kind.validity_days)?,
     );
     let public_key = SubjectPublicKeyInfoOwned::from_key(key.verifying_key())?;
     let names = Names {
         subject,
         issuer: issuer.name.clone(),
     };
-    CertificateBuilder::new(names, SerialNumber::from(serial), validity, public_key)
-}
-
-/// Add the subject key identifier and basic constraints, then sign.
-fn finish(
-    mut builder: CertificateBuilder<Names>,
-    key: &SigningKey,
-    issuer: &Issuer<'_>,
-    ca: bool,
-) -> BuildResult<Certificate> {
-    // The first 160 bits of the SHA-256 of the public key.
+    let mut builder =
+        CertificateBuilder::new(names, SerialNumber::from(kind.serial), validity, public_key)?;
+    // RFC 7093 method 1: the leftmost 160 bits of the SHA-256 of the key.
     let point = key.verifying_key().to_sec1_point(false);
     let identifier = OctetString::new(&Sha256::digest(point.as_bytes())[..20])?;
     builder.add_extension(&SubjectKeyIdentifier(identifier))?;
     builder.add_extension(&BasicConstraints {
-        ca,
+        ca: kind.ca,
         path_len_constraint: None,
     })?;
-    builder.build::<_, DerSignature>(issuer.key)
+    Ok(builder)
 }
 
 pub(super) fn server_identity(certificate: &str, key: &str) -> String {

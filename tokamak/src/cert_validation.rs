@@ -12,14 +12,10 @@ use x509_cert::ext::pkix::SubjectAltName;
 use x509_cert::ext::pkix::name::GeneralName;
 
 /// The contents of the first PEM block in `pem`.
-fn pem_contents(pem: &str) -> Option<Vec<u8>> {
+pub(crate) fn pem_contents(pem: &str) -> Option<Vec<u8>> {
     der::pem::decode_vec(pem.as_bytes())
         .ok()
         .map(|(_, contents)| contents)
-}
-
-pub(crate) fn certificate_der(pem: &str) -> Option<Vec<u8>> {
-    pem_contents(pem)
 }
 
 pub(crate) fn certificate_der_matches_pem(certificate_pem: &str, certificate_der: &[u8]) -> bool {
@@ -67,7 +63,7 @@ pub(crate) fn certificate_is_issued_by(certificate_pem: &str, issuer_pem: &str) 
     with_certificate(certificate_pem, |certificate| {
         with_certificate(issuer_pem, |issuer| {
             certificate.tbs_certificate().issuer() == issuer.tbs_certificate().subject()
-                && signature_is_valid(certificate, issuer).unwrap_or(false)
+                && signature_is_valid(certificate, issuer)
         })
     })
     .flatten()
@@ -84,14 +80,24 @@ fn public_key_info(certificate: &Certificate) -> Option<Vec<u8>> {
 }
 
 /// Whether `issuer`'s ECDSA P-256 key signed `certificate`.
-fn signature_is_valid(certificate: &Certificate, issuer: &Certificate) -> Option<bool> {
-    let key = VerifyingKey::from_public_key_der(&public_key_info(issuer)?).ok()?;
-    let signature = DerSignature::from_bytes(certificate.signature().as_bytes()?).ok()?;
-    let signed = certificate.tbs_certificate().to_der().ok()?;
-    Some(
-        certificate.signature_algorithm().oid == const_oid::db::rfc5912::ECDSA_WITH_SHA_256
-            && key.verify(&signed, &signature).is_ok(),
-    )
+fn signature_is_valid(certificate: &Certificate, issuer: &Certificate) -> bool {
+    let Some(key) =
+        public_key_info(issuer).and_then(|info| VerifyingKey::from_public_key_der(&info).ok())
+    else {
+        return false;
+    };
+    let Some(signature) = certificate
+        .signature()
+        .as_bytes()
+        .and_then(|bytes| DerSignature::from_bytes(bytes).ok())
+    else {
+        return false;
+    };
+    let Ok(signed) = certificate.tbs_certificate().to_der() else {
+        return false;
+    };
+    certificate.signature_algorithm().oid == const_oid::db::rfc5912::ECDSA_WITH_SHA_256
+        && key.verify(&signed, &signature).is_ok()
 }
 
 /// Whether the certificate in `pem` names `host` among its DNS subject

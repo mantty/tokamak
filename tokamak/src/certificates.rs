@@ -19,14 +19,14 @@ use crate::cert_generation::{
     remove_if_exists, server_identity, write_atomic,
 };
 use crate::cert_validation::{
-    certificate_der, certificate_der_matches_pem, certificate_is_issued_by,
-    certificate_is_valid_now, certificate_matches_key, certificate_names_host,
-    certificate_not_before, key_matches_der,
+    certificate_der_matches_pem, certificate_is_issued_by, certificate_is_valid_now,
+    certificate_matches_key, certificate_names_host, certificate_not_before, key_matches_der,
+    pem_contents,
 };
 use crate::lifecycle_events::{Event, Events};
 use crate::{Error, Result};
 
-/// How long after issue leaf certificates are renewed.
+/// How long after its validity starts a leaf certificate is renewed.
 const LEAF_RENEWAL: Duration = Duration::from_hours(30 * 24);
 
 /// Runtime certificate and key material needed by tokamak and platform `WebViews`.
@@ -96,7 +96,7 @@ impl CertificateBundle {
 
     /// The client certificate in DER, for platform credential APIs.
     pub(crate) fn client_certificate_der(&self) -> Option<Vec<u8>> {
-        certificate_der(&self.client_cert_pem)
+        pem_contents(&self.client_cert_pem)
     }
 
     /// Generate a self-signed local CA, an app-origin server certificate with
@@ -108,37 +108,25 @@ impl CertificateBundle {
         let authority = Self {
             ca_cert_pem: certificate_pem(&ca_cert)?,
             ca_key_pem,
-            ca_cert_der: ca_cert.to_der().map_err(x509_cert::builder::Error::from)?,
+            ca_cert_der: ca_cert.to_der()?,
             ..Self::default()
         };
-        authority.issue_leaves(&ca_cert, &ca_key, host, now)
+        authority.issue_leaves(&issuer(&ca_cert, &ca_key), host, now)
     }
 
     pub(crate) fn renew_leaves(&self, host: &str, now: SystemTime) -> Result<Self> {
-        let invalid = |_| x509_cert::builder::Error::from(spki::Error::KeyMalformed);
-        let ca_key = SigningKey::from_pkcs8_pem(&self.ca_key_pem).map_err(invalid)?;
-        let ca_cert = Certificate::from_pem(self.ca_cert_pem.as_bytes())
-            .map_err(x509_cert::builder::Error::from)?;
-        self.issue_leaves(&ca_cert, &ca_key, host, now)
+        let ca_key = SigningKey::from_pkcs8_pem(&self.ca_key_pem)?;
+        let ca_cert = Certificate::from_pem(self.ca_cert_pem.as_bytes())?;
+        self.issue_leaves(&issuer(&ca_cert, &ca_key), host, now)
     }
 
     /// This bundle's authority with new server and client certificates that
-    /// `ca_cert` and `ca_key` issue.
-    fn issue_leaves(
-        &self,
-        ca_cert: &Certificate,
-        ca_key: &SigningKey,
-        host: &str,
-        now: SystemTime,
-    ) -> Result<Self> {
-        let issuer = Issuer {
-            name: ca_cert.tbs_certificate().subject().clone(),
-            key: ca_key,
-        };
+    /// `issuer` issues.
+    fn issue_leaves(&self, issuer: &Issuer<'_>, host: &str, now: SystemTime) -> Result<Self> {
         let server_key = generate_key();
         let client_key = generate_key();
-        let server_cert = build_server_certificate(&server_key, &issuer, host, now)?;
-        let client_cert = build_client_certificate(&client_key, &issuer, now)?;
+        let server_cert = build_server_certificate(&server_key, issuer, host, now)?;
+        let client_cert = build_client_certificate(&client_key, issuer, now)?;
 
         let server_cert_pem = certificate_pem(&server_cert)?;
         let (server_key_pem, _) = encode_key(&server_key)?;
@@ -223,15 +211,13 @@ impl CertificateBundle {
             .is_none_or(|not_before| now >= not_before + LEAF_RENEWAL)
     }
 
-    /// Whole seconds until the leaves are due for renewal.
+    /// How long until the leaves are due for renewal.
     pub(crate) fn renewal_delay(&self, now: SystemTime) -> Duration {
-        let Some(not_before) = certificate_not_before(&self.server_cert_pem) else {
-            return Duration::ZERO;
-        };
-        let delay = (not_before + LEAF_RENEWAL)
-            .duration_since(now)
-            .unwrap_or_default();
-        Duration::from_secs(delay.as_secs())
+        certificate_not_before(&self.server_cert_pem).map_or(Duration::ZERO, |not_before| {
+            (not_before + LEAF_RENEWAL)
+                .duration_since(now)
+                .unwrap_or_default()
+        })
     }
 
     pub(crate) fn server_certificate_matches_host(&self, host: &str) -> bool {
@@ -297,6 +283,14 @@ impl CertificateBundle {
     }
 }
 
+/// The issuer whose name is `ca_cert`'s subject and whose key is `ca_key`.
+fn issuer<'a>(ca_cert: &Certificate, ca_key: &'a SigningKey) -> Issuer<'a> {
+    Issuer {
+        name: ca_cert.tbs_certificate().subject().clone(),
+        key: ca_key,
+    }
+}
+
 /// Write `files` into `work_dir`, clearing the completeness marker first and
 /// restoring it once every file is in place.
 fn write_files<'a>(
@@ -345,13 +339,166 @@ mod bundle_tests {
         Ok(())
     }
 
+    /// Certificates that rcgen generated, as earlier releases did.
+    fn rcgen_fixture() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rcgen-certificates")
+    }
+
+    #[test]
+    fn generates_certificates_like_those_rcgen_generated() -> TestResult {
+        use sha2::{Digest, Sha256};
+
+        let bundle = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
+        for (name, pem) in [
+            ("ca", &bundle.ca_cert_pem),
+            ("server", &bundle.server_cert_pem),
+            ("client", &bundle.client_cert_pem),
+        ] {
+            let fixture =
+                std::fs::read_to_string(rcgen_fixture().join(format!("{name}.cert.pem")))?;
+            let (generated_der, expected_der) =
+                (decode_certificate(pem)?, decode_certificate(&fixture)?);
+            let (_, generated) = parse_x509_certificate(&generated_der)?;
+            let (_, expected) = parse_x509_certificate(&expected_der)?;
+            let lifetime = |certificate: &X509Certificate<'_>| {
+                certificate.validity().not_after.timestamp()
+                    - certificate.validity().not_before.timestamp()
+            };
+            let extensions = |certificate: &X509Certificate<'_>| {
+                let mut kinds: Vec<_> = certificate
+                    .extensions()
+                    .iter()
+                    .map(|extension| (extension.oid.to_id_string(), extension.critical))
+                    .collect();
+                kinds.sort();
+                kinds
+            };
+            let key_identifier = |certificate: &X509Certificate<'_>| {
+                certificate.extensions().iter().find_map(|extension| {
+                    match extension.parsed_extension() {
+                        ParsedExtension::SubjectKeyIdentifier(identifier) => {
+                            Some(identifier.0.to_vec())
+                        }
+                        _ => None,
+                    }
+                })
+            };
+            let derived_identifier = |certificate: &X509Certificate<'_>| {
+                Sha256::digest(&certificate.public_key().subject_public_key.data)[..20].to_vec()
+            };
+
+            assert_eq!(extensions(&generated), extensions(&expected), "{name}");
+            assert_eq!(generated.raw_serial(), expected.raw_serial(), "{name}");
+            assert_eq!(
+                generated.subject().to_string(),
+                expected.subject().to_string(),
+                "{name}"
+            );
+            assert_eq!(
+                generated.issuer().to_string(),
+                expected.issuer().to_string(),
+                "{name}"
+            );
+            assert_eq!(lifetime(&generated), lifetime(&expected), "{name}");
+            assert_eq!(
+                generated.signature_algorithm.algorithm,
+                expected.signature_algorithm.algorithm
+            );
+            assert_eq!(
+                key_identifier(&generated),
+                Some(derived_identifier(&generated)),
+                "{name}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn completes_a_mutual_tls_handshake_with_generated_certificates() -> TestResult {
+        use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
+
+        let bundle = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
+        let server = crate::tls::server_config(
+            bundle.server_cert_pem.as_bytes(),
+            bundle.server_key_pem.as_bytes(),
+            bundle.ca_cert_pem.as_bytes(),
+        )?;
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(CertificateDer::from(bundle.ca_cert_der.clone()))?;
+        let chain = CertificateDer::pem_slice_iter(bundle.client_cert_pem.as_bytes())
+            .collect::<Result<Vec<_>, _>>()?;
+        let key = PrivateKeyDer::from_pem_slice(bundle.client_key_pem.as_bytes())?;
+        let client = rustls::ClientConfig::builder_with_provider(crate::tls::provider())
+            .with_safe_default_protocol_versions()?
+            .with_root_certificates(roots)
+            .with_client_auth_cert(chain, key)?;
+        let host = ServerName::try_from("app.tokamak.local")?;
+        let mut client = rustls::ClientConnection::new(std::sync::Arc::new(client), host)?;
+        let mut server = rustls::ServerConnection::new(server)?;
+
+        for _ in 0..8 {
+            let mut bytes = Vec::new();
+            client.write_tls(&mut bytes)?;
+            server.read_tls(&mut bytes.as_slice())?;
+            server.process_new_packets()?;
+            bytes.clear();
+            server.write_tls(&mut bytes)?;
+            client.read_tls(&mut bytes.as_slice())?;
+            client.process_new_packets()?;
+        }
+
+        assert!(!client.is_handshaking() && !server.is_handshaking());
+        assert!(
+            server
+                .peer_certificates()
+                .is_some_and(|chain| !chain.is_empty())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn renews_a_server_certificate_another_authority_signed() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let first = ensure(directory.path())?;
+        let foreign = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
+        for (name, content) in [
+            (CertificatePaths::SERVER_CERT_PEM, &foreign.server_cert_pem),
+            (CertificatePaths::SERVER_KEY_PEM, &foreign.server_key_pem),
+            (
+                CertificatePaths::SERVER_IDENTITY_PEM,
+                &foreign.server_identity_pem,
+            ),
+        ] {
+            std::fs::write(directory.path().join(name), content)?;
+        }
+
+        let second = ensure(directory.path())?;
+
+        assert_ne!(second.server_cert_pem, foreign.server_cert_pem);
+        assert_eq!(second.ca_cert_pem, first.ca_cert_pem);
+        Ok(())
+    }
+
+    #[test]
+    fn leaves_are_due_for_renewal_once_the_delay_elapses() -> TestResult {
+        let issued = SystemTime::now();
+        let bundle = CertificateBundle::generate_at("app.tokamak.local", issued)?;
+        let now = issued
+            + std::time::Duration::from_hours(24 * 10)
+            + std::time::Duration::from_nanos(123_456_789);
+
+        let delay = bundle.renewal_delay(now);
+
+        assert!(bundle.leaf_renewal_is_due(now + delay));
+        assert!(!bundle.leaf_renewal_is_due(now + delay - std::time::Duration::from_secs(1)));
+        Ok(())
+    }
+
     #[test]
     fn keeps_and_renews_a_bundle_that_rcgen_generated() -> TestResult {
         // Earlier releases cached these; installs keep them across updates.
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/rcgen-certificates");
         let directory = tempfile::tempdir()?;
-        for entry in std::fs::read_dir(fixture)? {
+        for entry in std::fs::read_dir(rcgen_fixture())? {
             let entry = entry?;
             std::fs::copy(entry.path(), directory.path().join(entry.file_name()))?;
         }
@@ -802,7 +949,7 @@ impl Certificates {
         let Ok(current) = self.current.read() else {
             return false;
         };
-        certificate_der(certificate) == certificate_der(&current.server_cert_pem)
+        pem_contents(certificate) == pem_contents(&current.server_cert_pem)
     }
 }
 
