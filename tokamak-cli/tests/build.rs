@@ -1107,7 +1107,7 @@ fn shrinks_release_builds_and_signs_them_with_the_debug_key_by_default() -> Test
     assert!(!build_script.contains("signingConfigs {"));
     assert_eq!(
         fs::read_to_string(app.join("tokamak-rules.pro"))?,
-        "-keep class com.tokamak.runtime.** { *; }\n"
+        "-keep class com.tokamak.runtime.** { *; }\n-dontobfuscate\n"
     );
     assert!(project.join("build/android/demo-app.apk").is_file());
     Ok(())

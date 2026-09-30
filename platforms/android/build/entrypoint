@@ -377,8 +377,9 @@ manifest=$app/src/main/AndroidManifest.xml
   printf '%s\n' '</manifest>'
 } > "$manifest"
 
-# R8 keeps the runtime's classes whole; native code calls into them.
-printf '%s\n' '-keep class com.tokamak.runtime.** { *; }' > "$app/tokamak-rules.pro"
+# R8 keeps the runtime's classes whole, since native code calls into them,
+# and keeps every name, so class names in errors and stack traces stay real.
+printf '%s\n' '-keep class com.tokamak.runtime.** { *; }' '-dontobfuscate' > "$app/tokamak-rules.pro"
 
 gradle --no-daemon ":app:lint$task" ":app:assemble$task" --project-dir "$project"
 mkdir -p "$(dirname "$output")"
