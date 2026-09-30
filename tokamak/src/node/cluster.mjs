@@ -1,5 +1,3 @@
-import { unsupportedFunction } from "./unsupported.mjs";
-
 export const SCHED_NONE = 1;
 export const SCHED_RR = 2;
 export class Worker {}

@@ -1,7 +1,13 @@
+import { captureAsyncContext, runInAsyncContext } from "../builtins/async-context.mjs";
+
 const localStorageState = new WeakMap();
 const resourceState = new WeakMap();
 
 function notImplemented(name) { throw new Error(`asyncLocalStorage.${name}() is not implemented`); }
+
+function validateCallback(callback) {
+  if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
+}
 
 export class AsyncLocalStorage {
   constructor(options = {}) { localStorageState.set(this, { name: options?.name, defaultValue: options?.defaultValue }); }
@@ -11,27 +17,27 @@ export class AsyncLocalStorage {
     return context?.has(this) ? context.get(this) : localStorageState.get(this).defaultValue;
   }
   static bind(callback) {
-    if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
+    validateCallback(callback);
     const context = captureAsyncContext();
     return (...args) => runInAsyncContext(context, callback, undefined, args);
   }
   static snapshot() {
     const context = captureAsyncContext();
     return (callback, ...args) => {
-      if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
+      validateCallback(callback);
       return runInAsyncContext(context, callback, undefined, args);
     };
   }
   disable() { return notImplemented("disable"); }
   enterWith() { return notImplemented("enterWith"); }
   run(value, callback, ...args) {
-    if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
+    validateCallback(callback);
     const context = new Map(captureAsyncContext());
     context.set(this, value);
     return runInAsyncContext(context, callback, undefined, args);
   }
   exit(callback, ...args) {
-    if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
+    validateCallback(callback);
     return this.run(undefined, callback, ...args);
   }
 }
@@ -41,17 +47,17 @@ export class AsyncResource {
   asyncId() { return resourceState.get(this).asyncId; }
   triggerAsyncId() { return resourceState.get(this).triggerAsyncId; }
   bind(callback, thisArg = globalThis) {
-    if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
+    validateCallback(callback);
     const resource = this;
     return function (...args) { return resource.runInAsyncScope(callback, thisArg, ...args); };
   }
   runInAsyncScope(callback, thisArg, ...args) {
-    if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
+    validateCallback(callback);
     return runInAsyncContext(resourceState.get(this).context, callback, thisArg, args);
   }
   emitDestroy() { return this; }
   static bind(callback, type, thisArg = globalThis) {
-    if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
+    validateCallback(callback);
     return new AsyncResource(type).bind(callback, thisArg);
   }
 }
@@ -80,4 +86,3 @@ export const asyncWrapProviders = {
 };
 
 export default { AsyncLocalStorage, AsyncResource, createHook, executionAsyncId, triggerAsyncId, executionAsyncResource, asyncWrapProviders };
-import { captureAsyncContext, runInAsyncContext } from "../builtins/async-context.mjs";

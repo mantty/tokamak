@@ -1,6 +1,4 @@
-// node:stream/promises re-exports the promises API vendored into
-// streams/node.mjs so that stream.promises and stream/promises are the same
-// objects, as in Node.
+// Shares streams/node.mjs's promises object, so stream.promises and stream/promises are the same object.
 import { promises } from "../streams/node.mjs";
 
 export const { finished, pipeline } = promises;

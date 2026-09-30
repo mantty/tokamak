@@ -1,9 +1,7 @@
 export function unsupported(name) {
-  const error = new Error(`${name} is not available in the Tokamak runtime`);
-  error.code = "ERR_METHOD_NOT_IMPLEMENTED";
-  throw error;
+  throw Object.assign(new Error(`${name} is not available in the Tokamak runtime`), { code: "ERR_METHOD_NOT_IMPLEMENTED" });
 }
 
 export function unsupportedFunction(name) {
-  return (..._args) => unsupported(name);
+  return () => unsupported(name);
 }

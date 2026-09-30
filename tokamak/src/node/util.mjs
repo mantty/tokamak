@@ -81,18 +81,7 @@ function formatSpecifier(specifier, value, options) {
   return `%${specifier}`;
 }
 
-export function format(first, ...values) {
-  if (typeof first !== "string") return [first, ...values].map(value => typeof value === "string" ? value : inspect(value)).join(" ");
-  let index = 0;
-  const output = first.replace(/%[sdifjoOc%]/g, token => {
-    if (token === "%%") return "%";
-    if (index >= values.length) return token;
-    return formatSpecifier(token[1], values[index++], {});
-  });
-  return index >= values.length ? output : `${output} ${values.slice(index).map(value => typeof value === "string" ? value : inspect(value)).join(" ")}`;
-}
-
-export function formatWithOptions(options, first, ...values) {
+function formatValues(options, first, values) {
   if (typeof first !== "string") return [first, ...values].map(value => typeof value === "string" ? value : inspect(value, options)).join(" ");
   let index = 0;
   const output = first.replace(/%[sdifjoOc%]/g, token => {
@@ -102,6 +91,9 @@ export function formatWithOptions(options, first, ...values) {
   });
   return index >= values.length ? output : `${output} ${values.slice(index).map(value => typeof value === "string" ? value : inspect(value, options)).join(" ")}`;
 }
+
+export function format(first, ...values) { return formatValues(undefined, first, values); }
+export function formatWithOptions(options, first, ...values) { return formatValues(options, first, values); }
 
 export function isArray(value) { return Array.isArray(value); }
 export function isBoolean(value) { return typeof value === "boolean"; }
@@ -198,10 +190,9 @@ export function getSystemErrorMessage(errorNumber) { return errnoMessages.get(Nu
 export function getSystemErrorMap() { return new Map([...errnoNames].map(([number, name]) => [number, [name, errnoMessages.get(number)]])); }
 
 const errnoNames = new Map([[1, "EPERM"], [2, "ENOENT"], [5, "EIO"], [9, "EBADF"], [11, "EAGAIN"], [12, "ENOMEM"], [13, "EACCES"], [17, "EEXIST"], [20, "ENOTDIR"], [21, "EISDIR"], [22, "EINVAL"], [28, "ENOSPC"], [32, "EPIPE"], [34, "ERANGE"], [38, "ENOSYS"], [110, "ETIMEDOUT"]]);
-const errnoMessages = new Map([...errnoNames].map(([number, name]) => [number, name]));
+const errnoMessages = new Map(errnoNames);
 
 function typeTag(value, tag) { return objectToString.call(value) === `[object ${tag}]`; }
-function typedArray(value, ctor) { return value instanceof ctor; }
 
 export const types = {
   isAnyArrayBuffer: value => value instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && value instanceof SharedArrayBuffer),
@@ -209,9 +200,9 @@ export const types = {
   isArrayBuffer: value => value instanceof ArrayBuffer,
   isArrayBufferView: value => ArrayBuffer.isView(value),
   isAsyncFunction: value => typeTag(value, "AsyncFunction"),
-  isBigInt64Array: value => typedArray(value, BigInt64Array),
+  isBigInt64Array: value => value instanceof BigInt64Array,
   isBigIntObject: value => typeTag(value, "BigInt"),
-  isBigUint64Array: value => typedArray(value, BigUint64Array),
+  isBigUint64Array: value => value instanceof BigUint64Array,
   isBooleanObject: value => typeTag(value, "Boolean"),
   isBoxedPrimitive: value => ["Boolean", "Number", "String", "Symbol", "BigInt"].some(tag => typeTag(value, tag)),
   isCryptoKey: value => typeTag(value, "CryptoKey"),
@@ -219,13 +210,13 @@ export const types = {
   isDate: value => value instanceof Date,
   isExternal: () => false,
   isFloat16Array: value => typeof Float16Array !== "undefined" && value instanceof Float16Array,
-  isFloat32Array: value => typedArray(value, Float32Array),
-  isFloat64Array: value => typedArray(value, Float64Array),
+  isFloat32Array: value => value instanceof Float32Array,
+  isFloat64Array: value => value instanceof Float64Array,
   isGeneratorFunction: value => typeTag(value, "GeneratorFunction"),
   isGeneratorObject: value => typeTag(value, "Generator"),
-  isInt16Array: value => typedArray(value, Int16Array),
-  isInt32Array: value => typedArray(value, Int32Array),
-  isInt8Array: value => typedArray(value, Int8Array),
+  isInt16Array: value => value instanceof Int16Array,
+  isInt32Array: value => value instanceof Int32Array,
+  isInt8Array: value => value instanceof Int8Array,
   isKeyObject: value => typeTag(value, "KeyObject"),
   isMap: value => value instanceof Map,
   isMapIterator: value => typeTag(value, "Map Iterator"),
@@ -241,10 +232,10 @@ export const types = {
   isStringObject: value => typeTag(value, "String"),
   isSymbolObject: value => typeTag(value, "Symbol"),
   isTypedArray: value => ArrayBuffer.isView(value) && !(value instanceof DataView),
-  isUint16Array: value => typedArray(value, Uint16Array),
-  isUint32Array: value => typedArray(value, Uint32Array),
-  isUint8Array: value => typedArray(value, Uint8Array),
-  isUint8ClampedArray: value => typedArray(value, Uint8ClampedArray),
+  isUint16Array: value => value instanceof Uint16Array,
+  isUint32Array: value => value instanceof Uint32Array,
+  isUint8Array: value => value instanceof Uint8Array,
+  isUint8ClampedArray: value => value instanceof Uint8ClampedArray,
   isWeakMap: value => value instanceof WeakMap,
   isWeakSet: value => value instanceof WeakSet,
 };
@@ -304,6 +295,14 @@ export function transferableAbortController() { return new AbortController(); }
 export function transferableAbortSignal(signal) { return signal; }
 export function styleText(_styles, value) { return String(value); }
 export function parseArgs() { throw new Error("node:util parseArgs is not implemented"); }
+
+function closingQuote(value, quote, start) {
+  for (let position = start; position < value.length; position += 1) {
+    if (value[position] === quote && value[position - 1] !== "\\") return position;
+  }
+  return -1;
+}
+
 export function parseEnv(content) {
   if (typeof content !== "string") throw new TypeError("The \"content\" argument must be of type string");
   const values = Object.create(null);
@@ -318,15 +317,10 @@ export function parseEnv(content) {
     let value = source;
     if (value.startsWith("\"") || value.startsWith("'")) {
       const quote = value[0];
-      let closing = -1;
-      for (let position = 1; position < value.length; position += 1) {
-        if (value[position] === quote && value[position - 1] !== "\\") { closing = position; break; }
-      }
+      let closing = closingQuote(value, quote, 1);
       while (closing < 0 && index + 1 < lines.length) {
         value += `\n${lines[++index]}`;
-        for (let position = value.length - lines[index].length - 1; position < value.length; position += 1) {
-          if (value[position] === quote && value[position - 1] !== "\\") { closing = position; break; }
-        }
+        closing = closingQuote(value, quote, value.length - lines[index].length - 1);
       }
       if (closing >= 0) value = value.slice(1, closing);
       else value = value.slice(1);
@@ -338,15 +332,17 @@ export function parseEnv(content) {
   }
   return values;
 }
-export function getCallSite() { const error = new Error("node:util getCallSite is not implemented"); error.code = "ERR_METHOD_NOT_IMPLEMENTED"; throw error; }
-export function getCallSites() { const error = new Error("node:util getCallSites is not implemented"); error.code = "ERR_METHOD_NOT_IMPLEMENTED"; throw error; }
 
-const exported = {
+function notImplemented(name) {
+  throw Object.assign(new Error(`node:util ${name} is not implemented`), { code: "ERR_METHOD_NOT_IMPLEMENTED" });
+}
+export function getCallSite() { notImplemented("getCallSite"); }
+export function getCallSites() { notImplemented("getCallSites"); }
+
+export default {
   MIMEParams, MIMEType, TextDecoder, TextEncoder, _errnoException, _exceptionWithHostPort, _extend, aborted, callbackify,
   debug, debuglog, deprecate, format, formatWithOptions, getCallSite, getCallSites, getSystemErrorMap, getSystemErrorMessage,
   getSystemErrorName, inherits, inspect, isArray, isBoolean, isBuffer, isDate, isDeepStrictEqual, isError, isFunction, isNull,
   isNullOrUndefined, isNumber, isObject, isPrimitive, isRegExp, isString, isSymbol, isUndefined, log, parseArgs, parseEnv,
   promisify, stripVTControlCharacters, styleText, toUSVString, transferableAbortController, transferableAbortSignal, types,
 };
-
-export default exported;

@@ -6,15 +6,15 @@ const encodingNames = new Set(["utf8", "utf-8", "ascii", "latin1", "binary", "ba
 function normalizeEncoding(encoding) {
   if (encoding === undefined || encoding === null) return "utf8";
   const name = String(encoding).toLowerCase();
-  if (!encodingNames.has(name)) throw unknownEncoding(name);
+  if (!encodingNames.has(name)) throw Object.assign(new TypeError(`Unknown encoding: ${name}`), { code: "ERR_UNKNOWN_ENCODING" });
   return name;
 }
 
-function unknownEncoding(name) {
-  const error = new TypeError(`Unknown encoding: ${name}`);
-  error.code = "ERR_UNKNOWN_ENCODING";
-  return error;
+function isArrayBufferLike(value) {
+  return value instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && value instanceof SharedArrayBuffer);
 }
+
+function hexByte(value) { return value.toString(16).padStart(2, "0"); }
 
 function stringBytes(value, encoding) {
   const name = normalizeEncoding(encoding);
@@ -84,7 +84,7 @@ function encodeBase64(bytes) {
 
 function decode(bytes, encoding) {
   const name = normalizeEncoding(encoding);
-  if (name === "hex") return [...bytes].map(value => value.toString(16).padStart(2, "0")).join("");
+  if (name === "hex") return [...bytes].map(hexByte).join("");
   if (name === "base64" || name === "base64url") {
     const value = encodeBase64(bytes);
     return name === "base64url" ? value.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") : value;
@@ -108,9 +108,7 @@ function index(value, length) {
 }
 
 function rangeError(name, value, min, max) {
-  const error = new RangeError(`The value of "${name}" is out of range. It must be >= ${min} && <= ${max}. Received ${value}`);
-  error.code = "ERR_OUT_OF_RANGE";
-  return error;
+  return Object.assign(new RangeError(`The value of "${name}" is out of range. It must be >= ${min} && <= ${max}. Received ${value}`), { code: "ERR_OUT_OF_RANGE" });
 }
 
 function checkOffset(buffer, offset, size) {
@@ -118,12 +116,12 @@ function checkOffset(buffer, offset, size) {
   return offset;
 }
 
-function checkByteLength(size, max = 6) {
-  if (!Number.isInteger(size) || size < 1 || size > max) throw new RangeError(`byteLength must be between 1 and ${max}`);
+function checkByteLength(size) {
+  if (!Number.isInteger(size) || size < 1 || size > 6) throw new RangeError("byteLength must be between 1 and 6");
 }
 
 function fillBytes(buffer, value, start, end, encoding) {
-  const first = typeof value === "number" ? Uint8Array.of(value & 0xff) : typeof value === "string" ? stringBytes(value, encoding) : toBytes(value, false);
+  const first = pattern(value, encoding);
   if (first.length === 0) return buffer;
   for (let index = start; index < end; index += 1) buffer[index] = first[(index - start) % first.length];
   return buffer;
@@ -132,7 +130,7 @@ function fillBytes(buffer, value, start, end, encoding) {
 function toBytes(value, allowString = true, encoding) {
   if (allowString && typeof value === "string") return stringBytes(value, encoding);
   if (value instanceof Buffer) return value;
-  if (value instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && value instanceof SharedArrayBuffer)) return new Uint8Array(value);
+  if (isArrayBufferLike(value)) return new Uint8Array(value);
   if (ArrayBuffer.isView(value)) {
     if (value instanceof DataView) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     return Uint8Array.from(value);
@@ -150,7 +148,7 @@ export class Buffer extends Uint8Array {
   static from(value, encodingOrOffset, length) {
     if (typeof value === "string") return new Buffer(stringBytes(value, encodingOrOffset));
     if (value && value.type === "Buffer" && Array.isArray(value.data)) return new Buffer(value.data);
-    if (value instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && value instanceof SharedArrayBuffer)) {
+    if (isArrayBufferLike(value)) {
       const offset = encodingOrOffset === undefined ? 0 : integer(encodingOrOffset);
       const available = value.byteLength - offset;
       const size = length === undefined ? available : integer(length);
@@ -172,8 +170,7 @@ export class Buffer extends Uint8Array {
 
   static byteLength(value, encoding) {
     if (typeof value === "string") return stringBytes(value, encoding).byteLength;
-    if (value instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && value instanceof SharedArrayBuffer)) return value.byteLength;
-    if (ArrayBuffer.isView(value)) return value.byteLength;
+    if (isArrayBufferLike(value) || ArrayBuffer.isView(value)) return value.byteLength;
     return stringBytes(String(value), encoding).byteLength;
   }
 
@@ -214,7 +211,7 @@ export class Buffer extends Uint8Array {
   }
 
   toJSON() { return { type: "Buffer", data: [...this] }; }
-  inspect() { return `<Buffer ${[...this].slice(0, 50).map(value => value.toString(16).padStart(2, "0")).join(" ")}${this.length > 50 ? " …" : ""}>`; }
+  inspect() { return `<Buffer ${[...this].slice(0, 50).map(hexByte).join(" ")}${this.length > 50 ? " …" : ""}>`; }
   toLocaleString(encoding, start, end) { return this.toString(encoding, start, end); }
   slice(start = 0, end = this.length) { return this.subarray(index(start, this.length), index(end, this.length)); }
   equals(other) { return Buffer.compare(this, other) === 0; }
@@ -285,31 +282,31 @@ export class Buffer extends Uint8Array {
   readBigInt64LE(offset = 0) { return dataView(this, offset, 8).getBigInt64(0, true); }
   readBigInt64BE(offset = 0) { return dataView(this, offset, 8).getBigInt64(0, false); }
 
-  writeUInt8(value, offset = 0) { return writeData(this, offset, 1, value, (view, number) => view.setUint8(0, number), 0, 255); }
+  writeUInt8(value, offset = 0) { return writeData(this, offset, 1, value, "setUint8", false, 0, 255); }
   writeUint8(value, offset = 0) { return this.writeUInt8(value, offset); }
-  writeInt8(value, offset = 0) { return writeData(this, offset, 1, value, (view, number) => view.setInt8(0, number), -128, 127); }
-  writeUInt16LE(value, offset = 0) { return writeData(this, offset, 2, value, (view, number) => view.setUint16(0, number, true), 0, 65535); }
+  writeInt8(value, offset = 0) { return writeData(this, offset, 1, value, "setInt8", false, -128, 127); }
+  writeUInt16LE(value, offset = 0) { return writeData(this, offset, 2, value, "setUint16", true, 0, 65535); }
   writeUint16LE(value, offset = 0) { return this.writeUInt16LE(value, offset); }
-  writeUInt16BE(value, offset = 0) { return writeData(this, offset, 2, value, (view, number) => view.setUint16(0, number, false), 0, 65535); }
+  writeUInt16BE(value, offset = 0) { return writeData(this, offset, 2, value, "setUint16", false, 0, 65535); }
   writeUint16BE(value, offset = 0) { return this.writeUInt16BE(value, offset); }
-  writeInt16LE(value, offset = 0) { return writeData(this, offset, 2, value, (view, number) => view.setInt16(0, number, true), -32768, 32767); }
-  writeInt16BE(value, offset = 0) { return writeData(this, offset, 2, value, (view, number) => view.setInt16(0, number, false), -32768, 32767); }
-  writeUInt32LE(value, offset = 0) { return writeData(this, offset, 4, value, (view, number) => view.setUint32(0, number, true), 0, 0xffffffff); }
+  writeInt16LE(value, offset = 0) { return writeData(this, offset, 2, value, "setInt16", true, -32768, 32767); }
+  writeInt16BE(value, offset = 0) { return writeData(this, offset, 2, value, "setInt16", false, -32768, 32767); }
+  writeUInt32LE(value, offset = 0) { return writeData(this, offset, 4, value, "setUint32", true, 0, 0xffffffff); }
   writeUint32LE(value, offset = 0) { return this.writeUInt32LE(value, offset); }
-  writeUInt32BE(value, offset = 0) { return writeData(this, offset, 4, value, (view, number) => view.setUint32(0, number, false), 0, 0xffffffff); }
+  writeUInt32BE(value, offset = 0) { return writeData(this, offset, 4, value, "setUint32", false, 0, 0xffffffff); }
   writeUint32BE(value, offset = 0) { return this.writeUInt32BE(value, offset); }
-  writeInt32LE(value, offset = 0) { return writeData(this, offset, 4, value, (view, number) => view.setInt32(0, number, true), -0x80000000, 0x7fffffff); }
-  writeInt32BE(value, offset = 0) { return writeData(this, offset, 4, value, (view, number) => view.setInt32(0, number, false), -0x80000000, 0x7fffffff); }
+  writeInt32LE(value, offset = 0) { return writeData(this, offset, 4, value, "setInt32", true, -0x80000000, 0x7fffffff); }
+  writeInt32BE(value, offset = 0) { return writeData(this, offset, 4, value, "setInt32", false, -0x80000000, 0x7fffffff); }
   writeUIntLE(value, offset, byteLength) { return writeInteger(this, value, offset, byteLength, false, false); }
   writeUintLE(value, offset, byteLength) { return this.writeUIntLE(value, offset, byteLength); }
   writeUIntBE(value, offset, byteLength) { return writeInteger(this, value, offset, byteLength, false, true); }
   writeUintBE(value, offset, byteLength) { return this.writeUIntBE(value, offset, byteLength); }
   writeIntLE(value, offset, byteLength) { return writeInteger(this, value, offset, byteLength, true, false); }
   writeIntBE(value, offset, byteLength) { return writeInteger(this, value, offset, byteLength, true, true); }
-  writeFloatLE(value, offset = 0) { return writeData(this, offset, 4, value, (view, number) => view.setFloat32(0, number, true), -Infinity, Infinity, false); }
-  writeFloatBE(value, offset = 0) { return writeData(this, offset, 4, value, (view, number) => view.setFloat32(0, number, false), -Infinity, Infinity, false); }
-  writeDoubleLE(value, offset = 0) { return writeData(this, offset, 8, value, (view, number) => view.setFloat64(0, number, true), -Infinity, Infinity, false); }
-  writeDoubleBE(value, offset = 0) { return writeData(this, offset, 8, value, (view, number) => view.setFloat64(0, number, false), -Infinity, Infinity, false); }
+  writeFloatLE(value, offset = 0) { return writeData(this, offset, 4, value, "setFloat32", true, -Infinity, Infinity, false); }
+  writeFloatBE(value, offset = 0) { return writeData(this, offset, 4, value, "setFloat32", false, -Infinity, Infinity, false); }
+  writeDoubleLE(value, offset = 0) { return writeData(this, offset, 8, value, "setFloat64", true, -Infinity, Infinity, false); }
+  writeDoubleBE(value, offset = 0) { return writeData(this, offset, 8, value, "setFloat64", false, -Infinity, Infinity, false); }
   writeBigUInt64LE(value, offset = 0) { return writeBig(this, value, offset, false, false); }
   writeBigUint64LE(value, offset = 0) { return this.writeBigUInt64LE(value, offset); }
   writeBigUInt64BE(value, offset = 0) { return writeBig(this, value, offset, false, true); }
@@ -361,12 +358,7 @@ function find(buffer, needle, byteOffset, reverse) {
 }
 
 function swap(buffer, size) {
-  if (buffer.length % size !== 0) {
-    const bits = size * 8;
-    const error = new RangeError(`Buffer size must be a multiple of ${bits}-bits`);
-    error.code = "ERR_INVALID_BUFFER_SIZE";
-    throw error;
-  }
+  if (buffer.length % size !== 0) throw Object.assign(new RangeError(`Buffer size must be a multiple of ${size * 8}-bits`), { code: "ERR_INVALID_BUFFER_SIZE" });
   for (let offset = 0; offset < buffer.length; offset += size) for (let left = 0; left < size / 2; left += 1) {
     const right = size - left - 1;
     [buffer[offset + left], buffer[offset + right]] = [buffer[offset + right], buffer[offset + left]];
@@ -383,11 +375,11 @@ function readInteger(buffer, offset, byteLength, signed, reverse) {
   return value;
 }
 
-function writeData(buffer, offset, size, value, writer, min, max, validate = true) {
+function writeData(buffer, offset, size, value, setter, littleEndian, min, max, validate = true) {
   const position = checkOffset(buffer, integer(offset), size);
   const number = Number(value);
   if (validate && (!Number.isFinite(number) || !Number.isInteger(number) || number < min || number > max)) throw rangeError("value", value, min, max);
-  writer(new DataView(buffer.buffer, buffer.byteOffset + position, size), number);
+  new DataView(buffer.buffer, buffer.byteOffset + position, size)[setter](0, number, littleEndian);
   return position + size;
 }
 

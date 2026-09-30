@@ -7,20 +7,12 @@ import { ipVersion } from "tokamak:host";
 
 const socketStates = new WeakMap();
 
-function missingArguments() {
-  const error = new TypeError("The \"options\" or \"port\" argument must be specified");
-  error.code = "ERR_MISSING_ARGS";
-  return error;
-}
-
 function invalidArgument(message, code = "ERR_INVALID_ARG_VALUE") {
-  const error = new TypeError(message);
-  error.code = code;
-  return error;
+  return Object.assign(new TypeError(message), { code });
 }
 
 function normalizeConnection(args) {
-  if (args.length === 0) throw missingArguments();
+  if (args.length === 0) throw invalidArgument("The \"options\" or \"port\" argument must be specified", "ERR_MISSING_ARGS");
   const first = args[0];
   const options = first !== null && typeof first === "object" ? { ...first } : { port: first, host: args[1] };
   const callback = typeof args.at(-1) === "function" ? args.at(-1) : undefined;

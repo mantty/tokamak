@@ -1,4 +1,4 @@
-import { unsupported, unsupportedFunction } from "./unsupported.mjs";
+import { unsupportedFunction } from "./unsupported.mjs";
 
 export class DefaultDeserializer {}
 export class DefaultSerializer {}
