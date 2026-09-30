@@ -102,7 +102,9 @@ fn deploy_runtime(workspace: &WorkspaceLayout, pack_root: &Path) -> Result<()> {
     for host in ESBUILD_HOSTS {
         copy_dir_contents(
             &workspace.esbuild_host_package(host),
-            &runtime.join("node_modules/@esbuild").join(host),
+            &pack_root
+                .join("tools/runtime/node_modules/@esbuild")
+                .join(host),
         )
         .with_context(|| format!("copy esbuild binary for {host}"))?;
     }
