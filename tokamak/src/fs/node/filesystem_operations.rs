@@ -4,6 +4,25 @@ use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::collections::VecDeque;
 
+/// `(input, options?)` operations answering with a value.
+pub(super) type ValueOperation =
+    for<'js> fn(Ctx<'js>, Value<'js>, Opt<Value<'js>>) -> rquickjs::Result<Value<'js>>;
+/// `(path, options?)` operations.
+pub(super) type OptionsOperation =
+    for<'js> fn(Ctx<'js>, Value<'js>, Opt<Value<'js>>) -> rquickjs::Result<()>;
+/// `(first, second)` operations.
+pub(super) type PairOperation =
+    for<'js> fn(Ctx<'js>, Value<'js>, Value<'js>) -> rquickjs::Result<()>;
+/// `(first, second, options?)` operations.
+pub(super) type PairOptionsOperation =
+    for<'js> fn(Ctx<'js>, Value<'js>, Value<'js>, Opt<Value<'js>>) -> rquickjs::Result<()>;
+/// `(path, uid, gid)` operations.
+pub(super) type OwnerOperation =
+    for<'js> fn(Ctx<'js>, Value<'js>, u32, u32) -> rquickjs::Result<()>;
+/// `(path, atime, mtime)` operations.
+pub(super) type TimesOperation =
+    for<'js> fn(Ctx<'js>, Value<'js>, Value<'js>, Value<'js>) -> rquickjs::Result<()>;
+
 #[allow(clippy::struct_excessive_bools)]
 pub(super) struct FsOptions {
     pub(super) encoding: Option<String>,
@@ -42,7 +61,7 @@ pub(super) fn parse_options<'js>(
     let Some(value) = value else {
         return Ok(FsOptions::default());
     };
-    if value.is_undefined() || value.is_null() {
+    if value.is_undefined() || value.is_null() || value.is_bool() {
         return Ok(FsOptions::default());
     }
     if value.is_string() {
@@ -56,48 +75,24 @@ pub(super) fn parse_options<'js>(
             ..FsOptions::default()
         });
     }
-    if value.is_bool() {
-        return Ok(FsOptions::default());
-    }
     let object = value
         .try_into_object()
         .map_err(|_| Exception::throw_type(ctx, "filesystem options must be a string or object"))?;
+    let boolean = |name: &str, default: bool| -> rquickjs::Result<bool> {
+        Ok(object.get::<_, Option<bool>>(name)?.unwrap_or(default))
+    };
     Ok(FsOptions {
         encoding: object.get("encoding")?,
-        recursive: object.get::<_, Option<bool>>("recursive")?.unwrap_or(false),
-        force: object.get::<_, Option<bool>>("force")?.unwrap_or(false),
-        error_on_exist: object
-            .get::<_, Option<bool>>("errorOnExist")?
-            .unwrap_or(false),
-        dereference: object
-            .get::<_, Option<bool>>("dereference")?
-            .unwrap_or(false),
-        with_file_types: object
-            .get::<_, Option<bool>>("withFileTypes")?
-            .unwrap_or(false),
-        bigint: object.get::<_, Option<bool>>("bigint")?.unwrap_or(false),
-        throw_if_no_entry: object
-            .get::<_, Option<bool>>("throwIfNoEntry")?
-            .unwrap_or(true),
+        recursive: boolean("recursive", false)?,
+        force: boolean("force", false)?,
+        error_on_exist: boolean("errorOnExist", false)?,
+        dereference: boolean("dereference", false)?,
+        with_file_types: boolean("withFileTypes", false)?,
+        bigint: boolean("bigint", false)?,
+        throw_if_no_entry: boolean("throwIfNoEntry", true)?,
         cwd: object.get("cwd")?,
         blob_type: object.get("type")?,
     })
-}
-
-pub(super) fn option_flag<'js>(
-    ctx: &Ctx<'js>,
-    value: Option<Value<'js>>,
-) -> rquickjs::Result<Option<Value<'js>>> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    if !value.is_object() {
-        return Ok(None);
-    }
-    let object = value
-        .try_into_object()
-        .map_err(|_| Exception::throw_type(ctx, "filesystem options must be a string or object"))?;
-    object.get("flag")
 }
 
 pub(super) fn option_property<'js>(
@@ -200,12 +195,13 @@ pub(super) fn bytes<'js>(
             .map(ToOwned::to_owned)
             .ok_or_else(|| Exception::throw_type(ctx, "array buffer is detached"));
     }
-    let object = value.clone().try_into_object().map_err(|_| {
-        Exception::throw_type(ctx, "data must be a string, ArrayBuffer, or typed array")
-    })?;
-    typed_array_bytes(&object).ok_or_else(|| {
-        Exception::throw_type(ctx, "data must be a string, ArrayBuffer, or typed array")
-    })
+    value
+        .try_into_object()
+        .ok()
+        .and_then(|object| typed_array_bytes(&object))
+        .ok_or_else(|| {
+            Exception::throw_type(ctx, "data must be a string, ArrayBuffer, or typed array")
+        })
 }
 
 pub(super) fn write_buffer_value<'js>(
@@ -319,7 +315,7 @@ pub(super) fn write_file_sync<'js>(
 ) -> rquickjs::Result<()> {
     let options_value = options.0;
     let options = parse_options(&ctx, options_value.clone())?;
-    let flag = option_flag(&ctx, options_value)?;
+    let flag = option_property(&ctx, options_value.as_ref(), "flag")?;
     let append = flag_string(flag.as_ref())?.is_some_and(|flag| flag.contains('a'));
     let bytes = bytes(&ctx, data, options.encoding.as_deref())?;
     match path_or_fd(&ctx, input)? {
@@ -341,10 +337,7 @@ pub(super) fn write_file_sync<'js>(
                 result.and(vfs.close(descriptor))
             })
         }
-        PathOrFd::Fd(descriptor) => {
-            write_descriptor(&ctx, descriptor, &bytes, append)?;
-            Ok(())
-        }
+        PathOrFd::Fd(descriptor) => write_descriptor(&ctx, descriptor, &bytes, append).map(|_| ()),
     }
 }
 
@@ -358,10 +351,7 @@ pub(super) fn append_file_sync<'js>(
     let bytes = bytes(&ctx, data, options.encoding.as_deref())?;
     match path_or_fd(&ctx, input)? {
         PathOrFd::Path(path) => vfs_call(&ctx, |vfs| vfs.write_file(&path, &bytes, true)),
-        PathOrFd::Fd(descriptor) => {
-            write_descriptor(&ctx, descriptor, &bytes, true)?;
-            Ok(())
-        }
+        PathOrFd::Fd(descriptor) => write_descriptor(&ctx, descriptor, &bytes, true).map(|_| ()),
     }
 }
 
@@ -374,6 +364,23 @@ pub(super) fn access_sync<'js>(
     vfs_call(&ctx, |vfs| vfs.access(&path, mode.0.unwrap_or(0)))
 }
 
+/// Fails unless `path` exists.
+fn require_path(ctx: &Ctx<'_>, path: &str, follow_symlinks: bool) -> rquickjs::Result<()> {
+    vfs_call(ctx, |vfs| {
+        let stat = if follow_symlinks {
+            vfs.stat(path)
+        } else {
+            vfs.lstat(path)
+        };
+        stat.map(|_| ())
+    })
+}
+
+/// Fails unless `descriptor` is open.
+pub(super) fn require_descriptor(ctx: &Ctx<'_>, descriptor: u32) -> rquickjs::Result<()> {
+    vfs_call(ctx, |vfs| vfs.fstat(descriptor).map(|_| ()))
+}
+
 pub(super) fn chmod_sync<'js>(
     ctx: Ctx<'js>,
     input: Value<'js>,
@@ -381,7 +388,7 @@ pub(super) fn chmod_sync<'js>(
 ) -> rquickjs::Result<()> {
     let path = path(&ctx, input)?;
     validate_mode(&ctx, mode)?;
-    vfs_call(&ctx, |vfs| vfs.stat(&path).map(|_| ()))
+    require_path(&ctx, &path, true)
 }
 
 pub(super) fn chown_sync<'js>(
@@ -390,8 +397,7 @@ pub(super) fn chown_sync<'js>(
     _uid: u32,
     _gid: u32,
 ) -> rquickjs::Result<()> {
-    let path = path(&ctx, input)?;
-    vfs_call(&ctx, |vfs| vfs.stat(&path).map(|_| ()))
+    require_path(&ctx, &path(&ctx, input)?, true)
 }
 
 pub(super) fn fchmod_sync<'js>(
@@ -400,7 +406,7 @@ pub(super) fn fchmod_sync<'js>(
     mode: Value<'js>,
 ) -> rquickjs::Result<()> {
     validate_mode(&ctx, mode)?;
-    vfs_call(&ctx, |vfs| vfs.fstat(descriptor).map(|_| ()))
+    require_descriptor(&ctx, descriptor)
 }
 
 pub(super) fn fchown_sync(
@@ -409,15 +415,12 @@ pub(super) fn fchown_sync(
     _uid: u32,
     _gid: u32,
 ) -> rquickjs::Result<()> {
-    vfs_call(&ctx, |vfs| vfs.fstat(descriptor).map(|_| ()))
+    require_descriptor(&ctx, descriptor)
 }
 
-pub(super) fn fdatasync_sync(ctx: Ctx<'_>, descriptor: u32) -> rquickjs::Result<()> {
-    vfs_call(&ctx, |vfs| vfs.fstat(descriptor).map(|_| ()))
-}
-
+/// Also serves `fdatasync`.
 pub(super) fn fsync_sync(ctx: Ctx<'_>, descriptor: u32) -> rquickjs::Result<()> {
-    vfs_call(&ctx, |vfs| vfs.fstat(descriptor).map(|_| ()))
+    require_descriptor(&ctx, descriptor)
 }
 
 pub(super) fn futimes_sync(
@@ -426,7 +429,7 @@ pub(super) fn futimes_sync(
     _atime: Value<'_>,
     _mtime: Value<'_>,
 ) -> rquickjs::Result<()> {
-    vfs_call(&ctx, |vfs| vfs.fstat(descriptor).map(|_| ()))
+    require_descriptor(&ctx, descriptor)
 }
 
 pub(super) fn lchmod_sync<'js>(
@@ -436,7 +439,7 @@ pub(super) fn lchmod_sync<'js>(
 ) -> rquickjs::Result<()> {
     let path = path(&ctx, input)?;
     validate_mode(&ctx, mode)?;
-    vfs_call(&ctx, |vfs| vfs.lstat(&path).map(|_| ()))
+    require_path(&ctx, &path, false)
 }
 
 pub(super) fn lchown_sync<'js>(
@@ -445,8 +448,7 @@ pub(super) fn lchown_sync<'js>(
     _uid: u32,
     _gid: u32,
 ) -> rquickjs::Result<()> {
-    let path = path(&ctx, input)?;
-    vfs_call(&ctx, |vfs| vfs.lstat(&path).map(|_| ()))
+    require_path(&ctx, &path(&ctx, input)?, false)
 }
 
 pub(super) fn lutimes_sync<'js>(
@@ -455,8 +457,7 @@ pub(super) fn lutimes_sync<'js>(
     _atime: Value<'js>,
     _mtime: Value<'js>,
 ) -> rquickjs::Result<()> {
-    let path = path(&ctx, input)?;
-    vfs_call(&ctx, |vfs| vfs.lstat(&path).map(|_| ()))
+    require_path(&ctx, &path(&ctx, input)?, false)
 }
 
 pub(super) fn utimes_sync<'js>(
@@ -465,8 +466,7 @@ pub(super) fn utimes_sync<'js>(
     _atime: Value<'js>,
     _mtime: Value<'js>,
 ) -> rquickjs::Result<()> {
-    let path = path(&ctx, input)?;
-    vfs_call(&ctx, |vfs| vfs.stat(&path).map(|_| ()))
+    require_path(&ctx, &path(&ctx, input)?, true)
 }
 
 pub(super) fn mkdir_sync<'js>(
@@ -496,46 +496,58 @@ pub(super) fn readdir_sync<'js>(
     ctx: Ctx<'js>,
     input: Value<'js>,
     options: Opt<Value<'js>>,
-) -> rquickjs::Result<Array<'js>> {
+) -> rquickjs::Result<Value<'js>> {
     let path = path(&ctx, input)?;
     let options = parse_options(&ctx, options.0)?;
-    let entries: Vec<(String, DirectoryEntry)> = if options.recursive {
-        vfs_call(&ctx, |vfs| vfs.walk(&path))?
-    } else {
-        vfs_call(&ctx, |vfs| vfs.read_dir(&path))?
-            .into_iter()
-            .map(|entry| (join_child(&path, &entry.name), entry))
-            .collect()
-    };
+    let items = dir_items(&ctx, &path, options.recursive)?;
+    let encoding = options.encoding.as_deref();
     let result = Array::new(ctx.clone())?;
-    for (index, (entry_path, entry)) in entries.into_iter().enumerate() {
-        let name = if options.recursive {
-            entry_path
-                .strip_prefix(&path)
-                .unwrap_or(&entry_path)
-                .trim_start_matches('/')
-                .to_owned()
+    for (index, item) in items.into_iter().enumerate() {
+        let value = if options.with_file_types {
+            item_dirent(&ctx, &item, encoding)?.into_value()
         } else {
-            entry.name.clone()
+            text_value(&ctx, &item.name, encoding)?
         };
-        if options.with_file_types {
-            let parent_path = entry_path
-                .rsplit_once('/')
-                .map_or(path.as_str(), |(parent, _)| normalized_parent(parent));
-            result.set(
-                index,
-                dirent(
-                    &ctx,
-                    &entry,
-                    name_value(&ctx, &name, options.encoding.as_deref())?,
-                    parent_path,
-                )?,
-            )?;
-        } else {
-            result.set(index, name_value(&ctx, &name, options.encoding.as_deref())?)?;
-        }
+        result.set(index, value)?;
     }
-    Ok(result)
+    Ok(result.into_value())
+}
+
+/// The entries below `path`, named relative to it.
+fn dir_items(ctx: &Ctx<'_>, path: &str, recursive: bool) -> rquickjs::Result<Vec<DirItem>> {
+    if !recursive {
+        let entries = vfs_call(ctx, |vfs| vfs.read_dir(path))?;
+        return Ok(entries
+            .into_iter()
+            .map(|entry| DirItem {
+                name: entry.name.clone(),
+                parent: path.to_owned(),
+                entry,
+            })
+            .collect());
+    }
+    let entries = vfs_call(ctx, |vfs| vfs.walk(path))?;
+    Ok(entries
+        .into_iter()
+        .map(|(entry_path, entry)| DirItem {
+            name: relative_to(&entry_path, path),
+            parent: normalized_parent(parent_of(&entry_path)).to_owned(),
+            entry,
+        })
+        .collect())
+}
+
+/// `path` relative to `base`, without a leading slash.
+fn relative_to(path: &str, base: &str) -> String {
+    path.strip_prefix(base)
+        .unwrap_or(path)
+        .trim_start_matches('/')
+        .to_owned()
+}
+
+/// Everything before the final slash of `path`; `"/"` without one.
+fn parent_of(path: &str) -> &str {
+    path.rsplit_once('/').map_or("/", |(parent, _)| parent)
 }
 
 pub(super) fn stat_sync<'js>(
@@ -727,36 +739,11 @@ pub(super) fn opendir_sync<'js>(
     ctx: Ctx<'js>,
     input: Value<'js>,
     options: Opt<Value<'js>>,
-) -> rquickjs::Result<Object<'js>> {
+) -> rquickjs::Result<Value<'js>> {
     let path = path(&ctx, input)?;
     let options = parse_options(&ctx, options.0)?;
-    let entries = if options.recursive {
-        vfs_call(&ctx, |vfs| vfs.walk(&path))?
-            .into_iter()
-            .map(|(entry_path, entry)| DirItem {
-                name: entry_path
-                    .strip_prefix(&path)
-                    .unwrap_or(&entry_path)
-                    .trim_start_matches('/')
-                    .to_owned(),
-                parent: entry_path.rsplit_once('/').map_or_else(
-                    || "/".to_owned(),
-                    |(parent, _)| normalized_parent(parent).to_owned(),
-                ),
-                entry,
-            })
-            .collect()
-    } else {
-        vfs_call(&ctx, |vfs| vfs.read_dir(&path))?
-            .into_iter()
-            .map(|entry| DirItem {
-                name: entry.name.clone(),
-                parent: path.clone(),
-                entry,
-            })
-            .collect()
-    };
-    dir_object(&ctx, path, entries, options.encoding.as_deref())
+    let entries = dir_items(&ctx, &path, options.recursive)?;
+    dir_object(&ctx, path, entries, options.encoding.as_deref()).map(Object::into_value)
 }
 
 pub(super) fn readv_sync<'js>(
@@ -786,66 +773,87 @@ pub(super) fn writev_sync<'js>(
     buffers: Array<'js>,
     position: Opt<Value<'js>>,
 ) -> rquickjs::Result<u32> {
-    let position = position_value(&ctx, position.0)?;
+    let written = write_buffers(&ctx, descriptor, &buffers, position.0)?;
+    u32::try_from(written).map_err(|_| Exception::throw_range(&ctx, "write is too large"))
+}
+
+/// Write `buffers` in order, returning the byte count.
+pub(super) fn write_buffers<'js>(
+    ctx: &Ctx<'js>,
+    descriptor: u32,
+    buffers: &Array<'js>,
+    position: Option<Value<'js>>,
+) -> rquickjs::Result<usize> {
+    let position = position_value(ctx, position)?;
     let values = buffers
         .iter::<Value>()
-        .map(|value| bytes(&ctx, value?, None))
+        .map(|value| bytes(ctx, value?, None))
         .collect::<rquickjs::Result<Vec<_>>>()?;
-    let written = vfs_call(&ctx, |vfs| vfs.writev(descriptor, &values, position))?;
-    u32::try_from(written).map_err(|_| Exception::throw_range(&ctx, "write is too large"))
+    vfs_call(ctx, |vfs| vfs.writev(descriptor, &values, position))
 }
 
 pub(super) fn statfs_sync<'js>(
     ctx: Ctx<'js>,
     input: Value<'js>,
     options: Opt<Value<'js>>,
-) -> rquickjs::Result<Object<'js>> {
+) -> rquickjs::Result<Value<'js>> {
     let _path = path(&ctx, input)?;
     let options = parse_options(&ctx, options.0)?;
-    statfs_object(&ctx, options.bigint)
+    statfs_object(&ctx, options.bigint).map(Object::into_value)
 }
 
 pub(super) fn open_as_blob<'js>(
     ctx: Ctx<'js>,
     input: Value<'js>,
     options: Opt<Value<'js>>,
-) -> rquickjs::Result<Object<'js>> {
+) -> rquickjs::Result<Value<'js>> {
     let path = path(&ctx, input)?;
     let options = parse_options(&ctx, options.0)?;
     let bytes = vfs_call(&ctx, |vfs| vfs.read_file(&path))?;
-    blob_object(&ctx, bytes, options.blob_type.as_deref().unwrap_or(""))
+    blob_object(&ctx, bytes, options.blob_type.as_deref().unwrap_or("")).map(Object::into_value)
 }
 
 pub(super) fn glob_sync<'js>(
     ctx: Ctx<'js>,
     pattern: Value<'js>,
     options: Opt<Value<'js>>,
-) -> rquickjs::Result<Array<'js>> {
-    let options_value = options.0;
-    let exclude = option_property(&ctx, options_value.as_ref(), "exclude")?;
-    let options = parse_options(&ctx, options_value)?;
+) -> rquickjs::Result<Value<'js>> {
+    glob_values(&ctx, pattern, options.0)?.into_js(&ctx)
+}
+
+pub(super) fn glob_promise<'js>(
+    ctx: Ctx<'js>,
+    pattern: Value<'js>,
+    options: Opt<Value<'js>>,
+) -> rquickjs::Result<Object<'js>> {
+    let values = glob_values(&ctx, pattern, options.0)?;
+    async_value_iterator(&ctx, values)
+}
+
+/// The matches of `pattern`, as names or dirents.
+fn glob_values<'js>(
+    ctx: &Ctx<'js>,
+    pattern: Value<'js>,
+    options_value: Option<Value<'js>>,
+) -> rquickjs::Result<Vec<Value<'js>>> {
+    let exclude = option_property(ctx, options_value.as_ref(), "exclude")?;
+    let options = parse_options(ctx, options_value)?;
     let patterns = if pattern.is_array() {
         Array::from_value(pattern)?
             .iter::<String>()
             .collect::<rquickjs::Result<Vec<_>>>()?
     } else {
-        vec![Coerced::<String>::from_js(&ctx, pattern)?.0]
+        vec![Coerced::<String>::from_js(ctx, pattern)?.0]
     };
     let cwd = options.cwd.as_deref().unwrap_or("/bundle");
-    let cwd = path(&ctx, cwd.into_js(&ctx)?)?;
+    let cwd = path(ctx, cwd.into_js(ctx)?)?;
+    let encoding = options.encoding.as_deref();
     let mut matches: Vec<Value<'js>> = Vec::new();
     for pattern in patterns {
-        for (path, entry) in glob_matches(&ctx, &cwd, &pattern, &options)? {
-            let relative = if pattern.starts_with('/') {
-                path.clone()
-            } else {
-                path.strip_prefix(&cwd)
-                    .unwrap_or(&path)
-                    .trim_start_matches('/')
-                    .to_owned()
-            };
+        for (path, entry) in glob_matches(ctx, &cwd, &pattern)? {
+            let relative = glob_candidate(&path, &cwd, &pattern);
             if glob_excluded(
-                &ctx,
+                ctx,
                 exclude.as_ref(),
                 &relative,
                 &entry,
@@ -854,28 +862,25 @@ pub(super) fn glob_sync<'js>(
             )? {
                 continue;
             }
-            if options.with_file_types {
+            matches.push(if options.with_file_types {
                 let name = path.rsplit('/').next().unwrap_or_default();
-                let parent = path.rsplit_once('/').map_or("/", |(parent, _)| parent);
-                matches.push(
-                    dirent(
-                        &ctx,
-                        &entry,
-                        name_value(&ctx, name, options.encoding.as_deref())?,
-                        normalized_parent(parent),
-                    )?
-                    .into_value(),
-                );
+                let name = text_value(ctx, name, encoding)?;
+                dirent(ctx, &entry, name, normalized_parent(parent_of(&path)))?.into_value()
             } else {
-                matches.push(name_value(&ctx, &relative, options.encoding.as_deref())?);
-            }
+                text_value(ctx, &relative, encoding)?
+            });
         }
     }
-    let result = Array::new(ctx.clone())?;
-    for (index, value) in matches.into_iter().enumerate() {
-        result.set(index, value)?;
+    Ok(matches)
+}
+
+/// `path` as a glob `pattern` sees it: absolute for absolute patterns, else relative to `cwd`.
+pub(super) fn glob_candidate(path: &str, cwd: &str, pattern: &str) -> String {
+    if pattern.starts_with('/') {
+        path.to_owned()
+    } else {
+        relative_to(path, cwd)
     }
-    Ok(result)
 }
 
 pub(super) fn glob_excluded<'js>(
@@ -891,15 +896,8 @@ pub(super) fn glob_excluded<'js>(
     };
     if let Ok(function) = Function::from_value(exclude.clone()) {
         let value = if with_file_types {
-            dirent(
-                ctx,
-                entry,
-                name_value(ctx, relative.rsplit('/').next().unwrap_or_default(), None)?,
-                parent_path
-                    .rsplit_once('/')
-                    .map_or("/", |(parent, _)| normalized_parent(parent)),
-            )?
-            .into_value()
+            let name = text_value(ctx, relative.rsplit('/').next().unwrap_or_default(), None)?;
+            dirent(ctx, entry, name, normalized_parent(parent_of(parent_path)))?.into_value()
         } else {
             relative.to_owned().into_js(ctx)?
         };
@@ -1008,21 +1006,9 @@ pub(super) fn read_sync_export<'js>(
     length: Opt<Value<'js>>,
     position: Opt<Value<'js>>,
 ) -> rquickjs::Result<u32> {
-    let (offset, length, position) = if let Some(value) = offset_or_options.0 {
-        if value.is_object() {
-            let options = value
-                .try_into_object()
-                .map_err(|_| Exception::throw_type(&ctx, "read options must be an object"))?;
-            (
-                options.get("offset")?,
-                options.get("length")?,
-                options.get("position")?,
-            )
-        } else {
-            (Some(value), length.0, position.0)
-        }
-    } else {
-        (None, length.0, position.0)
+    let (offset, length, position) = match offset_or_options.0 {
+        Some(value) if value.is_object() => read_options(&ctx, value)?,
+        offset => (offset, length.0, position.0),
     };
     read_sync(
         ctx.clone(),
@@ -1053,37 +1039,28 @@ pub(super) fn write_sync_export<'js>(
     length: Opt<Value<'js>>,
     position: Opt<Value<'js>>,
 ) -> rquickjs::Result<u32> {
-    let data_is_string = value.is_string();
-    let args = if let Some(value) = offset_or_options.0 {
-        if value.is_object() {
-            let options = value
+    let args = match offset_or_options.0 {
+        Some(options) if options.is_object() => {
+            let options = options
                 .try_into_object()
                 .map_err(|_| Exception::throw_type(&ctx, "write options must be an object"))?;
             let offset = options.get::<_, Option<Value>>("offset")?;
             let length = options.get::<_, Option<Value>>("length")?;
             let position = options.get::<_, Option<Value>>("position")?;
-            if data_is_string {
-                vec![
-                    position.unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-                    options
-                        .get::<_, Option<Value>>("encoding")?
-                        .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-                ]
+            let fields = if value.is_string() {
+                vec![position, options.get("encoding")?]
             } else {
-                vec![
-                    offset.unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-                    length.unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-                    position.unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-                ]
-            }
-        } else {
-            [Some(value), length.0, position.0]
+                vec![offset, length, position]
+            };
+            fields
                 .into_iter()
-                .flatten()
+                .map(|field| field.unwrap_or_else(|| Value::new_undefined(ctx.clone())))
                 .collect()
         }
-    } else {
-        [None, length.0, position.0].into_iter().flatten().collect()
+        offset => [offset, length.0, position.0]
+            .into_iter()
+            .flatten()
+            .collect(),
     };
     write_sync(ctx, descriptor, value, Rest(args))
 }
@@ -1105,119 +1082,11 @@ pub(super) fn ftruncate_sync(
     vfs_call(&ctx, |vfs| vfs.ftruncate(descriptor, length.0.unwrap_or(0)))
 }
 
-pub(super) fn read_file_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(ctx.clone(), read_file_sync(ctx, input, options))
-}
-
-pub(super) fn write_file_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    data: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        write_file_sync(ctx.clone(), input, data, options)
-            .map(|()| Value::new_undefined(ctx.clone())),
-    )
-}
-
-pub(super) fn append_file_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    data: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        append_file_sync(ctx.clone(), input, data, options)
-            .map(|()| Value::new_undefined(ctx.clone())),
-    )
-}
-
-pub(super) fn mkdir_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        mkdir_sync(ctx.clone(), input, options).map(|()| Value::new_undefined(ctx.clone())),
-    )
-}
-
-pub(super) fn readdir_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        readdir_sync(ctx.clone(), input, options).map(Array::into_value),
-    )
-}
-
-pub(super) fn stat_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(ctx.clone(), stat_sync(ctx.clone(), input, options))
-}
-
-pub(super) fn lstat_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(ctx.clone(), lstat_sync(ctx.clone(), input, options))
-}
-
 pub(super) fn unlink_promise<'js>(
     ctx: Ctx<'js>,
     input: Value<'js>,
 ) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        unlink_sync(ctx.clone(), input).map(|()| Value::new_undefined(ctx.clone())),
-    )
-}
-
-pub(super) fn rm_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        rm_sync(ctx.clone(), input, options).map(|()| Value::new_undefined(ctx.clone())),
-    )
-}
-
-pub(super) fn rmdir_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        rmdir_sync(ctx.clone(), input, options).map(|()| Value::new_undefined(ctx)),
-    )
-}
-
-pub(super) fn rename_promise<'js>(
-    ctx: Ctx<'js>,
-    from: Value<'js>,
-    to: Value<'js>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        rename_sync(ctx.clone(), from, to).map(|()| Value::new_undefined(ctx.clone())),
-    )
+    promise_unit(ctx.clone(), unlink_sync(ctx, input))
 }
 
 pub(super) fn copy_file_promise<'js>(
@@ -1226,10 +1095,7 @@ pub(super) fn copy_file_promise<'js>(
     to: Value<'js>,
     mode: Opt<u32>,
 ) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        copy_file_sync(ctx.clone(), from, to, mode).map(|()| Value::new_undefined(ctx.clone())),
-    )
+    promise_unit(ctx.clone(), copy_file_sync(ctx, from, to, mode))
 }
 
 pub(super) fn access_promise<'js>(
@@ -1237,140 +1103,51 @@ pub(super) fn access_promise<'js>(
     input: Value<'js>,
     mode: Opt<u32>,
 ) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        access_sync(ctx.clone(), input, mode).map(|()| Value::new_undefined(ctx)),
-    )
+    promise_unit(ctx.clone(), access_sync(ctx, input, mode))
 }
 
-pub(super) fn chmod_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    mode: Value<'js>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        chmod_sync(ctx.clone(), input, mode).map(|()| Value::new_undefined(ctx)),
-    )
-}
-
-pub(super) fn chown_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    uid: u32,
-    gid: u32,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        chown_sync(ctx.clone(), input, uid, gid).map(|()| Value::new_undefined(ctx)),
-    )
-}
-
-pub(super) fn cp_promise<'js>(
-    ctx: Ctx<'js>,
-    from: Value<'js>,
-    to: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        cp_sync(ctx.clone(), from, to, options).map(|()| Value::new_undefined(ctx)),
-    )
-}
-
-pub(super) fn glob_promise<'js>(
-    ctx: Ctx<'js>,
-    pattern: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Object<'js>> {
-    let values = glob_sync(ctx.clone(), pattern, options)?;
-    let values = values
-        .iter::<Value>()
-        .collect::<rquickjs::Result<Vec<_>>>()?;
-    async_value_iterator(&ctx, values)
-}
-
-#[allow(clippy::arc_with_non_send_sync)]
 pub(super) fn async_value_iterator<'js>(
     ctx: &Ctx<'js>,
     values: Vec<Value<'js>>,
 ) -> rquickjs::Result<Object<'js>> {
-    let state = Arc::new(Mutex::new(VecDeque::from(values)));
+    let state = Mutex::new(VecDeque::from(values));
+    let next = Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+        let value = lock(&state).pop_front();
+        let done = value.is_none();
+        let value = value.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+        iterator_result(ctx, done, value)
+    })?;
+    async_iterator(ctx, next)
+}
+
+/// An async iterator object over `next`.
+pub(super) fn async_iterator<'js>(
+    ctx: &Ctx<'js>,
+    next: Function<'js>,
+) -> rquickjs::Result<Object<'js>> {
     let iterator = Object::new(ctx.clone())?;
-    let next_state = Arc::clone(&state);
-    iterator.set(
-        "next",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            let value = lock(&next_state).pop_front();
-            let done = value.is_none();
-            let value = value.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-            let result = Object::new(ctx.clone())?;
-            result.set("done", done)?;
-            result.set("value", value)?;
-            promise(ctx.clone(), Ok(result.into_value())).map(Promise::into_value)
-        })?,
-    )?;
+    iterator.set("next", next)?;
     iterator.set(
         Symbol::async_iterator(ctx.clone()),
-        Function::new(ctx.clone(), |this: This<Object<'js>>| {
-            Ok::<Object<'js>, rquickjs::Error>(this.0)
-        })?,
+        Function::new(ctx.clone(), return_this)?,
     )?;
     Ok(iterator)
 }
 
-pub(super) fn lchmod_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    mode: Value<'js>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        lchmod_sync(ctx.clone(), input, mode).map(|()| Value::new_undefined(ctx)),
-    )
+fn return_this<'js>(this: This<Object<'js>>) -> Object<'js> {
+    this.0
 }
 
-pub(super) fn lchown_promise<'js>(
+/// A promise of the iterator result `{ done, value }`.
+pub(super) fn iterator_result<'js>(
     ctx: Ctx<'js>,
-    input: Value<'js>,
-    uid: u32,
-    gid: u32,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        lchown_sync(ctx.clone(), input, uid, gid).map(|()| Value::new_undefined(ctx)),
-    )
-}
-
-pub(super) fn link_promise<'js>(
-    ctx: Ctx<'js>,
-    existing: Value<'js>,
-    new: Value<'js>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        link_sync(ctx.clone(), existing, new).map(|()| Value::new_undefined(ctx)),
-    )
-}
-
-pub(super) fn lutimes_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    atime: Value<'js>,
-    mtime: Value<'js>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        lutimes_sync(ctx.clone(), input, atime, mtime).map(|()| Value::new_undefined(ctx)),
-    )
-}
-
-pub(super) fn mkdtemp_promise<'js>(
-    ctx: Ctx<'js>,
-    prefix: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(ctx.clone(), mkdtemp_sync(ctx.clone(), prefix, options))
+    done: bool,
+    value: Value<'js>,
+) -> rquickjs::Result<Value<'js>> {
+    let result = Object::new(ctx.clone())?;
+    result.set("done", done)?;
+    result.set("value", value)?;
+    promise(ctx, Ok(result.into_value())).map(Promise::into_value)
 }
 
 pub(super) fn open_promise<'js>(
@@ -1390,76 +1167,94 @@ pub(super) fn open_promise<'js>(
     )
 }
 
-pub(super) fn opendir_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        opendir_sync(ctx.clone(), input, options).map(Object::into_value),
-    )
-}
-
-pub(super) fn statfs_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        statfs_sync(ctx.clone(), input, options).map(Object::into_value),
-    )
-}
-
-pub(super) fn utimes_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    atime: Value<'js>,
-    mtime: Value<'js>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        utimes_sync(ctx.clone(), input, atime, mtime).map(|()| Value::new_undefined(ctx)),
-    )
-}
-
-pub(super) fn symlink_promise<'js>(
-    ctx: Ctx<'js>,
-    target: Value<'js>,
-    input: Value<'js>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        symlink_sync(ctx.clone(), target, input).map(|()| Value::new_undefined(ctx.clone())),
-    )
-}
-
-pub(super) fn read_link_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(ctx.clone(), read_link_sync(ctx, input, options))
-}
-
-pub(super) fn realpath_promise<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(ctx.clone(), realpath_sync(ctx, input, options))
-}
-
 pub(super) fn truncate_promise<'js>(
     ctx: Ctx<'js>,
     input: Value<'js>,
     length: Opt<u64>,
 ) -> rquickjs::Result<Promise<'js>> {
-    promise(
+    promise_unit(ctx.clone(), truncate_sync(ctx, input, length))
+}
+
+// Promise forms of the shared operation signatures, one host wrapper each.
+
+pub(super) fn value_promise<'js>(
+    ctx: &Ctx<'js>,
+    operation: ValueOperation,
+) -> rquickjs::Result<Function<'js>> {
+    Function::new(
         ctx.clone(),
-        truncate_sync(ctx.clone(), input, length).map(|()| Value::new_undefined(ctx.clone())),
+        move |ctx: Ctx<'js>, input: Value<'js>, options: Opt<Value<'js>>| {
+            promise(ctx.clone(), operation(ctx, input, options))
+        },
     )
+}
+
+pub(super) fn options_promise<'js>(
+    ctx: &Ctx<'js>,
+    operation: OptionsOperation,
+) -> rquickjs::Result<Function<'js>> {
+    Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>, input: Value<'js>, options: Opt<Value<'js>>| {
+            promise_unit(ctx.clone(), operation(ctx, input, options))
+        },
+    )
+}
+
+pub(super) fn pair_promise<'js>(
+    ctx: &Ctx<'js>,
+    operation: PairOperation,
+) -> rquickjs::Result<Function<'js>> {
+    Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>, first: Value<'js>, second: Value<'js>| {
+            promise_unit(ctx.clone(), operation(ctx, first, second))
+        },
+    )
+}
+
+pub(super) fn pair_options_promise<'js>(
+    ctx: &Ctx<'js>,
+    operation: PairOptionsOperation,
+) -> rquickjs::Result<Function<'js>> {
+    Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>, first: Value<'js>, second: Value<'js>, options: Opt<Value<'js>>| {
+            promise_unit(ctx.clone(), operation(ctx, first, second, options))
+        },
+    )
+}
+
+pub(super) fn owner_promise<'js>(
+    ctx: &Ctx<'js>,
+    operation: OwnerOperation,
+) -> rquickjs::Result<Function<'js>> {
+    Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>, input: Value<'js>, uid: u32, gid: u32| {
+            promise_unit(ctx.clone(), operation(ctx, input, uid, gid))
+        },
+    )
+}
+
+pub(super) fn times_promise<'js>(
+    ctx: &Ctx<'js>,
+    operation: TimesOperation,
+) -> rquickjs::Result<Function<'js>> {
+    Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>, input: Value<'js>, atime: Value<'js>, mtime: Value<'js>| {
+            promise_unit(ctx.clone(), operation(ctx, input, atime, mtime))
+        },
+    )
+}
+
+/// A promise of `result`, resolving to `undefined`.
+pub(super) fn promise_unit<'js>(
+    ctx: Ctx<'js>,
+    result: rquickjs::Result<()>,
+) -> rquickjs::Result<Promise<'js>> {
+    promise(ctx.clone(), result.map(|()| Value::new_undefined(ctx)))
 }
 
 pub(super) fn promise<'js>(

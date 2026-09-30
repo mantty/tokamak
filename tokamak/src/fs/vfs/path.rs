@@ -5,12 +5,10 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use super::{Error, ErrorKind, MAX_FILE_SIZE, MAX_PATH_LENGTH, MAX_PATH_SEGMENTS, Result};
 
 pub(super) fn absolute_components(path: &str) -> Result<Vec<String>> {
-    if !path.starts_with('/') || path.contains('\0') || path.chars().count() > MAX_PATH_LENGTH {
+    if !path.starts_with('/') {
         return Err(Error::new(ErrorKind::InvalidPath, path));
     }
-    let mut components = Vec::new();
-    apply_components(&mut components, path.split('/'), path)?;
-    Ok(components)
+    target_components(&[], path, path)
 }
 
 pub(super) fn target_components(base: &[String], target: &str, path: &str) -> Result<Vec<String>> {
@@ -22,16 +20,12 @@ pub(super) fn target_components(base: &[String], target: &str, path: &str) -> Re
     } else {
         base.to_vec()
     };
-    apply_components(&mut components, target.split('/'), path)?;
+    apply_components(&mut components, target, path)?;
     Ok(components)
 }
 
-pub(super) fn apply_components<'a>(
-    components: &mut Vec<String>,
-    parts: impl IntoIterator<Item = &'a str>,
-    path: &str,
-) -> Result<()> {
-    for part in parts {
+fn apply_components(components: &mut Vec<String>, target: &str, path: &str) -> Result<()> {
+    for part in target.split('/') {
         match part {
             "" | "." => {}
             ".." => {

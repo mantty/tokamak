@@ -28,11 +28,11 @@ pub(super) fn dirent_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Functi
     for (name, method) in [
         ("isFile", dirent_is_file as fn(This<Object<'_>>) -> bool),
         ("isDirectory", dirent_is_directory),
-        ("isBlockDevice", dirent_is_block_device),
+        ("isBlockDevice", never),
         ("isCharacterDevice", dirent_is_character_device),
         ("isSymbolicLink", dirent_is_symbolic_link),
-        ("isFIFO", dirent_is_fifo),
-        ("isSocket", dirent_is_socket),
+        ("isFIFO", never),
+        ("isSocket", never),
     ] {
         prototype.set(name, Function::new(ctx.clone(), method)?)?;
     }
@@ -57,7 +57,6 @@ pub(super) struct DirItem {
     pub(super) entry: DirectoryEntry,
 }
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn dir_object<'js>(
     ctx: &Ctx<'js>,
     path: String,
@@ -121,21 +120,18 @@ pub(super) fn dir_object<'js>(
             }
         })?,
     )?;
-    let entries_state = state.clone();
-    object.set(
-        "entries",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            dir_iterator(&ctx, entries_state.clone())
-        })?,
-    )?;
-    let iterator_state = state;
+    object.set("entries", dir_iterator_function(ctx, state.clone())?)?;
     object.set(
         Symbol::async_iterator(ctx.clone()),
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            dir_iterator(&ctx, iterator_state.clone())
-        })?,
+        dir_iterator_function(ctx, state)?,
     )?;
     Ok(object)
+}
+
+fn dir_iterator_function<'js>(ctx: &Ctx<'js>, state: DirState) -> rquickjs::Result<Function<'js>> {
+    Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+        dir_iterator(&ctx, state.clone())
+    })
 }
 
 pub(super) fn dir_read_entry<'js>(
@@ -147,16 +143,19 @@ pub(super) fn dir_read_entry<'js>(
         .ok_or_else(|| Exception::throw_message(ctx, "ERR_DIR_CLOSED: directory is closed"))?
         .pop_front();
     if let Some(item) = item {
-        dirent(
-            ctx,
-            &item.entry,
-            name_value(ctx, &item.name, state.encoding.as_deref())?,
-            normalized_parent(&item.parent),
-        )
-        .map(Object::into_value)
+        item_dirent(ctx, &item, state.encoding.as_deref()).map(Object::into_value)
     } else {
         Ok(Value::new_null(ctx.clone()))
     }
+}
+
+pub(super) fn item_dirent<'js>(
+    ctx: &Ctx<'js>,
+    item: &DirItem,
+    encoding: Option<&str>,
+) -> rquickjs::Result<Object<'js>> {
+    let name = text_value(ctx, &item.name, encoding)?;
+    dirent(ctx, &item.entry, name, normalized_parent(&item.parent))
 }
 
 pub(super) fn dir_close(ctx: &Ctx<'_>, state: &DirState) -> rquickjs::Result<()> {
@@ -171,24 +170,11 @@ pub(super) fn dir_close(ctx: &Ctx<'_>, state: &DirState) -> rquickjs::Result<()>
 }
 
 pub(super) fn dir_iterator<'js>(ctx: &Ctx<'js>, state: DirState) -> rquickjs::Result<Object<'js>> {
-    let iterator = Object::new(ctx.clone())?;
-    iterator.set(
-        "next",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            let value = dir_read_entry(&ctx, &state)?;
-            let next = Object::new(ctx.clone())?;
-            next.set("done", value.is_null())?;
-            next.set("value", value)?;
-            promise(ctx.clone(), Ok(next.into_value())).map(Promise::into_value)
-        })?,
-    )?;
-    iterator.set(
-        Symbol::async_iterator(ctx.clone()),
-        Function::new(ctx.clone(), |this: This<Object<'js>>| {
-            Ok::<Object<'js>, rquickjs::Error>(this.0)
-        })?,
-    )?;
-    Ok(iterator)
+    let next = Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+        let value = dir_read_entry(&ctx, &state)?;
+        iterator_result(ctx, value.is_null(), value)
+    })?;
+    async_iterator(ctx, next)
 }
 
 #[derive(Clone)]
@@ -227,14 +213,10 @@ pub(super) fn file_handle_object<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, buffers: Array<'js>, position: Opt<Value<'js>>| {
-                let descriptor = handle_descriptor(&vector_read_state).ok_or_else(|| {
-                    Exception::throw_message(&ctx, "EBADF: file descriptor closed")
-                })?;
+                let descriptor = open_descriptor(&ctx, &vector_read_state)?;
                 let bytes_read = readv_sync(ctx.clone(), descriptor, buffers.clone(), position)?;
-                let result = Object::new(ctx.clone())?;
-                result.set("bytesRead", bytes_read)?;
-                result.set("buffers", buffers)?;
-                promise(ctx.clone(), Ok(result.into_value()))
+                let buffers = buffers.into_value();
+                transfer_result(&ctx, "bytesRead", bytes_read as usize, "buffers", buffers)
             },
         )?,
     )?;
@@ -244,9 +226,7 @@ pub(super) fn file_handle_object<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, options: Opt<Value<'js>>| {
-                let descriptor = handle_descriptor(&read_file_state).ok_or_else(|| {
-                    Exception::throw_message(&ctx, "EBADF: file descriptor closed")
-                })?;
+                let descriptor = open_descriptor(&ctx, &read_file_state)?;
                 let options = parse_options(&ctx, options.0)?;
                 let bytes = read_descriptor(&ctx, descriptor)?;
                 promise(
@@ -281,20 +261,10 @@ pub(super) fn file_handle_object<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, buffers: Array<'js>, position: Opt<Value<'js>>| {
-                let descriptor = handle_descriptor(&vector_write_state).ok_or_else(|| {
-                    Exception::throw_message(&ctx, "EBADF: file descriptor closed")
-                })?;
-                let position = position_value(&ctx, position.0)?;
-                let values = buffers
-                    .iter::<Value>()
-                    .map(|value| bytes(&ctx, value?, None))
-                    .collect::<rquickjs::Result<Vec<_>>>()?;
-                let bytes_written =
-                    vfs_call(&ctx, |vfs| vfs.writev(descriptor, &values, position))?;
-                let result = Object::new(ctx.clone())?;
-                result.set("bytesWritten", bytes_written)?;
-                result.set("buffers", buffers)?;
-                promise(ctx.clone(), Ok(result.into_value()))
+                let descriptor = open_descriptor(&ctx, &vector_write_state)?;
+                let bytes_written = write_buffers(&ctx, descriptor, &buffers, position.0)?;
+                let buffers = buffers.into_value();
+                transfer_result(&ctx, "bytesWritten", bytes_written, "buffers", buffers)
             },
         )?,
     )?;
@@ -304,16 +274,12 @@ pub(super) fn file_handle_object<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, data: Value<'js>, options: Opt<Value<'js>>| {
-                let descriptor = handle_descriptor(&write_file_state).ok_or_else(|| {
-                    Exception::throw_message(&ctx, "EBADF: file descriptor closed")
-                })?;
+                let descriptor = open_descriptor(&ctx, &write_file_state)?;
                 let options = parse_options(&ctx, options.0)?;
                 let bytes = bytes(&ctx, data.clone(), options.encoding.as_deref())?;
                 let bytes_written = write_descriptor(&ctx, descriptor, &bytes, false)?;
-                let result = Object::new(ctx.clone())?;
-                result.set("bytesWritten", bytes_written)?;
-                result.set("buffer", write_buffer_value(&ctx, &data, &bytes)?)?;
-                promise(ctx.clone(), Ok(result.into_value()))
+                let buffer = write_buffer_value(&ctx, &data, &bytes)?;
+                transfer_result(&ctx, "bytesWritten", bytes_written, "buffer", buffer)
             },
         )?,
     )?;
@@ -323,13 +289,11 @@ pub(super) fn file_handle_object<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, data: Value<'js>, options: Opt<Value<'js>>| {
-                let descriptor = handle_descriptor(&append_state).ok_or_else(|| {
-                    Exception::throw_message(&ctx, "EBADF: file descriptor closed")
-                })?;
+                let descriptor = open_descriptor(&ctx, &append_state)?;
                 let options = parse_options(&ctx, options.0)?;
                 let data = bytes(&ctx, data, options.encoding.as_deref())?;
                 write_descriptor(&ctx, descriptor, &data, true)?;
-                promise(ctx.clone(), Ok(Value::new_undefined(ctx)))
+                promise_unit(ctx, Ok(()))
             },
         )?,
     )?;
@@ -339,9 +303,7 @@ pub(super) fn file_handle_object<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, options: Opt<Value<'js>>| {
-                let descriptor = handle_descriptor(&stat_state).ok_or_else(|| {
-                    Exception::throw_message(&ctx, "EBADF: file descriptor closed")
-                })?;
+                let descriptor = open_descriptor(&ctx, &stat_state)?;
                 let options = parse_options(&ctx, options.0)?;
                 let stat = vfs_call(&ctx, |vfs| vfs.fstat(descriptor))?;
                 promise(
@@ -355,10 +317,9 @@ pub(super) fn file_handle_object<'js>(
     object.set(
         "truncate",
         Function::new(ctx.clone(), move |ctx: Ctx<'js>, length: Opt<u64>| {
-            let descriptor = handle_descriptor(&truncate_state)
-                .ok_or_else(|| Exception::throw_message(&ctx, "EBADF: file descriptor closed"))?;
+            let descriptor = open_descriptor(&ctx, &truncate_state)?;
             vfs_call(&ctx, |vfs| vfs.ftruncate(descriptor, length.0.unwrap_or(0)))?;
-            promise(ctx.clone(), Ok(Value::new_undefined(ctx)))
+            promise_unit(ctx, Ok(()))
         })?,
     )?;
     for (name, function) in [
@@ -371,20 +332,16 @@ pub(super) fn file_handle_object<'js>(
     object.set(
         "chmod",
         Function::new(ctx.clone(), move |ctx: Ctx<'js>, mode: Value<'js>| {
-            let descriptor = handle_descriptor(&chmod_state)
-                .ok_or_else(|| Exception::throw_message(&ctx, "EBADF: file descriptor closed"))?;
-            fchmod_sync(ctx.clone(), descriptor, mode)?;
-            promise(ctx.clone(), Ok(Value::new_undefined(ctx)))
+            fchmod_sync(ctx.clone(), open_descriptor(&ctx, &chmod_state)?, mode)?;
+            promise_unit(ctx, Ok(()))
         })?,
     )?;
     let chown_state = state.clone();
     object.set(
         "chown",
         Function::new(ctx.clone(), move |ctx: Ctx<'js>, uid: u32, gid: u32| {
-            let descriptor = handle_descriptor(&chown_state)
-                .ok_or_else(|| Exception::throw_message(&ctx, "EBADF: file descriptor closed"))?;
-            fchown_sync(ctx.clone(), descriptor, uid, gid)?;
-            promise(ctx.clone(), Ok(Value::new_undefined(ctx)))
+            fchown_sync(ctx.clone(), open_descriptor(&ctx, &chown_state)?, uid, gid)?;
+            promise_unit(ctx, Ok(()))
         })?,
     )?;
     let utimes_state = state.clone();
@@ -393,11 +350,9 @@ pub(super) fn file_handle_object<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, atime: Value<'js>, mtime: Value<'js>| {
-                let descriptor = handle_descriptor(&utimes_state).ok_or_else(|| {
-                    Exception::throw_message(&ctx, "EBADF: file descriptor closed")
-                })?;
+                let descriptor = open_descriptor(&ctx, &utimes_state)?;
                 futimes_sync(ctx.clone(), descriptor, atime, mtime)?;
-                promise(ctx.clone(), Ok(Value::new_undefined(ctx)))
+                promise_unit(ctx, Ok(()))
             },
         )?,
     )?;
@@ -407,56 +362,62 @@ pub(super) fn file_handle_object<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, this: This<Object<'js>>| {
-                let result = close_handle(&ctx, &close_state, &this.0)
-                    .map(|()| Value::new_undefined(ctx.clone()));
-                promise(ctx.clone(), result)
+                promise_unit(ctx.clone(), close_handle(&ctx, &close_state, &this.0))
             },
         )?,
     )?;
-    let stream_state = state.clone();
-    object.set(
-        "createReadStream",
-        Function::new(
-            ctx.clone(),
-            move |ctx: Ctx<'js>, options: Opt<Value<'js>>| {
-                let descriptor = handle_descriptor(&stream_state).ok_or_else(|| {
-                    Exception::throw_message(&ctx, "EBADF: file descriptor closed")
-                })?;
-                create_read_stream(&ctx, None, Some(descriptor), options.0)
-            },
-        )?,
-    )?;
-    let stream_state = state.clone();
-    object.set(
-        "createWriteStream",
-        Function::new(
-            ctx.clone(),
-            move |ctx: Ctx<'js>, options: Opt<Value<'js>>| {
-                let descriptor = handle_descriptor(&stream_state).ok_or_else(|| {
-                    Exception::throw_message(&ctx, "EBADF: file descriptor closed")
-                })?;
-                create_write_stream(&ctx, None, Some(descriptor), options.0)
-            },
-        )?,
-    )?;
-    let web_stream_state = state.clone();
+    object.set("createReadStream", file_handle_stream(ctx, &state, true)?)?;
+    object.set("createWriteStream", file_handle_stream(ctx, &state, false)?)?;
+    let web_stream_state = state;
     object.set(
         "readableWebStream",
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, _options: Opt<Value<'js>>| {
-                let descriptor = handle_descriptor(&web_stream_state).ok_or_else(|| {
-                    Exception::throw_message(&ctx, "EBADF: file descriptor closed")
-                })?;
-                readable_web_stream(&ctx, descriptor)
+                readable_web_stream(&ctx, open_descriptor(&ctx, &web_stream_state)?)
             },
         )?,
     )?;
     Ok(object)
 }
 
+fn file_handle_stream<'js>(
+    ctx: &Ctx<'js>,
+    state: &FileHandleState,
+    readable: bool,
+) -> rquickjs::Result<Function<'js>> {
+    let state = state.clone();
+    Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>, options: Opt<Value<'js>>| {
+            let descriptor = open_descriptor(&ctx, &state)?;
+            create_stream(&ctx, readable, None, Some(descriptor), options.0)
+        },
+    )
+}
+
 pub(super) fn handle_descriptor(state: &FileHandleState) -> Option<u32> {
     *lock(&state.descriptor)
+}
+
+/// The handle's descriptor, or an `EBADF` error once it is closed.
+fn open_descriptor(ctx: &Ctx<'_>, state: &FileHandleState) -> rquickjs::Result<u32> {
+    handle_descriptor(state)
+        .ok_or_else(|| Exception::throw_message(ctx, "EBADF: file descriptor closed"))
+}
+
+/// A promise of `{ [count_name]: count, [buffer_name]: buffer }`.
+fn transfer_result<'js>(
+    ctx: &Ctx<'js>,
+    count_name: &str,
+    count: usize,
+    buffer_name: &str,
+    buffer: Value<'js>,
+) -> rquickjs::Result<Promise<'js>> {
+    let result = Object::new(ctx.clone())?;
+    result.set(count_name, count)?;
+    result.set(buffer_name, buffer)?;
+    promise(ctx.clone(), Ok(result.into_value()))
 }
 
 pub(super) fn take_descriptor(state: &FileHandleState) -> Option<u32> {
@@ -530,10 +491,8 @@ pub(super) fn file_handle_sync<'js>(
     state: FileHandleState,
 ) -> rquickjs::Result<Function<'js>> {
     Function::new(ctx, move |ctx: Ctx<'js>| {
-        let descriptor = handle_descriptor(&state)
-            .ok_or_else(|| Exception::throw_message(&ctx, "EBADF: file descriptor closed"))?;
-        vfs_call(&ctx, |vfs| vfs.fstat(descriptor))?;
-        promise(ctx.clone(), Ok(Value::new_undefined(ctx)))
+        require_descriptor(&ctx, open_descriptor(&ctx, &state)?)?;
+        promise_unit(ctx, Ok(()))
     })
 }
 
@@ -542,8 +501,7 @@ pub(super) fn handle_read<'js>(
     state: &FileHandleState,
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<Promise<'js>> {
-    let descriptor = handle_descriptor(state)
-        .ok_or_else(|| Exception::throw_message(ctx, "EBADF: file descriptor closed"))?;
+    let descriptor = open_descriptor(ctx, state)?;
     let ReadArguments {
         buffer,
         offset: offset_value,
@@ -567,10 +525,7 @@ pub(super) fn handle_read<'js>(
     }
     let bytes = vfs_call(ctx, |vfs| vfs.read(descriptor, length, position))?;
     writable.write(offset, &bytes);
-    let result = Object::new(ctx.clone())?;
-    result.set("bytesRead", bytes.len())?;
-    result.set("buffer", buffer)?;
-    promise(ctx.clone(), Ok(result.into_value()))
+    transfer_result(ctx, "bytesRead", bytes.len(), "buffer", buffer)
 }
 
 pub(super) fn handle_write<'js>(
@@ -578,8 +533,7 @@ pub(super) fn handle_write<'js>(
     state: &FileHandleState,
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<Promise<'js>> {
-    let descriptor = handle_descriptor(state)
-        .ok_or_else(|| Exception::throw_message(ctx, "EBADF: file descriptor closed"))?;
+    let descriptor = open_descriptor(ctx, state)?;
     let mut args = args.0;
     if args.is_empty() {
         return Err(Exception::throw_type(ctx, "data is required"));
@@ -588,50 +542,45 @@ pub(super) fn handle_write<'js>(
     let args = normalize_write_options(ctx, value.is_string(), args)?;
     let (data, position) = write_arguments(ctx, value.clone(), args)?;
     let bytes_written = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, position))?;
-    let result = Object::new(ctx.clone())?;
-    result.set("bytesWritten", bytes_written)?;
-    result.set("buffer", write_buffer_value(ctx, &value, &data)?)?;
-    promise(ctx.clone(), Ok(result.into_value()))
+    let buffer = write_buffer_value(ctx, &value, &data)?;
+    transfer_result(ctx, "bytesWritten", bytes_written, "buffer", buffer)
 }
 
-pub(super) fn create_read_stream_export<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    options: Opt<Value<'js>>,
+/// A `createReadStream` or `createWriteStream` export.
+pub(super) fn stream_function<'js>(
+    ctx: &Ctx<'js>,
+    readable: bool,
+) -> rquickjs::Result<Function<'js>> {
+    Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>, input: Value<'js>, options: Opt<Value<'js>>| {
+            create_stream(&ctx, readable, Some(input), None, options.0)
+        },
+    )
+}
+
+pub(super) fn create_stream<'js>(
+    ctx: &Ctx<'js>,
+    readable: bool,
+    input: Option<Value<'js>>,
+    descriptor: Option<u32>,
+    options: Option<Value<'js>>,
 ) -> rquickjs::Result<Object<'js>> {
-    create_read_stream(&ctx, Some(input), None, options.0)
+    if readable {
+        create_read_stream(ctx, input, descriptor, options)
+    } else {
+        create_write_stream(ctx, input, descriptor, options)
+    }
 }
 
-pub(super) fn create_write_stream_export<'js>(
-    ctx: Ctx<'js>,
-    input: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Object<'js>> {
-    create_write_stream(&ctx, Some(input), None, options.0)
-}
-
-pub(super) fn create_read_stream<'js>(
+fn create_read_stream<'js>(
     ctx: &Ctx<'js>,
     input: Option<Value<'js>>,
     descriptor: Option<u32>,
     options: Option<Value<'js>>,
 ) -> rquickjs::Result<Object<'js>> {
-    let path = input
-        .as_ref()
-        .map(|value| path(ctx, value.clone()))
-        .transpose()?;
-    let option_descriptor = option_descriptor(ctx, options.as_ref())?;
-    let owns_descriptor = descriptor.is_none() && option_descriptor.is_none();
-    let descriptor = if let Some(descriptor) = descriptor.or(option_descriptor) {
-        descriptor
-    } else {
-        let path = path
-            .as_deref()
-            .ok_or_else(|| Exception::throw_type(ctx, "stream path is required"))?;
-        let flags = option_property(ctx, options.as_ref(), "flags")?;
-        let options = open_options(ctx, flags)?;
-        vfs_call(ctx, |vfs| vfs.open(path, options))?
-    };
+    let (path, descriptor, owns_descriptor) =
+        stream_descriptor(ctx, input, descriptor, options.as_ref(), None)?;
     let bytes = read_descriptor(ctx, descriptor)?;
     let stream = stream_object(ctx, "Readable")?;
     stream.set("path", path.unwrap_or_default())?;
@@ -650,29 +599,14 @@ pub(super) fn create_read_stream<'js>(
     Ok(stream)
 }
 
-pub(super) fn create_write_stream<'js>(
+fn create_write_stream<'js>(
     ctx: &Ctx<'js>,
     input: Option<Value<'js>>,
     descriptor: Option<u32>,
     options: Option<Value<'js>>,
 ) -> rquickjs::Result<Object<'js>> {
-    let path = input
-        .as_ref()
-        .map(|value| path(ctx, value.clone()))
-        .transpose()?;
-    let option_descriptor = option_descriptor(ctx, options.as_ref())?;
-    let owns_descriptor = descriptor.is_none() && option_descriptor.is_none();
-    let descriptor = if let Some(descriptor) = descriptor.or(option_descriptor) {
-        descriptor
-    } else {
-        let path = path
-            .as_deref()
-            .ok_or_else(|| Exception::throw_type(ctx, "stream path is required"))?;
-        let flags = option_property(ctx, options.as_ref(), "flags")?;
-        let flags = flags.or_else(|| "w".into_js(ctx).ok());
-        let options = open_options(ctx, flags)?;
-        vfs_call(ctx, |vfs| vfs.open(path, options))?
-    };
+    let (path, descriptor, owns_descriptor) =
+        stream_descriptor(ctx, input, descriptor, options.as_ref(), Some("w"))?;
     let stream = stream_object(ctx, "Writable")?;
     stream.set("path", path.unwrap_or_default())?;
     stream.set("fd", descriptor)?;
@@ -715,16 +649,37 @@ pub(super) fn create_write_stream<'js>(
     Ok(stream)
 }
 
+/// The stream's path and descriptor, and whether the stream opened that
+/// descriptor itself, with `default_flags` when `options` names none.
+fn stream_descriptor<'js>(
+    ctx: &Ctx<'js>,
+    input: Option<Value<'js>>,
+    descriptor: Option<u32>,
+    options: Option<&Value<'js>>,
+    default_flags: Option<&str>,
+) -> rquickjs::Result<(Option<String>, u32, bool)> {
+    let path = input.map(|value| path(ctx, value)).transpose()?;
+    let option_descriptor = option_descriptor(ctx, options)?;
+    if let Some(descriptor) = descriptor.or(option_descriptor) {
+        return Ok((path, descriptor, false));
+    }
+    let open_path = path
+        .as_deref()
+        .ok_or_else(|| Exception::throw_type(ctx, "stream path is required"))?;
+    let flags = option_property(ctx, options, "flags")?
+        .or_else(|| default_flags.and_then(|flags| flags.into_js(ctx).ok()));
+    let open_options = open_options(ctx, flags)?;
+    let descriptor = vfs_call(ctx, |vfs| vfs.open(open_path, open_options))?;
+    Ok((path, descriptor, true))
+}
+
 pub(super) fn option_descriptor<'js>(
     ctx: &Ctx<'js>,
     options: Option<&Value<'js>>,
 ) -> rquickjs::Result<Option<u32>> {
-    let Some(value) = option_property(ctx, options, "fd")? else {
+    let Some(value) = defined(option_property(ctx, options, "fd")?) else {
         return Ok(None);
     };
-    if value.is_null() || value.is_undefined() {
-        return Ok(None);
-    }
     if value.is_object() {
         let object = value
             .try_into_object()
@@ -772,8 +727,7 @@ pub(super) fn stream_write<'js>(
         let args = normalize_write_options(ctx, false, args)?;
         write_arguments(ctx, value, args)?
     };
-    let descriptor = handle_descriptor(state)
-        .ok_or_else(|| Exception::throw_message(ctx, "EBADF: file descriptor closed"))?;
+    let descriptor = open_descriptor(ctx, state)?;
     let result = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, position));
     if let Some(callback) = callback {
         match result {
@@ -835,15 +789,16 @@ pub(super) fn readable_web_stream<'js>(
 
 pub(super) fn stats_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
     let (function, prototype) = constructor(ctx, "Stats", "__tokamak_node_fs_stats_proto")?;
-    for (name, method) in [
-        ("isFile", stats_is_file as fn(This<Object<'_>>) -> bool),
-        ("isDirectory", stats_is_directory),
-        ("isBlockDevice", stats_is_block_device),
-        ("isCharacterDevice", stats_is_character_device),
-        ("isSymbolicLink", stats_is_symbolic_link),
-        ("isFIFO", stats_is_fifo),
-        ("isSocket", stats_is_socket),
+    for (name, file_type) in [
+        ("isFile", 0o100_000),
+        ("isDirectory", 0o040_000),
+        ("isBlockDevice", 0o060_000),
+        ("isCharacterDevice", 0o020_000),
+        ("isSymbolicLink", 0o120_000),
+        ("isFIFO", 0o010_000),
+        ("isSocket", 0o140_000),
     ] {
+        let method = move |this: This<Object<'js>>| stats_type(&this) == Some(file_type);
         prototype.set(name, Function::new(ctx.clone(), method)?)?;
     }
     Ok(function)
@@ -865,77 +820,35 @@ pub(super) fn stats_type(this: &This<Object<'_>>) -> Option<u32> {
     Some(stats_mode(this)? & 0o170_000)
 }
 
-pub(super) fn stats_is_file(this: This<Object<'_>>) -> bool {
-    stats_type(&this).is_some_and(|mode| mode == 0o100_000)
+fn dirent_device(object: &Object<'_>) -> bool {
+    matches!(object.get::<_, Option<bool>>("device"), Ok(Some(true)))
 }
 
-pub(super) fn stats_is_directory(this: This<Object<'_>>) -> bool {
-    stats_type(&this).is_some_and(|mode| mode == 0o040_000)
-}
-
-pub(super) fn stats_is_block_device(this: This<Object<'_>>) -> bool {
-    stats_type(&this).is_some_and(|mode| mode == 0o060_000)
-}
-
-pub(super) fn stats_is_character_device(this: This<Object<'_>>) -> bool {
-    stats_type(&this).is_some_and(|mode| mode == 0o020_000)
-}
-
-pub(super) fn stats_is_symbolic_link(this: This<Object<'_>>) -> bool {
-    stats_type(&this).is_some_and(|mode| mode == 0o120_000)
-}
-
-pub(super) fn stats_is_fifo(this: This<Object<'_>>) -> bool {
-    stats_type(&this).is_some_and(|mode| mode == 0o010_000)
-}
-
-pub(super) fn stats_is_socket(this: This<Object<'_>>) -> bool {
-    stats_type(&this).is_some_and(|mode| mode == 0o140_000)
-}
-
-fn dirent_device(this: &This<Object<'_>>) -> bool {
-    matches!(this.0.get::<_, Option<bool>>("device"), Ok(Some(true)))
-}
-
-pub(super) fn dirent_is_file(this: This<Object<'_>>) -> bool {
-    !dirent_device(&this)
-        && this
-            .0
-            .get::<_, Option<String>>("type")
-            .ok()
-            .flatten()
-            .is_some_and(|kind| kind == "file")
-}
-
-pub(super) fn dirent_is_directory(this: This<Object<'_>>) -> bool {
-    this.0
+fn dirent_has_type(object: &Object<'_>, kind: &str) -> bool {
+    object
         .get::<_, Option<String>>("type")
         .ok()
         .flatten()
-        .is_some_and(|kind| kind == "directory")
+        .is_some_and(|value| value == kind)
 }
 
-pub(super) fn dirent_is_block_device(_: This<Object<'_>>) -> bool {
-    false
+fn dirent_is_file(this: This<Object<'_>>) -> bool {
+    !dirent_device(&this.0) && dirent_has_type(&this.0, "file")
 }
 
-pub(super) fn dirent_is_character_device(this: This<Object<'_>>) -> bool {
-    dirent_device(&this)
+fn dirent_is_directory(this: This<Object<'_>>) -> bool {
+    dirent_has_type(&this.0, "directory")
 }
 
-pub(super) fn dirent_is_symbolic_link(this: This<Object<'_>>) -> bool {
-    this.0
-        .get::<_, Option<String>>("type")
-        .ok()
-        .flatten()
-        .is_some_and(|kind| kind == "symlink")
+fn dirent_is_character_device(this: This<Object<'_>>) -> bool {
+    dirent_device(&this.0)
 }
 
-pub(super) fn dirent_is_fifo(_: This<Object<'_>>) -> bool {
-    false
+fn dirent_is_symbolic_link(this: This<Object<'_>>) -> bool {
+    dirent_has_type(&this.0, "symlink")
 }
 
-pub(super) fn dirent_is_socket(_: This<Object<'_>>) -> bool {
+fn never(_: This<Object<'_>>) -> bool {
     false
 }
 
@@ -958,33 +871,34 @@ pub(super) fn stat_object<'js>(
         0o120_777
     };
     object.set("type", node_type_name(stat.kind))?;
-    set_number_or_bigint(ctx, &object, "dev", u64::from(stat.device), bigint)?;
-    set_number_or_bigint(ctx, &object, "ino", 0, bigint)?;
-    set_number_or_bigint(ctx, &object, "mode", u64::from(mode), bigint)?;
-    set_number_or_bigint(ctx, &object, "nlink", 1, bigint)?;
-    set_number_or_bigint(ctx, &object, "uid", 0, bigint)?;
-    set_number_or_bigint(ctx, &object, "gid", 0, bigint)?;
-    set_number_or_bigint(ctx, &object, "rdev", 0, bigint)?;
-    set_number_or_bigint(ctx, &object, "size", stat.size, bigint)?;
-    set_number_or_bigint(ctx, &object, "blksize", 0, bigint)?;
-    set_number_or_bigint(ctx, &object, "blocks", 0, bigint)?;
+    for (name, value) in [
+        ("dev", u64::from(stat.device)),
+        ("ino", 0),
+        ("mode", u64::from(mode)),
+        ("nlink", 1),
+        ("uid", 0),
+        ("gid", 0),
+        ("rdev", 0),
+        ("size", stat.size),
+        ("blksize", 0),
+        ("blocks", 0),
+    ] {
+        set_number_or_bigint(ctx, &object, name, value, bigint)?;
+    }
     object.set("writable", stat.writable)?;
     object.set("device", stat.device)?;
-    set_number_or_bigint(ctx, &object, "atimeMs", 0, bigint)?;
-    set_number_or_bigint(ctx, &object, "mtimeMs", 0, bigint)?;
-    set_number_or_bigint(ctx, &object, "ctimeMs", 0, bigint)?;
-    set_number_or_bigint(ctx, &object, "birthtimeMs", 0, bigint)?;
+    for name in ["atimeMs", "mtimeMs", "ctimeMs", "birthtimeMs"] {
+        set_number_or_bigint(ctx, &object, name, 0, bigint)?;
+    }
     if bigint {
-        object.set("atimeNs", BigInt::from_i64(ctx.clone(), 0)?)?;
-        object.set("mtimeNs", BigInt::from_i64(ctx.clone(), 0)?)?;
-        object.set("ctimeNs", BigInt::from_i64(ctx.clone(), 0)?)?;
-        object.set("birthtimeNs", BigInt::from_i64(ctx.clone(), 0)?)?;
+        for name in ["atimeNs", "mtimeNs", "ctimeNs", "birthtimeNs"] {
+            object.set(name, BigInt::from_i64(ctx.clone(), 0)?)?;
+        }
     }
     let date: Object = ctx.eval("new Date(0)")?;
-    object.set("atime", date.clone())?;
-    object.set("mtime", date.clone())?;
-    object.set("ctime", date.clone())?;
-    object.set("birthtime", date)?;
+    for name in ["atime", "mtime", "ctime", "birthtime"] {
+        object.set(name, date.clone())?;
+    }
     Ok(object)
 }
 
@@ -999,20 +913,6 @@ pub(super) fn set_number_or_bigint<'js>(
         object.set(name, BigInt::from_u64(ctx.clone(), value)?)
     } else {
         object.set(name, value)
-    }
-}
-
-pub(super) fn name_value<'js>(
-    ctx: &Ctx<'js>,
-    name: &str,
-    encoding: Option<&str>,
-) -> rquickjs::Result<Value<'js>> {
-    match encoding.map(str::to_ascii_lowercase).as_deref() {
-        None | Some("utf8" | "utf-8") => name.to_owned().into_js(ctx),
-        Some("buffer") => {
-            Ok(TypedArray::<u8>::new_copy(ctx.clone(), name.as_bytes())?.into_value())
-        }
-        Some(_) => output(ctx.clone(), name.as_bytes(), encoding),
     }
 }
 
@@ -1059,20 +959,12 @@ pub(super) fn glob_matches(
     ctx: &Ctx<'_>,
     cwd: &str,
     pattern: &str,
-    _options: &FsOptions,
 ) -> rquickjs::Result<Vec<(String, DirectoryEntry)>> {
     let entries = vfs_call(ctx, |vfs| vfs.walk(cwd))?;
     let patterns = expand_braces(pattern);
     let mut result = Vec::new();
     for (path, entry) in entries {
-        let candidate = if pattern.starts_with('/') {
-            path.clone()
-        } else {
-            path.strip_prefix(cwd)
-                .unwrap_or(&path)
-                .trim_start_matches('/')
-                .to_owned()
-        };
+        let candidate = glob_candidate(&path, cwd, pattern);
         if patterns
             .iter()
             .any(|expanded| glob_match(expanded, &candidate))
@@ -1219,24 +1111,16 @@ pub(super) fn set_type_methods<'js>(
     kind: NodeType,
     device: bool,
 ) -> rquickjs::Result<()> {
-    let is_file = kind == NodeType::File && !device;
-    let is_directory = kind == NodeType::Directory;
-    let is_symlink = kind == NodeType::Symlink;
-    object.set("isFile", Function::new(ctx.clone(), move || is_file)?)?;
-    object.set(
-        "isDirectory",
-        Function::new(ctx.clone(), move || is_directory)?,
-    )?;
-    object.set(
-        "isSymbolicLink",
-        Function::new(ctx.clone(), move || is_symlink)?,
-    )?;
-    object.set(
-        "isCharacterDevice",
-        Function::new(ctx.clone(), move || device)?,
-    )?;
-    object.set("isBlockDevice", Function::new(ctx.clone(), || false)?)?;
-    object.set("isFIFO", Function::new(ctx.clone(), || false)?)?;
-    object.set("isSocket", Function::new(ctx.clone(), || false)?)?;
+    for (name, result) in [
+        ("isFile", kind == NodeType::File && !device),
+        ("isDirectory", kind == NodeType::Directory),
+        ("isSymbolicLink", kind == NodeType::Symlink),
+        ("isCharacterDevice", device),
+        ("isBlockDevice", false),
+        ("isFIFO", false),
+        ("isSocket", false),
+    ] {
+        object.set(name, Function::new(ctx.clone(), move || result)?)?;
+    }
     Ok(())
 }
