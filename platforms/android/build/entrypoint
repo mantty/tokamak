@@ -29,6 +29,28 @@ if [[ -n "$dev_endpoint" && -z "$dev_session_token" ]] || [[ -z "$dev_endpoint" 
   echo "development endpoint and session token must be provided together" >&2
   exit 1
 fi
+# Development builds are debug builds. Other builds are release builds,
+# which R8 shrinks and a configured keystore signs; without one, the debug
+# key signs them so they install for testing. Gradle reads the keystore
+# settings from the environment.
+variant=release
+task=Release
+if [[ -n "$dev_endpoint" ]]; then
+  variant=debug
+  task=Debug
+fi
+signing=debug
+if [[ -n "${TOKAMAK_ANDROID_KEYSTORE:-}" ]]; then
+  if [[ ! -f "$TOKAMAK_ANDROID_KEYSTORE" ]]; then
+    echo "Android keystore is missing: $TOKAMAK_ANDROID_KEYSTORE" >&2
+    exit 1
+  fi
+  if [[ -z "${TOKAMAK_ANDROID_KEY_ALIAS:-}" || -z "${TOKAMAK_ANDROID_KEYSTORE_PASSWORD:-}" ]]; then
+    echo "an Android keystore needs key-alias and keystore-password" >&2
+    exit 1
+  fi
+  signing=release
+fi
 user_manifest=
 if [[ -n "${TOKAMAK_ANDROID_MANIFEST:-}" ]]; then
   user_manifest=$TOKAMAK_ANDROID_MANIFEST
@@ -88,6 +110,24 @@ link_runtime() {
     -Wl,-z,noexecstack -Wl,-z,relro,-z,now -Wl,-z,max-page-size=16384 \
     -Wl,--strip-all \
     "${libraries[@]}"
+}
+
+# The signing configuration for a keystore that signs release builds.
+release_signing() {
+  if [[ "$signing" != release ]]; then
+    return
+  fi
+  cat <<'EOF'
+  signingConfigs {
+    release {
+      storeFile file(System.getenv('TOKAMAK_ANDROID_KEYSTORE'))
+      storePassword System.getenv('TOKAMAK_ANDROID_KEYSTORE_PASSWORD')
+      keyAlias System.getenv('TOKAMAK_ANDROID_KEY_ALIAS')
+      keyPassword System.getenv('TOKAMAK_ANDROID_KEY_PASSWORD') ?: System.getenv('TOKAMAK_ANDROID_KEYSTORE_PASSWORD')
+    }
+  }
+
+EOF
 }
 
 xml_escape() {
@@ -262,6 +302,15 @@ android {
     abortOnError true
     checkDependencies true
   }
+
+$(release_signing)
+  buildTypes {
+    release {
+      minifyEnabled true
+      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'tokamak-rules.pro'
+      signingConfig signingConfigs.$signing
+    }
+  }
 }
 
 dependencies {
@@ -328,6 +377,9 @@ manifest=$app/src/main/AndroidManifest.xml
   printf '%s\n' '</manifest>'
 } > "$manifest"
 
-gradle --no-daemon :app:lintDebug :app:assembleDebug --project-dir "$project"
+# R8 keeps the runtime's classes whole; native code calls into them.
+printf '%s\n' '-keep class com.tokamak.runtime.** { *; }' > "$app/tokamak-rules.pro"
+
+gradle --no-daemon ":app:lint$task" ":app:assemble$task" --project-dir "$project"
 mkdir -p "$(dirname "$output")"
-cp "$app/build/outputs/apk/debug/app-debug.apk" "$output"
+cp "$app/build/outputs/apk/$variant/app-$variant.apk" "$output"

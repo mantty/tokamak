@@ -592,12 +592,17 @@ for arg in "$@"; do
   fi
 done
 printf '%s\n' "$*" > "$project/gradle-arguments"
-mkdir -p "$project/app/build/outputs/apk/debug"
+variant=debug
+case " $* " in
+  *" :app:assembleRelease "*) variant=release ;;
+esac
+outputs="$project/app/build/outputs/apk/$variant"
+mkdir -p "$outputs"
 if [ -n "${TOKAMAK_ANDROID_TEST:-}" ]; then
   printf '%s' "$TOKAMAK_ANDROID_TEST" > "$project/platform-pack-set-value"
 fi
-cp "$project/app/src/main/AndroidManifest.xml" "$project/app/build/outputs/apk/debug/AndroidManifest.xml"
-touch "$project/app/build/outputs/apk/debug/app-debug.apk"
+cp "$project/app/src/main/AndroidManifest.xml" "$outputs/AndroidManifest.xml"
+touch "$outputs/app-$variant.apk"
 "#,
     )?;
     let mut path = OsString::from(bin);
@@ -1082,7 +1087,60 @@ fn checks_android_api_levels_with_lint() -> TestResult {
     assert!(build_script.contains("checkOnly 'NewApi'"));
     assert!(build_script.contains("abortOnError true"));
     let arguments = fs::read_to_string(gradle.join("gradle-arguments"))?;
-    assert!(arguments.contains(":app:lintDebug :app:assembleDebug"));
+    assert!(arguments.contains(":app:lintRelease :app:assembleRelease"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn shrinks_release_builds_and_signs_them_with_the_debug_key_by_default() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+
+    let mut command = build_command("android", &project, &platform_pack)?;
+    configure_fake_android_tools(&mut command, temporary.path())?;
+    command.assert().success();
+
+    let app = project.join("build/android/.tokamak/app");
+    let build_script = fs::read_to_string(app.join("build.gradle"))?;
+    assert!(build_script.contains("minifyEnabled true"));
+    assert!(build_script.contains("signingConfig signingConfigs.debug"));
+    assert!(!build_script.contains("signingConfigs {"));
+    assert_eq!(
+        fs::read_to_string(app.join("tokamak-rules.pro"))?,
+        "-keep class com.tokamak.runtime.** { *; }\n"
+    );
+    assert!(project.join("build/android/demo-app.apk").is_file());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn signs_release_builds_with_the_configured_keystore() -> TestResult {
+    let (temporary, project, platform_pack) = create_android_inputs()?;
+    let keystore = temporary.path().join("release.keystore");
+    fs::write(&keystore, "keystore")?;
+    let build = |alias: Option<&str>| -> TestResult<Command> {
+        let mut command = build_command("android", &project, &platform_pack)?;
+        command
+            .env("TOKAMAK_ANDROID_KEYSTORE", &keystore)
+            .env("TOKAMAK_ANDROID_KEYSTORE_PASSWORD", "secret")
+            .env_remove("TOKAMAK_ANDROID_KEY_ALIAS");
+        if let Some(alias) = alias {
+            command.env("TOKAMAK_ANDROID_KEY_ALIAS", alias);
+        }
+        configure_fake_android_tools(&mut command, temporary.path())?;
+        Ok(command)
+    };
+
+    build(None)?.assert().failure().stderr(contains(
+        "an Android keystore needs key-alias and keystore-password",
+    ));
+    build(Some("release"))?.assert().success();
+
+    let build_script = fs::read_to_string(project.join("build/android/.tokamak/app/build.gradle"))?;
+    assert!(build_script.contains("signingConfig signingConfigs.release"));
+    assert!(build_script.contains("storeFile file(System.getenv('TOKAMAK_ANDROID_KEYSTORE'))"));
+    assert!(!build_script.contains("secret"));
     Ok(())
 }
 

@@ -43,6 +43,10 @@ runtime="$output/lib/TokamakRuntime"
 mkdir -p "$runtime" "$output/build" "$output/native-shell"
 libraries="$workspace/target/$rust_target/release/tokamak-link-libraries"
 
+# Panics abort, so the runtime's code needs no unwind tables; only the
+# precompiled Rust standard library keeps its own.
+CFLAGS_aarch64_linux_android="-fno-asynchronous-unwind-tables -fno-unwind-tables" \
+CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C force-unwind-tables=no" \
 CC_aarch64_linux_android="$compiler" \
 AR_aarch64_linux_android="$host/bin/llvm-ar" \
 RANLIB_aarch64_linux_android="$host/bin/llvm-ranlib" \

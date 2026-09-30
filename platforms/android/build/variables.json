@@ -3,6 +3,22 @@
     "manifest": {
       "kind": "path",
       "description": "Partial AndroidManifest.xml merged over the generated manifest"
+    },
+    "keystore": {
+      "kind": "path",
+      "description": "Keystore that signs release builds; without one, the debug key signs them"
+    },
+    "keystore-password": {
+      "kind": "string",
+      "description": "Password of the keystore"
+    },
+    "key-alias": {
+      "kind": "string",
+      "description": "Alias of the signing key in the keystore"
+    },
+    "key-password": {
+      "kind": "string",
+      "description": "Password of the signing key; defaults to the keystore password"
     }
   }
 }
