@@ -198,18 +198,16 @@ fn load(root: &Path, path: &Path) -> Result<Plugin> {
         );
     }
     for (platform_name, native) in &manifest.platforms {
-        let platform = platform_name.parse::<Platform>().map_err(|_| {
-            anyhow::anyhow!(
-                "plugin '{}' has unknown platform '{platform_name}'",
-                manifest.id
-            )
-        })?;
-        if !platform.supports_plugins() {
-            bail!(
-                "plugin '{}' has unknown platform '{platform_name}'",
-                manifest.id
-            );
-        }
+        let platform = platform_name
+            .parse::<Platform>()
+            .ok()
+            .filter(|platform| platform.supports_plugins())
+            .with_context(|| {
+                format!(
+                    "plugin '{}' has unknown platform '{platform_name}'",
+                    manifest.id
+                )
+            })?;
         if !valid_qualified_name(&native.class)
             || (platform == Platform::Android && !native.class.contains('.'))
         {

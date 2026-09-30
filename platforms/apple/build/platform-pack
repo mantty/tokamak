@@ -28,16 +28,16 @@ case "$target" in
     ;;
 esac
 
+framework=$output/frameworks/TokamakRuntime.framework
 rm -rf "$output"
 mkdir -p \
   "$output/build" \
-  "$output/frameworks/TokamakRuntime.framework/Headers" \
-  "$output/frameworks/TokamakRuntime.framework/Modules" \
+  "$framework/Headers" \
+  "$framework/Modules" \
   "$output/native-shell" \
   "$output/tools"
 
-host_targets=(aarch64-apple-darwin x86_64-apple-darwin)
-for host_target in "${host_targets[@]}"; do
+for host_target in aarch64-apple-darwin x86_64-apple-darwin; do
   cargo build \
     --package tokamak-apple-signing \
     --release \
@@ -63,11 +63,9 @@ if [[ ! -f "$library" ]]; then
   exit 1
 fi
 
-cp "$library" "$output/frameworks/TokamakRuntime.framework/TokamakRuntime"
-cp "$workspace/platforms/apple/source/TokamakRuntime.h" \
-  "$output/frameworks/TokamakRuntime.framework/Headers/TokamakRuntime.h"
-cp "$workspace/platforms/apple/source/module.modulemap" \
-  "$output/frameworks/TokamakRuntime.framework/Modules/module.modulemap"
+cp "$library" "$framework/TokamakRuntime"
+cp "$workspace/platforms/apple/source/TokamakRuntime.h" "$framework/Headers/TokamakRuntime.h"
+cp "$workspace/platforms/apple/source/module.modulemap" "$framework/Modules/module.modulemap"
 cp "$workspace/platforms/apple/source/"*.swift "$output/native-shell/"
 cp "$workspace/platforms/apple/build/entrypoint" \
   "$output/build/entrypoint"

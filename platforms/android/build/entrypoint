@@ -191,15 +191,12 @@ for plugin in "$input/plugins"/*/; do
     cp "$plugin/AndroidManifest.xml" "$module/src/main/AndroidManifest.xml"
   fi
   {
-    printf '%s\n' 'plugins {'
-    printf '%s\n' "  id 'com.android.library'"
-    printf '%s\n' "  id 'org.jetbrains.kotlin.android'"
+    printf '%s\n' 'plugins {' "  id 'com.android.library'" "  id 'org.jetbrains.kotlin.android'"
     printf '%s\n\n' '}'
     printf '%s\n' 'android {'
     printf "  namespace 'tokamak.plugins.%s'\n" "${plugin_id//-/_}"
     printf '%s\n\n' '}'
-    printf '%s\n' 'dependencies {'
-    printf '%s\n' "  implementation project(':tokamak-plugin')"
+    printf '%s\n' 'dependencies {' "  implementation project(':tokamak-plugin')"
     for dependency in "$plugin/dependencies"/*; do
       printf "  implementation '%s'\n" "$(cat "$dependency")"
     done
@@ -338,8 +335,7 @@ fi
 registry=$kotlin/TokamakPluginRegistry.kt
 {
   printf '%s\n\n' 'package com.tokamak.runtime'
-  printf '%s\n' 'internal fun tokamakPlugins(host: TokamakHost): List<TokamakPlugin> ='
-  printf '%s\n' '    listOf('
+  printf '%s\n' 'internal fun tokamakPlugins(host: TokamakHost): List<TokamakPlugin> =' '    listOf('
   for plugin in "$input/plugins"/*/; do
     printf '        %s(host),\n' "$(cat "$plugin/class")"
   done
@@ -367,14 +363,15 @@ manifest=$app/src/main/AndroidManifest.xml
     printf '    <meta-data android:name="tokamak.dev.endpoint" android:value="%s" />\n' "$dev_endpoint"
     printf '    <meta-data android:name="tokamak.dev.session-token" android:value="%s" />\n' "$dev_session_token"
   fi
-  printf '%s\n' '    <activity android:name=".TokamakActivity" android:exported="true" android:launchMode="singleTask" android:theme="@android:style/Theme.Material.NoActionBar" android:configChanges="colorMode|density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode">'
-  printf '%s\n' '      <intent-filter>'
-  printf '%s\n' '        <action android:name="android.intent.action.MAIN" />'
-  printf '%s\n' '        <category android:name="android.intent.category.LAUNCHER" />'
-  printf '%s\n' '      </intent-filter>'
-  printf '%s\n' '    </activity>'
-  printf '%s\n' '  </application>'
-  printf '%s\n' '</manifest>'
+  printf '%s\n' \
+    '    <activity android:name=".TokamakActivity" android:exported="true" android:launchMode="singleTask" android:theme="@android:style/Theme.Material.NoActionBar" android:configChanges="colorMode|density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode">' \
+    '      <intent-filter>' \
+    '        <action android:name="android.intent.action.MAIN" />' \
+    '        <category android:name="android.intent.category.LAUNCHER" />' \
+    '      </intent-filter>' \
+    '    </activity>' \
+    '  </application>' \
+    '</manifest>'
 } > "$manifest"
 
 # R8 keeps the runtime's classes whole, since native code calls into them,

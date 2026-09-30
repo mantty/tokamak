@@ -38,13 +38,10 @@ pub(crate) fn declared(variable: &str) -> Result<Option<Dictionary>> {
 pub(crate) fn unpermitted<'a>(profile: &Dictionary, declared: &'a Dictionary) -> Option<&'a str> {
     declared
         .iter()
-        .find(|(key, value)| {
-            let allowed = profile.get(key.as_str());
-            match allowed {
-                None => true,
-                Some(_) if PROFILE_VALUED.contains(&key.as_str()) => false,
-                Some(allowed) => !permits(allowed, value),
-            }
+        .find(|(key, value)| match profile.get(key.as_str()) {
+            None => true,
+            Some(_) if PROFILE_VALUED.contains(&key.as_str()) => false,
+            Some(allowed) => !permits(allowed, value),
         })
         .map(|(key, _)| key.as_str())
 }

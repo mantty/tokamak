@@ -302,10 +302,10 @@ impl Target {
                 path: "native-shell".to_owned(),
             });
         }
-        artifacts.extend([Artifact {
+        artifacts.push(Artifact {
             kind: ArtifactKind::EsbuildExecutable,
             path: ESBUILD_EXECUTABLE.to_owned(),
-        }]);
+        });
         artifacts
     }
 }

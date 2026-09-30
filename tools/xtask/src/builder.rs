@@ -65,15 +65,13 @@ fn run_platform_recipe(workspace: &WorkspaceLayout, target: Target, output: &Pat
     {
         let mut command = Command::new("powershell");
         command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
-        command.arg(&recipe);
         command
     } else {
-        let mut command = Command::new("bash");
-        command.arg(&recipe);
-        command
+        Command::new("bash")
     };
     let target_name = target.to_string();
     let status = command
+        .arg(&recipe)
         .args(["build", &target_name, target.rust_target()])
         .arg(output)
         .current_dir(workspace.root())
@@ -104,9 +102,7 @@ fn deploy_runtime(workspace: &WorkspaceLayout, pack_root: &Path) -> Result<()> {
     for host in ESBUILD_HOSTS {
         copy_dir_contents(
             &workspace.esbuild_host_package(host),
-            &pack_root
-                .join("tools/runtime/node_modules/@esbuild")
-                .join(host),
+            &runtime.join("node_modules/@esbuild").join(host),
         )
         .with_context(|| format!("copy esbuild binary for {host}"))?;
     }
@@ -119,8 +115,7 @@ fn target_variables(
     target: Target,
 ) -> Result<BTreeMap<String, PackVariable>> {
     let path = workspace.platform_variables(target);
-    let path = path.as_path();
-    let content = fs::read_to_string(path)
+    let content = fs::read_to_string(&path)
         .with_context(|| format!("read platform-pack variables {}", path.display()))?;
     let mut namespaces: BTreeMap<String, BTreeMap<String, PackVariable>> =
         serde_json::from_str(&content)

@@ -161,46 +161,37 @@ pub(crate) fn stage_platform_icons(
     let Some(source) = source else {
         return Ok(());
     };
-
-    if !source.exists() {
-        bail!(
-            "Tokamak {} icon path does not exist: {}",
+    let invalid = |requirement: &str| {
+        anyhow::anyhow!(
+            "Tokamak {} icon path {requirement}: {}",
             platform.display_name(),
             source.display()
-        );
+        )
+    };
+
+    if !source.exists() {
+        return Err(invalid("does not exist"));
     }
 
     let destination = input.join("icons").join(platform.directory_name());
     match platform {
         Platform::Android => {
             if !source.is_dir() {
-                bail!(
-                    "Tokamak {} icon path must be a directory: {}",
-                    platform.display_name(),
-                    source.display()
-                );
+                return Err(invalid("must be a directory"));
             }
             fs::create_dir_all(&destination)?;
             copy_dir_contents(source, &destination)?;
         }
         Platform::Ios | Platform::IosSimulator | Platform::Macos => {
             if !source.is_dir() {
-                bail!(
-                    "Tokamak {} icon path must be an .icon directory: {}",
-                    platform.display_name(),
-                    source.display()
-                );
+                return Err(invalid("must be an .icon directory"));
             }
             let is_icon_package = source
                 .extension()
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("icon"));
             if !is_icon_package {
-                bail!(
-                    "Tokamak {} icon path must use the .icon format: {}",
-                    platform.display_name(),
-                    source.display()
-                );
+                return Err(invalid("must use the .icon format"));
             }
             let destination = destination.join("AppIcon.icon");
             fs::create_dir_all(&destination)?;
@@ -208,28 +199,14 @@ pub(crate) fn stage_platform_icons(
         }
         Platform::Windows => {
             if source.is_dir() {
-                bail!(
-                    "Tokamak {} icon path must be a file: {}",
-                    platform.display_name(),
-                    source.display()
-                );
+                return Err(invalid("must be a file"));
             }
             let extension = source
                 .extension()
                 .and_then(|extension| extension.to_str())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Tokamak {} icon path must have a file extension: {}",
-                        platform.display_name(),
-                        source.display()
-                    )
-                })?;
+                .ok_or_else(|| invalid("must have a file extension"))?;
             if !extension.eq_ignore_ascii_case("ico") {
-                bail!(
-                    "Tokamak {} icon path must use the .ico format: {}",
-                    platform.display_name(),
-                    source.display()
-                );
+                return Err(invalid("must use the .ico format"));
             }
             copy_file(source, destination.join("AppIcon.ico"))?;
         }
@@ -259,16 +236,14 @@ pub(crate) fn run_entrypoint(
     {
         let mut command = Command::new("powershell");
         command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
-        command.arg(command_path(&entrypoint));
         command
     } else {
-        let mut command = Command::new("bash");
-        command.arg(command_path(&entrypoint));
-        command
+        Command::new("bash")
     };
-    command.envs(environment);
     let status = command
-        .args(["build"])
+        .arg(command_path(&entrypoint))
+        .envs(environment)
+        .arg("build")
         .arg(command_path(input))
         .arg(command_path(output))
         .current_dir(command_path(pack_root))
