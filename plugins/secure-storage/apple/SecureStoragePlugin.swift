@@ -121,12 +121,9 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     return String(decoding: data, as: UTF8.self)
   }
 
-  /// Reads attributes only, which needs no authentication.
   private func keys() throws(TokamakPluginError) -> [String] {
-    var items = serviceQuery()
+    var items = attributesQuery(serviceQuery())
     items[kSecMatchLimit] = kSecMatchLimitAll
-    items[kSecReturnAttributes] = true
-    items[kSecUseAuthenticationContext] = nonInteractiveContext()
     var attributes: CFTypeRef?
     let status = SecItemCopyMatching(items as CFDictionary, &attributes)
     if status == errSecItemNotFound {
@@ -146,12 +143,8 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     }
   }
 
-  /// Reads attributes only, which needs no authentication.
   private func exists(_ name: String) throws(TokamakPluginError) -> Bool {
-    var item = query(name)
-    item[kSecReturnAttributes] = true
-    item[kSecUseAuthenticationContext] = nonInteractiveContext()
-    let status = SecItemCopyMatching(item as CFDictionary, nil)
+    let status = SecItemCopyMatching(attributesQuery(query(name)) as CFDictionary, nil)
     if status == errSecItemNotFound {
       return false
     }
@@ -159,10 +152,13 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     return true
   }
 
-  private func nonInteractiveContext() -> LAContext {
+  /// `query` reading attributes only, which needs no authentication.
+  private func attributesQuery(_ query: [CFString: Any]) -> [CFString: Any] {
     let context = LAContext()
     context.interactionNotAllowed = true
-    return context
+    return query.merging([kSecReturnAttributes: true, kSecUseAuthenticationContext: context]) {
+      _, attribute in attribute
+    }
   }
 
   /// All of the plugin's items. The data protection keychain is the only

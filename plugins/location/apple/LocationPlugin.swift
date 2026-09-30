@@ -6,6 +6,11 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
 {
   let id = "location"
 
+  private static let permissionDenied = TokamakPluginError(
+    name: "NotAllowedError",
+    message: "Location permission was denied"
+  )
+
   private let manager = CLLocationManager()
   private var current: [TokamakPluginReply] = []
   private var watchers: [UUID: TokamakPluginReply] = [:]
@@ -50,20 +55,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   func locationManagerDidChangeAuthorization(
     _ manager: CLLocationManager
   ) {
-    switch manager.authorizationStatus {
-    case .authorizedAlways, .authorizedWhenInUse:
-      manager.startUpdatingLocation()
-    case .denied, .restricted:
-      fail(
-        TokamakPluginError(
-          name: "NotAllowedError",
-          message: "Location permission was denied"
-        ))
-    case .notDetermined:
-      break
-    @unknown default:
-      fail(.notSupported("Location authorization is not supported"))
-    }
+    startIfAuthorized(manager.authorizationStatus)
   }
 
   func locationManager(
@@ -71,16 +63,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     didUpdateLocations locations: [CLLocation]
   ) {
     guard let location = locations.last else { return }
-    let result = Result<Any?, TokamakPluginError>.success(position(location))
-    let waiting = current
-    current.removeAll()
-    for reply in waiting {
-      reply(result)
-    }
-    for reply in watchers.values {
-      reply(result)
-    }
-    stopIfIdle()
+    deliver(.success(position(location)))
   }
 
   func locationManager(
@@ -98,40 +81,47 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
       fail(unavailable("Location services are disabled"))
       return
     }
-    switch manager.authorizationStatus {
+    let status = manager.authorizationStatus
+    if status == .notDetermined {
+      manager.requestWhenInUseAuthorization()
+    } else {
+      startIfAuthorized(status)
+    }
+  }
+
+  /// Starts updates when `status` allows them and fails every request when it
+  /// forbids them.
+  private func startIfAuthorized(_ status: CLAuthorizationStatus) {
+    switch status {
     case .authorizedAlways, .authorizedWhenInUse:
       manager.startUpdatingLocation()
-    case .notDetermined:
-      manager.requestWhenInUseAuthorization()
     case .denied, .restricted:
-      fail(
-        TokamakPluginError(
-          name: "NotAllowedError",
-          message: "Location permission was denied"
-        ))
+      fail(Self.permissionDenied)
+    case .notDetermined:
+      break
     @unknown default:
       fail(.notSupported("Location authorization is not supported"))
     }
   }
 
   private func fail(_ error: TokamakPluginError) {
-    let result = Result<Any?, TokamakPluginError>.failure(error)
+    deliver(.failure(error))
+  }
+
+  /// Replies to the waiting requests and every watcher, then stops when none
+  /// remain.
+  private func deliver(_ result: Result<Any?, TokamakPluginError>) {
     let replies = current + Array(watchers.values)
     current.removeAll()
     for reply in replies {
       reply(result)
     }
-    if watchers.isEmpty {
-      manager.stopUpdatingLocation()
-    }
+    stopIfIdle()
   }
 
   private func locationError(_ error: Error) -> TokamakPluginError {
     if (error as NSError).code == CLError.Code.denied.rawValue {
-      return TokamakPluginError(
-        name: "NotAllowedError",
-        message: "Location permission was denied"
-      )
+      return Self.permissionDenied
     }
     return unavailable(error.localizedDescription)
   }

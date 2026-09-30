@@ -123,22 +123,14 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       "environment": Self.apsEnvironment ?? "development",
     ]
     defaults.set(subscription, forKey: subscriptionKey)
-    let replies = registering
-    registering.removeAll()
-    for reply in replies {
-      reply(.success(subscription))
-    }
+    finishRegistering(.success(subscription))
     if let previous, previous["token"] as? String != subscription["token"] as? String {
       emit("onSubscriptionChange", subscription)
     }
   }
 
   func didFailToRegisterForRemoteNotifications(error: Error) {
-    let replies = registering
-    registering.removeAll()
-    for reply in replies {
-      reply(.failure(Self.registrationError(error)))
-    }
+    finishRegistering(.failure(Self.registrationError(error)))
   }
 
   /// Posts a data-only message to the Worker's push endpoint, showing the
@@ -323,10 +315,16 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     unregisterForRemoteNotifications()
     defaults.removeObject(forKey: subscriptionKey)
     defaults.removeObject(forKey: showInForegroundKey)
+    finishRegistering(
+      .failure(TokamakPluginError(name: "AbortError", message: "unsubscribe was called")))
+  }
+
+  /// Replies to every `subscribe` waiting for its token.
+  private func finishRegistering(_ result: Result<Any?, TokamakPluginError>) {
     let replies = registering
     registering.removeAll()
     for reply in replies {
-      reply(.failure(TokamakPluginError(name: "AbortError", message: "unsubscribe was called")))
+      reply(result)
     }
   }
 
