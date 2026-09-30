@@ -50,7 +50,7 @@ function stringParameter(value, method, owner, index) {
 
 // Options of `method`, or none when absent.
 function options(value, method, index, type) {
-  if (value === undefined || value === null) return {};
+  if (value == null) return {};
   if (typeof value !== "object") throw parameterError(method, "R2Bucket", index, type);
   return value;
 }
@@ -58,7 +58,7 @@ function options(value, method, index, type) {
 // An optional object field, or none when absent.
 function objectField(settings, field, struct, type) {
   const value = settings[field];
-  if (value === undefined || value === null) return undefined;
+  if (value == null) return undefined;
   if (typeof value !== "object") throw fieldError(field, struct, type);
   return value;
 }
@@ -274,7 +274,7 @@ function checksumValue(value, field, length, name) {
 
 // A value to write: a copy of its bytes when in memory, or its stream.
 function body(value, method, owner, optional) {
-  if (optional && (value === undefined || value === null)) return { bytes: new Uint8Array(0) };
+  if (optional && value == null) return { bytes: new Uint8Array(0) };
   if (typeof value === "string" || value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Blob) {
     return { bytes: bytes(value) };
   }

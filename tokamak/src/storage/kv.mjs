@@ -56,7 +56,7 @@ function validateCacheTtl(method, cacheTtl) {
 
 function getOptions(options) {
   if (typeof options === "string") return { type: options, cacheTtl: undefined };
-  if (options === undefined || options === null) return { type: undefined, cacheTtl: undefined };
+  if (options == null) return { type: undefined, cacheTtl: undefined };
   return {
     type: options.type === undefined ? undefined : String(options.type),
     cacheTtl: options.cacheTtl === undefined ? undefined : integer(options.cacheTtl),

@@ -2,16 +2,17 @@
 //! JavaScript calls. Storage work runs on the blocking thread pool, so it
 //! never blocks JavaScript.
 
+use std::any::Any;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::kv::Entry;
 use super::r2::{BodyReader, BodyWriter, Failure, R2Bucket, Read};
-use super::{Storage, lock};
+use super::{Storage, lock, text};
 use rquickjs::class::Trace;
 use rquickjs::function::Async;
 use rquickjs::module::{Declarations, Exports, ModuleDef};
-use rquickjs::{Class, Ctx, Exception, Function, JsLifetime, Object, TypedArray};
+use rquickjs::{Class, Ctx, Exception, JsLifetime, Object, TypedArray};
 
 /// A packaged app's storage, installed into each request's context.
 pub(crate) struct StorageHandle(pub(crate) Arc<Storage>);
@@ -35,71 +36,33 @@ impl ModuleDef for HostModule {
     }
 
     fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
-        exports.export("d1Query", Function::new(ctx.clone(), Async(d1_query))?)?;
-        exports.export("kvGet", Function::new(ctx.clone(), Async(kv_get))?)?;
-        exports.export("kvGetMany", Function::new(ctx.clone(), Async(kv_get_many))?)?;
-        exports.export("kvPut", Function::new(ctx.clone(), Async(kv_put))?)?;
-        exports.export("kvDelete", Function::new(ctx.clone(), Async(kv_delete))?)?;
-        exports.export("kvList", Function::new(ctx.clone(), Async(kv_list))?)?;
-        exports.export("r2Head", Function::new(ctx.clone(), Async(r2_head))?)?;
-        exports.export("r2Get", Function::new(ctx.clone(), Async(r2_get))?)?;
-        exports.export("r2Read", Function::new(ctx.clone(), Async(r2_read))?)?;
-        exports.export("r2CloseBody", Function::new(ctx.clone(), r2_close_body)?)?;
-        exports.export(
-            "r2ObjectWriter",
-            Function::new(ctx.clone(), Async(r2_object_writer))?,
-        )?;
-        exports.export(
-            "r2PartWriter",
-            Function::new(ctx.clone(), Async(r2_part_writer))?,
-        )?;
-        exports.export("r2Write", Function::new(ctx.clone(), Async(r2_write))?)?;
-        exports.export("r2Put", Function::new(ctx.clone(), Async(r2_put))?)?;
-        exports.export("r2Delete", Function::new(ctx.clone(), Async(r2_delete))?)?;
-        exports.export("r2List", Function::new(ctx.clone(), Async(r2_list))?)?;
-        exports.export(
-            "r2CreateUpload",
-            Function::new(ctx.clone(), Async(r2_create_upload))?,
-        )?;
-        exports.export(
-            "r2UploadPart",
-            Function::new(ctx.clone(), Async(r2_upload_part))?,
-        )?;
-        exports.export(
-            "r2CompleteUpload",
-            Function::new(ctx.clone(), Async(r2_complete_upload))?,
-        )?;
-        exports.export(
-            "r2AbortUpload",
-            Function::new(ctx.clone(), Async(r2_abort_upload))?,
-        )?;
-        Ok(())
+        export_host_functions(ctx, exports)
     }
 }
 
-/// Names the module exports.
-const HOST_EXPORTS: &[&str] = &[
-    "d1Query",
-    "kvGet",
-    "kvGetMany",
-    "kvPut",
-    "kvDelete",
-    "kvList",
-    "r2Head",
-    "r2Get",
-    "r2Read",
-    "r2CloseBody",
-    "r2ObjectWriter",
-    "r2PartWriter",
-    "r2Write",
-    "r2Put",
-    "r2Delete",
-    "r2List",
-    "r2CreateUpload",
-    "r2UploadPart",
-    "r2CompleteUpload",
-    "r2AbortUpload",
-];
+crate::globals::host_functions! {
+    pub(super),
+    "d1Query" => Async(d1_query),
+    "kvGet" => Async(kv_get),
+    "kvGetMany" => Async(kv_get_many),
+    "kvPut" => Async(kv_put),
+    "kvDelete" => Async(kv_delete),
+    "kvList" => Async(kv_list),
+    "r2Head" => Async(r2_head),
+    "r2Get" => Async(r2_get),
+    "r2Read" => Async(r2_read),
+    "r2CloseBody" => r2_close_body,
+    "r2ObjectWriter" => Async(r2_object_writer),
+    "r2PartWriter" => Async(r2_part_writer),
+    "r2Write" => Async(r2_write),
+    "r2Put" => Async(r2_put),
+    "r2Delete" => Async(r2_delete),
+    "r2List" => Async(r2_list),
+    "r2CreateUpload" => Async(r2_create_upload),
+    "r2UploadPart" => Async(r2_upload_part),
+    "r2CompleteUpload" => Async(r2_complete_upload),
+    "r2AbortUpload" => Async(r2_abort_upload),
+}
 
 /// A body the R2 binding reads, chunk by chunk.
 #[derive(Trace, JsLifetime)]
@@ -433,10 +396,6 @@ fn owned_bytes(ctx: &Ctx<'_>, array: &TypedArray<'_, u8>) -> rquickjs::Result<Ve
         .ok_or_else(|| Exception::throw_type(ctx, "Detached buffer"))
 }
 
-fn text(error: impl std::fmt::Display) -> String {
-    error.to_string()
-}
-
 fn entry_object<'js>(ctx: &Ctx<'js>, entry: Entry) -> rquickjs::Result<Object<'js>> {
     let object = Object::new(ctx.clone())?;
     object.set("value", TypedArray::new(ctx.clone(), entry.value)?)?;
@@ -445,13 +404,27 @@ fn entry_object<'js>(ctx: &Ctx<'js>, entry: Entry) -> rquickjs::Result<Object<'j
 }
 
 /// Run `work` on the blocking thread pool, rejecting with its error.
+///
+/// Every operation shares one blocking task type, so `work`'s output is
+/// boxed.
 async fn blocking<T: Send + 'static>(
     ctx: &Ctx<'_>,
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> rquickjs::Result<T> {
-    tokio::task::spawn_blocking(work)
+    let output = run_blocking(ctx, Box::new(move || Ok(Box::new(work()?)))).await?;
+    output
+        .downcast()
+        .map(|output| *output)
+        .map_err(|_| Exception::throw_internal(ctx, "blocking work returned another type"))
+}
+
+/// Work for the blocking thread pool, with its output boxed.
+type Job = Box<dyn FnOnce() -> Result<Box<dyn Any + Send>, String> + Send>;
+
+async fn run_blocking(ctx: &Ctx<'_>, job: Job) -> rquickjs::Result<Box<dyn Any + Send>> {
+    tokio::task::spawn_blocking(job)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(text)
         .and_then(|result| result)
         .map_err(|error| Exception::throw_message(ctx, &error))
 }
