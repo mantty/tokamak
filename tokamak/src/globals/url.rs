@@ -1,20 +1,28 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use rquickjs::{Ctx, Exception, Object};
+use rquickjs::{Ctx, Exception, Function, Object, Persistent, qjs};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use url::Url;
 use urlpattern::UrlPatternOptions;
-use urlpattern::quirks::StringOrInit;
+use urlpattern::parser::RegexSyntax;
+use urlpattern::quirks::{self, StringOrInit};
+use urlpattern::regexp::RegExp;
 
-/// The compiled pattern type using the crate's default regex backend.
-type Pattern = urlpattern::UrlPattern;
+/// A compiled pattern, whose regular expressions are the engine's.
+type Pattern = urlpattern::UrlPattern<EngineRegExp>;
 
 const PATTERN_CACHE_LIMIT: usize = 512;
 
+/// The context compiling a pattern, and its JavaScript regular expression
+/// runner; see [`EngineRegExp`].
+type Compiling = (NonNull<qjs::JSContext>, Persistent<Function<'static>>);
+
 thread_local! {
     static PATTERNS: RefCell<HashMap<String, Rc<Pattern>>> = RefCell::new(HashMap::new());
+    static COMPILING: RefCell<Option<Compiling>> = const { RefCell::new(None) };
 }
 
 super::host_functions! {
@@ -24,8 +32,7 @@ super::host_functions! {
     "urlEncodeParams" => encode_params,
     "urlDecodeParams" => decode_params,
     "urlPatternCompile" => pattern_compile,
-    "urlPatternTest" => pattern_test,
-    "urlPatternExec" => pattern_exec,
+    "urlPatternMatchInput" => pattern_match_input,
 }
 
 fn invalid_url(ctx: &Ctx<'_>, input: &str) -> rquickjs::Error {
@@ -113,35 +120,113 @@ fn pattern_key(input: &str, base: Option<&str>, ignore_case: bool) -> String {
     format!("{ignore_case}\u{1}{}\u{1}{input}", base.unwrap_or("\u{2}"))
 }
 
-fn compile_pattern(
-    ctx: &Ctx<'_>,
+/// An ECMAScript regular expression, which the engine compiles and runs so
+/// patterns behave as on Cloudflare. The crate runs one while parsing a
+/// pattern, to check its syntax and whether its protocol is special; that
+/// goes through the runner of the call compiling the pattern. Matching a
+/// compiled pattern happens in JavaScript.
+struct EngineRegExp {
+    source: String,
+    flags: String,
+}
+
+impl RegExp for EngineRegExp {
+    fn syntax() -> RegexSyntax {
+        RegexSyntax::EcmaScript
+    }
+
+    fn parse(source: &str, flags: &str, force_eval: bool) -> Result<Self, ()> {
+        if force_eval {
+            run(source, flags, "")?;
+        }
+        Ok(Self {
+            source: source.to_owned(),
+            flags: flags.to_owned(),
+        })
+    }
+
+    fn matches<'a>(&self, text: &'a str) -> Option<Vec<Option<&'a str>>> {
+        let captures = run(&self.source, &self.flags, text).ok()??;
+        let slice = |bounds: Vec<usize>| match bounds[..] {
+            [start, end] => Some(&text[byte_offset(text, start)?..byte_offset(text, end)?]),
+            _ => None,
+        };
+        Some(
+            captures
+                .into_iter()
+                .map(|bounds| bounds.and_then(slice))
+                .collect(),
+        )
+    }
+
+    fn pattern_string(&self) -> &str {
+        &self.source
+    }
+}
+
+/// Run `source` with `flags` on `text` through the compiling call's runner:
+/// the UTF-16 start and end of each capture, or `None` without a match.
+#[allow(clippy::type_complexity)]
+fn run(source: &str, flags: &str, text: &str) -> Result<Option<Vec<Option<Vec<usize>>>>, ()> {
+    COMPILING.with_borrow(|compiling| {
+        let (context, runner) = compiling.as_ref().ok_or(())?;
+        // SAFETY: `compile_pattern` names its context here only while it runs.
+        let ctx = unsafe { Ctx::from_raw(*context) };
+        let runner = runner.clone().restore(&ctx).map_err(|_| ())?;
+        runner.call((source, flags, text)).map_err(|_| {
+            // An invalid expression throws; the crate reports it instead.
+            ctx.catch();
+        })
+    })
+}
+
+/// The byte offset in `text` of UTF-16 offset `index`.
+fn byte_offset(text: &str, index: usize) -> Option<usize> {
+    let mut units = 0;
+    for (offset, character) in text.char_indices() {
+        if units == index {
+            return Some(offset);
+        }
+        units += character.len_utf16();
+    }
+    (units == index).then_some(text.len())
+}
+
+fn compile_pattern<'js>(
+    ctx: &Ctx<'js>,
     input: &str,
     base: Option<&str>,
     ignore_case: bool,
+    runner: Function<'js>,
 ) -> rquickjs::Result<Pattern> {
     let input: StringOrInit = serde_json::from_str(input).map_err(|error| {
         Exception::throw_type(ctx, &format!("Invalid URLPattern input: {error}"))
     })?;
-    let init = urlpattern::quirks::process_construct_pattern_input(input, base)
+    let init = quirks::process_construct_pattern_input(input, base)
         .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?;
     let options = UrlPatternOptions {
         ignore_case,
         ..UrlPatternOptions::default()
     };
-    Pattern::parse(init, options).map_err(|error| Exception::throw_type(ctx, &error.to_string()))
+    let runner = Persistent::save(ctx, runner);
+    COMPILING.set(Some((ctx.as_raw(), runner)));
+    let pattern = Pattern::parse(init, options);
+    COMPILING.take();
+    pattern.map_err(|error| Exception::throw_type(ctx, &error.to_string()))
 }
 
-fn cached_pattern(
-    ctx: &Ctx<'_>,
+fn cached_pattern<'js>(
+    ctx: &Ctx<'js>,
     input: &str,
     base: Option<&str>,
     ignore_case: bool,
+    runner: Function<'js>,
 ) -> rquickjs::Result<Rc<Pattern>> {
     let key = pattern_key(input, base, ignore_case);
     if let Some(pattern) = PATTERNS.with_borrow(|patterns| patterns.get(&key).cloned()) {
         return Ok(pattern);
     }
-    let pattern = Rc::new(compile_pattern(ctx, input, base, ignore_case)?);
+    let pattern = Rc::new(compile_pattern(ctx, input, base, ignore_case, runner)?);
     PATTERNS.with_borrow_mut(|patterns| {
         if patterns.len() >= PATTERN_CACHE_LIMIT {
             patterns.clear();
@@ -151,114 +236,65 @@ fn cached_pattern(
     Ok(pattern)
 }
 
-fn pattern_compile(
-    ctx: Ctx<'_>,
+fn pattern_compile<'js>(
+    ctx: Ctx<'js>,
     input: String,
     base: Option<String>,
     ignore_case: bool,
-) -> rquickjs::Result<Object<'_>> {
-    let pattern = cached_pattern(&ctx, &input, base.as_deref(), ignore_case)?;
+    runner: Function<'js>,
+) -> rquickjs::Result<Object<'js>> {
+    let pattern = cached_pattern(&ctx, &input, base.as_deref(), ignore_case, runner)?;
     let object = Object::new(ctx.clone())?;
-    object.set("protocol", pattern.protocol())?;
-    object.set("username", pattern.username())?;
-    object.set("password", pattern.password())?;
-    object.set("hostname", pattern.hostname())?;
-    object.set("port", pattern.port())?;
-    object.set("pathname", pattern.pathname())?;
-    object.set("search", pattern.search())?;
-    object.set("hash", pattern.hash())?;
+    let components = [
+        ("protocol", &pattern.protocol),
+        ("username", &pattern.username),
+        ("password", &pattern.password),
+        ("hostname", &pattern.hostname),
+        ("port", &pattern.port),
+        ("pathname", &pattern.pathname),
+        ("search", &pattern.search),
+        ("hash", &pattern.hash),
+    ];
+    for (name, component) in components {
+        let described = Object::new(ctx.clone())?;
+        described.set("pattern", component.pattern_string.as_str())?;
+        let regexp = component
+            .regexp
+            .as_ref()
+            .map_or("", |regexp| regexp.source.as_str());
+        described.set("regexp", regexp)?;
+        described.set("groups", component.group_name_list.clone())?;
+        object.set(name, described)?;
+    }
     object.set("hasRegExpGroups", pattern.has_regexp_groups())?;
     Ok(object)
 }
 
-/// Processes a match input (URL string or `URLPatternInit` JSON). Returns None
-/// when the input fails to parse as a URL, which the spec treats as no match.
-fn match_input(
-    ctx: &Ctx<'_>,
-    input: &str,
-    base: Option<&str>,
-) -> rquickjs::Result<Option<urlpattern::UrlPatternMatchInput>> {
-    let parsed: StringOrInit = serde_json::from_str(input).map_err(|error| {
-        Exception::throw_type(ctx, &format!("Invalid URLPattern input: {error}"))
+/// The component strings a URL or `URLPatternInit` input matches against, in
+/// `protocol` to `hash` order, or None when the input is not a URL, which
+/// the spec treats as no match.
+fn pattern_match_input(
+    ctx: Ctx<'_>,
+    input: String,
+    base: Option<String>,
+) -> rquickjs::Result<Option<Vec<String>>> {
+    let parsed: StringOrInit = serde_json::from_str(&input).map_err(|error| {
+        Exception::throw_type(&ctx, &format!("Invalid URLPattern input: {error}"))
     })?;
-    let processed = urlpattern::quirks::process_match_input(parsed, base)
-        .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?;
-    Ok(processed.map(|(input, _)| input))
-}
-
-fn pattern_test(
-    ctx: Ctx<'_>,
-    pattern: String,
-    pattern_base: Option<String>,
-    ignore_case: bool,
-    input: String,
-    base: Option<String>,
-) -> rquickjs::Result<bool> {
-    let compiled = cached_pattern(&ctx, &pattern, pattern_base.as_deref(), ignore_case)?;
-    let Some(input) = match_input(&ctx, &input, base.as_deref())? else {
-        return Ok(false);
-    };
-    compiled
-        .test(input)
-        .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))
-}
-
-fn pattern_exec(
-    ctx: Ctx<'_>,
-    pattern: String,
-    pattern_base: Option<String>,
-    ignore_case: bool,
-    input: String,
-    base: Option<String>,
-) -> rquickjs::Result<Option<Object<'_>>> {
-    let compiled = cached_pattern(&ctx, &pattern, pattern_base.as_deref(), ignore_case)?;
-    let Some(input) = match_input(&ctx, &input, base.as_deref())? else {
-        return Ok(None);
-    };
-    let result = compiled
-        .exec(input)
+    let processed = quirks::process_match_input(parsed, base.as_deref())
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
-    result
-        .map(|result| match_object(&ctx, &compiled, &result))
-        .transpose()
-}
-
-fn match_object<'js>(
-    ctx: &Ctx<'js>,
-    compiled: &Pattern,
-    result: &urlpattern::UrlPatternResult,
-) -> rquickjs::Result<Object<'js>> {
-    let object = Object::new(ctx.clone())?;
-    let components = [
-        ("protocol", &compiled.protocol, &result.protocol),
-        ("username", &compiled.username, &result.username),
-        ("password", &compiled.password, &result.password),
-        ("hostname", &compiled.hostname, &result.hostname),
-        ("port", &compiled.port, &result.port),
-        ("pathname", &compiled.pathname, &result.pathname),
-        ("search", &compiled.search, &result.search),
-        ("hash", &compiled.hash, &result.hash),
-    ];
-    for (name, component, value) in components {
-        object.set(name, component_result(ctx, component, value)?)?;
-    }
-    Ok(object)
-}
-
-/// Builds `{input, groups}` for one component, with group keys in pattern
-/// order and unmatched groups present as undefined, per the `URLPattern` spec.
-fn component_result<'js, R: urlpattern::regexp::RegExp>(
-    ctx: &Ctx<'js>,
-    component: &urlpattern::component::Component<R>,
-    result: &urlpattern::UrlPatternComponentResult,
-) -> rquickjs::Result<Object<'js>> {
-    let object = Object::new(ctx.clone())?;
-    object.set("input", result.input.as_str())?;
-    let groups = Object::new(ctx.clone())?;
-    for name in &component.group_name_list {
-        let matched = result.groups.get(name).and_then(Option::as_deref);
-        groups.set(name.as_str(), matched)?;
-    }
-    object.set("groups", groups)?;
-    Ok(object)
+    Ok(processed
+        .and_then(|(input, _)| quirks::parse_match_input(input))
+        .map(|input| {
+            vec![
+                input.protocol,
+                input.username,
+                input.password,
+                input.hostname,
+                input.port,
+                input.pathname,
+                input.search,
+                input.hash,
+            ]
+        }))
 }
