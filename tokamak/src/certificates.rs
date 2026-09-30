@@ -5,29 +5,32 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread::{self, JoinHandle};
-use std::time::Duration as StdDuration;
+use std::time::{Duration, SystemTime};
 
-use rcgen::{Issuer, KeyPair};
+use p256::ecdsa::SigningKey;
+use p256::pkcs8::DecodePrivateKey;
 use rustls::ServerConfig;
-use time::{Duration, OffsetDateTime};
-use x509_parser::extensions::{GeneralName, ParsedExtension};
+use x509_cert::Certificate;
+use x509_cert::der::{DecodePem, Encode};
 
 use crate::cert_generation::{
-    CertificatePaths, build_ca_certificate, build_client_certificate, build_server_certificate,
-    is_private_key, remove_if_exists, server_identity, write_atomic,
+    CertificatePaths, Issuer, build_ca_certificate, build_client_certificate,
+    build_server_certificate, certificate_pem, encode_key, generate_key, is_private_key,
+    remove_if_exists, server_identity, write_atomic,
 };
 use crate::cert_validation::{
     certificate_der, certificate_der_matches_pem, certificate_is_issued_by,
-    certificate_is_valid_now, certificate_matches_key, certificate_not_before, key_matches_der,
-    with_certificate,
+    certificate_is_valid_now, certificate_matches_key, certificate_names_host,
+    certificate_not_before, key_matches_der,
 };
 use crate::lifecycle_events::{Event, Events};
 use crate::{Error, Result};
 
-const LEAF_RENEWAL_DAYS: i64 = 30;
+/// How long after issue leaf certificates are renewed.
+const LEAF_RENEWAL: Duration = Duration::from_hours(30 * 24);
 
 /// Runtime certificate and key material needed by tokamak and platform `WebViews`.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CertificateBundle {
     /// CA certificate PEM trusted by the local gateway for client authentication.
     pub ca_cert_pem: String,
@@ -55,7 +58,7 @@ impl CertificateBundle {
     /// # Errors
     ///
     /// Returns an error when generation, cache loading, or cache writing fails.
-    pub(crate) fn ensure(work_dir: &Path, host: &str, now: OffsetDateTime) -> Result<Self> {
+    pub(crate) fn ensure(work_dir: &Path, host: &str, now: SystemTime) -> Result<Self> {
         let Ok(bundle) = Self::load_cached(work_dir) else {
             return Self::renew_or_generate(work_dir, host, now);
         };
@@ -73,7 +76,7 @@ impl CertificateBundle {
         Ok(bundle)
     }
 
-    fn renew_or_generate(work_dir: &Path, host: &str, now: OffsetDateTime) -> Result<Self> {
+    fn renew_or_generate(work_dir: &Path, host: &str, now: SystemTime) -> Result<Self> {
         let Ok(issuer) = Self::load_issuer(work_dir) else {
             return Self::generate_and_cache(work_dir, host, now);
         };
@@ -85,7 +88,7 @@ impl CertificateBundle {
         Ok(replacement)
     }
 
-    fn generate_and_cache(work_dir: &Path, host: &str, now: OffsetDateTime) -> Result<Self> {
+    fn generate_and_cache(work_dir: &Path, host: &str, now: SystemTime) -> Result<Self> {
         let bundle = Self::generate_at(host, now)?;
         bundle.write_all(work_dir)?;
         Ok(bundle)
@@ -98,52 +101,57 @@ impl CertificateBundle {
 
     /// Generate a self-signed local CA, an app-origin server certificate with
     /// loopback SANs, and a client-auth certificate, all ECDSA P-256/SHA-256.
-    pub(crate) fn generate_at(host: &str, now: OffsetDateTime) -> Result<Self> {
-        let ca_key = KeyPair::generate()?;
-        let server_key = KeyPair::generate()?;
-        let client_key = KeyPair::generate()?;
-
-        let (ca_params, ca_cert) = build_ca_certificate(&ca_key, now)?;
-        let ca_issuer = Issuer::from_params(&ca_params, &ca_key);
-        let server_cert = build_server_certificate(&server_key, &ca_issuer, host, now)?;
-        let client_cert = build_client_certificate(&client_key, &ca_issuer, now)?;
-        let server_cert_pem = server_cert.pem();
-        let server_key_pem = server_key.serialize_pem();
-        let client_cert_pem = client_cert.pem();
-        let client_key_pem = client_key.serialize_pem();
-
-        Ok(Self {
-            ca_cert_pem: ca_cert.pem(),
-            ca_key_pem: ca_key.serialize_pem(),
-            server_identity_pem: server_identity(&server_cert_pem, &server_key_pem),
-            server_cert_pem,
-            server_key_pem,
-            client_cert_pem,
-            client_key_pem,
-            client_key_der: client_key.serialized_der().to_vec(),
-            ca_cert_der: ca_cert.der().to_vec(),
-        })
+    pub(crate) fn generate_at(host: &str, now: SystemTime) -> Result<Self> {
+        let ca_key = generate_key();
+        let ca_cert = build_ca_certificate(&ca_key, now)?;
+        let (ca_key_pem, _) = encode_key(&ca_key)?;
+        let authority = Self {
+            ca_cert_pem: certificate_pem(&ca_cert)?,
+            ca_key_pem,
+            ca_cert_der: ca_cert.to_der().map_err(x509_cert::builder::Error::from)?,
+            ..Self::default()
+        };
+        authority.issue_leaves(&ca_cert, &ca_key, host, now)
     }
 
-    pub(crate) fn renew_leaves(&self, host: &str, now: OffsetDateTime) -> Result<Self> {
-        let ca_key = KeyPair::from_pem(&self.ca_key_pem)?;
-        let ca_issuer = Issuer::from_ca_cert_pem(&self.ca_cert_pem, ca_key)?;
-        let server_key = KeyPair::generate()?;
-        let client_key = KeyPair::generate()?;
-        let server_cert = build_server_certificate(&server_key, &ca_issuer, host, now)?;
-        let client_cert = build_client_certificate(&client_key, &ca_issuer, now)?;
+    pub(crate) fn renew_leaves(&self, host: &str, now: SystemTime) -> Result<Self> {
+        let invalid = |_| x509_cert::builder::Error::from(spki::Error::KeyMalformed);
+        let ca_key = SigningKey::from_pkcs8_pem(&self.ca_key_pem).map_err(invalid)?;
+        let ca_cert = Certificate::from_pem(self.ca_cert_pem.as_bytes())
+            .map_err(x509_cert::builder::Error::from)?;
+        self.issue_leaves(&ca_cert, &ca_key, host, now)
+    }
 
-        let server_cert_pem = server_cert.pem();
-        let server_key_pem = server_key.serialize_pem();
+    /// This bundle's authority with new server and client certificates that
+    /// `ca_cert` and `ca_key` issue.
+    fn issue_leaves(
+        &self,
+        ca_cert: &Certificate,
+        ca_key: &SigningKey,
+        host: &str,
+        now: SystemTime,
+    ) -> Result<Self> {
+        let issuer = Issuer {
+            name: ca_cert.tbs_certificate().subject().clone(),
+            key: ca_key,
+        };
+        let server_key = generate_key();
+        let client_key = generate_key();
+        let server_cert = build_server_certificate(&server_key, &issuer, host, now)?;
+        let client_cert = build_client_certificate(&client_key, &issuer, now)?;
+
+        let server_cert_pem = certificate_pem(&server_cert)?;
+        let (server_key_pem, _) = encode_key(&server_key)?;
+        let (client_key_pem, client_key_der) = encode_key(&client_key)?;
         Ok(Self {
             ca_cert_pem: self.ca_cert_pem.clone(),
             ca_key_pem: self.ca_key_pem.clone(),
             server_identity_pem: server_identity(&server_cert_pem, &server_key_pem),
             server_cert_pem,
             server_key_pem,
-            client_cert_pem: client_cert.pem(),
-            client_key_pem: client_key.serialize_pem(),
-            client_key_der: client_key.serialized_der().to_vec(),
+            client_cert_pem: certificate_pem(&client_cert)?,
+            client_key_pem,
+            client_key_der,
             ca_cert_der: self.ca_cert_der.clone(),
         })
     }
@@ -181,17 +189,12 @@ impl CertificateBundle {
         Ok(Self {
             ca_cert_pem: fs::read_to_string(work_dir.join(CertificatePaths::CA_CERT_PEM))?,
             ca_key_pem: fs::read_to_string(work_dir.join(CertificatePaths::CA_KEY_PEM))?,
-            server_cert_pem: String::new(),
-            server_key_pem: String::new(),
-            server_identity_pem: String::new(),
-            client_cert_pem: String::new(),
-            client_key_pem: String::new(),
-            client_key_der: Vec::new(),
             ca_cert_der: fs::read(work_dir.join(CertificatePaths::CA_CERT_DER))?,
+            ..Self::default()
         })
     }
 
-    pub(crate) fn cached_material_is_current(&self, now: OffsetDateTime) -> bool {
+    pub(crate) fn cached_material_is_current(&self, now: SystemTime) -> bool {
         self.issuer_is_current(now)
             && self.leaves_are_current(now)
             && certificate_matches_key(&self.server_cert_pem, &self.server_key_pem)
@@ -203,49 +206,36 @@ impl CertificateBundle {
                 == server_identity(&self.server_cert_pem, &self.server_key_pem)
     }
 
-    pub(crate) fn issuer_is_current(&self, now: OffsetDateTime) -> bool {
+    pub(crate) fn issuer_is_current(&self, now: SystemTime) -> bool {
         certificate_is_valid_now(&self.ca_cert_pem, now)
             && certificate_der_matches_pem(&self.ca_cert_pem, &self.ca_cert_der)
             && certificate_matches_key(&self.ca_cert_pem, &self.ca_key_pem)
     }
 
-    fn leaves_are_current(&self, now: OffsetDateTime) -> bool {
+    fn leaves_are_current(&self, now: SystemTime) -> bool {
         [self.server_cert_pem.as_str(), self.client_cert_pem.as_str()]
             .into_iter()
             .all(|pem| certificate_is_valid_now(pem, now))
     }
 
-    pub(crate) fn leaf_renewal_is_due(&self, now: OffsetDateTime) -> bool {
+    pub(crate) fn leaf_renewal_is_due(&self, now: SystemTime) -> bool {
         certificate_not_before(&self.server_cert_pem)
-            .is_none_or(|not_before| now >= not_before + Duration::days(LEAF_RENEWAL_DAYS))
+            .is_none_or(|not_before| now >= not_before + LEAF_RENEWAL)
     }
 
-    pub(crate) fn renewal_delay(&self, now: OffsetDateTime) -> std::time::Duration {
+    /// Whole seconds until the leaves are due for renewal.
+    pub(crate) fn renewal_delay(&self, now: SystemTime) -> Duration {
         let Some(not_before) = certificate_not_before(&self.server_cert_pem) else {
-            return std::time::Duration::ZERO;
+            return Duration::ZERO;
         };
-        let seconds = u64::try_from(
-            (not_before + Duration::days(LEAF_RENEWAL_DAYS) - now)
-                .whole_seconds()
-                .max(0),
-        )
-        .unwrap_or_default();
-        std::time::Duration::from_secs(seconds)
+        let delay = (not_before + LEAF_RENEWAL)
+            .duration_since(now)
+            .unwrap_or_default();
+        Duration::from_secs(delay.as_secs())
     }
 
     pub(crate) fn server_certificate_matches_host(&self, host: &str) -> bool {
-        with_certificate(&self.server_cert_pem, |certificate| {
-            certificate.extensions().iter().any(|extension| {
-                let ParsedExtension::SubjectAlternativeName(san) = extension.parsed_extension()
-                else {
-                    return false;
-                };
-                san.general_names
-                    .iter()
-                    .any(|name| matches!(name, GeneralName::DNSName(value) if *value == host))
-            })
-        })
-        .unwrap_or(false)
+        certificate_names_host(&self.server_cert_pem, host)
     }
 
     /// Write all certificate files expected by tokamak and platform `WebViews`.
@@ -324,6 +314,7 @@ fn write_files<'a>(
 mod bundle_tests {
     use super::{CertificateBundle, CertificatePaths};
     use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
+    use std::time::SystemTime;
     use time::{Duration, OffsetDateTime};
     use x509_parser::{
         certificate::X509Certificate,
@@ -338,7 +329,7 @@ mod bundle_tests {
         Ok(CertificateBundle::ensure(
             work_dir,
             "app.tokamak.local",
-            OffsetDateTime::now_utc(),
+            SystemTime::now(),
         )?)
     }
 
@@ -355,9 +346,35 @@ mod bundle_tests {
     }
 
     #[test]
+    fn keeps_and_renews_a_bundle_that_rcgen_generated() -> TestResult {
+        // Earlier releases cached these; installs keep them across updates.
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/rcgen-certificates");
+        let directory = tempfile::tempdir()?;
+        for entry in std::fs::read_dir(fixture)? {
+            let entry = entry?;
+            std::fs::copy(entry.path(), directory.path().join(entry.file_name()))?;
+        }
+        let cached = CertificateBundle::load_cached(directory.path())?;
+        let issued = crate::cert_validation::certificate_not_before(&cached.server_cert_pem)
+            .ok_or("fixture server certificate has no validity")?;
+        let day = std::time::Duration::from_hours(24);
+
+        let kept =
+            CertificateBundle::ensure(directory.path(), "app.tokamak.local", issued + day * 2)?;
+        let renewed =
+            CertificateBundle::ensure(directory.path(), "app.tokamak.local", issued + day * 32)?;
+
+        assert_eq!(kept, cached);
+        assert_eq!(renewed.ca_cert_pem, cached.ca_cert_pem);
+        assert_ne!(renewed.server_cert_pem, cached.server_cert_pem);
+        assert!(renewed.cached_material_is_current(issued + day * 33));
+        Ok(())
+    }
+
+    #[test]
     fn generates_platform_certificate_material() -> TestResult {
-        let bundle =
-            CertificateBundle::generate_at("app.tokamak.local", OffsetDateTime::now_utc())?;
+        let bundle = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
         assert_pem_material(&bundle);
 
         let ca_der = decode_certificate(&bundle.ca_cert_pem)?;
@@ -436,7 +453,7 @@ mod bundle_tests {
         let second = CertificateBundle::ensure(
             directory.path(),
             "app.tokamak.local",
-            OffsetDateTime::now_utc() + Duration::days(31),
+            SystemTime::now() + std::time::Duration::from_hours(31 * 24),
         )?;
 
         assert_eq!(second.ca_cert_pem, first.ca_cert_pem);
@@ -499,8 +516,7 @@ mod bundle_tests {
     fn regenerates_a_mismatched_authority_cache() -> TestResult {
         let directory = tempfile::tempdir()?;
         let first = ensure(directory.path())?;
-        let foreign =
-            CertificateBundle::generate_at("app.tokamak.local", OffsetDateTime::now_utc())?;
+        let foreign = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
         std::fs::write(
             directory.path().join(CertificatePaths::CA_CERT_DER),
             &foreign.ca_cert_der,
@@ -515,8 +531,7 @@ mod bundle_tests {
 
     #[test]
     fn exposes_the_client_certificate_in_der() -> TestResult {
-        let bundle =
-            CertificateBundle::generate_at("app.tokamak.local", OffsetDateTime::now_utc())?;
+        let bundle = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
 
         let der = bundle
             .client_certificate_der()
@@ -647,7 +662,7 @@ mod bundle_tests {
     }
 }
 
-const RETRY_DELAY: StdDuration = StdDuration::from_hours(1);
+const RETRY_DELAY: Duration = Duration::from_hours(1);
 
 type Shared = Arc<RwLock<CertificateBundle>>;
 
@@ -700,7 +715,7 @@ pub struct Certificates {
 
 impl Certificates {
     pub(crate) fn start(state_dir: PathBuf, host: String) -> Result<Self> {
-        let bundle = CertificateBundle::ensure(&state_dir, &host, OffsetDateTime::now_utc())?;
+        let bundle = CertificateBundle::ensure(&state_dir, &host, SystemTime::now())?;
         Ok(Self {
             state_dir,
             host,
@@ -737,8 +752,7 @@ impl Certificates {
 
     /// Renew any certificate that is due.
     pub(crate) fn refresh(&self) -> Result<()> {
-        let bundle =
-            CertificateBundle::ensure(&self.state_dir, &self.host, OffsetDateTime::now_utc())?;
+        let bundle = CertificateBundle::ensure(&self.state_dir, &self.host, SystemTime::now())?;
         {
             let mut held = self
                 .current
@@ -754,10 +768,10 @@ impl Certificates {
         Ok(())
     }
 
-    fn next_delay(&self) -> StdDuration {
-        self.current.read().map_or(RETRY_DELAY, |held| {
-            held.renewal_delay(OffsetDateTime::now_utc())
-        })
+    fn next_delay(&self) -> Duration {
+        self.current
+            .read()
+            .map_or(RETRY_DELAY, |held| held.renewal_delay(SystemTime::now()))
     }
 
     /// Decide how a shell should answer a platform TLS challenge.

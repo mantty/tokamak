@@ -113,7 +113,7 @@ pub enum Error {
     /// Certificate generation failed.
     #[cfg(feature = "native")]
     #[error(transparent)]
-    Certificate(#[from] rcgen::Error),
+    Certificate(#[from] x509_cert::builder::Error),
     /// The JavaScript runtime failed to start or change state.
     #[cfg(feature = "native")]
     #[error(transparent)]

@@ -1,48 +1,64 @@
 //! Certificate parsing and validation helpers.
 
-use rcgen::{KeyPair, PublicKeyData};
-use time::OffsetDateTime;
-use x509_parser::{certificate::X509Certificate, parse_x509_certificate, pem::parse_x509_pem};
+use std::time::SystemTime;
+
+use der::{Decode, DecodePem, Encode};
+use p256::ecdsa::signature::Verifier;
+use p256::ecdsa::{DerSignature, VerifyingKey};
+use p256::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePublicKey};
+use x509_cert::Certificate;
+use x509_cert::der;
+use x509_cert::ext::pkix::SubjectAltName;
+use x509_cert::ext::pkix::name::GeneralName;
+
+/// The contents of the first PEM block in `pem`.
+fn pem_contents(pem: &str) -> Option<Vec<u8>> {
+    der::pem::decode_vec(pem.as_bytes())
+        .ok()
+        .map(|(_, contents)| contents)
+}
 
 pub(crate) fn certificate_der(pem: &str) -> Option<Vec<u8>> {
-    parse_x509_pem(pem.as_bytes())
-        .ok()
-        .map(|(_, certificate)| certificate.contents)
+    pem_contents(pem)
 }
 
 pub(crate) fn certificate_der_matches_pem(certificate_pem: &str, certificate_der: &[u8]) -> bool {
-    let Ok((_, pem)) = parse_x509_pem(certificate_pem.as_bytes()) else {
-        return false;
-    };
-    pem.contents == certificate_der && parse_x509_certificate(certificate_der).is_ok()
+    pem_contents(certificate_pem).is_some_and(|contents| contents == certificate_der)
+        && Certificate::from_der(certificate_der).is_ok()
 }
 
 pub(crate) fn key_matches_der(key_pem: &str, key_der: &[u8]) -> bool {
-    KeyPair::from_pem(key_pem).is_ok_and(|key| key.serialized_der() == key_der)
+    p256::SecretKey::from_pkcs8_pem(key_pem).is_ok()
+        && pem_contents(key_pem).is_some_and(|contents| contents == key_der)
 }
 
-pub(crate) fn certificate_not_before(pem: &str) -> Option<OffsetDateTime> {
+pub(crate) fn certificate_not_before(pem: &str) -> Option<SystemTime> {
     with_certificate(pem, |certificate| {
-        OffsetDateTime::from_unix_timestamp(certificate.validity().not_before.timestamp()).ok()
+        certificate
+            .tbs_certificate()
+            .validity()
+            .not_before
+            .to_system_time()
     })
-    .flatten()
 }
 
-pub(crate) fn certificate_is_valid_now(pem: &str, now: OffsetDateTime) -> bool {
+pub(crate) fn certificate_is_valid_now(pem: &str, now: SystemTime) -> bool {
     with_certificate(pem, |certificate| {
-        let now = now.unix_timestamp();
-        let validity = certificate.validity();
-        validity.not_before.timestamp() <= now && now < validity.not_after.timestamp()
+        let validity = certificate.tbs_certificate().validity();
+        validity.not_before.to_system_time() <= now && now < validity.not_after.to_system_time()
     })
     .unwrap_or(false)
 }
 
 pub(crate) fn certificate_matches_key(certificate_pem: &str, key_pem: &str) -> bool {
-    let Ok(key) = KeyPair::from_pem(key_pem) else {
+    let Some(key) = p256::SecretKey::from_pkcs8_pem(key_pem)
+        .ok()
+        .and_then(|key| key.public_key().to_public_key_der().ok())
+    else {
         return false;
     };
     with_certificate(certificate_pem, |certificate| {
-        certificate.public_key().raw == key.subject_public_key_info()
+        public_key_info(certificate).is_some_and(|info| info == key.as_bytes())
     })
     .unwrap_or(false)
 }
@@ -50,23 +66,56 @@ pub(crate) fn certificate_matches_key(certificate_pem: &str, key_pem: &str) -> b
 pub(crate) fn certificate_is_issued_by(certificate_pem: &str, issuer_pem: &str) -> bool {
     with_certificate(certificate_pem, |certificate| {
         with_certificate(issuer_pem, |issuer| {
-            certificate.issuer() == issuer.subject()
-                && certificate
-                    .verify_signature(Some(issuer.public_key()))
-                    .is_ok()
+            certificate.tbs_certificate().issuer() == issuer.tbs_certificate().subject()
+                && signature_is_valid(certificate, issuer).unwrap_or(false)
         })
     })
     .flatten()
     .unwrap_or(false)
 }
 
+/// The DER `SubjectPublicKeyInfo` of `certificate`.
+fn public_key_info(certificate: &Certificate) -> Option<Vec<u8>> {
+    certificate
+        .tbs_certificate()
+        .subject_public_key_info()
+        .to_der()
+        .ok()
+}
+
+/// Whether `issuer`'s ECDSA P-256 key signed `certificate`.
+fn signature_is_valid(certificate: &Certificate, issuer: &Certificate) -> Option<bool> {
+    let key = VerifyingKey::from_public_key_der(&public_key_info(issuer)?).ok()?;
+    let signature = DerSignature::from_bytes(certificate.signature().as_bytes()?).ok()?;
+    let signed = certificate.tbs_certificate().to_der().ok()?;
+    Some(
+        certificate.signature_algorithm().oid == const_oid::db::rfc5912::ECDSA_WITH_SHA_256
+            && key.verify(&signed, &signature).is_ok(),
+    )
+}
+
+/// Whether the certificate in `pem` names `host` among its DNS subject
+/// alternative names.
+pub(crate) fn certificate_names_host(pem: &str, host: &str) -> bool {
+    with_certificate(pem, |certificate| {
+        let Ok(Some((_, names))) = certificate
+            .tbs_certificate()
+            .get_extension::<SubjectAltName>()
+        else {
+            return false;
+        };
+        names
+            .0
+            .iter()
+            .any(|name| matches!(name, GeneralName::DnsName(value) if value.as_str() == host))
+    })
+    .unwrap_or(false)
+}
+
 /// Parse `pem` and apply `inspect` to the certificate, or `None` when it does
 /// not parse.
-pub(crate) fn with_certificate<T>(
-    pem: &str,
-    inspect: impl FnOnce(&X509Certificate<'_>) -> T,
-) -> Option<T> {
-    let (_, pem) = parse_x509_pem(pem.as_bytes()).ok()?;
-    let certificate = pem.parse_x509().ok()?;
-    Some(inspect(&certificate))
+pub(crate) fn with_certificate<T>(pem: &str, inspect: impl FnOnce(&Certificate) -> T) -> Option<T> {
+    Certificate::from_pem(pem.as_bytes())
+        .ok()
+        .map(|certificate| inspect(&certificate))
 }

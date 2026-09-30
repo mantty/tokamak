@@ -58,15 +58,14 @@ native = [
     "dep:libc",
     "dep:mio",
     "dep:md4",
-    "dep:rcgen",
     "dep:reqwest",
     "dep:rusqlite",
-    "dep:time",
     "dep:tokio",
     "dep:tokio-util",
     "dep:url",
     "dep:urlpattern",
-    "dep:x509-parser",
+    "dep:x509-cert",
+    "dep:const-oid",
     "dep:writeable",
     "dep:zstd",
 ]
@@ -123,7 +122,6 @@ libc = { workspace = true, optional = true }
 mio = { workspace = true, optional = true }
 mime_guess.workspace = true
 md4 = { workspace = true, optional = true }
-rcgen = { workspace = true, features = ["pem", "x509-parser"], optional = true }
 rquickjs.workspace = true
 reqwest = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
@@ -131,21 +129,25 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 thiserror.workspace = true
-time = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 urlpattern = { workspace = true, optional = true }
 walkdir.workspace = true
 writeable = { workspace = true, optional = true }
-x509-parser = { workspace = true, features = ["verify"], optional = true }
+x509-cert = { workspace = true, optional = true }
+const-oid = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Independent certificate tooling that checks the generated certificates.
+rcgen = { workspace = true, features = ["pem", "x509-parser"] }
 rustls.workspace = true
 rustls-pki-types.workspace = true
 sha1.workspace = true
 tempfile.workspace = true
+time.workspace = true
+x509-parser = { workspace = true, features = ["verify"] }
 
 [build-dependencies]
 rquickjs.workspace = true
