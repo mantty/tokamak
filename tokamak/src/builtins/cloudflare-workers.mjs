@@ -1,22 +1,20 @@
 import { createTracing } from "./tracing.mjs";
 
-export const env = new Proxy({}, {
-  get(_target, property) { return globalThis.__tokamak_env?.[property]; },
-  has(_target, property) { return property in (globalThis.__tokamak_env ?? {}); },
-  ownKeys() { return Reflect.ownKeys(globalThis.__tokamak_env ?? {}); },
-  getOwnPropertyDescriptor(_target, property) {
-    return Object.getOwnPropertyDescriptor(globalThis.__tokamak_env ?? {}, property) ?? { enumerable: true, configurable: true };
-  },
-});
+// A live view of the object currently stored at `globalThis[key]`.
+function globalView(key) {
+  return new Proxy({}, {
+    get(_target, property) { return globalThis[key]?.[property]; },
+    has(_target, property) { return property in (globalThis[key] ?? {}); },
+    ownKeys() { return Reflect.ownKeys(globalThis[key] ?? {}); },
+    getOwnPropertyDescriptor(_target, property) {
+      return Object.getOwnPropertyDescriptor(globalThis[key] ?? {}, property) ?? { enumerable: true, configurable: true };
+    },
+  });
+}
+
+export const env = globalView("__tokamak_env");
 export function waitUntil(promise) { globalThis.__tokamak_context.waitUntil(promise); }
-export const exports = new Proxy({}, {
-  get(_target, property) { return globalThis.__tokamak_exports?.[property]; },
-  has(_target, property) { return property in (globalThis.__tokamak_exports ?? {}); },
-  ownKeys() { return Reflect.ownKeys(globalThis.__tokamak_exports ?? {}); },
-  getOwnPropertyDescriptor(_target, property) {
-    return Object.getOwnPropertyDescriptor(globalThis.__tokamak_exports ?? {}, property) ?? { enumerable: true, configurable: true };
-  },
-});
+export const exports = globalView("__tokamak_exports");
 export const restore = Symbol("cloudflare:workers.restore");
 export const tracing = createTracing();
 export const cache = {};

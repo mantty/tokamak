@@ -5,38 +5,38 @@ export default process;
 
 export function installProcessGlobals(builtinModules) {
   globalThis.process = process;
-  globalThis.process.env = Object.fromEntries(Object.entries(globalThis.__tokamak_env ?? {}).map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]));
-  globalThis.process.nextTick = (callback, ...args) => queueMicrotask(() => callback(...args));
-  globalThis.process.getBuiltinModule = (name) => {
+  process.env = Object.fromEntries(Object.entries(globalThis.__tokamak_env ?? {}).map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]));
+  process.nextTick = (callback, ...args) => queueMicrotask(() => callback(...args));
+  process.getBuiltinModule = (name) => {
     if (typeof name !== "string") throw new TypeError("Module name must be a string");
     const key = name.startsWith("node:") ? name.slice(5) : name;
     return Object.hasOwn(builtinModules, key) ? builtinModules[key] : undefined;
   };
-  globalThis.process.argv = ["workerd"];
-  globalThis.process.argv0 = "workerd";
-  globalThis.process.execArgv = [];
-  globalThis.process.execPath = "";
-  globalThis.process.pid = 1;
-  globalThis.process.ppid = 0;
-  globalThis.process.title = "workerd";
-  globalThis.process.platform = "linux";
-  globalThis.process.arch = "x64";
-  globalThis.process.version = "v22.19.0";
-  globalThis.process.versions = { node: "22.19.0", v8: "", modules: "", zlib: "", openssl: "", icu: "", tz: "" };
-  globalThis.process.release = { name: "node", lts: true, sourceUrl: "", headersUrl: "" };
-  globalThis.process.exitCode = 0;
-  globalThis.process.umask = () => 0o22;
-  globalThis.process.uptime = () => 0;
-  globalThis.process.memoryUsage = () => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 });
-  globalThis.process.resourceUsage = () => ({});
-  globalThis.process.cpuUsage = () => ({ user: 0, system: 0 });
-  globalThis.process.stdout = { write() { return true; } };
-  globalThis.process.stderr = { write() { return true; } };
-  globalThis.process.stdin = { isTTY: false };
-  globalThis.process.exit = code => { globalThis.process.exitCode = Number(code ?? 0); };
-  globalThis.process.abort = () => { throw new Error("process.abort is not available in the Tokamak runtime"); };
-  globalThis.process.cwd = () => "/bundle";
-  globalThis.process.hrtime = (start) => {
+  process.argv = ["workerd"];
+  process.argv0 = "workerd";
+  process.execArgv = [];
+  process.execPath = "";
+  process.pid = 1;
+  process.ppid = 0;
+  process.title = "workerd";
+  process.platform = "linux";
+  process.arch = "x64";
+  process.version = "v22.19.0";
+  process.versions = { node: "22.19.0", v8: "", modules: "", zlib: "", openssl: "", icu: "", tz: "" };
+  process.release = { name: "node", lts: true, sourceUrl: "", headersUrl: "" };
+  process.exitCode = 0;
+  process.umask = () => 0o22;
+  process.uptime = () => 0;
+  process.memoryUsage = () => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 });
+  process.resourceUsage = () => ({});
+  process.cpuUsage = () => ({ user: 0, system: 0 });
+  process.stdout = { write() { return true; } };
+  process.stderr = { write() { return true; } };
+  process.stdin = { isTTY: false };
+  process.exit = code => { globalThis.process.exitCode = Number(code ?? 0); };
+  process.abort = () => { throw new Error("process.abort is not available in the Tokamak runtime"); };
+  process.cwd = () => "/bundle";
+  process.hrtime = (start) => {
     const now = Date.now();
     const value = [Math.floor(now / 1000), (now % 1000) * 1e6];
     if (!start) return value;
@@ -44,7 +44,7 @@ export function installProcessGlobals(builtinModules) {
     const nanos = value[1] - start[1];
     return nanos < 0 ? [seconds - 1, nanos + 1e9] : [seconds, nanos];
   };
-  Object.assign(globalThis.process, {
+  Object.assign(process, {
     _channel: undefined,
     _debugEnd: () => {},
     _debugProcess: () => {},

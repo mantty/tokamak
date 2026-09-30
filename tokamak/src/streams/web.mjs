@@ -69,7 +69,6 @@ export class TransformStream {
 for (const name of ["readable", "writable"]) {
   Object.defineProperty(TransformStream.prototype, name, { ...Object.getOwnPropertyDescriptor(TransformStream.prototype, name), enumerable: true });
 }
-Object.defineProperty(TransformStream.prototype, Symbol.toStringTag, { value: "TransformStream", configurable: true });
 
 export function isDisturbed(stream) { return Boolean(stream?._disturbed); }
 
@@ -185,8 +184,6 @@ export class CompressionStream extends TransformStream {
 export class DecompressionStream extends TransformStream {
   constructor(format) { super(nativePair, compressionPair(format, true)); }
 }
-Object.defineProperty(CompressionStream.prototype, Symbol.toStringTag, { value: "CompressionStream", configurable: true });
-Object.defineProperty(DecompressionStream.prototype, Symbol.toStringTag, { value: "DecompressionStream", configurable: true });
 
 function identityPair(remaining, strategy = {}) {
   if (strategy === null) strategy = {};
@@ -288,8 +285,10 @@ export class FixedLengthStream extends IdentityTransformStream {
     setStreamLength(this.readable, Number(remaining));
   }
 }
-Object.defineProperty(IdentityTransformStream.prototype, Symbol.toStringTag, { value: "IdentityTransformStream", configurable: true });
-Object.defineProperty(FixedLengthStream.prototype, Symbol.toStringTag, { value: "FixedLengthStream", configurable: true });
+
+for (const Type of [TransformStream, CompressionStream, DecompressionStream, IdentityTransformStream, FixedLengthStream]) {
+  Object.defineProperty(Type.prototype, Symbol.toStringTag, { value: Type.name, configurable: true });
+}
 
 export default {
   ReadableStream,

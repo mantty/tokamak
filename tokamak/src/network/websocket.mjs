@@ -15,9 +15,7 @@ export class WebSocket extends EventTarget {
     this.__tokamak_receive = (data, binary) => {
       if (this.__readyState === 3) return;
       this.__readyState = 1;
-      this.dispatchEvent(new MessageEvent("message", {
-        data: binary && data instanceof ArrayBuffer ? data : data,
-      }));
+      this.dispatchEvent(new MessageEvent("message", { data }));
     };
     this.__tokamak_close = (code, reason) => {
       if (this.__readyState === 3) return;

@@ -4,7 +4,6 @@ import { installConsoleGlobal } from "../globals/console.mjs";
 import process, { installProcessGlobals } from "../globals/process.mjs";
 import { createTracing } from "./tracing.mjs";
 import streams from "../streams/node.mjs";
-import webStreams from "../streams/web.mjs";
 import streamConsumers from "../node/stream-consumers.mjs";
 import streamPromises from "../node/stream-promises.mjs";
 import fs from "node:fs";
