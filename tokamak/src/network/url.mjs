@@ -1,5 +1,5 @@
 import { markHostObject } from "../globals/objects.mjs";
-import { urlDecodeParams, urlEncodeParams, urlParse, urlPatternCompile, urlPatternExec, urlPatternTest, urlSetComponent } from "tokamak:host";
+import { urlDecodeParams, urlEncodeParams, urlParse, urlPatternCompile, urlPatternMatchInput, urlSetComponent } from "tokamak:host";
 
 export const blobBrand = Symbol("tokamak.blob");
 
@@ -165,36 +165,59 @@ function patternPayload(input) {
   return JSON.stringify(init);
 }
 
+// URLPattern runs the engine's regular expressions through intrinsics captured
+// before app code runs, so app code cannot intercept them.
+const NativeRegExp = RegExp;
+const regexpExec = RegExp.prototype.exec;
+const apply = Reflect.apply;
+
+// Runs `source` with `flags` on `input` for the host's pattern parser: the
+// start and end of the match and each capture, or null without a match.
+function runRegExp(source, flags, input) {
+  return apply(regexpExec, new NativeRegExp(source, `${flags}d`), [input])?.indices ?? null;
+}
+
+// The match of `pattern` on `input` by component, or null.
+function matchPattern(pattern, input, baseURL) {
+  const inputs = urlPatternMatchInput(patternPayload(input), baseURL === undefined ? undefined : usvString(baseURL));
+  if (!inputs) return null;
+  const match = {};
+  for (let index = 0; index < patternComponents.length; index += 1) {
+    const component = pattern.__components[patternComponents[index]];
+    component.compiled ??= new NativeRegExp(component.regexp, component.flags);
+    const result = apply(regexpExec, component.compiled, [inputs[index]]);
+    if (result === null) return null;
+    const groups = {};
+    for (let group = 0; group < component.groups.length; group += 1) groups[component.groups[group]] = result[group + 1];
+    match[patternComponents[index]] = { input: inputs[index], groups };
+  }
+  return match;
+}
+
 export class URLPattern {
   constructor(input = {}, baseOrOptions, options) {
     markHostObject(this);
     const baseIsString = typeof baseOrOptions === "string" || baseOrOptions instanceof String;
-    const patternOptions = (baseIsString ? options : baseOrOptions) ?? {};
-    hidden(this, "__pattern", patternPayload(input));
-    hidden(this, "__baseURL", baseIsString ? usvString(baseOrOptions) : undefined);
-    hidden(this, "__ignoreCase", patternOptions.ignoreCase === true);
-    hidden(this, "__components", urlPatternCompile(this.__pattern, this.__baseURL, this.__ignoreCase));
+    const ignoreCase = ((baseIsString ? options : baseOrOptions) ?? {}).ignoreCase === true;
+    const base = baseIsString ? usvString(baseOrOptions) : undefined;
+    hidden(this, "__components", urlPatternCompile(patternPayload(input), base, ignoreCase, runRegExp));
   }
 
-  get protocol() { return this.__components.protocol; }
-  get username() { return this.__components.username; }
-  get password() { return this.__components.password; }
-  get hostname() { return this.__components.hostname; }
-  get port() { return this.__components.port; }
-  get pathname() { return this.__components.pathname; }
-  get search() { return this.__components.search; }
-  get hash() { return this.__components.hash; }
+  get protocol() { return this.__components.protocol.pattern; }
+  get username() { return this.__components.username.pattern; }
+  get password() { return this.__components.password.pattern; }
+  get hostname() { return this.__components.hostname.pattern; }
+  get port() { return this.__components.port.pattern; }
+  get pathname() { return this.__components.pathname.pattern; }
+  get search() { return this.__components.search.pattern; }
+  get hash() { return this.__components.hash.pattern; }
   get hasRegExpGroups() { return this.__components.hasRegExpGroups; }
 
-  test(input = {}, baseURL) {
-    return urlPatternTest(this.__pattern, this.__baseURL, this.__ignoreCase,
-      patternPayload(input), baseURL === undefined ? undefined : usvString(baseURL));
-  }
+  test(input = {}, baseURL) { return matchPattern(this, input, baseURL) !== null; }
   get [Symbol.toStringTag]() { return "URLPattern"; }
 
   exec(input = {}, baseURL) {
-    const match = urlPatternExec(this.__pattern, this.__baseURL, this.__ignoreCase,
-      patternPayload(input), baseURL === undefined ? undefined : usvString(baseURL));
+    const match = matchPattern(this, input, baseURL);
     if (!match) return null;
     const result = { inputs: baseURL === undefined ? [input] : [input, baseURL] };
     for (const component of patternComponents) result[component] = match[component];

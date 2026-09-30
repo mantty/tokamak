@@ -307,11 +307,7 @@ fn signing_inventory(identities: &[Identity], profiles: &[Result<Profile>]) -> R
         writeln!(output, "    Matching installed identities (SHA-1):")?;
         let matching = identities
             .iter()
-            .filter(|identity| {
-                profile
-                    .developer_certificates
-                    .contains(&identity.certificate_der)
-            })
+            .filter(|identity| profile.includes(identity))
             .collect::<Vec<_>>();
         if matching.is_empty() {
             writeln!(output, "      None found.")?;
@@ -355,10 +351,13 @@ impl Profile {
             && !self.devices.is_empty()
             && device_matches
             && app_identifier_matches(&self.application_identifier, bundle_id)
-            && self
-                .developer_certificates
-                .iter()
-                .any(|certificate| certificate == &identity.certificate_der)
+            && self.includes(identity)
+    }
+
+    /// Whether the profile lists `identity`'s certificate.
+    fn includes(&self, identity: &Identity) -> bool {
+        self.developer_certificates
+            .contains(&identity.certificate_der)
     }
 }
 
@@ -778,12 +777,7 @@ fn automatic_team_id(
         };
         let score = profiles
             .iter()
-            .filter(|profile| {
-                profile
-                    .developer_certificates
-                    .iter()
-                    .any(|certificate| certificate == &identity.certificate_der)
-            })
+            .filter(|profile| profile.includes(identity))
             .map(|profile| profile_relevance(profile, bundle_id))
             .max()
             .unwrap_or_default();
@@ -834,12 +828,7 @@ fn automatic_team_id(
 fn identity_team_id(identity: &Identity, profiles: &[Profile]) -> Option<String> {
     profiles
         .iter()
-        .find(|profile| {
-            profile
-                .developer_certificates
-                .iter()
-                .any(|certificate| certificate == &identity.certificate_der)
-        })
+        .find(|profile| profile.includes(identity))
         .map(|profile| profile.team_id.clone())
         .or_else(|| certificate_team_id(&identity.certificate_der))
 }
@@ -1153,18 +1142,13 @@ fn profile_paths(platform: Platform) -> Vec<PathBuf> {
     }
     directories
         .into_iter()
-        .flat_map(|directory| {
-            let Ok(entries) = fs::read_dir(directory) else {
-                return Vec::new();
-            };
-            entries
-                .filter_map(std::result::Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| {
-                    path.extension()
-                        .is_some_and(|extension| extension == platform.profile_extension())
-                })
-                .collect::<Vec<_>>()
+        .filter_map(|directory| fs::read_dir(directory).ok())
+        .flatten()
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == platform.profile_extension())
         })
         .collect()
 }
@@ -1273,11 +1257,7 @@ fn string_value(values: &Dictionary, key: &str) -> Option<String> {
 
 #[cfg(any(target_os = "macos", test))]
 fn string_array(values: &Dictionary, key: &str) -> Vec<String> {
-    values
-        .get(key)
-        .and_then(PlistValue::as_array)
-        .into_iter()
-        .flatten()
+    array(values, key)
         .filter_map(PlistValue::as_string)
         .map(str::to_owned)
         .collect()
@@ -1285,14 +1265,20 @@ fn string_array(values: &Dictionary, key: &str) -> Vec<String> {
 
 #[cfg(any(target_os = "macos", test))]
 fn data_array(values: &Dictionary, key: &str) -> Vec<Vec<u8>> {
+    array(values, key)
+        .filter_map(PlistValue::as_data)
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// The items of the array at `key`, if it holds one.
+#[cfg(any(target_os = "macos", test))]
+fn array<'a>(values: &'a Dictionary, key: &str) -> impl Iterator<Item = &'a PlistValue> {
     values
         .get(key)
         .and_then(PlistValue::as_array)
         .into_iter()
         .flatten()
-        .filter_map(PlistValue::as_data)
-        .map(ToOwned::to_owned)
-        .collect()
 }
 
 #[cfg(any(target_os = "macos", test))]

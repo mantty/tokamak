@@ -99,17 +99,11 @@ impl ToolchainMetadata {
             "macos" => "macosx",
             platform => bail!("unsupported Apple platform: {platform}"),
         };
-        let platform_version =
-            command_output("xcrun", &["--sdk", platform_name, "--show-sdk-version"])?;
-        let sdk_build = command_output(
-            "xcrun",
-            &["--sdk", platform_name, "--show-sdk-build-version"],
-        )?;
-        let platform_path = command_output(
-            "xcrun",
-            &["--sdk", platform_name, "--show-sdk-platform-path"],
-        )?;
-        let platform_build = read_platform_build(Path::new(&platform_path))?;
+        let sdk_value = |query| command_output("xcrun", &["--sdk", platform_name, query]);
+        let platform_version = sdk_value("--show-sdk-version")?;
+        let sdk_build = sdk_value("--show-sdk-build-version")?;
+        let platform_build =
+            read_platform_build(Path::new(&sdk_value("--show-sdk-platform-path")?))?;
         let (xcode, xcode_build) =
             parse_xcode_version(&command_output("xcodebuild", &["-version"])?)?;
 
@@ -486,10 +480,10 @@ fn insert_dictionary<const N: usize>(
     key: &str,
     values: [(&str, Value); N],
 ) {
-    let mut dictionary = Dictionary::new();
-    for (key, value) in values {
-        dictionary.insert(key.into(), value);
-    }
+    let dictionary = values
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect();
     plist.insert(key.into(), Value::Dictionary(dictionary));
 }
 
@@ -503,11 +497,7 @@ fn read_required(path: &Path) -> Result<String> {
 }
 
 fn read_optional(path: &Path) -> Result<Option<String>> {
-    if path.is_file() {
-        Ok(Some(read_required(path)?))
-    } else {
-        Ok(None)
-    }
+    path.is_file().then(|| read_required(path)).transpose()
 }
 
 fn environment_value(name: &str) -> Result<Option<String>> {

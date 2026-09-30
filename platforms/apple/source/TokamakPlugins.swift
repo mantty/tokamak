@@ -121,8 +121,7 @@ final class TokamakPluginBridge: NSObject, WKScriptMessageHandler {
       message.frameInfo.securityOrigin.isAppOrigin(host),
       let encoded = message.body as? String,
       let data = encoded.data(using: .utf8),
-      let request = try? JSONSerialization.jsonObject(with: data)
-        as? [String: Any],
+      let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
       let type = request["type"] as? String,
       let session = request["session"] as? String
     else {
@@ -142,21 +141,13 @@ final class TokamakPluginBridge: NSObject, WKScriptMessageHandler {
     dispatch(type: type, key: key, request: request)
   }
 
-  private func dispatch(
-    type: String,
-    key: RequestKey,
-    request: [String: Any]
-  ) {
+  private func dispatch(type: String, key: RequestKey, request: [String: Any]) {
     guard
       let pluginId = request["plugin"] as? String,
       let method = request["method"] as? String,
       let plugin = plugins[pluginId]
     else {
-      send(
-        key: key,
-        result: .failure(.notSupported("Plugin is not supported")),
-        done: true
-      )
+      send(key: key, result: .failure(.notSupported("Plugin is not supported")), done: true)
       return
     }
     let arguments = request["arguments"] ?? NSNull()
@@ -175,29 +166,18 @@ final class TokamakPluginBridge: NSObject, WKScriptMessageHandler {
       cancellations[key] = cancellation
     default:
       send(
-        key: key,
-        result: .failure(.notSupported("Plugin operation is not supported")),
-        done: true
-      )
+        key: key, result: .failure(.notSupported("Plugin operation is not supported")), done: true)
     }
   }
 
   /// Plugins reply from any thread; delivery happens on the main thread.
-  private func send(
-    key: RequestKey,
-    result: Result<Any?, TokamakPluginError>,
-    done: Bool
-  ) {
+  private func send(key: RequestKey, result: Result<Any?, TokamakPluginError>, done: Bool) {
     DispatchQueue.main.async { [weak self] in
       self?.deliver(key: key, result: result, done: done)
     }
   }
 
-  private func deliver(
-    key: RequestKey,
-    result: Result<Any?, TokamakPluginError>,
-    done: Bool
-  ) {
+  private func deliver(key: RequestKey, result: Result<Any?, TokamakPluginError>, done: Bool) {
     if done {
       cancellations.removeValue(forKey: key)?()
     }

@@ -54,6 +54,12 @@ function optionsJson(options) {
   return JSON.stringify(optionsObject(options), (_, value) => typeof value === "bigint" ? String(value) : value);
 }
 
+function initIntlObject(object, locales) {
+  markHostObject(object);
+  object.__locales = canonicalLocales(locales);
+  object.__locale = object.__locales[0] ?? "en-US";
+}
+
 function localeInfo(locale) {
   return JSON.parse(intlLocaleInfo(locale, "{}"));
 }
@@ -117,6 +123,10 @@ function formatParts(host, ...args) {
   return JSON.parse(host(...args)).map(([type, value]) => ({ type, value }));
 }
 
+function joinRange(first, second) {
+  return first === second ? first : first + " – " + second;
+}
+
 function epochMilliseconds(value) {
   const milliseconds = value === undefined ? Date.now() : +value;
   if (!Number.isFinite(milliseconds) || Math.abs(milliseconds) > 8_640_000_000_000_000) throw new RangeError("Invalid time value");
@@ -134,11 +144,7 @@ function dateResolvedOptions(locale, options) {
   if (options.dateStyle !== undefined || options.timeStyle !== undefined) {
     if (options.dateStyle !== undefined) result.dateStyle = options.dateStyle;
     if (options.timeStyle !== undefined) result.timeStyle = options.timeStyle;
-    if (options.timeStyle !== undefined) {
-      const hourCycle = options.hourCycle ?? (options.hour12 === undefined ? localeDefaultHourCycle(locale) : options.hour12 ? "h12" : "h23");
-      result.hourCycle = hourCycle;
-      result.hour12 = hourCycle === "h11" || hourCycle === "h12";
-    }
+    if (options.timeStyle !== undefined) resolveHourCycle(result, locale, options);
     return result;
   }
   const hasDate = dateFields.some(field => ["weekday", "era", "year", "month", "day"].includes(field) && options[field] !== undefined);
@@ -150,20 +156,20 @@ function dateResolvedOptions(locale, options) {
   } else {
     for (const field of dateFields) if (options[field] !== undefined) result[field] = options[field];
   }
-  if (hasTime) {
-    const hourCycle = options.hourCycle ?? (options.hour12 === undefined ? localeDefaultHourCycle(locale) : options.hour12 ? "h12" : "h23");
-    result.hourCycle = hourCycle;
-    result.hour12 = hourCycle === "h11" || hourCycle === "h12";
-  }
+  if (hasTime) resolveHourCycle(result, locale, options);
   return result;
+}
+
+function resolveHourCycle(result, locale, options) {
+  const hourCycle = options.hourCycle ?? (options.hour12 === undefined ? localeDefaultHourCycle(locale) : options.hour12 ? "h12" : "h23");
+  result.hourCycle = hourCycle;
+  result.hour12 = hourCycle === "h11" || hourCycle === "h12";
 }
 
 class DateTimeFormat {
   #format;
   constructor(locales, options) {
-    markHostObject(this);
-    this.__locales = canonicalLocales(locales);
-    this.__locale = this.__locales[0] ?? "en-US";
+    initIntlObject(this, locales);
     this.__options = dateOptions(options);
     if (hasTimeFields(this.__options) && this.__options.hourCycle === undefined && this.__options.hour12 === undefined) {
       this.__options.hourCycle = localeDefaultHourCycle(this.__locale);
@@ -174,11 +180,7 @@ class DateTimeFormat {
   formatToParts(value = new Date()) {
     return formatParts(intlDateTimeParts, epochMilliseconds(value), JSON.stringify(this.__locales), optionsJson(this.__options));
   }
-  formatRange(start, end) {
-    const first = this.format(start);
-    const second = this.format(end);
-    return first === second ? first : first + " – " + second;
-  }
+  formatRange(start, end) { return joinRange(this.format(start), this.format(end)); }
   formatRangeToParts(start, end) {
     const first = this.formatToParts(start);
     const second = this.formatToParts(end);
@@ -191,7 +193,7 @@ class DateTimeFormat {
 
 function numberResolvedOptions(locale, options) {
   const style = options.style;
-  const currencyDigits = style === "currency" && options.currency === "JPY" ? 0 : style === "currency" ? 2 : 0;
+  const currencyDigits = style === "currency" && options.currency !== "JPY" ? 2 : 0;
   const result = {
     locale,
     numberingSystem: localeInfo(locale).numberingSystem,
@@ -204,7 +206,7 @@ function numberResolvedOptions(locale, options) {
   }
   if (style === "unit") result.unit = options.unit;
   result.minimumIntegerDigits = options.minimumIntegerDigits ?? 1;
-  result.minimumFractionDigits = options.minimumFractionDigits ?? (style === "currency" ? currencyDigits : 0);
+  result.minimumFractionDigits = options.minimumFractionDigits ?? currencyDigits;
   result.maximumFractionDigits = options.maximumFractionDigits ?? Math.max(style === "currency" ? currencyDigits : style === "percent" ? 0 : 3, result.minimumFractionDigits);
   result.useGrouping = options.useGrouping ?? "auto";
   result.notation = options.notation ?? "standard";
@@ -221,19 +223,13 @@ function numberResolvedOptions(locale, options) {
 class NumberFormat {
   #format;
   constructor(locales, options) {
-    markHostObject(this);
-    this.__locales = canonicalLocales(locales);
-    this.__locale = this.__locales[0] ?? "en-US";
+    initIntlObject(this, locales);
     this.__options = numberOptions(options);
     this.#format = value => intlNumber(Number(value), JSON.stringify(this.__locales), optionsJson(this.__options));
   }
   get format() { return this.#format; }
   formatToParts(value) { return formatParts(intlNumberParts, Number(value), JSON.stringify(this.__locales), optionsJson(this.__options)); }
-  formatRange(start, end) {
-    const first = this.format(start);
-    const second = this.format(end);
-    return first === second ? first : first + " – " + second;
-  }
+  formatRange(start, end) { return joinRange(this.format(start), this.format(end)); }
   formatRangeToParts(start, end) {
     const first = this.format(start);
     const second = this.format(end);
@@ -245,9 +241,7 @@ class NumberFormat {
 
 class PluralRules {
   constructor(locales, options) {
-    markHostObject(this);
-    this.__locales = canonicalLocales(locales);
-    this.__locale = this.__locales[0] ?? "en-US";
+    initIntlObject(this, locales);
     this.__options = pluralOptions(options);
   }
   select(value) { return intlPlural(Number(value), JSON.stringify(this.__locales), this.__options.type); }
@@ -315,24 +309,24 @@ class Locale {
   numberingSystemOf() { return this.numberingSystem; }
 }
 
+function listJson(list) {
+  return JSON.stringify([...list].map(value => String(value)));
+}
+
 class ListFormat {
   constructor(locales, options) {
-    markHostObject(this);
-    this.__locales = canonicalLocales(locales);
-    this.__locale = this.__locales[0] ?? "en-US";
+    initIntlObject(this, locales);
     this.__options = listOptions(options);
   }
-  format(list) { return intlList(JSON.stringify([...list].map(value => String(value))), JSON.stringify(this.__locales), optionsJson(this.__options)); }
-  formatToParts(list) { return formatParts(intlListParts, JSON.stringify([...list].map(value => String(value))), JSON.stringify(this.__locales), optionsJson(this.__options)); }
+  format(list) { return intlList(listJson(list), JSON.stringify(this.__locales), optionsJson(this.__options)); }
+  formatToParts(list) { return formatParts(intlListParts, listJson(list), JSON.stringify(this.__locales), optionsJson(this.__options)); }
   resolvedOptions() { return { locale: this.__locale, ...this.__options }; }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
 
 class RelativeTimeFormat {
   constructor(locales, options) {
-    markHostObject(this);
-    this.__locales = canonicalLocales(locales);
-    this.__locale = this.__locales[0] ?? "en-US";
+    initIntlObject(this, locales);
     this.__options = relativeOptions(options);
   }
   format(value, unit) { return intlRelative(Number(value), String(unit), JSON.stringify(this.__locales), optionsJson(this.__options)); }
@@ -343,9 +337,7 @@ class RelativeTimeFormat {
 
 class Collator {
   constructor(locales, options) {
-    markHostObject(this);
-    this.__locales = canonicalLocales(locales);
-    this.__locale = this.__locales[0] ?? "en-US";
+    initIntlObject(this, locales);
     const source = optionsObject(options);
     this.__options = {
       usage: source.usage ?? "sort",
@@ -363,9 +355,7 @@ class Collator {
 
 class Segmenter {
   constructor(locales, options) {
-    markHostObject(this);
-    this.__locales = canonicalLocales(locales);
-    this.__locale = this.__locales[0] ?? "en-US";
+    initIntlObject(this, locales);
     this.__granularity = optionsObject(options).granularity ?? "grapheme";
     if (!["grapheme", "word", "sentence"].includes(this.__granularity)) throw new RangeError("Invalid granularity");
   }
@@ -386,9 +376,7 @@ class Segmenter {
 
 class DisplayNames {
   constructor(locales, options) {
-    markHostObject(this);
-    this.__locales = canonicalLocales(locales);
-    this.__locale = this.__locales[0] ?? "en-US";
+    initIntlObject(this, locales);
     const source = optionsObject(options);
     this.__options = {
       style: source.style ?? "long",

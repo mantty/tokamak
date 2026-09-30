@@ -14,15 +14,26 @@ function validFunction(value, name) {
   return value;
 }
 
-function optionsValue(options) {
-  if (options === undefined) return { times: Infinity };
-  if (options === null || typeof options !== "object") fail(TypeError, "options must be an object", "ERR_INVALID_ARG_TYPE");
+function validateOptions(options) {
+  if (options === null || (options !== undefined && typeof options !== "object")) {
+    fail(TypeError, "options must be an object", "ERR_INVALID_ARG_TYPE");
+  }
+}
+
+function splitOptions(implementation, options) {
+  if (implementation && typeof implementation === "object" && options === undefined) return { implementation: undefined, options: implementation };
+  return { implementation, options };
+}
+
+function timesOption(options) {
+  if (options === undefined) return Infinity;
+  validateOptions(options);
   const times = options.times === undefined ? Infinity : options.times;
   if (times === null || typeof times !== "number") fail(TypeError, "options.times must be an integer", "ERR_INVALID_ARG_TYPE");
   if (times !== Infinity && (!Number.isInteger(times) || times < 1)) {
     fail(RangeError, "options.times must be a positive integer", "ERR_OUT_OF_RANGE");
   }
-  return { times };
+  return times;
 }
 
 function createState(original, implementation, options) {
@@ -33,7 +44,7 @@ function createState(original, implementation, options) {
   return {
     original,
     implementation,
-    times: optionsValue(options).times,
+    times: timesOption(options),
     calls: [],
     once: new Map(),
     restoreTarget: null,
@@ -69,10 +80,7 @@ function callImplementation(state, thisValue, args, target) {
 }
 
 function createMock(original, implementation, options, tracker) {
-  if (implementation && typeof implementation === "object" && options === undefined) {
-    options = implementation;
-    implementation = undefined;
-  }
+  ({ implementation, options } = splitOptions(implementation, options));
   const state = createState(original, implementation, options);
   const context = new MockFunctionContext(state);
   const mocked = function (...args) {
@@ -104,13 +112,8 @@ function mockProperty(tracker, object, property, implementation, options, kind) 
   if (object === null || (typeof object !== "object" && typeof object !== "function")) {
     fail(TypeError, "object must be an object", "ERR_INVALID_ARG_TYPE");
   }
-  if (implementation && typeof implementation === "object" && options === undefined) {
-    options = implementation;
-    implementation = undefined;
-  }
-  if (options === null || (options !== undefined && typeof options !== "object")) {
-    fail(TypeError, "options must be an object", "ERR_INVALID_ARG_TYPE");
-  }
+  ({ implementation, options } = splitOptions(implementation, options));
+  validateOptions(options);
   const found = findProperty(object, property);
   const descriptor = found.descriptor;
   const original = kind === "method" ? descriptor.value : descriptor[kind];
@@ -128,9 +131,7 @@ function mockProperty(tracker, object, property, implementation, options, kind) 
 }
 
 function accessorOptions(options, kind) {
-  if (options !== undefined && (options === null || typeof options !== "object")) {
-    fail(TypeError, "options must be an object", "ERR_INVALID_ARG_TYPE");
-  }
+  validateOptions(options);
   return { ...options, [kind]: true };
 }
 
@@ -172,11 +173,7 @@ export class MockFunctionContext {
   }
 
   restore() {
-    const state = states.get(this);
-    state.restoreTarget?.();
-    state.implementation = state.original;
-    state.times = Infinity;
-    state.once.clear();
+    restoreState(states.get(this));
   }
 
   resetCalls() {
@@ -204,18 +201,12 @@ export class MockTracker {
   }
 
   getter(object, property, implementation, options) {
-    if (implementation && typeof implementation === "object" && options === undefined) {
-      options = implementation;
-      implementation = undefined;
-    }
+    ({ implementation, options } = splitOptions(implementation, options));
     return mockProperty(this, object, property, implementation, accessorOptions(options, "getter"), "get");
   }
 
   setter(object, property, implementation, options) {
-    if (implementation && typeof implementation === "object" && options === undefined) {
-      options = implementation;
-      implementation = undefined;
-    }
+    ({ implementation, options } = splitOptions(implementation, options));
     return mockProperty(this, object, property, implementation, accessorOptions(options, "setter"), "set");
   }
 

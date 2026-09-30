@@ -246,163 +246,151 @@ fn declare_exports(declare: &Declarations, promises_only: bool) -> rquickjs::Res
     Ok(())
 }
 
+/// A module's named exports and its default export object, set together.
+struct ModuleExports<'a, 'js> {
+    ctx: &'a Ctx<'js>,
+    exports: &'a Exports<'js>,
+    default: Object<'js>,
+}
+
+impl<'js> ModuleExports<'_, 'js> {
+    fn value(&self, name: &str, value: Value<'js>) -> rquickjs::Result<()> {
+        self.exports.export(name, value.clone())?;
+        self.default.set(name, value)
+    }
+
+    fn function<F, P>(&self, name: &str, function: F) -> rquickjs::Result<()>
+    where
+        F: IntoJsFunc<'js, P> + 'js,
+    {
+        let function = Function::new(self.ctx.clone(), function)?;
+        self.value(name, function.into_value())
+    }
+}
+
 fn export_module<'js>(
     ctx: &Ctx<'js>,
     exports: &Exports<'js>,
     promises_only: bool,
 ) -> rquickjs::Result<()> {
-    let object = Object::new(ctx.clone())?;
-    export_constants(ctx, exports, &object, promises_only)?;
+    let module = ModuleExports {
+        ctx,
+        exports,
+        default: Object::new(ctx.clone())?,
+    };
+    export_constants(&module, promises_only)?;
     if promises_only {
         let file_handle = file_handle_constructor(ctx)?;
-        exports.export("FileHandle", file_handle.clone())?;
-        object.set("FileHandle", file_handle)?;
-        export_promises(ctx, exports, &object)?;
+        module.value("FileHandle", file_handle.into_value())?;
+        export_promises(&module)?;
     } else {
         let dirent = dirent_constructor(ctx)?;
         let dir = dir_constructor(ctx)?;
         let stats = stats_constructor(ctx)?;
         for (name, value) in [("Dirent", dirent), ("Dir", dir), ("Stats", stats)] {
-            exports.export(name, value.clone())?;
-            object.set(name, value)?;
+            module.value(name, value.into_value())?;
         }
 
-        export_sync(ctx, exports, &object)?;
+        export_sync(&module)?;
         let promises: Object = rquickjs::Module::import(ctx, PROMISES_MODULE_NAME)?
             .finish::<Object>()?
             .get("default")?;
-        exports.export("promises", promises.clone())?;
-        object.set("promises", promises)?;
-        export_streams(ctx, exports, &object)?;
-        export_callback(ctx, exports, &object)?;
+        module.value("promises", promises.into_value())?;
+        export_streams(&module)?;
+        export_callback(&module)?;
     }
-    exports.export("default", object).map(|_| ())
+    exports.export("default", module.default).map(|_| ())
 }
 
-fn export_constants<'js>(
-    ctx: &Ctx<'js>,
-    exports: &Exports<'js>,
-    object: &Object<'js>,
-    promises_only: bool,
-) -> rquickjs::Result<()> {
-    let constants = constants(ctx.clone())?;
+fn export_constants(module: &ModuleExports<'_, '_>, promises_only: bool) -> rquickjs::Result<()> {
+    let constants = constants(module.ctx.clone())?;
     if !promises_only {
-        for (name, value) in [
-            ("F_OK", 0_i32),
-            ("R_OK", 4_i32),
-            ("W_OK", 2_i32),
-            ("X_OK", 1_i32),
-        ] {
-            exports.export(name, value)?;
-            object.set(name, value)?;
+        for (name, value) in [("F_OK", 0), ("R_OK", 4), ("W_OK", 2), ("X_OK", 1)] {
+            module.value(name, Value::new_int(module.ctx.clone(), value))?;
         }
     }
-    exports.export("constants", constants.clone())?;
-    object.set("constants", constants)
+    module.value("constants", constants.into_value())
 }
 
-fn export_sync<'js>(
-    ctx: &Ctx<'js>,
-    exports: &Exports<'js>,
-    object: &Object<'js>,
-) -> rquickjs::Result<()> {
-    export_function(ctx, exports, object, "readFileSync", read_file_sync)?;
-    export_function(ctx, exports, object, "writeFileSync", write_file_sync)?;
-    export_function(ctx, exports, object, "appendFileSync", append_file_sync)?;
-    export_function(ctx, exports, object, "accessSync", access_sync)?;
-    export_function(ctx, exports, object, "chmodSync", chmod_sync)?;
-    export_function(ctx, exports, object, "chownSync", chown_sync)?;
-    export_function(ctx, exports, object, "mkdirSync", mkdir_sync)?;
-    export_function(ctx, exports, object, "readdirSync", readdir_sync)?;
-    export_function(ctx, exports, object, "statSync", stat_sync)?;
-    export_function(ctx, exports, object, "lstatSync", lstat_sync)?;
-    export_function(ctx, exports, object, "existsSync", exists_sync)?;
-    export_function(ctx, exports, object, "unlinkSync", unlink_sync)?;
-    export_function(ctx, exports, object, "rmSync", rm_sync)?;
-    export_function(ctx, exports, object, "rmdirSync", rmdir_sync)?;
-    export_function(ctx, exports, object, "renameSync", rename_sync)?;
-    export_function(ctx, exports, object, "copyFileSync", copy_file_sync)?;
-    export_function(ctx, exports, object, "cpSync", cp_sync)?;
-    export_function(ctx, exports, object, "fchmodSync", fchmod_sync)?;
-    export_function(ctx, exports, object, "fchownSync", fchown_sync)?;
-    export_function(ctx, exports, object, "fdatasyncSync", fdatasync_sync)?;
-    export_function(ctx, exports, object, "fsyncSync", fsync_sync)?;
-    export_function(ctx, exports, object, "futimesSync", futimes_sync)?;
-    export_function(ctx, exports, object, "globSync", glob_sync)?;
-    export_function(ctx, exports, object, "lchmodSync", lchmod_sync)?;
-    export_function(ctx, exports, object, "lchownSync", lchown_sync)?;
-    export_function(ctx, exports, object, "lutimesSync", lutimes_sync)?;
-    export_function(ctx, exports, object, "linkSync", link_sync)?;
-    export_function(ctx, exports, object, "mkdtempSync", mkdtemp_sync)?;
-    export_function(ctx, exports, object, "opendirSync", opendir_sync)?;
-    export_function(ctx, exports, object, "symlinkSync", symlink_sync)?;
-    export_function(ctx, exports, object, "readlinkSync", read_link_sync)?;
-    export_function(ctx, exports, object, "realpathSync", realpath_sync)?;
-    export_function(ctx, exports, object, "openSync", open_sync)?;
-    export_function(ctx, exports, object, "closeSync", close_sync)?;
-    export_function(ctx, exports, object, "fstatSync", fstat_sync)?;
-    export_function(ctx, exports, object, "readSync", read_sync_export)?;
-    export_function(ctx, exports, object, "readvSync", readv_sync)?;
-    export_function(ctx, exports, object, "writeSync", write_sync_export)?;
-    export_function(ctx, exports, object, "writevSync", writev_sync)?;
-    export_function(ctx, exports, object, "truncateSync", truncate_sync)?;
-    export_function(ctx, exports, object, "ftruncateSync", ftruncate_sync)?;
-    export_function(ctx, exports, object, "statfsSync", statfs_sync)?;
-    export_function(ctx, exports, object, "utimesSync", utimes_sync)?;
-    export_function(ctx, exports, object, "openAsBlob", open_as_blob)
+/// Casting to a shared signature compiles one host wrapper per signature.
+fn export_sync(module: &ModuleExports<'_, '_>) -> rquickjs::Result<()> {
+    module.function("readFileSync", read_file_sync as ValueOperation)?;
+    module.function("writeFileSync", write_file_sync as PairOptionsOperation)?;
+    module.function("appendFileSync", append_file_sync as PairOptionsOperation)?;
+    module.function("accessSync", access_sync)?;
+    module.function("chmodSync", chmod_sync as PairOperation)?;
+    module.function("chownSync", chown_sync as OwnerOperation)?;
+    module.function("mkdirSync", mkdir_sync as OptionsOperation)?;
+    module.function("readdirSync", readdir_sync as ValueOperation)?;
+    module.function("statSync", stat_sync as ValueOperation)?;
+    module.function("lstatSync", lstat_sync as ValueOperation)?;
+    module.function("existsSync", exists_sync)?;
+    module.function("unlinkSync", unlink_sync)?;
+    module.function("rmSync", rm_sync as OptionsOperation)?;
+    module.function("rmdirSync", rmdir_sync as OptionsOperation)?;
+    module.function("renameSync", rename_sync as PairOperation)?;
+    module.function("copyFileSync", copy_file_sync)?;
+    module.function("cpSync", cp_sync as PairOptionsOperation)?;
+    module.function("fchmodSync", fchmod_sync)?;
+    module.function("fchownSync", fchown_sync)?;
+    module.function("fdatasyncSync", fsync_sync)?;
+    module.function("fsyncSync", fsync_sync)?;
+    module.function("futimesSync", futimes_sync)?;
+    module.function("globSync", glob_sync as ValueOperation)?;
+    module.function("lchmodSync", lchmod_sync as PairOperation)?;
+    module.function("lchownSync", lchown_sync as OwnerOperation)?;
+    module.function("lutimesSync", lutimes_sync as TimesOperation)?;
+    module.function("linkSync", link_sync as PairOperation)?;
+    module.function("mkdtempSync", mkdtemp_sync as ValueOperation)?;
+    module.function("opendirSync", opendir_sync as ValueOperation)?;
+    module.function("symlinkSync", symlink_sync as PairOperation)?;
+    module.function("readlinkSync", read_link_sync as ValueOperation)?;
+    module.function("realpathSync", realpath_sync as ValueOperation)?;
+    module.function("openSync", open_sync)?;
+    module.function("closeSync", close_sync)?;
+    module.function("fstatSync", fstat_sync)?;
+    module.function("readSync", read_sync_export)?;
+    module.function("readvSync", readv_sync)?;
+    module.function("writeSync", write_sync_export)?;
+    module.function("writevSync", writev_sync)?;
+    module.function("truncateSync", truncate_sync)?;
+    module.function("ftruncateSync", ftruncate_sync)?;
+    module.function("statfsSync", statfs_sync as ValueOperation)?;
+    module.function("utimesSync", utimes_sync as TimesOperation)?;
+    module.function("openAsBlob", open_as_blob as ValueOperation)
 }
 
-fn export_callback<'js>(
-    ctx: &Ctx<'js>,
-    exports: &Exports<'js>,
-    object: &Object<'js>,
-) -> rquickjs::Result<()> {
+fn export_callback<'js>(module: &ModuleExports<'_, 'js>) -> rquickjs::Result<()> {
     for &(name, operation) in callback_operations() {
-        let function = Function::new(ctx.clone(), move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
-            callback_call(ctx, operation, args)
-        })?;
+        let function = Function::new(
+            module.ctx.clone(),
+            move |ctx: Ctx<'js>, args: Rest<Value<'js>>| callback_call(ctx, operation, args),
+        )?;
         if name == "realpath" {
             function.set("native", function.clone())?;
         }
-        exports.export(name, function.clone())?;
-        object.set(name, function)?;
+        module.value(name, function.into_value())?;
     }
     Ok(())
 }
 
-fn export_streams<'js>(
-    ctx: &Ctx<'js>,
-    exports: &Exports<'js>,
-    object: &Object<'js>,
-) -> rquickjs::Result<()> {
-    let read_stream = stream_type_constructor(ctx, "Readable")?;
-    let write_stream = stream_type_constructor(ctx, "Writable")?;
+fn export_streams(module: &ModuleExports<'_, '_>) -> rquickjs::Result<()> {
+    let read_stream = stream_type_constructor(module.ctx, "Readable")?;
+    let write_stream = stream_type_constructor(module.ctx, "Writable")?;
     for (name, value) in [
         ("ReadStream", read_stream.clone()),
         ("FileReadStream", read_stream),
         ("WriteStream", write_stream.clone()),
         ("FileWriteStream", write_stream),
     ] {
-        exports.export(name, value.clone())?;
-        object.set(name, value)?;
+        module.value(name, value.into_value())?;
     }
-    export_function(
-        ctx,
-        exports,
-        object,
-        "createReadStream",
-        create_read_stream_export,
-    )?;
-    export_function(
-        ctx,
-        exports,
-        object,
-        "createWriteStream",
-        create_write_stream_export,
-    )?;
-    export_function(ctx, exports, object, "unwatchFile", unsupported_watch)?;
-    export_function(ctx, exports, object, "watch", unsupported_watch)?;
-    export_function(ctx, exports, object, "watchFile", unsupported_watch)
+    for (name, readable) in [("createReadStream", true), ("createWriteStream", false)] {
+        module.value(name, stream_function(module.ctx, readable)?.into_value())?;
+    }
+    module.function("unwatchFile", unsupported_watch)?;
+    module.function("watch", unsupported_watch)?;
+    module.function("watchFile", unsupported_watch)
 }
 
 fn unsupported_watch(ctx: Ctx<'_>) -> rquickjs::Result<()> {
@@ -426,11 +414,7 @@ fn stream_type_constructor<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<
         ctx,
         prototype,
         move |ctx: Ctx<'js>, input: Opt<Value<'js>>, options: Opt<Value<'js>>| {
-            let stream = if readable {
-                create_read_stream(&ctx, input.0, None, options.0)
-            } else {
-                create_write_stream(&ctx, input.0, None, options.0)
-            }?;
+            let stream = create_stream(&ctx, readable, input.0, None, options.0)?;
             if let Some(base_prototype) = stream.get_prototype() {
                 let prototype: Object = ctx.globals().get(&prototype_name)?;
                 prototype.set_prototype(Some(&base_prototype))?;
@@ -440,66 +424,44 @@ fn stream_type_constructor<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<
     )
 }
 
-fn export_promises<'js>(
-    ctx: &Ctx<'js>,
-    exports: &Exports<'js>,
-    object: &Object<'js>,
-) -> rquickjs::Result<()> {
+fn export_promises(module: &ModuleExports<'_, '_>) -> rquickjs::Result<()> {
+    let ctx = module.ctx;
     for (name, function) in [
-        ("readFile", Function::new(ctx.clone(), read_file_promise)?),
-        ("writeFile", Function::new(ctx.clone(), write_file_promise)?),
-        (
-            "appendFile",
-            Function::new(ctx.clone(), append_file_promise)?,
-        ),
+        ("readFile", value_promise(ctx, read_file_sync)?),
+        ("writeFile", pair_options_promise(ctx, write_file_sync)?),
+        ("appendFile", pair_options_promise(ctx, append_file_sync)?),
         ("access", Function::new(ctx.clone(), access_promise)?),
-        ("chmod", Function::new(ctx.clone(), chmod_promise)?),
-        ("chown", Function::new(ctx.clone(), chown_promise)?),
-        ("cp", Function::new(ctx.clone(), cp_promise)?),
+        ("chmod", pair_promise(ctx, chmod_sync)?),
+        ("chown", owner_promise(ctx, chown_sync)?),
+        ("cp", pair_options_promise(ctx, cp_sync)?),
         ("glob", Function::new(ctx.clone(), glob_promise)?),
-        ("lchmod", Function::new(ctx.clone(), lchmod_promise)?),
-        ("lchown", Function::new(ctx.clone(), lchown_promise)?),
-        ("link", Function::new(ctx.clone(), link_promise)?),
-        ("lutimes", Function::new(ctx.clone(), lutimes_promise)?),
-        ("mkdir", Function::new(ctx.clone(), mkdir_promise)?),
-        ("mkdtemp", Function::new(ctx.clone(), mkdtemp_promise)?),
+        ("lchmod", pair_promise(ctx, lchmod_sync)?),
+        ("lchown", owner_promise(ctx, lchown_sync)?),
+        ("link", pair_promise(ctx, link_sync)?),
+        ("lutimes", times_promise(ctx, lutimes_sync)?),
+        ("mkdir", options_promise(ctx, mkdir_sync)?),
+        ("mkdtemp", value_promise(ctx, mkdtemp_sync)?),
         ("open", Function::new(ctx.clone(), open_promise)?),
-        ("opendir", Function::new(ctx.clone(), opendir_promise)?),
-        ("readdir", Function::new(ctx.clone(), readdir_promise)?),
-        ("stat", Function::new(ctx.clone(), stat_promise)?),
-        ("lstat", Function::new(ctx.clone(), lstat_promise)?),
+        ("opendir", value_promise(ctx, opendir_sync)?),
+        ("readdir", value_promise(ctx, readdir_sync)?),
+        ("stat", value_promise(ctx, stat_sync)?),
+        ("lstat", value_promise(ctx, lstat_sync)?),
         ("unlink", Function::new(ctx.clone(), unlink_promise)?),
-        ("rm", Function::new(ctx.clone(), rm_promise)?),
-        ("rmdir", Function::new(ctx.clone(), rmdir_promise)?),
-        ("rename", Function::new(ctx.clone(), rename_promise)?),
+        ("rm", options_promise(ctx, rm_sync)?),
+        ("rmdir", options_promise(ctx, rmdir_sync)?),
+        ("rename", pair_promise(ctx, rename_sync)?),
         ("copyFile", Function::new(ctx.clone(), copy_file_promise)?),
-        ("symlink", Function::new(ctx.clone(), symlink_promise)?),
-        ("readlink", Function::new(ctx.clone(), read_link_promise)?),
-        ("realpath", Function::new(ctx.clone(), realpath_promise)?),
+        ("symlink", pair_promise(ctx, symlink_sync)?),
+        ("readlink", value_promise(ctx, read_link_sync)?),
+        ("realpath", value_promise(ctx, realpath_sync)?),
         ("truncate", Function::new(ctx.clone(), truncate_promise)?),
-        ("statfs", Function::new(ctx.clone(), statfs_promise)?),
-        ("utimes", Function::new(ctx.clone(), utimes_promise)?),
+        ("statfs", value_promise(ctx, statfs_sync)?),
+        ("utimes", times_promise(ctx, utimes_sync)?),
         ("watch", Function::new(ctx.clone(), unsupported_watch)?),
     ] {
-        exports.export(name, function.clone())?;
-        object.set(name, function)?;
+        module.value(name, function.into_value())?;
     }
     Ok(())
-}
-
-fn export_function<'js, F, P>(
-    ctx: &Ctx<'js>,
-    exports: &Exports<'js>,
-    object: &Object<'js>,
-    name: &str,
-    function: F,
-) -> rquickjs::Result<()>
-where
-    F: IntoJsFunc<'js, P> + Copy + 'js,
-{
-    let function = Function::new(ctx.clone(), function)?;
-    exports.export(name, function.clone())?;
-    object.set(name, function)
 }
 
 fn constants(ctx: Ctx<'_>) -> rquickjs::Result<Object<'_>> {

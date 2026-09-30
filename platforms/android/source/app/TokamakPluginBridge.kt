@@ -46,7 +46,8 @@ internal class TokamakPluginBridge(
         val request = runCatching { JSONObject(message.data ?: return) }.getOrNull() ?: return
         val session = request.optString("session")
         if (session.isEmpty()) return
-        if (request.optString("type") == "reset") {
+        val type = request.optString("type")
+        if (type == "reset") {
             close()
             activeSession = session
             return
@@ -54,48 +55,39 @@ internal class TokamakPluginBridge(
         val id = request.optInt("id", -1)
         if (id < 0) return
         val key = RequestKey(session, id)
-        when (request.optString("type")) {
+        when (type) {
             "cancel" -> cancellations.remove(key)?.invoke()
-            "call", "subscribe" -> dispatch(request, key, replyProxy)
-            else ->
-                send(
-                    replyProxy,
-                    key,
-                    Result.failure(
-                        TokamakPluginError.notSupported("Plugin operation is not supported"),
-                    ),
-                    true,
-                )
+            "call", "subscribe" -> dispatch(request, type == "call", key, replyProxy)
+            else -> sendNotSupported(replyProxy, key, "Plugin operation is not supported")
         }
     }
 
     private fun dispatch(
         request: JSONObject,
+        isCall: Boolean,
         key: RequestKey,
         replyProxy: JavaScriptReplyProxy,
     ) {
         val plugin = plugins[request.optString("plugin")]
         val method = request.optString("method")
         if (plugin == null || method.isEmpty()) {
-            send(
-                replyProxy,
-                key,
-                Result.failure(TokamakPluginError.notSupported("Plugin is not supported")),
-                true,
-            )
+            sendNotSupported(replyProxy, key, "Plugin is not supported")
             return
         }
         val arguments = request.opt("arguments")
-        val reply: TokamakPluginReply = { result ->
-            send(replyProxy, key, result, request.optString("type") == "call")
-        }
-        if (request.optString("type") == "call") {
+        val reply: TokamakPluginReply = { result -> send(replyProxy, key, result, isCall) }
+        if (isCall) {
             plugin.call(method, arguments, reply)
         } else {
-            val cancellation = plugin.subscribe(method, arguments, reply)
-            cancellations[key] = cancellation
+            cancellations[key] = plugin.subscribe(method, arguments, reply)
         }
     }
+
+    private fun sendNotSupported(
+        replyProxy: JavaScriptReplyProxy,
+        key: RequestKey,
+        message: String,
+    ) = send(replyProxy, key, Result.failure(TokamakPluginError.notSupported(message)), true)
 
     private fun send(
         replyProxy: JavaScriptReplyProxy,

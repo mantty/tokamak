@@ -49,27 +49,13 @@ export abstract class FrontendPlugin {
 
   protected call<T>(method: string, arguments_: unknown = null): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      const transport = requireNativeTransport();
-      const id = nextRequestId++;
-      pending.set(id, {
+      send("call", this.pluginId, method, arguments_, {
         kind: "call",
         resolve: (value) => {
           resolve(value as T);
         },
         reject,
       });
-      post(
-        transport,
-        {
-          type: "call",
-          session,
-          id,
-          plugin: this.pluginId,
-          method,
-          arguments: arguments_,
-        },
-        id,
-      );
     });
   }
 
@@ -79,27 +65,13 @@ export abstract class FrontendPlugin {
     error: (error: DOMException) => void,
     arguments_: unknown = null,
   ): () => void {
-    const transport = requireNativeTransport();
-    const id = nextRequestId++;
-    pending.set(id, {
+    const { transport, id } = send("subscribe", this.pluginId, method, arguments_, {
       kind: "subscription",
       next: (value) => {
         next(value);
       },
       error,
     });
-    post(
-      transport,
-      {
-        type: "subscribe",
-        session,
-        id,
-        plugin: this.pluginId,
-        method,
-        arguments: arguments_,
-      },
-      id,
-    );
     return () => {
       if (!pending.delete(id)) return;
       transport.postMessage(JSON.stringify({ type: "cancel", session, id }));
@@ -127,13 +99,26 @@ function requireNativeTransport(): NativeTransport {
   throw new DOMException("Native plugin transport is unavailable", "NotSupportedError");
 }
 
-function post(transport: NativeTransport, message: object, id: number): void {
+/** Posts a call or subscription, keeping `request` pending unless posting throws. */
+function send(
+  type: "call" | "subscribe",
+  plugin: string,
+  method: string,
+  arguments_: unknown,
+  request: Pending,
+): { transport: NativeTransport; id: number } {
+  const transport = requireNativeTransport();
+  const id = nextRequestId++;
+  pending.set(id, request);
   try {
-    transport.postMessage(JSON.stringify(message));
+    transport.postMessage(
+      JSON.stringify({ type, session, id, plugin, method, arguments: arguments_ }),
+    );
   } catch (error) {
     pending.delete(id);
     throw error;
   }
+  return { transport, id };
 }
 
 function receive(response: NativeResponse): void {

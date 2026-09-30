@@ -5,12 +5,7 @@ function domString(value) {
 }
 
 function internal(object, name, value) {
-  Object.defineProperty(object, name, {
-    configurable: true,
-    enumerable: false,
-    writable: true,
-    value,
-  });
+  Object.defineProperty(object, name, { configurable: true, enumerable: false, writable: true, value });
 }
 
 const listenerStore = Symbol("event-listeners");
@@ -150,7 +145,7 @@ export class EventTarget {
 
   addEventListener(type, callback, options = {}) {
     if (callback == null) return;
-    if (typeof callback !== "function" && (callback === null || typeof callback.handleEvent !== "function")) {
+    if (typeof callback !== "function" && typeof callback.handleEvent !== "function") {
       throw new TypeError("Event listener must be callable");
     }
     const name = domString(type);
@@ -336,6 +331,10 @@ export class EventEmitterAsyncResource extends EventEmitter {
   emitDestroy() { return this; }
 }
 
+function invalidSignal(signal) {
+  return signal !== undefined && signal !== null && typeof signal.addEventListener !== "function";
+}
+
 export function once(emitter, name, options = {}) {
   if (options === null || (typeof options !== "object" && typeof options !== "function")) {
     return Promise.reject(new TypeError("options must be an object"));
@@ -343,14 +342,8 @@ export function once(emitter, name, options = {}) {
   const signal = options.signal;
   if (typeof emitter?.once !== "function" && typeof emitter?.addEventListener === "function") {
     return new Promise((resolve, reject) => {
-      if (signal !== undefined && signal !== null && typeof signal.addEventListener !== "function") {
-        reject(new TypeError("options.signal must be an AbortSignal"));
-        return;
-      }
-      if (signal?.aborted) {
-        reject(signal.reason);
-        return;
-      }
+      if (invalidSignal(signal)) return reject(new TypeError("options.signal must be an AbortSignal"));
+      if (signal?.aborted) return reject(signal.reason);
       const listener = event => { signal?.removeEventListener?.("abort", onAbort); resolve([event]); };
       const onAbort = () => { emitter.removeEventListener(name, listener); reject(signal.reason); };
       emitter.addEventListener(name, listener, { once: true });
@@ -377,14 +370,8 @@ export function once(emitter, name, options = {}) {
       reject(error);
     };
     const onAbort = () => onError(signal.reason);
-    if (signal !== undefined && signal !== null && typeof signal.addEventListener !== "function") {
-      reject(new TypeError("options.signal must be an AbortSignal"));
-      return;
-    }
-    if (signal?.aborted) {
-      onError(signal.reason);
-      return;
-    }
+    if (invalidSignal(signal)) return reject(new TypeError("options.signal must be an AbortSignal"));
+    if (signal?.aborted) return onAbort();
     emitter.once(name, listener);
     if (name !== "error") emitter.once("error", onError);
     signal?.addEventListener("abort", onAbort, { once: true });
@@ -398,7 +385,6 @@ export function on(emitter, name, options = {}) {
   const signal = options.signal;
   let failure;
   let failed = false;
-  let ended = false;
   let wake;
   const queue = [];
   const listener = (...args) => {
@@ -409,7 +395,6 @@ export function on(emitter, name, options = {}) {
   const onError = error => {
     failed = true;
     failure = error;
-    ended = true;
     wake?.();
     wake = undefined;
   };
@@ -419,19 +404,14 @@ export function on(emitter, name, options = {}) {
     if (name !== "error") emitter.removeListener("error", onError);
     signal?.removeEventListener?.("abort", onAbort);
   };
-  if (signal !== undefined && signal !== null && typeof signal.addEventListener !== "function") {
-    throw new TypeError("options.signal must be an AbortSignal");
-  }
-  if (signal?.aborted) {
-    failed = true;
-    failure = signal.reason;
-    ended = true;
-  } else {
+  if (invalidSignal(signal)) throw new TypeError("options.signal must be an AbortSignal");
+  if (signal?.aborted) onAbort();
+  else {
     emitter.on(name, listener);
     if (name !== "error") emitter.on("error", onError);
     signal?.addEventListener("abort", onAbort, { once: true });
   }
-  const iterator = (async function* () {
+  return (async function* () {
     try {
       while (true) {
         if (queue.length > 0) {
@@ -439,14 +419,12 @@ export function on(emitter, name, options = {}) {
           continue;
         }
         if (failed) throw failure;
-        if (ended) return;
         await new Promise(resolve => { wake = resolve; });
       }
     } finally {
       cleanup();
     }
   })();
-  return iterator;
 }
 
 EventEmitter.once = once;

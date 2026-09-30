@@ -14,6 +14,10 @@ fn error(code: usize) -> CodecError {
     CodecError::new("ERR_ZSTD_COMPRESSION_FAILED", z::get_error_name(code))
 }
 
+fn decompression_error(code: usize) -> CodecError {
+    CodecError::new("ERR_ZSTD_DECOMPRESSION_FAILED", z::get_error_name(code))
+}
+
 impl Zstd {
     pub(super) fn new(encode: bool, options: &Options) -> Result<Self, CodecError> {
         if !encode {
@@ -77,15 +81,9 @@ impl Zstd {
                         ended: true,
                     });
                 }
-                let remaining =
-                    context
-                        .decompress_stream(&mut output, &mut input)
-                        .map_err(|code| {
-                            CodecError::new(
-                                "ERR_ZSTD_DECOMPRESSION_FAILED",
-                                z::get_error_name(code),
-                            )
-                        })?;
+                let remaining = context
+                    .decompress_stream(&mut output, &mut input)
+                    .map_err(decompression_error)?;
                 *frame_ended = remaining == 0;
                 if flush == 2 && remaining != 0 && output.pos() < output.capacity() {
                     return Err(CodecError::new(

@@ -1,9 +1,8 @@
-import { cryptoAesGcm, cryptoHmac, cryptoHkdf, cryptoPbkdf2, cryptoCheckPrime, cryptoDecrypt, cryptoDhCompute, cryptoDhGenerate, cryptoDhParams, cryptoEcdhCompute, cryptoEcdhConvert, cryptoEcdhPublic, cryptoEncrypt, cryptoExportKey, cryptoGenerateKey, cryptoGeneratePrime, cryptoImportKey, cryptoRsaLegacyPrivateEncrypt, cryptoRsaLegacyPublicDecrypt, cryptoScrypt, cryptoSign, cryptoVerify, digest, randomBytes as hostRandomBytes } from "tokamak:host";
+import { cryptoHkdf, cryptoPbkdf2, cryptoCheckPrime, cryptoCreateCipher, cryptoCreateDigest, cryptoDecrypt, cryptoDhCompute, cryptoDhGenerate, cryptoDhParams, cryptoEcdhCompute, cryptoEcdhConvert, cryptoEcdhPublic, cryptoEncrypt, cryptoExportKey, cryptoGenerateKey, cryptoGeneratePrime, cryptoImportKey, cryptoRsaLegacyPrivateEncrypt, cryptoRsaLegacyPublicDecrypt, cryptoScrypt, cryptoSign, cryptoTimingSafeEqual, cryptoVerify, digest, randomBytes as hostRandomBytes } from "tokamak:host";
 import { CryptoKey, crypto as webcrypto } from "../globals/web.mjs";
 import { Transform } from "../streams/node.mjs";
 import { Buffer } from "./buffer.mjs";
 import { unsupportedFunction } from "./unsupported.mjs";
-import { cryptoCreateCipher, cryptoCreateDigest, cryptoTimingSafeEqual } from "tokamak:host";
 
 const unsupportedCrypto = name => unsupportedFunction(`crypto.${name}`);
 const hashToken = Symbol("hash");
@@ -34,18 +33,53 @@ function joinChunks(chunks) {
   return input;
 }
 
-function finalizedError() {
-  const error = new Error("Digest already called");
-  error.code = "ERR_CRYPTO_HASH_FINALIZED";
+function codedError(ErrorType, message, code) {
+  const error = new ErrorType(message);
+  error.code = code;
   return error;
 }
 
-function nodeHashAlgorithm(algorithm) {
-  if (typeof algorithm !== "string") {
-    const error = new TypeError('The "algorithm" argument must be of type string');
-    error.code = "ERR_INVALID_ARG_TYPE";
+function integerInRange(value, name, min) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < min) {
+    throw codedError(RangeError, `The value of "${name}" is out of range. Received ${value}`, "ERR_OUT_OF_RANGE");
+  }
+  return number;
+}
+
+// Reports the result or error of `compute` to `callback` on a microtask.
+function deliver(callback, compute) {
+  try {
+    const value = compute();
+    queueMicrotask(() => callback(null, value));
+  } catch (error) {
+    queueMicrotask(() => callback(error));
+  }
+}
+
+// Returns the result of `compute` without a callback; with one, returns nothing
+// and, when `report` is truthy, reports the result or error on a microtask.
+function returnOrDeliver(callback, compute, report = callback) {
+  try {
+    const value = compute();
+    if (report) queueMicrotask(() => callback(null, value));
+    return callback ? undefined : value;
+  } catch (error) {
+    if (report) { queueMicrotask(() => callback(error)); return undefined; }
     throw error;
   }
+}
+
+function transformUpdate(stream, chunk, encoding, callback) {
+  try { stream.update(chunk, encoding); callback(); } catch (error) { callback(error); }
+}
+
+function finalizedError() {
+  return codedError(Error, "Digest already called", "ERR_CRYPTO_HASH_FINALIZED");
+}
+
+function nodeHashAlgorithm(algorithm) {
+  if (typeof algorithm !== "string") throw codedError(TypeError, 'The "algorithm" argument must be of type string', "ERR_INVALID_ARG_TYPE");
   const name = getHashes().find(name => name.toLowerCase() === algorithm.toLowerCase());
   if (!name) throw new Error("Digest method not supported");
   if (["DSA-SHA", "DSA-SHA1", "ecdsa-with-SHA1"].includes(name)) return "SHA-1";
@@ -70,8 +104,7 @@ export class Hash extends Transform {
   digest(encoding) {
     if (this.__finalized) throw finalizedError();
     this.__finalized = true;
-    const output = Buffer.from(this.__handle.finish());
-    return encoding === undefined ? output : output.toString(encoding);
+    return outputEncoding(Buffer.from(this.__handle.finish()), encoding);
   }
 
   copy() {
@@ -79,32 +112,15 @@ export class Hash extends Transform {
     return new Hash(this.__algorithm, hashToken, this.__handle.copy());
   }
 
-  _transform(chunk, encoding, callback) {
-    try { this.update(chunk, encoding); callback(); }
-    catch (error) { callback(error); }
-  }
-
-  _flush(callback) {
-    try { callback(null, this.digest()); }
-    catch (error) { callback(error); }
-  }
+  _transform(chunk, encoding, callback) { transformUpdate(this, chunk, encoding, callback); }
+  _flush(callback) { try { callback(null, this.digest()); } catch (error) { callback(error); } }
 }
 
 export function createHash(algorithm) { return new Hash(algorithm, hashToken); }
 
-function validateRandomLength(length) {
-  const size = Number(length);
-  if (!Number.isSafeInteger(size) || size < 0) {
-    const error = new RangeError(`The value of "size" is out of range. Received ${length}`);
-    error.code = "ERR_OUT_OF_RANGE";
-    throw error;
-  }
-  return size;
-}
-
 // Workers rejects requests above the Web Crypto quota; matching keeps apps portable.
 export function randomBytesSync(length) {
-  const size = validateRandomLength(length);
+  const size = integerInRange(length, "size", 0);
   if (size > 65536) {
     throw new DOMException(
       `The requested length exceeds the quota (${size} > 65536)`,
@@ -117,12 +133,7 @@ export function randomBytesSync(length) {
 export function randomBytes(length, callback) {
   if (callback === undefined) return randomBytesSync(length);
   if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
-  try {
-    const value = randomBytesSync(length);
-    queueMicrotask(() => callback(null, value));
-  } catch (error) {
-    queueMicrotask(() => callback(error));
-  }
+  deliver(callback, () => randomBytesSync(length));
 }
 
 function arrayBufferView(buffer) {
@@ -138,9 +149,7 @@ export function randomFillSync(buffer, offset = 0, size) {
   const start = Number(offset);
   const length = size === undefined ? view.byteLength - start : Number(size);
   if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(length) || length < 0 || start + length > view.byteLength) {
-    const error = new RangeError("The value of \"offset\" is out of range");
-    error.code = "ERR_OUT_OF_RANGE";
-    throw error;
+    throw codedError(RangeError, "The value of \"offset\" is out of range", "ERR_OUT_OF_RANGE");
   }
   webcrypto.getRandomValues(view.subarray(start, start + length));
   return buffer;
@@ -155,17 +164,8 @@ export function randomFill(buffer, offset, size, callback) {
     callback = size;
     size = undefined;
   }
-  if (typeof callback !== "function") {
-    const error = new TypeError("The callback argument must be of type function");
-    error.code = "ERR_INVALID_ARG_TYPE";
-    throw error;
-  }
-  try {
-    const value = randomFillSync(buffer, offset, size);
-    queueMicrotask(() => callback(null, value));
-  } catch (error) {
-    queueMicrotask(() => callback(error));
-  }
+  if (typeof callback !== "function") throw codedError(TypeError, "The callback argument must be of type function", "ERR_INVALID_ARG_TYPE");
+  deliver(callback, () => randomFillSync(buffer, offset, size));
 }
 
 export function randomInt(min, max, callback) {
@@ -176,11 +176,7 @@ export function randomInt(min, max, callback) {
   }
   min = Number(min);
   max = Number(max);
-  if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max) || max <= min) {
-    const error = new RangeError("Invalid randomInt range");
-    error.code = "ERR_OUT_OF_RANGE";
-    throw error;
-  }
+  if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max) || max <= min) throw codedError(RangeError, "Invalid randomInt range", "ERR_OUT_OF_RANGE");
   const range = max - min;
   const randomSpace = 2 ** 53;
   if (range > randomSpace) throw new RangeError("randomInt range is too large");
@@ -226,27 +222,15 @@ export class Hmac extends Transform {
   digest(encoding) {
     if (this.__finalized) return encoding === undefined ? Buffer.alloc(0) : "";
     this.__finalized = true;
-    const output = Buffer.from(this.__handle.finish());
-    return encoding === undefined ? output : output.toString(encoding);
+    return outputEncoding(Buffer.from(this.__handle.finish()), encoding);
   }
 
-  _transform(chunk, encoding, callback) {
-    try { this.update(chunk, encoding); callback(); }
-    catch (error) { callback(error); }
-  }
-
-  _flush(callback) {
-    try { callback(null, this.digest()); }
-    catch (error) { callback(error); }
-  }
+  _transform(chunk, encoding, callback) { transformUpdate(this, chunk, encoding, callback); }
+  _flush(callback) { try { callback(null, this.digest()); } catch (error) { callback(error); } }
 }
 
 export function hash(algorithm, data, options) {
-  if (options !== undefined) {
-    const error = new TypeError("The \"options\" argument must be of type string or an instance of Buffer or Uint8Array");
-    error.code = "ERR_INVALID_ARG_TYPE";
-    throw error;
-  }
+  if (options !== undefined) throw codedError(TypeError, "The \"options\" argument must be of type string or an instance of Buffer or Uint8Array", "ERR_INVALID_ARG_TYPE");
   return createHash(algorithm).update(data).digest("hex");
 }
 
@@ -426,7 +410,7 @@ function pemDecode(value) {
   const label = match[1];
   return {
     bytes: Buffer.from(match[2].replace(/\s/g, ""), "base64"),
-    format: label === "PRIVATE KEY" || label === "PUBLIC KEY" ? (label === "PRIVATE KEY" ? "pkcs8" : "spki") : "der",
+    format: label === "PRIVATE KEY" ? "pkcs8" : label === "PUBLIC KEY" ? "spki" : "der",
     type: label.includes("PRIVATE") ? "private" : "public",
   };
 }
@@ -459,13 +443,20 @@ function jwkDetails(jwk) {
     let bits = Math.max(0, (modulus.length - 1) * 8);
     let first = modulus[0] ?? 0;
     while (first > 0) { bits += 1; first >>>= 1; }
-    const exponent = Buffer.from(jwk.e, "base64url");
-    let value = 0n;
-    for (const byte of exponent) value = (value << 8n) | BigInt(byte);
-    return { modulusLength: bits, publicExponent: value };
+    return { modulusLength: bits, publicExponent: bigIntFromBytes(Buffer.from(jwk.e, "base64url")) };
   }
   if (kind === "ec") return { namedCurve: jwk.crv };
   return undefined;
+}
+
+function bigIntFromBytes(bytes) {
+  let value = 0n;
+  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
+  return value;
+}
+
+function exportJwk(keyFormat, kind, key) {
+  return JSON.parse(new TextDecoder().decode(cryptoExportKey(new Uint8Array(), { format: "jwk", keyFormat, kind, key })));
 }
 
 function describeKey(bytes, format, typeHint) {
@@ -476,7 +467,7 @@ function describeKey(bytes, format, typeHint) {
     for (const keyFormat of formats) {
       for (const kind of candidates) {
         try {
-          const jwk = JSON.parse(new TextDecoder().decode(cryptoExportKey(new Uint8Array(), { format: "jwk", keyFormat, kind, key: bytes })));
+          const jwk = exportJwk(keyFormat, kind, bytes);
           const privateKey = jwk.d !== undefined;
           if ((type === "private") !== privateKey) continue;
           return { kind, format: keyFormat, type: privateKey ? "private" : "public", bytes: Buffer.from(bytes), jwk };
@@ -508,9 +499,7 @@ function encodeKey(record, options) {
   if (record.type === "secret") return Buffer.from(record.bytes);
   const settings = options && typeof options === "object" ? options : {};
   const format = settings.format ?? "pem";
-  if (format === "jwk") {
-    return JSON.parse(new TextDecoder().decode(hostKeyExport(record, "jwk")));
-  }
+  if (format === "jwk") return exportJwk(record.format, record.kind, Uint8Array.from(record.bytes));
   const type = settings.type ?? (record.type === "private" ? "pkcs8" : "spki");
   const der = hostKeyExport(record, type === "pkcs1" ? "pkcs1" : type);
   if (format === "der") return der;
@@ -560,21 +549,16 @@ export class Sign extends Transform {
   }
   sign(key, options, callback) {
     if (typeof options === "function") { callback = options; options = undefined; }
-    try {
+    return returnOrDeliver(callback, () => {
       const record = keyRecord(key instanceof KeyObject ? key : createPrivateKey(key));
       if (record.type !== "private") throw new TypeError("A private key is required");
       const kind = signingKind(record, options);
       const output = Buffer.from(cryptoSign(joinChunks(this.__chunks), { kind, format: record.format, key: record.bytes, hash: this.__algorithm, saltLength: options?.saltLength }));
       this.__finalized = true;
-      const value = outputEncoding(output, typeof options === "string" ? options : undefined);
-      if (callback) queueMicrotask(() => callback(null, value));
-      return callback ? undefined : value;
-    } catch (error) {
-      if (callback) { queueMicrotask(() => callback(error)); return undefined; }
-      throw error;
-    }
+      return outputEncoding(output, typeof options === "string" ? options : undefined);
+    });
   }
-  _transform(chunk, encoding, callback) { try { this.update(chunk, encoding); callback(); } catch (error) { callback(error); } }
+  _transform(chunk, encoding, callback) { transformUpdate(this, chunk, encoding, callback); }
   _flush(callback) { callback(); }
 }
 export class Verify extends Transform {
@@ -592,19 +576,15 @@ export class Verify extends Transform {
   }
   verify(key, signature, callback) {
     if (typeof signature === "function") { callback = signature; signature = key; key = undefined; }
-    try {
+    return returnOrDeliver(callback, () => {
       const record = keyRecord(key instanceof KeyObject ? key : createPublicKey(key));
       const kind = signingKind(record);
       const value = cryptoVerify(inputBytes(signature), { kind, format: record.format, key: record.bytes, hash: this.__algorithm, message: joinChunks(this.__chunks), saltLength: undefined });
       this.__finalized = true;
-      if (callback) queueMicrotask(() => callback(null, value));
-      return callback ? undefined : value;
-    } catch (error) {
-      if (callback) { queueMicrotask(() => callback(error)); return undefined; }
-      throw error;
-    }
+      return value;
+    });
   }
-  _transform(chunk, encoding, callback) { try { this.update(chunk, encoding); callback(); } catch (error) { callback(error); } }
+  _transform(chunk, encoding, callback) { transformUpdate(this, chunk, encoding, callback); }
   _flush(callback) { callback(); }
 }
 export const X509Certificate = class X509Certificate { constructor() { illegalConstructor(); } };
@@ -618,9 +598,7 @@ function signingKind(record, options = {}) {
 
 function cipherInput(value, encoding) {
   if (typeof value === "string" && encoding === undefined) {
-    const error = new TypeError("The argument 'inputEncoding' If inputEncoding is not provided then the data must be a Buffer. Received undefined");
-    error.code = "ERR_INVALID_ARG_VALUE";
-    throw error;
+    throw codedError(TypeError, "The argument 'inputEncoding' If inputEncoding is not provided then the data must be a Buffer. Received undefined", "ERR_INVALID_ARG_VALUE");
   }
   return inputBytes(value, encoding);
 }
@@ -631,6 +609,8 @@ function cipherSpec(algorithm) {
   return { keyLength: Number(match[1]) / 8, mode: match[2] };
 }
 
+const gcmTagLengths = [4, 8, 12, 13, 14, 15, 16];
+
 class CipherBase extends Transform {
   constructor(algorithm, key, iv, decrypt, options = {}) {
     super(options);
@@ -638,7 +618,7 @@ class CipherBase extends Transform {
     const keyBytes = key instanceof KeyObject ? keyRecord(key).bytes : inputBytes(key);
     if (keyBytes.length !== spec.keyLength) throw new RangeError("Invalid key length");
     const tagLength = options.authLengthTag;
-    if (spec.mode === "gcm" && tagLength !== undefined && ![4, 8, 12, 13, 14, 15, 16].includes(tagLength)) throw new Error("Invalid authentication tag length");
+    if (spec.mode === "gcm" && tagLength !== undefined && !gcmTagLengths.includes(tagLength)) throw new Error("Invalid authentication tag length");
     const ivBytes = inputBytes(iv);
     if (spec.mode !== "gcm" && ivBytes.length !== 16) throw new TypeError("Invalid initialization vector");
     if (spec.mode === "gcm" && ivBytes.length !== 12) throw new Error("Invalid initialization vector");
@@ -666,7 +646,7 @@ export class Decipheriv extends CipherBase {
   constructor(algorithm, key, iv, options) { super(algorithm, key, iv, true, options); }
   setAuthTag(value) {
     const tag = inputBytes(value);
-    if (![4, 8, 12, 13, 14, 15, 16].includes(tag.length) || (this.__tagLength !== undefined && this.__tagLength !== tag.length)) throw new Error("Invalid authentication tag length");
+    if (!gcmTagLengths.includes(tag.length) || (this.__tagLength !== undefined && this.__tagLength !== tag.length)) throw new Error("Invalid authentication tag length");
     this.__handle.setAuthTag(tag);
     return this;
   }
@@ -678,9 +658,7 @@ export class Decipher extends Decipheriv {}
 function primeChecks(options) {
   const checks = Number(options?.checks ?? 0);
   if (!Number.isSafeInteger(checks) || checks < 0) {
-    const error = new RangeError(`The value of "checks" is out of range. Received ${options?.checks}`);
-    error.code = "ERR_OUT_OF_RANGE";
-    throw error;
+    throw codedError(RangeError, `The value of "checks" is out of range. Received ${options?.checks}`, "ERR_OUT_OF_RANGE");
   }
   return checks;
 }
@@ -692,24 +670,11 @@ export function checkPrimeSync(candidate, options = {}) {
 export function checkPrime(candidate, options, callback) {
   if (typeof options === "function") { callback = options; options = {}; }
   if (typeof callback !== "function") throw new TypeError("The \"callback\" argument must be of type function");
-  try {
-    const value = checkPrimeSync(candidate, options);
-    queueMicrotask(() => callback(null, value));
-  } catch (error) { queueMicrotask(() => callback(error)); }
-}
-
-function primeSize(size) {
-  const bits = Number(size);
-  if (!Number.isSafeInteger(bits) || bits < 2) {
-    const error = new RangeError(`The value of "size" is out of range. Received ${size}`);
-    error.code = "ERR_OUT_OF_RANGE";
-    throw error;
-  }
-  return bits;
+  deliver(callback, () => checkPrimeSync(candidate, options));
 }
 
 function primeBytes(size, options = {}) {
-  const bits = primeSize(size);
+  const bits = integerInRange(size, "size", 2);
   const value = cryptoGeneratePrime({
     bits,
     safe: Boolean(options.safe),
@@ -721,21 +686,13 @@ function primeBytes(size, options = {}) {
 
 export function generatePrimeSync(size, options = {}) {
   const value = primeBytes(size, options);
-  if (options.bigint) {
-    let result = 0n;
-    for (const byte of value) result = (result << 8n) | BigInt(byte);
-    return result;
-  }
-  return Uint8Array.from(value).buffer;
+  return options.bigint ? bigIntFromBytes(value) : Uint8Array.from(value).buffer;
 }
 
 export function generatePrime(size, options, callback) {
   if (typeof options === "function") { callback = options; options = {}; }
   if (typeof callback !== "function") throw new TypeError("The \"callback\" argument must be of type function");
-  try {
-    const value = generatePrimeSync(size, options);
-    queueMicrotask(() => callback(null, value));
-  } catch (error) { queueMicrotask(() => callback(error)); }
+  deliver(callback, () => generatePrimeSync(size, options));
 }
 
 const cipherInfo = {
@@ -814,10 +771,7 @@ export function createPrivateKey(input) {
     format ??= pem.format;
     type ??= pem.type;
   }
-  format ??= "der";
-  const bytes = Buffer.from(value);
-  const description = describeKey(bytes, format, type);
-  return createAsymmetricObject(description);
+  return createAsymmetricObject(describeKey(Buffer.from(value), format ?? "der", type));
 }
 export function createPublicKey(input) {
   if (input instanceof KeyObject) {
@@ -841,8 +795,7 @@ export function createPublicKey(input) {
     type = pem.type;
   }
   if (type === "private") return createPublicKey(createPrivateKey({ key: value, format }));
-  format ??= "der";
-  return createAsymmetricObject(describeKey(Buffer.from(value), format, "public"));
+  return createAsymmetricObject(describeKey(Buffer.from(value), format ?? "der", "public"));
 }
 export function createSecretKey(key, encoding) { return new SecretKeyObject(inputBytes(key, encoding), keyObjectToken); }
 export function createCipheriv(algorithm, key, iv, options) { return new Cipheriv(algorithm, key, iv, options); }
@@ -870,8 +823,8 @@ export function generateKeyPairSync(type, options = {}) {
   }
   if (kind === "ec") generation.curve = options.namedCurve === "prime256v1" ? "P-256" : options.namedCurve === "secp384r1" ? "P-384" : options.namedCurve === "secp521r1" ? "P-521" : options.namedCurve;
   const keys = parseBundle(cryptoGenerateKey(generation));
-  const publicJwk = JSON.parse(new TextDecoder().decode(cryptoExportKey(new Uint8Array(), { format: "jwk", keyFormat: "spki", kind, key: keys.public })));
-  const privateJwk = JSON.parse(new TextDecoder().decode(cryptoExportKey(new Uint8Array(), { format: "jwk", keyFormat: "pkcs8", kind, key: keys.private })));
+  const publicJwk = exportJwk("spki", kind, keys.public);
+  const privateJwk = exportJwk("pkcs8", kind, keys.private);
   const publicKey = createAsymmetricObject({ type: "public", kind, format: "spki", bytes: keys.public, jwk: publicJwk });
   const privateKey = createAsymmetricObject({ type: "private", kind, format: "pkcs8", bytes: keys.private, jwk: privateJwk });
   if (options.publicKeyEncoding || options.privateKeyEncoding) return { publicKey: encodeKey(keyRecord(publicKey), options.publicKeyEncoding), privateKey: encodeKey(keyRecord(privateKey), options.privateKeyEncoding) };
@@ -892,21 +845,10 @@ export function generateKeySync(type, options = {}) {
 export function generateKey(type, options, callback) {
   if (typeof options === "function") { callback = options; options = {}; }
   if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
-  try { const key = generateKeySync(type, options); queueMicrotask(() => callback(null, key)); }
-  catch (error) { queueMicrotask(() => callback(error)); }
+  deliver(callback, () => generateKeySync(type, options));
 }
 function hashByteLength(hash) {
   return { "SHA-1": 20, "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[normalizeHash(hash)];
-}
-
-function derivationLength(value) {
-  const length = Number(value);
-  if (!Number.isSafeInteger(length) || length < 0) {
-    const error = new RangeError(`The value of "keylen" is out of range. Received ${value}`);
-    error.code = "ERR_OUT_OF_RANGE";
-    throw error;
-  }
-  return length;
 }
 
 function hkdfBytes(hash, key, salt, info, length) {
@@ -917,41 +859,21 @@ function hkdfBytes(hash, key, salt, info, length) {
 }
 
 export function hkdfSync(hash, key, salt, info, keylen) {
-  return hkdfBytes(hash, inputBytes(key), inputBytes(salt), inputBytes(info), derivationLength(keylen));
+  return hkdfBytes(hash, inputBytes(key), inputBytes(salt), inputBytes(info), integerInRange(keylen, "keylen", 0));
 }
 
 export function hkdf(hash, key, salt, info, keylen, callback) {
   if (typeof callback !== "function") throw new TypeError("The \"callback\" argument must be of type function");
-  try {
-    const value = hkdfSync(hash, key, salt, info, keylen);
-    queueMicrotask(() => callback(null, value));
-  } catch (error) { queueMicrotask(() => callback(error)); }
-}
-
-function derivationIterations(value) {
-  const iterations = Number(value);
-  if (!Number.isSafeInteger(iterations) || iterations < 1) {
-    const error = new RangeError(`The value of "iterations" is out of range. Received ${value}`);
-    error.code = "ERR_OUT_OF_RANGE";
-    throw error;
-  }
-  return iterations;
-}
-
-function pbkdf2Bytes(hash, password, salt, iterations, length) {
-  return new Uint8Array(cryptoPbkdf2(hash, password, salt, iterations, length));
+  deliver(callback, () => hkdfSync(hash, key, salt, info, keylen));
 }
 
 export function pbkdf2Sync(password, salt, iterations, keylen, hash) {
-  return Buffer.from(pbkdf2Bytes(normalizeHash(hash), inputBytes(password), inputBytes(salt), derivationIterations(iterations), derivationLength(keylen)));
+  return Buffer.from(new Uint8Array(cryptoPbkdf2(normalizeHash(hash), inputBytes(password), inputBytes(salt), integerInRange(iterations, "iterations", 1), integerInRange(keylen, "keylen", 0))));
 }
 
 export function pbkdf2(password, salt, iterations, keylen, hash, callback) {
   if (typeof callback !== "function") throw new TypeError("The \"callback\" argument must be of type function");
-  try {
-    const value = pbkdf2Sync(password, salt, iterations, keylen, hash);
-    queueMicrotask(() => callback(null, value));
-  } catch (error) { queueMicrotask(() => callback(error)); }
+  deliver(callback, () => pbkdf2Sync(password, salt, iterations, keylen, hash));
 }
 
 function encryptionSettings(value) {
@@ -959,25 +881,22 @@ function encryptionSettings(value) {
   return { key: value };
 }
 
-function rsaOperation(value, decrypt) {
-  const settings = encryptionSettings(value);
-  const key = decrypt ? createPrivateKey(settings.key) : createPublicKey(settings.key);
-  const record = keyRecord(key);
+function rsaKeySettings(options, isPrivate) {
+  const settings = encryptionSettings(options);
+  const record = keyRecord(isPrivate ? createPrivateKey(settings.key) : createPublicKey(settings.key));
   if (record.kind !== "rsa") throw new TypeError("An RSA key is required");
-  const padding = settings.padding;
-  if (padding !== undefined && padding !== 4 && padding !== "RSA_PKCS1_OAEP_PADDING") throw new Error("Only RSA-OAEP is supported");
   return { settings, record };
 }
 
-export function publicEncrypt(options, buffer) {
-  const { settings, record } = rsaOperation(options, false);
-  return Buffer.from(cryptoEncrypt(inputBytes(buffer), { kind: "rsa-oaep", format: record.format, key: record.bytes, hash: normalizeHash(settings.oaepHash ?? "sha1"), label: settings.oaepLabel ? inputBytes(settings.oaepLabel) : new Uint8Array() }));
+function rsaOaep(operation, options, buffer, isPrivate) {
+  const { settings, record } = rsaKeySettings(options, isPrivate);
+  const padding = settings.padding;
+  if (padding !== undefined && padding !== 4 && padding !== "RSA_PKCS1_OAEP_PADDING") throw new Error("Only RSA-OAEP is supported");
+  return Buffer.from(operation(inputBytes(buffer), { kind: "rsa-oaep", format: record.format, key: record.bytes, hash: normalizeHash(settings.oaepHash ?? "sha1"), label: settings.oaepLabel ? inputBytes(settings.oaepLabel) : new Uint8Array() }));
 }
 
-export function privateDecrypt(options, buffer) {
-  const { settings, record } = rsaOperation(options, true);
-  return Buffer.from(cryptoDecrypt(inputBytes(buffer), { kind: "rsa-oaep", format: record.format, key: record.bytes, hash: normalizeHash(settings.oaepHash ?? "sha1"), label: settings.oaepLabel ? inputBytes(settings.oaepLabel) : new Uint8Array() }));
-}
+export function publicEncrypt(options, buffer) { return rsaOaep(cryptoEncrypt, options, buffer, false); }
+export function privateDecrypt(options, buffer) { return rsaOaep(cryptoDecrypt, options, buffer, true); }
 
 function legacyRsaPadding(value) {
   if (value === undefined || value === "RSA_PKCS1_PADDING") return 1;
@@ -986,21 +905,14 @@ function legacyRsaPadding(value) {
   return value;
 }
 
-export function privateEncrypt(options, buffer) {
-  const settings = encryptionSettings(options);
-  const key = createPrivateKey(settings.key);
-  const record = keyRecord(key);
-  if (record.kind !== "rsa") throw new TypeError("An RSA key is required");
-  return Buffer.from(cryptoRsaLegacyPrivateEncrypt(inputBytes(buffer), { kind: "rsa", format: record.format, key: record.bytes, padding: legacyRsaPadding(settings.padding) }));
+function rsaLegacy(operation, options, buffer, isPrivate) {
+  const { settings, record } = rsaKeySettings(options, isPrivate);
+  return Buffer.from(operation(inputBytes(buffer), { kind: "rsa", format: record.format, key: record.bytes, padding: legacyRsaPadding(settings.padding) }));
 }
+
+export function privateEncrypt(options, buffer) { return rsaLegacy(cryptoRsaLegacyPrivateEncrypt, options, buffer, true); }
 export const pseudoRandomBytes = randomBytes;
-export function publicDecrypt(options, buffer) {
-  const settings = encryptionSettings(options);
-  const key = createPublicKey(settings.key);
-  const record = keyRecord(key);
-  if (record.kind !== "rsa") throw new TypeError("An RSA key is required");
-  return Buffer.from(cryptoRsaLegacyPublicDecrypt(inputBytes(buffer), { kind: "rsa", format: record.format, key: record.bytes, padding: legacyRsaPadding(settings.padding) }));
-}
+export function publicDecrypt(options, buffer) { return rsaLegacy(cryptoRsaLegacyPublicDecrypt, options, buffer, false); }
 
 function scryptSettings(options, keylen) {
   const settings = options ?? {};
@@ -1012,7 +924,7 @@ function scryptSettings(options, keylen) {
   if (!Number.isSafeInteger(r) || r < 1) throw new RangeError("Invalid scrypt r parameter");
   if (!Number.isSafeInteger(p) || p < 1) throw new RangeError("Invalid scrypt p parameter");
   if (!Number.isSafeInteger(maxmem) || maxmem < 1) throw new RangeError("Invalid scrypt maxmem parameter");
-  return { n, r, p, maxmem, keyLength: derivationLength(keylen) };
+  return { n, r, p, maxmem, keyLength: integerInRange(keylen, "keylen", 0) };
 }
 
 export function scryptSync(password, salt, keylen, options = {}) {
@@ -1023,33 +935,16 @@ export function scryptSync(password, salt, keylen, options = {}) {
 export function scrypt(password, salt, keylen, options, callback) {
   if (typeof options === "function") { callback = options; options = {}; }
   if (typeof callback !== "function") throw new TypeError("The \"callback\" argument must be of type function");
-  try {
-    const value = scryptSync(password, salt, keylen, options);
-    queueMicrotask(() => callback(null, value));
-  } catch (error) { queueMicrotask(() => callback(error)); }
+  deliver(callback, () => scryptSync(password, salt, keylen, options));
 }
 export const setEngine = unsupportedCrypto("setEngine");
 export const setFips = unsupportedCrypto("setFips");
 export function sign(algorithm, data, key, callback) {
-  try {
-    const value = createSign(algorithm).update(data).sign(key);
-    if (typeof callback === "function") queueMicrotask(() => callback(null, value));
-    return callback ? undefined : value;
-  } catch (error) {
-    if (typeof callback === "function") { queueMicrotask(() => callback(error)); return undefined; }
-    throw error;
-  }
+  return returnOrDeliver(callback, () => createSign(algorithm).update(data).sign(key), typeof callback === "function");
 }
 
 export function verify(algorithm, data, key, signature, callback) {
-  try {
-    const value = createVerify(algorithm).update(data).verify(key, signature);
-    if (typeof callback === "function") queueMicrotask(() => callback(null, value));
-    return callback ? undefined : value;
-  } catch (error) {
-    if (typeof callback === "function") { queueMicrotask(() => callback(error)); return undefined; }
-    throw error;
-  }
+  return returnOrDeliver(callback, () => createVerify(algorithm).update(data).verify(key, signature), typeof callback === "function");
 }
 
 export { CryptoKey };

@@ -62,7 +62,7 @@ export class Url {
     const output = emptyUrl();
     output.protocol = parsed.protocol || null;
     output.slashes = input.includes("//") ? true : null;
-    output.auth = parsed.username || parsed.password ? `${decodePart(parsed.username)}${parsed.password ? `:${decodePart(parsed.password)}` : ""}` : null;
+    output.auth = urlAuth(parsed);
     output.host = parsed.host || null;
     output.port = parsed.port || null;
     output.hostname = parsed.hostname || null;
@@ -84,6 +84,10 @@ export class Url {
 function decodePart(value) {
   try { return decodeURIComponent(value); }
   catch { return value; }
+}
+
+function urlAuth(url) {
+  return url.username || url.password ? `${decodePart(url.username)}${url.password ? `:${decodePart(url.password)}` : ""}` : null;
 }
 
 export function parse(value, parseQueryString = false, slashesDenoteHost = false) {
@@ -180,7 +184,8 @@ export function urlToHttpOptions(value) {
     href: url.href,
   };
   if (url.port) options.port = Number(url.port);
-  if (url.username || url.password) options.auth = `${decodePart(url.username)}${url.password ? `:${decodePart(url.password)}` : ""}`;
+  const auth = urlAuth(url);
+  if (auth !== null) options.auth = auth;
   return options;
 }
 

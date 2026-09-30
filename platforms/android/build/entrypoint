@@ -29,6 +29,31 @@ if [[ -n "$dev_endpoint" && -z "$dev_session_token" ]] || [[ -z "$dev_endpoint" 
   echo "development endpoint and session token must be provided together" >&2
   exit 1
 fi
+# Development builds are debug builds. Other builds are release builds,
+# which R8 shrinks and a configured keystore signs; without one, the debug
+# key signs them so they install for testing. Gradle reads the keystore
+# settings from the environment.
+variant=release
+task=Release
+if [[ -n "$dev_endpoint" ]]; then
+  variant=debug
+  task=Debug
+fi
+signing=debug
+if [[ "$variant" == release && -n "${TOKAMAK_ANDROID_KEYSTORE:-}" ]]; then
+  if [[ ! -f "$TOKAMAK_ANDROID_KEYSTORE" ]]; then
+    echo "Android keystore is missing: $TOKAMAK_ANDROID_KEYSTORE" >&2
+    exit 1
+  fi
+  if [[ -z "${TOKAMAK_ANDROID_KEY_ALIAS:-}" || -z "${TOKAMAK_ANDROID_KEYSTORE_PASSWORD:-}" ]]; then
+    echo "an Android keystore needs key-alias and keystore-password" >&2
+    exit 1
+  fi
+  signing=release
+elif [[ "$variant" == release && -n "${TOKAMAK_ANDROID_KEY_ALIAS:-}${TOKAMAK_ANDROID_KEYSTORE_PASSWORD:-}${TOKAMAK_ANDROID_KEY_PASSWORD:-}" ]]; then
+  echo "Android key-alias and passwords need a keystore" >&2
+  exit 1
+fi
 user_manifest=
 if [[ -n "${TOKAMAK_ANDROID_MANIFEST:-}" ]]; then
   user_manifest=$TOKAMAK_ANDROID_MANIFEST
@@ -88,6 +113,24 @@ link_runtime() {
     -Wl,-z,noexecstack -Wl,-z,relro,-z,now -Wl,-z,max-page-size=16384 \
     -Wl,--strip-all \
     "${libraries[@]}"
+}
+
+# The signing configuration for a keystore that signs release builds.
+release_signing() {
+  if [[ "$signing" != release ]]; then
+    return
+  fi
+  cat <<'EOF'
+  signingConfigs {
+    release {
+      storeFile file(System.getenv('TOKAMAK_ANDROID_KEYSTORE'))
+      storePassword System.getenv('TOKAMAK_ANDROID_KEYSTORE_PASSWORD')
+      keyAlias System.getenv('TOKAMAK_ANDROID_KEY_ALIAS')
+      keyPassword System.getenv('TOKAMAK_ANDROID_KEY_PASSWORD') ?: System.getenv('TOKAMAK_ANDROID_KEYSTORE_PASSWORD')
+    }
+  }
+
+EOF
 }
 
 xml_escape() {
@@ -151,15 +194,12 @@ for plugin in "$input/plugins"/*/; do
     cp "$plugin/AndroidManifest.xml" "$module/src/main/AndroidManifest.xml"
   fi
   {
-    printf '%s\n' 'plugins {'
-    printf '%s\n' "  id 'com.android.library'"
-    printf '%s\n' "  id 'org.jetbrains.kotlin.android'"
+    printf '%s\n' 'plugins {' "  id 'com.android.library'" "  id 'org.jetbrains.kotlin.android'"
     printf '%s\n\n' '}'
     printf '%s\n' 'android {'
     printf "  namespace 'tokamak.plugins.%s'\n" "${plugin_id//-/_}"
     printf '%s\n\n' '}'
-    printf '%s\n' 'dependencies {'
-    printf '%s\n' "  implementation project(':tokamak-plugin')"
+    printf '%s\n' 'dependencies {' "  implementation project(':tokamak-plugin')"
     for dependency in "$plugin/dependencies"/*; do
       printf "  implementation '%s'\n" "$(cat "$dependency")"
     done
@@ -262,6 +302,15 @@ android {
     abortOnError true
     checkDependencies true
   }
+
+$(release_signing)
+  buildTypes {
+    release {
+      minifyEnabled true
+      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'tokamak-rules.pro'
+      signingConfig signingConfigs.$signing
+    }
+  }
 }
 
 dependencies {
@@ -289,8 +338,7 @@ fi
 registry=$kotlin/TokamakPluginRegistry.kt
 {
   printf '%s\n\n' 'package com.tokamak.runtime'
-  printf '%s\n' 'internal fun tokamakPlugins(host: TokamakHost): List<TokamakPlugin> ='
-  printf '%s\n' '    listOf('
+  printf '%s\n' 'internal fun tokamakPlugins(host: TokamakHost): List<TokamakPlugin> =' '    listOf('
   for plugin in "$input/plugins"/*/; do
     printf '        %s(host),\n' "$(cat "$plugin/class")"
   done
@@ -318,16 +366,20 @@ manifest=$app/src/main/AndroidManifest.xml
     printf '    <meta-data android:name="tokamak.dev.endpoint" android:value="%s" />\n' "$dev_endpoint"
     printf '    <meta-data android:name="tokamak.dev.session-token" android:value="%s" />\n' "$dev_session_token"
   fi
-  printf '%s\n' '    <activity android:name=".TokamakActivity" android:exported="true" android:launchMode="singleTask" android:theme="@android:style/Theme.Material.NoActionBar" android:configChanges="colorMode|density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode">'
-  printf '%s\n' '      <intent-filter>'
-  printf '%s\n' '        <action android:name="android.intent.action.MAIN" />'
-  printf '%s\n' '        <category android:name="android.intent.category.LAUNCHER" />'
-  printf '%s\n' '      </intent-filter>'
-  printf '%s\n' '    </activity>'
-  printf '%s\n' '  </application>'
-  printf '%s\n' '</manifest>'
+  printf '%s\n' \
+    '    <activity android:name=".TokamakActivity" android:exported="true" android:launchMode="singleTask" android:theme="@android:style/Theme.Material.NoActionBar" android:configChanges="colorMode|density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode">' \
+    '      <intent-filter>' \
+    '        <action android:name="android.intent.action.MAIN" />' \
+    '        <category android:name="android.intent.category.LAUNCHER" />' \
+    '      </intent-filter>' \
+    '    </activity>' \
+    '  </application>' \
+    '</manifest>'
 } > "$manifest"
 
-gradle --no-daemon :app:lintDebug :app:assembleDebug --project-dir "$project"
+# R8 keeps every name, so class names in errors and stack traces stay real.
+printf '%s\n' '-dontobfuscate' > "$app/tokamak-rules.pro"
+
+gradle --no-daemon ":app:lint$task" ":app:assemble$task" --project-dir "$project"
 mkdir -p "$(dirname "$output")"
-cp "$app/build/outputs/apk/debug/app-debug.apk" "$output"
+cp "$app/build/outputs/apk/$variant/app-$variant.apk" "$output"

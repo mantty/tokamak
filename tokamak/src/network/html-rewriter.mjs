@@ -12,12 +12,9 @@ const rewriterStates = new WeakMap();
 const doctypeStates = new WeakMap();
 const expiredTokens = new WeakSet();
 
-function contentType(options) {
-  return options != null && options.html === true ? "html" : "text";
-}
-
-function contentOperation(state, name, value, options) {
-  const kind = contentType(options);
+function contentOperation(states, token, name, value, options) {
+  const state = requireState(states, token);
+  const contentType = options != null && options.html === true ? "html" : "text";
   if (value instanceof ReadableStream || value instanceof Response) {
     if (!state.resources) throw new TypeError("This HTML token requires string content");
     const stream = value instanceof Response ? value.body : value;
@@ -26,7 +23,8 @@ function contentOperation(state, name, value, options) {
     if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
     value = String(value);
   }
-  applyMutation(state, { name, value, contentType: kind });
+  applyMutation(state, { name, value, contentType });
+  return token;
 }
 
 function requireState(states, value) {
@@ -84,10 +82,7 @@ class Element {
       tagName: {
         enumerable: true,
         get() { return requireState(elementStates, this).tagName; },
-        set(value) {
-          const state = requireState(elementStates, this);
-          applyMutation(state, { name: "setTagName", value: String(value) });
-        },
+        set(value) { applyMutation(requireState(elementStates, this), { name: "setTagName", value: String(value) }); },
       },
       namespaceURI: { enumerable: true, get() { return requireState(elementStates, this).namespaceURI; } },
       attributes: {
@@ -114,60 +109,29 @@ class Element {
   }
 
   setAttribute(name, value) {
-    const state = requireState(elementStates, this);
-    const attribute = asciiLower(name);
-    const attributeValue = String(value);
-    applyMutation(state, { name: "setAttribute", attribute, value: attributeValue });
+    applyMutation(requireState(elementStates, this), { name: "setAttribute", attribute: asciiLower(name), value: String(value) });
     return this;
   }
 
   removeAttribute(name) {
-    const state = requireState(elementStates, this);
-    const attribute = asciiLower(name);
-    applyMutation(state, { name: "removeAttribute", attribute });
+    applyMutation(requireState(elementStates, this), { name: "removeAttribute", attribute: asciiLower(name) });
     return this;
   }
 
-  before(value, options) {
-    contentOperation(requireState(elementStates, this), "before", value, options);
-    return this;
-  }
-
-  after(value, options) {
-    contentOperation(requireState(elementStates, this), "after", value, options);
-    return this;
-  }
-
-  prepend(value, options) {
-    contentOperation(requireState(elementStates, this), "prepend", value, options);
-    return this;
-  }
-
-  append(value, options) {
-    contentOperation(requireState(elementStates, this), "append", value, options);
-    return this;
-  }
-
-  replace(value, options) {
-    const state = requireState(elementStates, this);
-    contentOperation(state, "replace", value, options);
-    return this;
-  }
-
-  setInnerContent(value, options) {
-    contentOperation(requireState(elementStates, this), "setInnerContent", value, options);
-    return this;
-  }
+  before(value, options) { return contentOperation(elementStates, this, "before", value, options); }
+  after(value, options) { return contentOperation(elementStates, this, "after", value, options); }
+  prepend(value, options) { return contentOperation(elementStates, this, "prepend", value, options); }
+  append(value, options) { return contentOperation(elementStates, this, "append", value, options); }
+  replace(value, options) { return contentOperation(elementStates, this, "replace", value, options); }
+  setInnerContent(value, options) { return contentOperation(elementStates, this, "setInnerContent", value, options); }
 
   remove() {
-    const state = requireState(elementStates, this);
-    applyMutation(state, { name: "remove" });
+    applyMutation(requireState(elementStates, this), { name: "remove" });
     return this;
   }
 
   removeAndKeepContent() {
-    const state = requireState(elementStates, this);
-    applyMutation(state, { name: "removeAndKeepContent" });
+    applyMutation(requireState(elementStates, this), { name: "removeAndKeepContent" });
     return this;
   }
 
@@ -198,34 +162,18 @@ class Text {
     };
     textStates.set(this, state);
     Object.defineProperties(this, {
-      text: {
-        enumerable: true,
-        get() { return requireState(textStates, this).text; },
-      },
+      text: { enumerable: true, get() { return requireState(textStates, this).text; } },
       lastInTextNode: { enumerable: true, get() { return requireState(textStates, this).lastInTextNode; } },
       removed: { enumerable: true, get() { return requireState(textStates, this).removed; } },
     });
   }
 
-  before(value, options) {
-    contentOperation(requireState(textStates, this), "before", value, options);
-    return this;
-  }
-
-  after(value, options) {
-    contentOperation(requireState(textStates, this), "after", value, options);
-    return this;
-  }
-
-  replace(value, options) {
-    const state = requireState(textStates, this);
-    contentOperation(state, "replace", value, options);
-    return this;
-  }
+  before(value, options) { return contentOperation(textStates, this, "before", value, options); }
+  after(value, options) { return contentOperation(textStates, this, "after", value, options); }
+  replace(value, options) { return contentOperation(textStates, this, "replace", value, options); }
 
   remove() {
-    const state = requireState(textStates, this);
-    applyMutation(state, { name: "remove" });
+    applyMutation(requireState(textStates, this), { name: "remove" });
     return this;
   }
 
@@ -240,34 +188,18 @@ class Comment {
       text: {
         enumerable: true,
         get() { return requireState(commentStates, this).text; },
-        set(value) {
-          const state = requireState(commentStates, this);
-          applyMutation(state, { name: "setText", value: String(value) });
-        },
+        set(value) { applyMutation(requireState(commentStates, this), { name: "setText", value: String(value) }); },
       },
       removed: { enumerable: true, get() { return requireState(commentStates, this).removed; } },
     });
   }
 
-  before(value, options) {
-    contentOperation(requireState(commentStates, this), "before", value, options);
-    return this;
-  }
-
-  after(value, options) {
-    contentOperation(requireState(commentStates, this), "after", value, options);
-    return this;
-  }
-
-  replace(value, options) {
-    const state = requireState(commentStates, this);
-    contentOperation(state, "replace", value, options);
-    return this;
-  }
+  before(value, options) { return contentOperation(commentStates, this, "before", value, options); }
+  after(value, options) { return contentOperation(commentStates, this, "after", value, options); }
+  replace(value, options) { return contentOperation(commentStates, this, "replace", value, options); }
 
   remove() {
-    const state = requireState(commentStates, this);
-    applyMutation(state, { name: "remove" });
+    applyMutation(requireState(commentStates, this), { name: "remove" });
     return this;
   }
 
@@ -282,18 +214,9 @@ class EndTag {
     });
   }
 
-  before(value, options) {
-    contentOperation(requireState(endTagStates, this), "before", value, options);
-  }
-
-  after(value, options) {
-    contentOperation(requireState(endTagStates, this), "after", value, options);
-  }
-
-  remove() {
-    const state = requireState(endTagStates, this);
-    applyMutation(state, { name: "remove" });
-  }
+  before(value, options) { contentOperation(endTagStates, this, "before", value, options); }
+  after(value, options) { contentOperation(endTagStates, this, "after", value, options); }
+  remove() { applyMutation(requireState(endTagStates, this), { name: "remove" }); }
 
   get [Symbol.toStringTag]() { return "EndTag"; }
 }
@@ -316,10 +239,7 @@ class DocumentEnd {
     documentEndStates.set(this, { mutate });
   }
 
-  append(value, options) {
-    contentOperation(requireState(documentEndStates, this), "append", value, options);
-    return this;
-  }
+  append(value, options) { return contentOperation(documentEndStates, this, "append", value, options); }
 
   get [Symbol.toStringTag]() { return "DocumentEnd"; }
 }
@@ -363,9 +283,7 @@ export class HTMLRewriter {
   }
 
   on(selector, handlers) {
-    if (arguments.length < 2) {
-      throw new TypeError("Invalid HTMLRewriter handler");
-    }
+    if (arguments.length < 2) throw new TypeError("Invalid HTMLRewriter handler");
     selector = `${selector}`;
     htmlValidateSelector(selector);
     requireState(rewriterStates, this).handlers.push({
@@ -468,33 +386,33 @@ export class HTMLRewriter {
       return bytes;
     };
     const pump = async controller => {
-        try {
-          while (!stopped) {
-            const event = await parser.next();
-            if (stopped) return;
-            resources.retire();
-            if (event === null) {
-              await stop();
-              controller.close();
-              controller.byobRequest?.respond(0);
-              return;
-            }
-            if (event.kind === "input") parser.reply(await readSource(event.source));
-            else if (event.kind === "token") {
-              const handler = callbacks.get(event.handler);
-              if (handler.once) callbacks.delete(event.handler);
-              await runInAsyncContext(context, handler.callback, undefined, [event.properties, resources]);
-              if (!stopped) parser.reply(undefined);
-            } else {
-              controller.enqueue(event.bytes);
-              return;
-            }
-          }
-        } catch (error) {
+      try {
+        while (!stopped) {
+          const event = await parser.next();
           if (stopped) return;
-          await stop(error);
-          controller.error(nativeStreamError(error));
+          resources.retire();
+          if (event === null) {
+            await stop();
+            controller.close();
+            controller.byobRequest?.respond(0);
+            return;
+          }
+          if (event.kind === "input") parser.reply(await readSource(event.source));
+          else if (event.kind === "token") {
+            const handler = callbacks.get(event.handler);
+            if (handler.once) callbacks.delete(event.handler);
+            await runInAsyncContext(context, handler.callback, undefined, [event.properties, resources]);
+            if (!stopped) parser.reply(undefined);
+          } else {
+            controller.enqueue(event.bytes);
+            return;
+          }
         }
+      } catch (error) {
+        if (stopped) return;
+        await stop(error);
+        controller.error(nativeStreamError(error));
+      }
     };
     const body = nativeReadableStream({ type: "bytes", start: pump, pull: pump, cancel: () => stop(undefined, false) });
     return new Response(body, responseInit(response));

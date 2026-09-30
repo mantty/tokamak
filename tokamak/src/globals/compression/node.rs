@@ -22,14 +22,9 @@ impl CodecError {
     }
 
     fn throw(self, ctx: &Ctx<'_>) -> rquickjs::Error {
-        let error = match Exception::from_message(ctx.clone(), &self.message) {
-            Ok(error) => error,
-            Err(error) => return error,
-        };
-        if let Err(error) = error.set("code", self.code) {
-            return error;
-        }
-        error.throw()
+        Exception::from_message(ctx.clone(), &self.message)
+            .and_then(|error| error.set("code", self.code).map(|()| error.throw()))
+            .unwrap_or_else(|error| error)
     }
 }
 

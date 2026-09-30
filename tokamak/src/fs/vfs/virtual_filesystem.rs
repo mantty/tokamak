@@ -467,8 +467,7 @@ impl VirtualFileSystem {
 
     /// Copy a regular file with optional exclusive creation.
     pub fn copy_file_with_options(&mut self, from: &str, to: &str, exclusive: bool) -> Result<()> {
-        let source = self.resolve(from, true)?;
-        let bytes = source.read_all(from)?;
+        let bytes = self.read_file(from)?;
         if exclusive && self.resolve(to, true).is_ok() {
             return Err(Error::new(ErrorKind::AlreadyExists, to));
         }
@@ -580,11 +579,7 @@ impl VirtualFileSystem {
         if existed && options.exclusive {
             return Err(Error::new(ErrorKind::AlreadyExists, path));
         }
-        let file = match &node {
-            Node::File(file) => file,
-            Node::Directory(_) => return Err(Error::new(ErrorKind::IsDirectory, path)),
-            Node::Symlink(_) => return Err(Error::new(ErrorKind::Unsupported, path)),
-        };
+        let file = node.file(path)?;
         if options.write && !file.writable() {
             return Err(Error::new(ErrorKind::ReadOnly, path));
         }
@@ -614,7 +609,7 @@ impl VirtualFileSystem {
         self.descriptors
             .remove(&descriptor)
             .map(|_| ())
-            .ok_or_else(|| Error::new(ErrorKind::InvalidDescriptor, descriptor.to_string()))
+            .ok_or_else(|| Error::new(ErrorKind::InvalidDescriptor, descriptor))
     }
 
     /// Return descriptor metadata.
@@ -629,12 +624,9 @@ impl VirtualFileSystem {
         length: usize,
         position: Option<u64>,
     ) -> Result<Vec<u8>> {
-        let open = self
-            .descriptors
-            .get_mut(&descriptor)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidDescriptor, descriptor.to_string()))?;
+        let open = self.descriptor_mut(descriptor)?;
         if !open.read {
-            return Err(Error::new(ErrorKind::NotPermitted, descriptor.to_string()));
+            return Err(Error::new(ErrorKind::NotPermitted, descriptor));
         }
         let offset = position.unwrap_or(open.position);
         let bytes = open.node.read(offset, length)?;
@@ -646,12 +638,9 @@ impl VirtualFileSystem {
 
     /// Write to a descriptor. `position` does not move the descriptor cursor.
     pub fn write(&mut self, descriptor: u32, data: &[u8], position: Option<u64>) -> Result<usize> {
-        let open = self
-            .descriptors
-            .get_mut(&descriptor)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidDescriptor, descriptor.to_string()))?;
+        let open = self.descriptor_mut(descriptor)?;
         if !open.write {
-            return Err(Error::new(ErrorKind::NotPermitted, descriptor.to_string()));
+            return Err(Error::new(ErrorKind::NotPermitted, descriptor));
         }
         let offset = position.unwrap_or(open.position);
         let written = open.node.write(offset, data, open.append)?;
@@ -714,7 +703,7 @@ impl VirtualFileSystem {
     pub fn ftruncate(&mut self, descriptor: u32, size: u64) -> Result<()> {
         let open = self.descriptor(descriptor)?;
         if !open.write {
-            return Err(Error::new(ErrorKind::NotPermitted, descriptor.to_string()));
+            return Err(Error::new(ErrorKind::NotPermitted, descriptor));
         }
         open.node.resize(size, &descriptor.to_string())
     }
@@ -722,21 +711,24 @@ impl VirtualFileSystem {
     fn descriptor(&self, descriptor: u32) -> Result<&OpenFile> {
         self.descriptors
             .get(&descriptor)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidDescriptor, descriptor.to_string()))
+            .ok_or_else(|| Error::new(ErrorKind::InvalidDescriptor, descriptor))
+    }
+
+    fn descriptor_mut(&mut self, descriptor: u32) -> Result<&mut OpenFile> {
+        self.descriptors
+            .get_mut(&descriptor)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidDescriptor, descriptor))
     }
 
     fn mkdir_recursive(&mut self, components: &[String], path: &str) -> Result<()> {
-        let mut current = Node::Directory(self.root.clone());
+        let mut current = self.root.clone();
         for component in components {
-            let directory = current
-                .as_directory()
-                .ok_or_else(|| Error::new(ErrorKind::NotDirectory, path))?;
-            current = match directory.lookup(component)? {
-                Some(Node::Directory(directory)) => Node::Directory(directory),
+            current = match current.lookup(component)? {
+                Some(Node::Directory(directory)) => directory,
                 Some(_) => return Err(Error::new(ErrorKind::NotDirectory, path)),
                 None => {
-                    let child = Node::Directory(Directory::memory(true));
-                    directory.insert(component.clone(), child.clone())?;
+                    let child = Directory::memory(true);
+                    current.insert(component.clone(), Node::Directory(child.clone()))?;
                     child
                 }
             };

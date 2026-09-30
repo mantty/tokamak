@@ -91,14 +91,7 @@ class TokamakLocationPlugin(
             PackageManager.PERMISSION_GRANTED
 
     private fun currentPosition(reply: TokamakPluginReply) {
-        val provider = runCatching(::provider).getOrElse {
-            reply(locationFailure(it, "Location is unavailable"))
-            return
-        }
-        if (provider == null) {
-            reply(unavailable("No location provider is available"))
-            return
-        }
+        val provider = availableProvider(reply) ?: return
         runCatching {
             manager.getCurrentLocation(
                 provider,
@@ -108,18 +101,11 @@ class TokamakLocationPlugin(
                 if (location == null) reply(unavailable("Location is unavailable"))
                 else reply(Result.success(position(location)))
             }
-        }.onFailure { reply(locationFailure(it, "Location is unavailable")) }
+        }.onFailure { reply(locationFailure(it)) }
     }
 
     private fun watchPosition(reply: TokamakPluginReply): () -> Unit {
-        val provider = runCatching(::provider).getOrElse {
-            reply(locationFailure(it, "Location is unavailable"))
-            return {}
-        }
-        if (provider == null) {
-            reply(unavailable("No location provider is available"))
-            return {}
-        }
+        val provider = availableProvider(reply) ?: return {}
         val listener = object : LocationListener {
             override fun onLocationChanged(location: Location) {
                 reply(Result.success(position(location)))
@@ -131,14 +117,23 @@ class TokamakLocationPlugin(
 
             override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
         }
-        val started = runCatching {
+        runCatching {
             manager.requestLocationUpdates(provider, 1000, 0F, listener, Looper.getMainLooper())
-        }
-        if (started.isFailure) {
-            reply(locationFailure(started.exceptionOrNull(), "Location is unavailable"))
+        }.onFailure {
+            reply(locationFailure(it))
             return {}
         }
         return { manager.removeUpdates(listener) }
+    }
+
+    /** The provider to use, or null once [reply] has the reason there is none. */
+    private fun availableProvider(reply: TokamakPluginReply): String? {
+        val provider = runCatching(::provider).getOrElse {
+            reply(locationFailure(it))
+            return null
+        }
+        if (provider == null) reply(unavailable("No location provider is available"))
+        return provider
     }
 
     private fun provider(): String? =
@@ -172,9 +167,9 @@ class TokamakLocationPlugin(
     private fun unavailable(message: String): Result<Any?> =
         Result.failure(TokamakPluginError("NotReadableError", message))
 
-    private fun locationFailure(error: Throwable?, fallback: String): Result<Any?> =
+    private fun locationFailure(error: Throwable): Result<Any?> =
         if (error is SecurityException) permissionDenied()
-        else unavailable(error?.message ?: fallback)
+        else unavailable(error.message ?: "Location is unavailable")
 
     private companion object {
         const val LOCATION_PERMISSION_REQUEST = 0xA771

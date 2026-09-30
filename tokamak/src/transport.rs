@@ -230,46 +230,19 @@ pub(super) fn read_request(
     let request_line = lines.next().unwrap_or_default();
     let mut request_parts = request_line.split_whitespace();
     let Some(method) = request_parts.next() else {
-        return Err(Error::Startup("HTTP method is missing".to_owned()));
+        return Err(Error::startup("HTTP method is missing"));
     };
     let target = request_parts.next().unwrap_or("/");
     let version = request_parts.next().unwrap_or("HTTP/1.1");
-    let mut request_headers = HeaderMap::new();
-    let mut content_length = None;
-    let mut chunked = false;
-    for line in lines {
-        if line.is_empty() {
-            break;
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        let name = name.trim().to_ascii_lowercase();
-        let value = value.trim_matches([' ', '\t']);
-        if name == "content-length" {
-            content_length = Some(
-                value
-                    .parse()
-                    .map_err(|_| Error::Startup("invalid content length".to_owned()))?,
-            );
-        }
-        if name == "transfer-encoding" && has_token(value, "chunked") {
-            chunked = true;
-        }
-        request_headers
-            .try_append(
-                HeaderName::from_bytes(name.as_bytes()).map_err(io::Error::other)?,
-                HeaderValue::from_bytes(value.as_bytes()).map_err(io::Error::other)?,
-            )
-            .map_err(io::Error::other)?;
-    }
+    let (mut request_headers, content_length, chunked) =
+        parse_header_fields(lines, "invalid content length", |_| true)?;
     if chunked && content_length.is_some() {
-        return Err(Error::Startup(
-            "chunked request cannot include content length".to_owned(),
+        return Err(Error::startup(
+            "chunked request cannot include content length",
         ));
     }
     if content_length.is_some_and(|length| length > MAX_HTTP_BODY) {
-        return Err(Error::Startup("HTTP body exceeds the limit".to_owned()));
+        return Err(Error::startup("HTTP body exceeds the limit"));
     }
     let body = if chunked {
         read_chunked_body(stream)?
@@ -292,20 +265,75 @@ pub(super) fn read_request(
     }))
 }
 
+/// The header fields before the first empty line that `keep` accepts, the
+/// declared content length, and whether the body is chunked.
+pub(super) fn parse_header_fields<'a>(
+    lines: impl Iterator<Item = &'a str>,
+    invalid_length: &str,
+    keep: fn(&str) -> bool,
+) -> Result<(HeaderMap, Option<usize>, bool), Error> {
+    let mut headers = HeaderMap::new();
+    let mut content_length = None;
+    let mut chunked = false;
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim().to_ascii_lowercase();
+        let value = value.trim_matches([' ', '\t']);
+        if name == "content-length" {
+            content_length = Some(value.parse().map_err(|_| Error::startup(invalid_length))?);
+        }
+        if name == "transfer-encoding" && has_token(value, "chunked") {
+            chunked = true;
+        }
+        if keep(&name) {
+            append_header(&mut headers, &name, value)?;
+        }
+    }
+    Ok((headers, content_length, chunked))
+}
+
+/// Appends a field, failing when the name or value is invalid or the map is full.
+pub(super) fn append_header(headers: &mut HeaderMap, name: &str, value: &str) -> io::Result<()> {
+    headers
+        .try_append(
+            HeaderName::from_bytes(name.as_bytes()).map_err(io::Error::other)?,
+            HeaderValue::from_bytes(value.as_bytes()).map_err(io::Error::other)?,
+        )
+        .map(drop)
+        .map_err(io::Error::other)
+}
+
+/// Inserts a field, failing when the map is full.
+fn insert_header(
+    headers: &mut HeaderMap,
+    name: &'static str,
+    value: HeaderValue,
+) -> io::Result<()> {
+    headers
+        .try_insert(name, value)
+        .map(drop)
+        .map_err(io::Error::other)
+}
+
 pub(super) fn read_chunked_body(stream: &mut impl Read) -> Result<Vec<u8>, Error> {
     let mut body = Vec::new();
     let mut trailer_bytes = 0usize;
     loop {
         let line = read_line(stream)?;
         let size = line.split(';').next().unwrap_or_default().trim();
-        let size = usize::from_str_radix(size, 16)
-            .map_err(|_| Error::Startup("chunk size is invalid".to_owned()))?;
+        let size =
+            usize::from_str_radix(size, 16).map_err(|_| Error::startup("chunk size is invalid"))?;
         if size == 0 {
             loop {
                 let trailer = read_line(stream)?;
                 trailer_bytes = trailer_bytes.saturating_add(trailer.len() + 2);
                 if trailer_bytes > MAX_HEADERS {
-                    return Err(Error::Startup("HTTP trailers exceed the limit".to_owned()));
+                    return Err(Error::startup("HTTP trailers exceed the limit"));
                 }
                 if trailer.is_empty() {
                     return Ok(body);
@@ -313,7 +341,7 @@ pub(super) fn read_chunked_body(stream: &mut impl Read) -> Result<Vec<u8>, Error
             }
         }
         if body.len().saturating_add(size) > MAX_HTTP_BODY {
-            return Err(Error::Startup("HTTP body exceeds the limit".to_owned()));
+            return Err(Error::startup("HTTP body exceeds the limit"));
         }
         let start = body.len();
         body.resize(start + size, 0);
@@ -321,7 +349,7 @@ pub(super) fn read_chunked_body(stream: &mut impl Read) -> Result<Vec<u8>, Error
         let mut terminator = [0; 2];
         stream.read_exact(&mut terminator)?;
         if terminator != *b"\r\n" {
-            return Err(Error::Startup("chunk is not terminated".to_owned()));
+            return Err(Error::startup("chunk is not terminated"));
         }
     }
 }
@@ -333,12 +361,11 @@ fn read_line(stream: &mut impl Read) -> Result<String, Error> {
         stream.read_exact(&mut byte)?;
         line.push(byte[0]);
         if line.len() > MAX_HEADERS {
-            return Err(Error::Startup("HTTP line is too long".to_owned()));
+            return Err(Error::startup("HTTP line is too long"));
         }
         if line.ends_with(b"\r\n") {
             line.truncate(line.len() - 2);
-            return String::from_utf8(line)
-                .map_err(|_| Error::Startup("HTTP line is not UTF-8".to_owned()));
+            return String::from_utf8(line).map_err(|_| Error::startup("HTTP line is not UTF-8"));
         }
     }
 }
@@ -355,7 +382,7 @@ pub(super) fn websocket_session(
     key: Option<&str>,
     bridge: WebSocketBridge,
 ) -> Result<(), Error> {
-    let key = key.ok_or_else(|| Error::Startup("WebSocket key is missing".to_owned()))?;
+    let key = key.ok_or_else(|| Error::startup("WebSocket key is missing"))?;
     let accept = websocket_accept(key);
     write!(
         stream,
@@ -397,7 +424,7 @@ pub(super) fn websocket_session(
                     frame.opcode,
                     frame.payload,
                 )?,
-                _ => return Err(Error::Startup("invalid WebSocket opcode".to_owned())),
+                _ => return Err(Error::startup("invalid WebSocket opcode")),
             },
         }
     }
@@ -481,7 +508,7 @@ impl<S: Read + Write> WebSocketCodec<S> {
                 Ok(count) => {
                     self.buffer.extend_from_slice(&bytes[..count]);
                     if self.buffer.len() > MAX_WEBSOCKET_BODY + 14 {
-                        return Err(Error::Startup("WebSocket frame is too large".to_owned()));
+                        return Err(Error::startup("WebSocket frame is too large"));
                     }
                 }
                 Err(error)
@@ -504,12 +531,10 @@ impl<S: Read + Write> WebSocketCodec<S> {
         mask: bool,
     ) -> Result<(), Error> {
         if payload.len() > MAX_WEBSOCKET_BODY {
-            return Err(Error::Startup("WebSocket frame is too large".to_owned()));
+            return Err(Error::startup("WebSocket frame is too large"));
         }
         if opcode >= 0x8 && (payload.len() > 125 || opcode & 0x40 != 0) {
-            return Err(Error::Startup(
-                "WebSocket control frame is invalid".to_owned(),
-            ));
+            return Err(Error::startup("WebSocket control frame is invalid"));
         }
         let mut header = vec![0x80 | opcode];
         let length = payload.len();
@@ -517,9 +542,8 @@ impl<S: Read + Write> WebSocketCodec<S> {
         if length <= 125 {
             header.push(
                 mask_bit
-                    | u8::try_from(length).map_err(|_| {
-                        Error::Startup("WebSocket frame length is invalid".to_owned())
-                    })?,
+                    | u8::try_from(length)
+                        .map_err(|_| Error::startup("WebSocket frame length is invalid"))?,
             );
         } else if let Ok(length) = u16::try_from(length) {
             header.push(mask_bit | 0x7e);
@@ -535,9 +559,7 @@ impl<S: Read + Write> WebSocketCodec<S> {
                 .map_err(|error| Error::Startup(format!("WebSocket mask failed: {error}")))?;
             self.stream.write_all(&key)?;
             let mut masked = payload.to_vec();
-            for (index, byte) in masked.iter_mut().enumerate() {
-                *byte ^= key[index % key.len()];
-            }
+            apply_mask(&mut masked, &key);
             self.stream.write_all(&masked)?;
         } else {
             self.stream.write_all(payload)?;
@@ -557,26 +579,23 @@ fn parse_websocket_frame(
     if buffer.len() < header.frame_length {
         return Ok(None);
     }
-    let key = header.mask_offset.map(|offset| {
-        [
-            buffer[offset],
-            buffer[offset + 1],
-            buffer[offset + 2],
-            buffer[offset + 3],
-        ]
-    });
     let mut payload = buffer[header.payload_offset..header.frame_length].to_vec();
-    buffer.drain(..header.frame_length);
-    if let Some(key) = key {
-        for (index, byte) in payload.iter_mut().enumerate() {
-            *byte ^= key[index % key.len()];
-        }
+    if let Some(offset) = header.mask_offset {
+        apply_mask(&mut payload, &buffer[offset..offset + 4]);
     }
+    buffer.drain(..header.frame_length);
     Ok(Some(WebSocketFrame {
         final_frame: header.final_frame,
         opcode: header.opcode,
         payload,
     }))
+}
+
+/// XORs `payload` with the repeating `key`.
+fn apply_mask(payload: &mut [u8], key: &[u8]) {
+    for (index, byte) in payload.iter_mut().enumerate() {
+        *byte ^= key[index % key.len()];
+    }
 }
 
 struct WebSocketHeader {
@@ -597,9 +616,7 @@ fn parse_websocket_header(
     let first = buffer[0];
     let second = buffer[1];
     if first & 0x70 != 0 {
-        return Err(Error::Startup(
-            "WebSocket reserved bits are unsupported".to_owned(),
-        ));
+        return Err(Error::startup("WebSocket reserved bits are unsupported"));
     }
     let masked = second & 0x80 != 0;
     if masked != expect_mask {
@@ -608,7 +625,7 @@ fn parse_websocket_header(
         } else {
             "server WebSocket frames must not be masked"
         };
-        return Err(Error::Startup(message.to_owned()));
+        return Err(Error::startup(message));
     }
     let mut offset = 2;
     let length = match second & 0x7f {
@@ -627,20 +644,17 @@ fn parse_websocket_header(
             };
             let length = u64::from_be_bytes(*bytes);
             offset += 8;
-            usize::try_from(length)
-                .map_err(|_| Error::Startup("WebSocket frame is too large".to_owned()))?
+            usize::try_from(length).map_err(|_| Error::startup("WebSocket frame is too large"))?
         }
         _ => unreachable!(),
     };
     if length > MAX_WEBSOCKET_BODY {
-        return Err(Error::Startup("WebSocket frame is too large".to_owned()));
+        return Err(Error::startup("WebSocket frame is too large"));
     }
     let opcode = first & 0x0f;
     let final_frame = first & 0x80 != 0;
     if opcode >= 0x8 && (!final_frame || length > 125) {
-        return Err(Error::Startup(
-            "WebSocket control frame is invalid".to_owned(),
-        ));
+        return Err(Error::startup("WebSocket control frame is invalid"));
     }
     let mask_offset = masked.then_some(offset);
     if masked {
@@ -648,7 +662,7 @@ fn parse_websocket_header(
     }
     let frame_length = offset
         .checked_add(length)
-        .ok_or_else(|| Error::Startup("WebSocket frame is too large".to_owned()))?;
+        .ok_or_else(|| Error::startup("WebSocket frame is too large"))?;
     Ok(Some(WebSocketHeader {
         final_frame,
         opcode,
@@ -665,14 +679,14 @@ pub(super) trait WebSocketSink {
 impl WebSocketSink for Sender<WebSocketInbound> {
     fn deliver(&self, binary: bool, payload: Vec<u8>) -> Result<(), Error> {
         self.send(WebSocketInbound::Message { binary, payload })
-            .map_err(|_| Error::Startup("WebSocket worker closed".to_owned()))
+            .map_err(|_| Error::startup("WebSocket worker closed"))
     }
 }
 
 impl WebSocketSink for WebSocketOutgoing {
     fn deliver(&self, binary: bool, payload: Vec<u8>) -> Result<(), Error> {
         self.send(WebSocketOutbound::Message { binary, payload })
-            .map_err(|_| Error::Startup("WebSocket gateway closed".to_owned()))
+            .map_err(|_| Error::startup("WebSocket gateway closed"))
     }
 }
 
@@ -686,25 +700,25 @@ pub(super) fn queue_websocket_message(
     let (message_opcode, payload) = match opcode {
         0x0 => {
             let Some((initial_opcode, mut message)) = fragmented.take() else {
-                return Err(Error::Startup(
-                    "WebSocket continuation has no initial frame".to_owned(),
+                return Err(Error::startup(
+                    "WebSocket continuation has no initial frame",
                 ));
             };
             if message.len().saturating_add(payload.len()) > MAX_WEBSOCKET_BODY {
-                return Err(Error::Startup("WebSocket message is too large".to_owned()));
+                return Err(Error::startup("WebSocket message is too large"));
             }
             message.extend_from_slice(&payload);
             (initial_opcode, message)
         }
         0x1 | 0x2 => {
             if fragmented.is_some() {
-                return Err(Error::Startup(
-                    "WebSocket message starts before the previous message ended".to_owned(),
+                return Err(Error::startup(
+                    "WebSocket message starts before the previous message ended",
                 ));
             }
             (opcode, payload)
         }
-        _ => return Err(Error::Startup("invalid WebSocket opcode".to_owned())),
+        _ => return Err(Error::startup("invalid WebSocket opcode")),
     };
     if final_frame {
         sink.deliver(message_opcode == 0x2, payload)?;
@@ -723,19 +737,11 @@ fn flush_websocket_outbound<S: Read + Write>(
             Ok(frame) => frame,
             Err(TryRecvError::Empty) => return Ok(false),
             Err(TryRecvError::Disconnected) => {
-                return Err(Error::Startup("WebSocket worker closed".to_owned()));
+                return Err(Error::startup("WebSocket worker closed"));
             }
         };
-        match frame {
-            WebSocketOutbound::Message { binary, payload } => {
-                codec.write_frame(if binary { 0x2 } else { 0x1 }, &payload, false)?;
-            }
-            WebSocketOutbound::Close { code, reason } => {
-                let payload = websocket_close_payload(code, &reason)?;
-                codec.write_frame(0x8, &payload, false)?;
-                return Ok(true);
-            }
-            WebSocketOutbound::Ready => {}
+        if write_outbound(codec, frame)? {
+            return Ok(true);
         }
     }
 }
@@ -745,23 +751,29 @@ fn wait_for_websocket_ready<S: Read + Write>(
     outgoing: &Receiver<WebSocketOutbound>,
 ) -> Result<bool, Error> {
     loop {
-        match outgoing.recv_timeout(Duration::from_secs(30)) {
-            Ok(WebSocketOutbound::Message { binary, payload }) => {
-                codec.write_frame(if binary { 0x2 } else { 0x1 }, &payload, false)?;
-            }
-            Ok(WebSocketOutbound::Close { code, reason }) => {
-                let payload = websocket_close_payload(code, &reason)?;
-                codec.write_frame(0x8, &payload, false)?;
-                return Ok(true);
-            }
+        let frame = match outgoing.recv_timeout(Duration::from_secs(30)) {
             Ok(WebSocketOutbound::Ready) => return Ok(false),
-            Err(_) => {
-                return Err(Error::Startup(
-                    "WebSocket worker did not become ready".to_owned(),
-                ));
-            }
+            Ok(frame) => frame,
+            Err(_) => return Err(Error::startup("WebSocket worker did not become ready")),
+        };
+        if write_outbound(codec, frame)? {
+            return Ok(true);
         }
     }
+}
+
+/// Writes a frame the worker queued, reporting whether it closed the connection.
+fn write_outbound<S: Read + Write>(
+    codec: &mut WebSocketCodec<S>,
+    frame: WebSocketOutbound,
+) -> Result<bool, Error> {
+    let (opcode, payload) = match frame {
+        WebSocketOutbound::Message { binary, payload } => (if binary { 0x2 } else { 0x1 }, payload),
+        WebSocketOutbound::Close { code, reason } => (0x8, websocket_close_payload(code, &reason)?),
+        WebSocketOutbound::Ready => return Ok(false),
+    };
+    codec.write_frame(opcode, &payload, false)?;
+    Ok(opcode == 0x8)
 }
 
 pub(super) fn websocket_close(payload: &[u8]) -> Result<(u16, String), Error> {
@@ -769,16 +781,14 @@ pub(super) fn websocket_close(payload: &[u8]) -> Result<(u16, String), Error> {
         return Ok((1000, String::new()));
     }
     let Some((code, reason)) = payload.split_first_chunk() else {
-        return Err(Error::Startup(
-            "WebSocket close payload is invalid".to_owned(),
-        ));
+        return Err(Error::startup("WebSocket close payload is invalid"));
     };
     let code = u16::from_be_bytes(*code);
     if !valid_websocket_close_code(code) {
-        return Err(Error::Startup("WebSocket close code is invalid".to_owned()));
+        return Err(Error::startup("WebSocket close code is invalid"));
     }
     let reason = std::str::from_utf8(reason)
-        .map_err(|_| Error::Startup("WebSocket close reason is invalid".to_owned()))?
+        .map_err(|_| Error::startup("WebSocket close reason is invalid"))?
         .to_owned();
     Ok((code, reason))
 }
@@ -789,12 +799,10 @@ fn valid_websocket_close_code(code: u16) -> bool {
 
 pub(super) fn websocket_close_payload(code: u16, reason: &str) -> Result<Vec<u8>, Error> {
     if !valid_websocket_close_code(code) {
-        return Err(Error::Startup("WebSocket close code is invalid".to_owned()));
+        return Err(Error::startup("WebSocket close code is invalid"));
     }
     if reason.len() > 123 {
-        return Err(Error::Startup(
-            "WebSocket close reason is too long".to_owned(),
-        ));
+        return Err(Error::startup("WebSocket close reason is too long"));
     }
     let mut payload = Vec::with_capacity(2 + reason.len());
     payload.extend_from_slice(&code.to_be_bytes());
@@ -878,38 +886,29 @@ fn write_response_inner(
     let head = method.is_some_and(|method| method.eq_ignore_ascii_case("HEAD"));
     let no_body =
         head || (100..200).contains(&response.status) || matches!(response.status, 204 | 205 | 304);
-    response.headers.remove("keep-alive");
-    response
-        .headers
-        .try_insert(
-            "connection",
-            HeaderValue::from_static(if persistent { "keep-alive" } else { "close" }),
-        )
-        .map_err(io::Error::other)?;
+    let headers = &mut response.headers;
+    headers.remove("keep-alive");
+    let connection = if persistent { "keep-alive" } else { "close" };
+    insert_header(headers, "connection", HeaderValue::from_static(connection))?;
     if !head {
-        response.headers.remove("transfer-encoding");
+        headers.remove("transfer-encoding");
         if (100..200).contains(&response.status) || matches!(response.status, 204 | 304) {
-            response.headers.remove("content-length");
+            headers.remove("content-length");
         } else if let HttpBody::Buffered(body) = &response.body {
-            response
-                .headers
-                .try_insert("content-length", HeaderValue::from(body.len()))
-                .map_err(io::Error::other)?;
+            insert_header(headers, "content-length", HeaderValue::from(body.len()))?;
         } else {
-            response.headers.remove("content-length");
-            response
-                .headers
-                .try_insert("transfer-encoding", HeaderValue::from_static("chunked"))
-                .map_err(io::Error::other)?;
+            headers.remove("content-length");
+            insert_header(
+                headers,
+                "transfer-encoding",
+                HeaderValue::from_static("chunked"),
+            )?;
         }
     } else if response.status == 205
-        && !response.headers.contains_key("content-length")
-        && !response.headers.contains_key("transfer-encoding")
+        && !headers.contains_key("content-length")
+        && !headers.contains_key("transfer-encoding")
     {
-        response
-            .headers
-            .try_insert("content-length", HeaderValue::from_static("0"))
-            .map_err(io::Error::other)?;
+        insert_header(headers, "content-length", HeaderValue::from_static("0"))?;
     }
     write_response_headers(
         &mut stream,

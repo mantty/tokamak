@@ -205,9 +205,7 @@ final class RuntimeHandle {
     guard handle != nil else {
       throw RuntimeError.runtime(String(cString: error))
     }
-    try? FileManager.default.removeItem(
-      at: state.appendingPathComponent(startupErrorFile)
-    )
+    try? FileManager.default.removeItem(at: state.appendingPathComponent(startupErrorFile))
   }
 
   deinit {
@@ -223,11 +221,7 @@ final class RuntimeHandle {
   func restoreGateway() throws -> UInt16 {
     var error = [CChar](repeating: 0, count: 512)
     let port = error.withUnsafeMutableBufferPointer { error in
-      tokamak_runtime_restore_gateway(
-        handle,
-        error.baseAddress,
-        error.count
-      )
+      tokamak_runtime_restore_gateway(handle, error.baseAddress, error.count)
     }
     guard port != 0 else {
       throw RuntimeError.runtime(String(cString: error))
@@ -245,7 +239,7 @@ final class RuntimeHandle {
       decoding: try JSONSerialization.data(withJSONObject: body, options: .fragmentsAllowed),
       as: UTF8.self
     )
-    var response = TokamakBytes(data: nil, len: 0)
+    var response = TokamakBytes()
     var error = [CChar](repeating: 0, count: 1024)
     let succeeded = name.withCString { name in
       body.withCString { body in
@@ -266,14 +260,11 @@ final class RuntimeHandle {
     guard succeeded else {
       throw RuntimeError.runtime(String(cString: error))
     }
-    guard let bytes = response.data else { return Data() }
-    return Data(bytes: bytes, count: response.len)
+    return response.contents ?? Data()
   }
 
-  func serverAuthority(
-    host: String
-  ) -> AuthenticationMaterial<Data> {
-    var bytes = TokamakBytes(data: nil, len: 0)
+  func serverAuthority(host: String) -> AuthenticationMaterial<Data> {
+    var bytes = TokamakBytes()
     let decision = host.withCString {
       tokamak_runtime_server_authority(handle, $0, &bytes)
     }
@@ -282,28 +273,17 @@ final class RuntimeHandle {
       return .defaultHandling
     case Int32(TOKAMAK_DECISION_USE):
       defer { tokamak_bytes_free(bytes) }
-      guard let data = bytes.data else { return .cancel }
-      return .use(Data(bytes: data, count: bytes.len))
+      guard let authority = bytes.contents else { return .cancel }
+      return .use(authority)
     default:
       return .cancel
     }
   }
 
-  func clientIdentity(
-    host: String,
-    previousFailures: Int
-  ) -> AuthenticationMaterial<(Data, Data)> {
-    var identity = TokamakIdentity(
-      certificate: TokamakBytes(data: nil, len: 0),
-      private_key: TokamakBytes(data: nil, len: 0)
-    )
+  func clientIdentity(host: String, previousFailures: Int) -> AuthenticationMaterial<(Data, Data)> {
+    var identity = TokamakIdentity()
     let decision = host.withCString {
-      tokamak_runtime_client_identity(
-        handle,
-        $0,
-        max(previousFailures, 0),
-        &identity
-      )
+      tokamak_runtime_client_identity(handle, $0, max(previousFailures, 0), &identity)
     }
     switch decision {
     case Int32(TOKAMAK_DECISION_DEFAULT):
@@ -311,16 +291,12 @@ final class RuntimeHandle {
     case Int32(TOKAMAK_DECISION_USE):
       defer { tokamak_identity_free(identity) }
       guard
-        let certificate = identity.certificate.data,
-        let privateKey = identity.private_key.data
+        let certificate = identity.certificate.contents,
+        let privateKey = identity.private_key.contents
       else {
         return .cancel
       }
-      return .use(
-        (
-          Data(bytes: certificate, count: identity.certificate.len),
-          Data(bytes: privateKey, count: identity.private_key.len)
-        ))
+      return .use((certificate, privateKey))
     default:
       return .cancel
     }
@@ -362,5 +338,12 @@ final class RuntimeHandle {
       create: true
     )
     .appendingPathComponent(identifier, isDirectory: true)
+  }
+}
+
+extension TokamakBytes {
+  /// A copy of the buffer, or nil when it is null.
+  fileprivate var contents: Data? {
+    data.map { Data(bytes: $0, count: len) }
   }
 }

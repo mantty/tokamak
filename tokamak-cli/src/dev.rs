@@ -130,43 +130,42 @@ fn warn_unsupported_bindings(config: &WranglerConfig) {
     if config.bindings.is_empty() {
         return;
     }
-    let mut warning =
-        "\nWARNING: this app declares bindings that tok dev does not provide.\n\n".to_owned();
-    warning.push_str(
-        "The host development server will continue. Avoid these bindings when running on tokamak,\n",
+    let mut warning = String::from(
+        "\nWARNING: this app declares bindings that tok dev does not provide.\n\n\
+         The host development server will continue. Avoid these bindings when running on tokamak,\n\
+         or guard their use with the appropriate platform or feature flag.\n\n\
+         Unsupported bindings:\n\n",
     );
-    warning.push_str("or guard their use with the appropriate platform or feature flag.\n\n");
-    warning.push_str("Unsupported bindings:\n\n");
     for binding in &config.bindings {
         let _ = writeln!(
             &mut warning,
-            "  - {} ({}): {}",
+            "  - {} ({}): tokamak development does not provide {}",
             binding.name,
             binding.kind,
-            unsupported_binding_reason(&binding.kind)
+            unsupported_binding_feature(&binding.kind)
         );
     }
     eprintln!("{warning}");
 }
 
-fn unsupported_binding_reason(kind: &str) -> &'static str {
+fn unsupported_binding_feature(kind: &str) -> &'static str {
     match kind {
-        "durable_objects" => "tokamak development does not provide Durable Objects",
-        "queues" => "tokamak development does not provide Queues",
-        "services" => "tokamak development does not provide service bindings",
-        "vectorize" => "tokamak development does not provide Vectorize",
-        "hyperdrive" => "tokamak development does not provide Hyperdrive",
-        "ai" => "tokamak development does not provide Workers AI",
-        "browser" => "tokamak development does not provide Browser Rendering",
-        "images" => "tokamak development does not provide Images",
-        "dispatch_namespaces" => "tokamak development does not provide dispatch namespaces",
-        "mtls_certificates" => "tokamak development does not provide mTLS bindings",
-        "pipelines" => "tokamak development does not provide Pipelines",
-        "rate_limiting" => "tokamak development does not provide rate limiting",
-        "secrets_store_secrets" => "tokamak development does not provide Secrets Store",
-        "send_email" => "tokamak development does not provide Email Routing",
-        "analytics_engine_datasets" => "tokamak development does not provide Analytics Engine",
-        _ => "tokamak development does not provide this binding",
+        "durable_objects" => "Durable Objects",
+        "queues" => "Queues",
+        "services" => "service bindings",
+        "vectorize" => "Vectorize",
+        "hyperdrive" => "Hyperdrive",
+        "ai" => "Workers AI",
+        "browser" => "Browser Rendering",
+        "images" => "Images",
+        "dispatch_namespaces" => "dispatch namespaces",
+        "mtls_certificates" => "mTLS bindings",
+        "pipelines" => "Pipelines",
+        "rate_limiting" => "rate limiting",
+        "secrets_store_secrets" => "Secrets Store",
+        "send_email" => "Email Routing",
+        "analytics_engine_datasets" => "Analytics Engine",
+        _ => "this binding",
     }
 }
 
@@ -395,27 +394,18 @@ impl ShutdownSignal {
 
         let ready = ready_receiver
             .recv()
-            .context("wait for development signal listener");
-        let ready = match ready {
-            Ok(ready) => ready,
-            Err(error) => {
-                let _ = stop_sender.send(());
-                let _ = thread.join();
-                return Err(error);
-            }
-        };
-        match ready {
-            Ok(()) => Ok(Self {
-                requested,
-                stop: Some(stop_sender),
-                thread: Some(thread),
-            }),
-            Err(error) => {
-                let _ = stop_sender.send(());
-                let _ = thread.join();
-                bail!(error);
-            }
+            .context("wait for development signal listener")
+            .and_then(|ready| ready.map_err(anyhow::Error::msg));
+        if let Err(error) = ready {
+            let _ = stop_sender.send(());
+            let _ = thread.join();
+            return Err(error);
         }
+        Ok(Self {
+            requested,
+            stop: Some(stop_sender),
+            thread: Some(thread),
+        })
     }
 
     fn requested(&self) -> bool {
@@ -441,29 +431,18 @@ async fn wait_for_shutdown(
 ) {
     #[cfg(unix)]
     {
-        let mut interrupt =
-            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()) {
-                Ok(signal) => signal,
-                Err(error) => {
-                    let _ = ready.send(Err(format!("install SIGINT listener: {error}")));
-                    return;
-                }
-            };
-        let mut terminate =
-            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                Ok(signal) => signal,
-                Err(error) => {
-                    let _ = ready.send(Err(format!("install SIGTERM listener: {error}")));
-                    return;
-                }
-            };
-        let mut hangup = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
-        {
-            Ok(signal) => signal,
-            Err(error) => {
-                let _ = ready.send(Err(format!("install SIGHUP listener: {error}")));
-                return;
-            }
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let Some(mut interrupt) = installed(signal(SignalKind::interrupt()), "SIGINT", &ready)
+        else {
+            return;
+        };
+        let Some(mut terminate) = installed(signal(SignalKind::terminate()), "SIGTERM", &ready)
+        else {
+            return;
+        };
+        let Some(mut hangup) = installed(signal(SignalKind::hangup()), "SIGHUP", &ready) else {
+            return;
         };
         let _ = ready.send(Ok(()));
         loop {
@@ -478,26 +457,16 @@ async fn wait_for_shutdown(
 
     #[cfg(windows)]
     {
-        let mut ctrl_c = match tokio::signal::windows::ctrl_c() {
-            Ok(signal) => signal,
-            Err(error) => {
-                let _ = ready.send(Err(format!("install Ctrl-C listener: {error}")));
-                return;
-            }
+        use tokio::signal::windows;
+
+        let Some(mut ctrl_c) = installed(windows::ctrl_c(), "Ctrl-C", &ready) else {
+            return;
         };
-        let mut ctrl_break = match tokio::signal::windows::ctrl_break() {
-            Ok(signal) => signal,
-            Err(error) => {
-                let _ = ready.send(Err(format!("install Ctrl-Break listener: {error}")));
-                return;
-            }
+        let Some(mut ctrl_break) = installed(windows::ctrl_break(), "Ctrl-Break", &ready) else {
+            return;
         };
-        let mut ctrl_close = match tokio::signal::windows::ctrl_close() {
-            Ok(signal) => signal,
-            Err(error) => {
-                let _ = ready.send(Err(format!("install console-close listener: {error}")));
-                return;
-            }
+        let Some(mut ctrl_close) = installed(windows::ctrl_close(), "console-close", &ready) else {
+            return;
         };
         let _ = ready.send(Ok(()));
         loop {
@@ -516,6 +485,23 @@ async fn wait_for_shutdown(
             "development signal handling is unsupported on this host".to_owned(),
         ));
         let _ = stop.await;
+    }
+}
+
+/// The installed signal `listener`, or `None` once `ready` reports why it
+/// could not be installed.
+#[cfg(any(unix, windows))]
+fn installed<T>(
+    listener: io::Result<T>,
+    name: &str,
+    ready: &std::sync::mpsc::SyncSender<Result<(), String>>,
+) -> Option<T> {
+    match listener {
+        Ok(listener) => Some(listener),
+        Err(error) => {
+            let _ = ready.send(Err(format!("install {name} listener: {error}")));
+            None
+        }
     }
 }
 
@@ -555,28 +541,24 @@ fn terminate_process_tree(child: &mut Child) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn process_group_is_running(pid: u32) -> bool {
+    send_process_group_signal(pid, "0")
+}
+
+/// Whether `kill` delivered `signal` to the process group `pid` leads.
 // `--` ends kill's options, so it reads the group as a process ID; procps-ng
 // 4.0.4 reads `-1234` after a signal as `-1`, which signals every process.
 #[cfg(unix)]
-fn process_group_is_running(pid: u32) -> bool {
+fn send_process_group_signal(pid: u32, signal: &str) -> bool {
+    let flag = format!("-{signal}");
     let group = format!("-{pid}");
     ProcessCommand::new("kill")
-        .args(["-0", "--", &group])
+        .args([flag.as_str(), "--", group.as_str()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
-}
-
-#[cfg(unix)]
-fn send_process_group_signal(pid: u32, signal: &str) {
-    let group = format!("-{pid}");
-    let flag = format!("-{signal}");
-    let _ = ProcessCommand::new("kill")
-        .args([flag.as_str(), "--", group.as_str()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
 }
 
 #[cfg(windows)]
@@ -663,19 +645,17 @@ fn install_and_launch_ios_simulator(
 ) -> Result<()> {
     run_platform_command(
         "xcrun",
-        ["simctl", "install", device_id]
-            .into_iter()
-            .map(String::from)
-            .chain(std::iter::once(
-                summary.bundle_dir.to_string_lossy().into_owned(),
-            )),
+        &[
+            "simctl",
+            "install",
+            device_id,
+            &summary.bundle_dir.to_string_lossy(),
+        ],
         "install the app in the iOS Simulator",
     )?;
     run_platform_command(
         "xcrun",
-        ["simctl", "launch", device_id, &summary.identifier]
-            .into_iter()
-            .map(String::from),
+        &["simctl", "launch", device_id, &summary.identifier],
         "launch the app in the iOS Simulator",
     )?;
     #[cfg(target_os = "macos")]
@@ -691,24 +671,20 @@ fn install_and_launch_ios_device(
 ) -> Result<()> {
     run_platform_command(
         "xcrun",
-        [
+        &[
             "devicectl",
             "device",
             "install",
             "app",
             "--device",
             device_id,
-        ]
-        .into_iter()
-        .map(String::from)
-        .chain(std::iter::once(
-            summary.bundle_dir.to_string_lossy().into_owned(),
-        )),
+            &summary.bundle_dir.to_string_lossy(),
+        ],
         "install the app on the iOS device",
     )?;
     run_platform_command(
         "xcrun",
-        [
+        &[
             "devicectl",
             "device",
             "process",
@@ -716,9 +692,7 @@ fn install_and_launch_ios_device(
             "--device",
             device_id,
             &summary.identifier,
-        ]
-        .into_iter()
-        .map(String::from),
+        ],
         "launch the app on the iOS device",
     )
 }
@@ -728,32 +702,26 @@ fn install_and_launch_android(
     device_id: &str,
     relay_port: u16,
 ) -> Result<()> {
+    let relay = format!("tcp:{relay_port}");
     run_platform_command(
         "adb",
-        [
-            "-s",
-            device_id,
-            "reverse",
-            &format!("tcp:{relay_port}"),
-            &format!("tcp:{relay_port}"),
-        ]
-        .into_iter()
-        .map(String::from),
+        &["-s", device_id, "reverse", &relay, &relay],
         "forward the development relay to Android",
     )?;
     run_platform_command(
         "adb",
-        ["-s", device_id, "install", "-r"]
-            .into_iter()
-            .map(String::from)
-            .chain(std::iter::once(
-                summary.bundle_dir.to_string_lossy().into_owned(),
-            )),
+        &[
+            "-s",
+            device_id,
+            "install",
+            "-r",
+            &summary.bundle_dir.to_string_lossy(),
+        ],
         "install the app on Android",
     )?;
     run_platform_command(
         "adb",
-        [
+        &[
             "-s",
             device_id,
             "shell",
@@ -761,19 +729,16 @@ fn install_and_launch_android(
             "-p",
             &summary.identifier,
             "1",
-        ]
-        .into_iter()
-        .map(String::from),
+        ],
         "launch the app on Android",
     )
 }
 
-fn run_platform_command(
-    program: &str,
-    arguments: impl IntoIterator<Item = String>,
-    action: &str,
-) -> Result<()> {
-    let arguments = arguments.into_iter().collect::<Vec<_>>();
+fn run_platform_command(program: &str, arguments: &[&str], action: &str) -> Result<()> {
+    let arguments = arguments
+        .iter()
+        .map(|argument| (*argument).to_owned())
+        .collect::<Vec<_>>();
     let mut retries = 0;
     loop {
         let output = ProcessCommand::new(program)
@@ -1120,7 +1085,7 @@ fn authorized(request: &[u8], expected: &str) -> bool {
         };
         if name.eq_ignore_ascii_case(b"x-tokamak-session") {
             found = true;
-            if trim_ascii(value) != expected.as_bytes() {
+            if value.trim_ascii() != expected.as_bytes() {
                 return false;
             }
         }
@@ -1138,16 +1103,13 @@ fn rewrite_request(request: &[u8], authority: &str) -> io::Result<Vec<u8>> {
     let mut rewritten = Vec::with_capacity(request.len());
     for (index, line) in request[..end].split(|byte| *byte == b'\n').enumerate() {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if index > 0
-            && let Some((name, _)) = header_parts(line)
-            && name.eq_ignore_ascii_case(b"x-tokamak-session")
-        {
+        let name = header_parts(line)
+            .filter(|_| index > 0)
+            .map(|(name, _)| name);
+        if name.is_some_and(|name| name.eq_ignore_ascii_case(b"x-tokamak-session")) {
             continue;
         }
-        if index > 0
-            && let Some((name, _)) = header_parts(line)
-            && name.eq_ignore_ascii_case(b"host")
-        {
+        if name.is_some_and(|name| name.eq_ignore_ascii_case(b"host")) {
             rewritten.extend_from_slice(b"Host: ");
             rewritten.extend_from_slice(authority.as_bytes());
         } else {
@@ -1158,18 +1120,6 @@ fn rewrite_request(request: &[u8], authority: &str) -> io::Result<Vec<u8>> {
     rewritten.extend_from_slice(b"\r\n");
     rewritten.extend_from_slice(&request[end + 4..]);
     Ok(rewritten)
-}
-
-fn trim_ascii(value: &[u8]) -> &[u8] {
-    let mut start = 0;
-    let mut end = value.len();
-    while start < end && value[start].is_ascii_whitespace() {
-        start += 1;
-    }
-    while end > start && value[end - 1].is_ascii_whitespace() {
-        end -= 1;
-    }
-    &value[start..end]
 }
 
 fn header_parts(line: &[u8]) -> Option<(&[u8], &[u8])> {

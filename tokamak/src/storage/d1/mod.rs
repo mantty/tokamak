@@ -20,7 +20,7 @@ use rusqlite::{Connection, TransactionState};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 
-use super::{Location, Open, SQLITE_FILES, lock, sqlite};
+use super::{Location, Open, SQLITE_FILES, lock, sqlite, text};
 use authorizer::Decision;
 use statement::{Output, Param, Value};
 
@@ -103,7 +103,7 @@ impl Open for D1Database {
                 version: Cell::new(version),
             })
         };
-        let session = open().map_err(|error| error.to_string())?;
+        let session = open().map_err(text)?;
         Ok(Self {
             session: Mutex::new(session),
         })
@@ -117,7 +117,7 @@ impl D1Database {
     /// transaction. Returns the response body and the database's bookmark.
     pub(crate) fn query(&self, body: &str, format: &str) -> (String, String) {
         let format = Format::parse(format);
-        let request = serde_json::from_str::<Request>(body).map_err(|error| error.to_string());
+        let request = serde_json::from_str::<Request>(body).map_err(text);
         let (response, bookmark) = {
             let session = lock(&self.session);
             let response =
@@ -269,14 +269,11 @@ impl Session {
     fn commit(&self) -> Result<(), String> {
         let wrote =
             self.connection.transaction_state(Some("main")).ok() == Some(TransactionState::Write);
-        let version = if wrote {
-            self.version.get().wrapping_add(1)
-        } else {
-            self.version.get()
-        };
+        let mut version = self.version.get();
         if wrote {
+            version = version.wrapping_add(1);
             self.trusted(|connection| connection.pragma_update(None, "user_version", version))
-                .map_err(|error| error.to_string())?;
+                .map_err(text)?;
         }
         self.trusted_batch("COMMIT")?;
         self.version.set(version);
@@ -297,7 +294,7 @@ impl Session {
                     |row| row.get(0),
                 )
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(text)?;
         Ok(u64::try_from(bytes).unwrap_or(0))
     }
 
@@ -319,7 +316,7 @@ impl Session {
     /// Apply the migration `name` in `directory` and record it in `table`, as
     /// one transaction.
     fn apply_migration(&self, directory: &Path, name: &str, table: &str) -> Result<(), String> {
-        let sql = fs::read_to_string(directory.join(name)).map_err(|error| error.to_string())?;
+        let sql = fs::read_to_string(directory.join(name)).map_err(text)?;
         let script = format!(
             "{sql}\nINSERT INTO {table} (name)\nvalues ('{}');",
             name.replace('\'', "''")
@@ -331,7 +328,7 @@ impl Session {
 
     fn trusted_batch(&self, sql: &str) -> Result<(), String> {
         self.trusted(|connection| connection.execute_batch(sql))
-            .map_err(|error| error.to_string())
+            .map_err(text)
     }
 
     fn trusted<T>(&self, work: impl FnOnce(&Connection) -> T) -> T {

@@ -172,21 +172,18 @@ fn run() -> Result<()> {
             server,
             host_address,
             command,
-        } => {
-            let request = dev::Request {
-                device_id,
-                project_dir: project,
-                platform_pack_dir: platform_pack,
-                tokamak_config_path: config,
-                wrangler_config_path: wrangler,
-                top,
-                platform_options,
-                server,
-                host_address,
-                command,
-            };
-            dev::run(&request)
-        }
+        } => dev::run(&dev::Request {
+            device_id,
+            project_dir: project,
+            platform_pack_dir: platform_pack,
+            tokamak_config_path: config,
+            wrangler_config_path: wrangler,
+            top,
+            platform_options,
+            server,
+            host_address,
+            command,
+        }),
         Command::Devices => {
             devices::list();
             Ok(())

@@ -58,9 +58,7 @@ impl Curve {
             p256::NistP256::OID => Ok(Self::P256),
             p384::NistP384::OID => Ok(Self::P384),
             p521::NistP521::OID => Ok(Self::P521),
-            _ => Err(KeyError::Data(
-                "The elliptic curve is not supported".to_owned(),
-            )),
+            _ => Err(KeyError::data("The elliptic curve is not supported")),
         }
     }
 }
@@ -145,7 +143,7 @@ pub(super) fn public_of(key: &EcSecret) -> EcPublic {
 /// A private scalar given as big-endian bytes, padded to the field size.
 pub(super) fn secret_from_scalar(curve: Curve, scalar: &[u8]) -> Result<EcSecret> {
     let padded = left_pad(scalar, curve.size())
-        .ok_or_else(|| KeyError::Data("The private key is too long".to_owned()))?;
+        .ok_or_else(|| KeyError::data("The private key is too long"))?;
     Ok(for_curve!(curve, EcSecret, c => c::SecretKey::from_slice(&padded)?))
 }
 
@@ -219,20 +217,12 @@ pub(super) fn verify(key: &EcPublic, prehash: &[u8], signature: &[u8]) -> bool {
 }
 
 pub(super) fn agree(key: &EcSecret, peer: &EcPublic) -> Result<Vec<u8>> {
-    match (key, peer) {
-        (EcSecret::P256(key), EcPublic::P256(peer)) => {
-            Ok(shared_secret::<p256::NistP256>(key, peer))
-        }
-        (EcSecret::P384(key), EcPublic::P384(peer)) => {
-            Ok(shared_secret::<p384::NistP384>(key, peer))
-        }
-        (EcSecret::P521(key), EcPublic::P521(peer)) => {
-            Ok(shared_secret::<p521::NistP521>(key, peer))
-        }
-        _ => Err(KeyError::Operation(
-            "The peer key is on a different curve".to_owned(),
-        )),
-    }
+    Ok(match (key, peer) {
+        (EcSecret::P256(key), EcPublic::P256(peer)) => shared_secret::<p256::NistP256>(key, peer),
+        (EcSecret::P384(key), EcPublic::P384(peer)) => shared_secret::<p384::NistP384>(key, peer),
+        (EcSecret::P521(key), EcPublic::P521(peer)) => shared_secret::<p521::NistP521>(key, peer),
+        _ => return Err(KeyError::operation("The peer key is on a different curve")),
+    })
 }
 
 fn shared_secret<C: p256::elliptic_curve::CurveArithmetic>(

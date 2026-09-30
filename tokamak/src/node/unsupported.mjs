@@ -5,5 +5,5 @@ export function unsupported(name) {
 }
 
 export function unsupportedFunction(name) {
-  return (..._args) => unsupported(name);
+  return () => unsupported(name);
 }

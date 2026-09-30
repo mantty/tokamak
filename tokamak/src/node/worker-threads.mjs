@@ -1,11 +1,11 @@
 import { MessageChannel, MessagePort } from "../events/web.mjs";
-import { unsupportedFunction } from "./unsupported.mjs";
+import { unsupported, unsupportedFunction } from "./unsupported.mjs";
 
 export { MessageChannel, MessagePort };
 export class BroadcastChannel {}
 export const SHARE_ENV = Symbol("worker_threads.SHARE_ENV");
 export class Worker {
-  constructor() { unsupportedFunction("worker_threads.Worker")(); }
+  constructor() { unsupported("worker_threads.Worker"); }
 }
 export const getEnvironmentData = () => undefined;
 export const isInternalThread = false;

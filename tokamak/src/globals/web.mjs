@@ -1,5 +1,5 @@
 import { markHostObject } from "./objects.mjs";
-import { decodeBase64, encodeBase64, randomBytes, detachArrayBuffer, digest, cryptoHmac, cryptoAesGcm, cryptoPbkdf2, cryptoHkdf, cryptoGenerateKey, cryptoImportKey, cryptoExportKey, cryptoSign, cryptoVerify, cryptoEncrypt, cryptoDecrypt, cryptoDerive, cryptoTimingSafeEqual, httpFetch } from "tokamak:host";
+import { decodeBase64, encodeBase64, randomBytes, digest, cryptoCreateDigest, cryptoHmac, cryptoAesGcm, cryptoPbkdf2, cryptoHkdf, cryptoGenerateKey, cryptoImportKey, cryptoExportKey, cryptoSign, cryptoVerify, cryptoEncrypt, cryptoDecrypt, cryptoDerive, cryptoTimingSafeEqual, httpFetch, scheduleTimer } from "tokamak:host";
 import { CloseEvent, CustomEvent, ErrorEvent, Event, EventTarget, ExtendableEvent, FetchEvent, MessageChannel, MessageEvent, MessagePort, PromiseRejectionEvent, ScheduledEvent, TailEvent, TraceEvent, WebSocketRequestResponsePair } from "../events/web.mjs";
 import { Blob, Body, Cache, CacheStorage, EventSource, File, FormData, Headers, Request, Response } from "../network/fetch.mjs";
 import { HTMLRewriter } from "../network/html-rewriter.mjs";
@@ -8,20 +8,13 @@ import { ReadableByteStreamController, ReadableStream, ReadableStreamBYOBReader,
 import { TextDecoder, TextEncoder, TextDecoderStream, TextEncoderStream } from "../streams/text.mjs";
 import { installIntlGlobals } from "../intl.mjs";
 import { captureAsyncContext, runInAsyncContext } from "../builtins/async-context.mjs";
-import { scheduleTimer } from "tokamak:host";
-import { cryptoCreateDigest } from "tokamak:host";
 import { structuredClone } from "./structured-clone.mjs";
 import { Performance, PerformanceEntry, PerformanceMark, PerformanceMeasure, PerformanceObserver, PerformanceObserverEntryList, PerformanceResourceTiming, performance } from "./performance.mjs";
 export { Performance, PerformanceEntry, PerformanceMark, PerformanceMeasure, PerformanceObserver, PerformanceObserverEntryList, PerformanceResourceTiming };
 export { structuredClone };
 
 function hidden(object, name, value) {
-  Object.defineProperty(object, name, {
-    configurable: true,
-    enumerable: false,
-    writable: true,
-    value,
-  });
+  Object.defineProperty(object, name, { configurable: true, enumerable: false, writable: true, value });
 }
 
 export class DOMException extends Error {
@@ -173,7 +166,7 @@ const subtle = {
       if (formatName !== "raw") throw notSupported();
       const bytes = toBytes(data);
       validateSecretLength(name, bytes);
-      validateUsages(keyUsages, name === "AES-KW" ? ["wrapKey", "unwrapKey"] : ["encrypt", "decrypt"]);
+      validateUsages(keyUsages, secretUsages(name));
       return secretKey({ name, length: bytes.byteLength * 8 }, extractable, keyUsages, bytes, { kind: "aes", format: "raw" });
     }
     if (name === "HKDF" || name === "PBKDF2") {
@@ -220,7 +213,7 @@ const subtle = {
     }
     if (symmetricNames.includes(name)) {
       const length = requiredAesLength(algorithm);
-      validateUsages(keyUsages, name === "AES-KW" ? ["wrapKey", "unwrapKey"] : ["encrypt", "decrypt"]);
+      validateUsages(keyUsages, secretUsages(name));
       return secretKey({ name, length }, extractable, keyUsages, randomBytes(length / 8), { kind: "aes", format: "raw" });
     }
     if (name === "HKDF" || name === "PBKDF2") throw notSupported();
@@ -235,31 +228,23 @@ const subtle = {
   async decrypt(algorithm, key, data) {
     validateKey(key, "decrypt");
     const record = requireAlgorithmKey(key, algorithm);
-    if (record.type === "secret" && symmetricNames.includes(record.algorithm.name) && record.algorithm.name !== "AES-KW") {
-      const parameter = record.algorithm.name === "AES-CTR" ? algorithmBytes(algorithm, "counter") : algorithmBytes(algorithm, "iv");
-      const length = record.algorithm.name === "AES-CTR" ? ctrLength(algorithm) : tagLength(algorithm);
-      return cryptoAesGcm(false, record.data, parameter, toBytes(data), aesOptions(length, record.algorithm.name, optionalBytes(algorithm?.additionalData)));
-    }
+    if (record.type === "secret" && symmetricNames.includes(record.algorithm.name) && record.algorithm.name !== "AES-KW") return aesCrypt(false, record, algorithm, () => toBytes(data));
     if (record.algorithm.name !== "RSA-OAEP") throw notSupported();
-    return cryptoDecrypt(toBytes(data), { kind: "rsa-oaep", format: record.meta.format, keyFormat: "pkcs8", key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) });
+    return rsaOaep(false, record, algorithm, toBytes(data), "pkcs8");
   },
   async encrypt(algorithm, key, data) {
     validateKey(key, "encrypt");
     const record = requireAlgorithmKey(key, algorithm);
-    if (record.type === "secret" && symmetricNames.includes(record.algorithm.name) && record.algorithm.name !== "AES-KW") {
-      const parameter = record.algorithm.name === "AES-CTR" ? algorithmBytes(algorithm, "counter") : algorithmBytes(algorithm, "iv");
-      const length = record.algorithm.name === "AES-CTR" ? ctrLength(algorithm) : tagLength(algorithm);
-      return cryptoAesGcm(true, record.data, parameter, toBytes(data), aesOptions(length, record.algorithm.name, optionalBytes(algorithm?.additionalData)));
-    }
+    if (record.type === "secret" && symmetricNames.includes(record.algorithm.name) && record.algorithm.name !== "AES-KW") return aesCrypt(true, record, algorithm, () => toBytes(data));
     if (record.algorithm.name !== "RSA-OAEP") throw notSupported();
-    return cryptoEncrypt(toBytes(data), { kind: "rsa-oaep", format: record.meta.format, keyFormat: "spki", key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) });
+    return rsaOaep(true, record, algorithm, toBytes(data), "spki");
   },
   async sign(algorithm, key, data) {
     validateKey(key, "sign");
     const record = requireAlgorithmKey(key, algorithm);
     if (record.algorithm.name === "HMAC") return cryptoHmac(record.algorithm.hash.name, record.data, toBytes(data));
-    const hash = record.algorithm.hash?.name ?? (["Ed25519", "NODE-ED25519"].includes(record.algorithm.name) ? "SHA-256" : algorithmHash(algorithm));
-    return cryptoSign(toBytes(data), { kind: record.meta.kind, format: record.meta.format, key: record.data, hash, saltLength: record.algorithm.name === "RSA-PSS" ? requiredSaltLength(algorithm) : undefined });
+    const hash = signatureHash(record, algorithm);
+    return cryptoSign(toBytes(data), { kind: record.meta.kind, format: record.meta.format, key: record.data, hash, saltLength: saltLength(record, algorithm) });
   },
   async verify(algorithm, key, signature, data) {
     validateKey(key, "verify");
@@ -268,12 +253,12 @@ const subtle = {
     if (record.algorithm.name === "HMAC") {
       const expected = new Uint8Array(cryptoHmac(record.algorithm.hash.name, record.data, toBytes(data)));
       if (expected.byteLength !== actual.byteLength) return false;
-      return timingSafeEqualBytes(expected, actual);
+      return cryptoTimingSafeEqual(expected, actual);
     }
-    const hash = record.algorithm.hash?.name ?? (["Ed25519", "NODE-ED25519"].includes(record.algorithm.name) ? "SHA-256" : algorithmHash(algorithm));
-    return cryptoVerify(actual, { kind: record.meta.kind, format: record.meta.format, key: record.data, hash, message: toBytes(data), saltLength: record.algorithm.name === "RSA-PSS" ? requiredSaltLength(algorithm) : undefined });
+    const hash = signatureHash(record, algorithm);
+    return cryptoVerify(actual, { kind: record.meta.kind, format: record.meta.format, key: record.data, hash, message: toBytes(data), saltLength: saltLength(record, algorithm) });
   },
-  timingSafeEqual(left, right) { return timingSafeEqualBytes(toBytes(left), toBytes(right)); },
+  timingSafeEqual(left, right) { return cryptoTimingSafeEqual(toBytes(left), toBytes(right)); },
   async deriveBits(algorithm, key, length) {
     return deriveBitsWithUsage(algorithm, key, length, "deriveBits");
   },
@@ -288,11 +273,11 @@ const subtle = {
     validateKey(wrappingKey, "wrapKey");
     const exported = await subtle.exportKey(format, key);
     const bytes = normalizeFormat(format) === "jwk" ? new TextEncoder().encode(JSON.stringify(exported)) : new Uint8Array(exported);
-    return encryptForWrap(wrappingKey, wrapAlgorithm, bytes);
+    return wrapCrypt(true, wrappingKey, wrapAlgorithm, bytes);
   },
   async unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgorithm, unwrappedKeyAlgorithm, extractable, usages) {
     validateKey(unwrappingKey, "unwrapKey");
-    const bytes = await decryptForWrap(unwrappingKey, unwrapAlgorithm, toBytes(wrappedKey));
+    const bytes = await wrapCrypt(false, unwrappingKey, unwrapAlgorithm, toBytes(wrappedKey));
     const source = normalizeFormat(format) === "jwk" ? parseWrappedJwk(bytes) : bytes;
     return subtle.importKey(format, source, unwrappedKeyAlgorithm, extractable, usages);
   },
@@ -366,12 +351,8 @@ function algorithmHash(algorithm) {
   if (!hashNames.includes(name)) throw notSupported();
   return name;
 }
-function algorithmBytes(algorithm, name) {
-  if (algorithm === null || typeof algorithm !== "object" || algorithm[name] === undefined) throw operationError(`AES algorithm ${name} is required`);
-  return toBytes(algorithm[name]);
-}
-function requiredBytes(algorithm, name) {
-  if (algorithm === null || typeof algorithm !== "object" || algorithm[name] === undefined) throw operationError(`${name} is required`);
+function requiredBytes(algorithm, name, prefix = "") {
+  if (algorithm === null || typeof algorithm !== "object" || algorithm[name] === undefined) throw operationError(`${prefix}${name} is required`);
   return toBytes(algorithm[name]);
 }
 function optionalBytes(value) { return value === undefined || value === null ? new Uint8Array() : toBytes(value); }
@@ -386,14 +367,14 @@ function deriveBitsWithUsage(algorithm, key, length, usage) {
   }
   if (name === "PBKDF2") {
     if (record.algorithm.name !== "PBKDF2") throw invalidAccess();
-    return pbkdf2(algorithmHash(algorithm), record.data, requiredBytes(algorithm, "salt"), positiveInteger(algorithm?.iterations, "PBKDF2 iterations"), bitLength);
+    return cryptoPbkdf2(algorithmHash(algorithm), record.data, requiredBytes(algorithm, "salt"), positiveInteger(algorithm?.iterations, "PBKDF2 iterations"), bitLength / 8);
   }
   if (name !== "ECDH" && name !== "X25519") throw notSupported();
   if (record.type !== "private" || record.algorithm.name !== name) throw invalidAccess();
   const peer = algorithm?.public;
   if (!(peer instanceof CryptoKey) || peer.type !== "public" || peer.algorithm.name !== name) throw invalidAccess();
   if (name === "ECDH" && record.algorithm.namedCurve !== peer.algorithm.namedCurve) throw invalidAccess();
-  const output = cryptoDerive({ kind: name === "X25519" ? "x25519" : "ec", format: "pkcs8", keyFormat: "pkcs8", key: record.data, peer: peerRecord(peer).data });
+  const output = cryptoDerive({ kind: name === "X25519" ? "x25519" : "ec", format: "pkcs8", keyFormat: "pkcs8", key: record.data, peer: requireKey(peer).data });
   if (bitLength > output.byteLength * 8) throw operationError("Derived secret is shorter than requested");
   return output.slice(0, bitLength / 8);
 }
@@ -417,6 +398,9 @@ function normalizeUsages(usages) {
 function validateUsages(usages, allowed) {
   if (usages.some(usage => !allowed.includes(usage))) throw new DOMException("Invalid key usage.", "SyntaxError");
 }
+function secretUsages(name) {
+  return name === "HMAC" ? ["sign", "verify"] : name === "AES-KW" ? ["wrapKey", "unwrapKey"] : ["encrypt", "decrypt"];
+}
 function validateAsymmetricUsages(usages, name, type) {
   const publicAllowed = name === "RSA-OAEP" ? ["encrypt"] : name === "ECDH" || name === "X25519" ? [] : ["verify"];
   const privateAllowed = name === "RSA-OAEP" ? ["decrypt"] : name === "ECDH" || name === "X25519" ? ["deriveBits", "deriveKey"] : ["sign"];
@@ -430,7 +414,6 @@ function requireKey(key) {
   if (!record) throw invalidAccess();
   return record;
 }
-function peerRecord(key) { return requireKey(key); }
 function requireAlgorithmKey(key, algorithm) {
   const record = requireKey(key);
   if (algorithmName(record.algorithm) !== algorithmName(algorithm)) throw notSupported();
@@ -452,6 +435,27 @@ function getRandomValues(value) {
 }
 
 function aesOptions(tagLength, mode, additionalData) { return { tagLength, mode, additionalData }; }
+// AES-GCM, AES-CBC or AES-CTR. `input()` supplies the data once the IV or counter and the length are read.
+function aesCrypt(encrypt, record, algorithm, input) {
+  const counter = record.algorithm.name === "AES-CTR";
+  const parameter = requiredBytes(algorithm, counter ? "counter" : "iv", "AES algorithm ");
+  const length = counter ? ctrLength(algorithm) : tagLength(algorithm);
+  return cryptoAesGcm(encrypt, record.data, parameter, input(), aesOptions(length, record.algorithm.name, optionalBytes(algorithm?.additionalData)));
+}
+function rsaOaep(encrypt, record, algorithm, bytes, keyFormat) {
+  const options = { kind: "rsa-oaep", format: record.meta.format, keyFormat, key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) };
+  return encrypt ? cryptoEncrypt(bytes, options) : cryptoDecrypt(bytes, options);
+}
+function signatureHash(record, algorithm) {
+  return record.algorithm.hash?.name ?? (["Ed25519", "NODE-ED25519"].includes(record.algorithm.name) ? "SHA-256" : algorithmHash(algorithm));
+}
+function saltLength(record, algorithm) {
+  if (record.algorithm.name !== "RSA-PSS") return undefined;
+  if (algorithm === null || typeof algorithm !== "object") throw new TypeError("RSA-PSS saltLength is required");
+  const length = integer(algorithm.saltLength, "saltLength");
+  if (length > 0x7fffffff) throw new TypeError("RSA-PSS saltLength is too large");
+  return length;
+}
 function createKey(algorithm, extractable, usages, type, data, meta) { return new CryptoKey(algorithm, extractable, usages, type, data, cryptoKeyBrand, meta); }
 function secretKey(algorithm, extractable, usages, data, meta) { return createKey(algorithm, extractable, usages, "secret", data, meta); }
 function parseBundle(value) {
@@ -506,18 +510,11 @@ function validateHmacImportLength(algorithm, data) {
 function validateHmacLength(length) { if (!Number.isSafeInteger(length) || length < 1 || length % 8 !== 0) throw dataError("Invalid HMAC key length"); }
 function hashBlockLength(hash) { return hash === "SHA-384" || hash === "SHA-512" ? 1024 : 512; }
 function hashByteLength(hash) { return { "SHA-1": 20, "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[hash]; }
-function requiredSaltLength(algorithm) {
-  if (algorithm === null || typeof algorithm !== "object") throw new TypeError("RSA-PSS saltLength is required");
-  const length = integer(algorithm.saltLength, "saltLength");
-  if (length > 0x7fffffff) throw new TypeError("RSA-PSS saltLength is too large");
-  return length;
-}
 
-function importJwk(data, algorithm, extractable, usages, expectedName) {
-  if (data === null || typeof data !== "object" || data instanceof ArrayBuffer || ArrayBuffer.isView(data) || Array.isArray(data)) {
+function importJwk(jwk, algorithm, extractable, usages, expectedName) {
+  if (jwk === null || typeof jwk !== "object" || jwk instanceof ArrayBuffer || ArrayBuffer.isView(jwk) || Array.isArray(jwk)) {
     throw new TypeError("JsonWebKey must be an object");
   }
-  const jwk = data;
   if (jwk === null || typeof jwk !== "object" || Array.isArray(jwk)) throw dataError("Invalid JWK");
   if (jwk.ext === false && extractable) throw dataError("JWK is not extractable");
   if (Array.isArray(jwk.key_ops) && jwk.key_ops.some(value => !usages.includes(value))) throw dataError("JWK key operations do not match usages");
@@ -527,7 +524,7 @@ function importJwk(data, algorithm, extractable, usages, expectedName) {
     validateSecretLength(expectedName, bytes);
     const hash = expectedName === "HMAC" ? algorithmHash(algorithm) : undefined;
     if (expectedName === "HMAC") validateHmacImportLength(algorithm, bytes);
-    validateUsages(usages, expectedName === "HMAC" ? ["sign", "verify"] : expectedName === "AES-KW" ? ["wrapKey", "unwrapKey"] : ["encrypt", "decrypt"]);
+    validateUsages(usages, secretUsages(expectedName));
     return secretKey(expectedName === "HMAC" ? { name: expectedName, hash: { name: hash }, length: algorithmLength(algorithm) ?? bytes.byteLength * 8 } : { name: expectedName, length: bytes.byteLength * 8 }, extractable, usages, bytes, { kind: expectedName === "HMAC" ? "hmac" : "aes", format: "jwk" });
   }
   const asymmetric = normalizeAsymmetricAlgorithm(algorithm);
@@ -592,9 +589,6 @@ function hkdf(hash, key, salt, info, length) {
   if (length / 8 > hashByteLength(hash) * 255) throw operationError("HKDF output is too long");
   return cryptoHkdf(hash, key, salt, info, length / 8);
 }
-function pbkdf2(hash, password, salt, iterations, length) {
-  return cryptoPbkdf2(hash, password, salt, iterations, length / 8);
-}
 function deriveLength(length) {
   const value = integer(length, "length");
   if (value === 0 || value % 8 !== 0) throw operationError("Derived length must be a non-zero multiple of 8");
@@ -609,30 +603,13 @@ function derivedKeyLength(algorithm) {
   }
   throw notSupported();
 }
-function encryptForWrap(key, algorithm, bytes) {
+function wrapCrypt(encrypt, key, algorithm, bytes) {
   const record = requireAlgorithmKey(key, algorithm);
-  if (record.algorithm.name === "AES-KW") return cryptoAesGcm(true, record.data, new Uint8Array(), bytes, aesOptions(128, "AES-KW"));
-  if (record.algorithm.name === "AES-GCM" || record.algorithm.name === "AES-CBC" || record.algorithm.name === "AES-CTR") {
-    const parameter = record.algorithm.name === "AES-CTR" ? algorithmBytes(algorithm, "counter") : algorithmBytes(algorithm, "iv");
-    const length = record.algorithm.name === "AES-CTR" ? ctrLength(algorithm) : tagLength(algorithm);
-    return cryptoAesGcm(true, record.data, parameter, bytes, aesOptions(length, record.algorithm.name, optionalBytes(algorithm?.additionalData)));
-  }
-  if (record.algorithm.name === "RSA-OAEP") return cryptoEncrypt(bytes, { kind: "rsa-oaep", format: record.meta.format, keyFormat: record.meta.private ? "pkcs8" : "spki", key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) });
+  const name = record.algorithm.name;
+  if (name === "AES-KW") return cryptoAesGcm(encrypt, record.data, new Uint8Array(), bytes, aesOptions(128, "AES-KW"));
+  if (name === "AES-GCM" || name === "AES-CBC" || name === "AES-CTR") return aesCrypt(encrypt, record, algorithm, () => bytes);
+  if (name === "RSA-OAEP") return rsaOaep(encrypt, record, algorithm, bytes, encrypt && !record.meta.private ? "spki" : "pkcs8");
   throw notSupported();
-}
-function decryptForWrap(key, algorithm, bytes) {
-  const record = requireAlgorithmKey(key, algorithm);
-  if (record.algorithm.name === "AES-KW") return cryptoAesGcm(false, record.data, new Uint8Array(), bytes, aesOptions(128, "AES-KW"));
-  if (record.algorithm.name === "AES-GCM" || record.algorithm.name === "AES-CBC" || record.algorithm.name === "AES-CTR") {
-    const parameter = record.algorithm.name === "AES-CTR" ? algorithmBytes(algorithm, "counter") : algorithmBytes(algorithm, "iv");
-    const length = record.algorithm.name === "AES-CTR" ? ctrLength(algorithm) : tagLength(algorithm);
-    return cryptoAesGcm(false, record.data, parameter, bytes, aesOptions(length, record.algorithm.name, optionalBytes(algorithm?.additionalData)));
-  }
-  if (record.algorithm.name === "RSA-OAEP") return cryptoDecrypt(bytes, { kind: "rsa-oaep", format: record.meta.format, keyFormat: "pkcs8", key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) });
-  throw notSupported();
-}
-function timingSafeEqualBytes(left, right) {
-  return cryptoTimingSafeEqual(left, right);
 }
 
 export class DigestStream extends WritableStream {

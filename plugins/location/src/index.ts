@@ -25,19 +25,14 @@ class Location extends FrontendPlugin {
   }
 
   getCurrentPosition(): Promise<Position> {
-    if (this.hasNativeTransport) {
-      return this.call("getCurrentPosition");
-    }
-    return web.getCurrentPosition();
+    return this.hasNativeTransport ? this.call("getCurrentPosition") : web.getCurrentPosition();
   }
 
   watchPosition(next: PositionCallback, error: PositionErrorCallback): () => void {
-    if (this.hasNativeTransport) {
-      return this.listen("watchPosition", (position) => {
-        next(position as Position);
-      }, error);
-    }
-    return web.watchPosition(next, error);
+    if (!this.hasNativeTransport) return web.watchPosition(next, error);
+    return this.listen("watchPosition", (position) => {
+      next(position as Position);
+    }, error);
   }
 }
 

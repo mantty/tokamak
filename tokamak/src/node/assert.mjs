@@ -99,12 +99,16 @@ function matches(thrown, expected) {
 function callbackResult(callback, expected, messageValue, operator) {
   let thrown;
   try { callback(); } catch (error) { thrown = error; }
-  if (operator === "throws" || operator === "rejects") {
+  if (operator === "throws") {
     if (thrown === undefined || !matches(thrown, expected)) assertionFailure(thrown, expected, operator, messageValue);
     return thrown;
   }
   if (thrown !== undefined) assertionFailure(thrown, undefined, operator, messageValue);
-  return undefined;
+}
+
+function matchesRegExp(value, regexp) {
+  if (!(regexp instanceof RegExp)) throw new TypeError("The \"regexp\" argument must be an instance of RegExp");
+  return regexp.test(String(value));
 }
 
 function assert(value, messageValue) {
@@ -127,8 +131,8 @@ assert.notDeepEqual = (actual, expected, messageValue) => { if (same(actual, exp
 assert.deepStrictEqual = (actual, expected, messageValue) => { if (!same(actual, expected)) assertionFailure(actual, expected, "deepStrictEqual", messageValue); };
 assert.notDeepStrictEqual = (actual, expected, messageValue) => { if (same(actual, expected)) assertionFailure(actual, expected, "notDeepStrictEqual", messageValue); };
 assert.ifError = value => { if (value != null) throw value; };
-assert.match = (value, regexp, messageValue) => { if (!(regexp instanceof RegExp)) throw new TypeError("The \"regexp\" argument must be an instance of RegExp"); if (!regexp.test(String(value))) assertionFailure(value, regexp, "match", messageValue); };
-assert.doesNotMatch = (value, regexp, messageValue) => { if (!(regexp instanceof RegExp)) throw new TypeError("The \"regexp\" argument must be an instance of RegExp"); if (regexp.test(String(value))) assertionFailure(value, regexp, "doesNotMatch", messageValue); };
+assert.match = (value, regexp, messageValue) => { if (!matchesRegExp(value, regexp)) assertionFailure(value, regexp, "match", messageValue); };
+assert.doesNotMatch = (value, regexp, messageValue) => { if (matchesRegExp(value, regexp)) assertionFailure(value, regexp, "doesNotMatch", messageValue); };
 assert.throws = (callback, expected, messageValue) => callbackResult(callback, expected, messageValue, "throws");
 assert.doesNotThrow = (callback, messageValue) => callbackResult(callback, undefined, messageValue, "doesNotThrow");
 assert.rejects = async (promise, expected, messageValue) => {
@@ -152,23 +156,8 @@ function strictAssert(value, messageValue) { assert(value, messageValue); }
 assert.strict = Object.assign(strictAssert, assert, { equal: assert.strictEqual, notEqual: assert.notStrictEqual, deepEqual: assert.deepStrictEqual, notDeepEqual: assert.notDeepStrictEqual });
 assert.strict.strict = assert.strict;
 
-export const strict = assert.strict;
-export const ok = assert.ok;
-export const equal = assert.equal;
-export const notEqual = assert.notEqual;
-export const strictEqual = assert.strictEqual;
-export const notStrictEqual = assert.notStrictEqual;
-export const deepEqual = assert.deepEqual;
-export const notDeepEqual = assert.notDeepEqual;
-export const deepStrictEqual = assert.deepStrictEqual;
-export const notDeepStrictEqual = assert.notDeepStrictEqual;
-export const ifError = assert.ifError;
-export const match = assert.match;
-export const doesNotMatch = assert.doesNotMatch;
-export const throws = assert.throws;
-export const doesNotThrow = assert.doesNotThrow;
-export const rejects = assert.rejects;
-export const doesNotReject = assert.doesNotReject;
-export const partialDeepStrictEqual = assert.partialDeepStrictEqual;
-export const fail = assert.fail;
+export const {
+  strict, ok, equal, notEqual, strictEqual, notStrictEqual, deepEqual, notDeepEqual, deepStrictEqual, notDeepStrictEqual,
+  ifError, match, doesNotMatch, throws, doesNotThrow, rejects, doesNotReject, partialDeepStrictEqual, fail,
+} = assert;
 export default assert;

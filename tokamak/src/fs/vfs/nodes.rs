@@ -57,17 +57,21 @@ impl Node {
         }
     }
 
-    pub(super) fn read_all(&self, path: &str) -> Result<Vec<u8>> {
+    /// The file behind this node; `path` names it in the error otherwise.
+    pub(super) fn file(&self, path: &str) -> Result<&FileNode> {
         match self {
-            Self::File(file) => {
-                let size = file.size()?;
-                let length =
-                    usize::try_from(size).map_err(|_| Error::new(ErrorKind::FileTooLarge, path))?;
-                file.read(0, length)
-            }
+            Self::File(file) => Ok(file),
             Self::Directory(_) => Err(Error::new(ErrorKind::IsDirectory, path)),
             Self::Symlink(_) => Err(Error::new(ErrorKind::Unsupported, path)),
         }
+    }
+
+    pub(super) fn read_all(&self, path: &str) -> Result<Vec<u8>> {
+        let file = self.file(path)?;
+        let size = file.size()?;
+        let length =
+            usize::try_from(size).map_err(|_| Error::new(ErrorKind::FileTooLarge, path))?;
+        file.read(0, length)
     }
 
     pub(super) fn read_dir(&self, path: &str) -> Result<Vec<DirectoryEntry>> {
@@ -78,19 +82,11 @@ impl Node {
     }
 
     pub(super) fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>> {
-        match self {
-            Self::File(file) => file.read(offset, length),
-            Self::Directory(_) => Err(Error::new(ErrorKind::IsDirectory, "")),
-            Self::Symlink(_) => Err(Error::new(ErrorKind::Unsupported, "")),
-        }
+        self.file("")?.read(offset, length)
     }
 
     pub(super) fn write(&self, offset: u64, data: &[u8], append: bool) -> Result<usize> {
-        match self {
-            Self::File(file) => file.write(offset, data, append),
-            Self::Directory(_) => Err(Error::new(ErrorKind::IsDirectory, "")),
-            Self::Symlink(_) => Err(Error::new(ErrorKind::Unsupported, "")),
-        }
+        self.file("")?.write(offset, data, append)
     }
 
     pub(super) fn is_device(&self) -> bool {
@@ -98,19 +94,11 @@ impl Node {
     }
 
     pub(super) fn size(&self) -> Result<u64> {
-        match self {
-            Self::File(file) => file.size(),
-            Self::Directory(_) => Ok(0),
-            Self::Symlink(target) => Ok(target.len() as u64),
-        }
+        Ok(self.stat()?.size)
     }
 
     pub(super) fn resize(&self, size: u64, path: &str) -> Result<()> {
-        match self {
-            Self::File(file) => file.resize(size, path),
-            Self::Directory(_) => Err(Error::new(ErrorKind::IsDirectory, path)),
-            Self::Symlink(_) => Err(Error::new(ErrorKind::Unsupported, path)),
-        }
+        self.file(path)?.resize(size, path)
     }
 }
 
@@ -131,10 +119,7 @@ pub(super) enum Directory {
 
 impl Directory {
     pub(super) fn memory(writable: bool) -> Self {
-        Self::Memory {
-            entries: Arc::new(Mutex::new(BTreeMap::new())),
-            writable,
-        }
+        Self::with_entries(writable, BTreeMap::new())
     }
 
     pub(super) fn with_entries(writable: bool, entries: BTreeMap<String, Node>) -> Self {
@@ -152,10 +137,7 @@ impl Directory {
         match self {
             Self::Memory { entries, .. } => Ok(lock(entries).get(name).cloned()),
             Self::Static { entries } => Ok(entries.get(name).cloned()),
-            Self::Bundle { bundle, relative } => {
-                let child = relative.join(name);
-                bundle.node(&child)
-            }
+            Self::Bundle { bundle, relative } => bundle.node(&relative.join(name)),
         }
     }
 
@@ -226,29 +208,17 @@ impl FileNode {
     }
 
     pub(super) fn stat(&self) -> Result<Stat> {
-        match self {
-            Self::Memory(data) => Ok(Stat {
-                kind: NodeType::File,
-                size: lock(data).len() as u64,
-                writable: true,
-                device: false,
-            }),
-            Self::Bundle { bundle, relative } => {
-                let metadata = bundle.metadata(relative)?;
-                Ok(Stat {
-                    kind: NodeType::File,
-                    size: metadata.len(),
-                    writable: false,
-                    device: false,
-                })
-            }
-            Self::Device(_) => Ok(Stat {
-                kind: NodeType::File,
-                size: 0,
-                writable: true,
-                device: true,
-            }),
-        }
+        let size = match self {
+            Self::Memory(data) => lock(data).len() as u64,
+            Self::Bundle { bundle, relative } => bundle.metadata(relative)?.len(),
+            Self::Device(_) => 0,
+        };
+        Ok(Stat {
+            kind: NodeType::File,
+            size,
+            writable: self.writable(),
+            device: self.is_device(),
+        })
     }
 
     pub(super) fn size(&self) -> Result<u64> {
@@ -332,24 +302,17 @@ impl Device {
 
 pub(super) fn shared_devices() -> Directory {
     static DEVICES: LazyLock<Directory> = LazyLock::new(|| Directory::Static {
-        entries: Arc::new(BTreeMap::from([
-            (
-                "full".to_owned(),
-                Node::File(FileNode::Device(Device::Full)),
-            ),
-            (
-                "null".to_owned(),
-                Node::File(FileNode::Device(Device::Null)),
-            ),
-            (
-                "random".to_owned(),
-                Node::File(FileNode::Device(Device::Random)),
-            ),
-            (
-                "zero".to_owned(),
-                Node::File(FileNode::Device(Device::Zero)),
-            ),
-        ])),
+        entries: Arc::new(
+            [
+                ("full", Device::Full),
+                ("null", Device::Null),
+                ("random", Device::Random),
+                ("zero", Device::Zero),
+            ]
+            .into_iter()
+            .map(|(name, device)| (name.to_owned(), Node::File(FileNode::Device(device))))
+            .collect(),
+        ),
     });
     DEVICES.clone()
 }

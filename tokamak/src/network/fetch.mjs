@@ -31,24 +31,33 @@ function usvString(value) {
   return output;
 }
 
+// A copy of an ArrayBuffer's or view's bytes; undefined for any other value.
+function bufferSourceBytes(value) {
+  if (value instanceof ArrayBuffer) return new Uint8Array(value).slice();
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
+}
+
+function writeChunks(output, chunks) {
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+}
+
 function bytes(value) {
   if (value == null) return new Uint8Array();
   if (value instanceof Uint8Array) return value.slice();
-  if (value instanceof ArrayBuffer) return new Uint8Array(value).slice();
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
+  const copy = bufferSourceBytes(value);
+  if (copy) return copy;
   if (value instanceof Blob) return value.__bytes.slice();
   if (value instanceof URLSearchParams) return new TextEncoder().encode(value.toString());
   if (value instanceof FormData) return formDataBody(value).body;
   return new TextEncoder().encode(usvString(value));
 }
 
-function streamChunkBytes(value) {
-  if (value instanceof ArrayBuffer) return new Uint8Array(value).slice();
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
-  throw new TypeError("Response stream must contain bytes");
-}
-
-function bodyStream(value, onUse) {
+function bodyStream(value) {
   const data = value instanceof Uint8Array ? value.slice() : bytes(value);
   const stream = new ReadableStream({ start(controller) {
     if (data.byteLength > 0) controller.enqueue(data.slice());
@@ -66,20 +75,15 @@ function consumeStream(stream) {
       while (true) {
         const result = await reader.read();
         if (result.done) break;
-        const chunk = streamChunkBytes(result.value);
+        const chunk = bufferSourceBytes(result.value);
+        if (!chunk) throw new TypeError("Response stream must contain bytes");
         chunks.push(chunk);
         length += chunk.byteLength;
       }
     } finally {
       reader.releaseLock();
     }
-    const output = new Uint8Array(length);
-    let offset = 0;
-    for (const chunk of chunks) {
-      output.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return output;
+    return writeChunks(new Uint8Array(length), chunks);
   })();
 }
 
@@ -156,13 +160,8 @@ export class Blob {
     markHostObject(this, "Blob");
     if (parts == null || typeof parts[Symbol.iterator] !== "function") throw new TypeError("Blob parts must be iterable");
     const chunks = [...parts].map(blobPartBytes);
-    const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
-    hidden(this, "__bytes", new Uint8Array(length));
-    let offset = 0;
-    for (const chunk of chunks) {
-      this.__bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
+    hidden(this, "__bytes", new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0)));
+    writeChunks(this.__bytes, chunks);
     hidden(this, blobBrand, true);
     hidden(this, "__type", mimeType(options?.type));
     hidden(this, "__size", this.__bytes.byteLength);
@@ -518,8 +517,7 @@ function responseInit(response) {
 
 function relativeIndex(value, length) {
   const number = Number(value);
-  if (Number.isNaN(number)) return 0;
-  if (number === -Infinity) return 0;
+  if (Number.isNaN(number) || number === -Infinity) return 0;
   if (number === Infinity) return length;
   return number < 0 ? Math.max(length + Math.trunc(number), 0) : Math.min(Math.trunc(number), length);
 }
@@ -527,9 +525,7 @@ function relativeIndex(value, length) {
 function blobPartBytes(value) {
   if (value instanceof Blob) return value.__bytes.slice();
   if (typeof value === "string") return new TextEncoder().encode(value);
-  if (value instanceof ArrayBuffer) return new Uint8Array(value).slice();
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
-  return new TextEncoder().encode(usvString(value));
+  return bufferSourceBytes(value) ?? new TextEncoder().encode(usvString(value));
 }
 
 function mimeType(value) {
@@ -684,13 +680,7 @@ function formDataBody(form) {
     chunks.push(file ? value.__bytes : encoder.encode(value), encoder.encode("\r\n"));
   }
   chunks.push(encoder.encode("--" + boundary + "--\r\n"));
-  const length = chunks.reduce((total, value) => total + value.byteLength, 0);
-  const body = new Uint8Array(length);
-  let offset = 0;
-  for (const value of chunks) {
-    body.set(value, offset);
-    offset += value.byteLength;
-  }
+  const body = writeChunks(new Uint8Array(chunks.reduce((total, value) => total + value.byteLength, 0)), chunks);
   return { body, contentType: "multipart/form-data; boundary=" + boundary };
 }
 
@@ -791,11 +781,11 @@ export class EventSource extends EventTarget {
   get readyState() { return this.__readyState; }
   get withCredentials() { return this.__withCredentials; }
   get onopen() { return this.__onopen; }
-  set onopen(value) { this.__onopen = value === null ? null : value; }
+  set onopen(value) { this.__onopen = value; }
   get onmessage() { return this.__onmessage; }
-  set onmessage(value) { this.__onmessage = value === null ? null : value; }
+  set onmessage(value) { this.__onmessage = value; }
   get onerror() { return this.__onerror; }
-  set onerror(value) { this.__onerror = value === null ? null : value; }
+  set onerror(value) { this.__onerror = value; }
 
   close() {
     if (this.__readyState === EventSource.CLOSED) return;
@@ -810,14 +800,10 @@ export class EventSource extends EventTarget {
   }
 
 }
-EventSource.CONNECTING = 0;
-EventSource.OPEN = 1;
-EventSource.CLOSED = 2;
-Object.assign(EventSource.prototype, {
-  CONNECTING: EventSource.CONNECTING,
-  OPEN: EventSource.OPEN,
-  CLOSED: EventSource.CLOSED,
-});
+for (const [value, name] of ["CONNECTING", "OPEN", "CLOSED"].entries()) {
+  EventSource[name] = value;
+  EventSource.prototype[name] = value;
+}
 
 const eventSourceStream = Symbol("event-source-stream");
 

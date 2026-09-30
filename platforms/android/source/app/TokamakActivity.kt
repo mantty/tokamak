@@ -122,8 +122,7 @@ class TokamakActivity : Activity() {
                 ) return@runOnUiThread
                 result
                     .onSuccess { port ->
-                        if (port != runtime.port) return@onSuccess
-                        if (port != proxyPort) {
+                        if (port == runtime.port && port != proxyPort) {
                             proxyPort = port
                             TokamakProxy.acquire(this, tokamak.appHost, port)
                         }

@@ -53,13 +53,12 @@ case "$target" in
     ;;
 esac
 
+bundle=$output
 if [[ "$platform" == macos ]]; then
-  bundle=$output
   contents=$bundle/Contents
   executable_dir=$contents/MacOS
   app_dir=$contents/Resources/app
 else
-  bundle=$output
   contents=$bundle
   executable_dir=$bundle
   app_dir=$bundle/app
@@ -77,27 +76,21 @@ write_plist() {
 }
 
 sign_bundle() {
-  if [[ "$platform" == ios ]]; then
-    signing_args=(
-      sign
-      --platform ios
-      --project "$project_dir"
-      --bundle "$bundle"
-      --bundle-id "$identifier"
-    )
-    if [[ -f "$metadata/device-id" ]]; then
-      signing_args+=(--device-id "$(cat "$metadata/device-id")")
-    fi
-    "$apple_tool" "${signing_args[@]}"
-  elif [[ "$platform" == macos ]]; then
-    "$apple_tool" sign \
-      --platform macos \
-      --project "$project_dir" \
-      --bundle "$bundle" \
-      --bundle-id "$identifier"
-  else
+  if [[ "$platform" != ios && "$platform" != macos ]]; then
     codesign --force --timestamp=none --sign - "$bundle"
+    return
   fi
+  signing_args=(
+    sign
+    --platform "$platform"
+    --project "$project_dir"
+    --bundle "$bundle"
+    --bundle-id "$identifier"
+  )
+  if [[ "$platform" == ios && -f "$metadata/device-id" ]]; then
+    signing_args+=(--device-id "$(cat "$metadata/device-id")")
+  fi
+  "$apple_tool" "${signing_args[@]}"
 }
 
 bundle_key_file=$output_parent/.tokamak/$(basename "$output").input-key
@@ -184,14 +177,12 @@ done
 registry=$temporary/TokamakPluginRegistry.swift
 {
   printf '%s\n\n' 'import Foundation'
-  printf '%s\n' 'func tokamakPlugins(host: TokamakHost) -> [any TokamakPlugin] {'
-  printf '%s\n' '  ['
+  printf '%s\n' 'func tokamakPlugins(host: TokamakHost) -> [any TokamakPlugin] {' '  ['
   for plugin in "$input/plugins"/*; do
     [[ -d "$plugin" ]] || continue
     printf '    %s(host: host),\n' "$(cat "$plugin/class")"
   done
-  printf '%s\n' '  ]'
-  printf '%s\n' '}'
+  printf '%s\n' '  ]' '}'
 } > "$registry"
 
 # The executable exports only the entry points of the runtime parts the app

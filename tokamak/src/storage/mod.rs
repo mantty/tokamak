@@ -129,12 +129,9 @@ impl Storage {
                 ));
             }
         }
-        let mut namespaces = Stores::new(directory, scratch, KV);
-        let mut databases = Stores::new(directory, scratch, D1);
-        let mut buckets = Stores::new(directory, scratch, R2);
-        namespaces.remove_unnamed(bindings)?;
-        databases.remove_unnamed(bindings)?;
-        buckets.remove_unnamed(bindings)?;
+        let mut namespaces = Stores::open(directory, scratch, KV, bindings)?;
+        let mut databases = Stores::open(directory, scratch, D1, bindings)?;
+        let mut buckets = Stores::open(directory, scratch, R2, bindings)?;
         let mut entries = BTreeMap::new();
         for binding in bindings {
             let entry = match binding {
@@ -240,36 +237,38 @@ impl StorageRuntime for Storage {
 
 /// The stores of one kind, each shared by the bindings that name it.
 struct Stores<T> {
-    kind: &'static str,
     directory: PathBuf,
     scratch: PathBuf,
     by_id: BTreeMap<String, Arc<Store<T>>>,
 }
 
 impl<T: Open> Stores<T> {
-    fn new(directory: &Path, scratch: &Path, kind: &'static str) -> Self {
-        Self {
-            kind,
+    /// The stores of `kind`, after deleting every one that none of
+    /// `bindings` names.
+    fn open(
+        directory: &Path,
+        scratch: &Path,
+        kind: &'static str,
+        bindings: &[StorageBinding],
+    ) -> io::Result<Self> {
+        let stores = Self {
             directory: directory.join(kind),
             scratch: scratch.join(kind),
             by_id: BTreeMap::new(),
-        }
-    }
-
-    /// Delete every store of this kind that none of `bindings` names.
-    fn remove_unnamed(&self, bindings: &[StorageBinding]) -> io::Result<()> {
+        };
         let named: BTreeSet<&str> = bindings
             .iter()
-            .filter(|binding| kind_of(binding) == self.kind)
+            .filter(|binding| kind_of(binding) == kind)
             .map(StorageBinding::store)
             .collect();
-        remove_entries(&self.directory, |name| {
+        remove_entries(&stores.directory, |name| {
             T::FILES
                 .iter()
                 .filter_map(|suffix| name.strip_suffix(suffix))
                 .any(|store| named.contains(store))
         })?;
-        remove_entries(&self.scratch, |name| named.contains(name))
+        remove_entries(&stores.scratch, |name| named.contains(name))?;
+        Ok(stores)
     }
 
     fn get(&mut self, id: &str) -> Arc<Store<T>> {
@@ -294,7 +293,7 @@ impl<T: Open> Store<T> {
             return Ok(Arc::clone(store));
         }
         if let Some(directory) = self.location.path.parent() {
-            fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+            fs::create_dir_all(directory).map_err(text)?;
         }
         let store = Arc::new(T::open(&self.location)?);
         *opened = Some(Arc::clone(&store));
@@ -312,6 +311,10 @@ fn kind_of(binding: &StorageBinding) -> &'static str {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn text(error: impl std::fmt::Display) -> String {
+    error.to_string()
 }
 
 /// Delete every entry of `directory` whose name `keep` rejects.

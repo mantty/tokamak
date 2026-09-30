@@ -379,6 +379,10 @@ The platform packs accept these settings:
 | `signing-identity` | `ios` | Identity SHA-1 for manual signing |
 | `provisioning-profile` | `ios` | Provisioning profile for manual signing |
 | `manifest` | `android` | Partial `AndroidManifest.xml` merged over the generated manifest |
+| `keystore` | `android` | Keystore that signs release builds |
+| `keystore-password` | `android` | Password of the keystore |
+| `key-alias` | `android` | Alias of the signing key in the keystore |
+| `key-password` | `android` | Password of the signing key; defaults to the keystore password |
 
 ```sh
 tok build ios --ios-build-number 5
@@ -553,6 +557,13 @@ receives, such as a data-only push notification, to an endpoint under
 `/tokamak/` that the Worker's `fetch` serves with the plugin's helper. In
 `tok dev` the post reaches the development server. The helper responds 404 on
 Cloudflare, so the same Worker deploys unchanged.
+
+`tok build android` produces a release APK, which R8 shrinks by removing
+unused code; it keeps every class and member name. The keystore settings sign
+the APK; without a keystore, the debug key signs it, so it installs for testing
+but cannot be published. Set the passwords through the
+`TOKAMAK_ANDROID_KEYSTORE_PASSWORD` and `TOKAMAK_ANDROID_KEY_PASSWORD`
+environment variables rather than `tokamak.jsonc`. `tok dev` builds debug APKs.
 
 Android builds run lint's `NewApi` check over the shell and plugin sources. A
 call to an API newer than the app's minimum SDK fails the build, naming the

@@ -230,6 +230,12 @@ impl Operation {
         }
     }
 
+    fn attribute_name(&self) -> Result<&str> {
+        self.attribute
+            .as_deref()
+            .ok_or_else(|| invalid("Missing attribute name"))
+    }
+
     fn stream(self, port: &Port) -> Result<Box<dyn StreamingHandler + Send + 'static>> {
         let content = self.value.ok_or_else(|| invalid("Missing HTML content"))?;
         let kind = self.content_type.into();
@@ -273,20 +279,10 @@ pub(super) fn run(
                 });
             }
             if let Some(handler) = spec.text {
-                handlers = handlers.text(move |text: &mut TextChunk<'_>| {
-                    port.call(handler, text_properties(text), |operation| {
-                        apply_text(text, operation, port)?;
-                        Ok(text_properties(text))
-                    })
-                });
+                handlers = handlers.text(text_handler(port, handler));
             }
             if let Some(handler) = spec.comments {
-                handlers = handlers.comments(move |comment: &mut Comment<'_>| {
-                    port.call(handler, comment_properties(comment), |operation| {
-                        apply_comment(comment, &operation)?;
-                        Ok(comment_properties(comment))
-                    })
-                });
+                handlers = handlers.comments(comment_handler(port, handler));
             }
             settings = settings.append_element_content_handler((Cow::Owned(selector), handlers));
         } else {
@@ -297,20 +293,10 @@ pub(super) fn run(
                 });
             }
             if let Some(handler) = spec.text {
-                handlers = handlers.text(move |text: &mut TextChunk<'_>| {
-                    port.call(handler, text_properties(text), |operation| {
-                        apply_text(text, operation, port)?;
-                        Ok(text_properties(text))
-                    })
-                });
+                handlers = handlers.text(text_handler(port, handler));
             }
             if let Some(handler) = spec.comments {
-                handlers = handlers.comments(move |comment: &mut Comment<'_>| {
-                    port.call(handler, comment_properties(comment), |operation| {
-                        apply_comment(comment, &operation)?;
-                        Ok(comment_properties(comment))
-                    })
-                });
+                handlers = handlers.comments(comment_handler(port, handler));
             }
             if let Some(handler) = spec.end {
                 handlers = handlers.end(move |end: &mut DocumentEnd<'_>| {
@@ -337,6 +323,24 @@ pub(super) fn run(
     Ok(())
 }
 
+fn text_handler(port: &Port, handler: usize) -> impl FnMut(&mut TextChunk<'_>) -> Result + '_ {
+    move |text| {
+        port.call(handler, text_properties(text), |operation| {
+            apply_text(text, operation, port)?;
+            Ok(text_properties(text))
+        })
+    }
+}
+
+fn comment_handler(port: &Port, handler: usize) -> impl FnMut(&mut Comment<'_>) -> Result + '_ {
+    move |comment| {
+        port.call(handler, comment_properties(comment), |operation| {
+            apply_comment(comment, &operation)?;
+            Ok(comment_properties(comment))
+        })
+    }
+}
+
 fn text_properties(text: &TextChunk<'_>) -> Value {
     json!({"text": text.as_str(), "lastInTextNode": text.last_in_text_node(), "removed": text.removed()})
 }
@@ -357,19 +361,10 @@ fn element_properties(element: &Element<'_, '_>) -> Value {
 
 fn apply_element(element: &mut Element<'_, '_>, operation: Operation, port: &Port) -> Result {
     match operation.name {
-        OperationName::SetAttribute => element.set_attribute(
-            operation
-                .attribute
-                .as_deref()
-                .ok_or_else(|| invalid("Missing attribute name"))?,
-            operation.string()?,
-        )?,
-        OperationName::RemoveAttribute => element.remove_attribute(
-            operation
-                .attribute
-                .as_deref()
-                .ok_or_else(|| invalid("Missing attribute name"))?,
-        ),
+        OperationName::SetAttribute => {
+            element.set_attribute(operation.attribute_name()?, operation.string()?)?;
+        }
+        OperationName::RemoveAttribute => element.remove_attribute(operation.attribute_name()?),
         OperationName::SetTagName => element.set_tag_name(operation.string()?)?,
         OperationName::SetInnerContent => {
             element.streaming_set_inner_content(operation.stream(port)?);

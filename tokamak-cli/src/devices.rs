@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::process::{Command as ProcessCommand, Stdio};
+use std::process::{Command as ProcessCommand, Output, Stdio};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -103,7 +103,7 @@ fn prepare_host(selector: &str) -> Result<Option<PreparedDevice>> {
             host.id
         );
     }
-    Ok(Some(prepared_device(host)?))
+    prepared_device(host).map(Some)
 }
 
 fn prepared_device(device: Device) -> Result<PreparedDevice> {
@@ -125,6 +125,27 @@ struct IosSimulatorTarget {
     state: String,
     has_been_booted: bool,
     availability_error: Option<String>,
+}
+
+impl IosSimulatorTarget {
+    fn kind(&self) -> String {
+        format!("{} / iOS Simulator", self.name)
+    }
+
+    fn unavailable_reason(&self) -> &str {
+        self.availability_error
+            .as_deref()
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or("the Simulator runtime is unavailable")
+    }
+
+    fn prepared_device(&self) -> PreparedDevice {
+        PreparedDevice {
+            id: self.id.clone(),
+            kind: self.kind(),
+            platform: Platform::IosSimulator,
+        }
+    }
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -223,19 +244,13 @@ fn prepare_ios_simulator(selector: &str) -> Result<Option<PreparedDevice>> {
         return Ok(None);
     };
     if !target.available {
-        let reason = target
-            .availability_error
-            .as_deref()
-            .filter(|reason| !reason.is_empty())
-            .unwrap_or("the Simulator runtime is unavailable");
-        bail!("iOS Simulator `{selector}` is unavailable: {reason}");
+        bail!(
+            "iOS Simulator `{selector}` is unavailable: {}",
+            target.unavailable_reason()
+        );
     }
     boot_ios_simulator(&target)?;
-    Ok(Some(PreparedDevice {
-        id: target.id,
-        kind: format!("{} / iOS Simulator", target.name),
-        platform: Platform::IosSimulator,
-    }))
+    Ok(Some(target.prepared_device()))
 }
 
 fn prepare_managed_ios() -> Result<PreparedDevice> {
@@ -266,22 +281,16 @@ fn prepare_managed_ios() -> Result<PreparedDevice> {
         .find(|target| target.name == MANAGED_IOS_NAME && target.available)
     {
         boot_ios_simulator(target)?;
-        return Ok(PreparedDevice {
-            id: target.id.clone(),
-            kind: format!("{} / iOS Simulator", target.name),
-            platform: Platform::IosSimulator,
-        });
+        return Ok(target.prepared_device());
     }
     if let Some(target) = targets
         .iter()
         .find(|target| target.name == MANAGED_IOS_NAME)
     {
-        let reason = target
-            .availability_error
-            .as_deref()
-            .filter(|reason| !reason.is_empty())
-            .unwrap_or("the Simulator runtime is unavailable");
-        bail!("managed iOS Simulator is unavailable: {reason}");
+        bail!(
+            "managed iOS Simulator is unavailable: {}",
+            target.unavailable_reason()
+        );
     }
 
     let device_types = run_tool("xcrun", &["simctl", "list", "devicetypes", "--json"]);
@@ -314,11 +323,7 @@ fn prepare_managed_ios() -> Result<PreparedDevice> {
         availability_error: None,
     };
     boot_ios_simulator(&target)?;
-    Ok(PreparedDevice {
-        id: target.id,
-        kind: format!("{} / iOS Simulator", target.name),
-        platform: Platform::IosSimulator,
-    })
+    Ok(target.prepared_device())
 }
 
 fn boot_ios_simulator(target: &IosSimulatorTarget) -> Result<()> {
@@ -347,13 +352,11 @@ fn prepare_ios_physical(selector: &str) -> Result<Option<PreparedDevice>> {
     if !cfg!(target_os = "macos") {
         return Ok(None);
     }
-    let Some(device) = discover_ios_physical_devices()
+    discover_ios_physical_devices()
         .into_iter()
         .find(|device| device.id == selector)
-    else {
-        return Ok(None);
-    };
-    Ok(Some(prepared_device(device)?))
+        .map(prepared_device)
+        .transpose()
 }
 
 fn prepare_managed_android() -> Result<PreparedDevice> {
@@ -425,13 +428,11 @@ fn prepare_android_device(selector: &str, adb: &ToolOutput) -> Result<Option<Pre
     if !adb.success {
         return Ok(None);
     }
-    if let Some(device) = parse_android_adb_devices(&adb.stdout)
+    parse_android_adb_devices(&adb.stdout)
         .into_iter()
         .find(|device| device.id == selector)
-    {
-        return Ok(Some(prepared_device(device)?));
-    }
-    Ok(None)
+        .map(prepared_device)
+        .transpose()
 }
 
 fn prepare_android_avd(avd_name: &str) -> Result<PreparedDevice> {
@@ -447,11 +448,7 @@ fn prepare_android_avd(avd_name: &str) -> Result<PreparedDevice> {
     }
     if let Some(serial) = find_android_avd(&adb.stdout, avd_name) {
         if android_boot_completed(&serial) {
-            return Ok(PreparedDevice {
-                id: serial,
-                kind: format!("{avd_name} / Android emulator (AVD)"),
-                platform: Platform::Android,
-            });
+            return Ok(android_avd_device(serial, avd_name));
         }
     } else {
         let Some(emulator) = android_tool_program("emulator", "emulator") else {
@@ -468,11 +465,15 @@ fn prepare_android_avd(avd_name: &str) -> Result<PreparedDevice> {
     let Some(serial) = wait_for_android_avd(avd_name) else {
         bail!("Android emulator `{avd_name}` did not become ready within 120 seconds");
     };
-    Ok(PreparedDevice {
+    Ok(android_avd_device(serial, avd_name))
+}
+
+fn android_avd_device(serial: String, avd_name: &str) -> PreparedDevice {
+    PreparedDevice {
         id: serial,
         kind: format!("{avd_name} / Android emulator (AVD)"),
         platform: Platform::Android,
-    })
+    }
 }
 
 fn device_platform(kind: &str) -> Platform {
@@ -586,53 +587,47 @@ fn host_device() -> Device {
 }
 
 fn discover_ios_devices() -> Vec<Device> {
-    let mut managed = Device {
+    let managed = |status| Device {
         id: "ios".to_owned(),
         kind: "managed iOS Simulator".to_owned(),
-        status: DeviceStatus::Blocked("iOS Simulator requires macOS and Xcode".to_owned()),
+        status,
     };
     if !cfg!(target_os = "macos") {
-        return vec![managed];
+        return vec![managed(DeviceStatus::Blocked(
+            "iOS Simulator requires macOS and Xcode".to_owned(),
+        ))];
     }
 
-    let runtimes = run_tool("xcrun", &["simctl", "list", "runtimes", "--json"]);
-    if !runtimes.available {
-        managed.status =
-            DeviceStatus::Blocked("Xcode command-line tools are not installed".to_owned());
-        return with_ios_physical_devices(managed);
-    }
-    if !runtimes.success {
-        managed.status =
-            DeviceStatus::Blocked("Xcode Simulator services are unavailable".to_owned());
-        return with_ios_physical_devices(managed);
-    }
-    if !has_available_ios_runtime(&runtimes.stdout) {
-        managed.status = DeviceStatus::Blocked("no iOS Simulator runtime is installed".to_owned());
-        return with_ios_physical_devices(managed);
-    }
-
-    let simulators = run_tool("xcrun", &["simctl", "list", "devices", "--json"]);
-    if !simulators.success {
-        managed.status =
-            DeviceStatus::Blocked("Xcode Simulator services are unavailable".to_owned());
-        return with_ios_physical_devices(managed);
-    }
-    let Some(simulator_devices) = parse_ios_simulator_devices(&simulators.stdout) else {
-        managed.status = DeviceStatus::Blocked("unable to read iOS Simulator devices".to_owned());
-        return with_ios_physical_devices(managed);
+    let mut devices = match discover_ios_simulators() {
+        Ok(simulators) => [managed(DeviceStatus::Available)]
+            .into_iter()
+            .chain(simulators)
+            .collect(),
+        Err(reason) => vec![managed(DeviceStatus::Blocked(reason.to_owned()))],
     };
-
-    managed.status = DeviceStatus::Available;
-    let mut devices = vec![managed];
-    devices.extend(simulator_devices);
     devices.extend(discover_ios_physical_devices());
     devices
 }
 
-fn with_ios_physical_devices(managed: Device) -> Vec<Device> {
-    let mut devices = vec![managed];
-    devices.extend(discover_ios_physical_devices());
-    devices
+/// Available simulators that have booted, or why the managed iOS Simulator is
+/// blocked.
+fn discover_ios_simulators() -> Result<Vec<Device>, &'static str> {
+    let runtimes = run_tool("xcrun", &["simctl", "list", "runtimes", "--json"]);
+    if !runtimes.available {
+        return Err("Xcode command-line tools are not installed");
+    }
+    if !runtimes.success {
+        return Err("Xcode Simulator services are unavailable");
+    }
+    if latest_ios_runtime(&runtimes.stdout).is_none() {
+        return Err("no iOS Simulator runtime is installed");
+    }
+
+    let simulators = run_tool("xcrun", &["simctl", "list", "devices", "--json"]);
+    if !simulators.success {
+        return Err("Xcode Simulator services are unavailable");
+    }
+    parse_ios_simulator_devices(&simulators.stdout).ok_or("unable to read iOS Simulator devices")
 }
 
 fn discover_ios_physical_devices() -> Vec<Device> {
@@ -708,16 +703,22 @@ struct ToolOutput {
     stderr: String,
 }
 
-fn run_tool(program: &str, arguments: &[&str]) -> ToolOutput {
-    match ProcessCommand::new(program).args(arguments).output() {
-        Ok(output) => ToolOutput {
+impl From<Output> for ToolOutput {
+    fn from(output: Output) -> Self {
+        Self {
             available: true,
             success: output.status.success(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        },
-        Err(_) => ToolOutput::default(),
+        }
     }
+}
+
+fn run_tool(program: &str, arguments: &[&str]) -> ToolOutput {
+    ProcessCommand::new(program)
+        .args(arguments)
+        .output()
+        .map_or_else(|_| ToolOutput::default(), ToolOutput::from)
 }
 
 fn run_tool_with_input(program: &str, arguments: &[&str], input: &str) -> Result<ToolOutput> {
@@ -730,13 +731,7 @@ fn run_tool_with_input(program: &str, arguments: &[&str], input: &str) -> Result
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(input.as_bytes())?;
     }
-    let output = child.wait_with_output()?;
-    Ok(ToolOutput {
-        available: true,
-        success: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    })
+    Ok(child.wait_with_output()?.into())
 }
 
 fn tool_failure(output: &ToolOutput, fallback: &str) -> String {
@@ -757,28 +752,20 @@ fn run_android_tool(name: &str, directory: &str, arguments: &[&str]) -> ToolOutp
 }
 
 fn android_tool_program(name: &str, directory: &str) -> Option<String> {
-    if let Some(path) = executable_in_path(name) {
-        return Some(path.to_string_lossy().into_owned());
-    }
-    let sdk_root = android_sdk_root()?;
-    let directories = if directory == "cmdline-tools" {
-        vec![
-            sdk_root.join("cmdline-tools/latest/bin"),
-            sdk_root.join("cmdline-tools/bin"),
-            sdk_root.join("tools/bin"),
-        ]
-    } else {
-        vec![sdk_root.join(directory)]
-    };
-    directories
-        .into_iter()
-        .flat_map(|directory| {
-            executable_suffixes()
-                .iter()
-                .map(move |suffix| directory.join(format!("{name}{suffix}")))
-        })
-        .find(|candidate| candidate.is_file())
-        .map(|candidate| candidate.to_string_lossy().into_owned())
+    let program = executable_in_path(name).or_else(|| {
+        let sdk_root = android_sdk_root()?;
+        let directories = if directory == "cmdline-tools" {
+            vec![
+                sdk_root.join("cmdline-tools/latest/bin"),
+                sdk_root.join("cmdline-tools/bin"),
+                sdk_root.join("tools/bin"),
+            ]
+        } else {
+            vec![sdk_root.join(directory)]
+        };
+        executable_in(directories, name)
+    })?;
+    Some(program.to_string_lossy().into_owned())
 }
 
 fn executable_suffixes() -> &'static [&'static str] {
@@ -790,16 +777,19 @@ fn executable_suffixes() -> &'static [&'static str] {
 }
 
 fn executable_in_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&path) {
-        for suffix in executable_suffixes() {
-            let candidate = directory.join(format!("{name}{suffix}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
+    executable_in(std::env::split_paths(&std::env::var_os("PATH")?), name)
+}
+
+/// The first `name` executable in `directories`.
+fn executable_in(directories: impl IntoIterator<Item = PathBuf>, name: &str) -> Option<PathBuf> {
+    directories
+        .into_iter()
+        .flat_map(|directory| {
+            executable_suffixes()
+                .iter()
+                .map(move |suffix| directory.join(format!("{name}{suffix}")))
+        })
+        .find(|candidate| candidate.is_file())
 }
 
 fn android_sdk_root() -> Option<PathBuf> {
@@ -809,18 +799,14 @@ fn android_sdk_root() -> Option<PathBuf> {
         .find(|path| path.is_dir())
 }
 
-fn has_available_ios_runtime(source: &str) -> bool {
-    latest_ios_runtime(source).is_some()
-}
-
 fn parse_ios_simulator_devices(source: &str) -> Option<Vec<Device>> {
     Some(
         parse_ios_simulator_targets(source)?
             .into_iter()
             .filter(|target| target.available && target.has_been_booted)
             .map(|target| Device {
+                kind: target.kind(),
                 id: target.id,
-                kind: format!("{} / iOS Simulator", target.name),
                 status: DeviceStatus::Available,
             })
             .collect(),
@@ -885,7 +871,7 @@ fn simulator_has_been_booted(entry: &Value) -> bool {
 fn latest_ios_runtime(source: &str) -> Option<String> {
     let value = serde_json::from_str::<Value>(source).ok()?;
     let runtimes = value.get("runtimes")?.as_array()?;
-    let mut candidates = runtimes
+    runtimes
         .iter()
         .filter_map(|runtime| {
             let identifier = first_json_string(runtime, &[&["identifier"]])?;
@@ -901,15 +887,14 @@ fn latest_ios_runtime(source: &str) -> Option<String> {
                 .unwrap_or_else(|| identifier.clone());
             Some((version_key(&version), identifier))
         })
-        .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    candidates.pop().map(|(_, identifier)| identifier)
+        .max()
+        .map(|(_, identifier)| identifier)
 }
 
 fn default_ios_device_type(source: &str) -> Option<String> {
     let value = serde_json::from_str::<Value>(source).ok()?;
     let device_types = value.get("devicetypes")?.as_array()?;
-    let mut candidates = device_types
+    device_types
         .iter()
         .filter_map(|device_type| {
             if device_type.get("isAvailable").and_then(Value::as_bool) == Some(false) {
@@ -924,11 +909,7 @@ fn default_ios_device_type(source: &str) -> Option<String> {
             }
             Some((name, identifier))
         })
-        .collect::<Vec<_>>();
-    candidates.sort();
-    candidates
-        .into_iter()
-        .next()
+        .min()
         .map(|(_, identifier)| identifier)
 }
 
@@ -1115,18 +1096,15 @@ fn parse_android_adb_devices(source: &str) -> Vec<Device> {
                 .strip_prefix("model:")
                 .map(|model| model.replace('_', " "))
         });
-        let is_emulator = id.starts_with("emulator-");
-        let kind = if is_emulator {
-            model.map_or_else(
-                || "Android emulator".to_owned(),
-                |model| format!("{model} / Android emulator"),
-            )
+        let generic_kind = if id.starts_with("emulator-") {
+            "Android emulator"
         } else {
-            model.map_or_else(
-                || "physical Android device".to_owned(),
-                |model| format!("{model} / physical Android device"),
-            )
+            "physical Android device"
         };
+        let kind = model.map_or_else(
+            || generic_kind.to_owned(),
+            |model| format!("{model} / {generic_kind}"),
+        );
         let status = match state {
             "device" => DeviceStatus::Available,
             "unauthorized" => {
@@ -1148,13 +1126,14 @@ fn parse_android_adb_devices(source: &str) -> Vec<Device> {
 }
 
 fn first_json_string(value: &Value, paths: &[&[&str]]) -> Option<String> {
-    paths.iter().find_map(|path| {
-        let mut current = value;
-        for key in *path {
-            current = current.get(*key)?;
-        }
-        current.as_str().map(str::to_owned)
-    })
+    paths
+        .iter()
+        .find_map(|path| json_at(value, path)?.as_str().map(str::to_owned))
+}
+
+fn json_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))
 }
 
 fn physical_ios_type(name: &str) -> String {
@@ -1205,19 +1184,11 @@ fn physical_ios_status(value: &Value) -> DeviceStatus {
         &["isConnected"][..],
         &["connectionProperties", "isConnected"][..],
     ] {
-        if json_bool_at(value, path) == Some(false) {
+        if json_at(value, path).and_then(Value::as_bool) == Some(false) {
             return DeviceStatus::Blocked("connect or trust the device".to_owned());
         }
     }
     DeviceStatus::Available
-}
-
-fn json_bool_at(value: &Value, path: &[&str]) -> Option<bool> {
-    let mut current = value;
-    for key in path {
-        current = current.get(*key)?;
-    }
-    current.as_bool()
 }
 
 fn is_ios_runtime(identifier: &str) -> bool {
@@ -1232,16 +1203,12 @@ fn render_devices(devices: &[Device]) -> String {
     let id_width = devices
         .iter()
         .map(|device| device.id.len())
-        .max()
-        .unwrap_or(2)
-        .max(2)
+        .fold(2, usize::max)
         + 2;
     let type_width = devices
         .iter()
         .map(|device| device.kind.len())
-        .max()
-        .unwrap_or(4)
-        .max(4)
+        .fold(4, usize::max)
         + 2;
     let mut output = format!("{:<id_width$}{:<type_width$}Status\n", "ID", "Type");
     for device in devices {

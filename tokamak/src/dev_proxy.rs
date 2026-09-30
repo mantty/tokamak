@@ -1,7 +1,7 @@
 //! Development requests forwarded to the host framework server.
 
 use flume::TryRecvError;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::HeaderValue;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
@@ -17,8 +17,8 @@ use crate::gateway::{
 use crate::quickjs::Error;
 use crate::transport::{
     BodyChunk, HttpRequest, HttpResponse, MAX_HEADERS, WEBSOCKET_WRITE_TIMEOUT, WebSocketCodec,
-    WebSocketRead, has_token, queue_websocket_message, read_header_block, response_stream,
-    websocket_accept, websocket_close, websocket_close_payload,
+    WebSocketRead, parse_header_fields, queue_websocket_message, read_header_block,
+    response_stream, websocket_accept, websocket_close, websocket_close_payload,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -63,9 +63,8 @@ impl DevProxy {
     pub(crate) fn new(config: &DevProxyConfig) -> Result<Arc<Self>, Error> {
         let session_token = config.session_token.trim().to_owned();
         if session_token.is_empty() || session_token.bytes().any(|byte| byte.is_ascii_control()) {
-            return Err(Error::Startup(
-                "development session token must be non-empty and contain no control characters"
-                    .to_owned(),
+            return Err(Error::startup(
+                "development session token must be non-empty and contain no control characters",
             ));
         }
         Ok(Arc::new(Self {
@@ -125,7 +124,12 @@ impl DevProxy {
         Ok(())
     }
 
-    fn request_http(&self, request: &HttpRequest) -> Result<HostResponse, Error> {
+    /// Sends `request` over a new upstream connection and reads the response head.
+    fn exchange(
+        &self,
+        request: &HttpRequest,
+        websocket: bool,
+    ) -> Result<(UpstreamStream, HttpResponse, Option<HostFraming>), Error> {
         let mut upstream = self.connect()?;
         upstream.set_timeouts(CONNECT_TIMEOUT, CONNECT_TIMEOUT)?;
         write_request(
@@ -133,9 +137,14 @@ impl DevProxy {
             &self.endpoint,
             &self.session_token,
             request,
-            false,
+            websocket,
         )?;
-        let (mut response, framing) = read_response(&mut upstream, &request.method)?;
+        let (response, framing) = read_response(&mut upstream, &request.method)?;
+        Ok((upstream, response, framing))
+    }
+
+    fn request_http(&self, request: &HttpRequest) -> Result<HostResponse, Error> {
+        let (upstream, mut response, framing) = self.exchange(request, false)?;
         let body = framing.map(|framing| {
             let (sender, cancelled, body) = response_stream();
             response.body = body;
@@ -159,11 +168,11 @@ impl DevProxy {
         let mut codec = self.open_websocket(request)?;
         response
             .send(JobResponse::WebSocket)
-            .map_err(|_| Error::Startup("WebSocket response receiver closed".to_owned()))?;
+            .map_err(|_| Error::startup("WebSocket response receiver closed"))?;
         websocket
             .outgoing
             .send(WebSocketOutbound::Ready)
-            .map_err(|_| Error::Startup("WebSocket gateway closed".to_owned()))?;
+            .map_err(|_| Error::startup("WebSocket gateway closed"))?;
 
         let result = proxy_websocket(&mut codec, websocket, execution);
         if result.is_err() {
@@ -182,19 +191,10 @@ impl DevProxy {
         let key = request
             .headers
             .get("sec-websocket-key")
-            .ok_or_else(|| Error::Startup("WebSocket key is missing".to_owned()))?
+            .ok_or_else(|| Error::startup("WebSocket key is missing"))?
             .to_str()
             .map_err(io::Error::other)?;
-        let mut upstream = self.connect()?;
-        upstream.set_timeouts(CONNECT_TIMEOUT, CONNECT_TIMEOUT)?;
-        write_request(
-            &mut upstream,
-            &self.endpoint,
-            &self.session_token,
-            request,
-            true,
-        )?;
-        let (upgrade, _) = read_response(&mut upstream, &request.method)?;
+        let (mut upstream, upgrade, _) = self.exchange(request, true)?;
         if upgrade.status != 101 {
             return Err(Error::Startup(format!(
                 "host WebSocket upgrade returned HTTP {}",
@@ -206,8 +206,8 @@ impl DevProxy {
             .get("sec-websocket-accept")
             .is_none_or(|actual| *actual != websocket_accept(key))
         {
-            return Err(Error::Startup(
-                "host WebSocket upgrade returned an invalid accept key".to_owned(),
+            return Err(Error::startup(
+                "host WebSocket upgrade returned an invalid accept key",
             ));
         }
         upstream.set_timeouts(WEBSOCKET_POLL, WEBSOCKET_WRITE_TIMEOUT)?;
@@ -295,7 +295,7 @@ fn proxy_websocket(
                     frame.opcode,
                     frame.payload,
                 )?,
-                _ => return Err(Error::Startup("invalid host WebSocket opcode".to_owned())),
+                _ => return Err(Error::startup("invalid host WebSocket opcode")),
             },
         }
     }
@@ -334,52 +334,40 @@ impl Endpoint {
         } else if let Some(value) = value.strip_prefix("https://") {
             (true, value)
         } else {
-            return Err(Error::Startup(
-                "development endpoint must start with http:// or https://".to_owned(),
+            return Err(Error::startup(
+                "development endpoint must start with http:// or https://",
             ));
         };
         if authority.is_empty()
             || authority.contains(['/', '?', '#'])
             || authority.chars().any(char::is_whitespace)
         {
-            return Err(Error::Startup(
-                "development endpoint must contain only a host and port".to_owned(),
+            return Err(Error::startup(
+                "development endpoint must contain only a host and port",
             ));
         }
         let default_port = if tls { 443 } else { 80 };
         let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
-            let end = rest.find(']').ok_or_else(|| {
-                Error::Startup("development endpoint has an invalid IPv6 host".to_owned())
-            })?;
-            let host = &rest[..end];
-            let suffix = &rest[end + 1..];
+            let (host, suffix) = rest.split_once(']').ok_or_else(invalid_ipv6_host)?;
             let port = if suffix.is_empty() {
                 default_port
             } else {
-                parse_port(suffix.strip_prefix(':').ok_or_else(|| {
-                    Error::Startup("development endpoint has an invalid IPv6 host".to_owned())
-                })?)?
+                parse_port(suffix.strip_prefix(':').ok_or_else(invalid_ipv6_host)?)?
             };
             (host.to_owned(), port)
         } else if let Some((host, port)) = authority.rsplit_once(':') {
             if host.is_empty() {
-                return Err(Error::Startup(
-                    "development endpoint host is empty".to_owned(),
-                ));
+                return Err(Error::startup("development endpoint host is empty"));
             }
             if host.contains(':') {
-                return Err(Error::Startup(
-                    "development endpoint has an invalid IPv6 host".to_owned(),
-                ));
+                return Err(invalid_ipv6_host());
             }
             (host.to_owned(), parse_port(port)?)
         } else {
             (authority.to_owned(), default_port)
         };
         if host.is_empty() || host.chars().any(char::is_control) {
-            return Err(Error::Startup(
-                "development endpoint host is invalid".to_owned(),
-            ));
+            return Err(Error::startup("development endpoint host is invalid"));
         }
         Ok(Self {
             authority: if host.contains(':') {
@@ -394,10 +382,14 @@ impl Endpoint {
     }
 }
 
+fn invalid_ipv6_host() -> Error {
+    Error::startup("development endpoint has an invalid IPv6 host")
+}
+
 fn parse_port(value: &str) -> Result<u16, Error> {
     value
         .parse()
-        .map_err(|_| Error::Startup("development endpoint port is invalid".to_owned()))
+        .map_err(|_| Error::startup("development endpoint port is invalid"))
 }
 
 enum UpstreamStream {
@@ -512,39 +504,14 @@ fn read_response(
     let _version = status_parts.next();
     let status: u16 = status_parts
         .next()
-        .ok_or_else(|| Error::Startup("host response status is missing".to_owned()))?
+        .ok_or_else(|| Error::startup("host response status is missing"))?
         .parse()
-        .map_err(|_| Error::Startup("host response status is invalid".to_owned()))?;
+        .map_err(|_| Error::startup("host response status is invalid"))?;
     let status_text = status_parts.next().unwrap_or_default().to_owned();
-    let mut response_headers = HeaderMap::new();
-    let mut content_length = None;
-    let mut chunked = false;
-    for line in lines {
-        if line.is_empty() {
-            break;
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        let name = name.trim().to_ascii_lowercase();
-        let value = value.trim_matches([' ', '\t']);
-        if name == "content-length" {
-            content_length = Some(value.parse().map_err(|_| {
-                Error::Startup("host response content length is invalid".to_owned())
-            })?);
-        }
-        if name == "transfer-encoding" && has_token(value, "chunked") {
-            chunked = true;
-        }
-        if !is_hop_by_hop(&name) {
-            response_headers
-                .try_append(
-                    HeaderName::from_bytes(name.as_bytes()).map_err(io::Error::other)?,
-                    HeaderValue::from_bytes(value.as_bytes()).map_err(io::Error::other)?,
-                )
-                .map_err(io::Error::other)?;
-        }
-    }
+    let (mut response_headers, content_length, chunked) =
+        parse_header_fields(lines, "host response content length is invalid", |name| {
+            !is_hop_by_hop(name)
+        })?;
     if chunked {
         response_headers.remove("content-length");
     }
@@ -601,7 +568,7 @@ fn pump_chunked_body(body: &mut HostBody) -> Result<(), Error> {
         };
         let size = line.split(';').next().unwrap_or_default().trim();
         let mut remaining = usize::from_str_radix(size, 16)
-            .map_err(|_| Error::Startup("host response chunk size is invalid".to_owned()))?;
+            .map_err(|_| Error::startup("host response chunk size is invalid"))?;
         if remaining == 0 {
             read_chunked_trailers(body)?;
             return Ok(());
@@ -628,9 +595,7 @@ fn pump_chunked_body(body: &mut HostBody) -> Result<(), Error> {
             return Ok(());
         }
         if terminator != *b"\r\n" {
-            return Err(Error::Startup(
-                "host response chunk is not terminated".to_owned(),
-            ));
+            return Err(Error::startup("host response chunk is not terminated"));
         }
     }
 }
@@ -676,9 +641,7 @@ fn read_chunked_trailers(body: &mut HostBody) -> Result<(), Error> {
         };
         bytes = bytes.saturating_add(line.len() + 2);
         if bytes > MAX_HEADERS {
-            return Err(Error::Startup(
-                "host response trailers exceed the limit".to_owned(),
-            ));
+            return Err(Error::startup("host response trailers exceed the limit"));
         }
         if line.is_empty() {
             return Ok(());
@@ -695,13 +658,13 @@ fn read_upstream_line(body: &mut HostBody) -> Result<Option<String>, Error> {
         }
         line.push(byte[0]);
         if line.len() > MAX_HEADERS {
-            return Err(Error::Startup("host response line is too long".to_owned()));
+            return Err(Error::startup("host response line is too long"));
         }
         if line.ends_with(b"\r\n") {
             line.truncate(line.len() - 2);
             return String::from_utf8(line)
                 .map(Some)
-                .map_err(|_| Error::Startup("host response line is not UTF-8".to_owned()));
+                .map_err(|_| Error::startup("host response line is not UTF-8"));
         }
     }
 }

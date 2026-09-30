@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use super::keys::{cursor, cursor_key, prefix_end};
-use super::{Location, Open, SQLITE_FILES, lock, sqlite};
+use super::{Location, Open, SQLITE_FILES, lock, sqlite, text};
 
 /// Entries in key order; `value` is last so records can end in a zero blob.
 const SCHEMA: &str = "
@@ -61,10 +61,8 @@ impl Open for KvNamespace {
     const FILES: &'static [&'static str] = &SQLITE_FILES;
 
     fn open(location: &Location) -> Result<Self, String> {
-        let connection = sqlite::open(&location.path).map_err(|error| error.to_string())?;
-        connection
-            .execute_batch(SCHEMA)
-            .map_err(|error| error.to_string())?;
+        let connection = sqlite::open(&location.path).map_err(text)?;
+        connection.execute_batch(SCHEMA).map_err(text)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -139,8 +137,8 @@ impl KvNamespace {
         let after = cursor_key(page_cursor).unwrap_or_default();
         let end = prefix_end(prefix);
         let connection = lock(&self.connection);
-        let mut keys = list_keys(&connection, prefix, end.as_deref(), &after, limit, now)
-            .map_err(|error| error.to_string())?;
+        let mut keys =
+            list_keys(&connection, prefix, end.as_deref(), &after, limit, now).map_err(text)?;
         let next = (keys.len() > limit).then(|| {
             keys.truncate(limit);
             keys.last().map(|key| cursor(&key.name))
@@ -170,10 +168,6 @@ fn read(connection: &Connection, key: &str, now: i64) -> Result<Option<Entry>, S
     let mut value = Vec::with_capacity(blob.len());
     blob.read_to_end(&mut value).map_err(text)?;
     Ok(Some(Entry { value, metadata }))
-}
-
-fn text(error: impl std::fmt::Display) -> String {
-    error.to_string()
 }
 
 /// Unexpired keys from `prefix` up to `end`, after `after`.

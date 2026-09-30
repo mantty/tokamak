@@ -28,6 +28,10 @@ function unsupported(name) {
   return error;
 }
 
+function typeName(answer) {
+  return Object.entries(typeNumbers).find(([, number]) => number === answer.type)?.[0];
+}
+
 function queryType(type) {
   const value = String(type).toUpperCase();
   if (typeNumbers[value] === undefined) throw new TypeError(`Unknown DNS record type: ${type}`);
@@ -48,7 +52,7 @@ function quoted(value) {
 }
 
 function answerValue(answer) {
-  const type = Object.entries(typeNumbers).find(([, number]) => number === answer.type)?.[0] ?? answer.type;
+  const type = typeName(answer) ?? answer.type;
   const data = String(answer.data ?? "").replace(/\.$/, "");
   switch (type) {
     case "A":
@@ -106,16 +110,26 @@ async function dohQuery(name, type) {
 export function resolvePromise(name, type, options = {}) {
   return dohQuery(name, type).then(answers => {
     if (type === "TXT") return answers.map(answer => answerValue(answer));
-    if (type === "MX" || type === "SOA" || type === "SRV" || type === "NAPTR" || type === "CAA") {
-      return answers.map(answer => options.ttl ? answerWithTtl(answer) : answerValue(answer));
-    }
     return answers.map(answer => options.ttl ? answerWithTtl(answer) : answerValue(answer));
   });
 }
 
-function callbackArgs(args) {
+function queryAllTypes(name) {
+  return Promise.all(Object.keys(typeNumbers).map(type => dohQuery(name, type).catch(() => [])));
+}
+
+function anyRecords(answers) {
+  return answers.flat().map(answer => ({ address: answerValue(answer), type: typeName(answer), ttl: Number(answer.TTL ?? 0) }));
+}
+
+function lastCallback(args) {
   const callback = args.at(-1);
   if (typeof callback !== "function") throw new TypeError("callback must be a function");
+  return callback;
+}
+
+function callbackArgs(args) {
+  const callback = lastCallback(args);
   const options = args[1] !== null && typeof args[1] === "object" ? args[1] : {};
   return { name: args[0], options, callback };
 }
@@ -126,8 +140,7 @@ function callbackResolve(type, args) {
 }
 
 function unsupportedCallback(name, args) {
-  const callback = args.at(-1);
-  if (typeof callback !== "function") throw new TypeError("callback must be a function");
+  const callback = lastCallback(args);
   queueMicrotask(() => callback(unsupported(name)));
 }
 
@@ -138,9 +151,7 @@ export function resolve4(...args) { callbackResolve("A", args); }
 export function resolve6(...args) { callbackResolve("AAAA", args); }
 export function resolveAny(...args) {
   const { name, callback } = callbackArgs(args);
-  Promise.all(Object.keys(typeNumbers).map(type => dohQuery(name, type).catch(() => []))).then(answers => {
-    callback(null, answers.flat().map(answer => ({ address: answerValue(answer), type: Object.entries(typeNumbers).find(([, number]) => number === answer.type)?.[0], ttl: Number(answer.TTL ?? 0) })));
-  }, error => callback(error));
+  queryAllTypes(name).then(answers => { callback(null, anyRecords(answers)); }, error => callback(error));
 }
 export function resolveCaa(...args) { callbackResolve("CAA", args); }
 export function resolveCname(...args) { callbackResolve("CNAME", args); }
@@ -192,7 +203,7 @@ export const promises = {
   resolve: () => Promise.reject(unsupported("resolve")),
   resolve4: (name, options) => resolvePromise(name, "A", options),
   resolve6: (name, options) => resolvePromise(name, "AAAA", options),
-  resolveAny: name => Promise.all(Object.keys(typeNumbers).map(type => dohQuery(name, type).catch(() => []))).then(answers => answers.flat().map(answer => ({ address: answerValue(answer), type: Object.entries(typeNumbers).find(([, number]) => number === answer.type)?.[0], ttl: Number(answer.TTL ?? 0) }))),
+  resolveAny: name => queryAllTypes(name).then(answers => anyRecords(answers)),
   resolveCaa: (name, options) => resolvePromise(name, "CAA", options),
   resolveCname: (name, options) => resolvePromise(name, "CNAME", options),
   resolveMx: (name, options) => resolvePromise(name, "MX", options),

@@ -1,7 +1,7 @@
-import { unsupportedFunction } from "./unsupported.mjs";
+import { unsupported, unsupportedFunction } from "./unsupported.mjs";
 
 export class Script {
-  constructor() { unsupportedFunction("vm.Script")(); }
+  constructor() { unsupported("vm.Script"); }
 }
 export const compileFunction = unsupportedFunction("vm.compileFunction");
 export const constants = {};

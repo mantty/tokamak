@@ -1,13 +1,4 @@
-import {
-  Agent,
-  ClientRequest,
-  IncomingMessage,
-  OutgoingMessage,
-  Server,
-  ServerResponse,
-  STATUS_CODES,
-  globalAgent,
-} from "./http.mjs";
+import { Agent, ClientRequest, IncomingMessage, OutgoingMessage, Server, ServerResponse, STATUS_CODES, globalAgent } from "./http.mjs";
 
 export { Agent, ClientRequest, IncomingMessage, OutgoingMessage, Server, ServerResponse, STATUS_CODES, globalAgent };
 export const CRLF = "\r\n";
@@ -37,31 +28,8 @@ export function validateHeaderValue(name, value) {
 export function _connectionListener() {}
 
 export default {
-  Agent,
-  ClientRequest,
-  IncomingMessage,
-  OutgoingMessage,
-  Server,
-  ServerResponse,
-  STATUS_CODES,
-  globalAgent,
-  CRLF,
-  chunkExpression,
-  continueExpression,
-  kIncomingMessage,
-  kHighWaterMark,
-  kServerResponse,
-  kUniqueHeaders,
-  methods,
-  parsers,
-  httpServerPreClose,
-  kConnectionsCheckingInterval,
-  _checkInvalidHeaderChar,
-  _checkIsHttpToken,
-  parseUniqueHeadersOption,
-  setupConnectionsTracking,
-  storeHTTPOptions,
-  validateHeaderName,
-  validateHeaderValue,
-  _connectionListener,
+  Agent, ClientRequest, IncomingMessage, OutgoingMessage, Server, ServerResponse, STATUS_CODES, globalAgent, CRLF,
+  chunkExpression, continueExpression, kIncomingMessage, kHighWaterMark, kServerResponse, kUniqueHeaders, methods, parsers,
+  httpServerPreClose, kConnectionsCheckingInterval, _checkInvalidHeaderChar, _checkIsHttpToken, parseUniqueHeadersOption,
+  setupConnectionsTracking, storeHTTPOptions, validateHeaderName, validateHeaderValue, _connectionListener,
 };

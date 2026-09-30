@@ -48,6 +48,14 @@ pub enum Error {
     Call(String),
 }
 
+#[cfg(feature = "native")]
+impl Error {
+    /// A startup failure described by `message`.
+    pub(crate) fn startup(message: &str) -> Self {
+        Self::Startup(message.to_owned())
+    }
+}
+
 /// Static asset service paths.
 #[cfg(feature = "native")]
 #[derive(Clone, Debug, Deserialize, Serialize)]

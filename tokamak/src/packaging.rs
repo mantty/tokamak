@@ -9,14 +9,6 @@ use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const WORKER_BUNDLE: &str = "worker.bundle";
-const WORKER_MANIFEST: &str = "worker-manifest.json";
-const WORKER_MODULES: &str = "worker-modules";
-const WORKER_ENVIRONMENT: &str = "worker-environment.json";
-const ASSET_MANIFEST: &str = "asset-manifest.json";
-const ASSETS: &str = "assets";
-const BUNDLE: &str = "bundle";
-const D1_MIGRATIONS: &str = "d1-migrations";
 const WORKER_BUNDLE_HEADER: &[u8] = b"TOKAMAK-QJS-GZIP\x01";
 
 /// Failures reading or writing packaged Worker bytecode and manifests.
@@ -57,49 +49,49 @@ impl PackageLayout {
     /// The `QuickJS` Worker bytecode.
     #[must_use]
     pub fn worker_bundle(&self) -> PathBuf {
-        self.root.join(WORKER_BUNDLE)
+        self.root.join("worker.bundle")
     }
 
     /// The manifest describing the split `QuickJS` Worker modules.
     #[must_use]
     pub fn worker_manifest(&self) -> PathBuf {
-        self.root.join(WORKER_MANIFEST)
+        self.root.join("worker-manifest.json")
     }
 
     /// The directory containing split `QuickJS` Worker modules.
     #[must_use]
     pub fn worker_modules(&self) -> PathBuf {
-        self.root.join(WORKER_MODULES)
+        self.root.join("worker-modules")
     }
 
     /// The normalized Worker environment bindings.
     #[must_use]
     pub fn worker_environment(&self) -> PathBuf {
-        self.root.join(WORKER_ENVIRONMENT)
+        self.root.join("worker-environment.json")
     }
 
     /// The static asset routing manifest.
     #[must_use]
     pub fn asset_manifest(&self) -> PathBuf {
-        self.root.join(ASSET_MANIFEST)
+        self.root.join("asset-manifest.json")
     }
 
     /// The static asset directory.
     #[must_use]
     pub fn assets(&self) -> PathBuf {
-        self.root.join(ASSETS)
+        self.root.join("assets")
     }
 
     /// The read-only Worker `/bundle` directory.
     #[must_use]
     pub fn bundle(&self) -> PathBuf {
-        self.root.join(BUNDLE)
+        self.root.join("bundle")
     }
 
     /// The migrations packaged for the D1 binding named `binding`.
     #[must_use]
     pub fn d1_migrations(&self, binding: &str) -> PathBuf {
-        self.root.join(D1_MIGRATIONS).join(binding)
+        self.root.join("d1-migrations").join(binding)
     }
 
     /// Whether the packaged app serves static assets.

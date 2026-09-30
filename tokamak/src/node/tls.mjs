@@ -1,6 +1,6 @@
 import EventEmitter from "../events/events.mjs";
 import { Socket } from "./net.mjs";
-import { unsupportedFunction } from "./unsupported.mjs";
+import { unsupported, unsupportedFunction } from "./unsupported.mjs";
 
 export const CLIENT_RENEG_LIMIT = 3;
 export const CLIENT_RENEG_WINDOW = 600;
@@ -32,7 +32,7 @@ export class TLSSocket extends Socket {
   _wrapHandle() {}
   disableRenegotiation() {}
   enableTrace() {}
-  exportKeyingMaterial() { return unsupportedFunction("tls.TLSSocket.exportKeyingMaterial")(); }
+  exportKeyingMaterial() { return unsupported("tls.TLSSocket.exportKeyingMaterial"); }
   getCertificate() { return undefined; }
   getCipher() { return undefined; }
   getEphemeralKeyInfo() { return undefined; }

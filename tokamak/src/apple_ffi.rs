@@ -51,13 +51,7 @@ pub unsafe extern "C" fn tokamak_runtime_start(
     error_len: usize,
 ) -> *mut c_void {
     let result = unsafe { start(packaged_dir, state_dir, storage_dir, host) };
-    match result {
-        Ok(runtime) => Box::into_raw(Box::new(runtime)).cast(),
-        Err(message) => {
-            write_error(error, error_len, &message);
-            ptr::null_mut()
-        }
-    }
+    into_handle(result, error, error_len)
 }
 
 /// Start a tokamak runtime that forwards requests to a host development server.
@@ -76,13 +70,7 @@ pub unsafe extern "C" fn tokamak_runtime_start_development(
     error_len: usize,
 ) -> *mut c_void {
     let result = unsafe { start_development(state_dir, host, endpoint, session_token) };
-    match result {
-        Ok(runtime) => Box::into_raw(Box::new(runtime)).cast(),
-        Err(message) => {
-            write_error(error, error_len, &message);
-            ptr::null_mut()
-        }
-    }
+    into_handle(result, error, error_len)
 }
 
 /// Return the runtime's loopback port.
@@ -372,6 +360,20 @@ fn report(event: Event) {
         Event::CertificatesRenewed => eprintln!("tokamak certificates renewed"),
         Event::Failed { message } => eprintln!("tokamak runtime failed: {message}"),
         Event::RequestFailed { message } => eprintln!("tokamak request failed: {message}"),
+    }
+}
+
+fn into_handle(
+    result: Result<Runtime, String>,
+    error: *mut c_char,
+    error_len: usize,
+) -> *mut c_void {
+    match result {
+        Ok(runtime) => Box::into_raw(Box::new(runtime)).cast(),
+        Err(message) => {
+            write_error(error, error_len, &message);
+            ptr::null_mut()
+        }
     }
 }
 

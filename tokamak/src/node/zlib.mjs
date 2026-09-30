@@ -9,10 +9,14 @@ function invalidType(name, expected) {
   return Object.assign(new TypeError('The "' + name + '" argument must be of type ' + expected), { code: "ERR_INVALID_ARG_TYPE" });
 }
 
+function outOfRange(name) {
+  return Object.assign(new RangeError(name + " is out of range"), { code: "ERR_OUT_OF_RANGE" });
+}
+
 function numberOption(value, name, min, max, fallback) {
   if (value === undefined || Number.isNaN(value)) return fallback;
   if (typeof value !== "number") throw invalidType(name, "number");
-  if (value < min || value > max) throw Object.assign(new RangeError(name + " is out of range"), { code: "ERR_OUT_OF_RANGE" });
+  if (value < min || value > max) throw outOfRange(name);
   return Math.trunc(value);
 }
 
@@ -85,13 +89,11 @@ class ZlibTransform extends Transform {
   }
 
   _transform(chunk, _encoding, callback) {
-    this._job = { input: chunk, offset: 0, flush: chunk[flushMarker] ?? this._defaultFlush, callback, complete: false };
-    this._pump();
+    startJob(this, chunk, chunk[flushMarker] ?? this._defaultFlush, callback);
   }
 
   _flush(callback) {
-    this._job = { input: empty, offset: 0, flush: this._finishFlush, callback, complete: false };
-    this._pump();
+    startJob(this, empty, this._finishFlush, callback);
   }
 
   _read(size) {
@@ -170,12 +172,16 @@ class ZlibTransform extends Transform {
 
   _processChunk(chunk, flush, callback) {
     if (typeof callback === "function") {
-      this._job = { input: inputBytes(chunk), offset: 0, flush, callback, complete: false };
-      this._pump();
+      startJob(this, inputBytes(chunk), flush, callback);
       return;
     }
     return processSync(this, inputBytes(chunk), flush);
   }
+}
+
+function startJob(engine, input, flush, callback) {
+  engine._job = { input, offset: 0, flush, callback, complete: false };
+  engine._pump();
 }
 
 function processSync(engine, input, flush) {
@@ -285,7 +291,8 @@ export const zstdDecompressSync = (input, options) => operation(ZstdDecompress, 
 export function zstdDecompress(input, options, callback) { callbackOperation(ZstdDecompress, input, options, callback); }
 
 const codeNames = ["Z_OK", "Z_STREAM_END", "Z_NEED_DICT", "Z_ERRNO", "Z_STREAM_ERROR", "Z_DATA_ERROR", "Z_MEM_ERROR", "Z_BUF_ERROR", "Z_VERSION_ERROR"];
-export const codes = Object.assign(Object.fromEntries(codeNames.map((name, index) => [name, index === 0 ? 0 : index === 1 ? 1 : index === 2 ? 2 : -index + 2])), Object.fromEntries(codeNames.map((name, index) => [index === 0 ? 0 : index === 1 ? 1 : index === 2 ? 2 : -index + 2, name])));
+const codeEntries = codeNames.map((name, index) => [name, index <= 2 ? index : 2 - index]);
+export const codes = Object.assign(Object.fromEntries(codeEntries), Object.fromEntries(codeEntries.map(([name, code]) => [code, name])));
 export const constants = {
   Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3, Z_FINISH: 4, Z_BLOCK: 5, Z_TREES: 6,
   Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1, Z_STREAM_ERROR: -2, Z_DATA_ERROR: -3, Z_MEM_ERROR: -4,
@@ -384,7 +391,7 @@ const exportedConstants = Object.fromEntries(
 
 export function crc32(input, value = 0) {
   if (typeof value !== "number") throw invalidType("value", "number");
-  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) throw Object.assign(new RangeError("value is out of range"), { code: "ERR_OUT_OF_RANGE" });
+  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) throw outOfRange("value");
   let crc = (value ^ -1) >>> 0;
   for (const byte of inputBytes(input)) {
     crc ^= byte;

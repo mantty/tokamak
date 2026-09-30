@@ -63,8 +63,7 @@ class Socket {
   get startTls() { return () => startTls(this); }
 
   close() {
-    const state = socketStates.get(this);
-    closeState(state);
+    closeState(socketStates.get(this));
     return Promise.resolve();
   }
 }
@@ -98,7 +97,7 @@ function createState(address, mode, native, allowHalfOpen, shared = undefined) {
     state.opened.reject(error);
     closeState(state, error);
   });
-  const readable = new ReadableStream({
+  state.readable = new ReadableStream({
     type: "bytes",
     async pull(controller) {
       if (state.transferred) {
@@ -130,7 +129,7 @@ function createState(address, mode, native, allowHalfOpen, shared = undefined) {
     },
     cancel(reason) { closeState(state, reason); },
   });
-  const writable = new WritableStream({
+  state.writable = new WritableStream({
     async write(value) {
       if (state.transferred) throw new TypeError("Socket was transferred");
       if (state.terminated) throw state.error ?? new TypeError("Socket is closed");
@@ -146,8 +145,6 @@ function createState(address, mode, native, allowHalfOpen, shared = undefined) {
     },
     abort(reason) { closeState(state, reason); },
   });
-  state.readable = readable;
-  state.writable = writable;
   return state;
 }
 
@@ -171,8 +168,7 @@ function startTls(socket) {
   state.transferred = true;
   state.upgraded = true;
   const native = state.native.startTls(state.address.hostname);
-  const upgraded = createState(state.address, "on", native, state.allowHalfOpen, state);
-  return new Socket(upgraded);
+  return new Socket(createState(state.address, "on", native, state.allowHalfOpen, state));
 }
 
 export function connect(address, options = {}) {

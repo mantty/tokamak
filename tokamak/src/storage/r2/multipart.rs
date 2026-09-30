@@ -115,7 +115,7 @@ impl R2Bucket {
         transaction.commit()?;
         body.keep();
         drop(connection);
-        remove_files(&self.parts, replaced);
+        remove_files(&self.parts, replaced.as_slice());
         Ok(etag)
     }
 
@@ -149,7 +149,7 @@ impl R2Bucket {
         drop(connection);
         remove_files(
             &self.objects,
-            replaced.iter().map(|replaced| &replaced.version),
+            replaced.map(|replaced| replaced.version).as_slice(),
         );
         remove_files(&self.parts, &files);
         Ok(object)

@@ -1,7 +1,7 @@
-import { unsupportedFunction } from "./unsupported.mjs";
+import { unsupported, unsupportedFunction } from "./unsupported.mjs";
 
 export class DatabaseSync {
-  constructor() { unsupportedFunction("sqlite.DatabaseSync")(); }
+  constructor() { unsupported("sqlite.DatabaseSync"); }
 }
 export class StatementSync {}
 export const backup = unsupportedFunction("sqlite.backup");

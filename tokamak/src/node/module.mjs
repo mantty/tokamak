@@ -15,6 +15,12 @@ function nameOf(value) {
   return value.startsWith("node:") ? value.slice(5) : value;
 }
 
+function moduleNotFound(key) {
+  const error = new Error(`Cannot find module '${key}'`);
+  error.code = "MODULE_NOT_FOUND";
+  return error;
+}
+
 export function isBuiltin(value) {
   return typeof value === "string" && (value.startsWith("node:") || builtinModules.includes(nameOf(value)));
 }
@@ -24,17 +30,11 @@ export function createRequire() {
     const key = nameOf(name);
     const value = globalThis.process?.getBuiltinModule?.(key);
     if (value !== undefined) return value;
-    const error = new Error(`Cannot find module '${key}'`);
-    error.code = "MODULE_NOT_FOUND";
-    throw error;
+    throw moduleNotFound(key);
   };
   require.resolve = name => {
     const key = nameOf(name);
-    if (!isBuiltin(key)) {
-      const error = new Error(`Cannot find module '${key}'`);
-      error.code = "MODULE_NOT_FOUND";
-      throw error;
-    }
+    if (!isBuiltin(key)) throw moduleNotFound(key);
     return `node:${key}`;
   };
   require.cache = {};
@@ -78,12 +78,7 @@ export function Module(id, parent) {
 Module.prototype.load = function () { return notImplemented("load"); };
 Module.prototype.require = createRequire();
 Module.prototype.isPreloading = false;
-Module.builtinModules = builtinModules;
-Module.isBuiltin = isBuiltin;
-Module.createRequire = createRequire;
-Module.Module = Module;
-Module._cache = {};
-Module._debug = false;
+Object.assign(Module, { builtinModules, isBuiltin, createRequire, Module, _cache: {}, _debug: false });
 Module._findPath = () => notImplemented("_findPath");
 Module._initPaths = () => notImplemented("_initPaths");
 Module._load = () => notImplemented("_load");
@@ -91,24 +86,14 @@ Module._nodeModulePaths = () => [];
 Module._preloadModules = [];
 Module._resolveFilename = () => notImplemented("_resolveFilename");
 Module._resolveLookupPaths = () => notImplemented("_resolveLookupPaths");
-Module._pathCache = {};
-Module._extensions = {};
-Module.globalPaths = [];
-Module.constants = { compileCacheStatus: { FAILED: 0, ENABLED: 1, ALREADY_ENABLED: 2, DISABLED: 3 } };
-Module.SourceMap = SourceMap;
-Module.stripTypeScriptTypes = stripTypeScriptTypes;
-Module.register = register;
-Module.registerHooks = registerHooks;
-Module.runMain = runMain;
-Module.findPackageJSON = findPackageJSON;
-Module.getCompileCacheDir = getCompileCacheDir;
-Module.findSourceMap = findSourceMap;
-Module.getSourceMapsSupport = getSourceMapsSupport;
-Module.setSourceMapsSupport = setSourceMapsSupport;
-Module.enableCompileCache = enableCompileCache;
-Module.flushCompileCache = flushCompileCache;
-Module.syncBuiltinESMExports = syncBuiltinESMExports;
-Module.wrap = wrap;
+Object.assign(Module, {
+  _pathCache: {},
+  _extensions: {},
+  globalPaths: [],
+  constants: { compileCacheStatus: { FAILED: 0, ENABLED: 1, ALREADY_ENABLED: 2, DISABLED: 3 } },
+  SourceMap, stripTypeScriptTypes, register, registerHooks, runMain, findPackageJSON, getCompileCacheDir, findSourceMap,
+  getSourceMapsSupport, setSourceMapsSupport, enableCompileCache, flushCompileCache, syncBuiltinESMExports, wrap,
+});
 
 export { builtinModules };
 export default Module;

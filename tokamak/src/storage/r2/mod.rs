@@ -22,7 +22,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 
-use super::{Location, Open, lock, remove_entries, sqlite};
+use super::{Location, Open, lock, remove_entries, sqlite, text};
 pub(crate) use body::{Body, BodyReader, BodyWriter, Checksum};
 use conditional::Conditional;
 pub(crate) use failure::Failure;
@@ -181,7 +181,7 @@ impl Open for R2Bucket {
     const FILES: &'static [&'static str] = &[""];
 
     fn open(location: &Location) -> Result<Self, String> {
-        Self::open_in(&location.path, &location.scratch).map_err(|error| error.to_string())
+        Self::open_in(&location.path, &location.scratch).map_err(text)
     }
 }
 
@@ -275,7 +275,7 @@ impl R2Bucket {
         drop(connection);
         remove_files(
             &self.objects,
-            replaced.iter().map(|replaced| &replaced.version),
+            replaced.map(|replaced| replaced.version).as_slice(),
         );
         Ok(Some(object))
     }
@@ -356,12 +356,8 @@ impl Object {
             etag: row.get(3)?,
             uploaded: row.get(4)?,
             checksums: Json(row.get(5)?),
-            http_metadata: if http { Some(Json(row.get(6)?)) } else { None },
-            custom_metadata: if custom {
-                Some(Json(row.get(7)?))
-            } else {
-                None
-            },
+            http_metadata: http.then(|| row.get(6).map(Json)).transpose()?,
+            custom_metadata: custom.then(|| row.get(7).map(Json)).transpose()?,
             storage_class: row.get(8)?,
             range: None,
         })
@@ -412,7 +408,7 @@ fn record(connection: &Connection, object: &Object) -> rusqlite::Result<()> {
 
 /// Remove the files `names` in `directory`, which no row names. A file left
 /// behind is removed when the bucket next opens.
-fn remove_files(directory: &Path, names: impl IntoIterator<Item = impl AsRef<Path>>) {
+fn remove_files(directory: &Path, names: &[String]) {
     for name in names {
         let _ = fs::remove_file(directory.join(name));
     }
@@ -439,8 +435,7 @@ fn validate_key(key: &str) -> Result<(), Failure> {
 
 /// Custom metadata must fit R2's limit on its names and values.
 fn validate_metadata(custom: &Json) -> Result<(), Failure> {
-    let fields: BTreeMap<String, String> =
-        serde_json::from_str(&custom.0).map_err(|error| Failure::Storage(error.to_string()))?;
+    let fields: BTreeMap<String, String> = serde_json::from_str(&custom.0)?;
     let size: usize = fields
         .iter()
         .map(|(name, value)| serialized_length(name) + serialized_length(value))

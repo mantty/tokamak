@@ -87,8 +87,6 @@ export class StringDecoder {
       state.lastNeed = 0;
       state.lastTotal = 0;
       remember(state, input.slice(complete).length ? input.slice(complete) : input.slice(-Math.min(3, input.length)));
-      state.pending = input.slice(complete);
-      return decodeBytes(state, input.slice(0, complete));
     } else if (state.encoding === "utf8") {
       const pending = utf8Pending(input);
       complete = pending.start;

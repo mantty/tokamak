@@ -13,8 +13,7 @@ function httpServers() {
   return globalThis.__tokamak_http_servers;
 }
 
-// Matches workerd's node:http: duplicate values comma-join into one entry, and
-// set-cookie combines in `headers` but is absent from `rawHeaders`.
+// Duplicate values comma-join into one entry; set-cookie combines in `headers` but is absent from `rawHeaders`.
 function incomingHeaders(webHeaders) {
   const headers = {};
   const rawHeaders = [];
@@ -247,7 +246,7 @@ export class Server extends EventEmitter {
   }
 }
 
-function requestUrl(input, options) {
+function requestUrl(input) {
   if (input instanceof URL) return input.toString();
   if (typeof input === "string") return input;
   const value = input ?? {};
@@ -267,7 +266,7 @@ function requestOptions(input, options) {
 export function request(input, options, callback) {
   if (typeof options === "function") callback = options;
   const settings = requestOptions(input, options);
-  return new ClientRequest(requestUrl(input, settings), settings, callback);
+  return new ClientRequest(requestUrl(input), settings, callback);
 }
 
 export function get(input, options, callback) {

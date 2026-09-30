@@ -342,41 +342,24 @@ impl Runtime {
         let deadline = Instant::now() + timeout;
         let request = call_request(&self.shared.config.host, name, body)?;
         let path = request.target.clone();
-        let (response, result) = flume::bounded(1);
-        let job = Job {
-            request,
-            response,
-            websocket: None,
-        };
-        let shared = Arc::clone(&self.shared);
-        drop(
-            self.shared
-                .tokio
-                .spawn_blocking(move || execute_job(&shared, job)),
-        );
-        let response = match result.recv_deadline(deadline) {
-            Ok(JobResponse::Http(response)) => response,
-            Ok(JobResponse::WebSocket) => {
-                return Err(Error::Call(format!("{path} returned a WebSocket")));
+        let result = spawn_job(&self.shared, request, None);
+        let failure = match result.recv_deadline(deadline) {
+            Ok(JobResponse::Http(response)) if response.status == 200 => {
+                return response
+                    .body
+                    .read_to_end(deadline)
+                    .map_err(|error| Error::Call(format!("{path} response failed: {error}")));
             }
+            Ok(JobResponse::Http(response)) => format!("{path} responded {}", response.status),
+            Ok(JobResponse::WebSocket) => format!("{path} returned a WebSocket"),
             Err(flume::RecvTimeoutError::Timeout) => {
-                return Err(Error::Call(format!(
-                    "{path} did not respond within {timeout:?}"
-                )));
+                format!("{path} did not respond within {timeout:?}")
             }
             Err(flume::RecvTimeoutError::Disconnected) => {
-                return Err(Error::Call(format!(
-                    "the runtime stopped before {path} ran"
-                )));
+                format!("the runtime stopped before {path} ran")
             }
         };
-        if response.status != 200 {
-            return Err(Error::Call(format!("{path} responded {}", response.status)));
-        }
-        response
-            .body
-            .read_to_end(deadline)
-            .map_err(|error| Error::Call(format!("{path} response failed: {error}")))
+        Err(Error::Call(failure))
     }
 }
 
@@ -600,10 +583,9 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
         shared: Arc::clone(shared),
         connection: Arc::clone(&connection),
     };
-    if !shared.accepting.load(Ordering::Acquire) {
-        return Ok(());
-    }
-    if !shared.lifecycle.wait_until_running(&shared.accepting) {
+    if !shared.accepting.load(Ordering::Acquire)
+        || !shared.lifecycle.wait_until_running(&shared.accepting)
+    {
         return Ok(());
     }
     let connect = read_header_block(&mut stream, "HTTP headers")?;
@@ -645,9 +627,8 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
                 return websocket_session(
                     &mut tls,
                     websocket_key.as_deref(),
-                    websocket_bridge.ok_or_else(|| {
-                        Error::Startup("WebSocket bridge was not created".to_owned())
-                    })?,
+                    websocket_bridge
+                        .ok_or_else(|| Error::startup("WebSocket bridge was not created"))?,
                 );
             }
             JobResponse::Http(response) => response,
@@ -673,17 +654,28 @@ fn dispatch(
     shared: &Arc<Shared>,
     request: HttpRequest,
 ) -> Result<(JobResponse, Option<WebSocketBridge>), Error> {
-    let (websocket_job, websocket_bridge) = if is_websocket(&request) {
-        let (job, bridge) = websocket_channels()?;
-        (Some(job), Some(bridge))
-    } else {
-        (None, None)
-    };
+    let (websocket_job, websocket_bridge) = is_websocket(&request)
+        .then(websocket_channels)
+        .transpose()?
+        .unzip();
+    let result = spawn_job(shared, request, websocket_job);
+    let response = result
+        .recv()
+        .map_err(|_| Error::startup("JavaScript request was dropped"))?;
+    Ok((response, websocket_bridge))
+}
+
+/// Runs `request` on a blocking Tokio thread and returns where its response arrives.
+fn spawn_job(
+    shared: &Arc<Shared>,
+    request: HttpRequest,
+    websocket: Option<WebSocketJob>,
+) -> Receiver<JobResponse> {
     let (response, result) = flume::bounded(1);
     let job = Job {
         request,
         response,
-        websocket: websocket_job,
+        websocket,
     };
     let execution_shared = Arc::clone(shared);
     drop(
@@ -691,10 +683,7 @@ fn dispatch(
             .tokio
             .spawn_blocking(move || execute_job(&execution_shared, job)),
     );
-    let response = result
-        .recv()
-        .map_err(|_| Error::Startup("JavaScript request was dropped".to_owned()))?;
-    Ok((response, websocket_bridge))
+    result
 }
 
 /// Closes the TLS session unless the runtime already shut the connection down.
