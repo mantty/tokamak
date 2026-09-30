@@ -16,13 +16,26 @@ type Pattern = urlpattern::UrlPattern<EngineRegExp>;
 
 const PATTERN_CACHE_LIMIT: usize = 512;
 
-/// The context compiling a pattern, and its JavaScript regular expression
+/// The context compiling a pattern and its JavaScript regular expression
 /// runner; see [`EngineRegExp`].
-type Compiling = (NonNull<qjs::JSContext>, Persistent<Function<'static>>);
+#[derive(Clone)]
+struct Compiling {
+    context: NonNull<qjs::JSContext>,
+    runner: Persistent<Function<'static>>,
+}
 
 thread_local! {
     static PATTERNS: RefCell<HashMap<String, Rc<Pattern>>> = RefCell::new(HashMap::new());
     static COMPILING: RefCell<Option<Compiling>> = const { RefCell::new(None) };
+}
+
+/// Restores the compiling context it replaced when dropped.
+struct RestoreCompiling(Option<Compiling>);
+
+impl Drop for RestoreCompiling {
+    fn drop(&mut self) {
+        COMPILING.set(self.0.take());
+    }
 }
 
 super::host_functions! {
@@ -120,11 +133,9 @@ fn pattern_key(input: &str, base: Option<&str>, ignore_case: bool) -> String {
     format!("{ignore_case}\u{1}{}\u{1}{input}", base.unwrap_or("\u{2}"))
 }
 
-/// An ECMAScript regular expression, which the engine compiles and runs so
-/// patterns behave as on Cloudflare. The crate runs one while parsing a
-/// pattern, to check its syntax and whether its protocol is special; that
-/// goes through the runner of the call compiling the pattern. Matching a
-/// compiled pattern happens in JavaScript.
+/// An ECMAScript regular expression, which the engine compiles and runs.
+/// The crate runs one while it parses a pattern; matching happens in
+/// JavaScript.
 struct EngineRegExp {
     source: String,
     flags: String,
@@ -146,14 +157,16 @@ impl RegExp for EngineRegExp {
     }
 
     fn matches<'a>(&self, text: &'a str) -> Option<Vec<Option<&'a str>>> {
-        let captures = run(&self.source, &self.flags, text).ok()??;
+        let bounds = run(&self.source, &self.flags, text).ok()??;
         let slice = |bounds: Vec<usize>| match bounds[..] {
             [start, end] => Some(&text[byte_offset(text, start)?..byte_offset(text, end)?]),
             _ => None,
         };
+        // The first bounds are the whole match's.
         Some(
-            captures
+            bounds
                 .into_iter()
+                .skip(1)
                 .map(|bounds| bounds.and_then(slice))
                 .collect(),
         )
@@ -165,18 +178,17 @@ impl RegExp for EngineRegExp {
 }
 
 /// Run `source` with `flags` on `text` through the compiling call's runner:
-/// the UTF-16 start and end of each capture, or `None` without a match.
+/// the UTF-16 start and end of the match and each capture, or `None` without
+/// a match.
 #[allow(clippy::type_complexity)]
 fn run(source: &str, flags: &str, text: &str) -> Result<Option<Vec<Option<Vec<usize>>>>, ()> {
-    COMPILING.with_borrow(|compiling| {
-        let (context, runner) = compiling.as_ref().ok_or(())?;
-        // SAFETY: `compile_pattern` names its context here only while it runs.
-        let ctx = unsafe { Ctx::from_raw(*context) };
-        let runner = runner.clone().restore(&ctx).map_err(|_| ())?;
-        runner.call((source, flags, text)).map_err(|_| {
-            // An invalid expression throws; the crate reports it instead.
-            ctx.catch();
-        })
+    let Compiling { context, runner } = COMPILING.with_borrow(Clone::clone).ok_or(())?;
+    // SAFETY: `compile_pattern` names its context here only while it runs.
+    let ctx = unsafe { Ctx::from_raw(context) };
+    let runner = runner.restore(&ctx).map_err(|_| ())?;
+    runner.call((source, flags, text)).map_err(|_| {
+        // An invalid expression throws; the crate reports it instead.
+        ctx.catch();
     })
 }
 
@@ -206,11 +218,14 @@ fn compile_pattern<'js>(
         ignore_case,
         ..UrlPatternOptions::default()
     };
-    let runner = Persistent::save(ctx, runner);
-    COMPILING.set(Some((ctx.as_raw(), runner)));
-    let pattern = construct_input(input, base).and_then(|init| Pattern::parse(init, options));
-    COMPILING.take();
-    pattern.map_err(|error| Exception::throw_type(ctx, &error.to_string()))
+    let compiling = Compiling {
+        context: ctx.as_raw(),
+        runner: Persistent::save(ctx, runner),
+    };
+    let _restore = RestoreCompiling(COMPILING.replace(Some(compiling)));
+    construct_input(input, base)
+        .and_then(|init| Pattern::parse(init, options))
+        .map_err(|error| Exception::throw_type(ctx, &error.to_string()))
 }
 
 /// The pattern `input` describes, as `quirks::process_construct_pattern_input`
@@ -292,13 +307,14 @@ fn pattern_compile<'js>(
         ("hash", &pattern.hash),
     ];
     for (name, component) in components {
-        let described = Object::new(ctx.clone())?;
-        described.set("pattern", component.pattern_string.as_str())?;
         let regexp = component
             .regexp
             .as_ref()
-            .map_or("", |regexp| regexp.source.as_str());
-        described.set("regexp", regexp)?;
+            .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
+        let described = Object::new(ctx.clone())?;
+        described.set("pattern", component.pattern_string.as_str())?;
+        described.set("regexp", regexp.source.as_str())?;
+        described.set("flags", regexp.flags.as_str())?;
         described.set("groups", component.group_name_list.clone())?;
         object.set(name, described)?;
     }
@@ -333,4 +349,16 @@ fn pattern_match_input(
                 input.hash,
             ]
         }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::byte_offset;
+
+    #[test]
+    fn maps_utf16_offsets_to_byte_offsets() {
+        let text = "a\u{1F600}b";
+        let offsets: Vec<_> = (0..=5).map(|index| byte_offset(text, index)).collect();
+        assert_eq!(offsets, [Some(0), Some(1), None, Some(5), Some(6), None]);
+    }
 }

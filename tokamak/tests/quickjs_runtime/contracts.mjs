@@ -2261,6 +2261,18 @@ export async function run(handlerEnv, ctx, constructors) {
         protocol: { pathname: protocol.pathname, groups: protocol.exec("https://example.test/a%20b")?.protocol.groups, other: protocol.test("ftp://example.test/a%20b") },
         ignoreCase: ignoreCase.exec("https://example.test/users/7")?.pathname.groups,
         constructorString: { protocol: constructorString.protocol, pathname: constructorString.pathname, groups: constructorString.exec("http://example.test/9")?.protocol.groups, other: constructorString.test("ftp://example.test/9") },
+        lookaheadProtocol: new URLPattern("((?!ftp)[a-z]+)://example.test").pathname,
+        ecmaScriptOnly: result(() => new URLPattern({ pathname: "/(\\Aa)" }).pathname),
+        constructorBase: new URLPattern("/books/:id", "https://example.test").exec("https://example.test/books/1")?.pathname.groups,
+        initWithBase: result(() => new URLPattern({ pathname: "/x" }, "https://example.test")),
+        execWithBase: new URLPattern({ pathname: "/books/:id" }).exec("/books/1", "https://example.test")?.pathname.groups,
+        reentrant: (() => {
+          const original = Reflect.apply;
+          try {
+            Reflect.apply = function (...args) { new URLPattern({ pathname: "/(r)" }); return original(...args); };
+            return new URLPattern({ protocol: "(https?)", pathname: "/a b" }).pathname;
+          } finally { Reflect.apply = original; }
+        })(),
         invalid: result(() => new URLPattern({ pathname: "/(()" })) };
     }),
     errorsAndEdges: {

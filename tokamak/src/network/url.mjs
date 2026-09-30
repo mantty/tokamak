@@ -165,19 +165,16 @@ function patternPayload(input) {
   return JSON.stringify(init);
 }
 
-// URLPattern's regular expressions are the engine's, as captured before app
-// code runs.
+// URLPattern runs the engine's regular expressions through intrinsics captured
+// before app code runs, so app code cannot intercept them.
 const NativeRegExp = RegExp;
 const regexpExec = RegExp.prototype.exec;
+const apply = Reflect.apply;
 
 // Runs `source` with `flags` on `input` for the host's pattern parser: the
-// start and end of each capture, or null without a match.
+// start and end of the match and each capture, or null without a match.
 function runRegExp(source, flags, input) {
-  const match = Reflect.apply(regexpExec, new NativeRegExp(source, `${flags}d`), [input]);
-  if (match === null) return null;
-  const bounds = [];
-  for (let index = 1; index < match.indices.length; index += 1) bounds.push(match.indices[index]);
-  return bounds;
+  return apply(regexpExec, new NativeRegExp(source, `${flags}d`), [input])?.indices ?? null;
 }
 
 // The match of `pattern` on `input` by component, or null.
@@ -187,8 +184,8 @@ function matchPattern(pattern, input, baseURL) {
   const match = {};
   for (let index = 0; index < patternComponents.length; index += 1) {
     const component = pattern.__components[patternComponents[index]];
-    component.compiled ??= new NativeRegExp(component.regexp, pattern.__flags);
-    const result = Reflect.apply(regexpExec, component.compiled, [inputs[index]]);
+    component.compiled ??= new NativeRegExp(component.regexp, component.flags);
+    const result = apply(regexpExec, component.compiled, [inputs[index]]);
     if (result === null) return null;
     const groups = {};
     for (let group = 0; group < component.groups.length; group += 1) groups[component.groups[group]] = result[group + 1];
@@ -204,7 +201,6 @@ export class URLPattern {
     const ignoreCase = ((baseIsString ? options : baseOrOptions) ?? {}).ignoreCase === true;
     const base = baseIsString ? usvString(baseOrOptions) : undefined;
     hidden(this, "__components", urlPatternCompile(patternPayload(input), base, ignoreCase, runRegExp));
-    hidden(this, "__flags", ignoreCase ? "ui" : "u");
   }
 
   get protocol() { return this.__components.protocol.pattern; }
