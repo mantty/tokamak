@@ -155,8 +155,8 @@ export function domainToUnicode(value) { return toUnicode(value); }
 
 export function fileURLToPath(value) {
   const url = value instanceof URL ? value : new URL(string(value));
-  if (url.protocol !== "file:") throw Object.assign(new TypeError("The URL must be of scheme file"), { code: "ERR_INVALID_URL_SCHEME" });
-  if (url.hostname && url.hostname !== "localhost") throw Object.assign(new TypeError("File URL host must be \"localhost\" or empty"), { code: "ERR_INVALID_FILE_URL_HOST" });
+  if (url.protocol !== "file:") { const error = new TypeError("The URL must be of scheme file"); error.code = "ERR_INVALID_URL_SCHEME"; throw error; }
+  if (url.hostname && url.hostname !== "localhost") { const error = new TypeError("File URL host must be \"localhost\" or empty"); error.code = "ERR_INVALID_FILE_URL_HOST"; throw error; }
   return decodeURIComponent(url.pathname);
 }
 

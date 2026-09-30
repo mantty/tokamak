@@ -18,7 +18,9 @@ consoleObject._times ??= new Map();
 
 export class Console {
   constructor() {
-    throw Object.assign(new Error("The Console method is not implemented"), { code: "ERR_METHOD_NOT_IMPLEMENTED" });
+    const error = new Error("The Console method is not implemented");
+    error.code = "ERR_METHOD_NOT_IMPLEMENTED";
+    throw error;
   }
 }
 

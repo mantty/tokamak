@@ -36,8 +36,10 @@ function assertionMessage({ actual, expected, operator }) {
   return `Expected values to ${operator === "notStrictEqual" || operator === "notEqual" ? "not be" : "be"} strictly equal:\n\n- ${inspect(actual)}\n+ ${inspect(expected)}`;
 }
 
-function assertionFailure(actual, expected, operator, message) {
-  throw new AssertionError({ actual, expected, operator, message });
+function message(value) { return value === undefined ? undefined : String(value); }
+
+function assertionFailure(actual, expected, operator, messageValue) {
+  throw new AssertionError({ actual, expected, operator, message: message(messageValue) });
 }
 
 function same(left, right, seen = []) {

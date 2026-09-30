@@ -12,7 +12,9 @@ export function eventLoopUtilization() {
 }
 
 function unsupported(name) {
-  throw Object.assign(new Error(`node:perf_hooks ${name} is not implemented`), { code: "ERR_METHOD_NOT_IMPLEMENTED" });
+  const error = new Error(`node:perf_hooks ${name} is not implemented`);
+  error.code = "ERR_METHOD_NOT_IMPLEMENTED";
+  throw error;
 }
 
 export function createHistogram() { return unsupported("createHistogram"); }

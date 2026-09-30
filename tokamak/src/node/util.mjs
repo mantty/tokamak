@@ -334,7 +334,9 @@ export function parseEnv(content) {
 }
 
 function notImplemented(name) {
-  throw Object.assign(new Error(`node:util ${name} is not implemented`), { code: "ERR_METHOD_NOT_IMPLEMENTED" });
+  const error = new Error(`node:util ${name} is not implemented`);
+  error.code = "ERR_METHOD_NOT_IMPLEMENTED";
+  throw error;
 }
 export function getCallSite() { notImplemented("getCallSite"); }
 export function getCallSites() { notImplemented("getCallSites"); }

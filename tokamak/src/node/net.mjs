@@ -8,7 +8,9 @@ import { ipVersion } from "tokamak:host";
 const socketStates = new WeakMap();
 
 function invalidArgument(message, code = "ERR_INVALID_ARG_VALUE") {
-  return Object.assign(new TypeError(message), { code });
+  const error = new TypeError(message);
+  error.code = code;
+  return error;
 }
 
 function normalizeConnection(args) {

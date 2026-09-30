@@ -8,9 +8,11 @@ function normalizeEncoding(value) {
   if (["utf8", "utf-8"].includes(encoding)) return "utf8";
   if (["utf16le", "utf-16le", "ucs2", "ucs-2"].includes(encoding)) return "utf16le";
   if (["latin1", "binary"].includes(encoding)) return "latin1";
-  if (encoding === "ascii") return "ascii";
+  if (["ascii"].includes(encoding)) return "ascii";
   if (["base64", "base64url", "hex"].includes(encoding)) return encoding;
-  throw Object.assign(new TypeError(`Unknown encoding: ${encoding}`), { code: "ERR_UNKNOWN_ENCODING" });
+  const error = new TypeError(`Unknown encoding: ${encoding}`);
+  error.code = "ERR_UNKNOWN_ENCODING";
+  throw error;
 }
 
 function bytes(value) {
@@ -92,6 +94,7 @@ export class StringDecoder {
       state.lastNeed = pending.total ? pending.total - (input.length - pending.start) : 0;
       rememberUtf8(state, input, pending);
     } else if (state.encoding === "utf16le") {
+      complete = input.length;
       if (complete % 2) {
         complete -= 1;
         state.lastNeed = 1;

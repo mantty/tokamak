@@ -1,5 +1,8 @@
 function abortError() {
-  return Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" });
+  const error = new Error("The operation was aborted");
+  error.name = "AbortError";
+  error.code = "ABORT_ERR";
+  return error;
 }
 
 function validateOptions(options) {

@@ -20,7 +20,11 @@ export function totalmem() { return 0; }
 export function uptime() { return 0; }
 export function getPriority() { return 0; }
 export function setPriority(pid, priority) {
-  if (priority === undefined) throw Object.assign(new TypeError("The \"priority\" argument must be specified"), { code: "ERR_INVALID_ARG_TYPE" });
+  if (priority === undefined) {
+    const error = new TypeError("The \"priority\" argument must be specified");
+    error.code = "ERR_INVALID_ARG_TYPE";
+    throw error;
+  }
 }
 
 const errno = {

@@ -37,11 +37,6 @@ function extensionOf(base) {
   return dot <= 0 ? "" : base.slice(dot);
 }
 
-function parsedPath(root, base, dir) {
-  const ext = extensionOf(base);
-  return { root, dir: dir === "." ? "" : dir, base, ext, name: base.slice(0, base.length - ext.length) };
-}
-
 function formatWith(value, separator, normalizeDir) {
   if (value === null || typeof value !== "object") throw new TypeError("The path object must be of type object");
   let dir = value.dir ?? value.root ?? "";
@@ -100,7 +95,11 @@ function posixExtname(value) { return extensionOf(posixBasename(value)); }
 
 function posixParse(value) {
   const input = pathString(value);
-  return parsedPath(input.startsWith("/") ? "/" : "", posixBasename(input), posixDirname(input));
+  const root = input.startsWith("/") ? "/" : "";
+  const base = posixBasename(input);
+  const ext = posixExtname(base);
+  const dir = posixDirname(input);
+  return { root, dir: dir === "." ? "" : dir, base, ext, name: base.slice(0, base.length - ext.length) };
 }
 
 function posixFormat(value) { return formatWith(value, "/", dir => dir); }
@@ -154,7 +153,7 @@ function winNormalize(value) {
   const input = winValue(value);
   if (input.length === 0) return ".";
   const root = winRoot(input);
-  const absolute = root.endsWith("\\");
+  const absolute = root === "\\" || root.endsWith("\\");
   const rest = input.slice(root.length);
   const trailing = input.endsWith("\\");
   const parts = normalizeParts(rest, "\\", absolute);
@@ -174,8 +173,13 @@ function winResolve(...parts) {
     if (value === "") continue;
     if (value.startsWith("\\") || /^[A-Za-z]:/.test(value)) {
       const valueRoot = winRoot(value);
-      root = valueRoot.endsWith("\\") ? valueRoot : valueRoot + "\\";
-      values.unshift(value.slice(valueRoot.length));
+      if (valueRoot.endsWith("\\") || valueRoot === "\\") {
+        root = valueRoot;
+        values.unshift(value.slice(valueRoot.length));
+      } else {
+        root = valueRoot + "\\";
+        values.unshift(value.slice(valueRoot.length));
+      }
       break;
     }
     values.unshift(value);
@@ -207,7 +211,11 @@ function winExtname(value) { return extensionOf(winBasename(value)); }
 
 function winParse(value) {
   const input = winValue(value);
-  return parsedPath(winRoot(input), winBasename(input), winDirname(input));
+  const root = winRoot(input);
+  const base = winBasename(input);
+  const ext = winExtname(base);
+  const dir = winDirname(input);
+  return { root, dir: dir === "." ? "" : dir, base, ext, name: base.slice(0, base.length - ext.length) };
 }
 
 function winFormat(value) { return formatWith(value, "\\", winValue); }
@@ -215,11 +223,11 @@ function winFormat(value) { return formatWith(value, "\\", winValue); }
 function winRelative(from, to) {
   const left = winResolve(from);
   const right = winResolve(to);
-  const leftRoot = winRoot(left);
-  const rightRoot = winRoot(right);
-  if (leftRoot.toLowerCase() !== rightRoot.toLowerCase()) return right;
-  const fromParts = left.slice(leftRoot.length).split("\\").filter(Boolean).map(value => value.toLowerCase());
-  const toParts = right.slice(rightRoot.length).split("\\").filter(Boolean);
+  const leftRoot = winRoot(left).toLowerCase();
+  const rightRoot = winRoot(right).toLowerCase();
+  if (leftRoot !== rightRoot) return right;
+  const fromParts = left.slice(winRoot(left).length).split("\\").filter(Boolean).map(value => value.toLowerCase());
+  const toParts = right.slice(winRoot(right).length).split("\\").filter(Boolean);
   let common = 0;
   while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common].toLowerCase()) common += 1;
   return [...fromParts.slice(common).map(() => ".."), ...toParts.slice(common)].join("\\");

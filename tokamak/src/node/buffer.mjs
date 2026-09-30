@@ -6,8 +6,14 @@ const encodingNames = new Set(["utf8", "utf-8", "ascii", "latin1", "binary", "ba
 function normalizeEncoding(encoding) {
   if (encoding === undefined || encoding === null) return "utf8";
   const name = String(encoding).toLowerCase();
-  if (!encodingNames.has(name)) throw Object.assign(new TypeError(`Unknown encoding: ${name}`), { code: "ERR_UNKNOWN_ENCODING" });
+  if (!encodingNames.has(name)) throw unknownEncoding(name);
   return name;
+}
+
+function unknownEncoding(name) {
+  const error = new TypeError(`Unknown encoding: ${name}`);
+  error.code = "ERR_UNKNOWN_ENCODING";
+  return error;
 }
 
 function isArrayBufferLike(value) {
@@ -108,7 +114,9 @@ function index(value, length) {
 }
 
 function rangeError(name, value, min, max) {
-  return Object.assign(new RangeError(`The value of "${name}" is out of range. It must be >= ${min} && <= ${max}. Received ${value}`), { code: "ERR_OUT_OF_RANGE" });
+  const error = new RangeError(`The value of "${name}" is out of range. It must be >= ${min} && <= ${max}. Received ${value}`);
+  error.code = "ERR_OUT_OF_RANGE";
+  return error;
 }
 
 function checkOffset(buffer, offset, size) {
@@ -282,9 +290,9 @@ export class Buffer extends Uint8Array {
   readBigInt64LE(offset = 0) { return dataView(this, offset, 8).getBigInt64(0, true); }
   readBigInt64BE(offset = 0) { return dataView(this, offset, 8).getBigInt64(0, false); }
 
-  writeUInt8(value, offset = 0) { return writeData(this, offset, 1, value, "setUint8", false, 0, 255); }
+  writeUInt8(value, offset = 0) { return writeData(this, offset, 1, value, "setUint8", undefined, 0, 255); }
   writeUint8(value, offset = 0) { return this.writeUInt8(value, offset); }
-  writeInt8(value, offset = 0) { return writeData(this, offset, 1, value, "setInt8", false, -128, 127); }
+  writeInt8(value, offset = 0) { return writeData(this, offset, 1, value, "setInt8", undefined, -128, 127); }
   writeUInt16LE(value, offset = 0) { return writeData(this, offset, 2, value, "setUint16", true, 0, 65535); }
   writeUint16LE(value, offset = 0) { return this.writeUInt16LE(value, offset); }
   writeUInt16BE(value, offset = 0) { return writeData(this, offset, 2, value, "setUint16", false, 0, 65535); }
@@ -358,7 +366,11 @@ function find(buffer, needle, byteOffset, reverse) {
 }
 
 function swap(buffer, size) {
-  if (buffer.length % size !== 0) throw Object.assign(new RangeError(`Buffer size must be a multiple of ${size * 8}-bits`), { code: "ERR_INVALID_BUFFER_SIZE" });
+  if (buffer.length % size !== 0) {
+    const error = new RangeError(`Buffer size must be a multiple of ${size * 8}-bits`);
+    error.code = "ERR_INVALID_BUFFER_SIZE";
+    throw error;
+  }
   for (let offset = 0; offset < buffer.length; offset += size) for (let left = 0; left < size / 2; left += 1) {
     const right = size - left - 1;
     [buffer[offset + left], buffer[offset + right]] = [buffer[offset + right], buffer[offset + left]];
@@ -379,7 +391,9 @@ function writeData(buffer, offset, size, value, setter, littleEndian, min, max, 
   const position = checkOffset(buffer, integer(offset), size);
   const number = Number(value);
   if (validate && (!Number.isFinite(number) || !Number.isInteger(number) || number < min || number > max)) throw rangeError("value", value, min, max);
-  new DataView(buffer.buffer, buffer.byteOffset + position, size)[setter](0, number, littleEndian);
+  const view = new DataView(buffer.buffer, buffer.byteOffset + position, size);
+  if (size === 1) view[setter](0, number);
+  else view[setter](0, number, littleEndian);
   return position + size;
 }
 

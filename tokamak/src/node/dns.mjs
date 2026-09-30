@@ -22,15 +22,14 @@ function dnsError(name, code = "ENOTFOUND") {
 }
 
 function unsupported(name) {
-  return Object.assign(new Error(`node:dns ${name} is not implemented in the Workers runtime`), { code: "ERR_METHOD_NOT_IMPLEMENTED", syscall: name });
+  const error = new Error(`node:dns ${name} is not implemented in the Workers runtime`);
+  error.code = "ERR_METHOD_NOT_IMPLEMENTED";
+  error.syscall = name;
+  return error;
 }
 
-function typeName(number) {
-  return Object.entries(typeNumbers).find(([, value]) => value === number)?.[0];
-}
-
-function reverseName(name) {
-  return `${validateName(name).split(".").reverse().join(".")}.in-addr.arpa`;
+function typeName(answer) {
+  return Object.entries(typeNumbers).find(([, number]) => number === answer.type)?.[0];
 }
 
 function queryType(type) {
@@ -53,7 +52,7 @@ function quoted(value) {
 }
 
 function answerValue(answer) {
-  const type = typeName(answer.type) ?? answer.type;
+  const type = typeName(answer) ?? answer.type;
   const data = String(answer.data ?? "").replace(/\.$/, "");
   switch (type) {
     case "A":
@@ -120,7 +119,7 @@ function queryAllTypes(name) {
 }
 
 function anyRecords(answers) {
-  return answers.flat().map(answer => ({ address: answerValue(answer), type: typeName(answer.type), ttl: Number(answer.TTL ?? 0) }));
+  return answers.flat().map(answer => ({ address: answerValue(answer), type: typeName(answer), ttl: Number(answer.TTL ?? 0) }));
 }
 
 function lastCallback(args) {
@@ -165,7 +164,8 @@ export function resolveSrv(...args) { callbackResolve("SRV", args); }
 export function resolveTxt(...args) { callbackResolve("TXT", args); }
 export function reverse(...args) {
   const { name, callback } = callbackArgs(args);
-  resolvePromise(reverseName(name), "PTR").then(value => callback(null, value), error => callback(error));
+  const labels = validateName(name).split(".").reverse().join(".") + ".in-addr.arpa";
+  resolvePromise(labels, "PTR").then(value => callback(null, value), error => callback(error));
 }
 export function getDefaultResultOrder() { return "verbatim"; }
 export function setDefaultResultOrder() {}
@@ -213,7 +213,7 @@ export const promises = {
   resolveSoa: (name, options) => resolvePromise(name, "SOA", options),
   resolveSrv: (name, options) => resolvePromise(name, "SRV", options),
   resolveTxt: (name, options) => resolvePromise(name, "TXT", options),
-  reverse: name => resolvePromise(reverseName(name), "PTR"),
+  reverse: name => resolvePromise(`${validateName(name).split(".").reverse().join(".")}.in-addr.arpa`, "PTR"),
   setDefaultResultOrder,
   setServers,
 };

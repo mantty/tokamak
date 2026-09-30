@@ -16,7 +16,9 @@ function nameOf(value) {
 }
 
 function moduleNotFound(key) {
-  return Object.assign(new Error(`Cannot find module '${key}'`), { code: "MODULE_NOT_FOUND" });
+  const error = new Error(`Cannot find module '${key}'`);
+  error.code = "MODULE_NOT_FOUND";
+  return error;
 }
 
 export function isBuiltin(value) {
@@ -41,7 +43,9 @@ export function createRequire() {
 }
 
 function notImplemented(name) {
-  throw Object.assign(new Error(`The module.${name} method is not implemented`), { code: "ERR_METHOD_NOT_IMPLEMENTED" });
+  const error = new Error(`The module.${name} method is not implemented`);
+  error.code = "ERR_METHOD_NOT_IMPLEMENTED";
+  throw error;
 }
 
 export function stripTypeScriptTypes() { return notImplemented("stripTypeScriptTypes"); }
