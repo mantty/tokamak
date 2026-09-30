@@ -6,10 +6,10 @@ use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use url::Url;
-use urlpattern::UrlPatternOptions;
 use urlpattern::parser::RegexSyntax;
 use urlpattern::quirks::{self, StringOrInit};
 use urlpattern::regexp::RegExp;
+use urlpattern::{UrlPatternInit, UrlPatternOptions};
 
 /// A compiled pattern, whose regular expressions are the engine's.
 type Pattern = urlpattern::UrlPattern<EngineRegExp>;
@@ -202,17 +202,53 @@ fn compile_pattern<'js>(
     let input: StringOrInit = serde_json::from_str(input).map_err(|error| {
         Exception::throw_type(ctx, &format!("Invalid URLPattern input: {error}"))
     })?;
-    let init = quirks::process_construct_pattern_input(input, base)
-        .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?;
     let options = UrlPatternOptions {
         ignore_case,
         ..UrlPatternOptions::default()
     };
     let runner = Persistent::save(ctx, runner);
     COMPILING.set(Some((ctx.as_raw(), runner)));
-    let pattern = Pattern::parse(init, options);
+    let pattern = construct_input(input, base).and_then(|init| Pattern::parse(init, options));
     COMPILING.take();
     pattern.map_err(|error| Exception::throw_type(ctx, &error.to_string()))
+}
+
+/// The pattern `input` describes, as `quirks::process_construct_pattern_input`
+/// builds it, but parsing a constructor string with the engine's regular
+/// expressions; the quirks function parses one with the Rust regex crate.
+fn construct_input(
+    input: StringOrInit<'_>,
+    base: Option<&str>,
+) -> Result<UrlPatternInit, urlpattern::Error> {
+    let init = match input {
+        StringOrInit::String(pattern) => {
+            let base = base
+                .map(Url::parse)
+                .transpose()
+                .map_err(urlpattern::Error::Url)?;
+            return UrlPatternInit::parse_constructor_string::<EngineRegExp>(&pattern, base);
+        }
+        StringOrInit::Init(init) => init,
+    };
+    if base.is_some() {
+        return Err(urlpattern::Error::BaseUrlWithInit);
+    }
+    let base_url = init
+        .base_url
+        .map(|base| Url::parse(&base))
+        .transpose()
+        .map_err(urlpattern::Error::Url)?;
+    Ok(UrlPatternInit {
+        protocol: init.protocol,
+        username: init.username,
+        password: init.password,
+        hostname: init.hostname,
+        port: init.port,
+        pathname: init.pathname,
+        search: init.search,
+        hash: init.hash,
+        base_url,
+    })
 }
 
 fn cached_pattern<'js>(

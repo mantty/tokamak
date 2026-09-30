@@ -2255,10 +2255,12 @@ export async function run(handlerEnv, ctx, constructors) {
       const lookahead = new URLPattern({ pathname: "/((?!admin)[a-z]+)/:id" });
       const protocol = new URLPattern({ protocol: "(https?)", pathname: "/a b" });
       const ignoreCase = new URLPattern({ pathname: "/Users/:id" }, { ignoreCase: true });
+      const constructorString = new URLPattern("(https?)://example.test/:id");
       return { test: pattern.test("https://api.example.test/users/42?q=ok"), groups: match && { hostname: match.hostname.groups, id: match.pathname.groups.id, search: match.search.groups }, parts: match && { inputs: match.inputs, protocol: match.protocol, hostname: match.hostname, pathname: match.pathname, search: match.search, hash: match.hash }, regexp: { pathname: regexp.pathname, hasRegExpGroups: regexp.hasRegExpGroups, groups: regexpMatch?.pathname.groups },
         lookahead: { users: lookahead.exec("https://example.test/users/7")?.pathname.groups, admin: lookahead.test("https://example.test/admin/7") },
         protocol: { pathname: protocol.pathname, groups: protocol.exec("https://example.test/a%20b")?.protocol.groups, other: protocol.test("ftp://example.test/a%20b") },
         ignoreCase: ignoreCase.exec("https://example.test/users/7")?.pathname.groups,
+        constructorString: { protocol: constructorString.protocol, pathname: constructorString.pathname, groups: constructorString.exec("http://example.test/9")?.protocol.groups, other: constructorString.test("ftp://example.test/9") },
         invalid: result(() => new URLPattern({ pathname: "/(()" })) };
     }),
     errorsAndEdges: {
