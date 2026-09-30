@@ -32,14 +32,8 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStart(
     storage_dir: JString,
     host: JString,
 ) -> jlong {
-    match start(&mut env, &packaged_dir, &state_dir, &storage_dir, &host) {
-        Ok(runtime) => Box::into_raw(Box::new(runtime)) as jlong,
-        Err(message) => {
-            log(LOG_ERROR, &format!("runtime startup failed: {message}"));
-            let _ = env.throw_new(FAILURE, message);
-            0
-        }
-    }
+    let result = start(&mut env, &packaged_dir, &state_dir, &storage_dir, &host);
+    into_handle(&mut env, result, "runtime startup failed")
 }
 
 /// Start the development runtime and return an opaque handle, or throw on
@@ -53,17 +47,8 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStartDevelo
     endpoint: JString,
     session_token: JString,
 ) -> jlong {
-    match start_development(&mut env, &state_dir, &host, &endpoint, &session_token) {
-        Ok(runtime) => Box::into_raw(Box::new(runtime)) as jlong,
-        Err(message) => {
-            log(
-                LOG_ERROR,
-                &format!("development runtime startup failed: {message}"),
-            );
-            let _ = env.throw_new(FAILURE, message);
-            0
-        }
-    }
+    let result = start_development(&mut env, &state_dir, &host, &endpoint, &session_token);
+    into_handle(&mut env, result, "development runtime startup failed")
 }
 
 /// Return the loopback port the gateway bound.
@@ -162,7 +147,9 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeServerAutho
         .certificates()
         .decide(&Challenge::ServerTrust { host: &host })
     {
-        Decision::TrustAuthority(authority) => bytes(&env, &authority),
+        Decision::TrustAuthority(authority) => env
+            .byte_array_from_slice(&authority)
+            .unwrap_or_else(|_| null_array()),
         _ => null_array(),
     }
 }
@@ -261,6 +248,17 @@ fn report(event: Event) {
     }
 }
 
+fn into_handle(env: &mut JNIEnv, result: Result<Runtime, String>, failure: &str) -> jlong {
+    match result {
+        Ok(runtime) => Box::into_raw(Box::new(runtime)) as jlong,
+        Err(message) => {
+            log(LOG_ERROR, &format!("{failure}: {message}"));
+            let _ = env.throw_new(FAILURE, message);
+            0
+        }
+    }
+}
+
 fn runtime<'handle>(handle: jlong) -> Option<&'handle Runtime> {
     if handle == 0 {
         return None;
@@ -274,11 +272,6 @@ fn text(env: &mut JNIEnv, value: &JString) -> Result<String, String> {
     env.get_string(value)
         .map(|value| value.to_string_lossy().into_owned())
         .map_err(|error| error.to_string())
-}
-
-fn bytes<'local>(env: &JNIEnv<'local>, data: &[u8]) -> JByteArray<'local> {
-    env.byte_array_from_slice(data)
-        .unwrap_or_else(|_| null_array())
 }
 
 fn identity<'local>(

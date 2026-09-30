@@ -84,7 +84,6 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
     for navigationAction: WKNavigationAction,
     windowFeatures: WKWindowFeatures
   ) -> WKWebView? {
-    _ = (configuration, windowFeatures)
     guard let url = navigationAction.request.url else { return nil }
     if url.isAppOrigin(runtime.appHost) {
       webView.load(navigationAction.request)
@@ -109,11 +108,7 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
   func webView(
     _ webView: WKWebView,
     didReceive challenge: URLAuthenticationChallenge,
-    completionHandler:
-      @escaping (
-        URLSession.AuthChallengeDisposition,
-        URLCredential?
-      ) -> Void
+    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
   ) {
     let space = challenge.protectionSpace
     switch space.authenticationMethod {
@@ -155,11 +150,7 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
   private func answer(
     _ material: AuthenticationMaterial<Data>,
     trust: SecTrust?,
-    completion:
-      @escaping (
-        URLSession.AuthChallengeDisposition,
-        URLCredential?
-      ) -> Void
+    completion: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
   ) {
     switch material {
     case .defaultHandling:
@@ -169,14 +160,8 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
     case .use(let authority):
       guard
         let trust,
-        let certificate = SecCertificateCreateWithData(
-          nil,
-          authority as CFData
-        ),
-        SecTrustSetAnchorCertificates(
-          trust,
-          [certificate] as CFArray
-        ) == errSecSuccess,
+        let certificate = SecCertificateCreateWithData(nil, authority as CFData),
+        SecTrustSetAnchorCertificates(trust, [certificate] as CFArray) == errSecSuccess,
         SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess
       else {
         completion(.cancelAuthenticationChallenge, nil)
@@ -199,10 +184,7 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
 
   private func answer(
     _ material: AuthenticationMaterial<(Data, Data)>,
-    completion: (
-      URLSession.AuthChallengeDisposition,
-      URLCredential?
-    ) -> Void
+    completion: (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
   ) {
     switch material {
     case .defaultHandling:
@@ -210,36 +192,17 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
     case .cancel:
       completion(.cancelAuthenticationChallenge, nil)
     case .use(let value):
-      guard
-        let identity = identity(
-          certificate: value.0,
-          privateKey: value.1
-        )
-      else {
+      guard let identity = identity(certificate: value.0, privateKey: value.1) else {
         completion(.cancelAuthenticationChallenge, nil)
         return
       }
-      completion(
-        .useCredential,
-        URLCredential(
-          identity: identity,
-          certificates: nil,
-          persistence: .none
-        )
-      )
+      let credential = URLCredential(identity: identity, certificates: nil, persistence: .none)
+      completion(.useCredential, credential)
     }
   }
 
-  private func identity(
-    certificate: Data,
-    privateKey: Data
-  ) -> SecIdentity? {
-    guard
-      let certificate = SecCertificateCreateWithData(
-        nil,
-        certificate as CFData
-      )
-    else {
+  private func identity(certificate: Data, privateKey: Data) -> SecIdentity? {
+    guard let certificate = SecCertificateCreateWithData(nil, certificate as CFData) else {
       return nil
     }
     let attributes: [CFString: Any] = [
@@ -247,12 +210,7 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
       kSecAttrKeyClass: kSecAttrKeyClassPrivate,
       kSecAttrKeySizeInBits: 256,
     ]
-    guard
-      let key = SecKeyCreateWithData(
-        privateKey as CFData,
-        attributes as CFDictionary,
-        nil
-      )
+    guard let key = SecKeyCreateWithData(privateKey as CFData, attributes as CFDictionary, nil)
     else {
       return nil
     }
@@ -273,10 +231,7 @@ private final class TokamakController {
     self.host = host
   }
 
-  func start(
-    frame: CGRect,
-    completion: @escaping (WKWebView) -> Void
-  ) {
+  func start(frame: CGRect, completion: @escaping (WKWebView) -> Void) {
     host.whenStarted { result in
       switch result {
       case .success(let runtime):
@@ -315,15 +270,9 @@ private final class TokamakController {
     #endif
     configuration.mediaTypesRequiringUserActionForPlayback = []
 
-    let pluginBridge = TokamakPluginBridge(
-      host: runtime.appHost,
-      plugins: host.plugins
-    )
+    let pluginBridge = TokamakPluginBridge(host: runtime.appHost, plugins: host.plugins)
     pluginBridge.install(in: configuration.userContentController)
-    let navigation = NavigationDelegate(
-      runtime: runtime,
-      pluginBridge: pluginBridge
-    )
+    let navigation = NavigationDelegate(runtime: runtime, pluginBridge: pluginBridge)
     self.navigation = navigation
     let webView = WKWebView(frame: frame, configuration: configuration)
     #if os(iOS)
@@ -339,16 +288,9 @@ private final class TokamakController {
     return webView
   }
 
-  private func setProxy(
-    port: UInt16,
-    host: String,
-    dataStore: WKWebsiteDataStore
-  ) {
+  private func setProxy(port: UInt16, host: String, dataStore: WKWebsiteDataStore) {
     var proxy = ProxyConfiguration(
-      httpCONNECTProxy: .hostPort(
-        host: "127.0.0.1",
-        port: NWEndpoint.Port(rawValue: port)!
-      )
+      httpCONNECTProxy: .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
     )
     proxy.matchDomains = [host]
     proxy.allowFailover = false
@@ -371,19 +313,12 @@ private final class TokamakController {
     func applicationDidFinishLaunching(_ notification: Notification) {
       let window = NSWindow(
         contentRect: NSRect(x: 0, y: 0, width: 1024, height: 768),
-        styleMask: [
-          .titled,
-          .closable,
-          .miniaturizable,
-          .resizable,
-        ],
+        styleMask: [.titled, .closable, .miniaturizable, .resizable],
         backing: .buffered,
         defer: false
       )
       window.title =
-        Bundle.main.object(
-          forInfoDictionaryKey: "CFBundleName"
-        ) as? String ?? "tokamak"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "tokamak"
       window.center()
       window.makeKeyAndOrderFront(nil)
       NSApplication.shared.activate(ignoringOtherApps: true)
@@ -396,9 +331,7 @@ private final class TokamakController {
       }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(
-      _ sender: NSApplication
-    ) -> Bool {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
       true
     }
 
@@ -451,10 +384,7 @@ private final class TokamakController {
       self.window = window
 
       controller.start(frame: viewController.view.bounds) { webView in
-        webView.autoresizingMask = [
-          .flexibleWidth,
-          .flexibleHeight,
-        ]
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         viewController.view.addSubview(webView)
       }
       return true

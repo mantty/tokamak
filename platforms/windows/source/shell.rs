@@ -23,7 +23,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
     COREWEBVIEW2_PERMISSION_STATE_DENY, COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW,
     COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL, ICoreWebView2, ICoreWebView2_5,
-    ICoreWebView2_14, ICoreWebView2Certificate, ICoreWebView2ClientCertificate,
+    ICoreWebView2_14, ICoreWebView2ClientCertificate,
     ICoreWebView2ClientCertificateRequestedEventArgs, ICoreWebView2PermissionRequestedEventArgs,
     ICoreWebView2ServerCertificateErrorDetectedEventArgs,
 };
@@ -67,7 +67,7 @@ pub(crate) fn run() -> Result<()> {
     let state = state_dir(&config.slug)?;
     let runtime = start_runtime(&config, &root, &state, events)?;
     let identity = ClientIdentity::install(&runtime.certificates(), &config.host)?;
-    let client_certificate = Arc::new(RwLock::new(identity.certificate().to_vec()));
+    let client_certificate = Arc::new(RwLock::new(identity.der.clone()));
     let icon = load_window_icon(&root)?;
     let window = WindowBuilder::new()
         .with_title(&config.name)
@@ -141,6 +141,10 @@ fn start_runtime(
     state: &Path,
     events: EventLoopProxy<Event>,
 ) -> Result<Runtime> {
+    let listener = move |event: Event| {
+        report(&event);
+        let _ = events.send_event(event);
+    };
     match (
         config.dev_endpoint.as_deref(),
         config.dev_session_token.as_deref(),
@@ -154,10 +158,7 @@ fn start_runtime(
                     session_token: session_token.to_owned(),
                 },
             },
-            move |event| {
-                report(&event);
-                let _ = events.send_event(event);
-            },
+            listener,
         )?),
         (None, None) => Ok(Runtime::start(
             Config {
@@ -166,10 +167,7 @@ fn start_runtime(
                 storage_dir: state.join("storage"),
                 host: config.host.clone(),
             },
-            move |event| {
-                report(&event);
-                let _ = events.send_event(event);
-            },
+            listener,
         )?),
         _ => bail!("tok dev endpoint and session token must be provided together"),
     }
@@ -267,10 +265,6 @@ impl ClientIdentity {
             let _ = CertCloseStore(Some(imported), 0);
         }
         result
-    }
-
-    fn certificate(&self) -> &[u8] {
-        &self.der
     }
 
     fn replace(
@@ -531,7 +525,7 @@ fn server_challenge(
     move |_, args| {
         let Some(args) = args else { return Ok(()) };
         let certificate = unsafe { args.ServerCertificate()? };
-        let pem = certificate_pem(&certificate)?;
+        let pem = webview_string(|value| unsafe { certificate.ToPemEncoding(value) })?;
         let request_uri = webview_string(|value| unsafe { args.RequestUri(value) })?;
         let action = if is_app_origin(&request_uri, &host)
             && certificates.trusts_server_certificate(&host, &pem)
@@ -554,32 +548,8 @@ fn certificate_matches(
     certificate: &ICoreWebView2ClientCertificate,
     expected: &[u8],
 ) -> windows::core::Result<bool> {
-    Ok(
-        CertificateDer::from_pem_slice(certificate_pem(certificate)?.as_bytes())
-            .is_ok_and(|der| der.as_ref() == expected),
-    )
-}
-
-fn certificate_pem(certificate: &impl PemCertificate) -> windows::core::Result<String> {
-    let mut value = PWSTR::null();
-    unsafe { certificate.pem(&raw mut value)? };
-    Ok(take_pwstr(value))
-}
-
-trait PemCertificate {
-    unsafe fn pem(&self, value: *mut PWSTR) -> windows::core::Result<()>;
-}
-
-impl PemCertificate for ICoreWebView2Certificate {
-    unsafe fn pem(&self, value: *mut PWSTR) -> windows::core::Result<()> {
-        unsafe { self.ToPemEncoding(value) }
-    }
-}
-
-impl PemCertificate for ICoreWebView2ClientCertificate {
-    unsafe fn pem(&self, value: *mut PWSTR) -> windows::core::Result<()> {
-        unsafe { self.ToPemEncoding(value) }
-    }
+    let pem = webview_string(|value| unsafe { certificate.ToPemEncoding(value) })?;
+    Ok(CertificateDer::from_pem_slice(pem.as_bytes()).is_ok_and(|der| der.as_ref() == expected))
 }
 
 fn webview_string(
