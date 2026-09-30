@@ -1,7 +1,6 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use rquickjs::module::Exports;
-use rquickjs::{Ctx, Exception, Function, Object};
+use rquickjs::{Ctx, Exception, Object};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -18,40 +17,15 @@ thread_local! {
     static PATTERNS: RefCell<HashMap<String, Rc<Pattern>>> = RefCell::new(HashMap::new());
 }
 
-pub(super) const HOST_EXPORTS: &[&str] = &[
-    "urlParse",
-    "urlSetComponent",
-    "urlEncodeParams",
-    "urlDecodeParams",
-    "urlPatternCompile",
-    "urlPatternTest",
-    "urlPatternExec",
-];
-
-pub(super) fn export_host_functions<'js>(
-    ctx: &Ctx<'js>,
-    exports: &Exports<'js>,
-) -> rquickjs::Result<()> {
-    exports.export("urlParse", Function::new(ctx.clone(), url_parse)?)?;
-    exports.export(
-        "urlSetComponent",
-        Function::new(ctx.clone(), url_set_component)?,
-    )?;
-    exports.export(
-        "urlEncodeParams",
-        Function::new(ctx.clone(), encode_params)?,
-    )?;
-    exports.export(
-        "urlDecodeParams",
-        Function::new(ctx.clone(), decode_params)?,
-    )?;
-    exports.export(
-        "urlPatternCompile",
-        Function::new(ctx.clone(), pattern_compile)?,
-    )?;
-    exports.export("urlPatternTest", Function::new(ctx.clone(), pattern_test)?)?;
-    exports.export("urlPatternExec", Function::new(ctx.clone(), pattern_exec)?)?;
-    Ok(())
+super::host_functions! {
+    pub(super),
+    "urlParse" => url_parse,
+    "urlSetComponent" => url_set_component,
+    "urlEncodeParams" => encode_params,
+    "urlDecodeParams" => decode_params,
+    "urlPatternCompile" => pattern_compile,
+    "urlPatternTest" => pattern_test,
+    "urlPatternExec" => pattern_exec,
 }
 
 fn invalid_url(ctx: &Ctx<'_>, input: &str) -> rquickjs::Error {
