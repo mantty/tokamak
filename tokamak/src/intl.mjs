@@ -18,9 +18,7 @@ import {
   intlSegment,
 } from "tokamak:host";
 
-const datePartFields = ["weekday", "era", "year", "month", "day"];
-const timePartFields = ["dayPeriod", "hour", "minute", "second", "fractionalSecondDigits", "timeZoneName"];
-const dateFields = [...datePartFields, ...timePartFields];
+const dateFields = ["weekday", "era", "year", "month", "day", "dayPeriod", "hour", "minute", "second", "fractionalSecondDigits", "timeZoneName"];
 const numberFields = ["minimumIntegerDigits", "minimumFractionDigits", "maximumFractionDigits", "minimumSignificantDigits", "maximumSignificantDigits", "useGrouping", "notation", "compactDisplay", "signDisplay", "roundingIncrement", "roundingMode", "roundingPriority", "trailingZeroDisplay", "currencySign", "currencyDisplay", "unitDisplay"];
 
 function localeList(locales) {
@@ -62,11 +60,6 @@ function initIntlObject(object, locales) {
   object.__locale = object.__locales[0] ?? "en-US";
 }
 
-function copyDefined(target, source, fields) {
-  for (const field of fields) if (source[field] !== undefined) target[field] = source[field];
-  return target;
-}
-
 function localeInfo(locale) {
   return JSON.parse(intlLocaleInfo(locale, "{}"));
 }
@@ -79,19 +72,26 @@ function localeDefaultHourCycle(locale) {
 
 function dateOptions(options) {
   const source = optionsObject(options);
-  const result = copyDefined({}, source, dateFields);
-  copyDefined(result, source, ["dateStyle", "timeStyle"]);
+  const result = {};
+  for (const field of dateFields) if (source[field] !== undefined) result[field] = source[field];
+  if (source.dateStyle !== undefined) result.dateStyle = source.dateStyle;
+  if (source.timeStyle !== undefined) result.timeStyle = source.timeStyle;
   result.timeZone = source.timeZone ?? "UTC";
-  return copyDefined(result, source, ["calendar", "numberingSystem", "hourCycle", "hour12"]);
+  if (source.calendar !== undefined) result.calendar = source.calendar;
+  if (source.numberingSystem !== undefined) result.numberingSystem = source.numberingSystem;
+  if (source.hourCycle !== undefined) result.hourCycle = source.hourCycle;
+  if (source.hour12 !== undefined) result.hour12 = source.hour12;
+  return result;
 }
 
 function hasTimeFields(options) {
-  return options.timeStyle !== undefined || timePartFields.some(field => options[field] !== undefined);
+  return options.timeStyle !== undefined || ["dayPeriod", "hour", "minute", "second", "fractionalSecondDigits", "timeZoneName"].some(field => options[field] !== undefined);
 }
 
 function numberOptions(options) {
   const source = optionsObject(options);
-  const result = copyDefined({}, source, numberFields);
+  const result = {};
+  for (const field of numberFields) if (source[field] !== undefined) result[field] = source[field];
   result.style = source.style ?? "decimal";
   if (result.style === "currency") {
     if (source.currency === undefined) throw new TypeError("Currency is required for currency style");
@@ -119,12 +119,8 @@ function relativeOptions(options) {
   return { numeric: source.numeric ?? "always", style: source.style ?? "long" };
 }
 
-function callHost(host, service, ...inputs) {
-  return host(...inputs, JSON.stringify(service.__locales), optionsJson(service.__options));
-}
-
-function typedParts(json) {
-  return JSON.parse(json).map(([type, value]) => ({ type, value }));
+function formatParts(host, ...args) {
+  return JSON.parse(host(...args)).map(([type, value]) => ({ type, value }));
 }
 
 function joinRange(first, second) {
@@ -146,18 +142,19 @@ function dateResolvedOptions(locale, options) {
     timeZone: options.timeZone,
   };
   if (options.dateStyle !== undefined || options.timeStyle !== undefined) {
-    copyDefined(result, options, ["dateStyle", "timeStyle"]);
+    if (options.dateStyle !== undefined) result.dateStyle = options.dateStyle;
+    if (options.timeStyle !== undefined) result.timeStyle = options.timeStyle;
     if (options.timeStyle !== undefined) resolveHourCycle(result, locale, options);
     return result;
   }
-  const hasDate = datePartFields.some(field => options[field] !== undefined);
-  const hasTime = timePartFields.some(field => options[field] !== undefined);
+  const hasDate = dateFields.some(field => ["weekday", "era", "year", "month", "day"].includes(field) && options[field] !== undefined);
+  const hasTime = dateFields.some(field => ["dayPeriod", "hour", "minute", "second", "fractionalSecondDigits", "timeZoneName"].includes(field) && options[field] !== undefined);
   if (!hasDate && !hasTime) {
     result.year = "numeric";
     result.month = "numeric";
     result.day = "numeric";
   } else {
-    copyDefined(result, options, dateFields);
+    for (const field of dateFields) if (options[field] !== undefined) result[field] = options[field];
   }
   if (hasTime) resolveHourCycle(result, locale, options);
   return result;
@@ -177,10 +174,12 @@ class DateTimeFormat {
     if (hasTimeFields(this.__options) && this.__options.hourCycle === undefined && this.__options.hour12 === undefined) {
       this.__options.hourCycle = localeDefaultHourCycle(this.__locale);
     }
-    this.#format = value => callHost(intlDateTime, this, epochMilliseconds(value));
+    this.#format = value => intlDateTime(epochMilliseconds(value), JSON.stringify(this.__locales), optionsJson(this.__options));
   }
   get format() { return this.#format; }
-  formatToParts(value = new Date()) { return typedParts(callHost(intlDateTimeParts, this, epochMilliseconds(value))); }
+  formatToParts(value = new Date()) {
+    return formatParts(intlDateTimeParts, epochMilliseconds(value), JSON.stringify(this.__locales), optionsJson(this.__options));
+  }
   formatRange(start, end) { return joinRange(this.format(start), this.format(end)); }
   formatRangeToParts(start, end) {
     const first = this.formatToParts(start);
@@ -216,7 +215,9 @@ function numberResolvedOptions(locale, options) {
   result.roundingMode = options.roundingMode ?? "halfExpand";
   result.roundingPriority = options.roundingPriority ?? "auto";
   result.trailingZeroDisplay = options.trailingZeroDisplay ?? "auto";
-  return copyDefined(result, options, ["minimumSignificantDigits", "maximumSignificantDigits"]);
+  if (options.minimumSignificantDigits !== undefined) result.minimumSignificantDigits = options.minimumSignificantDigits;
+  if (options.maximumSignificantDigits !== undefined) result.maximumSignificantDigits = options.maximumSignificantDigits;
+  return result;
 }
 
 class NumberFormat {
@@ -224,10 +225,10 @@ class NumberFormat {
   constructor(locales, options) {
     initIntlObject(this, locales);
     this.__options = numberOptions(options);
-    this.#format = value => callHost(intlNumber, this, Number(value));
+    this.#format = value => intlNumber(Number(value), JSON.stringify(this.__locales), optionsJson(this.__options));
   }
   get format() { return this.#format; }
-  formatToParts(value) { return typedParts(callHost(intlNumberParts, this, Number(value))); }
+  formatToParts(value) { return formatParts(intlNumberParts, Number(value), JSON.stringify(this.__locales), optionsJson(this.__options)); }
   formatRange(start, end) { return joinRange(this.format(start), this.format(end)); }
   formatRangeToParts(start, end) {
     const first = this.format(start);
@@ -317,8 +318,8 @@ class ListFormat {
     initIntlObject(this, locales);
     this.__options = listOptions(options);
   }
-  format(list) { return callHost(intlList, this, listJson(list)); }
-  formatToParts(list) { return typedParts(callHost(intlListParts, this, listJson(list))); }
+  format(list) { return intlList(listJson(list), JSON.stringify(this.__locales), optionsJson(this.__options)); }
+  formatToParts(list) { return formatParts(intlListParts, listJson(list), JSON.stringify(this.__locales), optionsJson(this.__options)); }
   resolvedOptions() { return { locale: this.__locale, ...this.__options }; }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
@@ -328,8 +329,8 @@ class RelativeTimeFormat {
     initIntlObject(this, locales);
     this.__options = relativeOptions(options);
   }
-  format(value, unit) { return callHost(intlRelative, this, Number(value), String(unit)); }
-  formatToParts(value, unit) { return JSON.parse(callHost(intlRelativeParts, this, Number(value), String(unit))); }
+  format(value, unit) { return intlRelative(Number(value), String(unit), JSON.stringify(this.__locales), optionsJson(this.__options)); }
+  formatToParts(value, unit) { return JSON.parse(intlRelativeParts(Number(value), String(unit), JSON.stringify(this.__locales), optionsJson(this.__options))); }
   resolvedOptions() { return { locale: this.__locale, ...this.__options, numberingSystem: localeInfo(this.__locale).numberingSystem }; }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
@@ -346,7 +347,7 @@ class Collator {
       numeric: source.numeric ?? false,
       caseFirst: source.caseFirst ?? "false",
     };
-    this.compare = (left, right) => callHost(intlCollatorCompare, this, String(left), String(right));
+    this.compare = (left, right) => intlCollatorCompare(String(left), String(right), JSON.stringify(this.__locales), optionsJson(this.__options));
   }
   resolvedOptions() { return { locale: this.__locale, ...this.__options }; }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
@@ -385,7 +386,7 @@ class DisplayNames {
     };
     if (!this.__options.type) throw new TypeError("DisplayNames type is required");
   }
-  of(value) { return callHost(intlDisplayName, this, String(value)); }
+  of(value) { return intlDisplayName(String(value), JSON.stringify(this.__locales), optionsJson(this.__options)); }
   resolvedOptions() { return { locale: this.__locale, ...this.__options }; }
 }
 
