@@ -2,9 +2,14 @@ import { socketConnect } from "tokamak:host";
 import { ReadableStream, WritableStream } from "../streams/web.mjs";
 
 function deferred() {
-  const pending = Promise.withResolvers();
-  pending.promise.catch(() => {});
-  return pending;
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  promise.catch(() => {});
+  return { promise, resolve, reject };
 }
 
 function socketAddress(address) {

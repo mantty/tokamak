@@ -37,8 +37,7 @@ function bufferSourceBytes(value) {
   if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
 }
 
-function concatBytes(chunks) {
-  const output = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
+function writeChunks(output, chunks) {
   let offset = 0;
   for (const chunk of chunks) {
     output.set(chunk, offset);
@@ -59,7 +58,7 @@ function bytes(value) {
 }
 
 function bodyStream(value) {
-  const data = bytes(value);
+  const data = value instanceof Uint8Array ? value.slice() : bytes(value);
   const stream = new ReadableStream({ start(controller) {
     if (data.byteLength > 0) controller.enqueue(data.slice());
     controller.close();
@@ -70,6 +69,7 @@ function bodyStream(value) {
 function consumeStream(stream) {
   const reader = stream.getReader();
   const chunks = [];
+  let length = 0;
   return (async () => {
     try {
       while (true) {
@@ -78,11 +78,12 @@ function consumeStream(stream) {
         const chunk = bufferSourceBytes(result.value);
         if (!chunk) throw new TypeError("Response stream must contain bytes");
         chunks.push(chunk);
+        length += chunk.byteLength;
       }
     } finally {
       reader.releaseLock();
     }
-    return concatBytes(chunks);
+    return writeChunks(new Uint8Array(length), chunks);
   })();
 }
 
@@ -93,11 +94,9 @@ function bodyInitType(value) {
   return null;
 }
 
-const httpToken = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
-
 function validateHeaderName(name) {
   const value = string(name);
-  if (!httpToken.test(value)) throw new TypeError("Invalid header name");
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(value)) throw new TypeError("Invalid header name");
   return value.toLowerCase();
 }
 
@@ -160,7 +159,9 @@ export class Blob {
   constructor(parts = [], options = {}) {
     markHostObject(this, "Blob");
     if (parts == null || typeof parts[Symbol.iterator] !== "function") throw new TypeError("Blob parts must be iterable");
-    hidden(this, "__bytes", concatBytes([...parts].map(blobPartBytes)));
+    const chunks = [...parts].map(blobPartBytes);
+    hidden(this, "__bytes", new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0)));
+    writeChunks(this.__bytes, chunks);
     hidden(this, blobBrand, true);
     hidden(this, "__type", mimeType(options?.type));
     hidden(this, "__size", this.__bytes.byteLength);
@@ -259,7 +260,7 @@ async function consumeBody(body) {
 function requestMethod(value) {
   if (value === null) throw new TypeError("Invalid request method");
   const method = string(value);
-  if (!httpToken.test(method)) throw new TypeError("Invalid request method");
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(method)) throw new TypeError("Invalid request method");
   const upper = method.toUpperCase();
   return ["DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT"].includes(upper) ? upper : method;
 }
@@ -268,7 +269,7 @@ function requestRedirect(value) {
   if (value === null) throw new TypeError("Invalid redirect mode");
   const redirect = string(value).toLowerCase();
   if (redirect === "error") throw new TypeError('Invalid redirect value, must be one of "follow" or "manual" ("error" won\'t be implemented since it does not make sense at the edge; use "manual" and check the response status code).');
-  if (redirect !== "follow" && redirect !== "manual") throw new TypeError("Invalid redirect mode");
+  if (!["error", "follow", "manual"].includes(redirect)) throw new TypeError("Invalid redirect mode");
   return redirect;
 }
 
@@ -679,7 +680,8 @@ function formDataBody(form) {
     chunks.push(file ? value.__bytes : encoder.encode(value), encoder.encode("\r\n"));
   }
   chunks.push(encoder.encode("--" + boundary + "--\r\n"));
-  return { body: concatBytes(chunks), contentType: "multipart/form-data; boundary=" + boundary };
+  const body = writeChunks(new Uint8Array(chunks.reduce((total, value) => total + value.byteLength, 0)), chunks);
+  return { body, contentType: "multipart/form-data; boundary=" + boundary };
 }
 
 function quoteHeader(value) { return string(value).replace(/["\\\r\n]/g, character => "\\" + character); }

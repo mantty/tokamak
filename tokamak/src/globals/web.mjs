@@ -83,7 +83,7 @@ export class AbortSignal extends EventTarget {
 export class AbortController {
   constructor() { markHostObject(this); hidden(this, "__signal", new AbortSignal()); }
   get signal() { return this.__signal; }
-  abort(reason) { this.signal.__abort(reason); }
+  abort(reason) { this.signal.__abort(reason === undefined ? new DOMException("The operation was aborted", "AbortError") : reason); }
 }
 
 
@@ -220,23 +220,22 @@ const subtle = {
     const asymmetric = normalizeAsymmetricAlgorithm(algorithm);
     validateAsymmetricUsages(keyUsages, name, "pair");
     const bundle = cryptoGenerateKey({ kind: asymmetric.kind, curve: asymmetric.namedCurve, modulusLength: asymmetric.modulusLength, publicExponent: asymmetric.publicExponent });
-    const allowed = asymmetricUsages(name);
-    return {
-      publicKey: asymmetricKey(asymmetric, extractable, keyUsages.filter(usage => allowed.public.includes(usage)), bundle, false),
-      privateKey: asymmetricKey(asymmetric, extractable, keyUsages.filter(usage => allowed.private.includes(usage)), bundle, true),
-    };
+    const keys = parseBundle(bundle);
+    const publicKey = createKey(asymmetric.keyAlgorithm, extractable, asymmetricPublicUsages(name, keyUsages), "public", keys.public, { kind: asymmetric.kind, format: "spki", private: false });
+    const privateKey = createKey(asymmetric.keyAlgorithm, extractable, asymmetricPrivateUsages(name, keyUsages), "private", keys.private, { kind: asymmetric.kind, format: "pkcs8", private: true });
+    return { publicKey, privateKey };
   },
   async decrypt(algorithm, key, data) {
     validateKey(key, "decrypt");
     const record = requireAlgorithmKey(key, algorithm);
-    if (record.type === "secret" && symmetricNames.includes(record.algorithm.name) && record.algorithm.name !== "AES-KW") return aesCrypt(false, record, algorithm, data);
+    if (record.type === "secret" && symmetricNames.includes(record.algorithm.name) && record.algorithm.name !== "AES-KW") return aesCrypt(false, record, algorithm, () => toBytes(data));
     if (record.algorithm.name !== "RSA-OAEP") throw notSupported();
     return rsaOaep(false, record, algorithm, toBytes(data), "pkcs8");
   },
   async encrypt(algorithm, key, data) {
     validateKey(key, "encrypt");
     const record = requireAlgorithmKey(key, algorithm);
-    if (record.type === "secret" && symmetricNames.includes(record.algorithm.name) && record.algorithm.name !== "AES-KW") return aesCrypt(true, record, algorithm, data);
+    if (record.type === "secret" && symmetricNames.includes(record.algorithm.name) && record.algorithm.name !== "AES-KW") return aesCrypt(true, record, algorithm, () => toBytes(data));
     if (record.algorithm.name !== "RSA-OAEP") throw notSupported();
     return rsaOaep(true, record, algorithm, toBytes(data), "spki");
   },
@@ -402,15 +401,12 @@ function validateUsages(usages, allowed) {
 function secretUsages(name) {
   return name === "HMAC" ? ["sign", "verify"] : name === "AES-KW" ? ["wrapKey", "unwrapKey"] : ["encrypt", "decrypt"];
 }
-function asymmetricUsages(name) {
-  if (name === "RSA-OAEP") return { public: ["encrypt"], private: ["decrypt"] };
-  if (name === "ECDH" || name === "X25519") return { public: [], private: ["deriveBits", "deriveKey"] };
-  return { public: ["verify"], private: ["sign"] };
-}
-// `type` is "public", "private" or "pair".
 function validateAsymmetricUsages(usages, name, type) {
-  const allowed = asymmetricUsages(name);
-  validateUsages(usages, type === "pair" ? [...allowed.public, ...allowed.private] : allowed[type]);
+  const publicAllowed = name === "RSA-OAEP" ? ["encrypt"] : name === "ECDH" || name === "X25519" ? [] : ["verify"];
+  const privateAllowed = name === "RSA-OAEP" ? ["decrypt"] : name === "ECDH" || name === "X25519" ? ["deriveBits", "deriveKey"] : ["sign"];
+  if (type === "public") validateUsages(usages, publicAllowed);
+  else if (type === "private") validateUsages(usages, privateAllowed);
+  else validateUsages(usages, [...new Set([...publicAllowed, ...privateAllowed])]);
 }
 function validateKey(key, usage) { if (!requireKey(key).usages.includes(usage)) throw invalidAccess(); }
 function requireKey(key) {
@@ -439,12 +435,12 @@ function getRandomValues(value) {
 }
 
 function aesOptions(tagLength, mode, additionalData) { return { tagLength, mode, additionalData }; }
-// AES-GCM, AES-CBC or AES-CTR.
-function aesCrypt(encrypt, record, algorithm, data) {
+// AES-GCM, AES-CBC or AES-CTR. `input()` supplies the data once the IV or counter and the length are read.
+function aesCrypt(encrypt, record, algorithm, input) {
   const counter = record.algorithm.name === "AES-CTR";
   const parameter = requiredBytes(algorithm, counter ? "counter" : "iv", "AES algorithm ");
   const length = counter ? ctrLength(algorithm) : tagLength(algorithm);
-  return cryptoAesGcm(encrypt, record.data, parameter, toBytes(data), aesOptions(length, record.algorithm.name, optionalBytes(algorithm?.additionalData)));
+  return cryptoAesGcm(encrypt, record.data, parameter, input(), aesOptions(length, record.algorithm.name, optionalBytes(algorithm?.additionalData)));
 }
 function rsaOaep(encrypt, record, algorithm, bytes, keyFormat) {
   const options = { kind: "rsa-oaep", format: record.meta.format, keyFormat, key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) };
@@ -497,6 +493,8 @@ function normalizeAsymmetricAlgorithm(algorithm) {
   }
   throw notSupported();
 }
+function asymmetricPublicUsages(name, usages) { return name === "ECDH" || name === "X25519" ? [] : usages.filter(value => value === "verify" || value === "encrypt"); }
+function asymmetricPrivateUsages(name, usages) { return name === "RSA-OAEP" ? usages.filter(value => value === "decrypt") : name === "ECDH" || name === "X25519" ? usages.filter(value => value === "deriveBits" || value === "deriveKey") : usages.filter(value => value === "sign"); }
 function integer(value, name) { const number = Number(value); if (!Number.isSafeInteger(number) || number < 0) throw new TypeError(`${name} must be an integer`); return number; }
 function positiveInteger(value, name) { const number = integer(value, name); if (number < 1) throw operationError(`${name} must be positive`); return number; }
 function requiredAesLength(algorithm) { const length = integer(algorithm?.length, "length"); if (![128, 192, 256].includes(length)) throw dataError("Invalid AES key length"); return length; }
@@ -517,6 +515,7 @@ function importJwk(jwk, algorithm, extractable, usages, expectedName) {
   if (jwk === null || typeof jwk !== "object" || jwk instanceof ArrayBuffer || ArrayBuffer.isView(jwk) || Array.isArray(jwk)) {
     throw new TypeError("JsonWebKey must be an object");
   }
+  if (jwk === null || typeof jwk !== "object" || Array.isArray(jwk)) throw dataError("Invalid JWK");
   if (jwk.ext === false && extractable) throw dataError("JWK is not extractable");
   if (Array.isArray(jwk.key_ops) && jwk.key_ops.some(value => !usages.includes(value))) throw dataError("JWK key operations do not match usages");
   if (expectedName === "HMAC" || symmetricNames.includes(expectedName)) {
@@ -542,9 +541,8 @@ function importJwk(jwk, algorithm, extractable, usages, expectedName) {
 
 function secretJwk(record) {
   const value = { kty: "oct", k: base64urlEncode(record.data), key_ops: record.usages.slice(), ext: record.extractable };
-  // Hash names are "SHA-<bits>" and AES names are "AES-<mode>".
-  if (record.algorithm.name === "HMAC") value.alg = `HS${record.algorithm.hash.name.slice(4)}`;
-  else value.alg = `A${record.algorithm.length}${record.algorithm.name.slice(4)}`;
+  if (record.algorithm.name === "HMAC") value.alg = ({ "SHA-1": "HS1", "SHA-256": "HS256", "SHA-384": "HS384", "SHA-512": "HS512" })[record.algorithm.hash.name];
+  else value.alg = `A${record.algorithm.length}${({ "AES-GCM": "GCM", "AES-CBC": "CBC", "AES-CTR": "CTR", "AES-KW": "KW" })[record.algorithm.name]}`;
   return value;
 }
 function addJwkMetadata(value, record) {
@@ -552,8 +550,8 @@ function addJwkMetadata(value, record) {
   value.ext = record.extractable;
   const name = algorithmName(record.algorithm);
   const hash = record.algorithm.hash?.name;
-  if (name === "RSASSA-PKCS1-V1_5") value.alg = `RS${hash.slice(4)}`;
-  else if (name === "RSA-PSS") value.alg = `PS${hash.slice(4)}`;
+  if (name === "RSASSA-PKCS1-V1_5") value.alg = ({ "SHA-1": "RS1", "SHA-256": "RS256", "SHA-384": "RS384", "SHA-512": "RS512" })[hash];
+  else if (name === "RSA-PSS") value.alg = ({ "SHA-1": "PS1", "SHA-256": "PS256", "SHA-384": "PS384", "SHA-512": "PS512" })[hash];
   else if (name === "RSA-OAEP") value.alg = hash === "SHA-1" ? "RSA-OAEP" : `RSA-OAEP-${hash.slice(4)}`;
   else if (name === "Ed25519" || name === "NODE-ED25519") value.alg = "EdDSA";
   return value;
@@ -609,7 +607,7 @@ function wrapCrypt(encrypt, key, algorithm, bytes) {
   const record = requireAlgorithmKey(key, algorithm);
   const name = record.algorithm.name;
   if (name === "AES-KW") return cryptoAesGcm(encrypt, record.data, new Uint8Array(), bytes, aesOptions(128, "AES-KW"));
-  if (name === "AES-GCM" || name === "AES-CBC" || name === "AES-CTR") return aesCrypt(encrypt, record, algorithm, bytes);
+  if (name === "AES-GCM" || name === "AES-CBC" || name === "AES-CTR") return aesCrypt(encrypt, record, algorithm, () => bytes);
   if (name === "RSA-OAEP") return rsaOaep(encrypt, record, algorithm, bytes, encrypt && !record.meta.private ? "spki" : "pkcs8");
   throw notSupported();
 }
@@ -617,7 +615,9 @@ function wrapCrypt(encrypt, key, algorithm, bytes) {
 export class DigestStream extends WritableStream {
   constructor(algorithm) {
     const name = normalizeDigest(algorithm);
-    const { promise: digestPromise, resolve: resolveDigest, reject: rejectDigest } = Promise.withResolvers();
+    let resolveDigest;
+    let rejectDigest;
+    const digestPromise = new Promise((resolve, reject) => { resolveDigest = resolve; rejectDigest = reject; });
     let state = cryptoCreateDigest(name);
     let bytesWritten = 0n;
     super({

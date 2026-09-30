@@ -231,8 +231,13 @@ Object.assign(EventEmitter.prototype, {
   off(name, listener) { return this.removeListener(name, listener); },
 
   removeListener(name, listener) {
-    const entry = this.__events?.get(name)?.find(entry => entry.listener === listener || entry.wrapper === listener);
-    if (entry) this.__removeEntry(name, entry);
+    const list = this.__events?.get(name) ?? [];
+    for (let index = 0; index < list.length; index += 1) {
+      const entry = list[index];
+      if (entry.listener !== listener && entry.wrapper !== listener) continue;
+      this.__removeEntry(name, entry);
+      break;
+    }
     return this;
   },
 
@@ -274,8 +279,8 @@ Object.assign(EventEmitter.prototype, {
     else this.emit("error", error);
   },
 
-  listeners(name) { return (this.__events?.get(name) ?? []).map(entry => entry.listener); },
-  rawListeners(name) { return (this.__events?.get(name) ?? []).map(entry => entry.wrapper ?? entry.listener); },
+  listeners(name) { return [...(this.__events?.get(name) ?? [])].map(entry => entry.listener); },
+  rawListeners(name) { return [...(this.__events?.get(name) ?? [])].map(entry => entry.wrapper ?? entry.listener); },
   listenerCount(name, listener) {
     const list = this.__events?.get(name) ?? [];
     return listener === undefined ? list.length : list.filter(entry => entry.listener === listener || entry.wrapper === listener).length;
