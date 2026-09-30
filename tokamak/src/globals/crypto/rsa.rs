@@ -111,7 +111,7 @@ pub(super) fn private_encrypt(
         Padding::None => {
             let size = key.size();
             if input.len() != size {
-                return Err(KeyError::Operation("data must be the key size".to_owned()));
+                return Err(KeyError::operation("data must be the key size"));
             }
             let value = BoxedUint::from_be_slice(input, key.n_bits_precision())?;
             let output = rsa::hazmat::rsa_decrypt_and_check(key, Some(&mut rng()), &value)?;
@@ -128,9 +128,7 @@ pub(super) fn public_decrypt(
 ) -> Result<Vec<u8>> {
     let size = key.size();
     if input.len() > size {
-        return Err(KeyError::Operation(
-            "data too large for key size".to_owned(),
-        ));
+        return Err(KeyError::operation("data too large for key size"));
     }
     let value = BoxedUint::from_be_slice(&fixed_width(input, size), key.n_bits_precision())?;
     let output = fixed_width(&rsa::hazmat::rsa_encrypt(key, &value)?.to_be_bytes(), size);
@@ -141,7 +139,7 @@ pub(super) fn public_decrypt(
 }
 
 fn strip_type1_padding(block: &[u8]) -> Result<Vec<u8>> {
-    let invalid = || KeyError::Operation("padding check failed".to_owned());
+    let invalid = || KeyError::operation("padding check failed");
     let [0, 1, rest @ ..] = block else {
         return Err(invalid());
     };

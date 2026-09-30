@@ -28,6 +28,14 @@ pub(super) enum KeyError {
 }
 
 impl KeyError {
+    pub(super) fn data(message: &str) -> Self {
+        Self::Data(message.to_owned())
+    }
+
+    pub(super) fn operation(message: &str) -> Self {
+        Self::Operation(message.to_owned())
+    }
+
     pub(super) fn message(&self) -> &str {
         match self {
             Self::Data(message) | Self::Operation(message) => message,
@@ -132,11 +140,7 @@ impl PrivateKey {
                 let inner = <&OctetStringRef as Decode>::from_der(info.private_key.as_bytes())?;
                 Self::X25519(StaticSecret::from(<[u8; 32]>::try_from(inner.as_bytes())?))
             }
-            _ => {
-                return Err(KeyError::Data(
-                    "Unsupported private key algorithm".to_owned(),
-                ));
-            }
+            _ => return Err(KeyError::data("Unsupported private key algorithm")),
         };
         Ok(key)
     }
@@ -187,7 +191,7 @@ impl PublicKey {
         let raw = || {
             info.subject_public_key
                 .as_bytes()
-                .ok_or_else(|| KeyError::Data("Malformed public key".to_owned()))
+                .ok_or_else(|| KeyError::data("Malformed public key"))
         };
         let key = match info.algorithm.oid {
             RSA_OID => Self::Rsa(RsaPublicKey::from_public_key_der(der)?),
@@ -199,11 +203,7 @@ impl PublicKey {
             X25519_OID => {
                 Self::X25519(x25519_dalek::PublicKey::from(<[u8; 32]>::try_from(raw()?)?))
             }
-            _ => {
-                return Err(KeyError::Data(
-                    "Unsupported public key algorithm".to_owned(),
-                ));
-            }
+            _ => return Err(KeyError::data("Unsupported public key algorithm")),
         };
         Ok(key)
     }
@@ -237,16 +237,12 @@ impl PublicKey {
     pub(super) fn from_raw(kind: Kind, curve: Option<Curve>, raw: &[u8]) -> Result<Self> {
         Ok(match kind {
             Kind::Ec => {
-                let curve = curve.ok_or_else(|| KeyError::Data("curve is required".to_owned()))?;
+                let curve = curve.ok_or_else(|| KeyError::data("curve is required"))?;
                 Self::Ec(curves::decode_point(curve, raw)?)
             }
             Kind::Ed25519 => Self::Ed25519(VerifyingKey::from_bytes(&<[u8; 32]>::try_from(raw)?)?),
             Kind::X25519 => Self::X25519(x25519_dalek::PublicKey::from(<[u8; 32]>::try_from(raw)?)),
-            Kind::Rsa => {
-                return Err(KeyError::Data(
-                    "Raw import is not supported for RSA".to_owned(),
-                ));
-            }
+            Kind::Rsa => return Err(KeyError::data("Raw import is not supported for RSA")),
         })
     }
 
@@ -288,8 +284,8 @@ pub(super) fn from_jwk(kind: Kind, jwk: &JsonValue) -> Result<KeyMaterial> {
                 }
             })
         }
-        _ => Err(KeyError::Data(
-            "The JWK does not match the requested algorithm".to_owned(),
+        _ => Err(KeyError::data(
+            "The JWK does not match the requested algorithm",
         )),
     }
 }
@@ -315,22 +311,22 @@ fn rsa_from_jwk(jwk: &JsonValue) -> Result<KeyMaterial> {
 
 fn ec_from_jwk(jwk: &JsonValue) -> Result<KeyMaterial> {
     let curve = Curve::parse(&jwk_string(jwk, "crv")?)
-        .ok_or_else(|| KeyError::Data("The JWK curve is not supported".to_owned()))?;
-    let too_long = || KeyError::Data("The JWK coordinate is too long".to_owned());
+        .ok_or_else(|| KeyError::data("The JWK curve is not supported"))?;
+    let too_long = || KeyError::data("The JWK coordinate is too long");
     let x = left_pad(&jwk_bytes(jwk, "x")?, curve.size()).ok_or_else(too_long)?;
     let y = left_pad(&jwk_bytes(jwk, "y")?, curve.size()).ok_or_else(too_long)?;
     let mut point = vec![4];
     point.extend(x);
     point.extend(y);
     let public = curves::decode_point(curve, &point)
-        .map_err(|error| KeyError::Operation(error.message().to_owned()))?;
+        .map_err(|error| KeyError::operation(error.message()))?;
     if jwk.get("d").is_none() {
         return Ok(KeyMaterial::Public(PublicKey::Ec(public)));
     }
     let secret = curves::secret_from_scalar(curve, &jwk_bytes(jwk, "d")?)?;
     if curves::public_of(&secret) != public {
-        return Err(KeyError::Operation(
-            "The JWK private key does not match its public key".to_owned(),
+        return Err(KeyError::operation(
+            "The JWK private key does not match its public key",
         ));
     }
     Ok(KeyMaterial::Private(PrivateKey::Ec(secret)))
@@ -338,8 +334,8 @@ fn ec_from_jwk(jwk: &JsonValue) -> Result<KeyMaterial> {
 
 fn okp_from_jwk(jwk: &JsonValue, curve: &str) -> Result<([u8; 32], Option<[u8; 32]>)> {
     if jwk_string(jwk, "crv")? != curve {
-        return Err(KeyError::Data(
-            "The JWK curve does not match the requested algorithm".to_owned(),
+        return Err(KeyError::data(
+            "The JWK curve does not match the requested algorithm",
         ));
     }
     let public = <[u8; 32]>::try_from(jwk_bytes(jwk, "x")?.as_slice())?;
@@ -359,7 +355,7 @@ fn rsa_public_jwk(key: &RsaPublicKey) -> JsonValue {
 }
 
 fn rsa_private_jwk(key: &RsaPrivateKey) -> Result<JsonValue> {
-    let incomplete = || KeyError::Operation("RSA private key is incomplete".to_owned());
+    let incomplete = || KeyError::operation("RSA private key is incomplete");
     let [p, q] = key.primes() else {
         return Err(incomplete());
     };

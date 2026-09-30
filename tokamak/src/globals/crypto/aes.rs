@@ -24,6 +24,7 @@ pub(super) enum Mode {
 #[derive(Debug)]
 pub(super) struct Failure(pub(super) &'static str);
 
+#[derive(Default)]
 pub(super) struct Finished {
     pub(super) output: Vec<u8>,
     pub(super) tag: Option<Vec<u8>>,
@@ -32,10 +33,17 @@ pub(super) struct Finished {
 /// An encryption or decryption in progress.
 pub(super) trait Stream {
     fn update(&mut self, input: &[u8]) -> Result<Vec<u8>, Failure>;
-    fn set_padding(&mut self, enabled: bool);
-    fn set_aad(&mut self, data: &[u8]) -> Result<(), Failure>;
-    fn set_tag(&mut self, tag: &[u8]) -> Result<(), Failure>;
     fn finish(self: Box<Self>) -> Result<Finished, Failure>;
+
+    fn set_padding(&mut self, _enabled: bool) {}
+
+    fn set_aad(&mut self, _: &[u8]) -> Result<(), Failure> {
+        Err(Failure("Cipher does not support AAD"))
+    }
+
+    fn set_tag(&mut self, _: &[u8]) -> Result<(), Failure> {
+        Err(Failure("Cipher does not support auth tags"))
+    }
 }
 
 /// Runs `$body` with `$c` bound to the AES type matching the key length.
@@ -124,10 +132,6 @@ fn blocks<C: BlockSizeUser>(data: &[u8]) -> Vec<Block<C>> {
         .collect()
 }
 
-fn flatten<C: BlockSizeUser>(blocks: &[Block<C>]) -> Vec<u8> {
-    blocks.concat()
-}
-
 struct CbcEncrypt<C: BlockCipherEncrypt> {
     cipher: cbc::Encryptor<C>,
     pending: Vec<u8>,
@@ -146,7 +150,7 @@ impl<C: BlockCipherEncrypt + KeyInit> CbcEncrypt<C> {
     fn encrypt(&mut self, data: &[u8]) -> Vec<u8> {
         let mut blocks = blocks::<C>(data);
         self.cipher.encrypt_blocks(&mut blocks);
-        flatten::<C>(&blocks)
+        blocks.concat()
     }
 }
 
@@ -162,23 +166,12 @@ impl<C: BlockCipherEncrypt + KeyInit> Stream for CbcEncrypt<C> {
         self.padding = enabled;
     }
 
-    fn set_aad(&mut self, _: &[u8]) -> Result<(), Failure> {
-        Err(Failure("Cipher does not support AAD"))
-    }
-
-    fn set_tag(&mut self, _: &[u8]) -> Result<(), Failure> {
-        Err(Failure("Cipher does not support auth tags"))
-    }
-
     fn finish(mut self: Box<Self>) -> Result<Finished, Failure> {
         if !self.padding {
             if !self.pending.is_empty() {
                 return Err(Failure("data not multiple of block length"));
             }
-            return Ok(Finished {
-                output: Vec::new(),
-                tag: None,
-            });
+            return Ok(Finished::default());
         }
         let fill = BLOCK - self.pending.len();
         let mut last = std::mem::take(&mut self.pending);
@@ -208,7 +201,7 @@ impl<C: BlockCipherDecrypt + KeyInit> CbcDecrypt<C> {
     fn decrypt(&mut self, data: &[u8]) -> Vec<u8> {
         let mut blocks = blocks::<C>(data);
         self.cipher.decrypt_blocks(&mut blocks);
-        flatten::<C>(&blocks)
+        blocks.concat()
     }
 }
 
@@ -226,23 +219,12 @@ impl<C: BlockCipherDecrypt + KeyInit> Stream for CbcDecrypt<C> {
         self.padding = enabled;
     }
 
-    fn set_aad(&mut self, _: &[u8]) -> Result<(), Failure> {
-        Err(Failure("Cipher does not support AAD"))
-    }
-
-    fn set_tag(&mut self, _: &[u8]) -> Result<(), Failure> {
-        Err(Failure("Cipher does not support auth tags"))
-    }
-
     fn finish(mut self: Box<Self>) -> Result<Finished, Failure> {
         if !self.padding {
             if !self.pending.is_empty() {
                 return Err(Failure("wrong final block length"));
             }
-            return Ok(Finished {
-                output: Vec::new(),
-                tag: None,
-            });
+            return Ok(Finished::default());
         }
         if self.pending.len() != BLOCK {
             return Err(Failure("wrong final block length"));
@@ -282,21 +264,8 @@ impl<C: BlockCipherEncrypt<BlockSize = U16> + KeyInit> Stream for Ctr<C> {
         Ok(output)
     }
 
-    fn set_padding(&mut self, _: bool) {}
-
-    fn set_aad(&mut self, _: &[u8]) -> Result<(), Failure> {
-        Err(Failure("Cipher does not support AAD"))
-    }
-
-    fn set_tag(&mut self, _: &[u8]) -> Result<(), Failure> {
-        Err(Failure("Cipher does not support auth tags"))
-    }
-
     fn finish(self: Box<Self>) -> Result<Finished, Failure> {
-        Ok(Finished {
-            output: Vec::new(),
-            tag: None,
-        })
+        Ok(Finished::default())
     }
 }
 
@@ -403,8 +372,6 @@ impl<C: BlockCipherEncrypt<BlockSize = U16> + KeyInit> Stream for Gcm<C> {
         Ok(output)
     }
 
-    fn set_padding(&mut self, _: bool) {}
-
     fn set_aad(&mut self, data: &[u8]) -> Result<(), Failure> {
         if self.aad_done {
             return Err(Failure("AAD must be set before any data"));
@@ -436,10 +403,7 @@ impl<C: BlockCipherEncrypt<BlockSize = U16> + KeyInit> Stream for Gcm<C> {
             .ok_or(Failure("Unsupported state or unable to authenticate data"))?;
         self.tag_length = expected.len();
         if self.tag().ct_eq(&expected).into() {
-            Ok(Finished {
-                output: Vec::new(),
-                tag: None,
-            })
+            Ok(Finished::default())
         } else {
             Err(Failure("Unsupported state or unable to authenticate data"))
         }
