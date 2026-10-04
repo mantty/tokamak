@@ -117,19 +117,24 @@ jobs:
         with:
           version: 9.9.0
 
-      - name: Build the Astro example with tok
+      - name: Install the Astro example
         if: matrix.app
         shell: bash
         run: |
-          if [ "${{ matrix.app }}" = android ]; then
-            export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
-          fi
-          npm ci --prefix tokamak-cli/npm
+          npm ci --prefix tokamak-cli/npm --omit=optional --ignore-scripts
           npm run build --prefix tokamak-cli/npm
           pnpm --dir plugins install --frozen-lockfile
           pnpm --dir examples/astro install --frozen-lockfile
-          cargo run -p tokamak-cli -- build "${{ matrix.app }}" --project examples/astro \
-            --platform-pack "target/tokamak-platform-packs/${{ matrix.target }}"
+
+      - name: Select the newest Xcode
+        if: matrix.app && runner.os == 'macOS'
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)"
+          xcodebuild -version
+
+      - name: Build the Astro example with tok
+        if: matrix.app
+        run: cargo run -p tokamak-cli -- build ${{ matrix.app }} --project examples/astro --platform-pack target/tokamak-platform-packs/${{ matrix.target }}
 
       - name: Serve the Astro example
         if: matrix.target == 'macos-arm64'

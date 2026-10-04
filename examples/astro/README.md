@@ -12,11 +12,10 @@ npm ci --prefix ../../tokamak-cli/npm
 npm run build --prefix ../../tokamak-cli/npm
 pnpm --dir ../../plugins install --frozen-lockfile
 pnpm install --frozen-lockfile
-pnpm run build
 ```
 
-Build a platform pack from the tokamak workspace, then package the app, which
-also builds it:
+`pnpm run build` builds the web app. Build a platform pack from the tokamak
+workspace, then package the app, which also builds it:
 
 ```sh
 cargo run -p xtask -- platform-pack --target macos-arm64

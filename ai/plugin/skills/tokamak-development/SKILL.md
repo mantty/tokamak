@@ -38,7 +38,7 @@ Apply the following model whenever working on a tokamak application. tokamak is 
 - Add the CLI to the project as a development dependency: `npm install --save-dev @tokamakdev/tok` (or the project's package manager equivalent). Run it with `npx tok`, `pnpm exec tok`, or a `package.json` script.
 - Expect the package to install the platform packs the machine can build as `@tokamakdev/platform-<target>` optional dependencies: every host gets `android-arm64`; macOS adds `ios-arm64` and the host-architecture `ios-simulator-*` and `macos-*` packs; Windows x64 adds `windows-x64`. Windows apps can only be built on Windows, and Apple apps only on macOS.
 - Do not install with `--omit=optional` or `--no-optional`; that omits the `tok` binary and platform packs. If `tok` reports a missing `@tokamakdev/platform-<target>` on a machine that can build it, reinstall with optional dependencies enabled.
-- Use the installer script from the tokamak README only when the project does not use npm; it installs `tok` and every platform pack under `~/.local`.
+- Apps always add `@tokamakdev/tok` for its Vite plugin. The installer script from the tokamak README is another way to get `tok` and every platform pack, under `~/.local`.
 
 ## Use the tokamak CLI
 
@@ -73,8 +73,8 @@ tok targets
 - `identifier` values are used as the Apple bundle identifier and Android application ID.
 - `version` is required by `tok build`. Do not use `TOKAMAK_APP_VERSION`.
 - `icon` accepts user-created platform assets: Android `res` directories, Apple `.icon` packages for `ios`/`macos`, and Windows `.ico` files. Missing icons preserve the existing behavior.
-- Every setting is a command-line option, an environment variable, or a configuration key, with the same name in each: `--version`/`TOKAMAK_VERSION`/`version`, and `--ios-plist`/`TOKAMAK_IOS_PLIST`/`ios.plist`. Options beat environment variables, which beat the configuration; within a source, a platform's own value beats a top-level one.
-- tokamak validates `name`, `identifier`, `icon`, `version`, and the `--build` command. Every other platform setting belongs to the platform pack, which declares it; `tok build <platform> --help` lists a platform's settings. An undeclared setting for the platform being built is an error; settings for other platforms are ignored. Do not invent platform settings.
+- Every setting is a command-line option, an environment variable, or a configuration key, with the same name in each: `--version`/`TOKAMAK_VERSION`/`version`, and `--ios-plist`/`TOKAMAK_IOS_PLIST`/`ios.plist`. Options beat environment variables, which beat the configuration; within a source, a platform's own value beats a top-level one. The build command is the exception: only `--build` or `TOKAMAK_BUILD`.
+- tokamak validates `name`, `identifier`, `icon`, and `version`. Every other platform setting belongs to the platform pack, which declares it; `tok build <platform> --help` lists a platform's settings. An undeclared setting for the platform being built is an error; settings for other platforms are ignored. Do not invent platform settings.
 - Relative paths in options and environment variables are relative to the current directory; relative paths in a configuration file are relative to that file.
 - `tok version` prints the CLI version; `--version` sets the app version.
 

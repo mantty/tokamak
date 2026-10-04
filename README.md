@@ -35,8 +35,9 @@ dependencies (`--omit=optional`, `--no-optional`) leaves them out.
 
 ### Installer script
 
-If you do not use npm, the installer script installs `tok` and every platform
-pack for your user account. On macOS, Linux, or WSL:
+Apps add `@tokamakdev/tok` for the Vite plugin. The installer script is
+another way to get `tok` and every platform pack, for your user account. On
+macOS, Linux, or WSL:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mantty/tokamak/main/scripts/install.sh | bash
@@ -315,20 +316,20 @@ export const config = {
   // Defaults for every platform
   name: "My App",
   identifier: "com.example.myapp",
-  icon: "assets/icons/AppIcon.icon",
+  icon: "../assets/icons/AppIcon.icon",
   version: "1.0.0",
 
   // Platform overrides and platform-pack settings
   ios: {
     name: "Myapp Pro",
     identifier: "com.example.myapp.ios",
-    plist: "native/Info.plist",
+    plist: "../native/Info.plist",
   },
   android: {
-    icon: "assets/icons/android",
+    icon: "../assets/icons/android",
   },
   windows: {
-    icon: "assets/icons/windows/AppIcon.ico",
+    icon: "../assets/icons/windows/AppIcon.ico",
   },
 } satisfies Config;
 ```
@@ -338,7 +339,7 @@ top-level keys are rejected. They are defaults for every platform. A platform
 object (`android`, `ios`, `macos`, `windows`) overrides `name`, `identifier`,
 or `icon` for that platform, and its other keys are settings for that
 platform's pack. `version` is top-level only. `ios` covers iOS devices and
-simulators. Values are strings, numbers, or booleans.
+simulators. Paths are relative to the configuration file.
 
 The plugin reads the file with Vite, using the app's aliases, when `tok build`
 or `tok dev` runs, so the file can import other modules and read
@@ -574,7 +575,9 @@ Pass a device selector and the framework's development command to `tok dev`:
 tok dev macos --project ./my-app -- pnpm dev
 ```
 
-The tokamak Vite plugin reports the development server's address and the
+`tok dev` reads the project's Wrangler configuration, which needs `name` and
+`main`, for the app name. The tokamak Vite plugin reports the development
+server's address and the
 configuration to `tok dev`, which waits up to a minute for them, then builds
 the development app and proxies it to that address, so `tok dev` takes no
 `--server` option. Restart `tok dev` after changing native settings.
@@ -631,16 +634,11 @@ refused request rejects with `NotAllowedError`.
 ## Example
 
 [The Astro example](examples/astro) exercises server rendering, static assets,
-navigation, WebSockets, and the native location plugin.
+navigation, WebSockets, and the native location plugin. It installs
+`@tokamakdev/tok` from this repository; its README lists the setup.
 
 ```sh
-pnpm --dir examples/astro install --frozen-lockfile
 tok dev macos --project examples/astro -- pnpm dev
-```
-
-To produce a native bundle instead:
-
-```sh
 tok build macos --project examples/astro
 ```
 
@@ -662,8 +660,7 @@ Platform-pack work additionally requires:
 | Windows | 64-bit Windows with Visual Studio 2022 C++ Build Tools and NASM |
 
 Install the JavaScript dependencies once after cloning. The Astro example
-installs `@tokamakdev/tok` from `tokamak-cli/npm`, so build that package first,
-and reinstall the example after changing it:
+installs `@tokamakdev/tok` from `tokamak-cli/npm`, so build that package first:
 
 ```sh
 npm ci --prefix tokamak-cli/npm

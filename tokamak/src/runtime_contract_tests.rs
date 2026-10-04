@@ -1190,7 +1190,7 @@ fn astro_example_renders_pages_and_serves_assets() -> TestResult {
         .ok_or("no workspace")?
         .join("examples/astro");
     if !example.join("dist/server/entry.mjs").is_file() {
-        return Err("Astro runtime fixture is missing; run pnpm --dir examples/astro install --frozen-lockfile and pnpm --dir examples/astro build before testing".into());
+        return Err("Astro runtime fixture is missing; build it as the README's checks do, with TOKAMAK_VITE_OUTPUT set".into());
     }
     let directory = tempfile::tempdir()?;
     let worker = module_worker(
