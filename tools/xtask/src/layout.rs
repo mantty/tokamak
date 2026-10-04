@@ -49,17 +49,6 @@ impl WorkspaceLayout {
             .join("build/variables.json")
     }
 
-    pub(crate) fn esbuild_host_package(&self, host: &str) -> PathBuf {
-        self.root
-            .join("tools/esbuild-hosts/node_modules/@esbuild")
-            .join(host)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_root(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
-    }
-
     pub(crate) fn manifest(&self, target: Target) -> PathBuf {
         self.platform_pack(target).join(MANIFEST_FILE)
     }
@@ -97,10 +86,6 @@ mod tests {
         assert_eq!(
             layout.platform_variables(Target::IosSimulatorArm64),
             Path::new("/workspace/tokamak/platforms/apple/build/variables.json")
-        );
-        assert_eq!(
-            layout.esbuild_host_package("win32-x64"),
-            Path::new("/workspace/tokamak/tools/esbuild-hosts/node_modules/@esbuild/win32-x64")
         );
     }
 }

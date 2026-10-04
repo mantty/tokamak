@@ -188,10 +188,6 @@ fn target_artifacts_describe_the_complete_pack_contract() {
                 "frameworks/TokamakRuntime.framework"
             ),
             (&ArtifactKind::NativeShellDirectory, "native-shell"),
-            (
-                &ArtifactKind::EsbuildExecutable,
-                "tools/runtime/node_modules/esbuild/bin/esbuild"
-            ),
         ]
     );
 }

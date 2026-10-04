@@ -23,23 +23,3 @@ The example intentionally uses no WebAssembly. It covers server rendering,
 static assets, API routes, navigation, and WebSockets through the QuickJS
 runtime.
 
-## Packaged startup regression
-
-The startup fixture uses text encoding at module scope before loading the Astro
-Worker. Run it in a packaged simulator app, not `tok dev`:
-
-```sh
-# From the tokamak workspace:
-cargo build -p tokamak-cli --release
-cargo run -p xtask -- platform-pack --target ios-simulator-arm64
-cd examples/astro
-pnpm build
-TOKAMAK_PLATFORM_PACK_PATH=../../target/tokamak-platform-packs \
-  ../../target/release/tok build ios-simulator \
-  --wrangler wrangler.runtime-test.json --skip-project-build
-xcrun simctl install booted build/ios-simulator/tokamak-example-astro.app
-xcrun simctl launch --terminate-running-process booted com.tokamak.tokamak-example-astro
-```
-
-The app displays the normal Astro page. The fixture is separate from the example's
-default Wrangler configuration.

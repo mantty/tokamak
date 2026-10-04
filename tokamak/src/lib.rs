@@ -81,7 +81,6 @@ pub use packaging::{
 };
 pub use quickjs::Error as QuickJsError;
 pub use quickjs::{compile_module, compile_worker};
-pub use runtime_modules::runtime_module_names;
 pub use tokamak_config::{
     Error as TokamakConfigError, PlatformValues, SHARED_PLATFORM_KEYS, TokamakConfig,
     app_name_problem, is_valid_key, parse_config as parse_tokamak_config, slug, value_problem,

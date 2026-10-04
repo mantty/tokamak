@@ -15,12 +15,6 @@ use tokamak::{SHARED_PLATFORM_KEYS, is_valid_key};
 
 /// Platform-pack manifest filename.
 pub const MANIFEST_FILE: &str = "platform-pack.json";
-/// Common runtime tool directory inside a platform pack.
-pub const RUNTIME_DIRECTORY: &str = "tools/runtime";
-/// Common esbuild directory inside a platform pack.
-pub const ESBUILD_DIRECTORY: &str = "tools/runtime/node_modules/esbuild";
-/// Common esbuild executable inside a platform pack.
-pub const ESBUILD_EXECUTABLE: &str = "tools/runtime/node_modules/esbuild/bin/esbuild";
 /// Fixed path of the platform-pack build entrypoint.
 pub const BUILD_ENTRYPOINT: &str = "build/entrypoint";
 /// Windows platform-pack build entrypoint path, retaining PowerShell's
@@ -302,10 +296,6 @@ impl Target {
                 path: "native-shell".to_owned(),
             });
         }
-        artifacts.push(Artifact {
-            kind: ArtifactKind::EsbuildExecutable,
-            path: ESBUILD_EXECUTABLE.to_owned(),
-        });
         artifacts
     }
 }
@@ -359,8 +349,6 @@ pub enum ArtifactKind {
     RuntimeLibrary,
     /// Native application-shell sources compiled during an app build.
     NativeShellDirectory,
-    /// Host-side JavaScript compiler used to produce Worker bytecode.
-    EsbuildExecutable,
 }
 
 /// A single file or directory provided by a platform pack.

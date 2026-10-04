@@ -90,7 +90,6 @@ jobs:
 
       - name: Install runtime test dependencies
         run: |
-          pnpm --dir tools/esbuild-hosts install --frozen-lockfile
           pnpm --dir tokamak/tests/quickjs_runtime install --frozen-lockfile
           pnpm --dir examples/astro install --frozen-lockfile
 

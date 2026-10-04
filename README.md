@@ -625,7 +625,6 @@ Install the JavaScript dependencies once after cloning:
 
 ```sh
 pnpm --dir plugins install --frozen-lockfile
-pnpm --dir tools/esbuild-hosts install --frozen-lockfile
 pnpm --dir examples/astro install --frozen-lockfile
 ```
 
@@ -639,8 +638,7 @@ The executable is written to `target/release/tok` (`tok.exe` on Windows).
 
 ### Build a platform pack
 
-Install the Rust target, then build the runtime, native shell, and runtime tools
-for one target. Apple platform packs also need both macOS host targets because the
+Install the Rust target, then build the runtime and native shell for one target. Apple platform packs also need both macOS host targets because the
 pack includes a universal host-side signing tool:
 
 ```sh
@@ -745,7 +743,6 @@ the compatibility reference.
 Run the common checks before submitting a change:
 
 ```sh
-pnpm --dir tools/esbuild-hosts install --frozen-lockfile
 pnpm --dir tokamak/tests/quickjs_runtime install --frozen-lockfile
 pnpm --dir examples/astro install --frozen-lockfile
 pnpm --dir examples/astro run build
