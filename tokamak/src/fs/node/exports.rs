@@ -31,6 +31,14 @@ pub fn install(ctx: &Ctx<'_>, vfs: &VfsHandle) -> rquickjs::Result<()> {
     Ok(())
 }
 
+/// The contents of `/bundle/<name>` in the request VFS.
+pub fn read_bundle_file(ctx: &Ctx<'_>, name: &str) -> rquickjs::Result<Vec<u8>> {
+    let vfs = vfs_handle(ctx)?;
+    lock(&vfs)
+        .read_file(&format!("/bundle/{name}"))
+        .map_err(|error| rquickjs::Error::new_loading_message(name, error.to_string()))
+}
+
 #[allow(clippy::wildcard_imports)]
 #[rquickjs::module]
 pub(crate) mod node_fs_module {

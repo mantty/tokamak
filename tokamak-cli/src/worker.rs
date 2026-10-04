@@ -9,9 +9,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokamak::compile_module;
 use tokamak::{
-    PackageLayout, WorkerEnvironment, WorkerManifest, WranglerConfig, WranglerModuleType,
-    WranglerRule, compress_worker_module, write_asset_manifest, write_worker_environment,
-    write_worker_manifest,
+    ModuleType, PackageLayout, WorkerEnvironment, WorkerManifest, WranglerConfig, WranglerRule,
+    compress_worker_module, write_asset_manifest, write_worker_environment, write_worker_manifest,
 };
 use tokamak_cli::{ArtifactKind, PlatformPackManifest};
 use walkdir::WalkDir;
@@ -191,6 +190,7 @@ fn write_worker_modules(layout: &PackageLayout, source: &Path) -> Result<()> {
     }
     let modules = layout.worker_modules();
     fs::create_dir_all(&modules)?;
+    let mut module_types = BTreeMap::new();
     for source_file in source_files {
         let relative = source_file
             .strip_prefix(source)
@@ -202,11 +202,13 @@ fn write_worker_modules(layout: &PackageLayout, source: &Path) -> Result<()> {
             fs::create_dir_all(parent)?;
         }
         fs::write(destination, compress_worker_module(&bytecode)?)?;
+        module_types.insert(name, ModuleType::EsModule);
     }
     write_worker_manifest(
         layout,
         &WorkerManifest {
             entry: WORKER_ENTRY.to_owned(),
+            modules: module_types,
         },
     )?;
     Ok(())
@@ -275,8 +277,7 @@ fn additional_module_files(wrangler: &WranglerConfig) -> Result<BTreeSet<PathBuf
                 continue;
             }
             let relative = entry.path().strip_prefix(&wrangler.base_dir)?;
-            if rule_type(relative, &wrangler.rules).is_some_and(WranglerModuleType::is_bundle_file)
-            {
+            if rule_type(relative, &wrangler.rules).is_some_and(ModuleType::is_bundle_file) {
                 files.insert(entry.path().to_owned());
             }
         }
@@ -284,7 +285,7 @@ fn additional_module_files(wrangler: &WranglerConfig) -> Result<BTreeSet<PathBuf
     Ok(files)
 }
 
-fn rule_type(path: &Path, rules: &[WranglerRule]) -> Option<WranglerModuleType> {
+fn rule_type(path: &Path, rules: &[WranglerRule]) -> Option<ModuleType> {
     let path = slash_path(path).ok()?;
     let mut selected = None;
     for rule in rules {
@@ -326,9 +327,9 @@ fn esbuild_loaders(rules: &[WranglerRule]) -> BTreeMap<String, &'static str> {
     ]);
     for rule in rules {
         let loader = match rule.module_type {
-            WranglerModuleType::Text => "text",
-            WranglerModuleType::Data | WranglerModuleType::CompiledWasm => "binary",
-            WranglerModuleType::EsModule | WranglerModuleType::CommonJs => continue,
+            ModuleType::Text => "text",
+            ModuleType::Data | ModuleType::CompiledWasm => "binary",
+            ModuleType::EsModule | ModuleType::CommonJs => continue,
         };
         for glob in &rule.globs {
             let Some(extension) = glob

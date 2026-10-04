@@ -12,6 +12,8 @@ use std::sync::Arc;
 #[cfg(feature = "native")]
 use crate::fs::Bundle as VfsBundle;
 #[cfg(feature = "native")]
+use crate::packaging::{ModuleType, WorkerManifest};
+#[cfg(feature = "native")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "native")]
 use serde_json::Value;
@@ -71,22 +73,28 @@ pub struct Assets {
 #[derive(Clone, Debug)]
 pub struct WorkerBundle {
     pub(crate) entry: String,
+    /// The type of each module, by name.
+    pub(crate) module_types: Arc<BTreeMap<String, ModuleType>>,
+    /// The directory of ES module bytecode.
     pub(crate) modules: PathBuf,
+    /// The read-only `/bundle`, which holds the Text and Data modules.
     pub(crate) vfs_bundle: VfsBundle,
     pub(crate) legacy: Option<Arc<Vec<u8>>>,
 }
 
 #[cfg(feature = "native")]
 impl WorkerBundle {
-    /// Describe a split Worker module directory and its read-only `/bundle`.
+    /// Describe the Worker `manifest` lists, with ES module bytecode in
+    /// `modules` and the read-only `/bundle` at `bundle`.
     #[must_use]
     pub fn from_modules(
-        entry: impl Into<String>,
+        manifest: WorkerManifest,
         modules: impl Into<PathBuf>,
         bundle: impl Into<PathBuf>,
     ) -> Self {
         Self {
-            entry: entry.into(),
+            entry: manifest.entry,
+            module_types: Arc::new(manifest.modules),
             modules: modules.into(),
             vfs_bundle: VfsBundle::new(bundle.into()),
             legacy: None,
@@ -96,8 +104,10 @@ impl WorkerBundle {
     /// Describe a legacy single-bytecode Worker and its read-only `/bundle`.
     #[must_use]
     pub fn from_bytecode(bytecode: Vec<u8>, bundle: impl Into<PathBuf>) -> Self {
+        let entry = "tokamak-worker.mjs".to_owned();
         Self {
-            entry: "tokamak-worker.mjs".to_owned(),
+            module_types: Arc::new(BTreeMap::from([(entry.clone(), ModuleType::EsModule)])),
+            entry,
             modules: PathBuf::new(),
             vfs_bundle: VfsBundle::new(bundle.into()),
             legacy: Some(Arc::new(bytecode)),

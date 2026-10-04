@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde_json::json;
 use tokamak::{
-    HtmlHandling, NotFoundHandling, WranglerConfigError, WranglerModuleType, load_wrangler_config,
+    HtmlHandling, ModuleType, NotFoundHandling, WranglerConfigError, load_wrangler_config,
     load_wrangler_config_for_env, resolve_wrangler_config_path,
 };
 
@@ -413,7 +413,7 @@ fn parses_additional_module_rules_and_base_directory() -> TestResult {
     assert_eq!(config.base_dir, root.join("worker"));
     assert!(config.find_additional_modules);
     assert_eq!(config.rules.len(), 2);
-    assert_eq!(config.rules[0].module_type, WranglerModuleType::Text);
+    assert_eq!(config.rules[0].module_type, ModuleType::Text);
     assert_eq!(config.rules[0].globs, ["**/*.md"]);
     assert!(config.rules[1].fallthrough);
     Ok(())

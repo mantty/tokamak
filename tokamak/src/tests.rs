@@ -10,6 +10,7 @@ use crate::gateway::{
     websocket_channels,
 };
 use crate::lifecycle_events::{Event, Events};
+use crate::packaging::WorkerManifest;
 use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{HttpBody, HttpRequest, HttpResponse, queue_websocket_message};
 use flume::{Receiver, Sender};
@@ -339,7 +340,11 @@ fn loads_split_worker_modules_through_the_quickjs_loader() -> Result<(), Box<dyn
     std::fs::create_dir_all(directory.path().join("chunks"))?;
     std::fs::write(directory.path().join("entry.js.qjs"), entry)?;
     std::fs::write(directory.path().join("chunks/worker.js.qjs"), chunk)?;
-    let worker = WorkerBundle::from_modules("entry.js", directory.path(), directory.path());
+    let worker = WorkerBundle::from_modules(
+        WorkerManifest::es_modules("entry.js", &["chunks/worker.js"]),
+        directory.path(),
+        directory.path(),
+    );
     let executor = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -546,7 +551,11 @@ fn loads_builtins_without_source_compilation() -> Result<(), Box<dyn std::error:
     let runtime = JsRuntime::new()?;
     configure_worker_loader(
         &runtime,
-        &WorkerBundle::from_modules("entry.js", directory.path(), directory.path()),
+        &WorkerBundle::from_modules(
+            WorkerManifest::es_modules("entry.js", &[]),
+            directory.path(),
+            directory.path(),
+        ),
     );
     let context = Context::full(&runtime)?;
     context.with(|ctx| -> rquickjs::Result<()> {
@@ -616,7 +625,11 @@ fn exposes_bundle_tmp_and_device_operations() -> Result<(), Box<dyn std::error::
     let runtime = JsRuntime::new()?;
     configure_worker_loader(
         &runtime,
-        &WorkerBundle::from_modules("entry.js", directory.path(), directory.path()),
+        &WorkerBundle::from_modules(
+            WorkerManifest::es_modules("entry.js", &[]),
+            directory.path(),
+            directory.path(),
+        ),
     );
     let context = Context::full(&runtime)?;
     context.with(|ctx| {

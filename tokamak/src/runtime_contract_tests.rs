@@ -12,7 +12,7 @@ use std::time::Duration;
 use crate::dispatcher::{AssetService, execute_request};
 use crate::env_vars::StorageBinding;
 use crate::gateway::{Job, JobResponse, Lifecycle};
-use crate::packaging::PackageLayout;
+use crate::packaging::{ModuleType, PackageLayout, WorkerManifest};
 use crate::quickjs::{Assets, RuntimeConfig, WorkerBundle};
 use crate::storage::Storage;
 use crate::transport::{HttpBody, HttpRequest};
@@ -59,21 +59,63 @@ fn bundle_worker(entry: &Path, output: &Path) -> TestResult<WorkerBundle> {
     if !result.status.success() {
         return Err(String::from_utf8_lossy(&result.stderr).into_owned().into());
     }
+    let mut manifest = WorkerManifest::es_modules("entry.js", &[]);
     for file in walkdir::WalkDir::new(output) {
         let file = file?;
         if !file.file_type().is_file() || file.path().extension().is_none_or(|ext| ext != "js") {
             continue;
         }
-        let name = file
-            .path()
-            .strip_prefix(output)?
-            .to_str()
-            .ok_or("non-UTF8 module")?
-            .replace('\\', "/");
+        let name = module_name(output, file.path())?;
         let bytecode = crate::compile_module(&name, &fs::read(file.path())?)?;
         fs::write(output.join(format!("{name}.qjs")), bytecode)?;
+        manifest.modules.insert(name, ModuleType::EsModule);
     }
-    Ok(WorkerBundle::from_modules("entry.js", output, output))
+    Ok(WorkerBundle::from_modules(manifest, output, output))
+}
+
+/// The Worker of the module files in `root`, packaged unbundled under `output`.
+fn module_worker(root: &Path, entry: &str, output: &Path) -> TestResult<WorkerBundle> {
+    let layout = PackageLayout::new(output);
+    fs::create_dir_all(layout.worker_modules())?;
+    fs::create_dir_all(layout.bundle())?;
+    let mut manifest = WorkerManifest::es_modules(entry, &[]);
+    for file in walkdir::WalkDir::new(root) {
+        let file = file?;
+        if !file.file_type().is_file() {
+            continue;
+        }
+        let name = module_name(root, file.path())?;
+        let contents = fs::read(file.path())?;
+        let module_type = match file.path().extension().and_then(|ext| ext.to_str()) {
+            Some("mjs") => ModuleType::EsModule,
+            Some("txt") => ModuleType::Text,
+            Some("bin") => ModuleType::Data,
+            _ => return Err(format!("no module type for {name}").into()),
+        };
+        if module_type == ModuleType::EsModule {
+            let bytecode = crate::compile_module(&name, &contents)?;
+            fs::write(
+                layout.worker_modules().join(format!("{name}.qjs")),
+                bytecode,
+            )?;
+        } else {
+            fs::write(layout.bundle().join(&name), contents)?;
+        }
+        manifest.modules.insert(name, module_type);
+    }
+    Ok(WorkerBundle::from_modules(
+        manifest,
+        layout.worker_modules(),
+        layout.bundle(),
+    ))
+}
+
+fn module_name(root: &Path, file: &Path) -> TestResult<String> {
+    Ok(file
+        .strip_prefix(root)?
+        .to_str()
+        .ok_or("non-UTF8 module")?
+        .replace('\\', "/"))
 }
 
 fn request(worker: &WorkerBundle, flag: &str) -> TestResult<Vec<u8>> {
@@ -521,6 +563,20 @@ fn bundled_worker_matches_cloudflare_node_compat() -> TestResult {
     let worker = bundle_worker(&fixture_root().join("startup.mjs"), directory.path())?;
     let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
     assert_contract_domains(&expected, &actual)
+}
+
+#[test]
+fn text_and_data_modules_match_cloudflare() -> TestResult {
+    let expected = node_reference("modules-reference.mjs")?;
+    let directory = tempfile::tempdir()?;
+    let worker = module_worker(
+        &fixture_root().join("modules"),
+        "modules.mjs",
+        directory.path(),
+    )?;
+    let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
+    assert_eq!(actual, expected);
+    Ok(())
 }
 
 /// The JSON a reference script prints after running a fixture in workerd.
@@ -1229,12 +1285,7 @@ fn write_asset_manifest_for(client: &Path, manifest: &Path) -> TestResult {
         if !entry.file_type().is_file() {
             continue;
         }
-        let relative = entry
-            .path()
-            .strip_prefix(client)?
-            .to_str()
-            .ok_or("non-UTF8 asset path")?
-            .replace('\\', "/");
+        let relative = module_name(client, entry.path())?;
         let mime = mime_guess::from_path(entry.path())
             .first_or_octet_stream()
             .to_string();

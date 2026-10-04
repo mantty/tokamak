@@ -1,5 +1,6 @@
 //! Packaged directory layout and Worker bytecode formats.
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -101,11 +102,54 @@ impl PackageLayout {
     }
 }
 
-/// The entry module and on-disk module directory for a packaged Worker.
+/// A Worker module's type, as Cloudflare names it in Wrangler's module rules.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ModuleType {
+    /// JavaScript ES module source.
+    #[serde(rename = "ESModule")]
+    EsModule,
+    /// `CommonJS` JavaScript source.
+    #[serde(rename = "CommonJS")]
+    CommonJs,
+    /// Compiled WebAssembly binary.
+    CompiledWasm,
+    /// Text, imported as a string.
+    Text,
+    /// Binary data, imported as an `ArrayBuffer`.
+    Data,
+}
+
+impl ModuleType {
+    /// Whether this module type is a non-code file for `/bundle`.
+    #[must_use]
+    pub const fn is_bundle_file(self) -> bool {
+        matches!(self, Self::CompiledWasm | Self::Text | Self::Data)
+    }
+}
+
+/// A packaged Worker's modules: ES modules as bytecode in
+/// [`PackageLayout::worker_modules`], Text and Data modules as files in
+/// [`PackageLayout::bundle`].
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct WorkerManifest {
     /// Module name used to start the Worker.
     pub entry: String,
+    /// Every module, by name, with its type.
+    pub modules: BTreeMap<String, ModuleType>,
+}
+
+#[cfg(all(test, feature = "native"))]
+impl WorkerManifest {
+    /// A Worker of the ES modules `entry` and `others`.
+    pub(crate) fn es_modules(entry: &str, others: &[&str]) -> Self {
+        Self {
+            entry: entry.to_owned(),
+            modules: std::iter::once(&entry)
+                .chain(others)
+                .map(|name| ((*name).to_owned(), ModuleType::EsModule))
+                .collect(),
+        }
+    }
 }
 
 /// Compress `QuickJS` bytecode for storage in a packaged app.
@@ -292,6 +336,11 @@ mod tests {
         let layout = PackageLayout::new(directory.path());
         let manifest = WorkerManifest {
             entry: "entry.js".to_owned(),
+            modules: [
+                ("entry.js".to_owned(), super::ModuleType::EsModule),
+                ("assets/page.html".to_owned(), super::ModuleType::Text),
+            ]
+            .into(),
         };
         super::write_worker_manifest(&layout, &manifest)?;
 
