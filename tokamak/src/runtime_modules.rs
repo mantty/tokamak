@@ -217,10 +217,9 @@ const PUBLIC_MODULES: &[(&str, &str)] = &[
     ("node:wasi", "tokamak:node/wasi.mjs"),
 ];
 
-/// Return every public import spelling handled by the runtime resolver.
-#[allow(dead_code)]
-#[must_use]
-pub fn runtime_module_names() -> Vec<&'static str> {
+/// Every public import spelling the runtime resolver handles.
+#[cfg(all(test, feature = "native"))]
+pub(crate) fn runtime_module_names() -> Vec<&'static str> {
     let mut names = Vec::with_capacity(PUBLIC_MODULES.len() * 2);
     names.extend(PUBLIC_MODULES.iter().map(|(name, _)| *name));
     names.extend(

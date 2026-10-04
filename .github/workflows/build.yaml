@@ -79,21 +79,10 @@ jobs:
           key: ${{ matrix.target }}
           cache-bin: false
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6.0.8
-        with:
-          version: 9.9.0
-
       - name: Setup Node
         uses: actions/setup-node@v6.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-          cache-dependency-path: tools/esbuild-hosts/pnpm-lock.yaml
-
-      - name: Install platform-pack tool dependencies
-        working-directory: tools/esbuild-hosts
-        run: pnpm install --frozen-lockfile
 
       - name: Build platform pack
         run: cargo run -p xtask -- platform-pack --target "${{ matrix.target }}"

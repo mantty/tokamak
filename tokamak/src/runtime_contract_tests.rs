@@ -23,84 +23,44 @@ fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/quickjs_runtime")
 }
 
-fn bundle_worker(entry: &Path, output: &Path) -> TestResult<WorkerBundle> {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or("no workspace")?;
-    let host = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => "darwin-arm64/bin/esbuild",
-        ("macos", "x86_64") => "darwin-x64/bin/esbuild",
-        ("linux", "x86_64") => "linux-x64/bin/esbuild",
-        ("windows", "x86_64") => "win32-x64/esbuild.exe",
-        _ => return Err("unsupported esbuild test host".into()),
-    };
-    let esbuild = workspace
-        .join("tools/esbuild-hosts/node_modules/@esbuild")
-        .join(host);
-    let result = Command::new(esbuild)
-        .args([
-            "--bundle",
-            "--splitting",
-            "--format=esm",
-            "--platform=neutral",
-            "--target=es2022",
-            "--entry-names=entry",
-            "--chunk-names=chunks/[name]-[hash]",
-            "--log-level=error",
-        ])
-        .args(
-            crate::runtime_modules::runtime_module_names()
-                .into_iter()
-                .map(|name| format!("--external:{name}")),
-        )
-        .arg(format!("--outdir={}", output.display()))
-        .arg(entry)
-        .output()?;
-    if !result.status.success() {
-        return Err(String::from_utf8_lossy(&result.stderr).into_owned().into());
-    }
-    let mut manifest = WorkerManifest::es_modules("entry.js", &[]);
-    for file in walkdir::WalkDir::new(output) {
-        let file = file?;
-        if !file.file_type().is_file() || file.path().extension().is_none_or(|ext| ext != "js") {
-            continue;
-        }
-        let name = module_name(output, file.path())?;
-        let bytecode = crate::compile_module(&name, &fs::read(file.path())?)?;
-        fs::write(output.join(format!("{name}.qjs")), bytecode)?;
-        manifest.modules.insert(name, ModuleType::EsModule);
-    }
-    Ok(WorkerBundle::from_modules(manifest, output, output))
+/// The Worker starting from `entry`, packaged under `output` with the other
+/// module files in its directory.
+fn entry_worker(entry: &Path, output: &Path) -> TestResult<WorkerBundle> {
+    let root = entry.parent().ok_or("entry has no directory")?;
+    let name = entry.file_name().and_then(|name| name.to_str());
+    module_worker(root, name.ok_or("entry has no name")?, output)
 }
 
-/// The Worker of the module files in `root`, packaged unbundled under `output`.
+/// The Worker of the module files in `root`, packaged under `output`: `.mjs`
+/// and `.js` files are ES modules, `.txt` files Text and `.bin` files Data.
+/// Other files and `node_modules` are left out.
 fn module_worker(root: &Path, entry: &str, output: &Path) -> TestResult<WorkerBundle> {
+    let files = walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|file| file.file_name() != "node_modules")
+        .collect::<Result<Vec<_>, _>>()?;
     let layout = PackageLayout::new(output);
-    fs::create_dir_all(layout.worker_modules())?;
     fs::create_dir_all(layout.bundle())?;
     let mut manifest = WorkerManifest::es_modules(entry, &[]);
-    for file in walkdir::WalkDir::new(root) {
-        let file = file?;
-        if !file.file_type().is_file() {
-            continue;
-        }
-        let name = module_name(root, file.path())?;
-        let contents = fs::read(file.path())?;
-        let module_type = match file.path().extension().and_then(|ext| ext.to_str()) {
-            Some("mjs") => ModuleType::EsModule,
+    for file in files {
+        let extension = file.path().extension().and_then(|ext| ext.to_str());
+        let module_type = match extension {
+            Some("mjs" | "js") => ModuleType::EsModule,
             Some("txt") => ModuleType::Text,
             Some("bin") => ModuleType::Data,
-            _ => return Err(format!("no module type for {name}").into()),
+            _ => continue,
         };
-        if module_type == ModuleType::EsModule {
-            let bytecode = crate::compile_module(&name, &contents)?;
-            fs::write(
+        let name = module_name(root, file.path())?;
+        let contents = fs::read(file.path())?;
+        let (destination, contents) = match module_type {
+            ModuleType::EsModule => (
                 layout.worker_modules().join(format!("{name}.qjs")),
-                bytecode,
-            )?;
-        } else {
-            fs::write(layout.bundle().join(&name), contents)?;
-        }
+                crate::compile_module(&name, &contents)?,
+            ),
+            _ => (layout.bundle().join(&name), contents),
+        };
+        fs::create_dir_all(destination.parent().ok_or("module has no directory")?)?;
+        fs::write(destination, contents)?;
         manifest.modules.insert(name, module_type);
     }
     Ok(WorkerBundle::from_modules(
@@ -208,7 +168,7 @@ export default { async fetch() {
 } };
 "#,
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("bundle"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(request(&worker, "enabled")?, br#"{"chunks":[1,2,3,4,3,4],"errors":["sink rejected","sink rejected"],"callbacks":["sink rejected","sink rejected","sink rejected","sink rejected"]}"#);
     Ok(())
 }
@@ -243,7 +203,7 @@ export default { async fetch() {
 } };
 "#,
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("bundle"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(
         request(&worker, "enabled")?,
         br#"[["writable","readable"],["readable","writable"]]"#
@@ -277,7 +237,7 @@ export default { async fetch() {
 } };
 "#,
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("bundle"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(request(&worker, "enabled")?, br#"{"restored":true}"#);
     Ok(())
 }
@@ -307,7 +267,7 @@ export default { async fetch() {
 } };
 "#,
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("bundle"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(request(&worker, "enabled")?, b"ordered");
     Ok(())
 }
@@ -346,7 +306,7 @@ export default {{ async fetch() {{
 "#
         ),
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let actual = request(&worker, "first");
     server.join().map_err(|_| "socket server panicked")??;
     assert_eq!(actual?, b"true");
@@ -369,7 +329,7 @@ fn streaming_fetch_matches_cloudflare() -> TestResult {
         let expected: serde_json::Value = serde_json::from_str(&line)?;
         let port = expected["port"].as_str().ok_or("reference port missing")?;
         let directory = tempfile::tempdir()?;
-        let worker = bundle_worker(
+        let worker = entry_worker(
             &fixture_root().join("http.mjs"),
             &directory.path().join("modules"),
         )?;
@@ -420,7 +380,7 @@ export default {{ async fetch() {{
 "#
         ),
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let actual = request(&worker, "first");
     server.join().map_err(|_| "upstream panicked")??;
     assert_eq!(
@@ -438,7 +398,7 @@ fn packaged_globals_precede_application_modules() -> TestResult {
         &source,
         "import { Readable } from 'node:stream'; const decoder = new TextDecoder(); const value = decoder.decode(new TextEncoder().encode('ready')); const signal = AbortSignal.any([]); export default { async fetch() { const chunks = []; for await (const chunk of Readable.from([value], { signal })) chunks.push(chunk); return new Response(chunks.join('')); } };",
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(request(&worker, "first")?, b"ready");
     Ok(())
 }
@@ -465,7 +425,7 @@ const server = http.createServer((request, response) => {
 export default httpServerHandler(server);
 "#,
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let config = RuntimeConfig {
         assets: None,
         cache: directory.path().join("cache"),
@@ -534,7 +494,7 @@ export default class App extends WorkerEntrypoint {
 }
 "#,
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let response: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
     assert_eq!(response["instance"], true);
     assert_eq!(response["env"], "enabled");
@@ -557,10 +517,10 @@ export default class App extends WorkerEntrypoint {
 }
 
 #[test]
-fn bundled_worker_matches_cloudflare_node_compat() -> TestResult {
+fn worker_matches_cloudflare_node_compat() -> TestResult {
     let expected = node_reference("workerd-reference.mjs")?;
     let directory = tempfile::tempdir()?;
-    let worker = bundle_worker(&fixture_root().join("startup.mjs"), directory.path())?;
+    let worker = entry_worker(&fixture_root().join("startup.mjs"), directory.path())?;
     let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
     assert_contract_domains(&expected, &actual)
 }
@@ -653,7 +613,7 @@ fn report_contract_difference(
 fn storage_bindings_match_cloudflare() -> TestResult {
     let expected = node_reference("storage-reference.mjs")?;
     let directory = tempfile::tempdir()?;
-    let worker = bundle_worker(
+    let worker = entry_worker(
         &fixture_root().join("storage.mjs"),
         &directory.path().join("worker"),
     )?;
@@ -718,7 +678,7 @@ export default {{ async fetch(request, env) {{
 "#
         ),
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let bindings = [StorageBinding::R2 {
         name: "FILES".to_owned(),
         id: "files".to_owned(),
@@ -769,7 +729,7 @@ export default {{ async fetch() {{
 "
         ),
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(request(&worker, "first")?, b"[]");
     Ok(())
 }
@@ -781,7 +741,7 @@ fn request_boundary_matches_cloudflare() -> TestResult {
     let port = listener.local_addr()?.port();
     let upstream = thread::spawn(move || serve_gzip_upstream(&listener));
     let directory = tempfile::tempdir()?;
-    let worker = bundle_worker(
+    let worker = entry_worker(
         &fixture_root().join("boundary.mjs"),
         &directory.path().join("modules"),
     )?;
@@ -836,7 +796,7 @@ fn response_encoding_matches_cloudflare() -> TestResult {
     );
     let expected: Vec<serde_json::Value> = serde_json::from_slice(&reference.stdout)?;
     let directory = tempfile::tempdir()?;
-    let worker = bundle_worker(
+    let worker = entry_worker(
         &fixture_root().join("encoding.mjs"),
         &directory.path().join("modules"),
     )?;
@@ -901,7 +861,7 @@ export default { fetch() {
 } };
 "#,
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let Err(error) = request(&worker, "overflow") else {
         return Err("header limit must be reported as a request error".into());
     };
@@ -924,7 +884,7 @@ export default { fetch() {
 } };
 "#,
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let (status, headers, body, status_text) =
         fixture_request(&worker, BTreeMap::new(), None, "GET", "/", None)?;
     assert_eq!(status, 201);
@@ -1109,7 +1069,7 @@ export default { fetch() {
 } };
 "#,
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let body = request(&worker, &port.to_string())?;
     assert_eq!(body, b"pongdone");
     server.join().map_err(|_| "socket fixture panicked")??;
@@ -1153,7 +1113,7 @@ export default { fetch() {
 } };
 "#,
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let body = request(&worker, &port.to_string())?;
     server.join().map_err(|_| "socket fixture panicked")??;
     assert_eq!(body, b"response after FIN");
@@ -1213,7 +1173,7 @@ export default { fetch() {
 } };
 "#,
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let actual: serde_json::Value = serde_json::from_slice(&request(&worker, &port.to_string())?)?;
     assert_eq!(
         actual,
@@ -1233,8 +1193,9 @@ fn astro_example_renders_pages_and_serves_assets() -> TestResult {
         return Err("Astro runtime fixture is missing; run pnpm --dir examples/astro install --frozen-lockfile and pnpm --dir examples/astro build before testing".into());
     }
     let directory = tempfile::tempdir()?;
-    let worker = bundle_worker(
-        &example.join("tests/startup.mjs"),
+    let worker = module_worker(
+        &example.join("dist/server"),
+        "entry.mjs",
         &directory.path().join("modules"),
     )?;
     let manifest = directory.path().join("asset-manifest.json");
@@ -1332,7 +1293,7 @@ export default { async fetch() {
 } };
 ",
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(request(&worker, "first")?, br#"{"calls":1,"flag":"first"}"#);
     assert_eq!(
         request(&worker, "second")?,
@@ -1355,7 +1316,7 @@ export default { async fetch() {
 } };
 ",
     )?;
-    let worker = bundle_worker(&source, &directory.path().join("modules"))?;
+    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let error = request(&worker, "first")
         .err()
         .ok_or("unsettled waitUntil was discarded")?;
