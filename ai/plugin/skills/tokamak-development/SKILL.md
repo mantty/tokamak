@@ -29,8 +29,8 @@ Apply the following model whenever working on a tokamak application. tokamak is 
 
 ### `tok build`
 
-- Run the project's build command.
-- Bundle the built Worker and assets into each requested native application under `build/<platform>`.
+- Run the project's build command with the tokamak Vite plugin active.
+- Package the Worker that the build generated, and its assets, into each requested native application under `build/<platform>`.
 - Run subsequent same-origin requests entirely through the packaged app and its embedded runtime. Do not assume a Node server, Wrangler process, internet connection, or Cloudflare account is present.
 
 ## Install the tokamak CLI
@@ -51,36 +51,37 @@ tok build <platform[,platform...]> --project <project>
 tok targets
 ```
 
-- Use `--server http://<host>:<port>` when the framework development server is not at `http://localhost:5173`.
-- Use `-w` or `--wrangler <path>` when the relevant Wrangler file is generated outside the project root.
-- Use `--config <path>` for the optional Tokamak configuration file; it defaults to the current directory.
-- Use `--skip-project-build` only for current output built outside tokamak.
-- `--env NAME` selects Wrangler `env.NAME.vars`; omit it for top-level `vars`. Named vars do not inherit; strings and JSON work. Generated configs with `userConfigPath` use source vars.
-- `build/` caches output by default (`--build-dir PATH` overrides). In GitHub Actions, cache it by OS and tested commit across merge and promotion workflows on the same branch; promote with `tok build ios --env production`. Missing/stale inputs rebuild; Apple env, signing, and build-number changes refresh the bundle and re-sign without recompiling the shell.
+- Require Vite with Cloudflare's Vite plugin (`@cloudflare/vite-plugin`) and add `tokamak()` from `@tokamakdev/tok/vite` next to `cloudflare()` in the Vite plugins (in Astro, `vite.plugins` in `astro.config.mjs`). Supported: React Router, TanStack Start, Astro 6+, RedwoodSDK, Vike, Next.js through vinext, React and Vue apps, and plain Workers (including Hono) with a `vite.config.ts`. Not supported: SvelteKit, Nuxt, Analog, Solid (Nitro), Qwik, Angular, and Next.js through OpenNext.
+- The plugin does nothing unless `tok` runs the command, so Cloudflare and web builds are unchanged. `tok build` fails when the build does not report a configuration because the plugin is missing.
+- `tok dev` learns the development server's address from the plugin; there is no `--server` option.
+- Use `--config <path>` for a configuration file other than `src/tokamak.ts` or `src/tokamak.js`.
+- Use `--skip-project-build` to package the previous `tok build`'s output again.
+- Choose a Wrangler environment as for Cloudflare: `CLOUDFLARE_ENV=production tok build ios`. Cloudflare's plugin applies it to the generated configuration, including `vars`; named vars do not inherit, and strings and JSON work. There is no `--env` or `--wrangler` option.
+- `build/` caches output by default (`--build-dir PATH` overrides). In GitHub Actions, cache it by OS and tested commit across merge and promotion workflows on the same branch; promote with `CLOUDFLARE_ENV=production tok build ios`. Missing/stale inputs rebuild; Apple env, signing, and build-number changes refresh the bundle and re-sign without recompiling the shell.
 - Use the current native platform names: `android`, `ios`, `ios-simulator`, `macos`, and `windows`.
-- Require a build command and a Wrangler configuration with at least `name` and `main` for a packaged build.
-- Without `build`, tokamak runs the `package.json` build script with pnpm, Yarn, or npm, chosen from the project's lockfile. Set `build` to a shell command when the project needs a different one, such as a monorepo task runner that also builds shared workspace packages.
+- tokamak packages the Worker modules `wrangler deploy` would upload for the generated configuration: ES modules, `Text` modules (`.txt`, `.html`, `.sql`) as strings and `Data` modules (`.bin`) as `ArrayBuffer`s. `CompiledWasm` and `CommonJS` modules fail the build; the runtime has no WebAssembly.
+- tokamak runs the `package.json` build script with pnpm, Yarn, or npm, chosen from the project's lockfile. Use `--build` or `TOKAMAK_BUILD` with a shell command when the project needs a different one, such as a monorepo task runner that also builds shared workspace packages.
 
 ### Configuration and settings
 
-- Look for `tokamak.jsonc` in the current directory, then `tokamak.json`; the file is optional. Use `-c` or `--config` to select another file or directory.
-- JSONC permits comments and trailing commas; plain JSON is also supported.
-- Top-level keys are `name`, `identifier`, `icon`, `version`, and `build`; other top-level keys are rejected. They are defaults for every platform.
-- Platform objects (`android`, `ios`, `macos`, `windows`) override `name`, `identifier`, or `icon` per platform, for example `{ "name": "My App", "ios": { "name": "My App Pro" } }`. Their other keys are settings for that platform's pack. `ios` also applies to `ios-simulator`. `version` and `build` are top-level only.
-- A file may `include` one other configuration file (absolute, or relative to the including file); the including file is deep-merged onto the included file (keys overwrite, platform objects merge key by key, `null` removes a value). Only the loaded file may include: a nested `include` is ignored with a warning.
+- The configuration is the `config` export of `src/tokamak.ts`, then `src/tokamak.js`; the file is optional. Use `-c` or `--config` to select another file. Type it with `satisfies Config`, importing `type Config` from `@tokamakdev/tok`.
+- The plugin evaluates the file with Vite and the app's aliases, so it can import shared modules and read `process.env`; express shared bases and per-environment variants as imports and conditions. There is no `include` and no `tokamak.jsonc`.
+- In tokamak builds and development the file is also part of the Worker, without its `config` export: its top-level code runs whenever the Worker is evaluated (and during Astro prerendering), so keep it cheap and safe. Declare `export const config = ...` in its own statement.
+- Top-level keys are `name`, `identifier`, `icon`, and `version`; other top-level keys are rejected. They are defaults for every platform.
+- Platform objects (`android`, `ios`, `macos`, `windows`) override `name`, `identifier`, or `icon` per platform, for example `{ name: "My App", ios: { name: "My App Pro" } }`. Their other keys are settings for that platform's pack. `ios` also applies to `ios-simulator`. `version` is top-level only.
 - Display names preserve their spelling and capitalization. Tokamak derives a lower-case slug for filenames, application IDs, and local hosts. If `name` is absent, the Wrangler Worker name is used.
 - `identifier` values are used as the Apple bundle identifier and Android application ID.
 - `version` is required by `tok build`. Do not use `TOKAMAK_APP_VERSION`.
 - `icon` accepts user-created platform assets: Android `res` directories, Apple `.icon` packages for `ios`/`macos`, and Windows `.ico` files. Missing icons preserve the existing behavior.
 - Every setting is a command-line option, an environment variable, or a configuration key, with the same name in each: `--version`/`TOKAMAK_VERSION`/`version`, and `--ios-plist`/`TOKAMAK_IOS_PLIST`/`ios.plist`. Options beat environment variables, which beat the configuration; within a source, a platform's own value beats a top-level one.
-- tokamak validates `name`, `identifier`, `icon`, `version`, and `build`. Every other platform setting belongs to the platform pack, which declares it; `tok build <platform> --help` lists a platform's settings. An undeclared setting for the platform being built is an error; settings for other platforms are ignored. Do not invent platform settings.
+- tokamak validates `name`, `identifier`, `icon`, `version`, and the `--build` command. Every other platform setting belongs to the platform pack, which declares it; `tok build <platform> --help` lists a platform's settings. An undeclared setting for the platform being built is an error; settings for other platforms are ignored. Do not invent platform settings.
 - Relative paths in options and environment variables are relative to the current directory; relative paths in a configuration file are relative to that file.
 - `tok version` prints the CLI version; `--version` sets the app version.
 
 Examples:
 
 ```sh
-tok build ios --config ./tokamak.jsonc --ios-build-number 5
+tok build ios --config ./src/tokamak.ts --ios-build-number 5
 tok build ios --ios-plist native/Info.plist
 TOKAMAK_MACOS_PLIST=native/Info.plist tok build macos
 ```

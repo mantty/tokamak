@@ -57,10 +57,10 @@ enum Command {
         config: Option<PathBuf>,
         #[command(flatten)]
         top: TopOptions,
-        /// Command that builds the project [`TOKAMAK_BUILD`, `build`].
+        /// Command that builds the project [`TOKAMAK_BUILD`].
         #[arg(long = "build", value_name = "COMMAND")]
         build_command: Option<String>,
-        /// Use existing project build output instead of running the project's build command.
+        /// Package the previous build's output instead of building the project.
         #[arg(long)]
         skip_project_build: bool,
     },

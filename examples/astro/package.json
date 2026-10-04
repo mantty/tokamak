@@ -5,15 +5,16 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "tokamak:android": "astro build && ../../target/release/tok build android --project . --wrangler dist/server/wrangler.json --skip-project-build",
-    "tokamak:macos": "astro build && ../../target/release/tok build macos --project . --wrangler dist/server/wrangler.json --skip-project-build",
-    "tokamak:ios": "astro build && ../../target/release/tok build ios --project . --wrangler dist/server/wrangler.json --skip-project-build",
-    "tokamak:ios-simulator": "astro build && ../../target/release/tok build ios-simulator --project . --wrangler dist/server/wrangler.json --skip-project-build"
+    "tokamak:android": "../../target/release/tok build android",
+    "tokamak:macos": "../../target/release/tok build macos",
+    "tokamak:ios": "../../target/release/tok build ios",
+    "tokamak:ios-simulator": "../../target/release/tok build ios-simulator"
   },
   "dependencies": {
-    "@tokamakdev/plugin-location": "link:../../plugins/location",
     "@astrojs/cloudflare": "13.1.8",
     "@tailwindcss/vite": "^4.2.2",
+    "@tokamakdev/plugin-location": "link:../../plugins/location",
+    "@tokamakdev/tok": "file:../../tokamak-cli/npm",
     "astro": "6.1.5",
     "tailwindcss": "^4.2.2"
   }

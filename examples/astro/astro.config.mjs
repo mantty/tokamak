@@ -1,16 +1,12 @@
 import { defineConfig } from "astro/config";
 import cloudflare from "@astrojs/cloudflare";
 import tailwindcss from "@tailwindcss/vite";
+import { tokamak } from "@tokamakdev/tok/vite";
 
 export default defineConfig({
   output: "server",
   adapter: cloudflare(),
-  // Set the dev server port to the default expected by tokamak.
-  server: {
-    port: 5173,
-    strictPort: true,
-  },
   vite: {
-    plugins: [tailwindcss()],
+    plugins: [tailwindcss(), tokamak()],
   },
 });

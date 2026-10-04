@@ -94,6 +94,8 @@ jobs:
           pnpm --dir examples/astro install --frozen-lockfile
 
       - name: Build Astro runtime fixture
+        env:
+          TOKAMAK_VITE_OUTPUT: ${{ github.workspace }}/examples/astro/build/.tokamak/vite
         run: pnpm --dir examples/astro build
 
       - name: Test runtime JavaScript
