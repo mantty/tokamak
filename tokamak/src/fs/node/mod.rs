@@ -33,5 +33,8 @@ use filesystem_operations::*;
 #[allow(clippy::wildcard_imports)]
 use javascript_objects::*;
 
-pub use exports::{MODULE_NAME, NodeFsModule, NodeFsPromisesModule, PROMISES_MODULE_NAME, install};
+pub use exports::{
+    MODULE_NAME, NodeFsModule, NodeFsPromisesModule, PROMISES_MODULE_NAME, install,
+    read_bundle_file,
+};
 use exports::{VfsHandle, VfsUserData};

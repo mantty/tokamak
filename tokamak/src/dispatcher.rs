@@ -1,6 +1,6 @@
 use flume::Sender;
 use std::collections::BTreeMap;
-use std::io::{self, Read};
+use std::io;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
@@ -10,7 +10,7 @@ use crate::compat;
 use crate::fs::VirtualFileSystem;
 use crate::fs::{
     MODULE_NAME as NODE_FS_MODULE_NAME, NodeFsModule, NodeFsPromisesModule,
-    PROMISES_MODULE_NAME as NODE_FS_PROMISES_MODULE_NAME, install,
+    PROMISES_MODULE_NAME as NODE_FS_PROMISES_MODULE_NAME, install, read_bundle_file,
 };
 use crate::gateway::{
     Execution, Handler, Job, JobResponse, WebSocketInbound, WebSocketJob, WebSocketOutbound,
@@ -18,14 +18,15 @@ use crate::gateway::{
 };
 use crate::globals::ResponseEncoder;
 use crate::linked::StorageRuntime;
+use crate::packaging::{ModuleType, decompress_worker_module};
 use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{
     BodyChunk, HttpBody, HttpRequest, HttpResponse, append_header, response_stream,
 };
-use flate2::read::GzDecoder;
 use reqwest::header::{HeaderMap, HeaderValue};
 use rquickjs::convert::List;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
+use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{
     Array, ArrayBuffer, AsyncContext, AsyncRuntime, Ctx, Function, Module, Object, Promise,
     TypedArray, Value,
@@ -379,26 +380,75 @@ impl Loader for WorkerLoader {
             _ => {
                 let storage = self.storage.as_ref();
                 let module = storage.and_then(|storage| storage.module(ctx, name));
-                module.unwrap_or_else(|| self.load_bytecode(ctx, name))
+                module.unwrap_or_else(|| self.load_module(ctx, name))
             }
         }
     }
 }
 
 impl WorkerLoader {
-    fn load_bytecode<'js>(&self, ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Module<'js>> {
+    fn load_module<'js>(&self, ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Module<'js>> {
         if let Some(bytecode) = compat::bytecode(name) {
             // Builtin bytecode is compiled with the runtime during its build.
             return unsafe { Module::load(ctx.clone(), bytecode) };
         }
-        if name.contains(':') {
+        let Some(module_type) = self.bundle.module_types.get(name) else {
             return Err(rquickjs::Error::new_loading(name));
+        };
+        match module_type {
+            ModuleType::EsModule => self.load_bytecode(ctx, name),
+            ModuleType::Text => Module::declare_def::<TextModule, _>(ctx.clone(), name),
+            ModuleType::Data => Module::declare_def::<DataModule, _>(ctx.clone(), name),
+            ModuleType::CommonJs | ModuleType::CompiledWasm => Err(
+                rquickjs::Error::new_loading_message(name, "unsupported module type"),
+            ),
         }
+    }
+
+    fn load_bytecode<'js>(&self, ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Module<'js>> {
         let bytes = read_worker_module(&self.bundle, name)
             .map_err(|error| rquickjs::Error::new_loading_message(name, error.to_string()))?;
         // Packaged bytecode is produced by tokamak itself and is trusted here.
         unsafe { Module::load(ctx.clone(), &bytes) }
     }
+}
+
+/// A Text module, whose default export is its file decoded as UTF-8.
+struct TextModule;
+
+impl ModuleDef for TextModule {
+    fn declare(declarations: &Declarations<'_>) -> rquickjs::Result<()> {
+        declarations.declare("default")?;
+        Ok(())
+    }
+
+    fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
+        let bytes = module_file(ctx, exports)?;
+        let (text, _) = encoding_rs::UTF_8.decode_with_bom_removal(&bytes);
+        exports.export("default", &*text)?;
+        Ok(())
+    }
+}
+
+/// A Data module, whose default export is its file as an `ArrayBuffer`.
+struct DataModule;
+
+impl ModuleDef for DataModule {
+    fn declare(declarations: &Declarations<'_>) -> rquickjs::Result<()> {
+        declarations.declare("default")?;
+        Ok(())
+    }
+
+    fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
+        let bytes = module_file(ctx, exports)?;
+        exports.export("default", ArrayBuffer::new(ctx.clone(), bytes)?)?;
+        Ok(())
+    }
+}
+
+/// The contents of the `/bundle` file behind the module `exports` belongs to.
+fn module_file<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<Vec<u8>> {
+    read_bundle_file(ctx, &exports.module().name::<String>()?)
 }
 
 fn is_module_name(name: &str) -> bool {
@@ -427,13 +477,7 @@ fn read_worker_module(bundle: &WorkerBundle, name: &str) -> io::Result<Vec<u8>> 
         ));
     }
     let bytes = std::fs::read(bundle.modules.join(format!("{name}.qjs")))?;
-    if !bytes.starts_with(&[0x1f, 0x8b]) {
-        return Ok(bytes);
-    }
-    let mut decoder = GzDecoder::new(bytes.as_slice());
-    let mut bytecode = Vec::new();
-    decoder.read_to_end(&mut bytecode)?;
-    Ok(bytecode)
+    decompress_worker_module(&bytes).map_err(io::Error::other)
 }
 
 async fn websocket_loop<'js>(

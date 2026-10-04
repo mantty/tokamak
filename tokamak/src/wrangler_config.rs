@@ -10,6 +10,8 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::packaging::ModuleType;
+
 /// Failures loading or validating a Wrangler configuration.
 #[derive(Debug, Error)]
 pub enum Error {
@@ -180,55 +182,16 @@ pub struct WranglerBinding {
     pub kind: String,
 }
 
-/// The module type declared by a Wrangler rule.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WranglerModuleType {
-    /// JavaScript ES module source.
-    EsModule,
-    /// `CommonJS` JavaScript source.
-    CommonJs,
-    /// Compiled WebAssembly binary.
-    CompiledWasm,
-    /// Text data.
-    Text,
-    /// Arbitrary binary data.
-    Data,
-}
-
-impl WranglerModuleType {
-    /// Parse a Wrangler module rule type.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unsupported module type.
-    pub fn parse(value: &str) -> Result<Self> {
-        match value {
-            "ESModule" => Ok(Self::EsModule),
-            "CommonJS" => Ok(Self::CommonJs),
-            "CompiledWasm" => Ok(Self::CompiledWasm),
-            "Text" => Ok(Self::Text),
-            "Data" => Ok(Self::Data),
-            _ => Err(Error::InvalidModuleRule(format!(
-                "unsupported module type '{value}'"
-            ))),
-        }
-    }
-
-    /// Whether this module type is a non-code file for `/bundle`.
-    #[must_use]
-    pub const fn is_bundle_file(self) -> bool {
-        matches!(self, Self::CompiledWasm | Self::Text | Self::Data)
-    }
-}
-
 /// A Wrangler rule selecting additional Worker modules.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct WranglerRule {
     /// Module type applied to matching files.
-    pub module_type: WranglerModuleType,
+    #[serde(rename = "type")]
+    pub module_type: ModuleType,
     /// POSIX glob patterns evaluated relative to [`WranglerConfig::base_dir`].
     pub globs: Vec<String>,
     /// Whether later matching rules may also apply.
+    #[serde(default)]
     pub fallthrough: bool,
 }
 
@@ -430,7 +393,7 @@ struct RawWranglerConfig {
     assets: Option<RawWranglerAssets>,
     #[serde(default)]
     vars: BTreeMap<String, Value>,
-    rules: Option<Vec<RawWranglerRule>>,
+    rules: Option<Vec<WranglerRule>>,
     find_additional_modules: Option<bool>,
     base_dir: Option<String>,
     #[serde(default)]
@@ -489,15 +452,6 @@ fn select_environment(
 }
 
 #[derive(Debug, Deserialize)]
-struct RawWranglerRule {
-    #[serde(rename = "type")]
-    module_type: String,
-    globs: Vec<String>,
-    #[serde(default)]
-    fallthrough: bool,
-}
-
-#[derive(Debug, Deserialize)]
 struct RawWranglerAssets {
     directory: Option<String>,
     binding: Option<String>,
@@ -539,17 +493,13 @@ fn resolve_assets(
     })
 }
 
-fn resolve_rule(rule: RawWranglerRule) -> Result<WranglerRule> {
+fn resolve_rule(rule: WranglerRule) -> Result<WranglerRule> {
     if rule.globs.is_empty() {
         return Err(Error::InvalidModuleRule(
             "rules.globs must not be empty".to_owned(),
         ));
     }
-    Ok(WranglerRule {
-        module_type: WranglerModuleType::parse(&rule.module_type)?,
-        globs: rule.globs,
-        fallthrough: rule.fallthrough,
-    })
+    Ok(rule)
 }
 
 #[derive(Deserialize)]

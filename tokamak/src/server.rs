@@ -179,9 +179,8 @@ fn finish_start(
 
 fn packaged_worker(app: &PackageLayout) -> Result<WorkerBundle> {
     if app.worker_manifest().is_file() {
-        let manifest = read_worker_manifest(app)?;
         Ok(WorkerBundle::from_modules(
-            manifest.entry,
+            read_worker_manifest(app)?,
             app.worker_modules(),
             app.bundle(),
         ))

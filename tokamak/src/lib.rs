@@ -75,7 +75,7 @@ pub use env_vars::{
 #[cfg(feature = "native")]
 pub use lifecycle_events::Event;
 pub use packaging::{
-    Error as BundleError, PackageLayout, WorkerManifest, compress_worker_bundle,
+    Error as BundleError, ModuleType, PackageLayout, WorkerManifest, compress_worker_bundle,
     compress_worker_module, decompress_worker_bundle, decompress_worker_module,
     read_worker_manifest, write_worker_manifest,
 };
@@ -90,9 +90,8 @@ pub use tokamak_config::{
 };
 pub use wrangler_config::{
     Error as WranglerConfigError, HtmlHandling, NotFoundHandling, WranglerAssets, WranglerBinding,
-    WranglerConfig, WranglerMigrations, WranglerModuleType, WranglerRule, WranglerStorage,
-    app_host, is_valid_app_name, load_config as load_wrangler_config,
-    load_config_for_env as load_wrangler_config_for_env,
+    WranglerConfig, WranglerMigrations, WranglerRule, WranglerStorage, app_host, is_valid_app_name,
+    load_config as load_wrangler_config, load_config_for_env as load_wrangler_config_for_env,
     resolve_config_path as resolve_wrangler_config_path,
 };
 

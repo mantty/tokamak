@@ -8,7 +8,11 @@ fn node_fs_runtime(root: &Path) -> rquickjs::Result<Runtime> {
     let runtime = Runtime::new()?;
     crate::dispatcher::configure_worker_loader(
         &runtime,
-        &crate::quickjs::WorkerBundle::from_modules("entry.js", root, root),
+        &crate::quickjs::WorkerBundle::from_modules(
+            crate::packaging::WorkerManifest::es_modules("entry.js", &[]),
+            root,
+            root,
+        ),
     );
     Ok(runtime)
 }
