@@ -180,3 +180,68 @@ test("rewrites the configuration in development when a file it imports changes",
     await server.close();
   }
 });
+
+const ENTRY = `import { DurableObject } from "cloudflare:workers";
+
+export class Counter extends DurableObject {}
+export const named = "named";
+
+export default {
+  fetch() {
+    return new Response(JSON.stringify({ loaded: globalThis.tokamakLoaded, evaluated: globalThis.configEvaluated }));
+  },
+};
+`;
+
+const TOKAMAK = `globalThis.tokamakLoaded = "loaded";
+
+const secret = () => "SECRET-TEAM";
+
+export const config = (globalThis.configEvaluated = true, { ios: { "team-id": secret() } });
+`;
+
+function entryProject() {
+  return project({ "src/index.ts": ENTRY, "src/tokamak.ts": TOKAMAK });
+}
+
+/** The source of the Worker the build of `app` generated. */
+function builtWorker(app) {
+  const generated = path.join(app.root, "dist/app");
+  const { main } = JSON.parse(fs.readFileSync(path.join(generated, "wrangler.json"), "utf8"));
+  return fs.readFileSync(path.join(generated, main), "utf8");
+}
+
+test("imports the configuration file into the entry Worker, keeping the entry's exports", async () => {
+  const app = entryProject();
+  await build(app);
+  const worker = builtWorker(app);
+  assert.match(worker, /globalThis\.tokamakLoaded = "loaded"/);
+  assert.match(worker, /export \{[^}]*\bCounter\b[^}]*\}/);
+  assert.match(worker, /export \{[^}]*\bnamed\b[^}]*\}/);
+  assert.match(worker, /export \{[^}]*\bas default\b[^}]*\}/);
+});
+
+test("keeps the config export out of the Worker bundle", async () => {
+  const app = entryProject();
+  await build(app);
+  const worker = builtWorker(app);
+  assert.doesNotMatch(worker, /SECRET-TEAM|configEvaluated = true/);
+  assert.deepEqual(readOutput(app, "config.json").config, { ios: { "team-id": "SECRET-TEAM" } });
+});
+
+test("evaluates the configuration file, without its config export, in the development Worker", async () => {
+  const app = entryProject();
+  const server = await createServer(viteConfig(app, { server: { port: 0 } }));
+  try {
+    await server.listen();
+    const response = await fetch(readOutput(app, "server.json").url);
+    assert.deepEqual(await response.json(), { loaded: "loaded" });
+  } finally {
+    await server.close();
+  }
+});
+
+test("fails on a config export it cannot remove", async () => {
+  const app = project({ "src/tokamak.ts": `const config = { name: "App" };\nexport { config };\n` });
+  await assert.rejects(build(app), /declare config in its own `export const config = \.\.\.` statement/);
+});
