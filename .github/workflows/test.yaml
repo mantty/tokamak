@@ -76,8 +76,14 @@ jobs:
           pnpm lint:ts
           pnpm test:ts
 
-      - name: Check CLI launcher
-        run: node --test tokamak-cli/npm/*.test.js
+      - name: Install CLI package dependencies
+        run: npm ci --prefix tokamak-cli/npm
+
+      - name: Check CLI package
+        working-directory: tokamak-cli/npm
+        run: |
+          npm run build
+          npm test
 
       - name: Check Rust formatting
         run: cargo fmt --all --check
