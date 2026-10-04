@@ -1,22 +1,53 @@
 {
   "name": "@tokamakdev/tok",
   "version": "0.0.0",
-  "description": "The tokamak CLI: build native apps from a Cloudflare Workers codebase",
+  "description": "The tokamak CLI, Vite plugin and app API: build native apps from a Cloudflare Workers codebase",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mantty/tokamak.git",
     "directory": "tokamak-cli/npm"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.mts",
+      "default": "./dist/vite.mjs"
+    }
   },
   "bin": {
     "tok": "bin/tok.js"
   },
   "files": [
     "bin",
+    "dist",
     "platform.js",
     "README.md"
   ],
+  "scripts": {
+    "build": "tsc",
+    "prepack": "npm run build",
+    "test": "node --test"
+  },
   "engines": {
     "node": ">=18"
+  },
+  "peerDependencies": {
+    "@cloudflare/vite-plugin": "^1.0.0",
+    "vite": "^7.0.0 || ^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@cloudflare/vite-plugin": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.62.5",
+    "@types/node": "22.19.15",
+    "typescript": "5.9.3",
+    "vite": "8.3.2"
   },
   "optionalDependencies": {
     "@tokamakdev/platform-android-arm64": "0.0.0",

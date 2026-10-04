@@ -13,3 +13,4 @@ __pycache__/
 .wrangler/
 tokamak-cli/npm/platforms/*/bin/
 tokamak-cli/npm/platform-packs/*/*/
+tokamak-cli/npm/dist/

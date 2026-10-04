@@ -1,12 +1,31 @@
 # @tokamakdev/tok
 
-The tokamak CLI, published from the tokamak workspace. The version is the
-workspace Cargo version, with a `-beta.N` suffix for automated pre-releases.
+The tokamak CLI, Vite plugin and app API, published from the tokamak
+workspace. The version is the workspace Cargo version, with a `-beta.N` suffix
+for automated pre-releases.
 
 ```sh
 npm install --save-dev @tokamakdev/tok
 npx tok targets
 ```
+
+| Entry | Contents |
+| --- | --- |
+| `@tokamakdev/tok` | The `Config` type of `src/tokamak.ts` |
+| `@tokamakdev/tok/vite` | The Vite plugin, `tokamak()` |
+| `tok` | The CLI |
+
+The Vite plugin goes next to Cloudflare's:
+
+```ts
+import { cloudflare } from "@cloudflare/vite-plugin";
+import { tokamak } from "@tokamakdev/tok/vite";
+import { defineConfig } from "vite";
+
+export default defineConfig({ plugins: [cloudflare(), tokamak()] });
+```
+
+It does nothing unless `tok` runs the build or development command.
 
 The package installs the `tok` binary for the current machine through an
 optional dependency (`@tokamakdev/tok-darwin-arm64`, `-darwin-x64`,
