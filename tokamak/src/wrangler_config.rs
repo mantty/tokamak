@@ -62,22 +62,17 @@ pub enum Error {
     /// A Wrangler name cannot be used as a tokamak app identity.
     #[error("wrangler config name is not a safe app name: {0}")]
     InvalidAppName(String),
-    /// The requested environment is not declared in the Wrangler configuration.
-    #[error(
-        "wrangler environment '{name}' not found in {path}; define env.{name} or omit --env to use top-level values"
-    )]
-    EnvironmentNotFound {
-        /// Path to the configuration file.
-        path: PathBuf,
-        /// Requested environment name.
-        name: String,
-    },
+    /// No deploy configuration was found.
+    #[error("no {DEPLOY_CONFIG} found in {0} or its parent directories")]
+    DeployConfigNotFound(PathBuf),
 }
 
 /// Result type for Wrangler configuration operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
 const CONFIG_FILE_NAMES: [&str; 3] = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"];
+/// Where a build records the configuration it generated for deployment.
+const DEPLOY_CONFIG: &str = ".wrangler/deploy/config.json";
 
 /// Resolved subset of a Wrangler config that tokamak consumes.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -92,12 +87,9 @@ pub struct WranglerConfig {
     pub assets: Option<WranglerAssets>,
     /// Text and JSON environment bindings declared in `vars`.
     pub vars: BTreeMap<String, Value>,
-    /// Additional module rules declared in `rules`.
+    /// The module rules Wrangler applies: those declared in `rules`, then its
+    /// default rules, without the rules it drops.
     pub rules: Vec<WranglerRule>,
-    /// Whether Wrangler should traverse `base_dir` for additional modules.
-    pub find_additional_modules: bool,
-    /// Directory against which additional-module globs are evaluated.
-    pub base_dir: PathBuf,
     /// Named Cloudflare bindings, other than storage, declared by the configuration.
     pub bindings: Vec<WranglerBinding>,
     /// Storage bindings declared by the configuration.
@@ -188,7 +180,8 @@ pub struct WranglerRule {
     /// Module type applied to matching files.
     #[serde(rename = "type")]
     pub module_type: ModuleType,
-    /// POSIX glob patterns evaluated relative to [`WranglerConfig::base_dir`].
+    /// POSIX glob patterns evaluated relative to the directory of
+    /// [`WranglerConfig::main`].
     pub globs: Vec<String>,
     /// Whether later matching rules may also apply.
     #[serde(default)]
@@ -290,31 +283,46 @@ impl NotFoundHandling {
     }
 }
 
-/// Resolve the Wrangler config path to use.
-///
-/// When `explicit_config` is provided, it is resolved relative to
-/// `reference_dir` unless already absolute. Without an explicit path, tokamak
-/// mirrors Wrangler's file order and parent-directory search:
-/// `wrangler.json`, then `wrangler.jsonc`, then `wrangler.toml`.
+/// Find the Wrangler config file as Wrangler does: `wrangler.json`, then
+/// `wrangler.jsonc`, then `wrangler.toml`, in `reference_dir` or its parent
+/// directories.
 ///
 /// # Errors
 ///
 /// Returns an error if no config file can be found.
-pub fn resolve_config_path(
-    reference_dir: &Path,
-    explicit_config: Option<&Path>,
-) -> Result<PathBuf> {
-    if let Some(path) = explicit_config {
-        return Ok(resolve_path(reference_dir, path));
+pub fn resolve_config_path(reference_dir: &Path) -> Result<PathBuf> {
+    CONFIG_FILE_NAMES
+        .iter()
+        .find_map(|file_name| find_file_upwards(reference_dir, file_name))
+        .ok_or_else(|| Error::ConfigNotFound(reference_dir.to_path_buf()))
+}
+
+/// The configuration a build generated for deployment, found as Wrangler
+/// finds it: through the `configPath` of the first `.wrangler/deploy/config.json`
+/// in `start` or its parent directories, relative to that file's directory.
+///
+/// # Errors
+///
+/// Returns an error when there is no deploy configuration, or it is invalid or
+/// names a file that does not exist.
+pub fn deploy_config_path(start: &Path) -> Result<PathBuf> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DeployConfig {
+        config_path: PathBuf,
     }
 
-    for file_name in CONFIG_FILE_NAMES {
-        if let Some(path) = find_file_upwards(reference_dir, file_name) {
-            return Ok(path);
-        }
+    let pointer = find_file_upwards(start, DEPLOY_CONFIG)
+        .ok_or_else(|| Error::DeployConfigNotFound(start.to_path_buf()))?;
+    let deploy: DeployConfig = parse_config(&pointer)?;
+    let path = resolve_path(
+        pointer.parent().unwrap_or(Path::new(".")),
+        &deploy.config_path,
+    );
+    if !path.is_file() {
+        return Err(Error::ConfigNotFound(path));
     }
-
-    Err(Error::ConfigNotFound(reference_dir.to_path_buf()))
+    Ok(path)
 }
 
 /// Load a Wrangler configuration file.
@@ -325,21 +333,8 @@ pub fn resolve_config_path(
 /// unsupported format, omits a field tokamak needs to package a Worker, or uses a
 /// name that cannot identify a tokamak application.
 pub fn load_config(config_path: &Path) -> Result<WranglerConfig> {
-    load_config_for_env(config_path, None)
-}
-
-/// Load the top-level or a named Wrangler environment.
-///
-/// # Errors
-///
-/// Returns an error when the configuration is invalid or the named environment
-/// does not exist.
-pub fn load_config_for_env(
-    config_path: &Path,
-    environment: Option<&str>,
-) -> Result<WranglerConfig> {
     let config_path = absolute_path(config_path)?;
-    let raw = select_environment(parse_config(&config_path)?, &config_path, environment)?;
+    let raw: RawWranglerConfig = parse_config(&config_path)?;
     let config_dir = config_path
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
@@ -366,20 +361,12 @@ pub fn load_config_for_env(
         main: resolve_path(&config_dir, Path::new(&main)),
         assets,
         vars: raw.vars,
-        rules: raw
-            .rules
-            .unwrap_or_default()
-            .into_iter()
-            .map(resolve_rule)
-            .collect::<Result<Vec<_>>>()?,
-        find_additional_modules: raw.find_additional_modules.unwrap_or_default(),
-        base_dir: resolve_path(
-            &config_dir,
-            raw.base_dir
-                .as_deref()
-                .map(Path::new)
-                .or_else(|| Path::new(&main).parent())
-                .unwrap_or(Path::new(".")),
+        rules: applied_rules(
+            raw.rules
+                .unwrap_or_default()
+                .into_iter()
+                .map(resolve_rule)
+                .collect::<Result<Vec<_>>>()?,
         ),
         storage,
         bindings: collect_bindings(&raw.other),
@@ -394,61 +381,8 @@ struct RawWranglerConfig {
     #[serde(default)]
     vars: BTreeMap<String, Value>,
     rules: Option<Vec<WranglerRule>>,
-    find_additional_modules: Option<bool>,
-    base_dir: Option<String>,
-    #[serde(default)]
-    env: BTreeMap<String, RawWranglerConfig>,
     #[serde(flatten)]
     other: BTreeMap<String, Value>,
-}
-
-fn select_environment(
-    mut raw: RawWranglerConfig,
-    config_path: &Path,
-    environment: Option<&str>,
-) -> Result<RawWranglerConfig> {
-    let source = raw
-        .other
-        .get("userConfigPath")
-        .and_then(Value::as_str)
-        .map(|path| {
-            resolve_path(
-                config_path.parent().unwrap_or(Path::new(".")),
-                Path::new(path),
-            )
-        });
-    if let Some(name) = environment {
-        if let Some(selected) = raw.env.remove(name) {
-            raw.name = selected.name.or(raw.name);
-            raw.main = selected.main.or(raw.main);
-            raw.assets = selected.assets.or(raw.assets);
-            raw.rules = selected.rules.or(raw.rules);
-            raw.find_additional_modules = selected
-                .find_additional_modules
-                .or(raw.find_additional_modules);
-            raw.base_dir = selected.base_dir.or(raw.base_dir);
-            raw.vars = selected.vars;
-            raw.other = selected.other;
-        } else if source.is_none() {
-            return Err(Error::EnvironmentNotFound {
-                path: config_path.to_path_buf(),
-                name: name.to_owned(),
-            });
-        }
-        if let Some(source) = source.as_ref() {
-            raw.vars = parse_config(source)?
-                .env
-                .remove(name)
-                .ok_or_else(|| Error::EnvironmentNotFound {
-                    path: source.clone(),
-                    name: name.to_owned(),
-                })?
-                .vars;
-        }
-    } else if let Some(source) = source.as_ref() {
-        raw.vars = parse_config(source)?.vars;
-    }
-    Ok(raw)
 }
 
 #[derive(Debug, Deserialize)]
@@ -491,6 +425,33 @@ fn resolve_assets(
             .transpose()?
             .unwrap_or(NotFoundHandling::None),
     })
+}
+
+/// `rules` followed by Wrangler's default rules, without the rules Wrangler
+/// drops: those after a rule of the same type without `fallthrough`.
+fn applied_rules(rules: Vec<WranglerRule>) -> Vec<WranglerRule> {
+    let defaults = [
+        (ModuleType::Text, &["**/*.txt", "**/*.html", "**/*.sql"][..]),
+        (ModuleType::Data, &["**/*.bin"]),
+        (ModuleType::CompiledWasm, &["**/*.wasm", "**/*.wasm?module"]),
+    ]
+    .map(|(module_type, globs)| WranglerRule {
+        module_type,
+        globs: globs.iter().map(|glob| (*glob).to_owned()).collect(),
+        fallthrough: false,
+    });
+    let mut completed = Vec::new();
+    let mut applied = Vec::new();
+    for rule in rules.into_iter().chain(defaults) {
+        if completed.contains(&rule.module_type) {
+            continue;
+        }
+        if !rule.fallthrough {
+            completed.push(rule.module_type);
+        }
+        applied.push(rule);
+    }
+    applied
 }
 
 fn resolve_rule(rule: WranglerRule) -> Result<WranglerRule> {
@@ -723,7 +684,7 @@ fn collect_binding_values(kind: &str, value: &Value, bindings: &mut Vec<Wrangler
     }
 }
 
-fn parse_config(config_path: &Path) -> Result<RawWranglerConfig> {
+fn parse_config<T: DeserializeOwned>(config_path: &Path) -> Result<T> {
     let content = fs::read_to_string(config_path)?;
     let extension = config_path
         .extension()
@@ -800,8 +761,9 @@ mod tests {
     use std::fs;
 
     use super::{
-        Error, WranglerMigrations, WranglerStorage, app_host, collect_bindings, is_valid_app_name,
-        load_config_for_env, normalize_relative_path, pattern_within,
+        Error, ModuleType, WranglerMigrations, WranglerRule, WranglerStorage, app_host,
+        applied_rules, collect_bindings, deploy_config_path, is_valid_app_name, load_config,
+        normalize_relative_path, pattern_within,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -874,7 +836,7 @@ mod tests {
             }"#,
         )?;
 
-        let loaded = load_config_for_env(&config, None)?;
+        let loaded = load_config(&config)?;
 
         assert_eq!(
             loaded.storage,
@@ -921,29 +883,71 @@ mod tests {
     }
 
     #[test]
-    fn takes_storage_bindings_from_the_selected_environment() -> TestResult {
-        let directory = tempfile::tempdir()?;
-        let config = directory.path().join("wrangler.json");
-        fs::write(
-            &config,
-            r#"{
-                "name": "app",
-                "main": "worker.js",
-                "d1_databases": [{ "binding": "TOP", "database_id": "top" }],
-                "env": { "production": { "d1_databases": [{ "binding": "PROD", "database_id": "prod" }] } }
-            }"#,
-        )?;
-
-        let loaded = load_config_for_env(&config, Some("production"))?;
+    fn applies_default_rules_without_those_wrangler_drops() {
+        let rule = |module_type, glob: &str, fallthrough| WranglerRule {
+            module_type,
+            globs: vec![glob.to_owned()],
+            fallthrough,
+        };
+        let applied = applied_rules(vec![
+            rule(ModuleType::Text, "**/*.md", false),
+            rule(ModuleType::Data, "**/*.txt", true),
+            rule(ModuleType::Text, "**/*.csv", false),
+        ]);
 
         assert_eq!(
-            loaded
-                .storage
+            applied
                 .iter()
-                .map(WranglerStorage::store)
+                .map(|rule| (rule.module_type, rule.globs[0].as_str()))
                 .collect::<Vec<_>>(),
-            ["prod"]
+            [
+                (ModuleType::Text, "**/*.md"),
+                (ModuleType::Data, "**/*.txt"),
+                (ModuleType::Data, "**/*.bin"),
+                (ModuleType::CompiledWasm, "**/*.wasm"),
+            ]
         );
+    }
+
+    #[test]
+    fn follows_the_deploy_config_from_a_nested_directory() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let deploy = directory.path().join(".wrangler/deploy");
+        fs::create_dir_all(&deploy)?;
+        fs::create_dir_all(directory.path().join("dist/app"))?;
+        fs::create_dir_all(directory.path().join("src"))?;
+        let generated = directory.path().join("dist/app/wrangler.json");
+        fs::write(&generated, r#"{ "name": "app", "main": "index.js" }"#)?;
+        fs::write(
+            deploy.join("config.json"),
+            r#"{ "configPath": "../../dist/app/wrangler.json", "auxiliaryWorkers": [] }"#,
+        )?;
+
+        assert_eq!(
+            deploy_config_path(&directory.path().join("src"))?,
+            deploy.join("../../dist/app/wrangler.json")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reports_a_missing_deploy_config_or_generated_config() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        assert!(matches!(
+            deploy_config_path(directory.path()),
+            Err(Error::DeployConfigNotFound(path)) if path == directory.path()
+        ));
+
+        let deploy = directory.path().join(".wrangler/deploy");
+        fs::create_dir_all(&deploy)?;
+        fs::write(
+            deploy.join("config.json"),
+            r#"{ "configPath": "missing.json" }"#,
+        )?;
+        assert!(matches!(
+            deploy_config_path(directory.path()),
+            Err(Error::ConfigNotFound(path)) if path == deploy.join("missing.json")
+        ));
         Ok(())
     }
 
@@ -956,8 +960,7 @@ mod tests {
             r#"{ "name": "app", "main": "worker.js", "d1_databases": [{ "database_id": "db" }] }"#,
         )?;
 
-        let Err(Error::InvalidStorageBinding { kind, .. }) = load_config_for_env(&config, None)
-        else {
+        let Err(Error::InvalidStorageBinding { kind, .. }) = load_config(&config) else {
             return Err("a nameless binding was accepted".into());
         };
         assert_eq!(kind, "d1_databases");

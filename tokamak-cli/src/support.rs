@@ -1,5 +1,6 @@
 //! Shared native app build helpers.
 
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,12 +35,19 @@ pub(crate) fn validate_target(manifest: &PlatformPackManifest, platform: Platfor
     }
 }
 
-pub(crate) fn run_project_build(project: &Path, command: Option<&str>) -> Result<()> {
+/// Run the project's build `command`, or its `package.json` build script, with
+/// `environment` set.
+pub(crate) fn run_project_build<'a>(
+    project: &Path,
+    command: Option<&str>,
+    environment: impl IntoIterator<Item = (&'a str, &'a OsStr)>,
+) -> Result<()> {
     let mut build = match command {
         Some(command) => shell_command(command),
         None => package_build_command(project)?,
     };
     let status = build
+        .envs(environment)
         .current_dir(project)
         .status()
         .with_context(|| format!("failed to run {}", build.get_program().to_string_lossy()))?;
@@ -71,7 +79,7 @@ fn shell_command(command: &str) -> Command {
 fn package_build_command(project: &Path) -> Result<Command> {
     if !project.join("package.json").is_file() {
         bail!(
-            "package.json not found in {}; add one or set `build` in the Tokamak configuration",
+            "package.json not found in {}; add one or set the build command with --build or TOKAMAK_BUILD",
             project.display()
         );
     }

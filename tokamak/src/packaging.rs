@@ -120,10 +120,25 @@ pub enum ModuleType {
 }
 
 impl ModuleType {
-    /// Whether this module type is a non-code file for `/bundle`.
+    /// The type's name in Wrangler's module rules.
     #[must_use]
-    pub const fn is_bundle_file(self) -> bool {
-        matches!(self, Self::CompiledWasm | Self::Text | Self::Data)
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::EsModule => "ESModule",
+            Self::CommonJs => "CommonJS",
+            Self::CompiledWasm => "CompiledWasm",
+            Self::Text => "Text",
+            Self::Data => "Data",
+        }
+    }
+
+    /// Whether the runtime loads modules of this type.
+    #[must_use]
+    pub const fn is_supported(self) -> bool {
+        match self {
+            Self::EsModule | Self::Text | Self::Data => true,
+            Self::CommonJs | Self::CompiledWasm => false,
+        }
     }
 }
 
@@ -245,7 +260,7 @@ pub fn read_worker_manifest(layout: &PackageLayout) -> Result<WorkerManifest> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PackageLayout, WORKER_BUNDLE_HEADER, WorkerManifest, compress_worker_bundle,
+        ModuleType, PackageLayout, WORKER_BUNDLE_HEADER, WorkerManifest, compress_worker_bundle,
         compress_worker_module, decompress_worker_bundle, decompress_worker_module,
     };
 
@@ -327,6 +342,20 @@ mod tests {
         let bytecode = b"quickjs bytecode".repeat(128);
         let compressed = compress_worker_module(&bytecode)?;
         assert_eq!(decompress_worker_module(&compressed)?, bytecode);
+        Ok(())
+    }
+
+    #[test]
+    fn names_module_types_as_wrangler_does() -> Result<(), Box<dyn std::error::Error>> {
+        for module_type in [
+            ModuleType::EsModule,
+            ModuleType::CommonJs,
+            ModuleType::CompiledWasm,
+            ModuleType::Text,
+            ModuleType::Data,
+        ] {
+            assert_eq!(serde_json::to_value(module_type)?, module_type.name());
+        }
         Ok(())
     }
 

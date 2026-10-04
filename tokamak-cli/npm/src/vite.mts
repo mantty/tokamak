@@ -83,7 +83,10 @@ async function writeConfig(
   return [file, ...dependencies.map(normalizePath)];
 }
 
+/** Writes `value` to `name` whole, as `tok` reads the file as soon as it exists. */
 function writeJson(output: string, name: string, value: unknown): void {
+  const file = path.join(output, name);
   fs.mkdirSync(output, { recursive: true });
-  fs.writeFileSync(path.join(output, name), `${JSON.stringify(value, null, 2)}\n`);
+  fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(value, null, 2)}\n`);
+  fs.renameSync(`${file}.tmp`, file);
 }

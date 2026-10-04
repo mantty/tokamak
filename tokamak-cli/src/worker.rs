@@ -1,43 +1,67 @@
 //! Worker package preparation.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use tokamak::compile_module;
 use tokamak::{
-    ModuleType, PackageLayout, WorkerEnvironment, WorkerManifest, WranglerConfig, WranglerRule,
+    ModuleType, PackageLayout, WorkerEnvironment, WorkerManifest, WranglerConfig, compile_module,
     compress_worker_module, write_asset_manifest, write_worker_environment, write_worker_manifest,
 };
-use tokamak_cli::{ArtifactKind, PlatformPackManifest};
 use walkdir::WalkDir;
 
-use super::support::{
-    artifact_path, command_path, copy_dir_contents, copy_file, glob_matches, slash_path,
-};
+use super::support::{self, copy_dir_contents, copy_file, glob_matches, slash_path};
 use super::{cache, storage};
 
-const WORKER_ENTRY: &str = "entry.js";
-
+/// What a compiled Worker was compiled from, and what it is.
 #[derive(Deserialize, Serialize)]
 struct WorkerCache {
-    config: String,
-    inputs: Vec<PathBuf>,
-    input_fingerprint: String,
-    additional_fingerprint: String,
-    output_fingerprint: String,
+    inputs: String,
+    outputs: String,
 }
 
-pub(crate) fn prepare_quickjs_app(
-    app_dir: &Path,
-    cache_dir: &Path,
-    pack_root: &Path,
-    manifest: &PlatformPackManifest,
-    wrangler: &WranglerConfig,
-) -> Result<()> {
+/// The Worker `wrangler` describes, compiled into a package directory under
+/// `cache_dir`; an earlier compilation is reused while its inputs are unchanged.
+pub(crate) fn compile(cache_dir: &Path, wrangler: &WranglerConfig) -> Result<PathBuf> {
+    let (root, manifest) = collect_modules(wrangler)?;
+    let files = manifest
+        .modules
+        .keys()
+        .map(|name| root.join(name))
+        .collect::<Vec<_>>();
+    let inputs = format!(
+        "{}:{}:{}",
+        env!("CARGO_PKG_VERSION"),
+        serde_json::to_string(&manifest)?,
+        cache::hash_paths(&files)?
+    );
+    let marker = cache_dir.join("state.json");
+    let compiled = cache_dir.join("compiled");
+    let cached = fs::read(&marker)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<WorkerCache>(&bytes).ok());
+    if let Some(state) = cached
+        && state.inputs == inputs
+        && PackageLayout::new(&compiled).worker_manifest().is_file()
+        && state.outputs == cache::hash_tree(&compiled, |_| false)?
+    {
+        return Ok(compiled);
+    }
+    support::reset_path(&compiled)?;
+    compile_modules(&PackageLayout::new(&compiled), root, &manifest)?;
+    let outputs = cache::hash_tree(&compiled, |_| false)?;
+    fs::write(
+        marker,
+        serde_json::to_vec(&WorkerCache { inputs, outputs })?,
+    )?;
+    Ok(compiled)
+}
+
+/// Package the app in `app_dir`: the `compiled` Worker with its environment,
+/// storage and assets.
+pub(crate) fn package(app_dir: &Path, compiled: &Path, wrangler: &WranglerConfig) -> Result<()> {
     let layout = PackageLayout::new(app_dir);
     write_worker_environment(
         &layout,
@@ -51,381 +75,189 @@ pub(crate) fn prepare_quickjs_app(
         copy_dir_contents(&assets.directory, &layout.assets())?;
         write_asset_manifest(&layout, assets)?;
     }
-    let config = format!(
-        "{}:{:?}:{}:{:?}:{}:{}",
-        env!("CARGO_PKG_VERSION"),
-        manifest.target,
-        wrangler.main.display(),
-        wrangler.rules,
-        wrangler.find_additional_modules,
-        wrangler.base_dir.display()
-    );
-    let marker = cache_dir.join("state.json");
-    let compiled = cache_dir.join("compiled");
-    let cached = fs::read(&marker)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<WorkerCache>(&bytes).ok());
-    let current = if let Some(state) = cached {
-        state.config == config
-            && compiled.join("worker-manifest.json").is_file()
-            && state.inputs.iter().all(|path| path.is_file())
-            && state.input_fingerprint == cache::hash_paths(&state.inputs)?
-            && state.additional_fingerprint == additional_fingerprint(wrangler)?
-            && state.output_fingerprint == cache::hash_tree(&compiled, |_| false)?
-    } else {
-        false
-    };
-    if !current {
-        if compiled.exists() {
-            fs::remove_dir_all(&compiled)?;
-        }
-        let cached_layout = PackageLayout::new(&compiled);
-        fs::create_dir_all(cached_layout.bundle())?;
-        let inputs = compile_worker_bundle(&cached_layout, wrangler, pack_root, manifest)?;
-        fs::write(
-            marker,
-            serde_json::to_vec(&WorkerCache {
-                config,
-                input_fingerprint: cache::hash_paths(&inputs)?,
-                additional_fingerprint: additional_fingerprint(wrangler)?,
-                output_fingerprint: cache::hash_tree(&compiled, |_| false)?,
-                inputs,
-            })?,
-        )?;
-    }
-    copy_dir_contents(&compiled, app_dir)
+    copy_dir_contents(compiled, app_dir)
 }
 
-fn additional_fingerprint(wrangler: &WranglerConfig) -> Result<String> {
-    cache::hash_paths(
-        &additional_module_files(wrangler)?
-            .into_iter()
-            .collect::<Vec<_>>(),
-    )
-}
-
-fn compile_worker_bundle(
-    layout: &PackageLayout,
-    wrangler: &WranglerConfig,
-    pack_root: &Path,
-    manifest: &PlatformPackManifest,
-) -> Result<Vec<PathBuf>> {
-    let (source, metafile) = run_esbuild(layout, wrangler, pack_root, manifest)?;
-    write_worker_modules(layout, &source)?;
-    let mut inputs = read_metafile_inputs(&metafile)?
-        .into_iter()
-        .map(|path| {
-            if path.is_absolute() {
-                Ok(path)
-            } else {
-                Ok(std::env::current_dir()?.join(path))
-            }
-        })
-        .collect::<Result<Vec<_>>>()?;
-    if !inputs.contains(&wrangler.main) {
-        inputs.push(wrangler.main.clone());
-    }
-    package_bundle_files(wrangler, layout, &inputs)?;
-    fs::remove_dir_all(source)?;
-    if metafile.exists() {
-        fs::remove_file(metafile)?;
-    }
-    Ok(inputs)
-}
-
-fn run_esbuild(
-    layout: &PackageLayout,
-    wrangler: &WranglerConfig,
-    pack_root: &Path,
-    manifest: &PlatformPackManifest,
-) -> Result<(PathBuf, PathBuf)> {
-    let compiler = artifact_path(pack_root, manifest, &ArtifactKind::EsbuildExecutable)?;
-    let source = layout.root().join("worker.source");
-    let metafile = layout.root().join("worker.metafile.json");
-    if source.exists() {
-        fs::remove_dir_all(&source)?;
-    }
-    fs::create_dir_all(&source)?;
-
-    let mut command = Command::new("node");
-    command
-        .arg(command_path(&compiler))
-        .args([
-            "--bundle",
-            "--splitting",
-            "--format=esm",
-            "--platform=neutral",
-            "--target=es2022",
-            "--entry-names=entry",
-            "--chunk-names=chunks/[name]-[hash]",
-        ])
-        .arg(format!("--outdir={}", command_path(&source).display()))
-        .arg(format!("--metafile={}", command_path(&metafile).display()))
-        .args(
-            tokamak::runtime_module_names()
-                .into_iter()
-                .map(|name| format!("--external:{name}")),
-        );
-    for (extension, loader) in esbuild_loaders(&wrangler.rules) {
-        command.arg(format!("--loader:.{extension}={loader}"));
-    }
-    let status = command
-        .arg(command_path(&wrangler.main))
-        .status()
-        .context("failed to bundle the Worker with esbuild")?;
-    if !status.success() {
-        bail!("Worker bundling failed with status {status}");
-    }
-    Ok((source, metafile))
-}
-
-fn write_worker_modules(layout: &PackageLayout, source: &Path) -> Result<()> {
-    let source_files = javascript_outputs(source)?;
-    let entry = source.join(WORKER_ENTRY);
-    if !entry.is_file() {
-        bail!(
-            "esbuild did not emit the Worker entry module {}",
-            entry.display()
-        );
-    }
-    let modules = layout.worker_modules();
-    fs::create_dir_all(&modules)?;
-    let mut module_types = BTreeMap::new();
-    for source_file in source_files {
-        let relative = source_file
-            .strip_prefix(source)
-            .context("Worker module escaped esbuild output directory")?;
-        let name = slash_path(relative)?;
-        let bytecode = compile_module(&name, &fs::read(&source_file)?)?;
-        let destination = modules.join(format!("{name}.qjs"));
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(destination, compress_worker_module(&bytecode)?)?;
-        module_types.insert(name, ModuleType::EsModule);
-    }
-    write_worker_manifest(
-        layout,
-        &WorkerManifest {
-            entry: WORKER_ENTRY.to_owned(),
-            modules: module_types,
-        },
-    )?;
-    Ok(())
-}
-
-fn javascript_outputs(source: &Path) -> Result<Vec<PathBuf>> {
-    let mut paths = Vec::new();
-    for entry in WalkDir::new(source) {
-        let entry = entry.map_err(std::io::Error::other)?;
-        if entry.file_type().is_file()
-            && entry
-                .path()
-                .extension()
-                .is_some_and(|extension| matches!(extension.to_str(), Some("js" | "mjs" | "cjs")))
-        {
-            paths.push(entry.path().to_owned());
-        }
-    }
-    paths.sort();
-    Ok(paths)
-}
-
-#[derive(Deserialize)]
-struct EsbuildMetafile {
-    #[serde(default)]
-    inputs: BTreeMap<String, serde_json::Value>,
-}
-
-fn read_metafile_inputs(path: &Path) -> Result<Vec<PathBuf>> {
-    if !path.is_file() {
-        return Ok(Vec::new());
-    }
-    let metafile: EsbuildMetafile = serde_json::from_slice(&fs::read(path)?)?;
-    Ok(metafile.inputs.into_keys().map(PathBuf::from).collect())
-}
-
-fn package_bundle_files(
-    wrangler: &WranglerConfig,
-    layout: &PackageLayout,
-    inputs: &[PathBuf],
-) -> Result<()> {
-    let mut files = additional_module_files(wrangler)?;
-    for input in inputs {
-        if is_code_path(input) {
+/// The directory of `main` and the Worker's modules in it, as `wrangler deploy`
+/// finds them for a configuration with `no_bundle`: `main`, and the files its
+/// module rules match.
+fn collect_modules(wrangler: &WranglerConfig) -> Result<(&Path, WorkerManifest)> {
+    let root = wrangler
+        .main
+        .parent()
+        .context("the Worker's main module has no directory")?;
+    let entry = slash_path(wrangler.main.strip_prefix(root)?)?;
+    let mut modules = BTreeMap::from([(entry.clone(), ModuleType::EsModule)]);
+    for file in WalkDir::new(root) {
+        let file = file?;
+        if !file.file_type().is_file() || file.path() == wrangler.path {
             continue;
         }
-        if input.is_file() && relative_to_base(input, &wrangler.base_dir).is_some() {
-            files.insert(input.clone());
-        }
-    }
-
-    for file in files {
-        let relative = relative_to_base(&file, &wrangler.base_dir)
-            .context("bundle file is outside Wrangler base_dir")?;
-        copy_file(&file, layout.bundle().join(relative))?;
-    }
-    Ok(())
-}
-
-fn additional_module_files(wrangler: &WranglerConfig) -> Result<BTreeSet<PathBuf>> {
-    let mut files = BTreeSet::new();
-    if wrangler.find_additional_modules {
-        for entry in WalkDir::new(&wrangler.base_dir).follow_links(true) {
-            let entry = entry.map_err(std::io::Error::other)?;
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let relative = entry.path().strip_prefix(&wrangler.base_dir)?;
-            if rule_type(relative, &wrangler.rules).is_some_and(ModuleType::is_bundle_file) {
-                files.insert(entry.path().to_owned());
-            }
-        }
-    }
-    Ok(files)
-}
-
-fn rule_type(path: &Path, rules: &[WranglerRule]) -> Option<ModuleType> {
-    let path = slash_path(path).ok()?;
-    let mut selected = None;
-    for rule in rules {
-        if rule.globs.iter().any(|glob| glob_matches(glob, &path)) {
-            selected = Some(rule.module_type);
-            if !rule.fallthrough {
-                break;
-            }
-        }
-    }
-    selected
-}
-
-fn relative_to_base(path: &Path, base: &Path) -> Option<PathBuf> {
-    let path = fs::canonicalize(path).ok()?;
-    let base = fs::canonicalize(base).ok()?;
-    let relative = path.strip_prefix(base).ok()?;
-    (!relative.as_os_str().is_empty()).then(|| relative.to_owned())
-}
-
-fn is_code_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" | "mts" | "cts"
-            )
-        })
-}
-
-fn esbuild_loaders(rules: &[WranglerRule]) -> BTreeMap<String, &'static str> {
-    let mut loaders = BTreeMap::from([
-        ("txt".to_owned(), "text"),
-        ("html".to_owned(), "text"),
-        ("sql".to_owned(), "text"),
-        ("bin".to_owned(), "binary"),
-        ("wasm".to_owned(), "binary"),
-    ]);
-    for rule in rules {
-        let loader = match rule.module_type {
-            ModuleType::Text => "text",
-            ModuleType::Data | ModuleType::CompiledWasm => "binary",
-            ModuleType::EsModule | ModuleType::CommonJs => continue,
+        let name = slash_path(file.path().strip_prefix(root)?)?;
+        let Some(module_type) = rule_type(&name, wrangler) else {
+            continue;
         };
-        for glob in &rule.globs {
-            let Some(extension) = glob
-                .rsplit('/')
-                .next()
-                .and_then(|name| name.strip_prefix("*."))
-            else {
-                continue;
-            };
-            loaders.insert(extension.to_owned(), loader);
+        if !module_type.is_supported() {
+            bail!(
+                "Worker module {name} is a {} module; tokamak supports ESModule, Text and Data modules",
+                module_type.name()
+            );
+        }
+        modules.entry(name).or_insert(module_type);
+    }
+    Ok((root, WorkerManifest { entry, modules }))
+}
+
+/// The type of the first of `wrangler`'s rules with a glob that matches `name`.
+fn rule_type(name: &str, wrangler: &WranglerConfig) -> Option<ModuleType> {
+    wrangler
+        .rules
+        .iter()
+        .find(|rule| rule.globs.iter().any(|glob| glob_matches(glob, name)))
+        .map(|rule| rule.module_type)
+}
+
+/// Compile `manifest`'s ES modules to bytecode and copy its Text and Data
+/// modules from `root` into `layout`.
+fn compile_modules(layout: &PackageLayout, root: &Path, manifest: &WorkerManifest) -> Result<()> {
+    for (name, module_type) in &manifest.modules {
+        let source = root.join(name);
+        match module_type {
+            ModuleType::EsModule => {
+                let bytecode = compile_module(name, &fs::read(&source)?)
+                    .with_context(|| format!("compile Worker module {name}"))?;
+                let destination = layout.worker_modules().join(format!("{name}.qjs"));
+                fs::create_dir_all(destination.parent().context("module has no directory")?)?;
+                fs::write(destination, compress_worker_module(&bytecode)?)?;
+            }
+            ModuleType::Text | ModuleType::Data => copy_file(&source, layout.bundle().join(name))?,
+            ModuleType::CommonJs | ModuleType::CompiledWasm => {
+                bail!("Worker module {name} has an unsupported type");
+            }
         }
     }
-    loaders
+    write_worker_manifest(layout, manifest)?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fmt::Write as _;
-    use tokamak_cli::{Artifact, ESBUILD_EXECUTABLE, Target};
 
-    #[test]
-    fn real_bundler_keeps_runtime_modules_external() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let root = directory.path();
-        let manifest = esbuild_pack(root)?;
-        let names = tokamak::runtime_module_names();
-        let mut source = String::new();
-        for (index, name) in names.iter().enumerate() {
-            writeln!(source, "export * as builtin{index} from '{name}';")?;
-        }
-        source.push_str("export async function lazy() { return import('./lazy.mjs'); }");
-        fs::write(root.join("entry.mjs"), source)?;
-        fs::write(
-            root.join("lazy.mjs"),
-            "export { env } from 'cloudflare:workers';",
-        )?;
+    /// The Worker `root/index.js` with the module rules `rules`, as JSON.
+    fn worker(root: &Path, rules: &str) -> Result<WranglerConfig> {
         fs::write(
             root.join("wrangler.json"),
-            r#"{"name":"test-app","main":"entry.mjs"}"#,
+            format!(r#"{{"name":"app","main":"index.js","rules":{rules}}}"#),
         )?;
-        let wrangler = tokamak::load_wrangler_config(&root.join("wrangler.json"))?;
-        let layout = PackageLayout::new(root.join("app"));
-        let (output, metadata) = run_esbuild(&layout, &wrangler, root, &manifest)?;
-        let metadata: serde_json::Value = serde_json::from_slice(&fs::read(metadata)?)?;
-        let inputs = metadata["inputs"].as_object().context("missing inputs")?;
-        assert_eq!(inputs.len(), 2, "runtime implementation was bundled");
-        let mut external = BTreeSet::new();
-        for output in metadata["outputs"]
-            .as_object()
-            .context("missing outputs")?
-            .values()
-        {
-            for import in output["imports"].as_array().context("missing imports")? {
-                if import["external"] == true {
-                    external.insert(import["path"].as_str().context("missing path")?);
-                }
-            }
+        Ok(tokamak::load_wrangler_config(&root.join("wrangler.json"))?)
+    }
+
+    fn write(root: &Path, files: &[&str]) -> Result<()> {
+        for name in files {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().context("no parent")?)?;
+            fs::write(path, "")?;
         }
-        assert_eq!(external, names.iter().copied().collect());
-        assert!(output.join("chunks").is_dir(), "lazy module was not split");
-        assert!(!root.join("tools/runtime/runtime-js").exists());
-        write_worker_modules(&layout, &output)?;
-        assert!(layout.worker_modules().join("entry.js.qjs").is_file());
         Ok(())
     }
-    fn esbuild_pack(root: &Path) -> Result<PlatformPackManifest> {
-        let host = match (std::env::consts::OS, std::env::consts::ARCH) {
-            ("macos", "aarch64") => "darwin-arm64",
-            ("macos", "x86_64") => "darwin-x64",
-            ("linux", "x86_64") => "linux-x64",
-            ("windows", "x86_64") => "win32-x64",
-            _ => bail!("unsupported esbuild test host"),
-        };
-        let binaries = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../tools/esbuild-hosts/node_modules/@esbuild")
-            .join(host);
-        copy_dir_contents(
-            &binaries,
-            &root.join("tools/runtime/node_modules/@esbuild").join(host),
+
+    #[test]
+    fn collects_modules_as_wrangler_does_without_bundling() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        write(
+            root,
+            &[
+                "index.js",
+                "assets/lazy.js",
+                "chunks/page.mjs",
+                "assets/page.html",
+                "assets/data.bin",
+                "assets/query.sql",
+                "notes.md",
+                "index.js.map",
+                ".vite/manifest.json",
+            ],
         )?;
-        let launcher = root.join(ESBUILD_EXECUTABLE);
-        fs::create_dir_all(launcher.parent().context("esbuild has no directory")?)?;
+        let wrangler = worker(
+            root,
+            r#"[{"type":"ESModule","globs":["**/*.js","**/*.mjs"]}]"#,
+        )?;
+
+        let (module_root, manifest) = collect_modules(&wrangler)?;
+
+        assert_eq!(module_root, root);
+        assert_eq!(manifest.entry, "index.js");
+        assert_eq!(
+            manifest.modules,
+            BTreeMap::from([
+                ("assets/data.bin".to_owned(), ModuleType::Data),
+                ("assets/lazy.js".to_owned(), ModuleType::EsModule),
+                ("assets/page.html".to_owned(), ModuleType::Text),
+                ("assets/query.sql".to_owned(), ModuleType::Text),
+                ("chunks/page.mjs".to_owned(), ModuleType::EsModule),
+                ("index.js".to_owned(), ModuleType::EsModule),
+            ])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_webassembly_and_commonjs_modules() -> Result<()> {
+        for (file, rules, expected) in [
+            (
+                "assets/add.wasm",
+                "[]",
+                "assets/add.wasm is a CompiledWasm module",
+            ),
+            (
+                "legacy.cjs",
+                r#"[{"type":"CommonJS","globs":["**/*.cjs"]}]"#,
+                "legacy.cjs is a CommonJS module",
+            ),
+        ] {
+            let directory = tempfile::tempdir()?;
+            write(directory.path(), &["index.js", file])?;
+            let error = collect_modules(&worker(directory.path(), rules)?).map(|_| ());
+            assert!(
+                error.as_ref().is_err_and(|error| error.to_string()
+                    == format!(
+                        "Worker module {expected}; tokamak supports ESModule, Text and Data modules"
+                    )),
+                "{error:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn compiles_es_modules_and_copies_text_and_data_modules() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().join("worker");
+        fs::create_dir_all(root.join("assets"))?;
         fs::write(
-            &launcher,
-            include_str!("../../tools/xtask/src/esbuild-launcher.cjs"),
+            root.join("index.js"),
+            "import page from './assets/page.html'; export default { fetch() { return new Response(page); } };",
         )?;
-        Ok(PlatformPackManifest {
-            tokamak_version: env!("CARGO_PKG_VERSION").to_owned(),
-            target: Target::WindowsX64,
-            artifacts: vec![Artifact {
-                kind: ArtifactKind::EsbuildExecutable,
-                path: ESBUILD_EXECUTABLE.to_owned(),
-            }],
-            required_tools: vec![],
-            variables: std::collections::BTreeMap::new(),
-        })
+        fs::write(root.join("assets/page.html"), "<p>page</p>")?;
+        let manifest = WorkerManifest {
+            entry: "index.js".to_owned(),
+            modules: BTreeMap::from([
+                ("index.js".to_owned(), ModuleType::EsModule),
+                ("assets/page.html".to_owned(), ModuleType::Text),
+            ]),
+        };
+        let layout = PackageLayout::new(directory.path().join("app"));
+
+        compile_modules(&layout, &root, &manifest)?;
+
+        assert!(layout.worker_modules().join("index.js.qjs").is_file());
+        assert_eq!(
+            fs::read_to_string(layout.bundle().join("assets/page.html"))?,
+            "<p>page</p>"
+        );
+        assert_eq!(tokamak::read_worker_manifest(&layout)?, manifest);
+        Ok(())
     }
 }
