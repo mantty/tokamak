@@ -3,12 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use tokamak::{
-    TokamakConfig, WranglerConfig, load_tokamak_config, load_wrangler_config_for_env,
-    resolve_tokamak_config_path, resolve_wrangler_config_path, slug,
-};
+use tokamak::{TokamakConfig, WranglerConfig, deploy_config_path, load_wrangler_config, slug};
 use tokamak_cli::{MANIFEST_FILE, Platform, PlatformPackManifest, Target, load_manifest};
 
+use super::vite::{PLUGIN_HINT, VitePlugin};
 use super::{cache, plugins, settings, support, worker};
 
 pub(crate) struct BuildRequest {
@@ -16,9 +14,7 @@ pub(crate) struct BuildRequest {
     pub(crate) project_dir: PathBuf,
     pub(crate) build_dir: Option<PathBuf>,
     pub(crate) platform_pack_dir: Option<PathBuf>,
-    pub(crate) tokamak_config_path: PathBuf,
-    pub(crate) wrangler_config_path: Option<PathBuf>,
-    pub(crate) wrangler_env: Option<String>,
+    pub(crate) tokamak_config_path: Option<PathBuf>,
     pub(crate) top: settings::TopOptions,
     pub(crate) platform_options: settings::PlatformOptions,
     pub(crate) skip_project_build: bool,
@@ -29,17 +25,18 @@ pub(crate) struct BuildSummary {
     pub(crate) bundle_dir: PathBuf,
 }
 
-pub(crate) struct DevelopmentRequest {
+pub(crate) struct DevelopmentRequest<'a> {
     pub(crate) platform: Platform,
-    pub(crate) project_dir: PathBuf,
-    pub(crate) platform_pack_dir: Option<PathBuf>,
-    pub(crate) tokamak_config_path: PathBuf,
-    pub(crate) wrangler_config_path: Option<PathBuf>,
-    pub(crate) endpoint: String,
-    pub(crate) session_token: String,
-    pub(crate) device_id: Option<String>,
-    pub(crate) top: settings::TopOptions,
-    pub(crate) platform_options: settings::PlatformOptions,
+    /// The canonical project directory.
+    pub(crate) project: &'a Path,
+    pub(crate) platform_pack_dir: Option<&'a Path>,
+    pub(crate) tokamak: &'a TokamakConfig,
+    pub(crate) worker_name: &'a str,
+    pub(crate) endpoint: &'a str,
+    pub(crate) session_token: &'a str,
+    pub(crate) device_id: &'a str,
+    pub(crate) top: &'a settings::TopOptions,
+    pub(crate) platform_options: &'a settings::PlatformOptions,
 }
 
 pub(crate) struct DevelopmentSummary {
@@ -52,6 +49,8 @@ pub(crate) struct DevelopmentSummary {
 struct BuildContext<'a> {
     build_dir: &'a Path,
     wrangler: &'a WranglerConfig,
+    /// The compiled Worker's package directory.
+    worker: &'a Path,
     plugins: &'a [plugins::Plugin],
     version: &'a str,
 }
@@ -82,8 +81,33 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     let build_dir = project.join(request.build_dir.as_deref().unwrap_or(Path::new("build")));
     fs::create_dir_all(&build_dir)?;
     let build_dir = fs::canonicalize(build_dir)?;
-    let tokamak = load_project_config(&request.tokamak_config_path)?;
+    let packs = request
+        .platforms
+        .iter()
+        .map(|platform| load_platform_pack(*platform, request.platform_pack_dir.as_deref()))
+        .collect::<Result<Vec<_>>>()?;
     let current_dir = env::current_dir()?;
+    let plugin = VitePlugin::new(
+        build_dir.join(".tokamak").join("vite"),
+        request.tokamak_config_path.as_deref(),
+    )?;
+    for (platform, (_, manifest)) in request.platforms.iter().zip(&packs) {
+        check_settings(&request.top, &request.platform_options, *platform, manifest)?;
+    }
+    if !request.skip_project_build {
+        let no_config = TokamakConfig::default();
+        let command = settings::build_command(&settings::Sources::new(
+            &request.top,
+            &request.platform_options,
+            &no_config,
+            &current_dir,
+        ))?;
+        plugin.clear()?;
+        support::run_project_build(&project, command.as_deref(), plugin.environment())?;
+    }
+    let tokamak = plugin.config()?.with_context(|| {
+        format!("the build did not report its tokamak configuration; {PLUGIN_HINT}")
+    })?;
     let sources = settings::Sources::new(
         &request.top,
         &request.platform_options,
@@ -94,24 +118,28 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     let builds = request
         .platforms
         .iter()
-        .map(|platform| {
-            prepare_platform_build(*platform, request.platform_pack_dir.as_deref(), &sources)
+        .zip(packs)
+        .map(|(platform, (pack_root, manifest))| {
+            Ok(PlatformBuild {
+                platform: *platform,
+                settings: settings::resolve(&sources, *platform, &manifest)?,
+                pack_root,
+                manifest,
+            })
         })
         .collect::<Result<Vec<_>>>()?;
-    if !request.skip_project_build {
-        let command = settings::build_command(&sources)?;
-        support::run_project_build(&project, command.as_deref())?;
-    }
-    let wrangler = load_wrangler(
-        &request.project_dir,
-        request.wrangler_config_path.as_deref(),
-        request.wrangler_env.as_deref(),
+    let wrangler = load_wrangler_config(
+        &deploy_config_path(&project)
+            .context("find the Wrangler configuration the build generated")?,
     )?;
     support::validate_project_build(&wrangler)?;
+    let worker = worker::compile(&build_dir.join(".tokamak").join("worker"), &wrangler)
+        .context("compile the Worker")?;
     let plugins = plugins::discover(&request.project_dir)?;
     let context = BuildContext {
         build_dir: &build_dir,
         wrangler: &wrangler,
+        worker: &worker,
         plugins: &plugins,
         version: &version,
     };
@@ -122,72 +150,38 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         .collect()
 }
 
-fn prepare_platform_build(
+/// Check the options and environment variables for `platform` before the
+/// project's command runs; the configuration file is read after it.
+pub(crate) fn check_settings(
+    top: &settings::TopOptions,
+    platform_options: &settings::PlatformOptions,
     platform: Platform,
-    platform_pack_dir: Option<&Path>,
-    sources: &settings::Sources<'_>,
-) -> Result<PlatformBuild> {
-    let (pack_root, manifest) = load_platform_pack(platform, platform_pack_dir)?;
-    let settings = settings::resolve(sources, platform, &manifest)?;
-    Ok(PlatformBuild {
-        platform,
-        pack_root,
-        manifest,
-        settings,
-    })
+    manifest: &PlatformPackManifest,
+) -> Result<()> {
+    let no_config = TokamakConfig::default();
+    let current_dir = env::current_dir()?;
+    let sources = settings::Sources::new(top, platform_options, &no_config, &current_dir);
+    settings::resolve(&sources, platform, manifest)?;
+    Ok(())
 }
 
-fn load_wrangler(
-    project_dir: &Path,
-    config_path: Option<&Path>,
-    environment: Option<&str>,
-) -> Result<WranglerConfig> {
-    let config_base = if config_path.is_some() {
-        env::current_dir()?
-    } else {
-        fs::canonicalize(project_dir)?
-    };
-    let config_path = resolve_wrangler_config_path(&config_base, config_path)?;
-    Ok(load_wrangler_config_for_env(&config_path, environment)?)
-}
-
-pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<DevelopmentSummary> {
-    if !request.project_dir.is_dir() {
-        bail!(
-            "project directory does not exist: {}",
-            request.project_dir.display()
-        );
-    }
-    let tokamak = load_project_config(&request.tokamak_config_path)?;
+pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<DevelopmentSummary> {
     let current_dir = env::current_dir()?;
     let sources = settings::Sources::new(
-        &request.top,
-        &request.platform_options,
-        &tokamak,
+        request.top,
+        request.platform_options,
+        request.tokamak,
         &current_dir,
     );
-    let (pack_root, manifest) =
-        load_platform_pack(request.platform, request.platform_pack_dir.as_deref())?;
+    let (pack_root, manifest) = load_platform_pack(request.platform, request.platform_pack_dir)?;
     let platform_settings = settings::resolve(&sources, request.platform, &manifest)?;
-    let wrangler = load_wrangler(
-        &request.project_dir,
-        request.wrangler_config_path.as_deref(),
-        None,
-    )?;
-    let plugins = plugins::discover(&request.project_dir)?;
-    let (app_name, app_slug) = resolve_app(platform_settings.name.as_deref(), &wrangler.name);
+    let plugins = plugins::discover(request.project)?;
+    let (app_name, app_slug) = resolve_app(platform_settings.name.as_deref(), request.worker_name);
     let identifier = resolve_identifier(platform_settings.identifier, &app_slug, request.platform)?;
     let version = settings::version(&sources)?;
-    let build_dir = fs::canonicalize(&request.project_dir)
-        .with_context(|| {
-            format!(
-                "resolve project directory: {}",
-                request.project_dir.display()
-            )
-        })?
-        .join("build");
+    let build_dir = request.project.join("build");
     let (input, project) = prepare_platform_input(
-        &request.project_dir,
+        request.project,
         &build_dir,
         request.platform,
         (&pack_root, &manifest),
@@ -204,8 +198,8 @@ pub(crate) fn run_development(request: &DevelopmentRequest) -> Result<Developmen
             identifier: &identifier,
             manifest: &manifest,
             version: version.as_deref(),
-            development: Some((&request.endpoint, &request.session_token)),
-            device_id: request.device_id.as_deref(),
+            development: Some((request.endpoint, request.session_token)),
+            device_id: Some(request.device_id),
             exported_symbols: &[],
         },
     )
@@ -269,19 +263,8 @@ fn build_platform(
         platform_settings.icon.as_deref(),
     )?;
 
-    let worker_cache = context
-        .build_dir
-        .join(".tokamak")
-        .join(platform.directory_name())
-        .join("worker");
-    worker::prepare_quickjs_app(
-        &input.join("app"),
-        &worker_cache,
-        pack_root,
-        manifest,
-        context.wrangler,
-    )
-    .context("prepare the tokamak application package")?;
+    worker::package(&input.join("app"), context.worker, context.wrangler)
+        .context("prepare the tokamak application package")?;
     plugins::stage(context.plugins, platform, &input.join("plugins"))
         .context("stage native plugin inputs")?;
     let (app_name, app_slug) =
@@ -354,7 +337,7 @@ fn resolve_identifier(
 fn required_version(sources: &settings::Sources<'_>) -> Result<String> {
     settings::version(sources)?.ok_or_else(|| {
         anyhow::anyhow!(
-            "tokamak version is required for `tok build`; set --version, TOKAMAK_VERSION, or `version` in tokamak.jsonc"
+            "tokamak version is required for `tok build`; set --version, TOKAMAK_VERSION, or `version` in the configuration file"
         )
     })
 }
@@ -458,20 +441,6 @@ fn prepare_platform_input(
     support::stage_platform_icons(&input, icon, platform)
         .context("stage Tokamak application assets")?;
     Ok((input, project))
-}
-
-pub(crate) fn load_project_config(config_path: &Path) -> Result<TokamakConfig> {
-    let current_dir = env::current_dir()?;
-    let path = resolve_tokamak_config_path(&current_dir, Some(config_path))?;
-    let Some(path) = path else {
-        return Ok(TokamakConfig::default());
-    };
-    let loaded = load_tokamak_config(&path)
-        .with_context(|| format!("load Tokamak config {}", path.display()))?;
-    for warning in &loaded.warnings {
-        eprintln!("warning: {warning}");
-    }
-    Ok(loaded.config)
 }
 
 fn output_path(build_dir: &Path, platform: Platform, app_slug: &str) -> PathBuf {

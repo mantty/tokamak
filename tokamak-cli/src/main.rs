@@ -12,6 +12,7 @@ mod plugins;
 mod settings;
 mod storage;
 mod support;
+mod vite;
 mod worker;
 
 use std::env;
@@ -51,15 +52,9 @@ enum Command {
         /// Platform-pack directory containing platform-pack.json.
         #[arg(long = "platform-pack")]
         platform_pack: Option<PathBuf>,
-        /// Tokamak configuration file or directory. Defaults to the current directory.
-        #[arg(short = 'c', long = "config", default_value = ".")]
-        config: PathBuf,
-        /// Path to the Wrangler configuration file.
-        #[arg(short = 'w', long = "wrangler")]
-        wrangler: Option<PathBuf>,
-        /// Named Wrangler environment. Defaults to top-level values.
-        #[arg(short = 'e', long = "env")]
-        env: Option<String>,
+        /// Tokamak configuration file [default: src/tokamak.ts, then src/tokamak.js].
+        #[arg(short = 'c', long = "config", value_name = "PATH")]
+        config: Option<PathBuf>,
         #[command(flatten)]
         top: TopOptions,
         /// Command that builds the project [`TOKAMAK_BUILD`, `build`].
@@ -81,17 +76,11 @@ enum Command {
         /// Platform-pack directory containing platform-pack.json.
         #[arg(long = "platform-pack")]
         platform_pack: Option<PathBuf>,
-        /// Tokamak configuration file or directory. Defaults to the current directory.
-        #[arg(short = 'c', long = "config", default_value = ".")]
-        config: PathBuf,
-        /// Path to the Wrangler configuration file.
-        #[arg(short = 'w', long = "wrangler")]
-        wrangler: Option<PathBuf>,
+        /// Tokamak configuration file [default: src/tokamak.ts, then src/tokamak.js].
+        #[arg(short = 'c', long = "config", value_name = "PATH")]
+        config: Option<PathBuf>,
         #[command(flatten)]
         top: TopOptions,
-        /// HTTP endpoint served by the framework's development command.
-        #[arg(long, value_name = "URL", default_value = "http://localhost:5173")]
-        server: String,
         /// Override the detected host address for a physical iOS device.
         #[arg(long, value_name = "ADDRESS")]
         host_address: Option<String>,
@@ -131,8 +120,6 @@ fn run() -> Result<()> {
             build_dir,
             platform_pack,
             config,
-            wrangler,
-            env,
             top,
             build_command,
             skip_project_build,
@@ -144,8 +131,6 @@ fn run() -> Result<()> {
                 build_dir,
                 platform_pack_dir: platform_pack,
                 tokamak_config_path: config,
-                wrangler_config_path: wrangler,
-                wrangler_env: env,
                 top: TopOptions {
                     build: build_command,
                     ..top
@@ -167,9 +152,7 @@ fn run() -> Result<()> {
             project,
             platform_pack,
             config,
-            wrangler,
             top,
-            server,
             host_address,
             command,
         } => dev::run(&dev::Request {
@@ -177,10 +160,8 @@ fn run() -> Result<()> {
             project_dir: project,
             platform_pack_dir: platform_pack,
             tokamak_config_path: config,
-            wrangler_config_path: wrangler,
             top,
             platform_options,
-            server,
             host_address,
             command,
         }),
@@ -307,39 +288,18 @@ mod tests {
     }
 
     #[test]
-    fn defaults_tokamak_config_to_the_current_directory() {
+    fn takes_an_optional_configuration_file() {
         assert!(matches!(
             Cli::try_parse_from(["tok", "build", "macos"]),
             Ok(Cli {
-                command: Command::Build {
-                    config,
-                    wrangler,
-                    ..
-                }
-            }) if config.as_path() == Path::new(".") && wrangler.is_none()
+                command: Command::Build { config: None, .. }
+            })
         ));
-    }
-
-    #[test]
-    fn keeps_tokamak_and_wrangler_config_paths_separate() {
         assert!(matches!(
-            Cli::try_parse_from([
-                "tok",
-                "build",
-                "macos",
-                "--config",
-                "tokamak.jsonc",
-                "--wrangler",
-                "dist/wrangler.json"
-            ]),
+            Cli::try_parse_from(["tok", "dev", "ios", "--config", "src/test.ts", "--", "vite"]),
             Ok(Cli {
-                command: Command::Build {
-                    config,
-                    wrangler: Some(wrangler),
-                    ..
-                }
-            }) if config.as_path() == Path::new("tokamak.jsonc")
-                && wrangler.as_path() == Path::new("dist/wrangler.json")
+                command: Command::Dev { config: Some(config), .. }
+            }) if config.as_path() == Path::new("src/test.ts")
         ));
     }
 

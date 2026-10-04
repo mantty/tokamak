@@ -12,10 +12,11 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use tokamak::{WranglerConfig, load_wrangler_config, resolve_wrangler_config_path};
+use tokamak::{TokamakConfig, WranglerConfig, load_wrangler_config, resolve_wrangler_config_path};
 use tokamak_cli::Platform;
 
 use super::devices::PreparedDevice;
+use super::vite::{PLUGIN_HINT, VitePlugin};
 use super::{devices, pipeline, settings};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_mins(1);
@@ -32,11 +33,9 @@ pub(crate) struct Request {
     pub(crate) device_id: String,
     pub(crate) project_dir: PathBuf,
     pub(crate) platform_pack_dir: Option<PathBuf>,
-    pub(crate) tokamak_config_path: PathBuf,
-    pub(crate) wrangler_config_path: Option<PathBuf>,
+    pub(crate) tokamak_config_path: Option<PathBuf>,
     pub(crate) top: settings::TopOptions,
     pub(crate) platform_options: settings::PlatformOptions,
-    pub(crate) server: String,
     pub(crate) host_address: Option<String>,
     pub(crate) command: Vec<std::ffi::OsString>,
 }
@@ -52,19 +51,31 @@ pub(crate) fn run(request: &Request) -> Result<()> {
             request.project_dir.display()
         )
     })?;
-    let wrangler = load_development_config(&project, request.wrangler_config_path.as_deref())?;
+    let wrangler = load_development_config(&project)?;
     warn_unsupported_bindings(&wrangler);
-    let server = ServerEndpoint::parse(&request.server)?;
-    server.ensure_unused()?;
     let device = devices::prepare(&request.device_id)?;
-    let session_token = session_token()?;
+    let (_, manifest) =
+        pipeline::load_platform_pack(device.platform, request.platform_pack_dir.as_deref())?;
+    pipeline::check_settings(
+        &request.top,
+        &request.platform_options,
+        device.platform,
+        &manifest,
+    )?;
     let relay_host = relay_host(&device, request.host_address.as_deref())?;
     if device.platform == Platform::Ios && request.host_address.is_none() {
         println!("Using detected host address {relay_host} for physical iOS development");
     }
-    let relay = DevRelay::bind(server.clone(), session_token.clone(), relay_host)?;
-    let mut framework =
-        spawn_framework(&request.command, &project, &relay, &server, &session_token)?;
+    let plugin = VitePlugin::new(
+        project
+            .join("build")
+            .join(".tokamak")
+            .join("dev")
+            .join("vite"),
+        request.tokamak_config_path.as_deref(),
+    )?;
+    plugin.clear()?;
+    let mut framework = spawn_framework(&request.command, &project, &plugin)?;
 
     if shutdown.requested() {
         stop_process(&mut framework)?;
@@ -73,9 +84,11 @@ pub(crate) fn run(request: &Request) -> Result<()> {
 
     let result = run_session(&mut DevelopmentSession {
         request,
+        project: &project,
+        worker_name: &wrangler.name,
         device: &device,
-        session_token: &session_token,
-        relay: &relay,
+        relay_host,
+        plugin: &plugin,
         framework: &mut framework,
         shutdown: &shutdown,
     });
@@ -116,13 +129,8 @@ fn usable_ipv4_address(addresses: impl IntoIterator<Item = Ipv4Addr>) -> Option<
     })
 }
 
-fn load_development_config(project: &Path, explicit: Option<&Path>) -> Result<WranglerConfig> {
-    let base = if explicit.is_some() {
-        std::env::current_dir()?
-    } else {
-        project.to_path_buf()
-    };
-    let path = resolve_wrangler_config_path(&base, explicit)?;
+fn load_development_config(project: &Path) -> Result<WranglerConfig> {
+    let path = resolve_wrangler_config_path(project)?;
     load_wrangler_config(&path).with_context(|| format!("load Wrangler config {}", path.display()))
 }
 
@@ -184,43 +192,47 @@ fn validate_request(request: &Request) -> Result<()> {
 
 struct DevelopmentSession<'a> {
     request: &'a Request,
+    project: &'a Path,
+    worker_name: &'a str,
     device: &'a PreparedDevice,
-    session_token: &'a str,
-    relay: &'a DevRelay,
+    relay_host: IpAddr,
+    plugin: &'a VitePlugin,
     framework: &'a mut Child,
     shutdown: &'a ShutdownSignal,
 }
 
 fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
-    let server = ServerEndpoint::parse(&session.request.server)?;
-    wait_for_server(session.framework, &server, session.shutdown)?;
-    if session.shutdown.requested() {
+    let Some((tokamak, server)) =
+        wait_for_plugin(session.framework, session.plugin, session.shutdown)?
+    else {
         stop_process(session.framework)?;
         return Ok(());
-    }
+    };
     println!("Development server is ready at {}", server.display_url());
+    let session_token = session_token()?;
+    let relay = DevRelay::bind(server, session_token.clone(), session.relay_host)?;
     let summary = pipeline::run_development(&pipeline::DevelopmentRequest {
         platform: session.device.platform,
-        project_dir: session.request.project_dir.clone(),
-        platform_pack_dir: session.request.platform_pack_dir.clone(),
-        tokamak_config_path: session.request.tokamak_config_path.clone(),
-        wrangler_config_path: session.request.wrangler_config_path.clone(),
-        endpoint: session.relay.device_endpoint(),
-        session_token: session.session_token.to_owned(),
-        device_id: Some(session.device.id.clone()),
-        top: session.request.top.clone(),
-        platform_options: session.request.platform_options.clone(),
+        project: session.project,
+        platform_pack_dir: session.request.platform_pack_dir.as_deref(),
+        tokamak: &tokamak,
+        worker_name: session.worker_name,
+        endpoint: &relay.device_endpoint(),
+        session_token: &session_token,
+        device_id: &session.device.id,
+        top: &session.request.top,
+        platform_options: &session.request.platform_options,
     })?;
     if session.shutdown.requested() {
         stop_process(session.framework)?;
         return Ok(());
     }
-    let mut app = launch_app(&summary, session.device, session.relay.port())?;
+    let mut app = launch_app(&summary, session.device, relay.port())?;
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
     if let Err(error) = wait_for_app_connection(
         session.framework,
-        session.relay,
+        &relay,
         &session.shutdown.requested,
         session.device,
         &mut stdout,
@@ -240,9 +252,7 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
 fn spawn_framework(
     command: &[std::ffi::OsString],
     project: &Path,
-    relay: &DevRelay,
-    server: &ServerEndpoint,
-    session_token: &str,
+    plugin: &VitePlugin,
 ) -> Result<Child> {
     let Some(program) = command.first() else {
         bail!("a development command is required");
@@ -254,9 +264,7 @@ fn spawn_framework(
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .env("TOKAMAK_DEV_SESSION_TOKEN", session_token)
-        .env("TOKAMAK_DEV_RELAY_ENDPOINT", relay.device_endpoint())
-        .env("TOKAMAK_DEV_SERVER_ENDPOINT", server.display_url());
+        .envs(plugin.environment());
     configure_process_group(&mut process);
     process.spawn().with_context(|| {
         format!(
@@ -266,26 +274,31 @@ fn spawn_framework(
     })
 }
 
-fn wait_for_server(
+/// The app's configuration and the development server, once the plugin has
+/// reported them, or `None` when shutdown is requested first.
+fn wait_for_plugin(
     child: &mut Child,
-    endpoint: &ServerEndpoint,
+    plugin: &VitePlugin,
     shutdown: &ShutdownSignal,
-) -> Result<()> {
+) -> Result<Option<(TokamakConfig, ServerEndpoint)>> {
     let deadline = Instant::now() + SERVER_READY_TIMEOUT;
     loop {
         if shutdown.requested() {
-            return Ok(());
+            return Ok(None);
         }
         if let Some(status) = child.try_wait()? {
             bail!("development command exited before its server was ready ({status})");
         }
-        if endpoint.connect().is_ok() {
-            return Ok(());
+        // The plugin reports the configuration before the server address.
+        if let Some(url) = plugin.server_url()? {
+            let config = plugin
+                .config()?
+                .context("the development command did not report its tokamak configuration")?;
+            return Ok(Some((config, ServerEndpoint::parse(&url)?)));
         }
         if Instant::now() >= deadline {
             bail!(
-                "development server did not become ready at {} within {} seconds; pass `--server` with its actual HTTP endpoint",
-                endpoint.display_url(),
+                "the development command did not report its server address within {} seconds; {PLUGIN_HINT}",
                 SERVER_READY_TIMEOUT.as_secs()
             );
         }
@@ -836,12 +849,15 @@ struct ServerEndpoint {
 }
 
 impl ServerEndpoint {
+    /// The server at `value`, an `http://` URL whose path is ignored.
     fn parse(value: &str) -> Result<Self> {
-        let authority = value
+        let address = value
             .strip_prefix("http://")
             .ok_or_else(|| anyhow::anyhow!("development server must use an http:// URL"))?;
+        let authority = address
+            .split_once('/')
+            .map_or(address, |(authority, _)| authority);
         if authority.is_empty()
-            || authority.contains('/')
             || authority.contains('?')
             || authority.contains('#')
             || authority.chars().any(char::is_whitespace)
@@ -872,16 +888,6 @@ impl ServerEndpoint {
             }
         }
         Err(last_error.unwrap_or_else(|| io::Error::other("development server did not resolve")))
-    }
-
-    fn ensure_unused(&self) -> Result<()> {
-        if self.connect().is_ok() {
-            bail!(
-                "development server endpoint {} is already accepting connections; stop the existing server or use a different `--server` endpoint",
-                self.display_url()
-            );
-        }
-        Ok(())
     }
 
     fn display_url(&self) -> &str {
@@ -1183,15 +1189,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_already_listening_development_server() -> Result<(), Box<dyn std::error::Error>> {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let endpoint = ServerEndpoint::parse(&format!("http://{}", listener.local_addr()?))?;
-
-        assert!(
-            endpoint
-                .ensure_unused()
-                .is_err_and(|error| error.to_string().contains("already accepting connections"))
-        );
+    fn takes_the_server_address_from_a_url() -> Result<(), Box<dyn std::error::Error>> {
+        let server = ServerEndpoint::parse("http://127.0.0.1:5174/")?;
+        assert_eq!(server.display_url(), "http://127.0.0.1:5174");
+        assert_eq!(server.authority, "127.0.0.1:5174");
+        assert!(ServerEndpoint::parse("https://127.0.0.1:5174/").is_err());
         Ok(())
     }
 

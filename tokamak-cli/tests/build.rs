@@ -7,46 +7,92 @@ use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tokamak::compile_module;
-use tokamak::{PackageLayout, decompress_worker_module, read_worker_manifest};
+use tokamak::{ModuleType, PackageLayout, decompress_worker_module, read_worker_manifest};
 use tokamak_cli::{
-    ESBUILD_EXECUTABLE, MANIFEST_FILE, PackVariable, PlatformPackManifest, Target, VariableKind,
-    write_manifest,
+    MANIFEST_FILE, PackVariable, PlatformPackManifest, Target, VariableKind, write_manifest,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+/// A project whose earlier build left Worker output as Cloudflare's Vite
+/// plugin writes it, and no configuration file as the tokamak Vite plugin
+/// reports it. Its build command stands in for that build.
 fn create_project(root: &Path) -> TestResult {
     fs::write(
         root.join("package.json"),
-        r#"{"name":"demo-app","scripts":{"build":"echo already-built"}}"#,
+        r#"{"name":"demo-app","scripts":{"build":"node build.cjs"}}"#,
     )?;
-    fs::create_dir_all(root.join("dist/server"))?;
+    fs::write(
+        root.join("build.cjs"),
+        include_str!("fixtures/vite-build.cjs"),
+    )?;
+    fs::create_dir_all(root.join("dist/app"))?;
     fs::create_dir_all(root.join("dist/client/styles"))?;
-    fs::write(root.join("dist/server/entry.mjs"), "export default {};")?;
+    fs::write(root.join("dist/app/index.js"), "export default {};")?;
     fs::write(root.join("dist/client/index.html"), "<html></html>")?;
     fs::write(root.join("dist/client/styles/app.css"), "body{}")?;
+    write_worker_config(root, "{}")?;
     fs::write(
         root.join("wrangler.jsonc"),
-        r#"{
-  "name": "demo-app",
-  "main": "dist/server/entry.mjs",
-  "assets": { "directory": "dist/client", "binding": "ASSETS" }
-}"#,
+        r#"{"name":"demo-app","main":"src/index.js"}"#,
+    )?;
+    fs::create_dir_all(root.join(".wrangler/deploy"))?;
+    fs::write(
+        root.join(".wrangler/deploy/config.json"),
+        r#"{"configPath":"../../dist/app/wrangler.json"}"#,
+    )?;
+    let output = root.join("build/.tokamak/vite");
+    fs::create_dir_all(&output)?;
+    fs::write(output.join("config.json"), r#"{"config":{}}"#)?;
+    Ok(())
+}
+
+/// Write the Wrangler configuration Cloudflare's Vite plugin generates, with
+/// `fields` over the demo app's.
+fn write_worker_config(root: &Path, fields: &str) -> TestResult {
+    let mut config = serde_json::json!({
+        "name": "demo-app",
+        "main": "index.js",
+        "rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
+        "assets": { "directory": "../client", "binding": "ASSETS" },
+        "no_bundle": true,
+    });
+    let serde_json::Value::Object(fields) = serde_json::from_str(fields)? else {
+        return Err("Worker config fields must be an object".into());
+    };
+    config
+        .as_object_mut()
+        .ok_or("Worker config must be an object")?
+        .extend(fields);
+    fs::write(
+        root.join("dist/app/wrangler.json"),
+        serde_json::to_vec(&config)?,
+    )?;
+    Ok(())
+}
+
+/// Report `config` as the `config` export of `src/tokamak.mjs`, as a build with
+/// the tokamak Vite plugin does.
+fn configure(root: &Path, config: &str) -> TestResult {
+    let file = root.join("src/tokamak.mjs");
+    fs::create_dir_all(root.join("src"))?;
+    fs::write(&file, format!("export const config = {config};\n"))?;
+    let report = serde_json::json!({
+        "file": file,
+        "config": serde_json::from_str::<serde_json::Value>(config)?,
+    });
+    fs::write(
+        root.join("build/.tokamak/vite/config.json"),
+        report.to_string(),
     )?;
     Ok(())
 }
 
 fn declare_storage(root: &Path) -> TestResult {
-    fs::write(
-        root.join("wrangler.jsonc"),
-        r#"{
-  "name": "demo-app",
-  "main": "dist/server/entry.mjs",
-  "assets": { "directory": "dist/client", "binding": "ASSETS" },
-  "kv_namespaces": [{ "binding": "SESSION", "id": "session" }]
-}"#,
-    )?;
-    Ok(())
+    write_worker_config(
+        root,
+        r#"{ "kv_namespaces": [{ "binding": "SESSION", "id": "session" }] }"#,
+    )
 }
 
 fn install_location_plugin(root: &Path) -> TestResult {
@@ -134,54 +180,6 @@ fn install_key_flow_plugins(root: &Path) -> TestResult {
     Ok(())
 }
 
-fn create_unbuilt_project(root: &Path) -> TestResult {
-    fs::write(
-        root.join("package.json"),
-        r#"{"name":"built-app","scripts":{"build":"node build.cjs"}}"#,
-    )?;
-    fs::write(
-        root.join("build.cjs"),
-        r#"const fs = require("node:fs");
-fs.mkdirSync("dist/server", { recursive: true });
-fs.mkdirSync("dist/client", { recursive: true });
-fs.writeFileSync("dist/server/entry.mjs", "export default {};");
-fs.writeFileSync("dist/client/index.html", "<html></html>");
-fs.writeFileSync("dist/server/wrangler.json", JSON.stringify({
-  name: "built-app",
-  main: "entry.mjs",
-  userConfigPath: "../../wrangler.jsonc",
-  assets: { directory: "../client", binding: "ASSETS" }
-}));
-"#,
-    )?;
-    fs::write(
-        root.join("wrangler.jsonc"),
-        r#"{
-  "name": "built-app",
-  "vars": { "API": "default" },
-  "env": { "production": { "vars": { "API": "production" } } }
-}"#,
-    )?;
-    Ok(())
-}
-
-fn write_test_esbuild(root: &Path) -> TestResult {
-    let path = root.join(ESBUILD_EXECUTABLE);
-    fs::create_dir_all(path.parent().ok_or("esbuild path has no parent")?)?;
-    fs::write(
-        &path,
-        "#!/usr/bin/env node\nconst fs = require('node:fs');\nconst path = require('node:path');\nconst args = process.argv.slice(2);\nconst output = args.find((arg) => arg.startsWith('--outdir=')).slice('--outdir='.length);\nconst metafile = args.find((arg) => arg.startsWith('--metafile='));\nconst input = args.at(-1);\nif (process.env.TOKAMAK_TEST_ESBUILD_LOG) fs.appendFileSync(process.env.TOKAMAK_TEST_ESBUILD_LOG, 'build\\n');\nfs.mkdirSync(output, { recursive: true });\nfs.copyFileSync(input, path.join(output, 'entry.js'));\nif (metafile) fs.writeFileSync(metafile.slice('--metafile='.length), JSON.stringify({ inputs: { [input]: {} } }));\n",
-    )?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = fs::metadata(&path)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions)?;
-    }
-    Ok(())
-}
-
 fn create_platform_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
     let target_name = target;
     let target = target_name.parse::<Target>()?;
@@ -196,7 +194,6 @@ fn create_platform_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
     )?;
     create_test_framework(root, target_name)?;
     write_test_shell(&shell)?;
-    write_test_esbuild(root)?;
     fs::write(
         root.join(target.build_entrypoint_path()),
         include_str!("../../platforms/apple/build/entrypoint"),
@@ -236,7 +233,6 @@ fn create_android_platform_pack(root: &Path) -> TestResult<PathBuf> {
         entrypoint,
         include_str!("../../platforms/android/build/entrypoint"),
     )?;
-    write_test_esbuild(root)?;
     write_test_manifest(root, target)?;
     Ok(root.to_path_buf())
 }
@@ -459,7 +455,6 @@ printf '{"name":"%s","slug":"%s","host":"%s"}\n' "$app_name" "$app_slug" "$host"
 "#
     };
     fs::write(pack.join(entrypoint_path), entrypoint)?;
-    write_test_esbuild(&pack)?;
     write_test_manifest(&pack, target)?;
     Ok((temporary, project, pack))
 }
@@ -517,15 +512,27 @@ fn contains_sqlite(binary: &[u8]) -> bool {
         .any(|window| window == b"SQLite format 3")
 }
 
+/// A `tok build` that uses the project's earlier build.
 fn build_command(platform: &str, project: &Path, platform_pack: &Path) -> TestResult<Command> {
+    let mut command = project_build_command(platform, project, platform_pack)?;
+    command.arg("--skip-project-build");
+    Ok(command)
+}
+
+/// A `tok build` that builds the project.
+fn project_build_command(
+    platform: &str,
+    project: &Path,
+    platform_pack: &Path,
+) -> TestResult<Command> {
     let mut command = Command::cargo_bin("tok")?;
     command
         .args(["build", platform, "--project"])
         .arg(project)
         .arg("--platform-pack")
         .arg(platform_pack)
-        .arg("--skip-project-build")
         .env("TOKAMAK_VERSION", "1.0.0")
+        .env_remove("CLOUDFLARE_ENV")
         .env_remove("TOKAMAK_IOS_BUILD_NUMBER")
         .env_remove("TOKAMAK_MACOS_BUILD_NUMBER")
         .env_remove("TOKAMAK_MACOS_TEAM_ID")
@@ -691,6 +698,7 @@ printf 'codesign-env %s\n' "$(cat "$manifest")" >> "$TOKAMAK_TEST_TOOL_LOG"
 fn write_executable(path: &Path, contents: &str) -> TestResult {
     use std::os::unix::fs::PermissionsExt;
 
+    fs::create_dir_all(path.parent().ok_or("executable path has no parent")?)?;
     fs::write(path, contents)?;
     let mut permissions = fs::metadata(path)?.permissions();
     permissions.set_mode(0o755);
@@ -736,13 +744,10 @@ fn builds_macos_app_with_quickjs_bundle_and_assets() -> TestResult {
             .exists()
     );
     let manifest = read_worker_manifest(&PackageLayout::new(&app))?;
-    assert_eq!(manifest.entry, "entry.js");
+    assert_eq!(manifest.entry, "index.js");
     assert_eq!(
-        decompress_worker_module(&fs::read(app.join("worker-modules/entry.js.qjs"))?)?,
-        compile_module(
-            "entry.js",
-            &fs::read(project.join("dist/server/entry.mjs"))?
-        )?
+        decompress_worker_module(&fs::read(app.join("worker-modules/index.js.qjs"))?)?,
+        compile_module("index.js", &fs::read(project.join("dist/app/index.js"))?)?
     );
     assert!(app.join("assets/index.html").is_file());
     let plist = fs::read_to_string(bundle.join("Contents/Info.plist"))?;
@@ -761,8 +766,8 @@ fn builds_macos_app_with_quickjs_bundle_and_assets() -> TestResult {
 #[test]
 fn builds_configured_identifier_and_version() -> TestResult {
     let (temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(
-        project.join("tokamak.jsonc"),
+    configure(
+        &project,
         r#"{
   "identifier": "com.example.app",
   "macos": { "identifier": "com.example.desktop" },
@@ -772,7 +777,6 @@ fn builds_configured_identifier_and_version() -> TestResult {
 
     let mut command = build_command("macos", &project, &manifest)?;
     command.env_remove("TOKAMAK_VERSION");
-    command.arg("--config").arg(project.join("tokamak.jsonc"));
     configure_fake_apple_tools(&mut command, temporary.path())?;
     command.assert().success();
 
@@ -785,24 +789,38 @@ fn builds_configured_identifier_and_version() -> TestResult {
 
 #[cfg(unix)]
 #[test]
-fn warns_about_a_nested_include() -> TestResult {
+fn reads_the_configuration_the_build_reports() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(project.join("base.jsonc"), r#"{ "version": "9.9.9" }"#)?;
     fs::write(
-        project.join("parent.jsonc"),
-        r#"{ "include": "base.jsonc", "identifier": "com.example.parent" }"#,
+        project.join("test.mjs"),
+        r#"export const config = { name: "Test App" };"#,
     )?;
-    fs::write(
-        project.join("tokamak.jsonc"),
-        r#"{ "include": "parent.jsonc", "name": "Demo App" }"#,
-    )?;
+    project_build_command("macos", &project, &manifest)?
+        .current_dir(&project)
+        .args(["--config", "test.mjs"])
+        .assert()
+        .success();
 
-    let mut command = build_command("macos", &project, &manifest)?;
-    command.arg("--config").arg(project.join("tokamak.jsonc"));
-    command.assert().success().stderr(contains(format!(
-        "warning: {}: nested include is ignored",
-        project.join("parent.jsonc").display()
-    )));
+    assert!(project.join("build/macos/test-app.app").is_dir());
+    Ok(())
+}
+
+#[test]
+fn requires_the_tokamak_vite_plugin_and_an_existing_configuration_file() -> TestResult {
+    let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
+    project_build_command("macos", &project, &manifest)?
+        .args(["--build", "node --version"])
+        .assert()
+        .failure()
+        .stderr(contains(
+            "the build did not report its tokamak configuration; the Vite config must include tokamak() from @tokamakdev/tok/vite",
+        ));
+    project_build_command("macos", &project, &manifest)?
+        .arg("--config")
+        .arg(project.join("missing.mjs"))
+        .assert()
+        .failure()
+        .stderr(contains("tokamak configuration file not found"));
     Ok(())
 }
 
@@ -810,10 +828,9 @@ fn warns_about_a_nested_include() -> TestResult {
 #[test]
 fn preserves_configured_display_name_in_apple_bundle() -> TestResult {
     let (temporary, project, manifest) = create_inputs("ios-simulator-arm64")?;
-    fs::write(project.join("tokamak.jsonc"), r#"{"name":"Vigilus"}"#)?;
+    configure(&project, r#"{"name":"Vigilus"}"#)?;
 
     let mut command = build_command("ios-simulator", &project, &manifest)?;
-    command.arg("--config").arg(project.join("tokamak.jsonc"));
     configure_fake_apple_tools(&mut command, temporary.path())?;
     command.assert().success();
 
@@ -830,10 +847,9 @@ fn preserves_configured_display_name_in_apple_bundle() -> TestResult {
 #[test]
 fn preserves_configured_display_name_in_macos_bundle() -> TestResult {
     let (temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(project.join("tokamak.jsonc"), r#"{"name":"Vigilus"}"#)?;
+    configure(&project, r#"{"name":"Vigilus"}"#)?;
 
     let mut command = build_command("macos", &project, &manifest)?;
-    command.arg("--config").arg(project.join("tokamak.jsonc"));
     configure_fake_apple_tools(&mut command, temporary.path())?;
     command.assert().success();
 
@@ -850,13 +866,9 @@ fn preserves_configured_display_name_in_macos_bundle() -> TestResult {
 #[test]
 fn preserves_configured_display_name_in_android_manifest() -> TestResult {
     let (temporary, project, platform_pack) = create_android_inputs()?;
-    fs::write(
-        project.join("tokamak.jsonc"),
-        r#"{"name":"Vigilus & <Co> \"Pro\" 'X'"}"#,
-    )?;
+    configure(&project, r#"{"name":"Vigilus & <Co> \"Pro\" 'X'"}"#)?;
 
     let mut command = build_command("android", &project, &platform_pack)?;
-    command.arg("--config").arg(project.join("tokamak.jsonc"));
     configure_fake_android_tools(&mut command, temporary.path())?;
     command.assert().success();
 
@@ -963,17 +975,11 @@ fn passes_platform_pack_variables_to_the_android_entrypoint() -> TestResult {
 #[test]
 fn passes_options_then_environment_then_configured_values_to_the_entrypoint() -> TestResult {
     let (temporary, project, platform_pack) = create_android_inputs()?;
-    fs::write(
-        project.join("tokamak.jsonc"),
-        r#"{ "android": { "test": "configured" } }"#,
-    )?;
+    configure(&project, r#"{ "android": { "test": "configured" } }"#)?;
     let set_value = project.join("build/android/.tokamak/platform-pack-set-value");
     let build = |configure: &dyn Fn(&mut Command)| -> TestResult<String> {
         let mut command = build_command("android", &project, &platform_pack)?;
-        command
-            .arg("--config")
-            .arg(project.join("tokamak.jsonc"))
-            .env_remove("TOKAMAK_ANDROID_TEST");
+        command.env_remove("TOKAMAK_ANDROID_TEST");
         configure(&mut command);
         configure_fake_android_tools(&mut command, temporary.path())?;
         command.assert().success();
@@ -1002,13 +1008,12 @@ fn passes_options_then_environment_then_configured_values_to_the_entrypoint() ->
 #[test]
 fn rejects_keys_the_platform_pack_does_not_declare() -> TestResult {
     let (temporary, project, platform_pack) = create_android_inputs()?;
-    fs::write(
-        project.join("tokamak.jsonc"),
+    configure(
+        &project,
         r#"{ "android": { "tset": "x" }, "ios": { "tset": "ignored" } }"#,
     )?;
 
     let mut command = build_command("android", &project, &platform_pack)?;
-    command.arg("--config").arg(project.join("tokamak.jsonc"));
     configure_fake_android_tools(&mut command, temporary.path())?;
     command
         .assert()
@@ -1036,7 +1041,7 @@ fn lists_the_platform_pack_options_in_build_help() -> TestResult {
         .success()
         .stdout(
             contains(
-                "Android options (also TOKAMAK_ANDROID_<KEY>, or android.<key> in tokamak.jsonc):",
+                "Android options (also TOKAMAK_ANDROID_<KEY>, or android.<key> in the configuration file):",
             )
             .and(contains("--android-identifier <VALUE>"))
             .and(contains("--android-manifest <PATH>"))
@@ -1344,8 +1349,8 @@ fn writes_each_android_permission_once() -> TestResult {
 #[test]
 fn environment_overrides_configured_identifier_and_version() -> TestResult {
     let (temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(
-        project.join("tokamak.jsonc"),
+    configure(
+        &project,
         r#"{
   "identifier": "com.example.config",
   "macos": { "identifier": "com.example.config-macos" },
@@ -1355,8 +1360,6 @@ fn environment_overrides_configured_identifier_and_version() -> TestResult {
 
     let mut command = build_command("macos", &project, &manifest)?;
     command
-        .arg("--config")
-        .arg(project.join("tokamak.jsonc"))
         .env("TOKAMAK_MACOS_IDENTIFIER", "com.example.environment")
         .env("TOKAMAK_VERSION", "3.4.5");
     configure_fake_apple_tools(&mut command, temporary.path())?;
@@ -1390,16 +1393,12 @@ fn builds_configured_apple_icon_packages() -> TestResult {
         ),
     ] {
         let (temporary, project, manifest) = create_inputs(target)?;
-        let icon = project.join("assets/AppIcon.icon");
+        let icon = project.join("src/assets/AppIcon.icon");
         fs::create_dir_all(&icon)?;
         fs::write(icon.join("icon.json"), "{}")?;
-        fs::write(
-            project.join("tokamak.jsonc"),
-            r#"{ "icon": "assets/AppIcon.icon" }"#,
-        )?;
+        configure(&project, r#"{ "icon": "assets/AppIcon.icon" }"#)?;
 
         let mut command = build_command(platform, &project, &manifest)?;
-        command.arg("--config").arg(project.join("tokamak.jsonc"));
         let tool_log = configure_fake_apple_tools(&mut command, temporary.path())?;
         command.assert().success();
 
@@ -1422,40 +1421,69 @@ fn builds_configured_apple_icon_packages() -> TestResult {
 }
 
 #[test]
-fn compiles_a_self_contained_worker() -> TestResult {
+fn compiles_es_modules_and_copies_text_and_data_modules() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
+    let worker = project.join("dist/app");
+    fs::create_dir_all(worker.join("assets"))?;
     fs::write(
-        project.join("dist/server/entry.mjs"),
-        "export default { fetch() { return new Response('ok'); } };",
+        worker.join("index.js"),
+        "import page from './assets/page.html'; export default { async fetch() { const { value } = await import('./assets/lazy.js'); return new Response(page + value); } };",
     )?;
+    fs::write(worker.join("assets/lazy.js"), "export const value = 1;")?;
+    fs::write(worker.join("assets/page.html"), "<p>page</p>")?;
+    fs::write(worker.join("assets/data.bin"), [0, 1, 2])?;
+    fs::write(worker.join("index.js.map"), "{}")?;
 
     build_command("macos", &project, &manifest)?
         .assert()
         .success();
 
-    let bundle = project.join("build/macos/demo-app.app/Contents/Resources/app");
-    let manifest = read_worker_manifest(&PackageLayout::new(&bundle))?;
-    assert_eq!(manifest.entry, "entry.js");
+    let app = project.join("build/macos/demo-app.app/Contents/Resources/app");
+    let manifest = read_worker_manifest(&PackageLayout::new(&app))?;
+    assert_eq!(manifest.entry, "index.js");
     assert_eq!(
-        decompress_worker_module(&fs::read(bundle.join("worker-modules/entry.js.qjs"))?)?,
-        compile_module(
-            "entry.js",
-            &fs::read(project.join("dist/server/entry.mjs"))?
-        )?
+        manifest.modules,
+        [
+            ("assets/data.bin", ModuleType::Data),
+            ("assets/lazy.js", ModuleType::EsModule),
+            ("assets/page.html", ModuleType::Text),
+            ("index.js", ModuleType::EsModule),
+        ]
+        .map(|(name, module_type)| (name.to_owned(), module_type))
+        .into()
     );
+    assert_eq!(
+        decompress_worker_module(&fs::read(app.join("worker-modules/assets/lazy.js.qjs"))?)?,
+        compile_module("assets/lazy.js", &fs::read(worker.join("assets/lazy.js"))?)?
+    );
+    assert_eq!(
+        fs::read(app.join("bundle/assets/page.html"))?,
+        b"<p>page</p>"
+    );
+    assert_eq!(fs::read(app.join("bundle/assets/data.bin"))?, [0, 1, 2]);
+    Ok(())
+}
+
+#[test]
+fn rejects_a_webassembly_module() -> TestResult {
+    let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
+    fs::write(project.join("dist/app/add.wasm"), [0, 0x61, 0x73, 0x6d])?;
+
+    build_command("macos", &project, &manifest)?
+        .assert()
+        .failure()
+        .stderr(contains(
+            "Worker module add.wasm is a CompiledWasm module; tokamak supports ESModule, Text and Data modules",
+        ));
     Ok(())
 }
 
 #[test]
 fn packages_worker_vars_as_a_normalized_manifest() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(
-        project.join("wrangler.jsonc"),
-        r#"{
-  "name": "demo-app",
-  "main": "dist/server/entry.mjs",
-  "vars": { "TEXT": "value", "JSON": { "enabled": true } }
-}"#,
+    write_worker_config(
+        &project,
+        r#"{ "vars": { "TEXT": "value", "JSON": { "enabled": true } } }"#,
     )?;
 
     build_command("macos", &project, &manifest)?
@@ -1474,72 +1502,59 @@ fn packages_worker_vars_as_a_normalized_manifest() -> TestResult {
 }
 
 #[test]
-fn reuses_unchanged_build_layers_across_wrangler_environments() -> TestResult {
-    let (temporary, project, pack) = create_windows_inputs()?;
-    let esbuild_log = temporary.path().join("esbuild.log");
-    fs::write(
-        project.join("wrangler.jsonc"),
-        r#"{
-  "name": "demo-app",
-  "main": "dist/server/entry.mjs",
-  "assets": { "directory": "dist/client" },
-  "env": {
-    "test": { "vars": { "API": "test", "OPTIONS": { "enabled": true } } },
-    "production": { "vars": { "API": "production" } }
-  }
-}"#,
-    )?;
+fn packages_the_wrangler_environment_the_build_applies() -> TestResult {
+    let (_temporary, project, pack) = create_windows_inputs()?;
     let build = |environment: &str| -> TestResult {
-        build_command("windows", &project, &pack)?
-            .args(["--build-dir", ".cache/tokamak", "--env", environment])
-            .env("TOKAMAK_TEST_ESBUILD_LOG", &esbuild_log)
+        project_build_command("windows", &project, &pack)?
+            .args(["--build-dir", ".cache/tokamak"])
+            .env("CLOUDFLARE_ENV", environment)
             .assert()
             .success();
         Ok(())
     };
-    let app = project.join(".cache/tokamak/windows/demo-app/app");
+    let build_dir = project.join(".cache/tokamak");
+    let app = build_dir.join("windows/demo-app/app");
     build("test")?;
     let test: serde_json::Value =
         serde_json::from_slice(&fs::read(app.join("worker-environment.json"))?)?;
-    assert_eq!(test["vars"]["API"], "test");
-    assert_eq!(
-        test["vars"]["OPTIONS"],
-        serde_json::json!({ "enabled": true })
-    );
+    assert_eq!(test["vars"]["CLOUDFLARE_ENV"], "test");
+    let compiled = worker_compiled_at(&build_dir)?;
 
     build("production")?;
     let production: serde_json::Value =
         serde_json::from_slice(&fs::read(app.join("worker-environment.json"))?)?;
-    assert_eq!(
-        production["vars"],
-        serde_json::json!({ "API": "production" })
-    );
-    assert_eq!(fs::read_to_string(&esbuild_log)?.lines().count(), 1);
+    assert_eq!(production["vars"]["CLOUDFLARE_ENV"], "production");
+    assert_eq!(worker_compiled_at(&build_dir)?, compiled);
 
-    let entry = project.join("dist/server/entry.mjs");
+    let entry = project.join("dist/app/index.js");
     fs::write(&entry, "export default { value: 2 };")?;
     build("production")?;
-    assert_eq!(fs::read_to_string(&esbuild_log)?.lines().count(), 2);
+    assert_ne!(worker_compiled_at(&build_dir)?, compiled);
     assert_eq!(
-        decompress_worker_module(&fs::read(app.join("worker-modules/entry.js.qjs"))?)?,
-        compile_module("entry.js", &fs::read(&entry)?)?
+        decompress_worker_module(&fs::read(app.join("worker-modules/index.js.qjs"))?)?,
+        compile_module("index.js", &fs::read(&entry)?)?
     );
     Ok(())
 }
 
+/// When the Worker of the build in `build_dir` was last compiled.
+fn worker_compiled_at(build_dir: &Path) -> TestResult<std::time::SystemTime> {
+    let compiled = PackageLayout::new(build_dir.join(".tokamak/worker/compiled"));
+    Ok(fs::metadata(compiled.worker_manifest())?.modified()?)
+}
+
 #[test]
 fn updates_changed_assets_without_recompiling_the_worker() -> TestResult {
-    let (temporary, project, pack) = create_windows_inputs()?;
-    let esbuild_log = temporary.path().join("esbuild.log");
+    let (_temporary, project, pack) = create_windows_inputs()?;
     let build = || -> TestResult {
         build_command("windows", &project, &pack)?
-            .env("TOKAMAK_TEST_ESBUILD_LOG", &esbuild_log)
             .assert()
             .success();
         Ok(())
     };
 
     build()?;
+    let compiled = worker_compiled_at(&project.join("build"))?;
     fs::write(
         project.join("dist/client/index.html"),
         "<html>updated</html>",
@@ -1550,42 +1565,35 @@ fn updates_changed_assets_without_recompiling_the_worker() -> TestResult {
         fs::read_to_string(project.join("build/windows/demo-app/app/assets/index.html"))?,
         "<html>updated</html>"
     );
-    assert_eq!(fs::read_to_string(esbuild_log)?.lines().count(), 1);
+    assert_eq!(worker_compiled_at(&project.join("build"))?, compiled);
     Ok(())
 }
 
 #[test]
 fn ignores_unrelated_files_when_reusing_worker_modules() -> TestResult {
-    let (temporary, project, pack) = create_windows_inputs()?;
-    let esbuild_log = temporary.path().join("esbuild.log");
-    let server = project.join("dist/server");
-    fs::write(server.join("settings.json"), r#"{"feature":true}"#)?;
-    fs::write(
-        project.join("wrangler.jsonc"),
-        r#"{
-  "name": "demo-app",
-  "main": "dist/server/entry.mjs",
-  "base_dir": "dist/server",
-  "find_additional_modules": true,
-  "rules": [{ "type": "Data", "globs": ["**/*.json"] }]
-}"#,
+    let (_temporary, project, pack) = create_windows_inputs()?;
+    let worker = project.join("dist/app");
+    fs::write(worker.join("settings.json"), r#"{"feature":true}"#)?;
+    write_worker_config(
+        &project,
+        r#"{ "rules": [{ "type": "ESModule", "globs": ["**/*.js"] }, { "type": "Data", "globs": ["**/*.json"] }] }"#,
     )?;
     let build = || -> TestResult {
         build_command("windows", &project, &pack)?
-            .env("TOKAMAK_TEST_ESBUILD_LOG", &esbuild_log)
             .assert()
             .success();
         Ok(())
     };
 
     build()?;
-    fs::write(server.join("unrelated.txt"), "changed")?;
+    let compiled = worker_compiled_at(&project.join("build"))?;
+    fs::write(worker.join("unrelated.md"), "changed")?;
     build()?;
-    assert_eq!(fs::read_to_string(&esbuild_log)?.lines().count(), 1);
+    assert_eq!(worker_compiled_at(&project.join("build"))?, compiled);
 
-    fs::write(server.join("settings.json"), r#"{"feature":false}"#)?;
+    fs::write(worker.join("settings.json"), r#"{"feature":false}"#)?;
     build()?;
-    assert_eq!(fs::read_to_string(&esbuild_log)?.lines().count(), 2);
+    assert_ne!(worker_compiled_at(&project.join("build"))?, compiled);
     assert_eq!(
         fs::read(project.join("build/windows/demo-app/app/bundle/settings.json"))?,
         br#"{"feature":false}"#
@@ -1609,21 +1617,12 @@ fn apple_env_only_build_reuses_the_native_bundle() -> TestResult {
         ),
     ] {
         let (temporary, project, pack) = create_inputs(target)?;
-        fs::write(
-            project.join("wrangler.jsonc"),
-            r#"{
-  "name": "demo-app",
-  "main": "dist/server/entry.mjs",
-  "env": {
-    "test": { "vars": { "API": "test" } },
-    "production": { "vars": { "API": "production" } }
-  }
-}"#,
-        )?;
+        write_worker_config(&project, r#"{ "vars": { "API": "test" } }"#)?;
         let mut test = build_command(platform, &project, &pack)?;
         let log = configure_fake_apple_tools(&mut test, temporary.path())?;
-        test.args(["--env", "test"]).assert().success();
+        test.assert().success();
 
+        write_worker_config(&project, r#"{ "vars": { "API": "production" } }"#)?;
         let mut production = build_command(platform, &project, &pack)?;
         configure_fake_apple_tools(&mut production, temporary.path())?;
         if platform == "ios" {
@@ -1634,7 +1633,7 @@ fn apple_env_only_build_reuses_the_native_bundle() -> TestResult {
                 .env("TOKAMAK_IOS_SIGNING_IDENTITY", "Apple Distribution: Test")
                 .env("TOKAMAK_IOS_PROVISIONING_PROFILE", profile);
         }
-        production.args(["--env", "production"]).assert().success();
+        production.assert().success();
 
         let commands = fs::read_to_string(log)?;
         assert_eq!(
@@ -1711,15 +1710,10 @@ fn apple_build_number_change_reuses_the_native_bundle() -> TestResult {
         ("ios-simulator", "ios-simulator-arm64"),
     ] {
         let (temporary, project, pack) = create_inputs(target)?;
-        fs::write(
-            project.join("wrangler.jsonc"),
-            r#"{"name":"demo-app","main":"dist/server/entry.mjs","env":{"test":{"vars":{"API":"test"}},"production":{"vars":{"API":"production"}}}}"#,
-        )?;
-        let icon = project.join("assets/AppIcon.icon");
+        let icon = project.join("src/assets/AppIcon.icon");
         fs::create_dir_all(&icon)?;
         fs::write(icon.join("icon.json"), "{}")?;
-        let config = project.join("tokamak.jsonc");
-        fs::write(&config, r#"{"icon":"assets/AppIcon.icon"}"#)?;
+        configure(&project, r#"{"icon":"assets/AppIcon.icon"}"#)?;
         let build_number = if platform == "macos" {
             "TOKAMAK_MACOS_BUILD_NUMBER"
         } else {
@@ -1727,15 +1721,11 @@ fn apple_build_number_change_reuses_the_native_bundle() -> TestResult {
         };
 
         let build = |number, environment| -> TestResult {
+            let vars = format!(r#"{{ "vars": {{ "API": "{environment}" }} }}"#);
+            write_worker_config(&project, &vars)?;
             let mut command = build_command(platform, &project, &pack)?;
             configure_fake_apple_tools(&mut command, temporary.path())?;
-            command
-                .arg("--config")
-                .arg(&config)
-                .env(build_number, number)
-                .args(["--env", environment])
-                .assert()
-                .success();
+            command.env(build_number, number).assert().success();
             Ok(())
         };
         build("1", "test")?;
@@ -1919,13 +1909,12 @@ fn passes_platform_pack_variables_to_the_windows_entrypoint() -> TestResult {
 #[test]
 fn builds_with_a_configured_display_name() -> TestResult {
     let (_temporary, project, manifest) = create_windows_inputs()?;
-    fs::write(
-        project.join("tokamak.jsonc"),
+    configure(
+        &project,
         r#"{"name":"My App","windows":{"name":"My App Pro"}}"#,
     )?;
 
     let mut command = build_command("windows", &project, &manifest)?;
-    command.arg("--config").arg(project.join("tokamak.jsonc"));
     command.assert().success();
 
     let bundle = project.join("build/windows/my-app-pro");
@@ -1941,14 +1930,10 @@ fn builds_with_a_configured_display_name() -> TestResult {
 #[test]
 fn builds_a_configured_windows_icon() -> TestResult {
     let (_temporary, project, manifest) = create_windows_inputs()?;
-    fs::write(project.join("AppIcon.ico"), "ico")?;
-    fs::write(
-        project.join("tokamak.jsonc"),
-        r#"{"windows":{"icon":"AppIcon.ico"}}"#,
-    )?;
+    configure(&project, r#"{"windows":{"icon":"AppIcon.ico"}}"#)?;
+    fs::write(project.join("src/AppIcon.ico"), "ico")?;
 
     let mut command = build_command("windows", &project, &manifest)?;
-    command.arg("--config").arg(project.join("tokamak.jsonc"));
     command.assert().success();
 
     assert_eq!(
@@ -2078,26 +2063,14 @@ fn searches_every_directory_in_the_platform_pack_path() -> TestResult {
 }
 
 #[test]
-fn builds_project_before_loading_generated_config() -> TestResult {
-    let temporary = tempfile::tempdir()?;
-    let project = temporary.path().join("project");
-    let pack = temporary.path().join("pack");
-    fs::create_dir_all(&project)?;
-    fs::create_dir_all(&pack)?;
-    create_unbuilt_project(&project)?;
-    let platform_pack = create_platform_pack(&pack, "macos-arm64")?;
-    let config = project.join("dist/server/wrangler.json");
+fn builds_the_project_before_reading_what_it_generates() -> TestResult {
+    let (_temporary, project, pack) = create_inputs("macos-arm64")?;
+    configure(&project, r#"{ "name": "Built App" }"#)?;
+    fs::remove_dir_all(project.join("build"))?;
 
-    let mut command = Command::cargo_bin("tok")?;
-    command
-        .args(["build", "macos", "--project"])
-        .arg(&project)
-        .arg("--platform-pack")
-        .arg(platform_pack)
-        .arg("--wrangler")
-        .arg(config)
-        .env("TOKAMAK_VERSION", "1.0.0");
-    command.assert().success();
+    project_build_command("macos", &project, &pack)?
+        .assert()
+        .success();
 
     assert!(project.join("build/macos/built-app.app").is_dir());
     Ok(())
@@ -2106,20 +2079,10 @@ fn builds_project_before_loading_generated_config() -> TestResult {
 #[test]
 fn runs_the_configured_build_command_in_the_project_directory() -> TestResult {
     let (temporary, project, pack) = create_windows_inputs()?;
-    fs::remove_dir_all(project.join("dist"))?;
     fs::remove_file(project.join("package.json"))?;
-    fs::write(
-        project.join("server.cjs"),
-        "const fs = require('node:fs');\nfs.mkdirSync('dist/server', { recursive: true });\nfs.writeFileSync('dist/server/entry.mjs', 'export default {};');\n",
-    )?;
     fs::write(
         project.join("client.cjs"),
         "const fs = require('node:fs');\nfs.mkdirSync('dist/client', { recursive: true });\nfs.writeFileSync('dist/client/index.html', '<html>built</html>');\n",
-    )?;
-    let config = temporary.path().join("tokamak.jsonc");
-    fs::write(
-        &config,
-        r#"{ "version": "1.0.0", "build": "node server.cjs && node client.cjs" }"#,
     )?;
 
     Command::cargo_bin("tok")?
@@ -2128,8 +2091,8 @@ fn runs_the_configured_build_command_in_the_project_directory() -> TestResult {
         .arg(&project)
         .arg("--platform-pack")
         .arg(&pack)
-        .arg("--config")
-        .arg(&config)
+        .args(["--version", "1.0.0"])
+        .env("TOKAMAK_BUILD", "node build.cjs && node client.cjs")
         .assert()
         .success();
 
@@ -2142,61 +2105,14 @@ fn runs_the_configured_build_command_in_the_project_directory() -> TestResult {
 
 #[test]
 fn stops_when_the_configured_build_command_fails() -> TestResult {
-    let (temporary, project, pack) = create_windows_inputs()?;
-    let config = temporary.path().join("tokamak.jsonc");
-    fs::write(&config, r#"{ "version": "1.0.0", "build": "exit 3" }"#)?;
+    let (_temporary, project, pack) = create_windows_inputs()?;
 
-    Command::cargo_bin("tok")?
-        .args(["build", "windows", "--project"])
-        .arg(&project)
-        .arg("--platform-pack")
-        .arg(&pack)
-        .arg("--config")
-        .arg(&config)
+    project_build_command("windows", &project, &pack)?
+        .args(["--build", "exit 3"])
         .assert()
         .failure()
         .stderr(contains("project build failed"));
     assert!(!project.join("build/windows/demo-app").exists());
-    Ok(())
-}
-
-#[test]
-fn builds_named_environment_from_generated_wrangler_config() -> TestResult {
-    let (temporary, project, pack) = create_windows_inputs()?;
-    fs::remove_dir_all(project.join("dist"))?;
-    create_unbuilt_project(&project)?;
-    let esbuild_log = temporary.path().join("esbuild.log");
-    let build = || -> TestResult {
-        Command::cargo_bin("tok")?
-            .args(["build", "windows", "--project"])
-            .arg(&project)
-            .arg("--platform-pack")
-            .arg(&pack)
-            .arg("--wrangler")
-            .arg(project.join("dist/server/wrangler.json"))
-            .args(["--env", "production"])
-            .env("TOKAMAK_VERSION", "1.0.0")
-            .env("TOKAMAK_TEST_ESBUILD_LOG", &esbuild_log)
-            .assert()
-            .success();
-        Ok(())
-    };
-    build()?;
-    fs::write(
-        project.join("wrangler.jsonc"),
-        r#"{
-  "name": "built-app",
-  "vars": { "API": "default" },
-  "env": { "production": { "vars": { "API": "promoted" } } }
-}"#,
-    )?;
-    build()?;
-
-    let environment: serde_json::Value = serde_json::from_slice(&fs::read(
-        project.join("build/windows/built-app/app/worker-environment.json"),
-    )?)?;
-    assert_eq!(environment["vars"]["API"], "promoted");
-    assert_eq!(fs::read_to_string(esbuild_log)?.lines().count(), 1);
     Ok(())
 }
 
@@ -2308,24 +2224,15 @@ fn conflicting_signing_dev_command(
 ) -> TestResult<Command> {
     let profile = project.join("manual.mobileprovision");
     fs::write(&profile, "profile")?;
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
 
     let mut command = Command::cargo_bin("tok")?;
     configure_fake_apple_tools(&mut command, temporary)?;
-    let server = format!("http://127.0.0.1:{port}");
-    let framework = format!(
-        "require('http').createServer((_, response) => response.end()).listen({port}, '127.0.0.1')"
-    );
     command
         .args(["dev", "DEVICE", "--project"])
         .arg(project_arg)
         .args(["--platform-pack"])
         .arg(platform_pack)
-        .args(["--config"])
-        .arg(project)
-        .args(["--server", &server, "--host-address", "127.0.0.1"])
+        .args(["--host-address", "127.0.0.1"])
         .args([
             "--ios-signing-identity",
             "IDENTITY_SHA1",
@@ -2333,10 +2240,24 @@ fn conflicting_signing_dev_command(
         ])
         .arg(&profile)
         .env("TOKAMAK_IOS_TEAM_ID", "TEAM")
-        .args(["--", "node", "-e"])
-        .arg(framework);
+        .args(["--", "node", "-e", DEV_SERVER]);
     Ok(command)
 }
+
+/// A development server that reports itself as the tokamak Vite plugin does.
+#[cfg(all(unix, target_os = "macos"))]
+const DEV_SERVER: &str = r#"
+const fs = require("node:fs");
+const path = require("node:path");
+const output = process.env.TOKAMAK_VITE_OUTPUT;
+fs.mkdirSync(output, { recursive: true });
+fs.writeFileSync(path.join(output, "config.json"), JSON.stringify({ config: {} }));
+const server = require("node:http").createServer((_, response) => response.end());
+server.listen(0, "127.0.0.1", () => {
+  const url = `http://127.0.0.1:${server.address().port}/`;
+  fs.writeFileSync(path.join(output, "server.json"), JSON.stringify({ url }));
+});
+"#;
 
 #[cfg(all(unix, target_os = "macos"))]
 #[test]
@@ -2493,13 +2414,11 @@ fn builds_secure_storage_and_local_authentication_into_apple_shells() -> TestRes
 #[test]
 fn writes_configured_asset_routing_modes() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(
-        project.join("wrangler.jsonc"),
+    write_worker_config(
+        &project,
         r#"{
-  "name": "demo-app",
-  "main": "dist/server/entry.mjs",
   "assets": {
-    "directory": "dist/client",
+    "directory": "../client",
     "html_handling": "drop-trailing-slash",
     "not_found_handling": "single-page-application"
   }
@@ -2517,23 +2436,17 @@ fn writes_configured_asset_routing_modes() -> TestResult {
 }
 
 #[test]
-fn packages_declared_non_code_modules_under_bundle() -> TestResult {
+fn packages_modules_the_configured_rules_match_under_bundle() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::create_dir_all(project.join("dist/server/config"))?;
+    fs::create_dir_all(project.join("dist/app/config"))?;
     fs::write(
-        project.join("dist/server/config/runtime.json"),
+        project.join("dist/app/config/runtime.json"),
         br#"{"feature":true}"#,
     )?;
-    fs::write(project.join("dist/server/not-included.txt"), "private")?;
-    fs::write(
-        project.join("wrangler.jsonc"),
-        r#"{
-  "name": "demo-app",
-  "main": "dist/server/entry.mjs",
-  "base_dir": "dist/server",
-  "find_additional_modules": true,
-  "rules": [{ "type": "Data", "globs": ["**/*.json"] }]
-}"#,
+    fs::write(project.join("dist/app/not-included.md"), "private")?;
+    write_worker_config(
+        &project,
+        r#"{ "rules": [{ "type": "ESModule", "globs": ["**/*.js"] }, { "type": "Data", "globs": ["**/*.json"] }] }"#,
     )?;
 
     build_command("macos", &project, &manifest)?
@@ -2545,20 +2458,7 @@ fn packages_declared_non_code_modules_under_bundle() -> TestResult {
         fs::read(app.join("bundle/config/runtime.json"))?,
         br#"{"feature":true}"#
     );
-    assert!(!app.join("bundle/not-included.txt").exists());
-    Ok(())
-}
-
-#[test]
-fn ignores_unreferenced_webassembly_modules() -> TestResult {
-    let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(project.join("dist/server/module.wasm"), b"wasm")?;
-
-    build_command("macos", &project, &manifest)?
-        .assert()
-        .success();
-    let app = project.join("build/macos/demo-app.app/Contents/Resources/app");
-    assert!(!app.join("bundle/module.wasm").exists());
+    assert!(!app.join("bundle/not-included.md").exists());
     Ok(())
 }
 
@@ -2578,10 +2478,7 @@ fn packages_webassembly_assets_as_static_files() -> TestResult {
 #[test]
 fn rejects_unsafe_wrangler_names() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(
-        project.join("wrangler.jsonc"),
-        r#"{"name":"../demo","main":"dist/server/entry.mjs"}"#,
-    )?;
+    write_worker_config(&project, r#"{"name":"../demo"}"#)?;
 
     build_command("macos", &project, &manifest)?
         .assert()
@@ -2593,10 +2490,7 @@ fn rejects_unsafe_wrangler_names() -> TestResult {
 #[test]
 fn rejects_wrangler_names_that_are_not_dns_labels() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(
-        project.join("wrangler.jsonc"),
-        r#"{"name":"Demo_App","main":"dist/server/entry.mjs"}"#,
-    )?;
+    write_worker_config(&project, r#"{"name":"Demo_App"}"#)?;
 
     build_command("macos", &project, &manifest)?
         .assert()
@@ -2608,10 +2502,7 @@ fn rejects_wrangler_names_that_are_not_dns_labels() -> TestResult {
 #[test]
 fn requires_a_wrangler_name() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(
-        project.join("wrangler.jsonc"),
-        r#"{"main":"dist/server/entry.mjs"}"#,
-    )?;
+    write_worker_config(&project, r#"{"name":null}"#)?;
 
     build_command("macos", &project, &manifest)?
         .assert()
@@ -2625,10 +2516,7 @@ fn rejects_wrangler_names_outside_dns_label_bounds() -> TestResult {
     let too_long = "a".repeat(64);
     for name in ["-demo", "demo-", &too_long] {
         let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-        fs::write(
-            project.join("wrangler.jsonc"),
-            format!(r#"{{"name":"{name}","main":"dist/server/entry.mjs"}}"#),
-        )?;
+        write_worker_config(&project, &format!(r#"{{"name":"{name}"}}"#))?;
 
         build_command("macos", &project, &manifest)?
             .assert()

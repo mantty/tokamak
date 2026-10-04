@@ -4,7 +4,7 @@ use std::path::Path;
 use serde_json::json;
 use tokamak::{
     HtmlHandling, ModuleType, NotFoundHandling, WranglerConfigError, load_wrangler_config,
-    load_wrangler_config_for_env, resolve_wrangler_config_path,
+    resolve_wrangler_config_path,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -31,7 +31,7 @@ fn discovers_wrangler_config_using_wrangler_order_and_parent_search() -> TestRes
         r#"{ "name": "jsonc-entry", "main": "jsonc-entry.mjs" }"#,
     )?;
 
-    let config_path = resolve_wrangler_config_path(&nested, None)?;
+    let config_path = resolve_wrangler_config_path(&nested)?;
 
     assert_eq!(config_path, root.join("wrangler.jsonc"));
     Ok(())
@@ -56,30 +56,12 @@ fn discovers_and_parses_json_before_jsonc_and_toml() -> TestResult {
         r#"{ "name": "json-entry", "main": "json-entry.mjs", "compatibility_date": "2026-06-01" }"#,
     )?;
 
-    let config_path = resolve_wrangler_config_path(&nested, None)?;
+    let config_path = resolve_wrangler_config_path(&nested)?;
     let config = load_wrangler_config(&config_path)?;
 
     assert_eq!(config_path, root.join("wrangler.json"));
     assert_eq!(config.name, "json-entry");
     assert_eq!(config.main, root.join("json-entry.mjs"));
-    Ok(())
-}
-
-#[test]
-fn explicit_config_path_overrides_default_discovery() -> TestResult {
-    let temp_dir = tempfile::tempdir()?;
-    let root = temp_dir.path();
-    fs::write(
-        root.join("wrangler.jsonc"),
-        r#"{ "name": "ignored", "main": "ignored.mjs" }"#,
-    )?;
-    fs::create_dir_all(root.join("config"))?;
-    let explicit = root.join("config/custom.toml");
-    fs::write(&explicit, "name = \"custom\"\nmain = \"worker.mjs\"")?;
-
-    let config_path = resolve_wrangler_config_path(root, Some(Path::new("config/custom.toml")))?;
-
-    assert_eq!(config_path, explicit);
     Ok(())
 }
 
@@ -285,41 +267,7 @@ not_found_handling = "404-page"
 }
 
 #[test]
-fn selects_named_jsonc_vars_without_inheriting_top_level_vars() -> TestResult {
-    let temporary = tempfile::tempdir()?;
-    let config = temporary.path().join("wrangler.jsonc");
-    fs::write(
-        &config,
-        r#"{
-  "name": "demo-app",
-  "main": "dist/worker.mjs",
-  "vars": { "API": "default", "TOP_ONLY": true },
-  "env": {
-    "test": { "vars": { "API": "test", "JSON": { "enabled": true } } },
-    "production": { "vars": { "API": "production" } }
-  }
-}"#,
-    )?;
-
-    let default = load_wrangler_config_for_env(&config, None)?;
-    let test = load_wrangler_config_for_env(&config, Some("test"))?;
-    let production = load_wrangler_config_for_env(&config, Some("production"))?;
-    assert_eq!(default.vars.get("TOP_ONLY"), Some(&json!(true)));
-    assert_eq!(test.vars.get("API"), Some(&json!("test")));
-    assert_eq!(test.vars.get("JSON"), Some(&json!({ "enabled": true })));
-    assert!(!test.vars.contains_key("TOP_ONLY"));
-    assert_eq!(production.vars.get("API"), Some(&json!("production")));
-    assert_eq!(test.main, default.main);
-    assert_eq!(test.name, default.name);
-    assert!(matches!(
-        load_wrangler_config_for_env(&config, Some("missing")),
-        Err(WranglerConfigError::EnvironmentNotFound { .. })
-    ));
-    Ok(())
-}
-
-#[test]
-fn selects_named_toml_json_vars() -> TestResult {
+fn parses_toml_json_vars() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let config = temporary.path().join("wrangler.toml");
     fs::write(
@@ -330,55 +278,16 @@ main = "dist/worker.mjs"
 
 [vars]
 API = "default"
-
-[env.production.vars]
-API = "production"
 JSON = { enabled = true, count = 3 }
 "#,
     )?;
 
-    let production = load_wrangler_config_for_env(&config, Some("production"))?;
-    assert_eq!(production.vars.get("API"), Some(&json!("production")));
+    let config = load_wrangler_config(&config)?;
+    assert_eq!(config.vars.get("API"), Some(&json!("default")));
     assert_eq!(
-        production.vars.get("JSON"),
+        config.vars.get("JSON"),
         Some(&json!({ "enabled": true, "count": 3 }))
     );
-    Ok(())
-}
-
-#[test]
-fn selects_vars_from_the_source_of_a_generated_wrangler_config() -> TestResult {
-    let temporary = tempfile::tempdir()?;
-    let source = temporary.path().join("wrangler.jsonc");
-    let generated_dir = temporary.path().join("dist/server");
-    fs::create_dir_all(&generated_dir)?;
-    fs::write(
-        &source,
-        r#"{
-  "name": "demo-app",
-  "vars": { "API": "default" },
-  "env": { "production": { "vars": { "API": "production", "JSON": { "ok": true } } } }
-}"#,
-    )?;
-    let generated = generated_dir.join("wrangler.json");
-    fs::write(
-        &generated,
-        serde_json::to_vec(&json!({
-            "name": "demo-app",
-            "main": "entry.mjs",
-            "userConfigPath": source,
-            "env": {
-                "production": { "main": "production.mjs", "vars": { "API": "stale" } }
-            }
-        }))?,
-    )?;
-
-    let default = load_wrangler_config_for_env(&generated, None)?;
-    let production = load_wrangler_config_for_env(&generated, Some("production"))?;
-    assert_eq!(default.vars.get("API"), Some(&json!("default")));
-    assert_eq!(production.vars.get("API"), Some(&json!("production")));
-    assert_eq!(production.vars.get("JSON"), Some(&json!({ "ok": true })));
-    assert_eq!(production.main, generated_dir.join("production.mjs"));
     Ok(())
 }
 
@@ -390,7 +299,7 @@ fn parses_exact_asset_paths() -> TestResult {
 }
 
 #[test]
-fn parses_additional_module_rules_and_base_directory() -> TestResult {
+fn parses_module_rules() -> TestResult {
     let temp_dir = tempfile::tempdir()?;
     let root = temp_dir.path();
     let config_path = root.join("wrangler.jsonc");
@@ -399,8 +308,6 @@ fn parses_additional_module_rules_and_base_directory() -> TestResult {
         r#"{
   "name": "demo-app",
   "main": "worker/entry.mjs",
-  "base_dir": "worker",
-  "find_additional_modules": true,
   "rules": [
     { "type": "Text", "globs": ["**/*.md"] },
     { "type": "Data", "globs": ["**/*.bin"], "fallthrough": true }
@@ -410,11 +317,22 @@ fn parses_additional_module_rules_and_base_directory() -> TestResult {
 
     let config = load_wrangler_config(&config_path)?;
 
-    assert_eq!(config.base_dir, root.join("worker"));
-    assert!(config.find_additional_modules);
-    assert_eq!(config.rules.len(), 2);
-    assert_eq!(config.rules[0].module_type, ModuleType::Text);
-    assert_eq!(config.rules[0].globs, ["**/*.md"]);
+    assert_eq!(
+        config
+            .rules
+            .iter()
+            .map(|rule| (rule.module_type, rule.globs.join(",")))
+            .collect::<Vec<_>>(),
+        [
+            (ModuleType::Text, "**/*.md".to_owned()),
+            (ModuleType::Data, "**/*.bin".to_owned()),
+            (ModuleType::Data, "**/*.bin".to_owned()),
+            (
+                ModuleType::CompiledWasm,
+                "**/*.wasm,**/*.wasm?module".to_owned()
+            ),
+        ]
+    );
     assert!(config.rules[1].fallthrough);
     Ok(())
 }

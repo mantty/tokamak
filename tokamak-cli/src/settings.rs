@@ -1,5 +1,5 @@
 //! Application settings from command-line options, environment variables, and
-//! the Tokamak configuration.
+//! the app's configuration file.
 //!
 //! A setting has the same name in each source: `--<platform>-<key>`,
 //! `TOKAMAK_<PLATFORM>_<KEY>`, and `<platform>.<key>`, or `--<key>`,
@@ -190,12 +190,10 @@ pub(crate) fn version(sources: &Sources<'_>) -> Result<Option<String>> {
     Ok(Some(value))
 }
 
-/// The project build command: `--build`, `TOKAMAK_BUILD`, or `build`.
+/// The project build command: `--build` or `TOKAMAK_BUILD`.
 pub(crate) fn build_command(sources: &Sources<'_>) -> Result<Option<String>> {
     let value = top_value(sources, "build", sources.top.build.as_ref())?;
-    Ok(value
-        .map(|(_, value)| value)
-        .or_else(|| sources.config.build.clone()))
+    Ok(value.map(|(_, value)| value))
 }
 
 /// Resolve `platform`'s settings, rejecting keys its pack does not declare.
@@ -309,12 +307,8 @@ fn pack_value(
         .pack_values
         .get(namespace)
         .and_then(|values| values.get(key));
-    Ok(configured.map(|configured| {
-        (
-            configured.value.clone(),
-            configured.directory().to_path_buf(),
-        )
-    }))
+    let directory = sources.config.directory().unwrap_or(sources.current_dir);
+    Ok(configured.map(|value| (value.clone(), directory.to_path_buf())))
 }
 
 fn reject_undeclared_keys(
@@ -335,14 +329,14 @@ fn reject_undeclared_keys(
         );
     }
     let configured = sources.config.pack_values.get(namespace);
-    if let Some((key, value)) = configured
+    let undeclared = configured
         .into_iter()
         .flatten()
-        .find(|(key, _)| !declared(key))
-    {
+        .find(|(key, _)| !declared(key));
+    if let (Some((key, _)), Some(file)) = (undeclared, &sources.config.path) {
         bail!(
             "unknown key {namespace}.{key} in {}; {}",
-            value.file.display(),
+            file.display(),
             accepted_options(platform, manifest)
         );
     }
@@ -384,7 +378,7 @@ pub(crate) fn platform_help(
 ) -> String {
     let namespace = platform.namespace();
     let mut help = format!(
-        "{} options (also TOKAMAK_{}_<KEY>, or {namespace}.<key> in tokamak.jsonc):\n",
+        "{} options (also TOKAMAK_{}_<KEY>, or {namespace}.<key> in the configuration file):\n",
         platform.display_name(),
         namespace.to_ascii_uppercase()
     );
@@ -429,7 +423,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use anyhow::Result;
-    use tokamak::{PackValue, PlatformValues, SHARED_PLATFORM_KEYS, TokamakConfig};
+    use tokamak::{PlatformValues, SHARED_PLATFORM_KEYS, TokamakConfig};
     use tokamak_cli::{PackVariable, Platform, PlatformPackManifest, Target, VariableKind};
 
     use super::{
@@ -468,21 +462,17 @@ mod tests {
         }
     }
 
-    fn pack_values(
-        platform: &str,
-        values: &[(&str, &str, &str)],
-    ) -> BTreeMap<String, BTreeMap<String, PackValue>> {
+    /// A configuration from `/config/src/tokamak.ts` with `values` for `platform`'s pack.
+    fn configured(platform: &str, values: &[(&str, &str)]) -> TokamakConfig {
         let values = values
             .iter()
-            .map(|(key, value, file)| {
-                let value = PackValue {
-                    value: (*value).to_owned(),
-                    file: PathBuf::from(file),
-                };
-                ((*key).to_owned(), value)
-            })
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
             .collect();
-        BTreeMap::from([(platform.to_owned(), values)])
+        TokamakConfig {
+            path: Some(PathBuf::from("/config/src/tokamak.ts")),
+            pack_values: BTreeMap::from([(platform.to_owned(), values)]),
+            ..TokamakConfig::default()
+        }
     }
 
     struct Fixture {
@@ -731,12 +721,9 @@ mod tests {
     #[test]
     fn pack_variables_prefer_options_then_environment_then_configuration() -> Result<()> {
         let mut fixture = Fixture::new();
-        fixture.config.pack_values = pack_values(
+        fixture.config = configured(
             "ios",
-            &[
-                ("plist", "native/Info.plist", "/config/tokamak.jsonc"),
-                ("team-id", "CONFIG", "/config/tokamak.jsonc"),
-            ],
+            &[("plist", "native/Info.plist"), ("team-id", "CONFIG")],
         );
         let environment = |settings: PlatformSettings| settings.pack_environment;
         assert_eq!(
@@ -744,7 +731,7 @@ mod tests {
             BTreeMap::from([
                 (
                     "TOKAMAK_IOS_PLIST".to_owned(),
-                    OsString::from("/config/native/Info.plist")
+                    OsString::from("/config/src/native/Info.plist")
                 ),
                 ("TOKAMAK_IOS_TEAM_ID".to_owned(), OsString::from("CONFIG")),
             ])
@@ -780,12 +767,11 @@ mod tests {
         assert!(fixture.resolve(Platform::Macos).is_ok());
 
         fixture.platform = PlatformOptions::default();
-        fixture.config.pack_values =
-            pack_values("macos", &[("plsit", "Info.plist", "/config/tokamak.jsonc")]);
+        fixture.config = configured("macos", &[("plsit", "Info.plist")]);
         assert!(fixture.resolve(Platform::Macos).is_err_and(|error| {
             error
                 .to_string()
-                .starts_with("unknown key macos.plsit in /config/tokamak.jsonc; macOS accepts")
+                .starts_with("unknown key macos.plsit in /config/src/tokamak.ts; macOS accepts")
         }));
         assert!(fixture.resolve(Platform::Ios).is_ok());
         Ok(())
@@ -795,8 +781,8 @@ mod tests {
     fn top_level_keys_prefer_options_then_environment_then_configuration() -> Result<()> {
         let mut fixture = Fixture::new();
         fixture.config.version = Some("1.0.0".to_owned());
-        fixture.config.build = Some("pnpm build".to_owned());
         assert_eq!(fixture.with(version)?.as_deref(), Some("1.0.0"));
+        assert_eq!(fixture.with(build_command)?, None);
         fixture
             .environment
             .insert("TOKAMAK_VERSION".to_owned(), "2.0.0".to_owned());
@@ -831,11 +817,9 @@ mod tests {
     #[test]
     fn lists_platform_options_in_help() {
         let help = platform_help(Platform::Ios, Ok(&manifest(Target::IosArm64)));
-        assert!(
-            help.starts_with(
-                "iOS options (also TOKAMAK_IOS_<KEY>, or ios.<key> in tokamak.jsonc):\n"
-            )
-        );
+        assert!(help.starts_with(
+            "iOS options (also TOKAMAK_IOS_<KEY>, or ios.<key> in the configuration file):\n"
+        ));
         assert!(help.contains("\n  --ios-icon <PATH>         Icon in the platform's format\n"));
         assert!(help.contains("\n  --ios-plist <PATH>        User plist\n"));
         assert!(help.contains("\n  --ios-team-id <VALUE>     Signing team\n"));

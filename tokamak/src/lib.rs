@@ -83,15 +83,13 @@ pub use quickjs::Error as QuickJsError;
 pub use quickjs::{compile_module, compile_worker};
 pub use runtime_modules::runtime_module_names;
 pub use tokamak_config::{
-    Error as TokamakConfigError, LoadedConfig as LoadedTokamakConfig, PackValue, PlatformValues,
-    SHARED_PLATFORM_KEYS, TokamakConfig, app_name_problem, is_valid_key,
-    load_config as load_tokamak_config, resolve_config_path as resolve_tokamak_config_path, slug,
-    value_problem,
+    Error as TokamakConfigError, PlatformValues, SHARED_PLATFORM_KEYS, TokamakConfig,
+    app_name_problem, is_valid_key, parse_config as parse_tokamak_config, slug, value_problem,
 };
 pub use wrangler_config::{
     Error as WranglerConfigError, HtmlHandling, NotFoundHandling, WranglerAssets, WranglerBinding,
-    WranglerConfig, WranglerMigrations, WranglerRule, WranglerStorage, app_host, is_valid_app_name,
-    load_config as load_wrangler_config, load_config_for_env as load_wrangler_config_for_env,
+    WranglerConfig, WranglerMigrations, WranglerRule, WranglerStorage, app_host,
+    deploy_config_path, is_valid_app_name, load_config as load_wrangler_config,
     resolve_config_path as resolve_wrangler_config_path,
 };
 
