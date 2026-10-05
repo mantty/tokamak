@@ -20,7 +20,7 @@ tokamak is pre-release. Backwards compatibility is not a goal.
 | `tokamak/src/quickjs` | QuickJS embedding and the gateway |
 | `tokamak/src/server.rs`, `tokamak/src/lifecycle_events.rs` | application startup and lifecycle |
 | `tokamak/src/certificates.rs`, `tokamak/src/cert_*.rs` | local mTLS certificate material and trust decisions |
-| `tokamak/src/packaging.rs`, `tokamak/src/compat.rs`, `tokamak/src/env_vars.rs`, `tokamak/src/asset_manifest.rs`, `tokamak/src/wrangler_config.rs` | the on-disk Worker contract and source preparation |
+| `tokamak/src/packaging.rs`, `tokamak/src/compat.rs`, `tokamak/src/env_vars.rs` | the on-disk Worker contract and source preparation |
 | `tokamak/src/fs` | the Workers virtual filesystem and native `node:fs` bindings |
 | `tokamak/src/streams` | Node and Web Streams, text encoding, and adapters |
 | `tokamak/src/network` | Fetch, URL, and WebSocket APIs |
@@ -28,7 +28,7 @@ tokamak is pre-release. Backwards compatibility is not a goal.
 | `tokamak/src/globals` | Web, process, and console globals |
 | `tokamak/src/builtins` | synthetic builtin entrypoints and registration |
 | `tokamak/src/android_jni.rs`, `tokamak/src/apple_ffi.rs` | target-specific runtime bridges |
-| `tokamak-cli` | user-facing native app packaging |
+| `tokamak-cli` | user-facing native app packaging, including Wrangler configuration loading |
 | `platforms/apple/source` | Swift shell, C ABI header, and module map |
 | `platforms/apple/build` | Apple platform-pack recipe and app build entrypoint |
 | `platforms/android/source` | Kotlin shell sources |

@@ -3,10 +3,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use tokamak::{TokamakConfig, WranglerConfig, deploy_config_path, load_wrangler_config, slug};
+use tokamak::{TokamakConfig, slug};
 use tokamak_cli::{MANIFEST_FILE, Platform, PlatformPackManifest, Target, load_manifest};
 
 use super::vite::{PLUGIN_HINT, VitePlugin};
+use super::wrangler_config::{self, WranglerConfig};
 use super::{cache, plugins, settings, support, worker};
 
 pub(crate) struct BuildRequest {
@@ -128,8 +129,8 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let wrangler = load_wrangler_config(
-        &deploy_config_path(&project)
+    let wrangler = wrangler_config::load_config(
+        &wrangler_config::deploy_config_path(&project)
             .context("find the Wrangler configuration the build generated")?,
     )?;
     support::validate_project_build(&wrangler)?;
@@ -571,6 +572,7 @@ mod tests {
     use std::fs;
 
     use super::{exported_symbols, resolve_app, resolve_identifier, resolve_manifest};
+    use crate::wrangler_config;
     use tokamak_cli::{MANIFEST_FILE, Platform};
 
     #[test]
@@ -598,7 +600,7 @@ mod tests {
                 format!(r#"{{ "name": "app", "main": "worker.js"{bindings} }}"#),
             )?;
             assert_eq!(
-                exported_symbols(&tokamak::load_wrangler_config(&path)?),
+                exported_symbols(&wrangler_config::load_config(&path)?),
                 symbols
             );
         }

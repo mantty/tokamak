@@ -1,105 +1,47 @@
 //! Minimal Wrangler configuration loading for tokamak packaging.
 
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result, anyhow, bail};
 use jsonc_parser::{ParseOptions, parse_to_serde_value};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use thiserror::Error;
-
-use crate::packaging::ModuleType;
-
-/// Failures loading or validating a Wrangler configuration.
-#[derive(Debug, Error)]
-pub enum Error {
-    /// Operating-system IO failed.
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    /// JSON encoding or decoding failed.
-    #[error(transparent)]
-    Json(#[from] serde_json::Error),
-    /// Static asset routing configuration is not valid.
-    #[error("invalid asset configuration: {0}")]
-    InvalidAssetConfig(String),
-    /// A Wrangler module rule is not valid.
-    #[error("invalid module rule: {0}")]
-    InvalidModuleRule(String),
-    /// No Wrangler configuration file could be found.
-    #[error("wrangler config not found starting from {0}")]
-    ConfigNotFound(PathBuf),
-    /// A Wrangler configuration file uses an unsupported format.
-    #[error("unsupported wrangler config format: {0}")]
-    UnsupportedConfigFormat(PathBuf),
-    /// A Wrangler configuration file is syntactically invalid.
-    #[error("invalid wrangler config {path}: {message}")]
-    InvalidConfig {
-        /// Path to the invalid configuration file.
-        path: PathBuf,
-        /// Parser or validation error details.
-        message: String,
-    },
-    /// tokamak needs a field that is not present in the Wrangler configuration.
-    #[error("wrangler config {path} is missing required field {field}")]
-    MissingConfigField {
-        /// Path to the configuration file.
-        path: PathBuf,
-        /// Name of the missing field.
-        field: &'static str,
-    },
-    /// A storage binding is not valid.
-    #[error("invalid {kind} binding in {path}: {message}")]
-    InvalidStorageBinding {
-        /// Path to the configuration file.
-        path: PathBuf,
-        /// Wrangler configuration key that declares the binding.
-        kind: &'static str,
-        /// What is wrong with the binding.
-        message: String,
-    },
-    /// A Wrangler name cannot be used as a tokamak app identity.
-    #[error("wrangler config name is not a safe app name: {0}")]
-    InvalidAppName(String),
-    /// No deploy configuration was found.
-    #[error("no {DEPLOY_CONFIG} found in {0} or its parent directories")]
-    DeployConfigNotFound(PathBuf),
-}
-
-/// Result type for Wrangler configuration operations.
-pub type Result<T> = std::result::Result<T, Error>;
+use tokamak::ModuleType;
 
 const CONFIG_FILE_NAMES: [&str; 3] = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"];
 /// Where a build records the configuration it generated for deployment.
 const DEPLOY_CONFIG: &str = ".wrangler/deploy/config.json";
 
 /// Resolved subset of a Wrangler config that tokamak consumes.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WranglerConfig {
+#[derive(Debug)]
+pub(crate) struct WranglerConfig {
     /// Absolute path to the config file that was parsed.
-    pub path: PathBuf,
+    pub(crate) path: PathBuf,
     /// Top-level Worker name used as the tokamak application identity.
-    pub name: String,
+    pub(crate) name: String,
     /// Worker entrypoint, resolved relative to the config file directory.
-    pub main: PathBuf,
+    pub(crate) main: PathBuf,
     /// Static asset configuration, when the Worker declares assets.
-    pub assets: Option<WranglerAssets>,
+    pub(crate) assets: Option<WranglerAssets>,
     /// Text and JSON environment bindings declared in `vars`.
-    pub vars: BTreeMap<String, Value>,
+    pub(crate) vars: BTreeMap<String, Value>,
     /// The module rules Wrangler applies: those declared in `rules`, then its
     /// default rules, without the rules it drops.
-    pub rules: Vec<WranglerRule>,
+    pub(crate) rules: Vec<WranglerRule>,
     /// Named Cloudflare bindings, other than storage, declared by the configuration.
-    pub bindings: Vec<WranglerBinding>,
+    pub(crate) bindings: Vec<WranglerBinding>,
     /// Storage bindings declared by the configuration.
-    pub storage: Vec<WranglerStorage>,
+    pub(crate) storage: Vec<WranglerStorage>,
 }
 
 /// A storage binding declared in a Wrangler configuration, with the store
 /// it names resolved as local Wrangler resolves it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum WranglerStorage {
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum WranglerStorage {
     /// A `kv_namespaces` entry.
     Kv {
         /// `binding`.
@@ -127,24 +69,21 @@ pub enum WranglerStorage {
 
 impl WranglerStorage {
     /// Binding name in the Worker's `env`.
-    #[must_use]
-    pub fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         match self {
             Self::Kv { name, .. } | Self::D1 { name, .. } | Self::R2 { name, .. } => name,
         }
     }
 
     /// Identifier of the store the binding names.
-    #[must_use]
-    pub fn store(&self) -> &str {
+    pub(crate) fn store(&self) -> &str {
         match self {
             Self::Kv { id, .. } | Self::D1 { id, .. } | Self::R2 { id, .. } => id,
         }
     }
 
     /// The Wrangler configuration key that declares the binding.
-    #[must_use]
-    pub const fn kind(&self) -> &'static str {
+    pub(crate) const fn kind(&self) -> &'static str {
         match self {
             Self::Kv { .. } => "kv_namespaces",
             Self::D1 { .. } => "d1_databases",
@@ -154,56 +93,56 @@ impl WranglerStorage {
 }
 
 /// A D1 binding's migrations settings.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WranglerMigrations {
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct WranglerMigrations {
     /// `migrations_dir`, resolved against the configuration file that
     /// declares it.
-    pub directory: PathBuf,
+    pub(crate) directory: PathBuf,
     /// `migrations_pattern`, relative to `directory`.
-    pub pattern: String,
+    pub(crate) pattern: String,
     /// `migrations_table`.
-    pub table: String,
+    pub(crate) table: String,
 }
 
 /// A named binding declared in a Wrangler configuration.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WranglerBinding {
+#[derive(Debug)]
+pub(crate) struct WranglerBinding {
     /// Binding name exposed to the Worker.
-    pub name: String,
+    pub(crate) name: String,
     /// Wrangler configuration key that declares the binding.
-    pub kind: String,
+    pub(crate) kind: String,
 }
 
 /// A Wrangler rule selecting additional Worker modules.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub struct WranglerRule {
+#[derive(Debug, Deserialize)]
+pub(crate) struct WranglerRule {
     /// Module type applied to matching files.
     #[serde(rename = "type")]
-    pub module_type: ModuleType,
+    pub(crate) module_type: ModuleType,
     /// POSIX glob patterns evaluated relative to the directory of
     /// [`WranglerConfig::main`].
-    pub globs: Vec<String>,
+    pub(crate) globs: Vec<String>,
     /// Whether later matching rules may also apply.
     #[serde(default)]
-    pub fallthrough: bool,
+    fallthrough: bool,
 }
 
 /// Static asset subset of a Wrangler config that tokamak consumes.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WranglerAssets {
+#[derive(Debug)]
+pub(crate) struct WranglerAssets {
     /// Static asset directory, resolved relative to the config file directory.
-    pub directory: PathBuf,
+    pub(crate) directory: PathBuf,
     /// Worker binding name. Defaults to `ASSETS`.
-    pub binding: String,
+    pub(crate) binding: String,
     /// Cloudflare-style HTML path handling mode.
-    pub html_handling: HtmlHandling,
+    pub(crate) html_handling: HtmlHandling,
     /// Cloudflare-style asset miss handling mode.
-    pub not_found_handling: NotFoundHandling,
+    pub(crate) not_found_handling: NotFoundHandling,
 }
 
 /// Cloudflare static asset `html_handling` mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HtmlHandling {
+pub(crate) enum HtmlHandling {
     /// Match asset paths exactly.
     None,
     /// Use Cloudflare's automatic trailing-slash behavior.
@@ -216,25 +155,20 @@ pub enum HtmlHandling {
 
 impl HtmlHandling {
     /// Parse a Wrangler `assets.html_handling` value.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for values tokamak does not support.
-    pub fn parse(value: &str) -> Result<Self> {
+    fn parse(value: &str) -> Result<Self> {
         match value {
             "none" => Ok(Self::None),
             "auto-trailing-slash" => Ok(Self::Auto),
             "force-trailing-slash" => Ok(Self::Force),
             "drop-trailing-slash" => Ok(Self::Drop),
-            _ => Err(Error::InvalidAssetConfig(format!(
-                "unsupported assets.html_handling value '{value}'"
-            ))),
+            _ => bail!(
+                "invalid asset configuration: unsupported assets.html_handling value '{value}'"
+            ),
         }
     }
 
     /// Return the Wrangler string representation.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::Auto => "auto-trailing-slash",
@@ -246,7 +180,7 @@ impl HtmlHandling {
 
 /// Cloudflare static asset `not_found_handling` mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NotFoundHandling {
+pub(crate) enum NotFoundHandling {
     /// Return a plain 404 when no asset matches.
     None,
     /// Serve `/index.html` with status 200 when no asset matches.
@@ -257,24 +191,19 @@ pub enum NotFoundHandling {
 
 impl NotFoundHandling {
     /// Parse a Wrangler `assets.not_found_handling` value.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for values tokamak does not support.
-    pub fn parse(value: &str) -> Result<Self> {
+    fn parse(value: &str) -> Result<Self> {
         match value {
             "none" => Ok(Self::None),
             "single-page-application" => Ok(Self::SinglePageApplication),
             "404-page" => Ok(Self::Page404),
-            _ => Err(Error::InvalidAssetConfig(format!(
-                "unsupported assets.not_found_handling value '{value}'"
-            ))),
+            _ => bail!(
+                "invalid asset configuration: unsupported assets.not_found_handling value '{value}'"
+            ),
         }
     }
 
     /// Return the Wrangler string representation.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::SinglePageApplication => "single-page-application",
@@ -286,82 +215,70 @@ impl NotFoundHandling {
 /// Find the Wrangler config file as Wrangler does: `wrangler.json`, then
 /// `wrangler.jsonc`, then `wrangler.toml`, in `reference_dir` or its parent
 /// directories.
-///
-/// # Errors
-///
-/// Returns an error if no config file can be found.
-pub fn resolve_config_path(reference_dir: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve_config_path(reference_dir: &Path) -> Result<PathBuf> {
     CONFIG_FILE_NAMES
         .iter()
         .find_map(|file_name| find_file_upwards(reference_dir, file_name))
-        .ok_or_else(|| Error::ConfigNotFound(reference_dir.to_path_buf()))
+        .ok_or_else(|| {
+            anyhow!(
+                "wrangler config not found starting from {}",
+                reference_dir.display()
+            )
+        })
 }
 
 /// The configuration a build generated for deployment, found as Wrangler
 /// finds it: through the `configPath` of the first `.wrangler/deploy/config.json`
 /// in `start` or its parent directories, relative to that file's directory.
-///
-/// # Errors
-///
-/// Returns an error when there is no deploy configuration, or it is invalid or
-/// names a file that does not exist.
-pub fn deploy_config_path(start: &Path) -> Result<PathBuf> {
+pub(crate) fn deploy_config_path(start: &Path) -> Result<PathBuf> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct DeployConfig {
         config_path: PathBuf,
     }
 
-    let pointer = find_file_upwards(start, DEPLOY_CONFIG)
-        .ok_or_else(|| Error::DeployConfigNotFound(start.to_path_buf()))?;
+    let pointer = find_file_upwards(start, DEPLOY_CONFIG).ok_or_else(|| {
+        anyhow!(
+            "no {DEPLOY_CONFIG} found in {} or its parent directories",
+            start.display()
+        )
+    })?;
     let deploy: DeployConfig = parse_config(&pointer)?;
-    let path = resolve_path(
-        pointer.parent().unwrap_or(Path::new(".")),
-        &deploy.config_path,
-    );
+    let path = pointer
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(deploy.config_path);
     if !path.is_file() {
-        return Err(Error::ConfigNotFound(path));
+        bail!("wrangler config not found starting from {}", path.display());
     }
     Ok(path)
 }
 
-/// Load a Wrangler configuration file.
-///
-/// # Errors
-///
-/// Returns an error when the file cannot be read, cannot be parsed, uses an
-/// unsupported format, omits a field tokamak needs to package a Worker, or uses a
-/// name that cannot identify a tokamak application.
-pub fn load_config(config_path: &Path) -> Result<WranglerConfig> {
-    let config_path = absolute_path(config_path)?;
+/// Load a Wrangler configuration file: fail when it cannot be read or parsed,
+/// uses an unsupported format, omits a field tokamak needs to package a
+/// Worker, or uses a name that cannot identify a tokamak application.
+pub(crate) fn load_config(config_path: &Path) -> Result<WranglerConfig> {
+    let config_path = std::path::absolute(config_path)?;
     let raw: RawWranglerConfig = parse_config(&config_path)?;
-    let config_dir = config_path
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let main = raw.main.ok_or_else(|| Error::MissingConfigField {
-        path: config_path.clone(),
-        field: "main",
-    })?;
+    let config_dir = config_path.parent().unwrap_or(Path::new("."));
+    let main = raw
+        .main
+        .ok_or_else(|| missing_field(&config_path, "main"))?;
     let name = raw
         .top_level_name
         .or(raw.name)
-        .ok_or_else(|| Error::MissingConfigField {
-            path: config_path.clone(),
-            field: "name",
-        })?;
+        .ok_or_else(|| missing_field(&config_path, "name"))?;
     if !is_valid_app_name(&name) {
-        return Err(Error::InvalidAppName(name));
+        bail!("wrangler config name is not a safe app name: {name}");
     }
     let assets = raw
         .assets
-        .map(|assets| resolve_assets(&config_path, &config_dir, assets))
+        .map(|assets| resolve_assets(&config_path, config_dir, assets))
         .transpose()?;
-    let storage = collect_storage(&config_path, &config_dir, &raw.other)?;
+    let storage = collect_storage(&config_path, config_dir, &raw.other)?;
 
     Ok(WranglerConfig {
-        path: config_path,
-        name,
-        main: resolve_path(&config_dir, Path::new(&main)),
+        main: config_dir.join(main),
         assets,
         vars: raw.vars,
         rules: applied_rules(
@@ -373,7 +290,16 @@ pub fn load_config(config_path: &Path) -> Result<WranglerConfig> {
         ),
         storage,
         bindings: collect_bindings(&raw.other),
+        name,
+        path: config_path,
     })
+}
+
+fn missing_field(config_path: &Path, field: &str) -> anyhow::Error {
+    anyhow!(
+        "wrangler config {} is missing required field {field}",
+        config_path.display()
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -405,19 +331,16 @@ fn resolve_assets(
     config_dir: &Path,
     assets: RawWranglerAssets,
 ) -> Result<WranglerAssets> {
-    let directory = assets.directory.ok_or_else(|| Error::MissingConfigField {
-        path: config_path.to_path_buf(),
-        field: "assets.directory",
-    })?;
+    let directory = assets
+        .directory
+        .ok_or_else(|| missing_field(config_path, "assets.directory"))?;
     let binding = assets.binding.unwrap_or_else(|| "ASSETS".to_owned());
     if binding.is_empty() {
-        return Err(Error::InvalidAssetConfig(
-            "assets.binding must not be empty".to_owned(),
-        ));
+        bail!("invalid asset configuration: assets.binding must not be empty");
     }
 
     Ok(WranglerAssets {
-        directory: resolve_path(config_dir, Path::new(&directory)),
+        directory: config_dir.join(directory),
         binding,
         html_handling: assets
             .html_handling
@@ -463,9 +386,7 @@ fn applied_rules(rules: Vec<WranglerRule>) -> Vec<WranglerRule> {
 
 fn resolve_rule(rule: WranglerRule) -> Result<WranglerRule> {
     if rule.globs.is_empty() {
-        return Err(Error::InvalidModuleRule(
-            "rules.globs must not be empty".to_owned(),
-        ));
+        bail!("invalid module rule: rules.globs must not be empty");
     }
     Ok(rule)
 }
@@ -517,30 +438,31 @@ fn storage_of_kind<T: DeserializeOwned>(
     config_path: &Path,
     values: &BTreeMap<String, Value>,
     kind: &'static str,
-    resolve: impl Fn(T) -> std::result::Result<WranglerStorage, String>,
+    resolve: impl Fn(T) -> Result<WranglerStorage>,
 ) -> Result<Vec<WranglerStorage>> {
-    let invalid = |message: String| Error::InvalidStorageBinding {
-        path: config_path.to_path_buf(),
-        kind,
-        message,
+    let invalid = |error: &dyn Display| {
+        anyhow!(
+            "invalid {kind} binding in {}: {error}",
+            config_path.display()
+        )
     };
     let Some(entries) = values.get(kind) else {
         return Ok(Vec::new());
     };
     Vec::<T>::deserialize(entries)
-        .map_err(|error| invalid(error.to_string()))?
+        .map_err(|error| invalid(&error))?
         .into_iter()
-        .map(|raw| resolve(raw).map_err(invalid))
+        .map(|raw| resolve(raw).map_err(|error| invalid(&error)))
         .collect()
 }
 
-fn binding_name(binding: Option<String>) -> std::result::Result<String, String> {
+fn binding_name(binding: Option<String>) -> Result<String> {
     binding
         .filter(|binding| !binding.is_empty())
-        .ok_or_else(|| "every binding needs a non-empty \"binding\" name".to_owned())
+        .context("every binding needs a non-empty \"binding\" name")
 }
 
-fn resolve_kv(raw: RawKvNamespace) -> std::result::Result<WranglerStorage, String> {
+fn resolve_kv(raw: RawKvNamespace) -> Result<WranglerStorage> {
     let name = binding_name(raw.binding)?;
     Ok(WranglerStorage::Kv {
         id: raw.id.unwrap_or_else(|| name.clone()),
@@ -548,7 +470,7 @@ fn resolve_kv(raw: RawKvNamespace) -> std::result::Result<WranglerStorage, Strin
     })
 }
 
-fn resolve_r2(raw: RawR2Bucket) -> std::result::Result<WranglerStorage, String> {
+fn resolve_r2(raw: RawR2Bucket) -> Result<WranglerStorage> {
     let name = binding_name(raw.binding)?;
     Ok(WranglerStorage::R2 {
         id: raw.bucket_name.unwrap_or_else(|| name.clone()),
@@ -556,19 +478,12 @@ fn resolve_r2(raw: RawR2Bucket) -> std::result::Result<WranglerStorage, String> 
     })
 }
 
-fn resolve_d1(
-    config_dir: &Path,
-    raw: RawD1Database,
-) -> std::result::Result<WranglerStorage, String> {
+fn resolve_d1(config_dir: &Path, raw: RawD1Database) -> Result<WranglerStorage> {
     let name = binding_name(raw.binding)?;
     let pattern = match (&raw.migrations_dir, raw.migrations_pattern) {
         (_, None) => "*.sql".to_owned(),
         (Some(directory), Some(pattern)) => pattern_within(directory, &pattern)?,
-        (None, Some(pattern)) => {
-            return Err(format!(
-                "migrations_pattern \"{pattern}\" needs migrations_dir"
-            ));
-        }
+        (None, Some(pattern)) => bail!("migrations_pattern \"{pattern}\" needs migrations_dir"),
     };
     let directory = raw
         .migrations_dir
@@ -577,7 +492,7 @@ fn resolve_d1(
         id: raw.database_id.unwrap_or_else(|| name.clone()),
         name,
         migrations: WranglerMigrations {
-            directory: resolve_path(config_dir, Path::new(&directory)),
+            directory: config_dir.join(directory),
             pattern,
             table: raw
                 .migrations_table
@@ -588,7 +503,7 @@ fn resolve_d1(
 
 /// `pattern`, which Wrangler requires to lie within `directory`, relative to
 /// `directory`.
-fn pattern_within(directory: &str, pattern: &str) -> std::result::Result<String, String> {
+fn pattern_within(directory: &str, pattern: &str) -> Result<String> {
     let directory = normalize_relative_path(directory);
     let pattern = normalize_relative_path(pattern);
     if directory == "." {
@@ -597,7 +512,9 @@ fn pattern_within(directory: &str, pattern: &str) -> std::result::Result<String,
     pattern
         .strip_prefix(&format!("{directory}/"))
         .map(str::to_owned)
-        .ok_or_else(|| format!("migrations_pattern \"{pattern}\" must start with \"{directory}/\""))
+        .with_context(|| {
+            format!("migrations_pattern \"{pattern}\" must start with \"{directory}/\"")
+        })
 }
 
 /// A relative path with forward slashes and without `.` segments, as
@@ -692,7 +609,8 @@ fn collect_binding_values(kind: &str, value: &Value, bindings: &mut Vec<Wrangler
 }
 
 fn parse_config<T: DeserializeOwned>(config_path: &Path) -> Result<T> {
-    let content = fs::read_to_string(config_path)?;
+    let content = fs::read_to_string(config_path)
+        .with_context(|| format!("read {}", config_path.display()))?;
     let extension = config_path
         .extension()
         .and_then(|extension| extension.to_str());
@@ -701,48 +619,29 @@ fn parse_config<T: DeserializeOwned>(config_path: &Path) -> Result<T> {
         Some("json" | "jsonc") => parse_to_serde_value(&content, &ParseOptions::default())
             .map_err(|error| error.to_string()),
         Some("toml") => toml::from_str(&content).map_err(|error| error.to_string()),
-        _ => return Err(Error::UnsupportedConfigFormat(config_path.to_path_buf())),
+        _ => bail!(
+            "unsupported wrangler config format: {}",
+            config_path.display()
+        ),
     };
-    parsed.map_err(|message| Error::InvalidConfig {
-        path: config_path.to_path_buf(),
-        message,
+    parsed.map_err(|message| {
+        anyhow!(
+            "invalid wrangler config {}: {message}",
+            config_path.display()
+        )
     })
 }
 
 fn find_file_upwards(start: &Path, file_name: &str) -> Option<PathBuf> {
-    let mut dir = absolute_path(start).ok()?;
-    loop {
-        let candidate = dir.join(file_name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        if !dir.pop() {
-            return None;
-        }
-    }
+    std::path::absolute(start)
+        .ok()?
+        .ancestors()
+        .map(|dir| dir.join(file_name))
+        .find(|candidate| candidate.is_file())
 }
 
-fn absolute_path(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        Ok(std::env::current_dir()?.join(path))
-    }
-}
-
-fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base_dir.join(path)
-    }
-}
-
-/// Return whether a name can be used as a tokamak app label.
-///
-/// Names become one DNS label of the app's `tokamak.local` host.
-#[must_use]
-pub fn is_valid_app_name(name: &str) -> bool {
+/// Whether `name` can be one DNS label of the app's `tokamak.local` host.
+fn is_valid_app_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 63
         && !name.starts_with('-')
@@ -752,28 +651,28 @@ pub fn is_valid_app_name(name: &str) -> bool {
         })
 }
 
-/// Return the `tokamak.local` host for an app name.
-#[must_use]
-pub fn app_host(name: &str) -> Option<String> {
-    let name = name.to_ascii_lowercase();
-    is_valid_app_name(&name).then(|| format!("{name}.tokamak.local"))
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-
-    use serde_json::Value;
-
     use std::fs;
+    use std::path::Path;
+
+    use anyhow::{Context, Result, bail};
+    use serde_json::{Value, json};
 
     use super::{
-        Error, ModuleType, WranglerMigrations, WranglerRule, WranglerStorage, app_host,
-        applied_rules, collect_bindings, deploy_config_path, is_valid_app_name, load_config,
-        normalize_relative_path, pattern_within,
+        HtmlHandling, ModuleType, NotFoundHandling, WranglerMigrations, WranglerRule,
+        WranglerStorage, applied_rules, collect_bindings, deploy_config_path, is_valid_app_name,
+        load_config, normalize_relative_path, pattern_within, resolve_config_path,
     };
 
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    /// The message loading `path` fails with.
+    fn load_error(path: &Path) -> Result<String> {
+        match load_config(path) {
+            Ok(_) => bail!("{} loaded", path.display()),
+            Err(error) => Ok(format!("{error:#}")),
+        }
+    }
 
     #[test]
     fn accepts_one_lower_case_dns_label() {
@@ -786,17 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn derives_the_tokamak_local_host_from_an_app_name() {
-        assert_eq!(app_host("my-app").as_deref(), Some("my-app.tokamak.local"));
-        assert_eq!(
-            app_host("Invalid").as_deref(),
-            Some("invalid.tokamak.local")
-        );
-        assert_eq!(app_host("not valid"), None);
-    }
-
-    #[test]
-    fn collects_named_bindings_from_wrangler_like_shapes() -> TestResult {
+    fn collects_named_bindings_from_wrangler_like_shapes() -> Result<()> {
         let values = serde_json::from_str::<BTreeMap<String, Value>>(
             r#"{
                 "vectorize": [{"binding": "INDEX", "index_name": "index"}],
@@ -805,27 +694,22 @@ mod tests {
             }"#,
         )?;
         let bindings = collect_bindings(&values);
-        assert_eq!(bindings.len(), 3);
-        assert!(
+        assert_eq!(
             bindings
                 .iter()
-                .any(|binding| { binding.name == "INDEX" && binding.kind == "vectorize" })
-        );
-        assert!(
-            bindings
-                .iter()
-                .any(|binding| binding.name == "ROOMS" && binding.kind == "durable_objects")
-        );
-        assert!(
-            bindings
-                .iter()
-                .any(|binding| binding.name == "EVENTS" && binding.kind == "queues")
+                .map(|binding| (binding.kind.as_str(), binding.name.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("durable_objects", "ROOMS"),
+                ("queues", "EVENTS"),
+                ("vectorize", "INDEX"),
+            ]
         );
         Ok(())
     }
 
     #[test]
-    fn resolves_storage_bindings_with_local_wrangler_fallbacks() -> TestResult {
+    fn resolves_storage_bindings_with_local_wrangler_fallbacks() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let config = directory.path().join("wrangler.jsonc");
         fs::write(
@@ -917,7 +801,38 @@ mod tests {
     }
 
     #[test]
-    fn names_the_app_after_the_top_level_worker() -> TestResult {
+    fn parses_module_rules() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let config = directory.path().join("wrangler.jsonc");
+        fs::write(
+            &config,
+            r#"{
+                "name": "demo-app",
+                "main": "worker/entry.mjs",
+                "rules": [
+                    { "type": "Text", "globs": ["**/*.md"] },
+                    { "type": "Data", "globs": ["**/*.dat"], "fallthrough": true }
+                ]
+            }"#,
+        )?;
+
+        let rules = load_config(&config)?.rules;
+
+        assert_eq!(
+            rules[..2]
+                .iter()
+                .map(|rule| (rule.module_type, rule.globs.join(","), rule.fallthrough))
+                .collect::<Vec<_>>(),
+            [
+                (ModuleType::Text, "**/*.md".to_owned(), false),
+                (ModuleType::Data, "**/*.dat".to_owned(), true),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn names_the_app_after_the_top_level_worker() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let config = directory.path().join("wrangler.json");
         fs::write(
@@ -930,7 +845,34 @@ mod tests {
     }
 
     #[test]
-    fn follows_the_deploy_config_from_a_nested_directory() -> TestResult {
+    fn finds_the_config_file_in_wrangler_order_from_a_nested_directory() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        let nested = root.join("apps/web");
+        fs::create_dir_all(&nested)?;
+        fs::write(
+            root.join("wrangler.toml"),
+            "name = \"toml-entry\"\nmain = \"toml-entry.mjs\"",
+        )?;
+        fs::write(
+            root.join("wrangler.jsonc"),
+            r#"{ "name": "jsonc-entry", "main": "jsonc-entry.mjs" }"#,
+        )?;
+        assert_eq!(resolve_config_path(&nested)?, root.join("wrangler.jsonc"));
+
+        fs::write(
+            root.join("wrangler.json"),
+            r#"{ "name": "json-entry", "main": "json-entry.mjs" }"#,
+        )?;
+        let config = load_config(&resolve_config_path(&nested)?)?;
+        assert_eq!(config.path, root.join("wrangler.json"));
+        assert_eq!(config.name, "json-entry");
+        assert_eq!(config.main, root.join("json-entry.mjs"));
+        Ok(())
+    }
+
+    #[test]
+    fn follows_the_deploy_config_from_a_nested_directory() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let deploy = directory.path().join(".wrangler/deploy");
         fs::create_dir_all(&deploy)?;
@@ -951,12 +893,18 @@ mod tests {
     }
 
     #[test]
-    fn reports_a_missing_deploy_config_or_generated_config() -> TestResult {
+    fn reports_a_missing_deploy_config_or_generated_config() -> Result<()> {
         let directory = tempfile::tempdir()?;
-        assert!(matches!(
-            deploy_config_path(directory.path()),
-            Err(Error::DeployConfigNotFound(path)) if path == directory.path()
-        ));
+        let Err(error) = deploy_config_path(directory.path()) else {
+            bail!("found a deploy config");
+        };
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "no .wrangler/deploy/config.json found in {} or its parent directories",
+                directory.path().display()
+            )
+        );
 
         let deploy = directory.path().join(".wrangler/deploy");
         fs::create_dir_all(&deploy)?;
@@ -964,37 +912,161 @@ mod tests {
             deploy.join("config.json"),
             r#"{ "configPath": "missing.json" }"#,
         )?;
-        assert!(matches!(
-            deploy_config_path(directory.path()),
-            Err(Error::ConfigNotFound(path)) if path == deploy.join("missing.json")
-        ));
+        let Err(error) = deploy_config_path(directory.path()) else {
+            bail!("found a missing generated config");
+        };
+        assert!(error.to_string().ends_with("missing.json"), "{error}");
         Ok(())
     }
 
     #[test]
-    fn rejects_a_storage_binding_without_a_name() -> TestResult {
+    fn rejects_missing_required_fields() -> Result<()> {
         let directory = tempfile::tempdir()?;
-        let config = directory.path().join("wrangler.json");
+        let config = directory.path().join("wrangler.jsonc");
+        for (source, field) in [
+            ("{}", "main"),
+            (r#"{ "main": "worker.mjs" }"#, "name"),
+            (
+                r#"{ "name": "demo-app", "main": "worker.mjs", "assets": {} }"#,
+                "assets.directory",
+            ),
+        ] {
+            fs::write(&config, source)?;
+            let message = load_error(&config)?;
+            assert!(
+                message.ends_with(&format!("is missing required field {field}")),
+                "{message}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_values_and_formats() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        let unsupported = root.join("wrangler.yaml");
+        fs::write(&unsupported, "main: worker.mjs")?;
+        assert!(load_error(&unsupported)?.starts_with("unsupported wrangler config format"));
+
+        let config = root.join("wrangler.jsonc");
+        for (source, expected) in [
+            (r#"{ "main": "#, "invalid wrangler config"),
+            (
+                r#"{ "name": "Demo_App", "main": "worker.mjs" }"#,
+                "wrangler config name is not a safe app name: Demo_App",
+            ),
+            (
+                r#"{ "name": "demo-app", "main": "worker.mjs", "assets": { "directory": "public", "html_handling": "surprising" } }"#,
+                "invalid asset configuration",
+            ),
+            (
+                r#"{ "name": "demo-app", "main": "worker.mjs", "assets": { "directory": "public", "not_found_handling": "surprising" } }"#,
+                "invalid asset configuration",
+            ),
+            (
+                r#"{ "name": "demo-app", "main": "worker.mjs", "assets": { "directory": "public", "binding": "" } }"#,
+                "invalid asset configuration",
+            ),
+            (
+                r#"{ "name": "demo-app", "main": "worker.mjs", "d1_databases": [{ "database_id": "db" }] }"#,
+                "invalid d1_databases binding",
+            ),
+        ] {
+            fs::write(&config, source)?;
+            let message = load_error(&config)?;
+            assert!(message.starts_with(expected), "{message}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parses_jsonc_and_resolves_paths() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        let config = root.join("wrangler.jsonc");
         fs::write(
             &config,
-            r#"{ "name": "app", "main": "worker.js", "d1_databases": [{ "database_id": "db" }] }"#,
+            r#"{
+                // JSONC comments and trailing commas are valid Wrangler config.
+                "name": "demo-app",
+                "main": "build/server/entry.mjs",
+                "compatibility_flags": ["nodejs_compat"],
+                "vars": { "TEXT": "value", "JSON": { "enabled": true } },
+                "assets": {
+                    "directory": "build/client",
+                    "binding": "STATIC",
+                    "html_handling": "drop-trailing-slash",
+                    "not_found_handling": "single-page-application",
+                },
+            }"#,
         )?;
 
-        let Err(Error::InvalidStorageBinding { kind, .. }) = load_config(&config) else {
-            return Err("a nameless binding was accepted".into());
-        };
-        assert_eq!(kind, "d1_databases");
+        let config = load_config(&config)?;
+
+        assert_eq!(config.name, "demo-app");
+        assert_eq!(config.main, root.join("build/server/entry.mjs"));
+        let assets = config.assets.context("assets should be parsed")?;
+        assert_eq!(assets.directory, root.join("build/client"));
+        assert_eq!(assets.binding, "STATIC");
+        assert_eq!(assets.html_handling, HtmlHandling::Drop);
+        assert_eq!(
+            assets.not_found_handling,
+            NotFoundHandling::SinglePageApplication
+        );
+        assert_eq!(config.vars.get("TEXT"), Some(&json!("value")));
+        assert_eq!(config.vars.get("JSON"), Some(&json!({ "enabled": true })));
         Ok(())
     }
 
     #[test]
-    fn requires_migrations_patterns_within_their_directory() {
+    fn parses_toml() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        let config = root.join("wrangler.toml");
+        fs::write(
+            &config,
+            r#"
+name = "demo-app"
+main = "worker/entry.mjs"
+
+[vars]
+TEXT = "value"
+JSON = { enabled = true, count = 3 }
+
+[assets]
+directory = "public"
+html_handling = "none"
+not_found_handling = "404-page"
+"#,
+        )?;
+
+        let config = load_config(&config)?;
+
+        assert_eq!(config.name, "demo-app");
+        assert_eq!(config.main, root.join("worker/entry.mjs"));
+        let assets = config.assets.context("assets should be parsed")?;
+        assert_eq!(assets.directory, root.join("public"));
+        assert_eq!(assets.binding, "ASSETS");
+        assert_eq!(assets.html_handling, HtmlHandling::None);
+        assert_eq!(assets.not_found_handling, NotFoundHandling::Page404);
+        assert_eq!(config.vars.get("TEXT"), Some(&json!("value")));
         assert_eq!(
-            pattern_within("./drizzle", "drizzle/*/migration.sql").as_deref(),
-            Ok("*/migration.sql")
+            config.vars.get("JSON"),
+            Some(&json!({ "enabled": true, "count": 3 }))
         );
-        assert_eq!(pattern_within(".", "sql/*.sql").as_deref(), Ok("sql/*.sql"));
+        Ok(())
+    }
+
+    #[test]
+    fn requires_migrations_patterns_within_their_directory() -> Result<()> {
+        assert_eq!(
+            pattern_within("./drizzle", "drizzle/*/migration.sql")?,
+            "*/migration.sql"
+        );
+        assert_eq!(pattern_within(".", "sql/*.sql")?, "sql/*.sql");
         assert!(pattern_within("db", "other/*.sql").is_err());
+        Ok(())
     }
 
     #[test]

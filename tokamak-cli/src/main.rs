@@ -14,6 +14,7 @@ mod storage;
 mod support;
 mod vite;
 mod worker;
+mod wrangler_config;
 
 use std::env;
 use std::ffi::OsString;

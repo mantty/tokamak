@@ -12,11 +12,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use tokamak::{TokamakConfig, WranglerConfig, load_wrangler_config, resolve_wrangler_config_path};
+use tokamak::TokamakConfig;
 use tokamak_cli::Platform;
 
 use super::devices::PreparedDevice;
 use super::vite::{PLUGIN_HINT, VitePlugin};
+use super::wrangler_config::{self, WranglerConfig};
 use super::{devices, pipeline, settings};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_mins(1);
@@ -130,8 +131,9 @@ fn usable_ipv4_address(addresses: impl IntoIterator<Item = Ipv4Addr>) -> Option<
 }
 
 fn load_development_config(project: &Path) -> Result<WranglerConfig> {
-    let path = resolve_wrangler_config_path(project)?;
-    load_wrangler_config(&path).with_context(|| format!("load Wrangler config {}", path.display()))
+    let path = wrangler_config::resolve_config_path(project)?;
+    wrangler_config::load_config(&path)
+        .with_context(|| format!("load Wrangler config {}", path.display()))
 }
 
 fn warn_unsupported_bindings(config: &WranglerConfig) {

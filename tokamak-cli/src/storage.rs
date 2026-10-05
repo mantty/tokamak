@@ -4,13 +4,11 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, bail};
-use tokamak::{
-    PackageLayout, StorageBinding, WranglerConfig, WranglerMigrations, WranglerStorage,
-    store_id_problem,
-};
+use tokamak::{PackageLayout, StorageBinding, store_id_problem};
 use walkdir::WalkDir;
 
 use super::support::{copy_file, glob_matches, slash_path};
+use super::wrangler_config::{WranglerConfig, WranglerMigrations, WranglerStorage};
 
 /// The storage bindings `wrangler` declares, after copying each D1
 /// database's migrations into `layout`.
@@ -154,16 +152,17 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use tokamak::{PackageLayout, StorageBinding, WranglerMigrations};
+    use tokamak::{PackageLayout, StorageBinding};
 
     use super::{compare_migrations, leading_number, migration_names, package};
+    use crate::wrangler_config::{self, WranglerConfig, WranglerMigrations};
 
     type TestResult = anyhow::Result<()>;
 
-    fn wrangler(root: &Path, config: &str) -> anyhow::Result<tokamak::WranglerConfig> {
+    fn wrangler(root: &Path, config: &str) -> anyhow::Result<WranglerConfig> {
         let path = root.join("wrangler.json");
         fs::write(&path, config)?;
-        Ok(tokamak::load_wrangler_config(&path)?)
+        wrangler_config::load_config(&path)
     }
 
     fn touch(root: &Path, files: &[&str]) -> TestResult {

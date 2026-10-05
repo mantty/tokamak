@@ -15,7 +15,7 @@ use tao::platform::windows::IconExtWindows;
 use tao::window::{Icon, WindowBuilder};
 use tokamak::{
     Certificates, Config, DevProxyConfig, DevelopmentConfig, Event, PackageLayout, Runtime,
-    app_host, frontend_url,
+    frontend_url,
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
@@ -191,14 +191,9 @@ fn load_window_icon(root: &Path) -> Result<Option<Icon>> {
 }
 
 fn read_config(root: &Path) -> Result<ShellConfig> {
-    let config: ShellConfig =
-        serde_json::from_slice(&fs::read(root.join("tokamak.json")).context("read tokamak.json")?)?;
-    let expected = app_host(&config.slug).context("tokamak.json slug is not a DNS label")?;
-    if config.host == expected {
-        Ok(config)
-    } else {
-        bail!("tokamak.json host does not match its app slug")
-    }
+    Ok(serde_json::from_slice(
+        &fs::read(root.join("tokamak.json")).context("read tokamak.json")?,
+    )?)
 }
 
 fn state_dir(slug: &str) -> Result<PathBuf> {

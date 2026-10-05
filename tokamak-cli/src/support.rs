@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use tokamak::WranglerConfig;
 use tokamak_cli::{ArtifactKind, Platform, PlatformPackManifest, Target};
 use walkdir::WalkDir;
+
+use super::wrangler_config::WranglerConfig;
 
 pub(crate) fn artifact_path(
     pack_root: &Path,
