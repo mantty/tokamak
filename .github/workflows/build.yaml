@@ -21,24 +21,30 @@ jobs:
       matrix:
         include:
           - target: macos-arm64
+            app: macos
             runner: macos-15
             rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
           - target: macos-x64
+            app: macos
             runner: macos-15
             rust_targets: x86_64-apple-darwin,aarch64-apple-darwin
           - target: ios-arm64
             runner: macos-15
             rust_targets: aarch64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
           - target: ios-simulator-arm64
+            app: ios-simulator
             runner: macos-15
             rust_targets: aarch64-apple-ios-sim,aarch64-apple-darwin,x86_64-apple-darwin
           - target: ios-simulator-x64
+            app: ios-simulator
             runner: macos-15
             rust_targets: x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
           - target: android-arm64
+            app: android
             runner: ubuntu-24.04
             rust_targets: aarch64-linux-android
           - target: windows-x64
+            app: windows
             runner: windows-2025
             rust_targets: x86_64-pc-windows-msvc
     steps:
@@ -104,6 +110,37 @@ jobs:
       - name: Verify packaged Worker mTLS
         if: matrix.target == 'macos-arm64'
         run: cargo test -p tokamak --features native --test packaged_worker
+
+      - name: Setup pnpm
+        if: matrix.app
+        uses: pnpm/action-setup@v6.0.8
+        with:
+          version: 9.9.0
+
+      - name: Install the Astro example
+        if: matrix.app
+        shell: bash
+        run: |
+          npm ci --prefix tokamak-cli/npm --omit=optional --ignore-scripts
+          npm run build --prefix tokamak-cli/npm
+          pnpm --dir plugins install --frozen-lockfile
+          pnpm --dir examples/astro install --frozen-lockfile
+
+      - name: Select the newest Xcode
+        if: matrix.app && runner.os == 'macOS'
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)"
+          xcodebuild -version
+
+      - name: Build the Astro example with tok
+        if: matrix.app
+        run: cargo run -p tokamak-cli -- build ${{ matrix.app }} --project examples/astro --platform-pack target/tokamak-platform-packs/${{ matrix.target }}
+
+      - name: Serve the Astro example
+        if: matrix.target == 'macos-arm64'
+        env:
+          TOKAMAK_TEST_ASTRO_APP: ${{ github.workspace }}/examples/astro/build/macos/tokamak-example-astro.app/Contents/Resources/app
+        run: cargo test -p tokamak --features native --test packaged_worker serves_the_astro_example_that_tok_packages -- --ignored
 
       - name: Archive platform pack
         run: tar -czf "tokamak-platform-pack-${{ matrix.target }}.tar.gz" -C "target/tokamak-platform-packs/${{ matrix.target }}" .

@@ -342,10 +342,13 @@ pub fn load_config(config_path: &Path) -> Result<WranglerConfig> {
         path: config_path.clone(),
         field: "main",
     })?;
-    let name = raw.name.ok_or_else(|| Error::MissingConfigField {
-        path: config_path.clone(),
-        field: "name",
-    })?;
+    let name = raw
+        .top_level_name
+        .or(raw.name)
+        .ok_or_else(|| Error::MissingConfigField {
+            path: config_path.clone(),
+            field: "name",
+        })?;
     if !is_valid_app_name(&name) {
         return Err(Error::InvalidAppName(name));
     }
@@ -376,6 +379,10 @@ pub fn load_config(config_path: &Path) -> Result<WranglerConfig> {
 #[derive(Debug, Deserialize)]
 struct RawWranglerConfig {
     name: Option<String>,
+    /// The Worker's name without an environment's suffix, in a generated
+    /// configuration.
+    #[serde(rename = "topLevelName")]
+    top_level_name: Option<String>,
     main: Option<String>,
     assets: Option<RawWranglerAssets>,
     #[serde(default)]
@@ -907,6 +914,19 @@ mod tests {
                 (ModuleType::CompiledWasm, "**/*.wasm"),
             ]
         );
+    }
+
+    #[test]
+    fn names_the_app_after_the_top_level_worker() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let config = directory.path().join("wrangler.json");
+        fs::write(
+            &config,
+            r#"{ "name": "app-production", "topLevelName": "app", "main": "index.js" }"#,
+        )?;
+
+        assert_eq!(load_config(&config)?.name, "app");
+        Ok(())
     }
 
     #[test]

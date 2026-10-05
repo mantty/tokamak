@@ -465,6 +465,27 @@ fn follows_cloudflare_where_local_r2_differs() -> TestResult {
     Ok(())
 }
 
+#[test]
+#[ignore = "needs the app tok packages from examples/astro at TOKAMAK_TEST_ASTRO_APP"]
+fn serves_the_astro_example_that_tok_packages() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let app = PackageLayout::new(std::env::var("TOKAMAK_TEST_ASTRO_APP")?);
+    let (runtime, state) = start_runtime(temporary.path(), app)?;
+    for (path, text) in [("/", "<html"), ("/about", "About - tokamak Example")] {
+        let mut tls = connect_gateway(&runtime, &state)?;
+        tls.write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: {HOST}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )?;
+        tls.flush()?;
+        let mut response = Vec::new();
+        tls.read_to_end(&mut response)?;
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 200"), "{path}: {response}");
+        assert!(response.contains(text), "{path}: {response}");
+    }
+    Ok(())
+}
+
 fn start_packaged_runtime(
     temporary: &Path,
     worker: &[u8],
@@ -477,7 +498,11 @@ fn start_packaged_runtime(
         app.worker_bundle(),
         compress_worker_bundle(&compile_worker(worker)?)?,
     )?;
+    start_runtime(temporary, app)
+}
 
+/// The runtime of the packaged `app`, with its state in `temporary`.
+fn start_runtime(temporary: &Path, app: PackageLayout) -> TestResult<(Runtime, PathBuf)> {
     let state = temporary.join("state");
     let runtime = Runtime::start(
         Config {
