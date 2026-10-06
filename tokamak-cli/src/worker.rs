@@ -7,12 +7,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokamak::{
-    ModuleType, PackageLayout, WorkerEnvironment, WorkerManifest, WranglerConfig, compile_module,
-    compress_worker_module, write_asset_manifest, write_worker_environment, write_worker_manifest,
+    ModuleType, PackageLayout, WorkerEnvironment, WorkerManifest, compile_module,
+    compress_worker_module, write_worker_environment, write_worker_manifest,
 };
 use walkdir::WalkDir;
 
 use super::support::{self, copy_dir_contents, copy_file, glob_matches, slash_path};
+use super::wrangler_config::{WranglerAssets, WranglerConfig};
 use super::{cache, storage};
 
 /// What a compiled Worker was compiled from, and what it is.
@@ -76,6 +77,35 @@ pub(crate) fn package(app_dir: &Path, compiled: &Path, wrangler: &WranglerConfig
         write_asset_manifest(&layout, assets)?;
     }
     copy_dir_contents(compiled, app_dir)
+}
+
+/// Write `layout`'s asset manifest: each file in its assets directory with its
+/// content type, and `assets`'s routing settings.
+fn write_asset_manifest(layout: &PackageLayout, assets: &WranglerAssets) -> Result<()> {
+    let root = layout.assets();
+    let mut files = BTreeMap::new();
+    for file in WalkDir::new(&root) {
+        let file = file?;
+        if !file.file_type().is_file() {
+            continue;
+        }
+        let content_type = mime_guess::from_path(file.path()).first_or_octet_stream();
+        files.insert(
+            slash_path(file.path().strip_prefix(&root)?)?,
+            content_type.essence_str().to_owned(),
+        );
+    }
+    let manifest = serde_json::json!({
+        "binding": assets.binding,
+        "files": files,
+        "htmlHandling": assets.html_handling.as_str(),
+        "notFoundHandling": assets.not_found_handling.as_str(),
+    });
+    fs::write(
+        layout.asset_manifest(),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    Ok(())
 }
 
 /// The directory of `main` and the Worker's modules in it, as `wrangler deploy`
@@ -143,6 +173,7 @@ fn compile_modules(layout: &PackageLayout, root: &Path, manifest: &WorkerManifes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wrangler_config::{self, HtmlHandling, NotFoundHandling};
 
     /// The Worker `root/index.js` with the module rules `rules`, as JSON.
     fn worker(root: &Path, rules: &str) -> Result<WranglerConfig> {
@@ -150,7 +181,7 @@ mod tests {
             root.join("wrangler.json"),
             format!(r#"{{"name":"app","main":"index.js","rules":{rules}}}"#),
         )?;
-        Ok(tokamak::load_wrangler_config(&root.join("wrangler.json"))?)
+        wrangler_config::load_config(&root.join("wrangler.json"))
     }
 
     fn write(root: &Path, files: &[&str]) -> Result<()> {
@@ -228,6 +259,33 @@ mod tests {
                 "{error:?}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn writes_content_types_and_routing_modes() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let layout = PackageLayout::new(directory.path());
+        fs::create_dir_all(layout.assets().join("styles"))?;
+        fs::write(layout.assets().join("index.html"), "home")?;
+        fs::write(layout.assets().join("styles/app.css"), "body{}")?;
+        let assets = WranglerAssets {
+            directory: layout.assets(),
+            binding: "ASSETS".to_owned(),
+            html_handling: HtmlHandling::Drop,
+            not_found_handling: NotFoundHandling::SinglePageApplication,
+        };
+
+        write_asset_manifest(&layout, &assets)?;
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(layout.asset_manifest())?)?;
+        assert_eq!(manifest["binding"], "ASSETS");
+        assert_eq!(manifest["files"]["index.html"], "text/html");
+        assert_eq!(manifest["files"]["styles/app.css"], "text/css");
+        assert_eq!(manifest["htmlHandling"], "drop-trailing-slash");
+        assert_eq!(manifest["notFoundHandling"], "single-page-application");
+        assert!(layout.serves_assets());
         Ok(())
     }
 
