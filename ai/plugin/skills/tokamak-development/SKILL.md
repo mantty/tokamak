@@ -69,7 +69,7 @@ tok targets
 - In tokamak builds and development the file is also part of the Worker, without its `config` export: its top-level code runs whenever the Worker is evaluated (and during Astro prerendering), so keep it cheap and safe. Declare `export const config = ...` in its own statement.
 - Top-level keys are `name`, `identifier`, `icon`, and `version`; other top-level keys are rejected. They are defaults for every platform.
 - Platform objects (`android`, `ios`, `macos`, `windows`) override `name`, `identifier`, or `icon` per platform, for example `{ name: "My App", ios: { name: "My App Pro" } }`. Their other keys are settings for that platform's pack. `ios` also applies to `ios-simulator`. `version` is top-level only.
-- Display names preserve their spelling and capitalization. Tokamak derives a lower-case slug for filenames, application IDs, and local hosts. If `name` is absent, the Wrangler Worker name is used.
+- Display names preserve their spelling and capitalization. Tokamak derives a lower-case slug for filenames, application IDs, and local hosts. If `name` is absent, the Wrangler Worker name is used as both name and slug, so it must already be a slug (lowercase letters and digits joined by single hyphens, at most 63 characters); set `name` when it is not.
 - `identifier` values are used as the Apple bundle identifier and Android application ID.
 - `version` is required by `tok build`. Do not use `TOKAMAK_APP_VERSION`.
 - `icon` accepts user-created platform assets: Android `res` directories, Apple `.icon` packages for `ios`/`macos`, and Windows `.ico` files. Missing icons preserve the existing behavior.

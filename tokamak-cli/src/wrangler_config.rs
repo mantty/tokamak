@@ -255,8 +255,8 @@ pub(crate) fn deploy_config_path(start: &Path) -> Result<PathBuf> {
 }
 
 /// Load a Wrangler configuration file: fail when it cannot be read or parsed,
-/// uses an unsupported format, omits a field tokamak needs to package a
-/// Worker, or uses a name that cannot identify a tokamak application.
+/// uses an unsupported format, or omits a field tokamak needs to package a
+/// Worker.
 pub(crate) fn load_config(config_path: &Path) -> Result<WranglerConfig> {
     let config_path = std::path::absolute(config_path)?;
     let raw: RawWranglerConfig = parse_config(&config_path)?;
@@ -268,9 +268,6 @@ pub(crate) fn load_config(config_path: &Path) -> Result<WranglerConfig> {
         .top_level_name
         .or(raw.name)
         .ok_or_else(|| missing_field(&config_path, "name"))?;
-    if !is_valid_app_name(&name) {
-        bail!("wrangler config name is not a safe app name: {name}");
-    }
     let assets = raw
         .assets
         .map(|assets| resolve_assets(&config_path, config_dir, assets))
@@ -640,17 +637,6 @@ fn find_file_upwards(start: &Path, file_name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// Whether `name` can be one DNS label of the app's `tokamak.local` host.
-fn is_valid_app_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 63
-        && !name.starts_with('-')
-        && !name.ends_with('-')
-        && name.chars().all(|character| {
-            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -662,8 +648,8 @@ mod tests {
 
     use super::{
         HtmlHandling, ModuleType, NotFoundHandling, WranglerMigrations, WranglerRule,
-        WranglerStorage, applied_rules, collect_bindings, deploy_config_path, is_valid_app_name,
-        load_config, normalize_relative_path, pattern_within, resolve_config_path,
+        WranglerStorage, applied_rules, collect_bindings, deploy_config_path, load_config,
+        normalize_relative_path, pattern_within, resolve_config_path,
     };
 
     /// The message loading `path` fails with.
@@ -672,16 +658,6 @@ mod tests {
             Ok(_) => bail!("{} loaded", path.display()),
             Err(error) => Ok(format!("{error:#}")),
         }
-    }
-
-    #[test]
-    fn accepts_one_lower_case_dns_label() {
-        assert!(is_valid_app_name("my-app"));
-        assert!(!is_valid_app_name(""));
-        assert!(!is_valid_app_name("-leading"));
-        assert!(!is_valid_app_name("trailing-"));
-        assert!(!is_valid_app_name("Upper"));
-        assert!(!is_valid_app_name(&"a".repeat(64)));
     }
 
     #[test]
@@ -952,10 +928,6 @@ mod tests {
         let config = root.join("wrangler.jsonc");
         for (source, expected) in [
             (r#"{ "main": "#, "invalid wrangler config"),
-            (
-                r#"{ "name": "Demo_App", "main": "worker.mjs" }"#,
-                "wrangler config name is not a safe app name: Demo_App",
-            ),
             (
                 r#"{ "name": "demo-app", "main": "worker.mjs", "assets": { "directory": "public", "html_handling": "surprising" } }"#,
                 "invalid asset configuration",

@@ -11,7 +11,6 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
-use tokamak::{SHARED_PLATFORM_KEYS, is_valid_key};
 
 /// Platform-pack manifest filename.
 pub const MANIFEST_FILE: &str = "platform-pack.json";
@@ -20,6 +19,21 @@ pub const BUILD_ENTRYPOINT: &str = "build/entrypoint";
 /// Windows platform-pack build entrypoint path, retaining PowerShell's
 /// required script extension.
 pub const WINDOWS_BUILD_ENTRYPOINT: &str = "build/entrypoint.ps1";
+/// Keys a platform object shares with the top level; tokamak validates them.
+pub const SHARED_PLATFORM_KEYS: [&str; 3] = ["name", "identifier", "icon"];
+
+/// Whether `key` is lowercase ASCII words joined by single hyphens, the form of
+/// every configuration key, command-line option, and platform-pack variable.
+#[must_use]
+pub fn is_valid_key(key: &str) -> bool {
+    key.starts_with(|character: char| character.is_ascii_lowercase())
+        && key.split('-').all(|word| {
+            !word.is_empty()
+                && word
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+        })
+}
 
 /// A platform family supported by the tokamak CLI.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

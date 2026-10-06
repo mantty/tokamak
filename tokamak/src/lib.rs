@@ -57,7 +57,6 @@ mod env_vars;
 mod readiness;
 #[cfg(feature = "native")]
 mod tls;
-mod tokamak_config;
 #[cfg(feature = "native")]
 mod transport;
 
@@ -78,10 +77,6 @@ pub use packaging::{
 };
 pub use quickjs::Error as QuickJsError;
 pub use quickjs::{compile_module, compile_worker};
-pub use tokamak_config::{
-    Error as TokamakConfigError, PlatformValues, SHARED_PLATFORM_KEYS, TokamakConfig,
-    app_name_problem, is_valid_key, parse_config as parse_tokamak_config, slug, value_problem,
-};
 
 /// The symbol the runtime's storage part exports its entry point as. An app
 /// links the part only when its executable exports this symbol.

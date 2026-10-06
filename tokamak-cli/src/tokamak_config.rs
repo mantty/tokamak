@@ -4,90 +4,57 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use thiserror::Error;
+use tokamak_cli::{SHARED_PLATFORM_KEYS, is_valid_key};
 
 const PLATFORMS: [&str; 4] = ["android", "ios", "macos", "windows"];
 
-/// Keys a platform object shares with the top level; tokamak validates them.
-pub const SHARED_PLATFORM_KEYS: [&str; 3] = ["name", "identifier", "icon"];
-
-/// Failures validating a Tokamak configuration.
-#[derive(Debug, Error)]
-pub enum Error {
-    /// A Tokamak configuration is malformed or uses invalid fields.
-    #[error("invalid tokamak config {path}: {message}")]
-    InvalidConfig {
-        /// Path to the invalid configuration file.
-        path: PathBuf,
-        /// Parser or validation error details.
-        message: String,
-    },
-}
-
-/// Result type for Tokamak configuration operations.
-pub type Result<T> = std::result::Result<T, Error>;
-
 /// Resolved Tokamak application configuration.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct TokamakConfig {
+pub(crate) struct TokamakConfig {
     /// Absolute path to the configuration file, when one was loaded.
-    pub path: Option<PathBuf>,
+    pub(crate) path: Option<PathBuf>,
     /// Display names.
-    pub name: PlatformValues<String>,
+    pub(crate) name: PlatformValues<String>,
     /// Application identifiers.
-    pub identifier: PlatformValues<String>,
+    pub(crate) identifier: PlatformValues<String>,
     /// Application icon paths, absolute.
-    pub icon: PlatformValues<PathBuf>,
+    pub(crate) icon: PlatformValues<PathBuf>,
     /// Application version, when configured.
-    pub version: Option<String>,
+    pub(crate) version: Option<String>,
     /// Values for each platform's pack, by platform then key; numbers and
     /// booleans are written as strings.
-    pub pack_values: BTreeMap<String, BTreeMap<String, String>>,
+    pub(crate) pack_values: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl TokamakConfig {
     /// The directory relative paths in the configuration are relative to.
-    #[must_use]
-    pub fn directory(&self) -> Option<&Path> {
+    pub(crate) fn directory(&self) -> Option<&Path> {
         self.path.as_deref().map(config_dir)
     }
 }
 
-/// Whether `key` is lowercase ASCII words joined by single hyphens, the form of
-/// every configuration key, command-line option, and platform-pack variable.
-#[must_use]
-pub fn is_valid_key(key: &str) -> bool {
-    key.starts_with(|character: char| character.is_ascii_lowercase())
-        && key.split('-').all(|word| {
-            !word.is_empty()
-                && word
-                    .chars()
-                    .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
-        })
-}
-
 /// A configuration value with an optional default and per-platform overrides.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PlatformValues<T> {
+pub(crate) struct PlatformValues<T> {
     /// Value used when the platform has no override.
-    pub default: Option<T>,
+    pub(crate) default: Option<T>,
     /// Android override.
-    pub android: Option<T>,
+    pub(crate) android: Option<T>,
     /// iOS override, also used by iOS simulators.
-    pub ios: Option<T>,
+    pub(crate) ios: Option<T>,
     /// macOS override.
-    pub macos: Option<T>,
+    pub(crate) macos: Option<T>,
     /// Windows override.
-    pub windows: Option<T>,
+    pub(crate) windows: Option<T>,
 }
 
 impl<T> PlatformValues<T> {
     /// Return the value for a platform namespace (`android`, `ios`, `macos`, or
     /// `windows`), falling back to the default.
-    #[must_use]
-    pub fn for_platform(&self, platform: &str) -> Option<&T> {
+    pub(crate) fn for_platform(&self, platform: &str) -> Option<&T> {
         let value = match platform {
             "android" => &self.android,
             "ios" => &self.ios,
@@ -118,8 +85,7 @@ impl<T> PlatformValues<T> {
 
 /// Return the lowercase ASCII slug of a display name, as used for bundle
 /// filenames, application identifiers, and `tokamak.local` hosts.
-#[must_use]
-pub fn slug(name: &str) -> String {
+pub(crate) fn slug(name: &str) -> String {
     let mut slug = String::new();
     for character in name.chars() {
         if character.is_ascii_alphanumeric() {
@@ -137,11 +103,7 @@ pub fn slug(name: &str) -> String {
 /// platform. Relative icon paths are resolved against the file's directory.
 /// Other platform-object keys are values for that platform's pack. `null`
 /// leaves a value unset.
-///
-/// # Errors
-///
-/// Returns an error naming `file` when the configuration is not valid.
-pub fn parse_config(file: &Path, config: Value) -> Result<TokamakConfig> {
+pub(crate) fn parse_config(file: &Path, config: Value) -> Result<TokamakConfig> {
     let Value::Object(mut object) = config else {
         return Err(invalid(file, "config must be an object"));
     };
@@ -214,8 +176,7 @@ fn pack_value(config_path: &Path, field: &str, value: Value) -> Result<Option<St
 }
 
 fn deserialize(config_path: &Path, object: Map<String, Value>) -> Result<RawTokamakConfig> {
-    serde_json::from_value(Value::Object(object))
-        .map_err(|error| invalid(config_path, error.to_string()))
+    serde_json::from_value(Value::Object(object)).map_err(|error| invalid(config_path, error))
 }
 
 #[derive(Debug, Deserialize)]
@@ -286,8 +247,7 @@ fn resolve_values(config_path: &Path, raw: RawTokamakConfig) -> Result<TokamakCo
             validate_value(config_path, field, value)
         })?,
         icon: icon.try_map("icon", |field, value| {
-            validate_value(config_path, field, value)
-                .map(|value| resolve_path(config_dir, Path::new(&value)))
+            validate_value(config_path, field, value).map(|value| config_dir.join(value))
         })?,
         version: version
             .map(|version| validate_value(config_path, "version", version))
@@ -301,8 +261,7 @@ fn config_dir(config_path: &Path) -> &Path {
 }
 
 /// Why `name` cannot be an app display name, when it cannot.
-#[must_use]
-pub fn app_name_problem(name: &str) -> Option<&'static str> {
+pub(crate) fn app_name_problem(name: &str) -> Option<&'static str> {
     let slug = slug(name);
     if slug.is_empty() {
         Some("must contain an ASCII letter or digit")
@@ -322,8 +281,7 @@ fn validate_name(config_path: &Path, field: &str, value: String) -> Result<Strin
 }
 
 /// Why `value` cannot be a setting value, when it cannot.
-#[must_use]
-pub fn value_problem(value: &str) -> Option<&'static str> {
+pub(crate) fn value_problem(value: &str) -> Option<&'static str> {
     (value.trim().is_empty() || value != value.trim() || value.chars().any(char::is_control))
         .then_some("must be a non-empty value without surrounding whitespace or control characters")
 }
@@ -335,19 +293,11 @@ fn validate_value(config_path: &Path, field: &str, value: String) -> Result<Stri
     }
 }
 
-fn invalid(config_path: &Path, message: impl Into<String>) -> Error {
-    Error::InvalidConfig {
-        path: config_path.to_path_buf(),
-        message: message.into(),
-    }
-}
-
-fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base_dir.join(path)
-    }
+fn invalid(config_path: &Path, message: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!(
+        "invalid tokamak config {}: {message}",
+        config_path.display()
+    )
 }
 
 #[cfg(test)]
@@ -355,9 +305,11 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
-    use super::{Error, PlatformValues, TokamakConfig, is_valid_key, parse_config, slug};
+    use anyhow::{Context, Result};
 
-    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+    use super::{PlatformValues, TokamakConfig, parse_config, slug};
+
+    type TestResult<T = ()> = Result<T>;
 
     /// The configuration file the tests' configurations come from.
     fn config_file(directory: &Path) -> PathBuf {
@@ -365,20 +317,23 @@ mod tests {
     }
 
     fn load(directory: &Path, config: &str) -> TestResult<TokamakConfig> {
-        Ok(parse_config(
-            &config_file(directory),
-            serde_json::from_str(config)?,
-        )?)
+        parse_config(&config_file(directory), serde_json::from_str(config)?)
     }
 
+    /// What is wrong with `config`, after the prefix naming its file.
     fn invalid_message(directory: &Path, config: &str) -> TestResult<String> {
-        match parse_config(&config_file(directory), serde_json::from_str(config)?) {
-            Err(Error::InvalidConfig { path, message }) => {
-                assert_eq!(path, config_file(directory));
-                Ok(message)
-            }
-            other => Err(format!("expected an invalid config, got {other:?}").into()),
-        }
+        let Err(error) = load(directory, config) else {
+            anyhow::bail!("accepted {config}");
+        };
+        let prefix = format!(
+            "invalid tokamak config {}: ",
+            config_file(directory).display()
+        );
+        error
+            .to_string()
+            .strip_prefix(&prefix)
+            .map(str::to_owned)
+            .with_context(|| format!("{error} does not start with {prefix}"))
     }
 
     fn strings(values: &PlatformValues<&str>) -> PlatformValues<String> {
@@ -560,17 +515,5 @@ mod tests {
                 .starts_with("ios.plist")
         );
         Ok(())
-    }
-
-    #[test]
-    fn keys_are_lowercase_words_joined_by_hyphens() {
-        for key in ["plist", "team-id", "build-number", "a1-b2"] {
-            assert!(is_valid_key(key), "rejected {key}");
-        }
-        for key in [
-            "", "Plist", "team_id", "-plist", "plist-", "team--id", "1plist",
-        ] {
-            assert!(!is_valid_key(key), "accepted {key}");
-        }
     }
 }

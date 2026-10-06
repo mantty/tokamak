@@ -12,10 +12,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use tokamak::TokamakConfig;
 use tokamak_cli::Platform;
 
 use super::devices::PreparedDevice;
+use super::tokamak_config::TokamakConfig;
 use super::vite::{PLUGIN_HINT, VitePlugin};
 use super::wrangler_config::{self, WranglerConfig};
 use super::{devices, pipeline, settings};

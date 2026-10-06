@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use tokamak::{TokamakConfig, parse_tokamak_config};
 
 use super::support;
+use super::tokamak_config::{self, TokamakConfig};
 
 /// How a missing report is fixed.
 pub(crate) const PLUGIN_HINT: &str =
@@ -70,7 +70,7 @@ impl VitePlugin {
         let Some(file) = report.file else {
             return Ok(Some(TokamakConfig::default()));
         };
-        Ok(Some(parse_tokamak_config(&file, report.config)?))
+        Ok(Some(tokamak_config::parse_config(&file, report.config)?))
     }
 
     /// The development server's URL, once the plugin has reported it.
