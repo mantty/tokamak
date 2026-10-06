@@ -11,6 +11,8 @@ mod android_jni;
 #[cfg(all(feature = "native", target_vendor = "apple"))]
 mod apple_ffi;
 #[cfg(feature = "native")]
+mod assets;
+#[cfg(feature = "native")]
 mod cert_generation;
 #[cfg(feature = "native")]
 mod cert_validation;
@@ -72,8 +74,9 @@ pub use env_vars::{
 #[cfg(feature = "native")]
 pub use lifecycle_events::Event;
 pub use packaging::{
-    Error as BundleError, ModuleType, PackageLayout, WorkerManifest, read_worker_manifest,
-    read_worker_module, write_worker,
+    AssetManifest, Error as BundleError, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout,
+    WorkerManifest, read_asset_manifest, read_worker_manifest, read_worker_module,
+    write_asset_manifest, write_worker,
 };
 pub use quickjs::Error as QuickJsError;
 pub use quickjs::compile_module;

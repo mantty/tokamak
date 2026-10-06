@@ -9,6 +9,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use tokamak::{HtmlHandling, NotFoundHandling};
 
 /// Where a build records the configuration it generated for deployment.
 const DEPLOY_CONFIG: &str = ".wrangler/deploy/config.json";
@@ -127,15 +128,10 @@ pub(crate) struct WranglerRule {
 /// A module type in Wrangler's module rules, each named as Wrangler names it.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 pub(crate) enum WranglerModuleType {
-    /// JavaScript ES module source.
     ESModule,
-    /// `CommonJS` JavaScript source.
     CommonJS,
-    /// Compiled WebAssembly binary.
     CompiledWasm,
-    /// Text, imported as a string.
     Text,
-    /// Binary data, imported as an `ArrayBuffer`.
     Data,
 }
 
@@ -150,78 +146,6 @@ pub(crate) struct WranglerAssets {
     pub(crate) html_handling: HtmlHandling,
     /// Cloudflare-style asset miss handling mode.
     pub(crate) not_found_handling: NotFoundHandling,
-}
-
-/// Cloudflare static asset `html_handling` mode.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum HtmlHandling {
-    /// Match asset paths exactly.
-    None,
-    /// Use Cloudflare's automatic trailing-slash behavior.
-    Auto,
-    /// Prefer directory-index paths.
-    Force,
-    /// Prefer extension paths.
-    Drop,
-}
-
-impl HtmlHandling {
-    /// Parse a Wrangler `assets.html_handling` value.
-    fn parse(value: &str) -> Result<Self> {
-        match value {
-            "none" => Ok(Self::None),
-            "auto-trailing-slash" => Ok(Self::Auto),
-            "force-trailing-slash" => Ok(Self::Force),
-            "drop-trailing-slash" => Ok(Self::Drop),
-            _ => bail!(
-                "invalid asset configuration: unsupported assets.html_handling value '{value}'"
-            ),
-        }
-    }
-
-    /// Return the Wrangler string representation.
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Auto => "auto-trailing-slash",
-            Self::Force => "force-trailing-slash",
-            Self::Drop => "drop-trailing-slash",
-        }
-    }
-}
-
-/// Cloudflare static asset `not_found_handling` mode.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum NotFoundHandling {
-    /// Return a plain 404 when no asset matches.
-    None,
-    /// Serve `/index.html` with status 200 when no asset matches.
-    SinglePageApplication,
-    /// Serve the nearest `404.html` with status 404 when no asset matches.
-    Page404,
-}
-
-impl NotFoundHandling {
-    /// Parse a Wrangler `assets.not_found_handling` value.
-    fn parse(value: &str) -> Result<Self> {
-        match value {
-            "none" => Ok(Self::None),
-            "single-page-application" => Ok(Self::SinglePageApplication),
-            "404-page" => Ok(Self::Page404),
-            _ => bail!(
-                "invalid asset configuration: unsupported assets.not_found_handling value '{value}'"
-            ),
-        }
-    }
-
-    /// Return the Wrangler string representation.
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::SinglePageApplication => "single-page-application",
-            Self::Page404 => "404-page",
-        }
-    }
 }
 
 /// The configuration a build generated for deployment, found as Wrangler
@@ -339,18 +263,18 @@ fn resolve_assets(
     Ok(WranglerAssets {
         directory: config_dir.join(directory),
         binding,
-        html_handling: assets
-            .html_handling
-            .as_deref()
-            .map(HtmlHandling::parse)
-            .transpose()?
-            .unwrap_or(HtmlHandling::Auto),
-        not_found_handling: assets
-            .not_found_handling
-            .as_deref()
-            .map(NotFoundHandling::parse)
-            .transpose()?
-            .unwrap_or(NotFoundHandling::None),
+        html_handling: asset_setting("html_handling", assets.html_handling)?,
+        not_found_handling: asset_setting("not_found_handling", assets.not_found_handling)?,
+    })
+}
+
+/// The `assets.{field}` setting `value`, or its default.
+fn asset_setting<T: DeserializeOwned + Default>(field: &str, value: Option<String>) -> Result<T> {
+    let Some(value) = value else {
+        return Ok(T::default());
+    };
+    serde_json::from_value(Value::String(value.clone())).map_err(|_| {
+        anyhow!("invalid asset configuration: unsupported assets.{field} value '{value}'")
     })
 }
 
@@ -929,7 +853,7 @@ mod tests {
         let assets = config.assets.context("assets should be parsed")?;
         assert_eq!(assets.directory, root.join("build/client"));
         assert_eq!(assets.binding, "STATIC");
-        assert_eq!(assets.html_handling, HtmlHandling::Drop);
+        assert_eq!(assets.html_handling, HtmlHandling::DropTrailingSlash);
         assert_eq!(
             assets.not_found_handling,
             NotFoundHandling::SinglePageApplication

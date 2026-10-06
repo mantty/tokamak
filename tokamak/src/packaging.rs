@@ -147,6 +147,52 @@ impl WorkerManifest {
     }
 }
 
+/// A packaged app's static assets, in [`PackageLayout::assets`], and how
+/// requests resolve to them.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetManifest {
+    /// The name of the Worker's binding to the assets.
+    pub binding: String,
+    /// The content type of each asset, by its path in the assets directory.
+    pub files: BTreeMap<String, String>,
+    /// The paths HTML assets are served at.
+    pub html_handling: HtmlHandling,
+    /// What serves a path no asset serves.
+    pub not_found_handling: NotFoundHandling,
+}
+
+/// Cloudflare's `assets.html_handling`: the paths HTML assets are served at.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HtmlHandling {
+    /// `page/index.html` at `/page/` and `page.html` at `/page`.
+    #[default]
+    AutoTrailingSlash,
+    /// Both at `/page/`.
+    ForceTrailingSlash,
+    /// Both at `/page`.
+    DropTrailingSlash,
+    /// Each asset at its own path only.
+    None,
+}
+
+/// Cloudflare's `assets.not_found_handling`: what serves a path no asset
+/// serves.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotFoundHandling {
+    /// Nothing.
+    #[default]
+    None,
+    /// `/index.html`, with status 200.
+    SinglePageApplication,
+    /// The nearest `404.html` in the path's directory or above it, with
+    /// status 404.
+    #[serde(rename = "404-page")]
+    Page404,
+}
+
 /// Package the Worker `manifest` describes, from its module files in `root`:
 /// ES modules compiled to bytecode, Text and Data modules copied into its
 /// `/bundle`.
@@ -200,6 +246,27 @@ pub fn read_worker_module(layout: &PackageLayout, name: &str) -> Result<Vec<u8>>
     Ok(bytecode)
 }
 
+/// Write the packaged app's asset manifest.
+///
+/// # Errors
+///
+/// Returns an error when the manifest cannot be encoded or written.
+pub fn write_asset_manifest(layout: &PackageLayout, manifest: &AssetManifest) -> Result<()> {
+    write_file(
+        &layout.asset_manifest(),
+        &serde_json::to_vec_pretty(manifest)?,
+    )
+}
+
+/// Read the packaged app's asset manifest.
+///
+/// # Errors
+///
+/// Returns an error when the manifest cannot be read or decoded.
+pub fn read_asset_manifest(layout: &PackageLayout) -> Result<AssetManifest> {
+    read_json(&layout.asset_manifest())
+}
+
 /// `name`'s bytecode, gzip-compressed unless that makes it larger, so each
 /// module decodes independently and small modules stay cheap.
 fn compile_worker_module(name: &str, source: &[u8]) -> Result<Vec<u8>> {
@@ -236,7 +303,8 @@ mod tests {
     use std::fs;
 
     use super::{
-        ModuleType, PackageLayout, WorkerManifest, read_worker_manifest, read_worker_module,
+        AssetManifest, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout, WorkerManifest,
+        read_asset_manifest, read_worker_manifest, read_worker_module, write_asset_manifest,
         write_worker,
     };
     use crate::compiler::{SourceText, compile_module};
@@ -343,6 +411,27 @@ mod tests {
                 .starts_with("compile Worker module entry.js: "),
             "{error}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn writes_the_asset_manifest_in_wrangler_terms() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let layout = PackageLayout::new(directory.path());
+        let manifest = AssetManifest {
+            binding: "STATIC".to_owned(),
+            files: BTreeMap::from([("index.html".to_owned(), "text/html".to_owned())]),
+            html_handling: HtmlHandling::DropTrailingSlash,
+            not_found_handling: NotFoundHandling::Page404,
+        };
+
+        write_asset_manifest(&layout, &manifest)?;
+
+        let json: serde_json::Value = serde_json::from_slice(&fs::read(layout.asset_manifest())?)?;
+        assert_eq!(json["htmlHandling"], "drop-trailing-slash");
+        assert_eq!(json["notFoundHandling"], "404-page");
+        assert_eq!(read_asset_manifest(&layout)?, manifest);
+        assert!(layout.serves_assets());
         Ok(())
     }
 }

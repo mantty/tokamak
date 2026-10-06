@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokamak::{
-    ModuleType, PackageLayout, WorkerEnvironment, WorkerManifest, write_worker,
+    AssetManifest, ModuleType, PackageLayout, WorkerEnvironment, WorkerManifest, write_worker,
     write_worker_environment,
 };
 use walkdir::WalkDir;
@@ -94,16 +94,13 @@ fn write_asset_manifest(layout: &PackageLayout, assets: &WranglerAssets) -> Resu
             content_type.essence_str().to_owned(),
         );
     }
-    let manifest = serde_json::json!({
-        "binding": assets.binding,
-        "files": files,
-        "htmlHandling": assets.html_handling.as_str(),
-        "notFoundHandling": assets.not_found_handling.as_str(),
-    });
-    fs::write(
-        layout.asset_manifest(),
-        serde_json::to_vec_pretty(&manifest)?,
-    )?;
+    let manifest = AssetManifest {
+        binding: assets.binding.clone(),
+        files,
+        html_handling: assets.html_handling,
+        not_found_handling: assets.not_found_handling,
+    };
+    tokamak::write_asset_manifest(layout, &manifest)?;
     Ok(())
 }
 
@@ -155,7 +152,8 @@ fn module_type(name: &str, rule_type: WranglerModuleType) -> Result<ModuleType> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wrangler_config::{self, HtmlHandling, NotFoundHandling};
+    use crate::wrangler_config;
+    use tokamak::{HtmlHandling, NotFoundHandling};
 
     /// The Worker `root/index.js` with the module rules `rules`, as JSON.
     fn worker(root: &Path, rules: &str) -> Result<WranglerConfig> {
@@ -254,20 +252,23 @@ mod tests {
         let assets = WranglerAssets {
             directory: layout.assets(),
             binding: "ASSETS".to_owned(),
-            html_handling: HtmlHandling::Drop,
+            html_handling: HtmlHandling::DropTrailingSlash,
             not_found_handling: NotFoundHandling::SinglePageApplication,
         };
 
         write_asset_manifest(&layout, &assets)?;
 
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(layout.asset_manifest())?)?;
-        assert_eq!(manifest["binding"], "ASSETS");
-        assert_eq!(manifest["files"]["index.html"], "text/html");
-        assert_eq!(manifest["files"]["styles/app.css"], "text/css");
-        assert_eq!(manifest["htmlHandling"], "drop-trailing-slash");
-        assert_eq!(manifest["notFoundHandling"], "single-page-application");
-        assert!(layout.serves_assets());
+        assert_eq!(
+            tokamak::read_asset_manifest(&layout)?,
+            AssetManifest {
+                binding: "ASSETS".to_owned(),
+                files: [("index.html", "text/html"), ("styles/app.css", "text/css")]
+                    .map(|(file, content_type)| (file.to_owned(), content_type.to_owned()))
+                    .into(),
+                html_handling: HtmlHandling::DropTrailingSlash,
+                not_found_handling: NotFoundHandling::SinglePageApplication,
+            }
+        );
         Ok(())
     }
 }

@@ -7,7 +7,10 @@ use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tokamak::compile_module;
-use tokamak::{ModuleType, PackageLayout, read_worker_manifest, read_worker_module};
+use tokamak::{
+    HtmlHandling, ModuleType, NotFoundHandling, PackageLayout, read_asset_manifest,
+    read_worker_manifest, read_worker_module,
+};
 use tokamak_cli::{
     MANIFEST_FILE, PackVariable, PlatformPackManifest, Target, VariableKind, write_manifest,
 };
@@ -752,9 +755,8 @@ fn builds_macos_app_with_quickjs_bundle_and_assets() -> TestResult {
     assert!(!bundle.join("Contents/Resources/Assets.car").exists());
     assert!(!plist.contains("CFBundleIconName"));
     assert!(!plist.contains("CFBundleIconFile"));
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(app.join("asset-manifest.json"))?)?;
-    assert_eq!(manifest["files"]["styles/app.css"], "text/css");
+    let manifest = read_asset_manifest(&PackageLayout::new(&app))?;
+    assert_eq!(manifest.files["styles/app.css"], "text/css");
     assert!(!app.join("config.capnp").exists());
     Ok(())
 }
@@ -2451,10 +2453,13 @@ fn writes_configured_asset_routing_modes() -> TestResult {
         .assert()
         .success();
 
-    let path = project.join("build/macos/demo-app.app/Contents/Resources/app/asset-manifest.json");
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
-    assert_eq!(value["htmlHandling"], "drop-trailing-slash");
-    assert_eq!(value["notFoundHandling"], "single-page-application");
+    let app = PackageLayout::new(project.join("build/macos/demo-app.app/Contents/Resources/app"));
+    let manifest = read_asset_manifest(&app)?;
+    assert_eq!(manifest.html_handling, HtmlHandling::DropTrailingSlash);
+    assert_eq!(
+        manifest.not_found_handling,
+        NotFoundHandling::SinglePageApplication
+    );
     Ok(())
 }
 

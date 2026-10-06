@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::assets::Assets;
 use crate::certificates::{Certificates, Renewal};
 use crate::dev_proxy::{DevProxy, DevProxyConfig};
 use crate::dispatcher::Dispatcher;
@@ -14,7 +15,7 @@ use crate::gateway::{self, GatewayConfig};
 use crate::lifecycle_events::{Event, Events};
 use crate::linked::StorageRuntime;
 use crate::packaging::{PackageLayout, read_worker_manifest};
-use crate::quickjs::{Assets, RuntimeConfig, WorkerBundle};
+use crate::quickjs::{RuntimeConfig, WorkerBundle};
 
 use crate::Result;
 
@@ -74,7 +75,7 @@ impl Runtime {
         )?);
         let worker = WorkerBundle::new(read_worker_manifest(&config.app)?, config.app.clone());
         validate_worker(&worker)?;
-        let handler = Dispatcher::new(worker, quickjs_config(&config)?)?;
+        let handler = Dispatcher::new(worker, quickjs_config(&config)?);
         finish_start(events, config.host, certificates, handler)
     }
 
@@ -214,10 +215,11 @@ fn quickjs_config(config: &Config) -> Result<RuntimeConfig> {
     let mut vars = environment.vars;
     vars.insert(RUNTIME_MARKER.to_owned(), "true".into());
     Ok(RuntimeConfig {
-        assets: app.serves_assets().then(|| Assets {
-            manifest: app.asset_manifest(),
-            root: app.assets(),
-        }),
+        assets: app
+            .serves_assets()
+            .then(|| Assets::open(app))
+            .transpose()?
+            .map(Arc::new),
         cache: config.state_dir.join("cache"),
         environment: vars,
         storage,
@@ -274,7 +276,9 @@ mod tests {
         }
     }
     use crate::certificates::Certificates;
-    use crate::packaging::PackageLayout;
+    use crate::packaging::{
+        AssetManifest, HtmlHandling, NotFoundHandling, PackageLayout, write_asset_manifest,
+    };
     use std::sync::Arc;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -304,7 +308,15 @@ mod tests {
 
         assert!(quickjs_config(&config(directory.path()))?.assets.is_none());
 
-        std::fs::write(app.asset_manifest(), "{}")?;
+        write_asset_manifest(
+            &app,
+            &AssetManifest {
+                binding: "ASSETS".to_owned(),
+                files: BTreeMap::new(),
+                html_handling: HtmlHandling::default(),
+                not_found_handling: NotFoundHandling::default(),
+            },
+        )?;
 
         assert!(quickjs_config(&config(directory.path()))?.assets.is_some());
         Ok(())

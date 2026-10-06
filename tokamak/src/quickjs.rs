@@ -14,8 +14,6 @@ use crate::fs::Bundle as VfsBundle;
 #[cfg(feature = "native")]
 use crate::packaging::{ModuleType, PackageLayout, WorkerManifest};
 #[cfg(feature = "native")]
-use serde::{Deserialize, Serialize};
-#[cfg(feature = "native")]
 use serde_json::Value;
 use thiserror::Error;
 
@@ -58,16 +56,6 @@ impl Error {
     }
 }
 
-/// Static asset service paths.
-#[cfg(feature = "native")]
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Assets {
-    /// Asset routing manifest.
-    pub manifest: PathBuf,
-    /// Root directory containing static assets.
-    pub root: PathBuf,
-}
-
 /// A packaged Worker whose modules are loaded independently by `QuickJS`.
 #[cfg(feature = "native")]
 #[derive(Clone, Debug)]
@@ -99,7 +87,7 @@ impl WorkerBundle {
 impl WorkerBundle {
     /// The Worker of the ES module `source`, packaged in `directory`.
     pub(crate) fn of_source(
-        source: &[u8],
+        source: impl AsRef<[u8]>,
         directory: &std::path::Path,
     ) -> std::result::Result<Self, crate::packaging::Error> {
         let manifest = WorkerManifest::es_modules("worker.mjs", &[]);
@@ -114,8 +102,8 @@ impl WorkerBundle {
 #[cfg(feature = "native")]
 #[derive(Clone, Debug)]
 pub(crate) struct RuntimeConfig {
-    /// Optional static asset service.
-    pub(crate) assets: Option<Assets>,
+    /// The app's static assets, when it has any.
+    pub(crate) assets: Option<Arc<crate::assets::Assets>>,
     /// Directory containing the app-private Worker cache.
     pub(crate) cache: PathBuf,
     /// Text and JSON Worker environment bindings.

@@ -1,6 +1,5 @@
 use reqwest::header::{HeaderMap, HeaderValue};
 use std::collections::BTreeMap;
-use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener};
 use std::path::{Path, PathBuf};
@@ -9,11 +8,15 @@ use std::sync::{Arc, atomic::AtomicBool};
 use std::thread;
 use std::time::Duration;
 
-use crate::dispatcher::{AssetService, execute_request};
+use crate::assets::Assets;
+use crate::dispatcher::{Dispatcher, execute_request};
 use crate::env_vars::StorageBinding;
-use crate::gateway::{Job, JobResponse, Lifecycle};
-use crate::packaging::{ModuleType, PackageLayout, WorkerManifest, write_worker};
-use crate::quickjs::{Assets, RuntimeConfig, WorkerBundle};
+use crate::gateway::{Handler, Job, JobResponse, Lifecycle};
+use crate::packaging::{
+    AssetManifest, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout, WorkerManifest,
+    write_worker,
+};
+use crate::quickjs::{RuntimeConfig, WorkerBundle};
 use crate::storage::Storage;
 use crate::transport::{HttpBody, HttpRequest};
 
@@ -58,55 +61,34 @@ fn module_worker(root: &Path, entry: &str, output: &Path) -> TestResult<WorkerBu
 }
 
 fn request(worker: &WorkerBundle, flag: &str) -> TestResult<Vec<u8>> {
-    let directory = tempfile::tempdir()?;
-    let config = RuntimeConfig {
-        assets: None,
-        cache: directory.path().join("cache"),
-        environment: BTreeMap::from([("FLAG".to_owned(), serde_json::json!(flag))]),
-        storage: None,
-    };
-    request_with(worker, &config)
+    let environment = BTreeMap::from([("FLAG".to_owned(), serde_json::json!(flag))]);
+    request_with(worker, runtime_config(environment, None)?)
 }
 
-fn request_with(worker: &WorkerBundle, config: &RuntimeConfig) -> TestResult<Vec<u8>> {
-    let accepting = Arc::new(AtomicBool::new(true));
-    let lifecycle = Lifecycle::new();
-    let execution = lifecycle.enter(&accepting).ok_or("request rejected")?;
-    let (sender, receiver) = flume::bounded(1);
-    execute_request(
-        worker,
-        config,
-        None,
-        Job {
-            request: HttpRequest {
-                persistent: true,
-                method: "GET".to_owned(),
-                target: "/".to_owned(),
-                url: "https://app.tokamak.local/".to_owned(),
-                headers: HeaderMap::new(),
-                body: None,
-            },
-            response: sender,
-            websocket: None,
-        },
-        &execution,
-    )?;
-    let JobResponse::Http(response) = receiver.recv()? else {
-        return Err("unexpected websocket".into());
-    };
-    assert_eq!(response.status, 200);
-    let HttpBody::Buffered(body) = response.body else {
-        return Err("unexpected stream".into());
-    };
+/// The body of `worker`'s 200 response, with `config`, to `GET /`.
+fn request_with(worker: &WorkerBundle, config: RuntimeConfig) -> TestResult<Vec<u8>> {
+    let (status, _, body, _) = fixture_request(worker, config, http_request("GET", "/", None))?;
+    assert_eq!(status, 200);
     Ok(body)
+}
+
+/// A configuration of `environment` and `assets`, with a cache of its own.
+fn runtime_config(
+    environment: BTreeMap<String, serde_json::Value>,
+    assets: Option<Arc<Assets>>,
+) -> TestResult<RuntimeConfig> {
+    Ok(RuntimeConfig {
+        assets,
+        cache: tempfile::tempdir()?.path().join("cache"),
+        environment,
+        storage: None,
+    })
 }
 
 #[test]
 fn node_web_stream_adapters_close_and_flush_vectors() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("web-adapters.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         r#"
 import { Writable, Duplex } from "node:stream";
 export default { async fetch() {
@@ -146,8 +128,8 @@ export default { async fetch() {
   return Response.json({ chunks, errors, callbacks });
 } };
 "#,
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(request(&worker, "enabled")?, br#"{"chunks":[1,2,3,4,3,4],"errors":["sink rejected","sink rejected"],"callbacks":["sink rejected","sink rejected","sink rejected","sink rejected"]}"#);
     Ok(())
 }
@@ -155,9 +137,7 @@ export default { async fetch() {
 #[test]
 fn node_web_duplex_failure_closes_the_live_peer() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("web-duplex-failure.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         r#"
 import { Duplex } from "node:stream";
 export default { async fetch() {
@@ -181,8 +161,8 @@ export default { async fetch() {
   return Response.json(cleanup);
 } };
 "#,
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(
         request(&worker, "enabled")?,
         br#"[["writable","readable"],["readable","writable"]]"#
@@ -193,9 +173,7 @@ export default { async fetch() {
 #[test]
 fn brotli_small_output_buffers_drain_without_recursion() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("brotli-small-buffers.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         r#"
 import { brotliCompressSync, createBrotliDecompress } from "node:zlib";
 import { Buffer } from "node:buffer";
@@ -215,8 +193,8 @@ export default { async fetch() {
   return Response.json({ restored: Buffer.concat(chunks).toString() === plain });
 } };
 "#,
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(request(&worker, "enabled")?, br#"{"restored":true}"#);
     Ok(())
 }
@@ -224,9 +202,7 @@ export default { async fetch() {
 #[test]
 fn due_timers_preserve_order_and_microtask_checkpoints() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("timer-order.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         r#"
 export default { async fetch() {
   for (let round = 0; round < 20; round++) {
@@ -245,8 +221,8 @@ export default { async fetch() {
   return new Response("ordered");
 } };
 "#,
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(request(&worker, "enabled")?, b"ordered");
     Ok(())
 }
@@ -264,9 +240,7 @@ fn timers_progress_while_a_socket_waits_for_data() -> TestResult {
         stream.write_all(b"pong")
     });
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("socket-timer.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         format!(
             r#"
 import {{ connect }} from "node:net";
@@ -284,8 +258,8 @@ export default {{ async fetch() {{
 }} }};
 "#
         ),
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let actual = request(&worker, "first");
     server.join().map_err(|_| "socket server panicked")??;
     assert_eq!(actual?, b"true");
@@ -343,9 +317,7 @@ fn timers_progress_while_fetch_waits_for_the_network() -> TestResult {
         stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
     });
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("concurrent-fetch.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         format!(
             r#"
 export default {{ async fetch() {{
@@ -358,8 +330,8 @@ export default {{ async fetch() {{
 }} }};
 "#
         ),
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let actual = request(&worker, "first");
     server.join().map_err(|_| "upstream panicked")??;
     assert_eq!(
@@ -372,12 +344,10 @@ export default {{ async fetch() {{
 #[test]
 fn packaged_globals_precede_application_modules() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("startup.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         "import { Readable } from 'node:stream'; const decoder = new TextDecoder(); const value = decoder.decode(new TextEncoder().encode('ready')); const signal = AbortSignal.any([]); export default { async fetch() { const chunks = []; for await (const chunk of Readable.from([value], { signal })) chunks.push(chunk); return new Response(chunks.join('')); } };",
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(request(&worker, "first")?, b"ready");
     Ok(())
 }
@@ -385,9 +355,7 @@ fn packaged_globals_precede_application_modules() -> TestResult {
 #[test]
 fn node_http_handler_uses_tokamak_request_response_boundary() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("http-handler.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         r#"
 import http from "node:http";
 import { httpServerHandler } from "cloudflare:node";
@@ -403,8 +371,8 @@ const server = http.createServer((request, response) => {
 
 export default httpServerHandler(server);
 "#,
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let config = RuntimeConfig {
         assets: None,
         cache: directory.path().join("cache"),
@@ -418,7 +386,6 @@ export default httpServerHandler(server);
     execute_request(
         &worker,
         &config,
-        None,
         Job {
             request: HttpRequest {
                 persistent: true,
@@ -451,9 +418,7 @@ export default httpServerHandler(server);
 #[test]
 fn worker_entrypoint_receives_context_and_module_exports() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("entrypoint.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         r#"
 import { env, exports, WorkerEntrypoint } from "cloudflare:workers";
 export const named = { value: 42 };
@@ -472,8 +437,8 @@ export default class App extends WorkerEntrypoint {
   }
 }
 "#,
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let response: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
     assert_eq!(response["instance"], true);
     assert_eq!(response["env"], "enabled");
@@ -623,7 +588,7 @@ fn storage_bindings_match_cloudflare() -> TestResult {
             &bindings,
         )?)),
     };
-    let actual: serde_json::Value = serde_json::from_slice(&request_with(&worker, &config)?)?;
+    let actual: serde_json::Value = serde_json::from_slice(&request_with(&worker, config)?)?;
     assert_contract_domains(&expected, &actual)
 }
 
@@ -644,9 +609,7 @@ fn r2_stores_fetched_bodies_of_known_length() -> TestResult {
         serve_gzip_upstream(&encoded)
     });
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("fetched.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         format!(
             r#"
 export default {{ async fetch(request, env) {{
@@ -656,8 +619,8 @@ export default {{ async fetch(request, env) {{
 }} }};
 "#
         ),
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let bindings = [StorageBinding::R2 {
         name: "FILES".to_owned(),
         id: "files".to_owned(),
@@ -674,7 +637,7 @@ export default {{ async fetch(request, env) {{
         )?)),
     };
 
-    let actual = request_with(&worker, &config);
+    let actual = request_with(&worker, config);
     server.join().map_err(|_| "upstream panicked")??;
 
     assert_eq!(
@@ -692,9 +655,7 @@ export default {{ async fetch(request, env) {{
 fn every_public_module_spelling_imports() -> TestResult {
     let names = serde_json::to_string(&crate::runtime_modules::runtime_module_names())?;
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("spellings.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         format!(
             r"const names = {names};
 export default {{ async fetch() {{
@@ -707,8 +668,8 @@ export default {{ async fetch() {{
 }} }};
 "
         ),
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(request(&worker, "first")?, b"[]");
     Ok(())
 }
@@ -757,7 +718,8 @@ fn boundary_request(
         "UPSTREAM_PORT".to_owned(),
         serde_json::json!(upstream_port.to_string()),
     )]);
-    fixture_request(worker, environment, None, method, target, body)
+    let config = runtime_config(environment, None)?;
+    fixture_request(worker, config, http_request(method, target, body))
 }
 
 #[test]
@@ -784,14 +746,9 @@ fn response_encoding_matches_cloudflare() -> TestResult {
         .build()?;
     let mut failures = Vec::new();
     for (index, expected) in expected.iter().enumerate() {
-        let (_, headers, raw, _) = fixture_request(
-            &worker,
-            BTreeMap::new(),
-            None,
-            "GET",
-            &format!("/?case={index}"),
-            None,
-        )?;
+        let request = http_request("GET", &format!("/?case={index}"), None);
+        let config = runtime_config(BTreeMap::new(), None)?;
+        let (_, headers, raw, _) = fixture_request(&worker, config, request)?;
         let encoding = headers
             .get("content-encoding")
             .ok_or("missing encoding")?
@@ -831,16 +788,14 @@ fn response_encoding_matches_cloudflare() -> TestResult {
 #[test]
 fn worker_response_rejects_header_overflow_without_panicking() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("headers.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         r#"
 export default { fetch() {
   return new Response(null, { headers: Array.from({ length: 25000 }, (_, index) => [`x-${index}`, "value"]) });
 } };
 "#,
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let Err(error) = request(&worker, "overflow") else {
         return Err("header limit must be reported as a request error".into());
     };
@@ -851,9 +806,7 @@ export default { fetch() {
 #[test]
 fn worker_response_preserves_duplicate_headers() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("headers.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         r#"
 export default { fetch() {
   return new Response("ok", { status: 201, statusText: "Created Here", headers: [
@@ -862,10 +815,13 @@ export default { fetch() {
   ] });
 } };
 "#,
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
-    let (status, headers, body, status_text) =
-        fixture_request(&worker, BTreeMap::new(), None, "GET", "/", None)?;
+    let (status, headers, body, status_text) = fixture_request(
+        &worker,
+        runtime_config(BTreeMap::new(), None)?,
+        http_request("GET", "/", None),
+    )?;
     assert_eq!(status, 201);
     assert_eq!(status_text, "Created Here");
     assert_eq!(body, b"ok");
@@ -881,70 +837,38 @@ export default { fetch() {
     Ok(())
 }
 
+/// The response of `worker`, with `config`, to `request`.
 fn fixture_request(
     worker: &WorkerBundle,
-    environment: BTreeMap<String, serde_json::Value>,
-    assets: Option<Assets>,
-    method: &str,
-    target: &str,
-    body: Option<Vec<u8>>,
+    config: RuntimeConfig,
+    request: HttpRequest,
 ) -> TestResult<(u16, HeaderMap, Vec<u8>, String)> {
-    let directory = tempfile::tempdir()?;
-    let config = RuntimeConfig {
-        assets: assets.clone(),
-        cache: directory.path().join("cache"),
-        environment,
-        storage: None,
-    };
-    let mut headers = HeaderMap::new();
-    if body.is_some() {
-        headers.insert(
-            "content-type",
-            HeaderValue::from_static("application/octet-stream"),
-        );
-    }
+    let dispatcher = Dispatcher::new(worker.clone(), config);
     let (sender, receiver) = flume::bounded(1);
     let job = Job {
-        request: HttpRequest {
-            persistent: true,
-            method: method.to_owned(),
-            target: target.to_owned(),
-            url: format!("https://app.tokamak.local{target}"),
-            headers,
-            body,
-        },
+        request,
         response: sender,
         websocket: None,
     };
     // The worker runs on its own thread so streamed bodies can be consumed here.
-    let worker = worker.clone();
     let handle = thread::spawn(move || -> Result<(), String> {
-        let service = assets
-            .as_ref()
-            .map(AssetService::new)
-            .transpose()
-            .map_err(|error| error.to_string())?
-            .map(Arc::new);
-        // Assets are served before the worker, matching Dispatcher::handle.
-        if let Some(service) = &service
-            && let Some(asset) = service
-                .response(&job.request)
-                .map_err(|error| error.to_string())?
-        {
-            return job
-                .response
-                .send(JobResponse::Http(asset))
-                .map_err(|error| error.to_string());
-        }
         let accepting = Arc::new(AtomicBool::new(true));
         let lifecycle = Lifecycle::new();
         let execution = lifecycle
             .enter(&accepting)
             .ok_or("request rejected".to_owned())?;
-        execute_request(&worker, &config, service.as_ref(), job, &execution)
+        dispatcher
+            .handle(job, &execution)
             .map_err(|error| error.to_string())
     });
-    let JobResponse::Http(response) = receiver.recv_timeout(Duration::from_secs(30))? else {
+    let response = match receiver.recv_timeout(Duration::from_secs(30)) {
+        Err(flume::RecvTimeoutError::Disconnected) => {
+            handle.join().map_err(|_| "worker panicked")??;
+            return Err("the worker sent no response".into());
+        }
+        response => response?,
+    };
+    let JobResponse::Http(response) = response else {
         return Err("unexpected websocket".into());
     };
     let body = match response.body {
@@ -957,13 +881,90 @@ fn fixture_request(
             collected
         }
     };
-    handle.join().map_err(|_| "boundary worker panicked")??;
+    handle.join().map_err(|_| "worker panicked")??;
     Ok((
         response.status,
         response.headers,
         body,
         response.status_text,
     ))
+}
+
+fn http_request(method: &str, target: &str, body: Option<Vec<u8>>) -> HttpRequest {
+    let mut headers = HeaderMap::new();
+    if body.is_some() {
+        headers.insert(
+            "content-type",
+            HeaderValue::from_static("application/octet-stream"),
+        );
+    }
+    HttpRequest {
+        persistent: true,
+        method: method.to_owned(),
+        target: target.to_owned(),
+        url: format!("https://app.tokamak.local{target}"),
+        headers,
+        body,
+    }
+}
+
+/// One asset configuration's answers in `assets-reference.mjs`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AssetsContract {
+    html_handling: HtmlHandling,
+    not_found_handling: NotFoundHandling,
+    /// Each request's method, path and whether it is a navigation.
+    requests: Vec<(String, String, bool)>,
+    router: Vec<serde_json::Value>,
+    binding: Vec<serde_json::Value>,
+}
+
+#[test]
+fn assets_match_cloudflare() -> TestResult {
+    let contracts: Vec<AssetsContract> =
+        serde_json::from_value(node_reference("assets-reference.mjs")?)?;
+    let fixture = fixture_root().join("assets");
+    let directory = tempfile::tempdir()?;
+    let worker = entry_worker(&fixture.join("worker.mjs"), directory.path())?;
+    let public = fixture.join("public");
+    let mut files = BTreeMap::new();
+    for file in walkdir::WalkDir::new(&public) {
+        let file = file?;
+        if file.file_type().is_file() {
+            let name = file.path().strip_prefix(&public)?.to_string_lossy();
+            files.insert(name.replace('\\', "/"), "text/plain".to_owned());
+        }
+    }
+    for contract in contracts {
+        let manifest = AssetManifest {
+            binding: "STATIC".to_owned(),
+            files: files.clone(),
+            html_handling: contract.html_handling,
+            not_found_handling: contract.not_found_handling,
+        };
+        let assets = Some(Arc::new(Assets::new(public.clone(), manifest)));
+        let mut router = Vec::new();
+        for (method, path, navigation) in &contract.requests {
+            let mut request = http_request(method, path, None);
+            if *navigation {
+                let navigate = HeaderValue::from_static("navigate");
+                request.headers.insert("sec-fetch-mode", navigate);
+            }
+            let config = runtime_config(BTreeMap::new(), assets.clone())?;
+            let (status, _, body, _) = fixture_request(&worker, config, request)?;
+            router.push(serde_json::json!({ "status": status, "body": String::from_utf8(body)? }));
+        }
+        let requests = serde_json::to_vec(&contract.requests)?;
+        let request = http_request("POST", "/binding", Some(requests));
+        let config = runtime_config(BTreeMap::new(), assets)?;
+        let (_, _, binding, _) = fixture_request(&worker, config, request)?;
+        let handling = (contract.html_handling, contract.not_found_handling);
+        assert_eq!(router, contract.router, "{handling:?}");
+        let binding: Vec<serde_json::Value> = serde_json::from_slice(&binding)?;
+        assert_eq!(binding, contract.binding, "{handling:?}");
+    }
+    Ok(())
 }
 
 fn serve_gzip_upstream(listener: &TcpListener) -> Result<(), String> {
@@ -1028,9 +1029,7 @@ fn node_net_socket_round_trip_uses_tokamak_socket_transport() -> TestResult {
     });
 
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("socket.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         r#"
 import net from "node:net";
 export default { fetch() {
@@ -1047,8 +1046,8 @@ export default { fetch() {
   });
 } };
 "#,
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let body = request(&worker, &port.to_string())?;
     assert_eq!(body, b"pongdone");
     server.join().map_err(|_| "socket fixture panicked")??;
@@ -1075,9 +1074,7 @@ fn node_socket_end_preserves_the_readable_half() -> TestResult {
         Ok(())
     });
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("socket-half-close.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         r#"
 import net from "node:net";
 export default { fetch() {
@@ -1091,8 +1088,8 @@ export default { fetch() {
   });
 } };
 "#,
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let body = request(&worker, &port.to_string())?;
     server.join().map_err(|_| "socket fixture panicked")??;
     assert_eq!(body, b"response after FIN");
@@ -1118,9 +1115,7 @@ fn node_socket_stops_reading_under_backpressure() -> TestResult {
         Ok(())
     });
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("socket-backpressure.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         r#"
 import net from "node:net";
 export default { fetch() {
@@ -1151,8 +1146,8 @@ export default { fetch() {
   });
 } };
 "#,
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let actual: serde_json::Value = serde_json::from_slice(&request(&worker, &port.to_string())?)?;
     assert_eq!(
         actual,
@@ -1163,13 +1158,13 @@ export default { fetch() {
 }
 
 #[test]
-fn astro_example_renders_pages_and_serves_assets() -> TestResult {
+fn astro_example_renders_its_home_page() -> TestResult {
     let example = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or("no workspace")?
         .join("examples/astro");
     if !example.join("dist/server/entry.mjs").is_file() {
-        return Err("Astro runtime fixture is missing; build it as the README's checks do, with TOKAMAK_VITE_OUTPUT set".into());
+        return Err("Astro runtime fixture is missing; build it as the README's checks do".into());
     }
     let directory = tempfile::tempdir()?;
     let worker = module_worker(
@@ -1177,76 +1172,20 @@ fn astro_example_renders_pages_and_serves_assets() -> TestResult {
         "entry.mjs",
         &directory.path().join("modules"),
     )?;
-    let manifest = directory.path().join("asset-manifest.json");
-    let client = example.join("dist/client");
-    write_asset_manifest_for(&client, &manifest)?;
-    let assets = Assets {
-        manifest,
-        root: client,
-    };
     let (status, _, home, _) = fixture_request(
         &worker,
-        BTreeMap::new(),
-        Some(assets.clone()),
-        "GET",
-        "/",
-        None,
+        runtime_config(BTreeMap::new(), None)?,
+        http_request("GET", "/", None),
     )?;
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&home));
     assert!(String::from_utf8(home)?.contains("<html"));
-    // Prerendered pages and static files reach the worker through env.ASSETS.
-    let (status, _, about, _) = fixture_request(
-        &worker,
-        BTreeMap::new(),
-        Some(assets.clone()),
-        "GET",
-        "/about",
-        None,
-    )?;
-    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&about));
-    assert!(String::from_utf8(about)?.contains("About - tokamak Example"));
-    let (status, _, favicon, _) = fixture_request(
-        &worker,
-        BTreeMap::new(),
-        Some(assets),
-        "GET",
-        "/favicon.ico",
-        None,
-    )?;
-    assert_eq!(status, 200);
-    assert!(!favicon.is_empty());
-    Ok(())
-}
-
-fn write_asset_manifest_for(client: &Path, manifest: &Path) -> TestResult {
-    let mut files = serde_json::Map::new();
-    for entry in walkdir::WalkDir::new(client) {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let relative = entry.path().strip_prefix(client)?.to_string_lossy();
-        let mime = mime_guess::from_path(entry.path())
-            .first_or_octet_stream()
-            .to_string();
-        files.insert(format!("/{relative}"), serde_json::json!(mime));
-    }
-    fs::write(
-        manifest,
-        serde_json::to_vec(&serde_json::json!({
-            "files": files,
-            "htmlHandling": "auto-trailing-slash",
-        }))?,
-    )?;
     Ok(())
 }
 
 #[test]
 fn builtin_modules_and_request_state_are_isolated() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("isolation.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         r"
 import { env, waitUntil } from 'cloudflare:workers';
 import fs from 'node:fs';
@@ -1271,8 +1210,8 @@ export default { async fetch() {
   return new Response(JSON.stringify({ calls: ++calls, flag: env.FLAG }));
 } };
 ",
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     assert_eq!(request(&worker, "first")?, br#"{"calls":1,"flag":"first"}"#);
     assert_eq!(
         request(&worker, "second")?,
@@ -1284,9 +1223,7 @@ export default { async fetch() {
 #[test]
 fn imported_wait_until_retains_pending_work() -> TestResult {
     let directory = tempfile::tempdir()?;
-    let source = directory.path().join("pending.mjs");
-    fs::write(
-        &source,
+    let worker = WorkerBundle::of_source(
         r"
 import { waitUntil } from 'cloudflare:workers';
 export default { async fetch() {
@@ -1294,8 +1231,8 @@ export default { async fetch() {
   return new Response('ready');
 } };
 ",
+        directory.path(),
     )?;
-    let worker = entry_worker(&source, &directory.path().join("modules"))?;
     let error = request(&worker, "first")
         .err()
         .ok_or("unsettled waitUntil was discarded")?;
