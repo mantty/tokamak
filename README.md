@@ -367,8 +367,11 @@ file.
 Every value is optional. Names retain their spelling and capitalization for
 display. Tokamak derives a lower-case ASCII slug for bundle filenames,
 application IDs, and `tokamak.local` hosts, so `My App` becomes `my-app`. If a
-platform has no configured name, the Wrangler Worker name is used. The slug is
-also used to derive an identifier when no identifier is configured.
+platform has no configured name, the Wrangler Worker name is used as both name
+and slug, so it must already be a slug: lowercase letters and digits joined by
+single hyphens, at most 63 characters. Set a name for Worker names that are
+not. The slug is also used to derive an identifier when no identifier is
+configured.
 Identifiers are used as the Apple bundle identifier and Android application ID.
 
 Icons are platform-specific formats: an Apple Icon Composer `.icon` package

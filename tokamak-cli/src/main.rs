@@ -12,6 +12,7 @@ mod plugins;
 mod settings;
 mod storage;
 mod support;
+mod tokamak_config;
 mod vite;
 mod worker;
 mod wrangler_config;

@@ -13,8 +13,9 @@ configure or import any transport code.
 
 App names are canonicalized to one lower-case DNS label of at most 63 bytes,
 containing only `a-z`, `0-9`, and interior hyphens. Leading or trailing
-hyphens are rejected. A Wrangler `name` is required; missing, empty, and invalid
-names are packaging errors.
+hyphens are rejected. A Wrangler `name` is required. Without a `name` setting
+the Worker name is the app name, and one that is not a valid slug is a
+packaging error.
 
 ## Required invariants
 

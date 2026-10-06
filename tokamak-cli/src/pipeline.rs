@@ -3,9 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use tokamak::{TokamakConfig, slug};
 use tokamak_cli::{MANIFEST_FILE, Platform, PlatformPackManifest, Target, load_manifest};
 
+use super::tokamak_config::{TokamakConfig, app_name_problem, slug};
 use super::vite::{PLUGIN_HINT, VitePlugin};
 use super::wrangler_config::{self, WranglerConfig};
 use super::{cache, plugins, settings, support, worker};
@@ -62,11 +62,19 @@ struct PlatformBuild {
     pack_root: PathBuf,
     manifest: PlatformPackManifest,
     settings: settings::PlatformSettings,
+    app: App,
+}
+
+/// The app on one platform: its display name, the name's slug, and its
+/// application identifier.
+struct App {
+    name: String,
+    slug: String,
+    identifier: String,
 }
 
 struct BuildMetadata<'a> {
-    app: (&'a str, &'a str),
-    identifier: &'a str,
+    app: &'a App,
     manifest: &'a PlatformPackManifest,
     version: Option<&'a str>,
     development: Option<(&'a str, &'a str)>,
@@ -116,24 +124,26 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         &current_dir,
     );
     let version = required_version(&sources)?;
-    let builds = request
-        .platforms
-        .iter()
-        .zip(packs)
-        .map(|(platform, (pack_root, manifest))| {
-            Ok(PlatformBuild {
-                platform: *platform,
-                settings: settings::resolve(&sources, *platform, &manifest)?,
-                pack_root,
-                manifest,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
     let wrangler = wrangler_config::load_config(
         &wrangler_config::deploy_config_path(&project)
             .context("find the Wrangler configuration the build generated")?,
     )?;
     support::validate_project_build(&wrangler)?;
+    let builds = request
+        .platforms
+        .iter()
+        .zip(packs)
+        .map(|(platform, (pack_root, manifest))| {
+            let settings = settings::resolve(&sources, *platform, &manifest)?;
+            Ok(PlatformBuild {
+                platform: *platform,
+                app: resolve_app(&settings, &wrangler.name, *platform)?,
+                settings,
+                pack_root,
+                manifest,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let worker = worker::compile(&build_dir.join(".tokamak").join("worker"), &wrangler)
         .context("compile the Worker")?;
     let plugins = plugins::discover(&request.project_dir)?;
@@ -177,8 +187,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
     let (pack_root, manifest) = load_platform_pack(request.platform, request.platform_pack_dir)?;
     let platform_settings = settings::resolve(&sources, request.platform, &manifest)?;
     let plugins = plugins::discover(request.project)?;
-    let (app_name, app_slug) = resolve_app(platform_settings.name.as_deref(), request.worker_name)?;
-    let identifier = resolve_identifier(platform_settings.identifier, &app_slug, request.platform)?;
+    let app = resolve_app(&platform_settings, request.worker_name, request.platform)?;
     let version = settings::version(&sources)?;
     let build_dir = request.project.join("build");
     let (input, project) = prepare_platform_input(
@@ -195,8 +204,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
         &input,
         &project,
         &BuildMetadata {
-            app: (&app_name, &app_slug),
-            identifier: &identifier,
+            app: &app,
             manifest: &manifest,
             version: version.as_deref(),
             development: Some((request.endpoint, request.session_token)),
@@ -206,7 +214,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
     )
     .context("write development metadata")?;
 
-    let bundle_dir = output_path(&build_dir, request.platform, &app_slug);
+    let bundle_dir = output_path(&build_dir, request.platform, &app.slug);
     support::run_entrypoint(
         &pack_root,
         &input,
@@ -223,8 +231,8 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
     Ok(DevelopmentSummary {
         platform: request.platform,
         bundle_dir,
-        app_slug,
-        identifier,
+        app_slug: app.slug,
+        identifier: app.identifier,
     })
 }
 
@@ -254,6 +262,7 @@ fn build_platform(
         pack_root,
         manifest,
         settings: platform_settings,
+        app,
     } = build;
     let platform = *platform;
     let (input, project) = prepare_platform_input(
@@ -268,15 +277,11 @@ fn build_platform(
         .context("prepare the tokamak application package")?;
     plugins::stage(context.plugins, platform, &input.join("plugins"))
         .context("stage native plugin inputs")?;
-    let (app_name, app_slug) =
-        resolve_app(platform_settings.name.as_deref(), &context.wrangler.name)?;
-    let identifier = resolve_identifier(platform_settings.identifier.clone(), &app_slug, platform)?;
     write_build_metadata(
         &input,
         &project,
         &BuildMetadata {
-            app: (&app_name, &app_slug),
-            identifier: &identifier,
+            app,
             manifest,
             version: Some(context.version),
             development: None,
@@ -298,7 +303,7 @@ fn build_platform(
         )?;
     }
 
-    let output = output_path(context.build_dir, platform, &app_slug);
+    let output = output_path(context.build_dir, platform, &app.slug);
     support::run_entrypoint(
         pack_root,
         &input,
@@ -318,31 +323,31 @@ fn build_platform(
     })
 }
 
-/// The display name and its slug: the `name` setting's, or else the Worker
-/// name, which must then be a valid slug itself.
-fn resolve_app(name: Option<&str>, worker_name: &str) -> Result<(String, String)> {
-    match name {
-        Some(name) => Ok((name.to_owned(), slug(name))),
-        None if is_valid_app_name(worker_name) => {
-            Ok((worker_name.to_owned(), worker_name.to_owned()))
+/// The app on `platform`, named by `settings` or else by the Worker name,
+/// which must then be its own slug.
+fn resolve_app(
+    settings: &settings::PlatformSettings,
+    worker_name: &str,
+    platform: Platform,
+) -> Result<App> {
+    let (name, app_slug) = match settings.name.as_deref() {
+        Some(name) => (name.to_owned(), slug(name)),
+        None if slug(worker_name) == worker_name && app_name_problem(worker_name).is_none() => {
+            (worker_name.to_owned(), worker_name.to_owned())
         }
         None => bail!(
-            "the Worker name {worker_name} is not a valid app name (lowercase letters, digits \
-             and inner hyphens, at most 63 characters); set a name with --name, TOKAMAK_NAME or \
-             name in the configuration file"
+            "{} has no name, and the Worker name {worker_name:?} is not a valid app name \
+             (lowercase letters and digits joined by single hyphens, at most 63 characters); \
+             set --name, TOKAMAK_NAME, or `name` in the configuration file",
+            platform.display_name()
         ),
-    }
-}
-
-/// Whether `name` can be one DNS label of the app's `tokamak.local` host.
-fn is_valid_app_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 63
-        && !name.starts_with('-')
-        && !name.ends_with('-')
-        && name.chars().all(|character| {
-            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
-        })
+    };
+    let identifier = resolve_identifier(settings.identifier.clone(), &app_slug, platform)?;
+    Ok(App {
+        name,
+        slug: app_slug,
+        identifier,
+    })
 }
 
 fn resolve_identifier(
@@ -470,13 +475,13 @@ fn output_path(build_dir: &Path, platform: Platform, app_slug: &str) -> PathBuf 
 }
 
 fn write_build_metadata(input: &Path, project: &Path, metadata: &BuildMetadata<'_>) -> Result<()> {
-    let (app_name, app_slug) = metadata.app;
+    let app = metadata.app;
     let metadata_dir = input.join("metadata");
     let values = [
-        ("app-name", app_name.to_owned()),
-        ("app-slug", app_slug.to_owned()),
-        ("identifier", metadata.identifier.to_owned()),
-        ("host", format!("{app_slug}.tokamak.local")),
+        ("app-name", app.name.clone()),
+        ("app-slug", app.slug.clone()),
+        ("identifier", app.identifier.clone()),
+        ("host", format!("{}.tokamak.local", app.slug)),
         (
             "platform",
             metadata
@@ -588,9 +593,11 @@ fn bundled_manifest(target: Target) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
 
     use super::{exported_symbols, resolve_app, resolve_identifier, resolve_manifest};
+    use crate::settings::PlatformSettings;
     use crate::wrangler_config;
     use tokamak_cli::{MANIFEST_FILE, Platform};
 
@@ -628,13 +635,25 @@ mod tests {
 
     #[test]
     fn resolves_names_with_the_worker_name_as_fallback() -> Result<(), Box<dyn std::error::Error>> {
+        let named = |name: Option<&str>| PlatformSettings {
+            name: name.map(str::to_owned),
+            identifier: None,
+            icon: None,
+            pack_environment: BTreeMap::new(),
+        };
+        let app = resolve_app(&named(Some("Myapp Pro")), "worker_name", Platform::Macos)?;
         assert_eq!(
-            resolve_app(Some("Myapp Pro"), "worker_name")?,
-            ("Myapp Pro".to_owned(), "myapp-pro".to_owned())
+            (
+                app.name.as_str(),
+                app.slug.as_str(),
+                app.identifier.as_str()
+            ),
+            ("Myapp Pro", "myapp-pro", "com.tokamak.myapp-pro")
         );
+        let app = resolve_app(&named(None), "worker-name", Platform::Macos)?;
         assert_eq!(
-            resolve_app(None, "worker-name")?,
-            ("worker-name".to_owned(), "worker-name".to_owned())
+            (app.name.as_str(), app.slug.as_str()),
+            ("worker-name", "worker-name")
         );
         for worker_name in [
             "",
@@ -642,10 +661,11 @@ mod tests {
             "Upper",
             "-leading",
             "trailing-",
+            "double--hyphen",
             &"a".repeat(64),
         ] {
             assert!(
-                resolve_app(None, worker_name).is_err(),
+                resolve_app(&named(None), worker_name, Platform::Macos).is_err(),
                 "accepted {worker_name}"
             );
         }

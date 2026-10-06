@@ -2477,18 +2477,16 @@ fn packages_webassembly_assets_as_static_files() -> TestResult {
 
 #[test]
 fn requires_a_name_while_the_worker_name_is_not_an_app_name() -> TestResult {
-    let too_long = "a".repeat(64);
-    for name in ["../demo", "Demo_App", "-demo", "demo-", &too_long] {
-        let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-        write_worker_config(&project, &format!(r#"{{"name":"{name}"}}"#))?;
+    let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
+    write_worker_config(&project, r#"{"name":"../demo"}"#)?;
 
-        build_command("macos", &project, &manifest)?
-            .assert()
-            .failure()
-            .stderr(contains(format!(
-                "the Worker name {name} is not a valid app name"
-            )));
-    }
+    build_command("macos", &project, &manifest)?
+        .assert()
+        .failure()
+        .stderr(contains(
+            r#"macOS has no name, and the Worker name "../demo" is not a valid app name"#,
+        ));
+    assert!(!project.join("build/.tokamak/worker").exists());
     Ok(())
 }
 

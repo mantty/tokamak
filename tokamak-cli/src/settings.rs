@@ -18,8 +18,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::Args;
-use tokamak::{SHARED_PLATFORM_KEYS, TokamakConfig, app_name_problem, is_valid_key, value_problem};
-use tokamak_cli::{Platform, PlatformPackManifest, VariableKind};
+use tokamak_cli::{
+    Platform, PlatformPackManifest, SHARED_PLATFORM_KEYS, VariableKind, is_valid_key,
+};
+
+use super::tokamak_config::{TokamakConfig, app_name_problem, value_problem};
 
 /// Keys every platform shares with the top level, with their kind and description.
 const SHARED_OPTIONS: [(&str, VariableKind, &str); 3] = [
@@ -423,7 +426,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use anyhow::Result;
-    use tokamak::{PlatformValues, SHARED_PLATFORM_KEYS, TokamakConfig};
+    use tokamak_cli::SHARED_PLATFORM_KEYS;
+
+    use crate::tokamak_config::{PlatformValues, TokamakConfig};
     use tokamak_cli::{PackVariable, Platform, PlatformPackManifest, Target, VariableKind};
 
     use super::{

@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use tokamak_cli::{
     Artifact, ArtifactKind, PackVariable, Platform, PlatformPackError, PlatformPackManifest,
-    Target, VariableKind, load_manifest, write_manifest,
+    Target, VariableKind, is_valid_key, load_manifest, write_manifest,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -364,4 +364,16 @@ fn load_manifest_rejects_contract_invalid_json() -> TestResult {
     ));
 
     Ok(())
+}
+
+#[test]
+fn keys_are_lowercase_words_joined_by_hyphens() {
+    for key in ["plist", "team-id", "build-number", "a1-b2"] {
+        assert!(is_valid_key(key), "rejected {key}");
+    }
+    for key in [
+        "", "Plist", "team_id", "-plist", "plist-", "team--id", "1plist",
+    ] {
+        assert!(!is_valid_key(key), "accepted {key}");
+    }
 }

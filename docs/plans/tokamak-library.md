@@ -28,7 +28,7 @@ tokamak is pre-release. Backwards compatibility is not a goal.
 | `tokamak/src/globals` | Web, process, and console globals |
 | `tokamak/src/builtins` | synthetic builtin entrypoints and registration |
 | `tokamak/src/android_jni.rs`, `tokamak/src/apple_ffi.rs` | target-specific runtime bridges |
-| `tokamak-cli` | user-facing native app packaging, including Wrangler configuration loading |
+| `tokamak-cli` | user-facing native app packaging, including Wrangler and tokamak configuration loading |
 | `platforms/apple/source` | Swift shell, C ABI header, and module map |
 | `platforms/apple/build` | Apple platform-pack recipe and app build entrypoint |
 | `platforms/android/source` | Kotlin shell sources |
