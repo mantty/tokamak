@@ -196,7 +196,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
         request.pack,
         platform_settings.icon.as_deref(),
     )?;
-    plugins::stage(&plugins, request.platform, &input.join("plugins"))
+    plugins::stage(&plugins, &manifest, &input.join("plugins"))
         .context("stage native plugin inputs")?;
     fs::write(input.join("app/.tokamak-development"), b"")?;
     write_build_metadata(
@@ -274,7 +274,7 @@ fn build_platform(
 
     worker::package(&input.join("app"), context.worker, context.wrangler)
         .context("prepare the tokamak application package")?;
-    plugins::stage(context.plugins, platform, &input.join("plugins"))
+    plugins::stage(context.plugins, manifest, &input.join("plugins"))
         .context("stage native plugin inputs")?;
     write_build_metadata(
         &input,
@@ -483,12 +483,7 @@ fn write_build_metadata(input: &Path, project: &Path, metadata: &BuildMetadata<'
         ("host", format!("{}.tokamak.local", app.slug)),
         (
             "platform",
-            metadata
-                .manifest
-                .target
-                .platform()
-                .directory_name()
-                .to_owned(),
+            metadata.manifest.target.platform().namespace().to_owned(),
         ),
         ("target", metadata.manifest.target.to_string()),
         ("project-dir", project.display().to_string()),

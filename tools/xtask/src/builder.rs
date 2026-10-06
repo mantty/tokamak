@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use tokamak_cli::{Artifact, PackVariable, PlatformPackManifest, Target, write_manifest};
+use tokamak_cli::{
+    Artifact, PackVariable, PlatformPackManifest, PluginKeyKind, Target, write_manifest,
+};
 
 use crate::layout::WorkspaceLayout;
 use crate::support::{copy_dir_contents, reset_dir};
@@ -38,6 +40,7 @@ fn build_source_platform_pack_at(workspace: &WorkspaceLayout, target: Target) ->
             .map(|tool| (*tool).to_owned())
             .collect(),
         variables: target_variables(workspace, target)?,
+        plugin_keys: plugin_keys(workspace, target)?,
     };
     manifest.validate()?;
     let manifest_path = workspace.manifest(target);
@@ -84,7 +87,7 @@ fn target_variables(
     workspace: &WorkspaceLayout,
     target: Target,
 ) -> Result<BTreeMap<String, PackVariable>> {
-    let path = workspace.platform_variables(target);
+    let path = workspace.platform_build(target).join("variables.json");
     let content = fs::read_to_string(&path)
         .with_context(|| format!("read platform-pack variables {}", path.display()))?;
     let mut namespaces: BTreeMap<String, BTreeMap<String, PackVariable>> =
@@ -97,6 +100,18 @@ fn target_variables(
             path.display()
         )
     })
+}
+
+/// The keys a pack reads from a plugin's platform section.
+fn plugin_keys(
+    workspace: &WorkspaceLayout,
+    target: Target,
+) -> Result<BTreeMap<String, PluginKeyKind>> {
+    let path = workspace.platform_build(target).join("plugin-keys.json");
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("read platform-pack plugin keys {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("parse platform-pack plugin keys {}", path.display()))
 }
 
 fn validate_artifacts(root: &Path, artifacts: &[Artifact]) -> Result<()> {
@@ -118,8 +133,8 @@ mod tests {
 
     use anyhow::Context;
 
-    use super::{target_variables, validate_artifacts};
-    use tokamak_cli::{Artifact, ArtifactKind, Target, VariableKind};
+    use super::{plugin_keys, target_variables, validate_artifacts};
+    use tokamak_cli::{Artifact, ArtifactKind, PluginKeyKind, Target, VariableKind};
 
     use crate::layout::WorkspaceLayout;
 
@@ -137,6 +152,19 @@ mod tests {
         assert!(simulator.contains_key("provisioning-profile"));
         assert!(!macos.contains_key("provisioning-profile"));
         assert!(windows.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn reads_the_plugin_keys_each_pack_declares() -> anyhow::Result<()> {
+        let workspace = WorkspaceLayout::from_source().context("source workspace")?;
+
+        assert_eq!(
+            plugin_keys(&workspace, Target::IosSimulatorArm64)?.get("sources"),
+            Some(&PluginKeyKind::Paths)
+        );
+        assert!(plugin_keys(&workspace, Target::AndroidArm64)?.contains_key("dependencies"));
+        assert!(plugin_keys(&workspace, Target::WindowsX64)?.is_empty());
         Ok(())
     }
 

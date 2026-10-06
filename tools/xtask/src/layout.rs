@@ -33,20 +33,17 @@ impl WorkspaceLayout {
     }
 
     pub(crate) fn platform_recipe(&self, target: Target) -> PathBuf {
-        let platform = target.platform();
-        self.root
-            .join("platforms")
-            .join(platform.repository_directory_name())
-            .join("build")
-            .join(platform.platform_pack_recipe_file_name())
+        self.platform_build(target)
+            .join(target.platform().platform_pack_recipe_file_name())
     }
 
-    /// Variables the platform's packs accept, by platform namespace.
-    pub(crate) fn platform_variables(&self, target: Target) -> PathBuf {
+    /// The directory of the platform's pack recipe, entrypoint, and the
+    /// variables and plugin keys its packs declare.
+    pub(crate) fn platform_build(&self, target: Target) -> PathBuf {
         self.root
             .join("platforms")
             .join(target.platform().repository_directory_name())
-            .join("build/variables.json")
+            .join("build")
     }
 
     pub(crate) fn manifest(&self, target: Target) -> PathBuf {
@@ -84,8 +81,8 @@ mod tests {
             Path::new("/workspace/tokamak/platforms/windows/build/platform-pack.ps1")
         );
         assert_eq!(
-            layout.platform_variables(Target::IosSimulatorArm64),
-            Path::new("/workspace/tokamak/platforms/apple/build/variables.json")
+            layout.platform_build(Target::IosSimulatorArm64),
+            Path::new("/workspace/tokamak/platforms/apple/build")
         );
     }
 }

@@ -22,7 +22,7 @@ const MACOS_BUILD_NUMBER_ENV: &str = "TOKAMAK_MACOS_BUILD_NUMBER";
 /// be written.
 pub fn write_info_plist(input: &Path, output: &Path, icon_info_plist: Option<&Path>) -> Result<()> {
     let metadata = Metadata::read(input)?;
-    let toolchain = ToolchainMetadata::detect(&metadata.platform)?;
+    let toolchain = ToolchainMetadata::detect(&read_required(&input.join("metadata/target"))?)?;
     let user_plist = configured_user_plist(&metadata)?;
     let plist = build_info_plist(
         input,
@@ -92,12 +92,12 @@ struct ToolchainMetadata {
 }
 
 impl ToolchainMetadata {
-    fn detect(platform: &str) -> Result<Self> {
-        let platform_name = match platform {
-            "ios" => "iphoneos",
-            "ios-simulator" => "iphonesimulator",
-            "macos" => "macosx",
-            platform => bail!("unsupported Apple platform: {platform}"),
+    fn detect(target: &str) -> Result<Self> {
+        let platform_name = match target {
+            "ios-arm64" => "iphoneos",
+            "ios-simulator-arm64" | "ios-simulator-x64" => "iphonesimulator",
+            "macos-arm64" | "macos-x64" => "macosx",
+            target => bail!("unsupported Apple target: {target}"),
         };
         let sdk_value = |query| command_output("xcrun", &["--sdk", platform_name, query]);
         let platform_version = sdk_value("--show-sdk-version")?;
@@ -254,8 +254,8 @@ fn add_generated_plist(
             );
             plist.insert("NSHighResolutionCapable".into(), Value::Boolean(true));
         }
-        "ios" | "ios-simulator" => {
-            let supported_platform = if metadata.platform == "ios-simulator" {
+        "ios" => {
+            let supported_platform = if toolchain.platform_name == "iphonesimulator" {
                 "iPhoneSimulator"
             } else {
                 "iPhoneOS"
@@ -312,7 +312,7 @@ fn add_plugin_plists(
         user_setting: user_plist_setting(&metadata.platform)?,
     };
     for plugin in sorted_directories(&input.join("plugins"))? {
-        let path = plugin.join("Info.plist");
+        let path = plugin.join("plist");
         if !path.is_file() {
             continue;
         }
@@ -420,7 +420,7 @@ fn configured_user_plist(metadata: &Metadata) -> Result<Option<PathBuf>> {
 
 fn user_plist_variable(platform: &str) -> Result<&'static str> {
     match platform {
-        "ios" | "ios-simulator" => Ok(IOS_PLIST_ENV),
+        "ios" => Ok(IOS_PLIST_ENV),
         "macos" => Ok(MACOS_PLIST_ENV),
         platform => bail!("unsupported Apple platform: {platform}"),
     }
@@ -428,7 +428,7 @@ fn user_plist_variable(platform: &str) -> Result<&'static str> {
 
 fn user_plist_setting(platform: &str) -> Result<&'static str> {
     match platform {
-        "ios" | "ios-simulator" => Ok("ios.plist"),
+        "ios" => Ok("ios.plist"),
         "macos" => Ok("macos.plist"),
         platform => bail!("unsupported Apple platform: {platform}"),
     }
@@ -510,7 +510,7 @@ fn environment_value(name: &str) -> Result<Option<String>> {
 
 fn build_number_environment(platform: &str) -> Option<&'static str> {
     match platform {
-        "ios" | "ios-simulator" => Some(IOS_BUILD_NUMBER_ENV),
+        "ios" => Some(IOS_BUILD_NUMBER_ENV),
         "macos" => Some(MACOS_BUILD_NUMBER_ENV),
         _ => None,
     }
@@ -660,7 +660,7 @@ mod tests {
             .iter()
             .map(|(key, value)| ((*key).to_owned(), value.clone()))
             .collect();
-        Value::Dictionary(dictionary).to_file_xml(directory.join("Info.plist"))?;
+        Value::Dictionary(dictionary).to_file_xml(directory.join("plist"))?;
         Ok(())
     }
 
@@ -916,7 +916,7 @@ mod tests {
         let input = input(temporary.path(), "ios")?;
         let directory = input.join("plugins/broken");
         std::fs::create_dir_all(&directory)?;
-        Value::Array(Vec::new()).to_file_xml(directory.join("Info.plist"))?;
+        Value::Array(Vec::new()).to_file_xml(directory.join("plist"))?;
 
         let Err(error) = build(&input, "iphoneos", None) else {
             anyhow::bail!("a plugin plist without a dictionary root was accepted");

@@ -76,7 +76,7 @@ write_plist() {
 }
 
 sign_bundle() {
-  if [[ "$platform" != ios && "$platform" != macos ]]; then
+  if [[ "$sdk" == iphonesimulator ]]; then
     codesign --force --timestamp=none --sign - "$bundle"
     return
   fi
@@ -96,7 +96,7 @@ sign_bundle() {
 bundle_key_file=$output_parent/.tokamak/$(basename "$output").input-key
 if [[ -f "$metadata/input-key" ]]; then
   case "$platform" in
-    ios|ios-simulator) app_files=("${TOKAMAK_IOS_PLIST:-}" "${TOKAMAK_IOS_ENTITLEMENTS:-}") ;;
+    ios) app_files=("${TOKAMAK_IOS_PLIST:-}" "${TOKAMAK_IOS_ENTITLEMENTS:-}") ;;
     macos) app_files=("${TOKAMAK_MACOS_PLIST:-}" "${TOKAMAK_MACOS_ENTITLEMENTS:-}") ;;
   esac
   bundle_key=$(
@@ -127,7 +127,7 @@ rm -rf "$bundle"
 mkdir -p "$executable_dir" "$app_dir" "$module_cache"
 cp -R "$input/app/." "$app_dir/"
 
-if [[ ( "$platform" == macos || "$platform" == ios || "$platform" == ios-simulator ) && -d "$icons/AppIcon.icon" ]]; then
+if [[ -d "$icons/AppIcon.icon" ]]; then
   if [[ "$platform" == macos ]]; then
     icon_output=$contents/Resources
     icon_minimum=14.0
@@ -160,10 +160,15 @@ if [[ ! -f "$native_shell/TokamakShell.swift" ]]; then
   exit 1
 fi
 
-for plugin in "$input/plugins"/*; do
-  [[ -d "$plugin" ]] || continue
+# A plugin's class is a Swift type name, and its sources are Swift.
+swift_type='^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$'
+for plugin in "$input/plugins"/*/; do
+  class=$(cat "$plugin/class" 2>/dev/null || true)
+  if [[ ! "$class" =~ $swift_type ]]; then
+    echo "plugin '$(basename "$plugin")' has invalid $platform class '$class'" >&2
+    exit 1
+  fi
   for source in "$plugin/sources"/*; do
-    [[ -f "$source" ]] || continue
     case "$source" in
       *.swift) swift_sources+=("$source") ;;
       *)
@@ -178,8 +183,7 @@ registry=$temporary/TokamakPluginRegistry.swift
 {
   printf '%s\n\n' 'import Foundation'
   printf '%s\n' 'func tokamakPlugins(host: TokamakHost) -> [any TokamakPlugin] {' '  ['
-  for plugin in "$input/plugins"/*; do
-    [[ -d "$plugin" ]] || continue
+  for plugin in "$input/plugins"/*/; do
     printf '    %s(host: host),\n' "$(cat "$plugin/class")"
   done
   printf '%s\n' '  ]' '}'
@@ -205,17 +209,10 @@ swift_args=(
   -Xlinker -dead_strip
   -Xlinker -exported_symbols_list -Xlinker "$exported_symbols"
 )
-for plugin in "$input/plugins"/*; do
-  [[ -d "$plugin" ]] || continue
-  for framework_file in "$plugin/frameworks"/*; do
-    [[ -f "$framework_file" ]] || continue
-    swift_args+=(-framework "$(cat "$framework_file")")
-  done
-done
 
 # Simulator builds embed their entitlements in __TEXT,__entitlements, where
 # the simulator reads them.
-if [[ "$platform" == ios-simulator ]]; then
+if [[ "$sdk" == iphonesimulator ]]; then
   simulator_entitlements=$temporary/simulator.entitlements
   "$apple_tool" simulator-entitlements --identifier "$identifier" --output "$simulator_entitlements"
   swift_args+=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker "$simulator_entitlements")

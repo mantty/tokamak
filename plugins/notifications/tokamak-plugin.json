@@ -4,19 +4,11 @@
   "platforms": {
     "macos": {
       "class": "TokamakNotificationsPlugin",
-      "sources": ["apple/NotificationContent.swift", "apple/NotificationsPlugin.swift"],
-      "frameworks": ["UserNotifications"]
+      "sources": ["apple/NotificationContent.swift", "apple/NotificationsPlugin.swift"]
     },
     "ios": {
       "class": "TokamakNotificationsPlugin",
       "sources": ["apple/NotificationContent.swift", "apple/NotificationsPlugin.swift"],
-      "frameworks": ["UserNotifications"],
-      "plist": "apple/Info.plist"
-    },
-    "ios-simulator": {
-      "class": "TokamakNotificationsPlugin",
-      "sources": ["apple/NotificationContent.swift", "apple/NotificationsPlugin.swift"],
-      "frameworks": ["UserNotifications"],
       "plist": "apple/Info.plist"
     },
     "android": {
@@ -29,11 +21,7 @@
         "android/Push.kt"
       ],
       "manifest": "android/AndroidManifest.xml",
-      "dependencies": ["com.google.firebase:firebase-messaging:25.1.3"],
-      "permissions": [
-        "android.permission.POST_NOTIFICATIONS",
-        "android.permission.RECEIVE_BOOT_COMPLETED"
-      ]
+      "dependencies": ["com.google.firebase:firebase-messaging:25.1.3"]
     }
   }
 }

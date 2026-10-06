@@ -5,28 +5,17 @@
     "macos": {
       "class": "TokamakLocationPlugin",
       "sources": ["apple/LocationPlugin.swift"],
-      "frameworks": ["CoreLocation"],
       "plist": "apple/macos/Info.plist"
     },
     "ios": {
       "class": "TokamakLocationPlugin",
       "sources": ["apple/LocationPlugin.swift"],
-      "frameworks": ["CoreLocation"],
-      "plist": "apple/ios/Info.plist"
-    },
-    "ios-simulator": {
-      "class": "TokamakLocationPlugin",
-      "sources": ["apple/LocationPlugin.swift"],
-      "frameworks": ["CoreLocation"],
       "plist": "apple/ios/Info.plist"
     },
     "android": {
       "class": "com.tokamak.plugins.location.TokamakLocationPlugin",
       "sources": ["android/LocationPlugin.kt"],
-      "permissions": [
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
-      ]
+      "manifest": "android/AndroidManifest.xml"
     }
   }
 }

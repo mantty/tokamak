@@ -4,25 +4,17 @@
   "platforms": {
     "macos": {
       "class": "TokamakSecureStoragePlugin",
-      "sources": ["apple/SecureStoragePlugin.swift"],
-      "frameworks": ["LocalAuthentication", "Security"]
+      "sources": ["apple/SecureStoragePlugin.swift"]
     },
     "ios": {
       "class": "TokamakSecureStoragePlugin",
       "sources": ["apple/SecureStoragePlugin.swift"],
-      "frameworks": ["LocalAuthentication", "Security"],
-      "plist": "apple/Info.plist"
-    },
-    "ios-simulator": {
-      "class": "TokamakSecureStoragePlugin",
-      "sources": ["apple/SecureStoragePlugin.swift"],
-      "frameworks": ["LocalAuthentication", "Security"],
       "plist": "apple/Info.plist"
     },
     "android": {
       "class": "com.tokamak.plugins.securestorage.TokamakSecureStoragePlugin",
       "sources": ["android/SecureStoragePlugin.kt"],
-      "permissions": ["android.permission.USE_BIOMETRIC"]
+      "manifest": "android/AndroidManifest.xml"
     }
   }
 }

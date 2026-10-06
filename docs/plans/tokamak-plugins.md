@@ -28,31 +28,37 @@ The TypeScript entrypoint is the API imported by app code. It calls the web
 implementation in a browser and the native implementation when tokamak provides
 its frontend bridge.
 
-`tokamak-plugin.json` declares the plugin ID and, per platform, the native
-class and sources. Apple platforms may add linked frameworks and an Info.plist
-file (`"plist": "apple/Info.plist"`). Android may add permissions, an
-`AndroidManifest.xml` file (`"manifest"`) and Maven dependencies
-(`"dependencies": ["group:artifact:version"]`). tokamak discovers manifests
-from the app's direct dependencies, resolved from the nearest `node_modules` of
-the app or a parent directory, and copies each declared file into the build
-without reading it.
+`tokamak-plugin.json` declares the plugin ID and a section per platform
+namespace: `android`, `ios` (devices and the iOS Simulator), `macos` and
+`windows`. Each platform pack declares the keys its section takes in
+`build/plugin-keys.json` and validates their values. Apple packs take the
+native `class`, Swift `sources` and an Info.plist file
+(`"plist": "apple/Info.plist"`). The Android pack takes the `class`, Kotlin
+`sources`, an `AndroidManifest.xml` file (`"manifest"`), which declares the
+plugin's permissions, and Maven dependencies
+(`"dependencies": ["group:artifact:version"]`). The Windows pack takes no
+plugins. tokamak discovers manifests from the app's direct dependencies,
+resolved from the nearest `node_modules` of the app or a parent directory.
 
 A platform omitted from the manifest has no native implementation. Calls made
 without an implementation throw `NotSupportedError`.
 
 ## Native build
 
-The tokamak runtime remains prebuilt. `tok build` stages plugin metadata and
-sources, then the platform-pack entrypoint compiles only the native shell and
-plugin sources:
+The tokamak runtime remains prebuilt. `tok build` stages each key of a
+plugin's section at `plugins/<id>/<key>` in the build input: a string as a file
+holding it, a file as its copy, unread, and a list as a directory of its items
+named by index, with a file's name after its index (`sources/0-Plugin.swift`).
+A key the pack does not declare, or a value of another kind, fails the build.
+The platform-pack entrypoint then compiles only the native shell and plugin
+sources:
 
 - macOS, iOS, and iOS Simulator compile Swift sources into the application
-  executable and link declared system frameworks. The Apple helper merges each
-  plugin's Info.plist by key path.
+  executable, which links the system frameworks they import. The Apple helper
+  merges each plugin's Info.plist by key path.
 - Android builds each plugin as a Gradle library module that depends on a
   plugin API module (`TokamakPlugin`, `TokamakHost` and their types) and the
   plugin's declared dependencies. The plugin's manifest merges below the app's.
-  Declared permissions go into the app's manifest.
 
 tokamak generates one registry per application, so plugins do not need manual
 shell registration.

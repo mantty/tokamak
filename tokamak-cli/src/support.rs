@@ -182,7 +182,7 @@ pub(crate) fn stage_platform_icons(
         return Err(invalid("does not exist"));
     }
 
-    let destination = input.join("icons").join(platform.directory_name());
+    let destination = input.join("icons").join(platform.namespace());
     match platform {
         Platform::Android => {
             if !source.is_dir() {
@@ -413,14 +413,17 @@ mod tests {
         fs::create_dir(&source)?;
         fs::write(source.join("icon.json"), "icon")?;
 
-        for platform in [Platform::Ios, Platform::Macos] {
+        for (platform, namespace) in [
+            (Platform::Ios, "ios"),
+            (Platform::IosSimulator, "ios"),
+            (Platform::Macos, "macos"),
+        ] {
             let input = temporary.path().join(platform.directory_name());
             stage_platform_icons(&input, Some(&source), platform)?;
             assert_eq!(
-                fs::read_to_string(input.join(format!(
-                    "icons/{}/AppIcon.icon/icon.json",
-                    platform.directory_name()
-                )))?,
+                fs::read_to_string(
+                    input.join(format!("icons/{namespace}/AppIcon.icon/icon.json"))
+                )?,
                 "icon"
             );
         }

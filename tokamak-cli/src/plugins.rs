@@ -1,4 +1,4 @@
-//! Native plugin discovery.
+//! Native plugin discovery and staging.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -6,45 +6,23 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use serde_json::{Map, Value};
 
 use super::support::copy_file;
-use tokamak_cli::Platform;
+use tokamak_cli::{Platform, PlatformPackManifest, PluginKeyKind};
 
 const MANIFEST: &str = "tokamak-plugin.json";
 
-#[derive(Clone, Debug)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct Plugin {
-    pub(crate) id: String,
-    root: PathBuf,
-    platforms: BTreeMap<String, NativePlatform>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct NativePlatform {
-    pub(crate) class: String,
-    #[serde(default)]
-    sources: Vec<PathBuf>,
-    #[serde(default)]
-    frameworks: Vec<String>,
-    /// An Info.plist whose values merge into the app's.
-    plist: Option<PathBuf>,
-    /// An `AndroidManifest.xml` merged below the app's manifest.
-    manifest: Option<PathBuf>,
-    /// Maven coordinates the plugin's Android module depends on.
-    #[serde(default)]
-    dependencies: Vec<String>,
-    #[serde(default)]
-    permissions: Vec<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PluginManifest {
     schema_version: u32,
-    id: String,
+    pub(crate) id: String,
+    /// Each platform namespace's section, which that platform's pack reads.
     #[serde(default)]
-    platforms: BTreeMap<String, NativePlatform>,
+    platforms: BTreeMap<String, Map<String, Value>>,
+    #[serde(skip)]
+    root: PathBuf,
 }
 
 pub(crate) fn discover(project: &Path) -> Result<Vec<Plugin>> {
@@ -73,81 +51,69 @@ pub(crate) fn discover(project: &Path) -> Result<Vec<Plugin>> {
 }
 
 impl Plugin {
-    pub(crate) fn platform(&self, platform: Platform) -> Option<&NativePlatform> {
-        self.platforms.get(platform.directory_name())
-    }
-
-    pub(crate) fn sources(&self, platform: Platform) -> Result<Vec<PathBuf>> {
-        let Some(native) = self.platform(platform) else {
-            return Ok(Vec::new());
-        };
-        native
-            .sources
-            .iter()
-            .map(|source| self.package_file("source", source))
-            .collect()
-    }
-
     /// `path` inside the plugin's package, which it must not escape.
-    fn package_file(&self, description: &str, path: &Path) -> Result<PathBuf> {
+    fn package_file(&self, description: &str, path: &str) -> Result<PathBuf> {
         let root = fs::canonicalize(&self.root)?;
-        let resolved = fs::canonicalize(root.join(path)).with_context(|| {
-            format!(
-                "plugin '{}' {description} is missing: {}",
-                self.id,
-                path.display()
-            )
-        })?;
+        let resolved = fs::canonicalize(root.join(path))
+            .with_context(|| format!("plugin '{}' {description} is missing: {path}", self.id))?;
         if !resolved.starts_with(&root) {
             bail!(
-                "plugin '{}' {description} escapes its package: {}",
-                self.id,
-                path.display()
+                "plugin '{}' {description} escapes its package: {path}",
+                self.id
             );
         }
         Ok(resolved)
     }
 }
 
-/// Stage each plugin's inputs for `platform` under `destination/<id>`: its
-/// class name, numbered sources, frameworks, permissions and dependencies, and
-/// its `Info.plist` and `AndroidManifest.xml` files, copied unread.
-pub(crate) fn stage(plugins: &[Plugin], platform: Platform, destination: &Path) -> Result<()> {
+/// Stage each plugin's section for the pack's platform under
+/// `destination/<id>`, each key as the pack declares it; files are copied
+/// unread.
+pub(crate) fn stage(
+    plugins: &[Plugin],
+    pack: &PlatformPackManifest,
+    destination: &Path,
+) -> Result<()> {
+    let namespace = pack.target.platform().namespace();
     fs::create_dir_all(destination)?;
 
     for plugin in plugins {
-        let Some(native) = plugin.platform(platform) else {
+        let Some(section) = plugin.platforms.get(namespace) else {
             continue;
         };
         let root = destination.join(&plugin.id);
-        fs::create_dir_all(root.join("sources"))?;
-        fs::write(root.join("class"), &native.class)?;
+        fs::create_dir_all(&root)?;
+        for (key, value) in section {
+            let Some(kind) = pack.plugin_keys.get(key) else {
+                bail!("plugin '{}' has unknown {namespace} key '{key}'", plugin.id);
+            };
+            stage_value(plugin, key, *kind, value, &root.join(key))?;
+        }
+    }
+    Ok(())
+}
 
-        for (index, source) in plugin.sources(platform)?.into_iter().enumerate() {
-            let file_name = source
-                .file_name()
-                .and_then(|name| name.to_str())
-                .context("plugin source must have a UTF-8 file name")?
-                .to_owned();
-            copy_file(
-                source,
-                root.join("sources").join(format!("{index}-{file_name}")),
-            )?;
-        }
-        write_list(&root.join("frameworks"), &native.frameworks)?;
-        write_list(&root.join("permissions"), &native.permissions)?;
-        write_list(&root.join("dependencies"), &native.dependencies)?;
-        if let Some(plist) = &native.plist {
-            copy_file(
-                plugin.package_file("plist", plist)?,
-                root.join("Info.plist"),
-            )?;
-        }
-        if let Some(manifest) = &native.manifest {
-            copy_file(
-                plugin.package_file("manifest", manifest)?,
-                root.join("AndroidManifest.xml"),
-            )?;
+/// Stage `value`, the plugin's `key` of `kind`, at `destination`.
+fn stage_value(
+    plugin: &Plugin,
+    key: &str,
+    kind: PluginKeyKind,
+    value: &Value,
+    destination: &Path,
+) -> Result<()> {
+    let invalid = || format!("plugin '{}' has an invalid {key}", plugin.id);
+    let single = || String::deserialize(value).with_context(invalid);
+    let list = || Vec::<String>::deserialize(value).with_context(invalid);
+    match kind {
+        PluginKeyKind::String => fs::write(destination, single()?)?,
+        PluginKeyKind::Strings => write_list(destination, &list()?)?,
+        PluginKeyKind::Path => copy_file(plugin.package_file(key, &single()?)?, destination)?,
+        PluginKeyKind::Paths => {
+            for (index, path) in list()?.iter().enumerate() {
+                let source = plugin.package_file(key, path)?;
+                let name = source.file_name().unwrap_or_default().to_string_lossy();
+                copy_file(&source, destination.join(format!("{index}-{name}")))?;
+            }
         }
     }
     Ok(())
@@ -184,63 +150,29 @@ fn package_root(project: &Path, name: &str) -> Option<PathBuf> {
 }
 
 fn load(root: &Path, path: &Path) -> Result<Plugin> {
-    let manifest: PluginManifest = serde_json::from_slice(&fs::read(path)?)?;
-    if manifest.schema_version != 1 {
+    let mut plugin: Plugin = serde_json::from_slice(&fs::read(path)?)?;
+    if plugin.schema_version != 1 {
         bail!(
             "unsupported plugin schema version {}",
-            manifest.schema_version
+            plugin.schema_version
         );
     }
-    if !valid_plugin_id(&manifest.id) {
+    if !valid_plugin_id(&plugin.id) {
         bail!(
             "plugin id '{}' must start with a lowercase letter and contain only lowercase letters, digits, and single hyphens",
-            manifest.id
+            plugin.id
         );
     }
-    for (platform_name, native) in &manifest.platforms {
-        let platform = platform_name.parse::<Platform>().map_err(|_| {
-            anyhow::anyhow!(
-                "plugin '{}' has unknown platform '{platform_name}'",
-                manifest.id
-            )
-        })?;
-        if !platform.supports_plugins() {
-            bail!(
-                "plugin '{}' has unknown platform '{platform_name}'",
-                manifest.id
-            );
-        }
-        if !valid_qualified_name(&native.class)
-            || (platform == Platform::Android && !native.class.contains('.'))
-        {
-            bail!(
-                "plugin '{}' has invalid {platform_name} class '{}'",
-                manifest.id,
-                native.class
-            );
-        }
-        for permission in &native.permissions {
-            if !permission.contains('.') || !valid_qualified_name(permission) {
-                bail!(
-                    "plugin '{}' has invalid {platform_name} permission '{permission}'",
-                    manifest.id
-                );
-            }
-        }
-        for dependency in &native.dependencies {
-            if !valid_maven_coordinate(dependency) {
-                bail!(
-                    "plugin '{}' has invalid {platform_name} dependency '{dependency}'; use group:artifact:version",
-                    manifest.id
-                );
-            }
-        }
+    let is_namespace = |name: &String| {
+        Platform::ALL
+            .iter()
+            .any(|platform| platform.namespace() == name)
+    };
+    if let Some(name) = plugin.platforms.keys().find(|name| !is_namespace(name)) {
+        bail!("plugin '{}' has unknown platform '{name}'", plugin.id);
     }
-    Ok(Plugin {
-        id: manifest.id,
-        root: root.to_path_buf(),
-        platforms: manifest.platforms,
-    })
+    plugin.root = root.to_path_buf();
+    Ok(plugin)
 }
 
 fn valid_plugin_id(id: &str) -> bool {
@@ -254,36 +186,35 @@ fn valid_plugin_id(id: &str) -> bool {
         && !id.contains("--")
 }
 
-fn valid_maven_coordinate(coordinate: &str) -> bool {
-    let parts: Vec<_> = coordinate.split(':').collect();
-    parts.len() == 3
-        && parts.iter().all(|part| {
-            !part.is_empty()
-                && part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-        })
-}
-
-fn valid_qualified_name(name: &str) -> bool {
-    name.split('.').all(|part| {
-        let mut bytes = part.bytes();
-        bytes
-            .next()
-            .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
-            && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-    })
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use super::{discover, stage, valid_maven_coordinate, valid_plugin_id, valid_qualified_name};
-    use tokamak_cli::Platform;
+    use super::{discover, stage, valid_plugin_id};
+    use tokamak_cli::{PlatformPackManifest, PluginKeyKind, Target};
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    /// A pack for `target` that reads a plugin's class, sources, plist,
+    /// manifest and dependencies.
+    fn pack(target: Target) -> PlatformPackManifest {
+        PlatformPackManifest {
+            tokamak_version: String::new(),
+            target,
+            artifacts: Vec::new(),
+            required_tools: Vec::new(),
+            variables: BTreeMap::new(),
+            plugin_keys: BTreeMap::from([
+                ("class".to_owned(), PluginKeyKind::String),
+                ("sources".to_owned(), PluginKeyKind::Paths),
+                ("plist".to_owned(), PluginKeyKind::Path),
+                ("manifest".to_owned(), PluginKeyKind::Path),
+                ("dependencies".to_owned(), PluginKeyKind::Strings),
+            ]),
+        }
+    }
 
     fn write_plugin(root: &Path, id: &str) -> TestResult {
         fs::create_dir_all(root.join("ios"))?;
@@ -322,22 +253,23 @@ mod tests {
   "platforms": {
     "ios": {
       "class": "LocationPlugin",
-      "sources": ["ios/plugin.swift"],
-      "frameworks": ["CoreLocation"]
+      "sources": ["ios/plugin.swift"]
     }
   }
 }"#,
         )?;
 
         let plugins = discover(root.path())?;
+        let staged = root.path().join("staged");
+        stage(&plugins, &pack(Target::IosArm64), &staged)?;
 
         assert_eq!(plugins.len(), 1);
         assert_eq!(plugins[0].id, "location");
-        let platform = plugins[0]
-            .platform(Platform::Ios)
-            .ok_or("iOS plugin is missing")?;
-        assert_eq!(platform.class, "LocationPlugin");
-        assert_eq!(plugins[0].sources(Platform::Ios)?.len(), 1);
+        assert_eq!(
+            fs::read_to_string(staged.join("location/class"))?,
+            "LocationPlugin"
+        );
+        assert!(staged.join("location/sources/0-plugin.swift").is_file());
         Ok(())
     }
 
@@ -394,64 +326,33 @@ mod tests {
         )?;
 
         let plugins = discover(&app)?;
+        let staged = workspace.path().join("staged");
+        stage(&plugins, &pack(Target::IosArm64), &staged)?;
 
         assert_eq!(plugins.len(), 1);
-        assert_eq!(
-            plugins[0].sources(Platform::Ios)?,
-            [fs::canonicalize(package.join("ios/Plugin.swift"))?]
-        );
+        assert!(staged.join("location/sources/0-Plugin.swift").is_file());
         Ok(())
     }
 
     #[test]
-    fn rejects_unknown_platforms() -> TestResult {
-        let root = tempfile::tempdir()?;
-        fs::write(
-            root.path().join("package.json"),
-            r#"{"dependencies":{"plugin":"1.0.0"}}"#,
-        )?;
-        let plugin = root.path().join("node_modules/plugin");
-        fs::create_dir_all(&plugin)?;
-        fs::write(
-            plugin.join("tokamak-plugin.json"),
-            r#"{
-  "schemaVersion": 1,
-  "id": "bad",
-  "platforms": {"dreamcast": {"class": "Bad"}}
-}"#,
-        )?;
+    fn rejects_platforms_that_are_not_namespaces() -> TestResult {
+        for platform in ["dreamcast", "web", "ios-simulator"] {
+            let root = tempfile::tempdir()?;
+            install_plugin(
+                root.path(),
+                &serde_json::json!({
+                    "schemaVersion": 1,
+                    "id": "bad",
+                    "platforms": { platform: { "class": "Bad" } },
+                }),
+            )?;
 
-        let Err(error) = discover(root.path()) else {
-            return Err("unknown platform was accepted".into());
-        };
+            let Err(error) = discover(root.path()) else {
+                return Err(format!("platform {platform} was accepted").into());
+            };
 
-        assert!(format!("{error:#}").contains("unknown platform 'dreamcast'"));
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_web_as_native_platform_metadata() -> TestResult {
-        let root = tempfile::tempdir()?;
-        fs::write(
-            root.path().join("package.json"),
-            r#"{"dependencies":{"plugin":"1.0.0"}}"#,
-        )?;
-        let plugin = root.path().join("node_modules/plugin");
-        fs::create_dir_all(&plugin)?;
-        fs::write(
-            plugin.join("tokamak-plugin.json"),
-            r#"{
-  "schemaVersion": 1,
-  "id": "bad",
-  "platforms": {"web": {"class": "Bad"}}
-}"#,
-        )?;
-
-        let Err(error) = discover(root.path()) else {
-            return Err("web native metadata was accepted".into());
-        };
-
-        assert!(format!("{error:#}").contains("unknown platform 'web'"));
+            assert!(format!("{error:#}").contains(&format!("unknown platform '{platform}'")));
+        }
         Ok(())
     }
 
@@ -467,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn stages_plugin_files_without_reading_them() -> TestResult {
+    fn stages_each_namespace_section_without_reading_its_files() -> TestResult {
         let project = tempfile::tempdir()?;
         let plugin = install_plugin(
             project.path(),
@@ -491,22 +392,70 @@ mod tests {
         let plugins = discover(project.path())?;
         let staged = project.path().join("staged");
 
-        stage(&plugins, Platform::Ios, &staged.join("ios"))?;
-        stage(&plugins, Platform::Android, &staged.join("android"))?;
+        stage(
+            &plugins,
+            &pack(Target::IosSimulatorArm64),
+            &staged.join("ios"),
+        )?;
+        stage(
+            &plugins,
+            &pack(Target::AndroidArm64),
+            &staged.join("android"),
+        )?;
 
         assert_eq!(
-            fs::read_to_string(staged.join("ios/alerts/Info.plist"))?,
+            fs::read_to_string(staged.join("ios/alerts/class"))?,
+            "Alerts"
+        );
+        assert_eq!(
+            fs::read_to_string(staged.join("ios/alerts/plist"))?,
             "not read"
         );
-        assert!(!staged.join("ios/alerts/AndroidManifest.xml").exists());
+        assert!(!staged.join("ios/alerts/manifest").exists());
         assert_eq!(
-            fs::read_to_string(staged.join("android/alerts/AndroidManifest.xml"))?,
+            fs::read_to_string(staged.join("android/alerts/manifest"))?,
             "<manifest />"
         );
         assert_eq!(
             fs::read_to_string(staged.join("android/alerts/dependencies/0"))?,
             "com.example:library:1.2.3"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_keys_the_pack_does_not_declare_and_values_of_another_kind() -> TestResult {
+        for (section, message) in [
+            (
+                serde_json::json!({ "class": "Alerts", "frameworks": ["UIKit"] }),
+                "plugin 'alerts' has unknown ios key 'frameworks'",
+            ),
+            (
+                serde_json::json!({ "class": "Alerts", "sources": "Alerts.swift" }),
+                "plugin 'alerts' has an invalid sources",
+            ),
+            (
+                serde_json::json!({ "class": ["Alerts"] }),
+                "plugin 'alerts' has an invalid class",
+            ),
+        ] {
+            let project = tempfile::tempdir()?;
+            install_plugin(
+                project.path(),
+                &serde_json::json!({
+                    "schemaVersion": 1,
+                    "id": "alerts",
+                    "platforms": { "ios": section },
+                }),
+            )?;
+            let plugins = discover(project.path())?;
+
+            let Err(error) = stage(&plugins, &pack(Target::IosArm64), project.path()) else {
+                return Err(format!("{section} was staged").into());
+            };
+
+            assert!(format!("{error:#}").contains(message), "{error:#}");
+        }
         Ok(())
     }
 
@@ -523,45 +472,16 @@ mod tests {
         )?;
         let plugins = discover(project.path())?;
 
-        let Err(error) = stage(&plugins, Platform::Ios, &project.path().join("staged")) else {
+        let Err(error) = stage(
+            &plugins,
+            &pack(Target::IosArm64),
+            &project.path().join("staged"),
+        ) else {
             return Err("a plist outside the package was staged".into());
         };
 
         assert!(format!("{error:#}").contains("plist escapes its package"));
         Ok(())
-    }
-
-    #[test]
-    fn rejects_invalid_android_dependencies() -> TestResult {
-        let project = tempfile::tempdir()?;
-        install_plugin(
-            project.path(),
-            &serde_json::json!({
-                "schemaVersion": 1,
-                "id": "alerts",
-                "platforms": {
-                    "android": { "class": "test.Alerts", "dependencies": ["com.example:library"] },
-                },
-            }),
-        )?;
-
-        let Err(error) = discover(project.path()) else {
-            return Err("an invalid dependency was accepted".into());
-        };
-
-        assert!(format!("{error:#}").contains("invalid android dependency 'com.example:library'"));
-        Ok(())
-    }
-
-    #[test]
-    fn validates_maven_coordinates() {
-        assert!(valid_maven_coordinate(
-            "com.google.firebase:firebase-messaging:25.0.1"
-        ));
-        assert!(!valid_maven_coordinate("com.example:library"));
-        assert!(!valid_maven_coordinate("com.example:library:1.0:extra"));
-        assert!(!valid_maven_coordinate("com.example:library:1.0'"));
-        assert!(!valid_maven_coordinate("com.example::1.0"));
     }
 
     #[test]
@@ -572,12 +492,5 @@ mod tests {
         assert!(!valid_plugin_id("2photo"));
         assert!(!valid_plugin_id("photo--library"));
         assert!(!valid_plugin_id("../photo"));
-
-        assert!(valid_qualified_name("TokamakLocationPlugin"));
-        assert!(valid_qualified_name(
-            "com.tokamak.plugins.location.TokamakLocationPlugin"
-        ));
-        assert!(!valid_qualified_name("com.tokamak.Location-Plugin"));
-        assert!(!valid_qualified_name("com.tokamak.2Location"));
     }
 }

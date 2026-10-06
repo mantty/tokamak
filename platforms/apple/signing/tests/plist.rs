@@ -15,7 +15,7 @@ fn write_executable(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-fn write_input(root: &Path, platform: &str) -> Result<std::path::PathBuf> {
+fn write_input(root: &Path, platform: &str, target: &str) -> Result<std::path::PathBuf> {
     let input = root.join("input");
     let metadata = input.join("metadata");
     fs::create_dir_all(&metadata)?;
@@ -25,6 +25,7 @@ fn write_input(root: &Path, platform: &str) -> Result<std::path::PathBuf> {
         ("identifier", "com.example.demo"),
         ("host", "demo-app.tokamak.local"),
         ("platform", platform),
+        ("target", target),
         (
             "project-dir",
             root.to_str().context("temporary path is UTF-8")?,
@@ -146,10 +147,12 @@ esac
     Ok(tools)
 }
 
-fn test_platform(platform: &str, platform_name: &str) -> Result<()> {
+/// Generate the plist for `platform` and `target`, check the toolchain values
+/// for `platform_name` and the app's overlay, and return the generated plist.
+fn test_platform(platform: &str, target: &str, platform_name: &str) -> Result<Value> {
     let temporary = tempfile::tempdir()?;
     let tools = write_toolchain_commands(temporary.path())?;
-    let input = write_input(temporary.path(), platform)?;
+    let input = write_input(temporary.path(), platform, target)?;
     let generated_output = temporary.path().join("generated.plist");
     run_plist(
         &input,
@@ -197,20 +200,33 @@ fn test_platform(platform: &str, platform_name: &str) -> Result<()> {
             ("UserValue", "preserved"),
         ],
     );
-    Ok(())
+    Ok(generated)
+}
+
+fn supported_platform(plist: &Value) -> Option<&str> {
+    plist
+        .as_dictionary()?
+        .get("CFBundleSupportedPlatforms")?
+        .as_array()?
+        .first()?
+        .as_string()
 }
 
 #[test]
 fn generates_ios_metadata_and_applies_user_overlay() -> Result<()> {
-    test_platform("ios", "iphoneos")
+    let generated = test_platform("ios", "ios-arm64", "iphoneos")?;
+    assert_eq!(supported_platform(&generated), Some("iPhoneOS"));
+    Ok(())
 }
 
 #[test]
 fn generates_ios_simulator_metadata_and_applies_user_overlay() -> Result<()> {
-    test_platform("ios-simulator", "iphonesimulator")
+    let generated = test_platform("ios", "ios-simulator-arm64", "iphonesimulator")?;
+    assert_eq!(supported_platform(&generated), Some("iPhoneSimulator"));
+    Ok(())
 }
 
 #[test]
 fn generates_macos_metadata_and_applies_user_overlay() -> Result<()> {
-    test_platform("macos", "macosx")
+    test_platform("macos", "macos-arm64", "macosx").map(drop)
 }

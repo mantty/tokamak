@@ -473,8 +473,8 @@ The Android manifest is a partial `AndroidManifest.xml`:
 ```
 
 The Android Gradle Plugin's manifest merger combines it with the generated
-manifest, which includes plugin permissions, and each plugin's own manifest.
-The application manifest has the highest priority:
+manifest and each plugin's own manifest, which declares the plugin's
+permissions. The application manifest has the highest priority:
 
 - Elements are combined by key, for example `<uses-permission>` by
   `android:name`. An element declared in both files appears once.

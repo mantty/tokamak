@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use tokamak_cli::{
     Artifact, ArtifactKind, PackVariable, Platform, PlatformPackError, PlatformPackManifest,
-    Target, VariableKind, is_valid_key, load_manifest, write_manifest,
+    PluginKeyKind, Target, VariableKind, is_valid_key, load_manifest, write_manifest,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -108,6 +108,7 @@ fn valid_manifest() -> PlatformPackManifest {
                 description: "Info.plist values layered over the generated plist".to_owned(),
             },
         )]),
+        plugin_keys: BTreeMap::from([("sources".to_owned(), PluginKeyKind::Paths)]),
     }
 }
 
@@ -289,6 +290,17 @@ fn rejects_invalid_variables() {
 }
 
 #[test]
+fn rejects_invalid_plugin_keys() {
+    let mut manifest = valid_manifest();
+    manifest.plugin_keys = BTreeMap::from([("../class".to_owned(), PluginKeyKind::String)]);
+
+    assert!(matches!(
+        manifest.validate(),
+        Err(PlatformPackError::InvalidPluginKey(key)) if key == "../class"
+    ));
+}
+
+#[test]
 fn rejects_empty_artifact_paths() {
     let mut manifest = valid_manifest();
     manifest.artifacts[0].path.clear();
@@ -333,6 +345,7 @@ fn round_trips_manifest_json_without_losing_contract_fields() -> TestResult {
     assert!(json.contains("\"target\": \"ios-arm64\""));
     assert!(json.contains("\"tokamakVersion\": \"0.1.0\""));
     assert!(json.contains("\"kind\": \"path\""));
+    assert!(json.contains("\"sources\": \"paths\""));
     assert!(!json.contains("requiredCliVersion"));
     assert!(!json.contains("schemaVersion"));
     assert!(!json.contains("sha256"));
@@ -354,7 +367,8 @@ fn load_manifest_rejects_contract_invalid_json() -> TestResult {
   "target": "ios-arm64",
   "artifacts": [{"kind": "runtimeLibrary", "path": "../tokamak-runtime"}],
   "requiredTools": [],
-  "variables": {}
+  "variables": {},
+  "pluginKeys": {}
 }"#,
     )?;
 
