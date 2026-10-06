@@ -66,66 +66,99 @@ impl Plugin {
     }
 }
 
+/// A staged file's contents: a plugin's value, or a copy of the package file
+/// it names.
+enum Staged {
+    Value(String),
+    Copy(PathBuf),
+}
+
+/// Check each plugin's section for the pack's platform: each key is one the
+/// pack declares, with a value of its kind and files inside the package.
+pub(crate) fn check(plugins: &[Plugin], pack: &PlatformPackManifest) -> Result<()> {
+    for plugin in plugins {
+        staged_files(plugin, pack)?;
+    }
+    Ok(())
+}
+
 /// Stage each plugin's section for the pack's platform under
-/// `destination/<id>`, each key as the pack declares it; files are copied
-/// unread.
+/// `destination/<id>`.
 pub(crate) fn stage(
     plugins: &[Plugin],
     pack: &PlatformPackManifest,
     destination: &Path,
 ) -> Result<()> {
-    let namespace = pack.target.platform().namespace();
-    fs::create_dir_all(destination)?;
-
     for plugin in plugins {
-        let Some(section) = plugin.platforms.get(namespace) else {
+        let Some(files) = staged_files(plugin, pack)? else {
             continue;
         };
         let root = destination.join(&plugin.id);
         fs::create_dir_all(&root)?;
-        for (key, value) in section {
-            let Some(kind) = pack.plugin_keys.get(key) else {
-                bail!("plugin '{}' has unknown {namespace} key '{key}'", plugin.id);
-            };
-            stage_value(plugin, key, *kind, value, &root.join(key))?;
-        }
-    }
-    Ok(())
-}
-
-/// Stage `value`, the plugin's `key` of `kind`, at `destination`.
-fn stage_value(
-    plugin: &Plugin,
-    key: &str,
-    kind: PluginKeyKind,
-    value: &Value,
-    destination: &Path,
-) -> Result<()> {
-    let invalid = || format!("plugin '{}' has an invalid {key}", plugin.id);
-    let single = || String::deserialize(value).with_context(invalid);
-    let list = || Vec::<String>::deserialize(value).with_context(invalid);
-    match kind {
-        PluginKeyKind::String => fs::write(destination, single()?)?,
-        PluginKeyKind::Strings => write_list(destination, &list()?)?,
-        PluginKeyKind::Path => copy_file(plugin.package_file(key, &single()?)?, destination)?,
-        PluginKeyKind::Paths => {
-            for (index, path) in list()?.iter().enumerate() {
-                let source = plugin.package_file(key, path)?;
-                let name = source.file_name().unwrap_or_default().to_string_lossy();
-                copy_file(&source, destination.join(format!("{index}-{name}")))?;
+        for (path, staged) in files {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap_or(&root))?;
+            match staged {
+                Staged::Value(value) => fs::write(path, value)?,
+                Staged::Copy(source) => copy_file(source, path)?,
             }
         }
     }
     Ok(())
 }
 
-/// Write each value to its own file, named by its index.
-fn write_list(directory: &Path, values: &[String]) -> Result<()> {
-    fs::create_dir_all(directory)?;
-    for (index, value) in values.iter().enumerate() {
-        fs::write(directory.join(index.to_string()), value)?;
+/// The files that stage the plugin's section for the pack's platform, if it
+/// has one, by path in the plugin's directory.
+fn staged_files(
+    plugin: &Plugin,
+    pack: &PlatformPackManifest,
+) -> Result<Option<Vec<(PathBuf, Staged)>>> {
+    let namespace = pack.target.platform().namespace();
+    let Some(section) = plugin.platforms.get(namespace) else {
+        return Ok(None);
+    };
+    let mut files = Vec::new();
+    for (key, value) in section {
+        let Some(&kind) = pack.plugin_keys.get(key) else {
+            bail!("plugin '{}' has unknown {namespace} key '{key}'", plugin.id);
+        };
+        let invalid = || format!("plugin '{}' has an invalid {key}", plugin.id);
+        let values = match kind {
+            PluginKeyKind::String | PluginKeyKind::Path => {
+                vec![String::deserialize(value).with_context(invalid)?]
+            }
+            PluginKeyKind::Strings | PluginKeyKind::Paths => {
+                Vec::deserialize(value).with_context(invalid)?
+            }
+        };
+        for (index, value) in values.into_iter().enumerate() {
+            files.push(staged_file(plugin, key, kind, index, value)?);
+        }
     }
-    Ok(())
+    Ok(Some(files))
+}
+
+/// The file that stages `value`, item `index` of the plugin's `key` of `kind`:
+/// a single value at `<key>`, and a list's at `<key>/<index>`, followed by
+/// `-<file name>` for a file.
+fn staged_file(
+    plugin: &Plugin,
+    key: &str,
+    kind: PluginKeyKind,
+    index: usize,
+    value: String,
+) -> Result<(PathBuf, Staged)> {
+    let path = Path::new(key);
+    Ok(match kind {
+        PluginKeyKind::String => (path.into(), Staged::Value(value)),
+        PluginKeyKind::Strings => (path.join(index.to_string()), Staged::Value(value)),
+        PluginKeyKind::Path => (path.into(), Staged::Copy(plugin.package_file(key, &value)?)),
+        PluginKeyKind::Paths => {
+            let source = plugin.package_file(key, &value)?;
+            let name = source.file_name().unwrap_or_default().to_string_lossy();
+            (path.join(format!("{index}-{name}")), Staged::Copy(source))
+        }
+    })
 }
 
 fn dependencies(project: &Path) -> Result<BTreeSet<String>> {
@@ -192,7 +225,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use super::{discover, stage, valid_plugin_id};
+    use super::{check, discover, stage, valid_plugin_id};
     use tokamak_cli::{PlatformPackManifest, PluginKeyKind, Target};
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -424,7 +457,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_keys_the_pack_does_not_declare_and_values_of_another_kind() -> TestResult {
+    fn rejects_undeclared_keys_values_of_another_kind_and_files_outside_the_package() -> TestResult
+    {
         for (section, message) in [
             (
                 serde_json::json!({ "class": "Alerts", "frameworks": ["UIKit"] }),
@@ -438,6 +472,14 @@ mod tests {
                 serde_json::json!({ "class": ["Alerts"] }),
                 "plugin 'alerts' has an invalid class",
             ),
+            (
+                serde_json::json!({ "plist": "../../package.json" }),
+                "plugin 'alerts' plist escapes its package",
+            ),
+            (
+                serde_json::json!({ "sources": ["Alerts.swift"] }),
+                "plugin 'alerts' sources is missing: Alerts.swift",
+            ),
         ] {
             let project = tempfile::tempdir()?;
             install_plugin(
@@ -450,37 +492,12 @@ mod tests {
             )?;
             let plugins = discover(project.path())?;
 
-            let Err(error) = stage(&plugins, &pack(Target::IosArm64), project.path()) else {
-                return Err(format!("{section} was staged").into());
+            let Err(error) = check(&plugins, &pack(Target::IosArm64)) else {
+                return Err(format!("{section} was accepted").into());
             };
 
             assert!(format!("{error:#}").contains(message), "{error:#}");
         }
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_plugin_files_outside_the_package() -> TestResult {
-        let project = tempfile::tempdir()?;
-        install_plugin(
-            project.path(),
-            &serde_json::json!({
-                "schemaVersion": 1,
-                "id": "alerts",
-                "platforms": { "ios": { "class": "Alerts", "plist": "../../package.json" } },
-            }),
-        )?;
-        let plugins = discover(project.path())?;
-
-        let Err(error) = stage(
-            &plugins,
-            &pack(Target::IosArm64),
-            &project.path().join("staged"),
-        ) else {
-            return Err("a plist outside the package was staged".into());
-        };
-
-        assert!(format!("{error:#}").contains("plist escapes its package"));
         Ok(())
     }
 

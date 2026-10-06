@@ -1322,6 +1322,35 @@ fn rejects_invalid_android_plugin_classes_and_dependencies() -> TestResult {
 
 #[cfg(unix)]
 #[test]
+fn checks_every_platform_s_plugin_sections_before_any_platform_builds() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let project = temporary.path().join("project");
+    let packs = temporary.path().join("platform-packs");
+    fs::create_dir_all(&project)?;
+    create_project(&project)?;
+    create_android_platform_pack(&packs.join("android-arm64"))?;
+    create_platform_pack(&packs.join("ios-arm64"), "ios-arm64")?;
+    let plugin_manifest =
+        install_android_plugin(&project, serde_json::json!({}))?.join("tokamak-plugin.json");
+    let mut plugin: serde_json::Value = serde_json::from_slice(&fs::read(&plugin_manifest)?)?;
+    plugin["platforms"]["ios"] = serde_json::json!({ "class": "Alerts", "frameworks": ["UIKit"] });
+    fs::write(&plugin_manifest, plugin.to_string())?;
+
+    Command::cargo_bin("tok")?
+        .args(["build", "android,ios", "--skip-project-build", "--project"])
+        .arg(&project)
+        .env("TOKAMAK_VERSION", "1.0.0")
+        .env("TOKAMAK_PLATFORM_PACK_PATH", &packs)
+        .assert()
+        .failure()
+        .stderr(contains("plugin 'alerts' has unknown ios key 'frameworks'"));
+    assert!(!project.join("build/.tokamak/android").exists());
+    assert!(!project.join("build/.tokamak/worker").exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn environment_overrides_configured_identifier_and_version() -> TestResult {
     let (temporary, project, manifest) = create_inputs("macos-arm64")?;
     configure(

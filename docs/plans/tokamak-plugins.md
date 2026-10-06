@@ -49,9 +49,9 @@ The tokamak runtime remains prebuilt. `tok build` stages each key of a
 plugin's section at `plugins/<id>/<key>` in the build input: a string as a file
 holding it, a file as its copy, unread, and a list as a directory of its items
 named by index, with a file's name after its index (`sources/0-Plugin.swift`).
-A key the pack does not declare, or a value of another kind, fails the build.
-The platform-pack entrypoint then compiles only the native shell and plugin
-sources:
+A key the pack does not declare, a value of another kind, or a missing file
+fails the build before any platform builds. The platform-pack entrypoint then
+compiles only the native shell and plugin sources:
 
 - macOS, iOS, and iOS Simulator compile Swift sources into the application
   executable, which links the system frameworks they import. The Apple helper

@@ -129,12 +129,14 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     )?;
     support::validate_project_build(&wrangler)?;
     warn_unsupported_bindings(&wrangler);
+    let plugins = plugins::discover(&request.project_dir)?;
     let builds = request
         .platforms
         .iter()
         .zip(packs)
         .map(|(platform, (pack_root, manifest))| {
             let settings = settings::resolve(&sources, *platform, &manifest)?;
+            plugins::check(&plugins, &manifest)?;
             Ok(PlatformBuild {
                 platform: *platform,
                 app: resolve_app(&settings, &wrangler.name, *platform)?,
@@ -146,7 +148,6 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         .collect::<Result<Vec<_>>>()?;
     let worker = worker::compile(&build_dir.join(".tokamak").join("worker"), &wrangler)
         .context("compile the Worker")?;
-    let plugins = plugins::discover(&request.project_dir)?;
     let context = BuildContext {
         build_dir: &build_dir,
         wrangler: &wrangler,
@@ -196,7 +197,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
         request.pack,
         platform_settings.icon.as_deref(),
     )?;
-    plugins::stage(&plugins, &manifest, &input.join("plugins"))
+    plugins::stage(&plugins, manifest, &input.join("plugins"))
         .context("stage native plugin inputs")?;
     fs::write(input.join("app/.tokamak-development"), b"")?;
     write_build_metadata(

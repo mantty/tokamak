@@ -8,11 +8,6 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use plist::{Dictionary, Value};
 
-const IOS_PLIST_ENV: &str = "TOKAMAK_IOS_PLIST";
-const MACOS_PLIST_ENV: &str = "TOKAMAK_MACOS_PLIST";
-const IOS_BUILD_NUMBER_ENV: &str = "TOKAMAK_IOS_BUILD_NUMBER";
-const MACOS_BUILD_NUMBER_ENV: &str = "TOKAMAK_MACOS_BUILD_NUMBER";
-
 /// Build the final Apple application information property list.
 ///
 /// # Errors
@@ -55,9 +50,7 @@ impl Metadata {
         let mut build_number = version.clone().unwrap_or_else(|| "1".into());
         let version = version.unwrap_or_else(|| "1.0".into());
         let platform = read_required(&metadata.join("platform"))?;
-        if let Some(environment) = build_number_environment(&platform)
-            && let Some(value) = environment_value(environment)?
-        {
+        if let Some(value) = environment_value(&pack_variable(&platform, "BUILD_NUMBER"))? {
             build_number = value;
         }
         validate_build_number(&build_number)?;
@@ -309,7 +302,7 @@ fn add_plugin_plists(
     let mut merge = PluginMerge {
         origins: BTreeMap::new(),
         user,
-        user_setting: user_plist_setting(&metadata.platform)?,
+        platform: &metadata.platform,
     };
     for plugin in sorted_directories(&input.join("plugins"))? {
         let path = plugin.join("plist");
@@ -330,7 +323,8 @@ struct PluginMerge<'a> {
     /// The plugin that set each key path; unlisted values are tokamak's.
     origins: BTreeMap<Vec<String>, String>,
     user: Option<&'a Dictionary>,
-    user_setting: &'static str,
+    /// The platform namespace, whose `plist` setting names the app's plist.
+    platform: &'a str,
 }
 
 impl PluginMerge<'_> {
@@ -360,10 +354,10 @@ impl PluginMerge<'_> {
                 }
                 (Some(existing), value) if *existing == value || self.user_sets(path) => {}
                 (Some(_), _) => bail!(
-                    "{} and plugin '{plugin}' set different values for Info.plist key '{}'; set it in the app's {} file",
+                    "{} and plugin '{plugin}' set different values for Info.plist key '{}'; set it in the app's {}.plist file",
                     self.origin(path),
                     path.join(":"),
-                    self.user_setting
+                    self.platform
                 ),
             }
             path.pop();
@@ -414,24 +408,14 @@ fn sorted_directories(path: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn configured_user_plist(metadata: &Metadata) -> Result<Option<PathBuf>> {
-    let variable = user_plist_variable(&metadata.platform)?;
-    user_plist_path(variable, env::var_os(variable))
+    let variable = pack_variable(&metadata.platform, "PLIST");
+    user_plist_path(&variable, env::var_os(&variable))
 }
 
-fn user_plist_variable(platform: &str) -> Result<&'static str> {
-    match platform {
-        "ios" => Ok(IOS_PLIST_ENV),
-        "macos" => Ok(MACOS_PLIST_ENV),
-        platform => bail!("unsupported Apple platform: {platform}"),
-    }
-}
-
-fn user_plist_setting(platform: &str) -> Result<&'static str> {
-    match platform {
-        "ios" => Ok("ios.plist"),
-        "macos" => Ok("macos.plist"),
-        platform => bail!("unsupported Apple platform: {platform}"),
-    }
+/// The environment variable that passes the pack variable `name`, in upper
+/// case, for the `platform` namespace.
+fn pack_variable(platform: &str, name: &str) -> String {
+    format!("TOKAMAK_{}_{name}", platform.to_ascii_uppercase())
 }
 
 fn user_plist_path(variable: &str, value: Option<OsString>) -> Result<Option<PathBuf>> {
@@ -505,14 +489,6 @@ fn environment_value(name: &str) -> Result<Option<String>> {
         Ok(value) => Ok(Some(value)),
         Err(env::VarError::NotPresent) => Ok(None),
         Err(env::VarError::NotUnicode(_)) => bail!("{name} must contain valid UTF-8"),
-    }
-}
-
-fn build_number_environment(platform: &str) -> Option<&'static str> {
-    match platform {
-        "ios" => Some(IOS_BUILD_NUMBER_ENV),
-        "macos" => Some(MACOS_BUILD_NUMBER_ENV),
-        _ => None,
     }
 }
 
