@@ -110,9 +110,7 @@ class Notifications extends FrontendPlugin {
   /** Receives push messages that arrive while the page is loaded. */
   onMessage(listener: Listener<Message>, error: ErrorListener = report): () => void {
     if (!this.hasNativeTransport) return web.onMessage(listener);
-    return this.listen("onMessage", (value) => {
-      listener(value as Message);
-    }, error);
+    return this.listen("onMessage", listener, error);
   }
 
   /** Receives opened notifications, local or push, including the one that opened the app. */
@@ -121,9 +119,7 @@ class Notifications extends FrontendPlugin {
     error: ErrorListener = report,
   ): () => void {
     if (!this.hasNativeTransport) return web.onNotificationOpened(listener);
-    return this.listen("onNotificationOpened", (value) => {
-      listener(value as OpenedNotification);
-    }, error);
+    return this.listen("onNotificationOpened", listener, error);
   }
 
   /** Receives the replacement when the push service changes the subscription. */
@@ -132,9 +128,7 @@ class Notifications extends FrontendPlugin {
     error: ErrorListener = report,
   ): () => void {
     if (!this.hasNativeTransport) return web.onSubscriptionChange(listener);
-    return this.listen("onSubscriptionChange", (value) => {
-      listener(value as Subscription);
-    }, error);
+    return this.listen("onSubscriptionChange", listener, error);
   }
 }
 

@@ -200,7 +200,12 @@ final class TokamakPluginBridge: NSObject, WKScriptMessageHandler {
     else {
       return
     }
-    webView?.evaluateJavaScript("globalThis.__tokamakReceive?.(\(json))")
+    webView?.callAsyncJavaScript(
+      "globalThis.__tokamakNative?.onmessage?.({ data })",
+      arguments: ["data": json],
+      in: nil,
+      in: .page
+    )
   }
 
   private static func bootstrap(host: String) -> String {
