@@ -27,14 +27,15 @@ struct WorkerCache {
 /// `cache_dir`; an earlier compilation is reused while its inputs are unchanged.
 pub(crate) fn compile(cache_dir: &Path, wrangler: &WranglerConfig) -> Result<PathBuf> {
     let (root, manifest) = collect_modules(wrangler)?;
-    let files = manifest
+    let mut files = manifest
         .modules
         .keys()
         .map(|name| root.join(name))
         .collect::<Vec<_>>();
+    // The running tok compiles and packages the modules, so it is an input too.
+    files.push(std::env::current_exe()?);
     let inputs = format!(
-        "{}:{}:{}",
-        env!("CARGO_PKG_VERSION"),
+        "{}:{}",
         serde_json::to_string(&manifest)?,
         cache::hash_paths(&files)?
     );
