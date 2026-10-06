@@ -22,7 +22,6 @@ private const val ASKED = "asked"
 private const val SUBSCRIBED = "subscribed"
 private const val TOKEN = "token"
 private const val SHOW_IN_FOREGROUND = "show-in-foreground"
-private const val PERMISSION_REQUEST = 0x4E07
 
 /** FCM allows about 10 seconds for a message, including starting the app. */
 private const val PUSH_DEADLINE_MILLIS = 8_000L
@@ -46,7 +45,6 @@ class TokamakNotificationsPlugin(
 
     /** Notifications opened while no page listened for them. */
     private val heldOpened = mutableListOf<JSONObject>()
-    private val permissionReplies = mutableListOf<TokamakPluginReply>()
 
     init {
         notifier.createChannel()
@@ -83,17 +81,6 @@ class TokamakNotificationsPlugin(
             heldOpened.clear()
         }
         return { listeners[method]?.remove(key) }
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) {
-        if (requestCode != PERMISSION_REQUEST) return
-        val permission = permission()
-        permissionReplies.forEach { it(Result.success(permission)) }
-        permissionReplies.clear()
     }
 
     /** Delivers a notification the user opened, local or from FCM, that started the activity. */
@@ -182,19 +169,17 @@ class TokamakNotificationsPlugin(
     }
 
     private fun requestPermission(reply: TokamakPluginReply) {
-        val activity = host.activity
         if (
             Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            activity == null ||
+            host.activity == null ||
             permission() != "prompt"
         ) {
             reply(Result.success(permission()))
             return
         }
         preferences.edit().putBoolean(ASKED, true).apply()
-        permissionReplies += reply
-        if (permissionReplies.size == 1) {
-            activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), PERMISSION_REQUEST)
+        host.requestPermissions(setOf(Manifest.permission.POST_NOTIFICATIONS)) {
+            reply(Result.success(permission()))
         }
     }
 

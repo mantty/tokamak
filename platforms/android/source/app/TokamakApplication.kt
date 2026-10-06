@@ -30,6 +30,8 @@ class TokamakApplication : Application(), TokamakHost {
         }
     }
 
+    internal val permissionRequests = TokamakPermissions(this)
+
     /** The running runtime, started on first use. Blocks while it starts. */
     internal val runtime: TokamakRuntime by lazy(::startRuntime)
 
@@ -42,6 +44,9 @@ class TokamakApplication : Application(), TokamakHost {
         runtime.call(name, body, timeoutMillis)
 
     override fun plugin(id: String): TokamakPlugin? = plugins[id]
+
+    override fun requestPermissions(permissions: Set<String>, callback: (Map<String, Boolean>) -> Unit) =
+        permissionRequests.request(permissions, callback)
 
     private fun startRuntime(): TokamakRuntime {
         val metadata = metadata()

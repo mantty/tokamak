@@ -33,12 +33,6 @@ interface TokamakPlugin {
         return {}
     }
 
-    fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) = Unit
-
     /** Receives the intent that started the app's activity, and each intent it receives later. */
     fun onIntent(intent: Intent) = Unit
 }
@@ -50,6 +44,13 @@ interface TokamakHost {
 
     /** The app's activity, or null while it has none. */
     val activity: Activity?
+
+    /**
+     * Asks the user for [permissions] in the app's activity once earlier requests finish, then
+     * passes [callback] whether each is granted. Without an activity, answers at once. Call it on
+     * the main thread; [callback] runs on the main thread.
+     */
+    fun requestPermissions(permissions: Set<String>, callback: (Map<String, Boolean>) -> Unit)
 
     /**
      * Posts the JSON [body] to the Worker's `/tokamak/<name>` endpoint and returns the

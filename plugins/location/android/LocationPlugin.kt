@@ -22,7 +22,6 @@ class TokamakLocationPlugin(
     private val context = host.context
     private val manager =
         context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    private val permissionRequests = mutableListOf<(Boolean) -> Unit>()
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
         if (method != "getCurrentPosition") {
@@ -55,40 +54,14 @@ class TokamakLocationPlugin(
         }
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) {
-        if (requestCode != LOCATION_PERMISSION_REQUEST) return
-        val granted = grantResults.any { it == PackageManager.PERMISSION_GRANTED }
-        val requests = permissionRequests.toList()
-        permissionRequests.clear()
-        requests.forEach { it(granted) }
-    }
-
+    /** Passes [action] whether the app may read fine or coarse location, asking when it may not. */
     private fun withPermission(action: (Boolean) -> Unit) {
-        if (hasPermission()) {
+        if (PERMISSIONS.any { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
             action(true)
             return
         }
-        val activity = host.activity ?: return action(false)
-        permissionRequests.add(action)
-        if (permissionRequests.size > 1) return
-        activity.requestPermissions(
-            arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION,
-            ),
-            LOCATION_PERMISSION_REQUEST,
-        )
+        host.requestPermissions(PERMISSIONS) { granted -> action(granted.containsValue(true)) }
     }
-
-    private fun hasPermission(): Boolean =
-        context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED ||
-            context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
 
     private fun currentPosition(reply: TokamakPluginReply) {
         val provider = availableProvider(reply) ?: return
@@ -172,6 +145,6 @@ class TokamakLocationPlugin(
         else unavailable(error.message ?: "Location is unavailable")
 
     private companion object {
-        const val LOCATION_PERMISSION_REQUEST = 0xA771
+        val PERMISSIONS = setOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
     }
 }
