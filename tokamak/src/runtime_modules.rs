@@ -1,113 +1,6 @@
-//! Runtime-owned JavaScript module registry.
+//! The public names of the runtime's builtin modules.
 
-/// Every JavaScript compatibility module compiled into the runtime image.
-#[allow(dead_code)]
-pub(crate) const BUILTIN_SOURCES: &[&str] = &[
-    "builtins/runtime.mjs",
-    "builtins/globals.mjs",
-    "builtins/async-context.mjs",
-    "builtins/cloudflare-workers.mjs",
-    "builtins/cloudflare-sockets.mjs",
-    "builtins/cloudflare-node.mjs",
-    "builtins/tracing.mjs",
-    "events/events.mjs",
-    "events/web.mjs",
-    "globals/console.mjs",
-    "globals/process.mjs",
-    "globals/structured-clone.mjs",
-    "globals/objects.mjs",
-    "globals/performance.mjs",
-    "globals/web.mjs",
-    "intl.mjs",
-    "network/fetch.mjs",
-    "network/html-rewriter.mjs",
-    "network/url.mjs",
-    "network/websocket.mjs",
-    "node/assert.mjs",
-    "node/assert-strict.mjs",
-    "node/async-hooks.mjs",
-    "node/buffer.mjs",
-    "node/child-process.mjs",
-    "node/cluster.mjs",
-    "node/console.mjs",
-    "node/constants.mjs",
-    "node/crypto.mjs",
-    "node/diagnostics-channel.mjs",
-    "node/dgram.mjs",
-    "node/dns.mjs",
-    "node/dns-promises.mjs",
-    "node/domain.mjs",
-    "node/http.mjs",
-    "node/http2.mjs",
-    "node/inspector.mjs",
-    "node/internal-http-agent.mjs",
-    "node/internal-http-client.mjs",
-    "node/internal-http-common.mjs",
-    "node/internal-http-incoming.mjs",
-    "node/internal-http.mjs",
-    "node/internal-http-outgoing.mjs",
-    "node/internal-http-server.mjs",
-    "node/internal-stream-duplex.mjs",
-    "node/internal-stream-passthrough.mjs",
-    "node/internal-stream-readable.mjs",
-    "node/internal-stream-transform.mjs",
-    "node/internal-stream-wrap.mjs",
-    "node/internal-stream-writable.mjs",
-    "node/internal-tls-common.mjs",
-    "node/internal-tls-wrap.mjs",
-    "node/https.mjs",
-    "node/module.mjs",
-    "node/net.mjs",
-    "node/os.mjs",
-    "node/path.mjs",
-    "node/path-posix.mjs",
-    "node/path-win32.mjs",
-    "node/perf-hooks.mjs",
-    "node/punycode.mjs",
-    "node/querystring.mjs",
-    "node/readline.mjs",
-    "node/readline-promises.mjs",
-    "node/repl.mjs",
-    "node/string-decoder.mjs",
-    "node/stream-consumers.mjs",
-    "node/stream-promises.mjs",
-    "node/stream-web.mjs",
-    "node/sqlite.mjs",
-    "node/timers.mjs",
-    "node/timers-promises.mjs",
-    "node/tls.mjs",
-    "node/tty.mjs",
-    "node/trace-events.mjs",
-    "node/url.mjs",
-    "node/util.mjs",
-    "node/util-types.mjs",
-    "node/unsupported.mjs",
-    "node/v8.mjs",
-    "node/vm.mjs",
-    "node/wasi.mjs",
-    "node/worker-threads.mjs",
-    "node/zlib.mjs",
-    "node/test.mjs",
-    "streams/node.mjs",
-    "streams/text.mjs",
-    "streams/web.mjs",
-    "streams/web-standard.mjs",
-];
-
-/// The storage bindings' JavaScript modules, compiled into the storage part,
-/// which only apps that declare storage bindings link.
-#[allow(dead_code)]
-pub(crate) const STORAGE_SOURCES: &[&str] = &[
-    "storage/bindings.mjs",
-    "storage/d1.mjs",
-    "storage/d1-api.mjs",
-    "storage/kv.mjs",
-    "storage/r2.mjs",
-    "storage/tracing-helpers.mjs",
-    "storage/wrapped-binding.mjs",
-];
-
-#[allow(dead_code)]
+/// Each public module name with the module it resolves to.
 const PUBLIC_MODULES: &[(&str, &str)] = &[
     (
         "cloudflare:workers",
@@ -230,7 +123,6 @@ pub(crate) fn runtime_module_names() -> Vec<&'static str> {
     names
 }
 
-#[allow(dead_code)]
 pub(crate) fn public_module(name: &str) -> Option<&'static str> {
     PUBLIC_MODULES.iter().find_map(|(public, target)| {
         (*public == name

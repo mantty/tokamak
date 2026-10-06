@@ -151,6 +151,7 @@ x509-parser = { workspace = true, features = ["verify"] }
 
 [build-dependencies]
 rquickjs.workspace = true
+walkdir.workspace = true
 
 # The system zoneinfo directory is unverified inside the iOS sandbox.
 [target.'cfg(target_os = "ios")'.dependencies]

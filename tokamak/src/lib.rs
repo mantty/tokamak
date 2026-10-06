@@ -39,6 +39,7 @@ mod packaging;
 mod quickjs;
 #[cfg(all(test, feature = "native"))]
 mod runtime_contract_tests;
+#[cfg(feature = "native")]
 mod runtime_modules;
 #[cfg(feature = "native")]
 mod server;
