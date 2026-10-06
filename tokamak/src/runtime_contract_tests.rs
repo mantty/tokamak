@@ -12,7 +12,7 @@ use std::time::Duration;
 use crate::dispatcher::{AssetService, execute_request};
 use crate::env_vars::StorageBinding;
 use crate::gateway::{Job, JobResponse, Lifecycle};
-use crate::packaging::{ModuleType, PackageLayout, WorkerManifest};
+use crate::packaging::{ModuleType, PackageLayout, WorkerManifest, write_worker};
 use crate::quickjs::{Assets, RuntimeConfig, WorkerBundle};
 use crate::storage::Storage;
 use crate::transport::{HttpBody, HttpRequest};
@@ -37,45 +37,24 @@ fn entry_worker(entry: &Path, output: &Path) -> TestResult<WorkerBundle> {
 fn module_worker(root: &Path, entry: &str, output: &Path) -> TestResult<WorkerBundle> {
     let files = walkdir::WalkDir::new(root)
         .into_iter()
-        .filter_entry(|file| file.file_name() != "node_modules")
-        .collect::<Result<Vec<_>, _>>()?;
-    let layout = PackageLayout::new(output);
-    fs::create_dir_all(layout.bundle())?;
+        .filter_entry(|file| file.file_name() != "node_modules");
     let mut manifest = WorkerManifest::es_modules(entry, &[]);
     for file in files {
-        let extension = file.path().extension().and_then(|ext| ext.to_str());
-        let module_type = match extension {
+        let file = file?;
+        let module_type = match file.path().extension().and_then(|ext| ext.to_str()) {
             Some("mjs" | "js") => ModuleType::EsModule,
             Some("txt") => ModuleType::Text,
             Some("bin") => ModuleType::Data,
             _ => continue,
         };
-        let name = module_name(root, file.path())?;
-        let contents = fs::read(file.path())?;
-        let (destination, contents) = match module_type {
-            ModuleType::EsModule => (
-                layout.worker_modules().join(format!("{name}.qjs")),
-                crate::compile_module(&name, &contents)?,
-            ),
-            _ => (layout.bundle().join(&name), contents),
-        };
-        fs::create_dir_all(destination.parent().ok_or("module has no directory")?)?;
-        fs::write(destination, contents)?;
-        manifest.modules.insert(name, module_type);
+        let name = file.path().strip_prefix(root)?.to_string_lossy();
+        manifest
+            .modules
+            .insert(name.replace('\\', "/"), module_type);
     }
-    Ok(WorkerBundle::from_modules(
-        manifest,
-        layout.worker_modules(),
-        layout.bundle(),
-    ))
-}
-
-fn module_name(root: &Path, file: &Path) -> TestResult<String> {
-    Ok(file
-        .strip_prefix(root)?
-        .to_str()
-        .ok_or("non-UTF8 module")?
-        .replace('\\', "/"))
+    let layout = PackageLayout::new(output);
+    write_worker(&layout, root, &manifest)?;
+    Ok(WorkerBundle::new(manifest, layout))
 }
 
 fn request(worker: &WorkerBundle, flag: &str) -> TestResult<Vec<u8>> {
@@ -1246,7 +1225,7 @@ fn write_asset_manifest_for(client: &Path, manifest: &Path) -> TestResult {
         if !entry.file_type().is_file() {
             continue;
         }
-        let relative = module_name(client, entry.path())?;
+        let relative = entry.path().strip_prefix(client)?.to_string_lossy();
         let mime = mime_guess::from_path(entry.path())
             .first_or_octet_stream()
             .to_string();
@@ -1335,10 +1314,7 @@ fn application_imports_cannot_access_runtime_internals() -> TestResult {
         let source = format!(
             "export default {{ async fetch() {{ await import('{name}'); return new Response('unexpected'); }} }};"
         );
-        let worker = WorkerBundle::from_bytecode(
-            crate::compile_worker(source.as_bytes())?,
-            directory.path(),
-        );
+        let worker = WorkerBundle::of_source(source.as_bytes(), directory.path())?;
         assert!(
             request(&worker, "first").is_err(),
             "private import succeeded: {name}"

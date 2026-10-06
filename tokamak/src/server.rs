@@ -13,7 +13,7 @@ use crate::env_vars::{StorageBinding, load as load_environment};
 use crate::gateway::{self, GatewayConfig};
 use crate::lifecycle_events::{Event, Events};
 use crate::linked::StorageRuntime;
-use crate::packaging::{PackageLayout, decompress_worker_bundle, read_worker_manifest};
+use crate::packaging::{PackageLayout, read_worker_manifest};
 use crate::quickjs::{Assets, RuntimeConfig, WorkerBundle};
 
 use crate::Result;
@@ -72,7 +72,7 @@ impl Runtime {
             config.state_dir.clone(),
             config.host.clone(),
         )?);
-        let worker = packaged_worker(&config.app)?;
+        let worker = WorkerBundle::new(read_worker_manifest(&config.app)?, config.app.clone());
         validate_worker(&worker)?;
         let handler = Dispatcher::new(worker, quickjs_config(&config)?)?;
         finish_start(events, config.host, certificates, handler)
@@ -179,28 +179,13 @@ fn finish_start(
     })
 }
 
-fn packaged_worker(app: &PackageLayout) -> Result<WorkerBundle> {
-    if app.worker_manifest().is_file() {
-        Ok(WorkerBundle::from_modules(
-            read_worker_manifest(app)?,
-            app.worker_modules(),
-            app.bundle(),
-        ))
-    } else {
-        let bytecode = decompress_worker_bundle(&std::fs::read(app.worker_bundle())?)?;
-        Ok(WorkerBundle::from_bytecode(bytecode, app.bundle()))
-    }
-}
-
 fn validate_worker(worker: &WorkerBundle) -> Result<()> {
-    let entry_module = worker.modules.join(format!("{}.qjs", worker.entry));
-    let message = match &worker.legacy {
-        _ if worker.entry.is_empty() => "Worker entry module is empty".to_owned(),
-        Some(bytecode) if bytecode.is_empty() => "Worker bytecode is empty".to_owned(),
-        None if !entry_module.is_file() => {
-            format!("Worker entry module is missing: {}", worker.entry)
-        }
-        _ => return Ok(()),
+    let message = if worker.entry.is_empty() {
+        "Worker entry module is empty".to_owned()
+    } else if !worker.app.worker_module(&worker.entry).is_file() {
+        format!("Worker entry module is missing: {}", worker.entry)
+    } else {
+        return Ok(());
     };
     Err(crate::QuickJsError::Startup(message).into())
 }
@@ -410,15 +395,5 @@ mod tests {
             Some(&json!("true"))
         );
         Ok(())
-    }
-
-    #[test]
-    fn describes_where_an_app_lives() {
-        let config = config(std::path::Path::new("/apps/example"));
-
-        assert_eq!(
-            config.app.worker_bundle(),
-            std::path::Path::new("/apps/example/worker.bundle")
-        );
     }
 }

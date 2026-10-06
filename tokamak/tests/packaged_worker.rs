@@ -13,10 +13,9 @@ use rcgen::{CertificateParams, KeyPair};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
 use serde_json::json;
-use tokamak::compile_worker;
 use tokamak::{
-    Config, PackageLayout, Runtime, StorageBinding, WorkerEnvironment, compress_worker_bundle,
-    write_worker_environment,
+    Config, ModuleType, PackageLayout, Runtime, StorageBinding, WorkerEnvironment, WorkerManifest,
+    write_worker, write_worker_environment,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -494,9 +493,14 @@ fn start_packaged_runtime(
     let app = PackageLayout::new(temporary.join("app"));
     fs::create_dir_all(app.root())?;
     write_worker_environment(&app, environment)?;
-    fs::write(
-        app.worker_bundle(),
-        compress_worker_bundle(&compile_worker(worker)?)?,
+    fs::write(temporary.join("worker.mjs"), worker)?;
+    write_worker(
+        &app,
+        temporary,
+        &WorkerManifest {
+            entry: "worker.mjs".to_owned(),
+            modules: BTreeMap::from([("worker.mjs".to_owned(), ModuleType::EsModule)]),
+        },
     )?;
     start_runtime(temporary, app)
 }

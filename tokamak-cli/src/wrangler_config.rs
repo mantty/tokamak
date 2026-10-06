@@ -9,7 +9,6 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use tokamak::ModuleType;
 
 /// Where a build records the configuration it generated for deployment.
 const DEPLOY_CONFIG: &str = ".wrangler/deploy/config.json";
@@ -116,13 +115,28 @@ pub(crate) struct WranglerBinding {
 pub(crate) struct WranglerRule {
     /// Module type applied to matching files.
     #[serde(rename = "type")]
-    pub(crate) module_type: ModuleType,
+    pub(crate) module_type: WranglerModuleType,
     /// POSIX glob patterns evaluated relative to the directory of
     /// [`WranglerConfig::main`].
     pub(crate) globs: Vec<String>,
     /// Whether later matching rules may also apply.
     #[serde(default)]
     fallthrough: bool,
+}
+
+/// A module type in Wrangler's module rules, each named as Wrangler names it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) enum WranglerModuleType {
+    /// JavaScript ES module source.
+    ESModule,
+    /// `CommonJS` JavaScript source.
+    CommonJS,
+    /// Compiled WebAssembly binary.
+    CompiledWasm,
+    /// Text, imported as a string.
+    Text,
+    /// Binary data, imported as an `ArrayBuffer`.
+    Data,
 }
 
 /// Static asset subset of a Wrangler config that tokamak consumes.
@@ -344,9 +358,15 @@ fn resolve_assets(
 /// drops: those after a rule of the same type without `fallthrough`.
 fn applied_rules(rules: Vec<WranglerRule>) -> Vec<WranglerRule> {
     let defaults = [
-        (ModuleType::Text, &["**/*.txt", "**/*.html", "**/*.sql"][..]),
-        (ModuleType::Data, &["**/*.bin"]),
-        (ModuleType::CompiledWasm, &["**/*.wasm", "**/*.wasm?module"]),
+        (
+            WranglerModuleType::Text,
+            &["**/*.txt", "**/*.html", "**/*.sql"][..],
+        ),
+        (WranglerModuleType::Data, &["**/*.bin"]),
+        (
+            WranglerModuleType::CompiledWasm,
+            &["**/*.wasm", "**/*.wasm?module"],
+        ),
     ]
     .map(|(module_type, globs)| WranglerRule {
         module_type,
@@ -608,7 +628,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        HtmlHandling, ModuleType, NotFoundHandling, WranglerMigrations, WranglerRule,
+        HtmlHandling, NotFoundHandling, WranglerMigrations, WranglerModuleType, WranglerRule,
         WranglerStorage, applied_rules, collect_bindings, deploy_config_path, load_config,
         normalize_relative_path, pattern_within,
     };
@@ -718,9 +738,9 @@ mod tests {
             fallthrough,
         };
         let applied = applied_rules(vec![
-            rule(ModuleType::Text, "**/*.md", false),
-            rule(ModuleType::Data, "**/*.txt", true),
-            rule(ModuleType::Text, "**/*.csv", false),
+            rule(WranglerModuleType::Text, "**/*.md", false),
+            rule(WranglerModuleType::Data, "**/*.txt", true),
+            rule(WranglerModuleType::Text, "**/*.csv", false),
         ]);
 
         assert_eq!(
@@ -729,10 +749,10 @@ mod tests {
                 .map(|rule| (rule.module_type, rule.globs[0].as_str()))
                 .collect::<Vec<_>>(),
             [
-                (ModuleType::Text, "**/*.md"),
-                (ModuleType::Data, "**/*.txt"),
-                (ModuleType::Data, "**/*.bin"),
-                (ModuleType::CompiledWasm, "**/*.wasm"),
+                (WranglerModuleType::Text, "**/*.md"),
+                (WranglerModuleType::Data, "**/*.txt"),
+                (WranglerModuleType::Data, "**/*.bin"),
+                (WranglerModuleType::CompiledWasm, "**/*.wasm"),
             ]
         );
     }
@@ -761,8 +781,8 @@ mod tests {
                 .map(|rule| (rule.module_type, rule.globs.join(","), rule.fallthrough))
                 .collect::<Vec<_>>(),
             [
-                (ModuleType::Text, "**/*.md".to_owned(), false),
-                (ModuleType::Data, "**/*.dat".to_owned(), true),
+                (WranglerModuleType::Text, "**/*.md".to_owned(), false),
+                (WranglerModuleType::Data, "**/*.dat".to_owned(), true),
             ]
         );
         Ok(())

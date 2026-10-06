@@ -7,8 +7,8 @@ use std::fs;
 use std::time::Duration;
 
 use tokamak::{
-    Config, PackageLayout, Runtime, StorageBinding, WorkerEnvironment, compile_worker,
-    compress_worker_bundle, write_worker_environment,
+    Config, ModuleType, PackageLayout, Runtime, StorageBinding, WorkerEnvironment, WorkerManifest,
+    write_worker, write_worker_environment,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -37,9 +37,14 @@ fn serves_storage_bindings_through_the_exported_entry_point() -> TestResult {
             }],
         },
     )?;
-    fs::write(
-        app.worker_bundle(),
-        compress_worker_bundle(&compile_worker(WORKER)?)?,
+    fs::write(temporary.path().join("worker.mjs"), WORKER)?;
+    write_worker(
+        &app,
+        temporary.path(),
+        &WorkerManifest {
+            entry: "worker.mjs".to_owned(),
+            modules: BTreeMap::from([("worker.mjs".to_owned(), ModuleType::EsModule)]),
+        },
     )?;
     let runtime = Runtime::start(
         Config {

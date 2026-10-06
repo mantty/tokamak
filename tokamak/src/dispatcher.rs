@@ -18,7 +18,7 @@ use crate::gateway::{
 };
 use crate::globals::ResponseEncoder;
 use crate::linked::StorageRuntime;
-use crate::packaging::{ModuleType, decompress_worker_module};
+use crate::packaging::{self, ModuleType};
 use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{
     BodyChunk, HttpBody, HttpRequest, HttpResponse, append_header, response_stream,
@@ -399,9 +399,6 @@ impl WorkerLoader {
             ModuleType::EsModule => self.load_bytecode(ctx, name),
             ModuleType::Text => Module::declare_def::<TextModule, _>(ctx.clone(), name),
             ModuleType::Data => Module::declare_def::<DataModule, _>(ctx.clone(), name),
-            ModuleType::CommonJs | ModuleType::CompiledWasm => Err(
-                rquickjs::Error::new_loading_message(name, "unsupported module type"),
-            ),
         }
     }
 
@@ -467,17 +464,7 @@ fn read_worker_module(bundle: &WorkerBundle, name: &str) -> io::Result<Vec<u8>> 
             "invalid Worker module name",
         ));
     }
-    if let Some(bytecode) = &bundle.legacy {
-        if name == bundle.entry {
-            return Ok(bytecode.to_vec());
-        }
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Worker module not found",
-        ));
-    }
-    let bytes = std::fs::read(bundle.modules.join(format!("{name}.qjs")))?;
-    decompress_worker_module(&bytes).map_err(io::Error::other)
+    packaging::read_worker_module(&bundle.app, name).map_err(io::Error::other)
 }
 
 async fn websocket_loop<'js>(
