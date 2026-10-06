@@ -1470,6 +1470,36 @@ fn rejects_a_webassembly_module() -> TestResult {
 }
 
 #[test]
+fn warns_about_bindings_the_packaged_app_lacks() -> TestResult {
+    let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
+    let build_warnings = || -> TestResult<String> {
+        let output = build_command("macos", &project, &manifest)?
+            .assert()
+            .success();
+        Ok(String::from_utf8(output.get_output().stderr.clone())?)
+    };
+    assert!(!build_warnings()?.contains("WARNING"));
+
+    write_worker_config(
+        &project,
+        r#"{
+            "kv_namespaces": [{ "binding": "SESSION", "id": "session" }],
+            "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "Room" }] }
+        }"#,
+    )?;
+    let warnings = build_warnings()?;
+    assert!(
+        warnings.contains(
+            "WARNING: this app declares bindings that the packaged app does not provide."
+        ) && warnings.contains(
+            "  - ROOMS (durable_objects): the packaged app does not provide Durable Objects"
+        ) && !warnings.contains("SESSION"),
+        "{warnings}"
+    );
+    Ok(())
+}
+
+#[test]
 fn packages_worker_vars_as_a_normalized_manifest() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
     write_worker_config(
@@ -2219,10 +2249,6 @@ fn conflicting_signing_dev_command(
 ) -> TestResult<Command> {
     let profile = project.join("manual.mobileprovision");
     fs::write(&profile, "profile")?;
-    fs::write(
-        project.join("wrangler.jsonc"),
-        r#"{"name":"demo-app","main":"src/index.js"}"#,
-    )?;
 
     let mut command = Command::cargo_bin("tok")?;
     configure_fake_apple_tools(&mut command, temporary)?;
@@ -2243,8 +2269,8 @@ fn conflicting_signing_dev_command(
     Ok(command)
 }
 
-/// A development server that reports the stand-in build's configuration and
-/// itself as the tokamak Vite plugin does.
+/// A development server that reports the stand-in build's configuration, and
+/// itself and its Worker as the tokamak Vite plugin does.
 #[cfg(all(unix, target_os = "macos"))]
 const DEV_SERVER: &str = r#"
 require("./build.cjs");
@@ -2252,7 +2278,7 @@ const server = require("node:http").createServer((_, response) => response.end()
 server.listen(0, "127.0.0.1", () => {
   const url = `http://127.0.0.1:${server.address().port}/`;
   const report = require("node:path").join(process.env.TOKAMAK_VITE_OUTPUT, "server.json");
-  require("node:fs").writeFileSync(report, JSON.stringify({ url }));
+  require("node:fs").writeFileSync(report, JSON.stringify({ url, workerName: "demo-app" }));
 });
 "#;
 

@@ -80,8 +80,6 @@ remaining work above:
 - host targets on macOS, Windows, and Linux where a platform pack exists;
 - iOS Simulator, physical iOS, Android emulator, and supported physical
   Android targets;
-- unsupported Wrangler bindings producing one readable warning block while
-  development continues;
 - temporary host-server or relay loss recovering on the existing session;
 - backend native plugin calls once the bridge is available; and
 - native-input rebuild/reinstall without restarting the framework process.

@@ -15,7 +15,6 @@ tokamak = { path = "../tokamak" }
 tokamak-apple-signing = { path = "../platforms/apple/signing" }
 clap.workspace = true
 getrandom.workspace = true
-jsonc-parser = { workspace = true, features = ["serde"] }
 mime_guess.workspace = true
 netdev.workspace = true
 serde.workspace = true
@@ -23,7 +22,6 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "signal", "sync"] }
-toml.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]

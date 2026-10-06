@@ -29,10 +29,15 @@ struct ConfigReport {
     config: serde_json::Value,
 }
 
-/// The plugin's `server.json`.
+/// The plugin's `server.json`: the development server and its Worker.
 #[derive(Deserialize)]
-struct ServerReport {
-    url: String,
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServerReport {
+    pub(crate) url: String,
+    /// The Worker's name without an environment's suffix; empty when the
+    /// Wrangler configuration names none.
+    #[serde(default)]
+    pub(crate) worker_name: String,
 }
 
 impl VitePlugin {
@@ -71,11 +76,9 @@ impl VitePlugin {
             .transpose()
     }
 
-    /// The development server's URL, once the plugin has reported it.
-    pub(crate) fn server_url(&self) -> Result<Option<String>> {
-        Ok(self
-            .report::<ServerReport>("server.json")?
-            .map(|report| report.url))
+    /// The development server, once the plugin has reported it.
+    pub(crate) fn server(&self) -> Result<Option<ServerReport>> {
+        self.report("server.json")
     }
 
     fn report<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {

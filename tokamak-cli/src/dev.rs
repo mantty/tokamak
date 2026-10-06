@@ -16,8 +16,7 @@ use tokamak_cli::{Platform, PlatformPackManifest};
 
 use super::devices::PreparedDevice;
 use super::tokamak_config::TokamakConfig;
-use super::vite::{PLUGIN_HINT, VitePlugin};
-use super::wrangler_config::{self, WranglerConfig};
+use super::vite::{PLUGIN_HINT, ServerReport, VitePlugin};
 use super::{devices, pipeline, settings};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_mins(1);
@@ -52,8 +51,6 @@ pub(crate) fn run(request: &Request) -> Result<()> {
             request.project_dir.display()
         )
     })?;
-    let wrangler = load_development_config(&project)?;
-    warn_unsupported_bindings(&wrangler);
     let device = devices::prepare(&request.device_id)?;
     let (pack_root, manifest) =
         pipeline::load_platform_pack(device.platform, request.platform_pack_dir.as_deref())?;
@@ -87,7 +84,6 @@ pub(crate) fn run(request: &Request) -> Result<()> {
         request,
         project: &project,
         pack: (&pack_root, &manifest),
-        worker_name: &wrangler.name,
         device: &device,
         relay_host,
         plugin: &plugin,
@@ -131,55 +127,6 @@ fn usable_ipv4_address(addresses: impl IntoIterator<Item = Ipv4Addr>) -> Option<
     })
 }
 
-fn load_development_config(project: &Path) -> Result<WranglerConfig> {
-    let path = wrangler_config::resolve_config_path(project)?;
-    wrangler_config::load_config(&path)
-        .with_context(|| format!("load Wrangler config {}", path.display()))
-}
-
-fn warn_unsupported_bindings(config: &WranglerConfig) {
-    if config.bindings.is_empty() {
-        return;
-    }
-    let mut warning = String::from(
-        "\nWARNING: this app declares bindings that tok dev does not provide.\n\n\
-         The host development server will continue. Avoid these bindings when running on tokamak,\n\
-         or guard their use with the appropriate platform or feature flag.\n\n\
-         Unsupported bindings:\n\n",
-    );
-    for binding in &config.bindings {
-        let _ = writeln!(
-            &mut warning,
-            "  - {} ({}): tokamak development does not provide {}",
-            binding.name,
-            binding.kind,
-            unsupported_binding_feature(&binding.kind)
-        );
-    }
-    eprintln!("{warning}");
-}
-
-fn unsupported_binding_feature(kind: &str) -> &'static str {
-    match kind {
-        "durable_objects" => "Durable Objects",
-        "queues" => "Queues",
-        "services" => "service bindings",
-        "vectorize" => "Vectorize",
-        "hyperdrive" => "Hyperdrive",
-        "ai" => "Workers AI",
-        "browser" => "Browser Rendering",
-        "images" => "Images",
-        "dispatch_namespaces" => "dispatch namespaces",
-        "mtls_certificates" => "mTLS bindings",
-        "pipelines" => "Pipelines",
-        "rate_limiting" => "rate limiting",
-        "secrets_store_secrets" => "Secrets Store",
-        "send_email" => "Email Routing",
-        "analytics_engine_datasets" => "Analytics Engine",
-        _ => "this binding",
-    }
-}
-
 fn validate_request(request: &Request) -> Result<()> {
     if request.command.is_empty() {
         bail!("a development command is required after `--`, for example `-- astro dev`");
@@ -197,7 +144,6 @@ struct DevelopmentSession<'a> {
     request: &'a Request,
     project: &'a Path,
     pack: (&'a Path, &'a PlatformPackManifest),
-    worker_name: &'a str,
     device: &'a PreparedDevice,
     relay_host: IpAddr,
     plugin: &'a VitePlugin,
@@ -206,12 +152,13 @@ struct DevelopmentSession<'a> {
 }
 
 fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
-    let Some((tokamak, server)) =
+    let Some((tokamak, report)) =
         wait_for_plugin(session.framework, session.plugin, session.shutdown)?
     else {
         stop_process(session.framework)?;
         return Ok(());
     };
+    let server = ServerEndpoint::parse(&report.url)?;
     println!("Development server is ready at {}", server.display_url());
     let session_token = session_token()?;
     let relay = DevRelay::bind(server, session_token.clone(), session.relay_host)?;
@@ -220,7 +167,7 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
         project: session.project,
         pack: session.pack,
         tokamak: tokamak.as_ref(),
-        worker_name: session.worker_name,
+        worker_name: &report.worker_name,
         endpoint: &relay.device_endpoint(),
         session_token: &session_token,
         device_id: &session.device.id,
@@ -285,7 +232,7 @@ fn wait_for_plugin(
     child: &mut Child,
     plugin: &VitePlugin,
     shutdown: &ShutdownSignal,
-) -> Result<Option<(Option<TokamakConfig>, ServerEndpoint)>> {
+) -> Result<Option<(Option<TokamakConfig>, ServerReport)>> {
     let deadline = Instant::now() + SERVER_READY_TIMEOUT;
     loop {
         if shutdown.requested() {
@@ -295,9 +242,9 @@ fn wait_for_plugin(
             bail!("development command exited before its server was ready ({status})");
         }
         // The plugin reports the configuration before the server address.
-        if let Some(url) = plugin.server_url()? {
+        if let Some(server) = plugin.server()? {
             let config = plugin.config("the development command")?;
-            return Ok(Some((config, ServerEndpoint::parse(&url)?)));
+            return Ok(Some((config, server)));
         }
         if Instant::now() >= deadline {
             bail!(

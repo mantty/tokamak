@@ -202,7 +202,8 @@ A packaged app's Worker gets KV, D1 and R2 bindings backed by storage on the
 device. Declare them in the Wrangler configuration as for Cloudflare; the
 Worker uses the same APIs, so the code deploys to Cloudflare unchanged. The
 data stays on the device and is not synced with the Cloudflare resources the
-bindings name.
+bindings name. `tok build` warns about other bindings, such as Durable Objects
+or Queues, which the packaged app does not provide.
 
 ```jsonc
 {
@@ -579,12 +580,13 @@ Pass a device selector and the framework's development command to `tok dev`:
 tok dev macos --project ./my-app -- pnpm dev
 ```
 
-`tok dev` reads the project's Wrangler configuration, which needs `name` and
-`main`, for the app name. The tokamak Vite plugin reports the development
-server's address and the
-configuration to `tok dev`, which waits up to a minute for them, then builds
-the development app and proxies it to that address, so `tok dev` takes no
-`--server` option. Restart `tok dev` after changing native settings.
+The tokamak Vite plugin reports the development server's address, the
+configuration, and the Worker name to `tok dev`, which waits up to a minute for
+them, then builds the development app and proxies it to that address, so
+`tok dev` takes no `--server` option. The plugin reads the Worker name with
+Wrangler from `wrangler.jsonc`, `wrangler.json` or `wrangler.toml` in the Vite
+root, in the `CLOUDFLARE_ENV` environment. Restart `tok dev` after changing
+native settings.
 
 ## Native plugins
 

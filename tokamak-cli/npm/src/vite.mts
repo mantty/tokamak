@@ -12,13 +12,17 @@ import {
 /** Configuration files tried in order when `tok` names none. */
 const CONFIG_FILES = ["src/tokamak.ts", "src/tokamak.js"];
 
+/** Wrangler configuration files Cloudflare's plugin tries in order. */
+const WRANGLER_FILES = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"];
+
 /** The files each output directory's `config.json` was read from, once written. */
 const written = new Map<string, Promise<string[]>>();
 
 /**
- * Reports the build's tokamak configuration and development server address to
- * `tok`, and makes the entry Worker import the configuration file. Without
- * `TOKAMAK_VITE_OUTPUT`, which `tok` sets, it adds no hooks.
+ * Reports the build's tokamak configuration, and the development server's
+ * address and Worker name, to `tok`, and makes the entry Worker import the
+ * configuration file. Without `TOKAMAK_VITE_OUTPUT`, which `tok` sets, it adds
+ * no hooks.
  */
 export function tokamak(): Plugin[] {
   const output = process.env.TOKAMAK_VITE_OUTPUT;
@@ -50,10 +54,15 @@ export function tokamak(): Plugin[] {
           await write();
         }
       },
-      configureServer(server) {
-        server.httpServer?.on("listening", () => {
+      async configureServer(server) {
+        const httpServer = server.httpServer;
+        if (!httpServer) {
+          return;
+        }
+        const workerName = await readWorkerName(server.config.root);
+        httpServer.on("listening", () => {
           const urls = server.resolvedUrls;
-          writeJson(output, "server.json", { url: urls?.local[0] ?? urls?.network[0] });
+          writeJson(output, "server.json", { url: urls?.local[0] ?? urls?.network[0], workerName });
         });
       },
       async buildApp(builder) {
@@ -126,6 +135,21 @@ async function writeConfig(
   });
   writeJson(output, "config.json", { file, config: module.config ?? {} });
   return [file, ...dependencies.map(normalizePath)];
+}
+
+/**
+ * The name of the Worker in the Wrangler configuration file in `root`, found
+ * as Cloudflare's plugin finds it without `configPath`, without the suffix of
+ * the `CLOUDFLARE_ENV` environment.
+ */
+async function readWorkerName(root: string): Promise<string | undefined> {
+  const file = WRANGLER_FILES.map((name) => path.join(root, name)).find((candidate) => fs.existsSync(candidate));
+  if (!file) {
+    return undefined;
+  }
+  const { unstable_readConfig } = await import("wrangler");
+  const worker = unstable_readConfig({ config: file, env: process.env.CLOUDFLARE_ENV }, { hideWarnings: true });
+  return worker.topLevelName ?? worker.name;
 }
 
 /**

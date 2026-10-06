@@ -1,4 +1,5 @@
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -127,6 +128,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
             .context("find the Wrangler configuration the build generated")?,
     )?;
     support::validate_project_build(&wrangler)?;
+    warn_unsupported_bindings(&wrangler);
     let builds = request
         .platforms
         .iter()
@@ -525,6 +527,49 @@ fn exported_symbols(wrangler: &WranglerConfig) -> &'static [&'static str] {
     }
 }
 
+fn warn_unsupported_bindings(wrangler: &WranglerConfig) {
+    if wrangler.bindings.is_empty() {
+        return;
+    }
+    let mut warning = String::from(
+        "\nWARNING: this app declares bindings that the packaged app does not provide.\n\n\
+         The build will continue. Avoid these bindings when running on tokamak,\n\
+         or guard their use with the appropriate platform or feature flag.\n\n\
+         Unsupported bindings:\n\n",
+    );
+    for binding in &wrangler.bindings {
+        let _ = writeln!(
+            &mut warning,
+            "  - {} ({}): the packaged app does not provide {}",
+            binding.name,
+            binding.kind,
+            unsupported_binding_feature(&binding.kind)
+        );
+    }
+    eprintln!("{warning}");
+}
+
+fn unsupported_binding_feature(kind: &str) -> &'static str {
+    match kind {
+        "durable_objects" => "Durable Objects",
+        "queues" => "Queues",
+        "services" => "service bindings",
+        "vectorize" => "Vectorize",
+        "hyperdrive" => "Hyperdrive",
+        "ai" => "Workers AI",
+        "browser" => "Browser Rendering",
+        "images" => "Images",
+        "dispatch_namespaces" => "dispatch namespaces",
+        "mtls_certificates" => "mTLS bindings",
+        "pipelines" => "Pipelines",
+        "rate_limiting" => "rate limiting",
+        "secrets_store_secrets" => "Secrets Store",
+        "send_email" => "Email Routing",
+        "analytics_engine_datasets" => "Analytics Engine",
+        _ => "this binding",
+    }
+}
+
 const PLATFORM_PACK_PATH_ENV: &str = "TOKAMAK_PLATFORM_PACK_PATH";
 
 fn resolve_manifest(platform: Platform, explicit_dir: Option<&Path>) -> Result<PathBuf> {
@@ -602,7 +647,7 @@ mod tests {
     fn exports_the_storage_entry_point_while_any_storage_binding_is_declared()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let path = directory.path().join("wrangler.jsonc");
+        let path = directory.path().join("wrangler.json");
         for (bindings, symbols) in [
             ("", &[][..]),
             (

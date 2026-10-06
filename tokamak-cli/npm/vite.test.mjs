@@ -165,6 +165,28 @@ test("reports the development server's port when the configured one is taken", a
   }
 });
 
+test("reports the Worker's top-level name with the development server", async () => {
+  for (const environment of [{}, { CLOUDFLARE_ENV: "staging" }]) {
+    const app = project({
+      "wrangler.jsonc": JSON.stringify({
+        name: "app",
+        main: "src/index.ts",
+        compatibility_date: "2026-09-01",
+        env: { staging: {} },
+      }),
+    });
+    await withEnvironment(environment, async () => {
+      const server = await createServer(viteConfig(app, { server: { port: 0 } }));
+      try {
+        await server.listen();
+        assert.equal(readOutput(app, "server.json").workerName, "app");
+      } finally {
+        await server.close();
+      }
+    });
+  }
+});
+
 test("rewrites the configuration in development when a file it imports changes", async () => {
   const app = project({
     "src/tokamak.ts": `import { name } from "./name";\nexport const config = { name };`,
