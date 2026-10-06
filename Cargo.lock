@@ -2451,15 +2451,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jsonc-parser"
-version = "0.32.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "840785e1a8b4fdb27be18440a35a81af64820dc185c3973ff8b012d4c6282512"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4660,7 +4651,6 @@ dependencies = [
  "assert_cmd",
  "clap",
  "getrandom 0.4.2",
- "jsonc-parser",
  "mime_guess",
  "netdev",
  "predicates",
@@ -4672,7 +4662,6 @@ dependencies = [
  "tokamak",
  "tokamak-apple-signing",
  "tokio",
- "toml 1.1.2+spec-1.1.0",
  "walkdir",
 ]
 

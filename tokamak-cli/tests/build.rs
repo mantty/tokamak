@@ -32,19 +32,12 @@ fn create_project(root: &Path) -> TestResult {
     fs::write(root.join("dist/client/index.html"), "<html></html>")?;
     fs::write(root.join("dist/client/styles/app.css"), "body{}")?;
     write_worker_config(root, "{}")?;
-    fs::write(
-        root.join("wrangler.jsonc"),
-        r#"{"name":"demo-app","main":"src/index.js"}"#,
-    )?;
     fs::create_dir_all(root.join(".wrangler/deploy"))?;
     fs::write(
         root.join(".wrangler/deploy/config.json"),
         r#"{"configPath":"../../dist/app/wrangler.json"}"#,
     )?;
-    let output = root.join("build/.tokamak/vite");
-    fs::create_dir_all(&output)?;
-    fs::write(output.join("config.json"), r#"{"config":{}}"#)?;
-    Ok(())
+    write_report(root, &serde_json::json!({ "config": {} }))
 }
 
 /// Write the Wrangler configuration Cloudflare's Vite plugin generates, with
@@ -71,20 +64,25 @@ fn write_worker_config(root: &Path, fields: &str) -> TestResult {
     Ok(())
 }
 
-/// Report `config` as the `config` export of `src/tokamak.mjs`, as a build with
-/// the tokamak Vite plugin does.
+/// Report `config` as the `config` export of `src/tokamak.ts`.
 fn configure(root: &Path, config: &str) -> TestResult {
-    let file = root.join("src/tokamak.mjs");
-    fs::create_dir_all(root.join("src"))?;
-    fs::write(&file, format!("export const config = {config};\n"))?;
-    let report = serde_json::json!({
-        "file": file,
-        "config": serde_json::from_str::<serde_json::Value>(config)?,
-    });
-    fs::write(
-        root.join("build/.tokamak/vite/config.json"),
-        report.to_string(),
-    )?;
+    write_report(
+        root,
+        &serde_json::json!({
+            "file": root.join("src/tokamak.ts"),
+            "config": serde_json::from_str::<serde_json::Value>(config)?,
+        }),
+    )
+}
+
+/// Write the tokamak Vite plugin's `report` where the earlier build left it,
+/// and to `vite-report.json`, which the stand-in build and development
+/// commands report.
+fn write_report(root: &Path, report: &serde_json::Value) -> TestResult {
+    let report = report.to_string();
+    fs::write(root.join("vite-report.json"), &report)?;
+    fs::create_dir_all(root.join("build/.tokamak/vite"))?;
+    fs::write(root.join("build/.tokamak/vite/config.json"), report)?;
     Ok(())
 }
 
@@ -532,7 +530,6 @@ fn project_build_command(
         .arg("--platform-pack")
         .arg(platform_pack)
         .env("TOKAMAK_VERSION", "1.0.0")
-        .env_remove("CLOUDFLARE_ENV")
         .env_remove("TOKAMAK_IOS_BUILD_NUMBER")
         .env_remove("TOKAMAK_MACOS_BUILD_NUMBER")
         .env_remove("TOKAMAK_MACOS_TEAM_ID")
@@ -789,24 +786,24 @@ fn builds_configured_identifier_and_version() -> TestResult {
 
 #[cfg(unix)]
 #[test]
-fn reads_the_configuration_the_build_reports() -> TestResult {
+fn passes_the_configuration_file_to_the_build() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(
-        project.join("test.mjs"),
-        r#"export const config = { name: "Test App" };"#,
-    )?;
     project_build_command("macos", &project, &manifest)?
         .current_dir(&project)
-        .args(["--config", "test.mjs"])
+        .args(["--config", "test.ts", "--build"])
+        .arg(r#"node build.cjs && printf %s "$TOKAMAK_CONFIG" > config-path"#)
         .assert()
         .success();
 
-    assert!(project.join("build/macos/test-app.app").is_dir());
+    assert_eq!(
+        PathBuf::from(fs::read_to_string(project.join("config-path"))?),
+        fs::canonicalize(&project)?.join("test.ts")
+    );
     Ok(())
 }
 
 #[test]
-fn requires_the_tokamak_vite_plugin_and_an_existing_configuration_file() -> TestResult {
+fn requires_the_tokamak_vite_plugin() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
     project_build_command("macos", &project, &manifest)?
         .args(["--build", "node --version"])
@@ -815,12 +812,6 @@ fn requires_the_tokamak_vite_plugin_and_an_existing_configuration_file() -> Test
         .stderr(contains(
             "the build did not report its tokamak configuration; the Vite config must include tokamak() from @tokamakdev/tok/vite",
         ));
-    project_build_command("macos", &project, &manifest)?
-        .arg("--config")
-        .arg(project.join("missing.mjs"))
-        .assert()
-        .failure()
-        .stderr(contains("tokamak configuration file not found"));
     Ok(())
 }
 
@@ -1479,6 +1470,36 @@ fn rejects_a_webassembly_module() -> TestResult {
 }
 
 #[test]
+fn warns_about_bindings_the_packaged_app_lacks() -> TestResult {
+    let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
+    let build_warnings = || -> TestResult<String> {
+        let output = build_command("macos", &project, &manifest)?
+            .assert()
+            .success();
+        Ok(String::from_utf8(output.get_output().stderr.clone())?)
+    };
+    assert!(!build_warnings()?.contains("WARNING"));
+
+    write_worker_config(
+        &project,
+        r#"{
+            "kv_namespaces": [{ "binding": "SESSION", "id": "session" }],
+            "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "Room" }] }
+        }"#,
+    )?;
+    let warnings = build_warnings()?;
+    assert!(
+        warnings.contains(
+            "WARNING: this app declares bindings that the packaged app does not provide."
+        ) && warnings.contains(
+            "  - ROOMS (durable_objects): the packaged app does not provide Durable Objects"
+        ) && !warnings.contains("SESSION"),
+        "{warnings}"
+    );
+    Ok(())
+}
+
+#[test]
 fn packages_worker_vars_as_a_normalized_manifest() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
     write_worker_config(
@@ -1502,33 +1523,35 @@ fn packages_worker_vars_as_a_normalized_manifest() -> TestResult {
 }
 
 #[test]
-fn packages_the_wrangler_environment_the_build_applies() -> TestResult {
+fn packages_each_generated_configuration_without_recompiling_unchanged_modules() -> TestResult {
     let (_temporary, project, pack) = create_windows_inputs()?;
-    let build = |environment: &str| -> TestResult {
-        project_build_command("windows", &project, &pack)?
-            .args(["--build-dir", ".cache/tokamak"])
-            .env("CLOUDFLARE_ENV", environment)
-            .assert()
-            .success();
-        Ok(())
-    };
     let build_dir = project.join(".cache/tokamak");
     let app = build_dir.join("windows/demo-app/app");
-    build("test")?;
-    let test: serde_json::Value =
-        serde_json::from_slice(&fs::read(app.join("worker-environment.json"))?)?;
-    assert_eq!(test["vars"]["CLOUDFLARE_ENV"], "test");
+    let packaged_vars = |vars: &str| -> TestResult<serde_json::Value> {
+        write_worker_config(&project, &format!(r#"{{ "vars": {vars} }}"#))?;
+        project_build_command("windows", &project, &pack)?
+            .args(["--build-dir", ".cache/tokamak"])
+            .assert()
+            .success();
+        let environment: serde_json::Value =
+            serde_json::from_slice(&fs::read(app.join("worker-environment.json"))?)?;
+        Ok(environment["vars"].clone())
+    };
+    assert_eq!(
+        packaged_vars(r#"{ "STAGE": "test" }"#)?,
+        serde_json::json!({ "STAGE": "test" })
+    );
     let compiled = worker_compiled_at(&build_dir)?;
 
-    build("production")?;
-    let production: serde_json::Value =
-        serde_json::from_slice(&fs::read(app.join("worker-environment.json"))?)?;
-    assert_eq!(production["vars"]["CLOUDFLARE_ENV"], "production");
+    assert_eq!(
+        packaged_vars(r#"{ "STAGE": "production" }"#)?,
+        serde_json::json!({ "STAGE": "production" })
+    );
     assert_eq!(worker_compiled_at(&build_dir)?, compiled);
 
     let entry = project.join("dist/app/index.js");
     fs::write(&entry, "export default { value: 2 };")?;
-    build("production")?;
+    packaged_vars(r#"{ "STAGE": "production" }"#)?;
     assert_ne!(worker_compiled_at(&build_dir)?, compiled);
     assert_eq!(
         decompress_worker_module(&fs::read(app.join("worker-modules/index.js.qjs"))?)?,
@@ -1931,6 +1954,7 @@ fn builds_with_a_configured_display_name() -> TestResult {
 fn builds_a_configured_windows_icon() -> TestResult {
     let (_temporary, project, manifest) = create_windows_inputs()?;
     configure(&project, r#"{"windows":{"icon":"AppIcon.ico"}}"#)?;
+    fs::create_dir_all(project.join("src"))?;
     fs::write(project.join("src/AppIcon.ico"), "ico")?;
 
     let mut command = build_command("windows", &project, &manifest)?;
@@ -2109,6 +2133,7 @@ fn stops_when_the_configured_build_command_fails() -> TestResult {
 
     project_build_command("windows", &project, &pack)?
         .args(["--build", "exit 3"])
+        .env("TOKAMAK_BUILD", "node build.cjs")
         .assert()
         .failure()
         .stderr(contains("project build failed"));
@@ -2244,18 +2269,16 @@ fn conflicting_signing_dev_command(
     Ok(command)
 }
 
-/// A development server that reports itself as the tokamak Vite plugin does.
+/// A development server that reports the stand-in build's configuration, and
+/// itself and its Worker as the tokamak Vite plugin does.
 #[cfg(all(unix, target_os = "macos"))]
 const DEV_SERVER: &str = r#"
-const fs = require("node:fs");
-const path = require("node:path");
-const output = process.env.TOKAMAK_VITE_OUTPUT;
-fs.mkdirSync(output, { recursive: true });
-fs.writeFileSync(path.join(output, "config.json"), JSON.stringify({ config: {} }));
+require("./build.cjs");
 const server = require("node:http").createServer((_, response) => response.end());
 server.listen(0, "127.0.0.1", () => {
   const url = `http://127.0.0.1:${server.address().port}/`;
-  fs.writeFileSync(path.join(output, "server.json"), JSON.stringify({ url }));
+  const report = require("node:path").join(process.env.TOKAMAK_VITE_OUTPUT, "server.json");
+  require("node:fs").writeFileSync(report, JSON.stringify({ url, workerName: "demo-app" }));
 });
 "#;
 

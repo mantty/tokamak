@@ -165,6 +165,28 @@ test("reports the development server's port when the configured one is taken", a
   }
 });
 
+test("reports the Worker's top-level name with the development server", async () => {
+  for (const environment of [{}, { CLOUDFLARE_ENV: "staging" }]) {
+    const app = project({
+      "wrangler.jsonc": JSON.stringify({
+        name: "app",
+        main: "src/index.ts",
+        compatibility_date: "2026-09-01",
+        env: { staging: {} },
+      }),
+    });
+    await withEnvironment(environment, async () => {
+      const server = await createServer(viteConfig(app, { server: { port: 0 } }));
+      try {
+        await server.listen();
+        assert.equal(readOutput(app, "server.json").workerName, "app");
+      } finally {
+        await server.close();
+      }
+    });
+  }
+});
+
 test("rewrites the configuration in development when a file it imports changes", async () => {
   const app = project({
     "src/tokamak.ts": `import { name } from "./name";\nexport const config = { name };`,
@@ -239,6 +261,31 @@ test("evaluates the configuration file, without its config export, in the develo
   } finally {
     await server.close();
   }
+});
+
+test("keeps config for the configuration file's own code", async () => {
+  const app = project({
+    "src/index.ts": `export default { fetch: () => new Response(globalThis.configName) };`,
+    "src/tokamak.ts": `export const config = { name: "Referenced" };\nglobalThis.configName = config.name;\n`,
+  });
+  await build(app);
+  assert.match(builtWorker(app), /Referenced/);
+  const server = await createServer(viteConfig(app, { server: { port: 0 } }));
+  try {
+    await server.listen();
+    assert.equal(await (await fetch(readOutput(app, "server.json").url)).text(), "Referenced");
+  } finally {
+    await server.close();
+  }
+});
+
+test("fails a build in which no environment builds the entry Worker", async () => {
+  const app = project({ "src/tokamak.ts": `export const config = {};` });
+  const withoutManifest = { name: "without-manifest", configEnvironment: () => ({ build: { manifest: false } }) };
+  await assert.rejects(
+    build(app, { vite: { plugins: [cloudflare(), activeTokamak(app), withoutManifest] } }),
+    /no environment builds the entry Worker/,
+  );
 });
 
 test("fails on a config export it cannot remove", async () => {

@@ -6,13 +6,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
-use jsonc_parser::{ParseOptions, parse_to_serde_value};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokamak::ModuleType;
 
-const CONFIG_FILE_NAMES: [&str; 3] = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"];
 /// Where a build records the configuration it generated for deployment.
 const DEPLOY_CONFIG: &str = ".wrangler/deploy/config.json";
 
@@ -212,21 +210,6 @@ impl NotFoundHandling {
     }
 }
 
-/// Find the Wrangler config file as Wrangler does: `wrangler.json`, then
-/// `wrangler.jsonc`, then `wrangler.toml`, in `reference_dir` or its parent
-/// directories.
-pub(crate) fn resolve_config_path(reference_dir: &Path) -> Result<PathBuf> {
-    CONFIG_FILE_NAMES
-        .iter()
-        .find_map(|file_name| find_file_upwards(reference_dir, file_name))
-        .ok_or_else(|| {
-            anyhow!(
-                "wrangler config not found starting from {}",
-                reference_dir.display()
-            )
-        })
-}
-
 /// The configuration a build generated for deployment, found as Wrangler
 /// finds it: through the `configPath` of the first `.wrangler/deploy/config.json`
 /// in `start` or its parent directories, relative to that file's directory.
@@ -237,12 +220,16 @@ pub(crate) fn deploy_config_path(start: &Path) -> Result<PathBuf> {
         config_path: PathBuf,
     }
 
-    let pointer = find_file_upwards(start, DEPLOY_CONFIG).ok_or_else(|| {
-        anyhow!(
-            "no {DEPLOY_CONFIG} found in {} or its parent directories",
-            start.display()
-        )
-    })?;
+    let pointer = std::path::absolute(start)?
+        .ancestors()
+        .map(|directory| directory.join(DEPLOY_CONFIG))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| {
+            anyhow!(
+                "no {DEPLOY_CONFIG} found in {} or its parent directories",
+                start.display()
+            )
+        })?;
     let deploy: DeployConfig = parse_config(&pointer)?;
     let path = pointer
         .parent()
@@ -254,9 +241,8 @@ pub(crate) fn deploy_config_path(start: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Load a Wrangler configuration file: fail when it cannot be read or parsed,
-/// uses an unsupported format, or omits a field tokamak needs to package a
-/// Worker.
+/// Load a generated Wrangler configuration file: fail when it cannot be read
+/// or parsed, or omits a field tokamak needs to package a Worker.
 pub(crate) fn load_config(config_path: &Path) -> Result<WranglerConfig> {
     let config_path = std::path::absolute(config_path)?;
     let raw: RawWranglerConfig = parse_config(&config_path)?;
@@ -606,35 +592,10 @@ fn collect_binding_values(kind: &str, value: &Value, bindings: &mut Vec<Wrangler
 }
 
 fn parse_config<T: DeserializeOwned>(config_path: &Path) -> Result<T> {
-    let content = fs::read_to_string(config_path)
-        .with_context(|| format!("read {}", config_path.display()))?;
-    let extension = config_path
-        .extension()
-        .and_then(|extension| extension.to_str());
-
-    let parsed = match extension {
-        Some("json" | "jsonc") => parse_to_serde_value(&content, &ParseOptions::default())
-            .map_err(|error| error.to_string()),
-        Some("toml") => toml::from_str(&content).map_err(|error| error.to_string()),
-        _ => bail!(
-            "unsupported wrangler config format: {}",
-            config_path.display()
-        ),
-    };
-    parsed.map_err(|message| {
-        anyhow!(
-            "invalid wrangler config {}: {message}",
-            config_path.display()
-        )
-    })
-}
-
-fn find_file_upwards(start: &Path, file_name: &str) -> Option<PathBuf> {
-    std::path::absolute(start)
-        .ok()?
-        .ancestors()
-        .map(|dir| dir.join(file_name))
-        .find(|candidate| candidate.is_file())
+    let content =
+        fs::read(config_path).with_context(|| format!("read {}", config_path.display()))?;
+    serde_json::from_slice(&content)
+        .map_err(|error| anyhow!("invalid wrangler config {}: {error}", config_path.display()))
 }
 
 #[cfg(test)]
@@ -649,7 +610,7 @@ mod tests {
     use super::{
         HtmlHandling, ModuleType, NotFoundHandling, WranglerMigrations, WranglerRule,
         WranglerStorage, applied_rules, collect_bindings, deploy_config_path, load_config,
-        normalize_relative_path, pattern_within, resolve_config_path,
+        normalize_relative_path, pattern_within,
     };
 
     /// The message loading `path` fails with.
@@ -687,7 +648,7 @@ mod tests {
     #[test]
     fn resolves_storage_bindings_with_local_wrangler_fallbacks() -> Result<()> {
         let directory = tempfile::tempdir()?;
-        let config = directory.path().join("wrangler.jsonc");
+        let config = directory.path().join("wrangler.json");
         fs::write(
             &config,
             r#"{
@@ -779,7 +740,7 @@ mod tests {
     #[test]
     fn parses_module_rules() -> Result<()> {
         let directory = tempfile::tempdir()?;
-        let config = directory.path().join("wrangler.jsonc");
+        let config = directory.path().join("wrangler.json");
         fs::write(
             &config,
             r#"{
@@ -817,33 +778,6 @@ mod tests {
         )?;
 
         assert_eq!(load_config(&config)?.name, "app");
-        Ok(())
-    }
-
-    #[test]
-    fn finds_the_config_file_in_wrangler_order_from_a_nested_directory() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let root = directory.path();
-        let nested = root.join("apps/web");
-        fs::create_dir_all(&nested)?;
-        fs::write(
-            root.join("wrangler.toml"),
-            "name = \"toml-entry\"\nmain = \"toml-entry.mjs\"",
-        )?;
-        fs::write(
-            root.join("wrangler.jsonc"),
-            r#"{ "name": "jsonc-entry", "main": "jsonc-entry.mjs" }"#,
-        )?;
-        assert_eq!(resolve_config_path(&nested)?, root.join("wrangler.jsonc"));
-
-        fs::write(
-            root.join("wrangler.json"),
-            r#"{ "name": "json-entry", "main": "json-entry.mjs" }"#,
-        )?;
-        let config = load_config(&resolve_config_path(&nested)?)?;
-        assert_eq!(config.path, root.join("wrangler.json"));
-        assert_eq!(config.name, "json-entry");
-        assert_eq!(config.main, root.join("json-entry.mjs"));
         Ok(())
     }
 
@@ -898,7 +832,7 @@ mod tests {
     #[test]
     fn rejects_missing_required_fields() -> Result<()> {
         let directory = tempfile::tempdir()?;
-        let config = directory.path().join("wrangler.jsonc");
+        let config = directory.path().join("wrangler.json");
         for (source, field) in [
             ("{}", "main"),
             (r#"{ "main": "worker.mjs" }"#, "name"),
@@ -918,14 +852,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_values_and_formats() -> Result<()> {
+    fn rejects_invalid_values() -> Result<()> {
         let directory = tempfile::tempdir()?;
-        let root = directory.path();
-        let unsupported = root.join("wrangler.yaml");
-        fs::write(&unsupported, "main: worker.mjs")?;
-        assert!(load_error(&unsupported)?.starts_with("unsupported wrangler config format"));
-
-        let config = root.join("wrangler.jsonc");
+        let config = directory.path().join("wrangler.json");
         for (source, expected) in [
             (r#"{ "main": "#, "invalid wrangler config"),
             (
@@ -953,14 +882,13 @@ mod tests {
     }
 
     #[test]
-    fn parses_jsonc_and_resolves_paths() -> Result<()> {
+    fn parses_values_and_resolves_paths() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let root = directory.path();
-        let config = root.join("wrangler.jsonc");
+        let config = root.join("wrangler.json");
         fs::write(
             &config,
             r#"{
-                // JSONC comments and trailing commas are valid Wrangler config.
                 "name": "demo-app",
                 "main": "build/server/entry.mjs",
                 "compatibility_flags": ["nodejs_compat"],
@@ -969,8 +897,8 @@ mod tests {
                     "directory": "build/client",
                     "binding": "STATIC",
                     "html_handling": "drop-trailing-slash",
-                    "not_found_handling": "single-page-application",
-                },
+                    "not_found_handling": "single-page-application"
+                }
             }"#,
         )?;
 
@@ -992,41 +920,24 @@ mod tests {
     }
 
     #[test]
-    fn parses_toml() -> Result<()> {
+    fn binds_assets_as_assets_by_default() -> Result<()> {
         let directory = tempfile::tempdir()?;
-        let root = directory.path();
-        let config = root.join("wrangler.toml");
+        let config = directory.path().join("wrangler.json");
         fs::write(
             &config,
-            r#"
-name = "demo-app"
-main = "worker/entry.mjs"
-
-[vars]
-TEXT = "value"
-JSON = { enabled = true, count = 3 }
-
-[assets]
-directory = "public"
-html_handling = "none"
-not_found_handling = "404-page"
-"#,
+            r#"{
+                "name": "demo-app",
+                "main": "index.js",
+                "assets": { "directory": "public", "html_handling": "none", "not_found_handling": "404-page" }
+            }"#,
         )?;
 
-        let config = load_config(&config)?;
-
-        assert_eq!(config.name, "demo-app");
-        assert_eq!(config.main, root.join("worker/entry.mjs"));
-        let assets = config.assets.context("assets should be parsed")?;
-        assert_eq!(assets.directory, root.join("public"));
+        let assets = load_config(&config)?
+            .assets
+            .context("assets should be parsed")?;
         assert_eq!(assets.binding, "ASSETS");
         assert_eq!(assets.html_handling, HtmlHandling::None);
         assert_eq!(assets.not_found_handling, NotFoundHandling::Page404);
-        assert_eq!(config.vars.get("TEXT"), Some(&json!("value")));
-        assert_eq!(
-            config.vars.get("JSON"),
-            Some(&json!({ "enabled": true, "count": 3 }))
-        );
         Ok(())
     }
 

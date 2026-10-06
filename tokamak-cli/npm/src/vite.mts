@@ -12,13 +12,17 @@ import {
 /** Configuration files tried in order when `tok` names none. */
 const CONFIG_FILES = ["src/tokamak.ts", "src/tokamak.js"];
 
+/** Wrangler configuration files Cloudflare's plugin tries in order. */
+const WRANGLER_FILES = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"];
+
 /** The files each output directory's `config.json` was read from, once written. */
 const written = new Map<string, Promise<string[]>>();
 
 /**
- * Reports the build's tokamak configuration and development server address to
- * `tok`, and makes the entry Worker import the configuration file. Without
- * `TOKAMAK_VITE_OUTPUT`, which `tok` sets, it adds no hooks.
+ * Reports the build's tokamak configuration, and the development server's
+ * address and Worker name, to `tok`, and makes the entry Worker import the
+ * configuration file. Without `TOKAMAK_VITE_OUTPUT`, which `tok` sets, it adds
+ * no hooks.
  */
 export function tokamak(): Plugin[] {
   const output = process.env.TOKAMAK_VITE_OUTPUT;
@@ -50,20 +54,27 @@ export function tokamak(): Plugin[] {
           await write();
         }
       },
-      configureServer(server) {
-        server.httpServer?.on("listening", () => {
+      async configureServer(server) {
+        const httpServer = server.httpServer;
+        if (!httpServer) {
+          return;
+        }
+        const workerName = await readWorkerName(server.config.root);
+        httpServer.on("listening", () => {
           const urls = server.resolvedUrls;
-          writeJson(output, "server.json", { url: urls?.local[0] ?? urls?.network[0] });
+          writeJson(output, "server.json", { url: urls?.local[0] ?? urls?.network[0], workerName });
         });
+      },
+      async buildApp(builder) {
+        const environments = Object.values(builder.environments);
+        if (file && !environments.some((environment) => buildsEntryWorker(environment.config))) {
+          throw new Error(`no environment builds the entry Worker to import ${file} into`);
+        }
       },
     },
     {
       name: "tokamak:entry",
-      // Server environments with a manifest are built from the entry Worker:
-      // Cloudflare's plugin gives one to the entry and prerender Workers, and
-      // Astro to its server and prerender environments.
-      applyToEnvironment: ({ config }) =>
-        file !== undefined && config.consumer === "server" && Boolean(config.build.manifest),
+      applyToEnvironment: ({ config }) => file !== undefined && buildsEntryWorker(config),
       async transform(code, id) {
         if (id === file) {
           return withoutConfig(this, code);
@@ -126,6 +137,30 @@ async function writeConfig(
   return [file, ...dependencies.map(normalizePath)];
 }
 
+/**
+ * The name of the Worker in the Wrangler configuration file in `root`, found
+ * as Cloudflare's plugin finds it without `configPath`, without the suffix of
+ * the `CLOUDFLARE_ENV` environment.
+ */
+async function readWorkerName(root: string): Promise<string | undefined> {
+  const file = WRANGLER_FILES.map((name) => path.join(root, name)).find((candidate) => fs.existsSync(candidate));
+  if (!file) {
+    return undefined;
+  }
+  const { unstable_readConfig } = await import("wrangler");
+  const worker = unstable_readConfig({ config: file, env: process.env.CLOUDFLARE_ENV }, { hideWarnings: true });
+  return worker.topLevelName ?? worker.name;
+}
+
+/**
+ * Whether an environment builds from the entry Worker: Cloudflare's plugin
+ * gives a manifest to its entry and prerender Workers, and Astro to its server
+ * and prerender environments.
+ */
+function buildsEntryWorker(config: { consumer: string; build: ResolvedBuildEnvironmentOptions }): boolean {
+  return config.consumer === "server" && Boolean(config.build.manifest);
+}
+
 /** The modules an environment's build starts from. */
 function inputs(build: ResolvedBuildEnvironmentOptions): string[] {
   const { input } = build.rollupOptions;
@@ -138,6 +173,7 @@ interface Statement {
   start: number;
   end: number;
   declaration?: {
+    start: number;
     id?: { name?: string } | null;
     declarations?: { id: { name?: string } }[];
   } | null;
@@ -145,8 +181,10 @@ interface Statement {
 }
 
 /**
- * `code` without its `export const config = ...` statement, which is blanked
- * so that every other position, and so the source map, is unchanged.
+ * `code` without its `config` export: the `export const config = ...`
+ * statement is blanked, or only its `export` keyword while other statements
+ * mention `config`, so that every other position, and so the source map, is
+ * unchanged.
  */
 function withoutConfig(context: Rollup.TransformPluginContext, code: string) {
   const statements = context.parse(code).body as Statement[];
@@ -154,11 +192,26 @@ function withoutConfig(context: Rollup.TransformPluginContext, code: string) {
   if (!statement) {
     return;
   }
-  if (statement.declaration?.declarations?.length !== 1) {
-    context.error("declare config in its own `export const config = ...` statement");
+  const declaration = statement.declaration;
+  if (declaration?.declarations?.length !== 1) {
+    return context.error("declare config in its own `export const config = ...` statement");
   }
-  const blank = code.slice(statement.start, statement.end).replace(/[^\n]/g, " ");
-  return { code: code.slice(0, statement.start) + blank + code.slice(statement.end), map: null };
+  const mentioned = statements.some((other) => other !== statement && mentions(other, "config"));
+  const end = mentioned ? declaration.start : statement.end;
+  const blank = code.slice(statement.start, end).replace(/[^\n]/g, " ");
+  return { code: code.slice(0, statement.start) + blank + code.slice(end), map: null };
+}
+
+/** Whether `node` contains an identifier named `name`, property names included. */
+function mentions(node: unknown, name: string): boolean {
+  if (typeof node !== "object" || node === null) {
+    return false;
+  }
+  const identifier = node as { type?: unknown; name?: unknown };
+  if (identifier.type === "Identifier" && identifier.name === name) {
+    return true;
+  }
+  return Object.values(node).some((child) => mentions(child, name));
 }
 
 function exportsConfig(statement: Statement): boolean {
