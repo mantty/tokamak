@@ -9,7 +9,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./worker": "./src/worker.ts"
+    "./worker": "./src/worker.ts",
+    "./testing": "./src/testing.ts"
   },
   "files": ["src"],
   "publishConfig": {

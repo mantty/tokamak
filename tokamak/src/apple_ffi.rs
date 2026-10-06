@@ -140,8 +140,8 @@ pub unsafe extern "C" fn tokamak_runtime_stop(handle: *mut c_void) {
     }
 }
 
-/// Post JSON `body` to the Worker's `/tokamak/<name>` endpoint, blocking for
-/// up to `timeout_ms`.
+/// Post JSON `body` to the Worker's `/tokamak/<name>` endpoint, retrying a
+/// failed post and blocking for up to `timeout_ms`.
 ///
 /// Returns true with the response body in `response` when the Worker responds
 /// 200, or false with a message in `error`.

@@ -15,8 +15,8 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
     fun resume() = nativeResume(handle)
 
     /**
-     * Posts the JSON [body] to the Worker's `/tokamak/<name>` endpoint, blocking until it
-     * responds 200 or [timeoutMillis] passes, and returns the response body.
+     * Posts the JSON [body] to the Worker's `/tokamak/<name>` endpoint, retrying a failed post,
+     * blocking until it responds 200 or [timeoutMillis] passes, and returns the response body.
      */
     fun call(name: String, body: String, timeoutMillis: Long): String =
         nativeCall(handle, name, body, timeoutMillis)

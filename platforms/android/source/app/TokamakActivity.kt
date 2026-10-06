@@ -23,7 +23,6 @@ class TokamakActivity : Activity() {
         get() = application as TokamakApplication
     private lateinit var webView: WebView
     private lateinit var pluginBridge: TokamakPluginBridge
-    private lateinit var chromeClient: TokamakWebChromeClient
     private var runtime: TokamakRuntime? = null
     private var proxyPort: Int? = null
     private var restoreGeneration = 0L
@@ -37,8 +36,7 @@ class TokamakActivity : Activity() {
             settings.domStorageEnabled = true
             settings.setSupportMultipleWindows(false)
         }
-        chromeClient = TokamakWebChromeClient(this, tokamak.appHost)
-        webView.webChromeClient = chromeClient
+        webView.webChromeClient = TokamakWebChromeClient(tokamak, tokamak.appHost)
         pluginBridge = TokamakPluginBridge(this, tokamak.appHost, tokamak.plugins)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
             pluginBridge.install(webView)
@@ -71,6 +69,7 @@ class TokamakActivity : Activity() {
         destroyed = true
         restoreGeneration += 1
         if (tokamak.activity === this) tokamak.activity = null
+        if (isFinishing) tokamak.permissionRequests.cancel()
         TokamakProxy.release(this)
         pluginBridge.close()
         webView.stopLoading()
@@ -84,10 +83,7 @@ class TokamakActivity : Activity() {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        chromeClient.onRequestPermissionsResult(requestCode)
-        tokamak.plugins.values.forEach {
-            it.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        }
+        tokamak.permissionRequests.onRequestPermissionsResult(requestCode)
     }
 
     private fun deliver(intent: Intent) {

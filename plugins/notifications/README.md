@@ -165,12 +165,11 @@ delivers messages to. It responds 404 otherwise, so the endpoint serves nothing
 on Cloudflare. A build made with `NODE_ENV=development`, or a Worker that
 declares `TOKAMAK_RUNTIME` itself, accepts every request.
 
-Each attempt waits up to 2 seconds for a 200 response. After a failure, the
-plugin tries again 1 second later, up to three attempts, while an attempt can
-finish within the plugin's time for the message. A handler can run more than
-once for one message, and an attempt that timed out keeps running. The plugin
-logs each failed attempt to the device log as
-`push notification failed: <reason>`.
+An attempt waits for a 200 response until the plugin's time for the message
+runs out. After a failed attempt, the runtime tries again 1 second later, up to
+three attempts, while that time lasts, so a handler can run more than once for
+one message. The plugin logs a message it could not deliver to the device log
+as `push notification failed: <reason>`.
 
 The platforms limit background delivery:
 

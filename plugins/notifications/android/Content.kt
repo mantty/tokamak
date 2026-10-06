@@ -26,8 +26,8 @@ internal class Content(
         fun parse(arguments: Any?, scheduled: Boolean): Content {
             val json = arguments as? JSONObject ?: JSONObject()
             val id = json.opt("id") as? String
-            if (id.isNullOrEmpty()) throw typeError("id must be a non-empty string")
-            val title = json.opt("title") as? String ?: throw typeError("title must be a string")
+            if (id.isNullOrEmpty()) throw TokamakPluginError.typeError("id must be a non-empty string")
+            val title = json.opt("title") as? String ?: throw TokamakPluginError.typeError("title must be a string")
             val at = if (scheduled) scheduledTime(json) else null
             return Content(id, title, json.opt("body") as? String, json.optJSONObject("data") ?: JSONObject(), at)
         }
@@ -37,11 +37,9 @@ internal class Content(
         private fun scheduledTime(json: JSONObject): Long {
             val at = (json.opt("at") as? Number)?.toDouble()
             if (at == null || !at.isFinite()) {
-                throw typeError("at must be a number of milliseconds since the epoch")
+                throw TokamakPluginError.typeError("at must be a number of milliseconds since the epoch")
             }
             return at.toLong()
         }
-
-        private fun typeError(message: String) = TokamakPluginError("TypeError", message)
     }
 }

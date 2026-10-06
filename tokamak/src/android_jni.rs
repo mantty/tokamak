@@ -107,9 +107,9 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeResume(
     }
 }
 
-/// Post JSON `body` to the Worker's `/tokamak/<name>` endpoint, blocking for
-/// up to `timeout_millis`. Returns the response body; throws unless the Worker
-/// responds 200.
+/// Post JSON `body` to the Worker's `/tokamak/<name>` endpoint, retrying a
+/// failed post and blocking for up to `timeout_millis`. Returns the response
+/// body; throws unless the Worker responds 200.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeCall<'local>(
     mut env: JNIEnv<'local>,

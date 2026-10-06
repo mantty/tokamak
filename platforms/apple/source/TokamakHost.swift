@@ -33,22 +33,25 @@ final class TokamakHost {
   }
 
   /// Posts `body`, JSON-serialisable, to the Worker's `/tokamak/<name>`
-  /// endpoint and returns the response body. Fails unless the Worker responds
-  /// 200 within `timeout`. Call it on the main thread; `completion` runs on
-  /// the main thread.
+  /// endpoint and returns the response body, retrying a failed post. Fails
+  /// unless the Worker responds 200 within `timeout`, which includes runtime
+  /// startup. Call it on the main thread; `completion` runs on the main thread.
   func call(
     _ name: String,
     body: Any,
     timeout: TimeInterval,
     completion: @escaping (Result<Data, Error>) -> Void
   ) {
+    let deadline = Date() + timeout
     whenStarted { result in
       switch result {
       case .failure(let error):
         completion(.failure(error))
       case .success(let runtime):
         DispatchQueue.global(qos: .userInitiated).async {
-          let outcome = Result { try runtime.call(name, body: body, timeout: timeout) }
+          let outcome = Result {
+            try runtime.call(name, body: body, timeout: deadline.timeIntervalSinceNow)
+          }
           DispatchQueue.main.async { completion(outcome) }
         }
       }
@@ -229,8 +232,8 @@ final class RuntimeHandle {
     return port
   }
 
-  /// Posts `body` to the Worker's `/tokamak/<name>` endpoint, blocking until
-  /// it responds 200 or `timeout` passes.
+  /// Posts `body` to the Worker's `/tokamak/<name>` endpoint, retrying a
+  /// failed post, and blocks until it responds 200 or `timeout` passes.
   func call(_ name: String, body: Any, timeout: TimeInterval) throws -> Data {
     guard JSONSerialization.isValidJSONObject([body]) else {
       throw RuntimeError.runtime("the \(name) call body is not JSON")
@@ -248,7 +251,7 @@ final class RuntimeHandle {
             handle,
             name,
             body,
-            UInt64(timeout * 1000),
+            UInt64(max(timeout, 0) * 1000),
             &response,
             error.baseAddress,
             error.count

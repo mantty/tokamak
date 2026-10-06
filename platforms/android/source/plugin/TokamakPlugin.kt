@@ -4,19 +4,27 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 
-/** A failure a plugin reports to the page as a `DOMException` named [errorName]. */
+/**
+ * A failure a plugin reports to the page as a `DOMException` named [errorName]. Other exceptions
+ * reach the page as an `OperationError`.
+ */
 class TokamakPluginError(
     val errorName: String,
     message: String,
 ) : Exception(message) {
     companion object {
         fun notSupported(message: String) = TokamakPluginError("NotSupportedError", message)
+
+        fun typeError(message: String) = TokamakPluginError("TypeError", message)
     }
 }
 
 typealias TokamakPluginReply = (Result<Any?>) -> Unit
 
-/** A native plugin, created once per process with the app's [TokamakHost]. */
+/**
+ * A native plugin, created once per process with the app's [TokamakHost]. A [call] or [subscribe]
+ * that throws replies with the exception.
+ */
 interface TokamakPlugin {
     val id: String
 
@@ -33,12 +41,6 @@ interface TokamakPlugin {
         return {}
     }
 
-    fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) = Unit
-
     /** Receives the intent that started the app's activity, and each intent it receives later. */
     fun onIntent(intent: Intent) = Unit
 }
@@ -52,9 +54,17 @@ interface TokamakHost {
     val activity: Activity?
 
     /**
+     * Asks the user for [permissions] in the app's activity once earlier requests finish, then
+     * passes [callback] whether each is granted. Without an activity, answers at once. Call it on
+     * the main thread; [callback] runs on the main thread.
+     */
+    fun requestPermissions(permissions: Set<String>, callback: (Map<String, Boolean>) -> Unit)
+
+    /**
      * Posts the JSON [body] to the Worker's `/tokamak/<name>` endpoint and returns the
-     * response body. Starts the runtime when it is not running. Blocks, so call it off the main
-     * thread; throws unless the Worker responds 200 within [timeoutMillis].
+     * response body, retrying a failed post. Starts the runtime when it is not running. Blocks,
+     * so call it off the main thread; throws unless the Worker responds 200 within
+     * [timeoutMillis], which includes runtime startup.
      */
     fun call(name: String, body: String, timeoutMillis: Long): String
 

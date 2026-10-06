@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
-import android.os.SystemClock
 import android.util.Log
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
@@ -22,13 +21,9 @@ private const val ASKED = "asked"
 private const val SUBSCRIBED = "subscribed"
 private const val TOKEN = "token"
 private const val SHOW_IN_FOREGROUND = "show-in-foreground"
-private const val PERMISSION_REQUEST = 0x4E07
 
 /** FCM allows about 10 seconds for a message, including starting the app. */
 private const val PUSH_DEADLINE_MILLIS = 8_000L
-private const val PUSH_ATTEMPTS = 3
-private const val PUSH_ATTEMPT_TIMEOUT_MILLIS = 2_000L
-private const val PUSH_RETRY_DELAY_MILLIS = 1_000L
 private const val FCM_MESSAGE_ID_EXTRA = "google.message_id"
 private val LISTENERS = setOf("onMessage", "onNotificationOpened", "onSubscriptionChange")
 
@@ -46,28 +41,25 @@ class TokamakNotificationsPlugin(
 
     /** Notifications opened while no page listened for them. */
     private val heldOpened = mutableListOf<JSONObject>()
-    private val permissionReplies = mutableListOf<TokamakPluginReply>()
 
     init {
         notifier.createChannel()
     }
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
-        runCatching {
-            when (method) {
-                "permission" -> reply(Result.success(permission()))
-                "requestPermission" -> requestPermission(reply)
-                "show" -> show(Content.parse(arguments, scheduled = false), reply)
-                "schedule" -> schedule(Content.parse(arguments, scheduled = true), reply)
-                "getScheduled" -> reply(Result.success(JSONArray(schedule.all().map(Content::toJson))))
-                "getDelivered" -> reply(Result.success(JSONArray(notifier.delivered())))
-                "remove" -> remove(identifier(arguments), reply)
-                "subscribe" -> subscribe(arguments, reply)
-                "getSubscription" -> reply(Result.success(subscription()))
-                "unsubscribe" -> unsubscribe(reply)
-                else -> super.call(method, arguments, reply)
-            }
-        }.onFailure { reply(Result.failure(pluginError(it))) }
+        when (method) {
+            "permission" -> reply(Result.success(permission()))
+            "requestPermission" -> requestPermission(reply)
+            "show" -> show(Content.parse(arguments, scheduled = false), reply)
+            "schedule" -> schedule(Content.parse(arguments, scheduled = true), reply)
+            "getScheduled" -> reply(Result.success(JSONArray(schedule.all().map(Content::toJson))))
+            "getDelivered" -> reply(Result.success(JSONArray(notifier.delivered())))
+            "remove" -> remove(identifier(arguments), reply)
+            "subscribe" -> subscribe(arguments, reply)
+            "getSubscription" -> reply(Result.success(subscription()))
+            "unsubscribe" -> unsubscribe(reply)
+            else -> super.call(method, arguments, reply)
+        }
     }
 
     override fun subscribe(
@@ -83,17 +75,6 @@ class TokamakNotificationsPlugin(
             heldOpened.clear()
         }
         return { listeners[method]?.remove(key) }
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) {
-        if (requestCode != PERMISSION_REQUEST) return
-        val permission = permission()
-        permissionReplies.forEach { it(Result.success(permission)) }
-        permissionReplies.clear()
     }
 
     /** Delivers a notification the user opened, local or from FCM, that started the activity. */
@@ -125,29 +106,10 @@ class TokamakNotificationsPlugin(
             if (preferences.getBoolean(SHOW_IN_FOREGROUND, false)) notifier.post(content(message), "push")
             return
         }
-        val deadline = SystemClock.elapsedRealtime() + PUSH_DEADLINE_MILLIS
-        runCatching { deliverPush(message.toString(), attempt = 1, deadline = deadline) }
+        runCatching { host.call("push", message.toString(), PUSH_DEADLINE_MILLIS) }
             .onSuccess(::showReturned)
+            .onFailure { Log.w("tokamak", "push notification failed: ${it.message}") }
     }
-
-    /**
-     * Posts [body] to `/tokamak/push`, logging each failed attempt and retrying while another
-     * attempt can finish before [deadline].
-     */
-    private fun deliverPush(
-        body: String,
-        attempt: Int,
-        deadline: Long,
-    ): String =
-        try {
-            host.call("push", body, PUSH_ATTEMPT_TIMEOUT_MILLIS)
-        } catch (error: Exception) {
-            Log.w("tokamak", "push notification failed: ${error.message}")
-            val retryEnds = SystemClock.elapsedRealtime() + PUSH_RETRY_DELAY_MILLIS + PUSH_ATTEMPT_TIMEOUT_MILLIS
-            if (attempt == PUSH_ATTEMPTS || retryEnds > deadline) throw error
-            Thread.sleep(PUSH_RETRY_DELAY_MILLIS)
-            deliverPush(body, attempt + 1, deadline)
-        }
 
     /** Shows the notification a push response returns, if any. */
     private fun showReturned(response: String) {
@@ -182,19 +144,17 @@ class TokamakNotificationsPlugin(
     }
 
     private fun requestPermission(reply: TokamakPluginReply) {
-        val activity = host.activity
         if (
             Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            activity == null ||
+            host.activity == null ||
             permission() != "prompt"
         ) {
             reply(Result.success(permission()))
             return
         }
         preferences.edit().putBoolean(ASKED, true).apply()
-        permissionReplies += reply
-        if (permissionReplies.size == 1) {
-            activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), PERMISSION_REQUEST)
+        host.requestPermissions(setOf(Manifest.permission.POST_NOTIFICATIONS)) {
+            reply(Result.success(permission()))
         }
     }
 
@@ -295,7 +255,7 @@ class TokamakNotificationsPlugin(
 
     private fun identifier(arguments: Any?): String {
         val id = (arguments as? JSONObject)?.opt("id") as? String
-        if (id.isNullOrEmpty()) throw TokamakPluginError("TypeError", "id must be a non-empty string")
+        if (id.isNullOrEmpty()) throw TokamakPluginError.typeError("id must be a non-empty string")
         return id
     }
 
@@ -307,8 +267,5 @@ class TokamakNotificationsPlugin(
 
         fun operationError(error: Throwable?) =
             TokamakPluginError("OperationError", error?.message ?: "The push service failed")
-
-        fun pluginError(error: Throwable): TokamakPluginError =
-            error as? TokamakPluginError ?: operationError(error)
     }
 }

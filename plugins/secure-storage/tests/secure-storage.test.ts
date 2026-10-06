@@ -1,40 +1,11 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
+import { connectNative, disconnectNative } from "@tokamakdev/plugin/testing";
+
 import { secureStorage } from "../src/index.js";
 
-type Message = Record<string, unknown>;
-
-afterEach(() => {
-  Reflect.deleteProperty(globalThis, "__tokamakNative");
-  Reflect.deleteProperty(globalThis, "__tokamakReceive");
-});
-
-function connectNative(): Message[] {
-  const sent: Message[] = [];
-  globalThis.__tokamakNative = {
-    onmessage: null,
-    postMessage(message) {
-      sent.push(JSON.parse(message) as Message);
-    },
-  };
-  return sent;
-}
-
-function lastCall(sent: Message[]): Message {
-  const { plugin, method, arguments: arguments_ } = sent.at(-1) ?? {};
-  return { plugin, method, arguments: arguments_ };
-}
-
-function respond(sent: Message[], response: { value?: unknown; error?: { name: string; message: string } }) {
-  const request = sent.at(-1);
-  globalThis.__tokamakReceive?.({
-    session: request?.session as string,
-    id: request?.id as number,
-    done: true,
-    ...response,
-  });
-}
+afterEach(disconnectNative);
 
 void test("rejects without a native bridge", async () => {
   await assert.rejects(
@@ -44,13 +15,14 @@ void test("rejects without a native bridge", async () => {
 });
 
 void test("stores a value with its options", async () => {
-  const sent = connectNative();
+  const native = connectNative();
 
   const stored = secureStorage.set("identity", "c2VjcmV0", {
     readable: "whenUnlocked",
     authentication: "biometricsOrPasscode",
   });
-  assert.deepEqual(lastCall(sent), {
+  assert.deepEqual(native.lastRequest(), {
+    type: "call",
     plugin: "secure-storage",
     method: "set",
     arguments: {
@@ -61,93 +33,95 @@ void test("stores a value with its options", async () => {
       thisDeviceOnly: true,
     },
   });
-  respond(sent, { value: null });
+  native.respond({ value: null });
 
   await stored;
 });
 
 void test("stores a restorable value without authentication", async () => {
-  const sent = connectNative();
+  const native = connectNative();
 
   const stored = secureStorage.set("identity", "c2VjcmV0", {
     readable: "afterFirstUnlock",
     thisDeviceOnly: false,
   });
-  assert.deepEqual(lastCall(sent).arguments, {
+  assert.deepEqual(native.lastRequest().arguments, {
     name: "identity",
     value: "c2VjcmV0",
     readable: "afterFirstUnlock",
     authentication: null,
     thisDeviceOnly: false,
   });
-  respond(sent, { value: null });
+  native.respond({ value: null });
 
   await stored;
 });
 
 void test("reads a value with a prompt", async () => {
-  const sent = connectNative();
+  const native = connectNative();
 
   const value = secureStorage.get("identity", { prompt: "Confirm it's you" });
-  assert.deepEqual(lastCall(sent), {
+  assert.deepEqual(native.lastRequest(), {
+    type: "call",
     plugin: "secure-storage",
     method: "get",
     arguments: { name: "identity", prompt: "Confirm it's you" },
   });
-  respond(sent, { value: "c2VjcmV0" });
+  native.respond({ value: "c2VjcmV0" });
 
   assert.equal(await value, "c2VjcmV0");
 });
 
 void test("reads a missing value as null", async () => {
-  const sent = connectNative();
+  const native = connectNative();
 
   const value = secureStorage.get("identity");
-  assert.deepEqual(lastCall(sent).arguments, { name: "identity", prompt: null });
-  respond(sent, { value: null });
+  assert.deepEqual(native.lastRequest().arguments, { name: "identity", prompt: null });
+  native.respond({ value: null });
 
   assert.equal(await value, null);
 });
 
 void test("deletes a value", async () => {
-  const sent = connectNative();
+  const native = connectNative();
 
   const deleted = secureStorage.delete("identity");
-  assert.deepEqual(lastCall(sent), {
+  assert.deepEqual(native.lastRequest(), {
+    type: "call",
     plugin: "secure-storage",
     method: "delete",
     arguments: { name: "identity" },
   });
-  respond(sent, { value: null });
+  native.respond({ value: null });
 
   await deleted;
 });
 
 void test("lists the stored names", async () => {
-  const sent = connectNative();
+  const native = connectNative();
 
   const names = secureStorage.keys();
-  assert.deepEqual(lastCall(sent), { plugin: "secure-storage", method: "keys", arguments: null });
-  respond(sent, { value: ["device", "identity"] });
+  assert.deepEqual(native.lastRequest(), { type: "call", plugin: "secure-storage", method: "keys", arguments: null });
+  native.respond({ value: ["device", "identity"] });
 
   assert.deepEqual(await names, ["device", "identity"]);
 });
 
 void test("clears every value", async () => {
-  const sent = connectNative();
+  const native = connectNative();
 
   const cleared = secureStorage.clear();
-  assert.deepEqual(lastCall(sent), { plugin: "secure-storage", method: "clear", arguments: null });
-  respond(sent, { value: null });
+  assert.deepEqual(native.lastRequest(), { type: "call", plugin: "secure-storage", method: "clear", arguments: null });
+  native.respond({ value: null });
 
   await cleared;
 });
 
 void test("preserves native errors", async () => {
-  const sent = connectNative();
+  const native = connectNative();
 
   const value = secureStorage.get("identity", { prompt: "Confirm it's you" });
-  respond(sent, { error: { name: "NotAllowedError", message: "Authentication was cancelled" } });
+  native.respond({ error: { name: "NotAllowedError", message: "Authentication was cancelled" } });
 
   await assert.rejects(
     value,

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.SystemClock
 import java.io.File
 
 private const val HOST_METADATA = "tokamak.host"
@@ -30,6 +31,8 @@ class TokamakApplication : Application(), TokamakHost {
         }
     }
 
+    internal val permissionRequests = TokamakPermissions(this)
+
     /** The running runtime, started on first use. Blocks while it starts. */
     internal val runtime: TokamakRuntime by lazy(::startRuntime)
 
@@ -38,10 +41,16 @@ class TokamakApplication : Application(), TokamakHost {
         requireNotNull(metadata()?.getString(HOST_METADATA)) { "$HOST_METADATA is required" }
     }
 
-    override fun call(name: String, body: String, timeoutMillis: Long): String =
-        runtime.call(name, body, timeoutMillis)
+    override fun call(name: String, body: String, timeoutMillis: Long): String {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMillis
+        val started = runtime
+        return started.call(name, body, deadline - SystemClock.elapsedRealtime())
+    }
 
     override fun plugin(id: String): TokamakPlugin? = plugins[id]
+
+    override fun requestPermissions(permissions: Set<String>, callback: (Map<String, Boolean>) -> Unit) =
+        permissionRequests.request(permissions, callback)
 
     private fun startRuntime(): TokamakRuntime {
         val metadata = metadata()

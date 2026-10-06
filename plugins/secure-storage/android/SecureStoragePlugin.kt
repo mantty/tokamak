@@ -1,9 +1,7 @@
 package com.tokamak.plugins.securestorage
 
-import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricManager.Authenticators
 import android.hardware.biometrics.BiometricPrompt
-import android.os.CancellationSignal
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyPermanentlyInvalidatedException
@@ -15,6 +13,12 @@ import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakPluginReply
+import com.tokamak.runtime.authenticateOwner
+import com.tokamak.runtime.optionalString
+import com.tokamak.runtime.requireBoolean
+import com.tokamak.runtime.requireObject
+import com.tokamak.runtime.requireOwnerAuthentication
+import com.tokamak.runtime.requireString
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -55,18 +59,17 @@ class TokamakSecureStoragePlugin(
     private val worker = Executors.newSingleThreadExecutor()
     private val directory = File(context.noBackupFilesDir, "tokamak-secure-storage")
     private val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-    private val biometrics = context.getSystemService(BiometricManager::class.java)
     private val random = SecureRandom()
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
         when (method) {
             "set" -> execute(reply) {
-                set(request(arguments))
+                set(requireObject(arguments))
                 reply(Result.success(null))
             }
-            "get" -> execute(reply) { get(request(arguments), reply) }
+            "get" -> execute(reply) { get(requireObject(arguments), reply) }
             "delete" -> execute(reply) {
-                delete(request(arguments).requireString("name"))
+                delete(requireObject(arguments).requireString("name"))
                 reply(Result.success(null))
             }
             "keys" -> execute(reply) { reply(Result.success(keys())) }
@@ -95,7 +98,7 @@ class TokamakSecureStoragePlugin(
             when (request.requireString("readable")) {
                 "whenUnlocked" -> true
                 "afterFirstUnlock" -> false
-                else -> throw typeError("readable must be \"whenUnlocked\" or \"afterFirstUnlock\"")
+                else -> throw TokamakPluginError.typeError("readable must be \"whenUnlocked\" or \"afterFirstUnlock\"")
             }
         if (!request.requireBoolean("thisDeviceOnly")) {
             throw TokamakPluginError.notSupported("Android keeps secure storage values on this device")
@@ -123,19 +126,10 @@ class TokamakSecureStoragePlugin(
     private fun requireAuthentication(spec: KeyGenParameterSpec.Builder, wireName: String) {
         val authentication =
             Authentication.entries.firstOrNull { it.wireName == wireName } ?: throw unknownAuthentication()
-        requireAvailable(authentication.authenticators)
+        host.requireOwnerAuthentication(authentication.authenticators)
         spec.setUserAuthenticationRequired(true)
             .setUserAuthenticationParameters(0, authentication.keyTypes)
             .setInvalidatedByBiometricEnrollment(authentication.invalidatedByEnrollment)
-    }
-
-    private fun requireAvailable(authenticators: Int) {
-        when (biometrics.canAuthenticate(authenticators)) {
-            BiometricManager.BIOMETRIC_SUCCESS -> Unit
-            BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE ->
-                throw TokamakPluginError.notSupported("This device cannot perform the requested authentication")
-            else -> throw notSetUp()
-        }
     }
 
     private fun generatePublicKey(spec: KeyGenParameterSpec.Builder): PublicKey {
@@ -201,26 +195,11 @@ class TokamakSecureStoragePlugin(
         stored: StoredValue,
         reply: TokamakPluginReply,
     ) {
-        val activity = host.activity ?: throw notVisible()
-        val callback = PromptCallback(reply) { execute(reply) { reply(Result.success(open(stored, unwrap))) } }
         val title = prompt?.takeIf { it.isNotEmpty() } ?: context.applicationInfo.loadLabel(context.packageManager)
-        val dialog =
-            BiometricPrompt.Builder(activity)
-                .setTitle(title)
-                .setAllowedAuthenticators(authenticators)
-        if ((authenticators and Authenticators.DEVICE_CREDENTIAL) == 0) {
-            dialog.setNegativeButton(
-                activity.getString(android.R.string.cancel),
-                activity.mainExecutor,
-            ) { _, _ -> reply(Result.failure(cancelled())) }
-        }
         onUiThread(reply) {
-            dialog.build().authenticate(
-                BiometricPrompt.CryptoObject(unwrap),
-                CancellationSignal(),
-                activity.mainExecutor,
-                callback,
-            )
+            host.authenticateOwner(title, authenticators, BiometricPrompt.CryptoObject(unwrap), reply) {
+                execute(reply) { reply(Result.success(open(stored, unwrap))) }
+            }
         }
     }
 
@@ -280,22 +259,6 @@ class TokamakSecureStoragePlugin(
 
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
-    private fun request(arguments: Any?): JSONObject =
-        arguments as? JSONObject ?: throw typeError("$id arguments must be an object")
-
-    private fun JSONObject.requireString(name: String): String =
-        optionalString(name) ?: throw typeError("$name must be a string")
-
-    private fun JSONObject.requireBoolean(name: String): Boolean =
-        opt(name) as? Boolean ?: throw typeError("$name must be a boolean")
-
-    private fun JSONObject.optionalString(name: String): String? =
-        when (val value = opt(name)) {
-            null, JSONObject.NULL -> null
-            is String -> value
-            else -> throw typeError("$name must be a string")
-        }
-
     private enum class Authentication(
         val wireName: String,
         val keyTypes: Int,
@@ -333,33 +296,22 @@ class TokamakSecureStoragePlugin(
         // Keystore RSA keys default to SHA-1 for the OAEP MGF1 digest.
         val OAEP = OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA1, PSource.PSpecified.DEFAULT)
 
-        fun typeError(message: String) = TokamakPluginError("TypeError", message)
-
         fun unknownAuthentication() =
-            typeError("authentication must be \"biometricsOrPasscode\", \"biometrics\" or \"currentBiometrics\"")
+            TokamakPluginError.typeError("authentication must be \"biometricsOrPasscode\", \"biometrics\" or \"currentBiometrics\"")
 
         fun locked() = TokamakPluginError("NotAllowedError", "The device must be unlocked to read this value")
 
         fun notReadable() =
             TokamakPluginError("NotReadableError", "The stored value can no longer be decrypted")
 
-        fun cancelled() = TokamakPluginError("NotAllowedError", "Authentication was cancelled")
-
-        fun notSetUp() =
-            TokamakPluginError("InvalidStateError", "The requested authentication is not set up on this device")
-
-        fun notVisible() =
-            TokamakPluginError("InvalidStateError", "The app has no activity to show the authentication prompt in")
-
-        fun pluginError(error: Throwable): TokamakPluginError =
+        fun pluginError(error: Throwable): Throwable =
             when (error) {
-                is TokamakPluginError -> error
                 is KeyPermanentlyInvalidatedException,
                 is BadPaddingException,
                 is IllegalBlockSizeException,
                 -> notReadable()
                 is UserNotAuthenticatedException -> locked()
-                else -> TokamakPluginError("OperationError", error.message ?: error.javaClass.name)
+                else -> error
             }
     }
 }
@@ -404,31 +356,3 @@ private class StoredValue(
         private fun DataInputStream.readExactly(size: Int) = ByteArray(size).also(::readFully)
     }
 }
-
-private class PromptCallback(
-    private val reply: TokamakPluginReply,
-    private val succeeded: () -> Unit,
-) : BiometricPrompt.AuthenticationCallback() {
-    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = succeeded()
-
-    override fun onAuthenticationError(code: Int, message: CharSequence) =
-        reply(Result.failure(authenticationError(code, message)))
-}
-
-private fun authenticationError(code: Int, message: CharSequence) =
-    TokamakPluginError(
-        when (code) {
-            BiometricPrompt.BIOMETRIC_ERROR_CANCELED,
-            BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED,
-            BiometricPrompt.BIOMETRIC_ERROR_TIMEOUT,
-            BiometricPrompt.BIOMETRIC_ERROR_LOCKOUT,
-            BiometricPrompt.BIOMETRIC_ERROR_LOCKOUT_PERMANENT,
-            -> "NotAllowedError"
-            BiometricPrompt.BIOMETRIC_ERROR_NO_BIOMETRICS,
-            BiometricPrompt.BIOMETRIC_ERROR_NO_DEVICE_CREDENTIAL,
-            -> "InvalidStateError"
-            BiometricPrompt.BIOMETRIC_ERROR_HW_NOT_PRESENT -> "NotSupportedError"
-            else -> "OperationError"
-        },
-        message.toString(),
-    )

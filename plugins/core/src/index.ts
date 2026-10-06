@@ -32,7 +32,6 @@ type Pending = PendingCall | PendingSubscription;
 
 declare global {
   var __tokamakNative: NativeTransport | undefined;
-  var __tokamakReceive: ((response: NativeResponse) => void) | undefined;
 }
 
 let nextRequestId = 1;
@@ -49,27 +48,20 @@ export abstract class FrontendPlugin {
 
   protected call<T>(method: string, arguments_: unknown = null): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      send("call", this.pluginId, method, arguments_, {
-        kind: "call",
-        resolve: (value) => {
-          resolve(value as T);
-        },
-        reject,
-      });
+      send("call", this.pluginId, method, arguments_, { kind: "call", resolve, reject });
     });
   }
 
-  protected listen(
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- T types the native values, as in call.
+  protected listen<T>(
     method: string,
-    next: (value: unknown) => void,
+    next: (value: T) => void,
     error: (error: DOMException) => void,
     arguments_: unknown = null,
   ): () => void {
     const { transport, id } = send("subscribe", this.pluginId, method, arguments_, {
       kind: "subscription",
-      next: (value) => {
-        next(value);
-      },
+      next,
       error,
     });
     return () => {
@@ -87,7 +79,6 @@ function nativeTransport(): NativeTransport | undefined {
     transport.onmessage = ({ data }) => {
       receive(JSON.parse(data) as NativeResponse);
     };
-    globalThis.__tokamakReceive = receive;
     transport.postMessage(JSON.stringify({ type: "reset", session }));
   }
   return transport;

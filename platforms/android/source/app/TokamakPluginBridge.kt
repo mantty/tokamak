@@ -76,10 +76,14 @@ internal class TokamakPluginBridge(
         }
         val arguments = request.opt("arguments")
         val reply: TokamakPluginReply = { result -> send(replyProxy, key, result, isCall) }
-        if (isCall) {
-            plugin.call(method, arguments, reply)
-        } else {
-            cancellations[key] = plugin.subscribe(method, arguments, reply)
+        try {
+            if (isCall) {
+                plugin.call(method, arguments, reply)
+            } else {
+                cancellations[key] = plugin.subscribe(method, arguments, reply)
+            }
+        } catch (error: Exception) {
+            send(replyProxy, key, Result.failure(error), true)
         }
     }
 
@@ -113,10 +117,10 @@ internal class TokamakPluginBridge(
         if (error == null) {
             response.put("value", JSONObject.wrap(result.getOrNull()))
         } else {
-            val name = (error as? TokamakPluginError)?.errorName ?: "UnknownError"
+            val name = (error as? TokamakPluginError)?.errorName ?: "OperationError"
             response.put(
                 "error",
-                JSONObject().put("name", name).put("message", error.message ?: name),
+                JSONObject().put("name", name).put("message", error.message ?: error.javaClass.name),
             )
         }
         replyProxy.postMessage(response.toString())
