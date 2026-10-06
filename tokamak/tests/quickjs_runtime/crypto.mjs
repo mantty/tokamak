@@ -328,8 +328,14 @@ function nodeCryptoContracts() {
     scryptLimit: outcome(() => nodeCrypto.scryptSync("password", "salt", 16, { N: 2 ** 20, maxmem: 1024 })),
     pbkdf2: nodeCrypto.pbkdf2Sync("password", "salt", 2, 20, "sha1").toString("hex"),
     hkdf: Buffer.from(nodeCrypto.hkdfSync("sha256", "key", "salt", "info", 42)).toString("hex"),
+    hkdfTooLong: (() => { try { return nodeCrypto.hkdfSync("sha256", "key", "salt", "info", 255 * 32 + 1); } catch (error) { return [error.name, error.message]; } })(),
   };
   const ecPair = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const details = keyObject => {
+    const value = keyObject.asymmetricKeyDetails;
+    return value && Object.fromEntries(Object.entries(value).map(([name, entry]) => [name, String(entry)]));
+  };
+  result.keyDetails = [privateKey, publicKey, ecPair.publicKey, nodeCrypto.generateKeyPairSync("ed25519").privateKey, nodeCrypto.createSecretKey(Buffer.from([1]))].map(keyObject => outcome(() => details(keyObject)));
   result.generatedPairs = {
     ec: nodeCrypto.verify("sha256", Buffer.from("abc"), ecPair.publicKey, nodeCrypto.sign("sha256", Buffer.from("abc"), ecPair.privateKey)),
     ecJwkFields: definedKeys(ecPair.privateKey.export({ format: "jwk" })),

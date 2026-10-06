@@ -25,33 +25,9 @@ use std::thread;
 use std::time::Duration;
 
 const WEBSOCKET_WORKER: &[u8] = br#"
-globalThis.Request = class { constructor(url, init = {}) { this.url = url; this.method = init.method ?? "GET"; this.headers = init.headers ?? {}; this.body = init.body; } };
-globalThis.Response = class { constructor(body = null, init = {}) { this.status = init.status ?? 200; this.headers = new Map(); this.webSocket = init.webSocket; } async text() { return ""; } };
-class Socket {
-  constructor() {
-    this.__tokamak_outbox = [];
-    this.__tokamak_peer = undefined;
-    this.__tokamak_listener = undefined;
-    this.__tokamak_receive = (data) => this.__tokamak_listener?.({ data });
-    this.__tokamak_close = () => {};
-  }
-  accept() {}
-  addEventListener(name, listener) { if (name === "message") this.__tokamak_listener = listener; }
-  send(data) { this.__tokamak_peer.__tokamak_outbox.push({ type: "message", binary: false, data }); }
-}
-globalThis.WebSocketPair = class {
-  constructor() {
-    this[0] = new Socket();
-    this[1] = new Socket();
-    this[0].__tokamak_peer = this[1];
-    this[1].__tokamak_peer = this[0];
-  }
-};
 export default {
   async fetch() {
-    const pair = new WebSocketPair();
-    const client = pair[0];
-    const server = pair[1];
+    const [client, server] = Object.values(new WebSocketPair());
     server.accept();
     server.addEventListener("message", (event) => server.send(`pong ${event.data}`));
     return new Response(null, { status: 101, webSocket: client });
@@ -59,9 +35,7 @@ export default {
 };
 "#;
 
-const SLOW_WORKER: &[u8] = br#"
-globalThis.Request = class { constructor(url, init = {}) { this.url = url; this.method = init.method ?? "GET"; this.headers = init.headers ?? {}; this.body = init.body; } };
-globalThis.Response = class { constructor(_body = null, init = {}) { this.status = init.status ?? 200; this.headers = new Map(); } async text() { return "ok"; } };
+const SLOW_WORKER: &[u8] = br"
 export default {
   async fetch() {
     const deadline = Date.now() + 250;
@@ -69,7 +43,7 @@ export default {
     return new Response(null);
   }
 };
-"#;
+";
 
 const GLOBAL_WORKER: &[u8] = br#"
 const encoded = new TextEncoder().encode("ready");
@@ -82,39 +56,20 @@ export default {
 "#;
 
 const STREAM_WORKER: &[u8] = br#"
-globalThis.Request = class Request {
-  constructor(url, init = {}) {
-    this.url = url;
-    this.method = init.method ?? "GET";
-    this.headers = init.headers ?? {};
-    this.body = init.body;
-  }
-};
-globalThis.Response = class Response {
-  constructor(body = null, init = {}) {
-    this.status = init.status ?? 200;
-    this.headers = new Map([["content-type", "application/octet-stream"]]);
-    this.__stream = body;
-  }
-};
-const stream = {
-  getReader() {
-    const values = [new Uint8Array([1, 2]), new Uint8Array([3, 4])];
-    return {
-      read() {
-        const value = values.shift();
-        return Promise.resolve(value ? { done: false, value } : { done: true, value: undefined });
-      },
-      cancel() { return Promise.resolve(); },
-    };
-  },
-};
 export default {
   fetch: async request => {
-    if (!(request.body instanceof Uint8Array) || request.body[0] !== 9 || request.body[2] !== 7) {
+    if (new Uint8Array(await request.arrayBuffer()).join() !== "9,8,7") {
       throw new Error("request body was not transferred as bytes");
     }
-    return new Response(stream);
+    const chunks = [new Uint8Array([1, 2]), new Uint8Array([3, 4])];
+    const body = new ReadableStream({
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk) controller.enqueue(chunk);
+        else controller.close();
+      },
+    });
+    return new Response(body, { headers: { "content-type": "application/octet-stream" } });
   },
 };
 "#;
@@ -201,7 +156,7 @@ fn streams_worker_response_chunks_without_buffering_the_body()
     let directory = tempfile::tempdir()?;
     let worker_bundle = WorkerBundle::of_source(STREAM_WORKER, directory.path())?;
     let config = websocket_config(directory.path());
-    let mut request = request("GET", "/socket");
+    let mut request = request("POST", "/upload");
     request.body = Some(vec![9, 8, 7]);
     let (response_sender, response_receiver) = flume::bounded(1);
     let accepting = Arc::new(AtomicBool::new(true));
@@ -567,31 +522,53 @@ fn loads_builtins_without_source_compilation() -> Result<(), Box<dyn std::error:
 #[test]
 fn initializes_web_globals_before_worker_module_evaluation()
 -> Result<(), Box<dyn std::error::Error>> {
+    let JobResponse::Http(response) = run_worker(GLOBAL_WORKER, request("GET", "/"))? else {
+        return Err("Worker returned a non-HTTP response".into());
+    };
+    assert_eq!(response.status, 204);
+    Ok(())
+}
+
+#[test]
+fn rejects_a_handler_result_that_is_not_a_response() -> Result<(), Box<dyn std::error::Error>> {
+    let source = b"export default { fetch: () => ({ status: 200, headers: [] }) };";
+    let error = run_worker(source, request("GET", "/"))
+        .err()
+        .ok_or("a plain object was sent as the response")?;
+    assert!(
+        error
+            .to_string()
+            .contains("Incorrect type for Promise: the Promise did not resolve to 'Response'."),
+        "{error}"
+    );
+    Ok(())
+}
+
+/// What the Worker compiled from `source` sends for `request`.
+fn run_worker(
+    source: &[u8],
+    request: HttpRequest,
+) -> Result<JobResponse, Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let worker = WorkerBundle::of_source(GLOBAL_WORKER, directory.path())?;
+    let worker = WorkerBundle::of_source(source, directory.path())?;
     let accepting = Arc::new(AtomicBool::new(true));
     let lifecycle = Lifecycle::new();
     let execution = lifecycle
         .enter(&accepting)
         .ok_or("request was not admitted")?;
-    let (response_sender, response_receiver) = flume::bounded(1);
-
+    let (response, responses) = flume::bounded(1);
+    let job = Job {
+        request,
+        response,
+        websocket: None,
+    };
     execute_request(
         &worker,
         &websocket_config(directory.path()),
-        Job {
-            request: request("GET", "/socket"),
-            response: response_sender,
-            websocket: None,
-        },
+        job,
         &execution,
     )?;
-
-    let JobResponse::Http(response) = response_receiver.recv()? else {
-        return Err("Worker returned a non-HTTP response".into());
-    };
-    assert_eq!(response.status, 204);
-    Ok(())
+    Ok(responses.recv()?)
 }
 
 #[test]

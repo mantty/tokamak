@@ -5,7 +5,9 @@ use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig, ge
 use encoding_rs::{DecoderResult, Encoding};
 use rquickjs::function::MutFn;
 use rquickjs::module::{Declarations, Exports, ModuleDef};
-use rquickjs::{ArrayBuffer, Ctx, Exception, Function, Object, TypedArray, Value};
+use rquickjs::{
+    ArrayBuffer, Constructor, Ctx, Exception, Function, JsLifetime, Object, TypedArray, Value,
+};
 use std::io::Write;
 
 pub(crate) struct HostModule;
@@ -32,6 +34,32 @@ super::host_functions! {
     "cacheDelete" => cache_delete,
     "writeStdout" => |text: String| write_flushed(&mut std::io::stdout().lock(), &text),
     "writeStderr" => |text: String| write_flushed(&mut std::io::stderr().lock(), &text),
+    "registerDomException" => register_dom_exception,
+}
+
+/// The `DOMException` class native errors are created with, registered by the
+/// module that defines it. A runtime has one context, so one class.
+#[derive(JsLifetime)]
+struct DomException<'js>(Constructor<'js>);
+
+fn register_dom_exception<'js>(
+    ctx: Ctx<'js>,
+    constructor: Constructor<'js>,
+) -> rquickjs::Result<()> {
+    ctx.store_userdata(DomException(constructor))
+        .map(drop)
+        .map_err(|_| Exception::throw_internal(&ctx, "DOMException could not be registered"))
+}
+
+/// A `DOMException` named `name`, thrown in `ctx`.
+pub(super) fn throw_dom_exception(ctx: &Ctx<'_>, name: &str, message: &str) -> rquickjs::Error {
+    let Some(constructor) = ctx.userdata::<DomException<'_>>() else {
+        return Exception::throw_internal(ctx, &format!("{name}: {message}"));
+    };
+    match constructor.0.construct::<_, Object>((message, name)) {
+        Ok(exception) => ctx.throw(exception.into()),
+        Err(error) => error,
+    }
 }
 
 /// Exports that `evaluate` constructs itself.

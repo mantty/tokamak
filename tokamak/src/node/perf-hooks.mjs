@@ -1,7 +1,7 @@
 import {
   Performance, PerformanceEntry, PerformanceMark, PerformanceMeasure, PerformanceObserver, PerformanceObserverEntryList,
   PerformanceResourceTiming, performance,
-} from "../globals/web.mjs";
+} from "../globals/performance.mjs";
 
 export function timerify(callback) {
   return performance.timerify(callback);

@@ -1,5 +1,7 @@
 import { d1Query } from "tokamak:storage";
 import makeBinding from "./d1-api.mjs";
+import { Response } from "../network/fetch.mjs";
+import { URL } from "../network/url.mjs";
 
 const BOOKMARK_HEADER = "x-cf-d1-session-commit-token";
 

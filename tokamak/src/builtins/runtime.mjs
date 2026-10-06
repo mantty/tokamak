@@ -69,6 +69,23 @@ import vm from "../node/vm.mjs";
 import workerThreads from "../node/worker-threads.mjs";
 import wasi from "../node/wasi.mjs";
 import zlib from "../node/zlib.mjs";
+import { Request, Response } from "../network/fetch.mjs";
+import { URL } from "../network/url.mjs";
+
+export { hostRequest, hostResponse } from "../network/fetch.mjs";
+
+// Binds `binding` in the environment, unless taken, to the app's assets, which
+// `fetchAsset(method, path)` answers.
+export function installAssets(binding, fetchAsset) {
+  if (globalThis.__tokamak_env[binding] !== undefined) return;
+  globalThis.__tokamak_env[binding] = {
+    async fetch(input, init) {
+      const request = new Request(input, init);
+      const { status, statusText, contentType, body } = fetchAsset(request.method, new URL(request.url).pathname);
+      return new Response(body, { status, statusText, headers: contentType ? { "content-type": contentType } : {} });
+    },
+  };
+}
 
 installProcessGlobals({
   assert,
@@ -143,16 +160,6 @@ installProcessGlobals({
   wasi,
 });
 installConsoleGlobal();
-const assets = globalThis.__tokamak_assets;
-if (assets && globalThis.__tokamak_env[assets.binding] === undefined) {
-  globalThis.__tokamak_env[assets.binding] = {
-    async fetch(input, init) {
-      const request = new Request(input, init);
-      const { status, statusText, contentType, body } = assets.fetch(request.method, new URL(request.url).pathname);
-      return new Response(body, { status, statusText, headers: contentType ? { "content-type": contentType } : {} });
-    },
-  };
-}
 // The storage part attaches the app's storage bindings when it has any.
 if (globalThis.__tokamak_storage) await (await import("../storage/bindings.mjs")).install(globalThis.__tokamak_env, globalThis.__tokamak_storage);
 const waitUntilValues = [];

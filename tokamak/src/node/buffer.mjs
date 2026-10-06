@@ -1,4 +1,5 @@
 import { Blob, File } from "../network/fetch.mjs";
+import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 
 const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const encodingNames = new Set(["utf8", "utf-8", "ascii", "latin1", "binary", "base64", "base64url", "hex", "ucs2", "ucs-2", "utf16le", "utf-16le"]);

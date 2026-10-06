@@ -44,6 +44,9 @@ export function intlContracts() {
   result.collation = ["a", "ä", "2"].map(value => Math.sign(value.localeCompare("10", "de", { numeric: true })));
   result.timeZoneNames = Object.fromEntries([["en-US", "America/Los_Angeles"], ["de", "Europe/Berlin"], ["ja", "Asia/Tokyo"], ["en-GB", "Australia/Sydney"]].flatMap(([locale, timeZone]) =>
     ["short", "long"].map(timeZoneName => [`${locale} ${timeZone} ${timeZoneName}`, outcome(() => new Intl.DateTimeFormat(locale, { timeZone, timeZoneName, hour: "numeric" }).formatToParts(date).find(part => part.type === "timeZoneName").value)])));
+  result.ownProperties = [new Intl.DateTimeFormat("en"), new Intl.NumberFormat("en"), new Intl.PluralRules("en"), new Intl.Locale("en"), new Intl.ListFormat("en"), new Intl.RelativeTimeFormat("en"), new Intl.Collator("en"), new Intl.Segmenter("en"), new Intl.DisplayNames("en", { type: "region" })]
+    .map(value => Reflect.ownKeys(value).map(String));
+  result.collatorPrototype = Object.getOwnPropertyNames(Intl.Collator.prototype).sort();
   result.boundFormat = outcome(() => {
     const dateFormatter = new Intl.DateTimeFormat("en-GB", { dateStyle: "short", timeZone: "UTC" });
     const numberFormatter = new Intl.NumberFormat("de");

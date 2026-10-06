@@ -1,5 +1,6 @@
 import EventEmitter from "../events/events.mjs";
 import { connect as connectSocket } from "../builtins/cloudflare-sockets.mjs";
+import { clearTimeout, setTimeout } from "../globals/timers.mjs";
 import { Duplex } from "../streams/node.mjs";
 import { Buffer } from "./buffer.mjs";
 import { unsupported } from "./unsupported.mjs";

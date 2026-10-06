@@ -1,3 +1,5 @@
+import { TextDecoder, TextEncoder } from "../streams/text.mjs";
+
 function string(value) {
   if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol value to a string");
   return String(value);

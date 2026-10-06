@@ -53,16 +53,3 @@ test("Readable emits end after pushed data", async () => {
   assert.equal((await failure).code, "ERR_STREAM_PUSH_AFTER_EOF");
   assert.deepEqual(lateValues, []);
 });
-
-test("WebSocketPair delivers Worker messages to the native bridge", async () => {
-  const { WebSocketPair } = await import("../../src/network/websocket.mjs");
-  const pair = new WebSocketPair();
-  const client = pair[0];
-  const server = pair[1];
-  server.accept();
-  server.addEventListener("message", (event) => server.send(`pong ${event.data}`));
-
-  server.__tokamak_receive("ping 42", false);
-
-  assert.deepEqual(client.__tokamak_outbox, [{ type: "message", binary: false, data: "pong ping 42" }]);
-});

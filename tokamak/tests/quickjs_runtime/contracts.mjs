@@ -218,7 +218,7 @@ export async function run(handlerEnv, ctx, constructors) {
     const value = globalThis[name];
     return [name, {
       type: typeof value,
-      proto: value && Object.getOwnPropertyNames(value.prototype ?? {}).filter(name => !name.startsWith("__")).sort(),
+      proto: value && Object.getOwnPropertyNames(value.prototype ?? {}).sort(),
       static: value && Object.getOwnPropertyNames(value).sort(),
     }];
   }));
@@ -318,6 +318,18 @@ export async function run(handlerEnv, ctx, constructors) {
     env: env.FLAG === handlerEnv.FLAG,
     repeatedImport: (await import("node:events")).default === EventEmitter,
     globals: constructors.every((value, index) => value === [TextDecoder, TextEncoder, Response, ReadableStream, process][index]),
+    timers: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"].every(name => process.getBuiltinModule("node:timers")[name] === globalThis[name]),
+  };
+  output.nodeEventsExports = Object.keys(await import("node:events")).sort();
+  output.bodyConstructor = result(() => new Body());
+  const ownKeys = value => Reflect.ownKeys(value).map(String).sort();
+  output.ownProperties = {
+    events: [new Event("x"), new CustomEvent("x", { detail: 1 }), new ErrorEvent("error"), new MessageEvent("message", { data: 1 }), new CloseEvent("close"), new EventTarget()].map(ownKeys),
+    abort: [new AbortController(), AbortSignal.abort()].map(ownKeys),
+    fetch: [new Request("https://example.test", { method: "POST", body: "body" }), new Response("body"), new Blob(["body"]), new File(["body"], "name"), new Headers({ a: "b" }), new FormData()].map(ownKeys),
+    sockets: [new WebSocketPair(), new WebSocketPair()[0], new WebSocketRequestResponsePair(new Request("https://example.test"), new Response(null))].map(ownKeys),
+    messaging: [new MessageChannel(), new MessageChannel().port1].map(ownKeys),
+    others: [caches, crypto.subtle, EventSource.from(new ReadableStream()), new TextDecoderStream(), new TextEncoderStream()].map(ownKeys),
   };
   output.decode = {};
   for (const bytes of [[0xff], [0xe2, 0x28, 0xa1], [0xed, 0xa0, 0x80], [0xf4, 0x90, 0x80, 0x80], [0xc0, 0xaf], [0xe2, 0x82]]) {

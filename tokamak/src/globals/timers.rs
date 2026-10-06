@@ -70,12 +70,9 @@ fn schedule<'js>(
                     changed.await;
                 }
             } => {
+                // Timer callbacks pass their errors to reportError; this clears any that escape it.
                 if callback.call::<_, ()>(()).is_err() {
-                    let ctx = callback.ctx();
-                    let error = ctx.catch();
-                    if let Ok(report) = ctx.globals().get::<_, Function>("reportError") {
-                        let _ = report.call::<_, ()>((error,));
-                    }
+                    let _ = callback.ctx().catch();
                 }
                 while callback.ctx().execute_pending_job() {}
             }

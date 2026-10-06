@@ -1,3 +1,5 @@
+import * as timers from "../globals/timers.mjs";
+
 function abortError() {
   const error = new Error("The operation was aborted");
   error.name = "AbortError";
@@ -16,8 +18,8 @@ function timerPromise(delay = 0, value, options) {
     try { settings = validateOptions(options); }
     catch (error) { reject(error); return; }
     if (settings.signal?.aborted) { reject(abortError()); return; }
-    const id = globalThis.setTimeout(() => resolve(value), delay);
-    settings.signal?.addEventListener("abort", () => { globalThis.clearTimeout(id); reject(abortError()); }, { once: true });
+    const id = timers.setTimeout(() => resolve(value), delay);
+    settings.signal?.addEventListener("abort", () => { timers.clearTimeout(id); reject(abortError()); }, { once: true });
   });
 }
 
@@ -29,13 +31,13 @@ export async function* setInterval(delay = 0, value, options) {
   let stopped = false;
   let resolveNext;
   const queue = [];
-  const id = globalThis.setInterval(() => {
+  const id = timers.setInterval(() => {
     if (resolveNext) { const resolve = resolveNext; resolveNext = undefined; resolve(value); }
     else queue.push(value);
   }, delay);
   const abort = () => {
     stopped = true;
-    globalThis.clearInterval(id);
+    timers.clearInterval(id);
     resolveNext?.(Promise.reject(abortError()));
     resolveNext = undefined;
   };
@@ -46,7 +48,7 @@ export async function* setInterval(delay = 0, value, options) {
       yield await new Promise((resolve, reject) => { resolveNext = result => result instanceof Promise ? result.then(resolve, reject) : resolve(result); });
     }
   } finally {
-    globalThis.clearInterval(id);
+    timers.clearInterval(id);
     settings.signal?.removeEventListener("abort", abort);
   }
 }

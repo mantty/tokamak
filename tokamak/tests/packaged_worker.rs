@@ -588,21 +588,13 @@ export default {
 
 fn worker_source() -> &'static [u8] {
     br#"
-globalThis.Request = class Request {
-  constructor(url, init = {}) {
-    this.url = url;
-    this.method = init.method ?? "GET";
-    this.headers = init.headers ?? {};
-    this.body = init.body;
-  }
-};
 export default {
   fetch: async (request, env, ctx) => {
     ctx.waitUntil(Promise.reject(new Error("background failure")));
     const valid = env.TEXT === "value" && env.JSON?.enabled === true;
-    const connection = request.headers.find(([name]) => name === "connection")?.[1] ?? "missing";
-    const headers = new Map([["content-type", "text/plain"], ["x-request-connection", connection]]);
-    return { status: valid ? 204 : 500, headers, text: async () => "" };
+    const connection = request.headers.get("connection") ?? "missing";
+    const headers = { "content-type": "text/plain", "x-request-connection": connection };
+    return new Response(null, { status: valid ? 204 : 500, headers });
   }
 };
 "#
@@ -610,53 +602,14 @@ export default {
 
 fn websocket_worker_source() -> &'static [u8] {
     br#"
-globalThis.Request = class Request {
-  constructor(url, init = {}) {
-    this.url = url;
-    this.method = init.method ?? "GET";
-    this.headers = init.headers ?? {};
-  }
-};
-globalThis.Response = class Response {
-  constructor(_body = null, init = {}) {
-    this.status = init.status ?? 200;
-    this.headers = new Map();
-    this.webSocket = init.webSocket;
-  }
-  async text() { return ""; }
-};
-class Socket {
-  constructor() {
-    this.__tokamak_outbox = [];
-    this.__tokamak_peer = undefined;
-    this.__tokamak_listener = undefined;
-    this.__tokamak_receive = (data, binary) => this.__tokamak_listener?.({ data, binary });
-    this.__tokamak_close = () => {};
-  }
-  accept() {}
-  addEventListener(name, listener) { if (name === "message") this.__tokamak_listener = listener; }
-  send(data) {
-    this.__tokamak_peer.__tokamak_outbox.push({ type: "message", binary: data instanceof ArrayBuffer, data });
-  }
-}
-globalThis.WebSocketPair = class {
-  constructor() {
-    this[0] = new Socket();
-    this[1] = new Socket();
-    this[0].__tokamak_peer = this[1];
-    this[1].__tokamak_peer = this[0];
-  }
-};
 export default {
   async fetch(request) {
-    if (!request.headers.some(([name]) => name === "upgrade")) return new Response(null, { status: 204 });
-    const pair = new WebSocketPair();
-    const client = pair[0];
-    const server = pair[1];
+    if (!request.headers.has("upgrade")) return new Response(null, { status: 204 });
+    const [client, server] = Object.values(new WebSocketPair());
     server.accept();
     server.addEventListener("message", (event) => {
       if (event.data === "fail") throw new Error("worker failure");
-      server.send(event.binary ? event.data : `pong ${event.data}`);
+      server.send(typeof event.data === "string" ? `pong ${event.data}` : event.data);
     });
     return new Response(null, { status: 101, webSocket: client });
   }

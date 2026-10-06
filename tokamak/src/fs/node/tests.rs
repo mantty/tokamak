@@ -19,7 +19,8 @@ fn node_fs_runtime(root: &Path) -> rquickjs::Result<Runtime> {
 fn install_node_fs(ctx: &Ctx<'_>, root: &Path) -> rquickjs::Result<()> {
     let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(Bundle::new(root))));
     install(ctx, &vfs)?;
-    crate::compat::initialize(ctx)
+    crate::compat::initialize(ctx)?;
+    Ok(())
 }
 
 #[test]

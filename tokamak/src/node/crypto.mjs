@@ -1,5 +1,7 @@
 import { cryptoHkdf, cryptoPbkdf2, cryptoCheckPrime, cryptoCreateCipher, cryptoCreateDigest, cryptoDecrypt, cryptoDhCompute, cryptoDhGenerate, cryptoDhParams, cryptoEcdhCompute, cryptoEcdhConvert, cryptoEcdhPublic, cryptoEncrypt, cryptoExportKey, cryptoGenerateKey, cryptoGeneratePrime, cryptoImportKey, cryptoRsaLegacyPrivateEncrypt, cryptoRsaLegacyPublicDecrypt, cryptoScrypt, cryptoSign, cryptoTimingSafeEqual, cryptoVerify, digest, randomBytes as hostRandomBytes } from "tokamak:host";
-import { CryptoKey, crypto as webcrypto } from "../globals/web.mjs";
+import { CryptoKey, crypto as webcrypto } from "../globals/crypto.mjs";
+import { DOMException } from "../globals/dom-exception.mjs";
+import { TextDecoder } from "../streams/text.mjs";
 import { Transform } from "../streams/node.mjs";
 import { Buffer } from "./buffer.mjs";
 import { unsupportedFunction } from "./unsupported.mjs";
@@ -287,9 +289,9 @@ export class DiffieHellman {
   }
 
   generateKeys(encoding) {
-    const state = parseBundle(cryptoDhGenerate({ prime: this.__prime, generator: this.__generator, private: this.__privateKey ?? undefined }));
-    this.__publicKey = Buffer.from(state.public);
-    this.__privateKey = Buffer.from(state.private);
+    const keys = cryptoDhGenerate({ prime: this.__prime, generator: this.__generator, private: this.__privateKey ?? undefined });
+    this.__publicKey = Buffer.from(keys.public);
+    this.__privateKey = Buffer.from(keys.private);
     return outputEncoding(this.getPublicKey(), encoding);
   }
 
@@ -305,9 +307,9 @@ export class DiffieHellman {
   }
   setPrivateKey(privateKey, encoding) {
     const value = inputBytes(privateKey, encoding);
-    const state = parseBundle(cryptoDhGenerate({ prime: this.__prime, generator: this.__generator, private: value }));
-    this.__privateKey = Buffer.from(state.private);
-    this.__publicKey = Buffer.from(state.public);
+    const keys = cryptoDhGenerate({ prime: this.__prime, generator: this.__generator, private: value });
+    this.__privateKey = Buffer.from(keys.private);
+    this.__publicKey = Buffer.from(keys.public);
     return this;
   }
   setPublicKey(publicKey, encoding) {
@@ -338,11 +340,9 @@ export class ECDH {
   }
 
   generateKeys(encoding, format = "uncompressed") {
-    const keys = generateKeyPairSync("ec", { namedCurve: webCurveName(this.__curve) });
-    const privateJwk = keyRecord(keys.privateKey).jwk;
-    const publicJwk = keyRecord(keys.publicKey).jwk;
-    this.__privateKey = Buffer.from(privateJwk.d, "base64url");
-    this.__publicKey = publicPoint(publicJwk);
+    const jwk = exportJwk("pkcs8", "ec", cryptoGenerateKey({ kind: "ec", curve: webCurveName(this.__curve) }).private);
+    this.__privateKey = Buffer.from(jwk.d, "base64url");
+    this.__publicKey = publicPoint(jwk);
     return this.getPublicKey(encoding, format);
   }
 
@@ -395,15 +395,6 @@ function publicPoint(jwk) {
 const keyObjectState = new WeakMap();
 const signToken = Symbol("sign");
 
-function parseBundle(value) {
-  const bytes = Buffer.from(value);
-  if (bytes.length < 9 || bytes[0] !== 1) throw new TypeError("Invalid native key bundle");
-  const publicLength = new DataView(bytes.buffer, bytes.byteOffset + 1, 4).getUint32(0);
-  const privateLength = new DataView(bytes.buffer, bytes.byteOffset + 5, 4).getUint32(0);
-  if (9 + publicLength + privateLength !== bytes.length) throw new TypeError("Invalid native key bundle");
-  return { public: Uint8Array.from(bytes.subarray(9, 9 + publicLength)), private: privateLength ? Uint8Array.from(bytes.subarray(9 + publicLength)) : null };
-}
-
 function pemDecode(value) {
   const match = String(value).match(/-----BEGIN ([^-]+)-----([\s\S]*?)-----END \1-----/);
   if (!match) throw new TypeError("Invalid PEM formatted message");
@@ -430,23 +421,23 @@ function keyKind(jwk) {
 }
 
 function keyFromJwk(jwk) {
-  const kind = keyKind(jwk);
-  const bundle = parseBundle(cryptoImportKey(new Uint8Array(), { format: "jwk", kind, curve: jwk.crv, jwk: JSON.stringify(jwk) }));
-  const privateKey = jwk.d !== undefined;
-  return createAsymmetricObject({ type: privateKey ? "private" : "public", kind, format: privateKey ? "pkcs8" : "spki", bytes: privateKey ? bundle.private : bundle.public, jwk });
+  return createAsymmetricObject(asymmetricRecord(cryptoImportKey({ format: "jwk", kind: keyKind(jwk), curve: jwk.crv, jwk: JSON.stringify(jwk) })));
 }
 
-function jwkDetails(jwk) {
-  const kind = keyKind(jwk);
-  if (kind === "rsa") {
-    const modulus = Buffer.from(jwk.n, "base64url");
-    let bits = Math.max(0, (modulus.length - 1) * 8);
-    let first = modulus[0] ?? 0;
-    while (first > 0) { bits += 1; first >>>= 1; }
-    return { modulusLength: bits, publicExponent: bigIntFromBytes(Buffer.from(jwk.e, "base64url")) };
-  }
-  if (kind === "ec") return { namedCurve: jwk.crv };
-  return undefined;
+// The state of a KeyObject for a key the host imported or generated, as its private key when it has one.
+function asymmetricRecord(key, type = key.private ? "private" : "public") {
+  const isPrivate = type === "private";
+  return { type, kind: key.kind, format: isPrivate ? "pkcs8" : "spki", bytes: isPrivate ? key.private : key.public, details: keyDetails(key) };
+}
+
+// Every detail Node reports, undefined where it does not apply to the key.
+function keyDetails(key) {
+  return {
+    modulusLength: key.modulusLength,
+    publicExponent: key.publicExponent && bigIntFromBytes(key.publicExponent),
+    divisorLength: undefined,
+    namedCurve: key.namedCurve && nodeCurveName(key.namedCurve),
+  };
 }
 
 function bigIntFromBytes(bytes) {
@@ -456,26 +447,17 @@ function bigIntFromBytes(bytes) {
 }
 
 function exportJwk(keyFormat, kind, key) {
-  return JSON.parse(new TextDecoder().decode(cryptoExportKey(new Uint8Array(), { format: "jwk", keyFormat, kind, key })));
+  return JSON.parse(new TextDecoder().decode(cryptoExportKey({ format: "jwk", keyFormat, kind, key })));
 }
 
-function describeKey(bytes, format, typeHint) {
-  const formats = format === "der" ? ["pkcs8", "spki", "der"] : [format];
-  const types = typeHint ? [typeHint] : ["private", "public"];
-  const candidates = ["rsa", "ec", "ed25519", "x25519"];
-  for (const type of types) {
-    for (const keyFormat of formats) {
-      for (const kind of candidates) {
-        try {
-          const jwk = exportJwk(keyFormat, kind, bytes);
-          const privateKey = jwk.d !== undefined;
-          if ((type === "private") !== privateKey) continue;
-          return { kind, format: keyFormat, type: privateKey ? "private" : "public", bytes: Buffer.from(bytes), jwk };
-        } catch {}
-      }
-    }
-  }
-  throw new TypeError("Invalid key material");
+// The key DER-encoded in `bytes` as `format`, which must be a `type` key when a type is given.
+function importDer(bytes, format, type) {
+  let key;
+  try { key = cryptoImportKey({ format, key: bytes }); }
+  catch { throw new TypeError("Invalid key material"); }
+  const record = asymmetricRecord(key);
+  if (type !== undefined && record.type !== type) throw new TypeError("Invalid key material");
+  return record;
 }
 
 function keyRecord(key) {
@@ -492,7 +474,7 @@ function createAsymmetricObject(record) {
 }
 
 function hostKeyExport(record, format) {
-  return Buffer.from(cryptoExportKey(new Uint8Array(), { format, keyFormat: record.format, kind: record.kind, key: Uint8Array.from(record.bytes) }));
+  return Buffer.from(cryptoExportKey({ format, keyFormat: record.format, kind: record.kind, key: Uint8Array.from(record.bytes) }));
 }
 
 function encodeKey(record, options) {
@@ -501,7 +483,7 @@ function encodeKey(record, options) {
   const format = settings.format ?? "pem";
   if (format === "jwk") return exportJwk(record.format, record.kind, Uint8Array.from(record.bytes));
   const type = settings.type ?? (record.type === "private" ? "pkcs8" : "spki");
-  const der = hostKeyExport(record, type === "pkcs1" ? "pkcs1" : type);
+  const der = hostKeyExport(record, type);
   if (format === "der") return der;
   if (format === "pem") {
     const label = type === "pkcs8" ? "PRIVATE KEY" : type === "spki" ? "PUBLIC KEY" : record.type === "private" ? "RSA PRIVATE KEY" : "RSA PUBLIC KEY";
@@ -516,7 +498,7 @@ export class KeyObject {
   }
   get type() { return keyObjectState.get(this)?.type; }
   get asymmetricKeyType() { return keyObjectState.get(this)?.kind; }
-  get asymmetricKeyDetails() { return jwkDetails(keyObjectState.get(this)?.jwk); }
+  get asymmetricKeyDetails() { return keyObjectState.get(this)?.details; }
   get symmetricKeySize() { return keyObjectState.get(this)?.type === "secret" ? keyObjectState.get(this).bytes.byteLength : undefined; }
   export(options) { return encodeKey(keyRecord(this), options); }
   equals(other) {
@@ -728,8 +710,8 @@ function integerBytes(value) {
 function diffieHellmanArgs(prime, primeEncoding, generator, generatorEncoding) {
   if (typeof prime === "number") {
     const actualGenerator = typeof primeEncoding === "number" ? primeEncoding : generator ?? 2;
-    const params = parseBundle(cryptoDhParams({ bits: prime, generator: actualGenerator }));
-    return { prime: Buffer.from(params.public), generator: Buffer.from(params.private) };
+    const params = cryptoDhParams({ bits: prime, generator: actualGenerator });
+    return { prime: Buffer.from(params.prime), generator: Buffer.from(params.generator) };
   }
   if (typeof primeEncoding === "number" || ArrayBuffer.isView(primeEncoding) || primeEncoding instanceof ArrayBuffer) {
     generatorEncoding = undefined;
@@ -771,14 +753,14 @@ export function createPrivateKey(input) {
     format ??= pem.format;
     type ??= pem.type;
   }
-  return createAsymmetricObject(describeKey(Buffer.from(value), format ?? "der", type));
+  return createAsymmetricObject(importDer(Buffer.from(value), format ?? "der", type));
 }
 export function createPublicKey(input) {
   if (input instanceof KeyObject) {
     const record = keyRecord(input);
     if (record.type === "public") return input;
     const bytes = hostKeyExport(record, "spki");
-    return createAsymmetricObject({ ...record, type: "public", format: "spki", bytes, jwk: { ...record.jwk, d: undefined } });
+    return createAsymmetricObject({ ...record, type: "public", format: "spki", bytes });
   }
   const settings = input && typeof input === "object" && !(input instanceof ArrayBuffer) && !ArrayBuffer.isView(input) ? input : {};
   let value = settings.key ?? input;
@@ -795,7 +777,7 @@ export function createPublicKey(input) {
     type = pem.type;
   }
   if (type === "private") return createPublicKey(createPrivateKey({ key: value, format }));
-  return createAsymmetricObject(describeKey(Buffer.from(value), format ?? "der", "public"));
+  return createAsymmetricObject(importDer(Buffer.from(value), format ?? "der", "public"));
 }
 export function createSecretKey(key, encoding) { return new SecretKeyObject(inputBytes(key, encoding), keyObjectToken); }
 export function createCipheriv(algorithm, key, iv, options) { return new Cipheriv(algorithm, key, iv, options); }
@@ -822,11 +804,9 @@ export function generateKeyPairSync(type, options = {}) {
     generation.publicExponent = inputBytes(options.publicExponent ?? new Uint8Array([1, 0, 1]));
   }
   if (kind === "ec") generation.curve = options.namedCurve === "prime256v1" ? "P-256" : options.namedCurve === "secp384r1" ? "P-384" : options.namedCurve === "secp521r1" ? "P-521" : options.namedCurve;
-  const keys = parseBundle(cryptoGenerateKey(generation));
-  const publicJwk = exportJwk("spki", kind, keys.public);
-  const privateJwk = exportJwk("pkcs8", kind, keys.private);
-  const publicKey = createAsymmetricObject({ type: "public", kind, format: "spki", bytes: keys.public, jwk: publicJwk });
-  const privateKey = createAsymmetricObject({ type: "private", kind, format: "pkcs8", bytes: keys.private, jwk: privateJwk });
+  const key = cryptoGenerateKey(generation);
+  const publicKey = createAsymmetricObject(asymmetricRecord(key, "public"));
+  const privateKey = createAsymmetricObject(asymmetricRecord(key, "private"));
   if (options.publicKeyEncoding || options.privateKeyEncoding) return { publicKey: encodeKey(keyRecord(publicKey), options.publicKeyEncoding), privateKey: encodeKey(keyRecord(privateKey), options.privateKeyEncoding) };
   return { publicKey, privateKey };
 }
@@ -847,15 +827,12 @@ export function generateKey(type, options, callback) {
   if (typeof callback !== "function") throw new TypeError("The callback argument must be of type function");
   deliver(callback, () => generateKeySync(type, options));
 }
-function hashByteLength(hash) {
-  return { "SHA-1": 20, "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[normalizeHash(hash)];
-}
-
 function hkdfBytes(hash, key, salt, info, length) {
-  const normalized = normalizeHash(hash);
-  const size = hashByteLength(normalized);
-  if (size && length > size * 255) throw new RangeError("Invalid key length");
-  return cryptoHkdf(normalized, key, salt, info, length);
+  try { return cryptoHkdf(normalizeHash(hash), key, salt, info, length); }
+  catch (error) {
+    if (error instanceof DOMException && error.name === "OperationError") throw new RangeError("Invalid Hkdf key length");
+    throw error;
+  }
 }
 
 export function hkdfSync(hash, key, salt, info, keylen) {

@@ -1,7 +1,5 @@
-import { markHostObject } from "../globals/objects.mjs";
+import { hostObjectKinds, markHostObject } from "../globals/objects.mjs";
 import { urlDecodeParams, urlEncodeParams, urlParse, urlPatternCompile, urlPatternMatchInput, urlSetComponent } from "tokamak:host";
-
-export const blobBrand = Symbol("tokamak.blob");
 
 function string(value) {
   if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
@@ -147,7 +145,7 @@ export class URL {
   static canParse(input, base) { try { new URL(input, base); return true; } catch { return false; } }
   static parse(input, base) { try { return new URL(input, base); } catch { return null; } }
   static createObjectURL(value) {
-    if (value?.[blobBrand] !== true) throw new TypeError("The object is not a Blob");
+    if (!["Blob", "File"].includes(hostObjectKinds.get(value))) throw new TypeError("The object is not a Blob");
     throw new Error("URL.createObjectURL is not supported");
   }
   static revokeObjectURL(value) { string(value); throw new Error("URL.revokeObjectURL is not supported"); }

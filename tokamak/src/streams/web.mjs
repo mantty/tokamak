@@ -1,5 +1,7 @@
 import { markHostObject } from "../globals/objects.mjs";
 import { createCompression } from "tokamak:host";
+import { structuredClone } from "../globals/structured-clone.mjs";
+import { TextDecoder, TextEncoder } from "./text.mjs";
 import {
   ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest,
   ReadableByteStreamController, ReadableStreamDefaultController, ReadableStreamDefaultReader,
@@ -92,7 +94,7 @@ Object.defineProperty(ReadableStreamBYOBRequest.prototype, "atLeast", {
 
 export class TextEncoderStream extends TransformStream {
   constructor() {
-    const encoder = new globalThis.TextEncoder();
+    const encoder = new TextEncoder();
     let pending = "";
     super({
       transform(chunk, controller) {
@@ -113,8 +115,9 @@ export class TextEncoderStream extends TransformStream {
 }
 
 export class TextDecoderStream extends TransformStream {
+  #decoder;
   constructor(label = "utf-8", options = {}) {
-    const decoder = new globalThis.TextDecoder(label, options);
+    const decoder = new TextDecoder(label, options);
     super({
       transform(chunk, controller) {
         const bytes = chunk instanceof ArrayBuffer
@@ -131,15 +134,11 @@ export class TextDecoderStream extends TransformStream {
         if (value !== "") controller.enqueue(value);
       },
     });
-    Object.defineProperties(this, {
-      __encoding: { configurable: true, enumerable: false, value: decoder.encoding },
-      __fatal: { configurable: true, enumerable: false, value: decoder.fatal },
-      __ignoreBOM: { configurable: true, enumerable: false, value: decoder.ignoreBOM },
-    });
+    this.#decoder = decoder;
   }
-  get encoding() { return this.__encoding; }
-  get fatal() { return this.__fatal; }
-  get ignoreBOM() { return this.__ignoreBOM; }
+  get encoding() { return this.#decoder.encoding; }
+  get fatal() { return this.#decoder.fatal; }
+  get ignoreBOM() { return this.#decoder.ignoreBOM; }
 }
 
 function compressionPair(format, decode) {
@@ -235,7 +234,7 @@ function identityPair(remaining, strategy = {}) {
     write(chunk) {
       try {
         let bytes;
-        if (typeof chunk === "string") bytes = new globalThis.TextEncoder().encode(chunk);
+        if (typeof chunk === "string") bytes = new TextEncoder().encode(chunk);
         else if (chunk instanceof ArrayBuffer || chunk instanceof SharedArrayBuffer) bytes = new Uint8Array(chunk).slice();
         else if (ArrayBuffer.isView(chunk)) bytes = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength).slice();
         else throw new TypeError("IdentityTransformStream accepts byte chunks or strings");

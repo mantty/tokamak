@@ -70,6 +70,15 @@ impl Kind {
             _ => None,
         }
     }
+
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Rsa => "rsa",
+            Self::Ec => "ec",
+            Self::Ed25519 => "ed25519",
+            Self::X25519 => "x25519",
+        }
+    }
 }
 
 pub(super) enum PrivateKey {
