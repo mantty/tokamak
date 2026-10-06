@@ -241,6 +241,31 @@ test("evaluates the configuration file, without its config export, in the develo
   }
 });
 
+test("keeps config for the configuration file's own code", async () => {
+  const app = project({
+    "src/index.ts": `export default { fetch: () => new Response(globalThis.configName) };`,
+    "src/tokamak.ts": `export const config = { name: "Referenced" };\nglobalThis.configName = config.name;\n`,
+  });
+  await build(app);
+  assert.match(builtWorker(app), /Referenced/);
+  const server = await createServer(viteConfig(app, { server: { port: 0 } }));
+  try {
+    await server.listen();
+    assert.equal(await (await fetch(readOutput(app, "server.json").url)).text(), "Referenced");
+  } finally {
+    await server.close();
+  }
+});
+
+test("fails a build in which no environment builds the entry Worker", async () => {
+  const app = project({ "src/tokamak.ts": `export const config = {};` });
+  const withoutManifest = { name: "without-manifest", configEnvironment: () => ({ build: { manifest: false } }) };
+  await assert.rejects(
+    build(app, { vite: { plugins: [cloudflare(), activeTokamak(app), withoutManifest] } }),
+    /no environment builds the entry Worker/,
+  );
+});
+
 test("fails on a config export it cannot remove", async () => {
   const app = project({ "src/tokamak.ts": `const config = { name: "App" };\nexport { config };\n` });
   await assert.rejects(build(app), /declare config in its own `export const config = \.\.\.` statement/);

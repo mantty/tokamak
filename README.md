@@ -361,8 +361,9 @@ top-level code runs whenever the Worker is evaluated, including during Astro's
 prerendering at build time, and when the configuration is read. Keep that code
 cheap and safe to run in each of those places. The Worker's copy of the file
 has no `config` export, so declare it as `export const config = ...` in a
-statement of its own. Builds for Cloudflare and the web do not include the
-file.
+statement of its own. It keeps `config` as a local constant while the file's
+other code mentions `config`, and leaves it out otherwise. Builds for
+Cloudflare and the web do not include the file.
 
 Every value is optional. Names retain their spelling and capitalization for
 display. Tokamak derives a lower-case ASCII slug for bundle filenames,
