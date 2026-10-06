@@ -12,7 +12,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use tokamak_cli::Platform;
+use tokamak_cli::{Platform, PlatformPackManifest};
 
 use super::devices::PreparedDevice;
 use super::tokamak_config::TokamakConfig;
@@ -55,7 +55,7 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     let wrangler = load_development_config(&project)?;
     warn_unsupported_bindings(&wrangler);
     let device = devices::prepare(&request.device_id)?;
-    let (_, manifest) =
+    let (pack_root, manifest) =
         pipeline::load_platform_pack(device.platform, request.platform_pack_dir.as_deref())?;
     pipeline::check_settings(
         &request.top,
@@ -86,6 +86,7 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     let result = run_session(&mut DevelopmentSession {
         request,
         project: &project,
+        pack: (&pack_root, &manifest),
         worker_name: &wrangler.name,
         device: &device,
         relay_host,
@@ -195,6 +196,7 @@ fn validate_request(request: &Request) -> Result<()> {
 struct DevelopmentSession<'a> {
     request: &'a Request,
     project: &'a Path,
+    pack: (&'a Path, &'a PlatformPackManifest),
     worker_name: &'a str,
     device: &'a PreparedDevice,
     relay_host: IpAddr,
@@ -216,8 +218,8 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
     let summary = pipeline::run_development(&pipeline::DevelopmentRequest {
         platform: session.device.platform,
         project: session.project,
-        platform_pack_dir: session.request.platform_pack_dir.as_deref(),
-        tokamak: &tokamak,
+        pack: session.pack,
+        tokamak: tokamak.as_ref(),
         worker_name: session.worker_name,
         endpoint: &relay.device_endpoint(),
         session_token: &session_token,
@@ -276,13 +278,14 @@ fn spawn_framework(
     })
 }
 
-/// The app's configuration and the development server, once the plugin has
-/// reported them, or `None` when shutdown is requested first.
+/// The app's configuration, `None` without a configuration file, and the
+/// development server, once the plugin has reported them, or `None` when
+/// shutdown is requested first.
 fn wait_for_plugin(
     child: &mut Child,
     plugin: &VitePlugin,
     shutdown: &ShutdownSignal,
-) -> Result<Option<(TokamakConfig, ServerEndpoint)>> {
+) -> Result<Option<(Option<TokamakConfig>, ServerEndpoint)>> {
     let deadline = Instant::now() + SERVER_READY_TIMEOUT;
     loop {
         if shutdown.requested() {
@@ -293,9 +296,7 @@ fn wait_for_plugin(
         }
         // The plugin reports the configuration before the server address.
         if let Some(url) = plugin.server_url()? {
-            let config = plugin
-                .config()?
-                .context("the development command did not report its tokamak configuration")?;
+            let config = plugin.config("the development command")?;
             return Ok(Some((config, ServerEndpoint::parse(&url)?)));
         }
         if Instant::now() >= deadline {

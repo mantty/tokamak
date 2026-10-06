@@ -6,80 +6,54 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
-use serde_json::{Map, Value};
-use tokamak_cli::{SHARED_PLATFORM_KEYS, is_valid_key};
+use serde_json::Value;
+use tokamak_cli::{Platform, is_valid_key};
 
-const PLATFORMS: [&str; 4] = ["android", "ios", "macos", "windows"];
-
-/// Resolved Tokamak application configuration.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// The app's tokamak configuration.
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct TokamakConfig {
-    /// Absolute path to the configuration file, when one was loaded.
-    pub(crate) path: Option<PathBuf>,
-    /// Display names.
-    pub(crate) name: PlatformValues<String>,
-    /// Application identifiers.
-    pub(crate) identifier: PlatformValues<String>,
-    /// Application icon paths, absolute.
-    pub(crate) icon: PlatformValues<PathBuf>,
-    /// Application version, when configured.
+    /// Absolute path to the configuration file.
+    pub(crate) path: PathBuf,
+    /// Application version.
     pub(crate) version: Option<String>,
-    /// Values for each platform's pack, by platform then key; numbers and
-    /// booleans are written as strings.
-    pub(crate) pack_values: BTreeMap<String, BTreeMap<String, String>>,
+    /// Values for every platform, without pack values.
+    top: PlatformConfig,
+    /// Each platform's own values, by namespace.
+    platforms: BTreeMap<&'static str, PlatformConfig>,
+}
+
+/// The values configured for a platform.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PlatformConfig {
+    /// Display name.
+    pub(crate) name: Option<String>,
+    /// Application identifier.
+    pub(crate) identifier: Option<String>,
+    /// Icon path, absolute.
+    pub(crate) icon: Option<PathBuf>,
+    /// Values for the platform's pack; numbers and booleans are written as strings.
+    pub(crate) pack: BTreeMap<String, String>,
 }
 
 impl TokamakConfig {
     /// The directory relative paths in the configuration are relative to.
-    pub(crate) fn directory(&self) -> Option<&Path> {
-        self.path.as_deref().map(config_dir)
-    }
-}
-
-/// A configuration value with an optional default and per-platform overrides.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct PlatformValues<T> {
-    /// Value used when the platform has no override.
-    pub(crate) default: Option<T>,
-    /// Android override.
-    pub(crate) android: Option<T>,
-    /// iOS override, also used by iOS simulators.
-    pub(crate) ios: Option<T>,
-    /// macOS override.
-    pub(crate) macos: Option<T>,
-    /// Windows override.
-    pub(crate) windows: Option<T>,
-}
-
-impl<T> PlatformValues<T> {
-    /// Return the value for a platform namespace (`android`, `ios`, `macos`, or
-    /// `windows`), falling back to the default.
-    pub(crate) fn for_platform(&self, platform: &str) -> Option<&T> {
-        let value = match platform {
-            "android" => &self.android,
-            "ios" => &self.ios,
-            "macos" => &self.macos,
-            "windows" => &self.windows,
-            _ => &None,
-        };
-        value.as_ref().or(self.default.as_ref())
+    pub(crate) fn directory(&self) -> &Path {
+        config_dir(&self.path)
     }
 
-    /// Convert each value, telling `convert` which field it came from.
-    fn try_map<U>(
-        self,
-        key: &str,
-        mut convert: impl FnMut(&str, T) -> Result<U>,
-    ) -> Result<PlatformValues<U>> {
-        let mut convert =
-            |field: String, value: Option<T>| value.map(|value| convert(&field, value)).transpose();
-        Ok(PlatformValues {
-            default: convert(key.to_owned(), self.default)?,
-            android: convert(format!("android.{key}"), self.android)?,
-            ios: convert(format!("ios.{key}"), self.ios)?,
-            macos: convert(format!("macos.{key}"), self.macos)?,
-            windows: convert(format!("windows.{key}"), self.windows)?,
-        })
+    /// `platform`'s values, with the top-level ones where it has none.
+    pub(crate) fn for_platform(&self, platform: Platform) -> PlatformConfig {
+        let own = self
+            .platforms
+            .get(platform.namespace())
+            .cloned()
+            .unwrap_or_default();
+        PlatformConfig {
+            name: own.name.or_else(|| self.top.name.clone()),
+            identifier: own.identifier.or_else(|| self.top.identifier.clone()),
+            icon: own.icon.or_else(|| self.top.icon.clone()),
+            pack: own.pack,
+        }
     }
 }
 
@@ -104,59 +78,89 @@ pub(crate) fn slug(name: &str) -> String {
 /// Other platform-object keys are values for that platform's pack. `null`
 /// leaves a value unset.
 pub(crate) fn parse_config(file: &Path, config: Value) -> Result<TokamakConfig> {
-    let Value::Object(mut object) = config else {
+    if !config.is_object() {
         return Err(invalid(file, "config must be an object"));
-    };
-    let pack_values = take_pack_values(file, &mut object)?;
-    let config = resolve_values(file, deserialize(file, object)?)?;
+    }
+    let raw: RawConfig = serde_json::from_value(config).map_err(|error| invalid(file, error))?;
+    if let Some(key) = raw.top.pack.keys().next() {
+        return Err(invalid(file, format!("unknown field `{key}`")));
+    }
+    let version = raw
+        .version
+        .map(|version| validate_value(file, "version", version))
+        .transpose()?;
+    let top = platform_config(file, "", raw.top)?;
+    let mut platforms = BTreeMap::new();
+    for (namespace, object) in [
+        ("android", raw.android),
+        ("ios", raw.ios),
+        ("macos", raw.macos),
+        ("windows", raw.windows),
+    ] {
+        if let Some(object) = object {
+            let values = platform_config(file, &format!("{namespace}."), object)?;
+            platforms.insert(namespace, values);
+        }
+    }
     Ok(TokamakConfig {
-        path: Some(file.to_path_buf()),
-        pack_values,
-        ..config
+        path: file.to_path_buf(),
+        version,
+        top,
+        platforms,
     })
 }
 
-/// Remove the platform-pack values from each platform object in `object`.
-fn take_pack_values(
-    config_path: &Path,
-    object: &mut Map<String, Value>,
-) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
-    let mut taken = BTreeMap::new();
-    for platform in PLATFORMS {
-        let Some(Value::Object(platform_object)) = object.get_mut(platform) else {
-            continue;
-        };
-        let values = take_platform_pack_values(config_path, platform, platform_object)?;
-        if !values.is_empty() {
-            taken.insert(platform.to_owned(), values);
-        }
-    }
-    Ok(taken)
+#[derive(Deserialize)]
+struct RawConfig {
+    version: Option<String>,
+    android: Option<RawPlatformConfig>,
+    ios: Option<RawPlatformConfig>,
+    macos: Option<RawPlatformConfig>,
+    windows: Option<RawPlatformConfig>,
+    /// The top-level values; its pack values are unknown fields.
+    #[serde(flatten)]
+    top: RawPlatformConfig,
 }
 
-fn take_platform_pack_values(
-    config_path: &Path,
-    platform: &str,
-    platform_object: &mut Map<String, Value>,
-) -> Result<BTreeMap<String, String>> {
-    let mut values = BTreeMap::new();
-    for (key, value) in std::mem::take(platform_object) {
-        if SHARED_PLATFORM_KEYS.contains(&key.as_str()) {
-            platform_object.insert(key, value);
-            continue;
-        }
-        let field = format!("{platform}.{key}");
+#[derive(Deserialize)]
+struct RawPlatformConfig {
+    name: Option<String>,
+    identifier: Option<String>,
+    icon: Option<String>,
+    #[serde(flatten)]
+    pack: BTreeMap<String, Value>,
+}
+
+/// The values of the object at `prefix` in `file`.
+fn platform_config(file: &Path, prefix: &str, raw: RawPlatformConfig) -> Result<PlatformConfig> {
+    let field = |key: &str| format!("{prefix}{key}");
+    let mut pack = BTreeMap::new();
+    for (key, value) in raw.pack {
         if !is_valid_key(&key) {
-            return Err(invalid(
-                config_path,
-                format!("{field} must be lowercase words joined by hyphens"),
-            ));
+            let message = format!("{} must be lowercase words joined by hyphens", field(&key));
+            return Err(invalid(file, message));
         }
-        if let Some(value) = pack_value(config_path, &field, value)? {
-            values.insert(key, value);
+        if let Some(value) = pack_value(file, &field(&key), value)? {
+            pack.insert(key, value);
         }
     }
-    Ok(values)
+    Ok(PlatformConfig {
+        name: raw
+            .name
+            .map(|name| validate_name(file, &field("name"), name))
+            .transpose()?,
+        identifier: raw
+            .identifier
+            .map(|identifier| validate_value(file, &field("identifier"), identifier))
+            .transpose()?,
+        icon: raw
+            .icon
+            .map(|icon| {
+                validate_value(file, &field("icon"), icon).map(|icon| config_dir(file).join(icon))
+            })
+            .transpose()?,
+        pack,
+    })
 }
 
 fn pack_value(config_path: &Path, field: &str, value: Value) -> Result<Option<String>> {
@@ -173,87 +177,6 @@ fn pack_value(config_path: &Path, field: &str, value: Value) -> Result<Option<St
         }
     };
     validate_value(config_path, field, value).map(Some)
-}
-
-fn deserialize(config_path: &Path, object: Map<String, Value>) -> Result<RawTokamakConfig> {
-    serde_json::from_value(Value::Object(object)).map_err(|error| invalid(config_path, error))
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawTokamakConfig {
-    name: Option<String>,
-    identifier: Option<String>,
-    icon: Option<String>,
-    version: Option<String>,
-    android: Option<RawPlatformConfig>,
-    ios: Option<RawPlatformConfig>,
-    macos: Option<RawPlatformConfig>,
-    windows: Option<RawPlatformConfig>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawPlatformConfig {
-    name: Option<String>,
-    identifier: Option<String>,
-    icon: Option<String>,
-}
-
-/// Validate the values and resolve relative icon paths against `config_path`'s directory.
-fn resolve_values(config_path: &Path, raw: RawTokamakConfig) -> Result<TokamakConfig> {
-    let config_dir = config_dir(config_path);
-    let RawTokamakConfig {
-        name,
-        identifier,
-        icon,
-        version,
-        android,
-        ios,
-        macos,
-        windows,
-    } = raw;
-    let android = android.unwrap_or_default();
-    let ios = ios.unwrap_or_default();
-    let macos = macos.unwrap_or_default();
-    let windows = windows.unwrap_or_default();
-    let name = PlatformValues {
-        default: name,
-        android: android.name,
-        ios: ios.name,
-        macos: macos.name,
-        windows: windows.name,
-    };
-    let identifier = PlatformValues {
-        default: identifier,
-        android: android.identifier,
-        ios: ios.identifier,
-        macos: macos.identifier,
-        windows: windows.identifier,
-    };
-    let icon = PlatformValues {
-        default: icon,
-        android: android.icon,
-        ios: ios.icon,
-        macos: macos.icon,
-        windows: windows.icon,
-    };
-    Ok(TokamakConfig {
-        path: None,
-        name: name.try_map("name", |field, value| {
-            validate_name(config_path, field, value)
-        })?,
-        identifier: identifier.try_map("identifier", |field, value| {
-            validate_value(config_path, field, value)
-        })?,
-        icon: icon.try_map("icon", |field, value| {
-            validate_value(config_path, field, value).map(|value| config_dir.join(value))
-        })?,
-        version: version
-            .map(|version| validate_value(config_path, "version", version))
-            .transpose()?,
-        pack_values: BTreeMap::new(),
-    })
 }
 
 fn config_dir(config_path: &Path) -> &Path {
@@ -306,8 +229,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use anyhow::{Context, Result};
+    use tokamak_cli::Platform;
 
-    use super::{PlatformValues, TokamakConfig, parse_config, slug};
+    use super::{PlatformConfig, TokamakConfig, parse_config, slug};
 
     type TestResult<T = ()> = Result<T>;
 
@@ -336,13 +260,16 @@ mod tests {
             .with_context(|| format!("{error} does not start with {prefix}"))
     }
 
-    fn strings(values: &PlatformValues<&str>) -> PlatformValues<String> {
-        PlatformValues {
-            default: values.default.map(str::to_owned),
-            android: values.android.map(str::to_owned),
-            ios: values.ios.map(str::to_owned),
-            macos: values.macos.map(str::to_owned),
-            windows: values.windows.map(str::to_owned),
+    fn named(
+        name: Option<&str>,
+        identifier: Option<&str>,
+        icon: Option<PathBuf>,
+    ) -> PlatformConfig {
+        PlatformConfig {
+            name: name.map(str::to_owned),
+            identifier: identifier.map(str::to_owned),
+            icon,
+            pack: BTreeMap::new(),
         }
     }
 
@@ -360,38 +287,28 @@ mod tests {
               "android": { "identifier": "com.example.myapp.android" }
             }"#,
         )?;
-        let source = temporary.path().join("src");
+        let icon = temporary.path().join("src/assets/AppIcon.icon");
 
+        assert_eq!(config.path, config_file(temporary.path()));
+        assert_eq!(config.version.as_deref(), Some("1.0.0"));
+        let ios = named(
+            Some("Myapp Pro"),
+            Some("com.example.myapp"),
+            Some(PathBuf::from("/icons/Pro.icon")),
+        );
+        assert_eq!(config.for_platform(Platform::Ios), ios);
+        assert_eq!(config.for_platform(Platform::IosSimulator), ios);
         assert_eq!(
-            config,
-            TokamakConfig {
-                path: Some(config_file(temporary.path())),
-                name: strings(&PlatformValues {
-                    default: Some("My App"),
-                    ios: Some("Myapp Pro"),
-                    ..PlatformValues::default()
-                }),
-                identifier: strings(&PlatformValues {
-                    default: Some("com.example.myapp"),
-                    android: Some("com.example.myapp.android"),
-                    ..PlatformValues::default()
-                }),
-                icon: PlatformValues {
-                    default: Some(source.join("assets/AppIcon.icon")),
-                    ios: Some(PathBuf::from("/icons/Pro.icon")),
-                    ..PlatformValues::default()
-                },
-                version: Some("1.0.0".to_owned()),
-                pack_values: BTreeMap::new(),
-            }
+            config.for_platform(Platform::Android),
+            named(
+                Some("My App"),
+                Some("com.example.myapp.android"),
+                Some(icon.clone())
+            )
         );
         assert_eq!(
-            config.name.for_platform("ios").map(String::as_str),
-            Some("Myapp Pro")
-        );
-        assert_eq!(
-            config.name.for_platform("macos").map(String::as_str),
-            Some("My App")
+            config.for_platform(Platform::Macos),
+            named(Some("My App"), Some("com.example.myapp"), Some(icon))
         );
         Ok(())
     }
@@ -402,11 +319,13 @@ mod tests {
         let config = load(temporary.path(), r#"{ "ios": { "name": "Only iOS" } }"#)?;
 
         assert_eq!(
-            config.name.for_platform("ios").map(String::as_str),
-            Some("Only iOS")
+            config.for_platform(Platform::Ios),
+            named(Some("Only iOS"), None, None)
         );
-        assert_eq!(config.name.for_platform("android"), None);
-        assert_eq!(config.identifier, PlatformValues::default());
+        assert_eq!(
+            config.for_platform(Platform::Android),
+            PlatformConfig::default()
+        );
         Ok(())
     }
 
@@ -415,12 +334,18 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         let config = load(
             temporary.path(),
-            r#"{ "version": null, "ios": { "name": null, "team-id": null } }"#,
+            r#"{ "version": null, "macos": null, "ios": { "name": null, "team-id": null } }"#,
         )?;
 
         assert_eq!(config.version, None);
-        assert_eq!(config.name, PlatformValues::default());
-        assert!(config.pack_values.is_empty());
+        assert_eq!(
+            config.for_platform(Platform::Ios),
+            PlatformConfig::default()
+        );
+        assert_eq!(
+            config.for_platform(Platform::Macos),
+            PlatformConfig::default()
+        );
         Ok(())
     }
 
@@ -456,7 +381,10 @@ mod tests {
     #[test]
     fn rejects_unknown_top_level_fields() -> TestResult {
         let temporary = tempfile::tempdir()?;
-        assert!(invalid_message(temporary.path(), r#"{ "icons": {} }"#)?.contains("unknown field"));
+        assert_eq!(
+            invalid_message(temporary.path(), r#"{ "icons": {} }"#)?,
+            "unknown field `icons`"
+        );
         assert!(invalid_message(temporary.path(), r#"{ "ios": "x" }"#)?.contains("invalid type"));
         Ok(())
     }
@@ -472,27 +400,20 @@ mod tests {
             }"#,
         )?;
 
-        assert_eq!(config.name.ios.as_deref(), Some("iOS App"));
+        let ios = config.for_platform(Platform::Ios);
+        assert_eq!(ios.name.as_deref(), Some("iOS App"));
         assert_eq!(
-            config.pack_values,
+            ios.pack,
             BTreeMap::from([
-                (
-                    "ios".to_owned(),
-                    BTreeMap::from([
-                        ("build-number".to_owned(), "5".to_owned()),
-                        ("plist".to_owned(), "native/Info.plist".to_owned()),
-                    ])
-                ),
-                (
-                    "macos".to_owned(),
-                    BTreeMap::from([("hardened-runtime".to_owned(), "true".to_owned())])
-                ),
+                ("build-number".to_owned(), "5".to_owned()),
+                ("plist".to_owned(), "native/Info.plist".to_owned()),
             ])
         );
         assert_eq!(
-            config.directory(),
-            Some(temporary.path().join("src").as_path())
+            config.for_platform(Platform::Macos).pack,
+            BTreeMap::from([("hardened-runtime".to_owned(), "true".to_owned())])
         );
+        assert_eq!(config.directory(), temporary.path().join("src"));
         Ok(())
     }
 

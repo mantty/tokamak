@@ -46,9 +46,6 @@ pub(crate) struct TopOptions {
     /// App version [`TOKAMAK_VERSION`, `version`].
     #[arg(long)]
     pub(crate) version: Option<String>,
-    /// Project build command, which only `tok build` takes.
-    #[arg(skip)]
-    pub(crate) build: Option<String>,
 }
 
 /// Values from `--<platform>-<key>` options, by platform namespace then key.
@@ -72,7 +69,8 @@ impl PlatformOptions {
 pub(crate) struct Sources<'a> {
     pub(crate) top: &'a TopOptions,
     pub(crate) platform: &'a PlatformOptions,
-    pub(crate) config: &'a TokamakConfig,
+    /// The configuration file's values, when there is a configuration file.
+    pub(crate) config: Option<&'a TokamakConfig>,
     /// Reads an environment variable.
     pub(crate) environment: &'a dyn Fn(&str) -> Result<Option<String>>,
     /// Base for relative paths from options and environment variables.
@@ -84,7 +82,7 @@ impl<'a> Sources<'a> {
     pub(crate) fn new(
         top: &'a TopOptions,
         platform: &'a PlatformOptions,
-        config: &'a TokamakConfig,
+        config: Option<&'a TokamakConfig>,
         current_dir: &'a Path,
     ) -> Self {
         Self {
@@ -97,7 +95,8 @@ impl<'a> Sources<'a> {
     }
 }
 
-fn process_environment(name: &str) -> Result<Option<String>> {
+/// The value of the environment variable `name`, which must be UTF-8.
+pub(crate) fn process_environment(name: &str) -> Result<Option<String>> {
     match env::var(name) {
         Ok(value) => Ok(Some(value)),
         Err(env::VarError::NotPresent) => Ok(None),
@@ -182,8 +181,8 @@ fn separate_value(value: Option<OsString>, option: &str) -> Result<String> {
 pub(crate) fn version(sources: &Sources<'_>) -> Result<Option<String>> {
     let (source, value) = match top_value(sources, "version", sources.top.version.as_ref())? {
         Some(value) => value,
-        None => match &sources.config.version {
-            Some(version) => ("version".to_owned(), version.clone()),
+        None => match sources.config.and_then(|config| config.version.clone()) {
+            Some(version) => ("version".to_owned(), version),
             None => return Ok(None),
         },
     };
@@ -193,20 +192,16 @@ pub(crate) fn version(sources: &Sources<'_>) -> Result<Option<String>> {
     Ok(Some(value))
 }
 
-/// The project build command: `--build` or `TOKAMAK_BUILD`.
-pub(crate) fn build_command(sources: &Sources<'_>) -> Result<Option<String>> {
-    let value = top_value(sources, "build", sources.top.build.as_ref())?;
-    Ok(value.map(|(_, value)| value))
-}
-
 /// Resolve `platform`'s settings, rejecting keys its pack does not declare.
 pub(crate) fn resolve(
     sources: &Sources<'_>,
     platform: Platform,
     manifest: &PlatformPackManifest,
 ) -> Result<PlatformSettings> {
-    let namespace = platform.namespace();
-    let config = sources.config;
+    let configured = sources
+        .config
+        .map(|config| config.for_platform(platform))
+        .unwrap_or_default();
     let name = shared_value(sources, platform, "name", sources.top.name.as_ref())?;
     if let Some(problem) = name.as_deref().and_then(app_name_problem) {
         bail!("{} name {problem}", platform.display_name());
@@ -219,12 +214,12 @@ pub(crate) fn resolve(
     )?;
     let icon = shared_value(sources, platform, "icon", sources.top.icon.as_ref())?;
     Ok(PlatformSettings {
-        name: name.or_else(|| config.name.for_platform(namespace).cloned()),
-        identifier: identifier.or_else(|| config.identifier.for_platform(namespace).cloned()),
+        name: name.or(configured.name),
+        identifier: identifier.or(configured.identifier),
         icon: icon
             .map(|icon| sources.current_dir.join(icon))
-            .or_else(|| config.icon.for_platform(namespace).cloned()),
-        pack_environment: pack_environment(sources, platform, manifest)?,
+            .or(configured.icon),
+        pack_environment: pack_environment(sources, platform, manifest, &configured.pack)?,
     })
 }
 
@@ -268,18 +263,21 @@ fn environment_value(sources: &Sources<'_>, name: &str) -> Result<Option<String>
         .transpose()
 }
 
-/// The platform pack's variables, keyed by their environment variable names.
+/// The platform pack's variables, keyed by their environment variable names;
+/// `configured` holds the configuration file's values for the platform.
 fn pack_environment(
     sources: &Sources<'_>,
     platform: Platform,
     manifest: &PlatformPackManifest,
+    configured: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, OsString>> {
-    reject_undeclared_keys(sources, platform, manifest)?;
+    reject_undeclared_keys(sources, platform, manifest, configured)?;
     let namespace = platform.namespace();
     let mut environment = BTreeMap::new();
     for (key, variable) in &manifest.variables {
         let name = environment_name(Some(namespace), key);
-        let Some((value, directory)) = pack_value(sources, namespace, key, &name)? else {
+        let Some((value, directory)) = pack_value(sources, namespace, key, &name, configured)?
+        else {
             continue;
         };
         let value = match variable.kind {
@@ -297,6 +295,7 @@ fn pack_value(
     namespace: &str,
     key: &str,
     environment_name: &str,
+    configured: &BTreeMap<String, String>,
 ) -> Result<Option<(String, PathBuf)>> {
     let from_current_dir = |value| (value, sources.current_dir.to_path_buf());
     if let Some(value) = sources.platform.value(namespace, key)? {
@@ -305,19 +304,15 @@ fn pack_value(
     if let Some(value) = environment_value(sources, environment_name)? {
         return Ok(Some(from_current_dir(value)));
     }
-    let configured = sources
-        .config
-        .pack_values
-        .get(namespace)
-        .and_then(|values| values.get(key));
-    let directory = sources.config.directory().unwrap_or(sources.current_dir);
-    Ok(configured.map(|value| (value.clone(), directory.to_path_buf())))
+    let configured = configured.get(key).zip(sources.config);
+    Ok(configured.map(|(value, config)| (value.clone(), config.directory().to_path_buf())))
 }
 
 fn reject_undeclared_keys(
     sources: &Sources<'_>,
     platform: Platform,
     manifest: &PlatformPackManifest,
+    configured: &BTreeMap<String, String>,
 ) -> Result<()> {
     let namespace = platform.namespace();
     let declared = |key: &str| manifest.variables.contains_key(key);
@@ -331,15 +326,12 @@ fn reject_undeclared_keys(
             accepted_options(platform, manifest)
         );
     }
-    let configured = sources.config.pack_values.get(namespace);
-    let undeclared = configured
-        .into_iter()
-        .flatten()
-        .find(|(key, _)| !declared(key));
-    if let (Some((key, _)), Some(file)) = (undeclared, &sources.config.path) {
+    if let Some(config) = sources.config
+        && let Some(key) = configured.keys().find(|key| !declared(key))
+    {
         bail!(
             "unknown key {namespace}.{key} in {}; {}",
-            file.display(),
+            config.path.display(),
             accepted_options(platform, manifest)
         );
     }
@@ -426,14 +418,15 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use anyhow::Result;
+    use serde_json::{Value, json};
     use tokamak_cli::SHARED_PLATFORM_KEYS;
 
-    use crate::tokamak_config::{PlatformValues, TokamakConfig};
+    use crate::tokamak_config::{TokamakConfig, parse_config};
     use tokamak_cli::{PackVariable, Platform, PlatformPackManifest, Target, VariableKind};
 
     use super::{
-        PlatformOptions, PlatformSettings, SHARED_OPTIONS, Sources, TopOptions, build_command,
-        environment_name, platform_help, resolve, split_platform_options, version,
+        PlatformOptions, PlatformSettings, SHARED_OPTIONS, Sources, TopOptions, environment_name,
+        platform_help, resolve, split_platform_options, version,
     };
 
     fn arguments(values: &[&str]) -> Vec<OsString> {
@@ -467,23 +460,15 @@ mod tests {
         }
     }
 
-    /// A configuration from `/config/src/tokamak.ts` with `values` for `platform`'s pack.
-    fn configured(platform: &str, values: &[(&str, &str)]) -> TokamakConfig {
-        let values = values
-            .iter()
-            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-            .collect();
-        TokamakConfig {
-            path: Some(PathBuf::from("/config/src/tokamak.ts")),
-            pack_values: BTreeMap::from([(platform.to_owned(), values)]),
-            ..TokamakConfig::default()
-        }
+    /// `config` as exported from `/config/src/tokamak.ts`.
+    fn configured(config: Value) -> Result<Option<TokamakConfig>> {
+        parse_config(Path::new("/config/src/tokamak.ts"), config).map(Some)
     }
 
     struct Fixture {
         top: TopOptions,
         platform: PlatformOptions,
-        config: TokamakConfig,
+        config: Option<TokamakConfig>,
         environment: BTreeMap<String, String>,
     }
 
@@ -492,7 +477,7 @@ mod tests {
             Self {
                 top: TopOptions::default(),
                 platform: PlatformOptions::default(),
-                config: TokamakConfig::default(),
+                config: None,
                 environment: BTreeMap::new(),
             }
         }
@@ -502,7 +487,7 @@ mod tests {
             run(&Sources {
                 top: &self.top,
                 platform: &self.platform,
-                config: &self.config,
+                config: self.config.as_ref(),
                 environment: &environment,
                 current_dir: Path::new("/work"),
             })
@@ -627,11 +612,10 @@ mod tests {
     #[test]
     fn shared_keys_prefer_options_then_environment_then_configuration() -> Result<()> {
         let mut fixture = Fixture::new();
-        fixture.config.identifier = PlatformValues {
-            default: Some("com.config.top".to_owned()),
-            ios: Some("com.config.ios".to_owned()),
-            ..PlatformValues::default()
-        };
+        fixture.config = configured(json!({
+            "identifier": "com.config.top",
+            "ios": { "identifier": "com.config.ios" },
+        }))?;
         assert_eq!(
             fixture.resolve(Platform::Ios)?.identifier.as_deref(),
             Some("com.config.ios")
@@ -680,7 +664,7 @@ mod tests {
     #[test]
     fn option_and_environment_icons_are_relative_to_the_current_directory() -> Result<()> {
         let mut fixture = Fixture::new();
-        fixture.config.icon.default = Some(PathBuf::from("/config/AppIcon.icon"));
+        fixture.config = configured(json!({ "icon": "/config/AppIcon.icon" }))?;
         assert_eq!(
             fixture.resolve(Platform::Macos)?.icon,
             Some(PathBuf::from("/config/AppIcon.icon"))
@@ -726,10 +710,9 @@ mod tests {
     #[test]
     fn pack_variables_prefer_options_then_environment_then_configuration() -> Result<()> {
         let mut fixture = Fixture::new();
-        fixture.config = configured(
-            "ios",
-            &[("plist", "native/Info.plist"), ("team-id", "CONFIG")],
-        );
+        fixture.config = configured(json!({
+            "ios": { "plist": "native/Info.plist", "team-id": "CONFIG" },
+        }))?;
         let environment = |settings: PlatformSettings| settings.pack_environment;
         assert_eq!(
             environment(fixture.resolve(Platform::Ios)?),
@@ -772,7 +755,7 @@ mod tests {
         assert!(fixture.resolve(Platform::Macos).is_ok());
 
         fixture.platform = PlatformOptions::default();
-        fixture.config = configured("macos", &[("plsit", "Info.plist")]);
+        fixture.config = configured(json!({ "macos": { "plsit": "Info.plist" } }))?;
         assert!(fixture.resolve(Platform::Macos).is_err_and(|error| {
             error
                 .to_string()
@@ -785,24 +768,17 @@ mod tests {
     #[test]
     fn top_level_keys_prefer_options_then_environment_then_configuration() -> Result<()> {
         let mut fixture = Fixture::new();
-        fixture.config.version = Some("1.0.0".to_owned());
+        fixture.config = configured(json!({ "version": "1.0.0" }))?;
         assert_eq!(fixture.with(version)?.as_deref(), Some("1.0.0"));
-        assert_eq!(fixture.with(build_command)?, None);
         fixture
             .environment
             .insert("TOKAMAK_VERSION".to_owned(), "2.0.0".to_owned());
-        fixture
-            .environment
-            .insert("TOKAMAK_BUILD".to_owned(), "turbo build".to_owned());
         assert_eq!(fixture.with(version)?.as_deref(), Some("2.0.0"));
-        assert_eq!(fixture.with(build_command)?.as_deref(), Some("turbo build"));
         fixture.top.version = Some("3.0.0".to_owned());
         assert_eq!(fixture.with(version)?.as_deref(), Some("3.0.0"));
-        fixture.top.build = Some("make".to_owned());
-        assert_eq!(fixture.with(build_command)?.as_deref(), Some("make"));
         fixture.environment.remove("TOKAMAK_VERSION");
         fixture.top.version = None;
-        fixture.config.version = Some("1.0'".to_owned());
+        fixture.config = configured(json!({ "version": "1.0'" }))?;
         assert!(
             fixture
                 .with(version)

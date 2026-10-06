@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use tokamak_cli::{MANIFEST_FILE, Platform, PlatformPackManifest, Target, load_manifest};
 
 use super::tokamak_config::{TokamakConfig, app_name_problem, slug};
-use super::vite::{PLUGIN_HINT, VitePlugin};
+use super::vite::VitePlugin;
 use super::wrangler_config::{self, WranglerConfig};
 use super::{cache, plugins, settings, support, worker};
 
@@ -18,6 +18,8 @@ pub(crate) struct BuildRequest {
     pub(crate) tokamak_config_path: Option<PathBuf>,
     pub(crate) top: settings::TopOptions,
     pub(crate) platform_options: settings::PlatformOptions,
+    /// `--build`; `TOKAMAK_BUILD` applies without it.
+    pub(crate) build_command: Option<String>,
     pub(crate) skip_project_build: bool,
 }
 
@@ -30,8 +32,9 @@ pub(crate) struct DevelopmentRequest<'a> {
     pub(crate) platform: Platform,
     /// The canonical project directory.
     pub(crate) project: &'a Path,
-    pub(crate) platform_pack_dir: Option<&'a Path>,
-    pub(crate) tokamak: &'a TokamakConfig,
+    /// The platform pack's root and manifest.
+    pub(crate) pack: (&'a Path, &'a PlatformPackManifest),
+    pub(crate) tokamak: Option<&'a TokamakConfig>,
     pub(crate) worker_name: &'a str,
     pub(crate) endpoint: &'a str,
     pub(crate) session_token: &'a str,
@@ -104,23 +107,18 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         check_settings(&request.top, &request.platform_options, *platform, manifest)?;
     }
     if !request.skip_project_build {
-        let no_config = TokamakConfig::default();
-        let command = settings::build_command(&settings::Sources::new(
-            &request.top,
-            &request.platform_options,
-            &no_config,
-            &current_dir,
-        ))?;
+        let command = match request.build_command.clone() {
+            Some(command) => Some(command),
+            None => settings::process_environment("TOKAMAK_BUILD")?,
+        };
         plugin.clear()?;
         support::run_project_build(&project, command.as_deref(), plugin.environment())?;
     }
-    let tokamak = plugin.config()?.with_context(|| {
-        format!("the build did not report its tokamak configuration; {PLUGIN_HINT}")
-    })?;
+    let tokamak = plugin.config("the build")?;
     let sources = settings::Sources::new(
         &request.top,
         &request.platform_options,
-        &tokamak,
+        tokamak.as_ref(),
         &current_dir,
     );
     let version = required_version(&sources)?;
@@ -169,9 +167,8 @@ pub(crate) fn check_settings(
     platform: Platform,
     manifest: &PlatformPackManifest,
 ) -> Result<()> {
-    let no_config = TokamakConfig::default();
     let current_dir = env::current_dir()?;
-    let sources = settings::Sources::new(top, platform_options, &no_config, &current_dir);
+    let sources = settings::Sources::new(top, platform_options, None, &current_dir);
     settings::resolve(&sources, platform, manifest)?;
     Ok(())
 }
@@ -184,8 +181,8 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
         request.tokamak,
         &current_dir,
     );
-    let (pack_root, manifest) = load_platform_pack(request.platform, request.platform_pack_dir)?;
-    let platform_settings = settings::resolve(&sources, request.platform, &manifest)?;
+    let (pack_root, manifest) = request.pack;
+    let platform_settings = settings::resolve(&sources, request.platform, manifest)?;
     let plugins = plugins::discover(request.project)?;
     let app = resolve_app(&platform_settings, request.worker_name, request.platform)?;
     let version = settings::version(&sources)?;
@@ -194,7 +191,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
         request.project,
         &build_dir,
         request.platform,
-        (&pack_root, &manifest),
+        request.pack,
         platform_settings.icon.as_deref(),
     )?;
     plugins::stage(&plugins, request.platform, &input.join("plugins"))
@@ -205,7 +202,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
         &project,
         &BuildMetadata {
             app: &app,
-            manifest: &manifest,
+            manifest,
             version: version.as_deref(),
             development: Some((request.endpoint, request.session_token)),
             device_id: Some(request.device_id),
@@ -216,7 +213,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
 
     let bundle_dir = output_path(&build_dir, request.platform, &app.slug);
     support::run_entrypoint(
-        &pack_root,
+        pack_root,
         &input,
         &bundle_dir,
         manifest.target,

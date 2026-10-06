@@ -54,7 +54,7 @@ enum Command {
         /// Platform-pack directory containing platform-pack.json.
         #[arg(long = "platform-pack")]
         platform_pack: Option<PathBuf>,
-        /// Tokamak configuration file [default: src/tokamak.ts, then src/tokamak.js].
+        /// Tokamak configuration file, instead of the one the Vite plugin finds.
         #[arg(short = 'c', long = "config", value_name = "PATH")]
         config: Option<PathBuf>,
         #[command(flatten)]
@@ -78,7 +78,7 @@ enum Command {
         /// Platform-pack directory containing platform-pack.json.
         #[arg(long = "platform-pack")]
         platform_pack: Option<PathBuf>,
-        /// Tokamak configuration file [default: src/tokamak.ts, then src/tokamak.js].
+        /// Tokamak configuration file, instead of the one the Vite plugin finds.
         #[arg(short = 'c', long = "config", value_name = "PATH")]
         config: Option<PathBuf>,
         #[command(flatten)]
@@ -133,11 +133,9 @@ fn run() -> Result<()> {
                 build_dir,
                 platform_pack_dir: platform_pack,
                 tokamak_config_path: config,
-                top: TopOptions {
-                    build: build_command,
-                    ..top
-                },
+                top,
                 platform_options,
+                build_command,
                 skip_project_build,
             })?;
             for summary in summaries {

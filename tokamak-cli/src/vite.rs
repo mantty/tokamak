@@ -5,7 +5,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -37,14 +37,9 @@ struct ServerReport {
 
 impl VitePlugin {
     /// The plugin writing to `output` and reading `config`, relative to the
-    /// current directory, or its default configuration file.
+    /// current directory, or else the configuration file it finds.
     pub(crate) fn new(output: PathBuf, config: Option<&Path>) -> Result<Self> {
         let config = config.map(std::path::absolute).transpose()?;
-        if let Some(config) = &config
-            && !config.is_file()
-        {
-            bail!("tokamak configuration file not found: {}", config.display());
-        }
         Ok(Self { output, config })
     }
 
@@ -62,15 +57,18 @@ impl VitePlugin {
         environment
     }
 
-    /// The app's configuration, once the plugin has reported it.
-    pub(crate) fn config(&self) -> Result<Option<TokamakConfig>> {
-        let Some(report) = self.report::<ConfigReport>("config.json")? else {
-            return Ok(None);
-        };
-        let Some(file) = report.file else {
-            return Ok(Some(TokamakConfig::default()));
-        };
-        Ok(Some(tokamak_config::parse_config(&file, report.config)?))
+    /// The app's configuration, `None` without a configuration file, as
+    /// `command`, which ran the plugin, reported it.
+    pub(crate) fn config(&self, command: &str) -> Result<Option<TokamakConfig>> {
+        let report = self
+            .report::<ConfigReport>("config.json")?
+            .with_context(|| {
+                format!("{command} did not report its tokamak configuration; {PLUGIN_HINT}")
+            })?;
+        report
+            .file
+            .map(|file| tokamak_config::parse_config(&file, report.config))
+            .transpose()
     }
 
     /// The development server's URL, once the plugin has reported it.
