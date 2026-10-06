@@ -172,14 +172,24 @@ if [[ -d "$icons" ]]; then
 fi
 
 # Each plugin is a library module, so its manifest merges below the app's and
-# its dependencies stay its own.
+# its dependencies stay its own. Its class is a Kotlin class name in a package,
+# which the registry creates, and its dependencies are Maven coordinates.
+kotlin_class='^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$'
+maven_coordinate='^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$'
+registry=$kotlin/TokamakPluginRegistry.kt
+printf '%s\n\n%s\n%s\n' 'package com.tokamak.runtime' 'internal fun tokamakPlugins(host: TokamakHost): List<TokamakPlugin> =' '    listOf(' > "$registry"
 shopt -s nullglob
 for plugin in "$input/plugins"/*/; do
   plugin_id=$(basename "$plugin")
+  class=$(cat "$plugin/class" 2>/dev/null || true)
+  if [[ ! "$class" =~ $kotlin_class ]]; then
+    echo "plugin '$plugin_id' has invalid android class '$class'" >&2
+    exit 1
+  fi
+  printf '        %s(host),\n' "$class" >> "$registry"
   module=$plugin_modules/$plugin_id
   mkdir -p "$module/src/main/kotlin"
   for source in "$plugin/sources"/*; do
-    [[ -f "$source" ]] || continue
     case "$source" in
       *.kt)
         cp "$source" "$module/src/main/kotlin/$(basename "$source")"
@@ -190,8 +200,8 @@ for plugin in "$input/plugins"/*/; do
         ;;
     esac
   done
-  if [[ -f "$plugin/AndroidManifest.xml" ]]; then
-    cp "$plugin/AndroidManifest.xml" "$module/src/main/AndroidManifest.xml"
+  if [[ -f "$plugin/manifest" ]]; then
+    cp "$plugin/manifest" "$module/src/main/AndroidManifest.xml"
   fi
   {
     printf '%s\n' 'plugins {' "  id 'com.android.library'" "  id 'org.jetbrains.kotlin.android'"
@@ -201,11 +211,17 @@ for plugin in "$input/plugins"/*/; do
     printf '%s\n\n' '}'
     printf '%s\n' 'dependencies {' "  implementation project(':tokamak-plugin')"
     for dependency in "$plugin/dependencies"/*; do
-      printf "  implementation '%s'\n" "$(cat "$dependency")"
+      coordinate=$(cat "$dependency")
+      if [[ ! "$coordinate" =~ $maven_coordinate ]]; then
+        echo "plugin '$plugin_id' has invalid android dependency '$coordinate'; use group:artifact:version" >&2
+        exit 1
+      fi
+      printf "  implementation '%s'\n" "$coordinate"
     done
     printf '%s\n' '}'
   } > "$module/build.gradle"
 done
+printf '%s\n' '    )' >> "$registry"
 
 mkdir -p "$project/app/src/main"
 cat > "$project/settings.gradle" <<'EOF'
@@ -335,27 +351,11 @@ androidComponents {
 EOF
 fi
 
-registry=$kotlin/TokamakPluginRegistry.kt
-{
-  printf '%s\n\n' 'package com.tokamak.runtime'
-  printf '%s\n' 'internal fun tokamakPlugins(host: TokamakHost): List<TokamakPlugin> =' '    listOf('
-  for plugin in "$input/plugins"/*/; do
-    printf '        %s(host),\n' "$(cat "$plugin/class")"
-  done
-  printf '%s\n' '    )'
-} > "$registry"
-
 manifest=$app/src/main/AndroidManifest.xml
 {
-  printf '%s\n' '<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
-  {
-    printf '%s\n' android.permission.INTERNET
-    for permission in "$input/plugins"/*/permissions/*; do
-      printf '%s\n' "$(cat "$permission")"
-    done
-  } | sort -u | while IFS= read -r permission; do
-    printf '  <uses-permission android:name="%s" />\n' "$permission"
-  done
+  printf '%s\n' \
+    '<manifest xmlns:android="http://schemas.android.com/apk/res/android">' \
+    '  <uses-permission android:name="android.permission.INTERNET" />'
   icon_attribute=
   if [[ "$has_icon" == true ]]; then
     icon_attribute=' android:icon="@mipmap/ic_launcher"'

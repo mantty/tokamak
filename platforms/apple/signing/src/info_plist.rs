@@ -8,11 +8,6 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use plist::{Dictionary, Value};
 
-const IOS_PLIST_ENV: &str = "TOKAMAK_IOS_PLIST";
-const MACOS_PLIST_ENV: &str = "TOKAMAK_MACOS_PLIST";
-const IOS_BUILD_NUMBER_ENV: &str = "TOKAMAK_IOS_BUILD_NUMBER";
-const MACOS_BUILD_NUMBER_ENV: &str = "TOKAMAK_MACOS_BUILD_NUMBER";
-
 /// Build the final Apple application information property list.
 ///
 /// # Errors
@@ -22,7 +17,7 @@ const MACOS_BUILD_NUMBER_ENV: &str = "TOKAMAK_MACOS_BUILD_NUMBER";
 /// be written.
 pub fn write_info_plist(input: &Path, output: &Path, icon_info_plist: Option<&Path>) -> Result<()> {
     let metadata = Metadata::read(input)?;
-    let toolchain = ToolchainMetadata::detect(&metadata.platform)?;
+    let toolchain = ToolchainMetadata::detect(&read_required(&input.join("metadata/target"))?)?;
     let user_plist = configured_user_plist(&metadata)?;
     let plist = build_info_plist(
         input,
@@ -55,9 +50,7 @@ impl Metadata {
         let mut build_number = version.clone().unwrap_or_else(|| "1".into());
         let version = version.unwrap_or_else(|| "1.0".into());
         let platform = read_required(&metadata.join("platform"))?;
-        if let Some(environment) = build_number_environment(&platform)
-            && let Some(value) = environment_value(environment)?
-        {
+        if let Some(value) = environment_value(&pack_variable(&platform, "BUILD_NUMBER"))? {
             build_number = value;
         }
         validate_build_number(&build_number)?;
@@ -92,12 +85,12 @@ struct ToolchainMetadata {
 }
 
 impl ToolchainMetadata {
-    fn detect(platform: &str) -> Result<Self> {
-        let platform_name = match platform {
-            "ios" => "iphoneos",
-            "ios-simulator" => "iphonesimulator",
-            "macos" => "macosx",
-            platform => bail!("unsupported Apple platform: {platform}"),
+    fn detect(target: &str) -> Result<Self> {
+        let platform_name = match target {
+            "ios-arm64" => "iphoneos",
+            "ios-simulator-arm64" | "ios-simulator-x64" => "iphonesimulator",
+            "macos-arm64" | "macos-x64" => "macosx",
+            target => bail!("unsupported Apple target: {target}"),
         };
         let sdk_value = |query| command_output("xcrun", &["--sdk", platform_name, query]);
         let platform_version = sdk_value("--show-sdk-version")?;
@@ -254,8 +247,8 @@ fn add_generated_plist(
             );
             plist.insert("NSHighResolutionCapable".into(), Value::Boolean(true));
         }
-        "ios" | "ios-simulator" => {
-            let supported_platform = if metadata.platform == "ios-simulator" {
+        "ios" => {
+            let supported_platform = if toolchain.platform_name == "iphonesimulator" {
                 "iPhoneSimulator"
             } else {
                 "iPhoneOS"
@@ -309,10 +302,10 @@ fn add_plugin_plists(
     let mut merge = PluginMerge {
         origins: BTreeMap::new(),
         user,
-        user_setting: user_plist_setting(&metadata.platform)?,
+        platform: &metadata.platform,
     };
     for plugin in sorted_directories(&input.join("plugins"))? {
-        let path = plugin.join("Info.plist");
+        let path = plugin.join("plist");
         if !path.is_file() {
             continue;
         }
@@ -330,7 +323,8 @@ struct PluginMerge<'a> {
     /// The plugin that set each key path; unlisted values are tokamak's.
     origins: BTreeMap<Vec<String>, String>,
     user: Option<&'a Dictionary>,
-    user_setting: &'static str,
+    /// The platform namespace, whose `plist` setting names the app's plist.
+    platform: &'a str,
 }
 
 impl PluginMerge<'_> {
@@ -360,10 +354,10 @@ impl PluginMerge<'_> {
                 }
                 (Some(existing), value) if *existing == value || self.user_sets(path) => {}
                 (Some(_), _) => bail!(
-                    "{} and plugin '{plugin}' set different values for Info.plist key '{}'; set it in the app's {} file",
+                    "{} and plugin '{plugin}' set different values for Info.plist key '{}'; set it in the app's {}.plist file",
                     self.origin(path),
                     path.join(":"),
-                    self.user_setting
+                    self.platform
                 ),
             }
             path.pop();
@@ -414,24 +408,14 @@ fn sorted_directories(path: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn configured_user_plist(metadata: &Metadata) -> Result<Option<PathBuf>> {
-    let variable = user_plist_variable(&metadata.platform)?;
-    user_plist_path(variable, env::var_os(variable))
+    let variable = pack_variable(&metadata.platform, "PLIST");
+    user_plist_path(&variable, env::var_os(&variable))
 }
 
-fn user_plist_variable(platform: &str) -> Result<&'static str> {
-    match platform {
-        "ios" | "ios-simulator" => Ok(IOS_PLIST_ENV),
-        "macos" => Ok(MACOS_PLIST_ENV),
-        platform => bail!("unsupported Apple platform: {platform}"),
-    }
-}
-
-fn user_plist_setting(platform: &str) -> Result<&'static str> {
-    match platform {
-        "ios" | "ios-simulator" => Ok("ios.plist"),
-        "macos" => Ok("macos.plist"),
-        platform => bail!("unsupported Apple platform: {platform}"),
-    }
+/// The environment variable that passes the pack variable `name`, in upper
+/// case, for the `platform` namespace.
+fn pack_variable(platform: &str, name: &str) -> String {
+    format!("TOKAMAK_{}_{name}", platform.to_ascii_uppercase())
 }
 
 fn user_plist_path(variable: &str, value: Option<OsString>) -> Result<Option<PathBuf>> {
@@ -505,14 +489,6 @@ fn environment_value(name: &str) -> Result<Option<String>> {
         Ok(value) => Ok(Some(value)),
         Err(env::VarError::NotPresent) => Ok(None),
         Err(env::VarError::NotUnicode(_)) => bail!("{name} must contain valid UTF-8"),
-    }
-}
-
-fn build_number_environment(platform: &str) -> Option<&'static str> {
-    match platform {
-        "ios" | "ios-simulator" => Some(IOS_BUILD_NUMBER_ENV),
-        "macos" => Some(MACOS_BUILD_NUMBER_ENV),
-        _ => None,
     }
 }
 
@@ -660,7 +636,7 @@ mod tests {
             .iter()
             .map(|(key, value)| ((*key).to_owned(), value.clone()))
             .collect();
-        Value::Dictionary(dictionary).to_file_xml(directory.join("Info.plist"))?;
+        Value::Dictionary(dictionary).to_file_xml(directory.join("plist"))?;
         Ok(())
     }
 
@@ -916,7 +892,7 @@ mod tests {
         let input = input(temporary.path(), "ios")?;
         let directory = input.join("plugins/broken");
         std::fs::create_dir_all(&directory)?;
-        Value::Array(Vec::new()).to_file_xml(directory.join("Info.plist"))?;
+        Value::Array(Vec::new()).to_file_xml(directory.join("plist"))?;
 
         let Err(error) = build(&input, "iphoneos", None) else {
             anyhow::bail!("a plugin plist without a dictionary root was accepted");

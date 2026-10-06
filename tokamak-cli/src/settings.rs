@@ -457,6 +457,7 @@ mod tests {
                     variable(VariableKind::String, "Signing team"),
                 ),
             ]),
+            plugin_keys: BTreeMap::new(),
         }
     }
 

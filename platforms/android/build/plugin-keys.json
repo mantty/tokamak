@@ -1,0 +1,6 @@
+{
+  "class": "string",
+  "sources": "paths",
+  "manifest": "path",
+  "dependencies": "strings"
+}

@@ -126,12 +126,6 @@ impl Platform {
         }
     }
 
-    /// Whether frontend plugins may provide native code for this platform.
-    #[must_use]
-    pub const fn supports_plugins(self) -> bool {
-        !matches!(self, Self::Windows)
-    }
-
     /// Resolve the default runtime target for the current build host.
     ///
     /// # Errors
@@ -396,6 +390,8 @@ pub struct PlatformPackManifest {
     pub required_tools: Vec<String>,
     /// Variables the pack accepts, by name.
     pub variables: BTreeMap<String, PackVariable>,
+    /// Keys the pack reads from a plugin's platform section, by name.
+    pub plugin_keys: BTreeMap<String, PluginKeyKind>,
 }
 
 /// A variable a platform pack accepts, set as `--<platform>-<name>`,
@@ -420,13 +416,29 @@ pub enum VariableKind {
     Path,
 }
 
+/// The value a plugin key takes, and how the CLI stages it in the plugin's
+/// directory of the build input.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PluginKeyKind {
+    /// A string, staged as a file holding it.
+    String,
+    /// Strings, staged as a directory of files holding each, named by index.
+    Strings,
+    /// A file in the plugin's package, staged as its copy.
+    Path,
+    /// Files in the plugin's package, staged as a directory of their copies,
+    /// named `<index>-<file name>`.
+    Paths,
+}
+
 impl PlatformPackManifest {
     /// Validate the manifest contract before a CLI consumes the platform pack.
     ///
     /// # Errors
     ///
-    /// Returns an error when required fields are missing or an artifact path
-    /// escapes the pack root.
+    /// Returns an error when required fields are missing, an artifact path
+    /// escapes the pack root, or a variable or plugin key is invalid.
     pub fn validate(&self) -> Result<(), PlatformPackError> {
         if self.tokamak_version.trim().is_empty() {
             return Err(PlatformPackError::MissingVersion);
@@ -442,6 +454,10 @@ impl PlatformPackManifest {
 
         for (name, variable) in &self.variables {
             validate_variable(name, variable)?;
+        }
+
+        if let Some(key) = self.plugin_keys.keys().find(|key| !is_valid_key(key)) {
+            return Err(PlatformPackError::InvalidPluginKey(key.clone()));
         }
 
         Ok(())
@@ -536,6 +552,9 @@ pub enum PlatformPackError {
     /// Variable had no description.
     #[error("variable must have a description: {0}")]
     MissingVariableDescription(String),
+    /// Plugin key was not lowercase words joined by hyphens.
+    #[error("plugin key must be lowercase words joined by hyphens: {0}")]
+    InvalidPluginKey(String),
     /// File IO failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),

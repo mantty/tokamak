@@ -35,7 +35,7 @@ case "${1-}" in
       build_number=$version
     fi
     case "$platform" in
-      ios|ios-simulator)
+      ios)
         build_number=${TOKAMAK_IOS_BUILD_NUMBER:-$build_number}
         ;;
       macos)
@@ -64,7 +64,7 @@ case "${1-}" in
       printf '  <key>CFBundleVersion</key><string>%s</string>\n' "$build_number"
       printf '  <key>CFBundleShortVersionString</key><string>%s</string>\n' "$version"
       printf '  <key>TokamakHost</key><string>%s</string>\n' "$host"
-      for plugin_plist in "$input/plugins"/*/Info.plist; do
+      for plugin_plist in "$input/plugins"/*/plist; do
         [ -f "$plugin_plist" ] || continue
         plutil -convert xml1 -o - "$plugin_plist" |
           sed -e '1,/^<dict>$/d' -e '/^<\/dict>$/,$d' | tr -d '\n\t'
@@ -74,11 +74,10 @@ case "${1-}" in
         printf '%s\n' '  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>'
         printf '%s\n' '  <key>NSHighResolutionCapable</key><true/>'
       else
-        if [ "$platform" = ios-simulator ]; then
-          supported_platform=iPhoneSimulator
-        else
-          supported_platform=iPhoneOS
-        fi
+        case $(cat "$input/metadata/target") in
+          ios-simulator-*) supported_platform=iPhoneSimulator ;;
+          *) supported_platform=iPhoneOS ;;
+        esac
         printf '  <key>CFBundleSupportedPlatforms</key><array><string>%s</string></array>\n' "$supported_platform"
         printf '%s\n' '  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>'
         printf '%s\n' '  <key>MinimumOSVersion</key><string>17.0</string>'

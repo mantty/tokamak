@@ -99,50 +99,28 @@ fn install_location_plugin(root: &Path) -> TestResult {
         r#"{"name":"demo-app","scripts":{"build":"echo already-built"},"dependencies":{"@tokamakdev/plugin-location":"1.0.0"}}"#,
     )?;
     let plugin = root.join("node_modules/@tokamakdev/plugin-location");
-    fs::create_dir_all(plugin.join("apple"))?;
-    fs::write(
-        plugin.join("apple/LocationPlugin.swift"),
-        include_str!("../../plugins/location/apple/LocationPlugin.swift"),
-    )?;
-    for (name, key) in [
-        ("macos", "NSLocationUsageDescription"),
-        ("ios", "NSLocationWhenInUseUsageDescription"),
+    fs::create_dir_all(plugin.join("apple/ios"))?;
+    fs::create_dir_all(plugin.join("apple/macos"))?;
+    for (path, contents) in [
+        (
+            "tokamak-plugin.json",
+            include_str!("../../plugins/location/tokamak-plugin.json"),
+        ),
+        (
+            "apple/LocationPlugin.swift",
+            include_str!("../../plugins/location/apple/LocationPlugin.swift"),
+        ),
+        (
+            "apple/ios/Info.plist",
+            include_str!("../../plugins/location/apple/ios/Info.plist"),
+        ),
+        (
+            "apple/macos/Info.plist",
+            include_str!("../../plugins/location/apple/macos/Info.plist"),
+        ),
     ] {
-        fs::write(
-            plugin.join(format!("apple/{name}.plist")),
-            format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict><key>{key}</key><string>Location test</string></dict></plist>"#
-            ),
-        )?;
+        fs::write(plugin.join(path), contents)?;
     }
-    fs::write(
-        plugin.join("tokamak-plugin.json"),
-        r#"{
-  "schemaVersion": 1,
-  "id": "location",
-  "platforms": {
-    "macos": {
-      "class": "TokamakLocationPlugin",
-      "sources": ["apple/LocationPlugin.swift"],
-      "frameworks": ["CoreLocation"],
-      "plist": "apple/macos.plist"
-    },
-    "ios": {
-      "class": "TokamakLocationPlugin",
-      "sources": ["apple/LocationPlugin.swift"],
-      "frameworks": ["CoreLocation"],
-      "plist": "apple/ios.plist"
-    },
-    "ios-simulator": {
-      "class": "TokamakLocationPlugin",
-      "sources": ["apple/LocationPlugin.swift"],
-      "frameworks": ["CoreLocation"],
-      "plist": "apple/ios.plist"
-    }
-  }
-}"#,
-    )?;
     Ok(())
 }
 
@@ -247,34 +225,32 @@ fn create_android_inputs() -> TestResult<(tempfile::TempDir, PathBuf, PathBuf)> 
     Ok((temporary, project, platform_pack))
 }
 
+/// Install the `alerts` plugin, whose Android section is `test.alerts.Plugin`
+/// built from an empty Kotlin source with `fields` over it.
 #[cfg(unix)]
-fn install_android_plugins(root: &Path, plugins: &[(&str, &[&str])]) -> TestResult {
-    let dependencies: serde_json::Map<_, _> = plugins
-        .iter()
-        .map(|(id, _)| ((*id).to_owned(), "1.0.0".into()))
-        .collect();
+fn install_android_plugin(root: &Path, fields: serde_json::Value) -> TestResult<PathBuf> {
     fs::write(
         root.join("package.json"),
-        serde_json::json!({ "name": "demo-app", "dependencies": dependencies }).to_string(),
+        r#"{"name":"demo-app","dependencies":{"alerts":"1.0.0"}}"#,
     )?;
-    for (id, permissions) in plugins {
-        let plugin = root.join("node_modules").join(id);
-        fs::create_dir_all(plugin.join("android"))?;
-        fs::write(plugin.join("android/Plugin.kt"), "")?;
-        let manifest = serde_json::json!({
-            "schemaVersion": 1,
-            "id": id,
-            "platforms": {
-                "android": {
-                    "class": format!("test.{}.Plugin", id.replace('-', "")),
-                    "sources": ["android/Plugin.kt"],
-                    "permissions": permissions,
-                }
-            }
-        });
-        fs::write(plugin.join("tokamak-plugin.json"), manifest.to_string())?;
-    }
-    Ok(())
+    let plugin = root.join("node_modules/alerts");
+    fs::create_dir_all(plugin.join("android"))?;
+    fs::write(plugin.join("android/Plugin.kt"), "")?;
+    let mut android = serde_json::json!({
+        "class": "test.alerts.Plugin",
+        "sources": ["android/Plugin.kt"],
+    });
+    android
+        .as_object_mut()
+        .ok_or("the Android section is an object")?
+        .extend(serde_json::from_value::<serde_json::Map<_, _>>(fields)?);
+    let manifest = serde_json::json!({
+        "schemaVersion": 1,
+        "id": "alerts",
+        "platforms": { "android": android },
+    });
+    fs::write(plugin.join("tokamak-plugin.json"), manifest.to_string())?;
+    Ok(plugin)
 }
 
 fn write_test_manifest(root: &Path, target: Target) -> TestResult {
@@ -285,13 +261,22 @@ fn write_test_manifest(root: &Path, target: Target) -> TestResult {
     Ok(())
 }
 
-/// A manifest declaring the pack's real variables and `test`, which fake
-/// entrypoints write out.
+/// A manifest declaring the pack's real variables and plugin keys, and the
+/// variable `test`, which fake entrypoints write out.
 fn test_manifest(target: Target, tokamak_version: &str) -> TestResult<PlatformPackManifest> {
-    let declarations = match target.platform().repository_directory_name() {
-        "apple" => include_str!("../../platforms/apple/build/variables.json"),
-        "android" => include_str!("../../platforms/android/build/variables.json"),
-        _ => include_str!("../../platforms/windows/build/variables.json"),
+    let (declarations, plugin_keys) = match target.platform().repository_directory_name() {
+        "apple" => (
+            include_str!("../../platforms/apple/build/variables.json"),
+            include_str!("../../platforms/apple/build/plugin-keys.json"),
+        ),
+        "android" => (
+            include_str!("../../platforms/android/build/variables.json"),
+            include_str!("../../platforms/android/build/plugin-keys.json"),
+        ),
+        _ => (
+            include_str!("../../platforms/windows/build/variables.json"),
+            include_str!("../../platforms/windows/build/plugin-keys.json"),
+        ),
     };
     let mut namespaces: std::collections::BTreeMap<
         String,
@@ -317,6 +302,7 @@ fn test_manifest(target: Target, tokamak_version: &str) -> TestResult<PlatformPa
             .map(|tool| (*tool).to_owned())
             .collect(),
         variables,
+        plugin_keys: serde_json::from_str(plugin_keys)?,
     })
 }
 
@@ -1263,16 +1249,15 @@ fn rejects_a_missing_app_android_manifest() -> TestResult {
 #[test]
 fn builds_each_android_plugin_as_a_library_module() -> TestResult {
     let (temporary, project, platform_pack) = create_android_inputs()?;
-    install_android_plugins(&project, &[("alerts", &[])])?;
-    let plugin = project.join("node_modules/alerts");
-    let plugin_manifest = r#"<manifest><application><service android:name="test.alerts.Service" /></application></manifest>"#;
+    let plugin = install_android_plugin(
+        &project,
+        serde_json::json!({
+            "manifest": "android/AndroidManifest.xml",
+            "dependencies": ["com.example:messaging:1.2.3"],
+        }),
+    )?;
+    let plugin_manifest = r#"<manifest><uses-permission android:name="android.permission.USE_BIOMETRIC" /><application><service android:name="test.alerts.Service" /></application></manifest>"#;
     fs::write(plugin.join("android/AndroidManifest.xml"), plugin_manifest)?;
-    let mut manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(plugin.join("tokamak-plugin.json"))?)?;
-    manifest["platforms"]["android"]["manifest"] = "android/AndroidManifest.xml".into();
-    manifest["platforms"]["android"]["dependencies"] =
-        serde_json::json!(["com.example:messaging:1.2.3"]);
-    fs::write(plugin.join("tokamak-plugin.json"), manifest.to_string())?;
 
     let mut command = build_command("android", &project, &platform_pack)?;
     configure_fake_android_tools(&mut command, temporary.path())?;
@@ -1300,39 +1285,67 @@ fn builds_each_android_plugin_as_a_library_module() -> TestResult {
         )?
         .contains("test.alerts.Plugin(host),")
     );
+    let app_manifest = fs::read_to_string(gradle.join("app/src/main/AndroidManifest.xml"))?;
+    assert!(
+        app_manifest.contains(r#"<uses-permission android:name="android.permission.INTERNET" />"#)
+    );
+    assert!(!app_manifest.contains("USE_BIOMETRIC"));
     Ok(())
 }
 
 #[cfg(unix)]
 #[test]
-fn writes_each_android_permission_once() -> TestResult {
-    let (temporary, project, platform_pack) = create_android_inputs()?;
-    install_android_plugins(
-        &project,
-        &[
-            ("storage", &["android.permission.USE_BIOMETRIC"]),
-            (
-                "authentication",
-                &[
-                    "android.permission.USE_BIOMETRIC",
-                    "android.permission.INTERNET",
-                ],
-            ),
-        ],
-    )?;
+fn rejects_invalid_android_plugin_classes_and_dependencies() -> TestResult {
+    for (fields, message) in [
+        (
+            serde_json::json!({ "class": "Plugin" }),
+            "plugin 'alerts' has invalid android class 'Plugin'",
+        ),
+        (
+            serde_json::json!({ "dependencies": ["com.example:library"] }),
+            "plugin 'alerts' has invalid android dependency 'com.example:library'; use group:artifact:version",
+        ),
+        (
+            serde_json::json!({ "dependencies": ["com.example:library:1.0'"] }),
+            "plugin 'alerts' has invalid android dependency 'com.example:library:1.0''",
+        ),
+    ] {
+        let (temporary, project, platform_pack) = create_android_inputs()?;
+        install_android_plugin(&project, fields)?;
+        let mut command = build_command("android", &project, &platform_pack)?;
+        configure_fake_android_tools(&mut command, temporary.path())?;
 
-    let mut command = build_command("android", &project, &platform_pack)?;
-    configure_fake_android_tools(&mut command, temporary.path())?;
-    command.assert().success();
+        command.assert().failure().stderr(contains(message));
+    }
+    Ok(())
+}
 
-    let manifest = fs::read_to_string(
-        project.join("build/android/.tokamak/app/src/main/AndroidManifest.xml"),
-    )?;
-    assert_eq!(
-        manifest.matches("android.permission.USE_BIOMETRIC").count(),
-        1
-    );
-    assert_eq!(manifest.matches("android.permission.INTERNET").count(), 1);
+#[cfg(unix)]
+#[test]
+fn checks_every_platform_s_plugin_sections_before_any_platform_builds() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let project = temporary.path().join("project");
+    let packs = temporary.path().join("platform-packs");
+    fs::create_dir_all(&project)?;
+    create_project(&project)?;
+    create_android_platform_pack(&packs.join("android-arm64"))?;
+    create_platform_pack(&packs.join("ios-arm64"), "ios-arm64")?;
+    let plugin_manifest =
+        install_android_plugin(&project, serde_json::json!({}))?.join("tokamak-plugin.json");
+    let mut plugin: serde_json::Value = serde_json::from_slice(&fs::read(&plugin_manifest)?)?;
+    plugin["platforms"]["ios"] = serde_json::json!({ "class": "Alerts", "frameworks": ["UIKit"] });
+    fs::write(&plugin_manifest, plugin.to_string())?;
+
+    Command::cargo_bin("tok")?
+        .args(["build", "android,ios", "--skip-project-build", "--project"])
+        .arg(&project)
+        .env("TOKAMAK_VERSION", "1.0.0")
+        .env("TOKAMAK_PLATFORM_PACK_PATH", &packs)
+        .assert()
+        .failure()
+        .stderr(contains("plugin 'alerts' has unknown ios key 'frameworks'"));
+    assert!(!project.join("build/.tokamak/android").exists());
+    assert!(!project.join("build/.tokamak/worker").exists());
     Ok(())
 }
 
@@ -1806,7 +1819,7 @@ fn builds_declared_plugins_into_the_macos_shell() -> TestResult {
         .success();
 
     let plist = fs::read_to_string(project.join("build/macos/demo-app.app/Contents/Info.plist"))?;
-    assert!(plist.contains("<key>NSLocationUsageDescription</key><string>Location test</string>"));
+    assert!(plist.contains("<key>NSLocationUsageDescription</key>"));
     Ok(())
 }
 
@@ -1825,7 +1838,26 @@ fn builds_plugins_installed_above_a_relative_project_directory() -> TestResult {
         .success();
 
     let plist = fs::read_to_string(project.join("build/macos/demo-app.app/Contents/Info.plist"))?;
-    assert!(plist.contains("<key>NSLocationUsageDescription</key><string>Location test</string>"));
+    assert!(plist.contains("<key>NSLocationUsageDescription</key>"));
+    Ok(())
+}
+
+#[test]
+fn rejects_apple_plugin_classes_that_are_not_swift_type_names() -> TestResult {
+    let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
+    install_location_plugin(&project)?;
+    let plugin_manifest =
+        project.join("node_modules/@tokamakdev/plugin-location/tokamak-plugin.json");
+    let mut plugin: serde_json::Value = serde_json::from_slice(&fs::read(&plugin_manifest)?)?;
+    plugin["platforms"]["macos"]["class"] = "Location-Plugin".into();
+    fs::write(&plugin_manifest, plugin.to_string())?;
+
+    build_command("macos", &project, &manifest)?
+        .assert()
+        .failure()
+        .stderr(contains(
+            "plugin 'location' has invalid macos class 'Location-Plugin'",
+        ));
     Ok(())
 }
 

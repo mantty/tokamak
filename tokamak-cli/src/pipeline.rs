@@ -129,12 +129,14 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     )?;
     support::validate_project_build(&wrangler)?;
     warn_unsupported_bindings(&wrangler);
+    let plugins = plugins::discover(&request.project_dir)?;
     let builds = request
         .platforms
         .iter()
         .zip(packs)
         .map(|(platform, (pack_root, manifest))| {
             let settings = settings::resolve(&sources, *platform, &manifest)?;
+            plugins::check(&plugins, &manifest)?;
             Ok(PlatformBuild {
                 platform: *platform,
                 app: resolve_app(&settings, &wrangler.name, *platform)?,
@@ -146,7 +148,6 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         .collect::<Result<Vec<_>>>()?;
     let worker = worker::compile(&build_dir.join(".tokamak").join("worker"), &wrangler)
         .context("compile the Worker")?;
-    let plugins = plugins::discover(&request.project_dir)?;
     let context = BuildContext {
         build_dir: &build_dir,
         wrangler: &wrangler,
@@ -196,7 +197,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
         request.pack,
         platform_settings.icon.as_deref(),
     )?;
-    plugins::stage(&plugins, request.platform, &input.join("plugins"))
+    plugins::stage(&plugins, manifest, &input.join("plugins"))
         .context("stage native plugin inputs")?;
     fs::write(input.join("app/.tokamak-development"), b"")?;
     write_build_metadata(
@@ -274,7 +275,7 @@ fn build_platform(
 
     worker::package(&input.join("app"), context.worker, context.wrangler)
         .context("prepare the tokamak application package")?;
-    plugins::stage(context.plugins, platform, &input.join("plugins"))
+    plugins::stage(context.plugins, manifest, &input.join("plugins"))
         .context("stage native plugin inputs")?;
     write_build_metadata(
         &input,
@@ -483,12 +484,7 @@ fn write_build_metadata(input: &Path, project: &Path, metadata: &BuildMetadata<'
         ("host", format!("{}.tokamak.local", app.slug)),
         (
             "platform",
-            metadata
-                .manifest
-                .target
-                .platform()
-                .directory_name()
-                .to_owned(),
+            metadata.manifest.target.platform().namespace().to_owned(),
         ),
         ("target", metadata.manifest.target.to_string()),
         ("project-dir", project.display().to_string()),
