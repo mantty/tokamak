@@ -4,19 +4,27 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 
-/** A failure a plugin reports to the page as a `DOMException` named [errorName]. */
+/**
+ * A failure a plugin reports to the page as a `DOMException` named [errorName]. Other exceptions
+ * reach the page as an `OperationError`.
+ */
 class TokamakPluginError(
     val errorName: String,
     message: String,
 ) : Exception(message) {
     companion object {
         fun notSupported(message: String) = TokamakPluginError("NotSupportedError", message)
+
+        fun typeError(message: String) = TokamakPluginError("TypeError", message)
     }
 }
 
 typealias TokamakPluginReply = (Result<Any?>) -> Unit
 
-/** A native plugin, created once per process with the app's [TokamakHost]. */
+/**
+ * A native plugin, created once per process with the app's [TokamakHost]. A [call] or [subscribe]
+ * that throws replies with the exception.
+ */
 interface TokamakPlugin {
     val id: String
 

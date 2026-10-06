@@ -47,21 +47,19 @@ class TokamakNotificationsPlugin(
     }
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
-        runCatching {
-            when (method) {
-                "permission" -> reply(Result.success(permission()))
-                "requestPermission" -> requestPermission(reply)
-                "show" -> show(Content.parse(arguments, scheduled = false), reply)
-                "schedule" -> schedule(Content.parse(arguments, scheduled = true), reply)
-                "getScheduled" -> reply(Result.success(JSONArray(schedule.all().map(Content::toJson))))
-                "getDelivered" -> reply(Result.success(JSONArray(notifier.delivered())))
-                "remove" -> remove(identifier(arguments), reply)
-                "subscribe" -> subscribe(arguments, reply)
-                "getSubscription" -> reply(Result.success(subscription()))
-                "unsubscribe" -> unsubscribe(reply)
-                else -> super.call(method, arguments, reply)
-            }
-        }.onFailure { reply(Result.failure(pluginError(it))) }
+        when (method) {
+            "permission" -> reply(Result.success(permission()))
+            "requestPermission" -> requestPermission(reply)
+            "show" -> show(Content.parse(arguments, scheduled = false), reply)
+            "schedule" -> schedule(Content.parse(arguments, scheduled = true), reply)
+            "getScheduled" -> reply(Result.success(JSONArray(schedule.all().map(Content::toJson))))
+            "getDelivered" -> reply(Result.success(JSONArray(notifier.delivered())))
+            "remove" -> remove(identifier(arguments), reply)
+            "subscribe" -> subscribe(arguments, reply)
+            "getSubscription" -> reply(Result.success(subscription()))
+            "unsubscribe" -> unsubscribe(reply)
+            else -> super.call(method, arguments, reply)
+        }
     }
 
     override fun subscribe(
@@ -257,7 +255,7 @@ class TokamakNotificationsPlugin(
 
     private fun identifier(arguments: Any?): String {
         val id = (arguments as? JSONObject)?.opt("id") as? String
-        if (id.isNullOrEmpty()) throw TokamakPluginError("TypeError", "id must be a non-empty string")
+        if (id.isNullOrEmpty()) throw TokamakPluginError.typeError("id must be a non-empty string")
         return id
     }
 
@@ -269,8 +267,5 @@ class TokamakNotificationsPlugin(
 
         fun operationError(error: Throwable?) =
             TokamakPluginError("OperationError", error?.message ?: "The push service failed")
-
-        fun pluginError(error: Throwable): TokamakPluginError =
-            error as? TokamakPluginError ?: operationError(error)
     }
 }
