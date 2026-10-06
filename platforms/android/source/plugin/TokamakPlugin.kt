@@ -54,8 +54,9 @@ interface TokamakHost {
 
     /**
      * Posts the JSON [body] to the Worker's `/tokamak/<name>` endpoint and returns the
-     * response body. Starts the runtime when it is not running. Blocks, so call it off the main
-     * thread; throws unless the Worker responds 200 within [timeoutMillis].
+     * response body, retrying a failed post. Starts the runtime when it is not running. Blocks,
+     * so call it off the main thread; throws unless the Worker responds 200 within
+     * [timeoutMillis], which includes runtime startup.
      */
     fun call(name: String, body: String, timeoutMillis: Long): String
 

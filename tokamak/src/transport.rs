@@ -29,7 +29,7 @@ pub(super) const WEBSOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) type BodyChunk = Result<Vec<u8>, String>;
 pub(super) type TlsStream = StreamOwned<ServerConnection, TcpStream>;
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(super) struct HttpRequest {
     /// Whether the connection stays open after the response, decided by the gateway.
     #[serde(skip_serializing)]

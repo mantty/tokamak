@@ -378,6 +378,10 @@ export default {
     if (path === "/tokamak/missing") return new Response(null, { status: 404 });
     if (path === "/tokamak/broken") throw new Error("handler exploded");
     if (path === "/tokamak/slow") await new Promise((resolve) => setTimeout(resolve, 5000));
+    if (path === "/tokamak/relay") {
+      const { status } = await fetch((await request.json()).url);
+      return new Response(String(status), { status });
+    }
     if (path === "/tokamak/later") {
       const { notify } = await request.json();
       ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 50)).then(() => fetch(notify)));
@@ -466,6 +470,78 @@ fn notify_listener()
         stream.write_all(b"HTTP/1.1 204 No Content\r\n\r\n")
     });
     Ok((url, arrival))
+}
+
+/// A URL answering its requests with `statuses` in turn; each request's arrival
+/// reaches the returned receiver.
+fn status_server(
+    statuses: &'static [u16],
+) -> Result<(String, flume::Receiver<()>), Box<dyn std::error::Error + Send + Sync>> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let url = format!("http://127.0.0.1:{}/", listener.local_addr()?.port());
+    let (arrived, arrivals) = flume::unbounded();
+    thread::spawn(move || -> io::Result<()> {
+        for status in statuses {
+            let (mut stream, _) = listener.accept()?;
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            while reader.read_line(&mut line)? > 2 {
+                line.clear();
+            }
+            let _ = arrived.send(());
+            write!(
+                stream,
+                "HTTP/1.1 {status} Status\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )?;
+        }
+        Ok(())
+    });
+    Ok((url, arrivals))
+}
+
+/// Calls the Worker's relay endpoint against [`status_server`], returning the
+/// response body or error, and the number of attempts.
+fn relay_call(
+    statuses: &'static [u16],
+    timeout: Duration,
+) -> Result<(String, usize), Box<dyn std::error::Error + Send + Sync>> {
+    let (url, arrivals) = status_server(statuses)?;
+    let (runtime, _directory) = call_runtime()?;
+    let body = serde_json::json!({ "url": url }).to_string();
+    let outcome = match runtime.call("relay", &body, timeout) {
+        Ok(response) => String::from_utf8(response)?,
+        Err(error) => error.to_string(),
+    };
+    Ok((outcome, arrivals.drain().count()))
+}
+
+#[test]
+fn retries_a_failed_runtime_call() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    assert_eq!(
+        relay_call(&[503, 200], Duration::from_secs(10))?,
+        ("200".to_owned(), 2)
+    );
+    Ok(())
+}
+
+#[test]
+fn fails_a_runtime_call_after_three_attempts()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    assert_eq!(
+        relay_call(&[503, 503, 503, 200], Duration::from_secs(10))?,
+        ("/tokamak/relay responded 503".to_owned(), 3)
+    );
+    Ok(())
+}
+
+#[test]
+fn retries_a_runtime_call_only_while_its_timeout_allows()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    assert_eq!(
+        relay_call(&[503, 200], Duration::from_millis(900))?,
+        ("/tokamak/relay responded 503".to_owned(), 1)
+    );
+    Ok(())
 }
 
 #[test]

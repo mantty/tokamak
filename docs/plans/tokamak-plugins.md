@@ -73,11 +73,10 @@ app in the background. A plugin receives the host in its constructor
   through `onIntent`, ask for runtime permissions through
   `host.requestPermissions`, which shows one request at a time, and reach the
   activity through `host.activity`.
-- `host.dispatch` runs a method of the Worker's default export with a JSON
-  payload and returns its JSON result, or reports that the Worker has no such
-  method. Each dispatch uses a fresh JavaScript runtime and waits for
-  `ctx.waitUntil` work, as a request does, until the timeout the plugin gives,
-  which fits the platform's background budget.
+- `host.call` posts JSON to the Worker's `/tokamak/<name>` endpoint and
+  returns the response body. The runtime attempts a failed post again a second
+  later, up to three times, within the timeout the plugin gives, which fits the
+  platform's background budget and includes runtime startup.
 
 ## Frontend calls
 

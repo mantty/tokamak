@@ -24,6 +24,10 @@ use crate::transport::{
 const MAX_WEBSOCKET_QUEUE: usize = 100;
 /// How long an idle persistent connection waits for its next request.
 const KEEP_ALIVE_IDLE_TIMEOUT: Duration = Duration::from_mins(1);
+/// The most attempts a runtime call makes.
+const CALL_ATTEMPTS: u32 = 3;
+/// The pause before a failed runtime call is attempted again.
+const CALL_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 /// Supplies the TLS configuration the gateway accepts connections with.
 pub(super) type ServerTls = Arc<dyn Fn() -> Result<Arc<ServerConfig>, Error> + Send + Sync>;
@@ -336,30 +340,47 @@ impl Runtime {
     }
 
     /// Posts JSON `body` to the Worker's `/tokamak/<name>` endpoint and returns
-    /// the response body, failing unless the Worker responds 200 within
-    /// `timeout`.
+    /// the response body. Attempts the post again a second after it fails, up
+    /// to three times, while the Worker can still respond within `timeout`.
     pub(crate) fn call(&self, name: &str, body: &str, timeout: Duration) -> Result<Vec<u8>, Error> {
         let deadline = Instant::now() + timeout;
         let request = call_request(&self.shared.config.host, name, body)?;
-        let path = request.target.clone();
-        let result = spawn_job(&self.shared, request, None);
-        let failure = match result.recv_deadline(deadline) {
-            Ok(JobResponse::Http(response)) if response.status == 200 => {
-                return response
-                    .body
-                    .read_to_end(deadline)
-                    .map_err(|error| Error::Call(format!("{path} response failed: {error}")));
+        let mut attempts = 1;
+        loop {
+            let failure = match self.post(request.clone(), deadline, timeout) {
+                Ok(response) => return Ok(response),
+                Err(failure) => failure,
+            };
+            if attempts == CALL_ATTEMPTS || Instant::now() + CALL_RETRY_DELAY >= deadline {
+                return Err(Error::Call(failure));
             }
-            Ok(JobResponse::Http(response)) => format!("{path} responded {}", response.status),
-            Ok(JobResponse::WebSocket) => format!("{path} returned a WebSocket"),
+            thread::sleep(CALL_RETRY_DELAY);
+            attempts += 1;
+        }
+    }
+
+    /// One attempt at a runtime call, describing why it failed.
+    fn post(
+        &self,
+        request: HttpRequest,
+        deadline: Instant,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, String> {
+        let path = request.target.clone();
+        match spawn_job(&self.shared, request, None).recv_deadline(deadline) {
+            Ok(JobResponse::Http(response)) if response.status == 200 => response
+                .body
+                .read_to_end(deadline)
+                .map_err(|error| format!("{path} response failed: {error}")),
+            Ok(JobResponse::Http(response)) => Err(format!("{path} responded {}", response.status)),
+            Ok(JobResponse::WebSocket) => Err(format!("{path} returned a WebSocket")),
             Err(flume::RecvTimeoutError::Timeout) => {
-                format!("{path} did not respond within {timeout:?}")
+                Err(format!("{path} did not respond within {timeout:?}"))
             }
             Err(flume::RecvTimeoutError::Disconnected) => {
-                format!("the runtime stopped before {path} ran")
+                Err(format!("the runtime stopped before {path} ran"))
             }
-        };
-        Err(Error::Call(failure))
+        }
     }
 }
 

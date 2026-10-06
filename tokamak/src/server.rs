@@ -120,11 +120,13 @@ impl Runtime {
     }
 
     /// Post JSON `body` to the Worker's `/tokamak/<name>` endpoint and return
-    /// the response body.
+    /// the response body. A failed post is attempted again a second later, up
+    /// to three times, while `timeout` allows.
     ///
     /// # Errors
     ///
-    /// Returns an error unless the Worker responds 200 within `timeout`.
+    /// Returns the last attempt's error unless the Worker responds 200 within
+    /// `timeout`.
     pub fn call(&self, name: &str, body: &str, timeout: Duration) -> Result<Vec<u8>> {
         Ok(self.gateway.call(name, body, timeout)?)
     }

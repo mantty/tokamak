@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
-import android.os.SystemClock
 import android.util.Log
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
@@ -25,9 +24,6 @@ private const val SHOW_IN_FOREGROUND = "show-in-foreground"
 
 /** FCM allows about 10 seconds for a message, including starting the app. */
 private const val PUSH_DEADLINE_MILLIS = 8_000L
-private const val PUSH_ATTEMPTS = 3
-private const val PUSH_ATTEMPT_TIMEOUT_MILLIS = 2_000L
-private const val PUSH_RETRY_DELAY_MILLIS = 1_000L
 private const val FCM_MESSAGE_ID_EXTRA = "google.message_id"
 private val LISTENERS = setOf("onMessage", "onNotificationOpened", "onSubscriptionChange")
 
@@ -112,29 +108,10 @@ class TokamakNotificationsPlugin(
             if (preferences.getBoolean(SHOW_IN_FOREGROUND, false)) notifier.post(content(message), "push")
             return
         }
-        val deadline = SystemClock.elapsedRealtime() + PUSH_DEADLINE_MILLIS
-        runCatching { deliverPush(message.toString(), attempt = 1, deadline = deadline) }
+        runCatching { host.call("push", message.toString(), PUSH_DEADLINE_MILLIS) }
             .onSuccess(::showReturned)
+            .onFailure { Log.w("tokamak", "push notification failed: ${it.message}") }
     }
-
-    /**
-     * Posts [body] to `/tokamak/push`, logging each failed attempt and retrying while another
-     * attempt can finish before [deadline].
-     */
-    private fun deliverPush(
-        body: String,
-        attempt: Int,
-        deadline: Long,
-    ): String =
-        try {
-            host.call("push", body, PUSH_ATTEMPT_TIMEOUT_MILLIS)
-        } catch (error: Exception) {
-            Log.w("tokamak", "push notification failed: ${error.message}")
-            val retryEnds = SystemClock.elapsedRealtime() + PUSH_RETRY_DELAY_MILLIS + PUSH_ATTEMPT_TIMEOUT_MILLIS
-            if (attempt == PUSH_ATTEMPTS || retryEnds > deadline) throw error
-            Thread.sleep(PUSH_RETRY_DELAY_MILLIS)
-            deliverPush(body, attempt + 1, deadline)
-        }
 
     /** Shows the notification a push response returns, if any. */
     private fun showReturned(response: String) {

@@ -13,9 +13,6 @@ private let showInForegroundKey = "tokamak.notifications.show-in-foreground"
 private let pendingLimit = 64
 /// The system allows about 30 seconds for a background remote notification.
 private let pushDeadline: TimeInterval = 25
-private let pushAttempts = 3
-private let pushAttemptTimeout: TimeInterval = 2
-private let pushRetryDelay: TimeInterval = 1
 private let shown: UNNotificationPresentationOptions = [.banner, .list, .sound]
 
 #if os(iOS)
@@ -145,35 +142,13 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       return
     }
     emit("onMessage", fields.message)
-    deliverPush(fields.message, attempt: 1, deadline: Date() + pushDeadline) { result in
+    host.call("push", body: fields.message, timeout: pushDeadline) { result in
       switch result {
       case .success(let response):
         self.show(response) { completion(.newData) }
-      case .failure:
-        completion(.failed)
-      }
-    }
-  }
-
-  /// Posts `message` to `/tokamak/push`, logging each failed attempt and
-  /// retrying while another attempt can finish before `deadline`.
-  private func deliverPush(
-    _ message: [String: Any],
-    attempt: Int,
-    deadline: Date,
-    completion: @escaping (Result<Data, Error>) -> Void
-  ) {
-    host.call("push", body: message, timeout: pushAttemptTimeout) { result in
-      if case .failure(let error) = result {
+      case .failure(let error):
         print("push notification failed: \(error)")
-      }
-      let retryEnds = Date() + pushRetryDelay + pushAttemptTimeout
-      guard case .failure = result, attempt < pushAttempts, retryEnds <= deadline else {
-        completion(result)
-        return
-      }
-      DispatchQueue.main.asyncAfter(deadline: .now() + pushRetryDelay) {
-        self.deliverPush(message, attempt: attempt + 1, deadline: deadline, completion: completion)
+        completion(.failed)
       }
     }
   }
