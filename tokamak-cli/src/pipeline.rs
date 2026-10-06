@@ -177,7 +177,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
     let (pack_root, manifest) = load_platform_pack(request.platform, request.platform_pack_dir)?;
     let platform_settings = settings::resolve(&sources, request.platform, &manifest)?;
     let plugins = plugins::discover(request.project)?;
-    let (app_name, app_slug) = resolve_app(platform_settings.name.as_deref(), request.worker_name);
+    let (app_name, app_slug) = resolve_app(platform_settings.name.as_deref(), request.worker_name)?;
     let identifier = resolve_identifier(platform_settings.identifier, &app_slug, request.platform)?;
     let version = settings::version(&sources)?;
     let build_dir = request.project.join("build");
@@ -269,7 +269,7 @@ fn build_platform(
     plugins::stage(context.plugins, platform, &input.join("plugins"))
         .context("stage native plugin inputs")?;
     let (app_name, app_slug) =
-        resolve_app(platform_settings.name.as_deref(), &context.wrangler.name);
+        resolve_app(platform_settings.name.as_deref(), &context.wrangler.name)?;
     let identifier = resolve_identifier(platform_settings.identifier.clone(), &app_slug, platform)?;
     write_build_metadata(
         &input,
@@ -318,12 +318,31 @@ fn build_platform(
     })
 }
 
-/// The display name and its slug, falling back to the Worker name.
-fn resolve_app(name: Option<&str>, worker_name: &str) -> (String, String) {
+/// The display name and its slug: the `name` setting's, or else the Worker
+/// name, which must then be a valid slug itself.
+fn resolve_app(name: Option<&str>, worker_name: &str) -> Result<(String, String)> {
     match name {
-        Some(name) => (name.to_owned(), slug(name)),
-        None => (worker_name.to_owned(), worker_name.to_owned()),
+        Some(name) => Ok((name.to_owned(), slug(name))),
+        None if is_valid_app_name(worker_name) => {
+            Ok((worker_name.to_owned(), worker_name.to_owned()))
+        }
+        None => bail!(
+            "the Worker name {worker_name} is not a valid app name (lowercase letters, digits \
+             and inner hyphens, at most 63 characters); set a name with --name, TOKAMAK_NAME or \
+             name in the configuration file"
+        ),
     }
+}
+
+/// Whether `name` can be one DNS label of the app's `tokamak.local` host.
+fn is_valid_app_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 63
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && name.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
 }
 
 fn resolve_identifier(
@@ -608,15 +627,29 @@ mod tests {
     }
 
     #[test]
-    fn resolves_names_with_the_worker_name_as_fallback() {
+    fn resolves_names_with_the_worker_name_as_fallback() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            resolve_app(Some("Myapp Pro"), "worker-name"),
+            resolve_app(Some("Myapp Pro"), "worker_name")?,
             ("Myapp Pro".to_owned(), "myapp-pro".to_owned())
         );
         assert_eq!(
-            resolve_app(None, "worker-name"),
+            resolve_app(None, "worker-name")?,
             ("worker-name".to_owned(), "worker-name".to_owned())
         );
+        for worker_name in [
+            "",
+            "worker_name",
+            "Upper",
+            "-leading",
+            "trailing-",
+            &"a".repeat(64),
+        ] {
+            assert!(
+                resolve_app(None, worker_name).is_err(),
+                "accepted {worker_name}"
+            );
+        }
+        Ok(())
     }
 
     #[test]

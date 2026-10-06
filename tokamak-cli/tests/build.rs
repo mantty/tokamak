@@ -2476,26 +2476,32 @@ fn packages_webassembly_assets_as_static_files() -> TestResult {
 }
 
 #[test]
-fn rejects_unsafe_wrangler_names() -> TestResult {
-    let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    write_worker_config(&project, r#"{"name":"../demo"}"#)?;
+fn requires_a_name_while_the_worker_name_is_not_an_app_name() -> TestResult {
+    let too_long = "a".repeat(64);
+    for name in ["../demo", "Demo_App", "-demo", "demo-", &too_long] {
+        let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
+        write_worker_config(&project, &format!(r#"{{"name":"{name}"}}"#))?;
 
-    build_command("macos", &project, &manifest)?
-        .assert()
-        .failure()
-        .stderr(contains("wrangler config name is not a safe app name"));
+        build_command("macos", &project, &manifest)?
+            .assert()
+            .failure()
+            .stderr(contains(format!(
+                "the Worker name {name} is not a valid app name"
+            )));
+    }
     Ok(())
 }
 
 #[test]
-fn rejects_wrangler_names_that_are_not_dns_labels() -> TestResult {
+fn names_the_app_from_the_name_setting_whatever_the_worker_name() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    write_worker_config(&project, r#"{"name":"Demo_App"}"#)?;
+    write_worker_config(&project, r#"{"name":"my_worker"}"#)?;
 
     build_command("macos", &project, &manifest)?
+        .args(["--name", "My Worker"])
         .assert()
-        .failure()
-        .stderr(contains("wrangler config name is not a safe app name"));
+        .success();
+    assert!(project.join("build/macos/my-worker.app").is_dir());
     Ok(())
 }
 
@@ -2508,21 +2514,6 @@ fn requires_a_wrangler_name() -> TestResult {
         .assert()
         .failure()
         .stderr(contains("missing required field name"));
-    Ok(())
-}
-
-#[test]
-fn rejects_wrangler_names_outside_dns_label_bounds() -> TestResult {
-    let too_long = "a".repeat(64);
-    for name in ["-demo", "demo-", &too_long] {
-        let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-        write_worker_config(&project, &format!(r#"{{"name":"{name}"}}"#))?;
-
-        build_command("macos", &project, &manifest)?
-            .assert()
-            .failure()
-            .stderr(contains("wrangler config name is not a safe app name"));
-    }
     Ok(())
 }
 
