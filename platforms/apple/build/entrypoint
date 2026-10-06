@@ -160,14 +160,18 @@ if [[ ! -f "$native_shell/TokamakShell.swift" ]]; then
   exit 1
 fi
 
-# A plugin's class is a Swift type name, and its sources are Swift.
+# A plugin's class is a Swift type name, which the registry creates, and its
+# sources are Swift.
 swift_type='^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$'
+registry=$temporary/TokamakPluginRegistry.swift
+printf '%s\n\n%s\n%s\n' 'import Foundation' 'func tokamakPlugins(host: TokamakHost) -> [any TokamakPlugin] {' '  [' > "$registry"
 for plugin in "$input/plugins"/*/; do
   class=$(cat "$plugin/class" 2>/dev/null || true)
   if [[ ! "$class" =~ $swift_type ]]; then
     echo "plugin '$(basename "$plugin")' has invalid $platform class '$class'" >&2
     exit 1
   fi
+  printf '    %s(host: host),\n' "$class" >> "$registry"
   for source in "$plugin/sources"/*; do
     case "$source" in
       *.swift) swift_sources+=("$source") ;;
@@ -178,16 +182,7 @@ for plugin in "$input/plugins"/*/; do
     esac
   done
 done
-
-registry=$temporary/TokamakPluginRegistry.swift
-{
-  printf '%s\n\n' 'import Foundation'
-  printf '%s\n' 'func tokamakPlugins(host: TokamakHost) -> [any TokamakPlugin] {' '  ['
-  for plugin in "$input/plugins"/*/; do
-    printf '    %s(host: host),\n' "$(cat "$plugin/class")"
-  done
-  printf '%s\n' '  ]' '}'
-} > "$registry"
+printf '%s\n' '  ]' '}' >> "$registry"
 
 # The executable exports only the entry points of the runtime parts the app
 # links.

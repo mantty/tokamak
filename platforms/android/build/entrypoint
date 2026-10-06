@@ -173,9 +173,11 @@ fi
 
 # Each plugin is a library module, so its manifest merges below the app's and
 # its dependencies stay its own. Its class is a Kotlin class name in a package,
-# and its dependencies are Maven coordinates.
+# which the registry creates, and its dependencies are Maven coordinates.
 kotlin_class='^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$'
 maven_coordinate='^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$'
+registry=$kotlin/TokamakPluginRegistry.kt
+printf '%s\n\n%s\n%s\n' 'package com.tokamak.runtime' 'internal fun tokamakPlugins(host: TokamakHost): List<TokamakPlugin> =' '    listOf(' > "$registry"
 shopt -s nullglob
 for plugin in "$input/plugins"/*/; do
   plugin_id=$(basename "$plugin")
@@ -184,6 +186,7 @@ for plugin in "$input/plugins"/*/; do
     echo "plugin '$plugin_id' has invalid android class '$class'" >&2
     exit 1
   fi
+  printf '        %s(host),\n' "$class" >> "$registry"
   module=$plugin_modules/$plugin_id
   mkdir -p "$module/src/main/kotlin"
   for source in "$plugin/sources"/*; do
@@ -218,6 +221,7 @@ for plugin in "$input/plugins"/*/; do
     printf '%s\n' '}'
   } > "$module/build.gradle"
 done
+printf '%s\n' '    )' >> "$registry"
 
 mkdir -p "$project/app/src/main"
 cat > "$project/settings.gradle" <<'EOF'
@@ -346,16 +350,6 @@ androidComponents {
 }
 EOF
 fi
-
-registry=$kotlin/TokamakPluginRegistry.kt
-{
-  printf '%s\n\n' 'package com.tokamak.runtime'
-  printf '%s\n' 'internal fun tokamakPlugins(host: TokamakHost): List<TokamakPlugin> =' '    listOf('
-  for plugin in "$input/plugins"/*/; do
-    printf '        %s(host),\n' "$(cat "$plugin/class")"
-  done
-  printf '%s\n' '    )'
-} > "$registry"
 
 manifest=$app/src/main/AndroidManifest.xml
 {
