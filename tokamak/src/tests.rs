@@ -1,6 +1,5 @@
 use crate::dispatcher::{
-    AssetManifest, AssetService, Dispatcher, WorkerLoader, WorkerResolver, configure_worker_loader,
-    execute_request, load_worker,
+    Dispatcher, WorkerLoader, WorkerResolver, configure_worker_loader, execute_request, load_worker,
 };
 use crate::fs::VirtualFileSystem;
 use crate::gateway::{
@@ -10,8 +9,8 @@ use crate::gateway::{
     websocket_channels,
 };
 use crate::lifecycle_events::{Event, Events};
-use crate::packaging::WorkerManifest;
-use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
+use crate::packaging::{PackageLayout, WorkerManifest, write_worker};
+use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{HttpBody, HttpRequest, HttpResponse, queue_websocket_message};
 use flume::{Receiver, Sender};
 use reqwest::header::HeaderMap;
@@ -120,86 +119,6 @@ export default {
 };
 "#;
 
-#[test]
-fn uses_the_resolved_asset_for_content_type() {
-    let manifest = AssetManifest {
-        files: BTreeMap::from([("about/index.html".to_owned(), "text/html".to_owned())]),
-        html_handling: "auto-trailing-slash".to_owned(),
-    };
-
-    assert_eq!(
-        manifest.path_for("/about").as_deref(),
-        Some("about/index.html")
-    );
-    assert_eq!(manifest.content_type("about/index.html"), "text/html");
-}
-
-#[test]
-fn serves_the_resolved_asset_with_its_content_type() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let assets = asset_fixture(directory.path())?;
-
-    let response = assets
-        .response(&request("GET", "/about"))?
-        .ok_or("asset was not found")?;
-
-    assert_eq!(header(&response, "content-type"), Some("text/html"));
-    assert!(matches!(response.body, HttpBody::Buffered(body) if body == b"about"));
-    Ok(())
-}
-
-#[test]
-fn serves_asset_headers_for_head_without_reading_the_body() -> Result<(), Box<dyn std::error::Error>>
-{
-    let directory = tempfile::tempdir()?;
-    let assets = asset_fixture(directory.path())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            directory.path().join("about/index.html"),
-            std::fs::Permissions::from_mode(0o000),
-        )?;
-    }
-
-    let response = assets
-        .response(&request("HEAD", "/about"))?
-        .ok_or("asset was not found")?;
-
-    assert_eq!(header(&response, "content-type"), Some("text/html"));
-    assert_eq!(header(&response, "content-length"), Some("5"));
-    assert!(matches!(response.body, HttpBody::Buffered(body) if body.is_empty()));
-    Ok(())
-}
-
-#[test]
-fn reports_a_missing_asset_file_for_get_and_head() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let assets = asset_fixture(directory.path())?;
-    std::fs::remove_file(directory.path().join("about/index.html"))?;
-
-    for method in ["GET", "HEAD"] {
-        let Err(Error::Io(error)) = assets.response(&request(method, "/about")) else {
-            return Err(format!("{method} did not report the missing file").into());
-        };
-        assert_eq!(error.kind(), io::ErrorKind::NotFound);
-    }
-    Ok(())
-}
-
-fn asset_fixture(root: &Path) -> Result<AssetService, Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(root.join("about"))?;
-    std::fs::write(
-        root.join("asset-manifest.json"),
-        br#"{"files":{"about/index.html":"text/html"},"htmlHandling":"auto-trailing-slash"}"#,
-    )?;
-    std::fs::write(root.join("about/index.html"), b"about")?;
-    Ok(AssetService::new(&Assets {
-        manifest: root.join("asset-manifest.json"),
-        root: root.to_owned(),
-    })?)
-}
-
 fn request(method: &str, path: &str) -> HttpRequest {
     HttpRequest {
         persistent: true,
@@ -211,19 +130,11 @@ fn request(method: &str, path: &str) -> HttpRequest {
     }
 }
 
-fn header<'a>(response: &'a HttpResponse, name: &str) -> Option<&'a str> {
-    response
-        .headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-}
-
 #[test]
 fn routes_worker_websocket_messages_through_the_native_bridge()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let bundle = crate::compile_worker(WEBSOCKET_WORKER)?;
-    let worker_bundle = WorkerBundle::from_bytecode(bundle, directory.path());
+    let worker_bundle = WorkerBundle::of_source(WEBSOCKET_WORKER, directory.path())?;
     let config = websocket_config(directory.path());
     let request = request("GET", "/socket");
     let (response_sender, response_receiver) = flume::bounded(1);
@@ -239,7 +150,6 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
         execute_request(
             &worker_bundle,
             &config,
-            None,
             Job {
                 request,
                 response: response_sender,
@@ -289,8 +199,7 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
 fn streams_worker_response_chunks_without_buffering_the_body()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let bundle = crate::compile_worker(STREAM_WORKER)?;
-    let worker_bundle = WorkerBundle::from_bytecode(bundle, directory.path());
+    let worker_bundle = WorkerBundle::of_source(STREAM_WORKER, directory.path())?;
     let config = websocket_config(directory.path());
     let mut request = request("GET", "/socket");
     request.body = Some(vec![9, 8, 7]);
@@ -304,7 +213,6 @@ fn streams_worker_response_chunks_without_buffering_the_body()
         execute_request(
             &worker_bundle,
             &config,
-            None,
             Job {
                 request,
                 response: response_sender,
@@ -332,19 +240,19 @@ fn streams_worker_response_chunks_without_buffering_the_body()
 fn loads_split_worker_modules_through_the_quickjs_loader() -> Result<(), Box<dyn std::error::Error>>
 {
     let directory = tempfile::tempdir()?;
-    let entry = crate::compile_module(
-        "entry.js",
+    std::fs::create_dir_all(directory.path().join("chunks"))?;
+    std::fs::write(
+        directory.path().join("entry.js"),
         br#"import worker from "./chunks/worker.js"; export default worker;"#,
     )?;
-    let chunk = crate::compile_module("chunks/worker.js", br"export default { fetch() {} };")?;
-    std::fs::create_dir_all(directory.path().join("chunks"))?;
-    std::fs::write(directory.path().join("entry.js.qjs"), entry)?;
-    std::fs::write(directory.path().join("chunks/worker.js.qjs"), chunk)?;
-    let worker = WorkerBundle::from_modules(
-        WorkerManifest::es_modules("entry.js", &["chunks/worker.js"]),
-        directory.path(),
-        directory.path(),
-    );
+    std::fs::write(
+        directory.path().join("chunks/worker.js"),
+        br"export default { fetch() {} };",
+    )?;
+    let manifest = WorkerManifest::es_modules("entry.js", &["chunks/worker.js"]);
+    let app = PackageLayout::new(directory.path().join("app"));
+    write_worker(&app, directory.path(), &manifest)?;
+    let worker = WorkerBundle::new(manifest, app);
     let executor = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -406,8 +314,8 @@ export default {
 fn call_runtime()
 -> Result<(crate::gateway::Runtime, tempfile::TempDir), Box<dyn std::error::Error + Send + Sync>> {
     let directory = tempfile::tempdir()?;
-    let worker = WorkerBundle::from_bytecode(crate::compile_worker(CALL_WORKER)?, directory.path());
-    let dispatcher = Dispatcher::new(worker, websocket_config(directory.path()))?;
+    let worker = WorkerBundle::of_source(CALL_WORKER, directory.path())?;
+    let dispatcher = Dispatcher::new(worker, websocket_config(directory.path()));
     let runtime = crate::gateway::Runtime::start(dispatcher, gateway_config(), Events::new(drop))?;
     Ok((runtime, directory))
 }
@@ -627,10 +535,9 @@ fn loads_builtins_without_source_compilation() -> Result<(), Box<dyn std::error:
     let runtime = JsRuntime::new()?;
     configure_worker_loader(
         &runtime,
-        &WorkerBundle::from_modules(
+        &WorkerBundle::new(
             WorkerManifest::es_modules("entry.js", &[]),
-            directory.path(),
-            directory.path(),
+            PackageLayout::new(directory.path()),
         ),
     );
     let context = Context::full(&runtime)?;
@@ -661,8 +568,7 @@ fn loads_builtins_without_source_compilation() -> Result<(), Box<dyn std::error:
 fn initializes_web_globals_before_worker_module_evaluation()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let worker =
-        WorkerBundle::from_bytecode(crate::compile_worker(GLOBAL_WORKER)?, directory.path());
+    let worker = WorkerBundle::of_source(GLOBAL_WORKER, directory.path())?;
     let accepting = Arc::new(AtomicBool::new(true));
     let lifecycle = Lifecycle::new();
     let execution = lifecycle
@@ -673,7 +579,6 @@ fn initializes_web_globals_before_worker_module_evaluation()
     execute_request(
         &worker,
         &websocket_config(directory.path()),
-        None,
         Job {
             request: request("GET", "/socket"),
             response: response_sender,
@@ -701,10 +606,9 @@ fn exposes_bundle_tmp_and_device_operations() -> Result<(), Box<dyn std::error::
     let runtime = JsRuntime::new()?;
     configure_worker_loader(
         &runtime,
-        &WorkerBundle::from_modules(
+        &WorkerBundle::new(
             WorkerManifest::es_modules("entry.js", &[]),
-            directory.path(),
-            directory.path(),
+            PackageLayout::new(directory.path()),
         ),
     );
     let context = Context::full(&runtime)?;
@@ -937,9 +841,12 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
     let config = gateway_config();
     let shared = Arc::new(Shared {
         handler: Dispatcher::new(
-            WorkerBundle::from_bytecode(Vec::new(), PathBuf::default()),
+            WorkerBundle::new(
+                WorkerManifest::es_modules("entry.js", &[]),
+                PackageLayout::new(PathBuf::default()),
+            ),
             quickjs_config,
-        )?,
+        ),
         config,
         tokio: tokio.handle().clone(),
         port: AtomicU16::new(0),
@@ -1169,8 +1076,7 @@ fn stopping_releases_blocked_admission() -> Result<(), Box<dyn std::error::Error
 fn suspension_allows_an_active_javascript_turn_to_finish()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let directory = tempfile::tempdir()?;
-    let bundle = crate::compile_worker(SLOW_WORKER)?;
-    let worker_bundle = WorkerBundle::from_bytecode(bundle, directory.path());
+    let worker_bundle = WorkerBundle::of_source(SLOW_WORKER, directory.path())?;
     let config = websocket_config(directory.path());
     let request = request("GET", "/socket");
     let (response_sender, response_receiver) = flume::bounded(1);
@@ -1189,7 +1095,6 @@ fn suspension_allows_an_active_javascript_turn_to_finish()
         execute_request(
             &worker_bundle,
             &config,
-            None,
             Job {
                 request,
                 response: response_sender,

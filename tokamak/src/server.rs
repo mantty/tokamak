@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::assets::Assets;
 use crate::certificates::{Certificates, Renewal};
 use crate::dev_proxy::{DevProxy, DevProxyConfig};
 use crate::dispatcher::Dispatcher;
@@ -13,8 +14,8 @@ use crate::env_vars::{StorageBinding, load as load_environment};
 use crate::gateway::{self, GatewayConfig};
 use crate::lifecycle_events::{Event, Events};
 use crate::linked::StorageRuntime;
-use crate::packaging::{PackageLayout, decompress_worker_bundle, read_worker_manifest};
-use crate::quickjs::{Assets, RuntimeConfig, WorkerBundle};
+use crate::packaging::{PackageLayout, read_worker_manifest};
+use crate::quickjs::{RuntimeConfig, WorkerBundle};
 
 use crate::Result;
 
@@ -72,9 +73,9 @@ impl Runtime {
             config.state_dir.clone(),
             config.host.clone(),
         )?);
-        let worker = packaged_worker(&config.app)?;
+        let worker = WorkerBundle::new(read_worker_manifest(&config.app)?, config.app.clone());
         validate_worker(&worker)?;
-        let handler = Dispatcher::new(worker, quickjs_config(&config)?)?;
+        let handler = Dispatcher::new(worker, quickjs_config(&config)?);
         finish_start(events, config.host, certificates, handler)
     }
 
@@ -179,28 +180,13 @@ fn finish_start(
     })
 }
 
-fn packaged_worker(app: &PackageLayout) -> Result<WorkerBundle> {
-    if app.worker_manifest().is_file() {
-        Ok(WorkerBundle::from_modules(
-            read_worker_manifest(app)?,
-            app.worker_modules(),
-            app.bundle(),
-        ))
-    } else {
-        let bytecode = decompress_worker_bundle(&std::fs::read(app.worker_bundle())?)?;
-        Ok(WorkerBundle::from_bytecode(bytecode, app.bundle()))
-    }
-}
-
 fn validate_worker(worker: &WorkerBundle) -> Result<()> {
-    let entry_module = worker.modules.join(format!("{}.qjs", worker.entry));
-    let message = match &worker.legacy {
-        _ if worker.entry.is_empty() => "Worker entry module is empty".to_owned(),
-        Some(bytecode) if bytecode.is_empty() => "Worker bytecode is empty".to_owned(),
-        None if !entry_module.is_file() => {
-            format!("Worker entry module is missing: {}", worker.entry)
-        }
-        _ => return Ok(()),
+    let message = if worker.entry.is_empty() {
+        "Worker entry module is empty".to_owned()
+    } else if !worker.app.worker_module(&worker.entry).is_file() {
+        format!("Worker entry module is missing: {}", worker.entry)
+    } else {
+        return Ok(());
     };
     Err(crate::QuickJsError::Startup(message).into())
 }
@@ -229,10 +215,11 @@ fn quickjs_config(config: &Config) -> Result<RuntimeConfig> {
     let mut vars = environment.vars;
     vars.insert(RUNTIME_MARKER.to_owned(), "true".into());
     Ok(RuntimeConfig {
-        assets: app.serves_assets().then(|| Assets {
-            manifest: app.asset_manifest(),
-            root: app.assets(),
-        }),
+        assets: app
+            .serves_assets()
+            .then(|| Assets::open(app))
+            .transpose()?
+            .map(Arc::new),
         cache: config.state_dir.join("cache"),
         environment: vars,
         storage,
@@ -289,7 +276,9 @@ mod tests {
         }
     }
     use crate::certificates::Certificates;
-    use crate::packaging::PackageLayout;
+    use crate::packaging::{
+        AssetManifest, HtmlHandling, NotFoundHandling, PackageLayout, write_asset_manifest,
+    };
     use std::sync::Arc;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -319,7 +308,15 @@ mod tests {
 
         assert!(quickjs_config(&config(directory.path()))?.assets.is_none());
 
-        std::fs::write(app.asset_manifest(), "{}")?;
+        write_asset_manifest(
+            &app,
+            &AssetManifest {
+                binding: "ASSETS".to_owned(),
+                files: BTreeMap::new(),
+                html_handling: HtmlHandling::default(),
+                not_found_handling: NotFoundHandling::default(),
+            },
+        )?;
 
         assert!(quickjs_config(&config(directory.path()))?.assets.is_some());
         Ok(())
@@ -410,15 +407,5 @@ mod tests {
             Some(&json!("true"))
         );
         Ok(())
-    }
-
-    #[test]
-    fn describes_where_an_app_lives() {
-        let config = config(std::path::Path::new("/apps/example"));
-
-        assert_eq!(
-            config.app.worker_bundle(),
-            std::path::Path::new("/apps/example/worker.bundle")
-        );
     }
 }

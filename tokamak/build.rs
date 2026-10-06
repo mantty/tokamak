@@ -3,15 +3,14 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use walkdir::WalkDir;
+
 #[path = "src/compiler.rs"]
 mod compiler;
-#[path = "src/runtime_modules.rs"]
-mod runtime_modules;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/compiler.rs");
-    println!("cargo:rerun-if-changed=src/runtime_modules.rs");
     let target_os = env::var("CARGO_CFG_TARGET_OS")?;
     if env::var_os("CARGO_FEATURE_NATIVE").is_some() {
         compile_builtins()?;
@@ -23,20 +22,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Compile every JavaScript module under `src`: those under `storage/` into
+/// the storage part, the others into the runtime.
 fn compile_builtins() -> Result<(), Box<dyn std::error::Error>> {
+    // A module added anywhere under `src` is compiled too.
+    println!("cargo:rerun-if-changed=src");
     let output = PathBuf::from(env::var("OUT_DIR")?);
-    write_builtin_table(
-        &output,
-        "builtins.rs",
-        "BUILTINS",
-        runtime_modules::BUILTIN_SOURCES,
-    )?;
-    write_builtin_table(
-        &output,
-        "storage_builtins.rs",
-        "STORAGE_BUILTINS",
-        runtime_modules::STORAGE_SOURCES,
-    )
+    let (storage, builtins): (Vec<_>, Vec<_>) = builtin_sources()?
+        .into_iter()
+        .partition(|module| module.starts_with("storage/"));
+    write_builtin_table(&output, "builtins.rs", "BUILTINS", &builtins)?;
+    write_builtin_table(&output, "storage_builtins.rs", "STORAGE_BUILTINS", &storage)
+}
+
+/// The path under `src` of each JavaScript module there.
+fn builtin_sources() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut modules = Vec::new();
+    for entry in WalkDir::new("src").sort_by_file_name() {
+        let path = entry?.into_path();
+        if path.extension().is_some_and(|extension| extension == "mjs") {
+            let module = path.strip_prefix("src")?.to_string_lossy();
+            modules.push(module.replace('\\', "/"));
+        }
+    }
+    Ok(modules)
 }
 
 /// Export the storage part's entry point from test executables.
@@ -55,12 +64,11 @@ fn write_builtin_table(
     output: &Path,
     table: &str,
     constant: &str,
-    sources: &[&str],
+    sources: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut modules = format!("const {constant}: &[(&str, &[u8])] = &[\n");
     for module in sources {
         let source = Path::new("src").join(module);
-        println!("cargo:rerun-if-changed={}", source.display());
         let name = format!("tokamak:{module}");
         let bytecode =
             compiler::compile_module(&name, &fs::read(&source)?, compiler::SourceText::Stripped)

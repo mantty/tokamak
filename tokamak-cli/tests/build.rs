@@ -7,7 +7,10 @@ use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tokamak::compile_module;
-use tokamak::{ModuleType, PackageLayout, decompress_worker_module, read_worker_manifest};
+use tokamak::{
+    HtmlHandling, ModuleType, NotFoundHandling, PackageLayout, read_asset_manifest,
+    read_worker_manifest, read_worker_module,
+};
 use tokamak_cli::{
     MANIFEST_FILE, PackVariable, PlatformPackManifest, Target, VariableKind, write_manifest,
 };
@@ -729,7 +732,7 @@ fn builds_macos_app_with_quickjs_bundle_and_assets() -> TestResult {
     let manifest = read_worker_manifest(&PackageLayout::new(&app))?;
     assert_eq!(manifest.entry, "index.js");
     assert_eq!(
-        decompress_worker_module(&fs::read(app.join("worker-modules/index.js.qjs"))?)?,
+        read_worker_module(&PackageLayout::new(&app), "index.js")?,
         compile_module("index.js", &fs::read(project.join("dist/app/index.js"))?)?
     );
     assert!(app.join("assets/index.html").is_file());
@@ -738,9 +741,8 @@ fn builds_macos_app_with_quickjs_bundle_and_assets() -> TestResult {
     assert!(!bundle.join("Contents/Resources/Assets.car").exists());
     assert!(!plist.contains("CFBundleIconName"));
     assert!(!plist.contains("CFBundleIconFile"));
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(app.join("asset-manifest.json"))?)?;
-    assert_eq!(manifest["files"]["styles/app.css"], "text/css");
+    let manifest = read_asset_manifest(&PackageLayout::new(&app))?;
+    assert_eq!(manifest.files["styles/app.css"], "text/css");
     assert!(!app.join("config.capnp").exists());
     Ok(())
 }
@@ -1457,7 +1459,7 @@ fn compiles_es_modules_and_copies_text_and_data_modules() -> TestResult {
         .into()
     );
     assert_eq!(
-        decompress_worker_module(&fs::read(app.join("worker-modules/assets/lazy.js.qjs"))?)?,
+        read_worker_module(&PackageLayout::new(&app), "assets/lazy.js")?,
         compile_module("assets/lazy.js", &fs::read(worker.join("assets/lazy.js"))?)?
     );
     assert_eq!(
@@ -1567,7 +1569,7 @@ fn packages_each_generated_configuration_without_recompiling_unchanged_modules()
     packaged_vars(r#"{ "STAGE": "production" }"#)?;
     assert_ne!(worker_compiled_at(&build_dir)?, compiled);
     assert_eq!(
-        decompress_worker_module(&fs::read(app.join("worker-modules/index.js.qjs"))?)?,
+        read_worker_module(&PackageLayout::new(&app), "index.js")?,
         compile_module("index.js", &fs::read(&entry)?)?
     );
     Ok(())
@@ -2483,10 +2485,13 @@ fn writes_configured_asset_routing_modes() -> TestResult {
         .assert()
         .success();
 
-    let path = project.join("build/macos/demo-app.app/Contents/Resources/app/asset-manifest.json");
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
-    assert_eq!(value["htmlHandling"], "drop-trailing-slash");
-    assert_eq!(value["notFoundHandling"], "single-page-application");
+    let app = PackageLayout::new(project.join("build/macos/demo-app.app/Contents/Resources/app"));
+    let manifest = read_asset_manifest(&app)?;
+    assert_eq!(manifest.html_handling, HtmlHandling::DropTrailingSlash);
+    assert_eq!(
+        manifest.not_found_handling,
+        NotFoundHandling::SinglePageApplication
+    );
     Ok(())
 }
 

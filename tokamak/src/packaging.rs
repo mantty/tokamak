@@ -1,4 +1,4 @@
-//! Packaged directory layout and Worker bytecode formats.
+//! Packaged directory layout and the formats of the files in it.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -7,12 +7,13 @@ use std::path::{Path, PathBuf};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const WORKER_BUNDLE_HEADER: &[u8] = b"TOKAMAK-QJS-GZIP\x01";
+use crate::compiler::{SourceText, compile_module};
 
-/// Failures reading or writing packaged Worker bytecode and manifests.
+/// Failures reading or writing a packaged app.
 #[derive(Debug, Error)]
 pub enum Error {
     /// Operating-system IO failed.
@@ -21,6 +22,14 @@ pub enum Error {
     /// JSON encoding or decoding failed.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// An ES module did not compile.
+    #[error("compile Worker module {name}: {message}")]
+    Compile {
+        /// The module's name.
+        name: String,
+        /// Why it did not compile.
+        message: String,
+    },
 }
 
 /// Result type for package layout and bytecode operations.
@@ -45,12 +54,6 @@ impl PackageLayout {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
-    }
-
-    /// The `QuickJS` Worker bytecode.
-    #[must_use]
-    pub fn worker_bundle(&self) -> PathBuf {
-        self.root.join("worker.bundle")
     }
 
     /// The manifest describing the split `QuickJS` Worker modules.
@@ -100,46 +103,23 @@ impl PackageLayout {
     pub fn serves_assets(&self) -> bool {
         self.asset_manifest().is_file()
     }
+
+    /// The bytecode of the ES module `name`.
+    pub(crate) fn worker_module(&self, name: &str) -> PathBuf {
+        self.worker_modules().join(format!("{name}.qjs"))
+    }
 }
 
-/// A Worker module's type, as Cloudflare names it in Wrangler's module rules.
+/// A packaged Worker module's type.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ModuleType {
-    /// JavaScript ES module source.
+    /// JavaScript ES module, packaged as bytecode.
     #[serde(rename = "ESModule")]
     EsModule,
-    /// `CommonJS` JavaScript source.
-    #[serde(rename = "CommonJS")]
-    CommonJs,
-    /// Compiled WebAssembly binary.
-    CompiledWasm,
     /// Text, imported as a string.
     Text,
     /// Binary data, imported as an `ArrayBuffer`.
     Data,
-}
-
-impl ModuleType {
-    /// The type's name in Wrangler's module rules.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::EsModule => "ESModule",
-            Self::CommonJs => "CommonJS",
-            Self::CompiledWasm => "CompiledWasm",
-            Self::Text => "Text",
-            Self::Data => "Data",
-        }
-    }
-
-    /// Whether the runtime loads modules of this type.
-    #[must_use]
-    pub const fn is_supported(self) -> bool {
-        match self {
-            Self::EsModule | Self::Text | Self::Data => true,
-            Self::CommonJs | Self::CompiledWasm => false,
-        }
-    }
 }
 
 /// A packaged Worker's modules: ES modules as bytecode in
@@ -167,110 +147,171 @@ impl WorkerManifest {
     }
 }
 
-/// Compress `QuickJS` bytecode for storage in a packaged app.
-///
-/// # Errors
-///
-/// Returns an error when the gzip encoder cannot write the bytecode.
-pub fn compress_worker_bundle(bytecode: &[u8]) -> Result<Vec<u8>> {
-    compress_worker_bytecode(bytecode, WORKER_BUNDLE_HEADER)
+/// A packaged app's static assets, in [`PackageLayout::assets`], and how
+/// requests resolve to them.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetManifest {
+    /// The name of the Worker's binding to the assets.
+    pub binding: String,
+    /// The content type of each asset, by its path in the assets directory.
+    pub files: BTreeMap<String, String>,
+    /// The paths HTML assets are served at.
+    pub html_handling: HtmlHandling,
+    /// What serves a path no asset serves.
+    pub not_found_handling: NotFoundHandling,
 }
 
-/// Decode a packaged `QuickJS` bundle.
-///
-/// Legacy uncompressed bundles are returned unchanged.
+/// Cloudflare's `assets.html_handling`: the paths HTML assets are served at.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HtmlHandling {
+    /// `page/index.html` at `/page/` and `page.html` at `/page`.
+    #[default]
+    AutoTrailingSlash,
+    /// Both at `/page/`.
+    ForceTrailingSlash,
+    /// Both at `/page`.
+    DropTrailingSlash,
+    /// Each asset at its own path only.
+    None,
+}
+
+/// Cloudflare's `assets.not_found_handling`: what serves a path no asset
+/// serves.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotFoundHandling {
+    /// Nothing.
+    #[default]
+    None,
+    /// `/index.html`, with status 200.
+    SinglePageApplication,
+    /// The nearest `404.html` in the path's directory or above it, with
+    /// status 404.
+    #[serde(rename = "404-page")]
+    Page404,
+}
+
+/// Package the Worker `manifest` describes, from its module files in `root`:
+/// ES modules compiled to bytecode, Text and Data modules copied into its
+/// `/bundle`.
 ///
 /// # Errors
 ///
-/// Returns an error when a compressed bundle is invalid or cannot be decoded.
-pub fn decompress_worker_bundle(bundle: &[u8]) -> Result<Vec<u8>> {
-    if !bundle.starts_with(WORKER_BUNDLE_HEADER) {
-        return Ok(bundle.to_vec());
+/// Returns an error when a module cannot be read, compiled or written.
+pub fn write_worker(layout: &PackageLayout, root: &Path, manifest: &WorkerManifest) -> Result<()> {
+    std::fs::create_dir_all(layout.bundle())?;
+    for (name, module_type) in &manifest.modules {
+        let source = std::fs::read(root.join(name))?;
+        match module_type {
+            ModuleType::EsModule => {
+                write_file(
+                    &layout.worker_module(name),
+                    &compile_worker_module(name, &source)?,
+                )?;
+            }
+            ModuleType::Text | ModuleType::Data => {
+                write_file(&layout.bundle().join(name), &source)?;
+            }
+        }
     }
-    decompress_gzip(&bundle[WORKER_BUNDLE_HEADER.len()..])
+    write_file(
+        &layout.worker_manifest(),
+        &serde_json::to_vec_pretty(manifest)?,
+    )
 }
 
-/// Compress one split Worker module for storage in a packaged app.
-///
-/// The result is either a standard gzip stream or the original bytecode when
-/// compression would make the module larger. This keeps small modules cheap
-/// while allowing the runtime to decode each module independently.
-///
-/// # Errors
-///
-/// Returns an error when the gzip encoder cannot write the bytecode.
-pub fn compress_worker_module(bytecode: &[u8]) -> Result<Vec<u8>> {
-    compress_worker_bytecode(bytecode, &[])
-}
-
-fn compress_worker_bytecode(bytecode: &[u8], prefix: &[u8]) -> Result<Vec<u8>> {
-    let mut compressor = GzEncoder::new(prefix.to_vec(), Compression::best());
-    compressor.write_all(bytecode)?;
-    let compressed = compressor.finish()?;
-    Ok(if compressed.len() < bytecode.len() {
-        compressed
-    } else {
-        bytecode.to_vec()
-    })
-}
-
-/// Decode one independently stored Worker module.
-///
-/// # Errors
-///
-/// Returns an error when a gzip-compressed module is invalid.
-pub fn decompress_worker_module(module: &[u8]) -> Result<Vec<u8>> {
-    if !module.starts_with(&[0x1f, 0x8b]) {
-        return Ok(module.to_vec());
-    }
-    decompress_gzip(module)
-}
-
-fn decompress_gzip(compressed: &[u8]) -> Result<Vec<u8>> {
-    let mut decoder = GzDecoder::new(compressed);
-    let mut bytecode = Vec::new();
-    decoder.read_to_end(&mut bytecode)?;
-    Ok(bytecode)
-}
-
-/// Write the split Worker manifest.
-///
-/// # Errors
-///
-/// Returns an error when the manifest cannot be serialized or written.
-pub fn write_worker_manifest(layout: &PackageLayout, manifest: &WorkerManifest) -> Result<()> {
-    std::fs::write(
-        layout.worker_manifest(),
-        serde_json::to_vec_pretty(manifest)?,
-    )?;
-    Ok(())
-}
-
-/// Read the split Worker manifest.
+/// Read the packaged Worker's manifest.
 ///
 /// # Errors
 ///
 /// Returns an error when the manifest cannot be read or decoded.
 pub fn read_worker_manifest(layout: &PackageLayout) -> Result<WorkerManifest> {
-    Ok(serde_json::from_slice(&std::fs::read(
-        layout.worker_manifest(),
-    )?)?)
+    read_json(&layout.worker_manifest())
+}
+
+/// The bytecode of the packaged ES module `name`.
+///
+/// # Errors
+///
+/// Returns an error when the module cannot be read or decoded.
+pub fn read_worker_module(layout: &PackageLayout, name: &str) -> Result<Vec<u8>> {
+    let module = std::fs::read(layout.worker_module(name))?;
+    if !module.starts_with(&[0x1f, 0x8b]) {
+        return Ok(module);
+    }
+    let mut bytecode = Vec::new();
+    GzDecoder::new(module.as_slice()).read_to_end(&mut bytecode)?;
+    Ok(bytecode)
+}
+
+/// Write the packaged app's asset manifest.
+///
+/// # Errors
+///
+/// Returns an error when the manifest cannot be encoded or written.
+pub fn write_asset_manifest(layout: &PackageLayout, manifest: &AssetManifest) -> Result<()> {
+    write_file(
+        &layout.asset_manifest(),
+        &serde_json::to_vec_pretty(manifest)?,
+    )
+}
+
+/// Read the packaged app's asset manifest.
+///
+/// # Errors
+///
+/// Returns an error when the manifest cannot be read or decoded.
+pub fn read_asset_manifest(layout: &PackageLayout) -> Result<AssetManifest> {
+    read_json(&layout.asset_manifest())
+}
+
+/// `name`'s bytecode, gzip-compressed unless that makes it larger, so each
+/// module decodes independently and small modules stay cheap.
+fn compile_worker_module(name: &str, source: &[u8]) -> Result<Vec<u8>> {
+    let bytecode =
+        compile_module(name, source, SourceText::Embedded).map_err(|message| Error::Compile {
+            name: name.to_owned(),
+            message,
+        })?;
+    let mut compressor = GzEncoder::new(Vec::new(), Compression::best());
+    compressor.write_all(&bytecode)?;
+    let compressed = compressor.finish()?;
+    Ok(if compressed.len() < bytecode.len() {
+        compressed
+    } else {
+        bytecode
+    })
+}
+
+fn write_file(path: &Path, contents: &[u8]) -> Result<()> {
+    if let Some(directory) = path.parent() {
+        std::fs::create_dir_all(directory)?;
+    }
+    std::fs::write(path, contents)?;
+    Ok(())
+}
+
+fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::fs;
+
     use super::{
-        ModuleType, PackageLayout, WORKER_BUNDLE_HEADER, WorkerManifest, compress_worker_bundle,
-        compress_worker_module, decompress_worker_bundle, decompress_worker_module,
+        AssetManifest, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout, WorkerManifest,
+        read_asset_manifest, read_worker_manifest, read_worker_module, write_asset_manifest,
+        write_worker,
     };
+    use crate::compiler::{SourceText, compile_module};
 
     #[test]
     fn resolves_every_path_under_the_app_root() {
         let layout = PackageLayout::new("/apps/example");
-        assert_eq!(
-            layout.worker_bundle(),
-            std::path::Path::new("/apps/example/worker.bundle")
-        );
         assert_eq!(
             layout.worker_manifest(),
             std::path::Path::new("/apps/example/worker-manifest.json")
@@ -307,73 +348,90 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_compressed_worker_bytecode() -> Result<(), Box<dyn std::error::Error>> {
-        let bytecode = b"quickjs bytecode".repeat(128);
-        let compressed = compress_worker_bundle(&bytecode)?;
-
-        assert!(compressed.starts_with(WORKER_BUNDLE_HEADER));
-        assert!(compressed.len() < bytecode.len());
-        assert_eq!(decompress_worker_bundle(&compressed)?, bytecode);
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_corrupt_compressed_worker_bytecode() -> Result<(), Box<dyn std::error::Error>> {
-        let mut compressed = compress_worker_bundle(&b"quickjs bytecode".repeat(128))?;
-        let last = compressed
-            .last_mut()
-            .ok_or("compressed worker bundle was empty")?;
-        *last ^= 1;
-
-        assert!(decompress_worker_bundle(&compressed).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn accepts_legacy_uncompressed_worker_bytecode() -> Result<(), Box<dyn std::error::Error>> {
-        let bytecode = b"legacy bytecode";
-
-        assert_eq!(decompress_worker_bundle(bytecode)?, bytecode);
-        Ok(())
-    }
-
-    #[test]
-    fn compresses_split_modules_independently() -> Result<(), Box<dyn std::error::Error>> {
-        let bytecode = b"quickjs bytecode".repeat(128);
-        let compressed = compress_worker_module(&bytecode)?;
-        assert_eq!(decompress_worker_module(&compressed)?, bytecode);
-        Ok(())
-    }
-
-    #[test]
-    fn names_module_types_as_wrangler_does() -> Result<(), Box<dyn std::error::Error>> {
-        for module_type in [
-            ModuleType::EsModule,
-            ModuleType::CommonJs,
-            ModuleType::CompiledWasm,
-            ModuleType::Text,
-            ModuleType::Data,
-        ] {
-            assert_eq!(serde_json::to_value(module_type)?, module_type.name());
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn round_trips_worker_manifest() -> Result<(), Box<dyn std::error::Error>> {
+    fn packages_es_modules_as_bytecode_and_copies_text_and_data_modules()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
-        let layout = PackageLayout::new(directory.path());
+        let root = directory.path().join("worker");
+        let large = format!("export default {:?};", "quickjs bytecode".repeat(128));
+        fs::create_dir_all(root.join("assets"))?;
+        fs::write(root.join("entry.js"), "export default 1;")?;
+        fs::write(root.join("assets/large.js"), &large)?;
+        fs::write(root.join("assets/page.html"), "<p>page</p>")?;
         let manifest = WorkerManifest {
             entry: "entry.js".to_owned(),
-            modules: [
-                ("entry.js".to_owned(), super::ModuleType::EsModule),
-                ("assets/page.html".to_owned(), super::ModuleType::Text),
-            ]
-            .into(),
+            modules: BTreeMap::from([
+                ("entry.js".to_owned(), ModuleType::EsModule),
+                ("assets/large.js".to_owned(), ModuleType::EsModule),
+                ("assets/page.html".to_owned(), ModuleType::Text),
+            ]),
         };
-        super::write_worker_manifest(&layout, &manifest)?;
+        let layout = PackageLayout::new(directory.path().join("app"));
 
-        assert_eq!(super::read_worker_manifest(&layout)?, manifest);
+        write_worker(&layout, &root, &manifest)?;
+
+        assert_eq!(read_worker_manifest(&layout)?, manifest);
+        for (name, source) in [
+            ("entry.js", "export default 1;"),
+            ("assets/large.js", &large),
+        ] {
+            let bytecode = compile_module(name, source.as_bytes(), SourceText::Embedded)?;
+            assert_eq!(read_worker_module(&layout, name)?, bytecode);
+        }
+        assert!(
+            fs::metadata(layout.worker_modules().join("assets/large.js.qjs"))?.len()
+                < fs::metadata(root.join("assets/large.js"))?.len()
+        );
+        assert_eq!(
+            fs::read_to_string(layout.bundle().join("assets/page.html"))?,
+            "<p>page</p>"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reports_the_module_that_does_not_compile() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        fs::write(directory.path().join("entry.js"), "export default {")?;
+        let manifest = WorkerManifest {
+            entry: "entry.js".to_owned(),
+            modules: BTreeMap::from([("entry.js".to_owned(), ModuleType::EsModule)]),
+        };
+
+        let error = write_worker(
+            &PackageLayout::new(directory.path().join("app")),
+            directory.path(),
+            &manifest,
+        )
+        .err()
+        .ok_or("the module compiled")?;
+
+        assert!(
+            error
+                .to_string()
+                .starts_with("compile Worker module entry.js: "),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn writes_the_asset_manifest_in_wrangler_terms() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let layout = PackageLayout::new(directory.path());
+        let manifest = AssetManifest {
+            binding: "STATIC".to_owned(),
+            files: BTreeMap::from([("index.html".to_owned(), "text/html".to_owned())]),
+            html_handling: HtmlHandling::DropTrailingSlash,
+            not_found_handling: NotFoundHandling::Page404,
+        };
+
+        write_asset_manifest(&layout, &manifest)?;
+
+        let json: serde_json::Value = serde_json::from_slice(&fs::read(layout.asset_manifest())?)?;
+        assert_eq!(json["htmlHandling"], "drop-trailing-slash");
+        assert_eq!(json["notFoundHandling"], "404-page");
+        assert_eq!(read_asset_manifest(&layout)?, manifest);
+        assert!(layout.serves_assets());
         Ok(())
     }
 }

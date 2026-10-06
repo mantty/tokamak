@@ -12,9 +12,7 @@ use std::sync::Arc;
 #[cfg(feature = "native")]
 use crate::fs::Bundle as VfsBundle;
 #[cfg(feature = "native")]
-use crate::packaging::{ModuleType, WorkerManifest};
-#[cfg(feature = "native")]
-use serde::{Deserialize, Serialize};
+use crate::packaging::{ModuleType, PackageLayout, WorkerManifest};
 #[cfg(feature = "native")]
 use serde_json::Value;
 use thiserror::Error;
@@ -58,16 +56,6 @@ impl Error {
     }
 }
 
-/// Static asset service paths.
-#[cfg(feature = "native")]
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Assets {
-    /// Asset routing manifest.
-    pub manifest: PathBuf,
-    /// Root directory containing static assets.
-    pub root: PathBuf,
-}
-
 /// A packaged Worker whose modules are loaded independently by `QuickJS`.
 #[cfg(feature = "native")]
 #[derive(Clone, Debug)]
@@ -75,43 +63,38 @@ pub struct WorkerBundle {
     pub(crate) entry: String,
     /// The type of each module, by name.
     pub(crate) module_types: Arc<BTreeMap<String, ModuleType>>,
-    /// The directory of ES module bytecode.
-    pub(crate) modules: PathBuf,
+    /// The packaged app holding the Worker.
+    pub(crate) app: PackageLayout,
     /// The read-only `/bundle`, which holds the Text and Data modules.
     pub(crate) vfs_bundle: VfsBundle,
-    pub(crate) legacy: Option<Arc<Vec<u8>>>,
 }
 
 #[cfg(feature = "native")]
 impl WorkerBundle {
-    /// Describe the Worker `manifest` lists, with ES module bytecode in
-    /// `modules` and the read-only `/bundle` at `bundle`.
+    /// Describe the Worker `manifest` lists, packaged in `app`.
     #[must_use]
-    pub fn from_modules(
-        manifest: WorkerManifest,
-        modules: impl Into<PathBuf>,
-        bundle: impl Into<PathBuf>,
-    ) -> Self {
+    pub fn new(manifest: WorkerManifest, app: PackageLayout) -> Self {
         Self {
             entry: manifest.entry,
             module_types: Arc::new(manifest.modules),
-            modules: modules.into(),
-            vfs_bundle: VfsBundle::new(bundle.into()),
-            legacy: None,
+            vfs_bundle: VfsBundle::new(app.bundle()),
+            app,
         }
     }
+}
 
-    /// Describe a legacy single-bytecode Worker and its read-only `/bundle`.
-    #[must_use]
-    pub fn from_bytecode(bytecode: Vec<u8>, bundle: impl Into<PathBuf>) -> Self {
-        let entry = "tokamak-worker.mjs".to_owned();
-        Self {
-            module_types: Arc::new(BTreeMap::from([(entry.clone(), ModuleType::EsModule)])),
-            entry,
-            modules: PathBuf::new(),
-            vfs_bundle: VfsBundle::new(bundle.into()),
-            legacy: Some(Arc::new(bytecode)),
-        }
+#[cfg(all(test, feature = "native"))]
+impl WorkerBundle {
+    /// The Worker of the ES module `source`, packaged in `directory`.
+    pub(crate) fn of_source(
+        source: impl AsRef<[u8]>,
+        directory: &std::path::Path,
+    ) -> std::result::Result<Self, crate::packaging::Error> {
+        let manifest = WorkerManifest::es_modules("worker.mjs", &[]);
+        let app = PackageLayout::new(directory.join("app"));
+        std::fs::write(directory.join("worker.mjs"), source)?;
+        crate::packaging::write_worker(&app, directory, &manifest)?;
+        Ok(Self::new(manifest, app))
     }
 }
 
@@ -119,25 +102,14 @@ impl WorkerBundle {
 #[cfg(feature = "native")]
 #[derive(Clone, Debug)]
 pub(crate) struct RuntimeConfig {
-    /// Optional static asset service.
-    pub(crate) assets: Option<Assets>,
+    /// The app's static assets, when it has any.
+    pub(crate) assets: Option<Arc<crate::assets::Assets>>,
     /// Directory containing the app-private Worker cache.
     pub(crate) cache: PathBuf,
     /// Text and JSON Worker environment bindings.
     pub(crate) environment: BTreeMap<String, Value>,
     /// The stores behind storage bindings, when the app has any.
     pub(crate) storage: Option<Arc<dyn crate::linked::StorageRuntime>>,
-}
-
-/// Compile a bundled Worker module to `QuickJS` bytecode.
-///
-/// The input must be a self-contained ES module without unresolved imports.
-///
-/// # Errors
-///
-/// Returns an error when `QuickJS` cannot compile or serialize the module.
-pub fn compile_worker(source: &[u8]) -> Result<Vec<u8>> {
-    compile_module("tokamak-worker.mjs", source)
 }
 
 /// Compile one named Worker module to `QuickJS` bytecode.
@@ -155,7 +127,7 @@ pub fn compile_module(name: &str, source: &[u8]) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::compile_worker;
+    use super::compile_module;
     use rquickjs::{ArrayBuffer, Context, Module, Runtime};
     use std::sync::{
         Arc,
@@ -241,7 +213,7 @@ mod tests {
 
     #[test]
     fn compiles_and_loads_a_module_bytecode_blob() -> Result<(), Box<dyn std::error::Error>> {
-        let bytecode = compile_worker(b"export const value = 42;")?;
+        let bytecode = compile_module("value.mjs", b"export const value = 42;")?;
         let runtime = Runtime::new()?;
         let context = Context::full(&runtime)?;
 

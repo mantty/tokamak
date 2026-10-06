@@ -792,7 +792,7 @@ npm run build --prefix tokamak-cli/npm
 npm test --prefix tokamak-cli/npm
 pnpm --dir tokamak/tests/quickjs_runtime install --frozen-lockfile
 pnpm --dir examples/astro install --frozen-lockfile
-TOKAMAK_VITE_OUTPUT="$PWD/examples/astro/build/.tokamak/vite" pnpm --dir examples/astro run build
+pnpm --dir examples/astro run build
 cargo fmt --all --check
 cargo test -p tokamak --features native
 node --test tokamak/tests/quickjs_runtime/runtime.test.mjs

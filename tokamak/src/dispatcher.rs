@@ -1,11 +1,11 @@
 use flume::Sender;
-use std::collections::BTreeMap;
 use std::io;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use tokio_util::sync::CancellationToken;
 
+use crate::assets::{AssetResponse, Assets};
 use crate::compat;
 use crate::fs::VirtualFileSystem;
 use crate::fs::{
@@ -18,12 +18,10 @@ use crate::gateway::{
 };
 use crate::globals::ResponseEncoder;
 use crate::linked::StorageRuntime;
-use crate::packaging::{ModuleType, decompress_worker_module};
-use crate::quickjs::{Assets, Error, RuntimeConfig, WorkerBundle};
-use crate::transport::{
-    BodyChunk, HttpBody, HttpRequest, HttpResponse, append_header, response_stream,
-};
-use reqwest::header::{HeaderMap, HeaderValue};
+use crate::packaging::{self, ModuleType};
+use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
+use crate::transport::{BodyChunk, HttpRequest, HttpResponse, append_header, response_stream};
+use reqwest::header::HeaderMap;
 use rquickjs::convert::List;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::module::{Declarations, Exports, ModuleDef};
@@ -32,46 +30,33 @@ use rquickjs::{
     TypedArray, Value,
 };
 
-/// Dispatches packaged application requests through `QuickJS`.
+/// Dispatches packaged application requests to the app's assets or, through
+/// `QuickJS`, its Worker.
 pub(crate) struct Dispatcher {
     worker: Arc<WorkerBundle>,
     config: RuntimeConfig,
-    assets: Option<Arc<AssetService>>,
 }
 
 impl Dispatcher {
-    pub(crate) fn new(bundle: WorkerBundle, config: RuntimeConfig) -> Result<Arc<Self>, Error> {
-        let assets = config
-            .assets
-            .as_ref()
-            .map(AssetService::new)
-            .transpose()?
-            .map(Arc::new);
-        Ok(Arc::new(Self {
+    pub(crate) fn new(bundle: WorkerBundle, config: RuntimeConfig) -> Arc<Self> {
+        Arc::new(Self {
             worker: Arc::new(bundle),
             config,
-            assets,
-        }))
+        })
     }
 }
 
 impl Handler for Dispatcher {
     fn handle(&self, job: Job, execution: &Execution<'_>) -> Result<(), Error> {
-        if let Some(assets) = &self.assets
-            && let Some(asset) = assets.response(&job.request)?
+        if let Some(assets) = &self.config.assets
+            && let Some(asset) = assets.route(&job.request)?
         {
             return job
                 .response
                 .send(JobResponse::Http(asset))
                 .map_err(|_| Error::startup("HTTP response receiver closed"));
         }
-        execute_request(
-            &self.worker,
-            &self.config,
-            self.assets.as_ref(),
-            job,
-            execution,
-        )
+        execute_request(&self.worker, &self.config, job, execution)
     }
 }
 
@@ -89,13 +74,10 @@ pub(super) fn configure_worker_loader(runtime: &rquickjs::Runtime, worker: &Work
 pub(super) fn execute_request(
     worker: &WorkerBundle,
     config: &RuntimeConfig,
-    assets: Option<&Arc<AssetService>>,
     job: Job,
     execution: &Execution<'_>,
 ) -> Result<(), Error> {
-    block_on(execute_request_async(
-        worker, config, assets, job, execution,
-    ))
+    block_on(execute_request_async(worker, config, job, execution))
 }
 
 fn block_on<T>(future: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
@@ -140,7 +122,6 @@ async fn worker_runtime(
 async fn execute_request_async(
     worker: &WorkerBundle,
     config: &RuntimeConfig,
-    assets: Option<&Arc<AssetService>>,
     job: Job,
     execution: &Execution<'_>,
 ) -> Result<(), Error> {
@@ -154,7 +135,7 @@ async fn execute_request_async(
             response: response_sender,
             websocket,
         } = job;
-        install_worker_globals(&ctx, config, assets)?;
+        install_worker_globals(&ctx, config)?;
         install_request(&ctx, &request)?;
         initialize_worker_context(&ctx, worker)?;
         let response = invoke_worker(&ctx, worker).await?;
@@ -210,19 +191,15 @@ async fn invoke_worker<'js>(ctx: &Ctx<'js>, worker: &WorkerBundle) -> Result<Obj
     finish_promise(ctx, &response, "response").await
 }
 
-fn install_worker_globals(
-    ctx: &Ctx<'_>,
-    config: &RuntimeConfig,
-    assets: Option<&Arc<AssetService>>,
-) -> Result<(), Error> {
+fn install_worker_globals(ctx: &Ctx<'_>, config: &RuntimeConfig) -> Result<(), Error> {
     let environment = serde_json::to_string(&config.environment)?;
     let cache = serde_json::to_string(&config.cache.to_string_lossy())?;
     ctx.eval::<(), _>(format!(
         "globalThis.__tokamak_env = {environment}; globalThis.__tokamak_cache = {cache};"
     ))
     .map_err(|error| js_error("setup", error))?;
-    if let Some(assets) = assets {
-        install_asset_lookup(ctx, assets)?;
+    if let Some(assets) = &config.assets {
+        install_assets(ctx, assets).map_err(|error| js_error("assets", error))?;
     }
     if let Some(storage) = &config.storage {
         Arc::clone(storage)
@@ -399,9 +376,6 @@ impl WorkerLoader {
             ModuleType::EsModule => self.load_bytecode(ctx, name),
             ModuleType::Text => Module::declare_def::<TextModule, _>(ctx.clone(), name),
             ModuleType::Data => Module::declare_def::<DataModule, _>(ctx.clone(), name),
-            ModuleType::CommonJs | ModuleType::CompiledWasm => Err(
-                rquickjs::Error::new_loading_message(name, "unsupported module type"),
-            ),
         }
     }
 
@@ -467,17 +441,7 @@ fn read_worker_module(bundle: &WorkerBundle, name: &str) -> io::Result<Vec<u8>> 
             "invalid Worker module name",
         ));
     }
-    if let Some(bytecode) = &bundle.legacy {
-        if name == bundle.entry {
-            return Ok(bytecode.to_vec());
-        }
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Worker module not found",
-        ));
-    }
-    let bytes = std::fs::read(bundle.modules.join(format!("{name}.qjs")))?;
-    decompress_worker_module(&bytes).map_err(io::Error::other)
+    packaging::read_worker_module(&bundle.app, name).map_err(io::Error::other)
 }
 
 async fn websocket_loop<'js>(
@@ -878,122 +842,30 @@ async fn finish_promise<'js, T: rquickjs::FromJs<'js>>(
         .map_err(|error| js_exception(ctx, stage, error))
 }
 
-/// Serves static assets from a manifest parsed once at startup.
-pub(super) struct AssetService {
-    root: std::path::PathBuf,
-    manifest: AssetManifest,
-}
-
-impl AssetService {
-    pub(super) fn new(assets: &Assets) -> Result<Self, Error> {
-        let manifest = serde_json::from_slice(&std::fs::read(&assets.manifest)?)?;
-        Ok(Self {
-            root: assets.root.clone(),
-            manifest,
-        })
-    }
-
-    pub(super) fn response(&self, request: &HttpRequest) -> Result<Option<HttpResponse>, Error> {
-        if request.method != "GET" && request.method != "HEAD" {
-            return Ok(None);
-        }
-        let path = request.target.split('?').next().unwrap_or("/");
-        let Some(relative) = self.manifest.path_for(path) else {
-            return Ok(None);
-        };
-        let file = self.root.join(&relative);
-        let mut response = HttpResponse::buffered(200, HeaderMap::new(), Vec::new());
-        response.headers.insert(
-            "content-type",
-            HeaderValue::from_str(&self.manifest.content_type(&relative))
-                .map_err(io::Error::other)?,
-        );
-        if request.method == "HEAD" {
-            let length = std::fs::metadata(file)?.len();
-            response
-                .headers
-                .insert("content-length", HeaderValue::from(length));
-        } else {
-            response.body = HttpBody::Buffered(std::fs::read(file)?);
-        }
-        Ok(Some(response))
-    }
-}
-
-fn install_asset_lookup<'js>(ctx: &Ctx<'js>, service: &Arc<AssetService>) -> Result<(), Error> {
-    let service = Arc::clone(service);
-    let lookup = Function::new(
+/// Give the runtime the app's `assets`: their binding's name and `fetch`.
+fn install_assets<'js>(ctx: &Ctx<'js>, assets: &Arc<Assets>) -> rquickjs::Result<()> {
+    let fetch_assets = Arc::clone(assets);
+    let fetch = Function::new(
         ctx.clone(),
-        rquickjs::function::MutFn::new(move |ctx: Ctx<'js>, path: String| {
-            asset_lookup(ctx, &service, &path)
-        }),
-    )
-    .map_err(|error| js_error("asset lookup", error))?;
-    ctx.globals()
-        .set("__tokamak_asset", lookup)
-        .map_err(|error| js_error("asset lookup", error))
+        move |ctx: Ctx<'js>, method: String, path: String| {
+            asset_response(&ctx, fetch_assets.fetch(&method, &path))
+        },
+    )?;
+    let object = Object::new(ctx.clone())?;
+    object.set("binding", assets.binding())?;
+    object.set("fetch", fetch)?;
+    ctx.globals().set("__tokamak_assets", object)
 }
 
-fn asset_lookup<'js>(
-    ctx: Ctx<'js>,
-    service: &AssetService,
-    path: &str,
-) -> rquickjs::Result<Option<Object<'js>>> {
-    let path = path.split('?').next().unwrap_or("/");
-    let Some(relative) = service.manifest.path_for(path) else {
-        return Ok(None);
-    };
-    let Ok(body) = std::fs::read(service.root.join(&relative)) else {
-        return Ok(None);
-    };
-    let result = Object::new(ctx.clone())?;
-    result.set("contentType", service.manifest.content_type(&relative))?;
-    result.set("body", TypedArray::new(ctx, body)?)?;
-    Ok(Some(result))
-}
-
-#[derive(serde::Deserialize)]
-pub(super) struct AssetManifest {
-    pub(super) files: BTreeMap<String, String>,
-    #[serde(rename = "htmlHandling")]
-    pub(super) html_handling: String,
-}
-
-impl AssetManifest {
-    pub(super) fn path_for(&self, path: &str) -> Option<String> {
-        let path = path.trim_start_matches('/');
-        let candidates = match self.html_handling.as_str() {
-            "force-trailing-slash" | "auto-trailing-slash" => {
-                if path.is_empty() {
-                    vec!["index.html".to_owned()]
-                } else if path.ends_with('/') {
-                    vec![
-                        format!("{path}index.html"),
-                        path.trim_end_matches('/').to_owned(),
-                    ]
-                } else {
-                    vec![format!("{path}/index.html"), path.to_owned()]
-                }
-            }
-            "drop-trailing-slash" => vec![
-                path.trim_end_matches('/').to_owned(),
-                format!("{path}.html"),
-            ],
-            _ => vec![path.to_owned()],
-        };
-        candidates.into_iter().find(|candidate| {
-            self.files.contains_key(&format!("/{candidate}")) || self.files.contains_key(candidate)
-        })
-    }
-
-    pub(super) fn content_type(&self, path: &str) -> String {
-        let path = path.trim_start_matches('/');
-        self.files
-            .get(path)
-            .or_else(|| self.files.get(&format!("/{path}")))
-            .cloned()
-            .unwrap_or_else(|| "application/octet-stream".to_owned())
-    }
+/// `response` as the object the assets binding builds its `Response` from.
+fn asset_response<'js>(ctx: &Ctx<'js>, response: AssetResponse) -> rquickjs::Result<Object<'js>> {
+    let object = Object::new(ctx.clone())?;
+    object.set("status", response.status.as_u16())?;
+    object.set("statusText", response.status.canonical_reason())?;
+    object.set("contentType", response.content_type)?;
+    let body = response.body.map(|body| TypedArray::new(ctx.clone(), body));
+    object.set("body", body.transpose()?)?;
+    Ok(object)
 }
 
 /// The function `source` evaluates to.

@@ -11,6 +11,8 @@ mod android_jni;
 #[cfg(all(feature = "native", target_vendor = "apple"))]
 mod apple_ffi;
 #[cfg(feature = "native")]
+mod assets;
+#[cfg(feature = "native")]
 mod cert_generation;
 #[cfg(feature = "native")]
 mod cert_validation;
@@ -39,6 +41,7 @@ mod packaging;
 mod quickjs;
 #[cfg(all(test, feature = "native"))]
 mod runtime_contract_tests;
+#[cfg(feature = "native")]
 mod runtime_modules;
 #[cfg(feature = "native")]
 mod server;
@@ -71,12 +74,12 @@ pub use env_vars::{
 #[cfg(feature = "native")]
 pub use lifecycle_events::Event;
 pub use packaging::{
-    Error as BundleError, ModuleType, PackageLayout, WorkerManifest, compress_worker_bundle,
-    compress_worker_module, decompress_worker_bundle, decompress_worker_module,
-    read_worker_manifest, write_worker_manifest,
+    AssetManifest, Error as BundleError, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout,
+    WorkerManifest, read_asset_manifest, read_worker_manifest, read_worker_module,
+    write_asset_manifest, write_worker,
 };
 pub use quickjs::Error as QuickJsError;
-pub use quickjs::{compile_module, compile_worker};
+pub use quickjs::compile_module;
 
 /// The symbol the runtime's storage part exports its entry point as. An app
 /// links the part only when its executable exports this symbol.

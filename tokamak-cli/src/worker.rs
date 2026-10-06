@@ -7,13 +7,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokamak::{
-    ModuleType, PackageLayout, WorkerEnvironment, WorkerManifest, compile_module,
-    compress_worker_module, write_worker_environment, write_worker_manifest,
+    AssetManifest, ModuleType, PackageLayout, WorkerEnvironment, WorkerManifest, write_worker,
+    write_worker_environment,
 };
 use walkdir::WalkDir;
 
-use super::support::{self, copy_dir_contents, copy_file, glob_matches, slash_path};
-use super::wrangler_config::{WranglerAssets, WranglerConfig};
+use super::support::{self, copy_dir_contents, glob_matches, slash_path};
+use super::wrangler_config::{WranglerAssets, WranglerConfig, WranglerModuleType};
 use super::{cache, storage};
 
 /// What a compiled Worker was compiled from, and what it is.
@@ -27,14 +27,15 @@ struct WorkerCache {
 /// `cache_dir`; an earlier compilation is reused while its inputs are unchanged.
 pub(crate) fn compile(cache_dir: &Path, wrangler: &WranglerConfig) -> Result<PathBuf> {
     let (root, manifest) = collect_modules(wrangler)?;
-    let files = manifest
+    let mut files = manifest
         .modules
         .keys()
         .map(|name| root.join(name))
         .collect::<Vec<_>>();
+    // The running tok compiles and packages the modules, so it is an input too.
+    files.push(std::env::current_exe()?);
     let inputs = format!(
-        "{}:{}:{}",
-        env!("CARGO_PKG_VERSION"),
+        "{}:{}",
         serde_json::to_string(&manifest)?,
         cache::hash_paths(&files)?
     );
@@ -51,7 +52,7 @@ pub(crate) fn compile(cache_dir: &Path, wrangler: &WranglerConfig) -> Result<Pat
         return Ok(compiled);
     }
     support::reset_path(&compiled)?;
-    compile_modules(&PackageLayout::new(&compiled), root, &manifest)?;
+    write_worker(&PackageLayout::new(&compiled), root, &manifest)?;
     let outputs = cache::hash_tree(&compiled, |_| false)?;
     fs::write(
         marker,
@@ -71,7 +72,6 @@ pub(crate) fn package(app_dir: &Path, compiled: &Path, wrangler: &WranglerConfig
             storage: storage::package(wrangler, &layout)?,
         },
     )?;
-    fs::create_dir_all(layout.bundle())?;
     if let Some(assets) = &wrangler.assets {
         copy_dir_contents(&assets.directory, &layout.assets())?;
         write_asset_manifest(&layout, assets)?;
@@ -95,16 +95,13 @@ fn write_asset_manifest(layout: &PackageLayout, assets: &WranglerAssets) -> Resu
             content_type.essence_str().to_owned(),
         );
     }
-    let manifest = serde_json::json!({
-        "binding": assets.binding,
-        "files": files,
-        "htmlHandling": assets.html_handling.as_str(),
-        "notFoundHandling": assets.not_found_handling.as_str(),
-    });
-    fs::write(
-        layout.asset_manifest(),
-        serde_json::to_vec_pretty(&manifest)?,
-    )?;
+    let manifest = AssetManifest {
+        binding: assets.binding.clone(),
+        files,
+        html_handling: assets.html_handling,
+        not_found_handling: assets.not_found_handling,
+    };
+    tokamak::write_asset_manifest(layout, &manifest)?;
     Ok(())
 }
 
@@ -124,22 +121,16 @@ fn collect_modules(wrangler: &WranglerConfig) -> Result<(&Path, WorkerManifest)>
             continue;
         }
         let name = slash_path(file.path().strip_prefix(root)?)?;
-        let Some(module_type) = rule_type(&name, wrangler) else {
-            continue;
-        };
-        if !module_type.is_supported() {
-            bail!(
-                "Worker module {name} is a {} module; tokamak supports ESModule, Text and Data modules",
-                module_type.name()
-            );
+        if let Some(rule_type) = rule_type(&name, wrangler) {
+            let module_type = module_type(&name, rule_type)?;
+            modules.entry(name).or_insert(module_type);
         }
-        modules.entry(name).or_insert(module_type);
     }
     Ok((root, WorkerManifest { entry, modules }))
 }
 
 /// The type of the first of `wrangler`'s rules with a glob that matches `name`.
-fn rule_type(name: &str, wrangler: &WranglerConfig) -> Option<ModuleType> {
+fn rule_type(name: &str, wrangler: &WranglerConfig) -> Option<WranglerModuleType> {
     wrangler
         .rules
         .iter()
@@ -147,33 +138,23 @@ fn rule_type(name: &str, wrangler: &WranglerConfig) -> Option<ModuleType> {
         .map(|rule| rule.module_type)
 }
 
-/// Compile `manifest`'s ES modules to bytecode and copy its Text and Data
-/// modules from `root` into `layout`.
-fn compile_modules(layout: &PackageLayout, root: &Path, manifest: &WorkerManifest) -> Result<()> {
-    for (name, module_type) in &manifest.modules {
-        let source = root.join(name);
-        match module_type {
-            ModuleType::EsModule => {
-                let bytecode = compile_module(name, &fs::read(&source)?)
-                    .with_context(|| format!("compile Worker module {name}"))?;
-                let destination = layout.worker_modules().join(format!("{name}.qjs"));
-                fs::create_dir_all(destination.parent().context("module has no directory")?)?;
-                fs::write(destination, compress_worker_module(&bytecode)?)?;
-            }
-            ModuleType::Text | ModuleType::Data => copy_file(&source, layout.bundle().join(name))?,
-            ModuleType::CommonJs | ModuleType::CompiledWasm => {
-                bail!("Worker module {name} has an unsupported type");
-            }
-        }
+/// The type the runtime loads the module `name`, of `rule_type`, as.
+fn module_type(name: &str, rule_type: WranglerModuleType) -> Result<ModuleType> {
+    match rule_type {
+        WranglerModuleType::ESModule => Ok(ModuleType::EsModule),
+        WranglerModuleType::Text => Ok(ModuleType::Text),
+        WranglerModuleType::Data => Ok(ModuleType::Data),
+        WranglerModuleType::CommonJS | WranglerModuleType::CompiledWasm => bail!(
+            "Worker module {name} is a {rule_type:?} module; tokamak supports ESModule, Text and Data modules"
+        ),
     }
-    write_worker_manifest(layout, manifest)?;
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wrangler_config::{self, HtmlHandling, NotFoundHandling};
+    use crate::wrangler_config;
+    use tokamak::{HtmlHandling, NotFoundHandling};
 
     /// The Worker `root/index.js` with the module rules `rules`, as JSON.
     fn worker(root: &Path, rules: &str) -> Result<WranglerConfig> {
@@ -272,50 +253,23 @@ mod tests {
         let assets = WranglerAssets {
             directory: layout.assets(),
             binding: "ASSETS".to_owned(),
-            html_handling: HtmlHandling::Drop,
+            html_handling: HtmlHandling::DropTrailingSlash,
             not_found_handling: NotFoundHandling::SinglePageApplication,
         };
 
         write_asset_manifest(&layout, &assets)?;
 
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(layout.asset_manifest())?)?;
-        assert_eq!(manifest["binding"], "ASSETS");
-        assert_eq!(manifest["files"]["index.html"], "text/html");
-        assert_eq!(manifest["files"]["styles/app.css"], "text/css");
-        assert_eq!(manifest["htmlHandling"], "drop-trailing-slash");
-        assert_eq!(manifest["notFoundHandling"], "single-page-application");
-        assert!(layout.serves_assets());
-        Ok(())
-    }
-
-    #[test]
-    fn compiles_es_modules_and_copies_text_and_data_modules() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let root = directory.path().join("worker");
-        fs::create_dir_all(root.join("assets"))?;
-        fs::write(
-            root.join("index.js"),
-            "import page from './assets/page.html'; export default { fetch() { return new Response(page); } };",
-        )?;
-        fs::write(root.join("assets/page.html"), "<p>page</p>")?;
-        let manifest = WorkerManifest {
-            entry: "index.js".to_owned(),
-            modules: BTreeMap::from([
-                ("index.js".to_owned(), ModuleType::EsModule),
-                ("assets/page.html".to_owned(), ModuleType::Text),
-            ]),
-        };
-        let layout = PackageLayout::new(directory.path().join("app"));
-
-        compile_modules(&layout, &root, &manifest)?;
-
-        assert!(layout.worker_modules().join("index.js.qjs").is_file());
         assert_eq!(
-            fs::read_to_string(layout.bundle().join("assets/page.html"))?,
-            "<p>page</p>"
+            tokamak::read_asset_manifest(&layout)?,
+            AssetManifest {
+                binding: "ASSETS".to_owned(),
+                files: [("index.html", "text/html"), ("styles/app.css", "text/css")]
+                    .map(|(file, content_type)| (file.to_owned(), content_type.to_owned()))
+                    .into(),
+                html_handling: HtmlHandling::DropTrailingSlash,
+                not_found_handling: NotFoundHandling::SinglePageApplication,
+            }
         );
-        assert_eq!(tokamak::read_worker_manifest(&layout)?, manifest);
         Ok(())
     }
 }
