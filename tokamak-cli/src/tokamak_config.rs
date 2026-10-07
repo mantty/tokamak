@@ -1,5 +1,4 @@
-//! The app's tokamak configuration: the `config` export of its configuration
-//! file.
+//! The app's tokamak configuration: the options of the tokamak Vite plugin.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -12,8 +11,8 @@ use tokamak_cli::{Platform, is_valid_key};
 /// The app's tokamak configuration.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct TokamakConfig {
-    /// Absolute path to the configuration file.
-    pub(crate) path: PathBuf,
+    /// The Vite root, which relative paths are relative to.
+    pub(crate) root: PathBuf,
     /// Application version.
     pub(crate) version: Option<String>,
     /// Values for every platform, without pack values.
@@ -36,11 +35,6 @@ pub(crate) struct PlatformConfig {
 }
 
 impl TokamakConfig {
-    /// The directory relative paths in the configuration are relative to.
-    pub(crate) fn directory(&self) -> &Path {
-        config_dir(&self.path)
-    }
-
     /// `platform`'s values, with the top-level ones where it has none.
     pub(crate) fn for_platform(&self, platform: Platform) -> PlatformConfig {
         let own = self
@@ -71,25 +65,25 @@ pub(crate) fn slug(name: &str) -> String {
     slug.trim_end_matches('-').to_owned()
 }
 
-/// The configuration `config` that the configuration file `file` exports.
+/// The configuration `config`, the plugin's options, in the Vite root `root`.
 ///
 /// Top-level values are defaults; a platform object overrides them for that
-/// platform. Relative icon paths are resolved against the file's directory.
-/// Other platform-object keys are values for that platform's pack. `null`
-/// leaves a value unset.
-pub(crate) fn parse_config(file: &Path, config: Value) -> Result<TokamakConfig> {
+/// platform. Relative icon paths are resolved against `root`. Other
+/// platform-object keys are values for that platform's pack. `null` leaves a
+/// value unset.
+pub(crate) fn parse_config(root: &Path, config: &Value) -> Result<TokamakConfig> {
     if !config.is_object() {
-        return Err(invalid(file, "config must be an object"));
+        return Err(invalid("options must be an object"));
     }
-    let raw: RawConfig = serde_json::from_value(config).map_err(|error| invalid(file, error))?;
+    let raw = RawConfig::deserialize(config).map_err(invalid)?;
     if let Some(key) = raw.top.pack.keys().next() {
-        return Err(invalid(file, format!("unknown field `{key}`")));
+        return Err(invalid(format!("unknown field `{key}`")));
     }
     let version = raw
         .version
-        .map(|version| validate_value(file, "version", version))
+        .map(|version| validate_value("version", version))
         .transpose()?;
-    let top = platform_config(file, "", raw.top)?;
+    let top = platform_config(root, "", raw.top)?;
     let mut platforms = BTreeMap::new();
     for (namespace, object) in [
         ("android", raw.android),
@@ -98,12 +92,12 @@ pub(crate) fn parse_config(file: &Path, config: Value) -> Result<TokamakConfig> 
         ("windows", raw.windows),
     ] {
         if let Some(object) = object {
-            let values = platform_config(file, &format!("{namespace}."), object)?;
+            let values = platform_config(root, &format!("{namespace}."), object)?;
             platforms.insert(namespace, values);
         }
     }
     Ok(TokamakConfig {
-        path: file.to_path_buf(),
+        root: root.to_path_buf(),
         version,
         top,
         platforms,
@@ -131,56 +125,49 @@ struct RawPlatformConfig {
     pack: BTreeMap<String, Value>,
 }
 
-/// The values of the object at `prefix` in `file`.
-fn platform_config(file: &Path, prefix: &str, raw: RawPlatformConfig) -> Result<PlatformConfig> {
+/// The values of the object at `prefix`, with relative icon paths under `root`.
+fn platform_config(root: &Path, prefix: &str, raw: RawPlatformConfig) -> Result<PlatformConfig> {
     let field = |key: &str| format!("{prefix}{key}");
     let mut pack = BTreeMap::new();
     for (key, value) in raw.pack {
         if !is_valid_key(&key) {
             let message = format!("{} must be lowercase words joined by hyphens", field(&key));
-            return Err(invalid(file, message));
+            return Err(invalid(message));
         }
-        if let Some(value) = pack_value(file, &field(&key), value)? {
+        if let Some(value) = pack_value(&field(&key), value)? {
             pack.insert(key, value);
         }
     }
     Ok(PlatformConfig {
         name: raw
             .name
-            .map(|name| validate_name(file, &field("name"), name))
+            .map(|name| validate_name(&field("name"), name))
             .transpose()?,
         identifier: raw
             .identifier
-            .map(|identifier| validate_value(file, &field("identifier"), identifier))
+            .map(|identifier| validate_value(&field("identifier"), identifier))
             .transpose()?,
         icon: raw
             .icon
-            .map(|icon| {
-                validate_value(file, &field("icon"), icon).map(|icon| config_dir(file).join(icon))
-            })
+            .map(|icon| validate_value(&field("icon"), icon).map(|icon| root.join(icon)))
             .transpose()?,
         pack,
     })
 }
 
-fn pack_value(config_path: &Path, field: &str, value: Value) -> Result<Option<String>> {
+fn pack_value(field: &str, value: Value) -> Result<Option<String>> {
     let value = match value {
         Value::Null => return Ok(None),
         Value::String(value) => value,
         Value::Number(number) => number.to_string(),
         Value::Bool(flag) => flag.to_string(),
         Value::Array(_) | Value::Object(_) => {
-            return Err(invalid(
-                config_path,
-                format!("{field} must be a string, number, or boolean"),
-            ));
+            return Err(invalid(format!(
+                "{field} must be a string, number, or boolean"
+            )));
         }
     };
-    validate_value(config_path, field, value).map(Some)
-}
-
-fn config_dir(config_path: &Path) -> &Path {
-    config_path.parent().unwrap_or(Path::new("."))
+    validate_value(field, value).map(Some)
 }
 
 /// Why `name` cannot be an app display name, when it cannot.
@@ -195,10 +182,10 @@ pub(crate) fn app_name_problem(name: &str) -> Option<&'static str> {
     }
 }
 
-fn validate_name(config_path: &Path, field: &str, value: String) -> Result<String> {
-    let value = validate_value(config_path, field, value)?;
+fn validate_name(field: &str, value: String) -> Result<String> {
+    let value = validate_value(field, value)?;
     match app_name_problem(&value) {
-        Some(problem) => Err(invalid(config_path, format!("{field} {problem}"))),
+        Some(problem) => Err(invalid(format!("{field} {problem}"))),
         None => Ok(value),
     }
 }
@@ -209,18 +196,15 @@ pub(crate) fn value_problem(value: &str) -> Option<&'static str> {
         .then_some("must be a non-empty value without surrounding whitespace or control characters")
 }
 
-fn validate_value(config_path: &Path, field: &str, value: String) -> Result<String> {
+fn validate_value(field: &str, value: String) -> Result<String> {
     match value_problem(&value) {
-        Some(problem) => Err(invalid(config_path, format!("{field} {problem}"))),
+        Some(problem) => Err(invalid(format!("{field} {problem}"))),
         None => Ok(value),
     }
 }
 
-fn invalid(config_path: &Path, message: impl std::fmt::Display) -> anyhow::Error {
-    anyhow!(
-        "invalid tokamak config {}: {message}",
-        config_path.display()
-    )
+fn invalid(message: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!("invalid tokamak() options: {message}")
 }
 
 #[cfg(test)]
@@ -235,27 +219,19 @@ mod tests {
 
     type TestResult<T = ()> = Result<T>;
 
-    /// The configuration file the tests' configurations come from.
-    fn config_file(directory: &Path) -> PathBuf {
-        directory.join("src/tokamak.ts")
+    fn load(root: &Path, config: &str) -> TestResult<TokamakConfig> {
+        parse_config(root, &serde_json::from_str(config)?)
     }
 
-    fn load(directory: &Path, config: &str) -> TestResult<TokamakConfig> {
-        parse_config(&config_file(directory), serde_json::from_str(config)?)
-    }
-
-    /// What is wrong with `config`, after the prefix naming its file.
-    fn invalid_message(directory: &Path, config: &str) -> TestResult<String> {
-        let Err(error) = load(directory, config) else {
+    /// What is wrong with `config`, after the error's prefix.
+    fn invalid_message(root: &Path, config: &str) -> TestResult<String> {
+        let Err(error) = load(root, config) else {
             anyhow::bail!("accepted {config}");
         };
-        let prefix = format!(
-            "invalid tokamak config {}: ",
-            config_file(directory).display()
-        );
+        let prefix = "invalid tokamak() options: ";
         error
             .to_string()
-            .strip_prefix(&prefix)
+            .strip_prefix(prefix)
             .map(str::to_owned)
             .with_context(|| format!("{error} does not start with {prefix}"))
     }
@@ -278,8 +254,8 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         let pro_icon = temporary.path().join("icons/Pro.icon");
         let config = parse_config(
-            &config_file(temporary.path()),
-            serde_json::json!({
+            temporary.path(),
+            &serde_json::json!({
               "name": "My App",
               "identifier": "com.example.myapp",
               "icon": "assets/AppIcon.icon",
@@ -288,9 +264,9 @@ mod tests {
               "android": { "identifier": "com.example.myapp.android" }
             }),
         )?;
-        let icon = temporary.path().join("src/assets/AppIcon.icon");
+        let icon = temporary.path().join("assets/AppIcon.icon");
 
-        assert_eq!(config.path, config_file(temporary.path()));
+        assert_eq!(config.root, temporary.path());
         assert_eq!(config.version.as_deref(), Some("1.0.0"));
         let ios = named(Some("Myapp Pro"), Some("com.example.myapp"), Some(pro_icon));
         assert_eq!(config.for_platform(Platform::Ios), ios);
@@ -366,7 +342,7 @@ mod tests {
                 r#"{ "windows": { "icon": "  " } }"#,
                 "windows.icon must be a non-empty value",
             ),
-            ("[]", "config must be an object"),
+            ("[]", "options must be an object"),
         ];
         for (content, expected) in cases {
             let message = invalid_message(temporary.path(), content)?;
@@ -410,7 +386,6 @@ mod tests {
             config.for_platform(Platform::Macos).pack,
             BTreeMap::from([("hardened-runtime".to_owned(), "true".to_owned())])
         );
-        assert_eq!(config.directory(), temporary.path().join("src"));
         Ok(())
     }
 

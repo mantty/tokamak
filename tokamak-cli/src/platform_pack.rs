@@ -296,7 +296,7 @@ pub enum VariableKind {
     /// The value is passed unchanged.
     String,
     /// A relative path is made absolute against the current directory, or the
-    /// directory of the configuration file that set it.
+    /// Vite root when the `tokamak()` options set it.
     Path,
 }
 

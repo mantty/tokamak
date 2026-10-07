@@ -139,7 +139,7 @@ jobs:
       - name: Serve the Astro example
         if: matrix.target == 'macos-arm64'
         env:
-          TOKAMAK_TEST_ASTRO_APP: ${{ github.workspace }}/examples/astro/build/macos/tokamak-example-astro.app/Contents/Resources/app
+          TOKAMAK_TEST_ASTRO_APP: ${{ github.workspace }}/examples/astro/build/macos/astro-tokamak.app/Contents/Resources/app
         run: cargo test -p tokamak --features native --test packaged_worker serves_the_astro_example_that_tok_packages -- --ignored
 
       - name: Archive platform pack

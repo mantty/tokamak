@@ -5,8 +5,8 @@ use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, ExitStatus, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -18,8 +18,7 @@ use super::devices::{
     install_and_launch_ios_simulator,
 };
 use super::packs::PlatformPack;
-use super::tokamak_config::TokamakConfig;
-use super::vite::{PLUGIN_HINT, ServerReport, VitePlugin};
+use super::vite::{ConfigReport, PLUGIN_HINT, ServerReport, VitePlugin};
 use super::{devices, pipeline, settings};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_mins(1);
@@ -34,7 +33,6 @@ pub(crate) struct Request {
     pub(crate) device_id: String,
     pub(crate) project_dir: PathBuf,
     pub(crate) platform_pack_dir: Option<PathBuf>,
-    pub(crate) tokamak_config_path: Option<PathBuf>,
     pub(crate) top: settings::TopOptions,
     pub(crate) platform_options: settings::PlatformOptions,
     pub(crate) host_address: Option<String>,
@@ -70,8 +68,7 @@ pub(crate) fn run(request: &Request) -> Result<()> {
             .join(".tokamak")
             .join("dev")
             .join("vite"),
-        request.tokamak_config_path.as_deref(),
-    )?;
+    );
     plugin.clear()?;
     let mut framework = spawn_framework(&request.command, &project, &plugin)?;
 
@@ -152,12 +149,13 @@ struct DevelopmentSession<'a> {
 }
 
 fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
-    let Some((tokamak, report)) =
+    let Some((config, report)) =
         wait_for_plugin(session.framework, session.plugin, session.shutdown)?
     else {
         stop_process(session.framework)?;
         return Ok(());
     };
+    let tokamak = config.parse()?;
     let server = ServerEndpoint::parse(&report.url)?;
     println!("Development server is ready at {}", server.display_url());
     let session_token = session_token()?;
@@ -166,7 +164,7 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
         platform: session.device.platform,
         project: session.project,
         pack: session.pack,
-        tokamak: tokamak.as_ref(),
+        tokamak: &tokamak,
         worker_name: &report.worker_name,
         endpoint: &relay.device_endpoint(),
         session_token: &session_token,
@@ -178,12 +176,17 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
         stop_process(session.framework)?;
         return Ok(());
     }
+    let mut server = FollowedServer {
+        plugin: session.plugin,
+        relay: &relay,
+        url: report.url,
+        config,
+    };
     let mut app = launch_app(&summary, session.device, relay.port())?;
-    let stdout = io::stdout();
-    let mut stdout = stdout.lock();
+    let mut stdout = io::stdout();
     if let Err(error) = wait_for_app_connection(
         session.framework,
-        &relay,
+        &mut server,
         session.shutdown,
         session.device,
         &mut stdout,
@@ -197,7 +200,13 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
         stop_process(session.framework)?;
         return Ok(());
     }
-    supervise(session.framework, &mut app, session.shutdown)
+    supervise(
+        session.framework,
+        &mut app,
+        &mut server,
+        session.shutdown,
+        &mut stdout,
+    )
 }
 
 fn spawn_framework(
@@ -225,14 +234,13 @@ fn spawn_framework(
     })
 }
 
-/// The app's configuration, `None` without a configuration file, and the
-/// development server, once the plugin has reported them, or `None` when
-/// shutdown is requested first.
+/// The app's configuration and the development server, once the plugin has
+/// reported them, or `None` when shutdown is requested first.
 fn wait_for_plugin(
     child: &mut Child,
     plugin: &VitePlugin,
     shutdown: &AtomicBool,
-) -> Result<Option<(Option<TokamakConfig>, ServerReport)>> {
+) -> Result<Option<(ConfigReport, ServerReport)>> {
     let deadline = Instant::now() + SERVER_READY_TIMEOUT;
     loop {
         if shutdown.load(Ordering::Acquire) {
@@ -258,7 +266,7 @@ fn wait_for_plugin(
 
 fn wait_for_app_connection(
     framework: &mut Child,
-    relay: &DevRelay,
+    server: &mut FollowedServer<'_>,
     shutdown: &AtomicBool,
     device: &PreparedDevice,
     output: &mut impl Write,
@@ -274,7 +282,8 @@ fn wait_for_app_connection(
         if let Some(status) = framework.try_wait()? {
             bail!("development command exited before the app connected ({status})");
         }
-        if relay.app_connected() {
+        server.follow(output)?;
+        if server.relay.app_connected() {
             writeln!(
                 output,
                 "Development app connected from {} ({})",
@@ -285,7 +294,7 @@ fn wait_for_app_connection(
         if Instant::now() >= deadline {
             bail!(
                 "development app did not connect to {} within {} seconds; check app startup and device connectivity",
-                relay.device_endpoint(),
+                server.relay.device_endpoint(),
                 timeout.as_secs()
             );
         }
@@ -293,7 +302,13 @@ fn wait_for_app_connection(
     }
 }
 
-fn supervise(framework: &mut Child, app: &mut LaunchedApp, shutdown: &AtomicBool) -> Result<()> {
+fn supervise(
+    framework: &mut Child,
+    app: &mut LaunchedApp,
+    server: &mut FollowedServer<'_>,
+    shutdown: &AtomicBool,
+    output: &mut impl Write,
+) -> Result<()> {
     loop {
         if shutdown.load(Ordering::Acquire) {
             app.stop();
@@ -312,7 +327,49 @@ fn supervise(framework: &mut Child, app: &mut LaunchedApp, shutdown: &AtomicBool
             stop_process(framework)?;
             return Ok(());
         }
+        if let Err(error) = server.follow(output) {
+            app.stop();
+            return Err(error);
+        }
         thread::sleep(SERVER_POLL_INTERVAL);
+    }
+}
+
+/// The development server as the relay follows it: a restart of the server
+/// reruns the plugin, which reports it again.
+struct FollowedServer<'a> {
+    plugin: &'a VitePlugin,
+    relay: &'a DevRelay,
+    /// The server URL and configuration the plugin last reported.
+    url: String,
+    config: ConfigReport,
+}
+
+impl FollowedServer<'_> {
+    /// Point the relay at the server the plugin reports, and say when the
+    /// reported configuration changes.
+    fn follow(&mut self, output: &mut impl Write) -> Result<()> {
+        if let Some(server) = self.plugin.server()?
+            && server.url != self.url
+        {
+            let endpoint = ServerEndpoint::parse(&server.url)?;
+            writeln!(
+                output,
+                "Development server moved to {}",
+                endpoint.display_url()
+            )?;
+            self.relay.set_server(endpoint);
+            self.url = server.url;
+        }
+        let config = self.plugin.config("the development command")?;
+        if config != self.config {
+            writeln!(
+                output,
+                "The tokamak configuration changed; restart `tok dev` to apply it to the app"
+            )?;
+            self.config = config;
+        }
+        Ok(())
     }
 }
 
@@ -605,6 +662,7 @@ fn parse_authority(authority: &str) -> Result<(String, u16)> {
 struct DevRelay {
     address: SocketAddr,
     advertised_host: IpAddr,
+    server: Arc<Mutex<ServerEndpoint>>,
     app_connected: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -617,17 +675,20 @@ impl DevRelay {
             .set_nonblocking(true)
             .context("configure development relay")?;
         let address = listener.local_addr()?;
+        let server = Arc::new(Mutex::new(server));
+        let target = Arc::clone(&server);
         let app_connected = Arc::new(AtomicBool::new(false));
         let connected = Arc::clone(&app_connected);
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
         let thread = thread::Builder::new()
             .name("tokamak-dev-relay".to_owned())
-            .spawn(move || relay_loop(listener, server, session_token, connected, stopped))
+            .spawn(move || relay_loop(listener, &target, session_token, connected, stopped))
             .context("start development relay")?;
         Ok(Self {
             address,
             advertised_host: host,
+            server,
             app_connected,
             stop,
             thread: Some(thread),
@@ -648,6 +709,11 @@ impl DevRelay {
     fn app_connected(&self) -> bool {
         self.app_connected.load(Ordering::Acquire)
     }
+
+    /// Relay later connections to `server`.
+    fn set_server(&self, server: ServerEndpoint) {
+        *self.server.lock().unwrap_or_else(PoisonError::into_inner) = server;
+    }
 }
 
 impl Drop for DevRelay {
@@ -663,7 +729,7 @@ impl Drop for DevRelay {
 #[allow(clippy::needless_pass_by_value)]
 fn relay_loop(
     listener: TcpListener,
-    server: ServerEndpoint,
+    server: &Mutex<ServerEndpoint>,
     session_token: String,
     app_connected: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
@@ -671,7 +737,10 @@ fn relay_loop(
     while !stop.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((stream, _)) => {
-                let server = server.clone();
+                let server = server
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
                 let session_token = session_token.clone();
                 let app_connected = Arc::clone(&app_connected);
                 let _ = thread::Builder::new()
@@ -817,6 +886,7 @@ fn header_parts(line: &[u8]) -> Option<(&[u8], &[u8])> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::io::{Read, Write};
     use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
     #[cfg(unix)]
@@ -824,18 +894,67 @@ mod tests {
     #[cfg(unix)]
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
-    #[cfg(unix)]
     use std::time::Duration;
 
+    use serde_json::{Value, json};
+
     use super::{
-        DevRelay, PreparedDevice, ServerEndpoint, authorized, parse_authority, relay_host,
-        rewrite_request, usable_ipv4_address,
+        DevRelay, FollowedServer, PreparedDevice, ServerEndpoint, VitePlugin, authorized,
+        parse_authority, relay_host, rewrite_request, usable_ipv4_address,
     };
     #[cfg(unix)]
     use super::{
         configure_process_group, process_group_is_running, stop_process, wait_for_app_connection,
     };
     use tokamak_cli::Platform;
+
+    /// A relay to a server that accepts no connections, and the plugin, in a
+    /// temporary directory, having reported that server and no options.
+    struct Reported {
+        _server: TcpListener,
+        url: String,
+        directory: tempfile::TempDir,
+        plugin: VitePlugin,
+        relay: DevRelay,
+    }
+
+    impl Reported {
+        fn new() -> anyhow::Result<Self> {
+            let server = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+            let url = format!("http://{}", server.local_addr()?);
+            let directory = tempfile::tempdir()?;
+            let relay = DevRelay::bind(
+                ServerEndpoint::parse(&url)?,
+                "token".to_owned(),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+            )?;
+            let reported = Self {
+                _server: server,
+                plugin: VitePlugin::new(directory.path().to_owned()),
+                directory,
+                relay,
+                url,
+            };
+            reported.report("server.json", &json!({ "url": reported.url }))?;
+            reported.report("config.json", &json!({ "root": "/app", "config": {} }))?;
+            Ok(reported)
+        }
+
+        /// Write the plugin's report `name`.
+        fn report(&self, name: &str, report: &Value) -> std::io::Result<()> {
+            fs::write(self.directory.path().join(name), report.to_string())
+        }
+
+        /// The relay following what the plugin reports.
+        fn following(&self) -> anyhow::Result<FollowedServer<'_>> {
+            Ok(FollowedServer {
+                plugin: &self.plugin,
+                relay: &self.relay,
+                url: self.url.clone(),
+                config: self.plugin.config("the test")?,
+            })
+        }
+    }
 
     #[cfg(unix)]
     #[test]
@@ -882,9 +1001,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn waits_for_app_connection_before_reporting_ready() -> Result<(), Box<dyn std::error::Error>> {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let server = ServerEndpoint::parse(&format!("http://{}", listener.local_addr()?))?;
-        let relay = DevRelay::bind(server, "token".to_owned(), IpAddr::V4(Ipv4Addr::LOCALHOST))?;
+        let reported = Reported::new()?;
+        let relay = &reported.relay;
+        let mut server = reported.following()?;
         let mut framework = Command::new("sleep").arg("30").spawn()?;
         let shutdown = AtomicBool::new(false);
         let device = PreparedDevice {
@@ -896,7 +1015,7 @@ mod tests {
 
         let not_ready = wait_for_app_connection(
             &mut framework,
-            &relay,
+            &mut server,
             &shutdown,
             &device,
             &mut output,
@@ -910,7 +1029,7 @@ mod tests {
         let mut output = Vec::new();
         let ready = wait_for_app_connection(
             &mut framework,
-            &relay,
+            &mut server,
             &shutdown,
             &device,
             &mut output,
@@ -934,9 +1053,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn stops_waiting_when_shutdown_is_requested() -> Result<(), Box<dyn std::error::Error>> {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let server = ServerEndpoint::parse(&format!("http://{}", listener.local_addr()?))?;
-        let relay = DevRelay::bind(server, "token".to_owned(), IpAddr::V4(Ipv4Addr::LOCALHOST))?;
+        let reported = Reported::new()?;
+        let mut server = reported.following()?;
         let mut framework = Command::new("sleep").arg("30").spawn()?;
         let shutdown = AtomicBool::new(true);
         let device = PreparedDevice {
@@ -948,7 +1066,7 @@ mod tests {
 
         let result = wait_for_app_connection(
             &mut framework,
-            &relay,
+            &mut server,
             &shutdown,
             &device,
             &mut output,
@@ -966,9 +1084,8 @@ mod tests {
     #[test]
     fn reports_framework_exit_while_waiting_for_app_connection()
     -> Result<(), Box<dyn std::error::Error>> {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let server = ServerEndpoint::parse(&format!("http://{}", listener.local_addr()?))?;
-        let relay = DevRelay::bind(server, "token".to_owned(), IpAddr::V4(Ipv4Addr::LOCALHOST))?;
+        let reported = Reported::new()?;
+        let mut server = reported.following()?;
         let mut framework = Command::new("true").spawn()?;
         let _ = framework.wait()?;
         let shutdown = AtomicBool::new(false);
@@ -981,7 +1098,7 @@ mod tests {
 
         let result = wait_for_app_connection(
             &mut framework,
-            &relay,
+            &mut server,
             &shutdown,
             &device,
             &mut output,
@@ -1162,6 +1279,58 @@ mod tests {
         upstream_thread
             .join()
             .map_err(|_| "upstream thread panicked")??;
+        Ok(())
+    }
+
+    #[test]
+    fn relays_to_the_server_the_plugin_reports_after_a_restart()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let restarted = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let restarted_url = format!("http://{}", restarted.local_addr()?);
+        let upstream_thread = thread::spawn(move || -> std::io::Result<()> {
+            let (mut stream, _) = restarted.accept()?;
+            let _ = stream.read(&mut [0_u8; 1024])?;
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nrestarted")
+        });
+        let reported = Reported::new()?;
+        let mut server = reported.following()?;
+        let mut output = Vec::new();
+
+        server.follow(&mut output)?;
+        assert!(output.is_empty());
+        reported.report("server.json", &json!({ "url": restarted_url }))?;
+        server.follow(&mut output)?;
+        assert_eq!(
+            String::from_utf8(output)?,
+            format!("Development server moved to {restarted_url}\n")
+        );
+
+        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, reported.relay.port()))?;
+        client.set_read_timeout(Some(Duration::from_secs(5)))?;
+        client.write_all(b"GET / HTTP/1.1\r\nX-Tokamak-Session: token\r\n\r\n")?;
+        let mut response = String::new();
+        client.read_to_string(&mut response)?;
+        assert!(response.ends_with("\r\n\r\nrestarted"));
+        upstream_thread
+            .join()
+            .map_err(|_| "upstream thread panicked")??;
+        Ok(())
+    }
+
+    #[test]
+    fn says_once_when_the_reported_configuration_changes() -> anyhow::Result<()> {
+        let reported = Reported::new()?;
+        let mut server = reported.following()?;
+        let changed = json!({ "root": "/app", "config": { "name": "Changed" } });
+        reported.report("config.json", &changed)?;
+        let mut output = Vec::new();
+
+        server.follow(&mut output)?;
+        server.follow(&mut output)?;
+        assert_eq!(
+            String::from_utf8(output)?,
+            "The tokamak configuration changed; restart `tok dev` to apply it to the app\n"
+        );
         Ok(())
     }
 }

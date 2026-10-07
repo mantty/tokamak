@@ -1,5 +1,5 @@
 //! Application settings from command-line options, environment variables, and
-//! the app's configuration file.
+//! the tokamak Vite plugin's options.
 //!
 //! A setting has the same name in each source: `--<platform>-<key>`,
 //! `TOKAMAK_<PLATFORM>_<KEY>`, and `<platform>.<key>`, or `--<key>`,
@@ -69,7 +69,7 @@ impl PlatformOptions {
 pub(crate) struct Sources<'a> {
     pub(crate) top: &'a TopOptions,
     pub(crate) platform: &'a PlatformOptions,
-    /// The configuration file's values, when there is a configuration file.
+    /// The `tokamak()` options, once the project's command has reported them.
     pub(crate) config: Option<&'a TokamakConfig>,
     /// Reads an environment variable.
     pub(crate) environment: &'a dyn Fn(&str) -> Result<Option<String>>,
@@ -253,7 +253,7 @@ fn environment_value(sources: &Sources<'_>, name: &str) -> Result<Option<String>
 }
 
 /// The platform pack's variables, keyed by their environment variable names;
-/// `configured` holds the configuration file's values for the platform.
+/// `configured` holds the `tokamak()` options' values for the platform.
 fn pack_environment(
     sources: &Sources<'_>,
     platform: Platform,
@@ -294,7 +294,7 @@ fn pack_value(
         return Ok(Some(from_current_dir(value)));
     }
     let configured = configured.get(key).zip(sources.config);
-    Ok(configured.map(|(value, config)| (value.clone(), config.directory().to_path_buf())))
+    Ok(configured.map(|(value, config)| (value.clone(), config.root.clone())))
 }
 
 fn reject_undeclared_keys(
@@ -315,12 +315,9 @@ fn reject_undeclared_keys(
             accepted_options(platform, manifest)
         );
     }
-    if let Some(config) = sources.config
-        && let Some(key) = configured.keys().find(|key| !declared(key))
-    {
+    if let Some(key) = configured.keys().find(|key| !declared(key)) {
         bail!(
-            "unknown key {namespace}.{key} in {}; {}",
-            config.path.display(),
+            "unknown key {namespace}.{key} in the tokamak() options; {}",
             accepted_options(platform, manifest)
         );
     }
@@ -362,7 +359,7 @@ pub(crate) fn platform_help(
 ) -> String {
     let namespace = platform.namespace();
     let mut help = format!(
-        "{} options (also TOKAMAK_{}_<KEY>, or {namespace}.<key> in the configuration file):\n",
+        "{} options (also TOKAMAK_{}_<KEY>, or {namespace}.<key> in the tokamak() options):\n",
         platform.display_name(),
         namespace.to_ascii_uppercase()
     );
@@ -453,9 +450,9 @@ mod tests {
         }
     }
 
-    /// `config` as exported from `/config/src/tokamak.ts`.
-    fn configured(config: Value) -> Result<Option<TokamakConfig>> {
-        parse_config(Path::new("/config/src/tokamak.ts"), config).map(Some)
+    /// `config` as the plugin reports it from the Vite root `/config`.
+    fn configured(config: &Value) -> Result<Option<TokamakConfig>> {
+        parse_config(Path::new("/config"), config).map(Some)
     }
 
     struct Fixture {
@@ -605,7 +602,7 @@ mod tests {
     #[test]
     fn shared_keys_prefer_options_then_environment_then_configuration() -> Result<()> {
         let mut fixture = Fixture::new();
-        fixture.config = configured(json!({
+        fixture.config = configured(&json!({
             "identifier": "com.config.top",
             "ios": { "identifier": "com.config.ios" },
         }))?;
@@ -663,10 +660,10 @@ mod tests {
             icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
             None
         );
-        fixture.config = configured(json!({ "icon": "../AppIcon.icon" }))?;
+        fixture.config = configured(&json!({ "icon": "../AppIcon.icon" }))?;
         assert_eq!(
             icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
-            Some(joined("/config/src", "../AppIcon.icon"))
+            Some(joined("/config", "../AppIcon.icon"))
         );
         fixture
             .environment
@@ -709,7 +706,7 @@ mod tests {
     #[test]
     fn pack_variables_prefer_options_then_environment_then_configuration() -> Result<()> {
         let mut fixture = Fixture::new();
-        fixture.config = configured(json!({
+        fixture.config = configured(&json!({
             "ios": { "plist": "native/Info.plist", "team-id": "CONFIG" },
         }))?;
         let environment = |settings: PlatformSettings| settings.pack_environment;
@@ -718,7 +715,7 @@ mod tests {
             BTreeMap::from([
                 (
                     "TOKAMAK_IOS_PLIST".to_owned(),
-                    joined("/config/src", "native/Info.plist")
+                    joined("/config", "native/Info.plist")
                 ),
                 ("TOKAMAK_IOS_TEAM_ID".to_owned(), OsString::from("CONFIG")),
             ])
@@ -754,11 +751,11 @@ mod tests {
         assert!(fixture.resolve(Platform::Macos).is_ok());
 
         fixture.platform = PlatformOptions::default();
-        fixture.config = configured(json!({ "macos": { "plsit": "Info.plist" } }))?;
+        fixture.config = configured(&json!({ "macos": { "plsit": "Info.plist" } }))?;
         assert!(fixture.resolve(Platform::Macos).is_err_and(|error| {
             error
                 .to_string()
-                .starts_with("unknown key macos.plsit in /config/src/tokamak.ts; macOS accepts")
+                .starts_with("unknown key macos.plsit in the tokamak() options; macOS accepts")
         }));
         assert!(fixture.resolve(Platform::Ios).is_ok());
         Ok(())
@@ -767,7 +764,7 @@ mod tests {
     #[test]
     fn top_level_keys_prefer_options_then_environment_then_configuration() -> Result<()> {
         let mut fixture = Fixture::new();
-        fixture.config = configured(json!({ "version": "1.0.0" }))?;
+        fixture.config = configured(&json!({ "version": "1.0.0" }))?;
         assert_eq!(fixture.with(version)?.as_deref(), Some("1.0.0"));
         fixture
             .environment
@@ -793,7 +790,7 @@ mod tests {
     fn lists_platform_options_in_help() {
         let help = platform_help(Platform::Ios, Ok(&manifest(Target::IosArm64)));
         assert!(help.starts_with(
-            "iOS options (also TOKAMAK_IOS_<KEY>, or ios.<key> in the configuration file):\n"
+            "iOS options (also TOKAMAK_IOS_<KEY>, or ios.<key> in the tokamak() options):\n"
         ));
         assert!(help.contains("\n  --ios-icon <PATH>         Icon in the platform's format\n"));
         assert!(help.contains("\n  --ios-plist <PATH>        User plist\n"));

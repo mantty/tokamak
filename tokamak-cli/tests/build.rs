@@ -19,8 +19,8 @@ use tokamak_cli::{
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 /// A project whose earlier build left Worker output as Cloudflare's Vite
-/// plugin writes it, and no configuration file as the tokamak Vite plugin
-/// reports it. Its build command stands in for that build.
+/// plugin writes it, and no `tokamak()` options as the tokamak Vite plugin
+/// reports them. Its build command stands in for that build.
 fn create_project(root: &Path) -> TestResult {
     fs::write(
         root.join("package.json"),
@@ -41,7 +41,7 @@ fn create_project(root: &Path) -> TestResult {
         root.join(".wrangler/deploy/config.json"),
         r#"{"configPath":"../../dist/app/wrangler.json"}"#,
     )?;
-    write_report(root, &serde_json::json!({ "config": {} }))
+    configure(root, "{}")
 }
 
 /// Write the Wrangler configuration Cloudflare's Vite plugin generates, with
@@ -68,22 +68,12 @@ fn write_worker_config(root: &Path, fields: &str) -> TestResult {
     Ok(())
 }
 
-/// Report `config` as the `config` export of `src/tokamak.ts`.
+/// Report `config` as the `tokamak()` options, with the Vite root `root`,
+/// where the earlier build left the report and to `vite-report.json`, which
+/// the stand-in build and development commands report.
 fn configure(root: &Path, config: &str) -> TestResult {
-    write_report(
-        root,
-        &serde_json::json!({
-            "file": root.join("src/tokamak.ts"),
-            "config": serde_json::from_str::<serde_json::Value>(config)?,
-        }),
-    )
-}
-
-/// Write the tokamak Vite plugin's `report` where the earlier build left it,
-/// and to `vite-report.json`, which the stand-in build and development
-/// commands report.
-fn write_report(root: &Path, report: &serde_json::Value) -> TestResult {
-    let report = report.to_string();
+    let config = serde_json::from_str::<serde_json::Value>(config)?;
+    let report = serde_json::json!({ "root": root, "config": config }).to_string();
     fs::write(root.join("vite-report.json"), &report)?;
     fs::create_dir_all(root.join("build/.tokamak/vite"))?;
     fs::write(root.join("build/.tokamak/vite/config.json"), report)?;
@@ -468,24 +458,6 @@ fn stages_the_identifier_and_version_from_each_source() -> TestResult {
     Ok(())
 }
 
-#[cfg(unix)]
-#[test]
-fn passes_the_configuration_file_to_the_build() -> TestResult {
-    let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    project_build_command("macos", &project, &manifest)?
-        .current_dir(&project)
-        .args(["--config", "test.ts", "--build"])
-        .arg(r#"node build.cjs && printf %s "$TOKAMAK_CONFIG" > config-path"#)
-        .assert()
-        .success();
-
-    assert_eq!(
-        PathBuf::from(fs::read_to_string(project.join("config-path"))?),
-        fs::canonicalize(&project)?.join("test.ts")
-    );
-    Ok(())
-}
-
 #[test]
 fn requires_the_tokamak_vite_plugin() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
@@ -584,7 +556,7 @@ fn passes_path_settings_and_the_icon_as_absolute_paths() -> TestResult {
     let path = |path: PathBuf| Some(path.display().to_string());
     assert_eq!(
         received(&output, "TOKAMAK_MACOS_ICON")?,
-        path(project.join("src/assets/AppIcon.icon"))
+        path(project.join("assets/AppIcon.icon"))
     );
     assert_eq!(
         received(&output, "TOKAMAK_MACOS_PLIST")?,
@@ -604,7 +576,9 @@ fn rejects_keys_the_platform_pack_does_not_declare() -> TestResult {
     build_command("android", &project, &platform_pack)?
         .assert()
         .failure()
-        .stderr(contains("unknown key android.tset in"));
+        .stderr(contains(
+            "unknown key android.tset in the tokamak() options",
+        ));
 
     build_command("android", &project, &platform_pack)?
         .args(["--android-manifset", "AndroidManifest.xml"])
@@ -627,7 +601,7 @@ fn lists_the_platform_pack_options_in_build_help() -> TestResult {
         .success()
         .stdout(
             contains(
-                "Android options (also TOKAMAK_ANDROID_<KEY>, or android.<key> in the configuration file):",
+                "Android options (also TOKAMAK_ANDROID_<KEY>, or android.<key> in the tokamak() options):",
             )
             .and(contains("--android-identifier <VALUE>"))
             .and(contains("--android-manifest <PATH>"))
@@ -1046,8 +1020,7 @@ fn builds_with_a_configured_display_name() -> TestResult {
 fn builds_a_configured_windows_icon() -> TestResult {
     let (_temporary, project, manifest) = create_windows_inputs()?;
     configure(&project, r#"{"windows":{"icon":"AppIcon.ico"}}"#)?;
-    fs::create_dir_all(project.join("src"))?;
-    fs::write(project.join("src/AppIcon.ico"), "ico")?;
+    fs::write(project.join("AppIcon.ico"), "ico")?;
 
     let mut command = build_command("windows", &project, &manifest)?;
     command.assert().success();

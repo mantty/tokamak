@@ -11,18 +11,21 @@ npx tok targets
 
 | Entry | Contents |
 | --- | --- |
-| `@tokamakdev/tok` | The `Config` type of `src/tokamak.ts` |
+| `@tokamakdev/tok` | The `Config` type of the Vite plugin's options |
 | `@tokamakdev/tok/vite` | The Vite plugin, `tokamak()` |
 | `tok` | The CLI |
 
-The Vite plugin goes next to Cloudflare's:
+The Vite plugin goes next to Cloudflare's, and its options are the app's
+tokamak configuration:
 
 ```ts
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { tokamak } from "@tokamakdev/tok/vite";
 import { defineConfig } from "vite";
 
-export default defineConfig({ plugins: [cloudflare(), tokamak()] });
+export default defineConfig({
+  plugins: [cloudflare(), tokamak({ name: "My App", version: "1.0.0" })],
+});
 ```
 
 It does nothing unless `tok` runs the build or development command.

@@ -54,7 +54,7 @@ tok targets
 - Require Vite with Cloudflare's Vite plugin (`@cloudflare/vite-plugin`) and add `tokamak()` from `@tokamakdev/tok/vite` next to `cloudflare()` in the Vite plugins (in Astro, `vite.plugins` in `astro.config.mjs`). Supported: React Router, TanStack Start, Astro 6+, RedwoodSDK, Vike, Next.js through vinext, React and Vue apps, and plain Workers (including Hono) with a `vite.config.ts`. Not supported: SvelteKit, Nuxt, Analog, Solid (Nitro), Qwik, Angular, and Next.js through OpenNext.
 - The plugin does nothing unless `tok` runs the command, so Cloudflare and web builds are unchanged. `tok build` fails when the build does not report a configuration because the plugin is missing.
 - `tok dev` learns the development server's address and the Worker name from the plugin, which reads the name with Wrangler from the Wrangler file in the Vite root and `CLOUDFLARE_ENV`; there is no `--server` option.
-- Use `--config <path>` for a configuration file other than `src/tokamak.ts` or `src/tokamak.js`.
+- `tok dev` follows the development server when it restarts on a new address, as Vite does when its config changes. Configuration changes apply to the app only after restarting `tok dev`, which says when the configuration changes.
 - Use `--skip-project-build` to package the previous `tok build`'s output again.
 - Choose a Wrangler environment as for Cloudflare: `CLOUDFLARE_ENV=production tok build ios`. Cloudflare's plugin applies it to the generated configuration, including `vars`; named vars do not inherit, and strings and JSON work. There is no `--env` or `--wrangler` option.
 - `build/` caches output by default (`--build-dir PATH` overrides). In GitHub Actions, cache it by OS and tested commit across merge and promotion workflows on the same branch; promote with `CLOUDFLARE_ENV=production tok build ios`. Missing/stale inputs rebuild; Apple env, signing, and build-number changes refresh the bundle and re-sign without recompiling the shell.
@@ -64,10 +64,10 @@ tok targets
 
 ### Configuration and settings
 
-- The configuration is the `config` export of `src/tokamak.ts`, then `src/tokamak.js`; the file is optional. Use `-c` or `--config` to select another file. Type it with `satisfies Config`, importing `type Config` from `@tokamakdev/tok`.
-- The plugin evaluates the file with Vite and the app's aliases, so it can import shared modules and read `process.env`; express shared bases and per-environment variants as imports and conditions. There is no `include` and no `tokamak.jsonc`.
-- In tokamak builds and development the file is also part of the Worker, without its `config` export: its top-level code runs whenever the Worker is evaluated (and during Astro prerendering), so keep it cheap and safe. Declare `export const config = ...` in its own statement; `config` stays a local constant while the file's other code mentions it, and is left out otherwise.
-- Top-level keys are `name`, `identifier`, `icon`, and `version`; other top-level keys are rejected. They are defaults for every platform.
+- The configuration is the options of `tokamak()` in the Vite config, for example `tokamak({ name: "My App", version: "1.0.0", ios: { "team-id": "ABCD1234" } })`. There is no configuration file and no `--config` option. `type Config` from `@tokamakdev/tok` types a configuration declared apart from the call.
+- The Vite config is code: express shared bases and per-environment variants, including `process.env` values, as imports and conditions. There is no `include` and no `tokamak.jsonc`.
+- `module`, relative to the Vite root, names the module the entry Worker imports in tokamak builds and development, for Worker code that runs only on the device. It defaults to `src/tokamak.ts`, then `src/tokamak.js`, when one exists; a `module` that does not exist fails the build. Its top-level code runs whenever the Worker is evaluated (and during Astro prerendering), so keep it cheap and safe. Cloudflare and web builds do not include it.
+- Top-level keys are `name`, `identifier`, `icon`, and `version`, which are defaults for every platform, and `module`; other top-level keys are rejected.
 - Platform objects (`android`, `ios`, `macos`, `windows`) override `name`, `identifier`, or `icon` per platform, for example `{ name: "My App", ios: { name: "My App Pro" } }`. Their other keys are settings for that platform's pack. `ios` also applies to `ios-simulator`. `version` is top-level only.
 - Display names preserve their spelling and capitalization. Tokamak derives a lower-case slug for filenames, application IDs, and local hosts. If `name` is absent, the Wrangler Worker name is used as both name and slug, so it must already be a slug (lowercase letters and digits joined by single hyphens, at most 63 characters); set `name` when it is not.
 - `identifier` values are used as the Apple bundle identifier and Android application ID.
@@ -75,13 +75,13 @@ tok targets
 - `icon` accepts user-created platform assets: Android `res` directories, Apple `.icon` packages for `ios`/`macos`, and Windows `.ico` files. Missing icons preserve the existing behavior.
 - Every setting is a command-line option, an environment variable, or a configuration key, with the same name in each: `--version`/`TOKAMAK_VERSION`/`version`, and `--ios-plist`/`TOKAMAK_IOS_PLIST`/`ios.plist`. Options beat environment variables, which beat the configuration; within a source, a platform's own value beats a top-level one. The build command is the exception: only `--build` or `TOKAMAK_BUILD`.
 - tokamak validates `name`, `identifier`, `icon`, and `version`. Every other platform setting belongs to the platform pack, which declares it; `tok build <platform> --help` lists a platform's settings. An undeclared setting for the platform being built is an error; settings for other platforms are ignored. Do not invent platform settings.
-- Relative paths in options and environment variables are relative to the current directory; relative paths in a configuration file are relative to that file.
+- Relative paths in options and environment variables are relative to the current directory; relative paths in the configuration are relative to the Vite root, which is the project directory unless the Vite config sets `root`.
 - `tok version` prints the CLI version; `--version` sets the app version.
 
 Examples:
 
 ```sh
-tok build ios --config ./src/tokamak.ts --ios-build-number 5
+tok build ios --ios-build-number 5
 tok build ios --ios-plist native/Info.plist
 TOKAMAK_MACOS_PLIST=native/Info.plist tok build macos
 ```

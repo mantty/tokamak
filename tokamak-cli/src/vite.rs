@@ -3,7 +3,7 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -16,17 +16,23 @@ use super::tokamak_config::{self, TokamakConfig};
 pub(crate) const PLUGIN_HINT: &str =
     "the Vite config must include tokamak() from @tokamakdev/tok/vite next to cloudflare()";
 
-/// The plugin's output directory and the configuration file `tok` names.
+/// The plugin's output directory.
 pub(crate) struct VitePlugin {
     output: PathBuf,
-    config: Option<PathBuf>,
 }
 
-/// The plugin's `config.json`: the configuration file and its `config` export.
-#[derive(Deserialize)]
-struct ConfigReport {
-    file: Option<PathBuf>,
+/// The plugin's `config.json`: the Vite root and the plugin's options.
+#[derive(Deserialize, PartialEq)]
+pub(crate) struct ConfigReport {
+    root: PathBuf,
     config: serde_json::Value,
+}
+
+impl ConfigReport {
+    /// The app's configuration.
+    pub(crate) fn parse(&self) -> Result<TokamakConfig> {
+        tokamak_config::parse_config(&self.root, &self.config)
+    }
 }
 
 /// The plugin's `server.json`: the development server and its Worker.
@@ -41,11 +47,9 @@ pub(crate) struct ServerReport {
 }
 
 impl VitePlugin {
-    /// The plugin writing to `output` and reading `config`, relative to the
-    /// current directory, or else the configuration file it finds.
-    pub(crate) fn new(output: PathBuf, config: Option<&Path>) -> Result<Self> {
-        let config = config.map(std::path::absolute).transpose()?;
-        Ok(Self { output, config })
+    /// The plugin writing to `output`.
+    pub(crate) const fn new(output: PathBuf) -> Self {
+        Self { output }
     }
 
     /// Remove what an earlier run reported.
@@ -53,27 +57,16 @@ impl VitePlugin {
         paths::reset_path(&self.output)
     }
 
-    /// The environment variables that activate the plugin.
-    pub(crate) fn environment(&self) -> Vec<(&'static str, &OsStr)> {
-        let mut environment = vec![("TOKAMAK_VITE_OUTPUT", self.output.as_os_str())];
-        if let Some(config) = &self.config {
-            environment.push(("TOKAMAK_CONFIG", config.as_os_str()));
-        }
-        environment
+    /// The environment variable that activates the plugin.
+    pub(crate) fn environment(&self) -> [(&'static str, &OsStr); 1] {
+        [("TOKAMAK_VITE_OUTPUT", self.output.as_os_str())]
     }
 
-    /// The app's configuration, `None` without a configuration file, as
-    /// `command`, which ran the plugin, reported it.
-    pub(crate) fn config(&self, command: &str) -> Result<Option<TokamakConfig>> {
-        let report = self
-            .report::<ConfigReport>("config.json")?
-            .with_context(|| {
-                format!("{command} did not report its tokamak configuration; {PLUGIN_HINT}")
-            })?;
-        report
-            .file
-            .map(|file| tokamak_config::parse_config(&file, report.config))
-            .transpose()
+    /// The app's configuration as `command`, which ran the plugin, reported it.
+    pub(crate) fn config(&self, command: &str) -> Result<ConfigReport> {
+        self.report("config.json")?.with_context(|| {
+            format!("{command} did not report its tokamak configuration; {PLUGIN_HINT}")
+        })
     }
 
     /// The development server, once the plugin has reported it.
