@@ -2161,6 +2161,18 @@ export async function run(handlerEnv, ctx, constructors) {
     await Promise.resolve();
     return received;
   });
+  output.globalScopeEvents = result(() => {
+    const calls = [];
+    function record(event) { calls.push([event.type, event.cancelable, event.target === globalThis, this === globalThis]); }
+    const types = ["error", "unhandledrejection", "custom"];
+    for (const type of types) addEventListener(type, record);
+    const dispatched = [dispatchEvent(new Event("custom")), globalThis.dispatchEvent(new Event("custom", { cancelable: true }))];
+    for (const type of types) removeEventListener(type, record);
+    return {
+      calls, dispatched, afterRemoval: dispatchEvent(new Event("custom")),
+      foreignReceivers: ["addEventListener", "removeEventListener", "dispatchEvent"].map(name => detailedResult(() => EventTarget.prototype[name].call({}, "custom", record))),
+    };
+  });
   const tasks = [];
   waitUntil(Promise.resolve().then(() => tasks.push("imported")));
   ctx.waitUntil(Promise.resolve().then(() => tasks.push("context")));
