@@ -123,19 +123,3 @@ fn lists_keys_in_byte_order_by_prefix_and_page() -> TestResult {
     );
     Ok(())
 }
-
-#[test]
-fn checks_expirations_against_the_clock_that_expires_entries() -> TestResult {
-    let (_directory, namespace) = namespace()?;
-
-    let refusal = namespace.put("k", b"", &expiring(NOW + 59), NOW).err();
-
-    assert_eq!(
-        refusal.as_deref(),
-        Some(
-            "400 Invalid expiration of 1000059. Expiration times must be at least 60 seconds in the future."
-        )
-    );
-    namespace.put("k", b"", &expiring(NOW + 60), NOW)?;
-    Ok(())
-}

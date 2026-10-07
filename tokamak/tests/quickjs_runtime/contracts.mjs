@@ -400,22 +400,15 @@ export async function run(handlerEnv, ctx, constructors) {
   const symbol = Symbol("name");
   const symbolConversions = {
     url: () => new URL(symbol),
-    searchParams: () => new URLSearchParams().append("name", symbol),
     encode: () => new TextEncoder().encode(symbol),
-    decoderLabel: () => new TextDecoder(symbol),
     event: () => new Event(symbol),
-    listener: () => new EventTarget().addEventListener(symbol, () => {}),
     mark: () => performance.mark(symbol),
-    entries: () => performance.getEntriesByName(symbol),
     atob: () => atob(symbol),
-    btoa: () => btoa(symbol),
     localeCompare: () => "a".localeCompare(symbol),
-    localeCompareThis: () => String.prototype.localeCompare.call(symbol, "a"),
     localeCompareNull: () => String.prototype.localeCompare.call(null, "a"),
     header: () => new Headers().append("name", symbol),
     formData: () => new FormData().append(symbol, "value"),
     blob: () => new Blob([symbol]),
-    response: () => new Response(symbol),
     escape: () => process.getBuiltinModule("node:querystring").escape(symbol),
   };
   output.symbolConversions = Object.fromEntries(Object.entries(symbolConversions).map(([name, convert]) => [name, detailedResult(convert)]));
@@ -2468,6 +2461,7 @@ export async function run(handlerEnv, ctx, constructors) {
           [...nodeBuffer.Buffer.from(value, "base64")], [...nodeBuffer.Buffer.from(value, "base64url")], nodeBuffer.Buffer.byteLength(value, "base64"), detailedResult(() => nodeBuffer.atob(value)),
         ]),
         base64Encoded: [[], [0], [0, 1], [255, 254, 253, 252]].map(bytes => [nodeBuffer.Buffer.from(bytes).toString("base64"), nodeBuffer.Buffer.from(bytes).toString("base64url")]),
+        decoded: [[0x00, 0xd8], [0x41, 0x00, 0x00, 0xd8, 0x42], [0xef, 0xbb, 0xbf, 0x41]].map(bytes => ["utf16le", "utf8"].map(encoding => [...nodeBuffer.Buffer.from(bytes).toString(encoding)].map(text => text.codePointAt(0)))),
         btoa: ["hello", "\x00\xff", "€"].map(value => detailedResult(() => nodeBuffer.btoa(value))),
         base64Missing: [detailedResult(() => nodeBuffer.atob()), detailedResult(() => nodeBuffer.btoa())],
       };

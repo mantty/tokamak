@@ -140,10 +140,7 @@ fn bare_name(public: &str) -> Option<&str> {
 
 /// Whether `name` names a Node module, as `node:module`'s `isBuiltin` decides.
 pub(crate) fn is_node_builtin(name: &str) -> bool {
-    name.starts_with("node:")
-        || PUBLIC_MODULES
-            .iter()
-            .any(|(public, _)| bare_name(public) == Some(name))
+    name.starts_with("node:") || (!name.contains(':') && public_module(name).is_some())
 }
 
 /// The names `node:module`'s `builtinModules` lists, in order.
