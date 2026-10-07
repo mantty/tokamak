@@ -1,10 +1,6 @@
-use std::collections::BTreeMap;
-use std::fs;
-
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
-use tokamak_cli::{MANIFEST_FILE, PlatformPackManifest, Target, write_manifest};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -24,6 +20,11 @@ fn explains_the_cert_inventory_command() -> TestResult {
 #[cfg(unix)]
 #[test]
 fn lists_signing_assets_with_the_ios_platform_pack() -> TestResult {
+    use std::collections::BTreeMap;
+    use std::fs;
+
+    use tokamak_cli::{MANIFEST_FILE, PlatformPackManifest, Target, write_manifest};
+
     let packs = tempfile::tempdir()?;
     let pack = packs.path().join("ios-arm64");
     fs::create_dir_all(pack.join("build"))?;
