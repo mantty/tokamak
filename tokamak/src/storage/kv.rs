@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use super::keys::{cursor, cursor_key, prefix_end};
 use super::{Location, Open, SQLITE_FILES, lock, sqlite, text};
 
-// Lengths are in UTF-8 bytes; a bulk read returns at most one value's length.
+// Lengths are in UTF-8 bytes, but a bulk read's total is in UTF-16 units of
+// its values decoded as text, and is at most one value's length.
 const MAX_KEY_LENGTH: usize = 512;
 const MAX_VALUE_LENGTH: usize = 25 * 1024 * 1024;
 const MAX_METADATA_LENGTH: usize = 1024;
@@ -123,7 +124,9 @@ impl KvNamespace {
         let connection = lock(&self.connection);
         let reads = keys.iter().map(|key| read(&connection, key, now));
         let entries: Vec<_> = reads.collect::<Result<_, _>>()?;
-        let lengths = entries.iter().flatten().map(|entry| entry.value.len());
+        let text_length =
+            |entry: &Entry| String::from_utf8_lossy(&entry.value).encode_utf16().count();
+        let lengths = entries.iter().flatten().map(text_length);
         check(lengths.sum::<usize>() <= MAX_VALUE_LENGTH, 413, || {
             "Total size of request exceeds the limit of 25MB".to_owned()
         })?;
