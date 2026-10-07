@@ -368,31 +368,10 @@ private final class TokamakController {
     }
   }
 #else
+  @main
   private final class TokamakIOSApplicationDelegate: UIResponder, UIApplicationDelegate {
-    private lazy var host = TokamakHost()
-    private lazy var controller = TokamakController(host: host)
-    var window: UIWindow?
-
-    func application(
-      _ application: UIApplication,
-      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
-    ) -> Bool {
-      let window = UIWindow(frame: UIScreen.main.bounds)
-      let viewController = UIViewController()
-      window.rootViewController = viewController
-      window.makeKeyAndVisible()
-      self.window = window
-
-      controller.start(frame: viewController.view.bounds) { webView in
-        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        viewController.view.addSubview(webView)
-      }
-      return true
-    }
-
-    func applicationWillEnterForeground(_ application: UIApplication) {
-      controller.restoreGateway()
-    }
+    /// Exists from launch, whether or not a scene connects.
+    let host = TokamakHost()
 
     func application(
       _ application: UIApplication,
@@ -423,15 +402,35 @@ private final class TokamakController {
     }
   }
 
-  @main
-  private enum TokamakApplication {
-    static func main() {
-      UIApplicationMain(
-        CommandLine.argc,
-        CommandLine.unsafeArgv,
-        nil,
-        NSStringFromClass(TokamakIOSApplicationDelegate.self)
-      )
+  /// The Info.plist scene configuration names this class.
+  @objc(TokamakSceneDelegate)
+  private final class TokamakSceneDelegate: UIResponder, UIWindowSceneDelegate {
+    var window: UIWindow?
+    private var controller: TokamakController?
+
+    func scene(
+      _ scene: UIScene,
+      willConnectTo session: UISceneSession,
+      options connectionOptions: UIScene.ConnectionOptions
+    ) {
+      guard let scene = scene as? UIWindowScene else { return }
+      let host = (UIApplication.shared.delegate as! TokamakIOSApplicationDelegate).host
+      let viewController = UIViewController()
+      let window = UIWindow(windowScene: scene)
+      window.rootViewController = viewController
+      window.makeKeyAndVisible()
+      self.window = window
+
+      let controller = TokamakController(host: host)
+      controller.start(frame: viewController.view.bounds) { webView in
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        viewController.view.addSubview(webView)
+      }
+      self.controller = controller
+    }
+
+    func sceneWillEnterForeground(_ scene: UIScene) {
+      controller?.restoreGateway()
     }
   }
 #endif

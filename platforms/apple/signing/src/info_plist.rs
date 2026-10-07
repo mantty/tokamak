@@ -271,6 +271,7 @@ fn add_generated_plist(
                 "UILaunchScreen".into(),
                 Value::Dictionary(Dictionary::new()),
             );
+            plist.insert("UIApplicationSceneManifest".into(), scene_manifest());
             insert_array(
                 plist,
                 "UISupportedInterfaceOrientations",
@@ -284,6 +285,17 @@ fn add_generated_plist(
         platform => bail!("unsupported Apple platform: {platform}"),
     }
     Ok(())
+}
+
+/// The scene manifest that runs the app's window from the shell's scene
+/// delegate.
+fn scene_manifest() -> Value {
+    let scene = Dictionary::from_iter([("UISceneDelegateClassName", "TokamakSceneDelegate")]);
+    let configurations = Dictionary::from_iter([(
+        "UIWindowSceneSessionRoleApplication",
+        vec![Value::from(scene)],
+    )]);
+    Dictionary::from_iter([("UISceneConfigurations", configurations)]).into()
 }
 
 /// Merge each plugin's Info.plist, in plugin ID order, onto the generated
@@ -980,6 +992,28 @@ mod tests {
                 "missing or incorrect {key}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn ios_apps_connect_their_scenes_to_the_shell_scene_delegate() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let ios = build(&input(temporary.path(), "ios")?, "iphoneos", None)?;
+        let delegate = ios
+            .get("UIApplicationSceneManifest")
+            .and_then(Value::as_dictionary)
+            .and_then(|manifest| manifest.get("UISceneConfigurations"))
+            .and_then(Value::as_dictionary)
+            .and_then(|configurations| configurations.get("UIWindowSceneSessionRoleApplication"))
+            .and_then(Value::as_array)
+            .and_then(|configurations| configurations.first())
+            .and_then(Value::as_dictionary)
+            .and_then(|configuration| configuration.get("UISceneDelegateClassName"))
+            .and_then(Value::as_string);
+        assert_eq!(delegate, Some("TokamakSceneDelegate"));
+
+        let macos = build(&input(temporary.path(), "macos")?, "macosx", None)?;
+        assert!(macos.get("UIApplicationSceneManifest").is_none());
         Ok(())
     }
 
