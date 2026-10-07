@@ -76,8 +76,16 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     fail(locationError(error))
   }
 
+  /// Checks location services off the main thread, which the check can block.
   private func start() {
-    guard CLLocationManager.locationServicesEnabled() else {
+    DispatchQueue.global(qos: .userInitiated).async {
+      let enabled = CLLocationManager.locationServicesEnabled()
+      DispatchQueue.main.async { self.start(servicesEnabled: enabled) }
+    }
+  }
+
+  private func start(servicesEnabled: Bool) {
+    guard servicesEnabled else {
       fail(unavailable("Location services are disabled"))
       return
     }
