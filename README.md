@@ -96,7 +96,8 @@ RedwoodSDK, Vike, Next.js through vinext, React and Vue apps, and plain
 Workers, including Hono, with a `vite.config.ts`. SvelteKit, Nuxt, Analog,
 Solid (Nitro), Qwik, Angular and Next.js through OpenNext are not supported.
 
-Add tokamak's Vite plugin next to Cloudflare's:
+Add tokamak's Vite plugin next to Cloudflare's. Its options are the app's
+[configuration](#configuration):
 
 ```ts
 // vite.config.ts
@@ -104,7 +105,9 @@ import { cloudflare } from "@cloudflare/vite-plugin";
 import { tokamak } from "@tokamakdev/tok/vite";
 import { defineConfig } from "vite";
 
-export default defineConfig({ plugins: [cloudflare(), tokamak()] });
+export default defineConfig({
+  plugins: [cloudflare(), tokamak({ name: "My App", version: "1.0.0" })],
+});
 ```
 
 In Astro, add `tokamak()` to `vite.plugins` in `astro.config.mjs`. The plugin
@@ -303,68 +306,61 @@ backing up an app whose data exceeds 25 MB.
 provides these bindings from the project's `.wrangler/state`, so development
 data stays on the development machine.
 
-### Configuration file
+### Configuration
 
-The app's tokamak configuration is the `config` export of `src/tokamak.ts`, or
-`src/tokamak.js`. The file is optional. Use `-c` or `--config` to name another
-file.
+The app's tokamak configuration is the options of the tokamak Vite plugin:
 
 ```ts
-// src/tokamak.ts
-import type { Config } from "@tokamakdev/tok";
-
-export const config = {
+// vite.config.ts
+tokamak({
   // Defaults for every platform
   name: "My App",
   identifier: "com.example.myapp",
-  icon: "../assets/icons/AppIcon.icon",
+  icon: "assets/icons/AppIcon.icon",
   version: "1.0.0",
 
   // Platform overrides and platform-pack settings
   ios: {
     name: "Myapp Pro",
     identifier: "com.example.myapp.ios",
-    plist: "../native/Info.plist",
+    plist: "native/Info.plist",
   },
   android: {
-    icon: "../assets/icons/android",
+    icon: "assets/icons/android",
   },
   windows: {
-    icon: "../assets/icons/windows/AppIcon.ico",
+    icon: "assets/icons/windows/AppIcon.ico",
   },
-} satisfies Config;
+});
 ```
 
-The top-level keys are `name`, `identifier`, `icon`, and `version`; other
-top-level keys are rejected. They are defaults for every platform. A platform
-object (`android`, `ios`, `macos`, `windows`) overrides `name`, `identifier`,
-or `icon` for that platform, and its other keys are settings for that
-platform's pack. `version` is top-level only. `ios` covers iOS devices and
-simulators. Paths are relative to the configuration file.
+The top-level keys are `name`, `identifier`, `icon`, and `version`, which are
+defaults for every platform, and `module`; other top-level keys are rejected.
+A platform object (`android`, `ios`, `macos`, `windows`) overrides `name`,
+`identifier`, or `icon` for that platform, and its other keys are settings for
+that platform's pack. `version` is top-level only. `ios` covers iOS devices
+and simulators. Relative paths are relative to the Vite root, which is the
+project directory unless the Vite config sets `root`.
 
-The plugin reads the file with Vite, using the app's aliases, when `tok build`
-or `tok dev` runs, so the file can import other modules and read
-`process.env`. A shared base and per-environment variants are ordinary imports
-and conditions, so there is no `include` key, and no `tokamak.jsonc`:
+The Vite config is code, so a shared base and per-environment variants are
+ordinary imports and conditions, and there is no `include` key and no
+`tokamak.jsonc`. `Config` from `@tokamakdev/tok` types the configuration:
 
 ```ts
 import type { Config } from "@tokamakdev/tok";
-import { base } from "./tokamak.base";
 
-export const config = {
-  ...base,
-  name: process.env.APP_NAME ?? "My App",
-} satisfies Config;
+const base: Config = { identifier: "com.example.myapp", version: "1.0.0" };
+
+tokamak({ ...base, name: process.env.APP_NAME ?? "My App" });
 ```
 
-In tokamak builds and development the file is also part of the Worker: its
-top-level code runs whenever the Worker is evaluated, including during Astro's
-prerendering at build time, and when the configuration is read. Keep that code
-cheap and safe to run in each of those places. The Worker's copy of the file
-has no `config` export, so declare it as `export const config = ...` in a
-statement of its own. It keeps `config` as a local constant while the file's
-other code mentions `config`, and leaves it out otherwise. Builds for
-Cloudflare and the web do not include the file.
+In tokamak builds and development the entry Worker imports `module`, a path
+relative to the Vite root, for code that runs only on the device. It defaults
+to `src/tokamak.ts`, then `src/tokamak.js`, when one exists; a `module` that
+does not exist fails the build. Its top-level code runs whenever the Worker is
+evaluated, including during Astro's prerendering at build time, so keep it
+cheap and safe to run there. Builds for Cloudflare and the web do not include
+it.
 
 Every value is optional. Names retain their spelling and capitalization for
 display. Tokamak derives a lower-case ASCII slug for bundle filenames,
@@ -412,8 +408,8 @@ precedence over a top-level one, so `--ios-identifier` overrides
 - **Values:** option and environment values are strings. Configuration values
   may be strings, numbers, or booleans.
 - **Relative paths:** paths in options and environment variables are relative
-  to the current directory. Paths in a configuration file are relative to that
-  file's directory.
+  to the current directory. Paths in the configuration are relative to the
+  Vite root.
 
 The platform packs accept these settings:
 
@@ -586,8 +582,12 @@ configuration, and the Worker name to `tok dev`, which waits up to a minute for
 them, then builds the development app and proxies it to that address, so
 `tok dev` takes no `--server` option. The plugin reads the Worker name with
 Wrangler from `wrangler.jsonc`, `wrangler.json` or `wrangler.toml` in the Vite
-root, in the `CLOUDFLARE_ENV` environment. Restart `tok dev` after changing
-native settings.
+root, in the `CLOUDFLARE_ENV` environment.
+
+When the development server restarts, as Vite does when its config changes,
+`tok dev` follows it to its new address. The configuration and other native
+settings apply to the app when `tok dev` restarts; `tok dev` says when the
+configuration changes.
 
 ## Native plugins
 
@@ -617,7 +617,7 @@ unused code; it keeps every class and member name. The keystore settings sign
 the APK; without a keystore, the debug key signs it, so it installs for testing
 but cannot be published. Set the passwords through the
 `TOKAMAK_ANDROID_KEYSTORE_PASSWORD` and `TOKAMAK_ANDROID_KEY_PASSWORD`
-environment variables rather than the configuration file. `tok dev` builds debug APKs.
+environment variables rather than the configuration. `tok dev` builds debug APKs.
 
 Android builds run lint's `NewApi` check over the shell and plugin sources. A
 call to an API newer than the app's minimum SDK fails the build, naming the

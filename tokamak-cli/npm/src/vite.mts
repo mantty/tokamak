@@ -1,58 +1,45 @@
 import fs from "node:fs";
 import path from "node:path";
-import {
-  normalizePath,
-  runnerImport,
-  type Plugin,
-  type ResolvedBuildEnvironmentOptions,
-  type ResolvedConfig,
-  type Rollup,
-} from "vite";
+import { normalizePath, type Plugin, type ResolvedBuildEnvironmentOptions } from "vite";
 
-/** Configuration files tried in order when `tok` names none. */
-const CONFIG_FILES = ["src/tokamak.ts", "src/tokamak.js"];
+import type { Config } from "./index.mjs";
+
+/** Modules tried in order when the options name none. */
+const DEFAULT_MODULES = ["src/tokamak.ts", "src/tokamak.js"];
 
 /** Wrangler configuration files Cloudflare's plugin tries in order. */
 const WRANGLER_FILES = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"];
 
-/** The files each output directory's `config.json` was read from, once written. */
-const written = new Map<string, Promise<string[]>>();
-
 /**
- * Reports the build's tokamak configuration, and the development server's
- * address and Worker name, to `tok`, and makes the entry Worker import the
- * configuration file. Without `TOKAMAK_VITE_OUTPUT`, which `tok` sets, it adds
- * no hooks.
+ * Reports the app's tokamak configuration, and the development server's
+ * address and Worker name, to `tok`, and makes the entry Worker import
+ * `module`. Without `TOKAMAK_VITE_OUTPUT`, which `tok` sets, it adds no hooks.
  */
-export function tokamak(): Plugin[] {
+export function tokamak({
+  module,
+  ...config
+}: Config & {
+  /**
+   * The module the entry Worker imports, relative to the Vite root; by
+   * default `src/tokamak.ts`, then `src/tokamak.js`, when one exists.
+   */
+  module?: string;
+} = {}): Plugin[] {
   const output = process.env.TOKAMAK_VITE_OUTPUT;
   if (!output) {
     return [];
   }
-  let config: ResolvedConfig;
   let file: string | undefined;
   /** The module IDs of each entry environment's inputs. */
   const entryIds = new Map<string, Promise<(string | undefined)[]>>();
-  /** The entry environments whose input imports the configuration file. */
+  /** The entry environments whose input imports the module. */
   const importing = new Set<string>();
-  const write = () => {
-    const files = writeConfig(output, file, config);
-    // A file that fails to load stays watched, so fixing it rewrites `config.json`.
-    written.set(output, files.catch(() => (file ? [file] : [])));
-    return files;
-  };
   return [
     {
       name: "tokamak",
-      async configResolved(resolved) {
-        config = resolved;
-        file = findConfigFile(resolved.root);
-        await (written.has(output) ? written.get(output) : write());
-      },
-      async watchChange(id) {
-        if ((await written.get(output))?.includes(id)) {
-          await write();
-        }
+      configResolved({ root }) {
+        file = findModule(root, module);
+        writeJson(output, "config.json", { root, config });
       },
       async configureServer(server) {
         const httpServer = server.httpServer;
@@ -76,9 +63,6 @@ export function tokamak(): Plugin[] {
       name: "tokamak:entry",
       applyToEnvironment: ({ config }) => file !== undefined && buildsEntryWorker(config),
       async transform(code, id) {
-        if (id === file) {
-          return withoutConfig(this, code);
-        }
         const environment = this.environment;
         const ids =
           entryIds.get(environment.name) ??
@@ -101,40 +85,14 @@ export function tokamak(): Plugin[] {
   ];
 }
 
-/** The configuration file `TOKAMAK_CONFIG` names, or the first default under `root` that exists. */
-function findConfigFile(root: string): string | undefined {
-  const named = process.env.TOKAMAK_CONFIG;
-  if (named) {
-    if (!fs.existsSync(named)) {
-      throw new Error(`tokamak configuration file not found: ${named}`);
-    }
-    return normalizePath(path.resolve(named));
+/** The module `name` under `root`, or else the first default under `root` that exists. */
+function findModule(root: string, name: string | undefined): string | undefined {
+  const candidates = (name ? [name] : DEFAULT_MODULES).map((candidate) => normalizePath(path.resolve(root, candidate)));
+  const file = candidates.find((candidate) => fs.existsSync(candidate));
+  if (name && !file) {
+    throw new Error(`tokamak module not found: ${candidates[0]}`);
   }
-  const file = CONFIG_FILES.map((name) => path.resolve(root, name)).find((candidate) =>
-    fs.existsSync(candidate),
-  );
-  return file && normalizePath(file);
-}
-
-/**
- * Writes the file's `config` export, with the file's path, to `config.json`,
- * returning the files it was read from.
- */
-async function writeConfig(
-  output: string,
-  file: string | undefined,
-  config: ResolvedConfig,
-): Promise<string[]> {
-  if (!file) {
-    writeJson(output, "config.json", { config: {} });
-    return [];
-  }
-  const { module, dependencies } = await runnerImport<{ config?: unknown }>(file, {
-    root: config.root,
-    resolve: { alias: config.resolve.alias, tsconfigPaths: config.resolve.tsconfigPaths },
-  });
-  writeJson(output, "config.json", { file, config: module.config ?? {} });
-  return [file, ...dependencies.map(normalizePath)];
+  return file;
 }
 
 /**
@@ -165,66 +123,6 @@ function buildsEntryWorker(config: { consumer: string; build: ResolvedBuildEnvir
 function inputs(build: ResolvedBuildEnvironmentOptions): string[] {
   const { input } = build.rollupOptions;
   return typeof input === "string" ? [input] : Object.values(input ?? {});
-}
-
-/** The parts of an ESTree statement `withoutConfig` reads. */
-interface Statement {
-  type: string;
-  start: number;
-  end: number;
-  declaration?: {
-    start: number;
-    id?: { name?: string } | null;
-    declarations?: { id: { name?: string } }[];
-  } | null;
-  specifiers?: { exported: { name?: string } }[];
-}
-
-/**
- * `code` without its `config` export: the `export const config = ...`
- * statement is blanked, or only its `export` keyword while other statements
- * mention `config`, so that every other position, and so the source map, is
- * unchanged.
- */
-function withoutConfig(context: Rollup.TransformPluginContext, code: string) {
-  const statements = context.parse(code).body as Statement[];
-  const statement = statements.find(exportsConfig);
-  if (!statement) {
-    return;
-  }
-  const declaration = statement.declaration;
-  if (declaration?.declarations?.length !== 1) {
-    return context.error("declare config in its own `export const config = ...` statement");
-  }
-  const mentioned = statements.some((other) => other !== statement && mentions(other, "config"));
-  const end = mentioned ? declaration.start : statement.end;
-  const blank = code.slice(statement.start, end).replace(/[^\n]/g, " ");
-  return { code: code.slice(0, statement.start) + blank + code.slice(end), map: null };
-}
-
-/** Whether `node` contains an identifier named `name`, property names included. */
-function mentions(node: unknown, name: string): boolean {
-  if (typeof node !== "object" || node === null) {
-    return false;
-  }
-  const identifier = node as { type?: unknown; name?: unknown };
-  if (identifier.type === "Identifier" && identifier.name === name) {
-    return true;
-  }
-  return Object.values(node).some((child) => mentions(child, name));
-}
-
-function exportsConfig(statement: Statement): boolean {
-  if (statement.type !== "ExportNamedDeclaration") {
-    return false;
-  }
-  const declaration = statement.declaration;
-  const names = [
-    declaration?.id?.name,
-    ...(declaration?.declarations ?? []).map((declarator) => declarator.id.name),
-    ...(statement.specifiers ?? []).map((specifier) => specifier.exported.name),
-  ];
-  return names.includes("config");
 }
 
 /** Writes `value` to `name` whole, as `tok` reads the file as soon as it exists. */

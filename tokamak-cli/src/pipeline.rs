@@ -17,7 +17,6 @@ pub(crate) struct BuildRequest {
     pub(crate) project_dir: PathBuf,
     pub(crate) build_dir: Option<PathBuf>,
     pub(crate) platform_pack_dir: Option<PathBuf>,
-    pub(crate) tokamak_config_path: Option<PathBuf>,
     pub(crate) top: settings::TopOptions,
     pub(crate) platform_options: settings::PlatformOptions,
     /// `--build`; `TOKAMAK_BUILD` applies without it.
@@ -35,7 +34,7 @@ pub(crate) struct DevelopmentRequest<'a> {
     /// The canonical project directory.
     pub(crate) project: &'a Path,
     pub(crate) pack: &'a PlatformPack,
-    pub(crate) tokamak: Option<&'a TokamakConfig>,
+    pub(crate) tokamak: &'a TokamakConfig,
     pub(crate) worker_name: &'a str,
     pub(crate) endpoint: &'a str,
     pub(crate) session_token: &'a str,
@@ -99,10 +98,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         .map(|platform| PlatformPack::load(*platform, request.platform_pack_dir.as_deref()))
         .collect::<Result<Vec<_>>>()?;
     let current_dir = env::current_dir()?;
-    let plugin = VitePlugin::new(
-        build_dir.join(".tokamak").join("vite"),
-        request.tokamak_config_path.as_deref(),
-    )?;
+    let plugin = VitePlugin::new(build_dir.join(".tokamak").join("vite"));
     for (platform, pack) in request.platforms.iter().zip(&packs) {
         check_settings(
             &request.top,
@@ -119,11 +115,11 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         plugin.clear()?;
         project::build(&project, command.as_deref(), plugin.environment())?;
     }
-    let tokamak = plugin.config("the build")?;
+    let tokamak = plugin.config("the build")?.parse()?;
     let sources = settings::Sources::new(
         &request.top,
         &request.platform_options,
-        tokamak.as_ref(),
+        Some(&tokamak),
         &current_dir,
     );
     let version = required_version(&sources)?;
@@ -166,7 +162,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
 }
 
 /// Check the options and environment variables for `platform` before the
-/// project's command runs; the configuration file is read after it.
+/// project's command runs; the `tokamak()` options are read after it.
 pub(crate) fn check_settings(
     top: &settings::TopOptions,
     platform_options: &settings::PlatformOptions,
@@ -184,7 +180,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
     let sources = settings::Sources::new(
         request.top,
         request.platform_options,
-        request.tokamak,
+        Some(request.tokamak),
         &current_dir,
     );
     let manifest = &request.pack.manifest;
@@ -307,7 +303,7 @@ fn resolve_app(
         None => bail!(
             "{} has no name, and the Worker name {worker_name:?} is not a valid app name \
              (lowercase letters and digits joined by single hyphens, at most 63 characters); \
-             set --name, TOKAMAK_NAME, or `name` in the configuration file",
+             set --name, TOKAMAK_NAME, or `name` in the tokamak() options",
             platform.display_name()
         ),
     };
@@ -331,7 +327,7 @@ fn resolve_identifier(
 fn required_version(sources: &settings::Sources<'_>) -> Result<String> {
     settings::version(sources)?.ok_or_else(|| {
         anyhow::anyhow!(
-            "tokamak version is required for `tok build`; set --version, TOKAMAK_VERSION, or `version` in the configuration file"
+            "tokamak version is required for `tok build`; set --version, TOKAMAK_VERSION, or `version` in the tokamak() options"
         )
     })
 }

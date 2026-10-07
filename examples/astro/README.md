@@ -3,9 +3,9 @@
 Astro SSR app using the Cloudflare adapter. It exercises server rendering, one
 prerendered route, asset serving, navigation, and a WebSocket endpoint.
 
-`astro.config.mjs` adds the tokamak Vite plugin, and `src/tokamak.ts` holds the
-app's tokamak configuration. The example installs `@tokamakdev/tok` from the
-workspace, so build that package first. From this directory:
+`astro.config.mjs` adds the tokamak Vite plugin with the app's tokamak
+configuration. The example installs `@tokamakdev/tok` from the workspace, so
+build that package first. From this directory:
 
 ```sh
 npm ci --prefix ../../tokamak-cli/npm

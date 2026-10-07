@@ -57,9 +57,6 @@ enum Command {
         /// Platform-pack directory containing platform-pack.json.
         #[arg(long = "platform-pack")]
         platform_pack: Option<PathBuf>,
-        /// Tokamak configuration file, instead of the one the Vite plugin finds.
-        #[arg(short = 'c', long = "config", value_name = "PATH")]
-        config: Option<PathBuf>,
         #[command(flatten)]
         top: TopOptions,
         /// Command that builds the project [`TOKAMAK_BUILD`].
@@ -81,9 +78,6 @@ enum Command {
         /// Platform-pack directory containing platform-pack.json.
         #[arg(long = "platform-pack")]
         platform_pack: Option<PathBuf>,
-        /// Tokamak configuration file, instead of the one the Vite plugin finds.
-        #[arg(short = 'c', long = "config", value_name = "PATH")]
-        config: Option<PathBuf>,
         #[command(flatten)]
         top: TopOptions,
         /// Override the detected host address for a physical iOS device.
@@ -124,7 +118,6 @@ fn run() -> Result<()> {
             project,
             build_dir,
             platform_pack,
-            config,
             top,
             build_command,
             skip_project_build,
@@ -135,7 +128,6 @@ fn run() -> Result<()> {
                 project_dir: project,
                 build_dir,
                 platform_pack_dir: platform_pack,
-                tokamak_config_path: config,
                 top,
                 platform_options,
                 build_command,
@@ -154,7 +146,6 @@ fn run() -> Result<()> {
             device_id,
             project,
             platform_pack,
-            config,
             top,
             host_address,
             command,
@@ -162,7 +153,6 @@ fn run() -> Result<()> {
             device_id,
             project_dir: project,
             platform_pack_dir: platform_pack,
-            tokamak_config_path: config,
             top,
             platform_options,
             host_address,
@@ -267,7 +257,6 @@ fn list_targets() {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
-    use std::path::Path;
 
     use clap::Parser;
 
@@ -287,22 +276,6 @@ mod tests {
             Cli::try_parse_from(["tok", "build", "macos,android"]),
             Ok(Cli { command: Command::Build { platforms, .. } })
                 if platforms == "macos,android"
-        ));
-    }
-
-    #[test]
-    fn takes_an_optional_configuration_file() {
-        assert!(matches!(
-            Cli::try_parse_from(["tok", "build", "macos"]),
-            Ok(Cli {
-                command: Command::Build { config: None, .. }
-            })
-        ));
-        assert!(matches!(
-            Cli::try_parse_from(["tok", "dev", "ios", "--config", "src/test.ts", "--", "vite"]),
-            Ok(Cli {
-                command: Command::Dev { config: Some(config), .. }
-            }) if config.as_path() == Path::new("src/test.ts")
         ));
     }
 
