@@ -52,9 +52,12 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     }
   }
 
+  /// Also called when the manager is created, before anything asks for a
+  /// position.
   func locationManagerDidChangeAuthorization(
     _ manager: CLLocationManager
   ) {
+    guard !current.isEmpty || !watchers.isEmpty else { return }
     startIfAuthorized(manager.authorizationStatus)
   }
 
