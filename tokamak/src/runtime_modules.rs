@@ -1,4 +1,4 @@
-//! The public names of the runtime's builtin modules.
+//! The runtime's public builtin modules: their names, and their namespaces.
 
 use rquickjs::{Ctx, Module, Object};
 

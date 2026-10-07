@@ -1,24 +1,22 @@
 import { builtinNamespace, isNodeBuiltin } from "tokamak:host";
 import EventEmitter from "../events/events.mjs";
-import { string } from "./conversions.mjs";
+import { usvString } from "./conversions.mjs";
 
 const process = new EventEmitter();
 export default process;
 
 const builtinModules = new Map();
 
-// The builtin module `name` names: a Node module's default export, or another's namespace.
-function builtinModule(name) {
-  const namespace = builtinNamespace(name);
-  return namespace && isNodeBuiltin(name) ? namespace.default : namespace;
-}
-
 process.env = Object.fromEntries(Object.entries(globalThis.__tokamak_env ?? {}).map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]));
 process.nextTick = (callback, ...args) => queueMicrotask(() => callback(...args));
+// A Node module's default export, or another builtin's namespace, kept once found.
 process.getBuiltinModule = specifier => {
-  const name = string(specifier);
-  if (!builtinModules.has(name)) builtinModules.set(name, builtinModule(name));
-  return builtinModules.get(name);
+  const name = usvString(specifier);
+  if (builtinModules.has(name)) return builtinModules.get(name);
+  const namespace = builtinNamespace(name);
+  const module = namespace && isNodeBuiltin(name) ? namespace.default : namespace;
+  if (module !== undefined) builtinModules.set(name, module);
+  return module;
 };
 process.argv = ["workerd"];
 process.argv0 = "workerd";

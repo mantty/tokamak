@@ -4,7 +4,7 @@ import process from "../globals/process.mjs";
 const builtinModules = nodeBuiltinNames();
 
 export function isBuiltin(value) {
-  return typeof value === "string" && isNodeBuiltin(value);
+  return typeof value === "string" && isNodeBuiltin(value.toWellFormed());
 }
 
 export function createRequire() {
