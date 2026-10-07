@@ -2,7 +2,6 @@ use flume::Sender;
 use std::io;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
 use tokio_util::sync::CancellationToken;
 
 use crate::assets::{AssetResponse, Assets};
@@ -13,7 +12,7 @@ use crate::fs::{
     PROMISES_MODULE_NAME as NODE_FS_PROMISES_MODULE_NAME, install, read_bundle_file,
 };
 use crate::gateway::{
-    Execution, Handler, Job, JobResponse, WebSocketInbound, WebSocketJob, WebSocketOutbound,
+    Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob, WebSocketOutbound,
     WebSocketOutgoing,
 };
 use crate::globals::ResponseEncoder;
@@ -47,16 +46,16 @@ impl Dispatcher {
 }
 
 impl Handler for Dispatcher {
-    fn handle(&self, job: Job, execution: &Execution<'_>) -> Result<(), Error> {
+    fn handle(&self, job: Job, stopped: &CancellationToken) -> Result<(), HandlerError> {
         if let Some(assets) = &self.config.assets
             && let Some(asset) = assets.route(&job.request)?
         {
-            return job
-                .response
+            job.response
                 .send(JobResponse::Http(asset))
-                .map_err(|_| Error::startup("HTTP response receiver closed"));
+                .map_err(|_| receiver_closed("HTTP response receiver closed"))?;
+            return Ok(());
         }
-        execute_request(&self.worker, &self.config, job, execution)
+        Ok(execute_request(&self.worker, &self.config, job, stopped)?)
     }
 }
 
@@ -71,38 +70,29 @@ pub(super) fn configure_worker_loader(runtime: &rquickjs::Runtime, worker: &Work
     );
 }
 
+/// Runs `job` on the Worker from a blocking thread of the gateway's Tokio runtime.
 pub(super) fn execute_request(
     worker: &WorkerBundle,
     config: &RuntimeConfig,
     job: Job,
-    execution: &Execution<'_>,
+    stopped: &CancellationToken,
 ) -> Result<(), Error> {
-    block_on(execute_request_async(worker, config, job, execution))
+    tokio::runtime::Handle::try_current()
+        .map_err(io::Error::other)?
+        .block_on(execute_request_async(worker, config, job, stopped))
 }
 
-fn block_on<T>(future: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(runtime) => runtime.block_on(future),
-        Err(_) => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
-            .block_on(future),
-    }
-}
-
-/// A fresh `QuickJS` runtime that loads the Worker's modules and stops when
-/// `execution` stops accepting work.
+/// A fresh `QuickJS` runtime that loads the Worker's modules and is
+/// interrupted once `stopped` is cancelled.
 async fn worker_runtime(
     worker: &WorkerBundle,
     storage: Option<&Arc<dyn StorageRuntime>>,
-    execution: &Execution<'_>,
+    stopped: &CancellationToken,
 ) -> Result<(AsyncRuntime, AsyncContext), Error> {
     let runtime = AsyncRuntime::new().map_err(|error| js_error("runtime", error))?;
-    let interrupt_accepting = execution.accepting();
+    let interrupted = stopped.clone();
     runtime
-        .set_interrupt_handler(Some(Box::new(move || {
-            !interrupt_accepting.load(Ordering::Acquire)
-        })))
+        .set_interrupt_handler(Some(Box::new(move || interrupted.is_cancelled())))
         .await;
     runtime
         .set_loader(
@@ -123,9 +113,9 @@ async fn execute_request_async(
     worker: &WorkerBundle,
     config: &RuntimeConfig,
     job: Job,
-    execution: &Execution<'_>,
+    stopped: &CancellationToken,
 ) -> Result<(), Error> {
-    let (runtime, context) = worker_runtime(worker, config.storage.as_ref(), execution).await?;
+    let (runtime, context) = worker_runtime(worker, config.storage.as_ref(), stopped).await?;
     let awaited = crate::event_loop::AwaitedPromise::default();
     let request = context.async_with(async |ctx| -> Result<(), Error> {
         ctx.store_userdata(awaited.clone())
@@ -150,8 +140,8 @@ async fn execute_request_async(
             response_sender
                 .send_async(JobResponse::WebSocket)
                 .await
-                .map_err(|_| Error::startup("WebSocket response receiver closed"))?;
-            websocket_loop(&ctx, native, &websocket, execution).await?;
+                .map_err(|_| receiver_closed("WebSocket response receiver closed"))?;
+            websocket_loop(&ctx, native, &websocket, stopped).await?;
             return drain_wait_until(&ctx).await;
         }
         send_worker_response(&ctx, response, &response_sender).await
@@ -159,7 +149,7 @@ async fn execute_request_async(
     let request = crate::event_loop::run(&runtime, &awaited, request);
     tokio::select! {
         result = request => result,
-        () = execution.cancelled() => Err(Error::Engine("Worker execution was stopped".to_owned())),
+        () = stopped.cancelled() => Err(Error::Engine("Worker execution was stopped".to_owned())),
     }
 }
 
@@ -197,11 +187,9 @@ async fn invoke_worker<'js>(
 
 fn install_worker_globals(ctx: &Ctx<'_>, config: &RuntimeConfig) -> Result<(), Error> {
     let environment = serde_json::to_string(&config.environment)?;
-    let cache = serde_json::to_string(&config.cache.to_string_lossy())?;
-    ctx.eval::<(), _>(format!(
-        "globalThis.__tokamak_env = {environment}; globalThis.__tokamak_cache = {cache};"
-    ))
-    .map_err(|error| js_error("setup", error))?;
+    ctx.eval::<(), _>(format!("globalThis.__tokamak_env = {environment};"))
+        .map_err(|error| js_error("setup", error))?;
+    crate::cache::attach(ctx, &config.cache).map_err(|error| js_error("caches", error))?;
     if let Some(storage) = &config.storage {
         Arc::clone(storage)
             .attach(ctx)
@@ -452,7 +440,7 @@ async fn websocket_loop<'js>(
     ctx: &Ctx<'js>,
     native: &Object<'js>,
     websocket: &WebSocketJob,
-    execution: &Execution<'_>,
+    stopped: &CancellationToken,
 ) -> Result<(), Error> {
     let changed = Arc::new(tokio::sync::Notify::new());
     let notify = Arc::clone(&changed);
@@ -469,7 +457,7 @@ async fn websocket_loop<'js>(
     send_outbound(&websocket.outgoing, WebSocketOutbound::Ready).await?;
 
     loop {
-        if !execution.is_running() {
+        if stopped.is_cancelled() {
             return Ok(());
         }
         let event = tokio::select! {
@@ -481,7 +469,7 @@ async fn websocket_loop<'js>(
                 drain_websocket_outbox(&take_outbox, &websocket.outgoing).await?;
                 continue;
             },
-            () = execution.paused() => return Ok(()),
+            () = stopped.cancelled() => return Ok(()),
         };
         let should_close = match event {
             WebSocketInbound::Message { binary, payload } => {
@@ -574,7 +562,11 @@ async fn send_outbound(
     outgoing
         .send_async(frame)
         .await
-        .map_err(|_| Error::startup("WebSocket connection closed"))
+        .map_err(|_| receiver_closed("WebSocket connection closed").into())
+}
+
+fn receiver_closed(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::BrokenPipe, message)
 }
 
 async fn drain_wait_until(ctx: &Ctx<'_>) -> Result<(), Error> {

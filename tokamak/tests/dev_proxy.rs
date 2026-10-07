@@ -144,9 +144,10 @@ fn forwards_runtime_calls_to_the_host_server() -> TestResult {
         request.contains("content-type: application/json\r\n"),
         "{request}"
     );
-    assert!(request.contains("Host: dev.tokamak.local\r\n"), "{request}");
-    assert!(
-        request.contains("X-Tokamak-Session: test-session\r\n"),
+    assert_eq!(header_value(&request, "host"), Some(HOST), "{request}");
+    assert_eq!(
+        header_value(&request, "x-tokamak-session"),
+        Some("test-session"),
         "{request}"
     );
     assert!(request.ends_with(r#"{"id":"1"}"#), "{request}");
@@ -325,8 +326,11 @@ fn serve_host(listener: &TcpListener) -> TestResult {
     let headers = read_header_block(&mut http)?;
     let text = String::from_utf8(headers)?;
     assert!(text.starts_with("POST /api HTTP/1.1"));
-    assert!(text.contains("Host: dev.tokamak.local\r\n"));
-    assert!(text.contains("X-Tokamak-Session: test-session\r\n"));
+    assert_eq!(header_value(&text, "host"), Some(HOST));
+    assert_eq!(
+        header_value(&text, "x-tokamak-session"),
+        Some("test-session")
+    );
     assert!(text.contains("x-repeated: café\r\n"));
     assert!(text.contains("x-repeated: 東京\r\n"));
     let mut body = [0; 3];
@@ -341,7 +345,7 @@ fn serve_host(listener: &TcpListener) -> TestResult {
     let headers = read_header_block(&mut websocket)?;
     let text = String::from_utf8(headers)?;
     let key = header_value(&text, "sec-websocket-key").ok_or("missing WebSocket key")?;
-    assert!(!text.contains("Sec-WebSocket-Extensions:"));
+    assert_eq!(header_value(&text, "sec-websocket-extensions"), None);
     let accept = websocket_accept(key);
     write!(
         websocket,

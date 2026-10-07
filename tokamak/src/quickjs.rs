@@ -5,8 +5,6 @@
 #[cfg(feature = "native")]
 use std::collections::BTreeMap;
 #[cfg(feature = "native")]
-use std::path::PathBuf;
-#[cfg(feature = "native")]
 use std::sync::Arc;
 
 #[cfg(feature = "native")]
@@ -34,26 +32,10 @@ pub enum Error {
     #[cfg(feature = "native")]
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    /// The TLS gateway rejected an operation.
-    #[cfg(feature = "native")]
-    #[error("TLS operation failed: {0}")]
-    Tls(String),
     /// Runtime startup failed.
     #[cfg(feature = "native")]
     #[error("QuickJS startup failed: {0}")]
     Startup(String),
-    /// A runtime call into the Worker failed.
-    #[cfg(feature = "native")]
-    #[error("{0}")]
-    Call(String),
-}
-
-#[cfg(feature = "native")]
-impl Error {
-    /// A startup failure described by `message`.
-    pub(crate) fn startup(message: &str) -> Self {
-        Self::Startup(message.to_owned())
-    }
 }
 
 /// A packaged Worker whose modules are loaded independently by `QuickJS`.
@@ -104,8 +86,8 @@ impl WorkerBundle {
 pub(crate) struct RuntimeConfig {
     /// The app's static assets, when it has any.
     pub(crate) assets: Option<Arc<crate::assets::Assets>>,
-    /// Directory containing the app-private Worker cache.
-    pub(crate) cache: PathBuf,
+    /// The Worker's Cache API store.
+    pub(crate) cache: Arc<crate::cache::Caches>,
     /// Text and JSON Worker environment bindings.
     pub(crate) environment: BTreeMap<String, Value>,
     /// The stores behind storage bindings, when the app has any.

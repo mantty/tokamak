@@ -1,17 +1,17 @@
+use crate::certificates::Certificates;
 use crate::dispatcher::{
     Dispatcher, WorkerLoader, WorkerResolver, configure_worker_loader, execute_request, load_worker,
 };
 use crate::fs::VirtualFileSystem;
 use crate::gateway::{
-    Execution, GatewayConfig, Handler, Job, JobResponse, Lifecycle, Shared, WebSocketInbound,
-    WebSocketOutbound, bind_replacement_listener, close_connections, execute_job,
-    listener_was_closed, lock_connections, probe_gateway, serve_connection, wait_for_gateway,
-    websocket_channels,
+    Handler, HandlerError, Job, JobResponse, Shared, WebSocketInbound, WebSocketOutbound,
+    bind_replacement_listener, close_connections, execute_job, listener_was_closed,
+    lock_connections, probe_gateway, serve_connection, wait_for_gateway, websocket_channels,
 };
 use crate::lifecycle_events::{Event, Events};
 use crate::packaging::{PackageLayout, WorkerManifest, write_worker};
 use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
-use crate::transport::{HttpBody, HttpRequest, HttpResponse, queue_websocket_message};
+use crate::transport::{HttpBody, HttpRequest, queue_websocket_message};
 use flume::{Receiver, Sender};
 use reqwest::header::HeaderMap;
 use rquickjs::{ArrayBuffer, Context, Function, Module, Object, Runtime as JsRuntime, TypedArray};
@@ -19,10 +19,13 @@ use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
+
+const HOST: &str = "example.test";
 
 const WEBSOCKET_WORKER: &[u8] = br#"
 export default {
@@ -35,15 +38,20 @@ export default {
 };
 "#;
 
-const SLOW_WORKER: &[u8] = br"
+const CACHE_WORKER: &[u8] = br#"
 export default {
-  async fetch() {
-    const deadline = Date.now() + 250;
-    while (Date.now() < deadline) {}
-    return new Response(null);
-  }
+  async fetch(request) {
+    const cache = await caches.open("pages");
+    const key = "https://example.test/page";
+    if (request.method === "PUT") {
+      await cache.put(key, new Response("cached", { headers: { "x-cache": "hit" } }));
+      return new Response("stored");
+    }
+    const entry = await cache.match(key);
+    return new Response(entry ? `${await entry.text()} ${entry.headers.get("x-cache")}` : "miss");
+  },
 };
-";
+"#;
 
 const GLOBAL_WORKER: &[u8] = br#"
 const encoded = new TextEncoder().encode("ready");
@@ -74,6 +82,55 @@ export default {
 };
 "#;
 
+/// Answers `job` with `handler` on a blocking Tokio thread, as the gateway does.
+fn handle_job(
+    tokio: &tokio::runtime::Runtime,
+    handler: Arc<dyn Handler>,
+    job: Job,
+) -> tokio::task::JoinHandle<Result<(), String>> {
+    tokio.spawn_blocking(move || {
+        handler
+            .handle(job, &CancellationToken::new())
+            .map_err(|error| error.to_string())
+    })
+}
+
+/// The body of `dispatcher`'s buffered response to `method /page`.
+fn respond(
+    tokio: &tokio::runtime::Runtime,
+    dispatcher: &Arc<Dispatcher>,
+    method: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let (response, responses) = flume::bounded(1);
+    let job = Job {
+        request: request(method, "/page"),
+        response,
+        websocket: None,
+    };
+    tokio.block_on(handle_job(tokio, dispatcher.clone(), job))??;
+    let JobResponse::Http(response) = responses.recv()? else {
+        return Err("Worker returned a non-HTTP response".into());
+    };
+    let HttpBody::Buffered(body) = response.body else {
+        return Err("Worker response was streamed".into());
+    };
+    Ok(String::from_utf8(body)?)
+}
+
+#[test]
+fn keeps_cache_entries_for_the_life_of_their_runtime() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let worker = WorkerBundle::of_source(CACHE_WORKER, directory.path())?;
+    let tokio = tokio::runtime::Runtime::new()?;
+    let running = Dispatcher::new(worker.clone(), runtime_config());
+    let restarted = Dispatcher::new(worker, runtime_config());
+
+    assert_eq!(respond(&tokio, &running, "PUT")?, "stored");
+    assert_eq!(respond(&tokio, &running, "GET")?, "cached hit");
+    assert_eq!(respond(&tokio, &restarted, "GET")?, "miss");
+    Ok(())
+}
+
 fn request(method: &str, path: &str) -> HttpRequest {
     HttpRequest {
         persistent: true,
@@ -90,33 +147,25 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let worker_bundle = WorkerBundle::of_source(WEBSOCKET_WORKER, directory.path())?;
-    let config = websocket_config(directory.path());
-    let request = request("GET", "/socket");
+    let dispatcher = Dispatcher::new(worker_bundle, runtime_config());
     let (response_sender, response_receiver) = flume::bounded(1);
     let (websocket, bridge) = websocket_channels()?;
     let incoming_sender = bridge.incoming;
     let outgoing_receiver = bridge.outgoing;
-    let accepting = Arc::new(AtomicBool::new(true));
-    let thread = std::thread::spawn(move || {
-        let lifecycle = Lifecycle::new();
-        let Some(execution) = lifecycle.enter(&accepting) else {
-            return Err(Error::Startup("execution was not admitted".to_owned()));
-        };
-        execute_request(
-            &worker_bundle,
-            &config,
-            Job {
-                request,
-                response: response_sender,
-                websocket: Some(websocket),
-            },
-            &execution,
-        )
-    });
+    let tokio = tokio::runtime::Runtime::new()?;
+    let worker = handle_job(
+        &tokio,
+        dispatcher,
+        Job {
+            request: request("GET", "/socket"),
+            response: response_sender,
+            websocket: Some(websocket),
+        },
+    );
 
     let response = response_receiver.recv_timeout(Duration::from_secs(1));
     if let Err(error) = response {
-        let worker_error = thread.join().map_err(|_| "WebSocket worker panicked")?;
+        let worker_error = tokio.block_on(worker)?;
         return Err(
             format!("WebSocket worker stopped before upgrade: {error}; {worker_error:?}").into(),
         );
@@ -146,7 +195,7 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
         code: 1000,
         reason: String::new(),
     })?;
-    thread.join().map_err(|_| "WebSocket worker panicked")??;
+    tokio.block_on(worker)??;
     Ok(())
 }
 
@@ -155,27 +204,20 @@ fn streams_worker_response_chunks_without_buffering_the_body()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let worker_bundle = WorkerBundle::of_source(STREAM_WORKER, directory.path())?;
-    let config = websocket_config(directory.path());
+    let dispatcher = Dispatcher::new(worker_bundle, runtime_config());
     let mut request = request("POST", "/upload");
     request.body = Some(vec![9, 8, 7]);
     let (response_sender, response_receiver) = flume::bounded(1);
-    let accepting = Arc::new(AtomicBool::new(true));
-    let thread = std::thread::spawn(move || {
-        let lifecycle = Lifecycle::new();
-        let Some(execution) = lifecycle.enter(&accepting) else {
-            return Err(Error::Startup("execution was not admitted".to_owned()));
-        };
-        execute_request(
-            &worker_bundle,
-            &config,
-            Job {
-                request,
-                response: response_sender,
-                websocket: None,
-            },
-            &execution,
-        )
-    });
+    let tokio = tokio::runtime::Runtime::new()?;
+    let worker = handle_job(
+        &tokio,
+        dispatcher,
+        Job {
+            request,
+            response: response_sender,
+            websocket: None,
+        },
+    );
 
     let response = response_receiver.recv_timeout(Duration::from_secs(1))?;
     let JobResponse::Http(response) = response else {
@@ -187,7 +229,7 @@ fn streams_worker_response_chunks_without_buffering_the_body()
     assert_eq!(body.recv()?.map_err(io::Error::other)?, vec![1, 2]);
     assert_eq!(body.recv()?.map_err(io::Error::other)?, vec![3, 4]);
     assert!(body.recv().is_err());
-    thread.join().map_err(|_| "stream worker panicked")??;
+    tokio.block_on(worker)??;
     Ok(())
 }
 
@@ -270,8 +312,13 @@ fn call_runtime()
 -> Result<(crate::gateway::Runtime, tempfile::TempDir), Box<dyn std::error::Error + Send + Sync>> {
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::of_source(CALL_WORKER, directory.path())?;
-    let dispatcher = Dispatcher::new(worker, websocket_config(directory.path()));
-    let runtime = crate::gateway::Runtime::start(dispatcher, gateway_config(), Events::new(drop))?;
+    let dispatcher = Dispatcher::new(worker, runtime_config());
+    let runtime = crate::gateway::Runtime::start(
+        dispatcher,
+        certificates(directory.path())?,
+        HOST.to_owned(),
+        Events::new(drop),
+    )?;
     Ok((runtime, directory))
 }
 
@@ -551,23 +598,16 @@ fn run_worker(
 ) -> Result<JobResponse, Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::of_source(source, directory.path())?;
-    let accepting = Arc::new(AtomicBool::new(true));
-    let lifecycle = Lifecycle::new();
-    let execution = lifecycle
-        .enter(&accepting)
-        .ok_or("request was not admitted")?;
     let (response, responses) = flume::bounded(1);
     let job = Job {
         request,
         response,
         websocket: None,
     };
-    execute_request(
-        &worker,
-        &websocket_config(directory.path()),
-        job,
-        &execution,
-    )?;
+    let tokio = tokio::runtime::Runtime::new()?;
+    tokio.block_on(tokio.spawn_blocking(move || {
+        execute_request(&worker, &runtime_config(), job, &CancellationToken::new())
+    }))??;
     Ok(responses.recv()?)
 }
 
@@ -722,19 +762,20 @@ fn reports_handler_failures_through_the_event_listener()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     struct FailingHandler;
     impl Handler for FailingHandler {
-        fn handle(&self, _: Job, _: &Execution<'_>) -> Result<(), Error> {
-            Err(Error::Startup("handler exploded".to_owned()))
+        fn handle(&self, _: Job, _: &CancellationToken) -> Result<(), HandlerError> {
+            Err("handler exploded".into())
         }
     }
+    let directory = tempfile::tempdir()?;
     let tokio = tokio::runtime::Builder::new_current_thread().build()?;
     let (sink, events) = flume::unbounded();
     let shared = Shared {
         handler: Arc::new(FailingHandler),
-        config: gateway_config(),
+        certificates: certificates(directory.path())?,
+        host: HOST.to_owned(),
         tokio: tokio.handle().clone(),
         port: AtomicU16::new(0),
-        accepting: Arc::new(AtomicBool::new(true)),
-        lifecycle: Lifecycle::new(),
+        stopped: CancellationToken::new(),
         connections: Mutex::new(Vec::new()),
         events: Events::new(move |event| {
             let _ = sink.send(event);
@@ -772,18 +813,26 @@ fn reports_connection_failures_through_the_event_listener()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     struct UnreachableHandler;
     impl Handler for UnreachableHandler {
-        fn handle(&self, _: Job, _: &Execution<'_>) -> Result<(), Error> {
-            Err(Error::Startup("handler must not run".to_owned()))
+        fn handle(&self, _: Job, _: &CancellationToken) -> Result<(), HandlerError> {
+            Err("handler must not run".into())
         }
     }
+    let directory = tempfile::tempdir()?;
     let (sink, events) = flume::unbounded();
     let runtime = crate::gateway::Runtime::start(
         Arc::new(UnreachableHandler),
-        gateway_config(),
+        certificates(directory.path())?,
+        HOST.to_owned(),
         Events::new(move |event| {
             let _ = sink.send(event);
         }),
     )?;
+    assert_eq!(
+        events.recv_timeout(Duration::from_secs(5))?,
+        Event::Listening {
+            port: runtime.port()
+        }
+    );
 
     // Hanging up before sending headers fails the connection thread's request read.
     drop(TcpStream::connect(("127.0.0.1", runtime.port()))?);
@@ -796,39 +845,30 @@ fn reports_connection_failures_through_the_event_listener()
     Ok(())
 }
 
-fn gateway_config() -> GatewayConfig {
-    GatewayConfig {
-        tls: Arc::new(|| Err(Error::Tls("TLS is not configured in this test".to_owned()))),
-        host: "example.test".to_owned(),
-        require_client_certificate: false,
-        port: 0,
-    }
+fn certificates(directory: &Path) -> io::Result<Arc<Certificates>> {
+    Certificates::start(directory.join("state"), HOST.to_owned())
+        .map(Arc::new)
+        .map_err(io::Error::other)
 }
 
 #[test]
 fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 {
+    let directory = tempfile::tempdir()?;
     let tokio = tokio::runtime::Builder::new_current_thread().build()?;
-    let quickjs_config = RuntimeConfig {
-        assets: None,
-        cache: PathBuf::default(),
-        environment: BTreeMap::new(),
-        storage: None,
-    };
-    let config = gateway_config();
     let shared = Arc::new(Shared {
         handler: Dispatcher::new(
             WorkerBundle::new(
                 WorkerManifest::es_modules("entry.js", &[]),
                 PackageLayout::new(PathBuf::default()),
             ),
-            quickjs_config,
+            runtime_config(),
         ),
-        config,
+        certificates: certificates(directory.path())?,
+        host: HOST.to_owned(),
         tokio: tokio.handle().clone(),
         port: AtomicU16::new(0),
-        accepting: Arc::new(AtomicBool::new(true)),
-        lifecycle: Lifecycle::new(),
+        stopped: CancellationToken::new(),
         connections: Mutex::new(Vec::new()),
         events: Events::new(|_| {}),
     });
@@ -841,7 +881,7 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
     while lock_connections(&shared).is_empty() {
         thread::yield_now();
     }
-    shared.accepting.store(false, Ordering::Release);
+    shared.stopped.cancel();
     close_connections(&shared);
     let _ = connection
         .join()
@@ -950,152 +990,6 @@ fn reports_an_unexpected_gateway_response() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-#[test]
-fn suspension_drains_active_work_and_blocks_new_work_until_resume()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let lifecycle = Arc::new(Lifecycle::new());
-    let accepting = Arc::new(AtomicBool::new(true));
-    let execution = lifecycle
-        .enter(&accepting)
-        .ok_or("initial execution was not admitted")?;
-    lifecycle.suspend();
-
-    let (started_sender, started_receiver) = flume::bounded(1);
-    let (admitted_sender, admitted_receiver) = flume::bounded(1);
-    let waiting_lifecycle = Arc::clone(&lifecycle);
-    let waiting_accepting = Arc::clone(&accepting);
-    let waiting = thread::spawn(move || {
-        started_sender
-            .send(())
-            .map_err(|error| Error::Startup(error.to_string()))?;
-        let Some(_execution) = waiting_lifecycle.enter(&waiting_accepting) else {
-            return Err("execution was not admitted after resume".into());
-        };
-        admitted_sender.send(())?;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-    });
-
-    started_receiver.recv_timeout(Duration::from_secs(1))?;
-    assert!(
-        admitted_receiver
-            .recv_timeout(Duration::from_millis(50))
-            .is_err()
-    );
-    drop(execution);
-    assert!(
-        admitted_receiver
-            .recv_timeout(Duration::from_millis(50))
-            .is_err()
-    );
-
-    lifecycle.resume();
-    admitted_receiver.recv_timeout(Duration::from_secs(1))?;
-    waiting.join().map_err(|_| "lifecycle waiter panicked")??;
-    Ok(())
-}
-
-#[test]
-fn suspension_without_active_work_blocks_until_resume()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let lifecycle = Arc::new(Lifecycle::new());
-    let accepting = Arc::new(AtomicBool::new(true));
-    lifecycle.suspend();
-    let (started_sender, started_receiver) = flume::bounded(1);
-    let (admitted_sender, admitted_receiver) = flume::bounded(1);
-    let waiting_lifecycle = Arc::clone(&lifecycle);
-    let waiting_accepting = Arc::clone(&accepting);
-    let waiting = thread::spawn(move || {
-        started_sender.send(())?;
-        admitted_sender.send(waiting_lifecycle.enter(&waiting_accepting).is_some())?;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-    });
-
-    started_receiver.recv_timeout(Duration::from_secs(1))?;
-    assert!(
-        admitted_receiver
-            .recv_timeout(Duration::from_millis(50))
-            .is_err()
-    );
-    lifecycle.resume();
-    assert!(admitted_receiver.recv_timeout(Duration::from_secs(1))?);
-    waiting.join().map_err(|_| "lifecycle waiter panicked")??;
-    Ok(())
-}
-
-#[test]
-fn stopping_releases_blocked_admission() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let lifecycle = Arc::new(Lifecycle::new());
-    let accepting = Arc::new(AtomicBool::new(true));
-    lifecycle.suspend();
-    let (started_sender, started_receiver) = flume::bounded(1);
-    let (admitted_sender, admitted_receiver) = flume::bounded(1);
-    let waiting_lifecycle = Arc::clone(&lifecycle);
-    let waiting_accepting = Arc::clone(&accepting);
-    let waiting = thread::spawn(move || {
-        started_sender.send(())?;
-        admitted_sender.send(waiting_lifecycle.enter(&waiting_accepting).is_some())?;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-    });
-
-    started_receiver.recv_timeout(Duration::from_secs(1))?;
-    assert!(
-        admitted_receiver
-            .recv_timeout(Duration::from_millis(50))
-            .is_err()
-    );
-    lifecycle.stop();
-    assert!(!admitted_receiver.recv_timeout(Duration::from_secs(1))?);
-    waiting.join().map_err(|_| "lifecycle waiter panicked")??;
-    Ok(())
-}
-
-#[test]
-fn suspension_allows_an_active_javascript_turn_to_finish()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let directory = tempfile::tempdir()?;
-    let worker_bundle = WorkerBundle::of_source(SLOW_WORKER, directory.path())?;
-    let config = websocket_config(directory.path());
-    let request = request("GET", "/socket");
-    let (response_sender, response_receiver) = flume::bounded(1);
-    let lifecycle = Arc::new(Lifecycle::new());
-    let accepting = Arc::new(AtomicBool::new(true));
-    let (started_sender, started_receiver) = flume::bounded(1);
-    let worker_lifecycle = Arc::clone(&lifecycle);
-    let worker_accepting = Arc::clone(&accepting);
-    let worker = thread::spawn(move || {
-        let Some(execution) = worker_lifecycle.enter(&worker_accepting) else {
-            return Err(Error::Startup("execution was not admitted".to_owned()));
-        };
-        started_sender
-            .send(())
-            .map_err(|error| Error::Startup(error.to_string()))?;
-        execute_request(
-            &worker_bundle,
-            &config,
-            Job {
-                request,
-                response: response_sender,
-                websocket: None,
-            },
-            &execution,
-        )
-    });
-
-    started_receiver.recv_timeout(Duration::from_secs(1))?;
-    lifecycle.suspend();
-    assert!(
-        response_receiver
-            .recv_timeout(Duration::from_millis(50))
-            .is_err()
-    );
-    assert!(matches!(
-        response_receiver.recv_timeout(Duration::from_secs(1))?,
-        JobResponse::Http(HttpResponse { status: 200, .. })
-    ));
-    worker.join().map_err(|_| "worker panicked")??;
-    Ok(())
-}
-
 fn spawn_blocking_request(
     tokio: &tokio::runtime::Runtime,
     started: Sender<()>,
@@ -1108,10 +1002,10 @@ fn spawn_blocking_request(
     })
 }
 
-fn websocket_config(root: &Path) -> RuntimeConfig {
+fn runtime_config() -> RuntimeConfig {
     RuntimeConfig {
         assets: None,
-        cache: root.join("cache"),
+        cache: Arc::default(),
         environment: BTreeMap::new(),
         storage: None,
     }

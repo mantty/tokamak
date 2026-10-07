@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -45,6 +46,17 @@ pub(crate) fn status_text(status: u16) -> &'static str {
         5 => "Server Error",
         _ => "",
     }
+}
+
+/// The reason phrase `response` arrived with.
+pub(crate) fn reason_phrase(response: &reqwest::Response) -> Cow<'_, str> {
+    response
+        .extensions()
+        .get::<hyper::ext::ReasonPhrase>()
+        .map_or_else(
+            || Cow::Borrowed(response.status().canonical_reason().unwrap_or("")),
+            |reason| String::from_utf8_lossy(reason.as_bytes()),
+        )
 }
 
 pub(crate) fn client() -> io::Result<Client> {
@@ -309,17 +321,7 @@ fn response_object<'js>(
     let response = response.response;
     result.set("url", response.url().as_str())?;
     result.set("status", response.status().as_u16())?;
-    result.set(
-        "statusText",
-        response
-            .extensions()
-            .get::<hyper::ext::ReasonPhrase>()
-            .map_or_else(
-                || std::borrow::Cow::Borrowed(response.status().canonical_reason().unwrap_or("")),
-                |reason| String::from_utf8_lossy(reason.as_bytes()),
-            )
-            .as_ref(),
-    )?;
+    result.set("statusText", reason_phrase(&response).as_ref())?;
     result.set(
         "headers",
         serde_json::to_string(&ResponseHeaders(response.headers()))

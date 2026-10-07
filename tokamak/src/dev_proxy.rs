@@ -1,31 +1,45 @@
 //! Development requests forwarded to the host framework server.
 
-use flume::TryRecvError;
-use reqwest::header::HeaderValue;
-use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::io;
 use std::sync::Arc;
-use std::thread;
 use std::time::{Duration, Instant};
 
-use rustls::{ClientConnection, StreamOwned};
-use rustls_pki_types::ServerName;
+use flume::Sender;
+use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::{Client, Method, StatusCode, Upgraded, Url};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 
 use crate::gateway::{
-    Execution, Handler, Job, JobResponse, WebSocketInbound, WebSocketJob, WebSocketOutbound,
+    Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob, WebSocketOutbound,
 };
-use crate::quickjs::Error;
 use crate::transport::{
-    BodyChunk, HttpRequest, HttpResponse, MAX_HEADERS, WEBSOCKET_WRITE_TIMEOUT, WebSocketCodec,
-    WebSocketRead, parse_header_fields, queue_websocket_message, read_header_block,
-    response_stream, websocket_accept, websocket_close, websocket_close_payload,
+    BodyChunk, HttpBody, HttpRequest, HttpResponse, WebSocketFrame, encode_websocket_frame,
+    invalid_data, parse_websocket_frame, queue_websocket_message, response_stream,
+    websocket_accept, websocket_close, websocket_close_payload,
 };
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_RETRY_DELAY: Duration = Duration::from_millis(100);
 const HTTP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
-const STREAM_POLL: Duration = Duration::from_millis(100);
-const WEBSOCKET_POLL: Duration = Duration::from_millis(20);
+
+/// Headers that describe only one hop of a proxied exchange.
+const HOP_BY_HOP: [&str; 7] = [
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+/// Request headers the proxy sets itself.
+const PROXY_HEADERS: [&str; 5] = [
+    "host",
+    "content-length",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-tokamak-session",
+];
 
 /// Host development-server connection settings.
 #[derive(Clone, Debug)]
@@ -38,682 +52,400 @@ pub struct DevProxyConfig {
 
 /// A gateway handler that forwards requests to the host development server.
 pub(crate) struct DevProxy {
-    endpoint: Endpoint,
-    session_token: String,
+    client: Client,
+    endpoint: Url,
+    session_token: HeaderValue,
 }
 
-struct HostResponse {
-    response: HttpResponse,
-    body: Option<HostBody>,
-}
-
+/// A host response body of unknown length, forwarded as it arrives.
 struct HostBody {
-    upstream: UpstreamStream,
-    framing: HostFraming,
-    sender: flume::Sender<BodyChunk>,
-    cancelled: tokio_util::sync::CancellationToken,
-}
-
-enum HostFraming {
-    Chunked,
-    CloseDelimited,
+    upstream: reqwest::Response,
+    sender: Sender<BodyChunk>,
+    cancelled: CancellationToken,
 }
 
 impl DevProxy {
-    pub(crate) fn new(config: &DevProxyConfig) -> Result<Arc<Self>, Error> {
-        let session_token = config.session_token.trim().to_owned();
+    pub(crate) fn new(config: &DevProxyConfig) -> io::Result<Arc<Self>> {
+        let session_token = config.session_token.trim();
         if session_token.is_empty() || session_token.bytes().any(|byte| byte.is_ascii_control()) {
-            return Err(Error::startup(
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
                 "development session token must be non-empty and contain no control characters",
             ));
         }
         Ok(Arc::new(Self {
-            endpoint: Endpoint::parse(&config.endpoint)?,
-            session_token,
+            client: crate::network::http::client()?,
+            endpoint: endpoint(&config.endpoint)?,
+            session_token: HeaderValue::from_bytes(session_token.as_bytes())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
         }))
     }
 
-    fn connect(&self) -> Result<UpstreamStream, Error> {
-        let addresses = (self.endpoint.host.as_str(), self.endpoint.port).to_socket_addrs()?;
-        let stream = connect_any(addresses)?;
-        stream.set_nodelay(true)?;
-        if self.endpoint.tls {
-            let config = crate::tls::client_config()
-                .map_err(|error| Error::Startup(format!("host TLS setup failed: {error}")))?;
-            let name = ServerName::try_from(self.endpoint.host.clone())
-                .map_err(|error| Error::Startup(format!("host TLS setup failed: {error}")))?;
-            let connection = ClientConnection::new(config, name)
-                .map_err(|error| Error::Startup(format!("host TLS setup failed: {error}")))?;
-            let mut stream = StreamOwned::new(connection, stream);
-            while stream.conn.is_handshaking() {
-                stream.conn.complete_io(&mut stream.sock).map_err(|error| {
-                    Error::Startup(format!("host TLS connection failed: {error}"))
-                })?;
-            }
-            Ok(UpstreamStream::Tls(Box::new(stream)))
-        } else {
-            Ok(UpstreamStream::Plain(stream))
-        }
-    }
-
-    fn forward_http(
+    async fn forward_http(
         &self,
         request: &HttpRequest,
-        response: &flume::Sender<JobResponse>,
-    ) -> Result<(), Error> {
+        response: &Sender<JobResponse>,
+    ) -> Result<(), HandlerError> {
         let deadline = Instant::now() + HTTP_RETRY_TIMEOUT;
-        let host_response = loop {
-            match self.request_http(request) {
-                Ok(host_response) => break host_response,
-                Err(error)
-                    if can_retry_http(&request.method, &error) && Instant::now() < deadline =>
-                {
-                    thread::sleep(HTTP_RETRY_DELAY);
+        let (head, body) = loop {
+            match self.fetch(request).await {
+                Ok(fetched) => break fetched,
+                Err(error) if can_retry(&request.method, &error) && Instant::now() < deadline => {
+                    tokio::time::sleep(HTTP_RETRY_DELAY).await;
                 }
                 Err(error) => return Err(error),
             }
         };
         // A caller that stopped waiting gets no response.
-        if response
-            .send(JobResponse::Http(host_response.response))
-            .is_ok()
-            && let Some(body) = host_response.body
+        if response.send(JobResponse::Http(head)).is_ok()
+            && let Some(body) = body
         {
-            pump_host_body(body);
+            body.forward().await;
         }
         Ok(())
     }
 
-    /// Sends `request` over a new upstream connection and reads the response head.
-    fn exchange(
+    /// The host server's response to `request`. A body of known length
+    /// arrives whole; any other body streams.
+    async fn fetch(
+        &self,
+        request: &HttpRequest,
+    ) -> Result<(HttpResponse, Option<HostBody>), HandlerError> {
+        let upstream = self.send(request, false).await?;
+        let mut headers = upstream.headers().clone();
+        for name in HOP_BY_HOP {
+            headers.remove(name);
+        }
+        let mut head = HttpResponse::buffered(upstream.status().as_u16(), headers, Vec::new());
+        head.status_text = crate::network::http::reason_phrase(&upstream).into_owned();
+        if upstream.content_length().is_some() {
+            head.body = HttpBody::Buffered(upstream.bytes().await?.to_vec());
+            return Ok((head, None));
+        }
+        let (sender, cancelled, body) = response_stream();
+        head.body = body;
+        let body = HostBody {
+            upstream,
+            sender,
+            cancelled,
+        };
+        Ok((head, Some(body)))
+    }
+
+    async fn send(
         &self,
         request: &HttpRequest,
         websocket: bool,
-    ) -> Result<(UpstreamStream, HttpResponse, Option<HostFraming>), Error> {
-        let mut upstream = self.connect()?;
-        upstream.set_timeouts(CONNECT_TIMEOUT, CONNECT_TIMEOUT)?;
-        write_request(
-            &mut upstream,
-            &self.endpoint,
-            &self.session_token,
-            request,
-            websocket,
-        )?;
-        let (response, framing) = read_response(&mut upstream, &request.method)?;
-        Ok((upstream, response, framing))
+    ) -> Result<reqwest::Response, HandlerError> {
+        let method = Method::from_bytes(request.method.as_bytes())?;
+        let mut builder = self
+            .client
+            .request(method, self.url(&request.target))
+            .headers(self.forwarded_headers(request, websocket)?);
+        if let Some(body) = &request.body {
+            builder = builder.body(body.clone());
+        }
+        Ok(builder.send().await?)
     }
 
-    fn request_http(&self, request: &HttpRequest) -> Result<HostResponse, Error> {
-        let (upstream, mut response, framing) = self.exchange(request, false)?;
-        let body = framing.map(|framing| {
-            let (sender, cancelled, body) = response_stream();
-            response.body = body;
-            HostBody {
-                upstream,
-                framing,
-                sender,
-                cancelled,
-            }
-        });
-        Ok(HostResponse { response, body })
+    /// The host server's URL for the request target `target`.
+    fn url(&self, target: &str) -> Url {
+        let (path, query) = target
+            .split_once('?')
+            .map_or((target, None), |(path, query)| (path, Some(query)));
+        let mut url = self.endpoint.clone();
+        url.set_path(path);
+        url.set_query(query);
+        url
     }
 
-    fn forward_websocket(
+    /// The headers of `request` the host server receives, with the host,
+    /// forwarding and session headers the proxy adds.
+    fn forwarded_headers(
         &self,
         request: &HttpRequest,
-        response: &flume::Sender<JobResponse>,
+        websocket: bool,
+    ) -> Result<HeaderMap, HandlerError> {
+        let mut headers = request.headers.clone();
+        for name in HOP_BY_HOP.into_iter().chain(PROXY_HEADERS) {
+            headers.remove(name);
+        }
+        if websocket {
+            headers.remove("sec-websocket-extensions");
+            headers.try_insert("connection", HeaderValue::from_static("Upgrade"))?;
+            headers.try_insert("upgrade", HeaderValue::from_static("websocket"))?;
+        }
+        let host = match request.headers.get("host") {
+            Some(host) => host.clone(),
+            None => HeaderValue::from_str(
+                &self.endpoint[url::Position::BeforeHost..url::Position::AfterPort],
+            )?,
+        };
+        headers.try_insert("host", host.clone())?;
+        headers.try_insert("x-forwarded-host", host)?;
+        headers.try_insert("x-forwarded-proto", HeaderValue::from_static("https"))?;
+        headers.try_insert("x-tokamak-session", self.session_token.clone())?;
+        Ok(headers)
+    }
+
+    async fn forward_websocket(
+        &self,
+        request: &HttpRequest,
+        response: &Sender<JobResponse>,
         websocket: &WebSocketJob,
-        execution: &Execution<'_>,
-    ) -> Result<(), Error> {
-        let mut codec = self.open_websocket(request)?;
+        stopped: &CancellationToken,
+    ) -> Result<(), HandlerError> {
+        let upstream = tokio::select! {
+            upstream = self.open_websocket(request) => upstream?,
+            () = stopped.cancelled() => return Ok(()),
+        };
+        let gateway_closed =
+            || io::Error::new(io::ErrorKind::BrokenPipe, "WebSocket gateway closed");
         response
             .send(JobResponse::WebSocket)
-            .map_err(|_| Error::startup("WebSocket response receiver closed"))?;
+            .map_err(|_| gateway_closed())?;
         websocket
             .outgoing
             .send(WebSocketOutbound::Ready)
-            .map_err(|_| Error::startup("WebSocket gateway closed"))?;
-
-        let result = proxy_websocket(&mut codec, websocket, execution);
+            .map_err(|_| gateway_closed())?;
+        let result = relay_websocket(upstream, websocket, stopped).await;
         if result.is_err() {
             let _ = websocket.outgoing.send(WebSocketOutbound::Close {
                 code: 1011,
                 reason: "development server connection failed".to_owned(),
             });
         }
-        result
+        result.map_err(Into::into)
     }
 
-    fn open_websocket(
-        &self,
-        request: &HttpRequest,
-    ) -> Result<WebSocketCodec<UpstreamStream>, Error> {
+    async fn open_websocket(&self, request: &HttpRequest) -> Result<Upgraded, HandlerError> {
         let key = request
             .headers
             .get("sec-websocket-key")
-            .ok_or_else(|| Error::startup("WebSocket key is missing"))?
-            .to_str()
-            .map_err(io::Error::other)?;
-        let (mut upstream, upgrade, _) = self.exchange(request, true)?;
-        if upgrade.status != 101 {
-            return Err(Error::Startup(format!(
-                "host WebSocket upgrade returned HTTP {}",
-                upgrade.status
-            )));
+            .ok_or_else(|| invalid_data("WebSocket key is missing"))?
+            .to_str()?;
+        let upgrade = self.send(request, true).await?;
+        if upgrade.status() != StatusCode::SWITCHING_PROTOCOLS {
+            let message = format!("host WebSocket upgrade returned HTTP {}", upgrade.status());
+            return Err(invalid_data(&message).into());
         }
         if upgrade
-            .headers
+            .headers()
             .get("sec-websocket-accept")
             .is_none_or(|actual| *actual != websocket_accept(key))
         {
-            return Err(Error::startup(
-                "host WebSocket upgrade returned an invalid accept key",
-            ));
+            let message = "host WebSocket upgrade returned an invalid accept key";
+            return Err(invalid_data(message).into());
         }
-        upstream.set_timeouts(WEBSOCKET_POLL, WEBSOCKET_WRITE_TIMEOUT)?;
-        Ok(WebSocketCodec::new(upstream))
+        Ok(upgrade.upgrade().await?)
     }
 }
 
-fn connect_any(addresses: impl Iterator<Item = SocketAddr>) -> io::Result<TcpStream> {
-    let mut last_error = io::Error::new(
-        io::ErrorKind::NotFound,
-        "development endpoint did not resolve",
-    );
-    for address in addresses {
-        match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
-            Ok(stream) => return Ok(stream),
-            Err(error) => last_error = error,
-        }
-    }
-    Err(last_error)
-}
-
-fn can_retry_http(method: &str, error: &Error) -> bool {
-    let Error::Io(error) = error else {
-        return false;
-    };
-    (method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD"))
-        && matches!(
-            error.kind(),
-            io::ErrorKind::UnexpectedEof
-                | io::ErrorKind::ConnectionReset
-                | io::ErrorKind::ConnectionAborted
-                | io::ErrorKind::BrokenPipe
-        )
-}
-
-fn proxy_websocket(
-    codec: &mut WebSocketCodec<UpstreamStream>,
-    websocket: &WebSocketJob,
-    execution: &Execution<'_>,
-) -> Result<(), Error> {
-    let mut fragmented: Option<(u8, Vec<u8>)> = None;
-    loop {
-        if !execution.is_running() {
-            let close = websocket_close_payload(1001, "tokamak runtime stopped")?;
-            codec.write_frame(0x8, &close, true)?;
-            return Ok(());
-        }
+impl HostBody {
+    /// Forwards the body until it ends, fails or its reader goes away.
+    async fn forward(mut self) {
         loop {
-            match websocket.incoming.try_recv() {
-                Ok(WebSocketInbound::Message { binary, payload }) => {
-                    codec.write_frame(if binary { 0x2 } else { 0x1 }, &payload, true)?;
-                }
-                Ok(WebSocketInbound::Close { code, reason }) => {
-                    let close = websocket_close_payload(code, &reason)?;
-                    codec.write_frame(0x8, &close, true)?;
-                    return Ok(());
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return Ok(()),
+            let chunk = tokio::select! {
+                chunk = self.upstream.chunk() => chunk,
+                () = self.cancelled.cancelled() => return,
+            };
+            let chunk = match chunk {
+                Ok(Some(chunk)) => Ok(chunk.to_vec()),
+                Ok(None) => return,
+                Err(error) => Err(error.to_string()),
+            };
+            let failed = chunk.is_err();
+            if self.sender.send_async(chunk).await.is_err() || failed {
+                return;
             }
-        }
-        match codec.read_frame(false)? {
-            WebSocketRead::Closed => {
-                let _ = websocket.outgoing.send(WebSocketOutbound::Close {
-                    code: 1000,
-                    reason: String::new(),
-                });
-                return Ok(());
-            }
-            WebSocketRead::Pending => thread::sleep(WEBSOCKET_POLL),
-            WebSocketRead::Frame(frame) => match frame.opcode {
-                0x8 => {
-                    let (code, reason) = websocket_close(&frame.payload)?;
-                    let _ = websocket
-                        .outgoing
-                        .send(WebSocketOutbound::Close { code, reason });
-                    return Ok(());
-                }
-                0x9 => codec.write_frame(0xA, &frame.payload, true)?,
-                0xA => {}
-                0x0..=0x2 => queue_websocket_message(
-                    &websocket.outgoing,
-                    &mut fragmented,
-                    frame.final_frame,
-                    frame.opcode,
-                    frame.payload,
-                )?,
-                _ => return Err(Error::startup("invalid host WebSocket opcode")),
-            },
         }
     }
 }
 
 impl Handler for DevProxy {
-    fn handle(&self, job: Job, execution: &Execution<'_>) -> Result<(), Error> {
-        if !execution.is_running() {
-            return Ok(());
-        }
+    fn handle(&self, job: Job, stopped: &CancellationToken) -> Result<(), HandlerError> {
         let Job {
             request,
             response,
             websocket,
         } = job;
-        if let Some(websocket) = websocket {
-            self.forward_websocket(&request, &response, &websocket, execution)
-        } else {
-            self.forward_http(&request, &response)
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct Endpoint {
-    host: String,
-    port: u16,
-    authority: String,
-    tls: bool,
-}
-
-impl Endpoint {
-    fn parse(value: &str) -> Result<Self, Error> {
-        let (tls, authority) = if let Some(value) = value.strip_prefix("http://") {
-            (false, value)
-        } else if let Some(value) = value.strip_prefix("https://") {
-            (true, value)
-        } else {
-            return Err(Error::startup(
-                "development endpoint must start with http:// or https://",
-            ));
+        let tokio = tokio::runtime::Handle::try_current()?;
+        let Some(websocket) = websocket else {
+            return tokio.block_on(async {
+                tokio::select! {
+                    result = self.forward_http(&request, &response) => result,
+                    () = stopped.cancelled() => Ok(()),
+                }
+            });
         };
-        if authority.is_empty()
-            || authority.contains(['/', '?', '#'])
-            || authority.chars().any(char::is_whitespace)
-        {
-            return Err(Error::startup(
-                "development endpoint must contain only a host and port",
-            ));
-        }
-        let default_port = if tls { 443 } else { 80 };
-        let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
-            let (host, suffix) = rest.split_once(']').ok_or_else(invalid_ipv6_host)?;
-            let port = if suffix.is_empty() {
-                default_port
-            } else {
-                parse_port(suffix.strip_prefix(':').ok_or_else(invalid_ipv6_host)?)?
-            };
-            (host.to_owned(), port)
-        } else if let Some((host, port)) = authority.rsplit_once(':') {
-            if host.is_empty() {
-                return Err(Error::startup("development endpoint host is empty"));
-            }
-            if host.contains(':') {
-                return Err(invalid_ipv6_host());
-            }
-            (host.to_owned(), parse_port(port)?)
-        } else {
-            (authority.to_owned(), default_port)
-        };
-        if host.is_empty() || host.chars().any(char::is_control) {
-            return Err(Error::startup("development endpoint host is invalid"));
-        }
-        Ok(Self {
-            authority: if host.contains(':') {
-                format!("[{host}]:{port}")
-            } else {
-                format!("{host}:{port}")
-            },
-            host,
-            port,
-            tls,
-        })
+        tokio.block_on(self.forward_websocket(&request, &response, &websocket, stopped))
     }
 }
 
-fn invalid_ipv6_host() -> Error {
-    Error::startup("development endpoint has an invalid IPv6 host")
-}
-
-fn parse_port(value: &str) -> Result<u16, Error> {
-    value
-        .parse()
-        .map_err(|_| Error::startup("development endpoint port is invalid"))
-}
-
-enum UpstreamStream {
-    Plain(TcpStream),
-    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
-}
-
-impl UpstreamStream {
-    fn socket(&mut self) -> &mut TcpStream {
-        match self {
-            Self::Plain(stream) => stream,
-            Self::Tls(stream) => stream.get_mut(),
-        }
-    }
-
-    fn set_timeouts(&mut self, read: Duration, write: Duration) -> io::Result<()> {
-        let socket = self.socket();
-        socket.set_read_timeout(Some(read))?;
-        socket.set_write_timeout(Some(write))
-    }
-
-    fn set_stream_timeout(&mut self) -> io::Result<()> {
-        self.socket().set_read_timeout(Some(STREAM_POLL))
-    }
-}
-
-impl Read for UpstreamStream {
-    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.read(bytes),
-            Self::Tls(stream) => stream.read(bytes),
-        }
-    }
-}
-
-impl Write for UpstreamStream {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.write(bytes),
-            Self::Tls(stream) => stream.write(bytes),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            Self::Plain(stream) => stream.flush(),
-            Self::Tls(stream) => stream.flush(),
-        }
-    }
-}
-
-fn write_request(
-    stream: &mut UpstreamStream,
-    endpoint: &Endpoint,
-    session_token: &str,
-    request: &HttpRequest,
-    websocket: bool,
-) -> Result<(), Error> {
-    let host = request
-        .headers
-        .get("host")
-        .map(HeaderValue::to_str)
-        .transpose()
-        .map_err(io::Error::other)?
-        .unwrap_or(endpoint.authority.as_str());
-    write!(stream, "{} {} HTTP/1.1\r\n", request.method, request.target)?;
-    for (name, value) in &request.headers {
-        let name = name.as_str();
-        if matches!(
-            name,
-            "host"
-                | "content-length"
-                | "x-forwarded-host"
-                | "x-forwarded-proto"
-                | "x-tokamak-session"
-        ) || (websocket && name == "sec-websocket-extensions")
-            || is_hop_by_hop(name)
-        {
-            continue;
-        }
-        write!(stream, "{name}: ")?;
-        stream.write_all(value.as_bytes())?;
-        stream.write_all(b"\r\n")?;
-    }
-    write!(stream, "Host: {host}\r\n")?;
-    write!(stream, "X-Forwarded-Host: {host}\r\n")?;
-    write!(stream, "X-Forwarded-Proto: https\r\n")?;
-    write!(stream, "X-Tokamak-Session: {session_token}\r\n")?;
-    if websocket {
-        write!(stream, "Connection: Upgrade\r\nUpgrade: websocket\r\n")?;
-    } else {
-        let length = request.body.as_ref().map_or(0, Vec::len);
-        write!(stream, "Connection: close\r\nContent-Length: {length}\r\n")?;
-    }
-    stream.write_all(b"\r\n")?;
-    if !websocket && let Some(body) = &request.body {
-        stream.write_all(body)?;
-    }
-    stream.flush()?;
-    Ok(())
-}
-
-fn read_response(
-    stream: &mut UpstreamStream,
-    method: &str,
-) -> Result<(HttpResponse, Option<HostFraming>), Error> {
-    let headers = read_header_block(stream, "host response headers")?;
-    let text = String::from_utf8_lossy(&headers);
-    let mut lines = text.split("\r\n");
-    let status_line = lines.next().unwrap_or_default();
-    let mut status_parts = status_line.splitn(3, ' ');
-    let _version = status_parts.next();
-    let status: u16 = status_parts
-        .next()
-        .ok_or_else(|| Error::startup("host response status is missing"))?
-        .parse()
-        .map_err(|_| Error::startup("host response status is invalid"))?;
-    let status_text = status_parts.next().unwrap_or_default().to_owned();
-    let (mut response_headers, content_length, chunked) =
-        parse_header_fields(lines, "host response content length is invalid", |name| {
-            !is_hop_by_hop(name)
-        })?;
-    if chunked {
-        response_headers.remove("content-length");
-    }
-    let no_body = method.eq_ignore_ascii_case("HEAD")
-        || (100..200).contains(&status)
-        || matches!(status, 204 | 304);
-    let (body, framing) = if no_body {
-        (Vec::new(), None)
-    } else if chunked {
-        (Vec::new(), Some(HostFraming::Chunked))
-    } else if let Some(length) = content_length {
-        let mut body = vec![0; length];
-        stream.read_exact(&mut body)?;
-        (body, None)
-    } else {
-        (Vec::new(), Some(HostFraming::CloseDelimited))
+/// The base URL of the development server `value` names: an HTTP or HTTPS
+/// origin.
+fn endpoint(value: &str) -> io::Result<Url> {
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("development endpoint must be an http:// or https:// origin: {value}"),
+        )
     };
-    let mut response = HttpResponse::buffered(status, response_headers, body);
-    response.status_text = status_text;
-    Ok((response, framing))
+    let url = Url::parse(value).map_err(|_| invalid())?;
+    let origin = matches!(url.scheme(), "http" | "https")
+        && url.has_host()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none();
+    origin.then_some(url).ok_or_else(invalid)
 }
 
-fn pump_host_body(mut body: HostBody) {
-    let result = body
-        .upstream
-        .set_stream_timeout()
-        .map_err(Error::from)
-        .and_then(|()| match body.framing {
-            HostFraming::Chunked => pump_chunked_body(&mut body),
-            HostFraming::CloseDelimited => pump_close_delimited_body(&mut body),
-        });
-    if let Err(error) = result {
-        let _ = body.sender.send(Err(error.to_string()));
-    }
+/// Whether a request with `method` that failed with `error` is sent again:
+/// an idempotent request whose connection the host server dropped, as it
+/// does while restarting.
+fn can_retry(method: &str, error: &HandlerError) -> bool {
+    let idempotent = method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD");
+    idempotent
+        && error.downcast_ref::<reqwest::Error>().is_some_and(|error| {
+            !error.is_connect() && (error.is_request() || error.is_body() || error.is_decode())
+        })
 }
 
-fn pump_close_delimited_body(body: &mut HostBody) -> Result<(), Error> {
-    let mut buffer = [0; 16 * 1024];
+/// Relays frames between the `WebView`'s WebSocket and the host server's
+/// until either side closes or the runtime stops.
+async fn relay_websocket(
+    upstream: Upgraded,
+    websocket: &WebSocketJob,
+    stopped: &CancellationToken,
+) -> io::Result<()> {
+    let (mut reader, mut writer) = tokio::io::split(upstream);
+    let mut buffer = Vec::new();
+    let mut fragmented = None;
+    let mut bytes = [0; 8192];
     loop {
-        let Some(count @ 1..) = read_host_chunk(body, &mut buffer)? else {
-            return Ok(());
-        };
-        if !send_host_chunk(body, buffer[..count].to_vec()) {
-            return Ok(());
-        }
-    }
-}
-
-fn pump_chunked_body(body: &mut HostBody) -> Result<(), Error> {
-    let mut buffer = [0; 16 * 1024];
-    loop {
-        let Some(line) = read_upstream_line(body)? else {
-            return Ok(());
-        };
-        let size = line.split(';').next().unwrap_or_default().trim();
-        let mut remaining = usize::from_str_radix(size, 16)
-            .map_err(|_| Error::startup("host response chunk size is invalid"))?;
-        if remaining == 0 {
-            read_chunked_trailers(body)?;
-            return Ok(());
-        }
-        while remaining > 0 {
-            let limit = remaining.min(buffer.len());
-            let Some(count) = read_host_chunk(body, &mut buffer[..limit])? else {
-                return Ok(());
-            };
-            if count == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "host response chunk ended early",
-                )
-                .into());
-            }
-            if !send_host_chunk(body, buffer[..count].to_vec()) {
+        while let Some(frame) = parse_websocket_frame(&mut buffer, false)? {
+            if relay_host_frame(frame, websocket, &mut fragmented, &mut writer).await? {
                 return Ok(());
             }
-            remaining -= count;
         }
-        let mut terminator = [0; 2];
-        if !read_host_exact(body, &mut terminator)? {
-            return Ok(());
-        }
-        if terminator != *b"\r\n" {
-            return Err(Error::startup("host response chunk is not terminated"));
-        }
-    }
-}
-
-fn send_host_chunk(body: &HostBody, chunk: Vec<u8>) -> bool {
-    !chunk.is_empty() && body.sender.send(Ok(chunk)).is_ok()
-}
-
-fn read_host_chunk(body: &mut HostBody, buffer: &mut [u8]) -> Result<Option<usize>, Error> {
-    loop {
-        if body.cancelled.is_cancelled() {
-            return Ok(None);
-        }
-        match body.upstream.read(buffer) {
-            Ok(count) => return Ok(Some(count)),
-            Err(error) if is_stream_timeout(&error) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-}
-
-fn read_host_exact(body: &mut HostBody, buffer: &mut [u8]) -> Result<bool, Error> {
-    let mut offset = 0;
-    while offset < buffer.len() {
-        let Some(count) = read_host_chunk(body, &mut buffer[offset..])? else {
-            return Ok(false);
+        let count = tokio::select! {
+            () = stopped.cancelled() => {
+                return write_close(&mut writer, 1001, "tokamak runtime stopped").await;
+            }
+            inbound = websocket.incoming.recv_async() => {
+                if relay_client_message(inbound.ok(), &mut writer).await? {
+                    return Ok(());
+                }
+                continue;
+            }
+            count = reader.read(&mut bytes) => count?,
         };
         if count == 0 {
-            return Err(
-                io::Error::new(io::ErrorKind::UnexpectedEof, "host response ended early").into(),
-            );
-        }
-        offset += count;
-    }
-    Ok(true)
-}
-
-fn read_chunked_trailers(body: &mut HostBody) -> Result<(), Error> {
-    let mut bytes = 0usize;
-    loop {
-        let Some(line) = read_upstream_line(body)? else {
-            return Ok(());
-        };
-        bytes = bytes.saturating_add(line.len() + 2);
-        if bytes > MAX_HEADERS {
-            return Err(Error::startup("host response trailers exceed the limit"));
-        }
-        if line.is_empty() {
+            let _ = websocket.outgoing.send(WebSocketOutbound::Close {
+                code: 1000,
+                reason: String::new(),
+            });
             return Ok(());
         }
+        buffer.extend_from_slice(&bytes[..count]);
     }
 }
 
-fn read_upstream_line(body: &mut HostBody) -> Result<Option<String>, Error> {
-    let mut line = Vec::new();
-    loop {
-        let mut byte = [0; 1];
-        if !read_host_exact(body, &mut byte)? {
-            return Ok(None);
+/// Passes a host frame to the `WebView`, reporting whether it closed the connection.
+async fn relay_host_frame(
+    frame: WebSocketFrame,
+    websocket: &WebSocketJob,
+    fragmented: &mut Option<(u8, Vec<u8>)>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> io::Result<bool> {
+    match frame.opcode {
+        0x8 => {
+            let (code, reason) = websocket_close(&frame.payload)?;
+            let _ = websocket
+                .outgoing
+                .send(WebSocketOutbound::Close { code, reason });
+            Ok(true)
         }
-        line.push(byte[0]);
-        if line.len() > MAX_HEADERS {
-            return Err(Error::startup("host response line is too long"));
-        }
-        if line.ends_with(b"\r\n") {
-            line.truncate(line.len() - 2);
-            return String::from_utf8(line)
-                .map(Some)
-                .map_err(|_| Error::startup("host response line is not UTF-8"));
-        }
+        0x9 => write_frame(writer, 0xA, &frame.payload)
+            .await
+            .map(|()| false),
+        0xA => Ok(false),
+        0x0..=0x2 => queue_websocket_message(
+            &websocket.outgoing,
+            fragmented,
+            frame.final_frame,
+            frame.opcode,
+            frame.payload,
+        )
+        .map(|()| false),
+        _ => Err(invalid_data("invalid host WebSocket opcode")),
     }
 }
 
-fn is_stream_timeout(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-    )
+/// Passes a `WebView` message to the host, reporting whether the connection closed.
+async fn relay_client_message(
+    inbound: Option<WebSocketInbound>,
+    writer: &mut (impl AsyncWrite + Unpin),
+) -> io::Result<bool> {
+    match inbound {
+        Some(WebSocketInbound::Message { binary, payload }) => {
+            let opcode = if binary { 0x2 } else { 0x1 };
+            write_frame(writer, opcode, &payload).await.map(|()| false)
+        }
+        Some(WebSocketInbound::Close { code, reason }) => {
+            write_close(writer, code, &reason).await.map(|()| true)
+        }
+        None => Ok(true),
+    }
 }
 
-fn is_hop_by_hop(name: &str) -> bool {
-    matches!(
-        name,
-        "connection"
-            | "keep-alive"
-            | "proxy-connection"
-            | "te"
-            | "trailer"
-            | "transfer-encoding"
-            | "upgrade"
-    )
+async fn write_close(
+    writer: &mut (impl AsyncWrite + Unpin),
+    code: u16,
+    reason: &str,
+) -> io::Result<()> {
+    write_frame(writer, 0x8, &websocket_close_payload(code, reason)?).await
+}
+
+async fn write_frame(
+    writer: &mut (impl AsyncWrite + Unpin),
+    opcode: u8,
+    payload: &[u8],
+) -> io::Result<()> {
+    writer
+        .write_all(&encode_websocket_frame(opcode, payload, true)?)
+        .await?;
+    writer.flush().await
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io;
+    use std::net::TcpListener;
+    use std::thread;
 
-    use super::{DevProxy, DevProxyConfig, Endpoint, can_retry_http};
-    use crate::quickjs::Error;
+    use super::{DevProxy, DevProxyConfig, HandlerError, can_retry, endpoint};
 
     #[test]
     fn parses_host_endpoints() -> Result<(), Box<dyn std::error::Error>> {
-        let endpoint = Endpoint::parse("http://localhost:5173")?;
-        assert_eq!(endpoint.host, "localhost");
-        assert_eq!(endpoint.port, 5173);
-        assert!(!endpoint.tls);
+        let local = endpoint("http://localhost:5173")?;
+        assert_eq!(local.host_str(), Some("localhost"));
+        assert_eq!(local.port_or_known_default(), Some(5173));
+        assert_eq!(local.scheme(), "http");
 
-        let endpoint = Endpoint::parse("https://[::1]")?;
-        assert_eq!(endpoint.host, "::1");
-        assert_eq!(endpoint.port, 443);
-        assert!(endpoint.tls);
+        let loopback = endpoint("https://[::1]")?;
+        assert_eq!(loopback.host_str(), Some("[::1]"));
+        assert_eq!(loopback.port_or_known_default(), Some(443));
+        assert_eq!(loopback.scheme(), "https");
         Ok(())
     }
 
     #[test]
     fn rejects_invalid_endpoint_suffixes() {
-        assert!(Endpoint::parse("http://[::1]unexpected").is_err());
-        assert!(Endpoint::parse("http://localhost:5173/path").is_err());
+        assert!(endpoint("http://[::1]unexpected").is_err());
+        assert!(endpoint("http://localhost:5173/path").is_err());
+        assert!(endpoint("ftp://localhost").is_err());
     }
 
     #[test]
@@ -727,9 +459,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn retries_head_after_an_upstream_disconnect() {
-        let error = Error::Io(io::ErrorKind::UnexpectedEof.into());
-        assert!(can_retry_http("HEAD", &error));
+    #[tokio::test]
+    async fn retries_head_after_an_upstream_disconnect() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let url = format!("http://{}/", listener.local_addr()?);
+        let host = thread::spawn(move || listener.accept().map(drop));
+
+        let result = crate::network::http::client()?.head(url).send().await;
+        host.join().map_err(|_| "host panicked")??;
+
+        let error: HandlerError = result.err().ok_or("the request succeeded")?.into();
+        assert!(can_retry("HEAD", &error));
+        assert!(!can_retry("POST", &error));
+        Ok(())
     }
 }

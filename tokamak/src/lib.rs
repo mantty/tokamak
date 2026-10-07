@@ -12,6 +12,13 @@ mod android_jni;
 mod apple_ffi;
 #[cfg(feature = "native")]
 mod assets;
+#[cfg(all(
+    feature = "native",
+    any(target_os = "android", target_vendor = "apple")
+))]
+mod bridge;
+#[cfg(feature = "native")]
+mod cache;
 #[cfg(feature = "native")]
 mod cert_generation;
 #[cfg(feature = "native")]

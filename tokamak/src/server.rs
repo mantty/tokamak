@@ -11,7 +11,7 @@ use crate::certificates::{Certificates, Renewal};
 use crate::dev_proxy::{DevProxy, DevProxyConfig};
 use crate::dispatcher::Dispatcher;
 use crate::env_vars::{StorageBinding, load as load_environment};
-use crate::gateway::{self, GatewayConfig};
+use crate::gateway;
 use crate::lifecycle_events::{Event, Events};
 use crate::linked::StorageRuntime;
 use crate::packaging::{PackageLayout, read_worker_manifest};
@@ -51,7 +51,6 @@ pub struct Runtime {
     host: String,
     certificates: Arc<Certificates>,
     _renewal: Renewal,
-    events: Events,
     gateway: gateway::Runtime,
 }
 
@@ -137,25 +136,6 @@ impl Runtime {
     pub fn certificates(&self) -> Arc<Certificates> {
         Arc::clone(&self.certificates)
     }
-
-    /// Stop new request dispatch and quiesce gateway connections.
-    pub fn suspend(&self) {
-        self.gateway.suspend();
-        self.events.emit(Event::Suspended);
-    }
-
-    /// Resume request dispatch, renewing certificates that fell due.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when renewal fails or the gateway rejects the
-    /// transition.
-    pub fn resume(&self) -> Result<()> {
-        self.certificates.refresh()?;
-        self.gateway.resume();
-        self.events.emit(Event::Resumed);
-        Ok(())
-    }
 }
 
 /// Start the gateway serving `handler`, then certificate renewal.
@@ -165,17 +145,17 @@ fn finish_start(
     certificates: Arc<Certificates>,
     handler: Arc<dyn gateway::Handler>,
 ) -> Result<Runtime> {
-    let config = gateway_config(&certificates, &host);
-    let gateway = gateway::Runtime::start(handler, config, events.clone())?;
-    let renewal = certificates.start_renewal(events.clone());
-    events.emit(Event::Listening {
-        port: gateway.port(),
-    });
+    let gateway = gateway::Runtime::start(
+        handler,
+        Arc::clone(&certificates),
+        host.clone(),
+        events.clone(),
+    )?;
+    let renewal = certificates.start_renewal(events);
     Ok(Runtime {
         host,
         certificates,
         _renewal: renewal,
-        events,
         gateway,
     })
 }
@@ -189,20 +169,6 @@ fn validate_worker(worker: &WorkerBundle) -> Result<()> {
         return Ok(());
     };
     Err(crate::QuickJsError::Startup(message).into())
-}
-
-fn gateway_config(certificates: &Arc<Certificates>, host: &str) -> GatewayConfig {
-    let certificates = Arc::clone(certificates);
-    GatewayConfig {
-        tls: Arc::new(move || {
-            certificates
-                .server_config()
-                .map_err(|error| crate::QuickJsError::Tls(error.to_string()))
-        }),
-        host: host.to_owned(),
-        port: 0,
-        require_client_certificate: true,
-    }
 }
 
 /// Set to "true" in a packaged app's Worker environment.
@@ -220,7 +186,7 @@ fn quickjs_config(config: &Config) -> Result<RuntimeConfig> {
             .then(|| Assets::open(app))
             .transpose()?
             .map(Arc::new),
-        cache: config.state_dir.join("cache"),
+        cache: Arc::default(),
         environment: vars,
         storage,
     })
@@ -265,7 +231,7 @@ mod tests {
     use crate::env_vars::{StorageBinding, WorkerEnvironment, write as write_environment};
     use serde_json::json;
 
-    use super::{Config, gateway_config, quickjs_config};
+    use super::{Config, quickjs_config};
 
     fn config(root: &std::path::Path) -> Config {
         Config {
@@ -275,30 +241,11 @@ mod tests {
             host: "example.tokamak.local".to_owned(),
         }
     }
-    use crate::certificates::Certificates;
     use crate::packaging::{
         AssetManifest, HtmlHandling, NotFoundHandling, PackageLayout, write_asset_manifest,
     };
-    use std::sync::Arc;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-
-    #[test]
-    fn always_requires_a_client_certificate() -> TestResult {
-        let directory = tempfile::tempdir()?;
-        let certificates = Arc::new(Certificates::start(
-            directory.path().to_path_buf(),
-            "app.tokamak.local".to_owned(),
-        )?);
-        let app = PackageLayout::new(directory.path());
-        write_environment(&app, &WorkerEnvironment::default())?;
-
-        let config = gateway_config(&certificates, "app.tokamak.local");
-
-        assert!(config.require_client_certificate);
-        assert_eq!(config.port, 0);
-        Ok(())
-    }
 
     #[test]
     fn serves_assets_only_when_the_app_packages_them() -> TestResult {
@@ -352,14 +299,12 @@ mod tests {
         std::fs::create_dir_all(config.storage_dir.join("d1"))?;
         std::fs::write(config.storage_dir.join("d1/app.sqlite"), "")?;
         std::fs::create_dir_all(config.state_dir.join("storage/r2/files"))?;
-        std::fs::create_dir_all(config.state_dir.join("cache"))?;
 
         let runtime = quickjs_config(&config)?;
 
         assert!(runtime.storage.is_none());
         assert!(!config.storage_dir.exists());
         assert!(!config.state_dir.join("storage").exists());
-        assert!(config.state_dir.join("cache").is_dir());
         assert!(quickjs_config(&config)?.storage.is_none());
         Ok(())
     }

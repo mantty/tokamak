@@ -811,7 +811,7 @@ export class Cache {
   constructor(name = "default") { markHostObject(this); this.#name = string(name); }
   async match(request, options = {}) {
     if (!options.ignoreMethod && requestMethodForCache(request) !== "GET") return undefined;
-    const entry = await cacheHost("cacheMatch", [cachePath(), this.#name, cacheKey(request, options)]);
+    const entry = await cacheHost("cacheMatch", [this.#name, cacheKey(request, options)]);
     if (entry === null || entry === undefined) return undefined;
     return new Response(entry.body, {
       status: entry.status,
@@ -828,7 +828,7 @@ export class Cache {
     if (!(response instanceof Response)) throw new TypeError("Cache.put requires a Response");
     const copy = response.clone();
     await cacheHost("cachePut", [
-      cachePath(), this.#name, cacheKey(request), {
+      this.#name, cacheKey(request), {
         status: copy.status,
         statusText: copy.statusText,
         headers: JSON.stringify([...copy.headers]),
@@ -840,7 +840,7 @@ export class Cache {
   }
   async delete(request, options = {}) {
     if (!options.ignoreMethod && requestMethodForCache(request) !== "GET") return false;
-    return cacheHost("cacheDelete", [cachePath(), this.#name, cacheKey(request, options)]);
+    return cacheHost("cacheDelete", [this.#name, cacheKey(request, options)]);
   }
   async keys() { throw cacheNotImplemented("Cache", "keys"); }
   async add() { throw cacheNotImplemented("Cache", "add"); }
@@ -875,7 +875,6 @@ function cacheKey(request, options = {}) {
   if (options.ignoreSearch) throw new Error("The 'ignoreSearch' field on 'CacheQueryOptions' is not implemented.");
   return url.href;
 }
-function cachePath() { return String(globalThis.__tokamak_cache ?? ""); }
 async function cacheHost(name, args) { return (await import("tokamak:host"))[name](...args); }
 function cacheNotImplemented(type, method) { return new Error(`Failed to execute '${method}' on '${type}': the method is not implemented.`); }
 

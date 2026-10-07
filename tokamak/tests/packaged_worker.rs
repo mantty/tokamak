@@ -147,40 +147,6 @@ fn upgrades_to_a_websocket_on_a_reused_connection() -> TestResult {
 }
 
 #[test]
-fn suspended_runtime_delays_new_gateway_connections_until_resume() -> TestResult {
-    let temporary = tempfile::tempdir()?;
-    let (runtime, _) = start_packaged_runtime(
-        temporary.path(),
-        worker_source(),
-        &WorkerEnvironment::default(),
-    )?;
-    let host = HOST;
-    runtime.suspend();
-    let mut proxy = TcpStream::connect(("127.0.0.1", runtime.port()))?;
-    proxy.set_read_timeout(Some(Duration::from_millis(100)))?;
-    proxy
-        .write_all(format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n").as_bytes())?;
-    proxy.flush()?;
-
-    let Err(error) = read_header_block(&mut proxy) else {
-        return Err("suspended gateway responded".into());
-    };
-    let error = error
-        .downcast_ref::<std::io::Error>()
-        .ok_or("suspended gateway returned a non-IO error")?;
-    assert!(matches!(
-        error.kind(),
-        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-    ));
-
-    proxy.set_read_timeout(Some(Duration::from_secs(2)))?;
-    runtime.resume()?;
-    let response = read_header_block(&mut proxy)?;
-    assert!(String::from_utf8(response)?.starts_with("HTTP/1.1 200"));
-    Ok(())
-}
-
-#[test]
 fn serves_a_packaged_worker_websocket_over_the_mtls_gateway() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let (runtime, state) = start_packaged_runtime(
