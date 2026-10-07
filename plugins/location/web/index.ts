@@ -1,6 +1,11 @@
-import type { Position, PositionCallback, PositionErrorCallback } from "../src/index.js";
+import type {
+  Position,
+  PositionCallback,
+  PositionErrorCallback,
+  PositionOptions,
+} from "../src/index.js";
 
-export function getCurrentPosition(): Promise<Position> {
+export function getCurrentPosition(options: PositionOptions): Promise<Position> {
   return new Promise((resolve, reject) => {
     const browserLocation = browserLocationApi();
     browserLocation.getCurrentPosition(
@@ -10,6 +15,7 @@ export function getCurrentPosition(): Promise<Position> {
       (error) => {
         reject(positionError(error));
       },
+      options,
     );
   });
 }

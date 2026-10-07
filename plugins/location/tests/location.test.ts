@@ -34,6 +34,41 @@ void test("uses browser location on the web", async () => {
   assert.equal(position.coords.longitude, -0.1);
 });
 
+void test("passes position options to browser location", async () => {
+  let received: PositionOptions | undefined;
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      geolocation: {
+        getCurrentPosition(success: PositionCallback, _: unknown, options: PositionOptions) {
+          received = options;
+          success(browserPosition(51.5, -0.1));
+        },
+      },
+    },
+  });
+
+  await location.getCurrentPosition({ maximumAge: 1000, timeout: 5000 });
+
+  assert.deepEqual(received, { maximumAge: 1000, timeout: 5000 });
+});
+
+void test("sends native position options as whole milliseconds", async () => {
+  const native = connectNative();
+
+  for (const [options, expected] of [
+    [undefined, { maximumAge: 0, timeout: 0xffffffff }],
+    [{ maximumAge: 1500.4 }, { maximumAge: 1500, timeout: 0xffffffff }],
+    [{ maximumAge: Infinity, timeout: -1 }, { maximumAge: 0xffffffff, timeout: 0 }],
+    [{ timeout: NaN }, { maximumAge: 0, timeout: 0 }],
+  ] as const) {
+    const position = location.getCurrentPosition(options);
+    assert.deepEqual(native.lastRequest().arguments, expected);
+    native.respond({ value: nativePosition(52, 0.2) });
+    await position;
+  }
+});
+
 void test("reports unavailable web location as unsupported", async () => {
   Reflect.deleteProperty(globalThis, "navigator");
 
