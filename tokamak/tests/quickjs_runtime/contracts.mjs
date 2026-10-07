@@ -2161,12 +2161,19 @@ export async function run(handlerEnv, ctx, constructors) {
     await Promise.resolve();
     return received;
   });
-  output.globalScopeEvents = result(() => {
+  output.globalScopeEvents = await asyncResult(async () => {
     const calls = [];
-    function record(event) { calls.push([event.type, event.cancelable, event.target === globalThis, this === globalThis]); }
+    function record(event) {
+      calls.push([event.type, event.message ?? null, event.error?.message ?? null, event.cancelable, event.target === globalThis, this === globalThis]);
+      event.preventDefault();
+    }
     const types = ["error", "unhandledrejection", "custom"];
     for (const type of types) addEventListener(type, record);
     const dispatched = [dispatchEvent(new Event("custom")), globalThis.dispatchEvent(new Event("custom", { cancelable: true }))];
+    reportError(new Error("reported"));
+    reportError("text");
+    queueMicrotask(() => { throw new Error("microtask"); });
+    await new Promise(resolve => setTimeout(resolve));
     for (const type of types) removeEventListener(type, record);
     return {
       calls, dispatched, afterRemoval: dispatchEvent(new Event("custom")),

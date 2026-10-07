@@ -17,7 +17,7 @@ function normalizeOptions(options, method) {
   };
 }
 
-// Runs `target`'s `listeners` for `event`.
+// Runs `target`'s `listeners` for `event`; false when a listener called preventDefault().
 let dispatch;
 
 export class Event {
@@ -25,7 +25,8 @@ export class Event {
   #bubbles;
   #cancelable;
   #composed;
-  #defaultPrevented = false;
+  // Set even when the event is not cancelable.
+  #preventDefaultCalled = false;
   #eventPhase = 0;
   #timeStamp = Date.now();
   #target;
@@ -51,17 +52,17 @@ export class Event {
   get eventPhase() { return this.#eventPhase; }
   get bubbles() { return this.#bubbles; }
   get cancelable() { return this.#cancelable; }
-  get defaultPrevented() { return this.#defaultPrevented; }
+  get defaultPrevented() { return this.#cancelable && this.#preventDefaultCalled; }
   get composed() { return this.#composed; }
   get isTrusted() { return false; }
   get timeStamp() { return this.#timeStamp; }
   get cancelBubble() { return this.#stopped; }
   set cancelBubble(value) { if (value) this.stopPropagation(); }
-  get returnValue() { return !this.#defaultPrevented; }
+  get returnValue() { return !this.defaultPrevented; }
 
   preventDefault() {
     if (this.#inPassive) throw new TypeError("Unable to preventDefault inside passive event listener invocation.");
-    if (this.#cancelable) this.#defaultPrevented = true;
+    this.#preventDefaultCalled = true;
   }
   stopPropagation() { this.#stopped = true; }
   stopImmediatePropagation() { this.#stopped = true; this.#immediateStopped = true; }
@@ -75,6 +76,7 @@ export class Event {
     this.#eventPhase = Event.AT_TARGET;
     this.#stopped = false;
     this.#immediateStopped = false;
+    this.#preventDefaultCalled = false;
     try {
       for (const entry of [...(listeners.get(this.#type) ?? [])]) {
         if (this.#immediateStopped) break;
@@ -86,7 +88,7 @@ export class Event {
       this.#dispatching = false;
       this.#eventPhase = Event.NONE;
     }
-    return !this.#defaultPrevented;
+    return !this.#preventDefaultCalled;
   }
 
   #invoke(target, entry) {
@@ -247,10 +249,12 @@ export class EventTarget {
 
 exposeProperties(EventTarget.prototype, ["addEventListener", "removeEventListener", "dispatchEvent"]);
 
-// Dispatches an ErrorEvent for `error` on the global scope.
+export function logUncaught(error) { console.error("Uncaught", error); }
+
+// Dispatches an ErrorEvent for `error` on the global scope and logs `error` unless a listener calls preventDefault().
 export function reportError(error) {
-  const event = new ErrorEvent("error", { error, message: error?.message ?? String(error) });
-  if (!globalThis.dispatchEvent?.(event)) console.error(error);
+  const event = new ErrorEvent("error", { error, message: `Uncaught ${String(error)}` });
+  if (dispatch(event, globalThis, listenersOf(globalThis))) logUncaught(error);
 }
 
 export class ExtendableEvent extends Event {
