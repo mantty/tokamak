@@ -112,9 +112,7 @@ jobs:
       - name: Test Rust
         run: |
           cargo test -p tokamak --features native
-          cargo test --workspace --exclude tokamak-cli --exclude windows-shell
-          cargo test -p tokamak-cli --lib --bin tok --test cli --test platform_pack
-          cargo test -p tokamak-cli --test build requires_a_platform_pack_for_app_builds
+          cargo test --workspace --exclude windows-shell
 
   apple:
     name: Test Apple
@@ -155,10 +153,8 @@ jobs:
       - name: Test the Apple platform pack
         run: cargo test -p tokamak-apple-signing
 
-      - name: Test Apple builds
-        run: >-
-          cargo test -p tokamak-cli --test build --
-          --skip requires_a_platform_pack_for_app_builds
+      - name: Test the CLI
+        run: cargo test -p tokamak-cli
 
   windows:
     name: Test Windows
@@ -198,12 +194,7 @@ jobs:
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           cargo test -p windows-shell
-          cargo test -p tokamak-cli --bin tok selects_platform_package_manager_commands
-          cargo test -p tokamak-cli --test build builds_windows_app_with_its_runtime_files
-          cargo test -p tokamak-cli --test build links_storage_into_the_windows_executable_while_the_app_declares_it
-          cargo test -p tokamak-cli --test build builds_with_a_configured_display_name
-          cargo test -p tokamak-cli --test build builds_a_configured_windows_icon
-          cargo test -p tokamak-cli --test build runs_the_configured_build_command_in_the_project_directory
+          cargo test -p tokamak-cli
 
   validate:
     name: Validate
