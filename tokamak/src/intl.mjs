@@ -301,14 +301,6 @@ class Locale {
   getHourCycles() { return [intlHourCycle(JSON.stringify([this.#tag]))]; }
   getTextInfo() { return { direction: this.#info.direction }; }
   getWeekInfo() { return { firstDay: this.#info.firstDay, weekend: this.#info.weekend }; }
-  languageOf() { return this.language; }
-  regionOf() { return this.region; }
-  scriptOf() { return this.script; }
-  calendarOf() { return this.calendar; }
-  caseFirstOf() { return this.caseFirst; }
-  collationOf() { return this.collation; }
-  hourCycleOf() { return this.hourCycle; }
-  numberingSystemOf() { return this.numberingSystem; }
 }
 
 function listJson(list) {

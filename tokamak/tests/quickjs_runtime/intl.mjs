@@ -55,6 +55,7 @@ export function intlContracts() {
     return [tag, { hourCycle: locale.hourCycle ?? null, hourCycles: locale.getHourCycles(), textInfo: locale.getTextInfo(), weekInfo: locale.getWeekInfo(), formatted: { hourCycle, hour12, dayPeriod } }];
   }));
   result.firstDayKeyword = new Intl.Locale("ar-u-fw-mon").getWeekInfo();
+  result.localeAccessors = ["languageOf", "regionOf", "scriptOf", "calendarOf", "hourCycleOf", "numberingSystemOf"].filter(name => name in Intl.Locale.prototype);
   result.currencyDigits = Object.fromEntries(["USD", "JPY", "KRW", "BHD", "KWD", "CLF", "HUF", "IDR", "TWD", "CHF", "IQD", "XOF"].map(currency => {
     const formatter = new Intl.NumberFormat("en-US", { style: "currency", currency, currencyDisplay: "code" });
     const { minimumFractionDigits, maximumFractionDigits } = formatter.resolvedOptions();
