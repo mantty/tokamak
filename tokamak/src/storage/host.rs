@@ -101,9 +101,13 @@ async fn kv_get(
     ctx: Ctx<'_>,
     binding: String,
     key: String,
+    cache_ttl: Option<i64>,
 ) -> rquickjs::Result<Option<Object<'_>>> {
     let storage = storage(&ctx)?;
-    let entry = blocking(&ctx, move || storage.kv(&binding)?.get(&key, now())).await?;
+    let entry = blocking(&ctx, move || {
+        storage.kv(&binding)?.get(&key, cache_ttl, now())
+    })
+    .await?;
     entry.map(|entry| entry_object(&ctx, entry)).transpose()
 }
 
@@ -112,30 +116,32 @@ async fn kv_get_many(
     ctx: Ctx<'_>,
     binding: String,
     keys: Vec<String>,
+    cache_ttl: Option<i64>,
 ) -> rquickjs::Result<Vec<Option<Object<'_>>>> {
     let storage = storage(&ctx)?;
-    let entries = blocking(&ctx, move || storage.kv(&binding)?.get_many(&keys, now())).await?;
+    let entries = blocking(&ctx, move || {
+        storage.kv(&binding)?.get_many(&keys, cache_ttl, now())
+    })
+    .await?;
     entries
         .into_iter()
         .map(|entry| entry.map(|entry| entry_object(&ctx, entry)).transpose())
         .collect()
 }
 
-/// Store `value` under `key` with an expiration in seconds and JSON metadata.
+/// Store `value` under `key` as the JSON `options` ask.
 async fn kv_put<'js>(
     ctx: Ctx<'js>,
     binding: String,
     key: String,
     value: TypedArray<'js, u8>,
-    expiration: Option<i64>,
-    metadata: Option<String>,
+    options: String,
 ) -> rquickjs::Result<()> {
     let storage = storage(&ctx)?;
     let value = owned_bytes(&ctx, &value)?;
     blocking(&ctx, move || {
-        storage
-            .kv(&binding)?
-            .put(&key, &value, expiration, metadata.as_deref(), now())
+        let options = serde_json::from_str(&options).map_err(text)?;
+        storage.kv(&binding)?.put(&key, &value, &options, now())
     })
     .await
 }
@@ -151,7 +157,7 @@ async fn kv_list(
     binding: String,
     prefix: String,
     cursor: String,
-    limit: usize,
+    limit: i64,
 ) -> rquickjs::Result<String> {
     let storage = storage(&ctx)?;
     blocking(&ctx, move || {

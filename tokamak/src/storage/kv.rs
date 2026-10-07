@@ -1,4 +1,5 @@
-//! KV namespaces, each a SQLite database of entries.
+//! KV namespaces, each a SQLite database of entries. A namespace refuses
+//! what the KV service refuses, with its HTTP status and message.
 //!
 //! Values are read and written with blob I/O, since a 25 MiB value exceeds
 //! the largest allocation the SQLite build makes.
@@ -8,10 +9,30 @@ use std::sync::Mutex;
 
 use rusqlite::blob::ZeroBlob;
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::keys::{cursor, cursor_key, prefix_end};
 use super::{Location, Open, SQLITE_FILES, lock, sqlite, text};
+
+// Lengths are in UTF-8 bytes; a bulk read returns at most one value's length.
+const MAX_KEY_LENGTH: usize = 512;
+const MAX_VALUE_LENGTH: usize = 25 * 1024 * 1024;
+const MAX_METADATA_LENGTH: usize = 1024;
+const MAX_LIST_KEYS: i64 = 1000;
+const MAX_BULK_KEYS: usize = 100;
+// Times are in seconds.
+const MIN_CACHE_TTL: i64 = 30;
+const MIN_EXPIRATION_TTL: i64 = 60;
+
+/// What `put` asks of a value besides its key and bytes: a TTL, or else an
+/// expiration in seconds since the epoch, and JSON metadata.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PutOptions {
+    pub(crate) expiration_ttl: Option<i64>,
+    pub(crate) expiration: Option<i64>,
+    pub(crate) metadata: Option<String>,
+}
 
 /// Entries in key order; `value` is last so records can end in a zero blob.
 const SCHEMA: &str = "
@@ -71,14 +92,42 @@ impl Open for KvNamespace {
 
 impl KvNamespace {
     /// The unexpired entry for `key` at `now`, in seconds since the epoch.
-    pub(crate) fn get(&self, key: &str, now: i64) -> Result<Option<Entry>, String> {
+    pub(crate) fn get(
+        &self,
+        key: &str,
+        cache_ttl: Option<i64>,
+        now: i64,
+    ) -> Result<Option<Entry>, String> {
+        validate_key(key)?;
+        validate_cache_ttl(cache_ttl)?;
         read(&lock(&self.connection), key, now)
     }
 
     /// The unexpired entries for `keys`, in the same order.
-    pub(crate) fn get_many(&self, keys: &[String], now: i64) -> Result<Vec<Option<Entry>>, String> {
+    pub(crate) fn get_many(
+        &self,
+        keys: &[String],
+        cache_ttl: Option<i64>,
+        now: i64,
+    ) -> Result<Vec<Option<Entry>>, String> {
+        check(keys.len() <= MAX_BULK_KEYS, 400, || {
+            format!("You can request a maximum of {MAX_BULK_KEYS} keys")
+        })?;
+        check(!keys.is_empty(), 400, || {
+            "You must request a minimum of 1 key".to_owned()
+        })?;
+        for key in keys {
+            validate_bulk_key(key)?;
+            validate_cache_ttl(cache_ttl)?;
+        }
         let connection = lock(&self.connection);
-        keys.iter().map(|key| read(&connection, key, now)).collect()
+        let reads = keys.iter().map(|key| read(&connection, key, now));
+        let entries: Vec<_> = reads.collect::<Result<_, _>>()?;
+        let lengths = entries.iter().flatten().map(|entry| entry.value.len());
+        check(lengths.sum::<usize>() <= MAX_VALUE_LENGTH, 413, || {
+            "Total size of request exceeds the limit of 25MB".to_owned()
+        })?;
+        Ok(entries)
     }
 
     /// Store `value` under `key`, replacing any entry, and delete the entries
@@ -87,11 +136,20 @@ impl KvNamespace {
         &self,
         key: &str,
         value: &[u8],
-        expiration: Option<i64>,
-        metadata: Option<&str>,
+        options: &PutOptions,
         now: i64,
     ) -> Result<(), String> {
-        let length = i32::try_from(value.len()).map_err(|_| "value too large".to_owned())?;
+        validate_key(key)?;
+        let expiration = expiration(options, now)?;
+        let metadata = options.metadata.as_deref().map_or(0, str::len);
+        check(metadata <= MAX_METADATA_LENGTH, 413, || {
+            format!("Metadata length of {metadata} exceeds limit of {MAX_METADATA_LENGTH}.")
+        })?;
+        let length = value.len();
+        check(length <= MAX_VALUE_LENGTH, 413, || {
+            format!("Value length of {length} exceeds limit of {MAX_VALUE_LENGTH}.")
+        })?;
+        let length = i32::try_from(length).map_err(text)?;
         let mut connection = lock(&self.connection);
         let transaction = connection.transaction().map_err(text)?;
         transaction
@@ -100,7 +158,7 @@ impl KvNamespace {
         transaction
             .execute(
                 "INSERT OR REPLACE INTO entries (key, expiration, metadata, value) VALUES (?1, ?2, ?3, ?4)",
-                params![key, expiration, metadata, ZeroBlob(length)],
+                params![key, expiration, options.metadata, ZeroBlob(length)],
             )
             .map_err(text)?;
         let row = transaction.last_insert_rowid();
@@ -114,6 +172,7 @@ impl KvNamespace {
 
     /// Delete `key`, and the entries expired at `now`.
     pub(crate) fn delete(&self, key: &str, now: i64) -> Result<(), String> {
+        validate_key(key)?;
         let mut connection = lock(&self.connection);
         let transaction = connection.transaction().map_err(text)?;
         transaction
@@ -126,14 +185,22 @@ impl KvNamespace {
     }
 
     /// Up to `limit` unexpired keys beginning with `prefix`, after the key
-    /// `page_cursor` encodes.
+    /// `page_cursor` encodes. A limit below one asks for a full page.
     pub(crate) fn list(
         &self,
         prefix: &str,
         page_cursor: &str,
-        limit: usize,
+        limit: i64,
         now: i64,
     ) -> Result<Page, String> {
+        let limit = if limit > 0 { limit } else { MAX_LIST_KEYS };
+        check(limit <= MAX_LIST_KEYS, 400, || {
+            format!(
+                "Invalid key_count_limit of {limit}. Please specify an integer less than {MAX_LIST_KEYS}."
+            )
+        })?;
+        validate_key(prefix)?;
+        let limit = usize::try_from(limit).map_err(text)?;
         let after = cursor_key(page_cursor).unwrap_or_default();
         let end = prefix_end(prefix);
         let connection = lock(&self.connection);
@@ -148,6 +215,69 @@ impl KvNamespace {
             cursor: next.flatten(),
         })
     }
+}
+
+/// Nothing when `valid`, else the service's refusal: its HTTP status and
+/// message.
+fn check(valid: bool, status: u16, message: impl FnOnce() -> String) -> Result<(), String> {
+    if valid {
+        Ok(())
+    } else {
+        Err(format!("{status} {}", message()))
+    }
+}
+
+fn validate_key(key: &str) -> Result<(), String> {
+    let length = key.len();
+    check(length <= MAX_KEY_LENGTH, 414, || {
+        format!("UTF-8 encoded length of {length} exceeds key length limit of {MAX_KEY_LENGTH}.")
+    })
+}
+
+/// A key a bulk read names must also be a usable name.
+fn validate_bulk_key(key: &str) -> Result<(), String> {
+    check(!key.is_empty(), 400, || {
+        "Key names must not be empty".to_owned()
+    })?;
+    check(key != "." && key != "..", 400, || {
+        format!("Illegal key name \"{key}\". Please use a different name.")
+    })?;
+    validate_key(key)
+}
+
+fn validate_cache_ttl(cache_ttl: Option<i64>) -> Result<(), String> {
+    let ttl = cache_ttl.unwrap_or(MIN_CACHE_TTL);
+    check(ttl >= MIN_CACHE_TTL, 400, || {
+        format!("Invalid cache_ttl of {ttl}. Cache TTL must be at least {MIN_CACHE_TTL}.")
+    })
+}
+
+/// The expiration `options` ask for at `now`: a TTL, or else a time.
+fn expiration(options: &PutOptions, now: i64) -> Result<Option<i64>, String> {
+    if let Some(ttl) = options.expiration_ttl {
+        let invalid = format!("Invalid expiration_ttl of {ttl}.");
+        check(ttl > 0, 400, || {
+            format!("{invalid} Please specify integer greater than 0.")
+        })?;
+        check(ttl >= MIN_EXPIRATION_TTL, 400, || {
+            format!("{invalid} Expiration TTL must be at least {MIN_EXPIRATION_TTL}.")
+        })?;
+        return Ok(Some(now + ttl));
+    }
+    if let Some(at) = options.expiration {
+        let invalid = format!("Invalid expiration of {at}.");
+        check(at > now, 400, || {
+            format!(
+                "{invalid} Please specify integer greater than the current number of seconds since the UNIX epoch."
+            )
+        })?;
+        check(at >= now + MIN_EXPIRATION_TTL, 400, || {
+            format!(
+                "{invalid} Expiration times must be at least {MIN_EXPIRATION_TTL} seconds in the future."
+            )
+        })?;
+    }
+    Ok(options.expiration)
 }
 
 fn read(connection: &Connection, key: &str, now: i64) -> Result<Option<Entry>, String> {
