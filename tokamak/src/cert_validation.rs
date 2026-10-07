@@ -2,7 +2,7 @@
 
 use std::time::SystemTime;
 
-use der::{Decode, DecodePem, Encode};
+use der::{DecodePem, Encode};
 use p256::ecdsa::signature::Verifier;
 use p256::ecdsa::{DerSignature, VerifyingKey};
 use p256::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePublicKey};
@@ -16,16 +16,6 @@ pub(crate) fn pem_contents(pem: &str) -> Option<Vec<u8>> {
     der::pem::decode_vec(pem.as_bytes())
         .ok()
         .map(|(_, contents)| contents)
-}
-
-pub(crate) fn certificate_der_matches_pem(certificate_pem: &str, certificate_der: &[u8]) -> bool {
-    pem_contents(certificate_pem).is_some_and(|contents| contents == certificate_der)
-        && Certificate::from_der(certificate_der).is_ok()
-}
-
-pub(crate) fn key_matches_der(key_pem: &str, key_der: &[u8]) -> bool {
-    p256::SecretKey::from_pkcs8_pem(key_pem).is_ok()
-        && pem_contents(key_pem).is_some_and(|contents| contents == key_der)
 }
 
 pub(crate) fn certificate_not_before(pem: &str) -> Option<SystemTime> {
