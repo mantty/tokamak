@@ -373,7 +373,25 @@ private final class TokamakController {
   }
 #else
   @main
-  private final class TokamakIOSApplicationDelegate: UIResponder, UIApplicationDelegate {
+  private enum TokamakApplication {
+    /// Only an app that declares the `remote-notification` background mode
+    /// gets a delegate that receives remote notifications, which UIKit
+    /// otherwise warns about.
+    static func main() {
+      let modes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String]
+      let delegate: TokamakIOSApplicationDelegate.Type =
+        modes?.contains("remote-notification") == true
+        ? TokamakIOSPushApplicationDelegate.self : TokamakIOSApplicationDelegate.self
+      UIApplicationMain(
+        CommandLine.argc,
+        CommandLine.unsafeArgv,
+        nil,
+        NSStringFromClass(delegate)
+      )
+    }
+  }
+
+  private class TokamakIOSApplicationDelegate: UIResponder, UIApplicationDelegate {
     /// Exists from launch, whether or not a scene connects.
     let host = TokamakHost()
 
@@ -390,7 +408,9 @@ private final class TokamakController {
     ) {
       host.didFailToRegisterForRemoteNotifications(error: error)
     }
+  }
 
+  private final class TokamakIOSPushApplicationDelegate: TokamakIOSApplicationDelegate {
     func application(
       _ application: UIApplication,
       didReceiveRemoteNotification userInfo: [AnyHashable: Any],
