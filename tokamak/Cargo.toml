@@ -70,7 +70,6 @@ native = [
     "dep:writeable",
     "dep:zstd",
 ]
-test-stubs = ["native"]
 
 [dependencies]
 async-compression = { workspace = true, optional = true }
