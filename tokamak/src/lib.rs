@@ -114,7 +114,7 @@ pub enum Error {
     #[cfg(feature = "native")]
     #[error(transparent)]
     CertificateKey(#[from] p256::pkcs8::Error),
-    /// The JavaScript runtime failed to start or change state.
+    /// The JavaScript runtime failed to start.
     #[cfg(feature = "native")]
     #[error(transparent)]
     QuickJs(#[from] QuickJsError),

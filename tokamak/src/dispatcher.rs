@@ -55,7 +55,7 @@ impl Handler for Dispatcher {
                 .map_err(|_| receiver_closed("HTTP response receiver closed"))?;
             return Ok(());
         }
-        Ok(execute_request(&self.worker, &self.config, job, stopped)?)
+        execute_request(&self.worker, &self.config, job, stopped).map_err(Into::into)
     }
 }
 

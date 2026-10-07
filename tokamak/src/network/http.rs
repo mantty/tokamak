@@ -17,12 +17,12 @@ use rquickjs::{
     function::{Async, This},
 };
 use serde::Serialize;
-
-use super::decoder::DecodedBody;
-use crate::globals::ContentDecoder;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::Mutex;
 use tokio_util::{io::StreamReader, sync::CancellationToken};
+
+use super::decoder::DecodedBody;
+use crate::globals::ContentDecoder;
 
 type Reader = Pin<Box<dyn AsyncRead>>;
 type ResponseBody = Rc<Mutex<Option<Reader>>>;
