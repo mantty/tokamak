@@ -30,9 +30,7 @@ function stringBytes(value, encoding) {
   if (name === "base64" || name === "base64url") return decodeBase64Leniently(String(value));
   if (name === "ascii" || name === "latin1" || name === "binary") {
     const input = String(value);
-    const bytes = new Uint8Array(input.length);
-    for (let index = 0; index < input.length; index += 1) bytes[index] = input.charCodeAt(index) & 0xff;
-    return bytes;
+    return Uint8Array.from({ length: input.length }, (_, index) => input.charCodeAt(index));
   }
   if (name === "ucs2" || name === "ucs-2" || name === "utf16le" || name === "utf-16le") {
     const input = String(value);

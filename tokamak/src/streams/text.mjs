@@ -13,11 +13,7 @@ function utf8(code) {
 export class TextEncoder {
   constructor() { markHostObject(this); }
   get encoding() { return "utf-8"; }
-  encode(value = "") {
-    const bytes = [];
-    for (const character of string(value)) bytes.push(...utf8(character.codePointAt(0)));
-    return new Uint8Array(bytes);
-  }
+  encode(value = "") { return new Uint8Array([...string(value)].flatMap(character => utf8(character.codePointAt(0)))); }
   encodeInto(source, destination) {
     source = string(source);
     if (!(destination instanceof Uint8Array)) throw new TypeError("Destination must be a Uint8Array");

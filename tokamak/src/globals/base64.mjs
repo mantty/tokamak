@@ -7,9 +7,7 @@ export function atob(value) {
   let bytes;
   try { bytes = Uint8Array.fromBase64(input); }
   catch { throw new DOMException("atob() called with invalid base64-encoded data. (Only whitespace, '+', '/', alphanumeric ASCII, and up to two terminal '=' signs when the input data length is divisible by 4 are allowed.)", "InvalidCharacterError"); }
-  let output = "";
-  for (const byte of bytes) output += String.fromCharCode(byte);
-  return output;
+  return Array.from(bytes, byte => String.fromCharCode(byte)).join("");
 }
 
 export function btoa(value) {
