@@ -9,7 +9,6 @@ build = "build.rs"
 [features]
 default = []
 native = [
-    "dep:async-compression",
     "dep:aes",
     "dep:aes-kw",
     "dep:cbc",
@@ -72,7 +71,6 @@ native = [
 ]
 
 [dependencies]
-async-compression = { workspace = true, optional = true }
 aes = { workspace = true, optional = true }
 aes-kw = { workspace = true, optional = true }
 cbc = { workspace = true, optional = true }

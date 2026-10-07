@@ -69,7 +69,6 @@ webpki-roots = "1"
 x25519-dalek = { version = "3", default-features = false, features = ["static_secrets", "getrandom"] }
 anyhow = "1.0.102"
 assert_cmd = "2.2.2"
-async-compression = { version = "0.4.46", features = ["tokio", "gzip"] }
 base64 = "0.22.1"
 brotlic-sys = "=0.2.2"
 block2 = "0.6.2"

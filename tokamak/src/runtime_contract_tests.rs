@@ -708,7 +708,6 @@ fn boundary_request(
 
 #[test]
 fn response_encoding_matches_cloudflare() -> TestResult {
-    use async_compression::tokio::bufread::GzipDecoder;
     use tokio::io::AsyncReadExt;
 
     let reference = Command::new("node")
@@ -738,20 +737,12 @@ fn response_encoding_matches_cloudflare() -> TestResult {
             .ok_or("missing encoding")?
             .to_str()?;
         let mut decoded = Vec::new();
-        let encoded = match encoding {
-            "gzip" => runtime
-                .block_on(GzipDecoder::new(raw.as_slice()).read_to_end(&mut decoded))
-                .is_ok(),
-            "br" => runtime
-                .block_on(
-                    crate::network::brotli::Decoder::new(Box::pin(std::io::Cursor::new(
-                        raw.clone(),
-                    )))
-                    .read_to_end(&mut decoded),
-                )
-                .is_ok(),
-            _ => false,
-        };
+        let encoded =
+            crate::globals::ContentDecoder::new(encoding.as_bytes())?.is_some_and(|decoder| {
+                let body = Box::pin(std::io::Cursor::new(raw.clone()));
+                let mut reader = crate::network::decoder::DecodedBody::new(body, decoder);
+                runtime.block_on(reader.read_to_end(&mut decoded)).is_ok()
+            });
         let actual = serde_json::json!({ "encoding": encoding, "encoded": encoded, "body": String::from_utf8_lossy(if encoded { &decoded } else { &raw }) });
         if actual != *expected {
             report_contract_difference(
