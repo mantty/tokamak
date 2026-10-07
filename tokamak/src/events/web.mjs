@@ -17,7 +17,7 @@ function normalizeOptions(options, method) {
   };
 }
 
-// Runs `target`'s listeners for `event`; `listeners()` returns those currently registered.
+// Runs `target`'s `listeners` for `event`; false when a listener called preventDefault().
 let dispatch;
 
 export class Event {
@@ -25,7 +25,8 @@ export class Event {
   #bubbles;
   #cancelable;
   #composed;
-  #defaultPrevented = false;
+  // Set even when the event is not cancelable.
+  #preventDefaultCalled = false;
   #eventPhase = 0;
   #timeStamp = Date.now();
   #target;
@@ -51,17 +52,17 @@ export class Event {
   get eventPhase() { return this.#eventPhase; }
   get bubbles() { return this.#bubbles; }
   get cancelable() { return this.#cancelable; }
-  get defaultPrevented() { return this.#defaultPrevented; }
+  get defaultPrevented() { return this.#cancelable && this.#preventDefaultCalled; }
   get composed() { return this.#composed; }
   get isTrusted() { return false; }
   get timeStamp() { return this.#timeStamp; }
   get cancelBubble() { return this.#stopped; }
   set cancelBubble(value) { if (value) this.stopPropagation(); }
-  get returnValue() { return !this.#defaultPrevented; }
+  get returnValue() { return !this.defaultPrevented; }
 
   preventDefault() {
     if (this.#inPassive) throw new TypeError("Unable to preventDefault inside passive event listener invocation.");
-    if (this.#cancelable) this.#defaultPrevented = true;
+    this.#preventDefaultCalled = true;
   }
   stopPropagation() { this.#stopped = true; }
   stopImmediatePropagation() { this.#stopped = true; this.#immediateStopped = true; }
@@ -75,18 +76,19 @@ export class Event {
     this.#eventPhase = Event.AT_TARGET;
     this.#stopped = false;
     this.#immediateStopped = false;
+    this.#preventDefaultCalled = false;
     try {
-      for (const entry of [...(listeners() ?? [])]) {
+      for (const entry of [...(listeners.get(this.#type) ?? [])]) {
         if (this.#immediateStopped) break;
-        if (!listeners()?.includes(entry)) continue;
-        if (entry.once) target.removeEventListener(this.#type, entry.callback);
+        if (!listeners.get(this.#type)?.includes(entry)) continue;
+        if (entry.once) removeListener(listeners, this.#type, entry.callback);
         this.#invoke(target, entry);
       }
     } finally {
       this.#dispatching = false;
       this.#eventPhase = Event.NONE;
     }
-    return !this.#defaultPrevented;
+    return !this.#preventDefaultCalled;
   }
 
   #invoke(target, entry) {
@@ -178,19 +180,45 @@ exposeProperties(Event.prototype, [
 exposeProperties(CustomEvent.prototype, ["detail"]);
 exposeProperties(ErrorEvent.prototype, ["message", "filename", "lineno", "colno", "error"]);
 
-export class EventTarget {
-  #listeners = new Map();
+// The listener entries of each EventTarget, by event type.
+const eventListeners = new WeakMap();
 
-  constructor() { markHostObject(this); }
+// Gives `target` the listener state of a new EventTarget.
+export function initEventTarget(target) { eventListeners.set(target, new Map()); }
+
+// The listener entries of `target`; an undefined or null receiver is the global scope, as in Web IDL.
+function listenersOf(target) {
+  const listeners = eventListeners.get(target ?? globalThis);
+  if (listeners === undefined) {
+    throw new TypeError("Illegal invocation: function called with incorrect `this` reference. See https://developers.cloudflare.com/workers/observability/errors/#illegal-invocation-errors for details.");
+  }
+  return listeners;
+}
+
+function removeListener(listeners, type, callback) {
+  const list = listeners.get(type);
+  if (!list) return;
+  const remaining = list.filter(entry => {
+    const remove = entry.callback === callback;
+    if (remove && entry.signal && entry.abort) entry.signal.removeEventListener("abort", entry.abort);
+    return !remove;
+  });
+  if (remaining.length === 0) listeners.delete(type);
+  else listeners.set(type, remaining);
+}
+
+export class EventTarget {
+  constructor() { markHostObject(this); initEventTarget(this); }
 
   addEventListener(type, callback, options = {}) {
+    const listeners = listenersOf(this);
     if (callback == null) return;
     if (typeof callback !== "function" && typeof callback.handleEvent !== "function") {
       throw new TypeError("Event listener must be callable");
     }
     const name = string(type);
     const normalized = normalizeOptions(options, "addEventListener");
-    const list = this.#listeners.get(name) ?? [];
+    const list = listeners.get(name) ?? [];
     if (list.some(entry => entry.callback === callback)) return;
     if (normalized.signal !== null && typeof normalized.signal.addEventListener !== "function") {
       throw new TypeError("Event listener signal must be an AbortSignal");
@@ -198,39 +226,35 @@ export class EventTarget {
     if (normalized.signal?.aborted) return;
     const entry = { callback, ...normalized, abort: null };
     list.push(entry);
-    this.#listeners.set(name, list);
+    listeners.set(name, list);
     if (entry.signal) {
-      entry.abort = () => this.removeEventListener(name, callback);
+      entry.abort = () => removeListener(listeners, name, callback);
       entry.signal.addEventListener("abort", entry.abort, { once: true });
     }
   }
 
   removeEventListener(type, callback, options = {}) {
+    const listeners = listenersOf(this);
     const name = string(type);
     normalizeOptions(options, "removeEventListener");
-    const list = this.#listeners.get(name);
-    if (!list) return;
-    const remaining = list.filter(entry => {
-      const remove = entry.callback === callback;
-      if (remove && entry.signal && entry.abort) entry.signal.removeEventListener("abort", entry.abort);
-      return !remove;
-    });
-    if (remaining.length === 0) this.#listeners.delete(name);
-    else this.#listeners.set(name, remaining);
+    removeListener(listeners, name, callback);
   }
 
   dispatchEvent(event) {
+    const listeners = listenersOf(this);
     if (!(event instanceof Event)) throw new TypeError("The event must be an Event");
-    return dispatch(event, this, () => this.#listeners.get(event.type));
+    return dispatch(event, this ?? globalThis, listeners);
   }
 }
 
 exposeProperties(EventTarget.prototype, ["addEventListener", "removeEventListener", "dispatchEvent"]);
 
-// Dispatches an ErrorEvent for `error` on the global scope.
+export function logUncaught(error) { console.error("Uncaught", error); }
+
+// Dispatches an ErrorEvent for `error` on the global scope and logs `error` unless a listener calls preventDefault().
 export function reportError(error) {
-  const event = new ErrorEvent("error", { error, message: error?.message ?? String(error) });
-  if (!globalThis.dispatchEvent?.(event)) console.error(error);
+  const event = new ErrorEvent("error", { error, message: `Uncaught ${String(error)}` });
+  if (dispatch(event, globalThis, listenersOf(globalThis))) logUncaught(error);
 }
 
 export class ExtendableEvent extends Event {

@@ -70,7 +70,7 @@ fn schedule<'js>(
                     changed.await;
                 }
             } => {
-                // Timer callbacks pass their errors to reportError; this clears any that escape it.
+                // Timer callbacks log their own errors; this clears any that escape.
                 if callback.call::<_, ()>(()).is_err() {
                     let _ = callback.ctx().catch();
                 }

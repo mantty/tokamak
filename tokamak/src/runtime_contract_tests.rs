@@ -230,6 +230,42 @@ export default { async fetch() {
 }
 
 #[test]
+fn uncaught_callback_errors_are_logged_unless_prevented() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let worker = WorkerBundle::of_source(
+        r#"
+export default { async fetch() {
+  const logged = [];
+  console.error = (...values) => logged.push(values.map(String).join(" "));
+  const dispatched = [];
+  const record = event => dispatched.push(event.error.message);
+  addEventListener("error", record);
+  setTimeout(() => { throw new Error("timeout"); });
+  const interval = setInterval(() => { clearInterval(interval); throw new Error("interval"); });
+  queueMicrotask(() => { throw new Error("microtask"); });
+  await scheduler.wait(10);
+  removeEventListener("error", record);
+  addEventListener("error", event => event.preventDefault());
+  queueMicrotask(() => { throw new Error("prevented"); });
+  reportError(new Error("prevented"));
+  await scheduler.wait(10);
+  return Response.json({ logged, dispatched });
+} };
+"#,
+        directory.path(),
+    )?;
+    let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
+    assert_eq!(
+        actual,
+        serde_json::json!({
+            "logged": ["Uncaught Error: microtask", "Uncaught Error: timeout", "Uncaught Error: interval"],
+            "dispatched": ["microtask"],
+        })
+    );
+    Ok(())
+}
+
+#[test]
 fn timers_progress_while_a_socket_waits_for_data() -> TestResult {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();

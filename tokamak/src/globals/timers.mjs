@@ -1,7 +1,8 @@
 import { scheduleTimer } from "tokamak:host";
 import { captureAsyncContext, runInAsyncContext } from "../builtins/async-context.mjs";
-import { reportError } from "../events/web.mjs";
+import { logUncaught, reportError } from "../events/web.mjs";
 
+const queueEngineMicrotask = globalThis.queueMicrotask;
 const timers = new Map();
 let nextTimer = 1;
 
@@ -14,7 +15,7 @@ function timer(callback, timeout, repeat, args) {
     if (repeat) timers.set(id, scheduleTimer(fire, Math.max(1, milliseconds)));
     else timers.delete(id);
     try { runInAsyncContext(context, callback, undefined, args); }
-    catch (error) { reportError(error); }
+    catch (error) { logUncaught(error); }
   };
   timers.set(id, scheduleTimer(fire, milliseconds));
   return id;
@@ -31,3 +32,13 @@ export function setImmediate(callback, ...args) { return timer(callback, 0, fals
 export function clearTimeout(id) { clearTimer(id); }
 export function clearInterval(id) { clearTimer(id); }
 export function clearImmediate(id) { clearTimer(id); }
+
+export function queueMicrotask(callback) {
+  if (typeof callback !== "function") {
+    throw new TypeError("Failed to execute 'queueMicrotask' on 'ServiceWorkerGlobalScope': parameter 1 is not of type 'function'.");
+  }
+  queueEngineMicrotask(() => {
+    try { callback(); }
+    catch (error) { reportError(error); }
+  });
+}

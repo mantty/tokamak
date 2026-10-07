@@ -3,11 +3,11 @@ import { DOMException } from "../globals/dom-exception.mjs";
 import { atob, btoa } from "../globals/base64.mjs";
 import { console } from "../globals/console.mjs";
 import process from "../globals/process.mjs";
-import { clearImmediate, clearInterval, clearTimeout, setImmediate, setInterval, setTimeout } from "../globals/timers.mjs";
+import { clearImmediate, clearInterval, clearTimeout, queueMicrotask, setImmediate, setInterval, setTimeout } from "../globals/timers.mjs";
 import { Crypto, CryptoKey, SubtleCrypto, crypto } from "../globals/crypto.mjs";
 import { structuredClone } from "../globals/structured-clone.mjs";
 import { Performance, PerformanceEntry, PerformanceMark, PerformanceMeasure, PerformanceObserver, PerformanceObserverEntryList, PerformanceResourceTiming, performance } from "../globals/performance.mjs";
-import { CloseEvent, CustomEvent, ErrorEvent, Event, EventTarget, ExtendableEvent, FetchEvent, MessageChannel, MessageEvent, MessagePort, PromiseRejectionEvent, ScheduledEvent, TailEvent, TraceEvent, WebSocketRequestResponsePair, reportError } from "../events/web.mjs";
+import { CloseEvent, CustomEvent, ErrorEvent, Event, EventTarget, ExtendableEvent, FetchEvent, MessageChannel, MessageEvent, MessagePort, PromiseRejectionEvent, ScheduledEvent, TailEvent, TraceEvent, WebSocketRequestResponsePair, initEventTarget, reportError } from "../events/web.mjs";
 import { AbortController, AbortSignal } from "../events/abort.mjs";
 import { Blob, Body, Cache, CacheStorage, EventSource, File, FormData, Headers, Request, Response, fetch } from "../network/fetch.mjs";
 import { HTMLRewriter } from "../network/html-rewriter.mjs";
@@ -49,12 +49,13 @@ Object.assign(globalThis, {
   Navigator, Performance, PerformanceEntry, PerformanceMark, PerformanceMeasure, PerformanceObserver, PerformanceObserverEntryList, PerformanceResourceTiming,
   WorkerGlobalScope, ServiceWorkerGlobalScope,
   atob, btoa,
-  fetch, reportError, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate,
+  fetch, queueMicrotask, reportError, setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate,
   caches: new CacheStorage(), crypto, HTMLRewriter, navigator: new Navigator(),
   origin: "null", self: globalThis, Cloudflare: { compatibilityFlags: [] },
   Buffer, console, global: globalThis, process,
 });
 Object.setPrototypeOf(globalThis, ServiceWorkerGlobalScope.prototype);
+initEventTarget(globalThis);
 installIntlGlobals();
 delete globalThis.WebAssembly;
 delete globalThis.InternalError;
