@@ -4,27 +4,26 @@ param(
   [Parameter(Position = 1)]
   [string] $Target,
   [Parameter(Position = 2)]
-  [string] $RustTarget,
-  [Parameter(Position = 3)]
   [string] $Output
 )
 
 $ErrorActionPreference = "Stop"
 
-if ($Command -ne "build" -or $Target -ne "windows-x64" -or $RustTarget -ne "x86_64-pc-windows-msvc" -or [string]::IsNullOrWhiteSpace($Output)) {
-  throw "usage: platform-pack.ps1 build windows-x64 x86_64-pc-windows-msvc OUTPUT"
+if ($Command -ne "build" -or $Target -ne "windows-x64" -or [string]::IsNullOrWhiteSpace($Output)) {
+  throw "usage: platform-pack.ps1 build windows-x64 OUTPUT"
 }
 
 $workspace = (Get-Location).Path
+$rustTarget = "x86_64-pc-windows-msvc"
 $output = [System.IO.Path]::GetFullPath($Output)
 
-$libraries = Join-Path $workspace "target/$RustTarget/release/tokamak-link-libraries"
-& cargo rustc --package windows-shell --release --target $RustTarget --lib --crate-type staticlib -- --print "native-static-libs=$libraries"
+$libraries = Join-Path $workspace "target/$rustTarget/release/tokamak-link-libraries"
+& cargo rustc --package windows-shell --release --target $rustTarget --lib --crate-type staticlib -- --print "native-static-libs=$libraries"
 if ($LASTEXITCODE -ne 0) {
   throw "Windows app shell build failed with status $LASTEXITCODE"
 }
 
-$library = Join-Path $workspace "target/$RustTarget/release/windows_shell.lib"
+$library = Join-Path $workspace "target/$rustTarget/release/windows_shell.lib"
 if (-not (Test-Path -LiteralPath $library -PathType Leaf) -or -not (Test-Path -LiteralPath $libraries -PathType Leaf)) {
   throw "Windows app shell library was not produced: $library"
 }

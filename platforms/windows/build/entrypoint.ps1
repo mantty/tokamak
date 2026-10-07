@@ -45,7 +45,7 @@ function Use-MicrosoftLinker {
 # points of the runtime parts the app links.
 function Invoke-RuntimeLink([string] $Executable) {
   Use-MicrosoftLinker
-  $runtime = Join-Path $InputDirectory "runtime/TokamakRuntime"
+  $runtime = Join-Path $pack "lib/TokamakRuntime"
   $libraries = [System.IO.File]::ReadAllText((Join-Path $runtime "link-libraries")).Trim() -split '\s+'
   $exports = @([System.IO.File]::ReadAllLines((Join-Path $InputDirectory "metadata/exported-symbols")) | ForEach-Object { "/EXPORT:$_" })
   $importLibrary = Join-Path $InputDirectory "runtime.lib"
@@ -55,23 +55,15 @@ function Invoke-RuntimeLink([string] $Executable) {
   }
 }
 
+# The CLI runs the entrypoint from the pack root.
+$pack = (Get-Location).Path
 $output = [System.IO.Path]::GetFullPath($OutputDirectory)
 $appName = Read-TokamakValue "app-name"
 $appSlug = Read-TokamakValue "app-slug"
-$identifier = Read-TokamakValue "identifier"
 $appHost = Read-TokamakValue "host"
-$devEndpoint = $null
-$devSessionToken = $null
-$devEndpointPath = Join-Path $InputDirectory "metadata/dev-endpoint"
-$devSessionTokenPath = Join-Path $InputDirectory "metadata/dev-session-token"
-if (Test-Path $devEndpointPath) {
-  $devEndpoint = [System.IO.File]::ReadAllText($devEndpointPath).Trim()
-}
-if (Test-Path $devSessionTokenPath) {
-  $devSessionToken = [System.IO.File]::ReadAllText($devSessionTokenPath).Trim()
-}
-if ([string]::IsNullOrWhiteSpace($devEndpoint) -xor [string]::IsNullOrWhiteSpace($devSessionToken)) {
-  throw "development endpoint and session token must be provided together"
+$icon = $env:TOKAMAK_WINDOWS_ICON
+if ($icon -and (-not (Test-Path -LiteralPath $icon -PathType Leaf) -or [System.IO.Path]::GetExtension($icon) -ne ".ico")) {
+  throw "windows.icon must be an .ico file: $icon"
 }
 $app = Join-Path $output "app"
 
@@ -81,23 +73,18 @@ if (Test-Path $output) {
 New-Item -ItemType Directory -Force -Path $app | Out-Null
 Copy-Item (Join-Path $InputDirectory "app/*") $app -Recurse -Force
 Invoke-RuntimeLink (Join-Path $output "$appSlug.exe")
-$icon = Join-Path $InputDirectory "icons/windows/AppIcon.ico"
-if (Test-Path -LiteralPath $icon -PathType Leaf) {
+if ($icon) {
   Copy-Item -LiteralPath $icon (Join-Path $output "AppIcon.ico")
 }
 
 $config = [ordered]@{
   name = $appName
   slug = $appSlug
-  identifier = $identifier
   host = $appHost
 }
-if (Test-Path (Join-Path $InputDirectory "metadata/version")) {
-  $config.version = Read-TokamakValue "version"
-}
-if (-not [string]::IsNullOrWhiteSpace($devEndpoint)) {
-  $config.devEndpoint = $devEndpoint
-  $config.devSessionToken = $devSessionToken
+if (Test-Path (Join-Path $InputDirectory "metadata/dev-endpoint")) {
+  $config.devEndpoint = Read-TokamakValue "dev-endpoint"
+  $config.devSessionToken = Read-TokamakValue "dev-session-token"
 }
 $config = $config | ConvertTo-Json
 $encoding = New-Object System.Text.UTF8Encoding($false)

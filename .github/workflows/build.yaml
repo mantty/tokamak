@@ -99,7 +99,7 @@ jobs:
           TOKAMAK_TEST_ANDROID_PACK: ${{ github.workspace }}/target/tokamak-platform-packs/android-arm64
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
-          cargo test -p tokamak-cli --test build links_storage_from_the_android_platform_pack_while_the_app_declares_it -- --ignored --nocapture
+          bash platforms/android/tests/pack.sh
 
       - name: Verify Windows storage linking
         if: matrix.target == 'windows-x64'

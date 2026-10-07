@@ -1,30 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 || "$1" != build ]]; then
-  echo "usage: platform-pack build TARGET RUST_TARGET OUTPUT" >&2
+if [[ $# -ne 3 || "$1" != build ]]; then
+  echo "usage: platform-pack build TARGET OUTPUT" >&2
   exit 2
 fi
 
 target=$2
-rust_target=$3
-output=$4
+output=$3
 workspace=$PWD
+build=$workspace/platforms/apple/build
 
 case "$target" in
-  macos-arm64|macos-x64)
-    export MACOSX_DEPLOYMENT_TARGET=14.0
-    ;;
-  ios-arm64)
-    export IPHONEOS_DEPLOYMENT_TARGET=17.0
-    ;;
-  ios-simulator-arm64|ios-simulator-x64)
-    export IPHONEOS_DEPLOYMENT_TARGET=17.0
-    export IPHONESIMULATOR_DEPLOYMENT_TARGET=17.0
-    ;;
+  macos-arm64) rust_target=aarch64-apple-darwin ;;
+  macos-x64) rust_target=x86_64-apple-darwin ;;
+  ios-arm64) rust_target=aarch64-apple-ios ;;
+  ios-simulator-arm64) rust_target=aarch64-apple-ios-sim ;;
+  ios-simulator-x64) rust_target=x86_64-apple-ios ;;
   *)
     echo "unsupported Apple target: $target" >&2
     exit 1
+    ;;
+esac
+case "$target" in
+  macos-*)
+    MACOSX_DEPLOYMENT_TARGET=$(<"$build/macos-deployment-target")
+    export MACOSX_DEPLOYMENT_TARGET
+    ;;
+  *)
+    IPHONEOS_DEPLOYMENT_TARGET=$(<"$build/ios-deployment-target")
+    export IPHONEOS_DEPLOYMENT_TARGET IPHONESIMULATOR_DEPLOYMENT_TARGET=$IPHONEOS_DEPLOYMENT_TARGET
     ;;
 esac
 
@@ -67,5 +72,4 @@ cp "$library" "$framework/TokamakRuntime"
 cp "$workspace/platforms/apple/source/TokamakRuntime.h" "$framework/Headers/TokamakRuntime.h"
 cp "$workspace/platforms/apple/source/module.modulemap" "$framework/Modules/module.modulemap"
 cp "$workspace/platforms/apple/source/"*.swift "$output/native-shell/"
-cp "$workspace/platforms/apple/build/entrypoint" \
-  "$output/build/entrypoint"
+cp "$build/entrypoint" "$build"/*-deployment-target "$output/build/"

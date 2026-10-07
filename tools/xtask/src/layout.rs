@@ -1,7 +1,7 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-use tokamak_cli::{MANIFEST_FILE, Target};
+use tokamak_cli::{MANIFEST_FILE, Platform, Target};
 
 pub(crate) struct WorkspaceLayout {
     root: PathBuf,
@@ -33,17 +33,23 @@ impl WorkspaceLayout {
     }
 
     pub(crate) fn platform_recipe(&self, target: Target) -> PathBuf {
-        self.platform_build(target)
-            .join(target.platform().platform_pack_recipe_file_name())
+        let recipe = if target.platform() == Platform::Windows {
+            "platform-pack.ps1"
+        } else {
+            "platform-pack"
+        };
+        self.platform_build(target).join(recipe)
     }
 
     /// The directory of the platform's pack recipe, entrypoint, and the
     /// variables and plugin keys its packs declare.
     pub(crate) fn platform_build(&self, target: Target) -> PathBuf {
-        self.root
-            .join("platforms")
-            .join(target.platform().repository_directory_name())
-            .join("build")
+        let pack = match target.platform() {
+            Platform::Android => "android",
+            Platform::Windows => "windows",
+            Platform::Ios | Platform::IosSimulator | Platform::Macos => "apple",
+        };
+        self.root.join("platforms").join(pack).join("build")
     }
 
     pub(crate) fn manifest(&self, target: Target) -> PathBuf {

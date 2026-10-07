@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
-use std::path::{Component, Path};
+use std::path::Path;
 use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -81,26 +81,6 @@ impl Platform {
             Self::Ios | Self::IosSimulator => "ios",
             Self::Macos => "macos",
             Self::Windows => "windows",
-        }
-    }
-
-    /// Repository directory containing the platform recipe and shell source.
-    #[must_use]
-    pub const fn repository_directory_name(self) -> &'static str {
-        match self {
-            Self::Android => "android",
-            Self::Windows => "windows",
-            Self::Ios | Self::IosSimulator | Self::Macos => "apple",
-        }
-    }
-
-    /// Platform-pack recipe filename.
-    #[must_use]
-    pub const fn platform_pack_recipe_file_name(self) -> &'static str {
-        if matches!(self, Self::Windows) {
-            "platform-pack.ps1"
-        } else {
-            "platform-pack"
         }
     }
 
@@ -228,20 +208,6 @@ impl Target {
         }
     }
 
-    /// Rust target triple used to build this target.
-    #[must_use]
-    pub const fn rust_target(self) -> &'static str {
-        match self {
-            Self::AndroidArm64 => "aarch64-linux-android",
-            Self::MacosArm64 => "aarch64-apple-darwin",
-            Self::MacosX64 => "x86_64-apple-darwin",
-            Self::IosArm64 => "aarch64-apple-ios",
-            Self::IosSimulatorArm64 => "aarch64-apple-ios-sim",
-            Self::IosSimulatorX64 => "x86_64-apple-ios",
-            Self::WindowsX64 => "x86_64-pc-windows-msvc",
-        }
-    }
-
     /// Platform-pack build entrypoint path.
     #[must_use]
     pub const fn build_entrypoint_path(self) -> &'static str {
@@ -250,61 +216,6 @@ impl Target {
         } else {
             BUILD_ENTRYPOINT
         }
-    }
-
-    /// Runtime artifact path relative to the platform-pack root.
-    #[must_use]
-    pub const fn runtime_artifact_path(self) -> &'static str {
-        match self.platform() {
-            Platform::Android | Platform::Windows => "lib/TokamakRuntime",
-            Platform::Ios | Platform::IosSimulator | Platform::Macos => {
-                "frameworks/TokamakRuntime.framework"
-            }
-        }
-    }
-
-    /// Runtime artifact path relative to the application build input.
-    #[must_use]
-    pub const fn runtime_staging_path(self) -> &'static str {
-        match self.platform() {
-            Platform::Android | Platform::Windows => "runtime/TokamakRuntime",
-            Platform::Ios | Platform::IosSimulator | Platform::Macos => {
-                "runtime/frameworks/TokamakRuntime.framework"
-            }
-        }
-    }
-
-    /// Whether the platform pack contains shell sources for the application
-    /// build entrypoint to compile.
-    #[must_use]
-    pub const fn has_native_shell(self) -> bool {
-        !matches!(self, Self::WindowsX64)
-    }
-
-    /// Host tools required to build an application from this platform pack.
-    #[must_use]
-    pub const fn required_tools(self) -> &'static [&'static str] {
-        match self.platform() {
-            Platform::Android => &["gradle"],
-            Platform::Windows => &[],
-            Platform::Ios | Platform::IosSimulator | Platform::Macos => &["xcrun"],
-        }
-    }
-
-    /// Artifact contract for this platform pack.
-    #[must_use]
-    pub fn artifacts(self) -> Vec<Artifact> {
-        let mut artifacts = vec![Artifact {
-            kind: ArtifactKind::RuntimeLibrary,
-            path: self.runtime_artifact_path().to_owned(),
-        }];
-        if self.has_native_shell() {
-            artifacts.push(Artifact {
-                kind: ArtifactKind::NativeShellDirectory,
-                path: "native-shell".to_owned(),
-            });
-        }
-        artifacts
     }
 }
 
@@ -345,38 +256,14 @@ impl FromStr for Target {
     }
 }
 
-/// Artifact categories that a platform pack can expose to the CLI.
-///
-/// Unknown artifact kinds intentionally fail deserialization. Additive artifact
-/// kinds require a new CLI/platform-pack release before older CLIs can consume
-/// them.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ArtifactKind {
-    /// Precompiled runtime library or framework, which an app build links.
-    RuntimeLibrary,
-    /// Native application-shell sources compiled during an app build.
-    NativeShellDirectory,
-}
-
-/// A single file or directory provided by a platform pack.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Artifact {
-    /// The artifact role.
-    pub kind: ArtifactKind,
-    /// Path relative to the platform-pack root.
-    pub path: String,
-}
-
 /// Manifest included in each `tokamak` platform pack.
 ///
-/// In addition to the paths listed here, every pack contains the fixed
-/// `build/entrypoint` builder entrypoint (or `build/entrypoint.ps1` for
-/// Windows). The CLI invokes it with `build`, an input directory, and an
-/// output path, passes through the user's environment and platform-pack
-/// variables, and leaves platform-specific project, signing, and packaging
-/// work to the entrypoint.
+/// Every pack also contains the fixed `build/entrypoint` (or
+/// `build/entrypoint.ps1` for Windows), which the CLI runs from the pack root.
+/// `build INPUT OUTPUT` builds the app; an iOS pack's `certs` lists the local
+/// signing assets. The entrypoint receives the user's environment plus
+/// `TOKAMAK_<PLATFORM>_<KEY>` for each variable and for the app's `icon` path,
+/// and owns every platform-specific project, signing, and packaging step.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlatformPackManifest {
@@ -384,10 +271,6 @@ pub struct PlatformPackManifest {
     pub tokamak_version: String,
     /// Native platform target.
     pub target: Target,
-    /// Runtime artifacts available in this pack.
-    pub artifacts: Vec<Artifact>,
-    /// Host tools required to consume this pack locally.
-    pub required_tools: Vec<String>,
     /// Variables the pack accepts, by name.
     pub variables: BTreeMap<String, PackVariable>,
     /// Keys the pack reads from a plugin's platform section, by name.
@@ -437,19 +320,11 @@ impl PlatformPackManifest {
     ///
     /// # Errors
     ///
-    /// Returns an error when required fields are missing, an artifact path
-    /// escapes the pack root, or a variable or plugin key is invalid.
+    /// Returns an error when the version is missing, or a variable or plugin
+    /// key is invalid.
     pub fn validate(&self) -> Result<(), PlatformPackError> {
         if self.tokamak_version.trim().is_empty() {
             return Err(PlatformPackError::MissingVersion);
-        }
-
-        if self.artifacts.is_empty() {
-            return Err(PlatformPackError::MissingArtifacts);
-        }
-
-        for artifact in &self.artifacts {
-            validate_relative_path(&artifact.path)?;
         }
 
         for (name, variable) in &self.variables {
@@ -534,15 +409,6 @@ pub enum PlatformPackError {
         /// CLI version that attempted to consume the platform pack.
         actual: String,
     },
-    /// Manifest had no artifacts.
-    #[error("platform pack must contain at least one artifact")]
-    MissingArtifacts,
-    /// Artifact path was empty.
-    #[error("artifact path must not be empty")]
-    EmptyArtifactPath,
-    /// Artifact path was absolute or escaped the pack root.
-    #[error("artifact path must stay inside the platform pack: {0}")]
-    UnsafeArtifactPath(String),
     /// Variable name was not lowercase words joined by hyphens.
     #[error("variable name must be lowercase words joined by hyphens: {0}")]
     InvalidVariableName(String),
@@ -576,30 +442,4 @@ fn validate_variable(name: &str, variable: &PackVariable) -> Result<(), Platform
         ));
     }
     Ok(())
-}
-
-fn validate_relative_path(path: &str) -> Result<(), PlatformPackError> {
-    if path.is_empty() {
-        return Err(PlatformPackError::EmptyArtifactPath);
-    }
-
-    if path.contains('\\') || has_windows_drive_prefix(path) {
-        return Err(PlatformPackError::UnsafeArtifactPath(path.to_owned()));
-    }
-
-    for component in Path::new(path).components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(PlatformPackError::UnsafeArtifactPath(path.to_owned()));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn has_windows_drive_prefix(path: &str) -> bool {
-    let bytes = path.as_bytes();
-    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }

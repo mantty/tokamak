@@ -3,104 +3,15 @@ use std::fs;
 use std::str::FromStr;
 
 use tokamak_cli::{
-    Artifact, ArtifactKind, PackVariable, Platform, PlatformPackError, PlatformPackManifest,
-    PluginKeyKind, Target, VariableKind, is_valid_key, load_manifest, write_manifest,
+    PackVariable, Platform, PlatformPackError, PlatformPackManifest, PluginKeyKind, Target,
+    VariableKind, is_valid_key, load_manifest, write_manifest,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-type TargetMetadata = (
-    Target,
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    bool,
-    &'static str,
-);
-
-const TARGET_METADATA: &[TargetMetadata] = &[
-    (
-        Target::AndroidArm64,
-        "aarch64-linux-android",
-        "android",
-        "platform-pack",
-        "lib/TokamakRuntime",
-        "runtime/TokamakRuntime",
-        true,
-        "build/entrypoint",
-    ),
-    (
-        Target::IosArm64,
-        "aarch64-apple-ios",
-        "apple",
-        "platform-pack",
-        "frameworks/TokamakRuntime.framework",
-        "runtime/frameworks/TokamakRuntime.framework",
-        true,
-        "build/entrypoint",
-    ),
-    (
-        Target::IosSimulatorArm64,
-        "aarch64-apple-ios-sim",
-        "apple",
-        "platform-pack",
-        "frameworks/TokamakRuntime.framework",
-        "runtime/frameworks/TokamakRuntime.framework",
-        true,
-        "build/entrypoint",
-    ),
-    (
-        Target::IosSimulatorX64,
-        "x86_64-apple-ios",
-        "apple",
-        "platform-pack",
-        "frameworks/TokamakRuntime.framework",
-        "runtime/frameworks/TokamakRuntime.framework",
-        true,
-        "build/entrypoint",
-    ),
-    (
-        Target::MacosArm64,
-        "aarch64-apple-darwin",
-        "apple",
-        "platform-pack",
-        "frameworks/TokamakRuntime.framework",
-        "runtime/frameworks/TokamakRuntime.framework",
-        true,
-        "build/entrypoint",
-    ),
-    (
-        Target::MacosX64,
-        "x86_64-apple-darwin",
-        "apple",
-        "platform-pack",
-        "frameworks/TokamakRuntime.framework",
-        "runtime/frameworks/TokamakRuntime.framework",
-        true,
-        "build/entrypoint",
-    ),
-    (
-        Target::WindowsX64,
-        "x86_64-pc-windows-msvc",
-        "windows",
-        "platform-pack.ps1",
-        "lib/TokamakRuntime",
-        "runtime/TokamakRuntime",
-        false,
-        "build/entrypoint.ps1",
-    ),
-];
-
 fn valid_manifest() -> PlatformPackManifest {
     PlatformPackManifest {
         tokamak_version: "0.1.0".to_owned(),
         target: Target::IosArm64,
-        artifacts: vec![Artifact {
-            kind: ArtifactKind::RuntimeLibrary,
-            path: "frameworks/TokamakRuntime.framework".to_owned(),
-        }],
-        required_tools: vec!["xcode".to_owned()],
         variables: BTreeMap::from([(
             "plist".to_owned(),
             PackVariable {
@@ -110,16 +21,6 @@ fn valid_manifest() -> PlatformPackManifest {
         )]),
         plugin_keys: BTreeMap::from([("sources".to_owned(), PluginKeyKind::Paths)]),
     }
-}
-
-fn assert_unsafe_artifact_path(path: &str) {
-    let mut manifest = valid_manifest();
-    path.clone_into(&mut manifest.artifacts[0].path);
-
-    assert!(matches!(
-        manifest.validate(),
-        Err(PlatformPackError::UnsafeArtifactPath(rejected)) if rejected == path
-    ));
 }
 
 #[test]
@@ -151,50 +52,19 @@ fn maps_targets_to_one_platform_metadata_model() {
 }
 
 #[test]
-fn exposes_canonical_build_metadata_for_every_target() {
-    for (
-        target,
-        rust_target,
-        repository_directory,
-        recipe,
-        runtime_artifact,
-        runtime_staging,
-        has_native_shell,
-        entrypoint,
-    ) in TARGET_METADATA.iter().copied()
-    {
-        let platform = target.platform();
-        assert_eq!(target.rust_target(), rust_target);
-        assert_eq!(platform.repository_directory_name(), repository_directory);
-        assert_eq!(platform.platform_pack_recipe_file_name(), recipe);
-        assert_eq!(target.runtime_artifact_path(), runtime_artifact);
-        assert_eq!(target.runtime_staging_path(), runtime_staging);
-        assert_eq!(target.has_native_shell(), has_native_shell);
-        assert_eq!(target.build_entrypoint_path(), entrypoint);
+fn names_each_target_s_build_entrypoint() {
+    for target in Target::ALL {
+        let expected = if *target == Target::WindowsX64 {
+            "build/entrypoint.ps1"
+        } else {
+            "build/entrypoint"
+        };
+        assert_eq!(target.build_entrypoint_path(), expected);
     }
 }
 
 #[test]
-fn target_artifacts_describe_the_complete_pack_contract() {
-    let artifacts = Target::MacosArm64.artifacts();
-
-    assert_eq!(
-        artifacts
-            .iter()
-            .map(|artifact| (&artifact.kind, artifact.path.as_str()))
-            .collect::<Vec<_>>(),
-        vec![
-            (
-                &ArtifactKind::RuntimeLibrary,
-                "frameworks/TokamakRuntime.framework"
-            ),
-            (&ArtifactKind::NativeShellDirectory, "native-shell"),
-        ]
-    );
-}
-
-#[test]
-fn validates_manifest_with_relative_artifact_paths() {
+fn validates_a_manifest() {
     let manifest = valid_manifest();
 
     assert!(manifest.validate().is_ok());
@@ -237,17 +107,6 @@ fn rejects_a_different_cli_version() {
         manifest.validate_cli_version("0.1.1"),
         Err(PlatformPackError::IncompatibleTokamakVersion { required, actual })
             if required == "0.1.0" && actual == "0.1.1"
-    ));
-}
-
-#[test]
-fn rejects_manifests_without_artifacts() {
-    let mut manifest = valid_manifest();
-    manifest.artifacts.clear();
-
-    assert!(matches!(
-        manifest.validate(),
-        Err(PlatformPackError::MissingArtifacts)
     ));
 }
 
@@ -301,40 +160,6 @@ fn rejects_invalid_plugin_keys() {
 }
 
 #[test]
-fn rejects_empty_artifact_paths() {
-    let mut manifest = valid_manifest();
-    manifest.artifacts[0].path.clear();
-
-    assert!(matches!(
-        manifest.validate(),
-        Err(PlatformPackError::EmptyArtifactPath)
-    ));
-}
-
-#[test]
-fn rejects_absolute_and_parent_artifact_paths() -> TestResult {
-    let absolute_path = std::env::current_dir()?
-        .join("tokamak-runtime")
-        .display()
-        .to_string();
-
-    assert_unsafe_artifact_path(&absolute_path);
-    assert_unsafe_artifact_path("../tokamak-runtime");
-
-    Ok(())
-}
-
-#[test]
-fn rejects_windows_absolute_artifact_paths_on_any_host() {
-    for path in [
-        r"C:\tokamak\tokamak-runtime.exe",
-        r"\\server\share\tokamak-runtime.exe",
-    ] {
-        assert_unsafe_artifact_path(path);
-    }
-}
-
-#[test]
 fn round_trips_manifest_json_without_losing_contract_fields() -> TestResult {
     let temp_dir = tempfile::tempdir()?;
     let manifest_path = temp_dir.path().join("platform-pack.json");
@@ -365,16 +190,14 @@ fn load_manifest_rejects_contract_invalid_json() -> TestResult {
         r#"{
   "tokamakVersion": "0.1.0",
   "target": "ios-arm64",
-  "artifacts": [{"kind": "runtimeLibrary", "path": "../tokamak-runtime"}],
-  "requiredTools": [],
   "variables": {},
-  "pluginKeys": {}
+  "pluginKeys": { "../class": "string" }
 }"#,
     )?;
 
     assert!(matches!(
         load_manifest(&manifest_path),
-        Err(PlatformPackError::UnsafeArtifactPath(path)) if path == "../tokamak-runtime"
+        Err(PlatformPackError::InvalidPluginKey(key)) if key == "../class"
     ));
 
     Ok(())

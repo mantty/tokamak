@@ -1,51 +1,55 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The CLI runs the entrypoint from the pack root.
+pack=$PWD
+apple_tool=$pack/tools/tokamak-apple-signing
+if [[ ! -x "$apple_tool" ]]; then
+  echo "Apple platform pack is missing its Apple helper: $apple_tool" >&2
+  exit 1
+fi
+if [[ $# -eq 1 && $1 == certs ]]; then
+  exec "$apple_tool" inventory
+fi
 if [[ $# -ne 3 || $1 != build ]]; then
-  echo "usage: entrypoint build INPUT OUTPUT" >&2
+  echo "usage: entrypoint build INPUT OUTPUT | entrypoint certs" >&2
   exit 2
 fi
 
 input=$2
 output=$3
 metadata=$input/metadata
-native_shell=$input/native-shell
-framework_root=$input/runtime/frameworks
 app_slug=$(cat "$metadata/app-slug")
 identifier=$(cat "$metadata/identifier")
 platform=$(cat "$metadata/platform")
 target=$(cat "$metadata/target")
 project_dir=$(cat "$metadata/project-dir")
+minimum=$(<"$pack/build/$platform-deployment-target")
 output_parent=$(dirname "$output")
 module_cache=$output_parent/.tokamak/module-cache
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/tokamak-apple.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT
-apple_tool=$PWD/tools/tokamak-apple-signing
-if [[ ! -x "$apple_tool" ]]; then
-  echo "Apple platform pack is missing its Apple helper: $apple_tool" >&2
-  exit 1
-fi
 
 case "$target" in
   macos-arm64)
     sdk=macosx
-    triple=arm64-apple-macos14.0
+    triple=arm64-apple-macos$minimum
     ;;
   macos-x64)
     sdk=macosx
-    triple=x86_64-apple-macos14.0
+    triple=x86_64-apple-macos$minimum
     ;;
   ios-arm64)
     sdk=iphoneos
-    triple=arm64-apple-ios17.0
+    triple=arm64-apple-ios$minimum
     ;;
   ios-simulator-arm64)
     sdk=iphonesimulator
-    triple=arm64-apple-ios17.0-simulator
+    triple=arm64-apple-ios$minimum-simulator
     ;;
   ios-simulator-x64)
     sdk=iphonesimulator
-    triple=x86_64-apple-ios17.0-simulator
+    triple=x86_64-apple-ios$minimum-simulator
     ;;
   *)
     echo "unsupported Apple target: $target" >&2
@@ -58,17 +62,24 @@ if [[ "$platform" == macos ]]; then
   contents=$bundle/Contents
   executable_dir=$contents/MacOS
   app_dir=$contents/Resources/app
+  icon=${TOKAMAK_MACOS_ICON:-}
+  app_files=("${TOKAMAK_MACOS_PLIST:-}" "${TOKAMAK_MACOS_ENTITLEMENTS:-}")
 else
   contents=$bundle
   executable_dir=$bundle
   app_dir=$bundle/app
+  icon=${TOKAMAK_IOS_ICON:-}
+  app_files=("${TOKAMAK_IOS_PLIST:-}" "${TOKAMAK_IOS_ENTITLEMENTS:-}")
 fi
-icons=$input/icons/$platform
+if [[ -n "$icon" && ! ( -d "$icon" && "$icon" == *.[iI][cC][oO][nN] ) ]]; then
+  echo "$platform.icon must be an Icon Composer .icon package: $icon" >&2
+  exit 1
+fi
 icon_info_plist=$output_parent/.tokamak/$(basename "$output").icon-info.plist
 
 write_plist() {
   plist_args=(plist --input "$input" --output "$temporary/Info.plist")
-  if [[ -d "$icons/AppIcon.icon" ]]; then
+  if [[ -n "$icon" ]]; then
     plist_args+=(--icon-info-plist "$icon_info_plist")
   fi
   "$apple_tool" "${plist_args[@]}"
@@ -93,33 +104,30 @@ sign_bundle() {
   "$apple_tool" "${signing_args[@]}"
 }
 
+# The bundle is reused while everything it is built from, apart from the
+# Worker's environment and the signing settings, is unchanged.
 bundle_key_file=$output_parent/.tokamak/$(basename "$output").input-key
-if [[ -f "$metadata/input-key" ]]; then
-  case "$platform" in
-    ios) app_files=("${TOKAMAK_IOS_PLIST:-}" "${TOKAMAK_IOS_ENTITLEMENTS:-}") ;;
-    macos) app_files=("${TOKAMAK_MACOS_PLIST:-}" "${TOKAMAK_MACOS_ENTITLEMENTS:-}") ;;
-  esac
-  bundle_key=$(
-    {
-      cat "$metadata/input-key"
-      shasum -a 256 "$0" "$apple_tool"
-      for app_file in "${app_files[@]}"; do
-        if [[ -n "$app_file" ]]; then
-          shasum -a 256 "$app_file"
-        fi
-      done
-      env | LC_ALL=C sort | sed -n '/^TOKAMAK_/p' |
-        sed '/^TOKAMAK_IOS_TEAM_ID=/d; /^TOKAMAK_IOS_SIGNING_IDENTITY=/d; /^TOKAMAK_IOS_PROVISIONING_PROFILE=/d; /^TOKAMAK_MACOS_TEAM_ID=/d; /^TOKAMAK_IOS_BUILD_NUMBER=/d; /^TOKAMAK_MACOS_BUILD_NUMBER=/d'
-      printf '%s\n' "${DEVELOPER_DIR:-}" "$PATH"
-      xcodebuild -version
-    } | shasum -a 256 | cut -d ' ' -f 1
-  )
-  if [[ -d "$bundle" && -f "$bundle_key_file" && $(cat "$bundle_key_file") == "$bundle_key" && ( ! -d "$icons/AppIcon.icon" || -f "$icon_info_plist" ) ]]; then
-    write_plist
-    cp "$input/app/worker-environment.json" "$app_dir/worker-environment.json"
-    sign_bundle
-    exit 0
+key_files=("$input" "$pack")
+for key_file in "$icon" "${app_files[@]}"; do
+  if [[ -n "$key_file" ]]; then
+    key_files+=("$key_file")
   fi
+done
+bundle_key=$(
+  {
+    find -L "${key_files[@]}" -type f ! -path "$input/app/worker-environment.json" -print0 |
+      LC_ALL=C sort -z | xargs -0 shasum -a 256
+    env | LC_ALL=C sort | sed -n '/^TOKAMAK_/p' |
+      sed '/^TOKAMAK_IOS_TEAM_ID=/d; /^TOKAMAK_IOS_SIGNING_IDENTITY=/d; /^TOKAMAK_IOS_PROVISIONING_PROFILE=/d; /^TOKAMAK_MACOS_TEAM_ID=/d; /^TOKAMAK_IOS_BUILD_NUMBER=/d; /^TOKAMAK_MACOS_BUILD_NUMBER=/d'
+    printf '%s\n' "${DEVELOPER_DIR:-}" "$PATH"
+    xcodebuild -version
+  } | shasum -a 256 | cut -d ' ' -f 1
+)
+if [[ -d "$bundle" && -f "$bundle_key_file" && $(cat "$bundle_key_file") == "$bundle_key" && ( -z "$icon" || -f "$icon_info_plist" ) ]]; then
+  write_plist
+  cp "$input/app/worker-environment.json" "$app_dir/worker-environment.json"
+  sign_bundle
+  exit 0
 fi
 
 rm -f "$bundle_key_file" "$icon_info_plist"
@@ -127,36 +135,36 @@ rm -rf "$bundle"
 mkdir -p "$executable_dir" "$app_dir" "$module_cache"
 cp -R "$input/app/." "$app_dir/"
 
-if [[ -d "$icons/AppIcon.icon" ]]; then
+if [[ -n "$icon" ]]; then
   if [[ "$platform" == macos ]]; then
     icon_output=$contents/Resources
-    icon_minimum=14.0
     icon_targets=(--target-device mac)
   else
     icon_output=$bundle
-    icon_minimum=17.0
     icon_targets=(--target-device iphone --target-device ipad)
   fi
+  # actool names the app icon after its package.
+  cp -R "$icon" "$temporary/AppIcon.icon"
   xcrun --sdk "$sdk" actool \
     --compile "$icon_output" \
     --platform "$sdk" \
-    --minimum-deployment-target "$icon_minimum" \
+    --minimum-deployment-target "$minimum" \
     --app-icon AppIcon \
     "${icon_targets[@]}" \
     --output-partial-info-plist "$icon_info_plist" \
     --output-format human-readable-text \
-    "$icons/AppIcon.icon"
+    "$temporary/AppIcon.icon"
 fi
 
 shopt -s nullglob
 swift_sources=()
-for source in "$native_shell"/*.swift; do
+for source in "$pack/native-shell"/*.swift; do
   [[ -f "$source" ]] || continue
   swift_sources+=("$source")
 done
 
-if [[ ! -f "$native_shell/TokamakShell.swift" ]]; then
-  echo "Apple native shell source is missing: $native_shell/TokamakShell.swift" >&2
+if [[ ! -f "$pack/native-shell/TokamakShell.swift" ]]; then
+  echo "Apple native shell source is missing: $pack/native-shell/TokamakShell.swift" >&2
   exit 1
 fi
 
@@ -196,7 +204,7 @@ swift_args=(
   -Osize
   -whole-module-optimization
   -module-cache-path "$module_cache"
-  -F "$framework_root"
+  -F "$pack/frameworks"
   -framework TokamakRuntime
   -framework CoreFoundation
   -lc++
@@ -220,7 +228,5 @@ xcrun --sdk "$sdk" strip -x "$executable_dir/$app_slug"
 write_plist
 
 sign_bundle
-if [[ -n "${bundle_key:-}" ]]; then
-  mkdir -p "$(dirname "$bundle_key_file")"
-  printf '%s' "$bundle_key" > "$bundle_key_file"
-fi
+mkdir -p "$(dirname "$bundle_key_file")"
+printf '%s' "$bundle_key" > "$bundle_key_file"

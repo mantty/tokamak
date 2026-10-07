@@ -1,6 +1,10 @@
+use std::collections::BTreeMap;
+use std::fs;
+
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
+use tokamak_cli::{MANIFEST_FILE, PlatformPackManifest, Target, write_manifest};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -17,14 +21,35 @@ fn explains_the_cert_inventory_command() -> TestResult {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(unix)]
 #[test]
-fn cert_inventory_requires_a_macos_host() -> TestResult {
+fn lists_signing_assets_with_the_ios_platform_pack() -> TestResult {
+    let packs = tempfile::tempdir()?;
+    let pack = packs.path().join("ios-arm64");
+    fs::create_dir_all(pack.join("build"))?;
+    write_manifest(
+        pack.join(MANIFEST_FILE),
+        &PlatformPackManifest {
+            tokamak_version: env!("CARGO_PKG_VERSION").to_owned(),
+            target: Target::IosArm64,
+            variables: BTreeMap::new(),
+            plugin_keys: BTreeMap::new(),
+        },
+    )?;
+    fs::write(
+        pack.join("build/entrypoint"),
+        "printf '%s from %s\\n' \"$*\" \"$PWD\"\n",
+    )?;
+
     Command::cargo_bin("tok")?
         .arg("certs")
+        .env("TOKAMAK_PLATFORM_PACK_PATH", packs.path())
         .assert()
-        .failure()
-        .stderr(contains("iOS signing discovery requires a macOS host"));
+        .success()
+        .stdout(format!(
+            "certs from {}\n",
+            fs::canonicalize(&pack)?.display()
+        ));
     Ok(())
 }
 

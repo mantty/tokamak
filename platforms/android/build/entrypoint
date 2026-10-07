@@ -6,12 +6,13 @@ if [[ $# -ne 3 || $1 != build ]]; then
   exit 2
 fi
 
+# The CLI runs the entrypoint from the pack root.
+pack=$PWD
 input=$2
 output=$3
 metadata=$input/metadata
 app_name=$(cat "$metadata/app-name")
 host=$(cat "$metadata/host")
-platform=$(cat "$metadata/platform")
 identifier=$(cat "$metadata/identifier")
 version=1.0
 if [[ -f "$metadata/version" ]]; then
@@ -21,13 +22,7 @@ dev_endpoint=
 dev_session_token=
 if [[ -f "$metadata/dev-endpoint" ]]; then
   dev_endpoint=$(cat "$metadata/dev-endpoint")
-fi
-if [[ -f "$metadata/dev-session-token" ]]; then
   dev_session_token=$(cat "$metadata/dev-session-token")
-fi
-if [[ -n "$dev_endpoint" && -z "$dev_session_token" ]] || [[ -z "$dev_endpoint" && -n "$dev_session_token" ]]; then
-  echo "development endpoint and session token must be provided together" >&2
-  exit 1
 fi
 # Development builds are debug builds. Other builds are release builds,
 # which R8 shrinks and a configured keystore signs; without one, the debug
@@ -62,6 +57,11 @@ if [[ -n "${TOKAMAK_ANDROID_MANIFEST:-}" ]]; then
     exit 1
   fi
 fi
+icon=${TOKAMAK_ANDROID_ICON:-}
+if [[ -n "$icon" && ! -d "$icon" ]]; then
+  echo "android.icon must be an Android res directory: $icon" >&2
+  exit 1
+fi
 project=$(dirname "$output")/.tokamak
 app=$project/app
 native=$app/src/main/jniLibs/arm64-v8a
@@ -69,9 +69,8 @@ assets=$app/src/main/assets/app
 kotlin=$app/src/main/kotlin/com/tokamak/runtime
 plugin_api=$project/tokamak-plugin
 plugin_modules=$project/plugins
-icons=$input/icons/$platform
 # The oldest Android API level the app supports.
-min_sdk=31
+min_sdk=$(<"$pack/build/min-sdk")
 
 # The Android NDK's compiler, which links the runtime into the app.
 android_linker() {
@@ -95,7 +94,7 @@ android_linker() {
 # Link the runtime into libtokamak.so, exporting the JNI functions and the
 # entry points of the runtime parts the app links.
 link_runtime() {
-  local runtime=$input/runtime/TokamakRuntime
+  local runtime=$pack/lib/TokamakRuntime
   local exports=$project/tokamak-exports.map
   local compiler libraries
   compiler=$(android_linker)
@@ -146,8 +145,8 @@ rm -rf "$app/src/main/assets" "$app/src/main/jniLibs" "$app/src/main/kotlin" "$a
 mkdir -p "$native" "$assets" "$kotlin" "$app/src/main/res" "$plugin_api/src/main/kotlin"
 cp -R "$input/app/." "$assets/"
 link_runtime
-cp -R "$input/native-shell/app/." "$kotlin/"
-cp -R "$input/native-shell/plugin/." "$plugin_api/src/main/kotlin/"
+cp -R "$pack/native-shell/app/." "$kotlin/"
+cp -R "$pack/native-shell/plugin/." "$plugin_api/src/main/kotlin/"
 cat > "$plugin_api/build.gradle" <<'EOF'
 plugins {
   id 'com.android.library'
@@ -160,8 +159,8 @@ android {
 EOF
 
 has_icon=false
-if [[ -d "$icons" ]]; then
-  cp -R "$icons/." "$app/src/main/res/"
+if [[ -n "$icon" ]]; then
+  cp -R "$icon/." "$app/src/main/res/"
   shopt -s nullglob
   launcher_resources=("$app/src/main/res"/mipmap*/ic_launcher.*)
   if (( ${#launcher_resources[@]} == 0 )); then
@@ -295,7 +294,7 @@ android {
     minSdk $min_sdk
     targetSdk 35
     versionCode 1
-    versionName '$version'
+    versionName providers.gradleProperty('tokamak.version').get()
   }
 
   androidResources {
@@ -380,6 +379,6 @@ manifest=$app/src/main/AndroidManifest.xml
 # R8 keeps every name, so class names in errors and stack traces stay real.
 printf '%s\n' '-dontobfuscate' > "$app/tokamak-rules.pro"
 
-gradle --no-daemon ":app:lint$task" ":app:assemble$task" --project-dir "$project"
+gradle --no-daemon "-Ptokamak.version=$version" ":app:lint$task" ":app:assemble$task" --project-dir "$project"
 mkdir -p "$(dirname "$output")"
 cp "$app/build/outputs/apk/$variant/app-$variant.apk" "$output"

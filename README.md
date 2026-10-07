@@ -528,11 +528,12 @@ List locally installed iOS signing assets on macOS with:
 tok certs
 ```
 
-This read-only command lists identity names and SHA-1 selectors, plus profile
-names, paths, team IDs, app identifiers, expiration dates, and matching installed
-identities. It includes development and distribution profiles; matching means
-the identity's certificate is included in the profile, not that the pair is valid
-for every app or device. It does not create or import signing assets.
+This read-only command, which the `ios-arm64` platform pack provides, lists
+identity names and SHA-1 selectors, plus profile names, paths, team IDs, app
+identifiers, expiration dates, and matching installed identities. It includes
+development and distribution profiles; matching means the identity's
+certificate is included in the profile, not that the pair is valid for every
+app or device. It does not create or import signing assets.
 
 Use the identity's SHA-1 and the profile's path:
 
@@ -701,7 +702,16 @@ Each pack declares the settings it accepts in
 `kind` (`string`, or `path` for a path tokamak makes absolute) and a one-line
 `description` for `--help`. The build writes the target platform's declarations
 into `platform-pack.json`, and `tok` passes each setting to the entrypoint as
-`TOKAMAK_<PLATFORM>_<KEY>`.
+`TOKAMAK_<PLATFORM>_<KEY>`, including the app's icon as the absolute path
+`TOKAMAK_<PLATFORM>_ICON`, whose format the pack checks. `tok` runs the
+entrypoint from the pack root, where it reads the pack's runtime and shell.
+
+Each pack declares its minimum OS versions once:
+`platforms/apple/build/ios-deployment-target` and `macos-deployment-target`, and
+`platforms/android/build/min-sdk`. A pack's tests live with it:
+`cargo test -p tokamak-apple-signing` runs the Apple entrypoint on macOS, and
+`bash platforms/android/tests/pack.sh` runs the Android entrypoint with fake
+Gradle and NDK tools.
 
 ### SQLite
 
@@ -798,6 +808,7 @@ cargo test -p tokamak --features native
 node --test tokamak/tests/quickjs_runtime/runtime.test.mjs
 cargo test -p tokamak-cli --lib --bin tok --test cli --test platform_pack
 cargo test -p xtask
+bash platforms/android/tests/pack.sh
 pnpm --dir plugins lint:ts
 pnpm --dir plugins test:ts
 ```

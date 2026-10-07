@@ -4,9 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use tokamak_cli::{
-    Artifact, PackVariable, PlatformPackManifest, PluginKeyKind, Target, write_manifest,
-};
+use tokamak_cli::{PackVariable, PlatformPackManifest, PluginKeyKind, Target, write_manifest};
 
 use crate::layout::WorkspaceLayout;
 use crate::support::{copy_dir_contents, reset_dir};
@@ -27,18 +25,11 @@ fn build_source_platform_pack_at(workspace: &WorkspaceLayout, target: Target) ->
     copy_dir_contents(&recipe_output, &pack_dir).context("copy platform-pack artifacts")?;
     fs::remove_dir_all(&recipe_output)?;
 
-    let artifacts = target.artifacts();
-    validate_artifacts(&pack_dir, &artifacts)?;
+    validate_entrypoint(&pack_dir, target)?;
 
     let manifest = PlatformPackManifest {
         tokamak_version: env!("CARGO_PKG_VERSION").to_owned(),
         target,
-        artifacts,
-        required_tools: target
-            .required_tools()
-            .iter()
-            .map(|tool| (*tool).to_owned())
-            .collect(),
         variables: target_variables(workspace, target)?,
         plugin_keys: plugin_keys(workspace, target)?,
     };
@@ -67,7 +58,7 @@ fn run_platform_recipe(workspace: &WorkspaceLayout, target: Target, output: &Pat
     let target_name = target.to_string();
     let status = command
         .arg(&recipe)
-        .args(["build", &target_name, target.rust_target()])
+        .args(["build", &target_name])
         .arg(output)
         .current_dir(workspace.root())
         .status()
@@ -114,17 +105,16 @@ fn plugin_keys(
         .with_context(|| format!("parse platform-pack plugin keys {}", path.display()))
 }
 
-fn validate_artifacts(root: &Path, artifacts: &[Artifact]) -> Result<()> {
-    for artifact in artifacts {
-        let path = root.join(&artifact.path);
-        if !path.exists() {
-            bail!(
-                "platform-pack artifact was not produced: {}",
-                path.display()
-            );
-        }
+fn validate_entrypoint(pack: &Path, target: Target) -> Result<()> {
+    let entrypoint = pack.join(target.build_entrypoint_path());
+    if entrypoint.is_file() {
+        Ok(())
+    } else {
+        bail!(
+            "platform-pack recipe did not produce its entrypoint: {}",
+            entrypoint.display()
+        )
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -133,8 +123,8 @@ mod tests {
 
     use anyhow::Context;
 
-    use super::{plugin_keys, target_variables, validate_artifacts};
-    use tokamak_cli::{Artifact, ArtifactKind, PluginKeyKind, Target, VariableKind};
+    use super::{plugin_keys, target_variables, validate_entrypoint};
+    use tokamak_cli::{PluginKeyKind, Target, VariableKind};
 
     use crate::layout::WorkspaceLayout;
 
@@ -169,37 +159,25 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_pack_artifacts() -> anyhow::Result<()> {
+    fn rejects_a_pack_without_its_entrypoint() -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
-        let result = validate_artifacts(
-            directory.path(),
-            &[Artifact {
-                kind: ArtifactKind::RuntimeLibrary,
-                path: "runtime".to_owned(),
-            }],
-        );
+        let result = validate_entrypoint(directory.path(), Target::MacosArm64);
 
         assert!(result.is_err_and(|error| {
             error
                 .to_string()
-                .contains("platform-pack artifact was not produced")
+                .contains("platform-pack recipe did not produce its entrypoint")
         }));
         Ok(())
     }
 
     #[test]
-    fn accepts_files_and_directories_from_the_recipe() -> anyhow::Result<()> {
+    fn accepts_the_entrypoint_for_the_target() -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
-        fs::create_dir(directory.path().join("runtime"))?;
-        fs::write(directory.path().join("runtime/file"), "runtime")?;
+        fs::create_dir(directory.path().join("build"))?;
+        fs::write(directory.path().join("build/entrypoint.ps1"), "")?;
 
-        validate_artifacts(
-            directory.path(),
-            &[Artifact {
-                kind: ArtifactKind::RuntimeLibrary,
-                path: "runtime".to_owned(),
-            }],
-        )?;
+        validate_entrypoint(directory.path(), Target::WindowsX64)?;
         Ok(())
     }
 }
