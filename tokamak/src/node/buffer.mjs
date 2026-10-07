@@ -47,7 +47,8 @@ function stringBytes(value, encoding) {
 
 // Node decodes hex pairs up to the first that is not one.
 function decodeHex(value) {
-  return Uint8Array.fromHex(value.match(/^(?:[0-9a-f]{2})*/i)[0]);
+  const digits = value.match(/^[0-9a-f]*/i)[0];
+  return Uint8Array.fromHex(digits.slice(0, digits.length - (digits.length % 2)));
 }
 
 // Node decodes either base64 alphabet up to the first "=", skipping other characters.
@@ -61,8 +62,8 @@ function decode(bytes, encoding) {
   if (name === "hex") return bytes.toHex();
   if (name === "base64") return bytes.toBase64();
   if (name === "base64url") return bytes.toBase64({ alphabet: "base64url", omitPadding: true });
-  if (name === "ascii") return String.fromCharCode(...bytes.map(value => value & 0x7f));
-  if (name === "latin1" || name === "binary") return String.fromCharCode(...bytes);
+  if (name === "ascii") return Array.from(bytes, byte => String.fromCharCode(byte & 0x7f)).join("");
+  if (name === "latin1" || name === "binary") return Array.from(bytes, byte => String.fromCharCode(byte)).join("");
   if (name === "ucs2" || name === "ucs-2" || name === "utf16le" || name === "utf-16le") return utf16Units(bytes);
   return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
 }

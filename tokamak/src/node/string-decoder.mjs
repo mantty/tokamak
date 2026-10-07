@@ -1,5 +1,4 @@
 import { bufferBytes } from "../globals/conversions.mjs";
-import { TextEncoder } from "../streams/text.mjs";
 import { Buffer } from "./buffer.mjs";
 
 const states = new WeakMap();
@@ -17,7 +16,6 @@ function normalizeEncoding(value) {
 }
 
 function bytes(value) {
-  if (typeof value === "string") return new TextEncoder().encode(value);
   if (ArrayBuffer.isView(value)) return bufferBytes(value);
   throw new TypeError("The \"buffer\" argument must be of type string or an instance of Buffer, TypedArray, or DataView");
 }
@@ -68,6 +66,7 @@ export class StringDecoder {
   get lastChar() { return states.get(this).lastChar; }
 
   write(value) {
+    if (typeof value === "string") return value;
     const state = states.get(this);
     const input = new Uint8Array([...state.pending, ...bytes(value)]);
     let complete = input.length;
