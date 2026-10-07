@@ -225,18 +225,7 @@ export async function run(handlerEnv, ctx, constructors) {
       static: value && Object.getOwnPropertyNames(value).sort(),
     }];
   }));
-  const builtinNames = [
-    "assert", "assert/strict", "async_hooks", "buffer", "console", "constants", "crypto",
-    "diagnostics_channel", "dns", "dns/promises", "events", "fs", "fs/promises", "http",
-    "https", "module", "net", "os", "path", "path/posix", "path/win32", "perf_hooks",
-    "process", "punycode", "querystring", "stream", "stream/consumers", "stream/promises",
-    "stream/web", "string_decoder", "sys", "timers", "timers/promises", "tls", "url", "util",
-    "util/types", "zlib", "child_process", "cluster", "dgram", "domain", "http2", "inspector",
-    "inspector/promises", "readline", "readline/promises", "repl", "sqlite", "test", "trace_events", "v8",
-    "vm", "wasi", "worker_threads", "_http_agent", "_http_client", "_http_common", "_http_incoming",
-    "_http_outgoing", "_http_server", "_stream_duplex", "_stream_passthrough", "_stream_readable",
-    "_stream_transform", "_stream_wrap", "_stream_writable", "_tls_common", "_tls_wrap", "tty",
-  ];
+  const builtinNames = [...process.getBuiltinModule("node:module").builtinModules, "sqlite", "test"];
   const builtinRequirements = {
     "assert": ["ok", "strictEqual", "deepStrictEqual"],
     "assert/strict": ["ok", "strictEqual", "deepStrictEqual"],
@@ -297,11 +286,8 @@ export async function run(handlerEnv, ctx, constructors) {
       required: value !== undefined && required.every(key => key in value),
     }];
   }));
-  output.builtinSurfaces = Object.fromEntries([
-    "_http_agent", "_http_client", "_http_common", "_http_incoming", "_http_outgoing", "_http_server",
-    "_stream_duplex", "_stream_passthrough", "_stream_readable", "_stream_transform", "_stream_wrap",
-    "_stream_writable", "_tls_common", "_tls_wrap", "tty",
-  ].map(name => [name, Object.keys(process.getBuiltinModule("node:" + name)).sort()]));
+  output.builtinSurfaces = Object.fromEntries(builtinNames.filter(name => name.startsWith("_") || name === "tty")
+    .map(name => [name, Object.keys(process.getBuiltinModule("node:" + name)).sort()]));
   output.nodeBuiltinSurfaces = Object.fromEntries(builtinNames.map(name => [
     name,
     Object.keys(process.getBuiltinModule("node:" + name)).sort(),
