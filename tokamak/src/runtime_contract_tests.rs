@@ -1,4 +1,4 @@
-use reqwest::header::{HeaderMap, HeaderValue};
+use hyper::header::{HeaderMap, HeaderValue};
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener};

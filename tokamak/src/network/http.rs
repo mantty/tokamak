@@ -8,25 +8,39 @@ use futures_util::{
     FutureExt, TryStreamExt,
     future::{LocalBoxFuture, Shared},
 };
-use reqwest::{
-    Client, Method, Url,
+use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
+use hyper::{
+    Method, Response, StatusCode, Uri,
+    body::{Body as _, Bytes, Frame, Incoming},
     header::{HeaderMap, HeaderName, HeaderValue},
 };
+use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
+use hyper_util::client::legacy::{self, connect::HttpConnector};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use rquickjs::{
     Ctx, Exception, Function, Object, Promise, TypedArray, Value,
     function::{Async, This},
 };
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_util::{io::StreamReader, sync::CancellationToken};
+use tower::{BoxError, timeout::Timeout, util::BoxCloneSyncService};
+use url::Url;
 
 use super::decoder::DecodedBody;
 use crate::globals::ContentDecoder;
 
+type Body = BoxBody<Bytes, io::Error>;
+pub(crate) type Client = legacy::Client<Connector, Body>;
+type Connector = BoxCloneSyncService<Uri, MaybeHttpsStream<TokioIo<TcpStream>>, BoxError>;
 type Reader = Pin<Box<dyn AsyncRead>>;
 type ResponseBody = Rc<Mutex<Option<Reader>>>;
 type UploadCompletion = Shared<LocalBoxFuture<'static, Result<(), String>>>;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const TCP_KEEPALIVE: Duration = Duration::from_secs(15);
 
 pub(crate) fn status_text(status: u16) -> &'static str {
     if status == 203 {
@@ -35,7 +49,7 @@ pub(crate) fn status_text(status: u16) -> &'static str {
     // Workerd's default phrases predate 425 Too Early; unknown statuses use
     // their class name rather than an empty string.
     if status != 425
-        && let Ok(code) = reqwest::StatusCode::from_u16(status)
+        && let Ok(code) = StatusCode::from_u16(status)
         && let Some(reason) = code.canonical_reason()
     {
         return reason;
@@ -51,7 +65,7 @@ pub(crate) fn status_text(status: u16) -> &'static str {
 }
 
 /// The reason phrase `response` arrived with.
-pub(crate) fn reason_phrase(response: &reqwest::Response) -> Cow<'_, str> {
+pub(crate) fn reason_phrase(response: &Response<Incoming>) -> Cow<'_, str> {
     response
         .extensions()
         .get::<hyper::ext::ReasonPhrase>()
@@ -63,13 +77,25 @@ pub(crate) fn reason_phrase(response: &reqwest::Response) -> Cow<'_, str> {
 
 pub(crate) fn client() -> io::Result<Client> {
     let tls = crate::tls::client_config().map_err(io::Error::other)?;
-    Client::builder()
-        .use_preconfigured_tls((*tls).clone())
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(15))
-        .no_proxy()
-        .build()
-        .map_err(io::Error::other)
+    let mut http = HttpConnector::new();
+    http.enforce_http(false);
+    http.set_nodelay(true);
+    http.set_connect_timeout(Some(CONNECT_TIMEOUT));
+    http.set_keepalive(Some(TCP_KEEPALIVE));
+    http.set_keepalive_interval(Some(TCP_KEEPALIVE));
+    http.set_keepalive_retries(Some(3));
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    http.set_tcp_user_timeout(Some(Duration::from_secs(30)));
+    // The timeout also covers name resolution and the TLS handshake.
+    let connector = Timeout::new(HttpsConnector::from((http, tls)), CONNECT_TIMEOUT);
+    Ok(legacy::Client::builder(TokioExecutor::new())
+        .pool_timer(TokioTimer::new())
+        .build(BoxCloneSyncService::new(connector)))
+}
+
+/// A request body of `bytes`.
+pub(crate) fn full(bytes: Vec<u8>) -> Body {
+    Full::from(bytes).map_err(|never| match never {}).boxed()
 }
 
 struct Request {
@@ -81,23 +107,24 @@ struct Request {
 }
 
 struct FetchResponse {
-    response: reqwest::Response,
+    response: Response<Incoming>,
+    url: Url,
     redirected: bool,
     bodyless: bool,
 }
 
 enum RequestBody {
     Bytes(Vec<u8>),
-    Stream(Option<reqwest::Body>),
+    Stream(Option<Body>),
 }
 
 #[derive(Serialize)]
 struct ResponseHeaders<'a>(#[serde(serialize_with = "super::headers::serialize")] &'a HeaderMap);
 
 impl RequestBody {
-    fn take(&mut self) -> io::Result<reqwest::Body> {
+    fn take(&mut self) -> io::Result<Body> {
         match self {
-            Self::Bytes(bytes) => Ok(bytes.clone().into()),
+            Self::Bytes(bytes) => Ok(full(bytes.clone())),
             Self::Stream(body) => body.take().ok_or_else(|| {
                 io::Error::other("Cannot replay a streaming request body after a redirect")
             }),
@@ -231,10 +258,12 @@ fn request_body<'js>(
     let completion = async move { completion.await.map_err(|error| error.to_string())? }
         .boxed_local()
         .shared();
-    Ok((
-        RequestBody::Stream(Some(reqwest::Body::wrap_stream(receiver.into_stream()))),
-        completion,
-    ))
+    let body = StreamBody::new(
+        receiver
+            .into_stream()
+            .map_ok(|bytes| Frame::data(Bytes::from(bytes))),
+    );
+    Ok((RequestBody::Stream(Some(body.boxed())), completion))
 }
 
 async fn pump_upload(
@@ -263,14 +292,14 @@ async fn send(
     client: &Client,
     mut request: Request,
     upload: &UploadCompletion,
-) -> Result<FetchResponse, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<FetchResponse, BoxError> {
     for count in 0..=20 {
-        let mut response = client
-            .request(request.method.clone(), request.url.clone())
-            .headers(request.headers.clone())
-            .body(request.body.take()?)
-            .send()
-            .await?;
+        let mut outgoing = hyper::Request::builder()
+            .method(request.method.clone())
+            .uri(request.url.as_str())
+            .body(request.body.take()?)?;
+        *outgoing.headers_mut() = request.headers.clone();
+        let mut response = client.request(outgoing).await?;
         let status = response.status().as_u16();
         let location = response.headers().get("location");
         let bodyless = request.method == Method::HEAD || matches!(status, 204 | 205 | 304);
@@ -280,6 +309,7 @@ async fn send(
             _ => {
                 return Ok(FetchResponse {
                     response,
+                    url: request.url,
                     redirected: count > 0,
                     bodyless,
                 });
@@ -289,7 +319,7 @@ async fn send(
             return Err("Redirect limit exceeded".into());
         }
         request.url = request.url.join(location.to_str()?)?;
-        while response.chunk().await?.is_some() {}
+        while response.body_mut().frame().await.transpose()?.is_some() {}
         upload.clone().await?;
         if (matches!(status, 301 | 302) && request.method == Method::POST)
             || (status == 303 && request.method != Method::GET && request.method != Method::HEAD)
@@ -320,8 +350,8 @@ fn response_object<'js>(
     let result = Object::new(ctx.clone())?;
     result.set("redirected", response.redirected)?;
     result.set("bodyless", response.bodyless)?;
+    result.set("url", response.url.as_str())?;
     let response = response.response;
-    result.set("url", response.url().as_str())?;
     result.set("status", response.status().as_u16())?;
     result.set("statusText", reason_phrase(&response).as_ref())?;
     result.set(
@@ -330,8 +360,13 @@ fn response_object<'js>(
             .map_err(|error| failure(&ctx, error))?,
     )?;
     let encoding = response.headers().get("content-encoding").cloned();
-    let length = response.content_length();
-    let body = StreamReader::new(response.bytes_stream().map_err(io::Error::other));
+    let length = response.body().size_hint().exact();
+    let body = StreamReader::new(
+        response
+            .into_body()
+            .into_data_stream()
+            .map_err(io::Error::other),
+    );
     let (body, length) = decode_body(
         Box::pin(body),
         encoding.as_ref().map(HeaderValue::as_bytes),

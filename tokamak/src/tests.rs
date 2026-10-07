@@ -13,7 +13,7 @@ use crate::packaging::{PackageLayout, WorkerManifest, write_worker};
 use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{HttpBody, HttpRequest, queue_websocket_message};
 use flume::{Receiver, Sender};
-use reqwest::header::HeaderMap;
+use hyper::header::HeaderMap;
 use rquickjs::{ArrayBuffer, Context, Function, Module, Object, Runtime as JsRuntime, TypedArray};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};

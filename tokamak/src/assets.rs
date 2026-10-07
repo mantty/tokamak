@@ -3,8 +3,8 @@
 use std::io;
 use std::path::PathBuf;
 
-use reqwest::StatusCode;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use hyper::StatusCode;
+use hyper::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 
 use crate::packaging::{self, AssetManifest, HtmlHandling, NotFoundHandling, PackageLayout};
 use crate::transport::{HttpRequest, HttpResponse};
@@ -315,7 +315,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
 
-    use reqwest::StatusCode;
+    use hyper::StatusCode;
 
     use super::{AssetResponse, Assets};
     use crate::packaging::{

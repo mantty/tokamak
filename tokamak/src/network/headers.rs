@@ -1,4 +1,4 @@
-use reqwest::header::HeaderMap;
+use hyper::header::HeaderMap;
 use serde::{Serializer, ser::SerializeSeq};
 
 /// Workerd exposes HTTP header bytes as UTF-8, including replacement characters

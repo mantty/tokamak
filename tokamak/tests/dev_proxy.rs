@@ -325,14 +325,22 @@ fn serve_host(listener: &TcpListener) -> TestResult {
     http.set_read_timeout(Some(Duration::from_secs(2)))?;
     let headers = read_header_block(&mut http)?;
     let text = String::from_utf8(headers)?;
-    assert!(text.starts_with("POST /api HTTP/1.1"));
-    assert_eq!(header_value(&text, "host"), Some(HOST));
+    let (request_line, headers) = text.split_once("\r\n").ok_or("missing request line")?;
+    assert_eq!(request_line, "POST /api HTTP/1.1");
+    let mut headers: Vec<_> = headers.lines().filter(|line| !line.is_empty()).collect();
+    headers.sort_unstable();
     assert_eq!(
-        header_value(&text, "x-tokamak-session"),
-        Some("test-session")
+        headers,
+        [
+            "content-length: 3",
+            "host: dev.tokamak.local",
+            "x-forwarded-host: dev.tokamak.local",
+            "x-forwarded-proto: https",
+            "x-repeated: café",
+            "x-repeated: 東京",
+            "x-tokamak-session: test-session",
+        ]
     );
-    assert!(text.contains("x-repeated: café\r\n"));
-    assert!(text.contains("x-repeated: 東京\r\n"));
     let mut body = [0; 3];
     http.read_exact(&mut body)?;
     assert_eq!(body, [0, 0xff, 1]);

@@ -17,9 +17,8 @@ export default {
       utf8: headerResponse.headers.get("x-utf8"),
       repeat: headerResponse.headers.get("x-repeat"),
       cookies: headerResponse.headers.getSetCookie(),
-      sentLatin: headerRequest["x-latin"],
-      sentUnicode: headerRequest["x-unicode"],
-      sentAcceptEncoding: headerRequest["accept-encoding"] ?? null,
+      // tokamak deliberately sends no cf-worker header.
+      sent: Object.entries(headerRequest).filter(([name]) => name !== "cf-worker").sort(),
     };
     results.nodeHeaders = await new Promise((resolve, reject) => {
       get(`${base}/headers`, response => {
