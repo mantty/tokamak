@@ -1,17 +1,17 @@
 import { markHostObject } from "../globals/objects.mjs";
-import { httpStatusText } from "tokamak:host";
+import { httpFetch, httpStatusText } from "tokamak:host";
+import { randomUUID } from "../globals/crypto.mjs";
+import { hostObjectCopies, uncloneable } from "../globals/structured-clone.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 import { ReadableStream, isDisturbed, setStreamLength } from "../streams/web.mjs";
-import { ErrorEvent, Event, EventTarget, MessageEvent } from "../events/events.mjs";
-import { blobBrand, URL, URLSearchParams } from "./url.mjs";
+import { ErrorEvent, Event, EventTarget, MessageEvent } from "../events/web.mjs";
+import { AbortController, AbortSignal } from "../events/abort.mjs";
+import { URL, URLSearchParams } from "./url.mjs";
+import { nativeWebSocket } from "./websocket.mjs";
 
 function string(value) {
   if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
   return String(value);
-}
-
-function hidden(object, name, value) {
-  Object.defineProperty(object, name, { configurable: true, enumerable: false, writable: true, value });
 }
 
 function usvString(value) {
@@ -51,9 +51,9 @@ function bytes(value) {
   if (value instanceof Uint8Array) return value.slice();
   const copy = bufferSourceBytes(value);
   if (copy) return copy;
-  if (value instanceof Blob) return value.__bytes.slice();
+  if (value instanceof Blob) return blobBytes(value).slice();
   if (value instanceof URLSearchParams) return new TextEncoder().encode(value.toString());
-  if (value instanceof FormData) return formDataBody(value).body;
+  if (value instanceof FormData) return formDataBody(value).bytes;
   return new TextEncoder().encode(usvString(value));
 }
 
@@ -87,11 +87,34 @@ function consumeStream(stream) {
   })();
 }
 
+// Reads `stream` for the host: `read()` gives each chunk as bytes, then null.
+function hostStreamReader(stream) {
+  const reader = stream.getReader();
+  return {
+    async read() {
+      const { done, value } = await reader.read();
+      if (done) return null;
+      if (typeof value === "string") return new TextEncoder().encode(value);
+      if (value instanceof ArrayBuffer) return new Uint8Array(value);
+      if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      throw new TypeError("response stream chunks must be byte-oriented");
+    },
+    cancel: () => reader.cancel(),
+  };
+}
+
 function bodyInitType(value) {
   if (typeof value === "string") return "text/plain;charset=UTF-8";
   if (value instanceof URLSearchParams) return "application/x-www-form-urlencoded;charset=UTF-8";
   if (value instanceof Blob && value.type !== "") return value.type;
   return null;
+}
+
+// A body init's content, as a stream or bytes, and the content type it implies.
+function bodyInit(value) {
+  if (value instanceof ReadableStream) return { bytes: null, stream: value, contentType: null };
+  if (value instanceof FormData) return formDataBody(value);
+  return { bytes: bytes(value), stream: null, contentType: bodyInitType(value) };
 }
 
 function validateHeaderName(name) {
@@ -107,11 +130,12 @@ function normalizeHeaderValue(value) {
 }
 
 export class Headers {
+  #values = new Map();
+
   constructor(init) {
     markHostObject(this, "Headers");
-    hidden(this, "__values", new Map());
-    if (init instanceof Headers) {
-      for (const [name, values] of init.__values) this.__values.set(name, values.slice());
+    if (Object(init) === init && #values in init) {
+      for (const [name, values] of init.#values) this.#values.set(name, values.slice());
     } else if (init != null && typeof init[Symbol.iterator] === "function") {
       for (const entry of init) {
         if (entry == null || typeof entry[Symbol.iterator] !== "function") throw new TypeError("Invalid header pair");
@@ -127,70 +151,85 @@ export class Headers {
   append(name, value) {
     const key = validateHeaderName(name);
     const next = normalizeHeaderValue(value);
-    const values = this.__values.get(key) ?? [];
+    const values = this.#values.get(key) ?? [];
     if (key === "set-cookie" || values.length === 0) values.push(next);
     else values[0] += ", " + next;
-    this.__values.set(key, values);
+    this.#values.set(key, values);
   }
-  set(name, value) { this.__values.set(validateHeaderName(name), [normalizeHeaderValue(value)]); }
-  get(name) { return this.__values.get(validateHeaderName(name))?.join(", ") ?? null; }
-  getAll(name) { return this.__values.get(validateHeaderName(name))?.slice() ?? []; }
-  has(name) { return this.__values.has(validateHeaderName(name)); }
-  delete(name) { this.__values.delete(validateHeaderName(name)); }
-  getSetCookie() { return this.__values.get("set-cookie")?.slice() ?? []; }
-  entries() { return headerEntries(this).values(); }
-  keys() { return headerEntries(this).map(entry => entry[0]).values(); }
-  values() { return headerEntries(this).map(entry => entry[1]).values(); }
+  set(name, value) { this.#values.set(validateHeaderName(name), [normalizeHeaderValue(value)]); }
+  get(name) { return this.#values.get(validateHeaderName(name))?.join(", ") ?? null; }
+  getAll(name) { return this.#values.get(validateHeaderName(name))?.slice() ?? []; }
+  has(name) { return this.#values.has(validateHeaderName(name)); }
+  delete(name) { this.#values.delete(validateHeaderName(name)); }
+  getSetCookie() { return this.#values.get("set-cookie")?.slice() ?? []; }
+  entries() { return headerEntries(this.#values).values(); }
+  keys() { return headerEntries(this.#values).map(entry => entry[0]).values(); }
+  values() { return headerEntries(this.#values).map(entry => entry[1]).values(); }
   forEach(callback, thisArg) { for (const [name, value] of this) callback.call(thisArg, value, name, this); }
   [Symbol.iterator]() { return this.entries(); }
   get [Symbol.toStringTag]() { return "Headers"; }
+
+  static {
+    hostObjectCopies.set("Headers", headers => new Headers(headers));
+  }
 }
 
-function headerEntries(headers) {
+function headerEntries(values) {
   const entries = [];
-  for (const [name, values] of [...headers.__values].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) {
-    if (name === "set-cookie") for (const value of values) entries.push([name, value]);
-    else entries.push([name, values.join(", ")]);
+  for (const [name, list] of [...values].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) {
+    if (name === "set-cookie") for (const value of list) entries.push([name, value]);
+    else entries.push([name, list.join(", ")]);
   }
   return entries;
 }
 
+// The bytes a Blob holds.
+let blobBytes;
+
 export class Blob {
+  #bytes;
+  #type;
+
   constructor(parts = [], options = {}) {
     markHostObject(this, "Blob");
     if (parts == null || typeof parts[Symbol.iterator] !== "function") throw new TypeError("Blob parts must be iterable");
     const chunks = [...parts].map(blobPartBytes);
-    hidden(this, "__bytes", new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0)));
-    writeChunks(this.__bytes, chunks);
-    hidden(this, blobBrand, true);
-    hidden(this, "__type", mimeType(options?.type));
-    hidden(this, "__size", this.__bytes.byteLength);
+    this.#bytes = writeChunks(new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0)), chunks);
+    this.#type = mimeType(options?.type);
   }
-  get size() { return this.__size; }
-  get type() { return this.__type; }
-  async text() { return new TextDecoder().decode(this.__bytes); }
-  async arrayBuffer() { return this.__bytes.slice().buffer; }
-  async bytes() { return this.__bytes.slice(); }
-  stream() { return bodyStream(this.__bytes); }
+  get size() { return this.#bytes.byteLength; }
+  get type() { return this.#type; }
+  async text() { return new TextDecoder().decode(this.#bytes); }
+  async arrayBuffer() { return this.#bytes.slice().buffer; }
+  async bytes() { return this.#bytes.slice(); }
+  stream() { return bodyStream(this.#bytes); }
   slice(start = 0, end = this.size, contentType = "") {
     const first = relativeIndex(start, this.size);
     const last = relativeIndex(end, this.size);
-    return new Blob([first < last ? this.__bytes.subarray(first, last) : new Uint8Array()], { type: contentType });
+    return new Blob([first < last ? this.#bytes.subarray(first, last) : new Uint8Array()], { type: contentType });
   }
   get [Symbol.toStringTag]() { return "Blob"; }
+
+  static {
+    blobBytes = blob => blob.#bytes;
+    hostObjectCopies.set("Blob", blob => new Blob([blob.#bytes], { type: blob.#type }));
+  }
 }
 
 export class File extends Blob {
+  #name;
+  #lastModified;
+
   constructor(parts, name, options = {}) {
     if (arguments.length < 2) throw new TypeError("File name is required");
     super(parts, options);
     markHostObject(this, "File");
-    hidden(this, "__name", usvString(name));
+    this.#name = usvString(name);
     const modified = Number(options?.lastModified === undefined ? Date.now() : options.lastModified);
-    hidden(this, "__lastModified", Number.isNaN(modified) ? 0 : modified);
+    this.#lastModified = Number.isNaN(modified) ? 0 : modified;
   }
-  get name() { return this.__name; }
-  get lastModified() { return this.__lastModified; }
+  get name() { return this.#name; }
+  get lastModified() { return this.#lastModified; }
   get [Symbol.toStringTag]() { return "File"; }
 }
 
@@ -198,63 +237,103 @@ function formDataValue(value, filename) {
   if (value instanceof File && filename === undefined) return value;
   if (value instanceof Blob) {
     const name = filename === undefined ? (value instanceof File ? value.name : "blob") : usvString(filename);
-    return new File([value.__bytes], name, { type: value.type });
+    return new File([value], name, { type: value.type });
   }
   return usvString(value);
 }
 
 export class FormData {
-  constructor() { markHostObject(this); hidden(this, "__entries", []); }
-  append(name, value, filename) { this.__entries.push([usvString(name), formDataValue(value, filename)]); }
+  #entries = [];
+
+  constructor() { markHostObject(this); }
+  append(name, value, filename) { this.#entries.push([usvString(name), formDataValue(value, filename)]); }
   set(name, value, filename) {
     const key = usvString(name);
     const item = formDataValue(value, filename);
-    const index = this.__entries.findIndex(([entryName]) => entryName === key);
-    if (index < 0) this.__entries.push([key, item]);
+    const index = this.#entries.findIndex(([entryName]) => entryName === key);
+    if (index < 0) this.#entries.push([key, item]);
     else {
-      this.__entries[index] = [key, item];
-      this.__entries = this.__entries.filter(([entryName], entryIndex) => entryName !== key || entryIndex === index);
+      this.#entries[index] = [key, item];
+      this.#entries = this.#entries.filter(([entryName], entryIndex) => entryName !== key || entryIndex === index);
     }
   }
-  get(name) { return this.__entries.find(([key]) => key === usvString(name))?.[1] ?? null; }
-  getAll(name) { return this.__entries.filter(([key]) => key === usvString(name)).map(([, value]) => value); }
-  has(name) { return this.__entries.some(([key]) => key === usvString(name)); }
-  delete(name) { this.__entries = this.__entries.filter(([key]) => key !== usvString(name)); }
-  entries() { return this.__entries.map(entry => entry.slice()).values(); }
-  keys() { return this.__entries.map(([key]) => key).values(); }
-  values() { return this.__entries.map(([, value]) => value).values(); }
+  get(name) { return this.#entries.find(([key]) => key === usvString(name))?.[1] ?? null; }
+  getAll(name) { return this.#entries.filter(([key]) => key === usvString(name)).map(([, value]) => value); }
+  has(name) { return this.#entries.some(([key]) => key === usvString(name)); }
+  delete(name) { this.#entries = this.#entries.filter(([key]) => key !== usvString(name)); }
+  entries() { return this.#entries.map(entry => entry.slice()).values(); }
+  keys() { return this.#entries.map(([key]) => key).values(); }
+  values() { return this.#entries.map(([, value]) => value).values(); }
   forEach(callback, thisArg) { for (const [key, value] of this) callback.call(thisArg, value, key, this); }
   [Symbol.iterator]() { return this.entries(); }
   get [Symbol.toStringTag]() { return "FormData"; }
 }
 
+// The content to send, `{ bytes, stream }`, after which the body is used.
+let takeBody;
+// The content for a copy of a body, teeing its stream so both read it.
+let cloneBody;
+// The stream a body exposes, or null.
+let bodyOf;
+
 export class Body {
-  get body() { return this.__bodyStream; }
-  get bodyUsed() { return Boolean(this.__bodyConsumed || this.__bodyDisturbed || isDisturbed(this.__bodyStream)); }
-  async arrayBuffer() { return (await consumeBody(this)).buffer; }
-  async bytes() { return consumeBody(this); }
+  #bytes;
+  #stream;
+  #body;
+  #used = false;
+  #disturbed = false;
+
+  constructor(bytes = null, stream = null) {
+    if (new.target === Body) throw new TypeError("Illegal constructor");
+    this.#bytes = bytes;
+    this.#stream = stream;
+    this.#body = stream ?? (bytes === null ? null : bodyStream(bytes));
+  }
+
+  get body() { return this.#body; }
+  get bodyUsed() { return this.#used || this.#disturbed || isDisturbed(this.#body); }
+  async arrayBuffer() { return (await this.#consume()).buffer; }
+  async bytes() { return this.#consume(); }
   async blob() {
-    const data = await consumeBody(this);
+    const data = await this.#consume();
     return new Blob([data], { type: this.headers.get("content-type") ?? "" });
   }
-  async text() { return new TextDecoder().decode(await consumeBody(this)); }
+  async text() { return new TextDecoder().decode(await this.#consume()); }
   async json() { return JSON.parse(await this.text()); }
   async formData() {
     const contentType = this.headers.get("content-type") ?? "";
-    const data = await consumeBody(this);
+    const data = await this.#consume();
     const mediaType = contentType.split(";", 1)[0].trim().toLowerCase();
     if (mediaType === "application/x-www-form-urlencoded") return parseUrlEncoded(new TextDecoder().decode(data));
     if (mediaType === "multipart/form-data") return parseMultipart(data, contentType);
     throw new TypeError("Request body is not form data");
   }
   get [Symbol.toStringTag]() { return "Body"; }
-}
 
-async function consumeBody(body) {
-  if (body.__bodyConsumed || body.__bodyStream?.locked) throw new TypeError("Body has already been used");
-  if (body.__bodyStream === null) return new Uint8Array();
-  body.__bodyConsumed = true;
-  return consumeStream(body.__bodyStream);
+  async #consume() {
+    if (this.#used || this.#body?.locked) throw new TypeError("Body has already been used");
+    if (this.#body === null) return new Uint8Array();
+    this.#used = true;
+    return consumeStream(this.#body);
+  }
+
+  static {
+    takeBody = target => {
+      if (target.#body !== null) target.#used = true;
+      return { bytes: target.#bytes, stream: target.#body };
+    };
+    cloneBody = target => {
+      if (target.#used || target.#body?.locked) throw new TypeError("Body has already been used");
+      const disturbed = isDisturbed(target.#body);
+      if (target.#stream === null && !disturbed) return target.#bytes?.slice() ?? null;
+      const [first, second] = target.#body.tee();
+      target.#body = first;
+      if (target.#stream !== null) target.#stream = first;
+      target.#disturbed ||= disturbed;
+      return second;
+    };
+    bodyOf = target => target.#body;
+  }
 }
 
 function requestMethod(value) {
@@ -271,45 +350,6 @@ function requestRedirect(value) {
   if (redirect === "error") throw new TypeError('Invalid redirect value, must be one of "follow" or "manual" ("error" won\'t be implemented since it does not make sense at the edge; use "manual" and check the response status code).');
   if (!["error", "follow", "manual"].includes(redirect)) throw new TypeError("Invalid redirect mode");
   return redirect;
-}
-
-function defaultSignal() {
-  return typeof AbortController === "function" ? new AbortController().signal : { aborted: false };
-}
-
-function requestSignal(value) {
-  if (typeof AbortSignal === "function" && value instanceof AbortSignal) return value;
-  throw new TypeError("Invalid signal");
-}
-
-function requestBody(value) {
-  if (value instanceof ReadableStream) return { body: null, stream: value, contentType: null };
-  if (value instanceof FormData) {
-    const serialized = formDataBody(value);
-    return { body: serialized.body, stream: null, contentType: serialized.contentType };
-  }
-  return { body: bytes(value), stream: null, contentType: bodyInitType(value) };
-}
-
-function requestInit(request, source) {
-  return {
-    method: request.method,
-    headers: request.headers,
-    body: request.__stream ?? request.__body?.slice(),
-    cache: request.cache,
-    credentials: request.credentials,
-    destination: request.destination,
-    integrity: request.integrity,
-    keepalive: request.keepalive,
-    mode: request.mode,
-    redirect: request.redirect,
-    referrer: request.referrer,
-    referrerPolicy: request.referrerPolicy,
-    cf: request.cf,
-    fetcher: request.fetcher,
-    duplex: request.duplex,
-    ...(source ? { body: source } : {}),
-  };
 }
 
 function transferBody(stream) {
@@ -334,80 +374,112 @@ function transferBody(stream) {
 }
 
 export class Request extends Body {
+  #url;
+  #method;
+  #headers;
+  #cache;
+  #cf;
+  #fetcher;
+  #integrity;
+  #keepalive;
+  #redirect;
+  #signal;
+  #signalProvided;
+
   constructor(input, init = {}) {
-    super();
-    markHostObject(this, "Request");
     init = init ?? {};
     const source = input instanceof Request ? input : null;
     const hasBody = init.body !== undefined;
     if (source && !hasBody && (source.bodyUsed || source.body?.locked)) throw new TypeError("Cannot construct a Request from a used body");
     const method = requestMethod(init.method === undefined ? source?.method ?? "GET" : init.method);
-    let inputBody = hasBody ? init.body : source?.__body;
-    let inputStream = null;
+    let content = { bytes: null, stream: null, contentType: null };
     if (!hasBody && source?.body != null) {
-      inputBody = source.__body?.slice() ?? null;
-      inputStream = transferBody(source.body);
-      source.__bodyConsumed = true;
+      const taken = takeBody(source);
+      content = { bytes: taken.bytes?.slice() ?? null, stream: transferBody(taken.stream), contentType: null };
     }
-    const serialized = inputBody instanceof FormData ? requestBody(inputBody) : null;
-    if ((method === "GET" || method === "HEAD") && (inputBody != null || inputStream !== null)) throw new TypeError("Request with GET/HEAD method cannot have body");
-    const body = inputStream === null && inputBody != null ? requestBody(serialized?.body ?? inputBody) : { body: inputBody ?? null, stream: inputStream, contentType: null };
+    const inputBody = hasBody ? init.body : null;
+    if ((method === "GET" || method === "HEAD") && (inputBody != null || content.stream !== null)) throw new TypeError("Request with GET/HEAD method cannot have body");
+    if (inputBody != null) content = bodyInit(inputBody);
     const url = source?.url ?? new URL(input).href;
     const headers = new Headers(init.headers !== undefined ? init.headers : source?.headers);
-    if ((inputBody != null || inputStream !== null) && !headers.has("content-type")) {
-      const type = serialized?.contentType ?? body.contentType;
-      if (type) headers.set("content-type", type);
-    }
-    hidden(this, "__url", url);
-    hidden(this, "__method", method);
-    hidden(this, "__headers", headers);
-    hidden(this, "__body", body.body);
-    hidden(this, "__stream", body.stream);
-    hidden(this, "__bodyStream", this.__stream ?? (this.__body == null ? null : bodyStream(this.__body)));
-    hidden(this, "__bodyConsumed", false);
-    hidden(this, "__bodyDisturbed", false);
-    hidden(this, "__cache", init.cache ?? source?.cache);
-    hidden(this, "__cf", init.cf ?? source?.cf);
-    hidden(this, "__fetcher", init.fetcher ?? source?.fetcher);
+    if (content.contentType && !headers.has("content-type")) headers.set("content-type", content.contentType);
+    super(content.bytes, content.stream);
+    markHostObject(this, "Request");
+    this.#url = url;
+    this.#method = method;
+    this.#headers = headers;
+    this.#cache = init.cache ?? source?.cache;
+    this.#cf = init.cf ?? source?.cf;
+    this.#fetcher = init.fetcher ?? source?.fetcher;
     if (init.integrity === null) throw new TypeError("Invalid integrity");
-    hidden(this, "__integrity", init.integrity === undefined ? source?.integrity ?? "" : init.integrity);
-    hidden(this, "__keepalive", Boolean(init.keepalive ?? source?.keepalive ?? false));
-    hidden(this, "__redirect", requestRedirect(init.redirect === undefined ? source?.redirect ?? "follow" : init.redirect));
+    this.#integrity = init.integrity === undefined ? source?.integrity ?? "" : init.integrity;
+    this.#keepalive = Boolean(init.keepalive ?? source?.keepalive ?? false);
+    this.#redirect = requestRedirect(init.redirect === undefined ? source?.redirect ?? "follow" : init.redirect);
     const inheritedSignal = init.signal === undefined ? source?.signal : init.signal;
-    hidden(this, "__signal", inheritedSignal == null ? defaultSignal() : requestSignal(inheritedSignal));
-    hidden(this, "__signalProvided", init.signal === undefined ? source?.__signalProvided ?? false : init.signal != null);
+    if (inheritedSignal != null && !(inheritedSignal instanceof AbortSignal)) throw new TypeError("Invalid signal");
+    this.#signal = inheritedSignal ?? new AbortController().signal;
+    this.#signalProvided = init.signal === undefined ? source?.#signalProvided ?? false : init.signal != null;
   }
 
-  get cache() { return this.__cache; }
-  get cf() { return this.__cf; }
-  get fetcher() { return this.__fetcher; }
-  get headers() { return this.__headers; }
-  get integrity() { return this.__integrity; }
-  get keepalive() { return this.__keepalive; }
-  get method() { return this.__method; }
-  get redirect() { return this.__redirect; }
-  get signal() { return this.__signal; }
-  get url() { return this.__url; }
+  get cache() { return this.#cache; }
+  get cf() { return this.#cf; }
+  get fetcher() { return this.#fetcher; }
+  get headers() { return this.#headers; }
+  get integrity() { return this.#integrity; }
+  get keepalive() { return this.#keepalive; }
+  get method() { return this.#method; }
+  get redirect() { return this.#redirect; }
+  get signal() { return this.#signal; }
+  get url() { return this.#url; }
   get [Symbol.toStringTag]() { return "Request"; }
 
   clone() {
-    if (this.bodyUsed || this.body?.locked) throw new TypeError("Body has already been used");
-    if (this.__stream !== null) {
-      const [first, second] = this.__stream.tee();
-      this.__stream = first;
-      this.__bodyStream = first;
-      return new Request(this.url, requestInit(this, second));
-    }
-    return new Request(this.url, requestInit(this));
+    if (this.bodyUsed) throw new TypeError("Body has already been used");
+    return new Request(this.#url, {
+      method: this.#method,
+      headers: this.#headers,
+      body: cloneBody(this),
+      cache: this.#cache,
+      integrity: this.#integrity,
+      keepalive: this.#keepalive,
+      redirect: this.#redirect,
+      cf: this.#cf,
+      fetcher: this.#fetcher,
+    });
+  }
+
+  static {
+    hostObjectCopies.set("Request", (request, clone, keep) => {
+      if (bodyOf(request) !== null || request.#signalProvided) throw uncloneable();
+      const copy = keep(new Request(request.#url, { method: request.#method, headers: request.#headers, redirect: request.#redirect, cache: request.#cache }));
+      copy.#cf = clone(request.#cf);
+      return copy;
+    });
   }
 }
 
+// The Request a Worker receives for the host's request descriptor and body bytes.
+export function hostRequest(request, body) {
+  return new Request(request.url, { method: request.method, headers: request.headers, body });
+}
+
+// The status line, headers, encoding, body (bytes or a host stream reader) and native WebSocket
+// end the host sends for a Worker's response.
+let hostResponse;
+
 export class Response extends Body {
+  #status;
+  #statusText;
+  #encodeBody;
+  #headers;
+  #redirected;
+  #type;
+  #url;
+  #cf;
+  #webSocket;
+
   constructor(body = null, init = {}) {
-    super();
-    markHostObject(this, "Response");
     init = init ?? {};
-    const serialized = body instanceof FormData ? requestBody(body) : null;
     const inputStatus = init.status;
     const status = Math.trunc(Number(inputStatus === undefined ? 200 : inputStatus));
     const webSocket = init.webSocket ?? null;
@@ -420,72 +492,55 @@ export class Response extends Body {
     const inputStatusText = init.statusText;
     const statusText = string(inputStatusText === undefined ? httpStatusText(status) : inputStatusText);
     if (/[\0-\x1f\x7f]/.test(statusText)) throw new TypeError("Invalid response status text");
-    const inputEncoding = init instanceof Response ? init.__encodeBody : init.encodeBody;
+    const inputEncoding = init instanceof Response ? init.#encodeBody : init.encodeBody;
     const encodeBody = inputEncoding === undefined ? "automatic" : string(inputEncoding);
     if (encodeBody !== "automatic" && encodeBody !== "manual") throw new TypeError(`encodeBody: unexpected value: ${encodeBody}`);
     const headers = new Headers(init.headers);
-    if (body != null && !(body instanceof ReadableStream) && !headers.has("content-type")) {
-      const type = serialized?.contentType ?? bodyInitType(body);
-      if (type) headers.set("content-type", type);
-    }
-    const stream = body instanceof ReadableStream ? body : null;
-    const bodyBytes = stream === null && body != null ? bytes(serialized?.body ?? body) : null;
-    hidden(this, "__status", status);
-    hidden(this, "__statusText", statusText);
-    hidden(this, "__encodeBody", encodeBody);
-    hidden(this, "__headers", headers);
-    hidden(this, "__stream", stream);
-    hidden(this, "__body", bodyBytes);
-    hidden(this, "__bodyStream", stream ?? (body == null ? null : bodyStream(bodyBytes)));
-    hidden(this, "__tokamak_body", bodyBytes);
-    hidden(this, "__ok", status >= 200 && status < 300);
-    hidden(this, "__redirected", Boolean(init.redirected));
-    hidden(this, "__type", init.type ?? "default");
-    hidden(this, "__url", string(init.url ?? ""));
-    hidden(this, "__cf", init.cf);
-    hidden(this, "__webSocket", webSocket);
-    hidden(this, "__bodyConsumed", false);
-    hidden(this, "__bodyDisturbed", false);
-    hidden(this, "__error", false);
+    const content = body == null ? { bytes: null, stream: null, contentType: null } : bodyInit(body);
+    if (content.contentType && !headers.has("content-type")) headers.set("content-type", content.contentType);
+    super(content.bytes, content.stream);
+    markHostObject(this, "Response");
+    this.#status = status;
+    this.#statusText = statusText;
+    this.#encodeBody = encodeBody;
+    this.#headers = headers;
+    this.#redirected = Boolean(init.redirected);
+    this.#type = init.type ?? "default";
+    this.#url = string(init.url ?? "");
+    this.#cf = init.cf;
+    this.#webSocket = webSocket;
   }
 
-  get cf() { return this.__cf; }
-  get headers() { return this.__headers; }
-  get ok() { return this.__ok; }
-  get redirected() { return this.__redirected; }
-  get status() { return this.__status; }
-  get statusText() { return this.__statusText; }
-  get type() { return this.__type; }
-  get url() { return this.__url; }
-  get webSocket() { return this.__webSocket; }
+  get cf() { return this.#cf; }
+  get headers() { return this.#headers; }
+  get ok() { return this.#status >= 200 && this.#status < 300; }
+  get redirected() { return this.#redirected; }
+  get status() { return this.#status; }
+  get statusText() { return this.#statusText; }
+  get type() { return this.#type; }
+  get url() { return this.#url; }
+  get webSocket() { return this.#webSocket; }
   get [Symbol.toStringTag]() { return "Response"; }
 
   clone() {
-    if (this.__error) return Response.error();
-    if (this.__bodyConsumed || this.body?.locked) throw new TypeError("Body has already been used");
-    if (isDisturbed(this.__bodyStream)) {
-      const [first, second] = this.__bodyStream.tee();
-      this.__bodyStream = first;
-      this.__stream = this.__stream === null ? null : first;
-      this.__bodyDisturbed = true;
-      return new Response(second, responseInit(this));
-    }
-    if (this.__stream !== null) {
-      const [first, second] = this.__stream.tee();
-      this.__stream = first;
-      this.__bodyStream = first;
-      return new Response(second, responseInit(this));
-    }
-    return new Response(this.__body?.slice() ?? null, responseInit(this));
+    if (this.#status === 0) return Response.error();
+    return new Response(cloneBody(this), {
+      status: this.#status,
+      statusText: this.#statusText,
+      headers: this.#headers,
+      url: this.#url,
+      redirected: this.#redirected,
+      type: this.#type,
+      cf: this.#cf,
+      webSocket: this.#webSocket,
+    });
   }
 
   static error() {
     const response = new Response(null);
-    response.__status = 0;
-    response.__statusText = "";
-    response.__ok = false;
-    response.__type = "error";
-    response.__error = true;
+    response.#status = 0;
+    response.#statusText = "";
+    response.#type = "error";
     return response;
   }
   static json(data, init = {}) {
@@ -500,19 +555,27 @@ export class Response extends Body {
     if (![301, 302, 303, 307, 308].includes(code)) throw new RangeError("Invalid redirect status code");
     return new Response(null, { status: code, headers: { location: new URL(url).href } });
   }
-}
 
-function responseInit(response) {
-  return {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-    url: response.url,
-    redirected: response.redirected,
-    type: response.type,
-    cf: response.cf,
-    webSocket: response.webSocket,
-  };
+  static {
+    hostObjectCopies.set("Response", (response, clone, keep) => {
+      if (bodyOf(response) !== null || response.#webSocket !== null) throw uncloneable();
+      const copy = keep(response.#status === 0 ? Response.error() : new Response(null, { status: response.#status, statusText: response.#statusText, headers: response.#headers }));
+      copy.#cf = clone(response.#cf);
+      return copy;
+    });
+    hostResponse = response => {
+      if (!(#status in Object(response))) throw new TypeError("Incorrect type for Promise: the Promise did not resolve to 'Response'.");
+      const { bytes, stream } = takeBody(response);
+      return {
+        status: response.#status,
+        statusText: response.#statusText,
+        headers: [...response.#headers],
+        encodeBody: response.#encodeBody,
+        body: bytes ?? (stream === null ? new Uint8Array() : hostStreamReader(stream)),
+        webSocket: response.#webSocket === null ? null : nativeWebSocket(response.#webSocket),
+      };
+    };
+  }
 }
 
 function relativeIndex(value, length) {
@@ -523,7 +586,7 @@ function relativeIndex(value, length) {
 }
 
 function blobPartBytes(value) {
-  if (value instanceof Blob) return value.__bytes.slice();
+  if (value instanceof Blob) return blobBytes(value).slice();
   if (typeof value === "string") return new TextEncoder().encode(value);
   return bufferSourceBytes(value) ?? new TextEncoder().encode(usvString(value));
 }
@@ -669,7 +732,7 @@ function ascii(bytes) {
 }
 
 function formDataBody(form) {
-  const boundary = "----tokamak-" + crypto.randomUUID();
+  const boundary = "----tokamak-" + randomUUID();
   const encoder = new TextEncoder();
   const chunks = [];
   for (const [name, value] of form) {
@@ -677,20 +740,78 @@ function formDataBody(form) {
     chunks.push(encoder.encode("--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + quoteHeader(name) + "\""
       + (file ? "; filename=\"" + quoteHeader(value.name) + "\"" : "")
       + (file ? "\r\nContent-Type: " + (value.type || "application/octet-stream") : "") + "\r\n\r\n"));
-    chunks.push(file ? value.__bytes : encoder.encode(value), encoder.encode("\r\n"));
+    chunks.push(file ? blobBytes(value) : encoder.encode(value), encoder.encode("\r\n"));
   }
   chunks.push(encoder.encode("--" + boundary + "--\r\n"));
   const body = writeChunks(new Uint8Array(chunks.reduce((total, value) => total + value.byteLength, 0)), chunks);
-  return { body, contentType: "multipart/form-data; boundary=" + boundary };
+  return { bytes: body, stream: null, contentType: "multipart/form-data; boundary=" + boundary };
 }
 
 function quoteHeader(value) { return string(value).replace(/["\\\r\n]/g, character => "\\" + character); }
 
+
+export async function fetch(input, init) {
+  const request = new Request(input, init);
+  if (request.signal.aborted) throw request.signal.reason;
+  const { bytes, stream } = takeBody(request);
+  const task = httpFetch(
+    request.url,
+    request.method,
+    JSON.stringify([...request.headers]),
+    bytes ?? stream,
+    request.redirect,
+  );
+  globalThis.__tokamak_context.waitUntil(task.upload);
+  const abort = () => task.cancel();
+  request.signal.addEventListener("abort", abort, { once: true });
+  const finish = () => request.signal.removeEventListener("abort", abort);
+  let response;
+  try {
+    response = await task.response;
+    if (response.bodyless) await task.upload;
+  } catch (error) {
+    finish();
+    if (request.signal.aborted) throw fetchAbortReason(request.signal);
+    throw error;
+  }
+  if (request.signal.aborted) { task.cancel(); finish(); throw fetchAbortReason(request.signal); }
+  const body = response.bodyless ? null : new ReadableStream({
+    type: "bytes",
+    async pull(controller) {
+      try {
+        request.signal.throwIfAborted();
+        const chunk = await response.read();
+        request.signal.throwIfAborted();
+        if (chunk == null) { finish(); controller.close(); }
+        else controller.enqueue(chunk);
+      } catch (error) {
+        task.cancel(); finish();
+        controller.error(request.signal.aborted ? fetchAbortReason(request.signal) : error);
+      }
+    },
+    cancel() { task.cancel(); finish(); },
+  });
+  if (response.bodyless) finish();
+  if (body !== null && response.length != null) setStreamLength(body, response.length);
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: JSON.parse(response.headers),
+    url: response.url,
+    redirected: response.redirected,
+  });
+}
+
+function fetchAbortReason(signal) {
+  return signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason));
+}
+
 export class Cache {
-  constructor(name = "default") { markHostObject(this); hidden(this, "__name", string(name)); }
+  #name;
+  constructor(name = "default") { markHostObject(this); this.#name = string(name); }
   async match(request, options = {}) {
     if (!options.ignoreMethod && requestMethodForCache(request) !== "GET") return undefined;
-    const entry = await cacheHost("cacheMatch", [cachePath(), this.__name, cacheKey(request, options)]);
+    const entry = await cacheHost("cacheMatch", [cachePath(), this.#name, cacheKey(request, options)]);
     if (entry === null || entry === undefined) return undefined;
     return new Response(entry.body, {
       status: entry.status,
@@ -707,7 +828,7 @@ export class Cache {
     if (!(response instanceof Response)) throw new TypeError("Cache.put requires a Response");
     const copy = response.clone();
     await cacheHost("cachePut", [
-      cachePath(), this.__name, cacheKey(request), {
+      cachePath(), this.#name, cacheKey(request), {
         status: copy.status,
         statusText: copy.statusText,
         headers: JSON.stringify([...copy.headers]),
@@ -719,7 +840,7 @@ export class Cache {
   }
   async delete(request, options = {}) {
     if (!options.ignoreMethod && requestMethodForCache(request) !== "GET") return false;
-    return cacheHost("cacheDelete", [cachePath(), this.__name, cacheKey(request, options)]);
+    return cacheHost("cacheDelete", [cachePath(), this.#name, cacheKey(request, options)]);
   }
   async keys() { throw cacheNotImplemented("Cache", "keys"); }
   async add() { throw cacheNotImplemented("Cache", "add"); }
@@ -727,17 +848,18 @@ export class Cache {
 }
 
 export class CacheStorage {
+  #caches;
   constructor() {
     markHostObject(this);
     this.default = new Cache();
-    this.__caches = new Map([["default", this.default]]);
+    this.#caches = new Map([["default", this.default]]);
   }
   async open(name = "default") {
     const key = string(name);
-    let cache = this.__caches.get(key);
+    let cache = this.#caches.get(key);
     if (!cache) {
       cache = new Cache(key);
-      this.__caches.set(key, cache);
+      this.#caches.set(key, cache);
     }
     return cache;
   }
@@ -757,41 +879,47 @@ function cachePath() { return String(globalThis.__tokamak_cache ?? ""); }
 async function cacheHost(name, args) { return (await import("tokamak:host"))[name](...args); }
 function cacheNotImplemented(type, method) { return new Error(`Failed to execute '${method}' on '${type}': the method is not implemented.`); }
 
+const eventSourceStream = Symbol("event-source-stream");
+
 export class EventSource extends EventTarget {
+  #url;
+  #withCredentials;
+  #readyState = EventSource.CONNECTING;
+  #onopen = null;
+  #onmessage = null;
+  #onerror = null;
+  #reader = null;
+  #controller = new AbortController();
+  #lastEventId = "";
+
   constructor(url, options = {}) {
     super();
     options ??= {};
-    hidden(this, "__url", options[eventSourceStream] ? "" : new URL(url, globalThis.__tokamak_request?.url).href);
-    hidden(this, "__withCredentials", Boolean(options.withCredentials));
-    hidden(this, "__readyState", EventSource.CONNECTING);
-    hidden(this, "__onopen", null);
-    hidden(this, "__onmessage", null);
-    hidden(this, "__onerror", null);
-    hidden(this, "__reader", null);
-    hidden(this, "__controller", new AbortController());
-    hidden(this, "__lastEventId", "");
-    if (options[eventSourceStream]) {
-      this.__readyState = EventSource.OPEN;
-      void consumeEventSource(this, options[eventSourceStream], true);
+    const stream = options[eventSourceStream];
+    this.#url = stream ? "" : new URL(url, globalThis.__tokamak_request?.url).href;
+    this.#withCredentials = Boolean(options.withCredentials);
+    if (stream) {
+      this.#readyState = EventSource.OPEN;
+      void this.#consume(stream);
     }
-    else void connectEventSource(this, options);
+    else void this.#connect(options);
   }
 
-  get url() { return this.__url; }
-  get readyState() { return this.__readyState; }
-  get withCredentials() { return this.__withCredentials; }
-  get onopen() { return this.__onopen; }
-  set onopen(value) { this.__onopen = value; }
-  get onmessage() { return this.__onmessage; }
-  set onmessage(value) { this.__onmessage = value; }
-  get onerror() { return this.__onerror; }
-  set onerror(value) { this.__onerror = value; }
+  get url() { return this.#url; }
+  get readyState() { return this.#readyState; }
+  get withCredentials() { return this.#withCredentials; }
+  get onopen() { return this.#onopen; }
+  set onopen(value) { this.#onopen = value; }
+  get onmessage() { return this.#onmessage; }
+  set onmessage(value) { this.#onmessage = value; }
+  get onerror() { return this.#onerror; }
+  set onerror(value) { this.#onerror = value; }
 
   close() {
-    if (this.__readyState === EventSource.CLOSED) return;
-    this.__readyState = EventSource.CLOSED;
-    this.__controller.abort();
-    void this.__reader?.cancel().catch(() => {});
+    if (this.#readyState === EventSource.CLOSED) return;
+    this.#readyState = EventSource.CLOSED;
+    this.#controller.abort();
+    void this.#reader?.cancel().catch(() => {});
   }
 
   static from(stream) {
@@ -799,94 +927,87 @@ export class EventSource extends EventTarget {
     return new EventSource("", { [eventSourceStream]: stream });
   }
 
+  #emit(event) {
+    this.dispatchEvent(event);
+    const handler = this["on" + event.type];
+    if (typeof handler === "function") handler.call(this, event);
+  }
+
+  #fail(error) {
+    if (this.#readyState === EventSource.CLOSED) return;
+    this.#readyState = EventSource.CONNECTING;
+    this.#emit(new ErrorEvent("error", { error, message: error?.message ?? String(error) }));
+  }
+
+  async #connect(options) {
+    try {
+      const fetcher = options.fetcher ?? globalThis;
+      if (typeof fetcher.fetch !== "function") throw new TypeError("EventSource fetcher must provide fetch()");
+      const response = await fetcher.fetch.call(fetcher, this.#url, {
+        headers: { accept: "text/event-stream" },
+        signal: this.#controller.signal,
+      });
+      if (!response?.ok || response.body === null) throw new TypeError("EventSource response was not a stream");
+      this.#readyState = EventSource.OPEN;
+      this.#emit(new Event("open"));
+      await this.#consume(response.body);
+    } catch (error) {
+      this.#fail(error);
+    }
+  }
+
+  async #consume(stream) {
+    const reader = stream.getReader();
+    this.#reader = reader;
+    const decoder = new TextDecoder();
+    let input = "";
+    let data = [];
+    let eventName = "";
+    const dispatch = () => {
+      if (data.length === 0) return;
+      this.#emit(new MessageEvent(eventName || "message", {
+        data: data.join("\n"),
+        lastEventId: this.#lastEventId,
+      }));
+      data = [];
+      eventName = "";
+    };
+    const line = value => {
+      if (value === "") {
+        dispatch();
+        return;
+      }
+      if (value[0] === ":") return;
+      const separator = value.indexOf(":");
+      const field = separator < 0 ? value : value.slice(0, separator);
+      let fieldValue = separator < 0 ? "" : value.slice(separator + 1);
+      if (fieldValue.startsWith(" ")) fieldValue = fieldValue.slice(1);
+      if (field === "data") data.push(fieldValue);
+      else if (field === "event") eventName = fieldValue;
+      else if (field === "id" && !fieldValue.includes("\0")) this.#lastEventId = fieldValue;
+    };
+    try {
+      while (true) {
+        const result = await reader.read();
+        if (result.done) break;
+        const lines = (input + decoder.decode(result.value, { stream: true })).split("\n");
+        input = lines.pop();
+        for (const value of lines) line(value.endsWith("\r") ? value.slice(0, -1) : value);
+      }
+      input += decoder.decode();
+      if (input !== "") line(input.endsWith("\r") ? input.slice(0, -1) : input);
+      dispatch();
+      this.#readyState = EventSource.CLOSED;
+    } catch (error) {
+      this.#fail(error);
+    } finally {
+      if (this.#reader === reader) this.#reader = null;
+    }
+  }
 }
 for (const [value, name] of ["CONNECTING", "OPEN", "CLOSED"].entries()) {
   EventSource[name] = value;
   EventSource.prototype[name] = value;
 }
 
-const eventSourceStream = Symbol("event-source-stream");
-
-function emitEventSource(source, event) {
-  source.dispatchEvent(event);
-  const handler = source["on" + event.type];
-  if (typeof handler === "function") handler.call(source, event);
-}
-
-function emitEventSourceError(source, error) {
-  source.__readyState = EventSource.CONNECTING;
-  emitEventSource(source, new ErrorEvent("error", { error, message: error?.message ?? String(error) }));
-}
-
-async function connectEventSource(source, options) {
-  try {
-    const fetcher = options.fetcher ?? globalThis;
-    if (typeof fetcher.fetch !== "function") throw new TypeError("EventSource fetcher must provide fetch()");
-    const response = await fetcher.fetch.call(fetcher, source.url, {
-      headers: { accept: "text/event-stream" },
-      signal: source.__controller.signal,
-    });
-    if (!response?.ok || response.body === null) throw new TypeError("EventSource response was not a stream");
-    source.__readyState = EventSource.OPEN;
-    emitEventSource(source, new Event("open"));
-    await consumeEventSource(source, response.body, true);
-  } catch (error) {
-    if (source.__readyState !== EventSource.CLOSED) emitEventSourceError(source, error);
-  }
-}
-
-async function consumeEventSource(source, stream, closeWhenDone) {
-  const reader = stream.getReader();
-  source.__reader = reader;
-  const decoder = new TextDecoder();
-  let input = "";
-  let data = [];
-  let eventName = "";
-  const dispatch = () => {
-    if (data.length === 0) return;
-    emitEventSource(source, new MessageEvent(eventName || "message", {
-      data: data.join("\n"),
-      lastEventId: source.__lastEventId,
-    }));
-    data = [];
-    eventName = "";
-  };
-  const line = value => {
-    if (value === "") {
-      dispatch();
-      return;
-    }
-    if (value[0] === ":") return;
-    const separator = value.indexOf(":");
-    const field = separator < 0 ? value : value.slice(0, separator);
-    let fieldValue = separator < 0 ? "" : value.slice(separator + 1);
-    if (fieldValue.startsWith(" ")) fieldValue = fieldValue.slice(1);
-    if (field === "data") data.push(fieldValue);
-    else if (field === "event") eventName = fieldValue;
-    else if (field === "id" && !fieldValue.includes("\0")) source.__lastEventId = fieldValue;
-  };
-  try {
-    while (true) {
-      const result = await reader.read();
-      if (result.done) break;
-      input += decoder.decode(result.value, { stream: true });
-      let separator;
-      while ((separator = input.indexOf("\n")) >= 0) {
-        let value = input.slice(0, separator);
-        if (value.endsWith("\r")) value = value.slice(0, -1);
-        input = input.slice(separator + 1);
-        line(value);
-      }
-    }
-    input += decoder.decode();
-    if (input !== "") line(input.endsWith("\r") ? input.slice(0, -1) : input);
-    dispatch();
-    if (closeWhenDone && source.__readyState !== EventSource.CLOSED) source.__readyState = EventSource.CLOSED;
-  } catch (error) {
-    if (source.__readyState !== EventSource.CLOSED) emitEventSourceError(source, error);
-  } finally {
-    if (source.__reader === reader) source.__reader = null;
-  }
-}
-
-export { bodyStream, bytes, consumeStream };
+export { bodyStream, bytes, consumeStream, hostResponse };

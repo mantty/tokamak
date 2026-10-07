@@ -1,4 +1,7 @@
-import { CloseEvent, EventEmitter, MessageEvent } from "../events/events.mjs";
+import { EventEmitter } from "../events/events.mjs";
+import { CloseEvent, MessageEvent } from "../events/web.mjs";
+import { Blob, Headers, Response } from "../network/fetch.mjs";
+import { URL } from "../network/url.mjs";
 import { WebSocket } from "../network/websocket.mjs";
 import { Readable } from "../streams/node.mjs";
 import { Buffer } from "./buffer.mjs";

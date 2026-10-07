@@ -136,30 +136,22 @@ async fn execute_request_async(
             websocket,
         } = job;
         install_worker_globals(&ctx, config)?;
-        install_request(&ctx, &request)?;
-        initialize_worker_context(&ctx, worker)?;
-        let response = invoke_worker(&ctx, worker).await?;
-        let web_socket: Option<Object> = response
-            .get("webSocket")
-            .map_err(|error| js_error("response WebSocket", error))?;
-        let response = response_from_js(&ctx, &response).await?;
+        let descriptor = install_request(&ctx, &request)?;
+        let bootstrap = initialize_worker_context(&ctx, worker)?;
+        if let Some(assets) = &config.assets {
+            install_assets(&ctx, &bootstrap, assets)
+                .map_err(|error| js_exception(&ctx, "assets", error))?;
+        }
+        let response = invoke_worker(&ctx, worker, &bootstrap, descriptor, &request).await?;
+        let response = response_from_js(&ctx, &bootstrap, response)?;
         if response.status == 101
-            && let (Some(web_socket), Some(websocket)) = (web_socket, websocket)
+            && let (Some(native), Some(websocket)) = (&response.web_socket, websocket)
         {
-            let server: Object = web_socket
-                .get("__tokamak_peer")
-                .map_err(|error| js_error("WebSocket peer", error))?;
-            let receive: Function = server
-                .get("__tokamak_receive")
-                .map_err(|error| js_error("WebSocket receive", error))?;
-            let close: Function = server
-                .get("__tokamak_close")
-                .map_err(|error| js_error("WebSocket close", error))?;
             response_sender
                 .send_async(JobResponse::WebSocket)
                 .await
                 .map_err(|_| Error::startup("WebSocket response receiver closed"))?;
-            websocket_loop(&ctx, &web_socket, &receive, &close, &websocket, execution).await?;
+            websocket_loop(&ctx, native, &websocket, execution).await?;
             return drain_wait_until(&ctx).await;
         }
         send_worker_response(&ctx, response, &response_sender).await
@@ -171,12 +163,24 @@ async fn execute_request_async(
     }
 }
 
-async fn invoke_worker<'js>(ctx: &Ctx<'js>, worker: &WorkerBundle) -> Result<Object<'js>, Error> {
+async fn invoke_worker<'js>(
+    ctx: &Ctx<'js>,
+    worker: &WorkerBundle,
+    bootstrap: &Object<'js>,
+    descriptor: Value<'js>,
+    request: &HttpRequest,
+) -> Result<Value<'js>, Error> {
     let entrypoint = load_worker(ctx, worker).await?;
     let fetch = worker_fetch(ctx, &entrypoint)?;
-    let request: Object = ctx
-        .eval("new Request(__tokamak_request.url, { method: __tokamak_request.method, headers: __tokamak_request.headers, body: __tokamak_body ? new Uint8Array(__tokamak_body) : undefined })")
-        .map_err(|error| js_error("request", error))?;
+    let body = request
+        .body
+        .as_deref()
+        .map(|body| TypedArray::<u8>::new_copy(ctx.clone(), body))
+        .transpose()
+        .map_err(|error| js_error("request body", error))?;
+    let request: Object = property::<Function>(bootstrap, "hostRequest")?
+        .call((descriptor, body))
+        .map_err(|error| js_exception(ctx, "request", error))?;
     let environment: Object = ctx
         .globals()
         .get("__tokamak_env")
@@ -198,9 +202,6 @@ fn install_worker_globals(ctx: &Ctx<'_>, config: &RuntimeConfig) -> Result<(), E
         "globalThis.__tokamak_env = {environment}; globalThis.__tokamak_cache = {cache};"
     ))
     .map_err(|error| js_error("setup", error))?;
-    if let Some(assets) = &config.assets {
-        install_assets(ctx, assets).map_err(|error| js_error("assets", error))?;
-    }
     if let Some(storage) = &config.storage {
         Arc::clone(storage)
             .attach(ctx)
@@ -209,22 +210,23 @@ fn install_worker_globals(ctx: &Ctx<'_>, config: &RuntimeConfig) -> Result<(), E
     Ok(())
 }
 
-fn install_request(ctx: &Ctx<'_>, request: &HttpRequest) -> Result<(), Error> {
-    let descriptor = serde_json::to_string(request)?;
-    let body = request
-        .body
-        .as_deref()
-        .map(|body| ArrayBuffer::new_copy(ctx.clone(), body))
-        .transpose()
-        .map_err(|error| js_error("request body", error))?;
-    ctx.eval::<(), _>(format!("globalThis.__tokamak_request = {descriptor};"))
+/// Install the request's descriptor as `__tokamak_request` and return it.
+fn install_request<'js>(ctx: &Ctx<'js>, request: &HttpRequest) -> Result<Value<'js>, Error> {
+    let descriptor = ctx
+        .json_parse(serde_json::to_string(request)?)
         .map_err(|error| js_error("setup", error))?;
     ctx.globals()
-        .set("__tokamak_body", body)
-        .map_err(|error| js_error("request body", error))
+        .set("__tokamak_request", descriptor.clone())
+        .map_err(|error| js_error("setup", error))?;
+    Ok(descriptor)
 }
 
-fn initialize_worker_context(ctx: &Ctx<'_>, worker: &WorkerBundle) -> Result<(), Error> {
+/// Install the Node file system and evaluate the runtime bootstrap, returning
+/// its exports.
+fn initialize_worker_context<'js>(
+    ctx: &Ctx<'js>,
+    worker: &WorkerBundle,
+) -> Result<Object<'js>, Error> {
     let vfs = Arc::new(Mutex::new(VirtualFileSystem::new(
         worker.vfs_bundle.clone(),
     )));
@@ -444,11 +446,11 @@ fn read_worker_module(bundle: &WorkerBundle, name: &str) -> io::Result<Vec<u8>> 
     packaging::read_worker_module(&bundle.app, name).map_err(io::Error::other)
 }
 
+/// Relays frames between the host's WebSocket and `native`, the runtime's end
+/// of the Worker's socket.
 async fn websocket_loop<'js>(
     ctx: &Ctx<'js>,
-    client: &Object<'js>,
-    receive: &Function<'js>,
-    close: &Function<'js>,
+    native: &Object<'js>,
     websocket: &WebSocketJob,
     execution: &Execution<'_>,
 ) -> Result<(), Error> {
@@ -456,16 +458,14 @@ async fn websocket_loop<'js>(
     let notify = Arc::clone(&changed);
     let notify = Function::new(ctx.clone(), move || notify.notify_one())
         .map_err(|error| js_error("WebSocket notification", error))?;
-    client
-        .set("__tokamak_notify", notify)
-        .map_err(|error| js_error("WebSocket notification", error))?;
-    let take_outbox = eval_function(
-        ctx,
-        "socket => { const outbox = socket.__tokamak_outbox; socket.__tokamak_outbox = []; return outbox; }",
-        "WebSocket outbox",
-    )?;
+    property::<Function>(native, "listen")?
+        .call::<_, ()>((notify,))
+        .map_err(|error| js_exception(ctx, "WebSocket", error))?;
+    let receive: Function = property(native, "receive")?;
+    let close: Function = property(native, "close")?;
+    let take_outbox: Function = property(native, "take")?;
     drain_pending_jobs(ctx);
-    drain_websocket_outbox(client, &take_outbox, &websocket.outgoing).await?;
+    drain_websocket_outbox(&take_outbox, &websocket.outgoing).await?;
     send_outbound(&websocket.outgoing, WebSocketOutbound::Ready).await?;
 
     loop {
@@ -478,7 +478,7 @@ async fn websocket_loop<'js>(
                 Err(_) => return Ok(()),
             },
             () = changed.notified() => {
-                drain_websocket_outbox(client, &take_outbox, &websocket.outgoing).await?;
+                drain_websocket_outbox(&take_outbox, &websocket.outgoing).await?;
                 continue;
             },
             () = execution.paused() => return Ok(()),
@@ -507,7 +507,7 @@ async fn websocket_loop<'js>(
             }
         };
         drain_pending_jobs(ctx);
-        drain_websocket_outbox(client, &take_outbox, &websocket.outgoing).await?;
+        drain_websocket_outbox(&take_outbox, &websocket.outgoing).await?;
         send_outbound(&websocket.outgoing, WebSocketOutbound::Ready).await?;
         if should_close {
             return Ok(());
@@ -519,13 +519,12 @@ fn drain_pending_jobs(ctx: &Ctx<'_>) {
     while ctx.execute_pending_job() {}
 }
 
-async fn drain_websocket_outbox<'js>(
-    client: &Object<'js>,
-    take_outbox: &Function<'js>,
+async fn drain_websocket_outbox(
+    take_outbox: &Function<'_>,
     outgoing: &WebSocketOutgoing,
 ) -> Result<(), Error> {
     let messages: Array = take_outbox
-        .call((client.clone(),))
+        .call(())
         .map_err(|error| js_error("WebSocket outbox", error))?;
     for entry in messages.iter::<Object>() {
         let entry = entry.map_err(|error| js_error("WebSocket outbox entry", error))?;
@@ -595,40 +594,34 @@ struct JsResponse<'js> {
     headers: HeaderMap,
     encoder: Option<ResponseEncoder>,
     body: JsResponseBody<'js>,
+    /// The runtime's end of the response's WebSocket.
+    web_socket: Option<Object<'js>>,
 }
 
 enum JsResponseBody<'js> {
     Buffered(Vec<u8>),
+    /// The runtime's reader of a body stream: `read()` resolves to each chunk's
+    /// bytes, then null.
     Stream(Object<'js>),
 }
 
-async fn response_from_js<'js>(
+/// The parts of the Worker's `response` the runtime's `hostResponse` gives the host.
+fn response_from_js<'js>(
     ctx: &Ctx<'js>,
-    response: &Object<'js>,
+    bootstrap: &Object<'js>,
+    response: Value<'js>,
 ) -> Result<JsResponse<'js>, Error> {
-    let status: u16 = response
-        .get("status")
-        .map_err(|error| js_error("response status", error))?;
-    let status_text = response
-        .get::<_, Option<String>>("statusText")
-        .map_err(|error| js_error("response status text", error))?
-        .unwrap_or_default();
+    let parts: Object = property::<Function>(bootstrap, "hostResponse")?
+        .call((response,))
+        .map_err(|error| js_exception(ctx, "response", error))?;
     let mut headers = HeaderMap::new();
-    let object: Object = response
-        .get("headers")
-        .map_err(|error| js_error("response headers", error))?;
-    let entries_fn = eval_function(ctx, "headers => Array.from(headers)", "response headers")?;
-    let entries: Array = entries_fn
-        .call((object,))
-        .map_err(|error| js_error("response headers", error))?;
+    let entries: Array = property(&parts, "headers")?;
     for entry in entries.iter::<List<(String, String)>>() {
         let List((name, value)) = entry.map_err(|error| js_error("response header", error))?;
         append_header(&mut headers, &name, &value)?;
     }
-    let encoding: Option<String> = response
-        .get("__encodeBody")
-        .map_err(|error| js_error("response encoding", error))?;
-    let encoder = if encoding.as_deref() == Some("manual") {
+    let encoding: String = property(&parts, "encodeBody")?;
+    let encoder = if encoding == "manual" {
         None
     } else {
         headers
@@ -638,49 +631,27 @@ async fn response_from_js<'js>(
             .transpose()?
             .flatten()
     };
-    let stream: Option<Object> = response
-        .get("__stream")
-        .map_err(|error| js_error("response stream", error))?;
-    let body = match stream {
-        Some(stream) => JsResponseBody::Stream(stream),
-        None => JsResponseBody::Buffered(buffered_response_body(ctx, response).await?),
+    let body: Value = property(&parts, "body")?;
+    let body = match TypedArray::<u8>::from_value(body.clone()) {
+        Ok(bytes) => JsResponseBody::Buffered(
+            bytes
+                .as_bytes()
+                .ok_or_else(|| Error::Engine("response body was detached".to_owned()))?
+                .to_vec(),
+        ),
+        Err(_) => JsResponseBody::Stream(
+            body.into_object()
+                .ok_or_else(|| Error::Engine("response body is not a stream".to_owned()))?,
+        ),
     };
     Ok(JsResponse {
-        status,
-        status_text,
+        status: property(&parts, "status")?,
+        status_text: property(&parts, "statusText")?,
         headers,
         encoder,
         body,
+        web_socket: property(&parts, "webSocket")?,
     })
-}
-
-async fn buffered_response_body<'js>(
-    ctx: &Ctx<'js>,
-    response: &Object<'js>,
-) -> Result<Vec<u8>, Error> {
-    let value: Value = response
-        .get("__body")
-        .map_err(|error| js_error("response body", error))?;
-    if value.is_null() {
-        return Ok(Vec::new());
-    }
-    let bytes = if let Ok(body) = TypedArray::<u8>::from_value(value.clone()) {
-        body.as_bytes().map(ToOwned::to_owned)
-    } else if let Some(body) = ArrayBuffer::from_value(value) {
-        body.as_bytes().map(ToOwned::to_owned)
-    } else {
-        return read_response_text(ctx, response).await;
-    };
-    bytes.ok_or_else(|| Error::Engine("response body was detached".to_owned()))
-}
-
-async fn read_response_text<'js>(ctx: &Ctx<'js>, response: &Object<'js>) -> Result<Vec<u8>, Error> {
-    let read_body = eval_function(ctx, "response => response.text()", "response body")?;
-    let body: Promise = read_body
-        .call((response.clone(),))
-        .map_err(|error| js_error("response body", error))?;
-    let body: String = finish_promise(ctx, &body, "response body").await?;
-    Ok(body.into_bytes())
 }
 
 async fn send_worker_response<'js>(
@@ -694,6 +665,7 @@ async fn send_worker_response<'js>(
         headers,
         mut encoder,
         body,
+        ..
     } = response;
     // A caller that stopped waiting gets no response, and `waitUntil` work still finishes.
     match body {
@@ -719,8 +691,8 @@ async fn send_worker_response<'js>(
                 JsResponseBody::Buffered(bytes) => {
                     send_response_chunk(&bytes, true, &mut encoder, &sender).await
                 }
-                JsResponseBody::Stream(stream) => {
-                    pump_response_stream(ctx, stream, &mut encoder, &sender, &cancelled).await
+                JsResponseBody::Stream(reader) => {
+                    pump_response_stream(ctx, &reader, &mut encoder, &sender, &cancelled).await
                 }
             };
             if let Err(error) = result {
@@ -733,66 +705,38 @@ async fn send_worker_response<'js>(
 
 async fn pump_response_stream<'js>(
     ctx: &Ctx<'js>,
-    stream: Object<'js>,
+    reader: &Object<'js>,
     encoder: &mut Option<ResponseEncoder>,
     sender: &Sender<BodyChunk>,
     cancelled: &CancellationToken,
 ) -> Result<(), Error> {
-    let get_reader = eval_function(
-        ctx,
-        "stream => stream.getReader()",
-        "response stream reader",
-    )?;
-    let reader: Object = get_reader
-        .call((stream,))
-        .map_err(|error| js_error("response stream reader", error))?;
-    let read = eval_function(ctx, "reader => reader.read()", "response stream read")?;
-    let cancel = eval_function(ctx, "reader => reader.cancel()", "response stream cancel")?;
-    let to_bytes = eval_function(
-        ctx,
-        "value => {\
-            if (typeof value === 'string') return new TextEncoder().encode(value);\
-            if (value instanceof Uint8Array) return value;\
-            if (value instanceof ArrayBuffer) return new Uint8Array(value);\
-            if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);\
-            throw new TypeError('response stream chunks must be byte-oriented');\
-        }",
-        "response stream chunk",
-    )?;
+    let read: Function = property(reader, "read")?;
+    let cancel: Function = property(reader, "cancel")?;
     loop {
         if cancelled.is_cancelled() {
-            cancel_response_stream(ctx, &cancel, &reader).await;
+            cancel_response_stream(ctx, &cancel).await;
             return Ok(());
         }
         let pending: Promise = read
-            .call((reader.clone(),))
+            .call(())
             .map_err(|error| js_error("response stream read", error))?;
-        let result: Object = tokio::select! {
-            result = finish_promise(ctx, &pending, "response stream read") => result?,
+        let chunk: Option<TypedArray<u8>> = tokio::select! {
+            chunk = finish_promise(ctx, &pending, "response stream read") => chunk?,
             () = cancelled.cancelled() => {
-                cancel_response_stream(ctx, &cancel, &reader).await;
+                cancel_response_stream(ctx, &cancel).await;
                 return Ok(());
             }
         };
-        let done: bool = result
-            .get("done")
-            .map_err(|error| js_error("response stream result", error))?;
-        if done {
+        let Some(chunk) = chunk else {
             return send_response_chunk(&[], true, encoder, sender).await;
-        }
-        let value: Value = result
-            .get("value")
-            .map_err(|error| js_error("response stream result", error))?;
-        let chunk: TypedArray<u8> = to_bytes
-            .call((value,))
-            .map_err(|error| js_exception(ctx, "response stream chunk", error))?;
+        };
         let Some(bytes) = chunk.as_bytes() else {
             return Err(Error::Engine(
                 "response stream chunk was detached".to_owned(),
             ));
         };
         if let Err(error) = send_response_chunk(bytes, false, encoder, sender).await {
-            cancel_response_stream(ctx, &cancel, &reader).await;
+            cancel_response_stream(ctx, &cancel).await;
             return Err(error);
         }
     }
@@ -822,8 +766,8 @@ async fn send_response_chunk(
     }
 }
 
-async fn cancel_response_stream<'js>(ctx: &Ctx<'js>, cancel: &Function<'js>, reader: &Object<'js>) {
-    let Ok(pending) = cancel.call::<_, Promise>((reader.clone(),)) else {
+async fn cancel_response_stream<'js>(ctx: &Ctx<'js>, cancel: &Function<'js>) {
+    let Ok(pending) = cancel.call::<_, Promise>(()) else {
         return;
     };
     let _ = finish_promise::<Value>(ctx, &pending, "response stream cancel").await;
@@ -843,7 +787,13 @@ async fn finish_promise<'js, T: rquickjs::FromJs<'js>>(
 }
 
 /// Give the runtime the app's `assets`: their binding's name and `fetch`.
-fn install_assets<'js>(ctx: &Ctx<'js>, assets: &Arc<Assets>) -> rquickjs::Result<()> {
+/// Bind the app's assets in the Worker's environment through the runtime's
+/// `installAssets`.
+fn install_assets<'js>(
+    ctx: &Ctx<'js>,
+    bootstrap: &Object<'js>,
+    assets: &Arc<Assets>,
+) -> rquickjs::Result<()> {
     let fetch_assets = Arc::clone(assets);
     let fetch = Function::new(
         ctx.clone(),
@@ -851,10 +801,8 @@ fn install_assets<'js>(ctx: &Ctx<'js>, assets: &Arc<Assets>) -> rquickjs::Result
             asset_response(&ctx, fetch_assets.fetch(&method, &path))
         },
     )?;
-    let object = Object::new(ctx.clone())?;
-    object.set("binding", assets.binding())?;
-    object.set("fetch", fetch)?;
-    ctx.globals().set("__tokamak_assets", object)
+    let install: Function = bootstrap.get("installAssets")?;
+    install.call((assets.binding(), fetch))
 }
 
 /// `response` as the object the assets binding builds its `Response` from.
@@ -866,6 +814,11 @@ fn asset_response<'js>(ctx: &Ctx<'js>, response: AssetResponse) -> rquickjs::Res
     let body = response.body.map(|body| TypedArray::new(ctx.clone(), body));
     object.set("body", body.transpose()?)?;
     Ok(object)
+}
+
+/// The `name` property of `object`.
+fn property<'js, T: rquickjs::FromJs<'js>>(object: &Object<'js>, name: &str) -> Result<T, Error> {
+    object.get(name).map_err(|error| js_error(name, error))
 }
 
 /// The function `source` evaluates to.

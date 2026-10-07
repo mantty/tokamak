@@ -1,5 +1,5 @@
 import { markHostObject } from "./objects.mjs";
-import { EventTarget } from "../events/events.mjs";
+import { EventTarget } from "../events/web.mjs";
 
 const internal = Symbol("performance construction");
 const entryState = new WeakMap();

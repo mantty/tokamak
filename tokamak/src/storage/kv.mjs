@@ -1,5 +1,7 @@
 import { kvDelete, kvGet, kvGetMany, kvList, kvPut } from "tokamak:storage";
 import { bodyStream } from "../network/fetch.mjs";
+import { TextDecoder, TextEncoder } from "../streams/text.mjs";
+import { ReadableStream } from "../streams/web.mjs";
 
 const MAX_KEY_LENGTH = 512;
 const MAX_VALUE_LENGTH = 25 * 1024 * 1024;

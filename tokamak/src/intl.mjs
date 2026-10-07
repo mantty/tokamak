@@ -54,10 +54,12 @@ function optionsJson(options) {
   return JSON.stringify(optionsObject(options), (_, value) => typeof value === "bigint" ? String(value) : value);
 }
 
+// Marks `object` as a host object and returns its canonical locales, as the JSON
+// the host takes, and the locale formatting uses.
 function initIntlObject(object, locales) {
   markHostObject(object);
-  object.__locales = canonicalLocales(locales);
-  object.__locale = object.__locales[0] ?? "en-US";
+  const list = canonicalLocales(locales);
+  return { json: JSON.stringify(list), locale: list[0] ?? "en-US" };
 }
 
 function localeInfo(locale) {
@@ -167,18 +169,20 @@ function resolveHourCycle(result, locale, options) {
 }
 
 class DateTimeFormat {
+  #locales;
+  #options;
   #format;
   constructor(locales, options) {
-    initIntlObject(this, locales);
-    this.__options = dateOptions(options);
-    if (hasTimeFields(this.__options) && this.__options.hourCycle === undefined && this.__options.hour12 === undefined) {
-      this.__options.hourCycle = localeDefaultHourCycle(this.__locale);
+    this.#locales = initIntlObject(this, locales);
+    this.#options = dateOptions(options);
+    if (hasTimeFields(this.#options) && this.#options.hourCycle === undefined && this.#options.hour12 === undefined) {
+      this.#options.hourCycle = localeDefaultHourCycle(this.#locales.locale);
     }
-    this.#format = value => intlDateTime(epochMilliseconds(value), JSON.stringify(this.__locales), optionsJson(this.__options));
+    this.#format = value => intlDateTime(epochMilliseconds(value), this.#locales.json, optionsJson(this.#options));
   }
   get format() { return this.#format; }
   formatToParts(value = new Date()) {
-    return formatParts(intlDateTimeParts, epochMilliseconds(value), JSON.stringify(this.__locales), optionsJson(this.__options));
+    return formatParts(intlDateTimeParts, epochMilliseconds(value), this.#locales.json, optionsJson(this.#options));
   }
   formatRange(start, end) { return joinRange(this.format(start), this.format(end)); }
   formatRangeToParts(start, end) {
@@ -187,7 +191,7 @@ class DateTimeFormat {
     if (this.format(start) === this.format(end)) return first.map(part => ({ ...part, source: "shared" }));
     return [...first.map(part => ({ ...part, source: "startRange" })), { type: "literal", value: " – ", source: "shared" }, ...second.map(part => ({ ...part, source: "endRange" }))];
   }
-  resolvedOptions() { return dateResolvedOptions(this.__locale, this.__options); }
+  resolvedOptions() { return dateResolvedOptions(this.#locales.locale, this.#options); }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
 
@@ -221,40 +225,44 @@ function numberResolvedOptions(locale, options) {
 }
 
 class NumberFormat {
+  #locales;
+  #options;
   #format;
   constructor(locales, options) {
-    initIntlObject(this, locales);
-    this.__options = numberOptions(options);
-    this.#format = value => intlNumber(Number(value), JSON.stringify(this.__locales), optionsJson(this.__options));
+    this.#locales = initIntlObject(this, locales);
+    this.#options = numberOptions(options);
+    this.#format = value => intlNumber(Number(value), this.#locales.json, optionsJson(this.#options));
   }
   get format() { return this.#format; }
-  formatToParts(value) { return formatParts(intlNumberParts, Number(value), JSON.stringify(this.__locales), optionsJson(this.__options)); }
+  formatToParts(value) { return formatParts(intlNumberParts, Number(value), this.#locales.json, optionsJson(this.#options)); }
   formatRange(start, end) { return joinRange(this.format(start), this.format(end)); }
   formatRangeToParts(start, end) {
     const first = this.format(start);
     const second = this.format(end);
     return first === second ? this.formatToParts(start).map(part => ({ ...part, source: "shared" })) : [{ type: "literal", value: first, source: "startRange" }, { type: "literal", value: " – ", source: "shared" }, { type: "literal", value: second, source: "endRange" }];
   }
-  resolvedOptions() { return numberResolvedOptions(this.__locale, this.__options); }
+  resolvedOptions() { return numberResolvedOptions(this.#locales.locale, this.#options); }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
 
 class PluralRules {
+  #locales;
+  #options;
   constructor(locales, options) {
-    initIntlObject(this, locales);
-    this.__options = pluralOptions(options);
+    this.#locales = initIntlObject(this, locales);
+    this.#options = pluralOptions(options);
   }
-  select(value) { return intlPlural(Number(value), JSON.stringify(this.__locales), this.__options.type); }
-  selectRange(start, end) { return intlPluralRange(Number(start), Number(end), JSON.stringify(this.__locales), this.__options.type); }
+  select(value) { return intlPlural(Number(value), this.#locales.json, this.#options.type); }
+  selectRange(start, end) { return intlPluralRange(Number(start), Number(end), this.#locales.json, this.#options.type); }
   resolvedOptions() {
     return {
-      locale: this.__locale,
-      type: this.__options.type,
+      locale: this.#locales.locale,
+      type: this.#options.type,
       notation: "standard",
       minimumIntegerDigits: 1,
       minimumFractionDigits: 0,
       maximumFractionDigits: 3,
-      pluralCategories: JSON.parse(intlPluralCategories(JSON.stringify(this.__locales), this.__options.type)),
+      pluralCategories: JSON.parse(intlPluralCategories(this.#locales.json, this.#options.type)),
       roundingIncrement: 1,
       roundingMode: "halfExpand",
       roundingPriority: "auto",
@@ -280,23 +288,25 @@ function localeTagWithOptions(tag, options) {
 }
 
 class Locale {
+  #tag;
+  #info;
   constructor(tag, options) {
     markHostObject(this, "Intl.Locale");
-    this.__tag = localeTagWithOptions(tag, options);
-    this.__info = localeInfo(this.__tag);
+    this.#tag = localeTagWithOptions(tag, options);
+    this.#info = localeInfo(this.#tag);
   }
-  get baseName() { return this.__info.baseName; }
-  get language() { return this.__info.language; }
-  get region() { return this.__info.region ?? undefined; }
-  get script() { return this.__info.script ?? undefined; }
-  get calendar() { return this.__info.calendar; }
-  get caseFirst() { return this.__tag.match(/-kf-([a-z]+)/)?.[1] ?? undefined; }
-  get collation() { return this.__tag.match(/-co-([a-z-]+)/)?.[1] ?? undefined; }
-  get hourCycle() { return this.__info.hourCycle ?? localeDefaultHourCycle(this.__tag); }
-  get numeric() { return /-kn(?:-|$)/.test(this.__tag); }
-  toString() { return this.__info.string; }
-  maximize() { return new Locale(this.__info.maximize); }
-  minimize() { return new Locale(this.__info.minimize); }
+  get baseName() { return this.#info.baseName; }
+  get language() { return this.#info.language; }
+  get region() { return this.#info.region ?? undefined; }
+  get script() { return this.#info.script ?? undefined; }
+  get calendar() { return this.#info.calendar; }
+  get caseFirst() { return this.#tag.match(/-kf-([a-z]+)/)?.[1] ?? undefined; }
+  get collation() { return this.#tag.match(/-co-([a-z-]+)/)?.[1] ?? undefined; }
+  get hourCycle() { return this.#info.hourCycle ?? localeDefaultHourCycle(this.#tag); }
+  get numeric() { return /-kn(?:-|$)/.test(this.#tag); }
+  toString() { return this.#info.string; }
+  maximize() { return new Locale(this.#info.maximize); }
+  minimize() { return new Locale(this.#info.minimize); }
   getTextInfo() { return { direction: ["ar", "fa", "he", "ur", "ps", "sd", "ug", "yi"].includes(this.language) ? "rtl" : "ltr" }; }
   getWeekInfo() { return { firstDay: ["US", "CA", "JP", "PH"].includes(this.region) ? 7 : 1, weekend: [6, 7] }; }
   languageOf() { return this.language; }
@@ -314,32 +324,39 @@ function listJson(list) {
 }
 
 class ListFormat {
+  #locales;
+  #options;
   constructor(locales, options) {
-    initIntlObject(this, locales);
-    this.__options = listOptions(options);
+    this.#locales = initIntlObject(this, locales);
+    this.#options = listOptions(options);
   }
-  format(list) { return intlList(listJson(list), JSON.stringify(this.__locales), optionsJson(this.__options)); }
-  formatToParts(list) { return formatParts(intlListParts, listJson(list), JSON.stringify(this.__locales), optionsJson(this.__options)); }
-  resolvedOptions() { return { locale: this.__locale, ...this.__options }; }
+  format(list) { return intlList(listJson(list), this.#locales.json, optionsJson(this.#options)); }
+  formatToParts(list) { return formatParts(intlListParts, listJson(list), this.#locales.json, optionsJson(this.#options)); }
+  resolvedOptions() { return { locale: this.#locales.locale, ...this.#options }; }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
 
 class RelativeTimeFormat {
+  #locales;
+  #options;
   constructor(locales, options) {
-    initIntlObject(this, locales);
-    this.__options = relativeOptions(options);
+    this.#locales = initIntlObject(this, locales);
+    this.#options = relativeOptions(options);
   }
-  format(value, unit) { return intlRelative(Number(value), String(unit), JSON.stringify(this.__locales), optionsJson(this.__options)); }
-  formatToParts(value, unit) { return JSON.parse(intlRelativeParts(Number(value), String(unit), JSON.stringify(this.__locales), optionsJson(this.__options))); }
-  resolvedOptions() { return { locale: this.__locale, ...this.__options, numberingSystem: localeInfo(this.__locale).numberingSystem }; }
+  format(value, unit) { return intlRelative(Number(value), String(unit), this.#locales.json, optionsJson(this.#options)); }
+  formatToParts(value, unit) { return JSON.parse(intlRelativeParts(Number(value), String(unit), this.#locales.json, optionsJson(this.#options))); }
+  resolvedOptions() { return { locale: this.#locales.locale, ...this.#options, numberingSystem: localeInfo(this.#locales.locale).numberingSystem }; }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
 
 class Collator {
+  #locales;
+  #options;
+  #compare;
   constructor(locales, options) {
-    initIntlObject(this, locales);
+    this.#locales = initIntlObject(this, locales);
     const source = optionsObject(options);
-    this.__options = {
+    this.#options = {
       usage: source.usage ?? "sort",
       sensitivity: source.sensitivity ?? "variant",
       ignorePunctuation: source.ignorePunctuation ?? false,
@@ -347,21 +364,24 @@ class Collator {
       numeric: source.numeric ?? false,
       caseFirst: source.caseFirst ?? "false",
     };
-    this.compare = (left, right) => intlCollatorCompare(String(left), String(right), JSON.stringify(this.__locales), optionsJson(this.__options));
+    this.#compare = (left, right) => intlCollatorCompare(String(left), String(right), this.#locales.json, optionsJson(this.#options));
   }
-  resolvedOptions() { return { locale: this.__locale, ...this.__options }; }
+  get compare() { return this.#compare; }
+  resolvedOptions() { return { locale: this.#locales.locale, ...this.#options }; }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
 
 class Segmenter {
+  #locales;
+  #granularity;
   constructor(locales, options) {
-    initIntlObject(this, locales);
-    this.__granularity = optionsObject(options).granularity ?? "grapheme";
-    if (!["grapheme", "word", "sentence"].includes(this.__granularity)) throw new RangeError("Invalid granularity");
+    this.#locales = initIntlObject(this, locales);
+    this.#granularity = optionsObject(options).granularity ?? "grapheme";
+    if (!["grapheme", "word", "sentence"].includes(this.#granularity)) throw new RangeError("Invalid granularity");
   }
   segment(input) {
     const source = String(input);
-    const values = JSON.parse(intlSegment(source, JSON.stringify(this.__locales), this.__granularity));
+    const values = JSON.parse(intlSegment(source, this.#locales.json, this.#granularity));
     return {
       containing(index) {
         const position = Number(index);
@@ -370,24 +390,26 @@ class Segmenter {
       [Symbol.iterator]: function* () { yield* values; },
     };
   }
-  resolvedOptions() { return { locale: this.__locale, granularity: this.__granularity }; }
+  resolvedOptions() { return { locale: this.#locales.locale, granularity: this.#granularity }; }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
 
 class DisplayNames {
+  #locales;
+  #options;
   constructor(locales, options) {
-    initIntlObject(this, locales);
+    this.#locales = initIntlObject(this, locales);
     const source = optionsObject(options);
-    this.__options = {
+    this.#options = {
       style: source.style ?? "long",
       type: source.type,
       fallback: source.fallback ?? "code",
       languageDisplay: source.languageDisplay ?? "dialect",
     };
-    if (!this.__options.type) throw new TypeError("DisplayNames type is required");
+    if (!this.#options.type) throw new TypeError("DisplayNames type is required");
   }
-  of(value) { return intlDisplayName(String(value), JSON.stringify(this.__locales), optionsJson(this.__options)); }
-  resolvedOptions() { return { locale: this.__locale, ...this.__options }; }
+  of(value) { return intlDisplayName(String(value), this.#locales.json, optionsJson(this.#options)); }
+  resolvedOptions() { return { locale: this.#locales.locale, ...this.#options }; }
 }
 
 const supportedValues = {

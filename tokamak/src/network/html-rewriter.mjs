@@ -1,6 +1,7 @@
 import { htmlRewrite, htmlValidateSelector } from "tokamak:host";
 import { ReadableStream, nativeReadableStream, nativeStreamError } from "../streams/web.mjs";
 import { captureAsyncContext, runInAsyncContext } from "../builtins/async-context.mjs";
+import { Response } from "./fetch.mjs";
 
 const elementStates = new WeakMap();
 const textStates = new WeakMap();

@@ -1,5 +1,6 @@
 import { Buffer } from "./buffer.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
+import { AbortController } from "../events/abort.mjs";
 
 const objectToString = Object.prototype.toString;
 const inspectCustom = Symbol.for("nodejs.util.inspect.custom");

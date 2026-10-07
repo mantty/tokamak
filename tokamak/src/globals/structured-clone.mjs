@@ -1,7 +1,10 @@
 import { cloneArrayBuffer, arrayBufferView, detachArrayBuffer, objectClass } from "tokamak:host";
-import { Blob, Headers, Request, Response } from "../network/fetch.mjs";
-import { DOMException } from "./web.mjs";
+import { DOMException } from "./dom-exception.mjs";
 import { hostObjectKinds } from "./objects.mjs";
+
+// How each cloneable host object kind is copied: `copy(value, clone, keep)` returns the copy,
+// passing it through `keep` before copying nested values with `clone`.
+export const hostObjectCopies = new Map();
 
 const errors = { Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, AggregateError };
 const typedArrays = Object.fromEntries(["Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "Float16Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array"].map(name => [name, globalThis[name]]));
@@ -12,7 +15,7 @@ const regexpFlags = ["hasIndices", "global", "ignoreCase", "multiline", "dotAll"
   .map((name, index) => [Object.getOwnPropertyDescriptor(RegExp.prototype, name)?.get, "dgimsuvy"[index]]);
 const boxedValues = Object.fromEntries([Number, String, Boolean, BigInt].map(Type => [Type.name, Type.prototype.valueOf]));
 
-function uncloneable() { return new DOMException("Value cannot be cloned.", "DataCloneError"); }
+export function uncloneable() { return new DOMException("Value cannot be cloned.", "DataCloneError"); }
 
 function copyProperties(value, copy, seen) {
   for (const key of Object.keys(value)) {
@@ -66,18 +69,9 @@ function clone(value, seen) {
   else if (kind === "Error") return cloneError(value, seen);
   else if (kind !== "Object") throw uncloneable();
   else if (hostKind === "DOMException") return cloneError(value, seen);
-  else if (hostKind === "Blob" || hostKind === "Headers") {
-    copy = hostKind === "Blob" ? new Blob([value.__bytes], { type: value.__type }) : new Headers([...value.__values].flatMap(([name, values]) => values.map(entry => [name, entry])));
-    seen.set(value, copy);
-    return copy;
-  }
-  else if (hostKind === "Request" || hostKind === "Response") {
-    if (value.__bodyStream !== null || value.__signalProvided || value.__webSocket) throw uncloneable();
-    copy = hostKind === "Request" ? new Request(value.__url, { method: value.__method, headers: value.__headers, redirect: value.__redirect, cache: value.__cache })
-      : value.__status === 0 ? Response.error() : new Response(null, { status: value.__status, statusText: value.__statusText, headers: value.__headers });
-    seen.set(value, copy);
-    if (value.__cf !== undefined) copy.__cf = clone(value.__cf, seen);
-    return copy;
+  else if (hostObjectCopies.has(hostKind)) {
+    const keep = kept => { seen.set(value, kept); return kept; };
+    return keep(hostObjectCopies.get(hostKind)(value, nested => clone(nested, seen), keep));
   } else {
     if (hostKind !== undefined) throw uncloneable();
     copy = {};

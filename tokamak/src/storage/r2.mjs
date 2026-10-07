@@ -2,8 +2,9 @@ import {
   r2AbortUpload, r2CloseBody, r2CompleteUpload, r2CreateUpload, r2Delete, r2Get, r2Head, r2List,
   r2ObjectWriter, r2PartWriter, r2Put, r2Read, r2UploadPart, r2Write,
 } from "tokamak:storage";
-import { bytes, consumeStream } from "../network/fetch.mjs";
-import { isDisturbed, nativeReadableStream, setStreamLength, streamLength } from "../streams/web.mjs";
+import { Blob, Headers, bytes, consumeStream } from "../network/fetch.mjs";
+import { TextDecoder } from "../streams/text.mjs";
+import { ReadableStream, isDisturbed, nativeReadableStream, setStreamLength, streamLength } from "../streams/web.mjs";
 
 // Bytes each native write takes at most.
 const WRITE_SIZE = 1024 * 1024;
