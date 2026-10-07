@@ -8,8 +8,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use super::support::copy_file;
-use tokamak_cli::{Platform, PlatformPackManifest, PluginKeyKind};
+use tokamak_cli::{Platform, PlatformPackManifest, PluginKeyKind, copy_file};
 
 const MANIFEST: &str = "tokamak-plugin.json";
 

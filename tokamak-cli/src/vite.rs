@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use super::support;
+use super::paths;
 use super::tokamak_config::{self, TokamakConfig};
 
 /// How a missing report is fixed.
@@ -50,7 +50,7 @@ impl VitePlugin {
 
     /// Remove what an earlier run reported.
     pub(crate) fn clear(&self) -> Result<()> {
-        support::reset_path(&self.output)
+        paths::reset_path(&self.output)
     }
 
     /// The environment variables that activate the plugin.

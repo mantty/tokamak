@@ -1,6 +1,5 @@
 //! Development-session orchestration.
 
-use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -12,9 +11,13 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use tokamak_cli::{Platform, PlatformPackManifest};
+use tokamak_cli::Platform;
 
-use super::devices::PreparedDevice;
+use super::devices::{
+    PreparedDevice, install_and_launch_android, install_and_launch_ios_device,
+    install_and_launch_ios_simulator,
+};
+use super::packs::PlatformPack;
 use super::tokamak_config::TokamakConfig;
 use super::vite::{PLUGIN_HINT, ServerReport, VitePlugin};
 use super::{devices, pipeline, settings};
@@ -24,8 +27,6 @@ const APP_CONNECTION_TIMEOUT: Duration = Duration::from_mins(1);
 const SERVER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(any(unix, windows))]
 const PROCESS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
-const CORE_DEVICE_MAX_RETRIES: usize = 2;
-const CORE_DEVICE_RETRY_DELAY: Duration = Duration::from_secs(1);
 const RELAY_HEADER_LIMIT: usize = 64 * 1024;
 
 /// Development command inputs collected by the CLI.
@@ -44,7 +45,7 @@ pub(crate) struct Request {
 /// exits.
 pub(crate) fn run(request: &Request) -> Result<()> {
     validate_request(request)?;
-    let shutdown = ShutdownSignal::start()?;
+    let shutdown = shutdown_flag()?;
     let project = fs::canonicalize(&request.project_dir).with_context(|| {
         format!(
             "resolve project directory: {}",
@@ -52,13 +53,12 @@ pub(crate) fn run(request: &Request) -> Result<()> {
         )
     })?;
     let device = devices::prepare(&request.device_id)?;
-    let (pack_root, manifest) =
-        pipeline::load_platform_pack(device.platform, request.platform_pack_dir.as_deref())?;
+    let pack = PlatformPack::load(device.platform, request.platform_pack_dir.as_deref())?;
     pipeline::check_settings(
         &request.top,
         &request.platform_options,
         device.platform,
-        &manifest,
+        &pack.manifest,
     )?;
     let relay_host = relay_host(&device, request.host_address.as_deref())?;
     if device.platform == Platform::Ios && request.host_address.is_none() {
@@ -75,7 +75,7 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     plugin.clear()?;
     let mut framework = spawn_framework(&request.command, &project, &plugin)?;
 
-    if shutdown.requested() {
+    if shutdown.load(Ordering::Acquire) {
         stop_process(&mut framework)?;
         return Ok(());
     }
@@ -83,7 +83,7 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     let result = run_session(&mut DevelopmentSession {
         request,
         project: &project,
-        pack: (&pack_root, &manifest),
+        pack: &pack,
         device: &device,
         relay_host,
         plugin: &plugin,
@@ -143,12 +143,12 @@ fn validate_request(request: &Request) -> Result<()> {
 struct DevelopmentSession<'a> {
     request: &'a Request,
     project: &'a Path,
-    pack: (&'a Path, &'a PlatformPackManifest),
+    pack: &'a PlatformPack,
     device: &'a PreparedDevice,
     relay_host: IpAddr,
     plugin: &'a VitePlugin,
     framework: &'a mut Child,
-    shutdown: &'a ShutdownSignal,
+    shutdown: &'a AtomicBool,
 }
 
 fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
@@ -174,7 +174,7 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
         top: &session.request.top,
         platform_options: &session.request.platform_options,
     })?;
-    if session.shutdown.requested() {
+    if session.shutdown.load(Ordering::Acquire) {
         stop_process(session.framework)?;
         return Ok(());
     }
@@ -184,7 +184,7 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
     if let Err(error) = wait_for_app_connection(
         session.framework,
         &relay,
-        &session.shutdown.requested,
+        session.shutdown,
         session.device,
         &mut stdout,
         APP_CONNECTION_TIMEOUT,
@@ -192,7 +192,7 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
         app.stop();
         return Err(error);
     }
-    if session.shutdown.requested() {
+    if session.shutdown.load(Ordering::Acquire) {
         app.stop();
         stop_process(session.framework)?;
         return Ok(());
@@ -231,11 +231,11 @@ fn spawn_framework(
 fn wait_for_plugin(
     child: &mut Child,
     plugin: &VitePlugin,
-    shutdown: &ShutdownSignal,
+    shutdown: &AtomicBool,
 ) -> Result<Option<(Option<TokamakConfig>, ServerReport)>> {
     let deadline = Instant::now() + SERVER_READY_TIMEOUT;
     loop {
-        if shutdown.requested() {
+        if shutdown.load(Ordering::Acquire) {
             return Ok(None);
         }
         if let Some(status) = child.try_wait()? {
@@ -259,7 +259,7 @@ fn wait_for_plugin(
 fn wait_for_app_connection(
     framework: &mut Child,
     relay: &DevRelay,
-    shutdown_requested: &AtomicBool,
+    shutdown: &AtomicBool,
     device: &PreparedDevice,
     output: &mut impl Write,
     timeout: Duration,
@@ -268,7 +268,7 @@ fn wait_for_app_connection(
     output.flush()?;
     let deadline = Instant::now() + timeout;
     loop {
-        if shutdown_requested.load(Ordering::Acquire) {
+        if shutdown.load(Ordering::Acquire) {
             return Ok(());
         }
         if let Some(status) = framework.try_wait()? {
@@ -293,13 +293,9 @@ fn wait_for_app_connection(
     }
 }
 
-fn supervise(
-    framework: &mut Child,
-    app: &mut LaunchedApp,
-    shutdown: &ShutdownSignal,
-) -> Result<()> {
+fn supervise(framework: &mut Child, app: &mut LaunchedApp, shutdown: &AtomicBool) -> Result<()> {
     loop {
-        if shutdown.requested() {
+        if shutdown.load(Ordering::Acquire) {
             app.stop();
             stop_process(framework)?;
             return Ok(());
@@ -307,7 +303,7 @@ fn supervise(
         if let Some(status) = framework.try_wait()? {
             app.stop();
             stop_process(framework)?;
-            if shutdown.requested() {
+            if shutdown.load(Ordering::Acquire) {
                 return Ok(());
             }
             return status_result("development command", status);
@@ -328,144 +324,14 @@ fn status_result(label: &str, status: ExitStatus) -> Result<()> {
     }
 }
 
-struct ShutdownSignal {
-    requested: Arc<AtomicBool>,
-    stop: Option<tokio::sync::oneshot::Sender<()>>,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl ShutdownSignal {
-    fn start() -> Result<Self> {
-        let requested = Arc::new(AtomicBool::new(false));
-        let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(1);
-        let (stop_sender, stop_receiver) = tokio::sync::oneshot::channel();
-        let watched = Arc::clone(&requested);
-        let thread = thread::Builder::new()
-            .name("tokamak-dev-signals".to_owned())
-            .spawn(move || {
-                let runtime = match tokio::runtime::Runtime::new() {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        let _ = ready_sender
-                            .send(Err(format!("create development signal runtime: {error}")));
-                        return;
-                    }
-                };
-                runtime.block_on(wait_for_shutdown(watched, ready_sender, stop_receiver));
-            })
-            .context("start development signal listener")?;
-
-        let ready = ready_receiver
-            .recv()
-            .context("wait for development signal listener")
-            .and_then(|ready| ready.map_err(anyhow::Error::msg));
-        if let Err(error) = ready {
-            let _ = stop_sender.send(());
-            let _ = thread.join();
-            return Err(error);
-        }
-        Ok(Self {
-            requested,
-            stop: Some(stop_sender),
-            thread: Some(thread),
-        })
-    }
-
-    fn requested(&self) -> bool {
-        self.requested.load(Ordering::Acquire)
-    }
-}
-
-impl Drop for ShutdownSignal {
-    fn drop(&mut self) {
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
-        }
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-async fn wait_for_shutdown(
-    requested: Arc<AtomicBool>,
-    ready: std::sync::mpsc::SyncSender<Result<(), String>>,
-    mut stop: tokio::sync::oneshot::Receiver<()>,
-) {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-
-        let Some(mut interrupt) = installed(signal(SignalKind::interrupt()), "SIGINT", &ready)
-        else {
-            return;
-        };
-        let Some(mut terminate) = installed(signal(SignalKind::terminate()), "SIGTERM", &ready)
-        else {
-            return;
-        };
-        let Some(mut hangup) = installed(signal(SignalKind::hangup()), "SIGHUP", &ready) else {
-            return;
-        };
-        let _ = ready.send(Ok(()));
-        loop {
-            tokio::select! {
-                Some(()) = interrupt.recv() => requested.store(true, Ordering::Release),
-                Some(()) = terminate.recv() => requested.store(true, Ordering::Release),
-                Some(()) = hangup.recv() => requested.store(true, Ordering::Release),
-                _ = &mut stop => break,
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        use tokio::signal::windows;
-
-        let Some(mut ctrl_c) = installed(windows::ctrl_c(), "Ctrl-C", &ready) else {
-            return;
-        };
-        let Some(mut ctrl_break) = installed(windows::ctrl_break(), "Ctrl-Break", &ready) else {
-            return;
-        };
-        let Some(mut ctrl_close) = installed(windows::ctrl_close(), "console-close", &ready) else {
-            return;
-        };
-        let _ = ready.send(Ok(()));
-        loop {
-            tokio::select! {
-                Some(()) = ctrl_c.recv() => requested.store(true, Ordering::Release),
-                Some(()) = ctrl_break.recv() => requested.store(true, Ordering::Release),
-                Some(()) = ctrl_close.recv() => requested.store(true, Ordering::Release),
-                _ = &mut stop => break,
-            }
-        }
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = ready.send(Err(
-            "development signal handling is unsupported on this host".to_owned(),
-        ));
-        let _ = stop.await;
-    }
-}
-
-/// The installed signal `listener`, or `None` once `ready` reports why it
-/// could not be installed.
-#[cfg(any(unix, windows))]
-fn installed<T>(
-    listener: io::Result<T>,
-    name: &str,
-    ready: &std::sync::mpsc::SyncSender<Result<(), String>>,
-) -> Option<T> {
-    match listener {
-        Ok(listener) => Some(listener),
-        Err(error) => {
-            let _ = ready.send(Err(format!("install {name} listener: {error}")));
-            None
-        }
-    }
+/// A flag set once the user stops the session with SIGINT, SIGTERM or
+/// SIGHUP, or a Windows console control event.
+fn shutdown_flag() -> Result<Arc<AtomicBool>> {
+    let requested = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&requested);
+    ctrlc::set_handler(move || flag.store(true, Ordering::Release))
+        .context("install the development signal handler")?;
+    Ok(requested)
 }
 
 #[cfg(unix)]
@@ -563,22 +429,15 @@ fn launch_app(
     device: &PreparedDevice,
     relay_port: u16,
 ) -> Result<LaunchedApp> {
+    let (id, bundle, identifier) = (&device.id, &summary.bundle_dir, &summary.identifier);
     match summary.platform {
-        Platform::Macos => launch_macos(summary),
-        Platform::Windows => launch_windows(summary),
-        Platform::IosSimulator => {
-            install_and_launch_ios_simulator(summary, &device.id)?;
-            Ok(LaunchedApp::detached())
-        }
-        Platform::Ios => {
-            install_and_launch_ios_device(summary, &device.id)?;
-            Ok(LaunchedApp::detached())
-        }
-        Platform::Android => {
-            install_and_launch_android(summary, &device.id, relay_port)?;
-            Ok(LaunchedApp::detached())
-        }
+        Platform::Macos => return launch_macos(summary),
+        Platform::Windows => return launch_windows(summary),
+        Platform::IosSimulator => install_and_launch_ios_simulator(id, bundle, identifier)?,
+        Platform::Ios => install_and_launch_ios_device(id, bundle, identifier)?,
+        Platform::Android => install_and_launch_android(id, bundle, identifier, relay_port)?,
     }
+    Ok(LaunchedApp::detached())
 }
 
 fn launch_macos(summary: &pipeline::DevelopmentSummary) -> Result<LaunchedApp> {
@@ -599,183 +458,56 @@ fn launch_windows(summary: &pipeline::DevelopmentSummary) -> Result<LaunchedApp>
     let process = ProcessCommand::new(&executable)
         .spawn()
         .with_context(|| format!("launch Windows app {}", executable.display()))?;
-    Ok(LaunchedApp::process(process))
+    Ok(LaunchedApp {
+        #[cfg(windows)]
+        _job: end_with_session(&process),
+        process: Some(process),
+    })
 }
 
-fn install_and_launch_ios_simulator(
-    summary: &pipeline::DevelopmentSummary,
-    device_id: &str,
-) -> Result<()> {
-    run_platform_command(
-        "xcrun",
-        &[
-            "simctl",
-            "install",
-            device_id,
-            &summary.bundle_dir.to_string_lossy(),
-        ],
-        "install the app in the iOS Simulator",
-    )?;
-    run_platform_command(
-        "xcrun",
-        &["simctl", "launch", device_id, &summary.identifier],
-        "launch the app in the iOS Simulator",
-    )?;
-    #[cfg(target_os = "macos")]
-    if let Err(error) = devices::open_ios_simulator_ui(device_id) {
-        eprintln!("warning: could not open the iOS Simulator UI: {error:#}");
-    }
-    Ok(())
-}
+/// A job that ends `process` once the job is dropped or `tok` exits, however
+/// `tok` exits.
+#[cfg(windows)]
+fn end_with_session(process: &Child) -> Option<win32job::Job> {
+    use std::os::windows::io::AsRawHandle;
+    use win32job::{ExtendedLimitInfo, Job};
 
-fn install_and_launch_ios_device(
-    summary: &pipeline::DevelopmentSummary,
-    device_id: &str,
-) -> Result<()> {
-    run_platform_command(
-        "xcrun",
-        &[
-            "devicectl",
-            "device",
-            "install",
-            "app",
-            "--device",
-            device_id,
-            &summary.bundle_dir.to_string_lossy(),
-        ],
-        "install the app on the iOS device",
-    )?;
-    run_platform_command(
-        "xcrun",
-        &[
-            "devicectl",
-            "device",
-            "process",
-            "launch",
-            "--device",
-            device_id,
-            &summary.identifier,
-        ],
-        "launch the app on the iOS device",
-    )
-}
-
-fn install_and_launch_android(
-    summary: &pipeline::DevelopmentSummary,
-    device_id: &str,
-    relay_port: u16,
-) -> Result<()> {
-    let relay = format!("tcp:{relay_port}");
-    run_platform_command(
-        "adb",
-        &["-s", device_id, "reverse", &relay, &relay],
-        "forward the development relay to Android",
-    )?;
-    run_platform_command(
-        "adb",
-        &[
-            "-s",
-            device_id,
-            "install",
-            "-r",
-            &summary.bundle_dir.to_string_lossy(),
-        ],
-        "install the app on Android",
-    )?;
-    run_platform_command(
-        "adb",
-        &[
-            "-s",
-            device_id,
-            "shell",
-            "monkey",
-            "-p",
-            &summary.identifier,
-            "1",
-        ],
-        "launch the app on Android",
-    )
-}
-
-fn run_platform_command(program: &str, arguments: &[&str], action: &str) -> Result<()> {
-    let arguments = arguments
-        .iter()
-        .map(|argument| (*argument).to_owned())
-        .collect::<Vec<_>>();
-    let mut retries = 0;
-    loop {
-        let output = ProcessCommand::new(program)
-            .args(&arguments)
-            .output()
-            .with_context(|| format!("{action}: failed to start {program}"))?;
-        if output.status.success() {
-            return Ok(());
-        }
-        let transient_detail = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        if retries < CORE_DEVICE_MAX_RETRIES
-            && is_transient_devicectl_error(program, &arguments, &transient_detail)
-        {
-            retries += 1;
-            eprintln!(
-                "{action} encountered a transient Apple device connection error; retrying ({retries}/{CORE_DEVICE_MAX_RETRIES})"
-            );
-            thread::sleep(CORE_DEVICE_RETRY_DELAY);
-            continue;
-        }
-        let detail = String::from_utf8_lossy(&output.stderr);
-        let detail = detail.trim();
-        if detail.is_empty() {
-            bail!("{action} failed with status {}", output.status);
-        }
-        bail!("{action} failed: {detail}");
-    }
-}
-
-fn is_transient_devicectl_error(program: &str, arguments: &[String], detail: &str) -> bool {
-    if program != "xcrun" || arguments.first().map(String::as_str) != Some("devicectl") {
-        return false;
-    }
-    let detail = detail.to_ascii_lowercase();
-    [
-        "connection was invalidated",
-        "connection reset by peer",
-        "could not be established",
-        "controlchannelconnectionerror",
-        "timed out waiting for coredeviceservice",
-        "transport error",
-        "xpcerror",
-    ]
-    .iter()
-    .any(|fragment| detail.contains(fragment))
+    Job::create_with_limit_info(ExtendedLimitInfo::new().limit_kill_on_job_close())
+        .and_then(|job| {
+            job.assign_process(process.as_raw_handle() as isize)
+                .map(|()| job)
+        })
+        .inspect_err(|error| eprintln!("warning: the Windows app may outlive tok: {error}"))
+        .ok()
 }
 
 fn session_token() -> Result<String> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).context("generate development session token")?;
-    let mut token = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(&mut token, "{byte:02x}");
-    }
-    Ok(token)
+    Ok(hex::encode(bytes))
 }
 
 struct LaunchedApp {
     process: Option<Child>,
+    #[cfg(windows)]
+    _job: Option<win32job::Job>,
 }
 
 impl LaunchedApp {
     fn process(process: Child) -> Self {
         Self {
             process: Some(process),
+            #[cfg(windows)]
+            _job: None,
         }
     }
 
     const fn detached() -> Self {
-        Self { process: None }
+        Self {
+            process: None,
+            #[cfg(windows)]
+            _job: None,
+        }
     }
 
     fn has_exited(&mut self) -> Result<bool> {
@@ -1096,8 +828,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        DevRelay, PreparedDevice, ServerEndpoint, authorized, is_transient_devicectl_error,
-        parse_authority, relay_host, rewrite_request, usable_ipv4_address,
+        DevRelay, PreparedDevice, ServerEndpoint, authorized, parse_authority, relay_host,
+        rewrite_request, usable_ipv4_address,
     };
     #[cfg(unix)]
     use super::{
@@ -1363,31 +1095,6 @@ mod tests {
         let mut app = super::launch_windows(&summary)?;
         app.stop();
         Ok(())
-    }
-
-    #[test]
-    fn retries_only_transient_devicectl_errors() {
-        let arguments = vec!["devicectl".to_owned(), "device".to_owned()];
-        assert!(is_transient_devicectl_error(
-            "xcrun",
-            &arguments,
-            "Connection reset by peer"
-        ));
-        assert!(is_transient_devicectl_error(
-            "xcrun",
-            &arguments,
-            "CoreDevice.ControlChannelConnectionError"
-        ));
-        assert!(!is_transient_devicectl_error(
-            "xcrun",
-            &arguments,
-            "The executable contains an invalid signature"
-        ));
-        assert!(!is_transient_devicectl_error(
-            "adb",
-            &arguments,
-            "Connection reset by peer"
-        ));
     }
 
     #[test]

@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use tokamak_cli::{PackVariable, PlatformPackManifest, PluginKeyKind, Target, write_manifest};
+use tokamak_cli::{
+    PackVariable, PlatformPackManifest, PluginKeyKind, Target, copy_dir_contents, script_command,
+    write_manifest,
+};
 
 use crate::layout::WorkspaceLayout;
-use crate::support::{copy_dir_contents, reset_dir};
+use crate::support::{reset_dir, run};
 
 pub(crate) fn build_source_platform_pack(target: Target) -> Result<PathBuf> {
     let workspace = WorkspaceLayout::from_source()
@@ -33,7 +35,6 @@ fn build_source_platform_pack_at(workspace: &WorkspaceLayout, target: Target) ->
         variables: target_variables(workspace, target)?,
         plugin_keys: plugin_keys(workspace, target)?,
     };
-    manifest.validate()?;
     let manifest_path = workspace.manifest(target);
     write_manifest(&manifest_path, &manifest)?;
     Ok(manifest_path)
@@ -45,32 +46,11 @@ fn run_platform_recipe(workspace: &WorkspaceLayout, target: Target, output: &Pat
         bail!("platform-pack recipe is missing: {}", recipe.display());
     }
 
-    let mut command = if recipe
-        .extension()
-        .is_some_and(|extension| extension == "ps1")
-    {
-        let mut command = Command::new("powershell");
-        command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
-        command
-    } else {
-        Command::new("bash")
-    };
-    let target_name = target.to_string();
-    let status = command
-        .arg(&recipe)
-        .args(["build", &target_name])
+    run(script_command(&recipe)
+        .args(["build", &target.to_string()])
         .arg(output)
-        .current_dir(workspace.root())
-        .status()
-        .with_context(|| format!("failed to run {}", recipe.display()))?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!(
-            "platform-pack recipe failed with status {status}: {}",
-            recipe.display()
-        )
-    }
+        .current_dir(workspace.root()))
+    .with_context(|| format!("run platform-pack recipe {}", recipe.display()))
 }
 
 /// The variables a pack declares for `target`'s platform namespace.

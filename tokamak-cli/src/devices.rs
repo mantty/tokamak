@@ -1,29 +1,38 @@
-//! Development target discovery and table rendering.
+//! Development target discovery, preparation, and app installation.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Output, Stdio};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tokamak_cli::Platform;
-
-#[cfg(target_os = "macos")]
-use anyhow::Context;
-#[cfg(any(target_os = "macos", test))]
-use std::path::Path;
 
 const MANAGED_IOS_NAME: &str = "tokamak iPhone";
 const MANAGED_ANDROID_NAME: &str = "tokamak-managed";
 const ANDROID_BOOT_TIMEOUT: usize = 120;
+const CORE_DEVICE_MAX_RETRIES: usize = 2;
+const CORE_DEVICE_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Device {
     id: String,
     kind: String,
+    platform: Platform,
+    group: DeviceGroup,
     status: DeviceStatus,
+}
+
+/// Where a device lists: the host first, then managed targets, physical
+/// devices, and other virtual devices.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum DeviceGroup {
+    Host,
+    Managed,
+    Physical,
+    Virtual,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,22 +105,22 @@ fn prepare_host(selector: &str) -> Result<Option<PreparedDevice>> {
     if !matches!(selector, "macos" | "windows" | "linux") {
         return Ok(None);
     }
-    let host = host_device();
-    if host.id != selector {
-        bail!(
+    match host_device() {
+        Some(host) if host.id == selector => prepared_device(host).map(Some),
+        Some(host) => bail!(
             "device `{selector}` is not available on this host; local host is `{}`",
             host.id
-        );
+        ),
+        None => bail!("device `{selector}` is not available; tokamak has no desktop target here"),
     }
-    prepared_device(host).map(Some)
 }
 
 fn prepared_device(device: Device) -> Result<PreparedDevice> {
     match device.status {
         DeviceStatus::Available => Ok(PreparedDevice {
             id: device.id,
-            platform: device_platform(&device.kind),
             kind: device.kind,
+            platform: device.platform,
         }),
         DeviceStatus::Blocked(reason) => bail!("device `{}` is blocked: {reason}", device.id),
     }
@@ -185,7 +194,7 @@ fn ios_simulator_ui_for_developer_dir(developer_dir: &Path) -> Option<IosSimulat
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn open_ios_simulator_ui(device_id: &str) -> Result<()> {
+fn open_ios_simulator_ui(device_id: &str) -> Result<()> {
     let simctl = run_tool("xcrun", &["--find", "simctl"]);
     if !simctl.available {
         bail!("Xcode command-line tools are not installed");
@@ -476,20 +485,6 @@ fn android_avd_device(serial: String, avd_name: &str) -> PreparedDevice {
     }
 }
 
-fn device_platform(kind: &str) -> Platform {
-    if kind.contains("iOS Simulator") {
-        Platform::IosSimulator
-    } else if kind.contains("iOS") || kind.contains("iPhone") || kind.contains("iPad") {
-        Platform::Ios
-    } else if kind.contains("Android") {
-        Platform::Android
-    } else if kind.starts_with("macOS") {
-        Platform::Macos
-    } else {
-        Platform::Windows
-    }
-}
-
 fn find_android_avd(source: &str, avd_name: &str) -> Option<String> {
     parse_android_adb_devices(source)
         .into_iter()
@@ -536,60 +531,158 @@ fn android_avd_name(serial: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
+/// Install the app `bundle` in the iOS Simulator `device_id`, launch the app
+/// `identifier`, and show the Simulator.
+pub(super) fn install_and_launch_ios_simulator(
+    device_id: &str,
+    bundle: &Path,
+    identifier: &str,
+) -> Result<()> {
+    let bundle = bundle.to_string_lossy();
+    run_action(
+        "xcrun",
+        &["simctl", "install", device_id, &bundle],
+        "install the app in the iOS Simulator",
+    )?;
+    run_action(
+        "xcrun",
+        &["simctl", "launch", device_id, identifier],
+        "launch the app in the iOS Simulator",
+    )?;
+    #[cfg(target_os = "macos")]
+    if let Err(error) = open_ios_simulator_ui(device_id) {
+        eprintln!("warning: could not open the iOS Simulator UI: {error:#}");
+    }
+    Ok(())
+}
+
+/// Install the app `bundle` on the iOS device `device_id` and launch the app
+/// `identifier`.
+pub(super) fn install_and_launch_ios_device(
+    device_id: &str,
+    bundle: &Path,
+    identifier: &str,
+) -> Result<()> {
+    let bundle = bundle.to_string_lossy();
+    run_devicectl(
+        &["device", "install", "app", "--device", device_id, &bundle],
+        "install the app on the iOS device",
+    )?;
+    run_devicectl(
+        &[
+            "device", "process", "launch", "--device", device_id, identifier,
+        ],
+        "launch the app on the iOS device",
+    )
+}
+
+/// Forward `relay_port` to the Android device `device_id`, install the app
+/// `bundle`, and launch the app `identifier`.
+pub(super) fn install_and_launch_android(
+    device_id: &str,
+    bundle: &Path,
+    identifier: &str,
+    relay_port: u16,
+) -> Result<()> {
+    let Some(adb) = android_tool_program("adb", "platform-tools") else {
+        bail!("Android platform-tools are not installed");
+    };
+    let relay = format!("tcp:{relay_port}");
+    let bundle = bundle.to_string_lossy();
+    run_action(
+        &adb,
+        &["-s", device_id, "reverse", &relay, &relay],
+        "forward the development relay to Android",
+    )?;
+    run_action(
+        &adb,
+        &["-s", device_id, "install", "-r", &bundle],
+        "install the app on Android",
+    )?;
+    run_action(
+        &adb,
+        &["-s", device_id, "shell", "monkey", "-p", identifier, "1"],
+        "launch the app on Android",
+    )
+}
+
+/// Run `devicectl` with `arguments` to `action`, retrying transient Apple
+/// device connection errors.
+fn run_devicectl(arguments: &[&str], action: &str) -> Result<()> {
+    let arguments = [&["devicectl"], arguments].concat();
+    let mut retries = 0;
+    loop {
+        let output = action_output("xcrun", &arguments, action)?;
+        let detail = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if output.status.success()
+            || retries == CORE_DEVICE_MAX_RETRIES
+            || !is_transient_devicectl_error(&detail)
+        {
+            return action_result(&output, action);
+        }
+        retries += 1;
+        eprintln!(
+            "{action} encountered a transient Apple device connection error; retrying ({retries}/{CORE_DEVICE_MAX_RETRIES})"
+        );
+        std::thread::sleep(CORE_DEVICE_RETRY_DELAY);
+    }
+}
+
+fn is_transient_devicectl_error(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    [
+        "connection was invalidated",
+        "connection reset by peer",
+        "could not be established",
+        "controlchannelconnectionerror",
+        "timed out waiting for coredeviceservice",
+        "transport error",
+        "xpcerror",
+    ]
+    .iter()
+    .any(|fragment| detail.contains(fragment))
+}
+
 fn discover_devices() -> Vec<Device> {
-    let mut devices = vec![host_device()];
-    let mut discovered = discover_ios_devices();
-    discovered.extend(discover_android_devices());
-    order_devices(&mut discovered);
-    devices.extend(discovered);
+    let mut devices = Vec::from_iter(host_device());
+    devices.extend(discover_ios_devices());
+    devices.extend(discover_android_devices());
+    order_devices(&mut devices);
     devices
 }
 
-fn is_physical_device(device: &Device) -> bool {
-    device.kind.contains("physical")
-}
-
-fn is_managed_device(device: &Device) -> bool {
-    device.kind.starts_with("managed ")
-}
-
 fn order_devices(devices: &mut [Device]) {
-    devices.sort_by_key(|device| {
-        if is_managed_device(device) {
-            0
-        } else if is_physical_device(device) {
-            1
-        } else {
-            2
-        }
-    });
+    devices.sort_by_key(|device| device.group);
 }
 
-fn host_device() -> Device {
-    let (id, device_type, status) = if cfg!(target_os = "macos") {
-        ("macos", "macOS desktop", DeviceStatus::Available)
+/// This host's desktop, when tokamak builds desktop apps for it.
+fn host_device() -> Option<Device> {
+    let platform = if cfg!(target_os = "macos") {
+        Platform::Macos
     } else if cfg!(target_os = "windows") {
-        ("windows", "Windows desktop", DeviceStatus::Available)
+        Platform::Windows
     } else {
-        (
-            "linux",
-            "Linux desktop",
-            DeviceStatus::Blocked(
-                "the tokamak desktop target is unavailable on this host".to_owned(),
-            ),
-        )
+        return None;
     };
-    Device {
-        id: id.to_owned(),
-        kind: device_type.to_owned(),
-        status,
-    }
+    Some(Device {
+        id: platform.directory_name().to_owned(),
+        kind: format!("{} desktop", platform.display_name()),
+        platform,
+        group: DeviceGroup::Host,
+        status: DeviceStatus::Available,
+    })
 }
 
 fn discover_ios_devices() -> Vec<Device> {
     let managed = |status| Device {
         id: "ios".to_owned(),
         kind: "managed iOS Simulator".to_owned(),
+        platform: Platform::IosSimulator,
+        group: DeviceGroup::Managed,
         status,
     };
     if !cfg!(target_os = "macos") {
@@ -682,11 +775,15 @@ fn discover_android_devices() -> Vec<Device> {
     let mut devices = vec![Device {
         id: "android".to_owned(),
         kind: "managed Android emulator".to_owned(),
+        platform: Platform::Android,
+        group: DeviceGroup::Managed,
         status: alias_status.clone(),
     }];
     devices.extend(avds.into_iter().map(|id| Device {
         id,
         kind: "Android emulator (AVD)".to_owned(),
+        platform: Platform::Android,
+        group: DeviceGroup::Virtual,
         status: alias_status.clone(),
     }));
     if adb.success {
@@ -732,6 +829,27 @@ fn run_tool_with_input(program: &str, arguments: &[&str], input: &str) -> Result
         stdin.write_all(input.as_bytes())?;
     }
     Ok(child.wait_with_output()?.into())
+}
+
+fn run_action(program: &str, arguments: &[&str], action: &str) -> Result<()> {
+    action_result(&action_output(program, arguments, action)?, action)
+}
+
+fn action_output(program: &str, arguments: &[&str], action: &str) -> Result<Output> {
+    ProcessCommand::new(program)
+        .args(arguments)
+        .output()
+        .with_context(|| format!("{action}: failed to start {program}"))
+}
+
+/// Fail with `output`'s error output, or else its status, unless it succeeded.
+fn action_result(output: &Output, action: &str) -> Result<()> {
+    let detail = String::from_utf8_lossy(&output.stderr);
+    match detail.trim() {
+        _ if output.status.success() => Ok(()),
+        "" => bail!("{action} failed with status {}", output.status),
+        detail => bail!("{action} failed: {detail}"),
+    }
 }
 
 fn tool_failure(output: &ToolOutput, fallback: &str) -> String {
@@ -807,6 +925,8 @@ fn parse_ios_simulator_devices(source: &str) -> Option<Vec<Device>> {
             .map(|target| Device {
                 kind: target.kind(),
                 id: target.id,
+                platform: Platform::IosSimulator,
+                group: DeviceGroup::Virtual,
                 status: DeviceStatus::Available,
             })
             .collect(),
@@ -1018,6 +1138,8 @@ fn parse_devicectl_devices(source: &str) -> Option<Vec<Device>> {
         devices.push(Device {
             id,
             kind: physical_ios_type(&name),
+            platform: Platform::Ios,
+            group: DeviceGroup::Physical,
             status: physical_ios_status(entry),
         });
     }
@@ -1066,6 +1188,8 @@ fn parse_xctrace_devices(source: &str) -> Vec<Device> {
         devices.push(Device {
             id: id.to_owned(),
             kind: physical_ios_type(&name),
+            platform: Platform::Ios,
+            group: DeviceGroup::Physical,
             status: DeviceStatus::Available,
         });
     }
@@ -1096,10 +1220,10 @@ fn parse_android_adb_devices(source: &str) -> Vec<Device> {
                 .strip_prefix("model:")
                 .map(|model| model.replace('_', " "))
         });
-        let generic_kind = if id.starts_with("emulator-") {
-            "Android emulator"
+        let (generic_kind, group) = if id.starts_with("emulator-") {
+            ("Android emulator", DeviceGroup::Virtual)
         } else {
-            "physical Android device"
+            ("physical Android device", DeviceGroup::Physical)
         };
         let kind = model.map_or_else(
             || generic_kind.to_owned(),
@@ -1119,6 +1243,8 @@ fn parse_android_adb_devices(source: &str) -> Vec<Device> {
         devices.push(Device {
             id: id.to_owned(),
             kind,
+            platform: Platform::Android,
+            group,
             status,
         });
     }
@@ -1228,12 +1354,13 @@ mod tests {
     use std::fs;
 
     use super::{
-        Device, DeviceStatus, IosSimulatorUi, default_ios_device_type,
-        ios_simulator_ui_for_developer_dir, latest_ios_runtime, order_devices,
-        parse_android_adb_devices, parse_android_system_images, parse_ios_simulator_devices,
-        parse_ios_simulator_targets, parse_xctrace_devices, render_devices,
-        select_android_system_image,
+        Device, DeviceGroup, DeviceStatus, IosSimulatorUi, default_ios_device_type,
+        ios_simulator_ui_for_developer_dir, is_transient_devicectl_error, latest_ios_runtime,
+        order_devices, parse_android_adb_devices, parse_android_system_images,
+        parse_ios_simulator_devices, parse_ios_simulator_targets, parse_xctrace_devices,
+        prepared_device, render_devices, select_android_system_image,
     };
+    use tokamak_cli::Platform;
 
     #[test]
     fn prefers_standalone_simulator_when_both_xcode_uis_exist()
@@ -1381,6 +1508,17 @@ mod tests {
     }
 
     #[test]
+    fn prepares_adb_devices_as_android_whatever_their_model() -> anyhow::Result<()> {
+        let devices = parse_android_adb_devices(
+            "List of devices attached\nphone-1 device model:iPad_Pro\nemulator-5554 device model:iOS_Simulator\n",
+        );
+        for device in devices {
+            assert_eq!(prepared_device(device)?.platform, Platform::Android);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn selects_installed_android_system_image_for_host_architecture() {
         let packages = "Installed packages:\n  Path | Version | Description\n  system-images;android-34;google_apis;x86_64 | 1 | image\n  system-images;android-35;google_apis;arm64-v8a | 1 | image\nAvailable Packages:\n  system-images;android-36;google_apis;arm64-v8a | 1 | image\n";
         let images = parse_android_system_images(packages);
@@ -1406,11 +1544,15 @@ mod tests {
             Device {
                 id: "macos".to_owned(),
                 kind: "macOS desktop".to_owned(),
+                platform: Platform::Macos,
+                group: DeviceGroup::Host,
                 status: DeviceStatus::Available,
             },
             Device {
                 id: "phone".to_owned(),
                 kind: "physical Android device".to_owned(),
+                platform: Platform::Android,
+                group: DeviceGroup::Physical,
                 status: DeviceStatus::Blocked("authorize USB debugging".to_owned()),
             },
         ]);
@@ -1425,24 +1567,17 @@ mod tests {
     }
 
     #[test]
-    fn orders_managed_then_physical_then_other_devices() {
-        let mut devices = vec![
-            Device {
-                id: "simulator".to_owned(),
-                kind: "iPhone / iOS Simulator".to_owned(),
-                status: DeviceStatus::Available,
-            },
-            Device {
-                id: "phone".to_owned(),
-                kind: "physical iPhone".to_owned(),
-                status: DeviceStatus::Available,
-            },
-            Device {
-                id: "ios".to_owned(),
-                kind: "managed iOS Simulator".to_owned(),
-                status: DeviceStatus::Available,
-            },
-        ];
+    fn orders_managed_then_physical_then_other_devices_whatever_their_names() {
+        let mut devices = parse_android_adb_devices(
+            "List of devices attached\nemulator-5554 device model:managed_physical\nphone-1 device model:Pixel_8\n",
+        );
+        devices.push(Device {
+            id: "android".to_owned(),
+            kind: "managed Android emulator".to_owned(),
+            platform: Platform::Android,
+            group: DeviceGroup::Managed,
+            status: DeviceStatus::Available,
+        });
 
         order_devices(&mut devices);
 
@@ -1451,7 +1586,18 @@ mod tests {
                 .iter()
                 .map(|device| device.id.as_str())
                 .collect::<Vec<_>>(),
-            ["ios", "phone", "simulator"]
+            ["android", "phone-1", "emulator-5554"]
         );
+    }
+
+    #[test]
+    fn retries_only_transient_devicectl_errors() {
+        assert!(is_transient_devicectl_error("Connection reset by peer"));
+        assert!(is_transient_devicectl_error(
+            "CoreDevice.ControlChannelConnectionError"
+        ));
+        assert!(!is_transient_devicectl_error(
+            "The executable contains an invalid signature"
+        ));
     }
 }

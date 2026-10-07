@@ -5,10 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, bail};
 use tokamak::{PackageLayout, StorageBinding, store_id_problem};
+use tokamak_cli::copy_file;
 use walkdir::WalkDir;
 
-use super::support::{copy_file, glob_matches, slash_path};
-use super::wrangler_config::{WranglerConfig, WranglerMigrations, WranglerStorage};
+use super::paths::slash_path;
+use super::wrangler_config::{WranglerConfig, WranglerMigrations, WranglerStorage, glob_matches};
 
 /// The storage bindings `wrangler` declares, after copying each D1
 /// database's migrations into `layout`.

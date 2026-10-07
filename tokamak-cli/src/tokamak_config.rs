@@ -276,26 +276,23 @@ mod tests {
     #[test]
     fn top_level_values_are_defaults_and_platform_objects_override_them() -> TestResult {
         let temporary = tempfile::tempdir()?;
-        let config = load(
-            temporary.path(),
-            r#"{
+        let pro_icon = temporary.path().join("icons/Pro.icon");
+        let config = parse_config(
+            &config_file(temporary.path()),
+            serde_json::json!({
               "name": "My App",
               "identifier": "com.example.myapp",
               "icon": "assets/AppIcon.icon",
               "version": "1.0.0",
-              "ios": { "name": "Myapp Pro", "icon": "/icons/Pro.icon" },
+              "ios": { "name": "Myapp Pro", "icon": pro_icon },
               "android": { "identifier": "com.example.myapp.android" }
-            }"#,
+            }),
         )?;
         let icon = temporary.path().join("src/assets/AppIcon.icon");
 
         assert_eq!(config.path, config_file(temporary.path()));
         assert_eq!(config.version.as_deref(), Some("1.0.0"));
-        let ios = named(
-            Some("Myapp Pro"),
-            Some("com.example.myapp"),
-            Some(PathBuf::from("/icons/Pro.icon")),
-        );
+        let ios = named(Some("Myapp Pro"), Some("com.example.myapp"), Some(pro_icon));
         assert_eq!(config.for_platform(Platform::Ios), ios);
         assert_eq!(config.for_platform(Platform::IosSimulator), ios);
         assert_eq!(

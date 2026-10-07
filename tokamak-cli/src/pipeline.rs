@@ -4,12 +4,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use tokamak_cli::{MANIFEST_FILE, Platform, PlatformPackManifest, Target, load_manifest};
+use tokamak_cli::{Platform, PlatformPackManifest};
 
+use super::packs::PlatformPack;
 use super::tokamak_config::{TokamakConfig, app_name_problem, slug};
 use super::vite::VitePlugin;
 use super::wrangler_config::{self, WranglerConfig};
-use super::{plugins, settings, support, worker};
+use super::{paths, plugins, project, settings, worker};
 
 pub(crate) struct BuildRequest {
     pub(crate) platforms: Vec<Platform>,
@@ -33,8 +34,7 @@ pub(crate) struct DevelopmentRequest<'a> {
     pub(crate) platform: Platform,
     /// The canonical project directory.
     pub(crate) project: &'a Path,
-    /// The platform pack's root and manifest.
-    pub(crate) pack: (&'a Path, &'a PlatformPackManifest),
+    pub(crate) pack: &'a PlatformPack,
     pub(crate) tokamak: Option<&'a TokamakConfig>,
     pub(crate) worker_name: &'a str,
     pub(crate) endpoint: &'a str,
@@ -63,8 +63,7 @@ struct BuildContext<'a> {
 /// A platform whose pack is loaded and whose settings are resolved.
 struct PlatformBuild {
     platform: Platform,
-    pack_root: PathBuf,
-    manifest: PlatformPackManifest,
+    pack: PlatformPack,
     settings: settings::PlatformSettings,
     app: App,
 }
@@ -97,15 +96,20 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     let packs = request
         .platforms
         .iter()
-        .map(|platform| load_platform_pack(*platform, request.platform_pack_dir.as_deref()))
+        .map(|platform| PlatformPack::load(*platform, request.platform_pack_dir.as_deref()))
         .collect::<Result<Vec<_>>>()?;
     let current_dir = env::current_dir()?;
     let plugin = VitePlugin::new(
         build_dir.join(".tokamak").join("vite"),
         request.tokamak_config_path.as_deref(),
     )?;
-    for (platform, (_, manifest)) in request.platforms.iter().zip(&packs) {
-        check_settings(&request.top, &request.platform_options, *platform, manifest)?;
+    for (platform, pack) in request.platforms.iter().zip(&packs) {
+        check_settings(
+            &request.top,
+            &request.platform_options,
+            *platform,
+            &pack.manifest,
+        )?;
     }
     if !request.skip_project_build {
         let command = match request.build_command.clone() {
@@ -113,7 +117,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
             None => settings::process_environment("TOKAMAK_BUILD")?,
         };
         plugin.clear()?;
-        support::run_project_build(&project, command.as_deref(), plugin.environment())?;
+        project::build(&project, command.as_deref(), plugin.environment())?;
     }
     let tokamak = plugin.config("the build")?;
     let sources = settings::Sources::new(
@@ -127,22 +131,21 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         &wrangler_config::deploy_config_path(&project)
             .context("find the Wrangler configuration the build generated")?,
     )?;
-    support::validate_project_build(&wrangler)?;
+    project::check_output(&wrangler)?;
     warn_unsupported_bindings(&wrangler);
     let plugins = plugins::discover(&request.project_dir)?;
     let builds = request
         .platforms
         .iter()
         .zip(packs)
-        .map(|(platform, (pack_root, manifest))| {
-            let settings = settings::resolve(&sources, *platform, &manifest)?;
-            plugins::check(&plugins, &manifest)?;
+        .map(|(platform, pack)| {
+            let settings = settings::resolve(&sources, *platform, &pack.manifest)?;
+            plugins::check(&plugins, &pack.manifest)?;
             Ok(PlatformBuild {
                 platform: *platform,
                 app: resolve_app(&settings, &wrangler.name, *platform)?,
                 settings,
-                pack_root,
-                manifest,
+                pack,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -184,7 +187,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
         request.tokamak,
         &current_dir,
     );
-    let (pack_root, manifest) = request.pack;
+    let manifest = &request.pack.manifest;
     let platform_settings = settings::resolve(&sources, request.platform, manifest)?;
     let plugins = plugins::discover(request.project)?;
     let app = resolve_app(&platform_settings, request.worker_name, request.platform)?;
@@ -209,19 +212,15 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
     .context("write development metadata")?;
 
     let bundle_dir = output_path(&build_dir, request.platform, &app.slug);
-    support::build_with_pack(
-        pack_root,
-        manifest.target,
-        &input,
-        &bundle_dir,
-        &platform_settings.pack_environment,
-    )
-    .with_context(|| {
-        format!(
-            "build {} development shell using platform-pack entrypoint",
-            request.platform.display_name()
-        )
-    })?;
+    request
+        .pack
+        .build(&input, &bundle_dir, &platform_settings.pack_environment)
+        .with_context(|| {
+            format!(
+                "build {} development shell using platform-pack entrypoint",
+                request.platform.display_name()
+            )
+        })?;
     Ok(DevelopmentSummary {
         platform: request.platform,
         bundle_dir,
@@ -253,8 +252,7 @@ fn build_platform(
 ) -> Result<BuildSummary> {
     let PlatformBuild {
         platform,
-        pack_root,
-        manifest,
+        pack,
         settings: platform_settings,
         app,
     } = build;
@@ -264,14 +262,14 @@ fn build_platform(
 
     worker::package(&input.join("app"), context.worker, context.wrangler)
         .context("prepare the tokamak application package")?;
-    plugins::stage(context.plugins, manifest, &input.join("plugins"))
+    plugins::stage(context.plugins, &pack.manifest, &input.join("plugins"))
         .context("stage native plugin inputs")?;
     write_build_metadata(
         &input,
         &project,
         &BuildMetadata {
             app,
-            manifest,
+            manifest: &pack.manifest,
             version: Some(context.version),
             development: None,
             device_id: None,
@@ -281,19 +279,13 @@ fn build_platform(
     .context("write platform build metadata")?;
 
     let output = output_path(context.build_dir, platform, &app.slug);
-    support::build_with_pack(
-        pack_root,
-        manifest.target,
-        &input,
-        &output,
-        &platform_settings.pack_environment,
-    )
-    .with_context(|| {
-        format!(
-            "build {} using platform-pack entrypoint",
-            platform.display_name()
-        )
-    })?;
+    pack.build(&input, &output, &platform_settings.pack_environment)
+        .with_context(|| {
+            format!(
+                "build {} using platform-pack entrypoint",
+                platform.display_name()
+            )
+        })?;
     Ok(BuildSummary {
         platform,
         bundle_dir: output,
@@ -399,25 +391,6 @@ fn validate_platform_identifier(platform: Platform, identifier: String) -> Resul
     }
 }
 
-/// The root and manifest of the platform pack that builds `platform`.
-pub(crate) fn load_platform_pack(
-    platform: Platform,
-    platform_pack_dir: Option<&Path>,
-) -> Result<(PathBuf, PlatformPackManifest)> {
-    let manifest_path = fs::canonicalize(resolve_manifest(platform, platform_pack_dir)?)?;
-    let manifest = load_manifest(&manifest_path)
-        .with_context(|| format!("invalid platform pack: {}", manifest_path.display()))?;
-    manifest
-        .validate_cli_version(env!("CARGO_PKG_VERSION"))
-        .with_context(|| format!("incompatible platform pack: {}", manifest_path.display()))?;
-    support::validate_target(&manifest, platform)?;
-    let pack_root = manifest_path
-        .parent()
-        .context("platform-pack manifest must have a parent directory")?
-        .to_path_buf();
-    Ok((pack_root, manifest))
-}
-
 fn prepare_platform_input(
     project_dir: &Path,
     build_dir: &Path,
@@ -427,7 +400,7 @@ fn prepare_platform_input(
         .with_context(|| format!("resolve project directory: {}", project_dir.display()))?;
     let staging = build_dir.join(".tokamak").join(platform.directory_name());
     let input = staging.join("input");
-    support::reset_path(&input)
+    paths::reset_path(&input)
         .with_context(|| format!("reset build input directory: {}", input.display()))?;
     fs::create_dir_all(input.join("metadata")).with_context(|| {
         format!(
@@ -508,96 +481,10 @@ fn warn_unsupported_bindings(wrangler: &WranglerConfig) {
         let _ = writeln!(
             &mut warning,
             "  - {} ({}): the packaged app does not provide {}",
-            binding.name,
-            binding.kind,
-            unsupported_binding_feature(&binding.kind)
+            binding.name, binding.kind, binding.feature
         );
     }
     eprintln!("{warning}");
-}
-
-fn unsupported_binding_feature(kind: &str) -> &'static str {
-    match kind {
-        "durable_objects" => "Durable Objects",
-        "queues" => "Queues",
-        "services" => "service bindings",
-        "vectorize" => "Vectorize",
-        "hyperdrive" => "Hyperdrive",
-        "ai" => "Workers AI",
-        "browser" => "Browser Rendering",
-        "images" => "Images",
-        "dispatch_namespaces" => "dispatch namespaces",
-        "mtls_certificates" => "mTLS bindings",
-        "pipelines" => "Pipelines",
-        "rate_limiting" => "rate limiting",
-        "secrets_store_secrets" => "Secrets Store",
-        "send_email" => "Email Routing",
-        "analytics_engine_datasets" => "Analytics Engine",
-        _ => "this binding",
-    }
-}
-
-const PLATFORM_PACK_PATH_ENV: &str = "TOKAMAK_PLATFORM_PACK_PATH";
-
-fn resolve_manifest(platform: Platform, explicit_dir: Option<&Path>) -> Result<PathBuf> {
-    if let Some(directory) = explicit_dir {
-        if directory.is_file() {
-            bail!(
-                "--platform-pack must point to a platform-pack directory, not a manifest file: {}",
-                directory.display()
-            );
-        }
-        if !directory.is_dir() {
-            bail!("platform-pack directory not found: {}", directory.display());
-        }
-        let manifest = directory.join(MANIFEST_FILE);
-        if manifest.is_file() {
-            return Ok(manifest);
-        }
-        bail!("platform-pack manifest not found: {}", manifest.display());
-    }
-
-    let target = platform.default_target().map_err(anyhow::Error::from)?;
-    if let Some(roots) = env::var_os(PLATFORM_PACK_PATH_ENV).filter(|roots| !roots.is_empty()) {
-        return env::split_paths(&roots)
-            .find_map(|root| manifest_in(&root, target))
-            .with_context(|| {
-                format!(
-                    "{PLATFORM_PACK_PATH_ENV} does not contain a platform pack for {target}; npm installs @tokamakdev/platform-{target} with @tokamakdev/tok on hosts that can build it"
-                )
-            });
-    }
-
-    if let Some(manifest) = bundled_manifest(target).or_else(|| installed_manifest(target)) {
-        return Ok(manifest);
-    }
-
-    bail!(
-        "no platform pack found for {target}; install @tokamakdev/tok with npm, run the tokamak installer, pass --platform-pack, or build one with `cargo run -p xtask -- platform-pack --target {target}`"
-    )
-}
-
-fn manifest_in(root: &Path, target: Target) -> Option<PathBuf> {
-    let manifest = root.join(target.to_string()).join(MANIFEST_FILE);
-    manifest.is_file().then_some(manifest)
-}
-
-/// The manifest under the installer's per-user data directory.
-fn installed_manifest(target: Target) -> Option<PathBuf> {
-    let root = env::home_dir()?.join(".local/share/tokamak/platform-packs");
-    manifest_in(&root, target)
-}
-
-fn bundled_manifest(target: Target) -> Option<PathBuf> {
-    let exe = env::current_exe().ok()?;
-    let exe_dir = exe.parent()?;
-    [
-        exe_dir.join("platform-packs"),
-        exe_dir.join("../share/tokamak/platform-packs"),
-        exe_dir.join("../Resources/platform-packs"),
-    ]
-    .into_iter()
-    .find_map(|root| manifest_in(&root, target))
 }
 
 #[cfg(test)]
@@ -605,10 +492,10 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
 
-    use super::{exported_symbols, resolve_app, resolve_identifier, resolve_manifest};
+    use super::{exported_symbols, resolve_app, resolve_identifier};
     use crate::settings::PlatformSettings;
     use crate::wrangler_config;
-    use tokamak_cli::{MANIFEST_FILE, Platform};
+    use tokamak_cli::Platform;
 
     #[test]
     fn exports_the_storage_entry_point_while_any_storage_binding_is_declared()
@@ -700,36 +587,6 @@ mod tests {
         );
         assert!(
             resolve_identifier(Some("com..app".to_owned()), "demo-app", Platform::Ios).is_err()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn resolves_an_explicit_platform_pack_directory() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let manifest = directory.path().join(MANIFEST_FILE);
-        fs::write(&manifest, "manifest")?;
-
-        assert_eq!(
-            resolve_manifest(Platform::Macos, Some(directory.path()))?,
-            manifest
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_an_explicit_manifest_file() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let manifest = directory.path().join(MANIFEST_FILE);
-        fs::write(&manifest, "manifest")?;
-
-        let Err(error) = resolve_manifest(Platform::Macos, Some(&manifest)) else {
-            return Err("a manifest file was accepted as a platform pack".into());
-        };
-        assert!(
-            error
-                .to_string()
-                .contains("must point to a platform-pack directory")
         );
         Ok(())
     }

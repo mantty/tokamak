@@ -7,11 +7,13 @@ mod cache;
 mod certs;
 mod dev;
 mod devices;
+mod packs;
+mod paths;
 mod pipeline;
 mod plugins;
+mod project;
 mod settings;
 mod storage;
-mod support;
 mod tokamak_config;
 mod vite;
 mod worker;
@@ -24,6 +26,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use packs::PlatformPack;
 use settings::{PlatformOptions, TopOptions};
 use tokamak_cli::{Platform, Target};
 
@@ -32,7 +35,7 @@ const DEV_PLATFORM_HELP: &str =
     "Platform options: run `tok dev <platform> --help` to list the options the platform accepts.";
 
 #[derive(Debug, Parser)]
-#[command(name = "tok", about = "tokamak native app tooling")]
+#[command(name = "tok", bin_name = "tok", about = "tokamak native app tooling")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -237,10 +240,10 @@ fn platforms_help(platforms: &[Platform], platform_pack: Option<&Path>) -> Strin
     platforms
         .iter()
         .map(|platform| {
-            let pack = pipeline::load_platform_pack(*platform, platform_pack);
+            let pack = PlatformPack::load(*platform, platform_pack);
             let manifest = pack
                 .as_ref()
-                .map(|(_, manifest)| manifest)
+                .map(|pack| &pack.manifest)
                 .map_err(|error| format!("{error:#}"));
             settings::platform_help(*platform, manifest)
         })

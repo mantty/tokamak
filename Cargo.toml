@@ -73,12 +73,14 @@ base64 = "0.22.1"
 brotlic-sys = "=0.2.2"
 block2 = "0.6.2"
 clap = { version = "4.6.1", features = ["derive"] }
+ctrlc = { version = "3.5.2", features = ["termination"] }
 dispatch2 = "0.3.1"
 encoding_rs = "0.8.35"
 flate2 = { version = "1.1.8", default-features = false, features = ["zlib-rs"] }
 flume = { version = "0.12.0", default-features = false, features = ["async", "select"] }
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 getrandom = { version = "0.4.2", features = ["sys_rng"] }
+hex = "0.4.3"
 hmac = { version = "0.13.0", features = ["zeroize"] }
 hyper = { version = "1.11.1", default-features = false }
 fixed_decimal = "0.7.2"
@@ -120,6 +122,7 @@ walkdir = "2.5.0"
 writeable = "0.6.4"
 wry = { version = "0.55.1", default-features = false }
 webview2-com = "0.38.2"
+win32job = "2.0.3"
 windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 x509-parser = { version = "0.18.1", features = ["verify"] }
 x509-cert = { version = "0.3", default-features = false, features = ["builder", "pem", "std"] }

@@ -10,10 +10,10 @@ anyhow.workspace = true
 tokamak = { path = "../../tokamak" }
 tokamak-cli = { path = "../../tokamak-cli" }
 clap.workspace = true
+hex.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 toml.workspace = true
-walkdir.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

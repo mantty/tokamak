@@ -6,11 +6,11 @@ use std::process::Command as ProcessCommand;
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
-use tokamak::compile_module;
+#[cfg(unix)]
 use tokamak::{
-    HtmlHandling, ModuleType, NotFoundHandling, PackageLayout, read_asset_manifest,
-    read_worker_manifest, read_worker_module,
+    HtmlHandling, ModuleType, NotFoundHandling, read_asset_manifest, read_worker_manifest,
 };
+use tokamak::{PackageLayout, compile_module, read_worker_module};
 use tokamak_cli::{
     MANIFEST_FILE, PackVariable, Platform, PlatformPackManifest, Target, VariableKind,
     write_manifest,
@@ -97,6 +97,7 @@ fn declare_storage(root: &Path) -> TestResult {
     )
 }
 
+#[cfg(unix)]
 fn install_location_plugin(root: &Path) -> TestResult {
     fs::write(
         root.join("package.json"),
@@ -130,7 +131,8 @@ fn install_location_plugin(root: &Path) -> TestResult {
 
 /// An entrypoint that records how tok runs it: its output holds the input tok
 /// staged, its arguments, the directory it ran from, and the tokamak settings
-/// it received.
+/// it received. It is a Bash script recording Unix paths, so tests that run it
+/// are Unix-only.
 const RECORDING_ENTRYPOINT: &str = r#"#!/usr/bin/env bash
 set -euo pipefail
 output=$3
@@ -153,6 +155,7 @@ fn create_platform_pack(root: &Path, target: &str) -> TestResult<PathBuf> {
 
 /// The value of the tokamak setting `name` that the recording entrypoint with
 /// `output` received.
+#[cfg(unix)]
 fn received(output: &Path, name: &str) -> TestResult<Option<String>> {
     let prefix = format!("{name}=");
     Ok(fs::read_to_string(output.join("environment"))?
@@ -354,6 +357,7 @@ fn write_executable(path: &Path, contents: &str) -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn stages_the_entry_points_of_the_runtime_parts_the_app_links() -> TestResult {
     let (_temporary, project, platform_pack) = create_inputs("android-arm64")?;
@@ -372,6 +376,7 @@ fn stages_the_entry_points_of_the_runtime_parts_the_app_links() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn stages_the_app_and_its_metadata_and_runs_the_entrypoint_from_the_pack_root() -> TestResult {
     let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
@@ -431,6 +436,7 @@ fn stages_the_app_and_its_metadata_and_runs_the_entrypoint_from_the_pack_root() 
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn stages_the_identifier_and_version_from_each_source() -> TestResult {
     let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
@@ -493,6 +499,7 @@ fn requires_the_tokamak_vite_plugin() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn stages_the_display_name_and_names_the_output_after_its_slug() -> TestResult {
     for (platform, target, output) in [
@@ -528,6 +535,7 @@ fn stages_the_display_name_and_names_the_output_after_its_slug() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn passes_options_then_environment_then_configured_values_to_the_entrypoint() -> TestResult {
     let (_temporary, project, platform_pack) = create_inputs("android-arm64")?;
@@ -560,6 +568,7 @@ fn passes_options_then_environment_then_configured_values_to_the_entrypoint() ->
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn passes_path_settings_and_the_icon_as_absolute_paths() -> TestResult {
     let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
@@ -685,6 +694,7 @@ fn checks_every_platform_s_plugin_sections_before_any_platform_builds() -> TestR
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn compiles_es_modules_and_copies_text_and_data_modules() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
@@ -743,6 +753,7 @@ fn rejects_a_webassembly_module() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn warns_about_bindings_the_packaged_app_lacks() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
@@ -773,6 +784,7 @@ fn warns_about_bindings_the_packaged_app_lacks() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn packages_worker_vars_as_a_normalized_manifest() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
@@ -898,6 +910,7 @@ fn ignores_unrelated_files_when_reusing_worker_modules() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn stages_the_plugins_installed_above_a_relative_project_directory() -> TestResult {
     let (temporary, project, platform_pack) = create_inputs("macos-arm64")?;
@@ -1087,11 +1100,14 @@ fn finds_platform_packs_installed_in_the_home_directory() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let project = temporary.path().join("project");
     let home = temporary.path().join("home");
-    let pack = home.join(".local/share/tokamak/platform-packs/macos-arm64");
+    let target = Platform::Macos.default_target()?.to_string();
+    let pack = home
+        .join(".local/share/tokamak/platform-packs")
+        .join(&target);
     fs::create_dir_all(&project)?;
     fs::create_dir_all(&pack)?;
     create_project(&project)?;
-    create_platform_pack(&pack, "macos-arm64")?;
+    create_platform_pack(&pack, &target)?;
 
     let mut command = Command::cargo_bin("tok")?;
     command
@@ -1141,12 +1157,13 @@ fn searches_every_directory_in_the_platform_pack_path() -> TestResult {
     let project = temporary.path().join("project");
     let empty = temporary.path().join("empty");
     let platform_packs = temporary.path().join("platform-packs");
-    let pack = platform_packs.join("macos-arm64");
+    let target = Platform::Macos.default_target()?.to_string();
+    let pack = platform_packs.join(&target);
     fs::create_dir_all(&project)?;
     fs::create_dir_all(&empty)?;
     fs::create_dir_all(&pack)?;
     create_project(&project)?;
-    create_platform_pack(&pack, "macos-arm64")?;
+    create_platform_pack(&pack, &target)?;
 
     let mut command = Command::cargo_bin("tok")?;
     command
@@ -1165,6 +1182,7 @@ fn searches_every_directory_in_the_platform_pack_path() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn builds_the_project_before_reading_what_it_generates() -> TestResult {
     let (_temporary, project, pack) = create_inputs("macos-arm64")?;
@@ -1297,6 +1315,7 @@ fn dev_selects_an_ios_device_when_android_devices_cannot_be_queried() -> TestRes
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn writes_configured_asset_routing_modes() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
@@ -1324,6 +1343,7 @@ fn writes_configured_asset_routing_modes() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn packages_modules_the_configured_rules_match_under_bundle() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
@@ -1351,6 +1371,7 @@ fn packages_modules_the_configured_rules_match_under_bundle() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn packages_webassembly_assets_as_static_files() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
@@ -1379,6 +1400,7 @@ fn requires_a_name_while_the_worker_name_is_not_an_app_name() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn names_the_app_from_the_name_setting_whatever_the_worker_name() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
