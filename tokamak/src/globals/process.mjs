@@ -1,16 +1,26 @@
+import { builtinNamespace, isNodeBuiltin } from "tokamak:host";
 import EventEmitter from "../events/events.mjs";
+import { string } from "./conversions.mjs";
 
 const process = new EventEmitter();
 export default process;
 
-export function installProcessGlobals(builtinModules) {
+const builtinModules = new Map();
+
+// The builtin module `name` names: a Node module's default export, or another's namespace.
+function builtinModule(name) {
+  const namespace = builtinNamespace(name);
+  return namespace && isNodeBuiltin(name) ? namespace.default : namespace;
+}
+
+export function installProcessGlobals() {
   globalThis.process = process;
   process.env = Object.fromEntries(Object.entries(globalThis.__tokamak_env ?? {}).map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]));
   process.nextTick = (callback, ...args) => queueMicrotask(() => callback(...args));
-  process.getBuiltinModule = (name) => {
-    if (typeof name !== "string") throw new TypeError("Module name must be a string");
-    const key = name.startsWith("node:") ? name.slice(5) : name;
-    return Object.hasOwn(builtinModules, key) ? builtinModules[key] : undefined;
+  process.getBuiltinModule = specifier => {
+    const name = string(specifier);
+    if (!builtinModules.has(name)) builtinModules.set(name, builtinModule(name));
+    return builtinModules.get(name);
   };
   process.argv = ["workerd"];
   process.argv0 = "workerd";

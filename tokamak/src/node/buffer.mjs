@@ -441,7 +441,6 @@ export function resolveObjectURL() { throw new Error("Blob URLs are not availabl
 
 Object.defineProperty(Buffer, "length", { configurable: true, value: 3 });
 Buffer.poolSize = 0;
-if (typeof globalThis.Buffer !== "function") globalThis.Buffer = Buffer;
 
 export { Blob, File };
 export default { Buffer, SlowBuffer, Blob, File, atob, btoa, constants, isAscii, isUtf8, kMaxLength, kStringMaxLength, INSPECT_MAX_BYTES, resolveObjectURL, transcode };

@@ -63,6 +63,7 @@ function describeHtmlRewriterAttributes(attributes) {
 
 export async function run(handlerEnv, ctx, constructors) {
   const output = {};
+  const consoleBeforeNodeConsole = Object.getOwnPropertyNames(console).sort();
   output.streamDetails = await streamContracts();
   output.cryptoDetails = await cryptoContracts();
   output.htmlDetails = await htmlContracts();
@@ -321,6 +322,23 @@ export async function run(handlerEnv, ctx, constructors) {
     timers: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"].every(name => process.getBuiltinModule("node:timers")[name] === globalThis[name]),
   };
   output.nodeEventsExports = Object.keys(await import("node:events")).sort();
+  const nodeModuleApi = process.getBuiltinModule("node:module");
+  const nodeRepl = process.getBuiltinModule("node:repl");
+  const nodeHttpServer = process.getBuiltinModule("node:http").createServer(() => {}).listen(8123);
+  output.builtinRegistry = {
+    consoleBeforeNodeConsole,
+    builtinModules: nodeModuleApi.builtinModules,
+    replBuiltinModules: [nodeRepl.builtinModules, nodeRepl._builtinLibs],
+    isBuiltin: ["fs", "node:fs", "node:nope", "nope", "test", "node:test", "sqlite", "cloudflare:sockets", 1].map(name => nodeModuleApi.isBuiltin(name)),
+    bareImports: await Promise.all(["test", "sqlite", "fs"].map(name => import(name).then(() => true, () => false))),
+    getBuiltinModule: ["cloudflare:sockets", "cloudflare:workers", "test", "sqlite", "node:nope", 1, null, undefined].map(name => typeof process.getBuiltinModule(name)),
+    namespaces: process.getBuiltinModule("cloudflare:sockets") === await import("cloudflare:sockets"),
+    symbol: detailedResult(() => process.getBuiltinModule(Symbol("name"))),
+    require: ["fs", "node:test", "test", "cloudflare:sockets"].map(name => detailedResult(() => typeof nodeModuleApi.createRequire("/")(name))),
+    requireProperties: Object.getOwnPropertyNames(nodeModuleApi.createRequire("/")).sort(),
+    httpGlobals: Object.getOwnPropertyNames(globalThis).filter(name => /http/i.test(name)),
+  };
+  nodeHttpServer.close();
   output.bodyConstructor = result(() => new Body());
   const ownKeys = value => Reflect.ownKeys(value).map(String).sort();
   output.ownProperties = {

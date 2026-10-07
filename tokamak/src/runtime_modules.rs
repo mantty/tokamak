@@ -1,5 +1,7 @@
 //! The public names of the runtime's builtin modules.
 
+use rquickjs::{Ctx, Module, Object};
+
 /// Each public module name with the module it resolves to.
 const PUBLIC_MODULES: &[(&str, &str)] = &[
     (
@@ -110,23 +112,64 @@ const PUBLIC_MODULES: &[(&str, &str)] = &[
     ("node:wasi", "tokamak:node/wasi.mjs"),
 ];
 
+/// Node modules imported only by their `node:` name.
+const PREFIX_ONLY: &[&str] = &["node:test"];
+
+/// Node modules `node:module`'s `builtinModules` leaves out.
+const UNLISTED: &[&str] = &["node:sqlite", "node:test"];
+
 /// Every public import spelling the runtime resolver handles.
 #[cfg(all(test, feature = "native"))]
 pub(crate) fn runtime_module_names() -> Vec<&'static str> {
-    let mut names = Vec::with_capacity(PUBLIC_MODULES.len() * 2);
-    names.extend(PUBLIC_MODULES.iter().map(|(name, _)| *name));
-    names.extend(
-        PUBLIC_MODULES
-            .iter()
-            .filter_map(|(name, _)| name.strip_prefix("node:")),
-    );
-    names
+    let names = PUBLIC_MODULES.iter().map(|(name, _)| *name);
+    names.clone().chain(names.filter_map(bare_name)).collect()
 }
 
 pub(crate) fn public_module(name: &str) -> Option<&'static str> {
     PUBLIC_MODULES.iter().find_map(|(public, target)| {
-        (*public == name
-            || (!name.starts_with("node:") && public.strip_prefix("node:") == Some(name)))
-        .then_some(*target)
+        (*public == name || bare_name(public) == Some(name)).then_some(*target)
     })
+}
+
+/// The name a Node module is also imported by, without `node:`.
+fn bare_name(public: &str) -> Option<&str> {
+    public
+        .strip_prefix("node:")
+        .filter(|_| !PREFIX_ONLY.contains(&public))
+}
+
+/// Whether `name` names a Node module, as `node:module`'s `isBuiltin` decides.
+pub(crate) fn is_node_builtin(name: &str) -> bool {
+    name.starts_with("node:")
+        || PUBLIC_MODULES
+            .iter()
+            .any(|(public, _)| bare_name(public) == Some(name))
+}
+
+/// The names `node:module`'s `builtinModules` lists, in order.
+pub(crate) fn node_builtin_names() -> Vec<&'static str> {
+    let mut names: Vec<_> = PUBLIC_MODULES
+        .iter()
+        .filter(|(public, _)| !UNLISTED.contains(public))
+        .filter_map(|(public, _)| public.strip_prefix("node:"))
+        .collect();
+    names.sort_unstable();
+    names
+}
+
+/// The namespace of the builtin module `name` names, evaluated now, or
+/// `None` when it names none.
+pub(crate) fn builtin_namespace<'js>(
+    ctx: Ctx<'js>,
+    name: &str,
+) -> rquickjs::Result<Option<Object<'js>>> {
+    let Some(target) = public_module(name) else {
+        return Ok(None);
+    };
+    // Evaluating a module that re-exports the namespace reaches it synchronously.
+    let source = format!("export * as namespace from {target:?};");
+    let module = Module::declare(ctx, format!("{target}#namespace"), source)?;
+    let (module, evaluation) = module.eval()?;
+    evaluation.result::<()>().transpose()?;
+    module.get("namespace").map(Some)
 }

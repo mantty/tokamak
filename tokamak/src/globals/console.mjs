@@ -19,6 +19,7 @@ export const console = {
     writeStderr("Trace" + (values.length ? ": " + format(...values) : "") + "\n" + stack);
   },
   dir(value, options) { writeStdout(inspect(value, options) + "\n"); },
+  dirxml(...values) { console.log(...values); },
   assert(condition, ...values) {
     if (condition) return;
     console.error("Assertion failed" + (values.length ? ": " + format(...values) : ""));
@@ -44,6 +45,10 @@ export const console = {
   groupEnd() {},
   table(value) { console.log(value); },
   clear() {},
+  context() { return console; },
+  profile() {},
+  profileEnd() {},
+  timeStamp() {},
 };
 
 export function installConsoleGlobal() {

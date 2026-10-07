@@ -3,12 +3,8 @@ import { console as consoleObject } from "../globals/console.mjs";
 
 function noop() {}
 
-const methods = [
-  "assert", "clear", "context", "count", "countReset", "createTask", "debug", "dir", "dirxml", "error", "group",
-  "groupCollapsed", "groupEnd", "info", "log", "profile", "profileEnd", "table", "time", "timeEnd", "timeLog",
-  "timeStamp", "trace", "warn",
-];
-for (const name of methods) if (typeof consoleObject[name] !== "function") consoleObject[name] = noop;
+// Loading `node:console` adds Node's members to the global console.
+consoleObject.createTask ??= noop;
 consoleObject._ignoreErrors ??= true;
 consoleObject._stderr ??= { write(text) { writeStderr(String(text)); return true; } };
 consoleObject._stdout ??= { write(text) { writeStdout(String(text)); return true; } };

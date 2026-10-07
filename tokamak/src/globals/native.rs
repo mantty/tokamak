@@ -10,6 +10,8 @@ use rquickjs::{
 };
 use std::io::Write;
 
+use crate::runtime_modules;
+
 pub(crate) struct HostModule;
 
 super::host_functions! {
@@ -35,6 +37,9 @@ super::host_functions! {
     "writeStdout" => |text: String| write_flushed(&mut std::io::stdout().lock(), &text),
     "writeStderr" => |text: String| write_flushed(&mut std::io::stderr().lock(), &text),
     "registerDomException" => register_dom_exception,
+    "builtinNamespace" => |ctx: Ctx<'js>, name: String| runtime_modules::builtin_namespace(ctx, &name),
+    "isNodeBuiltin" => |name: String| runtime_modules::is_node_builtin(&name),
+    "nodeBuiltinNames" => runtime_modules::node_builtin_names,
 }
 
 /// The `DOMException` class native errors are created with, registered by the

@@ -1,45 +1,18 @@
-const builtinModules = [
-  "assert", "assert/strict", "async_hooks", "buffer", "child_process", "cluster", "console", "constants",
-  "crypto", "dgram", "diagnostics_channel", "dns", "dns/promises", "domain", "events", "fs", "fs/promises",
-  "http", "http2", "https", "inspector", "inspector/promises", "module", "net", "os", "path", "path/posix",
-  "path/win32", "perf_hooks", "process", "punycode", "querystring", "readline", "readline/promises", "repl",
-  "stream", "stream/consumers", "stream/promises", "stream/web", "string_decoder", "sys", "timers",
-  "timers/promises", "tls", "trace_events", "tty", "url", "util", "util/types", "v8", "vm", "wasi",
-  "worker_threads", "zlib", "_http_agent", "_http_client", "_http_common", "_http_incoming", "_http_outgoing",
-  "_http_server", "_stream_duplex", "_stream_passthrough", "_stream_readable", "_stream_transform", "_stream_wrap",
-  "_stream_writable", "_tls_common", "_tls_wrap", "sqlite", "test",
-];
+import { isNodeBuiltin, nodeBuiltinNames } from "tokamak:host";
+import process from "../globals/process.mjs";
 
-function nameOf(value) {
-  if (typeof value !== "string") throw new TypeError("The module name must be a string");
-  return value.startsWith("node:") ? value.slice(5) : value;
-}
-
-function moduleNotFound(key) {
-  const error = new Error(`Cannot find module '${key}'`);
-  error.code = "MODULE_NOT_FOUND";
-  return error;
-}
+const builtinModules = nodeBuiltinNames();
 
 export function isBuiltin(value) {
-  return typeof value === "string" && (value.startsWith("node:") || builtinModules.includes(nameOf(value)));
+  return typeof value === "string" && isNodeBuiltin(value);
 }
 
 export function createRequire() {
-  const require = name => {
-    const key = nameOf(name);
-    const value = globalThis.process?.getBuiltinModule?.(key);
-    if (value !== undefined) return value;
-    throw moduleNotFound(key);
+  return function require(name) {
+    const value = process.getBuiltinModule(name);
+    if (value === undefined) throw new Error(`No such module "${name}".`);
+    return value;
   };
-  require.resolve = name => {
-    const key = nameOf(name);
-    if (!isBuiltin(key)) throw moduleNotFound(key);
-    return `node:${key}`;
-  };
-  require.cache = {};
-  require.extensions = {};
-  return require;
 }
 
 function notImplemented(name) {

@@ -1,9 +1,15 @@
+import { installConsoleGlobal } from "../globals/console.mjs";
+import { installProcessGlobals } from "../globals/process.mjs";
 import { installWebGlobals } from "../globals/web.mjs";
 import { installWebSocketGlobals } from "../network/websocket.mjs";
+import { Buffer } from "../node/buffer.mjs";
 
 installWebGlobals();
 installWebSocketGlobals();
+installProcessGlobals();
+installConsoleGlobal();
 globalThis.global = globalThis;
+globalThis.Buffer = Buffer;
 delete globalThis.InternalError;
 
 // Array/TypedArray toLocaleString forward locales and options to each element,
