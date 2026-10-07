@@ -1,18 +1,17 @@
 use flume::{Receiver, SendError, Sender};
 use std::io::{self, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use reqwest::header::{HeaderMap, HeaderValue};
-use rustls::ServerConfig;
 use tokio::runtime::{Builder as TokioBuilder, Runtime as TokioRuntime};
+use tokio_util::sync::CancellationToken;
 
+use crate::certificates::Certificates;
 use crate::lifecycle_events::{Event, Events};
-use crate::quickjs::Error;
 use crate::readiness::{Readiness, Waker};
 
 use crate::transport::{
@@ -29,16 +28,8 @@ const CALL_ATTEMPTS: u32 = 3;
 /// The pause before a failed runtime call is attempted again.
 const CALL_RETRY_DELAY: Duration = Duration::from_secs(1);
 
-/// Supplies the TLS configuration the gateway accepts connections with.
-pub(super) type ServerTls = Arc<dyn Fn() -> Result<Arc<ServerConfig>, Error> + Send + Sync>;
-
-#[derive(Clone)]
-pub(super) struct GatewayConfig {
-    pub(super) tls: ServerTls,
-    pub(super) host: String,
-    pub(super) port: u16,
-    pub(super) require_client_certificate: bool,
-}
+/// Why a handler could not answer a request.
+pub(super) type HandlerError = Box<dyn std::error::Error + Send + Sync>;
 
 pub(crate) struct Runtime {
     shared: Arc<Shared>,
@@ -57,169 +48,19 @@ impl std::fmt::Debug for Runtime {
 
 pub(super) struct Shared {
     pub(super) handler: Arc<dyn Handler>,
-    pub(super) config: GatewayConfig,
+    pub(super) certificates: Arc<Certificates>,
+    pub(super) host: String,
     pub(super) tokio: tokio::runtime::Handle,
     pub(super) port: AtomicU16,
-    pub(super) accepting: Arc<AtomicBool>,
-    pub(super) lifecycle: Lifecycle,
+    /// Cancelled once the runtime stops.
+    pub(super) stopped: CancellationToken,
     pub(super) connections: Mutex<Vec<Arc<Connection>>>,
     pub(super) events: Events,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LifecyclePhase {
-    Running,
-    Suspending,
-    Suspended,
-    Stopping,
-}
-
-struct LifecycleStatus {
-    phase: LifecyclePhase,
-    active: usize,
-}
-
-pub(super) struct Lifecycle {
-    status: Mutex<LifecycleStatus>,
-    changed: Condvar,
-    stopped: tokio::sync::Notify,
-}
-
-pub(super) struct Execution<'a> {
-    lifecycle: &'a Lifecycle,
-    accepting: &'a Arc<AtomicBool>,
-}
-
 pub(super) trait Handler: Send + Sync {
-    fn handle(&self, job: Job, execution: &Execution<'_>) -> Result<(), Error>;
-}
-
-impl Lifecycle {
-    pub(super) fn new() -> Self {
-        Self {
-            status: Mutex::new(LifecycleStatus {
-                phase: LifecyclePhase::Running,
-                active: 0,
-            }),
-            changed: Condvar::new(),
-            stopped: tokio::sync::Notify::new(),
-        }
-    }
-
-    pub(super) fn suspend(&self) {
-        let mut status = lock_status(&self.status);
-        if status.phase == LifecyclePhase::Running {
-            status.phase = if status.active == 0 {
-                LifecyclePhase::Suspended
-            } else {
-                LifecyclePhase::Suspending
-            };
-        }
-        self.changed.notify_all();
-        self.stopped.notify_waiters();
-    }
-
-    pub(super) fn resume(&self) {
-        let mut status = lock_status(&self.status);
-        if status.phase != LifecyclePhase::Stopping {
-            status.phase = LifecyclePhase::Running;
-            self.changed.notify_all();
-        }
-    }
-
-    pub(super) fn stop(&self) {
-        let mut status = lock_status(&self.status);
-        status.phase = LifecyclePhase::Stopping;
-        self.changed.notify_all();
-        self.stopped.notify_waiters();
-    }
-
-    pub(super) fn enter<'a>(&'a self, accepting: &'a Arc<AtomicBool>) -> Option<Execution<'a>> {
-        let mut status = self.wait_for_running(lock_status(&self.status), accepting)?;
-        status.active += 1;
-        Some(Execution {
-            lifecycle: self,
-            accepting,
-        })
-    }
-
-    fn wait_until_running(&self, accepting: &AtomicBool) -> bool {
-        self.wait_for_running(lock_status(&self.status), accepting)
-            .is_some()
-    }
-
-    fn wait_for_running<'a>(
-        &self,
-        mut status: MutexGuard<'a, LifecycleStatus>,
-        accepting: &AtomicBool,
-    ) -> Option<MutexGuard<'a, LifecycleStatus>> {
-        if !accepting.load(Ordering::Acquire) {
-            return None;
-        }
-        while status.phase != LifecyclePhase::Running {
-            if status.phase == LifecyclePhase::Stopping || !accepting.load(Ordering::Acquire) {
-                return None;
-            }
-            status = wait_for_change(&self.changed, status);
-        }
-        accepting.load(Ordering::Acquire).then_some(status)
-    }
-}
-
-impl Execution<'_> {
-    pub(super) async fn paused(&self) {
-        loop {
-            let changed = self.lifecycle.stopped.notified();
-            if !self.is_running() {
-                return;
-            }
-            changed.await;
-        }
-    }
-
-    pub(super) async fn cancelled(&self) {
-        loop {
-            let stopped = self.lifecycle.stopped.notified();
-            if !self.accepting.load(Ordering::Acquire)
-                || lock_status(&self.lifecycle.status).phase == LifecyclePhase::Stopping
-            {
-                return;
-            }
-            stopped.await;
-        }
-    }
-
-    pub(super) fn is_running(&self) -> bool {
-        self.accepting.load(Ordering::Acquire)
-            && lock_status(&self.lifecycle.status).phase == LifecyclePhase::Running
-    }
-
-    /// An owned handle on the accepting flag for observers that outlive this execution's borrow.
-    pub(super) fn accepting(&self) -> Arc<AtomicBool> {
-        Arc::clone(self.accepting)
-    }
-}
-
-impl Drop for Execution<'_> {
-    fn drop(&mut self) {
-        let mut status = lock_status(&self.lifecycle.status);
-        status.active -= 1;
-        if status.phase == LifecyclePhase::Suspending && status.active == 0 {
-            status.phase = LifecyclePhase::Suspended;
-        }
-        self.lifecycle.changed.notify_all();
-    }
-}
-
-fn lock_status(status: &Mutex<LifecycleStatus>) -> MutexGuard<'_, LifecycleStatus> {
-    status.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn wait_for_change<'a>(
-    changed: &Condvar,
-    status: MutexGuard<'a, LifecycleStatus>,
-) -> MutexGuard<'a, LifecycleStatus> {
-    changed.wait(status).unwrap_or_else(PoisonError::into_inner)
+    /// Answers `job`, abandoning it once `stopped` is cancelled.
+    fn handle(&self, job: Job, stopped: &CancellationToken) -> Result<(), HandlerError>;
 }
 
 pub(super) struct Job {
@@ -288,33 +129,35 @@ pub(super) enum WebSocketOutbound {
 }
 
 impl Runtime {
+    /// Serves `handler` on a loopback port, terminating TLS for `host` with
+    /// `certificates`.
     pub(crate) fn start(
         handler: Arc<dyn Handler>,
-        config: GatewayConfig,
+        certificates: Arc<Certificates>,
+        host: String,
         events: Events,
-    ) -> Result<Self, Error> {
-        let listener = TcpListener::bind(("127.0.0.1", config.port))?;
+    ) -> io::Result<Self> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
         let tokio_runtime = TokioBuilder::new_multi_thread()
             .thread_name("tokamak-tokio")
             .enable_all()
-            .build()
-            .map_err(|error| Error::Startup(format!("failed to start Tokio: {error}")))?;
+            .build()?;
         let shared = Arc::new(Shared {
             handler,
-            config,
+            certificates,
+            host,
             tokio: tokio_runtime.handle().clone(),
             port: AtomicU16::new(port),
-            accepting: Arc::new(AtomicBool::new(true)),
-            lifecycle: Lifecycle::new(),
+            stopped: CancellationToken::new(),
             connections: Mutex::new(Vec::new()),
             events,
         });
         let gateway_shared = Arc::clone(&shared);
         let gateway = thread::Builder::new()
             .name("tokamak-gateway".to_owned())
-            .spawn(move || gateway_loop(&gateway_shared, listener))
-            .map_err(|error| Error::Startup(format!("failed to start gateway thread: {error}")))?;
+            .spawn(move || gateway_loop(&gateway_shared, listener))?;
+        shared.events.emit(Event::Listening { port });
         Ok(Self {
             shared,
             gateway: Some(gateway),
@@ -330,21 +173,12 @@ impl Runtime {
         wait_for_gateway(|| self.port())
     }
 
-    pub(crate) fn suspend(&self) {
-        self.shared.lifecycle.suspend();
-        close_connections(&self.shared);
-    }
-
-    pub(crate) fn resume(&self) {
-        self.shared.lifecycle.resume();
-    }
-
     /// Posts JSON `body` to the Worker's `/tokamak/<name>` endpoint and returns
     /// the response body. Attempts the post again a second after it fails, up
     /// to three times, while the Worker can still respond within `timeout`.
-    pub(crate) fn call(&self, name: &str, body: &str, timeout: Duration) -> Result<Vec<u8>, Error> {
+    pub(crate) fn call(&self, name: &str, body: &str, timeout: Duration) -> io::Result<Vec<u8>> {
         let deadline = Instant::now() + timeout;
-        let request = call_request(&self.shared.config.host, name, body)?;
+        let request = call_request(&self.shared.host, name, body)?;
         let mut attempts = 1;
         loop {
             let failure = match self.post(request.clone(), deadline, timeout) {
@@ -352,7 +186,7 @@ impl Runtime {
                 Err(failure) => failure,
             };
             if attempts == CALL_ATTEMPTS || Instant::now() + CALL_RETRY_DELAY >= deadline {
-                return Err(Error::Call(failure));
+                return Err(io::Error::other(failure));
             }
             thread::sleep(CALL_RETRY_DELAY);
             attempts += 1;
@@ -385,13 +219,16 @@ impl Runtime {
 }
 
 /// The request for a runtime call to `/tokamak/<name>`.
-fn call_request(host: &str, name: &str, body: &str) -> Result<HttpRequest, Error> {
+fn call_request(host: &str, name: &str, body: &str) -> io::Result<HttpRequest> {
     if name.is_empty()
         || !name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
     {
-        return Err(Error::Call(format!("invalid runtime call name: {name:?}")));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid runtime call name: {name:?}"),
+        ));
     }
     let target = format!("/tokamak/{name}");
     let mut headers = HeaderMap::new();
@@ -412,8 +249,7 @@ fn call_request(host: &str, name: &str, body: &str) -> Result<HttpRequest, Error
 
 impl Drop for Runtime {
     fn drop(&mut self) {
-        self.shared.lifecycle.stop();
-        self.shared.accepting.store(false, Ordering::Release);
+        self.shared.stopped.cancel();
         close_connections(&self.shared);
         let _ = TcpStream::connect(("127.0.0.1", self.port()));
         if let Some(thread) = self.gateway.take() {
@@ -427,54 +263,36 @@ impl Drop for Runtime {
 
 fn gateway_loop(shared: &Arc<Shared>, mut listener: TcpListener) {
     let mut connection_threads = Vec::new();
-    let mut listener_error_reported = false;
+    let mut listener_failed = false;
     loop {
         reap_finished_connections(&mut connection_threads);
-        if !shared.accepting.load(Ordering::Acquire) {
+        if shared.stopped.is_cancelled() {
             break;
         }
         let stream = match listener.accept() {
             Ok((stream, _)) => stream,
             Err(error) if listener_was_closed(&error) => {
-                let port = shared.port.load(Ordering::Acquire);
-                eprintln!("gateway listener closed: {error}");
-                match replace_closed_listener(listener, port) {
-                    Ok((replacement, replacement_port)) => {
-                        listener = replacement;
-                        shared.port.store(replacement_port, Ordering::Release);
-                        listener_error_reported = false;
-                        eprintln!("tokamak gateway listening on 127.0.0.1:{replacement_port}");
-                        continue;
-                    }
-                    Err(error) => {
-                        eprintln!("gateway listener could not recover: {error}");
-                        break;
-                    }
-                }
+                let Some(replacement) = recover_listener(shared, listener) else {
+                    break;
+                };
+                listener = replacement;
+                continue;
             }
             Err(error) => {
-                if !listener_error_reported {
-                    eprintln!("gateway listener failed: {error}");
-                    listener_error_reported = true;
+                if !listener_failed {
+                    shared.events.emit(Event::Failed {
+                        message: format!("gateway listener failed: {error}"),
+                    });
+                    listener_failed = true;
                 }
                 continue;
             }
         };
-        listener_error_reported = false;
-        if !shared.lifecycle.wait_until_running(&shared.accepting) {
+        listener_failed = false;
+        if shared.stopped.is_cancelled() {
             break;
         }
-        let connection_shared = Arc::clone(shared);
-        if let Ok(thread) = thread::Builder::new()
-            .name("tokamak-connection".to_owned())
-            .spawn(move || {
-                if let Err(error) = serve_connection(&connection_shared, stream) {
-                    connection_shared.events.emit(Event::RequestFailed {
-                        message: error.to_string(),
-                    });
-                }
-            })
-        {
+        if let Ok(thread) = spawn_connection(shared, stream) {
             connection_threads.push(thread);
         }
     }
@@ -482,6 +300,37 @@ fn gateway_loop(shared: &Arc<Shared>, mut listener: TcpListener) {
     for thread in connection_threads {
         let _ = thread.join();
     }
+}
+
+/// A listener replacing the closed `listener`, reported as listening, or
+/// `None` once no port can be bound.
+fn recover_listener(shared: &Shared, listener: TcpListener) -> Option<TcpListener> {
+    match replace_closed_listener(listener, shared.port.load(Ordering::Acquire)) {
+        Ok((replacement, port)) => {
+            shared.port.store(port, Ordering::Release);
+            shared.events.emit(Event::Listening { port });
+            Some(replacement)
+        }
+        Err(error) => {
+            shared.events.emit(Event::Failed {
+                message: format!("gateway listener could not recover: {error}"),
+            });
+            None
+        }
+    }
+}
+
+fn spawn_connection(shared: &Arc<Shared>, stream: TcpStream) -> io::Result<JoinHandle<()>> {
+    let shared = Arc::clone(shared);
+    thread::Builder::new()
+        .name("tokamak-connection".to_owned())
+        .spawn(move || {
+            if let Err(error) = serve_connection(&shared, stream) {
+                shared.events.emit(Event::RequestFailed {
+                    message: error.to_string(),
+                });
+            }
+        })
 }
 
 #[cfg(unix)]
@@ -594,7 +443,7 @@ fn reap_finished_connections(connections: &mut Vec<JoinHandle<()>>) {
     }
 }
 
-pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> Result<(), Error> {
+pub(super) fn serve_connection(shared: &Arc<Shared>, stream: TcpStream) -> io::Result<()> {
     let connection = Arc::new(Connection {
         stream: stream.try_clone()?,
         cancelled: AtomicBool::new(false),
@@ -604,35 +453,60 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
         shared: Arc::clone(shared),
         connection: Arc::clone(&connection),
     };
-    if !shared.accepting.load(Ordering::Acquire)
-        || !shared.lifecycle.wait_until_running(&shared.accepting)
-    {
+    if shared.stopped.is_cancelled() {
         return Ok(());
     }
-    let connect = read_header_block(&mut stream, "HTTP headers")?;
-    if !is_connect(&connect, &shared.config.host) {
-        write_plain_response(&mut stream, HttpResponse::text(400, "Bad CONNECT request"))?;
+    let Some(mut tls) = open_tunnel(shared, stream, &connection)? else {
         return Ok(());
+    };
+    serve_requests(shared, &mut tls, &connection)
+}
+
+/// The mutually authenticated TLS session a client opens through a CONNECT
+/// tunnel, or `None` once the client was refused.
+fn open_tunnel(
+    shared: &Shared,
+    mut stream: TcpStream,
+    connection: &Connection,
+) -> io::Result<Option<TlsStream>> {
+    let connect = read_header_block(&mut stream, "HTTP headers")?;
+    if !is_connect(&connect, &shared.host) {
+        write_plain_response(&mut stream, HttpResponse::text(400, "Bad CONNECT request"))?;
+        return Ok(None);
     }
     stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
     stream.flush()?;
-
-    let mut tls = tls_accept((shared.config.tls)()?, stream)?;
-    if shared.config.require_client_certificate && tls.conn.peer_certificates().is_none() {
-        write_response(
-            &mut tls,
-            HttpResponse::text(403, "Client certificate required"),
-            "GET",
-            &connection.cancelled,
-            false,
-        )?;
-        return tls_close(&mut tls);
+    let tls_config = shared
+        .certificates
+        .server_config()
+        .map_err(io::Error::other)?;
+    let mut tls = tls_accept(tls_config, stream)?;
+    if tls.conn.peer_certificates().is_some() {
+        return Ok(Some(tls));
     }
+    write_response(
+        &mut tls,
+        HttpResponse::text(403, "Client certificate required"),
+        "GET",
+        &connection.cancelled,
+        false,
+    )?;
+    tls_close(&mut tls)?;
+    Ok(None)
+}
+
+/// Answers the requests a TLS session carries until it closes or upgrades to
+/// a WebSocket.
+fn serve_requests(
+    shared: &Arc<Shared>,
+    tls: &mut TlsStream,
+    connection: &Connection,
+) -> io::Result<()> {
     loop {
         tls.get_ref()
             .set_read_timeout(Some(KEEP_ALIVE_IDLE_TIMEOUT))?;
-        let Some(request) = read_request(&mut tls, &shared.config.host)? else {
-            return finish_connection(&mut tls, &connection);
+        let Some(request) = read_request(tls, &shared.host)? else {
+            return finish_connection(tls, connection);
         };
         let persistent = request.persistent;
         let method = request.method.clone();
@@ -642,47 +516,43 @@ pub(super) fn serve_connection(shared: &Arc<Shared>, mut stream: TcpStream) -> R
             .map(|value| value.to_str().map(str::to_owned))
             .transpose()
             .map_err(io::Error::other)?;
-        let (response, websocket_bridge) = dispatch(shared, request)?;
-        let response = match response {
-            JobResponse::WebSocket => {
-                return websocket_session(
-                    &mut tls,
-                    websocket_key.as_deref(),
-                    websocket_bridge
-                        .ok_or_else(|| Error::startup("WebSocket bridge was not created"))?,
-                );
+        let response = match dispatch(shared, request)? {
+            (JobResponse::WebSocket, Some(bridge)) => {
+                return websocket_session(tls, websocket_key.as_deref(), bridge);
             }
-            JobResponse::Http(response) => response,
+            (JobResponse::WebSocket, None) => {
+                return Err(io::Error::other(
+                    "a plain request was answered as a WebSocket",
+                ));
+            }
+            (JobResponse::Http(response), _) => response,
         };
-        let outcome = write_response(
-            &mut tls,
-            response,
-            &method,
-            &connection.cancelled,
-            persistent,
-        )?;
+        let outcome = write_response(tls, response, &method, &connection.cancelled, persistent)?;
         if outcome == ResponseOutcome::Interrupted {
             return Ok(());
         }
         if !persistent {
-            return finish_connection(&mut tls, &connection);
+            return finish_connection(tls, connection);
         }
     }
 }
 
-/// Hands a request to the JavaScript side and waits for its response.
+/// Hands a request to its handler and waits for the response.
 fn dispatch(
     shared: &Arc<Shared>,
     request: HttpRequest,
-) -> Result<(JobResponse, Option<WebSocketBridge>), Error> {
+) -> io::Result<(JobResponse, Option<WebSocketBridge>)> {
     let (websocket_job, websocket_bridge) = is_websocket(&request)
         .then(websocket_channels)
         .transpose()?
         .unzip();
     let result = spawn_job(shared, request, websocket_job);
-    let response = result
-        .recv()
-        .map_err(|_| Error::startup("JavaScript request was dropped"))?;
+    let response = result.recv().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "the request ended without a response",
+        )
+    })?;
     Ok((response, websocket_bridge))
 }
 
@@ -708,14 +578,14 @@ fn spawn_job(
 }
 
 /// Closes the TLS session unless the runtime already shut the connection down.
-fn finish_connection(tls: &mut TlsStream, connection: &Connection) -> Result<(), Error> {
+fn finish_connection(tls: &mut TlsStream, connection: &Connection) -> io::Result<()> {
     if connection.cancelled.load(Ordering::Acquire) {
         return Ok(());
     }
     tls_close(tls)
 }
 
-pub(super) fn websocket_channels() -> Result<(WebSocketJob, WebSocketBridge), Error> {
+pub(super) fn websocket_channels() -> io::Result<(WebSocketJob, WebSocketBridge)> {
     let (incoming_sender, incoming_receiver) = flume::bounded(MAX_WEBSOCKET_QUEUE);
     let (outgoing_sender, outgoing_receiver) = flume::bounded(MAX_WEBSOCKET_QUEUE);
     let (readiness, waker) = Readiness::new()?;
@@ -735,11 +605,11 @@ pub(super) fn websocket_channels() -> Result<(WebSocketJob, WebSocketBridge), Er
 }
 
 pub(super) fn execute_job(shared: &Shared, job: Job) {
-    let Some(execution) = shared.lifecycle.enter(&shared.accepting) else {
+    if shared.stopped.is_cancelled() {
         return;
-    };
+    }
     let response = job.response.clone();
-    if let Err(error) = shared.handler.handle(job, &execution) {
+    if let Err(error) = shared.handler.handle(job, &shared.stopped) {
         let message = format!("Worker error: {error}");
         let _ = response.send(JobResponse::Http(HttpResponse::text(500, &message)));
         shared.events.emit(Event::RequestFailed { message });

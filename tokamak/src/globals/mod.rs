@@ -18,7 +18,7 @@ pub(crate) use host_functions;
 mod async_context;
 mod buffers;
 pub(crate) mod compression;
-pub(crate) use compression::http::ResponseEncoder;
+pub(crate) use compression::http::{ContentDecoder, ResponseEncoder};
 mod crypto;
 mod html_rewriter;
 mod intl;

@@ -1,12 +1,11 @@
 //! TLS configuration shared by the gateway, dev proxy, sockets and fetch.
 
+use std::io;
 use std::sync::{Arc, LazyLock};
 
 use rustls::crypto::CryptoProvider;
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
-
-use crate::quickjs::Error;
 
 static PROVIDER: LazyLock<Arc<CryptoProvider>> =
     LazyLock::new(|| Arc::new(rustls::crypto::ring::default_provider()));
@@ -48,7 +47,7 @@ pub(crate) fn server_config(
     server_cert_pem: &[u8],
     server_key_pem: &[u8],
     ca_cert_pem: &[u8],
-) -> Result<Arc<ServerConfig>, Error> {
+) -> io::Result<Arc<ServerConfig>> {
     let chain = CertificateDer::pem_slice_iter(server_cert_pem)
         .collect::<Result<Vec<_>, _>>()
         .map_err(tls_error)?;
@@ -73,6 +72,6 @@ pub(crate) fn server_config(
     Ok(Arc::new(config))
 }
 
-pub(crate) fn tls_error(error: impl std::fmt::Display) -> Error {
-    Error::Tls(error.to_string())
+fn tls_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error)
 }

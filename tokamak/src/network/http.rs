@@ -1,9 +1,9 @@
+use std::borrow::Cow;
 use std::io;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::time::Duration;
 
-use async_compression::tokio::bufread::GzipDecoder;
 use futures_util::{
     FutureExt, TryStreamExt,
     future::{LocalBoxFuture, Shared},
@@ -17,11 +17,14 @@ use rquickjs::{
     function::{Async, This},
 };
 use serde::Serialize;
-use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::Mutex;
 use tokio_util::{io::StreamReader, sync::CancellationToken};
 
-type Reader = Pin<Box<dyn AsyncRead + Send>>;
+use super::decoder::DecodedBody;
+use crate::globals::ContentDecoder;
+
+type Reader = Pin<Box<dyn AsyncRead>>;
 type ResponseBody = Rc<Mutex<Option<Reader>>>;
 type UploadCompletion = Shared<LocalBoxFuture<'static, Result<(), String>>>;
 
@@ -45,6 +48,17 @@ pub(crate) fn status_text(status: u16) -> &'static str {
         5 => "Server Error",
         _ => "",
     }
+}
+
+/// The reason phrase `response` arrived with.
+pub(crate) fn reason_phrase(response: &reqwest::Response) -> Cow<'_, str> {
+    response
+        .extensions()
+        .get::<hyper::ext::ReasonPhrase>()
+        .map_or_else(
+            || Cow::Borrowed(response.status().canonical_reason().unwrap_or("")),
+            |reason| String::from_utf8_lossy(reason.as_bytes()),
+        )
 }
 
 pub(crate) fn client() -> io::Result<Client> {
@@ -309,17 +323,7 @@ fn response_object<'js>(
     let response = response.response;
     result.set("url", response.url().as_str())?;
     result.set("status", response.status().as_u16())?;
-    result.set(
-        "statusText",
-        response
-            .extensions()
-            .get::<hyper::ext::ReasonPhrase>()
-            .map_or_else(
-                || std::borrow::Cow::Borrowed(response.status().canonical_reason().unwrap_or("")),
-                |reason| String::from_utf8_lossy(reason.as_bytes()),
-            )
-            .as_ref(),
-    )?;
+    result.set("statusText", reason_phrase(&response).as_ref())?;
     result.set(
         "headers",
         serde_json::to_string(&ResponseHeaders(response.headers()))
@@ -332,7 +336,8 @@ fn response_object<'js>(
         Box::pin(body),
         encoding.as_ref().map(HeaderValue::as_bytes),
         length,
-    );
+    )
+    .map_err(|error| failure(&ctx, error))?;
     if let Some(length) = length {
         result.set("length", length)?;
     }
@@ -384,16 +389,12 @@ fn decode_body(
     body: Reader,
     encoding: Option<&[u8]>,
     length: Option<u64>,
-) -> (Reader, Option<u64>) {
-    match encoding {
-        Some(b"gzip") => {
-            let mut decoder = GzipDecoder::new(BufReader::new(body));
-            decoder.multiple_members(true);
-            (Box::pin(decoder), None)
-        }
-        Some(b"br") => (Box::pin(super::brotli::Decoder::new(body)), None),
-        _ => (body, length),
-    }
+) -> io::Result<(Reader, Option<u64>)> {
+    let decoder = encoding.map(ContentDecoder::new).transpose()?.flatten();
+    Ok(match decoder {
+        Some(decoder) => (Box::pin(DecodedBody::new(body, decoder)), None),
+        None => (body, length),
+    })
 }
 
 fn failure(ctx: &Ctx<'_>, error: impl std::fmt::Display) -> rquickjs::Error {

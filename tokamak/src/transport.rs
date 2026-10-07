@@ -16,15 +16,14 @@ use sha1::{Digest, Sha1};
 use tokio_util::sync::CancellationToken;
 
 use crate::gateway::{WebSocketBridge, WebSocketInbound, WebSocketOutbound, WebSocketOutgoing};
-use crate::quickjs::Error;
 use crate::readiness::Readiness;
 
-pub(super) const MAX_HEADERS: usize = 64 * 1024;
-pub(super) const MAX_HTTP_BODY: usize = 250 * 1024 * 1024;
+const MAX_HEADERS: usize = 64 * 1024;
+const MAX_HTTP_BODY: usize = 250 * 1024 * 1024;
 const MAX_WEBSOCKET_BODY: usize = 16 * 1024 * 1024;
 const RESPONSE_STREAM_QUEUE: usize = 8;
 const RESPONSE_STREAM_POLL: Duration = Duration::from_millis(100);
-pub(super) const WEBSOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const WEBSOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) type BodyChunk = Result<Vec<u8>, String>;
 pub(super) type TlsStream = StreamOwned<ServerConnection, TcpStream>;
@@ -62,7 +61,7 @@ pub(super) struct BodyStream {
 
 impl HttpBody {
     /// The whole body, failing when it has not ended by `deadline`.
-    pub(super) fn read_to_end(self, deadline: Instant) -> Result<Vec<u8>, Error> {
+    pub(super) fn read_to_end(self, deadline: Instant) -> io::Result<Vec<u8>> {
         let stream = match self {
             Self::Buffered(body) => return Ok(body),
             Self::Stream(stream) => stream,
@@ -70,14 +69,10 @@ impl HttpBody {
         let mut body = Vec::new();
         loop {
             match stream.receiver.recv_deadline(deadline) {
-                Ok(chunk) => {
-                    body.extend(chunk.map_err(|error| {
-                        Error::Startup(format!("response stream failed: {error}"))
-                    })?);
-                }
+                Ok(chunk) => body.extend(chunk.map_err(|error| stream_failure(&error))?),
                 Err(flume::RecvTimeoutError::Disconnected) => return Ok(body),
                 Err(flume::RecvTimeoutError::Timeout) => {
-                    return Err(io::Error::from(io::ErrorKind::TimedOut).into());
+                    return Err(io::Error::from(io::ErrorKind::TimedOut));
                 }
             }
         }
@@ -140,25 +135,34 @@ impl Drop for BodyStream {
     }
 }
 
+/// A protocol violation described by `message`.
+pub(super) fn invalid_data(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn stream_failure(error: &str) -> io::Error {
+    io::Error::other(format!("response stream failed: {error}"))
+}
+
 pub(super) fn read_header_block(
     stream: &mut impl Read,
     subject: &'static str,
-) -> Result<Vec<u8>, Error> {
+) -> io::Result<Vec<u8>> {
     read_optional_header_block(stream, subject)?
-        .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof).into())
+        .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))
 }
 
 /// Reads a header block, or `None` when the connection ends or goes idle before one begins.
 fn read_optional_header_block(
     stream: &mut impl Read,
     subject: &'static str,
-) -> Result<Option<Vec<u8>>, Error> {
+) -> io::Result<Option<Vec<u8>>> {
     let mut first = [0; 1];
     match stream.read(&mut first) {
         Ok(0) => return Ok(None),
         Ok(_) => {}
         Err(error) if connection_ended(&error) => return Ok(None),
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     }
     let mut data = first.to_vec();
     loop {
@@ -169,7 +173,7 @@ fn read_optional_header_block(
         stream.read_exact(&mut byte)?;
         data.push(byte[0]);
         if data.len() > MAX_HEADERS {
-            return Err(Error::Startup(format!("{subject} exceed the limit")));
+            return Err(invalid_data(&format!("{subject} exceed the limit")));
         }
     }
 }
@@ -198,8 +202,9 @@ pub(super) fn is_connect(data: &[u8], host: &str) -> bool {
 }
 
 /// Completes the TLS handshake for an accepted gateway connection.
-pub(super) fn tls_accept(config: Arc<ServerConfig>, stream: TcpStream) -> Result<TlsStream, Error> {
-    let connection = ServerConnection::new(config).map_err(crate::tls::tls_error)?;
+pub(super) fn tls_accept(config: Arc<ServerConfig>, stream: TcpStream) -> io::Result<TlsStream> {
+    let connection = ServerConnection::new(config)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let mut stream = StreamOwned::new(connection, stream);
     while stream.conn.is_handshaking() {
         stream.conn.complete_io(&mut stream.sock)?;
@@ -208,20 +213,17 @@ pub(super) fn tls_accept(config: Arc<ServerConfig>, stream: TcpStream) -> Result
 }
 
 /// Ends the TLS session cleanly so the peer sees a close rather than an abrupt disconnect.
-pub(super) fn tls_close(stream: &mut TlsStream) -> Result<(), Error> {
+pub(super) fn tls_close(stream: &mut TlsStream) -> io::Result<()> {
     stream.conn.send_close_notify();
     match stream.conn.complete_io(&mut stream.sock) {
         Ok(_) => Ok(()),
         Err(error) if connection_ended(&error) => Ok(()),
-        Err(error) => Err(error.into()),
+        Err(error) => Err(error),
     }
 }
 
 /// Reads the next request, or `None` when the client closes the connection or goes idle first.
-pub(super) fn read_request(
-    stream: &mut impl Read,
-    host: &str,
-) -> Result<Option<HttpRequest>, Error> {
+pub(super) fn read_request(stream: &mut impl Read, host: &str) -> io::Result<Option<HttpRequest>> {
     let Some(headers) = read_optional_header_block(stream, "HTTP headers")? else {
         return Ok(None);
     };
@@ -230,19 +232,18 @@ pub(super) fn read_request(
     let request_line = lines.next().unwrap_or_default();
     let mut request_parts = request_line.split_whitespace();
     let Some(method) = request_parts.next() else {
-        return Err(Error::startup("HTTP method is missing"));
+        return Err(invalid_data("HTTP method is missing"));
     };
     let target = request_parts.next().unwrap_or("/");
     let version = request_parts.next().unwrap_or("HTTP/1.1");
-    let (mut request_headers, content_length, chunked) =
-        parse_header_fields(lines, "invalid content length", |_| true)?;
+    let (mut request_headers, content_length, chunked) = parse_header_fields(lines)?;
     if chunked && content_length.is_some() {
-        return Err(Error::startup(
+        return Err(invalid_data(
             "chunked request cannot include content length",
         ));
     }
     if content_length.is_some_and(|length| length > MAX_HTTP_BODY) {
-        return Err(Error::startup("HTTP body exceeds the limit"));
+        return Err(invalid_data("HTTP body exceeds the limit"));
     }
     let body = if chunked {
         read_chunked_body(stream)?
@@ -265,13 +266,11 @@ pub(super) fn read_request(
     }))
 }
 
-/// The header fields before the first empty line that `keep` accepts, the
-/// declared content length, and whether the body is chunked.
-pub(super) fn parse_header_fields<'a>(
+/// The header fields before the first empty line, the declared content
+/// length, and whether the body is chunked.
+fn parse_header_fields<'a>(
     lines: impl Iterator<Item = &'a str>,
-    invalid_length: &str,
-    keep: fn(&str) -> bool,
-) -> Result<(HeaderMap, Option<usize>, bool), Error> {
+) -> io::Result<(HeaderMap, Option<usize>, bool)> {
     let mut headers = HeaderMap::new();
     let mut content_length = None;
     let mut chunked = false;
@@ -285,14 +284,16 @@ pub(super) fn parse_header_fields<'a>(
         let name = name.trim().to_ascii_lowercase();
         let value = value.trim_matches([' ', '\t']);
         if name == "content-length" {
-            content_length = Some(value.parse().map_err(|_| Error::startup(invalid_length))?);
+            content_length = Some(
+                value
+                    .parse()
+                    .map_err(|_| invalid_data("invalid content length"))?,
+            );
         }
         if name == "transfer-encoding" && has_token(value, "chunked") {
             chunked = true;
         }
-        if keep(&name) {
-            append_header(&mut headers, &name, value)?;
-        }
+        append_header(&mut headers, &name, value)?;
     }
     Ok((headers, content_length, chunked))
 }
@@ -320,20 +321,20 @@ fn insert_header(
         .map_err(io::Error::other)
 }
 
-pub(super) fn read_chunked_body(stream: &mut impl Read) -> Result<Vec<u8>, Error> {
+fn read_chunked_body(stream: &mut impl Read) -> io::Result<Vec<u8>> {
     let mut body = Vec::new();
     let mut trailer_bytes = 0usize;
     loop {
         let line = read_line(stream)?;
         let size = line.split(';').next().unwrap_or_default().trim();
         let size =
-            usize::from_str_radix(size, 16).map_err(|_| Error::startup("chunk size is invalid"))?;
+            usize::from_str_radix(size, 16).map_err(|_| invalid_data("chunk size is invalid"))?;
         if size == 0 {
             loop {
                 let trailer = read_line(stream)?;
                 trailer_bytes = trailer_bytes.saturating_add(trailer.len() + 2);
                 if trailer_bytes > MAX_HEADERS {
-                    return Err(Error::startup("HTTP trailers exceed the limit"));
+                    return Err(invalid_data("HTTP trailers exceed the limit"));
                 }
                 if trailer.is_empty() {
                     return Ok(body);
@@ -341,7 +342,7 @@ pub(super) fn read_chunked_body(stream: &mut impl Read) -> Result<Vec<u8>, Error
             }
         }
         if body.len().saturating_add(size) > MAX_HTTP_BODY {
-            return Err(Error::startup("HTTP body exceeds the limit"));
+            return Err(invalid_data("HTTP body exceeds the limit"));
         }
         let start = body.len();
         body.resize(start + size, 0);
@@ -349,23 +350,23 @@ pub(super) fn read_chunked_body(stream: &mut impl Read) -> Result<Vec<u8>, Error
         let mut terminator = [0; 2];
         stream.read_exact(&mut terminator)?;
         if terminator != *b"\r\n" {
-            return Err(Error::startup("chunk is not terminated"));
+            return Err(invalid_data("chunk is not terminated"));
         }
     }
 }
 
-fn read_line(stream: &mut impl Read) -> Result<String, Error> {
+fn read_line(stream: &mut impl Read) -> io::Result<String> {
     let mut line = Vec::new();
     loop {
         let mut byte = [0; 1];
         stream.read_exact(&mut byte)?;
         line.push(byte[0]);
         if line.len() > MAX_HEADERS {
-            return Err(Error::startup("HTTP line is too long"));
+            return Err(invalid_data("HTTP line is too long"));
         }
         if line.ends_with(b"\r\n") {
             line.truncate(line.len() - 2);
-            return String::from_utf8(line).map_err(|_| Error::startup("HTTP line is not UTF-8"));
+            return String::from_utf8(line).map_err(|_| invalid_data("HTTP line is not UTF-8"));
         }
     }
 }
@@ -381,8 +382,8 @@ pub(super) fn websocket_session(
     stream: &mut TlsStream,
     key: Option<&str>,
     bridge: WebSocketBridge,
-) -> Result<(), Error> {
-    let key = key.ok_or_else(|| Error::startup("WebSocket key is missing"))?;
+) -> io::Result<()> {
+    let key = key.ok_or_else(|| invalid_data("WebSocket key is missing"))?;
     let accept = websocket_accept(key);
     write!(
         stream,
@@ -405,17 +406,17 @@ pub(super) fn websocket_session(
         if flush_websocket_outbound(&mut codec, &outgoing)? {
             return Ok(());
         }
-        match codec.read_frame(true)? {
+        match codec.read_frame()? {
             WebSocketRead::Closed => return Ok(()),
             WebSocketRead::Pending => codec.stream.readiness.wait(None)?,
             WebSocketRead::Frame(frame) => match frame.opcode {
                 0x8 => {
                     let (code, reason) = websocket_close(&frame.payload)?;
-                    codec.write_frame(frame.opcode, &frame.payload, false)?;
+                    codec.write_frame(frame.opcode, &frame.payload)?;
                     let _ = incoming.send(WebSocketInbound::Close { code, reason });
                     return Ok(());
                 }
-                0x9 => codec.write_frame(0xA, &frame.payload, false)?,
+                0x9 => codec.write_frame(0xA, &frame.payload)?,
                 0xA => {}
                 0x0..=0x2 => queue_websocket_message(
                     &incoming,
@@ -424,7 +425,7 @@ pub(super) fn websocket_session(
                     frame.opcode,
                     frame.payload,
                 )?,
-                _ => return Err(Error::startup("invalid WebSocket opcode")),
+                _ => return Err(invalid_data("invalid WebSocket opcode")),
             },
         }
     }
@@ -470,20 +471,21 @@ impl<S: Write> Write for ReadySocket<S> {
     }
 }
 
-pub(super) enum WebSocketRead {
+enum WebSocketRead {
     Frame(WebSocketFrame),
     Pending,
     Closed,
 }
 
-pub(super) struct WebSocketCodec<S> {
+/// The server side of a WebSocket connection to the `WebView`.
+struct WebSocketCodec<S> {
     stream: S,
     buffer: Vec<u8>,
     closed: bool,
 }
 
 impl<S: Read + Write> WebSocketCodec<S> {
-    pub(super) fn new(stream: S) -> Self {
+    fn new(stream: S) -> Self {
         Self {
             stream,
             buffer: Vec::new(),
@@ -491,12 +493,12 @@ impl<S: Read + Write> WebSocketCodec<S> {
         }
     }
 
-    pub(super) fn read_frame(&mut self, expect_mask: bool) -> Result<WebSocketRead, Error> {
+    fn read_frame(&mut self) -> io::Result<WebSocketRead> {
         if self.closed {
             return Ok(WebSocketRead::Closed);
         }
         loop {
-            if let Some(frame) = parse_websocket_frame(&mut self.buffer, expect_mask)? {
+            if let Some(frame) = parse_websocket_frame(&mut self.buffer, true)? {
                 return Ok(WebSocketRead::Frame(frame));
             }
             let mut bytes = [0; 8192];
@@ -505,12 +507,7 @@ impl<S: Read + Write> WebSocketCodec<S> {
                     self.closed = true;
                     return Ok(WebSocketRead::Closed);
                 }
-                Ok(count) => {
-                    self.buffer.extend_from_slice(&bytes[..count]);
-                    if self.buffer.len() > MAX_WEBSOCKET_BODY + 14 {
-                        return Err(Error::startup("WebSocket frame is too large"));
-                    }
-                }
+                Ok(count) => self.buffer.extend_from_slice(&bytes[..count]),
                 Err(error)
                     if matches!(
                         error.kind(),
@@ -519,60 +516,66 @@ impl<S: Read + Write> WebSocketCodec<S> {
                 {
                     return Ok(WebSocketRead::Pending);
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error),
             }
         }
     }
 
-    pub(super) fn write_frame(
-        &mut self,
-        opcode: u8,
-        payload: &[u8],
-        mask: bool,
-    ) -> Result<(), Error> {
-        if payload.len() > MAX_WEBSOCKET_BODY {
-            return Err(Error::startup("WebSocket frame is too large"));
-        }
-        if opcode >= 0x8 && (payload.len() > 125 || opcode & 0x40 != 0) {
-            return Err(Error::startup("WebSocket control frame is invalid"));
-        }
-        let mut header = vec![0x80 | opcode];
-        let length = payload.len();
-        let mask_bit = if mask { 0x80 } else { 0 };
-        if length <= 125 {
-            header.push(
-                mask_bit
-                    | u8::try_from(length)
-                        .map_err(|_| Error::startup("WebSocket frame length is invalid"))?,
-            );
-        } else if let Ok(length) = u16::try_from(length) {
-            header.push(mask_bit | 0x7e);
-            header.extend_from_slice(&length.to_be_bytes());
-        } else {
-            header.push(mask_bit | 127);
-            header.extend_from_slice(&(length as u64).to_be_bytes());
-        }
-        self.stream.write_all(&header)?;
-        if mask {
-            let mut key = [0; 4];
-            getrandom::fill(&mut key)
-                .map_err(|error| Error::Startup(format!("WebSocket mask failed: {error}")))?;
-            self.stream.write_all(&key)?;
-            let mut masked = payload.to_vec();
-            apply_mask(&mut masked, &key);
-            self.stream.write_all(&masked)?;
-        } else {
-            self.stream.write_all(payload)?;
-        }
-        self.stream.flush()?;
-        Ok(())
+    fn write_frame(&mut self, opcode: u8, payload: &[u8]) -> io::Result<()> {
+        self.stream
+            .write_all(&encode_websocket_frame(opcode, payload, false)?)?;
+        self.stream.flush()
     }
 }
 
-fn parse_websocket_frame(
+/// A final frame carrying `payload`, masked with a random key when `mask`.
+pub(super) fn encode_websocket_frame(
+    opcode: u8,
+    payload: &[u8],
+    mask: bool,
+) -> io::Result<Vec<u8>> {
+    if payload.len() > MAX_WEBSOCKET_BODY {
+        return Err(invalid_data("WebSocket frame is too large"));
+    }
+    if opcode >= 0x8 && (payload.len() > 125 || opcode & 0x40 != 0) {
+        return Err(invalid_data("WebSocket control frame is invalid"));
+    }
+    let mask_bit = if mask { 0x80 } else { 0 };
+    let mut frame = vec![0x80 | opcode];
+    match (u8::try_from(payload.len()), u16::try_from(payload.len())) {
+        (Ok(length @ 0..=125), _) => frame.push(mask_bit | length),
+        (_, Ok(length)) => {
+            frame.push(mask_bit | 0x7e);
+            frame.extend_from_slice(&length.to_be_bytes());
+        }
+        _ => {
+            frame.push(mask_bit | 0x7f);
+            frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        }
+    }
+    if !mask {
+        frame.extend_from_slice(payload);
+        return Ok(frame);
+    }
+    let mut key = [0; 4];
+    getrandom::fill(&mut key)
+        .map_err(|error| io::Error::other(format!("WebSocket mask failed: {error}")))?;
+    frame.extend_from_slice(&key);
+    let start = frame.len();
+    frame.extend_from_slice(payload);
+    apply_mask(&mut frame[start..], &key);
+    Ok(frame)
+}
+
+/// Removes the first complete frame from `buffer`, failing when its masking
+/// is not `expect_mask` or it breaks the protocol.
+pub(super) fn parse_websocket_frame(
     buffer: &mut Vec<u8>,
     expect_mask: bool,
-) -> Result<Option<WebSocketFrame>, Error> {
+) -> io::Result<Option<WebSocketFrame>> {
+    if buffer.len() > MAX_WEBSOCKET_BODY + 14 {
+        return Err(invalid_data("WebSocket frame is too large"));
+    }
     let Some(header) = parse_websocket_header(buffer, expect_mask)? else {
         return Ok(None);
     };
@@ -606,17 +609,14 @@ struct WebSocketHeader {
     mask_offset: Option<usize>,
 }
 
-fn parse_websocket_header(
-    buffer: &[u8],
-    expect_mask: bool,
-) -> Result<Option<WebSocketHeader>, Error> {
+fn parse_websocket_header(buffer: &[u8], expect_mask: bool) -> io::Result<Option<WebSocketHeader>> {
     if buffer.len() < 2 {
         return Ok(None);
     }
     let first = buffer[0];
     let second = buffer[1];
     if first & 0x70 != 0 {
-        return Err(Error::startup("WebSocket reserved bits are unsupported"));
+        return Err(invalid_data("WebSocket reserved bits are unsupported"));
     }
     let masked = second & 0x80 != 0;
     if masked != expect_mask {
@@ -625,7 +625,7 @@ fn parse_websocket_header(
         } else {
             "server WebSocket frames must not be masked"
         };
-        return Err(Error::startup(message));
+        return Err(invalid_data(message));
     }
     let mut offset = 2;
     let length = match second & 0x7f {
@@ -644,17 +644,17 @@ fn parse_websocket_header(
             };
             let length = u64::from_be_bytes(*bytes);
             offset += 8;
-            usize::try_from(length).map_err(|_| Error::startup("WebSocket frame is too large"))?
+            usize::try_from(length).map_err(|_| invalid_data("WebSocket frame is too large"))?
         }
         _ => unreachable!(),
     };
     if length > MAX_WEBSOCKET_BODY {
-        return Err(Error::startup("WebSocket frame is too large"));
+        return Err(invalid_data("WebSocket frame is too large"));
     }
     let opcode = first & 0x0f;
     let final_frame = first & 0x80 != 0;
     if opcode >= 0x8 && (!final_frame || length > 125) {
-        return Err(Error::startup("WebSocket control frame is invalid"));
+        return Err(invalid_data("WebSocket control frame is invalid"));
     }
     let mask_offset = masked.then_some(offset);
     if masked {
@@ -662,7 +662,7 @@ fn parse_websocket_header(
     }
     let frame_length = offset
         .checked_add(length)
-        .ok_or_else(|| Error::startup("WebSocket frame is too large"))?;
+        .ok_or_else(|| invalid_data("WebSocket frame is too large"))?;
     Ok(Some(WebSocketHeader {
         final_frame,
         opcode,
@@ -673,20 +673,20 @@ fn parse_websocket_header(
 }
 
 pub(super) trait WebSocketSink {
-    fn deliver(&self, binary: bool, payload: Vec<u8>) -> Result<(), Error>;
+    fn deliver(&self, binary: bool, payload: Vec<u8>) -> io::Result<()>;
 }
 
 impl WebSocketSink for Sender<WebSocketInbound> {
-    fn deliver(&self, binary: bool, payload: Vec<u8>) -> Result<(), Error> {
+    fn deliver(&self, binary: bool, payload: Vec<u8>) -> io::Result<()> {
         self.send(WebSocketInbound::Message { binary, payload })
-            .map_err(|_| Error::startup("WebSocket worker closed"))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "WebSocket worker closed"))
     }
 }
 
 impl WebSocketSink for WebSocketOutgoing {
-    fn deliver(&self, binary: bool, payload: Vec<u8>) -> Result<(), Error> {
+    fn deliver(&self, binary: bool, payload: Vec<u8>) -> io::Result<()> {
         self.send(WebSocketOutbound::Message { binary, payload })
-            .map_err(|_| Error::startup("WebSocket gateway closed"))
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "WebSocket gateway closed"))
     }
 }
 
@@ -696,29 +696,27 @@ pub(super) fn queue_websocket_message(
     final_frame: bool,
     opcode: u8,
     payload: Vec<u8>,
-) -> Result<(), Error> {
+) -> io::Result<()> {
     let (message_opcode, payload) = match opcode {
         0x0 => {
             let Some((initial_opcode, mut message)) = fragmented.take() else {
-                return Err(Error::startup(
-                    "WebSocket continuation has no initial frame",
-                ));
+                return Err(invalid_data("WebSocket continuation has no initial frame"));
             };
             if message.len().saturating_add(payload.len()) > MAX_WEBSOCKET_BODY {
-                return Err(Error::startup("WebSocket message is too large"));
+                return Err(invalid_data("WebSocket message is too large"));
             }
             message.extend_from_slice(&payload);
             (initial_opcode, message)
         }
         0x1 | 0x2 => {
             if fragmented.is_some() {
-                return Err(Error::startup(
+                return Err(invalid_data(
                     "WebSocket message starts before the previous message ended",
                 ));
             }
             (opcode, payload)
         }
-        _ => return Err(Error::startup("invalid WebSocket opcode")),
+        _ => return Err(invalid_data("invalid WebSocket opcode")),
     };
     if final_frame {
         sink.deliver(message_opcode == 0x2, payload)?;
@@ -731,13 +729,16 @@ pub(super) fn queue_websocket_message(
 fn flush_websocket_outbound<S: Read + Write>(
     codec: &mut WebSocketCodec<S>,
     outgoing: &Receiver<WebSocketOutbound>,
-) -> Result<bool, Error> {
+) -> io::Result<bool> {
     loop {
         let frame = match outgoing.try_recv() {
             Ok(frame) => frame,
             Err(TryRecvError::Empty) => return Ok(false),
             Err(TryRecvError::Disconnected) => {
-                return Err(Error::startup("WebSocket worker closed"));
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "WebSocket worker closed",
+                ));
             }
         };
         if write_outbound(codec, frame)? {
@@ -749,12 +750,17 @@ fn flush_websocket_outbound<S: Read + Write>(
 fn wait_for_websocket_ready<S: Read + Write>(
     codec: &mut WebSocketCodec<S>,
     outgoing: &Receiver<WebSocketOutbound>,
-) -> Result<bool, Error> {
+) -> io::Result<bool> {
     loop {
         let frame = match outgoing.recv_timeout(Duration::from_secs(30)) {
             Ok(WebSocketOutbound::Ready) => return Ok(false),
             Ok(frame) => frame,
-            Err(_) => return Err(Error::startup("WebSocket worker did not become ready")),
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "WebSocket worker did not become ready",
+                ));
+            }
         };
         if write_outbound(codec, frame)? {
             return Ok(true);
@@ -766,29 +772,29 @@ fn wait_for_websocket_ready<S: Read + Write>(
 fn write_outbound<S: Read + Write>(
     codec: &mut WebSocketCodec<S>,
     frame: WebSocketOutbound,
-) -> Result<bool, Error> {
+) -> io::Result<bool> {
     let (opcode, payload) = match frame {
         WebSocketOutbound::Message { binary, payload } => (if binary { 0x2 } else { 0x1 }, payload),
         WebSocketOutbound::Close { code, reason } => (0x8, websocket_close_payload(code, &reason)?),
         WebSocketOutbound::Ready => return Ok(false),
     };
-    codec.write_frame(opcode, &payload, false)?;
+    codec.write_frame(opcode, &payload)?;
     Ok(opcode == 0x8)
 }
 
-pub(super) fn websocket_close(payload: &[u8]) -> Result<(u16, String), Error> {
+pub(super) fn websocket_close(payload: &[u8]) -> io::Result<(u16, String)> {
     if payload.is_empty() {
         return Ok((1000, String::new()));
     }
     let Some((code, reason)) = payload.split_first_chunk() else {
-        return Err(Error::startup("WebSocket close payload is invalid"));
+        return Err(invalid_data("WebSocket close payload is invalid"));
     };
     let code = u16::from_be_bytes(*code);
     if !valid_websocket_close_code(code) {
-        return Err(Error::startup("WebSocket close code is invalid"));
+        return Err(invalid_data("WebSocket close code is invalid"));
     }
     let reason = std::str::from_utf8(reason)
-        .map_err(|_| Error::startup("WebSocket close reason is invalid"))?
+        .map_err(|_| invalid_data("WebSocket close reason is invalid"))?
         .to_owned();
     Ok((code, reason))
 }
@@ -797,12 +803,12 @@ fn valid_websocket_close_code(code: u16) -> bool {
     matches!(code, 1000..=1003 | 1007..=1014 | 3000..=4999)
 }
 
-pub(super) fn websocket_close_payload(code: u16, reason: &str) -> Result<Vec<u8>, Error> {
+pub(super) fn websocket_close_payload(code: u16, reason: &str) -> io::Result<Vec<u8>> {
     if !valid_websocket_close_code(code) {
-        return Err(Error::startup("WebSocket close code is invalid"));
+        return Err(invalid_data("WebSocket close code is invalid"));
     }
     if reason.len() > 123 {
-        return Err(Error::startup("WebSocket close reason is too long"));
+        return Err(invalid_data("WebSocket close reason is too long"));
     }
     let mut payload = Vec::with_capacity(2 + reason.len());
     payload.extend_from_slice(&code.to_be_bytes());
@@ -818,7 +824,7 @@ pub(super) fn websocket_accept(key: &str) -> String {
 pub(super) fn write_plain_response(
     stream: &mut TcpStream,
     response: HttpResponse,
-) -> Result<(), Error> {
+) -> io::Result<()> {
     write_response_inner(stream, response, None, None, None, false).map(|_| ())
 }
 
@@ -836,7 +842,7 @@ fn connection_persists(version: &str, headers: &HeaderMap) -> bool {
 }
 
 /// Whether a comma-separated header value contains `token`, ignoring case and whitespace.
-pub(super) fn has_token(value: &str, token: &str) -> bool {
+fn has_token(value: &str, token: &str) -> bool {
     value
         .split(',')
         .any(|candidate| candidate.trim().eq_ignore_ascii_case(token))
@@ -855,7 +861,7 @@ pub(super) fn write_response(
     method: &str,
     cancelled: &AtomicBool,
     persistent: bool,
-) -> Result<ResponseOutcome, Error> {
+) -> io::Result<ResponseOutcome> {
     let peer = match response.body {
         HttpBody::Stream(_) => {
             let peer = stream.get_ref().try_clone()?;
@@ -882,7 +888,7 @@ fn write_response_inner(
     cancelled: Option<&AtomicBool>,
     peer: Option<&TcpStream>,
     persistent: bool,
-) -> Result<ResponseOutcome, Error> {
+) -> io::Result<ResponseOutcome> {
     let head = method.is_some_and(|method| method.eq_ignore_ascii_case("HEAD"));
     let no_body =
         head || (100..200).contains(&response.status) || matches!(response.status, 204 | 205 | 304);
@@ -934,14 +940,14 @@ fn write_stream_body(
     body: &BodyStream,
     cancelled: Option<&AtomicBool>,
     peer: Option<&TcpStream>,
-) -> Result<ResponseOutcome, Error> {
+) -> io::Result<ResponseOutcome> {
     let is_cancelled = || {
         cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
             || body.cancelled.is_cancelled()
     };
     loop {
         let chunk = match body.receiver.recv_timeout(RESPONSE_STREAM_POLL) {
-            Ok(chunk) => chunk,
+            Ok(chunk) => chunk.map_err(|error| stream_failure(&error))?,
             Err(flume::RecvTimeoutError::Timeout) => {
                 if is_cancelled() {
                     break;
@@ -954,8 +960,6 @@ fn write_stream_body(
             }
             Err(flume::RecvTimeoutError::Disconnected) => break,
         };
-        let chunk =
-            chunk.map_err(|error| Error::Startup(format!("response stream failed: {error}")))?;
         if !chunk.is_empty() {
             write!(stream, "{:X}\r\n", chunk.len())?;
             stream.write_all(&chunk)?;
@@ -996,7 +1000,7 @@ fn write_response_headers(
     status: u16,
     reason: &str,
     headers: &HeaderMap,
-) -> Result<(), Error> {
+) -> io::Result<()> {
     hyper::ext::ReasonPhrase::try_from(reason.as_bytes()).map_err(io::Error::other)?;
     write!(stream, "HTTP/1.1 {status} {reason}\r\n")?;
     for (name, value) in headers {
@@ -1005,8 +1009,7 @@ fn write_response_headers(
         stream.write_all(b"\r\n")?;
     }
     stream.write_all(b"\r\n")?;
-    stream.flush()?;
-    Ok(())
+    stream.flush()
 }
 
 #[cfg(test)]
@@ -1358,7 +1361,8 @@ mod tests {
         let input = format!("{:X}\r\n", super::MAX_HTTP_BODY + 1);
         assert!(matches!(
             super::read_chunked_body(&mut Cursor::new(input.as_bytes())),
-            Err(error) if error.to_string() == "QuickJS startup failed: HTTP body exceeds the limit"
+            Err(error) if error.kind() == io::ErrorKind::InvalidData
+                && error.to_string() == "HTTP body exceeds the limit"
         ));
     }
 
@@ -1379,10 +1383,7 @@ mod tests {
         let Err(error) = write_response_inner(io::sink(), response, None, None, None, false) else {
             return Err("stream should fail".into());
         };
-        assert_eq!(
-            error.to_string(),
-            "QuickJS startup failed: response stream failed: broken"
-        );
+        assert_eq!(error.to_string(), "response stream failed: broken");
         Ok(())
     }
 }

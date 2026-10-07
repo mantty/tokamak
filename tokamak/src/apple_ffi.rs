@@ -3,12 +3,10 @@
 //! C ABI used by the native Apple application shell.
 
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::path::PathBuf;
 use std::ptr;
 use std::time::Duration;
 
-use crate::packaging::PackageLayout;
-use crate::{Challenge, Config, Decision, Event, Runtime};
+use crate::{Challenge, Decision, Event, Runtime, bridge};
 use p256::{SecretKey, pkcs8::DecodePrivateKey};
 
 const DECISION_DEFAULT: c_int = 0;
@@ -105,26 +103,6 @@ pub unsafe extern "C" fn tokamak_runtime_restore_gateway(
             0
         }
     }
-}
-
-/// Suspend JavaScript execution; returns whether `handle` was live.
-///
-/// # Safety
-///
-/// `handle` must be null or a live handle returned by [`tokamak_runtime_start`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn tokamak_runtime_suspend(handle: *const c_void) -> bool {
-    unsafe { runtime(handle) }.map(Runtime::suspend).is_some()
-}
-
-/// Resume JavaScript execution.
-///
-/// # Safety
-///
-/// `handle` must be null or a live handle returned by [`tokamak_runtime_start`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn tokamak_runtime_resume(handle: *const c_void) -> bool {
-    unsafe { runtime(handle) }.is_some_and(|runtime| runtime.resume().is_ok())
 }
 
 /// Stop a runtime and release its handle.
@@ -295,21 +273,13 @@ unsafe fn start(
     storage_dir: *const c_char,
     host: *const c_char,
 ) -> Result<Runtime, String> {
-    let config = Config {
-        app: PackageLayout::new(
-            unsafe { text(packaged_dir) }.ok_or("packaged app path is not valid UTF-8")?,
-        ),
-        state_dir: PathBuf::from(
-            unsafe { text(state_dir) }.ok_or("state directory is not valid UTF-8")?,
-        ),
-        storage_dir: PathBuf::from(
-            unsafe { text(storage_dir) }.ok_or("storage directory is not valid UTF-8")?,
-        ),
-        host: unsafe { text(host) }
-            .ok_or("app host is not valid UTF-8")?
-            .to_owned(),
-    };
-    Runtime::start(config, report).map_err(|error| error.to_string())
+    bridge::start(
+        unsafe { text(packaged_dir) }.ok_or("packaged app path is not valid UTF-8")?,
+        unsafe { text(state_dir) }.ok_or("state directory is not valid UTF-8")?,
+        unsafe { text(storage_dir) }.ok_or("storage directory is not valid UTF-8")?,
+        unsafe { text(host) }.ok_or("app host is not valid UTF-8")?,
+        report,
+    )
 }
 
 unsafe fn start_development(
@@ -318,23 +288,13 @@ unsafe fn start_development(
     endpoint: *const c_char,
     session_token: *const c_char,
 ) -> Result<Runtime, String> {
-    let config = crate::DevelopmentConfig {
-        state_dir: PathBuf::from(
-            unsafe { text(state_dir) }.ok_or("development state path is not valid UTF-8")?,
-        ),
-        host: unsafe { text(host) }
-            .ok_or("app host is not valid UTF-8")?
-            .to_owned(),
-        proxy: crate::DevProxyConfig {
-            endpoint: unsafe { text(endpoint) }
-                .ok_or("development endpoint is not valid UTF-8")?
-                .to_owned(),
-            session_token: unsafe { text(session_token) }
-                .ok_or("development session token is not valid UTF-8")?
-                .to_owned(),
-        },
-    };
-    Runtime::start_development(config, report).map_err(|error| error.to_string())
+    bridge::start_development(
+        unsafe { text(state_dir) }.ok_or("development state path is not valid UTF-8")?,
+        unsafe { text(host) }.ok_or("app host is not valid UTF-8")?,
+        unsafe { text(endpoint) }.ok_or("development endpoint is not valid UTF-8")?,
+        unsafe { text(session_token) }.ok_or("development session token is not valid UTF-8")?,
+        report,
+    )
 }
 
 unsafe fn call(
@@ -351,16 +311,8 @@ unsafe fn call(
         .map_err(|error| error.to_string())
 }
 
-fn report(event: Event) {
-    match event {
-        Event::Starting => eprintln!("tokamak runtime starting"),
-        Event::Listening { port } => eprintln!("tokamak gateway listening on 127.0.0.1:{port}"),
-        Event::Suspended => eprintln!("tokamak runtime suspended"),
-        Event::Resumed => eprintln!("tokamak runtime resumed"),
-        Event::CertificatesRenewed => eprintln!("tokamak certificates renewed"),
-        Event::Failed { message } => eprintln!("tokamak runtime failed: {message}"),
-        Event::RequestFailed { message } => eprintln!("tokamak request failed: {message}"),
-    }
+fn report(event: &Event) {
+    eprintln!("tokamak {event}");
 }
 
 fn into_handle(

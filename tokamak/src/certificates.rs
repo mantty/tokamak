@@ -1,7 +1,10 @@
-//! Local mTLS certificate material, lifecycle, and platform trust decisions.
+//! Local mTLS certificate material, its cache, lifecycle, and platform trust
+//! decisions.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread::{self, JoinHandle};
@@ -11,17 +14,15 @@ use p256::ecdsa::SigningKey;
 use p256::pkcs8::DecodePrivateKey;
 use rustls::ServerConfig;
 use x509_cert::Certificate;
-use x509_cert::der::{DecodePem, Encode};
+use x509_cert::der::DecodePem;
 
 use crate::cert_generation::{
-    CertificatePaths, Issuer, build_ca_certificate, build_client_certificate,
-    build_server_certificate, certificate_pem, encode_key, generate_key, is_private_key,
-    remove_if_exists, server_identity, write_atomic,
+    Issuer, build_ca_certificate, build_client_certificate, build_server_certificate,
+    certificate_pem, generate_key, key_pem,
 };
 use crate::cert_validation::{
-    certificate_der_matches_pem, certificate_is_issued_by, certificate_is_valid_now,
-    certificate_matches_key, certificate_names_host, certificate_not_before, key_matches_der,
-    pem_contents,
+    certificate_is_issued_by, certificate_is_valid_now, certificate_matches_key,
+    certificate_names_host, certificate_not_before, pem_contents,
 };
 use crate::lifecycle_events::{Event, Events};
 use crate::{Error, Result};
@@ -29,27 +30,36 @@ use crate::{Error, Result};
 /// How long after its validity starts a leaf certificate is renewed.
 const LEAF_RENEWAL: Duration = Duration::from_hours(30 * 24);
 
-/// Runtime certificate and key material needed by tokamak and platform `WebViews`.
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// The certificate cache's file names in the app's state directory.
+struct CertificatePaths;
+
+impl CertificatePaths {
+    const CA_CERT_PEM: &'static str = "ca.cert.pem";
+    const CA_KEY_PEM: &'static str = "ca.key.pem";
+    const SERVER_CERT_PEM: &'static str = "server.cert.pem";
+    const SERVER_KEY_PEM: &'static str = "server.key.pem";
+    const CLIENT_CERT_PEM: &'static str = "client.cert.pem";
+    const CLIENT_KEY_PEM: &'static str = "client.key.pem";
+}
+
+/// Runtime certificate and key material, in PEM, for tokamak and platform
+/// `WebViews`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CertificateBundle {
-    /// CA certificate PEM trusted by the local gateway for client authentication.
-    pub ca_cert_pem: String,
-    /// CA private key PEM used to issue replacement leaf certificates.
-    pub ca_key_pem: String,
-    /// Server certificate PEM used by the local TLS gateway.
-    pub server_cert_pem: String,
-    /// Server private key PEM used by the local TLS gateway.
-    pub server_key_pem: String,
-    /// Server certificate and key PEM consumed atomically by the local gateway.
-    pub server_identity_pem: String,
-    /// Client certificate PEM.
-    pub client_cert_pem: String,
-    /// Client private key PEM.
-    pub client_key_pem: String,
-    /// Client private key PKCS#8 DER for in-memory platform credentials.
-    pub client_key_der: Vec<u8>,
-    /// CA certificate DER for platform trust APIs.
-    pub ca_cert_der: Vec<u8>,
+    /// CA certificate trusted by the local gateway for client authentication.
+    pub ca_cert: String,
+    /// CA private key used to issue replacement leaf certificates.
+    pub ca_key: String,
+    /// Server certificate used by the local TLS gateway.
+    pub server_cert: String,
+    /// Server private key used by the local TLS gateway.
+    pub server_key: String,
+    /// Client certificate.
+    pub client_cert: String,
+    /// Client private key.
+    pub client_key: String,
 }
 
 impl CertificateBundle {
@@ -94,29 +104,22 @@ impl CertificateBundle {
         Ok(bundle)
     }
 
-    /// The client certificate in DER, for platform credential APIs.
-    pub(crate) fn client_certificate_der(&self) -> Option<Vec<u8>> {
-        pem_contents(&self.client_cert_pem)
-    }
-
     /// Generate a self-signed local CA, an app-origin server certificate with
     /// loopback SANs, and a client-auth certificate, all ECDSA P-256/SHA-256.
     pub(crate) fn generate_at(host: &str, now: SystemTime) -> Result<Self> {
         let ca_key = generate_key();
         let ca_cert = build_ca_certificate(&ca_key, now)?;
-        let (ca_key_pem, _) = encode_key(&ca_key)?;
         let authority = Self {
-            ca_cert_pem: certificate_pem(&ca_cert)?,
-            ca_key_pem,
-            ca_cert_der: ca_cert.to_der()?,
+            ca_cert: certificate_pem(&ca_cert)?,
+            ca_key: key_pem(&ca_key)?,
             ..Self::default()
         };
         authority.issue_leaves(&issuer(&ca_cert, &ca_key), host, now)
     }
 
     pub(crate) fn renew_leaves(&self, host: &str, now: SystemTime) -> Result<Self> {
-        let ca_key = SigningKey::from_pkcs8_pem(&self.ca_key_pem)?;
-        let ca_cert = Certificate::from_pem(self.ca_cert_pem.as_bytes())?;
+        let ca_key = SigningKey::from_pkcs8_pem(&self.ca_key)?;
+        let ca_cert = Certificate::from_pem(self.ca_cert.as_bytes())?;
         self.issue_leaves(&issuer(&ca_cert, &ca_key), host, now)
     }
 
@@ -127,20 +130,13 @@ impl CertificateBundle {
         let client_key = generate_key();
         let server_cert = build_server_certificate(&server_key, issuer, host, now)?;
         let client_cert = build_client_certificate(&client_key, issuer, now)?;
-
-        let server_cert_pem = certificate_pem(&server_cert)?;
-        let (server_key_pem, _) = encode_key(&server_key)?;
-        let (client_key_pem, client_key_der) = encode_key(&client_key)?;
         Ok(Self {
-            ca_cert_pem: self.ca_cert_pem.clone(),
-            ca_key_pem: self.ca_key_pem.clone(),
-            server_identity_pem: server_identity(&server_cert_pem, &server_key_pem),
-            server_cert_pem,
-            server_key_pem,
-            client_cert_pem: certificate_pem(&client_cert)?,
-            client_key_pem,
-            client_key_der,
-            ca_cert_der: self.ca_cert_der.clone(),
+            ca_cert: self.ca_cert.clone(),
+            ca_key: self.ca_key.clone(),
+            server_cert: certificate_pem(&server_cert)?,
+            server_key: key_pem(&server_key)?,
+            client_cert: certificate_pem(&client_cert)?,
+            client_key: key_pem(&client_key)?,
         })
     }
 
@@ -151,33 +147,21 @@ impl CertificateBundle {
     /// Returns an error when any expected certificate file cannot be read.
     pub fn load_cached(work_dir: impl AsRef<Path>) -> Result<Self> {
         let work_dir = work_dir.as_ref();
-        if !CertificatePaths::all_exist(work_dir) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "certificate cache is incomplete",
-            )
-            .into());
-        }
+        let read = |name| fs::read_to_string(work_dir.join(name));
         Ok(Self {
-            ca_cert_pem: fs::read_to_string(work_dir.join(CertificatePaths::CA_CERT_PEM))?,
-            ca_key_pem: fs::read_to_string(work_dir.join(CertificatePaths::CA_KEY_PEM))?,
-            server_cert_pem: fs::read_to_string(work_dir.join(CertificatePaths::SERVER_CERT_PEM))?,
-            server_key_pem: fs::read_to_string(work_dir.join(CertificatePaths::SERVER_KEY_PEM))?,
-            server_identity_pem: fs::read_to_string(
-                work_dir.join(CertificatePaths::SERVER_IDENTITY_PEM),
-            )?,
-            client_cert_pem: fs::read_to_string(work_dir.join(CertificatePaths::CLIENT_CERT_PEM))?,
-            client_key_pem: fs::read_to_string(work_dir.join(CertificatePaths::CLIENT_KEY_PEM))?,
-            client_key_der: fs::read(work_dir.join(CertificatePaths::CLIENT_KEY_DER))?,
-            ca_cert_der: fs::read(work_dir.join(CertificatePaths::CA_CERT_DER))?,
+            ca_cert: read(CertificatePaths::CA_CERT_PEM)?,
+            ca_key: read(CertificatePaths::CA_KEY_PEM)?,
+            server_cert: read(CertificatePaths::SERVER_CERT_PEM)?,
+            server_key: read(CertificatePaths::SERVER_KEY_PEM)?,
+            client_cert: read(CertificatePaths::CLIENT_CERT_PEM)?,
+            client_key: read(CertificatePaths::CLIENT_KEY_PEM)?,
         })
     }
 
     pub(crate) fn load_issuer(work_dir: &Path) -> Result<Self> {
         Ok(Self {
-            ca_cert_pem: fs::read_to_string(work_dir.join(CertificatePaths::CA_CERT_PEM))?,
-            ca_key_pem: fs::read_to_string(work_dir.join(CertificatePaths::CA_KEY_PEM))?,
-            ca_cert_der: fs::read(work_dir.join(CertificatePaths::CA_CERT_DER))?,
+            ca_cert: fs::read_to_string(work_dir.join(CertificatePaths::CA_CERT_PEM))?,
+            ca_key: fs::read_to_string(work_dir.join(CertificatePaths::CA_KEY_PEM))?,
             ..Self::default()
         })
     }
@@ -185,35 +169,31 @@ impl CertificateBundle {
     pub(crate) fn cached_material_is_current(&self, now: SystemTime) -> bool {
         self.issuer_is_current(now)
             && self.leaves_are_current(now)
-            && certificate_matches_key(&self.server_cert_pem, &self.server_key_pem)
-            && certificate_matches_key(&self.client_cert_pem, &self.client_key_pem)
-            && key_matches_der(&self.client_key_pem, &self.client_key_der)
-            && certificate_is_issued_by(&self.server_cert_pem, &self.ca_cert_pem)
-            && certificate_is_issued_by(&self.client_cert_pem, &self.ca_cert_pem)
-            && self.server_identity_pem
-                == server_identity(&self.server_cert_pem, &self.server_key_pem)
+            && certificate_matches_key(&self.server_cert, &self.server_key)
+            && certificate_matches_key(&self.client_cert, &self.client_key)
+            && certificate_is_issued_by(&self.server_cert, &self.ca_cert)
+            && certificate_is_issued_by(&self.client_cert, &self.ca_cert)
     }
 
     pub(crate) fn issuer_is_current(&self, now: SystemTime) -> bool {
-        certificate_is_valid_now(&self.ca_cert_pem, now)
-            && certificate_der_matches_pem(&self.ca_cert_pem, &self.ca_cert_der)
-            && certificate_matches_key(&self.ca_cert_pem, &self.ca_key_pem)
+        certificate_is_valid_now(&self.ca_cert, now)
+            && certificate_matches_key(&self.ca_cert, &self.ca_key)
     }
 
     fn leaves_are_current(&self, now: SystemTime) -> bool {
-        [self.server_cert_pem.as_str(), self.client_cert_pem.as_str()]
+        [self.server_cert.as_str(), self.client_cert.as_str()]
             .into_iter()
             .all(|pem| certificate_is_valid_now(pem, now))
     }
 
     pub(crate) fn leaf_renewal_is_due(&self, now: SystemTime) -> bool {
-        certificate_not_before(&self.server_cert_pem)
+        certificate_not_before(&self.server_cert)
             .is_none_or(|not_before| now >= not_before + LEAF_RENEWAL)
     }
 
     /// How long until the leaves are due for renewal.
     pub(crate) fn renewal_delay(&self, now: SystemTime) -> Duration {
-        certificate_not_before(&self.server_cert_pem).map_or(Duration::ZERO, |not_before| {
+        certificate_not_before(&self.server_cert).map_or(Duration::ZERO, |not_before| {
             (not_before + LEAF_RENEWAL)
                 .duration_since(now)
                 .unwrap_or_default()
@@ -221,7 +201,7 @@ impl CertificateBundle {
     }
 
     pub(crate) fn server_certificate_matches_host(&self, host: &str) -> bool {
-        certificate_names_host(&self.server_cert_pem, host)
+        certificate_names_host(&self.server_cert, host)
     }
 
     /// Write all certificate files expected by tokamak and platform `WebViews`.
@@ -234,7 +214,10 @@ impl CertificateBundle {
         let work_dir = work_dir.as_ref();
         fs::create_dir_all(work_dir)?;
         #[cfg(unix)]
-        crate::cert_generation::set_directory_permissions(work_dir)?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(work_dir, fs::Permissions::from_mode(0o700))?;
+        }
         write_files(
             work_dir,
             self.authority_files().into_iter().chain(self.leaf_files()),
@@ -245,40 +228,19 @@ impl CertificateBundle {
         write_files(work_dir, self.leaf_files())
     }
 
-    fn authority_files(&self) -> [(&str, &[u8]); 3] {
+    fn authority_files(&self) -> [(&'static str, &str); 2] {
         [
-            (CertificatePaths::CA_CERT_PEM, self.ca_cert_pem.as_bytes()),
-            (CertificatePaths::CA_KEY_PEM, self.ca_key_pem.as_bytes()),
-            (CertificatePaths::CA_CERT_DER, self.ca_cert_der.as_slice()),
+            (CertificatePaths::CA_CERT_PEM, &self.ca_cert),
+            (CertificatePaths::CA_KEY_PEM, &self.ca_key),
         ]
     }
 
-    fn leaf_files(&self) -> [(&str, &[u8]); 6] {
+    fn leaf_files(&self) -> [(&'static str, &str); 4] {
         [
-            (
-                CertificatePaths::SERVER_CERT_PEM,
-                self.server_cert_pem.as_bytes(),
-            ),
-            (
-                CertificatePaths::SERVER_KEY_PEM,
-                self.server_key_pem.as_bytes(),
-            ),
-            (
-                CertificatePaths::SERVER_IDENTITY_PEM,
-                self.server_identity_pem.as_bytes(),
-            ),
-            (
-                CertificatePaths::CLIENT_CERT_PEM,
-                self.client_cert_pem.as_bytes(),
-            ),
-            (
-                CertificatePaths::CLIENT_KEY_PEM,
-                self.client_key_pem.as_bytes(),
-            ),
-            (
-                CertificatePaths::CLIENT_KEY_DER,
-                self.client_key_der.as_slice(),
-            ),
+            (CertificatePaths::SERVER_CERT_PEM, &self.server_cert),
+            (CertificatePaths::SERVER_KEY_PEM, &self.server_key),
+            (CertificatePaths::CLIENT_CERT_PEM, &self.client_cert),
+            (CertificatePaths::CLIENT_KEY_PEM, &self.client_key),
         ]
     }
 }
@@ -291,17 +253,48 @@ fn issuer<'a>(ca_cert: &Certificate, ca_key: &'a SigningKey) -> Issuer<'a> {
     }
 }
 
-/// Write `files` into `work_dir`, clearing the completeness marker first and
-/// restoring it once every file is in place.
+/// Write each of `files` into `work_dir` atomically, keys readable only by
+/// the app.
 fn write_files<'a>(
     work_dir: &Path,
-    files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+    files: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> Result<()> {
-    remove_if_exists(work_dir.join(CertificatePaths::CACHE_MARKER))?;
     for (name, content) in files {
-        write_atomic(work_dir, name, content, is_private_key(name))?;
+        let private = matches!(
+            name,
+            CertificatePaths::CA_KEY_PEM
+                | CertificatePaths::SERVER_KEY_PEM
+                | CertificatePaths::CLIENT_KEY_PEM
+        );
+        write_atomic(work_dir, name, content.as_bytes(), private)?;
     }
-    write_atomic(work_dir, CertificatePaths::CACHE_MARKER, &[], true)
+    Ok(())
+}
+
+fn write_atomic(directory: &Path, name: &str, content: &[u8], private: bool) -> Result<()> {
+    let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temporary = directory.join(format!(".{name}.{}.{counter}.tmp", std::process::id()));
+    let result = write_temporary(&temporary, content, private)
+        .and_then(|()| fs::rename(&temporary, directory.join(name)));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map_err(Error::from)
+}
+
+fn write_temporary(path: &Path, content: &[u8], private: bool) -> std::io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(if private { 0o600 } else { 0o644 });
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    let mut file = options.open(path)?;
+    file.write_all(content)?;
+    file.sync_all()
 }
 
 #[cfg(test)]
@@ -332,10 +325,10 @@ mod bundle_tests {
         let directory = tempfile::tempdir()?;
 
         let first = ensure(directory.path())?;
-        assert!(CertificatePaths::all_exist(directory.path()));
+        assert_eq!(CertificateBundle::load_cached(directory.path())?, first);
         let second = ensure(directory.path())?;
 
-        assert_eq!(first.ca_cert_der, second.ca_cert_der);
+        assert_eq!(first, second);
         Ok(())
     }
 
@@ -350,9 +343,9 @@ mod bundle_tests {
 
         let bundle = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
         for (name, pem) in [
-            ("ca", &bundle.ca_cert_pem),
-            ("server", &bundle.server_cert_pem),
-            ("client", &bundle.client_cert_pem),
+            ("ca", &bundle.ca_cert),
+            ("server", &bundle.server_cert),
+            ("client", &bundle.client_cert),
         ] {
             let fixture =
                 std::fs::read_to_string(rcgen_fixture().join(format!("{name}.cert.pem")))?;
@@ -419,15 +412,17 @@ mod bundle_tests {
 
         let bundle = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
         let server = crate::tls::server_config(
-            bundle.server_cert_pem.as_bytes(),
-            bundle.server_key_pem.as_bytes(),
-            bundle.ca_cert_pem.as_bytes(),
+            bundle.server_cert.as_bytes(),
+            bundle.server_key.as_bytes(),
+            bundle.ca_cert.as_bytes(),
         )?;
         let mut roots = rustls::RootCertStore::empty();
-        roots.add(CertificateDer::from(bundle.ca_cert_der.clone()))?;
-        let chain = CertificateDer::pem_slice_iter(bundle.client_cert_pem.as_bytes())
+        for authority in CertificateDer::pem_slice_iter(bundle.ca_cert.as_bytes()) {
+            roots.add(authority?)?;
+        }
+        let chain = CertificateDer::pem_slice_iter(bundle.client_cert.as_bytes())
             .collect::<Result<Vec<_>, _>>()?;
-        let key = PrivateKeyDer::from_pem_slice(bundle.client_key_pem.as_bytes())?;
+        let key = PrivateKeyDer::from_pem_slice(bundle.client_key.as_bytes())?;
         let client = rustls::ClientConfig::builder_with_provider(crate::tls::provider())
             .with_safe_default_protocol_versions()?
             .with_root_certificates(roots)
@@ -462,20 +457,16 @@ mod bundle_tests {
         let first = ensure(directory.path())?;
         let foreign = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
         for (name, content) in [
-            (CertificatePaths::SERVER_CERT_PEM, &foreign.server_cert_pem),
-            (CertificatePaths::SERVER_KEY_PEM, &foreign.server_key_pem),
-            (
-                CertificatePaths::SERVER_IDENTITY_PEM,
-                &foreign.server_identity_pem,
-            ),
+            (CertificatePaths::SERVER_CERT_PEM, &foreign.server_cert),
+            (CertificatePaths::SERVER_KEY_PEM, &foreign.server_key),
         ] {
             std::fs::write(directory.path().join(name), content)?;
         }
 
         let second = ensure(directory.path())?;
 
-        assert_ne!(second.server_cert_pem, foreign.server_cert_pem);
-        assert_eq!(second.ca_cert_pem, first.ca_cert_pem);
+        assert_ne!(second.server_cert, foreign.server_cert);
+        assert_eq!(second.ca_cert, first.ca_cert);
         Ok(())
     }
 
@@ -503,7 +494,7 @@ mod bundle_tests {
             std::fs::copy(entry.path(), directory.path().join(entry.file_name()))?;
         }
         let cached = CertificateBundle::load_cached(directory.path())?;
-        let issued = crate::cert_validation::certificate_not_before(&cached.server_cert_pem)
+        let issued = crate::cert_validation::certificate_not_before(&cached.server_cert)
             .ok_or("fixture server certificate has no validity")?;
         let day = std::time::Duration::from_hours(24);
 
@@ -513,8 +504,8 @@ mod bundle_tests {
             CertificateBundle::ensure(directory.path(), "app.tokamak.local", issued + day * 32)?;
 
         assert_eq!(kept, cached);
-        assert_eq!(renewed.ca_cert_pem, cached.ca_cert_pem);
-        assert_ne!(renewed.server_cert_pem, cached.server_cert_pem);
+        assert_eq!(renewed.ca_cert, cached.ca_cert);
+        assert_ne!(renewed.server_cert, cached.server_cert);
         assert!(renewed.cached_material_is_current(issued + day * 33));
         Ok(())
     }
@@ -524,9 +515,9 @@ mod bundle_tests {
         let bundle = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
         assert_pem_material(&bundle);
 
-        let ca_der = decode_certificate(&bundle.ca_cert_pem)?;
-        let server_der = decode_certificate(&bundle.server_cert_pem)?;
-        let client_der = decode_certificate(&bundle.client_cert_pem)?;
+        let ca_der = decode_certificate(&bundle.ca_cert)?;
+        let server_der = decode_certificate(&bundle.server_cert)?;
+        let client_der = decode_certificate(&bundle.client_cert)?;
         let (_, ca) = parse_x509_certificate(&ca_der)?;
         let (_, server) = parse_x509_certificate(&server_der)?;
         let (_, client) = parse_x509_certificate(&client_der)?;
@@ -548,9 +539,7 @@ mod bundle_tests {
         for name in [
             CertificatePaths::SERVER_KEY_PEM,
             CertificatePaths::CA_KEY_PEM,
-            CertificatePaths::SERVER_IDENTITY_PEM,
             CertificatePaths::CLIENT_KEY_PEM,
-            CertificatePaths::CLIENT_KEY_DER,
         ] {
             let mode = std::fs::metadata(directory.path().join(name))?
                 .permissions()
@@ -569,8 +558,8 @@ mod bundle_tests {
 
         let bundle = ensure(directory.path())?;
 
-        assert!(CertificatePaths::all_exist(directory.path()));
-        assert_eq!(std::fs::read_to_string(stale)?, bundle.server_cert_pem);
+        assert_eq!(CertificateBundle::load_cached(directory.path())?, bundle);
+        assert_eq!(std::fs::read_to_string(stale)?, bundle.server_cert);
         Ok(())
     }
 
@@ -586,9 +575,9 @@ mod bundle_tests {
 
         let second = ensure(directory.path())?;
 
-        assert_ne!(second.server_cert_pem, expired);
-        assert_ne!(second.server_cert_pem, first.server_cert_pem);
-        assert_eq!(second.ca_cert_pem, first.ca_cert_pem);
+        assert_ne!(second.server_cert, expired);
+        assert_ne!(second.server_cert, first.server_cert);
+        assert_eq!(second.ca_cert, first.ca_cert);
         Ok(())
     }
 
@@ -603,12 +592,10 @@ mod bundle_tests {
             SystemTime::now() + std::time::Duration::from_hours(31 * 24),
         )?;
 
-        assert_eq!(second.ca_cert_pem, first.ca_cert_pem);
-        assert_eq!(second.ca_key_pem, first.ca_key_pem);
-        assert_ne!(second.server_cert_pem, first.server_cert_pem);
-        assert_ne!(second.client_cert_pem, first.client_cert_pem);
-        assert!(second.server_identity_pem.contains(&second.server_cert_pem));
-        assert!(second.server_identity_pem.contains(&second.server_key_pem));
+        assert_eq!(second.ca_cert, first.ca_cert);
+        assert_eq!(second.ca_key, first.ca_key);
+        assert_ne!(second.server_cert, first.server_cert);
+        assert_ne!(second.client_cert, first.client_cert);
         Ok(())
     }
 
@@ -620,9 +607,9 @@ mod bundle_tests {
 
         let second = ensure(directory.path())?;
 
-        assert_eq!(second.ca_cert_pem, first.ca_cert_pem);
-        assert_ne!(second.client_cert_pem, first.client_cert_pem);
-        assert!(CertificatePaths::all_exist(directory.path()));
+        assert_eq!(second.ca_cert, first.ca_cert);
+        assert_ne!(second.client_cert, first.client_cert);
+        assert_eq!(CertificateBundle::load_cached(directory.path())?, second);
         Ok(())
     }
 
@@ -631,15 +618,14 @@ mod bundle_tests {
         let directory = tempfile::tempdir()?;
         let first = ensure(directory.path())?;
         std::fs::write(
-            directory.path().join(CertificatePaths::CA_CERT_DER),
-            [0_u8, 1_u8],
+            directory.path().join(CertificatePaths::CA_CERT_PEM),
+            "not a certificate",
         )?;
 
         let second = ensure(directory.path())?;
 
-        assert_ne!(second.ca_cert_der, [0_u8, 1_u8]);
-        assert_ne!(second.ca_cert_der, first.ca_cert_der);
-        assert!(CertificatePaths::all_exist(directory.path()));
+        assert_ne!(second.ca_cert, first.ca_cert);
+        assert_eq!(CertificateBundle::load_cached(directory.path())?, second);
         Ok(())
     }
 
@@ -648,14 +634,15 @@ mod bundle_tests {
         let directory = tempfile::tempdir()?;
         let first = ensure(directory.path())?;
         std::fs::write(
-            directory.path().join(CertificatePaths::CLIENT_KEY_DER),
-            [0_u8, 1_u8],
+            directory.path().join(CertificatePaths::CLIENT_KEY_PEM),
+            "not a key",
         )?;
 
         let second = ensure(directory.path())?;
 
-        assert_ne!(second.client_key_der, [0_u8, 1_u8]);
-        assert_ne!(second.client_key_der, first.client_key_der);
+        assert_eq!(second.ca_cert, first.ca_cert);
+        assert_ne!(second.client_key, first.client_key);
+        assert!(second.cached_material_is_current(SystemTime::now()));
         Ok(())
     }
 
@@ -665,26 +652,38 @@ mod bundle_tests {
         let first = ensure(directory.path())?;
         let foreign = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
         std::fs::write(
-            directory.path().join(CertificatePaths::CA_CERT_DER),
-            &foreign.ca_cert_der,
+            directory.path().join(CertificatePaths::CA_CERT_PEM),
+            &foreign.ca_cert,
         )?;
 
         let second = ensure(directory.path())?;
 
-        assert_ne!(second.ca_cert_der, foreign.ca_cert_der);
-        assert_ne!(second.ca_cert_der, first.ca_cert_der);
+        assert_ne!(second.ca_cert, foreign.ca_cert);
+        assert_ne!(second.ca_cert, first.ca_cert);
         Ok(())
     }
 
     #[test]
-    fn exposes_the_client_certificate_in_der() -> TestResult {
-        let bundle = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
+    fn stores_only_pem_material() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        ensure(directory.path())?;
 
-        let der = bundle
-            .client_certificate_der()
-            .ok_or_else(|| std::io::Error::other("client certificate should decode"))?;
+        let mut names = std::fs::read_dir(directory.path())?
+            .map(|entry| Ok(entry?.file_name().into_string().map_err(|_| "file name")?))
+            .collect::<TestResult<Vec<_>>>()?;
+        names.sort();
 
-        assert!(!der.is_empty());
+        assert_eq!(
+            names,
+            [
+                "ca.cert.pem",
+                "ca.key.pem",
+                "client.cert.pem",
+                "client.key.pem",
+                "server.cert.pem",
+                "server.key.pem"
+            ]
+        );
         Ok(())
     }
 
@@ -704,15 +703,12 @@ mod bundle_tests {
         const CERTIFICATE: &str = "-----BEGIN CERTIFICATE-----";
         const PRIVATE_KEY: &str = "-----BEGIN PRIVATE KEY-----";
 
-        assert!(bundle.ca_cert_pem.starts_with(CERTIFICATE));
-        assert!(bundle.server_cert_pem.starts_with(CERTIFICATE));
-        assert!(bundle.server_key_pem.starts_with(PRIVATE_KEY));
-        assert!(bundle.ca_key_pem.starts_with(PRIVATE_KEY));
-        assert!(bundle.server_identity_pem.contains(&bundle.server_cert_pem));
-        assert!(bundle.server_identity_pem.contains(&bundle.server_key_pem));
-        assert!(bundle.client_cert_pem.starts_with(CERTIFICATE));
-        assert!(bundle.client_key_pem.starts_with(PRIVATE_KEY));
-        assert!(!bundle.client_key_der.is_empty());
+        assert!(bundle.ca_cert.starts_with(CERTIFICATE));
+        assert!(bundle.server_cert.starts_with(CERTIFICATE));
+        assert!(bundle.server_key.starts_with(PRIVATE_KEY));
+        assert!(bundle.ca_key.starts_with(PRIVATE_KEY));
+        assert!(bundle.client_cert.starts_with(CERTIFICATE));
+        assert!(bundle.client_key.starts_with(PRIVATE_KEY));
     }
 
     fn assert_certificate_chain(
@@ -885,9 +881,9 @@ impl Certificates {
             .read()
             .map_err(|_| Error::CertificatesUnavailable)?;
         let config = crate::tls::server_config(
-            bundle.server_cert_pem.as_bytes(),
-            bundle.server_key_pem.as_bytes(),
-            bundle.ca_cert_pem.as_bytes(),
+            bundle.server_cert.as_bytes(),
+            bundle.server_key.as_bytes(),
+            bundle.ca_cert.as_bytes(),
         )?;
         *cached = Some(Arc::clone(&config));
         Ok(config)
@@ -933,7 +929,9 @@ impl Certificates {
             return Decision::Cancel;
         };
         match *challenge {
-            Challenge::ServerTrust { .. } => Decision::TrustAuthority(current.ca_cert_der.clone()),
+            Challenge::ServerTrust { .. } => {
+                pem_contents(&current.ca_cert).map_or(Decision::Cancel, Decision::TrustAuthority)
+            }
             Challenge::ClientCertificate {
                 previous_failures, ..
             } => client_identity(&current, previous_failures),
@@ -949,7 +947,7 @@ impl Certificates {
         let Ok(current) = self.current.read() else {
             return false;
         };
-        pem_contents(certificate) == pem_contents(&current.server_cert_pem)
+        pem_contents(certificate) == pem_contents(&current.server_cert)
     }
 }
 
@@ -957,12 +955,16 @@ fn client_identity(current: &CertificateBundle, previous_failures: usize) -> Dec
     if previous_failures > 0 {
         return Decision::Cancel;
     }
-    current
-        .client_certificate_der()
-        .map_or(Decision::Cancel, |certificate| Decision::PresentIdentity {
+    match (
+        pem_contents(&current.client_cert),
+        pem_contents(&current.client_key),
+    ) {
+        (Some(certificate), Some(private_key)) => Decision::PresentIdentity {
             certificate,
-            private_key: current.client_key_der.clone(),
-        })
+            private_key,
+        },
+        _ => Decision::Cancel,
+    }
 }
 
 fn same_dns_host(left: &str, right: &str) -> bool {

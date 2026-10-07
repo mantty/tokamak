@@ -4,11 +4,9 @@
 //! moves values across the boundary; every decision belongs to the runtime.
 
 use std::ffi::{CString, c_char, c_int};
-use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::packaging::PackageLayout;
-use crate::{Challenge, Config, Decision, Event, Runtime};
+use crate::{Challenge, Decision, Event, Runtime, bridge};
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString};
 use jni::sys::{jint, jlong};
@@ -78,32 +76,6 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeRestoreGate
             let _ = env.throw_new(FAILURE, error.to_string());
             0
         }
-    }
-}
-
-/// Suspend JavaScript execution.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeSuspend(
-    _: JNIEnv,
-    _: JClass,
-    handle: jlong,
-) {
-    if let Some(runtime) = runtime(handle) {
-        runtime.suspend();
-    }
-}
-
-/// Resume JavaScript execution.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeResume(
-    _: JNIEnv,
-    _: JClass,
-    handle: jlong,
-) {
-    if let Some(runtime) = runtime(handle)
-        && let Err(error) = runtime.resume()
-    {
-        log(LOG_ERROR, &format!("resume failed: {error}"));
     }
 }
 
@@ -193,13 +165,13 @@ fn start(
     storage_dir: &JString,
     host: &JString,
 ) -> Result<Runtime, String> {
-    let config = Config {
-        app: PackageLayout::new(text(env, packaged_dir)?),
-        state_dir: PathBuf::from(text(env, state_dir)?),
-        storage_dir: PathBuf::from(text(env, storage_dir)?),
-        host: text(env, host)?,
-    };
-    Runtime::start(config, report).map_err(|error| error.to_string())
+    bridge::start(
+        &text(env, packaged_dir)?,
+        &text(env, state_dir)?,
+        &text(env, storage_dir)?,
+        &text(env, host)?,
+        report,
+    )
 }
 
 fn start_development(
@@ -209,15 +181,13 @@ fn start_development(
     endpoint: &JString,
     session_token: &JString,
 ) -> Result<Runtime, String> {
-    let config = crate::DevelopmentConfig {
-        state_dir: PathBuf::from(text(env, state_dir)?),
-        host: text(env, host)?,
-        proxy: crate::DevProxyConfig {
-            endpoint: text(env, endpoint)?,
-            session_token: text(env, session_token)?,
-        },
-    };
-    Runtime::start_development(config, report).map_err(|error| error.to_string())
+    bridge::start_development(
+        &text(env, state_dir)?,
+        &text(env, host)?,
+        &text(env, endpoint)?,
+        &text(env, session_token)?,
+        report,
+    )
 }
 
 fn call(
@@ -236,16 +206,12 @@ fn call(
     String::from_utf8(response).map_err(|error| error.to_string())
 }
 
-fn report(event: Event) {
-    match event {
-        Event::Starting => log(LOG_INFO, "runtime starting"),
-        Event::Listening { port } => log(LOG_INFO, &format!("gateway listening on {port}")),
-        Event::Suspended => log(LOG_INFO, "runtime suspended"),
-        Event::Resumed => log(LOG_INFO, "runtime resumed"),
-        Event::CertificatesRenewed => log(LOG_INFO, "certificates renewed"),
-        Event::Failed { message } => log(LOG_ERROR, &format!("runtime failed: {message}")),
-        Event::RequestFailed { message } => log(LOG_ERROR, &format!("request failed: {message}")),
-    }
+fn report(event: &Event) {
+    let priority = match event {
+        Event::Failed { .. } | Event::RequestFailed { .. } => LOG_ERROR,
+        _ => LOG_INFO,
+    };
+    log(priority, &event.to_string());
 }
 
 fn into_handle(env: &mut JNIEnv, result: Result<Runtime, String>, failure: &str) -> jlong {

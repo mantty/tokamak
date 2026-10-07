@@ -4,14 +4,16 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::assets::Assets;
-use crate::dispatcher::{Dispatcher, execute_request};
+use crate::dispatcher::Dispatcher;
 use crate::env_vars::StorageBinding;
-use crate::gateway::{Handler, Job, JobResponse, Lifecycle};
+use crate::gateway::{Handler, Job, JobResponse};
 use crate::packaging::{
     AssetManifest, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout, WorkerManifest,
     write_worker,
@@ -62,7 +64,7 @@ fn module_worker(root: &Path, entry: &str, output: &Path) -> TestResult<WorkerBu
 
 fn request(worker: &WorkerBundle, flag: &str) -> TestResult<Vec<u8>> {
     let environment = BTreeMap::from([("FLAG".to_owned(), serde_json::json!(flag))]);
-    request_with(worker, runtime_config(environment, None)?)
+    request_with(worker, runtime_config(environment, None))
 }
 
 /// The body of `worker`'s 200 response, with `config`, to `GET /`.
@@ -76,13 +78,13 @@ fn request_with(worker: &WorkerBundle, config: RuntimeConfig) -> TestResult<Vec<
 fn runtime_config(
     environment: BTreeMap<String, serde_json::Value>,
     assets: Option<Arc<Assets>>,
-) -> TestResult<RuntimeConfig> {
-    Ok(RuntimeConfig {
+) -> RuntimeConfig {
+    RuntimeConfig {
         assets,
-        cache: tempfile::tempdir()?.path().join("cache"),
+        cache: Arc::default(),
         environment,
         storage: None,
-    })
+    }
 }
 
 #[test]
@@ -375,42 +377,24 @@ export default httpServerHandler(server);
     )?;
     let config = RuntimeConfig {
         assets: None,
-        cache: directory.path().join("cache"),
+        cache: Arc::default(),
         environment: BTreeMap::new(),
         storage: None,
     };
-    let accepting = Arc::new(AtomicBool::new(true));
-    let lifecycle = Lifecycle::new();
-    let execution = lifecycle.enter(&accepting).ok_or("request rejected")?;
-    let (sender, receiver) = flume::bounded(1);
-    execute_request(
-        &worker,
-        &config,
-        Job {
-            request: HttpRequest {
-                persistent: true,
-                method: "POST".to_owned(),
-                target: "/bridge?value=1".to_owned(),
-                url: "https://app.tokamak.local/bridge?value=1".to_owned(),
-                headers: HeaderMap::new(),
-                body: Some(b"payload".to_vec()),
-            },
-            response: sender,
-            websocket: None,
-        },
-        &execution,
-    )?;
-    let JobResponse::Http(response) = receiver.recv()? else {
-        return Err("unexpected websocket".into());
+    let request = HttpRequest {
+        persistent: true,
+        method: "POST".to_owned(),
+        target: "/bridge?value=1".to_owned(),
+        url: "https://app.tokamak.local/bridge?value=1".to_owned(),
+        headers: HeaderMap::new(),
+        body: Some(b"payload".to_vec()),
     };
-    assert_eq!(response.status, 201);
+    let (status, headers, body, _) = fixture_request(&worker, config, request)?;
+    assert_eq!(status, 201);
     assert_eq!(
-        response.headers.get("x-tokamak-boundary"),
+        headers.get("x-tokamak-boundary"),
         Some(&HeaderValue::from_static("yes"))
     );
-    let HttpBody::Buffered(body) = response.body else {
-        return Err("unexpected stream".into());
-    };
     assert_eq!(body, b"POST /bridge?value=1 payload");
     Ok(())
 }
@@ -579,7 +563,7 @@ fn storage_bindings_match_cloudflare() -> TestResult {
     ];
     let config = RuntimeConfig {
         assets: None,
-        cache: directory.path().join("cache"),
+        cache: Arc::default(),
         environment: BTreeMap::new(),
         storage: Some(Arc::new(Storage::open(
             &directory.path().join("storage"),
@@ -627,7 +611,7 @@ export default {{ async fetch(request, env) {{
     }];
     let config = RuntimeConfig {
         assets: None,
-        cache: directory.path().join("cache"),
+        cache: Arc::default(),
         environment: BTreeMap::new(),
         storage: Some(Arc::new(Storage::open(
             &directory.path().join("storage"),
@@ -718,13 +702,12 @@ fn boundary_request(
         "UPSTREAM_PORT".to_owned(),
         serde_json::json!(upstream_port.to_string()),
     )]);
-    let config = runtime_config(environment, None)?;
+    let config = runtime_config(environment, None);
     fixture_request(worker, config, http_request(method, target, body))
 }
 
 #[test]
 fn response_encoding_matches_cloudflare() -> TestResult {
-    use async_compression::tokio::bufread::GzipDecoder;
     use tokio::io::AsyncReadExt;
 
     let reference = Command::new("node")
@@ -747,27 +730,19 @@ fn response_encoding_matches_cloudflare() -> TestResult {
     let mut failures = Vec::new();
     for (index, expected) in expected.iter().enumerate() {
         let request = http_request("GET", &format!("/?case={index}"), None);
-        let config = runtime_config(BTreeMap::new(), None)?;
+        let config = runtime_config(BTreeMap::new(), None);
         let (_, headers, raw, _) = fixture_request(&worker, config, request)?;
         let encoding = headers
             .get("content-encoding")
             .ok_or("missing encoding")?
             .to_str()?;
         let mut decoded = Vec::new();
-        let encoded = match encoding {
-            "gzip" => runtime
-                .block_on(GzipDecoder::new(raw.as_slice()).read_to_end(&mut decoded))
-                .is_ok(),
-            "br" => runtime
-                .block_on(
-                    crate::network::brotli::Decoder::new(Box::pin(std::io::Cursor::new(
-                        raw.clone(),
-                    )))
-                    .read_to_end(&mut decoded),
-                )
-                .is_ok(),
-            _ => false,
-        };
+        let encoded =
+            crate::globals::ContentDecoder::new(encoding.as_bytes())?.is_some_and(|decoder| {
+                let body = Box::pin(std::io::Cursor::new(raw.clone()));
+                let mut reader = crate::network::decoder::DecodedBody::new(body, decoder);
+                runtime.block_on(reader.read_to_end(&mut decoded)).is_ok()
+            });
         let actual = serde_json::json!({ "encoding": encoding, "encoded": encoded, "body": String::from_utf8_lossy(if encoded { &decoded } else { &raw }) });
         if actual != *expected {
             report_contract_difference(
@@ -819,7 +794,7 @@ export default { fetch() {
     )?;
     let (status, headers, body, status_text) = fixture_request(
         &worker,
-        runtime_config(BTreeMap::new(), None)?,
+        runtime_config(BTreeMap::new(), None),
         http_request("GET", "/", None),
     )?;
     assert_eq!(status, 201);
@@ -850,20 +825,17 @@ fn fixture_request(
         response: sender,
         websocket: None,
     };
-    // The worker runs on its own thread so streamed bodies can be consumed here.
-    let handle = thread::spawn(move || -> Result<(), String> {
-        let accepting = Arc::new(AtomicBool::new(true));
-        let lifecycle = Lifecycle::new();
-        let execution = lifecycle
-            .enter(&accepting)
-            .ok_or("request rejected".to_owned())?;
+    // The worker runs on a blocking Tokio thread, as the gateway runs it, so
+    // streamed bodies can be consumed here.
+    let tokio = tokio::runtime::Runtime::new()?;
+    let handle = tokio.spawn_blocking(move || {
         dispatcher
-            .handle(job, &execution)
+            .handle(job, &CancellationToken::new())
             .map_err(|error| error.to_string())
     });
     let response = match receiver.recv_timeout(Duration::from_secs(30)) {
         Err(flume::RecvTimeoutError::Disconnected) => {
-            handle.join().map_err(|_| "worker panicked")??;
+            tokio.block_on(handle)??;
             return Err("the worker sent no response".into());
         }
         response => response?,
@@ -881,7 +853,7 @@ fn fixture_request(
             collected
         }
     };
-    handle.join().map_err(|_| "worker panicked")??;
+    tokio.block_on(handle)??;
     Ok((
         response.status,
         response.headers,
@@ -951,13 +923,13 @@ fn assets_match_cloudflare() -> TestResult {
                 let navigate = HeaderValue::from_static("navigate");
                 request.headers.insert("sec-fetch-mode", navigate);
             }
-            let config = runtime_config(BTreeMap::new(), assets.clone())?;
+            let config = runtime_config(BTreeMap::new(), assets.clone());
             let (status, _, body, _) = fixture_request(&worker, config, request)?;
             router.push(serde_json::json!({ "status": status, "body": String::from_utf8(body)? }));
         }
         let requests = serde_json::to_vec(&contract.requests)?;
         let request = http_request("POST", "/binding", Some(requests));
-        let config = runtime_config(BTreeMap::new(), assets)?;
+        let config = runtime_config(BTreeMap::new(), assets);
         let (_, _, binding, _) = fixture_request(&worker, config, request)?;
         let handling = (contract.html_handling, contract.not_found_handling);
         assert_eq!(router, contract.router, "{handling:?}");
@@ -1174,7 +1146,7 @@ fn astro_example_renders_its_home_page() -> TestResult {
     )?;
     let (status, _, home, _) = fixture_request(
         &worker,
-        runtime_config(BTreeMap::new(), None)?,
+        runtime_config(BTreeMap::new(), None),
         http_request("GET", "/", None),
     )?;
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&home));

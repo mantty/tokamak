@@ -106,8 +106,8 @@ jobs:
       - name: Lint Rust
         run: |
           cargo clippy --workspace --exclude windows-shell --all-targets -- -D warnings
-          cargo clippy -p tokamak --all-targets --features test-stubs -- -D warnings
-          cargo clippy -p tokamak --lib --target aarch64-linux-android --features test-stubs -- -D warnings
+          cargo clippy -p tokamak --all-targets --features native -- -D warnings
+          cargo clippy -p tokamak --lib --target aarch64-linux-android --features native -- -D warnings
 
       - name: Test Rust
         run: |
@@ -147,10 +147,10 @@ jobs:
       - name: Lint Apple Rust
         run: |
           cargo clippy -p tokamak-cli --all-targets -- -D warnings
-          cargo clippy -p tokamak --lib --target aarch64-apple-ios --features test-stubs -- -D warnings
-          cargo clippy -p tokamak --lib --target aarch64-apple-ios-sim --features test-stubs -- -D warnings
-          cargo clippy -p tokamak --lib --target x86_64-apple-ios --features test-stubs -- -D warnings
-          cargo clippy -p tokamak --lib --target x86_64-apple-darwin --features test-stubs -- -D warnings
+          cargo clippy -p tokamak --lib --target aarch64-apple-ios --features native -- -D warnings
+          cargo clippy -p tokamak --lib --target aarch64-apple-ios-sim --features native -- -D warnings
+          cargo clippy -p tokamak --lib --target x86_64-apple-ios --features native -- -D warnings
+          cargo clippy -p tokamak --lib --target x86_64-apple-darwin --features native -- -D warnings
 
       - name: Test the Apple platform pack
         run: cargo test -p tokamak-apple-signing

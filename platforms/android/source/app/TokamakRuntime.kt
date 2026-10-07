@@ -10,10 +10,6 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
 
     fun restoreGateway(): Int = nativeRestoreGateway(handle)
 
-    fun suspend() = nativeSuspend(handle)
-
-    fun resume() = nativeResume(handle)
-
     /**
      * Posts the JSON [body] to the Worker's `/tokamak/<name>` endpoint, retrying a failed post,
      * blocking until it responds 200 or [timeoutMillis] passes, and returns the response body.
@@ -78,12 +74,6 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
 
         @JvmStatic
         private external fun nativeRestoreGateway(handle: Long): Int
-
-        @JvmStatic
-        private external fun nativeSuspend(handle: Long)
-
-        @JvmStatic
-        private external fun nativeResume(handle: Long)
 
         @JvmStatic
         private external fun nativeCall(

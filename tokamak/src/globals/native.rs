@@ -29,9 +29,9 @@ super::host_functions! {
     "httpStatusText" => crate::network::http::status_text,
     "socketConnect" => crate::network::sockets::start,
     "ipVersion" => |input: String| crate::network::sockets::ip_version(&input),
-    "cacheMatch" => cache_match,
-    "cachePut" => cache_put,
-    "cacheDelete" => cache_delete,
+    "cacheMatch" => crate::cache::cache_match,
+    "cachePut" => crate::cache::cache_put,
+    "cacheDelete" => crate::cache::cache_delete,
     "writeStdout" => |text: String| write_flushed(&mut std::io::stdout().lock(), &text),
     "writeStderr" => |text: String| write_flushed(&mut std::io::stderr().lock(), &text),
     "registerDomException" => register_dom_exception,
@@ -114,71 +114,6 @@ impl ModuleDef for HostModule {
 fn write_flushed(output: &mut dyn Write, text: &str) {
     let _ = output.write_all(text.as_bytes());
     let _ = output.flush();
-}
-
-fn cache_match(
-    ctx: Ctx<'_>,
-    path: String,
-    name: String,
-    key: String,
-) -> rquickjs::Result<Option<Object<'_>>> {
-    let Some(entry) = crate::network::cache_match(&path, &name, &key) else {
-        return Ok(None);
-    };
-    let result = Object::new(ctx.clone())?;
-    result.set("status", entry.status)?;
-    result.set("statusText", entry.status_text)?;
-    result.set(
-        "headers",
-        serde_json::to_string(&entry.headers)
-            .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?,
-    )?;
-    result.set("body", TypedArray::new(ctx.clone(), entry.body)?)?;
-    result.set("url", entry.url)?;
-    result.set("redirected", entry.redirected)?;
-    result.set("type", entry.response_type)?;
-    Ok(Some(result))
-}
-
-fn cache_put<'js>(
-    ctx: Ctx<'js>,
-    path: String,
-    name: String,
-    key: String,
-    metadata: Object<'js>,
-    body: TypedArray<'js, u8>,
-) -> rquickjs::Result<()> {
-    let status: u16 = metadata.get("status")?;
-    let status_text: String = metadata.get("statusText")?;
-    let headers_json: String = metadata.get("headers")?;
-    let url: String = metadata.get("url")?;
-    let redirected: bool = metadata.get("redirected")?;
-    let response_type: String = metadata.get("type")?;
-    let headers: crate::network::HeaderList = serde_json::from_str(&headers_json)
-        .map_err(|error| Exception::throw_type(&ctx, &format!("Invalid cache headers: {error}")))?;
-    let body = body
-        .as_bytes()
-        .ok_or_else(|| Exception::throw_type(&ctx, "Detached buffer"))?
-        .to_vec();
-    crate::network::cache_put(
-        &path,
-        &name,
-        key,
-        crate::network::CacheEntry {
-            status,
-            status_text,
-            headers,
-            body,
-            url,
-            redirected,
-            response_type,
-        },
-    );
-    Ok(())
-}
-
-fn cache_delete(path: String, name: String, key: String) -> bool {
-    crate::network::cache_delete(&path, &name, &key)
 }
 
 fn create_decoder<'js>(

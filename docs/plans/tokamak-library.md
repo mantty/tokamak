@@ -67,8 +67,7 @@ depend on each other through narrow interfaces.
   modules and the
   certificates.
 - Loads app code, already prepared by `tokamak-cli`.
-- Exposes explicit suspend and resume operations for callers that need them.
-- Emits lifecycle events — starting, listening, suspended, resumed, failed —
+- Emits lifecycle events — starting, listening, certificates renewed, failed —
   for shells and, later, plugins.
 - Learns the gateway's port when its listener binds. Startup does not poll.
 
