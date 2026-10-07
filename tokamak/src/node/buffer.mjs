@@ -1,4 +1,3 @@
-import { decodeBase64, encodeBase64 } from "tokamak:host";
 import { atob as globalAtob, btoa as globalBtoa } from "../globals/base64.mjs";
 import { bufferBytes } from "../globals/conversions.mjs";
 import { Blob, File } from "../network/fetch.mjs";
@@ -48,29 +47,22 @@ function stringBytes(value, encoding) {
   return new TextEncoder().encode(String(value));
 }
 
+// Node decodes hex pairs up to the first that is not one.
 function decodeHex(value) {
-  const bytes = [];
-  for (let index = 0; index + 1 < value.length; index += 2) {
-    const pair = value.slice(index, index + 2);
-    if (!/^[0-9a-f]{2}$/i.test(pair)) break;
-    bytes.push(parseInt(pair, 16));
-  }
-  return new Uint8Array(bytes);
+  return Uint8Array.fromHex(value.match(/^(?:[0-9a-f]{2})*/i)[0]);
 }
 
 // Node decodes either base64 alphabet up to the first "=", skipping other characters.
 function decodeBase64Leniently(value) {
   const digits = value.split("=", 1)[0].replace(/[^A-Za-z0-9+/_-]/g, "").replace(/-/g, "+").replace(/_/g, "/");
-  return decodeBase64(digits.length % 4 === 1 ? digits.slice(0, -1) : digits);
+  return Uint8Array.fromBase64(digits.length % 4 === 1 ? digits.slice(0, -1) : digits);
 }
 
 function decode(bytes, encoding) {
   const name = normalizeEncoding(encoding);
-  if (name === "hex") return [...bytes].map(hexByte).join("");
-  if (name === "base64" || name === "base64url") {
-    const value = encodeBase64(bytes);
-    return name === "base64url" ? value.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") : value;
-  }
+  if (name === "hex") return bytes.toHex();
+  if (name === "base64") return bytes.toBase64();
+  if (name === "base64url") return bytes.toBase64({ alphabet: "base64url", omitPadding: true });
   if (name === "ascii") return String.fromCharCode(...bytes.map(value => value & 0x7f));
   if (name === "latin1" || name === "binary") return String.fromCharCode(...bytes);
   if (name === "ucs2" || name === "ucs-2" || name === "utf16le" || name === "utf-16le") return utf16Units(bytes);

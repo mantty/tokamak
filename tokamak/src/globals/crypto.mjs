@@ -1,5 +1,5 @@
 import { markHostObject } from "./objects.mjs";
-import { decodeBase64, encodeBase64, randomBytes, digest, cryptoCreateDigest, cryptoHmac, cryptoAesGcm, cryptoPbkdf2, cryptoHkdf, cryptoGenerateKey, cryptoImportKey, cryptoExportKey, cryptoSign, cryptoVerify, cryptoEncrypt, cryptoDecrypt, cryptoDerive, cryptoTimingSafeEqual } from "tokamak:host";
+import { randomBytes, digest, cryptoCreateDigest, cryptoHmac, cryptoAesGcm, cryptoPbkdf2, cryptoHkdf, cryptoGenerateKey, cryptoImportKey, cryptoExportKey, cryptoSign, cryptoVerify, cryptoEncrypt, cryptoDecrypt, cryptoDerive, cryptoTimingSafeEqual } from "tokamak:host";
 import { bufferSourceBytes, sharedBufferSourceBytes } from "./conversions.mjs";
 import { DOMException } from "./dom-exception.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
@@ -405,11 +405,12 @@ function importedAlgorithm(asymmetric, key) {
   if (key.modulusLength === undefined) return asymmetric;
   return { ...asymmetric, keyAlgorithm: { ...asymmetric.keyAlgorithm, modulusLength: key.modulusLength, publicExponent: key.publicExponent } };
 }
-function base64urlEncode(bytes) { return encodeBase64(bytes).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ""); }
+function base64urlEncode(bytes) { return bytes.toBase64({ alphabet: "base64url", omitPadding: true }); }
 function base64urlDecode(value) {
-  const bytes = /^[A-Za-z0-9_-]*$/.test(value) ? decodeBase64(value.replaceAll("-", "+").replaceAll("_", "/")) : null;
-  if (!bytes) throw dataError("Invalid base64url value");
-  return bytes;
+  try {
+    if (/^[A-Za-z0-9_-]*$/.test(value)) return Uint8Array.fromBase64(value, { alphabet: "base64url" });
+  } catch {}
+  throw dataError("Invalid base64url value");
 }
 function parseWrappedJwk(bytes) {
   try { return JSON.parse(new TextDecoder().decode(bytes)); }

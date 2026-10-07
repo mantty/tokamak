@@ -2461,6 +2461,7 @@ export async function run(handlerEnv, ctx, constructors) {
           [...nodeBuffer.Buffer.from(value, "base64")], [...nodeBuffer.Buffer.from(value, "base64url")], nodeBuffer.Buffer.byteLength(value, "base64"), detailedResult(() => nodeBuffer.atob(value)),
         ]),
         base64Encoded: [[], [0], [0, 1], [255, 254, 253, 252]].map(bytes => [nodeBuffer.Buffer.from(bytes).toString("base64"), nodeBuffer.Buffer.from(bytes).toString("base64url")]),
+        hex: ["0a1B", "0a1", "0a zz", "zz0a", ""].map(value => [...nodeBuffer.Buffer.from(value, "hex")]),
         decoded: [[0x00, 0xd8], [0x41, 0x00, 0x00, 0xd8, 0x42], [0xef, 0xbb, 0xbf, 0x41]].map(bytes => ["utf16le", "utf8"].map(encoding => [...nodeBuffer.Buffer.from(bytes).toString(encoding)].map(text => text.codePointAt(0)))),
         btoa: ["hello", "\x00\xff", "€"].map(value => detailedResult(() => nodeBuffer.btoa(value))),
         base64Missing: [detailedResult(() => nodeBuffer.atob()), detailedResult(() => nodeBuffer.btoa())],
