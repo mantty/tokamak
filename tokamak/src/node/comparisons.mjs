@@ -63,11 +63,11 @@ function sameBytes(actual, expected, partial) {
   return expected.every((byte, index) => byte === actual[index]);
 }
 
-// Own enumerable keys, leaving out a typed array's elements, which compare as bytes.
+// Own enumerable keys, leaving out a typed array's elements, which come first
+// and compare as bytes.
 function ownKeys(value) {
-  const keys = Reflect.ownKeys(value).filter(key => propertyIsEnumerable.call(value, key));
-  if (!ArrayBuffer.isView(value)) return keys;
-  return keys.filter(key => typeof key === "symbol" || String(Number(key)) !== key);
+  const keys = Reflect.ownKeys(value);
+  return (ArrayBuffer.isView(value) ? keys.slice(value.length ?? 0) : keys).filter(key => propertyIsEnumerable.call(value, key));
 }
 
 function sameKeys(actual, expected, partial, paths) {

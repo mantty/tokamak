@@ -38,8 +38,8 @@ function inspectValue(value, options, level, seen) {
     if (typeof custom === "string") return custom;
   }
   if (value instanceof Buffer) return value.inspect();
-  if (objectClass(value) === "Date") return Number.isNaN(value.getTime()) ? "Invalid Date" : value.toISOString();
-  if (objectClass(value) === "RegExp") return String(value);
+  if (objectClass(value) === "Date") return Number.isNaN(Date.prototype.getTime.call(value)) ? "Invalid Date" : Date.prototype.toISOString.call(value);
+  if (objectClass(value) === "RegExp") return RegExp.prototype.toString.call(value);
   if (value instanceof Error) return `${value.name}: ${value.message}`;
 
   const nextSeen = [...seen, value];
