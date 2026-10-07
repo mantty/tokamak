@@ -9,7 +9,7 @@ use tokamak_cli::{MANIFEST_FILE, Platform, PlatformPackManifest, Target, load_ma
 use super::tokamak_config::{TokamakConfig, app_name_problem, slug};
 use super::vite::VitePlugin;
 use super::wrangler_config::{self, WranglerConfig};
-use super::{cache, plugins, settings, support, worker};
+use super::{plugins, settings, support, worker};
 
 pub(crate) struct BuildRequest {
     pub(crate) platforms: Vec<Platform>,
@@ -190,13 +190,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
     let app = resolve_app(&platform_settings, request.worker_name, request.platform)?;
     let version = settings::version(&sources)?;
     let build_dir = request.project.join("build");
-    let (input, project) = prepare_platform_input(
-        request.project,
-        &build_dir,
-        request.platform,
-        request.pack,
-        platform_settings.icon.as_deref(),
-    )?;
+    let (input, project) = prepare_platform_input(request.project, &build_dir, request.platform)?;
     plugins::stage(&plugins, manifest, &input.join("plugins"))
         .context("stage native plugin inputs")?;
     fs::write(input.join("app/.tokamak-development"), b"")?;
@@ -215,11 +209,11 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
     .context("write development metadata")?;
 
     let bundle_dir = output_path(&build_dir, request.platform, &app.slug);
-    support::run_entrypoint(
+    support::build_with_pack(
         pack_root,
+        manifest.target,
         &input,
         &bundle_dir,
-        manifest.target,
         &platform_settings.pack_environment,
     )
     .with_context(|| {
@@ -265,13 +259,8 @@ fn build_platform(
         app,
     } = build;
     let platform = *platform;
-    let (input, project) = prepare_platform_input(
-        &request.project_dir,
-        context.build_dir,
-        platform,
-        (pack_root, manifest),
-        platform_settings.icon.as_deref(),
-    )?;
+    let (input, project) =
+        prepare_platform_input(&request.project_dir, context.build_dir, platform)?;
 
     worker::package(&input.join("app"), context.worker, context.wrangler)
         .context("prepare the tokamak application package")?;
@@ -291,24 +280,12 @@ fn build_platform(
     )
     .context("write platform build metadata")?;
 
-    if matches!(
-        platform,
-        Platform::Ios | Platform::IosSimulator | Platform::Macos
-    ) {
-        let environment = input.join("app/worker-environment.json");
-        let key = input.join("metadata/input-key");
-        fs::write(
-            &key,
-            cache::hash_tree(&input, |path| path == environment || path == key)?,
-        )?;
-    }
-
     let output = output_path(context.build_dir, platform, &app.slug);
-    support::run_entrypoint(
+    support::build_with_pack(
         pack_root,
+        manifest.target,
         &input,
         &output,
-        manifest.target,
         &platform_settings.pack_environment,
     )
     .with_context(|| {
@@ -445,8 +422,6 @@ fn prepare_platform_input(
     project_dir: &Path,
     build_dir: &Path,
     platform: Platform,
-    (pack_root, manifest): (&Path, &PlatformPackManifest),
-    icon: Option<&Path>,
 ) -> Result<(PathBuf, PathBuf)> {
     let project = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project directory: {}", project_dir.display()))?;
@@ -461,10 +436,6 @@ fn prepare_platform_input(
         )
     })?;
     fs::create_dir_all(input.join("app"))?;
-    support::stage_platform_artifacts(&input, pack_root, manifest)
-        .context("stage platform-pack platform artifacts")?;
-    support::stage_platform_icons(&input, icon, platform)
-        .context("stage Tokamak application assets")?;
     Ok((input, project))
 }
 
@@ -676,7 +647,6 @@ mod tests {
         let named = |name: Option<&str>| PlatformSettings {
             name: name.map(str::to_owned),
             identifier: None,
-            icon: None,
             pack_environment: BTreeMap::new(),
         };
         let app = resolve_app(&named(Some("Myapp Pro")), "worker_name", Platform::Macos)?;

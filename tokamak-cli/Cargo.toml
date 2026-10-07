@@ -12,7 +12,6 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 tokamak = { path = "../tokamak" }
-tokamak-apple-signing = { path = "../platforms/apple/signing" }
 clap.workspace = true
 getrandom.workspace = true
 mime_guess.workspace = true

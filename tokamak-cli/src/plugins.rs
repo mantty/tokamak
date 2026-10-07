@@ -236,8 +236,6 @@ mod tests {
         PlatformPackManifest {
             tokamak_version: String::new(),
             target,
-            artifacts: Vec::new(),
-            required_tools: Vec::new(),
             variables: BTreeMap::new(),
             plugin_keys: BTreeMap::from([
                 ("class".to_owned(), PluginKeyKind::String),

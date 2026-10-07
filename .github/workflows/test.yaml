@@ -25,6 +25,9 @@ jobs:
       - name: Test Bash installer
         run: bash tests/install.sh
 
+      - name: Test the Android platform pack
+        run: bash platforms/android/tests/pack.sh
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -42,11 +45,12 @@ jobs:
           sdkmanager "ndk;29.0.14206865"
           ndk="${ANDROID_HOME}/ndk/29.0.14206865"
           toolchain="$(find "${ndk}/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          min_sdk="$(cat platforms/android/build/min-sdk)"
           {
-            echo "CC_aarch64_linux_android=${toolchain}/bin/aarch64-linux-android31-clang"
+            echo "CC_aarch64_linux_android=${toolchain}/bin/aarch64-linux-android${min_sdk}-clang"
             echo "AR_aarch64_linux_android=${toolchain}/bin/llvm-ar"
             echo "RANLIB_aarch64_linux_android=${toolchain}/bin/llvm-ranlib"
-            echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android31 --sysroot=${toolchain}/sysroot"
+            echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android${min_sdk} --sysroot=${toolchain}/sysroot"
           } >> "${GITHUB_ENV}"
 
       - name: Cache Rust
@@ -148,14 +152,12 @@ jobs:
           cargo clippy -p tokamak --lib --target x86_64-apple-ios --features test-stubs -- -D warnings
           cargo clippy -p tokamak --lib --target x86_64-apple-darwin --features test-stubs -- -D warnings
 
-      - name: Test iOS signing
-        run: |
-          cargo test -p tokamak-apple-signing
+      - name: Test the Apple platform pack
+        run: cargo test -p tokamak-apple-signing
 
       - name: Test Apple builds
         run: >-
           cargo test -p tokamak-cli --test build --
-          --skip builds_windows_app_with_its_runtime_files
           --skip requires_a_platform_pack_for_app_builds
 
   windows:
@@ -200,6 +202,7 @@ jobs:
           cargo test -p tokamak-cli --test build builds_windows_app_with_its_runtime_files
           cargo test -p tokamak-cli --test build links_storage_into_the_windows_executable_while_the_app_declares_it
           cargo test -p tokamak-cli --test build builds_with_a_configured_display_name
+          cargo test -p tokamak-cli --test build builds_a_configured_windows_icon
           cargo test -p tokamak-cli --test build runs_the_configured_build_command_in_the_project_directory
 
   validate:

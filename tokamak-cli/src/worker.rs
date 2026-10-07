@@ -47,13 +47,13 @@ pub(crate) fn compile(cache_dir: &Path, wrangler: &WranglerConfig) -> Result<Pat
     if let Some(state) = cached
         && state.inputs == inputs
         && PackageLayout::new(&compiled).worker_manifest().is_file()
-        && state.outputs == cache::hash_tree(&compiled, |_| false)?
+        && state.outputs == cache::hash_tree(&compiled)?
     {
         return Ok(compiled);
     }
     support::reset_path(&compiled)?;
     write_worker(&PackageLayout::new(&compiled), root, &manifest)?;
-    let outputs = cache::hash_tree(&compiled, |_| false)?;
+    let outputs = cache::hash_tree(&compiled)?;
     fs::write(
         marker,
         serde_json::to_vec(&WorkerCache { inputs, outputs })?,

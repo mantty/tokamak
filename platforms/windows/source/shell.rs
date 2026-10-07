@@ -160,7 +160,7 @@ fn start_runtime(
             },
             listener,
         )?),
-        (None, None) => Ok(Runtime::start(
+        _ => Ok(Runtime::start(
             Config {
                 app: PackageLayout::new(root.join("app")),
                 state_dir: state.join("runtime"),
@@ -169,7 +169,6 @@ fn start_runtime(
             },
             listener,
         )?),
-        _ => bail!("tok dev endpoint and session token must be provided together"),
     }
 }
 

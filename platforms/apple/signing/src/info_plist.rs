@@ -8,6 +8,9 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use plist::{Dictionary, Value};
 
+/// The oldest iOS version the pack's apps support.
+const IOS_DEPLOYMENT_TARGET: &str = include_str!("../../build/ios-deployment-target");
+
 /// Build the final Apple application information property list.
 ///
 /// # Errors
@@ -39,8 +42,8 @@ struct Metadata {
     platform: String,
     version: String,
     build_number: String,
-    dev_endpoint: Option<String>,
-    dev_session_token: Option<String>,
+    /// The development server's endpoint and session token.
+    development: Option<(String, String)>,
 }
 
 impl Metadata {
@@ -55,11 +58,13 @@ impl Metadata {
         }
         validate_build_number(&build_number)?;
 
-        let dev_endpoint = read_optional(&metadata.join("dev-endpoint"))?;
-        let dev_session_token = read_optional(&metadata.join("dev-session-token"))?;
-        if dev_endpoint.is_some() != dev_session_token.is_some() {
-            bail!("development endpoint and session token must be provided together");
-        }
+        let development = match read_optional(&metadata.join("dev-endpoint"))? {
+            Some(endpoint) => Some((
+                endpoint,
+                read_required(&metadata.join("dev-session-token"))?,
+            )),
+            None => None,
+        };
 
         Ok(Self {
             app_name: read_required(&metadata.join("app-name"))?,
@@ -69,8 +74,7 @@ impl Metadata {
             platform,
             version,
             build_number,
-            dev_endpoint,
-            dev_session_token,
+            development,
         })
     }
 }
@@ -226,16 +230,9 @@ fn add_generated_plist(
     insert_string(plist, "DTXcode", &toolchain.xcode);
     insert_string(plist, "DTXcodeBuild", &toolchain.xcode_build);
     insert_string(plist, "TokamakHost", &metadata.host);
-    if let Some(endpoint) = &metadata.dev_endpoint {
+    if let Some((endpoint, session_token)) = &metadata.development {
         insert_string(plist, "TokamakDevEndpoint", endpoint);
-        insert_string(
-            plist,
-            "TokamakDevSessionToken",
-            metadata
-                .dev_session_token
-                .as_deref()
-                .context("development session token is missing")?,
-        );
+        insert_string(plist, "TokamakDevSessionToken", session_token);
     }
 
     match metadata.platform.as_str() {
@@ -263,7 +260,7 @@ fn add_generated_plist(
                 "NSAppTransportSecurity",
                 [("NSAllowsLocalNetworking", Value::Boolean(true))],
             );
-            insert_string(plist, "MinimumOSVersion", "17.0");
+            insert_string(plist, "MinimumOSVersion", IOS_DEPLOYMENT_TARGET.trim_end());
             plist.insert("LSRequiresIPhoneOS".into(), Value::Boolean(true));
             insert_array(
                 plist,
@@ -968,6 +965,7 @@ mod tests {
         let metadata = Metadata::read(&input)?;
         let result = build_info_plist(&input, &metadata, &toolchain("iphoneos"), None, None)?;
         for (key, value) in [
+            ("MinimumOSVersion", super::IOS_DEPLOYMENT_TARGET.trim_end()),
             ("DTPlatformName", "iphoneos"),
             ("DTPlatformVersion", "26.5"),
             ("DTSDKName", "iphoneos26.5"),
@@ -982,6 +980,33 @@ mod tests {
                 "missing or incorrect {key}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn includes_the_development_server_only_for_development_builds() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let input = input(temporary.path(), "ios")?;
+        let development = |input: &std::path::Path| -> anyhow::Result<Vec<Option<String>>> {
+            let metadata = Metadata::read(input)?;
+            let result = build_info_plist(input, &metadata, &toolchain("iphoneos"), None, None)?;
+            Ok(["TokamakDevEndpoint", "TokamakDevSessionToken"]
+                .map(|key| {
+                    result
+                        .get(key)
+                        .and_then(Value::as_string)
+                        .map(str::to_owned)
+                })
+                .into())
+        };
+        assert_eq!(development(&input)?, [None, None]);
+
+        std::fs::write(input.join("metadata/dev-endpoint"), "http://127.0.0.1:9")?;
+        std::fs::write(input.join("metadata/dev-session-token"), "token")?;
+        assert_eq!(
+            development(&input)?,
+            [Some("http://127.0.0.1:9".into()), Some("token".into())]
+        );
         Ok(())
     }
 

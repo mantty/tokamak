@@ -6,7 +6,6 @@
 mod platform_pack;
 
 pub use platform_pack::{
-    Artifact, ArtifactKind, MANIFEST_FILE, PackVariable, Platform, PlatformPackError,
-    PlatformPackManifest, PluginKeyKind, SHARED_PLATFORM_KEYS, Target, VariableKind, is_valid_key,
-    load_manifest, write_manifest,
+    MANIFEST_FILE, PackVariable, Platform, PlatformPackError, PlatformPackManifest, PluginKeyKind,
+    SHARED_PLATFORM_KEYS, Target, VariableKind, is_valid_key, load_manifest, write_manifest,
 };

@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 || "$1" != build ]]; then
-  echo "usage: platform-pack build TARGET RUST_TARGET OUTPUT" >&2
+if [[ $# -ne 3 || "$1" != build ]]; then
+  echo "usage: platform-pack build TARGET OUTPUT" >&2
   exit 2
 fi
 
 target=$2
-rust_target=$3
-output=$4
+output=$3
 workspace=$PWD
+build=$workspace/platforms/android/build
+rust_target=aarch64-linux-android
+min_sdk=$(<"$build/min-sdk")
 
-if [[ "$target" != android-arm64 || "$rust_target" != aarch64-linux-android ]]; then
+if [[ "$target" != android-arm64 ]]; then
   echo "unsupported Android target: $target" >&2
   exit 1
 fi
@@ -31,7 +33,7 @@ if [[ ! -d "$ndk" ]]; then
 fi
 
 host=$(find "$ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d -print | head -n 1)
-compiler="$host/bin/aarch64-linux-android31-clang"
+compiler="$host/bin/aarch64-linux-android$min_sdk-clang"
 sysroot="$host/sysroot"
 if [[ ! -x "$compiler" ]]; then
   echo "Android NDK compiler is missing: $compiler" >&2
@@ -51,7 +53,7 @@ CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C force-unwind-tables=no" \
 CC_aarch64_linux_android="$compiler" \
 AR_aarch64_linux_android="$host/bin/llvm-ar" \
 RANLIB_aarch64_linux_android="$host/bin/llvm-ranlib" \
-BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--target=aarch64-linux-android31 --sysroot=$sysroot" \
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--target=aarch64-linux-android$min_sdk --sysroot=$sysroot" \
 cargo rustc \
   --package tokamak \
   --release \
@@ -71,5 +73,4 @@ fi
 cp "$library" "$runtime/libtokamak.a"
 cp "$libraries" "$runtime/link-libraries"
 cp -R "$workspace/platforms/android/source/." "$output/native-shell/"
-cp "$workspace/platforms/android/build/entrypoint" \
-  "$output/build/entrypoint"
+cp "$build/entrypoint" "$build/min-sdk" "$output/build/"

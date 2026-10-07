@@ -109,8 +109,8 @@ pub(crate) fn process_environment(name: &str) -> Result<Option<String>> {
 pub(crate) struct PlatformSettings {
     pub(crate) name: Option<String>,
     pub(crate) identifier: Option<String>,
-    pub(crate) icon: Option<PathBuf>,
-    /// The platform pack's variables, as its entrypoint's environment.
+    /// The platform pack's variables and the icon path, as its entrypoint's
+    /// environment.
     pub(crate) pack_environment: BTreeMap<String, OsString>,
 }
 
@@ -179,17 +179,8 @@ fn separate_value(value: Option<OsString>, option: &str) -> Result<String> {
 
 /// The app version: `--version`, `TOKAMAK_VERSION`, or `version`.
 pub(crate) fn version(sources: &Sources<'_>) -> Result<Option<String>> {
-    let (source, value) = match top_value(sources, "version", sources.top.version.as_ref())? {
-        Some(value) => value,
-        None => match sources.config.and_then(|config| config.version.clone()) {
-            Some(version) => ("version".to_owned(), version),
-            None => return Ok(None),
-        },
-    };
-    if value.contains('\'') {
-        bail!("{source} must not contain quotes");
-    }
-    Ok(Some(value))
+    let option = top_option(sources, "version", sources.top.version.as_ref())?;
+    Ok(option.or_else(|| sources.config.and_then(|config| config.version.clone())))
 }
 
 /// Resolve `platform`'s settings, rejecting keys its pack does not declare.
@@ -212,29 +203,27 @@ pub(crate) fn resolve(
         "identifier",
         sources.top.identifier.as_ref(),
     )?;
-    let icon = shared_value(sources, platform, "icon", sources.top.icon.as_ref())?;
+    let icon = shared_value(sources, platform, "icon", sources.top.icon.as_ref())?
+        .map(|icon| sources.current_dir.join(icon))
+        .or(configured.icon);
+    let mut pack_environment = pack_environment(sources, platform, manifest, &configured.pack)?;
+    if let Some(icon) = icon {
+        let name = environment_name(Some(platform.namespace()), "icon");
+        pack_environment.insert(name, icon.into_os_string());
+    }
     Ok(PlatformSettings {
         name: name.or(configured.name),
         identifier: identifier.or(configured.identifier),
-        icon: icon
-            .map(|icon| sources.current_dir.join(icon))
-            .or(configured.icon),
-        pack_environment: pack_environment(sources, platform, manifest, &configured.pack)?,
+        pack_environment,
     })
 }
 
-/// A top-level key's option or environment value, with where it came from.
-fn top_value(
-    sources: &Sources<'_>,
-    key: &str,
-    option: Option<&String>,
-) -> Result<Option<(String, String)>> {
-    let source = format!("--{key}");
-    if let Some(value) = option {
-        return Ok(Some((source.clone(), valid(&source, value.clone())?)));
+/// A top-level key's option or environment value.
+fn top_option(sources: &Sources<'_>, key: &str, option: Option<&String>) -> Result<Option<String>> {
+    match option {
+        Some(value) => valid(&format!("--{key}"), value.clone()).map(Some),
+        None => environment_value(sources, &environment_name(None, key)),
     }
-    let name = environment_name(None, key);
-    Ok(environment_value(sources, &name)?.map(|value| (name, value)))
 }
 
 /// A shared key's option or environment value: the platform's own, then the top-level one.
@@ -415,7 +404,7 @@ pub(crate) fn platform_help(
 mod tests {
     use std::collections::BTreeMap;
     use std::ffi::OsString;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     use anyhow::Result;
     use serde_json::{Value, json};
@@ -445,8 +434,6 @@ mod tests {
         PlatformPackManifest {
             tokamak_version: "0.1.0".to_owned(),
             target,
-            artifacts: Vec::new(),
-            required_tools: Vec::new(),
             variables: BTreeMap::from([
                 (
                     "plist".to_owned(),
@@ -663,29 +650,35 @@ mod tests {
     }
 
     #[test]
-    fn option_and_environment_icons_are_relative_to_the_current_directory() -> Result<()> {
+    fn passes_the_icon_to_the_pack_as_a_path() -> Result<()> {
         let mut fixture = Fixture::new();
-        fixture.config = configured(json!({ "icon": "/config/AppIcon.icon" }))?;
+        let icon =
+            |settings: PlatformSettings, name: &str| settings.pack_environment.get(name).cloned();
         assert_eq!(
-            fixture.resolve(Platform::Macos)?.icon,
-            Some(PathBuf::from("/config/AppIcon.icon"))
+            icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
+            None
+        );
+        fixture.config = configured(json!({ "icon": "../AppIcon.icon" }))?;
+        assert_eq!(
+            icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
+            Some(OsString::from("/config/src/../AppIcon.icon"))
         );
         fixture
             .environment
             .insert("TOKAMAK_ICON".to_owned(), "icons/App.icon".to_owned());
         assert_eq!(
-            fixture.resolve(Platform::Macos)?.icon,
-            Some(PathBuf::from("/work/icons/App.icon"))
+            icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
+            Some(OsString::from("/work/icons/App.icon"))
         );
         fixture.top.icon = Some("top/App.icon".to_owned());
         fixture.platform = platform_options(&["--macos-icon", "macos/App.icon"])?;
         assert_eq!(
-            fixture.resolve(Platform::Macos)?.icon,
-            Some(PathBuf::from("/work/macos/App.icon"))
+            icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
+            Some(OsString::from("/work/macos/App.icon"))
         );
         assert_eq!(
-            fixture.resolve(Platform::Ios)?.icon,
-            Some(PathBuf::from("/work/top/App.icon"))
+            icon(fixture.resolve(Platform::IosSimulator)?, "TOKAMAK_IOS_ICON"),
+            Some(OsString::from("/work/top/App.icon"))
         );
         Ok(())
     }
@@ -777,14 +770,9 @@ mod tests {
         assert_eq!(fixture.with(version)?.as_deref(), Some("2.0.0"));
         fixture.top.version = Some("3.0.0".to_owned());
         assert_eq!(fixture.with(version)?.as_deref(), Some("3.0.0"));
-        fixture.environment.remove("TOKAMAK_VERSION");
+        fixture.top.version = Some("1.0'beta\"".to_owned());
+        assert_eq!(fixture.with(version)?.as_deref(), Some("1.0'beta\""));
         fixture.top.version = None;
-        fixture.config = configured(json!({ "version": "1.0'" }))?;
-        assert!(
-            fixture
-                .with(version)
-                .is_err_and(|error| error.to_string() == "version must not contain quotes")
-        );
         fixture
             .environment
             .insert("TOKAMAK_VERSION".to_owned(), " 2".to_owned());

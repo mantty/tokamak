@@ -9,13 +9,9 @@ use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
-pub(crate) fn hash_tree(root: &Path, exclude: impl Fn(&Path) -> bool) -> Result<String> {
+pub(crate) fn hash_tree(root: &Path) -> Result<String> {
     let mut files = Vec::new();
-    for entry in WalkDir::new(root)
-        .follow_links(true)
-        .into_iter()
-        .filter_entry(|entry| !exclude(entry.path()))
-    {
+    for entry in WalkDir::new(root).follow_links(true) {
         let entry = entry?;
         if entry.file_type().is_file() {
             files.push(entry.path().to_path_buf());
