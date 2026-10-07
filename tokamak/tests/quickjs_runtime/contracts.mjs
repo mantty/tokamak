@@ -2472,6 +2472,13 @@ export async function run(handlerEnv, ctx, constructors) {
         json: encoded.toJSON(),
         static: [nodeBuffer.Buffer.byteLength("€"), nodeBuffer.Buffer.compare(nodeBuffer.Buffer.from([1]), nodeBuffer.Buffer.from([2])), nodeBuffer.Buffer.isEncoding("utf-8"), nodeBuffer.Buffer.of(1, 257)[1]],
         aliases: [nodeBuffer.Blob === Blob, nodeBuffer.File === File, nodeBuffer.atob === globalThis.atob, nodeBuffer.btoa === globalThis.btoa],
+        base64Names: [nodeBuffer.atob.name, nodeBuffer.btoa.name],
+        base64: ["aGVsbG8", "aGVsbG8===", "aGVs*bG8=", "a-_b", "aGVsbG8=aGVsbG8=", "=aGVsbG8", "abcde", "YR==", "Zm9véYmFy", "AAAA====AAAA", "%%%"].map(value => [
+          [...nodeBuffer.Buffer.from(value, "base64")], [...nodeBuffer.Buffer.from(value, "base64url")], nodeBuffer.Buffer.byteLength(value, "base64"), detailedResult(() => nodeBuffer.atob(value)),
+        ]),
+        base64Encoded: [[], [0], [0, 1], [255, 254, 253, 252]].map(bytes => [nodeBuffer.Buffer.from(bytes).toString("base64"), nodeBuffer.Buffer.from(bytes).toString("base64url")]),
+        btoa: ["hello", "\x00\xff", "€"].map(value => detailedResult(() => nodeBuffer.btoa(value))),
+        base64Missing: [detailedResult(() => nodeBuffer.atob()), detailedResult(() => nodeBuffer.btoa())],
       };
     })(),
     path: {

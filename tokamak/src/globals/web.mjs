@@ -1,6 +1,6 @@
 import { markHostObject } from "./objects.mjs";
-import { decodeBase64, encodeBase64 } from "tokamak:host";
 import { DOMException } from "./dom-exception.mjs";
+import { atob, btoa } from "./base64.mjs";
 import { clearImmediate, clearInterval, clearTimeout, setImmediate, setInterval, setTimeout } from "./timers.mjs";
 import { Crypto, CryptoKey, SubtleCrypto, crypto } from "./crypto.mjs";
 import { structuredClone } from "./structured-clone.mjs";
@@ -13,34 +13,6 @@ import { URL, URLPattern, URLSearchParams } from "../network/url.mjs";
 import { ReadableByteStreamController, ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest, ReadableStreamDefaultController, ReadableStreamDefaultReader, WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter, TransformStream, TransformStreamDefaultController, CompressionStream, DecompressionStream, ByteLengthQueuingStrategy, CountQueuingStrategy, FixedLengthStream, IdentityTransformStream, TextDecoderStream, TextEncoderStream } from "../streams/web.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 import { installIntlGlobals } from "../intl.mjs";
-
-function binaryString(value) {
-  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
-  return String(value);
-}
-
-function atob(value) {
-  if (arguments.length === 0) throw new TypeError("1 argument required");
-  const input = binaryString(value).replace(/[\t\n\f\r ]/g, "");
-  const valid = !input.includes("=") || (input.length % 4 === 0 && /^[A-Za-z0-9+/]*={1,2}$/.test(input));
-  const bytes = valid ? decodeBase64(input) : null;
-  if (!bytes) throw new DOMException("Invalid Base64 data", "InvalidCharacterError");
-  let output = "";
-  for (const byte of bytes) output += String.fromCharCode(byte);
-  return output;
-}
-
-function btoa(value) {
-  if (arguments.length === 0) throw new TypeError("1 argument required");
-  const input = binaryString(value);
-  const bytes = new Uint8Array(input.length);
-  for (let index = 0; index < input.length; index += 1) {
-    const code = input.charCodeAt(index);
-    if (code > 255) throw new DOMException("Input is not a binary string", "InvalidCharacterError");
-    bytes[index] = code;
-  }
-  return encodeBase64(bytes);
-}
 
 class Navigator {
   constructor() {

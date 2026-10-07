@@ -1,7 +1,8 @@
+import { decodeBase64, encodeBase64 } from "tokamak:host";
+import { atob as globalAtob, btoa as globalBtoa } from "../globals/base64.mjs";
 import { Blob, File } from "../network/fetch.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 
-const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const encodingNames = new Set(["utf8", "utf-8", "ascii", "latin1", "binary", "base64", "base64url", "hex", "ucs2", "ucs-2", "utf16le", "utf-16le"]);
 
 function normalizeEncoding(encoding) {
@@ -26,7 +27,7 @@ function hexByte(value) { return value.toString(16).padStart(2, "0"); }
 function stringBytes(value, encoding) {
   const name = normalizeEncoding(encoding);
   if (name === "hex") return decodeHex(String(value));
-  if (name === "base64" || name === "base64url") return decodeBase64(String(value));
+  if (name === "base64" || name === "base64url") return decodeBase64Leniently(String(value));
   if (name === "ascii" || name === "latin1" || name === "binary") {
     const input = String(value);
     const bytes = new Uint8Array(input.length);
@@ -56,37 +57,10 @@ function decodeHex(value) {
   return new Uint8Array(bytes);
 }
 
-function decodeBase64(value) {
-  const input = value.replace(/[\t\n\f\r ]/g, "").replace(/-/g, "+").replace(/_/g, "/");
-  const bytes = [];
-  let accumulator = 0;
-  let bits = 0;
-  for (const character of input) {
-    if (character === "=") break;
-    const digit = BASE64.indexOf(character);
-    if (digit < 0) continue;
-    accumulator = (accumulator << 6) | digit;
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      bytes.push((accumulator >> bits) & 0xff);
-    }
-  }
-  return new Uint8Array(bytes);
-}
-
-function encodeBase64(bytes) {
-  let output = "";
-  for (let index = 0; index < bytes.length; index += 3) {
-    const first = bytes[index];
-    const second = bytes[index + 1];
-    const third = bytes[index + 2];
-    output += BASE64[first >> 2];
-    output += BASE64[((first & 3) << 4) | (second === undefined ? 0 : second >> 4)];
-    output += second === undefined ? "=" : BASE64[((second & 15) << 2) | (third === undefined ? 0 : third >> 6)];
-    output += third === undefined ? "=" : BASE64[third & 63];
-  }
-  return output;
+// Node decodes either base64 alphabet up to the first "=", skipping other characters.
+function decodeBase64Leniently(value) {
+  const digits = value.split("=", 1)[0].replace(/[^A-Za-z0-9+/_-]/g, "").replace(/-/g, "+").replace(/_/g, "/");
+  return decodeBase64(digits.length % 4 === 1 ? digits.slice(0, -1) : digits);
 }
 
 function decode(bytes, encoding) {
@@ -178,6 +152,8 @@ export class Buffer extends Uint8Array {
   static allocUnsafeSlow(size) { return Buffer.allocUnsafe(size); }
 
   static byteLength(value, encoding) {
+    // Node estimates a base64 string's length from its padding.
+    if (typeof value === "string" && ["base64", "base64url"].includes(normalizeEncoding(encoding))) return Math.floor(value.replace(/={1,2}$/, "").length * 3 / 4);
     if (typeof value === "string") return stringBytes(value, encoding).byteLength;
     if (isArrayBufferLike(value) || ArrayBuffer.isView(value)) return value.byteLength;
     return stringBytes(String(value), encoding).byteLength;
@@ -433,10 +409,9 @@ export function isUtf8(value) { try { new TextDecoder("utf-8", { fatal: true }).
 export function transcode(value, fromEncoding = "utf8", toEncoding = "utf8") {
   return Buffer.from(Buffer.from(value, fromEncoding).toString(toEncoding), toEncoding);
 }
-export function atob(value) { return Buffer.from(decodeBase64(String(value))).toString("latin1"); }
-export function btoa(value) { return encodeBase64(stringBytes(String(value), "latin1")); }
-export const atobBuffer = value => Buffer.from(atob(value), "latin1");
-export const btoaBuffer = value => btoa(Buffer.from(value).toString("latin1"));
+// The globals, as bound functions of their own.
+export const atob = globalAtob.bind(globalThis);
+export const btoa = globalBtoa.bind(globalThis);
 export function resolveObjectURL() { throw new Error("Blob URLs are not available in the Tokamak runtime"); }
 
 Object.defineProperty(Buffer, "length", { configurable: true, value: 3 });
