@@ -9,6 +9,7 @@ mod dev;
 mod devices;
 mod packs;
 mod paths;
+mod pinned_tls;
 mod pipeline;
 mod plugins;
 mod project;
