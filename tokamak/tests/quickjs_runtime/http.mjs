@@ -127,13 +127,14 @@ export default {
       let ended = false;
       let cancelled = 0;
       let count = 0;
+      const cancellation = Promise.withResolvers();
       const body = new ReadableStream({
         async pull(controller) {
           await new Promise(resolve => setTimeout(resolve, 1));
           if (count++ === 100) { ended = true; controller.close(); }
           else controller.enqueue(new Uint8Array(1024));
         },
-        cancel() { cancelled++; },
+        cancel() { cancelled++; cancellation.resolve(); },
       });
       try {
         const response = await fetch(`${base}/${endpoint}`, { method: "POST", body });
@@ -141,7 +142,8 @@ export default {
         const text = await response.text();
         results.earlyUploads.push({ headersBeforeEnd, text, ended, cancelled });
       } catch {
-        await new Promise(resolve => setTimeout(resolve, 1));
+        // Both runtimes cancel the upload after the fetch rejects, at no fixed time.
+        await Promise.race([cancellation.promise, new Promise(resolve => setTimeout(resolve, 1000))]);
         results.earlyUploads.push({ failed: true, ended, cancelled });
       }
     }
