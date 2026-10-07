@@ -115,11 +115,6 @@ function websocketData(data) {
   return bytes.slice().buffer;
 }
 
-export function installWebSocketGlobals() {
-  globalThis.WebSocket ??= WebSocket;
-  globalThis.WebSocketPair ??= WebSocketPair;
-}
-
 for (const [name, value] of Object.entries({
   CONNECTING: 0,
   OPEN: 1,

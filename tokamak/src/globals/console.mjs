@@ -50,7 +50,3 @@ export const console = {
   profileEnd() {},
   timeStamp() {},
 };
-
-export function installConsoleGlobal() {
-  globalThis.console = console;
-}
