@@ -8,11 +8,14 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
 import android.os.CancellationSignal
+import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakPluginReply
+import org.json.JSONObject
 
 class TokamakLocationPlugin(
     private val host: TokamakHost,
@@ -22,14 +25,16 @@ class TokamakLocationPlugin(
     private val context = host.context
     private val manager =
         context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+    private val handler = Handler(Looper.getMainLooper())
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
         if (method != "getCurrentPosition") {
             super.call(method, arguments, reply)
             return
         }
+        val options = arguments as? JSONObject
         withPermission { granted ->
-            if (granted) currentPosition(reply) else reply(permissionDenied())
+            if (granted) currentPosition(options, reply) else reply(permissionDenied())
         }
     }
 
@@ -63,19 +68,42 @@ class TokamakLocationPlugin(
         host.requestPermissions(PERMISSIONS) { granted -> action(granted.containsValue(true)) }
     }
 
-    private fun currentPosition(reply: TokamakPluginReply) {
+    /**
+     * Replies with a fix no older than the `maximumAge` option, taking a new one when there is
+     * none, or fails after the `timeout` option.
+     */
+    private fun currentPosition(options: JSONObject?, reply: TokamakPluginReply) {
         val provider = availableProvider(reply) ?: return
+        val maximumAge = options?.optLong("maximumAge", 0) ?: 0
+        val recent = runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
+        if (recent != null && ageMillis(recent) <= maximumAge) {
+            reply(Result.success(position(recent)))
+            return
+        }
+        val cancellation = CancellationSignal()
+        val timeout = Runnable {
+            cancellation.cancel()
+            reply(Result.failure(TokamakPluginError("TimeoutError", "Location was not found in time")))
+        }
+        handler.postDelayed(timeout, options?.optLong("timeout", UNLIMITED) ?: UNLIMITED)
         runCatching {
             manager.getCurrentLocation(
                 provider,
-                CancellationSignal(),
+                cancellation,
                 context.mainExecutor,
             ) { location ->
+                handler.removeCallbacks(timeout)
                 if (location == null) reply(unavailable("Location is unavailable"))
                 else reply(Result.success(position(location)))
             }
-        }.onFailure { reply(locationFailure(it)) }
+        }.onFailure {
+            handler.removeCallbacks(timeout)
+            reply(locationFailure(it))
+        }
     }
+
+    private fun ageMillis(location: Location): Long =
+        (SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos) / 1_000_000
 
     private fun watchPosition(reply: TokamakPluginReply): () -> Unit {
         val provider = availableProvider(reply) ?: return {}
@@ -145,6 +173,8 @@ class TokamakLocationPlugin(
         else unavailable(error.message ?: "Location is unavailable")
 
     private companion object {
+        /** The `timeout` that never expires, as the page sends it. */
+        const val UNLIMITED = 0xffffffffL
         val PERMISSIONS = setOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
     }
 }

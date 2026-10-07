@@ -10,15 +10,32 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     name: "NotAllowedError",
     message: "Location permission was denied"
   )
+  private static let timedOut = TokamakPluginError(
+    name: "TimeoutError",
+    message: "Location was not found in time"
+  )
 
-  private let manager = CLLocationManager()
-  private var current: [TokamakPluginReply] = []
+  /// A current position request, timed from when locating starts.
+  private struct Request {
+    let reply: TokamakPluginReply
+    let maximumAge: TimeInterval
+    let timeout: TimeInterval
+    var timer: DispatchWorkItem?
+  }
+
+  /// Updates watchers.
+  private let updates = CLLocationManager()
+  /// Takes single fixes for current position requests, apart from watching.
+  private let fixes = CLLocationManager()
+  private var current: [UUID: Request] = [:]
   private var watchers: [UUID: TokamakPluginReply] = [:]
 
   init(host: TokamakHost) {
     super.init()
-    manager.delegate = self
-    manager.desiredAccuracy = kCLLocationAccuracyBest
+    for manager in [updates, fixes] {
+      manager.delegate = self
+      manager.desiredAccuracy = kCLLocationAccuracyBest
+    }
   }
 
   func call(
@@ -30,7 +47,12 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
       reply(.failure(.notSupported("\(id).\(method) is not supported")))
       return
     }
-    current.append(reply)
+    let options = arguments as? [String: Any] ?? [:]
+    current[UUID()] = Request(
+      reply: reply,
+      maximumAge: (options["maximumAge"] as? Double ?? 0) / 1000,
+      timeout: (options["timeout"] as? Double ?? Double(UInt32.max)) / 1000
+    )
     start()
   }
 
@@ -48,14 +70,19 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     start()
     return { [weak self] in
       self?.watchers.removeValue(forKey: subscription)
-      self?.stopIfIdle()
+      if self?.watchers.isEmpty == true {
+        self?.updates.stopUpdatingLocation()
+      }
     }
   }
 
+  /// Also called when each manager is created, before anything asks for a
+  /// position. Both managers report the app's one authorization.
   func locationManagerDidChangeAuthorization(
     _ manager: CLLocationManager
   ) {
-    startIfAuthorized(manager.authorizationStatus)
+    guard manager === updates, !current.isEmpty || !watchers.isEmpty else { return }
+    serve(manager.authorizationStatus)
   }
 
   func locationManager(
@@ -63,38 +90,53 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     didUpdateLocations locations: [CLLocation]
   ) {
     guard let location = locations.last else { return }
-    deliver(.success(position(location)))
+    deliver(.success(position(location)), from: manager)
   }
 
+  /// A fix that is not yet available is taken again; updates continue.
   func locationManager(
     _ manager: CLLocationManager,
     didFailWithError error: Error
   ) {
-    if (error as NSError).code == CLError.Code.locationUnknown.rawValue {
+    guard (error as NSError).code == CLError.Code.locationUnknown.rawValue else {
+      deliver(.failure(locationError(error)), from: manager)
       return
     }
-    fail(locationError(error))
+    if manager === fixes && !current.isEmpty {
+      fixes.requestLocation()
+    }
   }
 
+  /// Checks location services off the main thread, which the check can block.
   private func start() {
-    guard CLLocationManager.locationServicesEnabled() else {
+    DispatchQueue.global(qos: .userInitiated).async {
+      let enabled = CLLocationManager.locationServicesEnabled()
+      DispatchQueue.main.async { self.start(servicesEnabled: enabled) }
+    }
+  }
+
+  private func start(servicesEnabled: Bool) {
+    guard servicesEnabled else {
       fail(unavailable("Location services are disabled"))
       return
     }
-    let status = manager.authorizationStatus
+    let status = updates.authorizationStatus
     if status == .notDetermined {
-      manager.requestWhenInUseAuthorization()
+      updates.requestWhenInUseAuthorization()
     } else {
-      startIfAuthorized(status)
+      serve(status)
     }
   }
 
-  /// Starts updates when `status` allows them and fails every request when it
-  /// forbids them.
-  private func startIfAuthorized(_ status: CLAuthorizationStatus) {
+  /// Locates for the waiting requests and watchers when `status` allows it,
+  /// and fails them when it forbids it.
+  private func serve(_ status: CLAuthorizationStatus) {
     switch status {
     case .authorizedAlways, .authorizedWhenInUse:
-      manager.startUpdatingLocation()
+      if !watchers.isEmpty {
+        updates.startUpdatingLocation()
+      }
+      locate()
     case .denied, .restricted:
       fail(Self.permissionDenied)
     case .notDetermined:
@@ -104,19 +146,49 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     }
   }
 
-  private func fail(_ error: TokamakPluginError) {
-    deliver(.failure(error))
+  /// Answers each new request with a fix no older than its `maximumAge`, and
+  /// takes a fix for the rest, each failing after its `timeout`.
+  private func locate() {
+    for (key, request) in current where request.timer == nil {
+      if let fix = fixes.location, -fix.timestamp.timeIntervalSinceNow <= request.maximumAge {
+        finish(key, .success(position(fix)))
+        continue
+      }
+      let timer = DispatchWorkItem { [weak self] in self?.finish(key, .failure(Self.timedOut)) }
+      current[key]?.timer = timer
+      DispatchQueue.main.asyncAfter(deadline: .now() + request.timeout, execute: timer)
+    }
+    if !current.isEmpty {
+      fixes.requestLocation()
+    }
   }
 
-  /// Replies to the waiting requests and every watcher, then stops when none
-  /// remain.
-  private func deliver(_ result: Result<Any?, TokamakPluginError>) {
-    let replies = current + Array(watchers.values)
-    current.removeAll()
-    for reply in replies {
-      reply(result)
+  /// Answers the waiting requests with a fix, or the watchers with an update.
+  private func deliver(_ result: Result<Any?, TokamakPluginError>, from manager: CLLocationManager)
+  {
+    guard manager === fixes else {
+      for reply in watchers.values {
+        reply(result)
+      }
+      return
     }
-    stopIfIdle()
+    for key in current.keys {
+      finish(key, result)
+    }
+  }
+
+  private func fail(_ error: TokamakPluginError) {
+    deliver(.failure(error), from: fixes)
+    deliver(.failure(error), from: updates)
+  }
+
+  private func finish(_ key: UUID, _ result: Result<Any?, TokamakPluginError>) {
+    guard let request = current.removeValue(forKey: key) else { return }
+    request.timer?.cancel()
+    request.reply(result)
+    if current.isEmpty {
+      fixes.stopUpdatingLocation()
+    }
   }
 
   private func locationError(_ error: Error) -> TokamakPluginError {
@@ -128,12 +200,6 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
 
   private func unavailable(_ message: String) -> TokamakPluginError {
     TokamakPluginError(name: "NotReadableError", message: message)
-  }
-
-  private func stopIfIdle() {
-    if current.isEmpty && watchers.isEmpty {
-      manager.stopUpdatingLocation()
-    }
   }
 
   private func position(_ location: CLLocation) -> [String: Any] {
