@@ -231,6 +231,10 @@ private final class TokamakController {
     self.host = host
   }
 
+  deinit {
+    pluginBridge?.close()
+  }
+
   func start(frame: CGRect, completion: @escaping (WKWebView) -> Void) {
     host.whenStarted { result in
       switch result {
@@ -431,6 +435,12 @@ private final class TokamakController {
 
     func sceneWillEnterForeground(_ scene: UIScene) {
       controller?.restoreGateway()
+    }
+
+    /// Releases the scene's window and page, which a reconnection recreates.
+    func sceneDidDisconnect(_ scene: UIScene) {
+      window = nil
+      controller = nil
     }
   }
 #endif
