@@ -1,4 +1,5 @@
 import { cryptoHkdf, cryptoPbkdf2, cryptoCheckPrime, cryptoCreateCipher, cryptoCreateDigest, cryptoDecrypt, cryptoDhCompute, cryptoDhGenerate, cryptoDhParams, cryptoEcdhCompute, cryptoEcdhConvert, cryptoEcdhPublic, cryptoEncrypt, cryptoExportKey, cryptoGenerateKey, cryptoGeneratePrime, cryptoImportKey, cryptoRsaLegacyPrivateEncrypt, cryptoRsaLegacyPublicDecrypt, cryptoScrypt, cryptoSign, cryptoTimingSafeEqual, cryptoVerify, digest, randomBytes as hostRandomBytes } from "tokamak:host";
+import { bufferBytes, joinBytes } from "../globals/conversions.mjs";
 import { CryptoKey, crypto as webcrypto } from "../globals/crypto.mjs";
 import { DOMException } from "../globals/dom-exception.mjs";
 import { TextDecoder } from "../streams/text.mjs";
@@ -22,17 +23,6 @@ function normalizeHash(algorithm) {
 
 function inputBytes(value, encoding) {
   return Buffer.from(value, encoding);
-}
-
-function joinChunks(chunks) {
-  const size = chunks.reduce((total, chunk) => total + chunk.length, 0);
-  const input = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    input.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return input;
 }
 
 function codedError(ErrorType, message, code) {
@@ -138,16 +128,9 @@ export function randomBytes(length, callback) {
   deliver(callback, () => randomBytesSync(length));
 }
 
-function arrayBufferView(buffer) {
-  if (buffer instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && buffer instanceof SharedArrayBuffer)) {
-    return new Uint8Array(buffer);
-  }
-  if (ArrayBuffer.isView(buffer)) return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-  throw new TypeError("The first argument must be an ArrayBuffer or a view on an ArrayBuffer");
-}
-
 export function randomFillSync(buffer, offset = 0, size) {
-  const view = arrayBufferView(buffer);
+  const view = bufferBytes(buffer);
+  if (!view) throw new TypeError("The first argument must be an ArrayBuffer or a view on an ArrayBuffer");
   const start = Number(offset);
   const length = size === undefined ? view.byteLength - start : Number(size);
   if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(length) || length < 0 || start + length > view.byteLength) {
@@ -535,7 +518,7 @@ export class Sign extends Transform {
       const record = keyRecord(key instanceof KeyObject ? key : createPrivateKey(key));
       if (record.type !== "private") throw new TypeError("A private key is required");
       const kind = signingKind(record, options);
-      const output = Buffer.from(cryptoSign(joinChunks(this.__chunks), { kind, format: record.format, key: record.bytes, hash: this.__algorithm, saltLength: options?.saltLength }));
+      const output = Buffer.from(cryptoSign(joinBytes(this.__chunks), { kind, format: record.format, key: record.bytes, hash: this.__algorithm, saltLength: options?.saltLength }));
       this.__finalized = true;
       return outputEncoding(output, typeof options === "string" ? options : undefined);
     });
@@ -561,7 +544,7 @@ export class Verify extends Transform {
     return returnOrDeliver(callback, () => {
       const record = keyRecord(key instanceof KeyObject ? key : createPublicKey(key));
       const kind = signingKind(record);
-      const value = cryptoVerify(inputBytes(signature), { kind, format: record.format, key: record.bytes, hash: this.__algorithm, message: joinChunks(this.__chunks), saltLength: undefined });
+      const value = cryptoVerify(inputBytes(signature), { kind, format: record.format, key: record.bytes, hash: this.__algorithm, message: joinBytes(this.__chunks), saltLength: undefined });
       this.__finalized = true;
       return value;
     });

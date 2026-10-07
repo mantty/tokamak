@@ -1,5 +1,5 @@
 import { socketConnect } from "tokamak:host";
-import { ReadableStream, WritableStream } from "../streams/web.mjs";
+import { ReadableStream, WritableStream, writtenChunkBytes } from "../streams/web.mjs";
 
 function deferred() {
   let resolve;
@@ -31,12 +31,6 @@ function validateAddress(address) {
         : "The value cannot be converted because it is not an integer.");
   }
   return address;
-}
-
-function bytes(value) {
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  throw new TypeError("Socket writes require an ArrayBuffer or ArrayBufferView");
 }
 
 function secureMode(options) {
@@ -133,7 +127,7 @@ function createState(address, mode, native, allowHalfOpen, shared = undefined) {
     async write(value) {
       if (state.transferred) throw new TypeError("Socket was transferred");
       if (state.terminated) throw state.error ?? new TypeError("Socket is closed");
-      const data = bytes(value);
+      const data = writtenChunkBytes(value);
       await state.opened.promise;
       await native.write(data);
     },

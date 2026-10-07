@@ -1,5 +1,5 @@
 import { htmlRewrite, htmlValidateSelector } from "tokamak:host";
-import { ReadableStream, nativeReadableStream, nativeStreamError } from "../streams/web.mjs";
+import { ReadableStream, drainedChunkBytes, nativeReadableStream, nativeStreamError } from "../streams/web.mjs";
 import { captureAsyncContext, runInAsyncContext } from "../builtins/async-context.mjs";
 import { string } from "../globals/conversions.mjs";
 import { Response } from "./fetch.mjs";
@@ -375,9 +375,7 @@ export class HTMLRewriter {
           sources.delete(id);
           return null;
         }
-        if (next.value instanceof ArrayBuffer) source.bytes = new Uint8Array(next.value);
-        else if (ArrayBuffer.isView(next.value)) source.bytes = new Uint8Array(next.value.buffer, next.value.byteOffset, next.value.byteLength);
-        else throw new TypeError("HTMLRewriter input streams must contain bytes");
+        source.bytes = drainedChunkBytes(next.value);
         source.offset = 0;
       }
       const bytes = source.bytes.subarray(source.offset, source.offset + 65536);

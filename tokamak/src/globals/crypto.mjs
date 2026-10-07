@@ -1,5 +1,6 @@
 import { markHostObject } from "./objects.mjs";
 import { decodeBase64, encodeBase64, randomBytes, digest, cryptoCreateDigest, cryptoHmac, cryptoAesGcm, cryptoPbkdf2, cryptoHkdf, cryptoGenerateKey, cryptoImportKey, cryptoExportKey, cryptoSign, cryptoVerify, cryptoEncrypt, cryptoDecrypt, cryptoDerive, cryptoTimingSafeEqual } from "tokamak:host";
+import { bufferSourceBytes, sharedBufferSourceBytes } from "./conversions.mjs";
 import { DOMException } from "./dom-exception.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 import { WritableStream } from "../streams/web.mjs";
@@ -279,11 +280,9 @@ function requireAlgorithmKey(key, algorithm) {
   return record;
 }
 function toBytes(value) {
-  try {
-    if (value instanceof ArrayBuffer) return new Uint8Array(value).slice();
-    if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
-  } catch { throw new TypeError("ArrayBuffer is detached"); }
-  throw new TypeError("Data must be an ArrayBuffer or ArrayBufferView");
+  const bytes = bufferSourceBytes(value);
+  if (!bytes) throw new TypeError("Data must be an ArrayBuffer or ArrayBufferView");
+  return bytes.slice();
 }
 
 function aesOptions(tagLength, mode, additionalData) { return { tagLength, mode, additionalData }; }
@@ -483,7 +482,7 @@ export class Crypto {
     if (!ArrayBuffer.isView(value)) throw new TypeError("Expected an integer typed array");
     if (value instanceof DataView || value instanceof Float32Array || value instanceof Float64Array || (typeof Float16Array !== "undefined" && value instanceof Float16Array)) throw new DOMException("The provided value is not an integer typed array.", "TypeMismatchError");
     if (value.byteLength > 65536) throw new DOMException("The requested length exceeds 65,536 bytes.", "QuotaExceededError");
-    new Uint8Array(value.buffer, value.byteOffset, value.byteLength).set(randomBytes(value.byteLength));
+    sharedBufferSourceBytes(value).set(randomBytes(value.byteLength));
     return value;
   }
   randomUUID() { return randomUUID(); }

@@ -9,6 +9,7 @@ import { zlibContracts } from "./zlib.mjs";
 import { cloneContracts } from "./clone.mjs";
 import { performanceContracts } from "./performance.mjs";
 import { intlContracts } from "./intl.mjs";
+import { bytesContracts } from "./bytes.mjs";
 
 function errorResult(error) {
   return { error: error.name, dom: error instanceof DOMException, code: error.code ?? null };
@@ -71,6 +72,7 @@ export async function run(handlerEnv, ctx, constructors) {
   output.cloneDetails = await cloneContracts();
   output.performanceDetails = await performanceContracts();
   output.intlDetails = intlContracts();
+  output.bytesDetails = await bytesContracts();
   output.asyncContextDetails = await asyncResult(async () => {
     const { AsyncLocalStorage } = await import("node:async_hooks");
     const storage = new AsyncLocalStorage({ name: "scope", defaultValue: "default" });

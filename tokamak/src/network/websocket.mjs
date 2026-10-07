@@ -1,3 +1,4 @@
+import { sharedBufferSourceBytes } from "../globals/conversions.mjs";
 import { DOMException } from "../globals/dom-exception.mjs";
 import { structuredClone } from "../globals/structured-clone.mjs";
 import { TextEncoder } from "../streams/text.mjs";
@@ -109,9 +110,9 @@ export class WebSocketPair {
 
 function websocketData(data) {
   if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return data.slice(0);
-  if (ArrayBuffer.isView(data)) return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-  throw new TypeError("WebSocket data must be a string, ArrayBuffer, or ArrayBufferView");
+  const bytes = sharedBufferSourceBytes(data);
+  if (!bytes) throw new TypeError("WebSocket data must be a string, ArrayBuffer, or ArrayBufferView");
+  return bytes.slice().buffer;
 }
 
 export function installWebSocketGlobals() {

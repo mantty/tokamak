@@ -1,7 +1,8 @@
 import { kvDelete, kvGet, kvGetMany, kvList, kvPut } from "tokamak:storage";
+import { joinBytes, sharedBufferSourceBytes } from "../globals/conversions.mjs";
 import { bodyStream } from "../network/fetch.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
-import { ReadableStream } from "../streams/web.mjs";
+import { ReadableStream, drainedChunkBytes } from "../streams/web.mjs";
 
 const MAX_KEY_LENGTH = 512;
 const MAX_VALUE_LENGTH = 25 * 1024 * 1024;
@@ -81,29 +82,22 @@ function copy(bytes) {
 
 // A value's length, and its bytes unless it exceeds the value limit.
 async function readValue(body) {
-  if (typeof body !== "object" || body === null) return copy(encoder.encode(String(body)));
-  if (body instanceof ArrayBuffer) return copy(new Uint8Array(body));
-  if (ArrayBuffer.isView(body)) return copy(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
   if (body instanceof ReadableStream) return readStream(body);
-  throw new TypeError(VALUE_TYPES);
+  if (typeof body !== "object" || body === null) return copy(encoder.encode(String(body)));
+  const bytes = sharedBufferSourceBytes(body);
+  if (!bytes) throw new TypeError(VALUE_TYPES);
+  return copy(bytes);
 }
 
 async function readStream(stream) {
   const chunks = [];
   let length = 0;
   for await (const chunk of stream) {
-    const bytes = ArrayBuffer.isView(chunk) ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength) : new Uint8Array(chunk);
+    const bytes = drainedChunkBytes(chunk);
     length += bytes.byteLength;
     if (length <= MAX_VALUE_LENGTH) chunks.push(bytes);
   }
-  if (length > MAX_VALUE_LENGTH) return { bytes: null, length };
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return { bytes, length };
+  return { bytes: length > MAX_VALUE_LENGTH ? null : joinBytes(chunks), length };
 }
 
 // The expiration, in seconds since the epoch, `put` options ask for.

@@ -1,3 +1,4 @@
+import { bufferBytes } from "../globals/conversions.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 import { Buffer } from "./buffer.mjs";
 
@@ -17,8 +18,7 @@ function normalizeEncoding(value) {
 
 function bytes(value) {
   if (typeof value === "string") return new TextEncoder().encode(value);
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (ArrayBuffer.isView(value)) return bufferBytes(value);
   throw new TypeError("The \"buffer\" argument must be of type string or an instance of Buffer, TypedArray, or DataView");
 }
 
