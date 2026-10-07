@@ -4,6 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { tokamak } from "@tokamakdev/tok/vite";
@@ -57,9 +58,9 @@ async function build(app, vite) {
   await builder.buildApp();
 }
 
-/** Runs `use` with the development server of `app`, listening on any port. */
-async function serve(app, use) {
-  const server = await createServer(viteConfig(app, { server: { port: 0 } }));
+/** Runs `use` with the development server of `app`, listening on any port, with Vite's `server` options. */
+async function serve(app, use, options = {}) {
+  const server = await createServer(viteConfig(app, { server: { port: 0, ...options } }));
   try {
     await server.listen();
     return await use(server);
@@ -226,6 +227,51 @@ test("reports again when the development server restarts", async () => {
     assert.deepEqual(readOutput(app, "config.json").config, { name: "App" });
     assert.equal(readOutput(app, "server.json").url, server.resolvedUrls.local[0]);
   });
+});
+
+test("reports that a development server in middleware mode has no address", async () => {
+  const app = project();
+  const server = await createServer(viteConfig(app, { server: { middlewareMode: true } }));
+  try {
+    assert.match(readOutput(app, "server.json").error, /middleware mode.*tok dev needs Vite's own dev server/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("keeps the reported development server when a middleware-mode server starts beside it", async () => {
+  const app = project();
+  await serve(app, async (server) => {
+    const beside = await createServer(viteConfig(app, { server: { middlewareMode: true } }));
+    await beside.close();
+    assert.equal(readOutput(app, "server.json").url, server.resolvedUrls.local[0]);
+  });
+});
+
+const fixture = (name) => fileURLToPath(new URL(`fixtures/${name}`, import.meta.url));
+
+test("reports the certificate an HTTPS development server serves, in each form Vite reads", async () => {
+  const key = fs.readFileSync(fixture("localhost-key.pem"));
+  const certificate = fs.readFileSync(fixture("localhost-cert.pem"), "utf8");
+  const forms = [
+    // A key and certificate in one PEM, as @vitejs/plugin-basic-ssl sets them.
+    { key: `${key}${certificate}`, cert: `${key}${certificate}` },
+    { key, cert: fixture("localhost-cert.pem") },
+    { key: [key], cert: [Buffer.from(certificate)] },
+  ];
+  for (const https of forms) {
+    const app = project();
+    await serve(
+      app,
+      (server) =>
+        assert.deepEqual(readOutput(app, "server.json"), {
+          url: server.resolvedUrls.local[0],
+          workerName: "app",
+          certificates: certificate,
+        }),
+      { https },
+    );
+  }
 });
 
 test("fails a build in which no environment builds the entry Worker", async () => {
