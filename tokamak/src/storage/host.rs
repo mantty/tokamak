@@ -6,7 +6,7 @@ use std::any::Any;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::kv::Entry;
+use super::kv::{Entry, Value};
 use super::r2::{BodyReader, BodyWriter, Failure, R2Bucket, Read};
 use super::{Storage, lock, text};
 use rquickjs::class::Trace;
@@ -45,6 +45,8 @@ crate::globals::host_functions! {
     "d1Query" => Async(d1_query),
     "kvGet" => Async(kv_get),
     "kvGetMany" => Async(kv_get_many),
+    "kvValue" => kv_value,
+    "kvWrite" => kv_write,
     "kvPut" => Async(kv_put),
     "kvDelete" => Async(kv_delete),
     "kvList" => Async(kv_list),
@@ -78,6 +80,14 @@ pub(crate) struct Reader {
 pub(crate) struct Writer {
     #[qjs(skip_trace)]
     body: Arc<Mutex<Option<BodyWriter>>>,
+}
+
+/// A value the KV binding writes, chunk by chunk, before storing it.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class(rename = "KvValueWriter")]
+pub(crate) struct ValueWriter {
+    #[qjs(skip_trace)]
+    value: Value,
 }
 
 /// Resolve to `{ body, bookmark }`: a D1 service response for `binding`.
@@ -129,16 +139,29 @@ async fn kv_get_many(
         .collect()
 }
 
-/// Store `value` under `key` as the JSON `options` ask.
+/// A new value for the KV binding to write.
+fn kv_value(ctx: Ctx<'_>) -> rquickjs::Result<Class<'_, ValueWriter>> {
+    let value = Value::default();
+    Class::instance(ctx, ValueWriter { value })
+}
+
+/// Append `chunk` to the value `writer` writes.
+#[allow(clippy::needless_pass_by_value)]
+fn kv_write<'js>(writer: Class<'js, ValueWriter>, chunk: TypedArray<'js, u8>) {
+    let bytes = chunk.as_bytes().unwrap_or_default();
+    writer.borrow_mut().value.write(bytes);
+}
+
+/// Store the value `writer` wrote under `key`, as the JSON `options` ask.
 async fn kv_put<'js>(
     ctx: Ctx<'js>,
     binding: String,
     key: String,
-    value: TypedArray<'js, u8>,
+    writer: Class<'js, ValueWriter>,
     options: String,
 ) -> rquickjs::Result<()> {
     let storage = storage(&ctx)?;
-    let value = owned_bytes(&ctx, &value)?;
+    let value = std::mem::take(&mut writer.borrow_mut().value);
     blocking(&ctx, move || {
         let options = serde_json::from_str(&options).map_err(text)?;
         storage.kv(&binding)?.put(&key, &value, &options, now())

@@ -169,6 +169,10 @@ async function kvContracts(kv) {
   });
   await record("metadataLarge", () => kv.put("meta", "x", { metadata: "m".repeat(1100) }));
   await record("valueLarge", () => kv.put("large", new Uint8Array(25 * 1024 * 1024 + 1)));
+  await record("streamLarge", () => {
+    let chunks = 0;
+    return kv.put("large", new ReadableStream({ pull(controller) { if (++chunks > 26) controller.close(); else controller.enqueue(new Uint8Array(MIB)); } }));
+  });
   await record("expiring", async () => {
     await kv.put("expiring", "x", { expirationTtl: 3600, metadata: [1] });
     await kv.put("absolute", "y", { expiration: now() + 120 });

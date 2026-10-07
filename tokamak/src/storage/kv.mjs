@@ -1,5 +1,5 @@
-import { kvDelete, kvGet, kvGetMany, kvList, kvPut } from "tokamak:storage";
-import { joinBytes, sharedBufferSourceBytes } from "../globals/conversions.mjs";
+import { kvDelete, kvGet, kvGetMany, kvList, kvPut, kvValue, kvWrite } from "tokamak:storage";
+import { sharedBufferSourceBytes } from "../globals/conversions.mjs";
 import { bodyStream } from "../network/fetch.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 import { ReadableStream, drainedChunkBytes } from "../streams/web.mjs";
@@ -45,13 +45,17 @@ function decode(bytes, type) {
   }
 }
 
-// A copy of a value's bytes.
+// The store's value for `body`, written as the body is read.
 async function readValue(body) {
-  if (body instanceof ReadableStream) return joinBytes(await Array.fromAsync(body, drainedChunkBytes));
-  if (typeof body !== "object" || body === null) return new TextEncoder().encode(String(body));
-  const bytes = sharedBufferSourceBytes(body);
+  const value = kvValue();
+  if (body instanceof ReadableStream) {
+    for await (const chunk of body) kvWrite(value, drainedChunkBytes(chunk));
+    return value;
+  }
+  const bytes = typeof body !== "object" || body === null ? new TextEncoder().encode(String(body)) : sharedBufferSourceBytes(body);
   if (!bytes) throw new TypeError(VALUE_TYPES);
-  return bytes.slice();
+  kvWrite(value, bytes);
+  return value;
 }
 
 // Whether a property name is an array index, which workerd leaves out of bulk results.

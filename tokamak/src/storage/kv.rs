@@ -25,6 +25,24 @@ const MAX_BULK_KEYS: usize = 100;
 const MIN_CACHE_TTL: i64 = 30;
 const MIN_EXPIRATION_TTL: i64 = 60;
 
+/// A value written in chunks, whose bytes are kept only within the limit.
+#[derive(Debug, Default)]
+pub(crate) struct Value {
+    bytes: Vec<u8>,
+    length: usize,
+}
+
+impl Value {
+    pub(crate) fn write(&mut self, chunk: &[u8]) {
+        self.length += chunk.len();
+        if self.length > MAX_VALUE_LENGTH {
+            self.bytes = Vec::new();
+        } else {
+            self.bytes.extend_from_slice(chunk);
+        }
+    }
+}
+
 /// What `put` asks of a value besides its key and bytes: a TTL, or else an
 /// expiration in seconds since the epoch, and JSON metadata.
 #[derive(Debug, Default, Deserialize)]
@@ -138,7 +156,7 @@ impl KvNamespace {
     pub(crate) fn put(
         &self,
         key: &str,
-        value: &[u8],
+        value: &Value,
         options: &PutOptions,
         now: i64,
     ) -> Result<(), String> {
@@ -148,7 +166,7 @@ impl KvNamespace {
         check(metadata <= MAX_METADATA_LENGTH, 413, || {
             format!("Metadata length of {metadata} exceeds limit of {MAX_METADATA_LENGTH}.")
         })?;
-        let length = value.len();
+        let length = value.length;
         check(length <= MAX_VALUE_LENGTH, 413, || {
             format!("Value length of {length} exceeds limit of {MAX_VALUE_LENGTH}.")
         })?;
@@ -168,7 +186,7 @@ impl KvNamespace {
         transaction
             .blob_open("main", "entries", "value", row, false)
             .map_err(text)?
-            .write_all(value)
+            .write_all(&value.bytes)
             .map_err(text)?;
         transaction.commit().map_err(text)
     }

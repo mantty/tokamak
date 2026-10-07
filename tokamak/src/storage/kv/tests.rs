@@ -1,4 +1,4 @@
-use super::{Entry, Key, KvNamespace, PutOptions};
+use super::{Entry, Key, KvNamespace, PutOptions, Value};
 use crate::storage::{Location, Open};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -18,6 +18,12 @@ fn names(keys: &[Key]) -> Vec<&str> {
     keys.iter().map(|key| key.name.as_str()).collect()
 }
 
+fn written(bytes: &[u8]) -> Value {
+    let mut value = Value::default();
+    value.write(bytes);
+    value
+}
+
 fn expiring(expiration: i64) -> PutOptions {
     PutOptions {
         expiration: Some(expiration),
@@ -32,8 +38,8 @@ fn stores_values_with_metadata() -> TestResult {
         metadata: Some("{\"a\":1}".to_owned()),
         ..PutOptions::default()
     };
-    namespace.put("key", b"value", &metadata, NOW)?;
-    namespace.put("key", b"replaced", &PutOptions::default(), NOW)?;
+    namespace.put("key", &written(b"value"), &metadata, NOW)?;
+    namespace.put("key", &written(b"replaced"), &PutOptions::default(), NOW)?;
 
     assert_eq!(
         namespace.get("key", None, NOW)?,
@@ -49,11 +55,31 @@ fn stores_values_with_metadata() -> TestResult {
 }
 
 #[test]
+fn keeps_no_bytes_of_a_value_written_past_the_limit() -> TestResult {
+    let (_directory, namespace) = namespace()?;
+    let (mut value, chunk) = (Value::default(), vec![0; 1024 * 1024]);
+    for _ in 0..26 {
+        value.write(&chunk);
+    }
+
+    let refusal = namespace
+        .put("k", &value, &PutOptions::default(), NOW)
+        .err();
+
+    assert_eq!(value.bytes.capacity(), 0);
+    assert_eq!(
+        refusal.as_deref(),
+        Some("413 Value length of 27262976 exceeds limit of 26214400.")
+    );
+    Ok(())
+}
+
+#[test]
 fn stores_values_larger_than_sqlite_allocations() -> TestResult {
     let (_directory, namespace) = namespace()?;
     let value: Vec<u8> = (0..=250_u8).cycle().take(20 * 1024 * 1024).collect();
 
-    namespace.put("large", &value, &PutOptions::default(), NOW)?;
+    namespace.put("large", &written(&value), &PutOptions::default(), NOW)?;
 
     assert_eq!(
         namespace.get("large", None, NOW)?.map(|entry| entry.value),
@@ -65,19 +91,19 @@ fn stores_values_larger_than_sqlite_allocations() -> TestResult {
 #[test]
 fn hides_expired_entries_and_deletes_them_during_writes() -> TestResult {
     let (_directory, namespace) = namespace()?;
-    namespace.put("soon", b"x", &expiring(NOW + 60), NOW)?;
+    namespace.put("soon", &written(b"x"), &expiring(NOW + 60), NOW)?;
     let ttl = PutOptions {
         expiration_ttl: Some(120),
         ..PutOptions::default()
     };
-    namespace.put("later", b"y", &ttl, NOW)?;
+    namespace.put("later", &written(b"y"), &ttl, NOW)?;
 
     let expired = NOW + 60;
     assert_eq!(namespace.get("soon", None, expired)?, None);
     let listed = namespace.list("", "", 10, expired)?.keys;
     assert_eq!(names(&listed), ["later"]);
     assert_eq!(listed[0].expiration, Some(NOW + 120));
-    namespace.put("other", b"z", &PutOptions::default(), expired)?;
+    namespace.put("other", &written(b"z"), &PutOptions::default(), expired)?;
     assert_eq!(
         namespace.get("soon", None, NOW)?,
         None,
@@ -95,7 +121,7 @@ fn lists_keys_in_byte_order_by_prefix_and_page() -> TestResult {
         ..expiring(NOW + 100)
     };
     for key in ["b/2", "a", "b/1", "b/é", "b/\u{10FFFF}", "b0", "c"] {
-        namespace.put(key, b"", &options, NOW)?;
+        namespace.put(key, &written(b""), &options, NOW)?;
     }
 
     let prefixed = namespace.list("b/", "", 0, NOW)?;
