@@ -2412,6 +2412,47 @@ export async function run(handlerEnv, ctx, constructors) {
       fail: result(() => nodeAssert.fail(["why"])),
       error: result(() => { throw new nodeAssert.AssertionError({ actual: 1, expected: 2, operator: "strictEqual", message: "custom" }); }),
     },
+    deepEquality: (() => {
+      const loop = value => Object.assign(value, { self: value });
+      const outer = { a: 1 };
+      const tagged = value => Object.assign(value, { [Symbol.toStringTag]: "Tagged" });
+      const symbol = Symbol("key");
+      const pairs = {
+        numberString: [1, "1"], zero: [0, -0], nan: [NaN, NaN], prototype: [Object.create(null), {}], holes: [[1, , 3], [1, undefined, 3]],
+        arrayProperty: [Object.assign([1], { extra: 1 }), [1]], symbolKeys: [{ [symbol]: 1 }, { [symbol]: 2 }],
+        boxed: [new Number(1), new Number(2)], boxedBoolean: [new Boolean(false), new Boolean(true)], boxedSymbol: [Object(Symbol("a")), Object(Symbol("a"))],
+        boxedPrimitive: [new String("a"), "a"], dateProperty: [Object.assign(new Date(0), { extra: 1 }), new Date(0)], invalidDates: [new Date(NaN), new Date(NaN)],
+        regexpIndex: [Object.assign(/a/g, { lastIndex: 2 }), /a/g], regexpProperty: [Object.assign(/a/g, { extra: 1 }), /a/g],
+        errorProperty: [Object.assign(new Error("m"), { extra: 1 }), new Error("m")], errorCause: [new Error("m", { cause: 1 }), new Error("m", { cause: 2 })],
+        errorMessage: [new Error("a"), new Error("b")], errorKind: [new Error("m"), new TypeError("m")],
+        typed: [new Uint8Array([1, 2]), new Uint8Array([1, 2])], typedDiff: [new Uint8Array([1, 2]), new Uint8Array([1, 3])], typedKind: [new Uint8Array([1]), new Int8Array([1])],
+        floatNaN: [new Float64Array([NaN]), new Float64Array([NaN])], floatZero: [new Float64Array([0]), new Float64Array([-0])],
+        typedProperty: [Object.assign(new Uint8Array([1]), { extra: 1 }), new Uint8Array([1])], typedBuffer: [new Uint8Array([1]), nodeBuffer.Buffer.from([1])],
+        buffers: [new Uint8Array([1, 2]).buffer, new Uint8Array([1, 2]).buffer], buffersDiff: [new Uint8Array([1, 2]).buffer, new Uint8Array([1, 3]).buffer],
+        sharedBuffer: [new SharedArrayBuffer(2), new ArrayBuffer(2)], dataViews: [new DataView(new Uint8Array([1]).buffer), new DataView(new Uint8Array([2]).buffer)],
+        mapProperty: [Object.assign(new Map(), { extra: 1 }), new Map()], mapZero: [new Map([[0, 1]]), new Map([[-0, 1]])], mapLoose: [new Map([[1, "a"]]), new Map([["1", "a"]])],
+        mapKeys: [new Map([[outer, 1], [{ a: 2 }, 1]]), new Map([[{ a: 1 }, 1], [{ a: 1 }, 1]])],
+        mapEntries: [new Map([[{ k: 1 }, "a"], [{ k: 1 }, "b"]]), new Map([[{ k: 1 }, "b"], [{ k: 1 }, "a"]])],
+        setConsumed: [new Set([{ a: 1 }, { a: 1 }]), new Set([{ a: 1 }, { a: 2 }])], setOfSets: [new Set([new Set([1]), new Set([1])]), new Set([new Set([1]), new Set([2])])],
+        setMixed: [new Set([1, { a: 1 }]), new Set([{ a: 1 }, 1])], setLoose: [new Set([1]), new Set(["1"])],
+        circular: [loop({ a: 1 }), loop({ a: 1 })], circularDepth: [loop({ a: 1 }), (() => { const value = { a: 1 }; value.self = { a: 1, self: value }; return value; })()],
+        tag: [tagged({}), {}], forgedDates: [Object.create(Date.prototype), Object.create(Date.prototype)], forgedDate: [Object.create(Date.prototype), new Date(0)],
+        proxy: [new Proxy({ a: 1 }, {}), { a: 1 }], proxyArray: [new Proxy([1], {}), [1]], functions: [() => 1, () => 1], arguments: [(function () { return arguments; })(1), [1]],
+      };
+      return Object.fromEntries(Object.entries(pairs).map(([name, [actual, expected]]) => [name, [
+        nodeUtil.isDeepStrictEqual(actual, expected),
+        result(() => nodeAssert.deepStrictEqual(actual, expected)) ?? true,
+        result(() => nodeAssert.deepEqual(actual, expected)) ?? true,
+        result(() => nodeAssert.notDeepStrictEqual(actual, expected)) ?? true,
+      ]]));
+    })(),
+    partialEquality: Object.fromEntries(Object.entries({
+      prefix: [[1, 2], [1]], longer: [[1], [1, 2]], middle: [[1, 2, 3], [2]], nested: [[1, { a: 1, b: 2 }], [1, { a: 1 }]], missingKey: [{}, { a: undefined }],
+      prototype: [new Error("x"), { message: "x" }], errors: [new Error("x"), new Error("y")], primitives: [1, 1], zero: [0, -0],
+      typed: [new Uint8Array([1, 2]), new Uint8Array([1])], buffers: [new Uint8Array([1, 2]).buffer, new Uint8Array([1]).buffer],
+      mapSubset: [new Map([[1, { a: 1, b: 2 }], [2, 2]]), new Map([[1, { a: 1 }]])], mapMissing: [new Map([[1, 1]]), new Map([[2, 2]])],
+      setSubset: [new Set([1, 2]), new Set([1])], setObjects: [new Set([{ a: 1, b: 2 }]), new Set([{ a: 1 }])],
+    }).map(([name, [actual, expected]]) => [name, result(() => nodeAssert.partialDeepStrictEqual(actual, expected)) ?? true])),
     buffer: (() => {
       const source = new Uint8Array([1, 2]);
       const shared = nodeBuffer.Buffer.from(source.buffer);

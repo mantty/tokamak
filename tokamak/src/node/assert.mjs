@@ -1,3 +1,6 @@
+import { isDeepStrictEqual, isPartialDeepStrictEqual } from "./comparisons.mjs";
+import { inspect } from "./util.mjs";
+
 export class AssertionError extends Error {
   constructor(options = {}) {
     const hasMessage = options.message !== undefined;
@@ -9,20 +12,6 @@ export class AssertionError extends Error {
     this.expected = options.expected;
     this.operator = options.operator;
   }
-}
-
-function inspect(value, seen = []) {
-  if (typeof value === "string") return `'${value.replaceAll("'", "\\'")}'`;
-  if (value === undefined) return "undefined";
-  if (value === null) return "null";
-  if (typeof value === "bigint") return `${value}n`;
-  if (typeof value !== "object") return String(value);
-  if (seen.includes(value)) return "[Circular]";
-  if (value instanceof Date) return Number.isNaN(value.getTime()) ? "Invalid Date" : value.toISOString();
-  if (value instanceof RegExp) return String(value);
-  if (Array.isArray(value)) return `[ ${value.map(item => inspect(item, [...seen, value])).join(", ")} ]`;
-  const entries = Object.keys(value).map(key => `${key}: ${inspect(value[key], [...seen, value])}`);
-  return `{ ${entries.join(", ")} }`;
 }
 
 function assertionMessage({ actual, expected, operator }) {
@@ -42,57 +31,11 @@ function assertionFailure(actual, expected, operator, messageValue) {
   throw new AssertionError({ actual, expected, operator, message: message(messageValue) });
 }
 
-function same(left, right, seen = []) {
-  if (Object.is(left, right)) return true;
-  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
-  const previous = seen.find(pair => pair[0] === left && pair[1] === right);
-  if (previous) return true;
-  seen.push([left, right]);
-  if (left.constructor !== right.constructor) return false;
-  if (left instanceof Date) return left.getTime() === right.getTime();
-  if (left instanceof RegExp) return left.source === right.source && left.flags === right.flags && left.lastIndex === right.lastIndex;
-  if (left instanceof Error) return left.name === right.name && left.message === right.message && same(left.cause, right.cause, seen);
-  if (left instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && left instanceof SharedArrayBuffer)) {
-    return left.byteLength === right.byteLength && same(new Uint8Array(left), new Uint8Array(right), seen);
-  }
-  if (ArrayBuffer.isView(left)) {
-    if (left.byteLength !== right.byteLength) return false;
-    return same(new Uint8Array(left.buffer, left.byteOffset, left.byteLength), new Uint8Array(right.buffer, right.byteOffset, right.byteLength), seen);
-  }
-  if (left instanceof Map) return sameMap(left, right, seen);
-  if (left instanceof Set) return sameSet(left, right, seen);
-  const leftKeys = Reflect.ownKeys(left).filter(key => Object.prototype.propertyIsEnumerable.call(left, key));
-  const rightKeys = Reflect.ownKeys(right).filter(key => Object.prototype.propertyIsEnumerable.call(right, key));
-  return leftKeys.length === rightKeys.length && leftKeys.every(key => rightKeys.includes(key) && same(left[key], right[key], seen));
-}
-
-function sameMap(left, right, seen) {
-  if (left.size !== right.size) return false;
-  const unmatched = [...right];
-  for (const [key, value] of left) {
-    const index = unmatched.findIndex(([otherKey, otherValue]) => same(key, otherKey, seen) && same(value, otherValue, seen));
-    if (index < 0) return false;
-    unmatched.splice(index, 1);
-  }
-  return true;
-}
-
-function sameSet(left, right, seen) {
-  if (left.size !== right.size) return false;
-  const unmatched = [...right];
-  for (const value of left) {
-    const index = unmatched.findIndex(other => same(value, other, seen));
-    if (index < 0) return false;
-    unmatched.splice(index, 1);
-  }
-  return true;
-}
-
 function matches(thrown, expected) {
   if (expected === undefined) return true;
   if (typeof expected === "function") return thrown instanceof expected;
   if (expected instanceof RegExp) return expected.test(thrown?.message ?? String(thrown));
-  if (expected && typeof expected === "object") return Object.keys(expected).every(key => same(thrown?.[key], expected[key]));
+  if (expected && typeof expected === "object") return Object.keys(expected).every(key => isDeepStrictEqual(thrown?.[key], expected[key]));
   return false;
 }
 
@@ -126,10 +69,10 @@ assert.equal = (actual, expected, messageValue) => { if (!Object.is(actual, expe
 assert.notEqual = (actual, expected, messageValue) => { if (Object.is(actual, expected)) assertionFailure(actual, expected, "notStrictEqual", messageValue); };
 assert.strictEqual = (actual, expected, messageValue) => { if (!Object.is(actual, expected)) assertionFailure(actual, expected, "strictEqual", messageValue); };
 assert.notStrictEqual = (actual, expected, messageValue) => { if (Object.is(actual, expected)) assertionFailure(actual, expected, "notStrictEqual", messageValue); };
-assert.deepEqual = (actual, expected, messageValue) => { if (!same(actual, expected)) assertionFailure(actual, expected, "deepStrictEqual", messageValue); };
-assert.notDeepEqual = (actual, expected, messageValue) => { if (same(actual, expected)) assertionFailure(actual, expected, "notDeepStrictEqual", messageValue); };
-assert.deepStrictEqual = (actual, expected, messageValue) => { if (!same(actual, expected)) assertionFailure(actual, expected, "deepStrictEqual", messageValue); };
-assert.notDeepStrictEqual = (actual, expected, messageValue) => { if (same(actual, expected)) assertionFailure(actual, expected, "notDeepStrictEqual", messageValue); };
+assert.deepEqual = (actual, expected, messageValue) => { if (!isDeepStrictEqual(actual, expected)) assertionFailure(actual, expected, "deepStrictEqual", messageValue); };
+assert.notDeepEqual = (actual, expected, messageValue) => { if (isDeepStrictEqual(actual, expected)) assertionFailure(actual, expected, "notDeepStrictEqual", messageValue); };
+assert.deepStrictEqual = (actual, expected, messageValue) => { if (!isDeepStrictEqual(actual, expected)) assertionFailure(actual, expected, "deepStrictEqual", messageValue); };
+assert.notDeepStrictEqual = (actual, expected, messageValue) => { if (isDeepStrictEqual(actual, expected)) assertionFailure(actual, expected, "notDeepStrictEqual", messageValue); };
 assert.ifError = value => { if (value != null) throw value; };
 assert.match = (value, regexp, messageValue) => { if (!matchesRegExp(value, regexp)) assertionFailure(value, regexp, "match", messageValue); };
 assert.doesNotMatch = (value, regexp, messageValue) => { if (matchesRegExp(value, regexp)) assertionFailure(value, regexp, "doesNotMatch", messageValue); };
@@ -148,8 +91,7 @@ assert.doesNotReject = async (promise, messageValue) => {
   catch (error) { assertionFailure(error, undefined, "doesNotReject", messageValue); }
 };
 assert.partialDeepStrictEqual = (actual, expected, messageValue) => {
-  if (actual === null || actual === undefined || typeof actual !== "object") assertionFailure(actual, expected, "partialDeepStrictEqual", messageValue);
-  for (const key of Reflect.ownKeys(expected)) if (!same(actual[key], expected[key])) assertionFailure(actual, expected, "partialDeepStrictEqual", messageValue);
+  if (!isPartialDeepStrictEqual(actual, expected)) assertionFailure(actual, expected, "partialDeepStrictEqual", messageValue);
 };
 
 function strictAssert(value, messageValue) { assert(value, messageValue); }
