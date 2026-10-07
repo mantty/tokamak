@@ -1,5 +1,6 @@
 import { decodeBase64, encodeBase64 } from "tokamak:host";
 import { atob as globalAtob, btoa as globalBtoa } from "../globals/base64.mjs";
+import { bufferBytes } from "../globals/conversions.mjs";
 import { Blob, File } from "../network/fetch.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 
@@ -19,7 +20,7 @@ function unknownEncoding(name) {
 }
 
 function isArrayBufferLike(value) {
-  return value instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && value instanceof SharedArrayBuffer);
+  return value instanceof ArrayBuffer || value instanceof SharedArrayBuffer;
 }
 
 function hexByte(value) { return value.toString(16).padStart(2, "0"); }
@@ -113,11 +114,9 @@ function fillBytes(buffer, value, start, end, encoding) {
 function toBytes(value, allowString = true, encoding) {
   if (allowString && typeof value === "string") return stringBytes(value, encoding);
   if (value instanceof Buffer) return value;
-  if (isArrayBufferLike(value)) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) {
-    if (value instanceof DataView) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-    return Uint8Array.from(value);
-  }
+  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) return Uint8Array.from(value);
+  const bytes = bufferBytes(value);
+  if (bytes) return bytes;
   if (Array.isArray(value) || (value && typeof value.length === "number")) return Uint8Array.from(value);
   throw new TypeError("The value must be a string, Buffer, TypedArray, DataView, ArrayBuffer, or Array-like Object");
 }
