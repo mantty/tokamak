@@ -859,22 +859,35 @@ fn rewrite_request(request: &[u8], authority: &str) -> io::Result<Vec<u8>> {
             "development relay received an incomplete request",
         )
     })?;
+    let lines = request[..end]
+        .split(|byte| *byte == b'\n')
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line));
+    let upgrade = lines
+        .clone()
+        .skip(1)
+        .filter_map(header_parts)
+        .any(|(name, _)| name.eq_ignore_ascii_case(b"upgrade"));
     let mut rewritten = Vec::with_capacity(request.len());
-    for (index, line) in request[..end].split(|byte| *byte == b'\n').enumerate() {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
+    for (index, line) in lines.enumerate() {
         let name = header_parts(line)
             .filter(|_| index > 0)
             .map(|(name, _)| name);
-        if name.is_some_and(|name| name.eq_ignore_ascii_case(b"x-tokamak-session")) {
+        let named = |expected: &[u8]| name.is_some_and(|name| name.eq_ignore_ascii_case(expected));
+        if named(b"x-tokamak-session") || (named(b"connection") && !upgrade) {
             continue;
         }
-        if name.is_some_and(|name| name.eq_ignore_ascii_case(b"host")) {
+        if named(b"host") {
             rewritten.extend_from_slice(b"Host: ");
             rewritten.extend_from_slice(authority.as_bytes());
         } else {
             rewritten.extend_from_slice(line);
         }
         rewritten.extend_from_slice(b"\r\n");
+    }
+    // The relay rewrites only a connection's first request, so a request
+    // that does not upgrade the connection closes it.
+    if !upgrade {
+        rewritten.extend_from_slice(b"Connection: close\r\n");
     }
     rewritten.extend_from_slice(b"\r\n");
     rewritten.extend_from_slice(&request[end + 4..]);
@@ -1169,7 +1182,21 @@ mod tests {
         let rewritten = rewrite_request(request, "127.0.0.1:5173").ok();
         assert_eq!(
             rewritten,
-            Some(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:5173\r\n\r\n".to_vec())
+            Some(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:5173\r\nConnection: close\r\n\r\n".to_vec())
+        );
+    }
+
+    #[test]
+    fn closes_the_connection_after_one_request_unless_it_upgrades() {
+        let request = b"POST / HTTP/1.1\r\nconnection: keep-alive\r\nContent-Length: 2\r\n\r\nhi";
+        assert_eq!(
+            rewrite_request(request, "127.0.0.1:5173").ok(),
+            Some(b"POST / HTTP/1.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".to_vec())
+        );
+        let upgrade = b"GET / HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n";
+        assert_eq!(
+            rewrite_request(upgrade, "127.0.0.1:5173").ok(),
+            Some(upgrade.to_vec())
         );
     }
 
