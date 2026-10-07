@@ -1,4 +1,5 @@
 import { hostObjectKinds, markHostObject } from "./globals/objects.mjs";
+import { string } from "./globals/conversions.mjs";
 import {
   intlCanonicalLocales,
   intlCollatorCompare,
@@ -452,8 +453,8 @@ export function installIntlGlobals() {
     value: function toLocaleString(locales, options) { return new NumberFormat(locales, options).format(Number.prototype.valueOf.call(this)); } });
   Object.defineProperty(String.prototype, "localeCompare", { configurable: true, writable: true,
     value: function localeCompare(other, locales, options) {
-      if (this == null || typeof this === "symbol" || typeof other === "symbol") throw new TypeError("Cannot convert value to string");
-      return new Collator(locales, options).compare(String(this), String(other));
+      if (this == null) throw new TypeError("String.prototype.localeCompare called on null or undefined");
+      return new Collator(locales, options).compare(string(this), string(other));
     } });
 }
 

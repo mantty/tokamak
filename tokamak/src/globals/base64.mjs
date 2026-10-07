@@ -1,14 +1,10 @@
 import { decodeBase64, encodeBase64 } from "tokamak:host";
+import { string } from "./conversions.mjs";
 import { DOMException } from "./dom-exception.mjs";
-
-function binaryString(value) {
-  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
-  return String(value);
-}
 
 export function atob(value) {
   if (arguments.length === 0) throw new TypeError("Failed to execute 'atob' on 'ServiceWorkerGlobalScope': parameter 1 is not of type 'string'.");
-  const input = binaryString(value).replace(/[\t\n\f\r ]/g, "");
+  const input = string(value).replace(/[\t\n\f\r ]/g, "");
   const valid = !input.includes("=") || (input.length % 4 === 0 && /^[A-Za-z0-9+/]*={1,2}$/.test(input));
   const bytes = valid ? decodeBase64(input) : null;
   if (!bytes) throw new DOMException("atob() called with invalid base64-encoded data. (Only whitespace, '+', '/', alphanumeric ASCII, and up to two terminal '=' signs when the input data length is divisible by 4 are allowed.)", "InvalidCharacterError");
@@ -19,7 +15,7 @@ export function atob(value) {
 
 export function btoa(value) {
   if (arguments.length === 0) throw new TypeError("Failed to execute 'btoa' on 'ServiceWorkerGlobalScope': parameter 1 is not of type 'String'.");
-  const input = binaryString(value);
+  const input = string(value);
   const bytes = new Uint8Array(input.length);
   for (let index = 0; index < input.length; index += 1) {
     const code = input.charCodeAt(index);
