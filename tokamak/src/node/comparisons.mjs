@@ -2,8 +2,8 @@ import { objectClass } from "tokamak:host";
 
 // Deep equality as node:assert and node:util define it. Partial equality asks
 // only that `actual` hold `expected`'s keys, entries and leading elements.
-export function isDeepStrictEqual(actual, expected) { return equal(actual, expected, false, new Paths()); }
-export function isPartialDeepStrictEqual(actual, expected) { return equal(actual, expected, true, new Paths()); }
+export function isDeepStrictEqual(actual, expected) { return equal(actual, expected, false, paths()); }
+export function isPartialDeepStrictEqual(actual, expected) { return equal(actual, expected, true, paths()); }
 
 const toStringTag = Object.prototype.toString;
 const propertyIsEnumerable = Object.prototype.propertyIsEnumerable;
@@ -16,10 +16,7 @@ const comparedKinds = new Set(["Date", "RegExp", "Error", "Map", "Set", "ArrayBu
 
 // The objects each side is comparing on the way to the current pair, each
 // with the object it is compared against.
-class Paths {
-  actual = new Map();
-  expected = new Map();
-}
+function paths() { return { actual: new Map(), expected: new Map() }; }
 
 function isObject(value) { return typeof value === "object" && value !== null; }
 
