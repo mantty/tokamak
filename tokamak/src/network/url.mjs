@@ -1,30 +1,9 @@
 import { hostObjectKinds, markHostObject } from "../globals/objects.mjs";
 import { urlDecodeParams, urlEncodeParams, urlParse, urlPatternCompile, urlPatternMatchInput, urlSetComponent } from "tokamak:host";
-
-function string(value) {
-  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
-  return String(value);
-}
+import { string, usvString } from "../globals/conversions.mjs";
 
 function hidden(object, name, value) {
   Object.defineProperty(object, name, { configurable: true, enumerable: false, writable: true, value });
-}
-
-function usvString(value) {
-  const input = string(value);
-  let output = "";
-  for (let index = 0; index < input.length; index += 1) {
-    const code = input.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = input.charCodeAt(index + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        output += input[index] + input[index + 1];
-        index += 1;
-      } else output += "�";
-    } else if (code >= 0xdc00 && code <= 0xdfff) output += "�";
-    else output += input[index];
-  }
-  return output;
 }
 
 export class URLSearchParams {

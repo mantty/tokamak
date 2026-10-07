@@ -47,6 +47,29 @@ export function intlContracts() {
   result.ownProperties = [new Intl.DateTimeFormat("en"), new Intl.NumberFormat("en"), new Intl.PluralRules("en"), new Intl.Locale("en"), new Intl.ListFormat("en"), new Intl.RelativeTimeFormat("en"), new Intl.Collator("en"), new Intl.Segmenter("en"), new Intl.DisplayNames("en", { type: "region" })]
     .map(value => Reflect.ownKeys(value).map(String));
   result.collatorPrototype = Object.getOwnPropertyNames(Intl.Collator.prototype).sort();
+  const localeTags = ["en", "en-GB", "en-AU", "en-IN", "es-MX", "fr-CA", "de", "ja", "zh-TW", "ko", "ar-EG", "he", "fa", "hi", "pt-BR", "ms", "pa-Arab", "ja-u-hc-h12", "en-u-hc-h23"];
+  result.localeData = Object.fromEntries(localeTags.map(tag => {
+    const locale = new Intl.Locale(tag);
+    const { hourCycle, hour12 } = new Intl.DateTimeFormat(tag, { hour: "numeric", timeZone: "UTC" }).resolvedOptions();
+    const dayPeriod = new Intl.DateTimeFormat(tag, { hour: "numeric", timeZone: "UTC" }).formatToParts(date).some(part => part.type === "dayPeriod");
+    return [tag, { hourCycle: locale.hourCycle ?? null, hourCycles: locale.getHourCycles(), textInfo: locale.getTextInfo(), weekInfo: locale.getWeekInfo(), formatted: { hourCycle, hour12, dayPeriod } }];
+  }));
+  result.firstDayKeyword = new Intl.Locale("ar-u-fw-mon").getWeekInfo();
+  result.localeAccessors = ["languageOf", "regionOf", "scriptOf", "calendarOf", "hourCycleOf", "numberingSystemOf"].filter(name => name in Intl.Locale.prototype);
+  result.currencyDigits = Object.fromEntries(["USD", "JPY", "KRW", "BHD", "KWD", "CLF", "HUF", "IDR", "TWD", "CHF", "IQD", "XOF"].map(currency => {
+    const formatter = new Intl.NumberFormat("en-US", { style: "currency", currency, currencyDisplay: "code" });
+    const { minimumFractionDigits, maximumFractionDigits } = formatter.resolvedOptions();
+    return [currency, [minimumFractionDigits, maximumFractionDigits, formatter.format(1234.5678).replace(/\s/g, " ")]];
+  }));
+  result.fractionDigits = [
+    { style: "currency", currency: "KWD", minimumFractionDigits: 1 }, { style: "currency", currency: "EUR", maximumFractionDigits: 1 },
+    { style: "currency", currency: "EUR", maximumFractionDigits: 0 }, { style: "currency", currency: "JPY", minimumFractionDigits: 3 },
+    { maximumFractionDigits: 1 }, { style: "percent", maximumFractionDigits: 2 }, { minimumFractionDigits: 3, maximumFractionDigits: 1 }, { minimumFractionDigits: 101 },
+  ].map(options => outcome(() => {
+    const formatter = new Intl.NumberFormat("en-US", options);
+    const { minimumFractionDigits, maximumFractionDigits } = formatter.resolvedOptions();
+    return [minimumFractionDigits, maximumFractionDigits, formatter.format(1.23456)];
+  }));
   result.boundFormat = outcome(() => {
     const dateFormatter = new Intl.DateTimeFormat("en-GB", { dateStyle: "short", timeZone: "UTC" });
     const numberFormatter = new Intl.NumberFormat("de");

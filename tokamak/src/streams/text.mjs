@@ -1,10 +1,6 @@
 import { markHostObject } from "../globals/objects.mjs";
 import { createDecoder } from "tokamak:host";
-
-function string(value) {
-  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
-  return String(value);
-}
+import { sharedBufferSourceBytes, string } from "../globals/conversions.mjs";
 
 function utf8(code) {
   if (code >= 0xd800 && code <= 0xdfff) code = 0xfffd;
@@ -17,11 +13,7 @@ function utf8(code) {
 export class TextEncoder {
   constructor() { markHostObject(this); }
   get encoding() { return "utf-8"; }
-  encode(value = "") {
-    const bytes = [];
-    for (const character of string(value)) bytes.push(...utf8(character.codePointAt(0)));
-    return new Uint8Array(bytes);
-  }
+  encode(value = "") { return new Uint8Array([...string(value)].flatMap(character => utf8(character.codePointAt(0)))); }
   encodeInto(source, destination) {
     source = string(source);
     if (!(destination instanceof Uint8Array)) throw new TypeError("Destination must be a Uint8Array");
@@ -53,10 +45,8 @@ export class TextDecoder {
   get fatal() { return this.#fatal; }
   get ignoreBOM() { return this.#ignoreBOM; }
   decode(input = new Uint8Array(), options = {}) {
-    let bytes;
-    if (input instanceof ArrayBuffer) bytes = input.byteLength ? new Uint8Array(input) : new Uint8Array();
-    else if (ArrayBuffer.isView(input)) bytes = input.buffer.byteLength ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : new Uint8Array();
-    else throw new TypeError("Input must be an ArrayBuffer or an ArrayBuffer view");
+    const bytes = sharedBufferSourceBytes(input);
+    if (!bytes) throw new TypeError("Failed to execute 'decode' on 'TextDecoder': parameter 1 is not of type 'Array'.");
     if (options === null || (typeof options !== "object" && typeof options !== "function")) throw new TypeError("Options must be an object");
     return this.#decoder.decode(bytes, Boolean(options.stream));
   }

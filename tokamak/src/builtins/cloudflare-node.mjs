@@ -1,7 +1,9 @@
+import { listeningServers } from "../node/http-servers.mjs";
+
 function serverFor(portOrServer) {
   if (portOrServer && typeof portOrServer.__handle === "function") return portOrServer;
   const port = typeof portOrServer === "object" ? portOrServer?.port : portOrServer;
-  return globalThis.__tokamak_http_servers?.get(Number(port));
+  return listeningServers.get(Number(port));
 }
 
 export function httpServerHandler(portOrServer) {

@@ -1,11 +1,12 @@
+import { nodeBuiltinNames } from "tokamak:host";
 import { unsupportedFunction } from "./unsupported.mjs";
 
 export class REPLServer {}
 export const REPL_MODE_SLOPPY = Symbol("REPL_MODE_SLOPPY");
 export const REPL_MODE_STRICT = Symbol("REPL_MODE_STRICT");
 export class Recoverable {}
-export const _builtinLibs = [];
-export const builtinModules = [];
+export const builtinModules = nodeBuiltinNames().filter(name => !name.startsWith("_"));
+export const _builtinLibs = builtinModules;
 export const start = unsupportedFunction("repl.start");
 export const writer = value => String(value);
 

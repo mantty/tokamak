@@ -16,6 +16,7 @@ use std::thread::LocalKey;
 use fixed_decimal::{
     Decimal as FixedDecimal, Sign, SignDisplay, SignedRoundingMode, UnsignedRoundingMode,
 };
+use icu::calendar::week::WeekInformation;
 use icu::calendar::{Date, Iso};
 use icu::collator::options::{
     AlternateHandling, CaseLevel, CollatorOptions, MaxVariable, Strength,
@@ -26,6 +27,7 @@ use icu::datetime::fieldsets::builder::{DateFields, FieldSetBuilder, ZoneStyle};
 use icu::datetime::fieldsets::enums::CompositeFieldSet;
 use icu::datetime::options::{Length, TimePrecision, YearStyle};
 use icu::datetime::preferences::HourCycle;
+use icu::datetime::provider::fields::components;
 use icu::datetime::{DateTimeFormatter, DateTimeFormatterPreferences};
 use icu::decimal::options::{
     CompactDecimalFormatterOptions, DecimalFormatterOptions, GroupingStrategy,
@@ -40,6 +42,7 @@ use icu::experimental::dimension::percent::formatter::{
     PercentFormatter, PercentFormatterPreferences,
 };
 use icu::experimental::dimension::percent::options::PercentFormatterOptions;
+use icu::experimental::dimension::provider::currency::fractions::CurrencyFractionsV1;
 use icu::experimental::relativetime::options::Numeric as RelativeNumeric;
 use icu::experimental::relativetime::{RelativeTimeFormatter, RelativeTimeFormatterOptions};
 use icu::list::ListFormatter;
@@ -49,7 +52,7 @@ use icu::locale::names::{
     RegionDisplayName, ScriptDisplayName,
 };
 use icu::locale::subtags::{Language, Region, Script};
-use icu::locale::{Locale, LocaleCanonicalizer, LocaleExpander};
+use icu::locale::{Locale, LocaleCanonicalizer, LocaleDirectionality, LocaleExpander};
 use icu::plurals::{
     PluralCategory, PluralRuleType, PluralRules, PluralRulesOptions, PluralRulesWithRanges,
 };
@@ -58,6 +61,7 @@ use icu::segmenter::{GraphemeClusterSegmenter, SentenceSegmenter, WordSegmenter}
 use icu::time::ZonedDateTime;
 use icu::time::zone::models::AtTime;
 use icu::time::zone::{TimeZoneInfo, UtcOffset, ZoneNameTimestamp};
+use icu_provider::{DataProvider, DataRequest, DataResponse};
 use jiff::Timestamp;
 use rquickjs::{Ctx, Exception};
 use serde::Serialize;
@@ -83,6 +87,8 @@ super::host_functions! {
     "intlSegment" => segment,
     "intlDisplayName" => display_name,
     "intlLocaleInfo" => locale_info,
+    "intlHourCycle" => hour_cycle,
+    "intlFractionDigits" => number_fraction_digits,
 }
 
 // Requests run on dedicated threads, so per-thread caches need no locking.
@@ -587,7 +593,7 @@ fn english_display_name<'a>(kind: &str, code: &'a str) -> &'a str {
     }
 }
 
-fn locale_info(ctx: Ctx<'_>, tag: String, _options: String) -> rquickjs::Result<String> {
+fn locale_info(ctx: Ctx<'_>, tag: String) -> rquickjs::Result<String> {
     let mut locale = tag.parse::<Locale>().map_err(range_error(&ctx))?;
     LocaleCanonicalizer::try_new_extended_unstable(&*PROVIDER)
         .map_err(internal_error(&ctx))?
@@ -598,6 +604,13 @@ fn locale_info(ctx: Ctx<'_>, tag: String, _options: String) -> rquickjs::Result<
     expander.maximize(&mut maximum.id);
     let mut minimum = maximum.clone();
     expander.minimize(&mut minimum.id);
+    let directionality = LocaleDirectionality::try_new_with_expander_unstable(&*PROVIDER, expander)
+        .map_err(internal_error(&ctx))?;
+    // Week data is by region, so the likely region stands in for a missing one.
+    let week = WeekInformation::try_new_unstable(&*PROVIDER, (&maximum).into())
+        .map_err(internal_error(&ctx))?;
+    let mut weekend: Vec<_> = week.weekend().map(|day| day as i8).collect();
+    weekend.sort_unstable();
     let value = serde_json::json!({
         "string": locale.to_string(),
         "baseName": locale.id.to_string(),
@@ -609,8 +622,25 @@ fn locale_info(ctx: Ctx<'_>, tag: String, _options: String) -> rquickjs::Result<
         "hourCycle": locale_keyword(&locale, "hc"),
         "maximize": maximum.to_string(),
         "minimize": minimum.to_string(),
+        "direction": if directionality.is_right_to_left(&locale.id) { "rtl" } else { "ltr" },
+        "firstDay": week.first_weekday as i8,
+        "weekend": weekend,
     });
     to_json(&ctx, &value)
+}
+
+/// The hour cycle `locales` format times with, which `-u-hc` sets.
+fn hour_cycle(ctx: Ctx<'_>, locales: String) -> rquickjs::Result<&'static str> {
+    let options = serde_json::json!({ "hour": "numeric" });
+    let formatter = date_time_formatter(&ctx, resolved_locale(&ctx, &locales)?, &options)?;
+    let pattern = formatter
+        .format(&date_time_input(&ctx, 0.0, &options)?)
+        .pattern();
+    Ok(match components::Bag::from(&pattern).hour_cycle {
+        Some(HourCycle::H11) => "h11",
+        Some(HourCycle::H12) => "h12",
+        _ => "h23",
+    })
 }
 
 fn first_locale(ctx: &Ctx<'_>, locales: &str) -> rquickjs::Result<String> {
@@ -964,7 +994,7 @@ fn prepared_number(
         return Ok(decimal);
     }
 
-    let (minimum_fraction, maximum_fraction) = fraction_digits(style, options);
+    let (minimum_fraction, maximum_fraction) = fraction_digits(ctx, style, options)?;
     decimal.round_with_mode(
         -(i16::try_from(maximum_fraction).unwrap_or(i16::MAX)),
         rounding_mode(options),
@@ -983,40 +1013,61 @@ fn prepared_number(
     Ok(decimal)
 }
 
-fn fraction_digits(style: &str, options: &Value) -> (u64, u64) {
-    let currency_digits = options
-        .get("currency")
+/// The minimum and maximum fraction digits a number format with `options`
+/// uses: `[minimum, maximum]`.
+fn number_fraction_digits(ctx: Ctx<'_>, options: String) -> rquickjs::Result<Vec<u64>> {
+    let options: Value = from_json(&ctx, &options)?;
+    let style = options
+        .get("style")
         .and_then(Value::as_str)
-        .map_or(2, currency_fraction_digits);
-    let default_minimum = match style {
-        "currency" => currency_digits,
+        .unwrap_or("decimal");
+    let (minimum, maximum) = fraction_digits(&ctx, style, &options)?;
+    Ok(vec![minimum, maximum])
+}
+
+/// The fraction digits `options` resolve to, defaulting from the style and the
+/// currency's minor unit as ECMA-402 does.
+fn fraction_digits(ctx: &Ctx<'_>, style: &str, options: &Value) -> rquickjs::Result<(u64, u64)> {
+    let currency = options.get("currency").and_then(Value::as_str);
+    let default_minimum = match (style, currency) {
+        ("currency", Some(currency)) => currency_digits(ctx, currency)?,
         _ => 0,
     };
     let default_maximum = match style {
-        "currency" => currency_digits,
+        "currency" => default_minimum,
         "percent" => 0,
         _ => 3,
     };
-    let minimum = options
-        .get("minimumFractionDigits")
-        .and_then(Value::as_u64)
-        .unwrap_or(default_minimum);
-    let maximum = options
-        .get("maximumFractionDigits")
-        .and_then(Value::as_u64)
-        .unwrap_or(default_maximum.max(minimum));
-    (minimum.min(100), maximum.max(minimum).min(100))
+    let minimum = digit_option(ctx, options, "minimumFractionDigits")?;
+    let maximum = digit_option(ctx, options, "maximumFractionDigits")?;
+    match (minimum, maximum) {
+        (None, None) => Ok((default_minimum, default_maximum)),
+        (Some(minimum), None) => Ok((minimum, default_maximum.max(minimum))),
+        (None, Some(maximum)) => Ok((default_minimum.min(maximum), maximum)),
+        (Some(minimum), Some(maximum)) if minimum <= maximum => Ok((minimum, maximum)),
+        _ => Err(out_of_range(ctx, "maximumFractionDigits")),
+    }
 }
 
-// icu4x ships CLDR fraction data only behind doc-hidden provider internals;
-// this table covers the common non-default currencies, the rest default to 2.
-fn currency_fraction_digits(currency: &str) -> u64 {
-    match currency {
-        "BHD" | "IQD" | "JOD" | "KWD" | "LYD" | "OMR" | "TND" => 3,
-        "CLP" | "ISK" | "JPY" | "KRW" | "PYG" | "RWF" | "UGX" | "VND" | "VUV" | "XAF" | "XOF"
-        | "XPF" => 0,
-        _ => 2,
+/// The fraction digit option `name`, which is at most 100.
+fn digit_option(ctx: &Ctx<'_>, options: &Value, name: &str) -> rquickjs::Result<Option<u64>> {
+    match options.get(name).and_then(Value::as_u64) {
+        Some(digits) if digits > 100 => Err(out_of_range(ctx, name)),
+        digits => Ok(digits),
     }
+}
+
+fn out_of_range(ctx: &Ctx<'_>, name: &str) -> rquickjs::Error {
+    Exception::throw_range(ctx, &format!("{name} value is out of range."))
+}
+
+/// The digits of `currency`'s minor unit, from CLDR.
+fn currency_digits(ctx: &Ctx<'_>, currency: &str) -> rquickjs::Result<u64> {
+    let currency = CurrencyType::try_from_str(currency).map_err(range_error(ctx))?;
+    let fractions: DataResponse<CurrencyFractionsV1> = PROVIDER
+        .load(DataRequest::default())
+        .map_err(internal_error(ctx))?;
+    Ok(u64::from(fractions.payload.get().resolve(currency).digits))
 }
 
 fn rounding_mode(options: &Value) -> SignedRoundingMode {
@@ -1252,16 +1303,8 @@ fn split_affixes(
     sign: Option<&(String, String)>,
     token_kind: &str,
 ) -> Vec<(String, String)> {
-    let numeric_text: String = numeric_parts
-        .iter()
-        .map(|(_, value)| value.as_str())
-        .collect();
-    let span = formatted
-        .find(&numeric_text)
-        .filter(|_| !numeric_text.is_empty())
-        .map(|start| (start, start + numeric_text.len()))
-        .or_else(|| numeric_range(formatted));
-    let Some((start, end)) = span else {
+    // The formatter rounds by its own rules, so its whole span of digits is replaced.
+    let Some((start, end)) = numeric_range(formatted) else {
         return vec![("literal".to_owned(), formatted.to_owned())];
     };
     let parenthesised = formatted.starts_with('(') && formatted.ends_with(')');

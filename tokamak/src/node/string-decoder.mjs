@@ -1,4 +1,4 @@
-import { TextDecoder, TextEncoder } from "../streams/text.mjs";
+import { bufferBytes } from "../globals/conversions.mjs";
 import { Buffer } from "./buffer.mjs";
 
 const states = new WeakMap();
@@ -16,9 +16,7 @@ function normalizeEncoding(value) {
 }
 
 function bytes(value) {
-  if (typeof value === "string") return new TextEncoder().encode(value);
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (ArrayBuffer.isView(value)) return bufferBytes(value);
   throw new TypeError("The \"buffer\" argument must be of type string or an instance of Buffer, TypedArray, or DataView");
 }
 
@@ -52,19 +50,8 @@ function rememberUtf8(state, input, pending) {
   remember(state, total > 1 && total === input.length - start ? input.slice(start) : input.slice(-1));
 }
 
-function utf16Chars(input) {
-  let text = "";
-  for (let index = 0; index + 1 < input.length; index += 2) text += String.fromCharCode(input[index] | (input[index + 1] << 8));
-  return text;
-}
-
 function decodeBytes(state, input) {
-  if (state.encoding === "latin1") return String.fromCharCode(...input);
-  if (state.encoding === "ascii") return String.fromCharCode(...input.map(value => value & 0x7f));
-  if (state.encoding === "utf16le") return utf16Chars(input);
-  if (state.encoding === "hex") return [...input].map(value => value.toString(16).padStart(2, "0")).join("");
-  if (state.encoding === "base64" || state.encoding === "base64url") return Buffer.from(input).toString(state.encoding);
-  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(input);
+  return Buffer.from(input.buffer, input.byteOffset, input.byteLength).toString(state.encoding);
 }
 
 export class StringDecoder {
@@ -79,6 +66,7 @@ export class StringDecoder {
   get lastChar() { return states.get(this).lastChar; }
 
   write(value) {
+    if (typeof value === "string") return value;
     const state = states.get(this);
     const input = new Uint8Array([...state.pending, ...bytes(value)]);
     let complete = input.length;

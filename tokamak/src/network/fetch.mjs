@@ -3,58 +3,21 @@ import { httpFetch, httpStatusText } from "tokamak:host";
 import { randomUUID } from "../globals/crypto.mjs";
 import { hostObjectCopies, uncloneable } from "../globals/structured-clone.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
-import { ReadableStream, isDisturbed, setStreamLength } from "../streams/web.mjs";
+import { ReadableStream, drainedChunkBytes, isDisturbed, setStreamLength } from "../streams/web.mjs";
 import { ErrorEvent, Event, EventTarget, MessageEvent } from "../events/web.mjs";
 import { AbortController, AbortSignal } from "../events/abort.mjs";
 import { URL, URLSearchParams } from "./url.mjs";
 import { nativeWebSocket } from "./websocket.mjs";
-
-function string(value) {
-  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
-  return String(value);
-}
-
-function usvString(value) {
-  const input = string(value);
-  let output = "";
-  for (let index = 0; index < input.length; index += 1) {
-    const code = input.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = input.charCodeAt(index + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        output += input[index] + input[index + 1];
-        index += 1;
-      } else output += "\ufffd";
-    } else if (code >= 0xdc00 && code <= 0xdfff) output += "\ufffd";
-    else output += input[index];
-  }
-  return output;
-}
-
-// A copy of an ArrayBuffer's or view's bytes; undefined for any other value.
-function bufferSourceBytes(value) {
-  if (value instanceof ArrayBuffer) return new Uint8Array(value).slice();
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
-}
-
-function writeChunks(output, chunks) {
-  let offset = 0;
-  for (const chunk of chunks) {
-    output.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return output;
-}
+import { bufferSourceBytes, joinBytes, string, usvString } from "../globals/conversions.mjs";
 
 function bytes(value) {
   if (value == null) return new Uint8Array();
-  if (value instanceof Uint8Array) return value.slice();
-  const copy = bufferSourceBytes(value);
+  const copy = bufferSourceBytes(value)?.slice();
   if (copy) return copy;
   if (value instanceof Blob) return blobBytes(value).slice();
   if (value instanceof URLSearchParams) return new TextEncoder().encode(value.toString());
   if (value instanceof FormData) return formDataBody(value).bytes;
-  return new TextEncoder().encode(usvString(value));
+  return new TextEncoder().encode(string(value));
 }
 
 function bodyStream(value) {
@@ -69,21 +32,17 @@ function bodyStream(value) {
 function consumeStream(stream) {
   const reader = stream.getReader();
   const chunks = [];
-  let length = 0;
   return (async () => {
     try {
-      while (true) {
-        const result = await reader.read();
-        if (result.done) break;
+      for (let result = await reader.read(); !result.done; result = await reader.read()) {
         const chunk = bufferSourceBytes(result.value);
-        if (!chunk) throw new TypeError("Response stream must contain bytes");
-        chunks.push(chunk);
-        length += chunk.byteLength;
+        if (!chunk) throw new TypeError("This ReadableStream did not return bytes.");
+        chunks.push(chunk.slice());
       }
     } finally {
       reader.releaseLock();
     }
-    return writeChunks(new Uint8Array(length), chunks);
+    return joinBytes(chunks);
   })();
 }
 
@@ -93,11 +52,7 @@ function hostStreamReader(stream) {
   return {
     async read() {
       const { done, value } = await reader.read();
-      if (done) return null;
-      if (typeof value === "string") return new TextEncoder().encode(value);
-      if (value instanceof ArrayBuffer) return new Uint8Array(value);
-      if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-      throw new TypeError("response stream chunks must be byte-oriented");
+      return done ? null : drainedChunkBytes(value);
     },
     cancel: () => reader.cancel(),
   };
@@ -194,7 +149,7 @@ export class Blob {
     markHostObject(this, "Blob");
     if (parts == null || typeof parts[Symbol.iterator] !== "function") throw new TypeError("Blob parts must be iterable");
     const chunks = [...parts].map(blobPartBytes);
-    this.#bytes = writeChunks(new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0)), chunks);
+    this.#bytes = joinBytes(chunks);
     this.#type = mimeType(options?.type);
   }
   get size() { return this.#bytes.byteLength; }
@@ -587,8 +542,7 @@ function relativeIndex(value, length) {
 
 function blobPartBytes(value) {
   if (value instanceof Blob) return blobBytes(value).slice();
-  if (typeof value === "string") return new TextEncoder().encode(value);
-  return bufferSourceBytes(value) ?? new TextEncoder().encode(usvString(value));
+  return bufferSourceBytes(value)?.slice() ?? new TextEncoder().encode(string(value));
 }
 
 function mimeType(value) {
@@ -743,7 +697,7 @@ function formDataBody(form) {
     chunks.push(file ? blobBytes(value) : encoder.encode(value), encoder.encode("\r\n"));
   }
   chunks.push(encoder.encode("--" + boundary + "--\r\n"));
-  const body = writeChunks(new Uint8Array(chunks.reduce((total, value) => total + value.byteLength, 0)), chunks);
+  const body = joinBytes(chunks);
   return { bytes: body, stream: null, contentType: "multipart/form-data; boundary=" + boundary };
 }
 

@@ -1,13 +1,9 @@
+import { string } from "../globals/conversions.mjs";
 import { URL, URLSearchParams } from "../network/url.mjs";
 import { parse as parseQuery, stringify as stringifyQuery } from "./querystring.mjs";
 import { toASCII, toUnicode } from "./punycode.mjs";
 
 export { URL, URLSearchParams };
-
-function string(value) {
-  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol value to a string");
-  return String(value);
-}
 
 function queryValue(value) {
   if (value === undefined || value === null) return "";

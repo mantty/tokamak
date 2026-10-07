@@ -2,6 +2,7 @@ import {
   r2AbortUpload, r2CloseBody, r2CompleteUpload, r2CreateUpload, r2Delete, r2Get, r2Head, r2List,
   r2ObjectWriter, r2PartWriter, r2Put, r2Read, r2UploadPart, r2Write,
 } from "tokamak:storage";
+import { bufferSourceBytes, sharedBufferSourceBytes } from "../globals/conversions.mjs";
 import { Blob, Headers, bytes, consumeStream } from "../network/fetch.mjs";
 import { TextDecoder } from "../streams/text.mjs";
 import { ReadableStream, isDisturbed, nativeReadableStream, setStreamLength, streamLength } from "../streams/web.mjs";
@@ -98,12 +99,6 @@ function rejectEncryptionKey(settings) {
 
 function hex(data) {
   return Array.from(data, byte => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function viewBytes(value) {
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  throw new TypeError(NOT_BYTES);
 }
 
 // The etags a conditional header lists: all of them, or a wildcard alone.
@@ -267,8 +262,8 @@ function checksumValue(value, field, length, name) {
     if (!/^[0-9a-fA-F]*$/.test(value)) throw new TypeError(`Provided ${name} wasn't a valid hex string`);
     return value.toLowerCase();
   }
-  if (!(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value)) throw fieldError(field, "PutOptions", "BufferSource or string");
-  const digest = viewBytes(value);
+  const digest = bufferSourceBytes(value);
+  if (!digest) throw fieldError(field, "PutOptions", "BufferSource or string");
   if (digest.byteLength !== length) throw new TypeError(`${name} is ${length} bytes, not ${digest.byteLength}`);
   return hex(digest);
 }
@@ -276,10 +271,10 @@ function checksumValue(value, field, length, name) {
 // A value to write: a copy of its bytes when in memory, or its stream.
 function body(value, method, owner, optional) {
   if (optional && value == null) return { bytes: new Uint8Array(0) };
-  if (typeof value === "string" || value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Blob) {
-    return { bytes: bytes(value) };
-  }
   if (value instanceof ReadableStream) return { stream: value };
+  const buffer = sharedBufferSourceBytes(value);
+  if (buffer) return { bytes: buffer.slice() };
+  if (typeof value === "string" || value instanceof Blob) return { bytes: bytes(value) };
   throw parameterError(method, owner, 2, VALUE_TYPES);
 }
 
@@ -308,7 +303,8 @@ async function writeStream(write, stream) {
   const reader = stream.getReader();
   try {
     for (let result = await reader.read(); !result.done; result = await reader.read()) {
-      let chunk = viewBytes(result.value);
+      let chunk = bufferSourceBytes(result.value);
+      if (!chunk) throw new TypeError(NOT_BYTES);
       while (filled + chunk.byteLength >= WRITE_SIZE) {
         const taken = WRITE_SIZE - filled;
         buffer.set(chunk.subarray(0, taken), filled);

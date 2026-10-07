@@ -1,6 +1,7 @@
 import { markHostObject } from "../globals/objects.mjs";
 import { createCompression } from "tokamak:host";
 import { structuredClone } from "../globals/structured-clone.mjs";
+import { bufferSourceBytes, sharedBufferSourceBytes, string } from "../globals/conversions.mjs";
 import { TextDecoder, TextEncoder } from "./text.mjs";
 import {
   ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest,
@@ -29,6 +30,22 @@ export function setStreamLength(stream, length) {
 // The number of bytes `stream` delivers, when known.
 export function streamLength(stream) {
   return streamLengths.get(stream);
+}
+
+const encoder = new TextEncoder();
+
+// The bytes of a chunk a byte stream's writable side takes: a string or an [AllowShared] BufferSource.
+export function writtenChunkBytes(chunk) {
+  const bytes = typeof chunk === "string" ? encoder.encode(chunk) : sharedBufferSourceBytes(chunk);
+  if (bytes) return bytes;
+  throw new TypeError("This TransformStream is being used as a byte stream, but received an object of non-ArrayBuffer/ArrayBufferView type on its writable side.");
+}
+
+// The bytes of a chunk read from a stream to drain it: a string or a BufferSource.
+export function drainedChunkBytes(chunk) {
+  const bytes = typeof chunk === "string" ? encoder.encode(chunk) : bufferSourceBytes(chunk);
+  if (bytes) return bytes;
+  throw new TypeError("Draining read encountered a value that cannot be converted to bytes");
 }
 
 // Both branches of a tee deliver the bytes of the stream they split.
@@ -94,12 +111,10 @@ Object.defineProperty(ReadableStreamBYOBRequest.prototype, "atLeast", {
 
 export class TextEncoderStream extends TransformStream {
   constructor() {
-    const encoder = new TextEncoder();
     let pending = "";
     super({
       transform(chunk, controller) {
-        if (typeof chunk === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
-        let text = pending + String(chunk);
+        let text = pending + string(chunk);
         pending = "";
         const last = text.charCodeAt(text.length - 1);
         if (last >= 0xd800 && last <= 0xdbff) {
@@ -120,12 +135,8 @@ export class TextDecoderStream extends TransformStream {
     const decoder = new TextDecoder(label, options);
     super({
       transform(chunk, controller) {
-        const bytes = chunk instanceof ArrayBuffer
-          ? new Uint8Array(chunk)
-          : ArrayBuffer.isView(chunk)
-            ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
-            : null;
-        if (bytes === null) throw new TypeError("TextDecoderStream accepts byte chunks");
+        const bytes = bufferSourceBytes(chunk);
+        if (!bytes) throw new TypeError("This TransformStream is being used as a byte stream, but received a value that is not a BufferSource.");
         const value = decoder.decode(bytes, { stream: true });
         if (value !== "") controller.enqueue(value);
       },
@@ -152,9 +163,8 @@ function compressionPair(format, decode) {
   });
   const process = (chunk, finish) => {
     try {
-      if (chunk instanceof ArrayBuffer) chunk = new Uint8Array(chunk);
-      else if (ArrayBuffer.isView(chunk) && chunk.buffer instanceof ArrayBuffer) chunk = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-      else throw new TypeError("Compression streams accept byte chunks");
+      chunk = typeof chunk === "string" ? encoder.encode(chunk) : sharedBufferSourceBytes(chunk);
+      if (!chunk) throw new TypeError("This WritableStream only supports writing byte types.");
       codec(chunk, finish, output => readableController.enqueue(output));
       if (finish) codec = null;
     } catch (error) {
@@ -233,11 +243,7 @@ function identityPair(remaining, strategy = {}) {
     },
     write(chunk) {
       try {
-        let bytes;
-        if (typeof chunk === "string") bytes = new TextEncoder().encode(chunk);
-        else if (chunk instanceof ArrayBuffer || chunk instanceof SharedArrayBuffer) bytes = new Uint8Array(chunk).slice();
-        else if (ArrayBuffer.isView(chunk)) bytes = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength).slice();
-        else throw new TypeError("IdentityTransformStream accepts byte chunks or strings");
+        const bytes = writtenChunkBytes(chunk).slice();
         if (bytes.byteLength === 0) return;
         if (remaining !== undefined) {
           remaining -= BigInt(bytes.byteLength);

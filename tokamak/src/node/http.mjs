@@ -5,15 +5,11 @@ import { URL } from "../network/url.mjs";
 import { WebSocket } from "../network/websocket.mjs";
 import { Readable } from "../streams/node.mjs";
 import { Buffer } from "./buffer.mjs";
+import { listeningServers } from "./http-servers.mjs";
 
 export class Agent {
   constructor(options = {}) { this.options = { ...options }; this.protocol = options.protocol ?? "http:"; }
   destroy() {}
-}
-
-function httpServers() {
-  if (!globalThis.__tokamak_http_servers) Object.defineProperty(globalThis, "__tokamak_http_servers", { configurable: true, value: new Map() });
-  return globalThis.__tokamak_http_servers;
 }
 
 // Duplicate values comma-join into one entry; set-cookie combines in `headers` but is absent from `rawHeaders`.
@@ -216,7 +212,7 @@ export class Server extends EventEmitter {
     const requestedPort = port === undefined ? 0 : Number(port);
     if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65535) throw new RangeError("Invalid port");
     this.__port = requestedPort === 0 ? 32768 + Math.floor(Math.random() * 32768) : requestedPort;
-    httpServers().set(this.__port, this);
+    listeningServers.set(this.__port, this);
     this.listening = true;
     callback?.();
     queueMicrotask(() => this.emit("listening"));
@@ -228,7 +224,7 @@ export class Server extends EventEmitter {
   }
 
   close(callback) {
-    if (this.listening) httpServers().delete(this.__port);
+    if (this.listening) listeningServers.delete(this.__port);
     this.listening = false;
     callback?.();
     queueMicrotask(() => this.emit("close"));

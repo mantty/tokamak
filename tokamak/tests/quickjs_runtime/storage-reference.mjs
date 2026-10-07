@@ -18,7 +18,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({
   kvPersist: join(state, "kv"),
   r2Buckets: ["R2"],
   r2Persist: join(state, "r2"),
-  modules: [{ type: "ESModule", path: `${root}/storage.mjs`, contents: readFileSync(`${root}/storage.mjs`, "utf8") }],
+  modules: ["storage.mjs", "bytes.mjs"].map(name => ({ type: "ESModule", path: `${root}/${name}`, contents: readFileSync(`${root}/${name}`, "utf8") })),
 }));
 try {
   const response = await mf.dispatchFetch("http://localhost/");

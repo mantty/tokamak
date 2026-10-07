@@ -1,6 +1,8 @@
 import { Buffer } from "./buffer.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 import { AbortController } from "../events/abort.mjs";
+import { objectClass } from "tokamak:host";
+import { isDeepStrictEqual } from "./comparisons.mjs";
 
 const objectToString = Object.prototype.toString;
 const inspectCustom = Symbol.for("nodejs.util.inspect.custom");
@@ -36,8 +38,8 @@ function inspectValue(value, options, level, seen) {
     if (typeof custom === "string") return custom;
   }
   if (value instanceof Buffer) return value.inspect();
-  if (value instanceof Date) return Number.isNaN(value.getTime()) ? "Invalid Date" : value.toISOString();
-  if (value instanceof RegExp) return String(value);
+  if (objectClass(value) === "Date") return Number.isNaN(Date.prototype.getTime.call(value)) ? "Invalid Date" : Date.prototype.toISOString.call(value);
+  if (objectClass(value) === "RegExp") return RegExp.prototype.toString.call(value);
   if (value instanceof Error) return `${value.name}: ${value.message}`;
 
   const nextSeen = [...seen, value];
@@ -100,7 +102,7 @@ export function isArray(value) { return Array.isArray(value); }
 export function isBoolean(value) { return typeof value === "boolean"; }
 export function isBuffer(value) { return Buffer.isBuffer(value); }
 export function isDate(value) { return value instanceof Date; }
-export function isDeepStrictEqual(left, right) { return deepEqual(left, right, []); }
+export { isDeepStrictEqual };
 export function isError(value) { return value instanceof Error || objectToString.call(value) === "[object Error]"; }
 export function isFunction(value) { return typeof value === "function"; }
 export function isNull(value) { return value === null; }
@@ -112,27 +114,6 @@ export function isRegExp(value) { return value instanceof RegExp; }
 export function isString(value) { return typeof value === "string"; }
 export function isSymbol(value) { return typeof value === "symbol"; }
 export function isUndefined(value) { return value === undefined; }
-
-function deepEqual(left, right, seen) {
-  if (Object.is(left, right)) return true;
-  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
-  if (left.constructor !== right.constructor) return false;
-  if (seen.some(pair => pair[0] === left && pair[1] === right)) return true;
-  seen.push([left, right]);
-  if (left instanceof Date) return left.getTime() === right.getTime();
-  if (left instanceof RegExp) return String(left) === String(right);
-  if (left instanceof Map) return left.size === right.size && [...left].every(([key, value]) => [...right].some(([otherKey, otherValue]) => deepEqual(key, otherKey, seen) && deepEqual(value, otherValue, seen)));
-  if (left instanceof Set) return left.size === right.size && [...left].every(value => [...right].some(other => deepEqual(value, other, seen)));
-  if (ArrayBuffer.isView(left)) {
-    if (left.byteLength !== right.byteLength) return false;
-    const leftBytes = new Uint8Array(left.buffer, left.byteOffset, left.byteLength);
-    const rightBytes = new Uint8Array(right.buffer, right.byteOffset, right.byteLength);
-    return leftBytes.every((value, index) => value === rightBytes[index]);
-  }
-  const leftKeys = Reflect.ownKeys(left).filter(name => Object.prototype.propertyIsEnumerable.call(left, name));
-  const rightKeys = Reflect.ownKeys(right).filter(name => Object.prototype.propertyIsEnumerable.call(right, name));
-  return leftKeys.length === rightKeys.length && leftKeys.every(name => rightKeys.includes(name) && deepEqual(left[name], right[name], seen));
-}
 
 export function inherits(ctor, superCtor) {
   if (typeof ctor !== "function" || typeof superCtor !== "function") throw new TypeError("The super constructor must be a function");

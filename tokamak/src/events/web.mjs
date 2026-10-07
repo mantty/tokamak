@@ -1,11 +1,7 @@
 import { markHostObject } from "../globals/objects.mjs";
 import { DOMException } from "../globals/dom-exception.mjs";
 import { structuredClone } from "../globals/structured-clone.mjs";
-
-function domString(value) {
-  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol value to a string");
-  return String(value);
-}
+import { string } from "../globals/conversions.mjs";
 
 function normalizeOptions(options, method) {
   if (typeof options === "boolean") {
@@ -42,7 +38,7 @@ export class Event {
   constructor(type, options = {}) {
     markHostObject(this);
     options ??= {};
-    this.#type = domString(type);
+    this.#type = string(type);
     this.#bubbles = Boolean(options.bubbles);
     this.#cancelable = Boolean(options.cancelable);
     this.#composed = Boolean(options.composed);
@@ -192,7 +188,7 @@ export class EventTarget {
     if (typeof callback !== "function" && typeof callback.handleEvent !== "function") {
       throw new TypeError("Event listener must be callable");
     }
-    const name = domString(type);
+    const name = string(type);
     const normalized = normalizeOptions(options, "addEventListener");
     const list = this.#listeners.get(name) ?? [];
     if (list.some(entry => entry.callback === callback)) return;
@@ -210,7 +206,7 @@ export class EventTarget {
   }
 
   removeEventListener(type, callback, options = {}) {
-    const name = domString(type);
+    const name = string(type);
     normalizeOptions(options, "removeEventListener");
     const list = this.#listeners.get(name);
     if (!list) return;

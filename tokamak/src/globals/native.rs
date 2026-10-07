@@ -1,7 +1,5 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use base64::Engine;
-use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig, general_purpose};
 use encoding_rs::{DecoderResult, Encoding};
 use rquickjs::function::MutFn;
 use rquickjs::module::{Declarations, Exports, ModuleDef};
@@ -10,6 +8,8 @@ use rquickjs::{
 };
 use std::io::Write;
 
+use crate::runtime_modules;
+
 pub(crate) struct HostModule;
 
 super::host_functions! {
@@ -17,8 +17,6 @@ super::host_functions! {
     "asyncContextGet" => super::async_context::get,
     "asyncContextSet" => super::async_context::set,
     "createDecoder" => create_decoder,
-    "encodeBase64" => encode_base64,
-    "decodeBase64" => decode_base64,
     "randomBytes" => random_bytes,
     "detachArrayBuffer" => detach_array_buffer,
     "objectClass" => super::objects::class_name,
@@ -35,6 +33,9 @@ super::host_functions! {
     "writeStdout" => |text: String| write_flushed(&mut std::io::stdout().lock(), &text),
     "writeStderr" => |text: String| write_flushed(&mut std::io::stderr().lock(), &text),
     "registerDomException" => register_dom_exception,
+    "builtinNamespace" => |ctx: Ctx<'js>, name: String| runtime_modules::builtin_namespace(ctx, &name),
+    "isNodeBuiltin" => |name: String| runtime_modules::is_node_builtin(&name),
+    "nodeBuiltinNames" => runtime_modules::node_builtin_names,
 }
 
 /// The `DOMException` class native errors are created with, registered by the
@@ -175,27 +176,6 @@ fn create_decoder<'js>(
     )?;
     object.set("decode", decode)?;
     Ok(object)
-}
-
-fn encode_base64(ctx: Ctx<'_>, bytes: TypedArray<'_, u8>) -> rquickjs::Result<String> {
-    let bytes = bytes
-        .as_bytes()
-        .ok_or_else(|| Exception::throw_type(&ctx, "Detached buffer"))?;
-    Ok(general_purpose::STANDARD.encode(bytes))
-}
-
-fn decode_base64(ctx: Ctx<'_>, input: String) -> rquickjs::Result<Option<TypedArray<'_, u8>>> {
-    let engine = GeneralPurpose::new(
-        &base64::alphabet::STANDARD,
-        GeneralPurposeConfig::new()
-            .with_decode_padding_mode(DecodePaddingMode::Indifferent)
-            .with_decode_allow_trailing_bits(true),
-    );
-    engine
-        .decode(input)
-        .ok()
-        .map(|bytes| TypedArray::new(ctx, bytes))
-        .transpose()
 }
 
 fn random_bytes(ctx: Ctx<'_>, length: usize) -> rquickjs::Result<TypedArray<'_, u8>> {

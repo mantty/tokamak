@@ -1,7 +1,8 @@
+import { atob as globalAtob, btoa as globalBtoa } from "../globals/base64.mjs";
+import { bufferBytes } from "../globals/conversions.mjs";
 import { Blob, File } from "../network/fetch.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 
-const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const encodingNames = new Set(["utf8", "utf-8", "ascii", "latin1", "binary", "base64", "base64url", "hex", "ucs2", "ucs-2", "utf16le", "utf-16le"]);
 
 function normalizeEncoding(encoding) {
@@ -18,7 +19,7 @@ function unknownEncoding(name) {
 }
 
 function isArrayBufferLike(value) {
-  return value instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && value instanceof SharedArrayBuffer);
+  return value instanceof ArrayBuffer || value instanceof SharedArrayBuffer;
 }
 
 function hexByte(value) { return value.toString(16).padStart(2, "0"); }
@@ -26,12 +27,10 @@ function hexByte(value) { return value.toString(16).padStart(2, "0"); }
 function stringBytes(value, encoding) {
   const name = normalizeEncoding(encoding);
   if (name === "hex") return decodeHex(String(value));
-  if (name === "base64" || name === "base64url") return decodeBase64(String(value));
+  if (name === "base64" || name === "base64url") return decodeBase64Leniently(String(value));
   if (name === "ascii" || name === "latin1" || name === "binary") {
     const input = String(value);
-    const bytes = new Uint8Array(input.length);
-    for (let index = 0; index < input.length; index += 1) bytes[index] = input.charCodeAt(index) & 0xff;
-    return bytes;
+    return Uint8Array.from({ length: input.length }, (_, index) => input.charCodeAt(index));
   }
   if (name === "ucs2" || name === "ucs-2" || name === "utf16le" || name === "utf-16le") {
     const input = String(value);
@@ -46,60 +45,34 @@ function stringBytes(value, encoding) {
   return new TextEncoder().encode(String(value));
 }
 
+// Node decodes hex pairs up to the first that is not one.
 function decodeHex(value) {
-  const bytes = [];
-  for (let index = 0; index + 1 < value.length; index += 2) {
-    const pair = value.slice(index, index + 2);
-    if (!/^[0-9a-f]{2}$/i.test(pair)) break;
-    bytes.push(parseInt(pair, 16));
-  }
-  return new Uint8Array(bytes);
+  const digits = value.match(/^[0-9a-f]*/i)[0];
+  return Uint8Array.fromHex(digits.slice(0, digits.length - (digits.length % 2)));
 }
 
-function decodeBase64(value) {
-  const input = value.replace(/[\t\n\f\r ]/g, "").replace(/-/g, "+").replace(/_/g, "/");
-  const bytes = [];
-  let accumulator = 0;
-  let bits = 0;
-  for (const character of input) {
-    if (character === "=") break;
-    const digit = BASE64.indexOf(character);
-    if (digit < 0) continue;
-    accumulator = (accumulator << 6) | digit;
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      bytes.push((accumulator >> bits) & 0xff);
-    }
-  }
-  return new Uint8Array(bytes);
-}
-
-function encodeBase64(bytes) {
-  let output = "";
-  for (let index = 0; index < bytes.length; index += 3) {
-    const first = bytes[index];
-    const second = bytes[index + 1];
-    const third = bytes[index + 2];
-    output += BASE64[first >> 2];
-    output += BASE64[((first & 3) << 4) | (second === undefined ? 0 : second >> 4)];
-    output += second === undefined ? "=" : BASE64[((second & 15) << 2) | (third === undefined ? 0 : third >> 6)];
-    output += third === undefined ? "=" : BASE64[third & 63];
-  }
-  return output;
+// Node decodes either base64 alphabet up to the first "=", skipping other characters.
+function decodeBase64Leniently(value) {
+  const digits = value.split("=", 1)[0].replace(/[^A-Za-z0-9+/_-]/g, "").replace(/-/g, "+").replace(/_/g, "/");
+  return Uint8Array.fromBase64(digits.length % 4 === 1 ? digits.slice(0, -1) : digits);
 }
 
 function decode(bytes, encoding) {
   const name = normalizeEncoding(encoding);
-  if (name === "hex") return [...bytes].map(hexByte).join("");
-  if (name === "base64" || name === "base64url") {
-    const value = encodeBase64(bytes);
-    return name === "base64url" ? value.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") : value;
-  }
-  if (name === "ascii") return String.fromCharCode(...bytes.map(value => value & 0x7f));
-  if (name === "latin1" || name === "binary") return String.fromCharCode(...bytes);
-  if (name === "ucs2" || name === "ucs-2" || name === "utf16le" || name === "utf-16le") return new TextDecoder("utf-16le").decode(bytes);
-  return new TextDecoder().decode(bytes);
+  if (name === "hex") return bytes.toHex();
+  if (name === "base64") return bytes.toBase64();
+  if (name === "base64url") return bytes.toBase64({ alphabet: "base64url", omitPadding: true });
+  if (name === "ascii") return Array.from(bytes, byte => String.fromCharCode(byte & 0x7f)).join("");
+  if (name === "latin1" || name === "binary") return Array.from(bytes, byte => String.fromCharCode(byte)).join("");
+  if (name === "ucs2" || name === "ucs-2" || name === "utf16le" || name === "utf-16le") return utf16Units(bytes);
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+}
+
+// UTF-16LE code units, unpaired surrogates kept and an odd last byte left out.
+function utf16Units(bytes) {
+  let text = "";
+  for (let index = 0; index + 1 < bytes.length; index += 2) text += String.fromCharCode(bytes[index] | (bytes[index + 1] << 8));
+  return text;
 }
 
 function integer(value, fallback = 0) {
@@ -139,11 +112,9 @@ function fillBytes(buffer, value, start, end, encoding) {
 function toBytes(value, allowString = true, encoding) {
   if (allowString && typeof value === "string") return stringBytes(value, encoding);
   if (value instanceof Buffer) return value;
-  if (isArrayBufferLike(value)) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) {
-    if (value instanceof DataView) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-    return Uint8Array.from(value);
-  }
+  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) return Uint8Array.from(value);
+  const bytes = bufferBytes(value);
+  if (bytes) return bytes;
   if (Array.isArray(value) || (value && typeof value.length === "number")) return Uint8Array.from(value);
   throw new TypeError("The value must be a string, Buffer, TypedArray, DataView, ArrayBuffer, or Array-like Object");
 }
@@ -178,6 +149,8 @@ export class Buffer extends Uint8Array {
   static allocUnsafeSlow(size) { return Buffer.allocUnsafe(size); }
 
   static byteLength(value, encoding) {
+    // Node estimates a base64 string's length from its padding.
+    if (typeof value === "string" && ["base64", "base64url"].includes(normalizeEncoding(encoding))) return Math.floor(value.replace(/={1,2}$/, "").length * 3 / 4);
     if (typeof value === "string") return stringBytes(value, encoding).byteLength;
     if (isArrayBufferLike(value) || ArrayBuffer.isView(value)) return value.byteLength;
     return stringBytes(String(value), encoding).byteLength;
@@ -433,15 +406,13 @@ export function isUtf8(value) { try { new TextDecoder("utf-8", { fatal: true }).
 export function transcode(value, fromEncoding = "utf8", toEncoding = "utf8") {
   return Buffer.from(Buffer.from(value, fromEncoding).toString(toEncoding), toEncoding);
 }
-export function atob(value) { return Buffer.from(decodeBase64(String(value))).toString("latin1"); }
-export function btoa(value) { return encodeBase64(stringBytes(String(value), "latin1")); }
-export const atobBuffer = value => Buffer.from(atob(value), "latin1");
-export const btoaBuffer = value => btoa(Buffer.from(value).toString("latin1"));
+// The globals, as bound functions of their own.
+export const atob = globalAtob.bind(globalThis);
+export const btoa = globalBtoa.bind(globalThis);
 export function resolveObjectURL() { throw new Error("Blob URLs are not available in the Tokamak runtime"); }
 
 Object.defineProperty(Buffer, "length", { configurable: true, value: 3 });
 Buffer.poolSize = 0;
-if (typeof globalThis.Buffer !== "function") globalThis.Buffer = Buffer;
 
 export { Blob, File };
 export default { Buffer, SlowBuffer, Blob, File, atob, btoa, constants, isAscii, isUtf8, kMaxLength, kStringMaxLength, INSPECT_MAX_BYTES, resolveObjectURL, transcode };

@@ -2,6 +2,8 @@
 // Values that differ by implementation (timings, sizes, bookmarks) are
 // reduced to their types.
 
+import { byteOutcomes, bytesOf } from "./bytes.mjs";
+
 async function outcome(callback) {
   try {
     return await callback();
@@ -167,6 +169,10 @@ async function kvContracts(kv) {
   });
   await record("metadataLarge", () => kv.put("meta", "x", { metadata: "m".repeat(1100) }));
   await record("valueLarge", () => kv.put("large", new Uint8Array(25 * 1024 * 1024 + 1)));
+  await record("streamLarge", () => {
+    let chunks = 0;
+    return kv.put("large", new ReadableStream({ pull(controller) { if (++chunks > 26) controller.close(); else controller.enqueue(new Uint8Array(MIB)); } }));
+  });
   await record("expiring", async () => {
     await kv.put("expiring", "x", { expirationTtl: 3600, metadata: [1] });
     await kv.put("absolute", "y", { expiration: now() + 120 });
@@ -210,6 +216,8 @@ async function kvContracts(kv) {
   await record("bulkBadJson", () => kv.get(["list/a"], "json"));
   await record("bulkBadKey", () => kv.get(["ok", ""]));
   await record("invalidText", async () => { await kv.put("invalid", new Uint8Array([0xff, 0x61])); return kv.get("invalid"); });
+  await record("valueBytes", () => byteOutcomes(async value => { await kv.put("bytes", value); return bytesOf(kv.get("bytes", "arrayBuffer")); }));
+  await record("streamBytes", () => byteOutcomes(async value => { await kv.put("bytes", streamOf(value)); return bytesOf(kv.get("bytes", "arrayBuffer")); }));
   await record("shape", () => Object.getOwnPropertyNames(Object.getPrototypeOf(kv)).sort());
   return results;
 }
@@ -254,6 +262,7 @@ async function r2Contracts(r2) {
   const record = async (name, callback) => { results[name] = await outcome(callback); };
   const written = await r2.put("a", "hello", { httpMetadata: { contentType: "text/plain", cacheExpiry: new Date(1000) }, customMetadata: { b: "1", a: "2", 10: 3 } });
   await record("put", () => r2Object(written));
+  await record("valueBytes", () => byteOutcomes(async value => { await r2.put("bytes", value); return bytesOf((await r2.get("bytes")).arrayBuffer()); }));
   await record("shape", async () => {
     const object = await r2.get("a");
     const upload = await r2.createMultipartUpload("shape");

@@ -9,6 +9,7 @@ import { zlibContracts } from "./zlib.mjs";
 import { cloneContracts } from "./clone.mjs";
 import { performanceContracts } from "./performance.mjs";
 import { intlContracts } from "./intl.mjs";
+import { bytesContracts } from "./bytes.mjs";
 
 function errorResult(error) {
   return { error: error.name, dom: error instanceof DOMException, code: error.code ?? null };
@@ -63,6 +64,7 @@ function describeHtmlRewriterAttributes(attributes) {
 
 export async function run(handlerEnv, ctx, constructors) {
   const output = {};
+  const consoleBeforeNodeConsole = Object.getOwnPropertyNames(console).sort();
   output.streamDetails = await streamContracts();
   output.cryptoDetails = await cryptoContracts();
   output.htmlDetails = await htmlContracts();
@@ -70,6 +72,7 @@ export async function run(handlerEnv, ctx, constructors) {
   output.cloneDetails = await cloneContracts();
   output.performanceDetails = await performanceContracts();
   output.intlDetails = intlContracts();
+  output.bytesDetails = await bytesContracts();
   output.asyncContextDetails = await asyncResult(async () => {
     const { AsyncLocalStorage } = await import("node:async_hooks");
     const storage = new AsyncLocalStorage({ name: "scope", defaultValue: "default" });
@@ -222,18 +225,7 @@ export async function run(handlerEnv, ctx, constructors) {
       static: value && Object.getOwnPropertyNames(value).sort(),
     }];
   }));
-  const builtinNames = [
-    "assert", "assert/strict", "async_hooks", "buffer", "console", "constants", "crypto",
-    "diagnostics_channel", "dns", "dns/promises", "events", "fs", "fs/promises", "http",
-    "https", "module", "net", "os", "path", "path/posix", "path/win32", "perf_hooks",
-    "process", "punycode", "querystring", "stream", "stream/consumers", "stream/promises",
-    "stream/web", "string_decoder", "sys", "timers", "timers/promises", "tls", "url", "util",
-    "util/types", "zlib", "child_process", "cluster", "dgram", "domain", "http2", "inspector",
-    "inspector/promises", "readline", "readline/promises", "repl", "sqlite", "test", "trace_events", "v8",
-    "vm", "wasi", "worker_threads", "_http_agent", "_http_client", "_http_common", "_http_incoming",
-    "_http_outgoing", "_http_server", "_stream_duplex", "_stream_passthrough", "_stream_readable",
-    "_stream_transform", "_stream_wrap", "_stream_writable", "_tls_common", "_tls_wrap", "tty",
-  ];
+  const builtinNames = [...process.getBuiltinModule("node:module").builtinModules, "sqlite", "test"];
   const builtinRequirements = {
     "assert": ["ok", "strictEqual", "deepStrictEqual"],
     "assert/strict": ["ok", "strictEqual", "deepStrictEqual"],
@@ -294,11 +286,8 @@ export async function run(handlerEnv, ctx, constructors) {
       required: value !== undefined && required.every(key => key in value),
     }];
   }));
-  output.builtinSurfaces = Object.fromEntries([
-    "_http_agent", "_http_client", "_http_common", "_http_incoming", "_http_outgoing", "_http_server",
-    "_stream_duplex", "_stream_passthrough", "_stream_readable", "_stream_transform", "_stream_wrap",
-    "_stream_writable", "_tls_common", "_tls_wrap", "tty",
-  ].map(name => [name, Object.keys(process.getBuiltinModule("node:" + name)).sort()]));
+  output.builtinSurfaces = Object.fromEntries(builtinNames.filter(name => name.startsWith("_") || name === "tty")
+    .map(name => [name, Object.keys(process.getBuiltinModule("node:" + name)).sort()]));
   output.nodeBuiltinSurfaces = Object.fromEntries(builtinNames.map(name => [
     name,
     Object.keys(process.getBuiltinModule("node:" + name)).sort(),
@@ -321,6 +310,23 @@ export async function run(handlerEnv, ctx, constructors) {
     timers: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"].every(name => process.getBuiltinModule("node:timers")[name] === globalThis[name]),
   };
   output.nodeEventsExports = Object.keys(await import("node:events")).sort();
+  const nodeModuleApi = process.getBuiltinModule("node:module");
+  const nodeRepl = process.getBuiltinModule("node:repl");
+  const nodeHttpServer = process.getBuiltinModule("node:http").createServer(() => {}).listen(8123);
+  output.builtinRegistry = {
+    consoleBeforeNodeConsole,
+    builtinModules: nodeModuleApi.builtinModules,
+    replBuiltinModules: [nodeRepl.builtinModules, nodeRepl._builtinLibs],
+    isBuiltin: ["fs", "node:fs", "node:nope", "nope", "test", "node:test", "sqlite", "cloudflare:sockets", 1].map(name => nodeModuleApi.isBuiltin(name)),
+    bareImports: await Promise.all(["test", "sqlite", "fs"].map(name => import(name).then(() => true, () => false))),
+    getBuiltinModule: ["cloudflare:sockets", "cloudflare:workers", "test", "sqlite", "node:nope", 1, null, undefined].map(name => typeof process.getBuiltinModule(name)),
+    namespaces: process.getBuiltinModule("cloudflare:sockets") === await import("cloudflare:sockets"),
+    symbol: detailedResult(() => process.getBuiltinModule(Symbol("name"))),
+    require: ["fs", "node:test", "test", "cloudflare:sockets"].map(name => detailedResult(() => typeof nodeModuleApi.createRequire("/")(name))),
+    requireProperties: Object.getOwnPropertyNames(nodeModuleApi.createRequire("/")).sort(),
+    httpGlobals: Object.getOwnPropertyNames(globalThis).filter(name => /http/i.test(name)),
+  };
+  nodeHttpServer.close();
   output.bodyConstructor = result(() => new Body());
   const ownKeys = value => Reflect.ownKeys(value).map(String).sort();
   output.ownProperties = {
@@ -391,6 +397,25 @@ export async function run(handlerEnv, ctx, constructors) {
     get ignoreBOM() { conversions.push("ignoreBOM"); return false; },
   });
   output.conversions = conversions;
+  const symbol = Symbol("name");
+  const symbolConversions = {
+    url: () => new URL(symbol),
+    encode: () => new TextEncoder().encode(symbol),
+    event: () => new Event(symbol),
+    mark: () => performance.mark(symbol),
+    atob: () => atob(symbol),
+    localeCompare: () => "a".localeCompare(symbol),
+    localeCompareNull: () => String.prototype.localeCompare.call(null, "a"),
+    header: () => new Headers().append("name", symbol),
+    formData: () => new FormData().append(symbol, "value"),
+    blob: () => new Blob([symbol]),
+    escape: () => process.getBuiltinModule("node:querystring").escape(symbol),
+  };
+  output.symbolConversions = Object.fromEntries(Object.entries(symbolConversions).map(([name, convert]) => [name, detailedResult(convert)]));
+  output.symbolChunks = await Promise.all([
+    () => { const stream = new TextEncoderStream(); stream.readable.getReader().read().catch(() => {}); return stream.writable.getWriter().write(symbol); },
+    () => new HTMLRewriter().on("p", { element(element) { element.append(symbol); } }).transform(new Response("<p></p>")).text(),
+  ].map(detailedAsyncResult));
   output.view = new TextDecoder().decode(new DataView(new Uint8Array([0, 65, 66, 0]).buffer, 1, 2));
   output.encode = ["", "hello", "€", "😀", "\ud800", "\udc00", "\ud800A"].map(value => [...new TextEncoder().encode(value)]);
   output.encodeInto = [];
@@ -2371,6 +2396,47 @@ export async function run(handlerEnv, ctx, constructors) {
       fail: result(() => nodeAssert.fail(["why"])),
       error: result(() => { throw new nodeAssert.AssertionError({ actual: 1, expected: 2, operator: "strictEqual", message: "custom" }); }),
     },
+    deepEquality: (() => {
+      const loop = value => Object.assign(value, { self: value });
+      const outer = { a: 1 };
+      const tagged = value => Object.assign(value, { [Symbol.toStringTag]: "Tagged" });
+      const symbol = Symbol("key");
+      const pairs = {
+        numberString: [1, "1"], zero: [0, -0], nan: [NaN, NaN], prototype: [Object.create(null), {}], holes: [[1, , 3], [1, undefined, 3]],
+        arrayProperty: [Object.assign([1], { extra: 1 }), [1]], symbolKeys: [{ [symbol]: 1 }, { [symbol]: 2 }],
+        boxed: [new Number(1), new Number(2)], boxedBoolean: [new Boolean(false), new Boolean(true)], boxedSymbol: [Object(Symbol("a")), Object(Symbol("a"))],
+        boxedPrimitive: [new String("a"), "a"], dateProperty: [Object.assign(new Date(0), { extra: 1 }), new Date(0)], invalidDates: [new Date(NaN), new Date(NaN)],
+        regexpIndex: [Object.assign(/a/g, { lastIndex: 2 }), /a/g], regexpProperty: [Object.assign(/a/g, { extra: 1 }), /a/g],
+        errorProperty: [Object.assign(new Error("m"), { extra: 1 }), new Error("m")], errorCause: [new Error("m", { cause: 1 }), new Error("m", { cause: 2 })],
+        errorMessage: [new Error("a"), new Error("b")], errorKind: [new Error("m"), new TypeError("m")],
+        typed: [new Uint8Array([1, 2]), new Uint8Array([1, 2])], typedDiff: [new Uint8Array([1, 2]), new Uint8Array([1, 3])], typedKind: [new Uint8Array([1]), new Int8Array([1])],
+        floatNaN: [new Float64Array([NaN]), new Float64Array([NaN])], floatZero: [new Float64Array([0]), new Float64Array([-0])],
+        typedProperty: [Object.assign(new Uint8Array([1]), { extra: 1 }), new Uint8Array([1])], typedBuffer: [new Uint8Array([1]), nodeBuffer.Buffer.from([1])],
+        buffers: [new Uint8Array([1, 2]).buffer, new Uint8Array([1, 2]).buffer], buffersDiff: [new Uint8Array([1, 2]).buffer, new Uint8Array([1, 3]).buffer],
+        sharedBuffer: [new SharedArrayBuffer(2), new ArrayBuffer(2)], dataViews: [new DataView(new Uint8Array([1]).buffer), new DataView(new Uint8Array([2]).buffer)],
+        mapProperty: [Object.assign(new Map(), { extra: 1 }), new Map()], mapZero: [new Map([[0, 1]]), new Map([[-0, 1]])], mapLoose: [new Map([[1, "a"]]), new Map([["1", "a"]])],
+        mapKeys: [new Map([[outer, 1], [{ a: 2 }, 1]]), new Map([[{ a: 1 }, 1], [{ a: 1 }, 1]])],
+        mapEntries: [new Map([[{ k: 1 }, "a"], [{ k: 1 }, "b"]]), new Map([[{ k: 1 }, "b"], [{ k: 1 }, "a"]])],
+        setConsumed: [new Set([{ a: 1 }, { a: 1 }]), new Set([{ a: 1 }, { a: 2 }])], setOfSets: [new Set([new Set([1]), new Set([1])]), new Set([new Set([1]), new Set([2])])],
+        setMixed: [new Set([1, { a: 1 }]), new Set([{ a: 1 }, 1])], setLoose: [new Set([1]), new Set(["1"])],
+        circular: [loop({ a: 1 }), loop({ a: 1 })], circularDepth: [loop({ a: 1 }), (() => { const value = { a: 1 }; value.self = { a: 1, self: value }; return value; })()],
+        tag: [tagged({}), {}], forgedDates: [Object.create(Date.prototype), Object.create(Date.prototype)], forgedDate: [Object.create(Date.prototype), new Date(0)],
+        proxy: [new Proxy({ a: 1 }, {}), { a: 1 }], proxyArray: [new Proxy([1], {}), [1]], functions: [() => 1, () => 1], arguments: [(function () { return arguments; })(1), [1]],
+      };
+      return Object.fromEntries(Object.entries(pairs).map(([name, [actual, expected]]) => [name, [
+        nodeUtil.isDeepStrictEqual(actual, expected),
+        result(() => nodeAssert.deepStrictEqual(actual, expected)) ?? true,
+        result(() => nodeAssert.deepEqual(actual, expected)) ?? true,
+        result(() => nodeAssert.notDeepStrictEqual(actual, expected)) ?? true,
+      ]]));
+    })(),
+    partialEquality: Object.fromEntries(Object.entries({
+      prefix: [[1, 2], [1]], longer: [[1], [1, 2]], middle: [[1, 2, 3], [2]], nested: [[1, { a: 1, b: 2 }], [1, { a: 1 }]], missingKey: [{}, { a: undefined }],
+      prototype: [new Error("x"), { message: "x" }], errors: [new Error("x"), new Error("y")], primitives: [1, 1], zero: [0, -0],
+      typed: [new Uint8Array([1, 2]), new Uint8Array([1])], buffers: [new Uint8Array([1, 2]).buffer, new Uint8Array([1]).buffer],
+      mapSubset: [new Map([[1, { a: 1, b: 2 }], [2, 2]]), new Map([[1, { a: 1 }]])], mapMissing: [new Map([[1, 1]]), new Map([[2, 2]])],
+      setSubset: [new Set([1, 2]), new Set([1])], setObjects: [new Set([{ a: 1, b: 2 }]), new Set([{ a: 1 }])],
+    }).map(([name, [actual, expected]]) => [name, result(() => nodeAssert.partialDeepStrictEqual(actual, expected)) ?? true])),
     buffer: (() => {
       const source = new Uint8Array([1, 2]);
       const shared = nodeBuffer.Buffer.from(source.buffer);
@@ -2390,6 +2456,17 @@ export async function run(handlerEnv, ctx, constructors) {
         json: encoded.toJSON(),
         static: [nodeBuffer.Buffer.byteLength("€"), nodeBuffer.Buffer.compare(nodeBuffer.Buffer.from([1]), nodeBuffer.Buffer.from([2])), nodeBuffer.Buffer.isEncoding("utf-8"), nodeBuffer.Buffer.of(1, 257)[1]],
         aliases: [nodeBuffer.Blob === Blob, nodeBuffer.File === File, nodeBuffer.atob === globalThis.atob, nodeBuffer.btoa === globalThis.btoa],
+        base64Names: [nodeBuffer.atob.name, nodeBuffer.btoa.name],
+        base64: ["aGVsbG8", "aGVsbG8===", "aGVs*bG8=", "a-_b", "aGVsbG8=aGVsbG8=", "=aGVsbG8", "abcde", "YR==", "Zm9véYmFy", "AAAA====AAAA", "%%%"].map(value => [
+          [...nodeBuffer.Buffer.from(value, "base64")], [...nodeBuffer.Buffer.from(value, "base64url")], nodeBuffer.Buffer.byteLength(value, "base64"), detailedResult(() => nodeBuffer.atob(value)),
+        ]),
+        base64Encoded: [[], [0], [0, 1], [255, 254, 253, 252]].map(bytes => [nodeBuffer.Buffer.from(bytes).toString("base64"), nodeBuffer.Buffer.from(bytes).toString("base64url")]),
+        hex: ["0a1B", "0a1", "0a zz", "zz0a", ""].map(value => [...nodeBuffer.Buffer.from(value, "hex")]),
+        largeLatin1: ["latin1", "ascii"].map(encoding => nodeBuffer.Buffer.alloc(70000, 0xe9).toString(encoding).length),
+        decoderStrings: ["hex", "base64", "utf8"].map(encoding => new nodeStringDecoder.StringDecoder(encoding).write("ab")),
+        decoded: [[0x00, 0xd8], [0x41, 0x00, 0x00, 0xd8, 0x42], [0xef, 0xbb, 0xbf, 0x41]].map(bytes => ["utf16le", "utf8"].map(encoding => [...nodeBuffer.Buffer.from(bytes).toString(encoding)].map(text => text.codePointAt(0)))),
+        btoa: ["hello", "\x00\xff", "€"].map(value => detailedResult(() => nodeBuffer.btoa(value))),
+        base64Missing: [detailedResult(() => nodeBuffer.atob()), detailedResult(() => nodeBuffer.btoa())],
       };
     })(),
     path: {
