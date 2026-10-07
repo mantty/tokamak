@@ -5,6 +5,8 @@ import {
   intlDateTime,
   intlDateTimeParts,
   intlDisplayName,
+  intlFractionDigits,
+  intlHourCycle,
   intlList,
   intlListParts,
   intlLocaleInfo,
@@ -63,13 +65,7 @@ function initIntlObject(object, locales) {
 }
 
 function localeInfo(locale) {
-  return JSON.parse(intlLocaleInfo(locale, "{}"));
-}
-
-function localeDefaultHourCycle(locale) {
-  const info = localeInfo(locale);
-  if (info.hourCycle) return info.hourCycle;
-  return /^en-US|en-CA|en-PH|es-US|fr-CA/.test(locale) ? "h12" : "h23";
+  return JSON.parse(intlLocaleInfo(locale));
 }
 
 function dateOptions(options) {
@@ -84,10 +80,6 @@ function dateOptions(options) {
   if (source.hourCycle !== undefined) result.hourCycle = source.hourCycle;
   if (source.hour12 !== undefined) result.hour12 = source.hour12;
   return result;
-}
-
-function hasTimeFields(options) {
-  return options.timeStyle !== undefined || ["dayPeriod", "hour", "minute", "second", "fractionalSecondDigits", "timeZoneName"].some(field => options[field] !== undefined);
 }
 
 function numberOptions(options) {
@@ -135,7 +127,7 @@ function epochMilliseconds(value) {
   return Math.trunc(milliseconds);
 }
 
-function dateResolvedOptions(locale, options) {
+function dateResolvedOptions({ locale, json }, options) {
   const info = localeInfo(locale);
   const result = {
     locale,
@@ -146,7 +138,7 @@ function dateResolvedOptions(locale, options) {
   if (options.dateStyle !== undefined || options.timeStyle !== undefined) {
     if (options.dateStyle !== undefined) result.dateStyle = options.dateStyle;
     if (options.timeStyle !== undefined) result.timeStyle = options.timeStyle;
-    if (options.timeStyle !== undefined) resolveHourCycle(result, locale, options);
+    if (options.timeStyle !== undefined) resolveHourCycle(result, json, options);
     return result;
   }
   const hasDate = dateFields.some(field => ["weekday", "era", "year", "month", "day"].includes(field) && options[field] !== undefined);
@@ -158,12 +150,12 @@ function dateResolvedOptions(locale, options) {
   } else {
     for (const field of dateFields) if (options[field] !== undefined) result[field] = options[field];
   }
-  if (hasTime) resolveHourCycle(result, locale, options);
+  if (hasTime) resolveHourCycle(result, json, options);
   return result;
 }
 
-function resolveHourCycle(result, locale, options) {
-  const hourCycle = options.hourCycle ?? (options.hour12 === undefined ? localeDefaultHourCycle(locale) : options.hour12 ? "h12" : "h23");
+function resolveHourCycle(result, locales, options) {
+  const hourCycle = options.hourCycle ?? (options.hour12 === undefined ? intlHourCycle(locales) : options.hour12 ? "h12" : "h23");
   result.hourCycle = hourCycle;
   result.hour12 = hourCycle === "h11" || hourCycle === "h12";
 }
@@ -175,9 +167,6 @@ class DateTimeFormat {
   constructor(locales, options) {
     this.#locales = initIntlObject(this, locales);
     this.#options = dateOptions(options);
-    if (hasTimeFields(this.#options) && this.#options.hourCycle === undefined && this.#options.hour12 === undefined) {
-      this.#options.hourCycle = localeDefaultHourCycle(this.#locales.locale);
-    }
     this.#format = value => intlDateTime(epochMilliseconds(value), this.#locales.json, optionsJson(this.#options));
   }
   get format() { return this.#format; }
@@ -191,13 +180,12 @@ class DateTimeFormat {
     if (this.format(start) === this.format(end)) return first.map(part => ({ ...part, source: "shared" }));
     return [...first.map(part => ({ ...part, source: "startRange" })), { type: "literal", value: " – ", source: "shared" }, ...second.map(part => ({ ...part, source: "endRange" }))];
   }
-  resolvedOptions() { return dateResolvedOptions(this.#locales.locale, this.#options); }
+  resolvedOptions() { return dateResolvedOptions(this.#locales, this.#options); }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
 
-function numberResolvedOptions(locale, options) {
+function numberResolvedOptions(locale, options, [minimumFractionDigits, maximumFractionDigits]) {
   const style = options.style;
-  const currencyDigits = style === "currency" && options.currency !== "JPY" ? 2 : 0;
   const result = {
     locale,
     numberingSystem: localeInfo(locale).numberingSystem,
@@ -210,8 +198,8 @@ function numberResolvedOptions(locale, options) {
   }
   if (style === "unit") result.unit = options.unit;
   result.minimumIntegerDigits = options.minimumIntegerDigits ?? 1;
-  result.minimumFractionDigits = options.minimumFractionDigits ?? currencyDigits;
-  result.maximumFractionDigits = options.maximumFractionDigits ?? Math.max(style === "currency" ? currencyDigits : style === "percent" ? 0 : 3, result.minimumFractionDigits);
+  result.minimumFractionDigits = minimumFractionDigits;
+  result.maximumFractionDigits = maximumFractionDigits;
   result.useGrouping = options.useGrouping ?? "auto";
   result.notation = options.notation ?? "standard";
   result.signDisplay = options.signDisplay ?? "auto";
@@ -227,10 +215,12 @@ function numberResolvedOptions(locale, options) {
 class NumberFormat {
   #locales;
   #options;
+  #fractionDigits;
   #format;
   constructor(locales, options) {
     this.#locales = initIntlObject(this, locales);
     this.#options = numberOptions(options);
+    this.#fractionDigits = intlFractionDigits(optionsJson(this.#options));
     this.#format = value => intlNumber(Number(value), this.#locales.json, optionsJson(this.#options));
   }
   get format() { return this.#format; }
@@ -241,7 +231,7 @@ class NumberFormat {
     const second = this.format(end);
     return first === second ? this.formatToParts(start).map(part => ({ ...part, source: "shared" })) : [{ type: "literal", value: first, source: "startRange" }, { type: "literal", value: " – ", source: "shared" }, { type: "literal", value: second, source: "endRange" }];
   }
-  resolvedOptions() { return numberResolvedOptions(this.#locales.locale, this.#options); }
+  resolvedOptions() { return numberResolvedOptions(this.#locales.locale, this.#options, this.#fractionDigits); }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
 
@@ -302,13 +292,14 @@ class Locale {
   get calendar() { return this.#info.calendar; }
   get caseFirst() { return this.#tag.match(/-kf-([a-z]+)/)?.[1] ?? undefined; }
   get collation() { return this.#tag.match(/-co-([a-z-]+)/)?.[1] ?? undefined; }
-  get hourCycle() { return this.#info.hourCycle ?? localeDefaultHourCycle(this.#tag); }
+  get hourCycle() { return this.#info.hourCycle ?? undefined; }
   get numeric() { return /-kn(?:-|$)/.test(this.#tag); }
   toString() { return this.#info.string; }
   maximize() { return new Locale(this.#info.maximize); }
   minimize() { return new Locale(this.#info.minimize); }
-  getTextInfo() { return { direction: ["ar", "fa", "he", "ur", "ps", "sd", "ug", "yi"].includes(this.language) ? "rtl" : "ltr" }; }
-  getWeekInfo() { return { firstDay: ["US", "CA", "JP", "PH"].includes(this.region) ? 7 : 1, weekend: [6, 7] }; }
+  getHourCycles() { return [intlHourCycle(JSON.stringify([this.#tag]))]; }
+  getTextInfo() { return { direction: this.#info.direction }; }
+  getWeekInfo() { return { firstDay: this.#info.firstDay, weekend: this.#info.weekend }; }
   languageOf() { return this.language; }
   regionOf() { return this.region; }
   scriptOf() { return this.script; }
