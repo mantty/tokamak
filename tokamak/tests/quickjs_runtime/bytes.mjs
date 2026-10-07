@@ -33,7 +33,8 @@ export async function byteOutcomes(use, messages = true) {
   return outcomes;
 }
 
-async function identity(value) {
+// The bytes `value` becomes, written directly to an IdentityTransformStream.
+async function written(value) {
   const stream = new IdentityTransformStream();
   const read = bytesOf(new Response(stream.readable).arrayBuffer());
   read.catch(() => {});
@@ -51,7 +52,7 @@ export async function bytesContracts() {
     decode: await byteOutcomes(value => new TextDecoder().decode(value)),
     decoderStream: await byteOutcomes(async value => (await Array.fromAsync(streamOf(value).pipeThrough(new TextDecoderStream()))).join("")),
     compression: await byteOutcomes(value => bytesOf(new Response(streamOf(value).pipeThrough(new CompressionStream("gzip")).pipeThrough(new DecompressionStream("gzip"))).arrayBuffer())),
-    identity: await byteOutcomes(identity),
+    identity: await byteOutcomes(written),
     html: await byteOutcomes(value => new HTMLRewriter().transform(new Response(streamOf(value))).text()),
     digest: await byteOutcomes(async value => (await crypto.subtle.digest("SHA-1", value)).byteLength, false),
     stringDecoder: await byteOutcomes(value => new StringDecoder().write(value), false),

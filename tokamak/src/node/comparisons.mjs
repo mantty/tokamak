@@ -1,4 +1,5 @@
 import { objectClass } from "tokamak:host";
+import { bufferBytes } from "../globals/conversions.mjs";
 
 // Deep equality as node:assert and node:util define it. Partial equality asks
 // only that `actual` hold `expected`'s keys, entries and leading elements.
@@ -54,8 +55,7 @@ function sameIntrinsics(actual, expected, kind, partial) {
 }
 
 function bytesOf(value, kind) {
-  if (kind === "ArrayBuffer" || kind === "SharedArrayBuffer") return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (kind === "ArrayBuffer" || kind === "SharedArrayBuffer" || ArrayBuffer.isView(value)) return bufferBytes(value);
 }
 
 function sameBytes(actual, expected, partial) {

@@ -1,5 +1,5 @@
 import { cryptoHkdf, cryptoPbkdf2, cryptoCheckPrime, cryptoCreateCipher, cryptoCreateDigest, cryptoDecrypt, cryptoDhCompute, cryptoDhGenerate, cryptoDhParams, cryptoEcdhCompute, cryptoEcdhConvert, cryptoEcdhPublic, cryptoEncrypt, cryptoExportKey, cryptoGenerateKey, cryptoGeneratePrime, cryptoImportKey, cryptoRsaLegacyPrivateEncrypt, cryptoRsaLegacyPublicDecrypt, cryptoScrypt, cryptoSign, cryptoTimingSafeEqual, cryptoVerify, digest, randomBytes as hostRandomBytes } from "tokamak:host";
-import { bufferBytes, joinBytes } from "../globals/conversions.mjs";
+import { bufferBytes, bufferSourceBytes, joinBytes } from "../globals/conversions.mjs";
 import { CryptoKey, crypto as webcrypto } from "../globals/crypto.mjs";
 import { DOMException } from "../globals/dom-exception.mjs";
 import { TextDecoder } from "../streams/text.mjs";
@@ -178,12 +178,9 @@ export function randomInt(min, max, callback) {
 }
 
 export function timingSafeEqual(left, right) {
-  for (const value of [left, right]) {
-    if (!(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value)) throw new TypeError("Input must be an ArrayBuffer or ArrayBufferView");
-  }
-  if (left.byteLength !== right.byteLength) throw new TypeError("Input buffers must have the same byte length");
-  const a = new Uint8Array(left.buffer ?? left, left.byteOffset ?? 0, left.byteLength);
-  const b = new Uint8Array(right.buffer ?? right, right.byteOffset ?? 0, right.byteLength);
+  const [a, b] = [left, right].map(bufferSourceBytes);
+  if (!a || !b) throw new TypeError("Input must be an ArrayBuffer or ArrayBufferView");
+  if (a.byteLength !== b.byteLength) throw new TypeError("Input buffers must have the same byte length");
   return cryptoTimingSafeEqual(a, b);
 }
 
