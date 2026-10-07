@@ -416,10 +416,11 @@ async function r2Contracts(r2) {
   const r = await r2.head("r");
   const before = new Date(r.uploaded.getTime() - 5000);
   const after = new Date(r.uploaded.getTime() + 5000);
+  const endOfUploadSecond = new Date(Math.floor(r.uploaded.getTime() / 1000) * 1000 + 999);
   const conditions = {
     match: { etagMatches: r.etag }, noMatch: { etagMatches: "x" }, wildcard: { etagMatches: "*" }, notMatch: { etagDoesNotMatch: r.etag }, notMatchOther: { etagDoesNotMatch: "x" },
     after: { uploadedAfter: before }, afterLater: { uploadedAfter: after }, before: { uploadedBefore: after }, beforeEarlier: { uploadedBefore: before },
-    same: { uploadedBefore: r.uploaded }, sameSecond: { uploadedBefore: new Date(r.uploaded.getTime() + 1), secondsGranularity: true },
+    same: { uploadedBefore: r.uploaded }, sameSecond: { uploadedBefore: endOfUploadSecond, secondsGranularity: true },
     afterOverridden: { uploadedAfter: after, etagDoesNotMatch: "x" }, beforeOverridden: { uploadedBefore: before, etagMatches: r.etag },
     quoted: { etagMatches: `"${r.etag}"` }, dateText: { uploadedAfter: "2020-01-01" }, etagNumber: { etagMatches: 5 },
   };
