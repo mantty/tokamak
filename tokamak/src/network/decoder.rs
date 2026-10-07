@@ -108,13 +108,13 @@ mod tests {
             Ok::<_, io::Error>(())
         });
         let mut output = Vec::new();
-        let decoded = DecodedBody::new(Box::pin(reader), decoder)
+        let outcome = DecodedBody::new(Box::pin(reader), decoder)
             .read_to_end(&mut output)
             .await;
         // A body that fails to decode is no longer read, which fails its producer.
-        let produced = producer.await?;
-        decoded?;
-        produced.map(|()| output)
+        let delivery = producer.await?;
+        outcome?;
+        delivery.map(|()| output)
     }
 
     fn kind<T>(result: io::Result<T>) -> Option<io::ErrorKind> {
