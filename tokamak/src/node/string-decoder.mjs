@@ -1,5 +1,5 @@
 import { bufferBytes } from "../globals/conversions.mjs";
-import { TextDecoder, TextEncoder } from "../streams/text.mjs";
+import { TextEncoder } from "../streams/text.mjs";
 import { Buffer } from "./buffer.mjs";
 
 const states = new WeakMap();
@@ -52,19 +52,8 @@ function rememberUtf8(state, input, pending) {
   remember(state, total > 1 && total === input.length - start ? input.slice(start) : input.slice(-1));
 }
 
-function utf16Chars(input) {
-  let text = "";
-  for (let index = 0; index + 1 < input.length; index += 2) text += String.fromCharCode(input[index] | (input[index + 1] << 8));
-  return text;
-}
-
 function decodeBytes(state, input) {
-  if (state.encoding === "latin1") return String.fromCharCode(...input);
-  if (state.encoding === "ascii") return String.fromCharCode(...input.map(value => value & 0x7f));
-  if (state.encoding === "utf16le") return utf16Chars(input);
-  if (state.encoding === "hex") return [...input].map(value => value.toString(16).padStart(2, "0")).join("");
-  if (state.encoding === "base64" || state.encoding === "base64url") return Buffer.from(input).toString(state.encoding);
-  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(input);
+  return Buffer.from(input.buffer, input.byteOffset, input.byteLength).toString(state.encoding);
 }
 
 export class StringDecoder {

@@ -73,8 +73,15 @@ function decode(bytes, encoding) {
   }
   if (name === "ascii") return String.fromCharCode(...bytes.map(value => value & 0x7f));
   if (name === "latin1" || name === "binary") return String.fromCharCode(...bytes);
-  if (name === "ucs2" || name === "ucs-2" || name === "utf16le" || name === "utf-16le") return new TextDecoder("utf-16le").decode(bytes);
-  return new TextDecoder().decode(bytes);
+  if (name === "ucs2" || name === "ucs-2" || name === "utf16le" || name === "utf-16le") return utf16Units(bytes);
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+}
+
+// UTF-16LE code units, unpaired surrogates kept and an odd last byte left out.
+function utf16Units(bytes) {
+  let text = "";
+  for (let index = 0; index + 1 < bytes.length; index += 2) text += String.fromCharCode(bytes[index] | (bytes[index + 1] << 8));
+  return text;
 }
 
 function integer(value, fallback = 0) {
