@@ -5,14 +5,22 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use flume::Sender;
-use reqwest::header::{HeaderMap, HeaderValue};
-use reqwest::{Client, Method, StatusCode, Upgraded, Url};
+use futures_util::TryStreamExt;
+use http_body_util::{BodyDataStream, BodyExt};
+use hyper::body::{Body as _, Incoming};
+use hyper::header::{HeaderMap, HeaderValue};
+use hyper::upgrade::Upgraded;
+use hyper::{Response, StatusCode};
+use hyper_util::client::legacy;
+use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 use crate::gateway::{
     Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob, WebSocketOutbound,
 };
+use crate::network::http::{Client, full, reason_phrase};
 use crate::transport::{
     BodyChunk, HttpBody, HttpRequest, HttpResponse, WebSocketFrame, encode_websocket_frame,
     invalid_data, parse_websocket_frame, queue_websocket_message, response_stream,
@@ -59,7 +67,7 @@ pub(crate) struct DevProxy {
 
 /// A host response body of unknown length, forwarded as it arrives.
 struct HostBody {
-    upstream: reqwest::Response,
+    upstream: BodyDataStream<Incoming>,
     sender: Sender<BodyChunk>,
     cancelled: CancellationToken,
 }
@@ -117,15 +125,16 @@ impl DevProxy {
             headers.remove(name);
         }
         let mut head = HttpResponse::buffered(upstream.status().as_u16(), headers, Vec::new());
-        head.status_text = crate::network::http::reason_phrase(&upstream).into_owned();
-        if upstream.content_length().is_some() {
-            head.body = HttpBody::Buffered(upstream.bytes().await?.to_vec());
+        head.status_text = reason_phrase(&upstream).into_owned();
+        if upstream.body().size_hint().exact().is_some() {
+            let body = upstream.into_body().collect().await?;
+            head.body = HttpBody::Buffered(body.to_bytes().into());
             return Ok((head, None));
         }
         let (sender, cancelled, body) = response_stream();
         head.body = body;
         let body = HostBody {
-            upstream,
+            upstream: upstream.into_body().into_data_stream(),
             sender,
             cancelled,
         };
@@ -136,16 +145,13 @@ impl DevProxy {
         &self,
         request: &HttpRequest,
         websocket: bool,
-    ) -> Result<reqwest::Response, HandlerError> {
-        let method = Method::from_bytes(request.method.as_bytes())?;
-        let mut builder = self
-            .client
-            .request(method, self.url(&request.target))
-            .headers(self.forwarded_headers(request, websocket)?);
-        if let Some(body) = &request.body {
-            builder = builder.body(body.clone());
-        }
-        Ok(builder.send().await?)
+    ) -> Result<Response<Incoming>, HandlerError> {
+        let mut upstream = hyper::Request::builder()
+            .method(request.method.as_bytes())
+            .uri(self.url(&request.target).as_str())
+            .body(full(request.body.clone().unwrap_or_default()))?;
+        *upstream.headers_mut() = self.forwarded_headers(request, websocket)?;
+        Ok(self.client.request(upstream).await?)
     }
 
     /// The host server's URL for the request target `target`.
@@ -237,7 +243,7 @@ impl DevProxy {
             let message = "host WebSocket upgrade returned an invalid accept key";
             return Err(invalid_data(message).into());
         }
-        Ok(upgrade.upgrade().await?)
+        Ok(hyper::upgrade::on(upgrade).await?)
     }
 }
 
@@ -246,7 +252,7 @@ impl HostBody {
     async fn forward(mut self) {
         loop {
             let chunk = tokio::select! {
-                chunk = self.upstream.chunk() => chunk,
+                chunk = self.upstream.try_next() => chunk,
                 () = self.cancelled.cancelled() => return,
             };
             let chunk = match chunk {
@@ -307,10 +313,11 @@ fn endpoint(value: &str) -> io::Result<Url> {
 /// does while restarting.
 fn can_retry(method: &str, error: &HandlerError) -> bool {
     let idempotent = method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD");
-    idempotent
-        && error.downcast_ref::<reqwest::Error>().is_some_and(|error| {
-            !error.is_connect() && (error.is_request() || error.is_body() || error.is_decode())
-        })
+    let dropped = error.is::<hyper::Error>()
+        || error
+            .downcast_ref::<legacy::Error>()
+            .is_some_and(|error| !error.is_connect());
+    idempotent && dropped
 }
 
 /// Relays frames between the `WebView`'s WebSocket and the host server's
@@ -320,7 +327,7 @@ async fn relay_websocket(
     websocket: &WebSocketJob,
     stopped: &CancellationToken,
 ) -> io::Result<()> {
-    let (mut reader, mut writer) = tokio::io::split(upstream);
+    let (mut reader, mut writer) = tokio::io::split(TokioIo::new(upstream));
     let mut buffer = Vec::new();
     let mut fragmented = None;
     let mut bytes = [0; 8192];
@@ -425,7 +432,7 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
-    use super::{DevProxy, DevProxyConfig, HandlerError, can_retry, endpoint};
+    use super::{DevProxy, DevProxyConfig, HandlerError, can_retry, endpoint, full};
 
     #[test]
     fn parses_host_endpoints() -> Result<(), Box<dyn std::error::Error>> {
@@ -465,7 +472,8 @@ mod tests {
         let url = format!("http://{}/", listener.local_addr()?);
         let host = thread::spawn(move || listener.accept().map(drop));
 
-        let result = crate::network::http::client()?.head(url).send().await;
+        let request = hyper::Request::head(url).body(full(Vec::new()))?;
+        let result = crate::network::http::client()?.request(request).await;
         host.join().map_err(|_| "host panicked")??;
 
         let error: HandlerError = result.err().ok_or("the request succeeded")?.into();

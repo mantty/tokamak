@@ -19,7 +19,10 @@ native = [
     "dep:ed25519-dalek",
     "dep:ghash",
     "dep:hkdf",
+    "dep:http-body-util",
     "dep:hyper",
+    "dep:hyper-rustls",
+    "dep:hyper-util",
     "dep:md-5",
     "dep:p256",
     "dep:p384",
@@ -58,10 +61,10 @@ native = [
     "dep:mime",
     "dep:mio",
     "dep:md4",
-    "dep:reqwest",
     "dep:rusqlite",
     "dep:tokio",
     "dep:tokio-util",
+    "dep:tower",
     "dep:url",
     "dep:urlpattern",
     "dep:x509-cert",
@@ -81,7 +84,10 @@ der = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 ghash = { workspace = true, optional = true }
 hkdf = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true }
+hyper-rustls = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
 md-5 = { workspace = true, optional = true }
 p256 = { workspace = true, optional = true }
 p384 = { workspace = true, optional = true }
@@ -120,13 +126,13 @@ mio = { workspace = true, optional = true }
 mime = { workspace = true, optional = true }
 md4 = { workspace = true, optional = true }
 rquickjs.workspace = true
-reqwest = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 urlpattern = { workspace = true, optional = true }
 writeable = { workspace = true, optional = true }

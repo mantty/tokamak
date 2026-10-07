@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use reqwest::{
+use hyper::{
     StatusCode,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
@@ -1018,7 +1018,7 @@ mod tests {
         HttpBody, HttpResponse, ResponseOutcome, read_request, response_stream,
         write_response_inner,
     };
-    use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+    use hyper::header::{HeaderMap, HeaderName, HeaderValue};
     use std::io::{self, Cursor, Read};
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;

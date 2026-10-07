@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use reqwest::header::{HeaderMap, HeaderValue};
+use hyper::header::{HeaderMap, HeaderValue};
 use tokio::runtime::{Builder as TokioBuilder, Runtime as TokioRuntime};
 use tokio_util::sync::CancellationToken;
 

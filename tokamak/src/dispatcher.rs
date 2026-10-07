@@ -20,7 +20,7 @@ use crate::linked::StorageRuntime;
 use crate::packaging::{self, ModuleType};
 use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{BodyChunk, HttpRequest, HttpResponse, append_header, response_stream};
-use reqwest::header::HeaderMap;
+use hyper::header::HeaderMap;
 use rquickjs::convert::List;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::module::{Declarations, Exports, ModuleDef};
