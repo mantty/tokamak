@@ -1,6 +1,7 @@
 import { htmlRewrite, htmlValidateSelector } from "tokamak:host";
 import { ReadableStream, nativeReadableStream, nativeStreamError } from "../streams/web.mjs";
 import { captureAsyncContext, runInAsyncContext } from "../builtins/async-context.mjs";
+import { string } from "../globals/conversions.mjs";
 import { Response } from "./fetch.mjs";
 
 const elementStates = new WeakMap();
@@ -20,10 +21,7 @@ function contentOperation(states, token, name, value, options) {
     if (!state.resources) throw new TypeError("This HTML token requires string content");
     const stream = value instanceof Response ? value.body : value;
     value = stream === null ? "" : { source: state.resources.addSource(stream) };
-  } else {
-    if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
-    value = String(value);
-  }
+  } else value = string(value);
   applyMutation(state, { name, value, contentType });
   return token;
 }

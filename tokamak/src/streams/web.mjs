@@ -1,6 +1,7 @@
 import { markHostObject } from "../globals/objects.mjs";
 import { createCompression } from "tokamak:host";
 import { structuredClone } from "../globals/structured-clone.mjs";
+import { string } from "../globals/conversions.mjs";
 import { TextDecoder, TextEncoder } from "./text.mjs";
 import {
   ReadableStream, ReadableStreamBYOBReader, ReadableStreamBYOBRequest,
@@ -98,8 +99,7 @@ export class TextEncoderStream extends TransformStream {
     let pending = "";
     super({
       transform(chunk, controller) {
-        if (typeof chunk === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
-        let text = pending + String(chunk);
+        let text = pending + string(chunk);
         pending = "";
         const last = text.charCodeAt(text.length - 1);
         if (last >= 0xd800 && last <= 0xdbff) {

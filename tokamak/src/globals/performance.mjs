@@ -1,15 +1,11 @@
 import { markHostObject } from "./objects.mjs";
 import { EventTarget } from "../events/web.mjs";
+import { string } from "./conversions.mjs";
 
 const internal = Symbol("performance construction");
 const entryState = new WeakMap();
 const now = Date.now;
 const json = value => Object.assign(Object.create(null), value);
-
-function text(value) {
-  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
-  return String(value);
-}
 
 function detailOption(options) {
   const detail = options?.detail;
@@ -38,7 +34,7 @@ export class PerformanceEntry {
 export class PerformanceMark extends PerformanceEntry {
   constructor(name, options = {}) {
     if (arguments.length === 0) throw new TypeError("A mark name is required");
-    const markName = text(name);
+    const markName = string(name);
     const startTime = options?.startTime;
     super(internal, { name: markName, entryType: "mark", startTime: startTime === undefined ? now() : Number(startTime), duration: 0, detail: detailOption(options) });
   }
@@ -138,19 +134,19 @@ export class Performance extends EventTarget {
         const state = entryState.get(entry);
         return state.name === name && state.entryType === "mark";
       }))?.startTime;
-      startTime = markTime(text(startOrOptions)) ?? 0;
-      if (endMark !== undefined) endTime = markTime(text(endMark)) ?? endTime;
+      startTime = markTime(string(startOrOptions)) ?? 0;
+      if (endMark !== undefined) endTime = markTime(string(endMark)) ?? endTime;
     }
-    const measure = new PerformanceMeasure(internal, { name: text(name), entryType: "measure", startTime, duration: endTime >= startTime ? endTime - startTime : 0, detail });
+    const measure = new PerformanceMeasure(internal, { name: string(name), entryType: "measure", startTime, duration: endTime >= startTime ? endTime - startTime : 0, detail });
     this.#entries.push(measure);
     return measure;
   }
-  clearMarks(name) { if (name !== undefined) name = text(name); this.#entries = this.#entries.filter(entry => name === undefined ? entryState.get(entry).entryType !== "mark" : entryState.get(entry).name !== name); }
-  clearMeasures(name) { if (name !== undefined) name = text(name); this.#entries = this.#entries.filter(entry => name === undefined ? entryState.get(entry).entryType !== "measure" : entryState.get(entry).name !== name); }
+  clearMarks(name) { if (name !== undefined) name = string(name); this.#entries = this.#entries.filter(entry => name === undefined ? entryState.get(entry).entryType !== "mark" : entryState.get(entry).name !== name); }
+  clearMeasures(name) { if (name !== undefined) name = string(name); this.#entries = this.#entries.filter(entry => name === undefined ? entryState.get(entry).entryType !== "measure" : entryState.get(entry).name !== name); }
   clearResourceTimings() { this.#entries = this.#entries.filter(entry => !["resource", "navigation"].includes(entryState.get(entry).entryType)); }
   getEntries() { return [...this.#entries]; }
-  getEntriesByName(name, type) { name = text(name); if (type !== undefined) type = text(type); return this.#entries.filter(entry => { const state = entryState.get(entry); return state.name === name && (type === undefined || state.entryType === type); }); }
-  getEntriesByType(type) { type = text(type); return this.#entries.filter(entry => entryState.get(entry).entryType === type); }
+  getEntriesByName(name, type) { name = string(name); if (type !== undefined) type = string(type); return this.#entries.filter(entry => { const state = entryState.get(entry); return state.name === name && (type === undefined || state.entryType === type); }); }
+  getEntriesByType(type) { type = string(type); return this.#entries.filter(entry => entryState.get(entry).entryType === type); }
   get eventCounts() { return new EventCounts(); }
   eventLoopUtilization() { return { idle: 0, active: 0, utilization: 0 }; }
   get nodeTiming() { return new PerformanceNodeTiming(); }

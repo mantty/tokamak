@@ -1,10 +1,6 @@
 import { markHostObject } from "../globals/objects.mjs";
 import { createDecoder } from "tokamak:host";
-
-function string(value) {
-  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
-  return String(value);
-}
+import { string } from "../globals/conversions.mjs";
 
 function utf8(code) {
   if (code >= 0xd800 && code <= 0xdfff) code = 0xfffd;

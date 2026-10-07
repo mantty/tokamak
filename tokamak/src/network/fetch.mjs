@@ -8,28 +8,7 @@ import { ErrorEvent, Event, EventTarget, MessageEvent } from "../events/web.mjs"
 import { AbortController, AbortSignal } from "../events/abort.mjs";
 import { URL, URLSearchParams } from "./url.mjs";
 import { nativeWebSocket } from "./websocket.mjs";
-
-function string(value) {
-  if (typeof value === "symbol") throw new TypeError("Cannot convert a Symbol to a string");
-  return String(value);
-}
-
-function usvString(value) {
-  const input = string(value);
-  let output = "";
-  for (let index = 0; index < input.length; index += 1) {
-    const code = input.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = input.charCodeAt(index + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        output += input[index] + input[index + 1];
-        index += 1;
-      } else output += "\ufffd";
-    } else if (code >= 0xdc00 && code <= 0xdfff) output += "\ufffd";
-    else output += input[index];
-  }
-  return output;
-}
+import { string, usvString } from "../globals/conversions.mjs";
 
 // A copy of an ArrayBuffer's or view's bytes; undefined for any other value.
 function bufferSourceBytes(value) {
@@ -54,7 +33,7 @@ function bytes(value) {
   if (value instanceof Blob) return blobBytes(value).slice();
   if (value instanceof URLSearchParams) return new TextEncoder().encode(value.toString());
   if (value instanceof FormData) return formDataBody(value).bytes;
-  return new TextEncoder().encode(usvString(value));
+  return new TextEncoder().encode(string(value));
 }
 
 function bodyStream(value) {
@@ -587,8 +566,7 @@ function relativeIndex(value, length) {
 
 function blobPartBytes(value) {
   if (value instanceof Blob) return blobBytes(value).slice();
-  if (typeof value === "string") return new TextEncoder().encode(value);
-  return bufferSourceBytes(value) ?? new TextEncoder().encode(usvString(value));
+  return bufferSourceBytes(value) ?? new TextEncoder().encode(string(value));
 }
 
 function mimeType(value) {

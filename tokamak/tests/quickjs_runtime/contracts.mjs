@@ -409,6 +409,27 @@ export async function run(handlerEnv, ctx, constructors) {
     get ignoreBOM() { conversions.push("ignoreBOM"); return false; },
   });
   output.conversions = conversions;
+  const symbol = Symbol("name");
+  const symbolConversions = {
+    url: () => new URL(symbol),
+    searchParams: () => new URLSearchParams().append("name", symbol),
+    encode: () => new TextEncoder().encode(symbol),
+    decoderLabel: () => new TextDecoder(symbol),
+    event: () => new Event(symbol),
+    listener: () => new EventTarget().addEventListener(symbol, () => {}),
+    mark: () => performance.mark(symbol),
+    entries: () => performance.getEntriesByName(symbol),
+    header: () => new Headers().append("name", symbol),
+    formData: () => new FormData().append(symbol, "value"),
+    blob: () => new Blob([symbol]),
+    response: () => new Response(symbol),
+    escape: () => process.getBuiltinModule("node:querystring").escape(symbol),
+  };
+  output.symbolConversions = Object.fromEntries(Object.entries(symbolConversions).map(([name, convert]) => [name, detailedResult(convert)]));
+  output.symbolChunks = await Promise.all([
+    () => { const stream = new TextEncoderStream(); stream.readable.getReader().read().catch(() => {}); return stream.writable.getWriter().write(symbol); },
+    () => new HTMLRewriter().on("p", { element(element) { element.append(symbol); } }).transform(new Response("<p></p>")).text(),
+  ].map(detailedAsyncResult));
   output.view = new TextDecoder().decode(new DataView(new Uint8Array([0, 65, 66, 0]).buffer, 1, 2));
   output.encode = ["", "hello", "€", "😀", "\ud800", "\udc00", "\ud800A"].map(value => [...new TextEncoder().encode(value)]);
   output.encodeInto = [];
