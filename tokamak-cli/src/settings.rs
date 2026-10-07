@@ -422,6 +422,11 @@ mod tests {
         values.iter().map(OsString::from).collect()
     }
 
+    /// `relative` in `directory`, as a pack receives a path setting.
+    fn joined(directory: &str, relative: &str) -> OsString {
+        Path::new(directory).join(relative).into_os_string()
+    }
+
     fn platform_options(values: &[&str]) -> Result<PlatformOptions> {
         Ok(split_platform_options(arguments(values))?.1)
     }
@@ -661,24 +666,24 @@ mod tests {
         fixture.config = configured(json!({ "icon": "../AppIcon.icon" }))?;
         assert_eq!(
             icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
-            Some(OsString::from("/config/src/../AppIcon.icon"))
+            Some(joined("/config/src", "../AppIcon.icon"))
         );
         fixture
             .environment
             .insert("TOKAMAK_ICON".to_owned(), "icons/App.icon".to_owned());
         assert_eq!(
             icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
-            Some(OsString::from("/work/icons/App.icon"))
+            Some(joined("/work", "icons/App.icon"))
         );
         fixture.top.icon = Some("top/App.icon".to_owned());
         fixture.platform = platform_options(&["--macos-icon", "macos/App.icon"])?;
         assert_eq!(
             icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
-            Some(OsString::from("/work/macos/App.icon"))
+            Some(joined("/work", "macos/App.icon"))
         );
         assert_eq!(
             icon(fixture.resolve(Platform::IosSimulator)?, "TOKAMAK_IOS_ICON"),
-            Some(OsString::from("/work/top/App.icon"))
+            Some(joined("/work", "top/App.icon"))
         );
         Ok(())
     }
@@ -713,7 +718,7 @@ mod tests {
             BTreeMap::from([
                 (
                     "TOKAMAK_IOS_PLIST".to_owned(),
-                    OsString::from("/config/src/native/Info.plist")
+                    joined("/config/src", "native/Info.plist")
                 ),
                 ("TOKAMAK_IOS_TEAM_ID".to_owned(), OsString::from("CONFIG")),
             ])
@@ -728,7 +733,7 @@ mod tests {
             BTreeMap::from([
                 (
                     "TOKAMAK_IOS_PLIST".to_owned(),
-                    OsString::from("/work/env/Info.plist")
+                    joined("/work", "env/Info.plist")
                 ),
                 ("TOKAMAK_IOS_TEAM_ID".to_owned(), OsString::from("OPTION")),
             ])

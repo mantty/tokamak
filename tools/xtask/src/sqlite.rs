@@ -1,15 +1,15 @@
 //! Regenerate the SQLite source in the vendored `libsqlite3-sys`.
 
-use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
+use tokamak_cli::copy_file;
 
 use crate::layout::WorkspaceLayout;
-use crate::support::{copy_file, reset_dir};
+use crate::support::{reset_dir, run};
 
 /// The SQLite release workerd builds.
 const VERSION: &str = "3530400";
@@ -72,11 +72,7 @@ fn options(path: &Path) -> Result<String> {
 }
 
 fn verify(archive: &Path, url: &str) -> Result<()> {
-    let digest = Sha256::digest(fs::read(archive)?);
-    let hex = digest.iter().fold(String::new(), |mut hex, byte| {
-        let _ = write!(hex, "{byte:02x}");
-        hex
-    });
+    let hex = hex::encode(Sha256::digest(fs::read(archive)?));
     if hex == SOURCE_SHA256 {
         Ok(())
     } else {
@@ -94,20 +90,6 @@ fn patches(directory: &Path) -> Result<Vec<std::path::PathBuf>> {
     });
     patches.sort();
     Ok(patches)
-}
-
-fn run(command: &mut Command) -> Result<()> {
-    let status = command
-        .status()
-        .with_context(|| format!("failed to run {}", command.get_program().to_string_lossy()))?;
-    if status.success() {
-        Ok(())
-    } else {
-        bail!(
-            "{} failed with status {status}",
-            command.get_program().to_string_lossy()
-        )
-    }
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -384,6 +385,25 @@ pub fn write_manifest(
     let content = serde_json::to_string_pretty(manifest)?;
     fs::write(path.as_ref(), content)?;
     Ok(())
+}
+
+/// A command that runs the platform-pack script `script`: PowerShell runs a
+/// `.ps1` script on Windows, and Bash runs any other.
+#[must_use]
+pub fn script_command(script: &Path) -> Command {
+    let powershell = cfg!(windows)
+        && script
+            .extension()
+            .is_some_and(|extension| extension == "ps1");
+    let mut command = if powershell {
+        let mut command = Command::new("powershell");
+        command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
+        command
+    } else {
+        Command::new("bash")
+    };
+    command.arg(script);
+    command
 }
 
 /// Platform-pack parsing and validation failures.

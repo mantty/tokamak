@@ -108,8 +108,30 @@ pub(crate) struct WranglerBinding {
     /// Binding name exposed to the Worker.
     pub(crate) name: String,
     /// Wrangler configuration key that declares the binding.
-    pub(crate) kind: String,
+    pub(crate) kind: &'static str,
+    /// The Cloudflare feature the binding provides.
+    pub(crate) feature: &'static str,
 }
+
+/// The Wrangler configuration keys of the bindings, other than storage, that
+/// the packaged app does not provide, each with its Cloudflare feature.
+const BINDING_KINDS: [(&str, &str); 15] = [
+    ("ai", "Workers AI"),
+    ("analytics_engine_datasets", "Analytics Engine"),
+    ("browser", "Browser Rendering"),
+    ("dispatch_namespaces", "dispatch namespaces"),
+    ("durable_objects", "Durable Objects"),
+    ("hyperdrive", "Hyperdrive"),
+    ("images", "Images"),
+    ("mtls_certificates", "mTLS bindings"),
+    ("pipelines", "Pipelines"),
+    ("queues", "Queues"),
+    ("rate_limiting", "rate limiting"),
+    ("secrets_store_secrets", "Secrets Store"),
+    ("send_email", "Email Routing"),
+    ("services", "service bindings"),
+    ("vectorize", "Vectorize"),
+];
 
 /// A Wrangler rule selecting additional Worker modules.
 #[derive(Debug, Deserialize)]
@@ -464,53 +486,43 @@ fn normalize_relative_path(path: &str) -> String {
     }
 }
 
+/// The bindings of `BINDING_KINDS` in `values`, by kind, then name.
 fn collect_bindings(values: &BTreeMap<String, Value>) -> Vec<WranglerBinding> {
-    const BINDING_KINDS: &[&str] = &[
-        "ai",
-        "analytics_engine_datasets",
-        "browser",
-        "dispatch_namespaces",
-        "durable_objects",
-        "hyperdrive",
-        "images",
-        "mtls_certificates",
-        "pipelines",
-        "queues",
-        "rate_limiting",
-        "secrets_store_secrets",
-        "send_email",
-        "services",
-        "vectorize",
-    ];
     let mut bindings = Vec::new();
-    for &kind in BINDING_KINDS {
+    for (kind, feature) in BINDING_KINDS {
+        let mut names = Vec::new();
         if let Some(value) = values.get(kind) {
-            collect_binding_values(kind, value, &mut bindings);
+            collect_binding_names(kind, value, &mut names);
         }
+        names.sort();
+        bindings.extend(names.into_iter().map(|name| WranglerBinding {
+            name,
+            kind,
+            feature,
+        }));
     }
-    bindings.sort_by(|left, right| left.kind.cmp(&right.kind).then(left.name.cmp(&right.name)));
     bindings
 }
 
-fn collect_binding_values(kind: &str, value: &Value, bindings: &mut Vec<WranglerBinding>) {
+fn collect_binding_names(kind: &str, value: &Value, names: &mut Vec<String>) {
     match value {
         Value::Array(values) => {
             for value in values {
-                collect_binding_values(kind, value, bindings);
+                collect_binding_names(kind, value, names);
             }
         }
         Value::Object(values) => {
             if kind == "durable_objects"
                 && let Some(value) = values.get("bindings")
             {
-                collect_binding_values(kind, value, bindings);
+                collect_binding_names(kind, value, names);
                 return;
             }
             if kind == "queues" {
                 let mut nested = false;
                 for key in ["producers", "consumers"] {
                     if let Some(value) = values.get(key) {
-                        collect_binding_values(kind, value, bindings);
+                        collect_binding_names(kind, value, names);
                         nested = true;
                     }
                 }
@@ -522,17 +534,62 @@ fn collect_binding_values(kind: &str, value: &Value, bindings: &mut Vec<Wrangler
                 .into_iter()
                 .find_map(|key| values.get(key).and_then(Value::as_str))
                 .unwrap_or("<unnamed>");
-            bindings.push(WranglerBinding {
-                name: name.to_owned(),
-                kind: kind.to_owned(),
-            });
+            names.push(name.to_owned());
         }
-        Value::String(name) => bindings.push(WranglerBinding {
-            name: name.clone(),
-            kind: kind.to_owned(),
-        }),
+        Value::String(name) => names.push(name.clone()),
         _ => {}
     }
+}
+
+/// Whether `path`, with forward slashes, matches the glob `pattern`.
+pub(crate) fn glob_matches(pattern: &str, path: &str) -> bool {
+    let pattern = pattern.trim_start_matches("./");
+    let path = path.trim_start_matches("./");
+    let pattern = pattern.split('/').collect::<Vec<_>>();
+    let path = path.split('/').collect::<Vec<_>>();
+    glob_segments(&pattern, &path)
+}
+
+fn glob_segments(pattern: &[&str], path: &[&str]) -> bool {
+    match pattern {
+        [] => path.is_empty(),
+        ["**", rest @ ..] => {
+            glob_segments(rest, path) || (!path.is_empty() && glob_segments(pattern, &path[1..]))
+        }
+        [segment, rest @ ..] => {
+            !path.is_empty() && segment_matches(segment, path[0]) && glob_segments(rest, &path[1..])
+        }
+    }
+}
+
+fn segment_matches(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let value = value.as_bytes();
+    let mut states = vec![(0, 0)];
+    while let Some((pattern_index, value_index)) = states.pop() {
+        if pattern_index == pattern.len() {
+            if value_index == value.len() {
+                return true;
+            }
+            continue;
+        }
+        match pattern[pattern_index] {
+            b'*' => {
+                states.push((pattern_index + 1, value_index));
+                if value_index < value.len() {
+                    states.push((pattern_index, value_index + 1));
+                }
+            }
+            b'?' if value_index < value.len() => {
+                states.push((pattern_index + 1, value_index + 1));
+            }
+            character if value_index < value.len() && character == value[value_index] => {
+                states.push((pattern_index + 1, value_index + 1));
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn parse_config<T: DeserializeOwned>(config_path: &Path) -> Result<T> {
@@ -578,7 +635,7 @@ mod tests {
         assert_eq!(
             bindings
                 .iter()
-                .map(|binding| (binding.kind.as_str(), binding.name.as_str()))
+                .map(|binding| (binding.kind, binding.name.as_str()))
                 .collect::<Vec<_>>(),
             [
                 ("durable_objects", "ROOMS"),

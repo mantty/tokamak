@@ -1,6 +1,5 @@
 //! Content fingerprints for reusable build outputs.
 
-use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -39,9 +38,5 @@ pub(crate) fn hash_paths(paths: &[PathBuf]) -> Result<String> {
             hash.update(&buffer[..read]);
         }
     }
-    let mut encoded = String::with_capacity(64);
-    for byte in hash.finalize() {
-        write!(&mut encoded, "{byte:02x}")?;
-    }
-    Ok(encoded)
+    Ok(hex::encode(hash.finalize()))
 }

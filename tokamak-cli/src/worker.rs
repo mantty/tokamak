@@ -10,10 +10,11 @@ use tokamak::{
     AssetManifest, ModuleType, PackageLayout, WorkerEnvironment, WorkerManifest, write_worker,
     write_worker_environment,
 };
+use tokamak_cli::copy_dir_contents;
 use walkdir::WalkDir;
 
-use super::support::{self, copy_dir_contents, glob_matches, slash_path};
-use super::wrangler_config::{WranglerAssets, WranglerConfig, WranglerModuleType};
+use super::paths::{self, slash_path};
+use super::wrangler_config::{WranglerAssets, WranglerConfig, WranglerModuleType, glob_matches};
 use super::{cache, storage};
 
 /// What a compiled Worker was compiled from, and what it is.
@@ -51,7 +52,7 @@ pub(crate) fn compile(cache_dir: &Path, wrangler: &WranglerConfig) -> Result<Pat
     {
         return Ok(compiled);
     }
-    support::reset_path(&compiled)?;
+    paths::reset_path(&compiled)?;
     write_worker(&PackageLayout::new(&compiled), root, &manifest)?;
     let outputs = cache::hash_tree(&compiled)?;
     fs::write(
