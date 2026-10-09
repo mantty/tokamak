@@ -6,7 +6,7 @@ import android.content.pm.PackageManager
  * Asks for runtime permissions in the app's activity one request at a time, as Android cancels a
  * request made while another shows. Use it on the main thread.
  */
-internal class TokamakPermissions(private val host: TokamakHost) {
+internal class TokamakPermissions(private val app: TokamakApplication) {
     private class Request(val permissions: Set<String>, val callback: (Map<String, Boolean>) -> Unit)
 
     private val queue = ArrayDeque<Request>()
@@ -36,7 +36,7 @@ internal class TokamakPermissions(private val host: TokamakHost) {
 
     private fun askNext() {
         val request = queue.firstOrNull() ?: return
-        val activity = host.activity ?: return cancel()
+        val activity = app.activity ?: return cancel()
         requestCode += 1
         activity.requestPermissions(request.permissions.toTypedArray(), requestCode)
     }
@@ -45,5 +45,5 @@ internal class TokamakPermissions(private val host: TokamakHost) {
         request.callback(request.permissions.associateWith(::isGranted))
 
     private fun isGranted(permission: String): Boolean =
-        host.context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+        app.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 }

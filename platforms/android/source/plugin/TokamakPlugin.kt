@@ -45,7 +45,7 @@ interface TokamakPlugin {
     fun onIntent(intent: Intent) = Unit
 }
 
-/** The app as a plugin sees it: its context, its activity, and its Worker. */
+/** The app as one plugin sees it: its context, its activity, and its Worker. */
 interface TokamakHost {
     /** The application context. */
     val context: Context
@@ -61,17 +61,19 @@ interface TokamakHost {
     fun requestPermissions(permissions: Set<String>, callback: (Map<String, Boolean>) -> Unit)
 
     /**
-     * Posts the JSON [body] to the Worker's `/tokamak/<name>` endpoint and returns the
-     * response body, retrying a failed post. Starts the runtime when it is not running. Blocks,
-     * so call it off the main thread; throws unless the Worker responds 200 within
-     * [timeoutMillis], which includes runtime startup.
+     * Delivers the plugin's event [name], which the Worker's listeners receive as
+     * `<plugin>.<name>`, with the JSON [event], and returns their reply as JSON, `null` when none
+     * replies. Starts the runtime when it is not running. Blocks, so call it off the main thread;
+     * throws unless the listeners return within [timeoutMillis], which includes runtime startup.
      */
-    fun call(name: String, body: String, timeoutMillis: Long): String
+    fun emit(name: String, event: String, timeoutMillis: Long): String
+}
 
+/** The app's plugins. The app's [android.app.Application] is one. */
+interface TokamakPlugins {
     /** The plugin with [id], or null when the app does not include it. */
     fun plugin(id: String): TokamakPlugin?
 }
 
-/** The host of the app this context belongs to. */
-val Context.tokamakHost: TokamakHost
-    get() = applicationContext as TokamakHost
+/** The plugin with [id] in the app this context belongs to, or null when the app does not include it. */
+fun Context.tokamakPlugin(id: String): TokamakPlugin? = (applicationContext as TokamakPlugins).plugin(id)

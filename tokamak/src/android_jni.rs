@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::{Challenge, Decision, Event, Runtime, bridge};
 use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString};
-use jni::sys::{jint, jlong};
+use jni::sys::{jboolean, jint, jlong};
 
 const LOG_TAG: &str = "tokamak";
 const LOG_INFO: c_int = 4;
@@ -20,7 +20,8 @@ unsafe extern "C" {
     fn __android_log_write(priority: c_int, tag: *const c_char, text: *const c_char) -> c_int;
 }
 
-/// Start the runtime and return an opaque handle, or throw on failure.
+/// Start the runtime, which delivers `start` with `foreground`, and return an
+/// opaque handle, or throw on failure.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStart(
     mut env: JNIEnv,
@@ -29,13 +30,21 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStart(
     state_dir: JString,
     storage_dir: JString,
     host: JString,
+    foreground: jboolean,
 ) -> jlong {
-    let result = start(&mut env, &packaged_dir, &state_dir, &storage_dir, &host);
+    let result = start(
+        &mut env,
+        &packaged_dir,
+        &state_dir,
+        &storage_dir,
+        &host,
+        foreground != 0,
+    );
     into_handle(&mut env, result, "runtime startup failed")
 }
 
-/// Start the development runtime and return an opaque handle, or throw on
-/// failure.
+/// Start the development runtime, which delivers `start` with `foreground`,
+/// and return an opaque handle, or throw on failure.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStartDevelopment(
     mut env: JNIEnv,
@@ -44,8 +53,16 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStartDevelo
     host: JString,
     endpoint: JString,
     session_token: JString,
+    foreground: jboolean,
 ) -> jlong {
-    let result = start_development(&mut env, &state_dir, &host, &endpoint, &session_token);
+    let result = start_development(
+        &mut env,
+        &state_dir,
+        &host,
+        &endpoint,
+        &session_token,
+        foreground != 0,
+    );
     into_handle(&mut env, result, "development runtime startup failed")
 }
 
@@ -79,21 +96,21 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeRestoreGate
     }
 }
 
-/// Post JSON `body` to the Worker's `/tokamak/<name>` endpoint, retrying a
-/// failed post and blocking for up to `timeout_millis`. Returns the response
-/// body; throws unless the Worker responds 200.
+/// Deliver the event `name`, whose JSON is `event`, to the Worker's
+/// listeners, blocking for up to `timeout_millis`. Returns the reply's JSON;
+/// throws when the event fails.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeCall<'local>(
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeEmit<'local>(
     mut env: JNIEnv<'local>,
     _: JClass,
     handle: jlong,
     name: JString,
-    body: JString,
+    event: JString,
     timeout_millis: jlong,
 ) -> JString<'local> {
     let timeout = Duration::from_millis(u64::try_from(timeout_millis).unwrap_or(0));
-    let result = call(&mut env, handle, &name, &body, timeout)
-        .and_then(|body| env.new_string(body).map_err(|error| error.to_string()));
+    let result = emit(&mut env, handle, &name, &event, timeout)
+        .and_then(|reply| env.new_string(reply).map_err(|error| error.to_string()));
     result.unwrap_or_else(|message| {
         let _ = env.throw_new(FAILURE, message);
         JString::from(JObject::null())
@@ -164,12 +181,14 @@ fn start(
     state_dir: &JString,
     storage_dir: &JString,
     host: &JString,
+    foreground: bool,
 ) -> Result<Runtime, String> {
     bridge::start(
         &text(env, packaged_dir)?,
         &text(env, state_dir)?,
         &text(env, storage_dir)?,
         &text(env, host)?,
+        foreground,
         report,
     )
 }
@@ -180,30 +199,31 @@ fn start_development(
     host: &JString,
     endpoint: &JString,
     session_token: &JString,
+    foreground: bool,
 ) -> Result<Runtime, String> {
     bridge::start_development(
         &text(env, state_dir)?,
         &text(env, host)?,
         &text(env, endpoint)?,
         &text(env, session_token)?,
+        foreground,
         report,
     )
 }
 
-fn call(
+fn emit(
     env: &mut JNIEnv,
     handle: jlong,
     name: &JString,
-    body: &JString,
+    event: &JString,
     timeout: Duration,
 ) -> Result<String, String> {
     let runtime = runtime(handle).ok_or("tokamak runtime is unavailable")?;
     let name = text(env, name)?;
-    let body = text(env, body)?;
-    let response = runtime
-        .call(&name, &body, timeout)
-        .map_err(|error| error.to_string())?;
-    String::from_utf8(response).map_err(|error| error.to_string())
+    let event = text(env, event)?;
+    runtime
+        .emit(&name, &event, timeout)
+        .map_err(|error| error.to_string())
 }
 
 fn report(event: &Event) {

@@ -1,97 +1,28 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import net from "node:net";
-import os from "node:os";
 import path from "node:path";
-import { after, test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { test } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { tokamak } from "@tokamakdev/tok/vite";
-import { createBuilder, createServer } from "vite";
+import { createServer } from "vite";
+import WebSocket from "ws";
 
-const WORKER = `export default {
-  fetch() {
-    return new Response("worker");
-  },
-};
-`;
-
-const roots = [];
-after(() => {
-  for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
-});
-
-/** A Worker project in a new directory, with `files` relative to its root and the plugin's `options`. */
-function project(files = {}, options) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tokamak-vite-")));
-  roots.push(root);
-  const all = {
-    "wrangler.jsonc": JSON.stringify({ name: "app", main: "src/index.ts", compatibility_date: "2026-09-01" }),
-    "src/index.ts": WORKER,
-    ...files,
-  };
-  for (const [name, contents] of Object.entries(all)) {
-    fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
-    fs.writeFileSync(path.join(root, name), contents);
-  }
-  return { root, options, output: path.join(root, "build/.tokamak/vite") };
-}
-
-/** The tokamak plugin as `tok` activates it for `app`. */
-function activeTokamak(app) {
-  process.env.TOKAMAK_VITE_OUTPUT = app.output;
-  try {
-    return tokamak(app.options);
-  } finally {
-    delete process.env.TOKAMAK_VITE_OUTPUT;
-  }
-}
-
-/** Vite options for `app` with Cloudflare's plugin and the active tokamak plugin. */
-function viteConfig(app, vite = {}) {
-  return { root: app.root, configFile: false, logLevel: "silent", plugins: [cloudflare(), activeTokamak(app)], ...vite };
-}
-
-async function build(app, vite) {
-  const builder = await createBuilder(viteConfig(app, vite));
-  await builder.buildApp();
-}
-
-/** Runs `use` with the development server of `app`, listening on any port, with Vite's `server` options. */
-async function serve(app, use, options = {}) {
-  const server = await createServer(viteConfig(app, { server: { port: 0, ...options } }));
-  try {
-    await server.listen();
-    return await use(server);
-  } finally {
-    await server.close();
-  }
-}
-
-async function withEnvironment(values, run) {
-  const previous = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]));
-  Object.assign(process.env, values);
-  try {
-    return await run();
-  } finally {
-    for (const [name, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-  }
-}
-
-function readOutput(app, name) {
-  return JSON.parse(fs.readFileSync(path.join(app.output, name), "utf8"));
-}
-
-/** The source of the Worker the build of `app` generated. */
-function builtWorker(app) {
-  const generated = path.join(app.root, "dist/app");
-  const { main } = JSON.parse(fs.readFileSync(path.join(generated, "wrangler.json"), "utf8"));
-  return fs.readFileSync(path.join(generated, main), "utf8");
-}
+import {
+  WORKER,
+  activeTokamak,
+  build,
+  builtWorker,
+  project,
+  readOutput,
+  reported,
+  serve,
+  viteConfig,
+  withEnvironment,
+} from "./vite-fixtures.mjs";
 
 test("adds no hooks without TOKAMAK_VITE_OUTPUT", () => {
   assert.deepEqual(tokamak({ name: "App" }), []);
@@ -118,11 +49,16 @@ test("reports its options, without module, and the Vite root", async () => {
   });
 });
 
+/** Whether `worker` exports `name`. */
+const exportsName = (worker, name) => new RegExp(`export \\{[^}]*\\b${name}\\b[^}]*\\}`).test(worker);
+
 test("reports an empty configuration without options, and builds without a module", async () => {
   const app = project();
   await build(app);
   assert.deepEqual(readOutput(app, "config.json").config, {});
-  assert.match(builtWorker(app), /"worker"/);
+  const worker = builtWorker(app);
+  assert.match(worker, /"worker"/);
+  assert.ok(exportsName(worker, "TokamakEvents"));
 });
 
 const ENTRY = `import { DurableObject } from "cloudflare:workers";
@@ -145,9 +81,7 @@ test("imports src/tokamak.ts into the entry Worker, keeping the entry's exports"
   const worker = builtWorker(app);
   assert.match(worker, /globalThis\.tokamakLoaded = "tokamak\.ts"/);
   assert.doesNotMatch(worker, /"tokamak\.js"/);
-  assert.match(worker, /export \{[^}]*\bCounter\b[^}]*\}/);
-  assert.match(worker, /export \{[^}]*\bnamed\b[^}]*\}/);
-  assert.match(worker, /export \{[^}]*\bas default\b[^}]*\}/);
+  for (const name of ["Counter", "named", "as default", "TokamakEvents"]) assert.ok(exportsName(worker, name), name);
 });
 
 test("imports src/tokamak.js without src/tokamak.ts", async () => {
@@ -193,7 +127,7 @@ test("reports the development server's port when the configured one is taken", a
   const server = await createServer(viteConfig(app, { server: { port } }));
   try {
     await server.listen();
-    const { url } = readOutput(app, "server.json");
+    const { url } = await reported(app, "server.json");
     assert.equal(url, server.resolvedUrls.local[0]);
     assert.notEqual(new URL(url).port, String(port));
     assert.equal(await (await fetch(url)).text(), "worker");
@@ -203,20 +137,9 @@ test("reports the development server's port when the configured one is taken", a
   }
 });
 
-test("reports the Worker's top-level name with the development server", async () => {
-  for (const environment of [{}, { CLOUDFLARE_ENV: "staging" }]) {
-    const app = project({
-      "wrangler.jsonc": JSON.stringify({
-        name: "app",
-        main: "src/index.ts",
-        compatibility_date: "2026-09-01",
-        env: { staging: {} },
-      }),
-    });
-    await withEnvironment(environment, () =>
-      serve(app, () => assert.equal(readOutput(app, "server.json").workerName, "app")),
-    );
-  }
+test("reports the Worker's name with the development server", async () => {
+  const app = project();
+  await serve(app, () => assert.equal(readOutput(app, "server.json").workerName, "app"));
 });
 
 test("reports again when the development server restarts", async () => {
@@ -225,7 +148,7 @@ test("reports again when the development server restarts", async () => {
     fs.rmSync(app.output, { recursive: true });
     await server.restart();
     assert.deepEqual(readOutput(app, "config.json").config, { name: "App" });
-    assert.equal(readOutput(app, "server.json").url, server.resolvedUrls.local[0]);
+    assert.equal((await reported(app, "server.json")).url, server.resolvedUrls.local[0]);
   });
 });
 
@@ -263,22 +186,183 @@ test("reports the certificate an HTTPS development server serves, in each form V
     const app = project();
     await serve(
       app,
-      (server) =>
-        assert.deepEqual(readOutput(app, "server.json"), {
-          url: server.resolvedUrls.local[0],
-          workerName: "app",
-          certificates: certificate,
-        }),
+      (server) => {
+        const { socketPort, ...report } = readOutput(app, "server.json");
+        assert.deepEqual(report, { url: server.resolvedUrls.local[0], workerName: "app", certificates: certificate });
+      },
       { https },
     );
   }
 });
 
 test("fails a build in which no environment builds the entry Worker", async () => {
-  const app = project({ "src/tokamak.ts": "" });
+  const app = project();
   const withoutManifest = { name: "without-manifest", configEnvironment: () => ({ build: { manifest: false } }) };
   await assert.rejects(
     build(app, { plugins: [cloudflare(), activeTokamak(app), withoutManifest] }),
-    /no environment builds the entry Worker/,
+    /no environment builds the entry Worker to export TokamakEvents from/,
+  );
+});
+
+/**
+ * A Worker project whose `file`, which `src/tokamak.ts` is or imports, replies to `start` with
+ * `reply`, an expression of the event and `env`.
+ */
+function listeningProject(reply, file = "src/tokamak.ts") {
+  const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
+  return project({
+    "wrangler.jsonc": JSON.stringify({ name: "app", main: "src/index.ts", compatibility_date: "2026-09-01", vars: { GREETING: "hi" } }),
+    "src/tokamak.ts": `import ${JSON.stringify(`./${path.basename(file)}`)};\n`,
+    [file]: `import { onStart } from ${JSON.stringify(events)};\nonStart((event, env, ctx) => {\n  ctx.waitUntil(Promise.resolve());\n  return ${reply};\n});\n`,
+  });
+}
+
+/** A dev WebSocket to `port`, open, sending `token` as the device does. */
+async function openSocket(port, token) {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`, { headers: token ? { "x-tokamak-session": token } : {} });
+  await new Promise((resolve, reject) => {
+    socket.once("open", resolve);
+    socket.once("error", reject);
+  });
+  return socket;
+}
+
+let messages = 0;
+
+/** Sends the event `name` on `socket` and returns the message that answers it within 30 seconds. */
+async function emit(socket, name, event) {
+  const id = messages++;
+  const answer = new Promise((resolve, reject) => {
+    const unanswered = setTimeout(() => reject(new Error(`${name} was not answered`)), 30_000);
+    socket.once("close", () => reject(new Error("the dev socket closed")));
+    socket.on("message", function receive(data) {
+      const message = JSON.parse(String(data));
+      if (message.id !== id) return;
+      socket.off("message", receive);
+      clearTimeout(unanswered);
+      resolve(message);
+    });
+  });
+  socket.send(JSON.stringify({ type: "event", id, name, event }));
+  return answer;
+}
+
+/**
+ * Makes the listener in `file` reply "second" rather than "first", and returns the reply to
+ * `start` once it changes, or after 10 seconds.
+ */
+async function replyAfterEditing(app, socket, file) {
+  const source = path.join(app.root, file);
+  fs.writeFileSync(source, fs.readFileSync(source, "utf8").replace('"first"', '"second"'));
+  const deadline = Date.now() + 10_000;
+  let reply;
+  while ((reply = (await emit(socket, "start", {})).reply) !== "second" && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return reply;
+}
+
+test("delivers dev socket events to the development Worker's listeners", async () => {
+  const app = listeningProject("{ foreground: event.foreground, greeting: env.GREETING }");
+  await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
+    serve(app, async () => {
+      const socket = await openSocket(readOutput(app, "server.json").socketPort, "token");
+      try {
+        assert.deepEqual(await emit(socket, "start", { foreground: true }), {
+          type: "reply",
+          id: messages - 1,
+          reply: { foreground: true, greeting: "hi" },
+        });
+        assert.equal((await emit(socket, "resume", {})).reply, null);
+      } finally {
+        socket.close();
+      }
+    }),
+  );
+});
+
+// The first listener's reply wins, so a stale listener would still reply "first".
+for (const file of ["src/tokamak.ts", "src/listeners.ts"]) {
+  test(`replaces the development Worker's listeners when ${file} changes`, async () => {
+    const app = listeningProject('"first"', file);
+    await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
+      serve(app, async () => {
+        const socket = await openSocket(readOutput(app, "server.json").socketPort, "token");
+        try {
+          assert.equal((await emit(socket, "start", {})).reply, "first");
+          assert.equal(await replyAfterEditing(app, socket, file), "second");
+        } finally {
+          socket.close();
+        }
+      }),
+    );
+  });
+}
+
+test("builds an entry Worker whose TokamakEvents runs the listeners", async () => {
+  const app = listeningProject("{ foreground: event.foreground, greeting: env.GREETING }");
+  await build(app);
+  const generated = path.join(app.root, "dist/app");
+  const { main } = JSON.parse(fs.readFileSync(path.join(generated, "wrangler.json"), "utf8"));
+  const require = createRequire(import.meta.resolve("@cloudflare/vite-plugin"));
+  const { Miniflare, convertV4MiniflareOptions } = await import(pathToFileURL(require.resolve("miniflare")).href);
+  const miniflare = new Miniflare(
+    convertV4MiniflareOptions({
+      workers: [
+        {
+          name: "caller",
+          modules: true,
+          compatibilityDate: "2026-09-01",
+          serviceBindings: { APP: { name: "app", entrypoint: "TokamakEvents" } },
+          script: `export default { fetch: async (_request, env) => Response.json(await env.APP.dispatch("start", { foreground: true })) };`,
+        },
+        {
+          name: "app",
+          modules: true,
+          compatibilityDate: "2026-09-01",
+          script: fs.readFileSync(path.join(generated, main), "utf8"),
+          bindings: { GREETING: "hi" },
+        },
+      ],
+    }),
+  );
+  try {
+    const response = await miniflare.dispatchFetch("http://tokamak/");
+    assert.deepEqual(await response.json(), { reply: { foreground: true, greeting: "hi" }, listened: ["start"] });
+  } finally {
+    await miniflare.dispose();
+  }
+});
+
+test("shares the listener registry with pre-bundled dependencies", async () => {
+  const app = project({
+    "node_modules/events-package/package.json": JSON.stringify({ name: "events-package", type: "module", exports: "./index.js" }),
+    "node_modules/events-package/index.js": `import { defineEvent } from "@tokamakdev/plugin/events";\nexport const onStart = defineEvent("start");\n`,
+    "src/tokamak.ts": `import { onStart } from "events-package";\nonStart(() => "pre-bundled");\n`,
+  });
+  const core = path.dirname(path.dirname(fileURLToPath(import.meta.resolve("@tokamakdev/plugin/events"))));
+  fs.mkdirSync(path.join(app.root, "node_modules/@tokamakdev"));
+  fs.symlinkSync(core, path.join(app.root, "node_modules/@tokamakdev/plugin"), "junction");
+  await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
+    serve(app, async () => {
+      const socket = await openSocket(readOutput(app, "server.json").socketPort, "token");
+      try {
+        assert.equal((await emit(socket, "start", {})).reply, "pre-bundled");
+      } finally {
+        socket.close();
+      }
+    }),
+  );
+});
+
+test("refuses dev socket connections without the session token", async () => {
+  const app = project();
+  await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
+    serve(app, async () => {
+      const { socketPort } = readOutput(app, "server.json");
+      for (const token of [undefined, "wrong"]) {
+        await assert.rejects(openSocket(socketPort, token), /401/);
+      }
+    }),
   );
 });

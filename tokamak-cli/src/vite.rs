@@ -35,8 +35,8 @@ impl ConfigReport {
     }
 }
 
-/// The plugin's `server.json`: the development server and its Worker, or why
-/// the plugin cannot report the server.
+/// The plugin's `server.json`: the development server, its Worker and the
+/// plugin's dev socket, or why the plugin cannot report the server.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ServerFile {
@@ -44,7 +44,7 @@ enum ServerFile {
     Reported(ServerReport),
 }
 
-/// The development server and its Worker.
+/// The development server, its Worker, and the plugin's dev socket.
 #[derive(Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ServerReport {
@@ -57,6 +57,9 @@ pub(crate) struct ServerReport {
     /// Wrangler configuration names none.
     #[serde(default)]
     pub(crate) worker_name: String,
+    /// The loopback port of the plugin's dev socket, which takes the app's
+    /// events.
+    pub(crate) socket_port: u16,
 }
 
 impl VitePlugin {
@@ -73,6 +76,16 @@ impl VitePlugin {
     /// The environment variable that activates the plugin.
     pub(crate) fn environment(&self) -> [(&'static str, &OsStr); 1] {
         [("TOKAMAK_VITE_OUTPUT", self.output.as_os_str())]
+    }
+
+    /// The environment variables that activate the plugin in a development
+    /// server whose dev socket takes connections carrying `session_token`.
+    pub(crate) fn development_environment<'a>(
+        &'a self,
+        session_token: &'a str,
+    ) -> [(&'static str, &'a OsStr); 2] {
+        let [output] = self.environment();
+        [output, ("TOKAMAK_SESSION_TOKEN", OsStr::new(session_token))]
     }
 
     /// The app's configuration as `command`, which ran the plugin, reported it.

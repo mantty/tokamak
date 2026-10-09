@@ -13,6 +13,7 @@ use hyper::{
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use serde::Serialize;
 use sha1::{Digest, Sha1};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::gateway::{WebSocketBridge, WebSocketInbound, WebSocketOutbound, WebSocketOutgoing};
@@ -57,26 +58,6 @@ pub(super) enum HttpBody {
 pub(super) struct BodyStream {
     receiver: Receiver<BodyChunk>,
     cancelled: CancellationToken,
-}
-
-impl HttpBody {
-    /// The whole body, failing when it has not ended by `deadline`.
-    pub(super) fn read_to_end(self, deadline: Instant) -> io::Result<Vec<u8>> {
-        let stream = match self {
-            Self::Buffered(body) => return Ok(body),
-            Self::Stream(stream) => stream,
-        };
-        let mut body = Vec::new();
-        loop {
-            match stream.receiver.recv_deadline(deadline) {
-                Ok(chunk) => body.extend(chunk.map_err(|error| stream_failure(&error))?),
-                Err(flume::RecvTimeoutError::Disconnected) => return Ok(body),
-                Err(flume::RecvTimeoutError::Timeout) => {
-                    return Err(io::Error::from(io::ErrorKind::TimedOut));
-                }
-            }
-        }
-    }
 }
 
 impl BodyStream {
@@ -565,6 +546,18 @@ pub(super) fn encode_websocket_frame(
     frame.extend_from_slice(payload);
     apply_mask(&mut frame[start..], &key);
     Ok(frame)
+}
+
+/// Writes a masked frame, as a client sends one, to `writer`.
+pub(super) async fn write_frame(
+    writer: &mut (impl AsyncWrite + Unpin),
+    opcode: u8,
+    payload: &[u8],
+) -> io::Result<()> {
+    writer
+        .write_all(&encode_websocket_frame(opcode, payload, true)?)
+        .await?;
+    writer.flush().await
 }
 
 /// Removes the first complete frame from `buffer`, failing when its masking

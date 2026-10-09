@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use crate::assets::Assets;
 use crate::certificates::{Certificates, Renewal};
-use crate::dev_proxy::{DevProxy, DevProxyConfig};
 use crate::dispatcher::Dispatcher;
 use crate::env_vars::{StorageBinding, load as load_environment};
 use crate::gateway;
@@ -16,6 +15,7 @@ use crate::lifecycle_events::{Event, Events};
 use crate::linked::StorageRuntime;
 use crate::packaging::{PackageLayout, read_worker_manifest};
 use crate::quickjs::{RuntimeConfig, WorkerBundle};
+use crate::worker_events::WorkerEvents;
 
 use crate::Result;
 
@@ -30,6 +30,17 @@ pub struct Config {
     pub storage_dir: PathBuf,
     /// Stable HTTPS host the shell's `WebView` loads.
     pub host: String,
+    /// Whether the app is in the foreground as the runtime starts.
+    pub foreground: bool,
+}
+
+/// Host development-server connection settings.
+#[derive(Clone, Debug)]
+pub struct DevProxyConfig {
+    /// HTTP or HTTPS endpoint exposed by the host development supervisor.
+    pub endpoint: String,
+    /// Credential identifying the current development session.
+    pub session_token: String,
 }
 
 /// Configuration for a runtime that forwards requests to a host development server.
@@ -41,6 +52,8 @@ pub struct DevelopmentConfig {
     pub host: String,
     /// Host development-server connection.
     pub proxy: DevProxyConfig,
+    /// Whether the app is in the foreground as the runtime starts.
+    pub foreground: bool,
 }
 
 /// A running tokamak service.
@@ -51,11 +64,13 @@ pub struct Runtime {
     host: String,
     certificates: Arc<Certificates>,
     _renewal: Renewal,
+    events: Arc<WorkerEvents>,
     gateway: gateway::Runtime,
 }
 
 impl Runtime {
-    /// Start the gateway and JavaScript runtime for a packaged app.
+    /// Start the gateway and JavaScript runtime for a packaged app, and
+    /// deliver the `start` event in the background.
     ///
     /// Blocks until the gateway is listening. `listener` receives every
     /// [`Event`], including those raised from background threads, so it must
@@ -75,7 +90,13 @@ impl Runtime {
         let worker = WorkerBundle::new(read_worker_manifest(&config.app)?, config.app.clone());
         validate_worker(&worker)?;
         let handler = Dispatcher::new(worker, quickjs_config(&config)?);
-        finish_start(events, config.host, certificates, handler)
+        finish_start(
+            events,
+            config.host,
+            config.foreground,
+            certificates,
+            handler,
+        )
     }
 
     /// Start a runtime that forwards requests to a host development server.
@@ -85,17 +106,28 @@ impl Runtime {
     ///
     /// # Errors
     ///
-    /// Returns an error when certificates, the proxy endpoint, or the gateway
-    /// cannot start.
+    /// Returns an error when the app was linked without the development part,
+    /// or when certificates, the proxy endpoint, or the gateway cannot start.
     pub fn start_development(
         config: DevelopmentConfig,
         listener: impl Fn(Event) + Send + Sync + 'static,
     ) -> Result<Self> {
+        let development = crate::linked::development().ok_or_else(|| {
+            io::Error::other(
+                "the app starts in development, but its runtime was linked without development",
+            )
+        })?;
         let events = Events::new(listener);
         events.emit(Event::Starting);
         let certificates = Arc::new(Certificates::start(config.state_dir, config.host.clone())?);
-        let handler = DevProxy::new(&config.proxy)?;
-        finish_start(events, config.host, certificates, handler)
+        let handler = (development.handler)(&config.proxy)?;
+        finish_start(
+            events,
+            config.host,
+            config.foreground,
+            certificates,
+            handler,
+        )
     }
 
     /// The host the `WebView` loads.
@@ -119,16 +151,25 @@ impl Runtime {
         Ok(self.gateway.restore_gateway()?)
     }
 
-    /// Post JSON `body` to the Worker's `/tokamak/<name>` endpoint and return
-    /// the response body. A failed post is attempted again a second later, up
-    /// to three times, while `timeout` allows.
+    /// Deliver the event `name`, whose JSON is `event`, to the Worker's
+    /// listeners and return the reply as JSON: the first value a listener
+    /// returns other than `undefined`, or `null`.
+    ///
+    /// Blocks until the listeners and their `waitUntil` promises settle, or
+    /// `timeout` passes. Events wait for `start`. `resume` and `suspend` are
+    /// delivered one at a time, so a shell emits them from one thread to keep
+    /// their order, and only when they change whether the app is in the
+    /// foreground. A packaged app runs no Worker for an event without
+    /// listeners.
     ///
     /// # Errors
     ///
-    /// Returns the last attempt's error unless the Worker responds 200 within
-    /// `timeout`.
-    pub fn call(&self, name: &str, body: &str, timeout: Duration) -> Result<Vec<u8>> {
-        Ok(self.gateway.call(name, body, timeout)?)
+    /// Returns an error when `name` is `start`, the Worker cannot run, or
+    /// `timeout` passes before every listener returns.
+    pub fn emit(&self, name: &str, event: &str, timeout: Duration) -> Result<String> {
+        self.events
+            .emit(name, event, timeout)
+            .map_err(crate::Error::Event)
     }
 
     /// Certificate material for the shell's TLS challenge callbacks.
@@ -138,10 +179,12 @@ impl Runtime {
     }
 }
 
-/// Start the gateway serving `handler`, then certificate renewal.
+/// Start the gateway serving `handler`, certificate renewal, and the Worker's
+/// events.
 fn finish_start(
     events: Events,
     host: String,
+    foreground: bool,
     certificates: Arc<Certificates>,
     handler: Arc<dyn gateway::Handler>,
 ) -> Result<Runtime> {
@@ -156,6 +199,7 @@ fn finish_start(
         host,
         certificates,
         _renewal: renewal,
+        events: WorkerEvents::start(Arc::clone(gateway.shared()), foreground),
         gateway,
     })
 }
@@ -231,7 +275,7 @@ mod tests {
     use crate::env_vars::{StorageBinding, WorkerEnvironment, write as write_environment};
     use serde_json::json;
 
-    use super::{Config, quickjs_config};
+    use super::{Config, DevProxyConfig, DevelopmentConfig, Runtime, quickjs_config};
 
     fn config(root: &std::path::Path) -> Config {
         Config {
@@ -239,6 +283,7 @@ mod tests {
             state_dir: root.join("state"),
             storage_dir: root.join("storage"),
             host: "example.tokamak.local".to_owned(),
+            foreground: true,
         }
     }
     use crate::packaging::{
@@ -336,6 +381,35 @@ mod tests {
             "{error}"
         );
         assert!(config.storage_dir.join("kv/session.sqlite").is_file());
+        Ok(())
+    }
+
+    // Unit test executables do not export the development part's entry point,
+    // as an app built for release does not.
+    #[test]
+    fn refuses_development_when_linked_without_development() -> TestResult {
+        let directory = tempfile::tempdir()?;
+
+        let error = Runtime::start_development(
+            DevelopmentConfig {
+                state_dir: directory.path().join("state"),
+                host: "example.tokamak.local".to_owned(),
+                proxy: DevProxyConfig {
+                    endpoint: "http://127.0.0.1:1".to_owned(),
+                    session_token: "token".to_owned(),
+                },
+                foreground: true,
+            },
+            |_| {},
+        )
+        .err()
+        .ok_or("the development runtime started")?;
+
+        assert!(
+            error.to_string().contains("linked without development"),
+            "{error}"
+        );
+        assert!(!directory.path().join("state").exists());
         Ok(())
     }
 

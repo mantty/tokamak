@@ -176,7 +176,7 @@ fi
 kotlin_class='^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$'
 maven_coordinate='^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$'
 registry=$kotlin/TokamakPluginRegistry.kt
-printf '%s\n\n%s\n%s\n' 'package com.tokamak.runtime' 'internal fun tokamakPlugins(host: TokamakHost): List<TokamakPlugin> =' '    listOf(' > "$registry"
+printf '%s\n\n%s\n%s\n' 'package com.tokamak.runtime' 'internal fun tokamakPlugins(app: TokamakApplication): List<TokamakPlugin> =' '    listOf(' > "$registry"
 shopt -s nullglob
 for plugin in "$input/plugins"/*/; do
   plugin_id=$(basename "$plugin")
@@ -185,7 +185,7 @@ for plugin in "$input/plugins"/*/; do
     echo "plugin '$plugin_id' has invalid android class '$class'" >&2
     exit 1
   fi
-  printf '        %s(host),\n' "$class" >> "$registry"
+  printf '        %s(app.host("%s")),\n' "$class" "$plugin_id" >> "$registry"
   module=$plugin_modules/$plugin_id
   mkdir -p "$module/src/main/kotlin"
   for source in "$plugin/sources"/*; do
@@ -329,6 +329,7 @@ $(release_signing)
 }
 
 dependencies {
+  implementation 'androidx.lifecycle:lifecycle-process:2.11.0'
   implementation 'androidx.webkit:webkit:1.12.1'
   implementation project(':tokamak-plugin')
 EOF

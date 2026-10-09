@@ -9,7 +9,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./worker": "./src/worker.ts",
+    "./events": "./src/events.ts",
     "./testing": "./src/testing.ts"
   },
   "files": ["src"],

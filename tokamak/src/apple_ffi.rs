@@ -33,7 +33,7 @@ pub struct TokamakIdentity {
     pub private_key: TokamakBytes,
 }
 
-/// Start a tokamak runtime.
+/// Start a tokamak runtime, which delivers `start` with `foreground`.
 ///
 /// # Safety
 ///
@@ -45,14 +45,16 @@ pub unsafe extern "C" fn tokamak_runtime_start(
     state_dir: *const c_char,
     storage_dir: *const c_char,
     host: *const c_char,
+    foreground: bool,
     error: *mut c_char,
     error_len: usize,
 ) -> *mut c_void {
-    let result = unsafe { start(packaged_dir, state_dir, storage_dir, host) };
+    let result = unsafe { start(packaged_dir, state_dir, storage_dir, host, foreground) };
     into_handle(result, error, error_len)
 }
 
-/// Start a tokamak runtime that forwards requests to a host development server.
+/// Start a tokamak runtime that forwards requests to a host development
+/// server, and delivers `start` with `foreground`.
 ///
 /// # Safety
 ///
@@ -64,10 +66,11 @@ pub unsafe extern "C" fn tokamak_runtime_start_development(
     host: *const c_char,
     endpoint: *const c_char,
     session_token: *const c_char,
+    foreground: bool,
     error: *mut c_char,
     error_len: usize,
 ) -> *mut c_void {
-    let result = unsafe { start_development(state_dir, host, endpoint, session_token) };
+    let result = unsafe { start_development(state_dir, host, endpoint, session_token, foreground) };
     into_handle(result, error, error_len)
 }
 
@@ -118,35 +121,35 @@ pub unsafe extern "C" fn tokamak_runtime_stop(handle: *mut c_void) {
     }
 }
 
-/// Post JSON `body` to the Worker's `/tokamak/<name>` endpoint, retrying a
-/// failed post and blocking for up to `timeout_ms`.
+/// Deliver the event `name`, whose JSON is `event`, to the Worker's
+/// listeners, blocking for up to `timeout_ms`.
 ///
-/// Returns true with the response body in `response` when the Worker responds
-/// 200, or false with a message in `error`.
+/// Returns true with the reply's JSON in `reply`, or false with a message in
+/// `error`.
 ///
 /// # Safety
 ///
-/// `handle` must be live, `name` and `body` must be NUL-terminated UTF-8
-/// strings, `response` must be writable, and `error` must be writable for
+/// `handle` must be live, `name` and `event` must be NUL-terminated UTF-8
+/// strings, `reply` must be writable, and `error` must be writable for
 /// `error_len` bytes when non-null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn tokamak_runtime_call(
+pub unsafe extern "C" fn tokamak_runtime_emit(
     handle: *const c_void,
     name: *const c_char,
-    body: *const c_char,
+    event: *const c_char,
     timeout_ms: u64,
-    response: *mut TokamakBytes,
+    reply: *mut TokamakBytes,
     error: *mut c_char,
     error_len: usize,
 ) -> bool {
-    if response.is_null() {
+    if reply.is_null() {
         return false;
     }
-    unsafe { response.write(TokamakBytes::empty()) };
+    unsafe { reply.write(TokamakBytes::empty()) };
     let timeout = Duration::from_millis(timeout_ms);
-    match unsafe { call(handle, name, body, timeout) } {
-        Ok(body) => {
-            unsafe { response.write(TokamakBytes::from_vec(body)) };
+    match unsafe { emit(handle, name, event, timeout) } {
+        Ok(json) => {
+            unsafe { reply.write(TokamakBytes::from_vec(json.into_bytes())) };
             true
         }
         Err(message) => {
@@ -272,12 +275,14 @@ unsafe fn start(
     state_dir: *const c_char,
     storage_dir: *const c_char,
     host: *const c_char,
+    foreground: bool,
 ) -> Result<Runtime, String> {
     bridge::start(
         unsafe { text(packaged_dir) }.ok_or("packaged app path is not valid UTF-8")?,
         unsafe { text(state_dir) }.ok_or("state directory is not valid UTF-8")?,
         unsafe { text(storage_dir) }.ok_or("storage directory is not valid UTF-8")?,
         unsafe { text(host) }.ok_or("app host is not valid UTF-8")?,
+        foreground,
         report,
     )
 }
@@ -287,27 +292,29 @@ unsafe fn start_development(
     host: *const c_char,
     endpoint: *const c_char,
     session_token: *const c_char,
+    foreground: bool,
 ) -> Result<Runtime, String> {
     bridge::start_development(
         unsafe { text(state_dir) }.ok_or("development state path is not valid UTF-8")?,
         unsafe { text(host) }.ok_or("app host is not valid UTF-8")?,
         unsafe { text(endpoint) }.ok_or("development endpoint is not valid UTF-8")?,
         unsafe { text(session_token) }.ok_or("development session token is not valid UTF-8")?,
+        foreground,
         report,
     )
 }
 
-unsafe fn call(
+unsafe fn emit(
     handle: *const c_void,
     name: *const c_char,
-    body: *const c_char,
+    event: *const c_char,
     timeout: Duration,
-) -> Result<Vec<u8>, String> {
+) -> Result<String, String> {
     let runtime = unsafe { runtime(handle) }.ok_or("runtime is unavailable")?;
-    let name = unsafe { text(name) }.ok_or("call name is not valid UTF-8")?;
-    let body = unsafe { text(body) }.ok_or("call body is not valid UTF-8")?;
+    let name = unsafe { text(name) }.ok_or("event name is not valid UTF-8")?;
+    let event = unsafe { text(event) }.ok_or("event is not valid UTF-8")?;
     runtime
-        .call(name, body, timeout)
+        .emit(name, event, timeout)
         .map_err(|error| error.to_string())
 }
 

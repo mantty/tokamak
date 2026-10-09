@@ -172,14 +172,14 @@ fi
 # sources are Swift.
 swift_type='^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$'
 registry=$temporary/TokamakPluginRegistry.swift
-printf '%s\n\n%s\n%s\n' 'import Foundation' 'func tokamakPlugins(host: TokamakHost) -> [any TokamakPlugin] {' '  [' > "$registry"
+printf '%s\n\n%s\n%s\n' 'import Foundation' 'func tokamakPlugins(app: TokamakApp) -> [any TokamakPlugin] {' '  [' > "$registry"
 for plugin in "$input/plugins"/*/; do
   class=$(cat "$plugin/class" 2>/dev/null || true)
   if [[ ! "$class" =~ $swift_type ]]; then
     echo "plugin '$(basename "$plugin")' has invalid $platform class '$class'" >&2
     exit 1
   fi
-  printf '    %s(host: host),\n' "$class" >> "$registry"
+  printf '    %s(host: TokamakHost(app: app, plugin: "%s")),\n' "$class" "$(basename "$plugin")" >> "$registry"
   for source in "$plugin/sources"/*; do
     case "$source" in
       *.swift) swift_sources+=("$source") ;;

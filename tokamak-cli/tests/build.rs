@@ -299,15 +299,6 @@ fn create_windows_runtime(runtime: &Path) -> TestResult {
     Ok(())
 }
 
-/// Whether `binary` contains SQLite, which writes this header into every
-/// database.
-#[cfg(windows)]
-fn contains_sqlite(binary: &[u8]) -> bool {
-    binary
-        .windows(15)
-        .any(|window| window == b"SQLite format 3")
-}
-
 /// A `tok build` that uses the project's earlier build.
 fn build_command(platform: &str, project: &Path, platform_pack: &Path) -> TestResult<Command> {
     let mut command = project_build_command(platform, project, platform_pack)?;
@@ -961,17 +952,27 @@ fn links_storage_into_the_windows_executable_while_the_app_declares_it() -> Test
 #[cfg(windows)]
 #[test]
 #[ignore = "needs a Windows platform pack at TOKAMAK_TEST_WINDOWS_PACK"]
-fn links_storage_from_the_windows_platform_pack_while_the_app_declares_it() -> TestResult {
+fn links_only_the_runtime_parts_the_windows_app_declares() -> TestResult {
     let platform_pack = PathBuf::from(std::env::var("TOKAMAK_TEST_WINDOWS_PACK")?);
     let temporary = tempfile::tempdir()?;
     let project = temporary.path().join("project");
     fs::create_dir_all(&project)?;
     create_project(&project)?;
     let executable = project.join("build/windows/demo-app/demo-app.exe");
-    let links_storage = || -> TestResult<(bool, bool)> {
+    let build = || -> TestResult {
         build_command("windows", &project, &platform_pack)?
             .assert()
             .success();
+        println!(
+            "{}: {} bytes",
+            executable.display(),
+            fs::metadata(&executable)?.len()
+        );
+        Ok(())
+    };
+    // Whether the executable exports `entry_point` and contains `code`, a
+    // string only that part's code holds.
+    let linked = |entry_point: &str, code: &str| -> TestResult<(bool, bool)> {
         let exports = ProcessCommand::new("dumpbin")
             .args(["/NOLOGO", "/EXPORTS"])
             .arg(&executable)
@@ -980,16 +981,24 @@ fn links_storage_from_the_windows_platform_pack_while_the_app_declares_it() -> T
             return Err(format!("dumpbin failed with {}", exports.status).into());
         }
         let contents = fs::read(&executable)?;
-        println!("{}: {} bytes", executable.display(), contents.len());
         Ok((
-            String::from_utf8_lossy(&exports.stdout).contains(tokamak::STORAGE_ENTRY_POINT),
-            contains_sqlite(&contents),
+            String::from_utf8_lossy(&exports.stdout).contains(entry_point),
+            contents
+                .windows(code.len())
+                .any(|window| window == code.as_bytes()),
         ))
     };
+    // SQLite writes this header into every database.
+    let storage = || linked(tokamak::STORAGE_ENTRY_POINT, "SQLite format 3");
+    let development = || linked(tokamak::DEVELOPMENT_ENTRY_POINT, tokamak::DEV_SOCKET_HEADER);
 
-    assert_eq!(links_storage()?, (false, false));
+    build()?;
+    assert_eq!(storage()?, (false, false));
+    assert_eq!(development()?, (false, false));
     declare_storage(&project)?;
-    assert_eq!(links_storage()?, (true, true));
+    build()?;
+    assert_eq!(storage()?, (true, true));
+    assert_eq!(development()?, (false, false));
     Ok(())
 }
 
@@ -1212,14 +1221,15 @@ fn stops_when_the_configured_build_command_fails() -> TestResult {
 }
 
 /// `tok dev` for the iOS device `DEVICE`, whose platform pack's entrypoint
-/// reports the device and project it builds for, then fails.
+/// reports the device and project it builds for and the entry points the app
+/// exports, then fails.
 #[cfg(target_os = "macos")]
 fn dev_command(temporary: &Path, platform_pack: &Path, project: &Path) -> TestResult<Command> {
     use std::ffi::OsString;
 
     fs::write(
         platform_pack.join("build/entrypoint"),
-        "echo \"building for $(cat \"$2/metadata/device-id\") from $(cat \"$2/metadata/project-dir\")\" >&2\nexit 1\n",
+        "echo \"building for $(cat \"$2/metadata/device-id\") from $(cat \"$2/metadata/project-dir\"), exporting [$(cat \"$2/metadata/exported-symbols\")]\" >&2\nexit 1\n",
     )?;
     let bin = temporary.join("fake-devices");
     write_executable(
@@ -1257,7 +1267,7 @@ const server = require("node:http").createServer((_, response) => response.end()
 server.listen(0, "127.0.0.1", () => {
   const url = `http://127.0.0.1:${server.address().port}/`;
   const report = require("node:path").join(process.env.TOKAMAK_VITE_OUTPUT, "server.json");
-  require("node:fs").writeFileSync(report, JSON.stringify({ url, workerName: "demo-app" }));
+  require("node:fs").writeFileSync(report, JSON.stringify({ url, workerName: "demo-app", socketPort: 1 }));
 });
 "#;
 
@@ -1272,6 +1282,20 @@ fn dev_runs_the_entrypoint_for_a_relative_project_directory() -> TestResult {
         .stderr(contains(format!(
             "building for DEVICE from {}",
             fs::canonicalize(&project)?.display()
+        )));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn dev_links_the_development_part() -> TestResult {
+    let (temporary, project, platform_pack) = create_inputs("ios-arm64")?;
+    dev_command(temporary.path(), &platform_pack, &project)?
+        .assert()
+        .failure()
+        .stderr(contains(format!(
+            "exporting [{}]",
+            tokamak::DEVELOPMENT_ENTRY_POINT
         )));
     Ok(())
 }

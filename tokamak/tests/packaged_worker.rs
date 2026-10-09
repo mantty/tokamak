@@ -263,13 +263,23 @@ fn marks_the_worker_environment_of_a_packaged_app() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let (runtime, _) = start_packaged_runtime(
         temporary.path(),
-        br"export default { fetch: (request, env) => Response.json([env.TOKAMAK_RUNTIME, process.env.TOKAMAK_RUNTIME]) };",
+        br#"
+import { WorkerEntrypoint } from "cloudflare:workers";
+
+export class TokamakEvents extends WorkerEntrypoint {
+  dispatch() {
+    return { reply: [this.env.TOKAMAK_RUNTIME, process.env.TOKAMAK_RUNTIME], listened: ["check"] };
+  }
+}
+
+export default { fetch: () => new Response(null, { status: 404 }) };
+"#,
         &WorkerEnvironment::default(),
     )?;
 
-    let body = runtime.call("check", "{}", Duration::from_secs(5))?;
+    let reply = runtime.emit("check", "{}", Duration::from_secs(5))?;
 
-    assert_eq!(body, br#"["true","true"]"#);
+    assert_eq!(reply, r#"["true","true"]"#);
     Ok(())
 }
 
@@ -278,14 +288,14 @@ fn keeps_d1_data_across_runtime_restarts() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let environment = d1_environment(&[]);
     let (runtime, _) = start_packaged_runtime(temporary.path(), d1_worker_source(), &environment)?;
-    runtime.call("setup", "{}", Duration::from_secs(5))?;
-    runtime.call("hit", "{}", Duration::from_secs(5))?;
+    runtime.emit("setup", "{}", Duration::from_secs(5))?;
+    runtime.emit("hit", "{}", Duration::from_secs(5))?;
     drop(runtime);
 
     let (restarted, _) =
         start_packaged_runtime(temporary.path(), d1_worker_source(), &environment)?;
 
-    assert_eq!(restarted.call("count", "{}", Duration::from_secs(5))?, b"1");
+    assert_eq!(restarted.emit("count", "{}", Duration::from_secs(5))?, "1");
     Ok(())
 }
 
@@ -294,11 +304,11 @@ fn serves_concurrent_d1_writes() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let (runtime, _) =
         start_packaged_runtime(temporary.path(), d1_worker_source(), &d1_environment(&[]))?;
-    runtime.call("setup", "{}", Duration::from_secs(5))?;
+    runtime.emit("setup", "{}", Duration::from_secs(5))?;
 
     let writes: Vec<_> = std::thread::scope(|scope| {
         let writers: Vec<_> = (0..16)
-            .map(|_| scope.spawn(|| runtime.call("hit", "{}", Duration::from_secs(30)).is_ok()))
+            .map(|_| scope.spawn(|| runtime.emit("hit", "{}", Duration::from_secs(30)).is_ok()))
             .collect();
         writers
             .into_iter()
@@ -308,7 +318,7 @@ fn serves_concurrent_d1_writes() -> TestResult {
 
     assert!(writes.iter().all(|written| *written), "{writes:?}");
 
-    assert_eq!(runtime.call("count", "{}", Duration::from_secs(5))?, b"16");
+    assert_eq!(runtime.emit("count", "{}", Duration::from_secs(5))?, "16");
     Ok(())
 }
 
@@ -327,7 +337,7 @@ fn applies_packaged_migrations_before_the_first_query() -> TestResult {
         &d1_environment(&["0001_hits.sql"]),
     )?;
 
-    assert_eq!(runtime.call("count", "{}", Duration::from_secs(5))?, b"1");
+    assert_eq!(runtime.emit("count", "{}", Duration::from_secs(5))?, "1");
     Ok(())
 }
 
@@ -337,7 +347,7 @@ fn keeps_r2_objects_across_restarts_and_removes_unrecorded_bodies() -> TestResul
     let environment = r2_environment();
     let (runtime, state) =
         start_packaged_runtime(temporary.path(), r2_worker_source(), &environment)?;
-    runtime.call(
+    runtime.emit(
         "put",
         r#"{"key":"kept","value":"hello"}"#,
         Duration::from_secs(5),
@@ -352,8 +362,8 @@ fn keeps_r2_objects_across_restarts_and_removes_unrecorded_bodies() -> TestResul
         start_packaged_runtime(temporary.path(), r2_worker_source(), &environment)?;
 
     assert_eq!(
-        restarted.call("get", r#"{"key":"kept"}"#, Duration::from_secs(5))?,
-        b"hello"
+        restarted.emit("get", r#"{"key":"kept"}"#, Duration::from_secs(5))?,
+        r#""hello""#
     );
     assert!(!objects.join("unrecorded").exists());
     assert!(!parts.join("unrecorded").exists());
@@ -374,7 +384,7 @@ fn replaces_r2_objects_whole_under_concurrent_writes() -> TestResult {
                 scope.spawn(move || {
                     let value = format!("{writer:02}").repeat(50_000);
                     let body = json!({ "key": "shared", "value": value }).to_string();
-                    runtime.call("put", &body, Duration::from_secs(30)).is_ok()
+                    runtime.emit("put", &body, Duration::from_secs(30)).is_ok()
                 })
             })
             .collect();
@@ -385,9 +395,18 @@ fn replaces_r2_objects_whole_under_concurrent_writes() -> TestResult {
     });
 
     assert!(writes.iter().all(|written| *written), "{writes:?}");
-    let value = runtime.call("get", r#"{"key":"shared"}"#, Duration::from_secs(5))?;
+    let value: String = serde_json::from_str(&runtime.emit(
+        "get",
+        r#"{"key":"shared"}"#,
+        Duration::from_secs(5),
+    )?)?;
     assert_eq!(value.len(), 100_000);
-    assert!(value.chunks(2).all(|pair| pair == &value[..2]));
+    assert!(
+        value
+            .as_bytes()
+            .chunks(2)
+            .all(|pair| pair == &value.as_bytes()[..2])
+    );
     let objects = temporary.path().join("storage/r2/files/objects");
     assert_eq!(fs::read_dir(objects)?.count(), 1);
     Ok(())
@@ -396,15 +415,15 @@ fn replaces_r2_objects_whole_under_concurrent_writes() -> TestResult {
 #[test]
 fn stores_request_bodies_in_r2() -> TestResult {
     let temporary = tempfile::tempdir()?;
-    let (runtime, _) =
+    let (runtime, state) =
         start_packaged_runtime(temporary.path(), r2_worker_source(), &r2_environment())?;
 
-    let size = runtime.call("upload", r#"{"file":"contents"}"#, Duration::from_secs(5))?;
+    let size = post(&runtime, &state, "/upload", br#"{"file":"contents"}"#)?;
 
     assert_eq!(size, b"19");
     assert_eq!(
-        runtime.call("get", r#"{"key":"upload"}"#, Duration::from_secs(5))?,
-        br#"{"file":"contents"}"#
+        runtime.emit("get", r#"{"key":"upload"}"#, Duration::from_secs(5))?,
+        r#""{\"file\":\"contents\"}""#
     );
     Ok(())
 }
@@ -415,10 +434,10 @@ fn follows_cloudflare_where_local_r2_differs() -> TestResult {
     let (runtime, _) =
         start_packaged_runtime(temporary.path(), r2_worker_source(), &r2_environment())?;
 
-    let body = runtime.call("cloudflare", "{}", Duration::from_secs(5))?;
+    let reply = runtime.emit("cloudflare", "{}", Duration::from_secs(5))?;
 
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&body)?,
+        serde_json::from_str::<serde_json::Value>(&reply)?,
         json!({
             "storageClasses": ["InfrequentAccess", "Standard", "InfrequentAccess"],
             "listedMetadata": [null, null],
@@ -436,7 +455,15 @@ fn serves_the_astro_example_that_tok_packages() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let app = PackageLayout::new(std::env::var("TOKAMAK_TEST_ASTRO_APP")?);
     let (runtime, state) = start_runtime(temporary.path(), app)?;
-    for (path, text) in [("/", "<html"), ("/about", "About - tokamak Example")] {
+    // Events wait for `start`, so both are recorded once this returns.
+    runtime.emit("suspend", "{}", Duration::from_secs(30))?;
+    for (path, text) in [
+        ("/", "<html"),
+        ("/about", "About - tokamak Example"),
+        // Each entry begins with its time, which ends in Z.
+        ("/events", "Z start in the foreground"),
+        ("/events", "Z suspend"),
+    ] {
         let mut tls = connect_gateway(&runtime, &state)?;
         tls.write_all(
             format!("GET {path} HTTP/1.1\r\nHost: {HOST}\r\nConnection: close\r\n\r\n").as_bytes(),
@@ -480,6 +507,7 @@ fn start_runtime(temporary: &Path, app: PackageLayout) -> TestResult<(Runtime, P
             state_dir: state.clone(),
             storage_dir: temporary.join("storage"),
             host: HOST.to_owned(),
+            foreground: true,
         },
         |_| {},
     )?;
@@ -510,6 +538,8 @@ fn r2_environment() -> WorkerEnvironment {
 
 fn r2_worker_source() -> &'static [u8] {
     br#"
+import { WorkerEntrypoint } from "cloudflare:workers";
+
 async function cloudflare(files) {
   const infrequent = await files.put("class", "x", { storageClass: "InfrequentAccess" });
   const standard = await files.put("standard", "x");
@@ -525,15 +555,23 @@ async function cloudflare(files) {
   };
 }
 
+export class TokamakEvents extends WorkerEntrypoint {
+  async dispatch(name, input) {
+    const files = this.env.FILES;
+    const listened = ["put", "get", "cloudflare"];
+    if (name === "cloudflare") return { reply: await cloudflare(files), listened };
+    if (name === "put") return { reply: (await files.put(input.key, input.value)).etag, listened };
+    if (name === "get") {
+      const object = await files.get(input.key);
+      return { reply: object === null ? "missing" : await new Response(object.body).text(), listened };
+    }
+    return { listened };
+  }
+}
+
 export default {
   async fetch(request, env) {
-    const name = new URL(request.url).pathname.slice("/tokamak/".length);
-    if (name === "upload") return Response.json((await env.FILES.put("upload", request.body)).size);
-    if (name === "cloudflare") return Response.json(await cloudflare(env.FILES));
-    const input = await request.json();
-    if (name === "put") return Response.json((await env.FILES.put(input.key, input.value)).etag);
-    const object = await env.FILES.get(input.key);
-    return new Response(object === null ? "missing" : object.body);
+    return Response.json((await env.FILES.put("upload", request.body)).size);
   },
 };
 "#
@@ -541,14 +579,20 @@ export default {
 
 fn d1_worker_source() -> &'static [u8] {
     br#"
-export default {
-  async fetch(request, env) {
-    const { pathname } = new URL(request.url);
-    if (pathname === "/tokamak/setup") await env.DB.exec("CREATE TABLE IF NOT EXISTS hits (n INTEGER)");
-    if (pathname === "/tokamak/hit") await env.DB.prepare("INSERT INTO hits VALUES (?)").bind(1).run();
-    return Response.json(await env.DB.prepare("SELECT count(*) AS count FROM hits").first("count"));
-  },
-};
+import { WorkerEntrypoint } from "cloudflare:workers";
+
+export class TokamakEvents extends WorkerEntrypoint {
+  async dispatch(name) {
+    const db = this.env.DB;
+    const listened = ["setup", "hit", "count"];
+    if (name === "setup") await db.exec("CREATE TABLE IF NOT EXISTS hits (n INTEGER)");
+    if (name === "hit") await db.prepare("INSERT INTO hits VALUES (?)").bind(1).run();
+    if (name !== "count") return { listened };
+    return { reply: await db.prepare("SELECT count(*) AS count FROM hits").first("count"), listened };
+  }
+}
+
+export default { fetch: () => new Response(null, { status: 404 }) };
 "#
 }
 
@@ -581,6 +625,25 @@ export default {
   }
 };
 "#
+}
+
+/// The body of the Worker's 200 response to a POST of `body` to `path`.
+fn post(runtime: &Runtime, state: &Path, path: &str, body: &[u8]) -> TestResult<Vec<u8>> {
+    let mut tls = connect_gateway(runtime, state)?;
+    write!(
+        tls,
+        "POST {path} HTTP/1.1\r\nHost: {HOST}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )?;
+    tls.write_all(body)?;
+    tls.flush()?;
+    let headers = String::from_utf8(read_header_block(&mut tls)?)?;
+    if !headers.starts_with("HTTP/1.1 200") {
+        return Err(format!("{path} responded {headers}").into());
+    }
+    let mut response = Vec::new();
+    tls.read_to_end(&mut response)?;
+    Ok(response)
 }
 
 fn read_header_block(stream: &mut impl Read) -> TestResult<Vec<u8>> {

@@ -1,3 +1,5 @@
+//! An app reaches the development part through the entry point its binary
+//! exports, as this test executable does.
 #![cfg(feature = "native")]
 
 use std::io::{ErrorKind, Read, Write};
@@ -29,7 +31,7 @@ fn forwards_http_and_websocket_traffic_to_the_host_server() -> TestResult {
 
     let mut http = connect_gateway(&runtime, &state)?;
     http.write_all(
-        "POST /api HTTP/1.1\r\nHost: dev.tokamak.local\r\nX-Repeated: café\r\nX-Repeated: 東京\r\nContent-Length: 3\r\n\r\n".as_bytes(),
+        "POST /api HTTP/1.1\r\nHost: dev.tokamak.local\r\nX-Repeated: café\r\nX-Repeated: 東京\r\nX-Tokamak-Dev-Socket: 1\r\nContent-Length: 3\r\n\r\n".as_bytes(),
     )?;
     http.write_all(&[0, 0xff, 1])?;
     http.flush()?;
@@ -119,84 +121,127 @@ fn does_not_retry_post_after_an_upstream_disconnect() -> TestResult {
 }
 
 #[test]
-fn forwards_runtime_calls_to_the_host_server() -> TestResult {
+fn delivers_events_through_the_dev_socket() -> TestResult {
     let (listener, runtime, _temporary) = start_test_runtime()?;
-    let host_server = thread::spawn(move || -> TestResult<String> {
-        let (mut call, _) = listener.accept()?;
-        call.set_read_timeout(Some(Duration::from_secs(2)))?;
-        let headers = String::from_utf8(read_header_block(&mut call)?)?;
-        let mut body = [0; 10];
-        call.read_exact(&mut body)?;
-        call.write_all(
-            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnull",
-        )?;
-        Ok(format!("{headers}{}", String::from_utf8(body.to_vec())?))
+    let host_server = thread::spawn(move || -> TestResult<(String, Vec<String>)> {
+        let (mut socket, headers) = accept_dev_socket(&listener)?;
+        let events = [answer_event(&mut socket)?, answer_event(&mut socket)?];
+        Ok((headers, events.to_vec()))
     });
 
-    let response = runtime.call("push", r#"{"id":"1"}"#, Duration::from_secs(2))?;
+    let reply = runtime.emit("example.ping", r#"{"id":"1"}"#, Duration::from_secs(5))?;
 
-    let request = host_server.join().map_err(|_| "host server panicked")??;
-    assert!(
-        request.starts_with("POST /tokamak/push HTTP/1.1\r\n"),
-        "{request}"
-    );
-    assert!(
-        request.contains("content-type: application/json\r\n"),
-        "{request}"
-    );
-    assert_eq!(header_value(&request, "host"), Some(HOST), "{request}");
+    let (headers, events) = host_server.join().map_err(|_| "host server panicked")??;
+    assert_eq!(reply, r#"{"echo":"example.ping"}"#);
     assert_eq!(
-        header_value(&request, "x-tokamak-session"),
-        Some("test-session"),
-        "{request}"
+        header_value(&headers, "x-tokamak-session"),
+        Some("test-session")
     );
-    assert!(request.ends_with(r#"{"id":"1"}"#), "{request}");
-    assert_eq!(response, b"null");
+    assert_eq!(
+        events,
+        [
+            r#"{"type":"event","id":0,"name":"start","event":{"foreground":true}}"#,
+            r#"{"type":"event","id":1,"name":"example.ping","event":{"id":"1"}}"#,
+        ]
+    );
     Ok(())
 }
 
 #[test]
-fn fails_a_runtime_call_the_host_server_does_not_answer() -> TestResult {
-    let (_listener, runtime, _temporary) = start_test_runtime()?;
+fn reopens_the_dev_socket_after_it_closes() -> TestResult {
+    let (listener, runtime, _temporary) = start_test_runtime()?;
+    let (reopened, reopening) = mpsc::channel();
+    let host_server = thread::spawn(move || -> TestResult<String> {
+        let (mut first, _) = accept_dev_socket(&listener)?;
+        answer_event(&mut first)?;
+        drop(first);
+        let (mut second, _) = accept_dev_socket(&listener)?;
+        reopened.send(())?;
+        answer_event(&mut second)
+    });
+    reopening.recv_timeout(Duration::from_secs(10))?;
 
-    let Err(error) = runtime.call("push", "{}", Duration::from_millis(200)) else {
-        return Err("the call succeeded".into());
+    let reply = runtime.emit("suspend", "{}", Duration::from_secs(5));
+
+    assert_eq!(
+        host_server.join().map_err(|_| "host server panicked")??,
+        r#"{"type":"event","id":1,"name":"suspend","event":{}}"#
+    );
+    assert_eq!(reply?, "null");
+    Ok(())
+}
+
+#[test]
+fn assembles_a_reply_sent_in_fragments() -> TestResult {
+    let (listener, runtime, _temporary) = start_test_runtime()?;
+    let host_server = thread::spawn(move || -> TestResult {
+        let (mut socket, _) = accept_dev_socket(&listener)?;
+        answer_event(&mut socket)?;
+        let (_, event) = read_frame(&mut socket)?;
+        let id = serde_json::from_slice::<serde_json::Value>(&event)?["id"].clone();
+        let reply = serde_json::json!({ "type": "reply", "id": id, "reply": "joined" }).to_string();
+        let (first, last) = reply.split_at(reply.len() / 2);
+        socket.write_all(&[0x01, u8::try_from(first.len())?])?;
+        socket.write_all(first.as_bytes())?;
+        write_frame(&mut socket, 0x0, last.as_bytes(), false)
+    });
+
+    let reply = runtime.emit("example.ping", "{}", Duration::from_secs(5))?;
+
+    host_server.join().map_err(|_| "host server panicked")??;
+    assert_eq!(reply, r#""joined""#);
+    Ok(())
+}
+
+#[test]
+fn fails_an_event_the_plugin_answers_with_an_error_or_too_late() -> TestResult {
+    let (listener, runtime, _temporary) = start_test_runtime()?;
+    let host_server = thread::spawn(move || -> TestResult {
+        let (mut socket, _) = accept_dev_socket(&listener)?;
+        answer_event(&mut socket)?;
+        for answer in [
+            serde_json::json!({ "type": "error", "message": "listener exploded" }),
+            serde_json::json!({ "type": "reply", "reply": "late" }),
+        ] {
+            let (_, event) = read_frame(&mut socket)?;
+            let mut answer = answer;
+            answer["id"] = serde_json::from_slice::<serde_json::Value>(&event)?["id"].clone();
+            if answer["type"] == "reply" {
+                thread::sleep(Duration::from_millis(500));
+            }
+            write_frame(&mut socket, 0x1, answer.to_string().as_bytes(), false)?;
+        }
+        Ok(())
+    });
+
+    let failed = runtime.emit("example.ping", "{}", Duration::from_secs(5));
+    let late = runtime.emit("example.ping", "{}", Duration::from_millis(200));
+
+    host_server.join().map_err(|_| "host server panicked")??;
+    assert_eq!(
+        failed.err().ok_or("the event completed")?.to_string(),
+        "listener exploded"
+    );
+    assert_eq!(
+        late.err().ok_or("the event completed")?.to_string(),
+        "example.ping did not complete before its deadline"
+    );
+    Ok(())
+}
+
+#[test]
+fn fails_an_event_no_dev_socket_answers_before_its_deadline() -> TestResult {
+    let (listener, runtime, _temporary) = start_test_runtime()?;
+    drop(listener);
+
+    let Err(error) = runtime.emit("example.ping", "{}", Duration::from_millis(200)) else {
+        return Err("the event was delivered".into());
     };
 
     assert_eq!(
         error.to_string(),
-        "/tokamak/push did not respond within 200ms"
+        "example.ping timed out waiting for start"
     );
-    Ok(())
-}
-
-#[test]
-fn drops_a_host_response_that_arrives_after_the_call_timed_out() -> TestResult {
-    let (events, received) = mpsc::channel();
-    let (listener, runtime, _temporary) = start_test_runtime_reporting(move |event| {
-        let _ = events.send(event);
-    })?;
-    let host_server = thread::spawn(move || -> TestResult {
-        let (mut call, _) = listener.accept()?;
-        call.set_read_timeout(Some(Duration::from_secs(2)))?;
-        read_header_block(&mut call)?;
-        thread::sleep(Duration::from_millis(400));
-        call.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnull")?;
-        Ok(())
-    });
-
-    let result = runtime.call("push", "{}", Duration::from_millis(200));
-    host_server.join().map_err(|_| "host server panicked")??;
-
-    assert!(result.is_err());
-    let deadline = Instant::now() + Duration::from_millis(500);
-    while let Ok(event) = received.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-    {
-        assert!(
-            !matches!(event, Event::RequestFailed { .. }),
-            "the late response was reported: {event:?}"
-        );
-    }
     Ok(())
 }
 
@@ -205,8 +250,7 @@ fn forwards_chunked_host_responses_as_they_arrive() -> TestResult {
     let (listener, runtime, temporary) = start_test_runtime()?;
     let (release_sender, release_receiver) = mpsc::sync_channel(1);
     let host_server = thread::spawn(move || -> TestResult {
-        let (mut host, _) = listener.accept()?;
-        read_header_block(&mut host)?;
+        let (mut host, _) = accept_page(&listener)?;
         host.write_all(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\npart\r\n",
         )?;
@@ -236,8 +280,7 @@ fn forwards_close_delimited_host_responses_as_they_arrive() -> TestResult {
     let (listener, runtime, temporary) = start_test_runtime()?;
     let (release_sender, release_receiver) = mpsc::sync_channel(1);
     let host_server = thread::spawn(move || -> TestResult {
-        let (mut host, _) = listener.accept()?;
-        read_header_block(&mut host)?;
+        let (mut host, _) = accept_page(&listener)?;
         host.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\npart")?;
         host.flush()?;
         release_receiver.recv_timeout(Duration::from_secs(2))?;
@@ -265,8 +308,7 @@ fn forwards_close_delimited_host_responses_as_they_arrive() -> TestResult {
 fn stops_an_idle_stream_when_the_runtime_stops() -> TestResult {
     let (listener, runtime, temporary) = start_test_runtime()?;
     let host_server = thread::spawn(move || -> TestResult {
-        let (mut host, _) = listener.accept()?;
-        read_header_block(&mut host)?;
+        let (mut host, _) = accept_page(&listener)?;
         host.write_all(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
         )?;
@@ -314,6 +356,7 @@ fn start_test_runtime_reporting(
                 endpoint,
                 session_token: "test-session".to_owned(),
             },
+            foreground: true,
         },
         events,
     )?;
@@ -321,10 +364,7 @@ fn start_test_runtime_reporting(
 }
 
 fn serve_host(listener: &TcpListener) -> TestResult {
-    let (mut http, _) = listener.accept()?;
-    http.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let headers = read_header_block(&mut http)?;
-    let text = String::from_utf8(headers)?;
+    let (mut http, text) = accept_page(listener)?;
     let (request_line, headers) = text.split_once("\r\n").ok_or("missing request line")?;
     assert_eq!(request_line, "POST /api HTTP/1.1");
     let mut headers: Vec<_> = headers.lines().filter(|line| !line.is_empty()).collect();
@@ -348,10 +388,7 @@ fn serve_host(listener: &TcpListener) -> TestResult {
         "HTTP/1.1 201 Created Here\r\nSet-Cookie: first=1\r\nSet-Cookie: second=2\r\nX-Text: 東京\r\nContent-Length: 13\r\nConnection: close\r\n\r\nhost response".as_bytes(),
     )?;
 
-    let (mut websocket, _) = listener.accept()?;
-    websocket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let headers = read_header_block(&mut websocket)?;
-    let text = String::from_utf8(headers)?;
+    let (mut websocket, text) = accept_page(listener)?;
     let key = header_value(&text, "sec-websocket-key").ok_or("missing WebSocket key")?;
     assert_eq!(header_value(&text, "sec-websocket-extensions"), None);
     let accept = websocket_accept(key);
@@ -371,7 +408,6 @@ fn serve_host(listener: &TcpListener) -> TestResult {
 }
 
 fn serve_restarting_host(listener: &TcpListener) -> TestResult {
-    listener.set_nonblocking(true)?;
     let mut first = accept_request(listener, "GET / HTTP/1.1")?;
     first.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\no")?;
     drop(first);
@@ -387,9 +423,7 @@ fn serve_restarting_host(listener: &TcpListener) -> TestResult {
 
 #[cfg(unix)]
 fn serve_resetting_websocket(listener: &TcpListener) -> TestResult {
-    let (mut websocket, _) = listener.accept()?;
-    websocket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let headers = String::from_utf8(read_header_block(&mut websocket)?)?;
+    let (mut websocket, headers) = accept_page(listener)?;
     assert!(headers.starts_with("GET /@vite/client HTTP/1.1"));
     let key = header_value(&headers, "sec-websocket-key").ok_or("missing WebSocket key")?;
     let accept = websocket_accept(key);
@@ -429,32 +463,91 @@ fn reset_connection(stream: &TcpStream) -> TestResult {
 }
 
 fn serve_interrupted_post(listener: &TcpListener) -> TestResult {
-    listener.set_nonblocking(true)?;
     let mut post = accept_request(listener, "POST /api HTTP/1.1")?;
     post.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\no")?;
     drop(post);
 
-    if accept_before(listener, Duration::from_millis(300))?.is_some() {
+    if accept_page_before(listener, Duration::from_millis(300))?.is_some() {
         return Err("POST request was retried".into());
     }
     Ok(())
 }
 
 fn accept_request(listener: &TcpListener, expected: &str) -> TestResult<TcpStream> {
-    let mut stream = accept_before(listener, Duration::from_secs(2))?
-        .ok_or("host server did not receive a request")?;
-    stream.set_nonblocking(false)?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let request = String::from_utf8(read_header_block(&mut stream)?)?;
+    let (stream, request) = accept_page(listener)?;
     assert!(request.starts_with(expected));
     Ok(stream)
 }
 
-fn accept_before(listener: &TcpListener, timeout: Duration) -> TestResult<Option<TcpStream>> {
+/// The next connection to `listener` other than the dev socket, which it
+/// refuses, with its request headers.
+fn accept_page(listener: &TcpListener) -> TestResult<(TcpStream, String)> {
+    Ok(accept_page_before(listener, Duration::from_secs(2))?
+        .ok_or("host server did not receive a request")?)
+}
+
+fn accept_page_before(
+    listener: &TcpListener,
+    timeout: Duration,
+) -> TestResult<Option<(TcpStream, String)>> {
     let deadline = Instant::now() + timeout;
+    while let Some((mut stream, headers)) = accept_before(listener, deadline)? {
+        if header_value(&headers, "x-tokamak-dev-socket").is_none() {
+            return Ok(Some((stream, headers)));
+        }
+        stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")?;
+    }
+    Ok(None)
+}
+
+/// The next dev socket connection to `listener`, accepted, with its request
+/// headers.
+fn accept_dev_socket(listener: &TcpListener) -> TestResult<(TcpStream, String)> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while let Some((mut stream, headers)) = accept_before(listener, deadline)? {
+        if header_value(&headers, "x-tokamak-dev-socket") == Some("1") {
+            let key = header_value(&headers, "sec-websocket-key").ok_or("missing WebSocket key")?;
+            write!(
+                stream,
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+                websocket_accept(key)
+            )?;
+            return Ok((stream, headers));
+        }
+    }
+    Err("the dev socket did not connect".into())
+}
+
+/// Reads an event from the dev socket and replies to it with its name,
+/// returning the event's message.
+fn answer_event(socket: &mut TcpStream) -> TestResult<String> {
+    let (opcode, payload) = read_frame(socket)?;
+    assert_eq!(opcode, 0x1);
+    let message: serde_json::Value = serde_json::from_slice(&payload)?;
+    let reply = serde_json::json!({
+        "type": "reply",
+        "id": message["id"],
+        "reply": if message["name"] == "example.ping" { serde_json::json!({ "echo": message["name"] }) } else { serde_json::Value::Null },
+    });
+    write_frame(socket, 0x1, reply.to_string().as_bytes(), false)?;
+    Ok(String::from_utf8(payload)?)
+}
+
+/// The next connection to `listener` before `deadline`, with its request
+/// headers.
+fn accept_before(
+    listener: &TcpListener,
+    deadline: Instant,
+) -> TestResult<Option<(TcpStream, String)>> {
+    listener.set_nonblocking(true)?;
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return Ok(Some(stream)),
+            Ok((mut stream, _)) => {
+                stream.set_nonblocking(false)?;
+                stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+                let headers = String::from_utf8(read_header_block(&mut stream)?)?;
+                return Ok(Some((stream, headers)));
+            }
             Err(error) if error.kind() == ErrorKind::WouldBlock && Instant::now() < deadline => {
                 thread::sleep(Duration::from_millis(10));
             }

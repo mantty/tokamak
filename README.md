@@ -159,8 +159,7 @@ CLOUDFLARE_ENV=production tok build ios
 Never put secrets in packaged `vars`.
 
 Built apps also set `TOKAMAK_RUNTIME` to `"true"` in the Worker's `env` and
-`process.env`. Plugin helpers use it to serve the runtime's calls to endpoints
-under `/tokamak/`.
+`process.env`.
 
 `build/` holds output and reusable build data; `--build-dir PATH` moves both.
 An empty or stale cache builds normally. Changing only vars on Apple updates
@@ -355,12 +354,12 @@ tokamak({ ...base, name: process.env.APP_NAME ?? "My App" });
 ```
 
 In tokamak builds and development the entry Worker imports `module`, a path
-relative to the Vite root, for code that runs only on the device. It defaults
-to `src/tokamak.ts`, then `src/tokamak.js`, when one exists; a `module` that
-does not exist fails the build. Its top-level code runs whenever the Worker is
-evaluated, including during Astro's prerendering at build time, so keep it
-cheap and safe to run there. Builds for Cloudflare and the web do not include
-it.
+relative to the Vite root, for code that runs only on the device, such as
+[event](#events) listeners. It defaults to `src/tokamak.ts`, then
+`src/tokamak.js`, when one exists; a `module` that does not exist fails the
+build. Its top-level code runs whenever the Worker is evaluated, including
+during Astro's prerendering at build time, so keep it cheap and safe to run
+there. Builds for Cloudflare and the web do not include it.
 
 Every value is optional. Names retain their spelling and capitalization for
 display. Tokamak derives a lower-case ASCII slug for bundle filenames,
@@ -594,6 +593,77 @@ address to report, so `tok dev` stops. When Vite serves HTTPS, as with
 `@vitejs/plugin-basic-ssl`, the plugin reports the certificate in
 `server.https.cert`, and `tok dev` trusts only that certificate.
 
+The development app links the runtime's development code, which forwards its
+requests and events to the development server. Apps built with `tok build` leave
+it out.
+
+## Events
+
+The Worker reacts to native events with listeners it registers at the top
+level of `src/tokamak.ts` or the modules it imports:
+
+```ts
+// src/tokamak.ts
+import { onResume, onStart, onSuspend } from "@tokamakdev/tok/events";
+import { onPush } from "@tokamakdev/plugin-notifications/events";
+
+onStart((event, env, ctx) => {
+  ctx.waitUntil(env.DB.prepare("INSERT INTO launches (foreground) VALUES (?)").bind(event.foreground).run());
+});
+
+onPush(async (message, env) => ({ id: message.id, title: "New item", body: await env.ITEMS.get(message.id) }));
+```
+
+A listener receives `(event, env, ctx)`, as Cloudflare's `scheduled` and
+`queue` handlers do. `event` is plain data, `env` is the Worker's environment,
+typed as `Cloudflare.Env`, which `wrangler types` declares, and
+`ctx.waitUntil` keeps the event running until a promise settles.
+`@tokamakdev/tok/events` exports the app's events, and each plugin exports its
+own from its `/events` entry.
+
+| Event | Fires | `event` |
+|---|---|---|
+| `onStart` | Once per runtime start, including when the system starts the app in the background | `{ foreground: boolean }` |
+| `onResume` | Each time the app moves into the foreground, but not when it starts there | `{}` |
+| `onSuspend` | Each time the app moves out of the foreground | `{}` |
+
+| Platform | Resume | Suspend |
+|---|---|---|
+| iOS | The first scene enters the foreground | The last scene enters the background |
+| Android | The first activity starts (`ProcessLifecycleOwner`) | The last activity stops |
+| macOS | The app is unhidden, or its window is restored | The app is hidden, or its window is miniaturised |
+| Windows | The window is restored | The window is minimised |
+
+Other desktop actions, such as covering the window or switching Spaces, fire
+no event.
+
+- **Replies:** an event's reply is the first value, in registration order, that
+  a listener returns other than `undefined`. Plugins use it, as
+  `onPush` shows the notification its listeners return.
+- **Timing:** every event waits for `onStart`'s listeners, and `onResume` and
+  `onSuspend` run one at a time, in order. An event completes when its
+  listeners and their `waitUntil` promises settle, or at its deadline: 10
+  seconds, or 25 seconds for `onSuspend` on iOS, where the app holds a
+  background task while it runs. An event whose listeners have not all
+  returned by the deadline fails.
+- **Failures:** a listener that throws is reported with `reportError`, and the
+  others still run. Events are not retried.
+- **State:** each event runs in a fresh Worker invocation, as each request
+  does, so module state does not carry from one event to the next. Keep state
+  in a KV, D1 or R2 binding.
+- **Cost:** a packaged app runs no Worker for an event without listeners,
+  apart from `onStart`.
+
+Under `tok dev`, events reach the listeners in the development server's
+Worker, through Cloudflare's dev registry, and every event is delivered.
+Editing `src/tokamak.ts`, or a module it imports, replaces its listeners. The
+dev registry holds one Worker of each name: a second development server of the
+same Worker does not receive events, and after a development server is killed,
+the next one receives them only once its registration expires, 90 seconds
+later.
+
+Builds for Cloudflare and the web include no event code.
+
 ## Native plugins
 
 Native capabilities are provided by npm packages: `@tokamakdev/plugin-location`,
@@ -611,11 +681,9 @@ package as Node does, in the nearest `node_modules` of the project or a parent
 directory, so plugins installed at a workspace root are included. Call plugins
 from browser code. Each plugin's README describes its API.
 
-A plugin can also run Worker code: native builds post an event the plugin
-receives, such as a data-only push notification, to an endpoint under
-`/tokamak/` that the Worker's `fetch` serves with the plugin's helper. In
-`tok dev` the post reaches the development server. The helper responds 404 on
-Cloudflare, so the same Worker deploys unchanged.
+A plugin can also run Worker code through [events](#events), such as
+`onPush` from `@tokamakdev/plugin-notifications/events` for a data-only push
+notification.
 
 `tok build android` produces a release APK, which R8 shrinks by removing
 unused code; it keeps every class and member name. The keystore settings sign
@@ -646,7 +714,8 @@ refused request rejects with `NotAllowedError`.
 ## Example
 
 [The Astro example](examples/astro) exercises server rendering, static assets,
-navigation, WebSockets, and the native location plugin. It installs
+navigation, WebSockets, lifecycle events recorded in KV, and the native
+location plugin. It installs
 `@tokamakdev/tok` from this repository; its README lists the setup.
 
 ```sh
@@ -823,7 +892,7 @@ Platform-specific lint and build-test commands are kept in
 
 ### Packaged Worker runtime
 
-Each request owns a fresh QuickJS runtime, module graph, and temporary filesystem.
+Each request and event owns a fresh QuickJS runtime, module graph, and temporary filesystem.
 Storage bindings share their stores between requests.
 The native runtime installs Web globals before evaluating application modules.
 Supported builtin imports resolve to runtime-owned modules; they are not bundled

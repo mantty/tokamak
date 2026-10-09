@@ -202,7 +202,7 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
             version: version.as_deref(),
             development: Some((request.endpoint, request.session_token)),
             device_id: Some(request.device_id),
-            exported_symbols: &[],
+            exported_symbols: &[tokamak::DEVELOPMENT_ENTRY_POINT],
         },
     )
     .context("write development metadata")?;

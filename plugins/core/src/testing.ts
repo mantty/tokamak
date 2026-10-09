@@ -1,3 +1,5 @@
+import { dispatch as dispatchEvent, type Dispatched } from "./registry.js";
+
 /** A native transport that records the page's messages and replies as the native bridges do. */
 export class FakeNativeTransport {
   /** Every message the page posted, parsed. */
@@ -36,4 +38,24 @@ export function connectNative(): FakeNativeTransport {
 /** Removes the page's native transport. */
 export function disconnectNative(): void {
   Reflect.deleteProperty(globalThis, "__tokamakNative");
+}
+
+/**
+ * Runs the listeners of the event `name` as the runtime does, returning the reply, the events
+ * that have listeners, and what listeners threw, which the runtime reports with `reportError`.
+ */
+export async function dispatch(
+  name: string,
+  event: unknown,
+  env: unknown = {},
+  ctx: unknown = { waitUntil: () => undefined },
+): Promise<Dispatched & { reported: unknown[] }> {
+  const reported: unknown[] = [];
+  const previous = Reflect.get(globalThis, "reportError") as unknown;
+  globalThis.reportError = (error: unknown) => reported.push(error);
+  try {
+    return { ...(await dispatchEvent(name, event, env, ctx)), reported };
+  } finally {
+    Reflect.set(globalThis, "reportError", previous);
+  }
 }

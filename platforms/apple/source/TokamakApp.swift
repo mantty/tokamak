@@ -1,22 +1,43 @@
 import Foundation
 import TokamakRuntime
 
+#if os(iOS)
+  import UIKit
+#endif
+
 private let startupErrorFile = "startup-error.log"
+/// How long the Worker has for `resume` and `suspend`.
+private let lifecycleDeadline: TimeInterval = 10
+#if os(iOS)
+  /// The system gives an app about 30 seconds after it leaves the foreground.
+  private let suspendDeadline: TimeInterval = 25
+#endif
 
 /// The tokamak runtime and native plugins of this process. Both outlive any
 /// WebView, so plugins receive app events before a page loads and a Worker
 /// event can run while no page is loaded.
-final class TokamakHost {
+final class TokamakApp {
   private(set) var plugins: [any TokamakPlugin] = []
   private var runtime: Result<RuntimeHandle, Error>?
   private var waiting: [(Result<RuntimeHandle, Error>) -> Void] = []
+  /// Delivers `resume` and `suspend` one at a time, in order.
+  private let lifecycle = DispatchQueue(label: "tokamak.lifecycle")
+  #if os(iOS)
+    /// The scenes in the foreground.
+    private var foregroundScenes = 0
+  #endif
 
-  /// Creates the plugins and starts the runtime in the background. Call it
-  /// before launch finishes.
+  /// Creates the plugins. Call it before launch finishes.
   init() {
-    plugins = tokamakPlugins(host: self)
+    plugins = tokamakPlugins(app: self)
+  }
+
+  /// Starts the runtime in the background, which delivers `start` with
+  /// `foreground`. Call it once, on the main thread.
+  func start(foreground: Bool) {
+    dispatchPrecondition(condition: .onQueue(.main))
     DispatchQueue.global(qos: .userInitiated).async {
-      let result = Result { try RuntimeHandle() }
+      let result = Result { try RuntimeHandle(foreground: foreground) }
       DispatchQueue.main.async { self.started(result) }
     }
   }
@@ -32,15 +53,17 @@ final class TokamakHost {
     }
   }
 
-  /// Posts `body`, JSON-serialisable, to the Worker's `/tokamak/<name>`
-  /// endpoint and returns the response body, retrying a failed post. Fails
-  /// unless the Worker responds 200 within `timeout`, which includes runtime
-  /// startup. Call it on the main thread; `completion` runs on the main thread.
-  func call(
+  /// Delivers the event `name` with `event`, JSON-serialisable, to the
+  /// Worker's listeners on `queue`, and calls `completion` on the main thread
+  /// with their reply, parsed from JSON, or nil. Fails unless they return
+  /// within `timeout`, which includes runtime startup. Call it on the main
+  /// thread.
+  func emit(
     _ name: String,
-    body: Any,
+    event: Any,
     timeout: TimeInterval,
-    completion: @escaping (Result<Data, Error>) -> Void
+    on queue: DispatchQueue = .global(qos: .userInitiated),
+    completion: @escaping (Result<Any?, Error>) -> Void
   ) {
     let deadline = Date() + timeout
     whenStarted { result in
@@ -48,15 +71,68 @@ final class TokamakHost {
       case .failure(let error):
         completion(.failure(error))
       case .success(let runtime):
-        DispatchQueue.global(qos: .userInitiated).async {
+        queue.async {
           let outcome = Result {
-            try runtime.call(name, body: body, timeout: deadline.timeIntervalSinceNow)
+            try runtime.emit(name, event: event, timeout: deadline.timeIntervalSinceNow)
           }
           DispatchQueue.main.async { completion(outcome) }
         }
       }
     }
   }
+
+  /// Delivers `resume` when the app moves into the foreground and `suspend`
+  /// when it moves out. Call it on the main thread.
+  func moved(toForeground foreground: Bool) {
+    let name = foreground ? "resume" : "suspend"
+    #if os(iOS)
+      // The system suspends the app soon after it leaves the foreground
+      // unless a background task holds it there.
+      var task = UIBackgroundTaskIdentifier.invalid
+      let finish = {
+        guard task != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(task)
+        task = .invalid
+      }
+      if !foreground {
+        task = UIApplication.shared.beginBackgroundTask(
+          withName: "tokamak suspend", expirationHandler: finish)
+      }
+      let timeout = foreground ? lifecycleDeadline : suspendDeadline
+    #else
+      let finish = {}
+      let timeout = lifecycleDeadline
+    #endif
+    emit(name, event: [String: Any](), timeout: timeout, on: lifecycle) { result in
+      if case .failure(let error) = result {
+        print("tokamak \(name) failed: \(error)")
+      }
+      finish()
+    }
+  }
+
+  #if os(iOS)
+    /// Delivers `resume` as the first scene enters the foreground.
+    func sceneWillEnterForeground() {
+      foregroundScenes += 1
+      if foregroundScenes == 1 {
+        moved(toForeground: true)
+      }
+    }
+
+    /// Delivers `suspend` as the last scene leaves the foreground.
+    func sceneDidEnterBackground() {
+      foregroundScenes -= 1
+      if foregroundScenes == 0 {
+        moved(toForeground: false)
+      }
+    }
+
+    /// Whether a scene is in the foreground.
+    var isInForeground: Bool {
+      foregroundScenes > 0
+    }
+  #endif
 
   func didRegisterForRemoteNotifications(deviceToken: Data) {
     for plugin in plugins {
@@ -147,7 +223,8 @@ final class RuntimeHandle {
   let appHost: String
   private var handle: UnsafeMutableRawPointer?
 
-  init() throws {
+  /// Starts the runtime, which delivers `start` with `foreground`.
+  init(foreground: Bool) throws {
     guard
       let appHost = Bundle.main.object(forInfoDictionaryKey: "TokamakHost") as? String,
       !appHost.isEmpty
@@ -172,6 +249,7 @@ final class RuntimeHandle {
                   appHost,
                   endpoint,
                   sessionToken,
+                  foreground,
                   error.baseAddress,
                   error.count
                 )
@@ -196,6 +274,7 @@ final class RuntimeHandle {
                   statePath,
                   storagePath,
                   appHost,
+                  foreground,
                   error.baseAddress,
                   error.count
                 )
@@ -232,38 +311,40 @@ final class RuntimeHandle {
     return port
   }
 
-  /// Posts `body` to the Worker's `/tokamak/<name>` endpoint, retrying a
-  /// failed post, and blocks until it responds 200 or `timeout` passes.
-  func call(_ name: String, body: Any, timeout: TimeInterval) throws -> Data {
-    guard JSONSerialization.isValidJSONObject([body]) else {
-      throw RuntimeError.runtime("the \(name) call body is not JSON")
+  /// Delivers the event `name` with `event`, JSON-serialisable, to the
+  /// Worker's listeners, blocking until they return or `timeout` passes, and
+  /// returns their reply, parsed from JSON, or nil.
+  func emit(_ name: String, event: Any, timeout: TimeInterval) throws -> Any? {
+    guard JSONSerialization.isValidJSONObject([event]) else {
+      throw RuntimeError.runtime("the \(name) event is not JSON")
     }
-    let body = String(
-      decoding: try JSONSerialization.data(withJSONObject: body, options: .fragmentsAllowed),
+    let event = String(
+      decoding: try JSONSerialization.data(withJSONObject: event, options: .fragmentsAllowed),
       as: UTF8.self
     )
-    var response = TokamakBytes()
+    var reply = TokamakBytes()
     var error = [CChar](repeating: 0, count: 1024)
     let succeeded = name.withCString { name in
-      body.withCString { body in
+      event.withCString { event in
         error.withUnsafeMutableBufferPointer { error in
-          tokamak_runtime_call(
+          tokamak_runtime_emit(
             handle,
             name,
-            body,
+            event,
             UInt64(max(timeout, 0) * 1000),
-            &response,
+            &reply,
             error.baseAddress,
             error.count
           )
         }
       }
     }
-    defer { tokamak_bytes_free(response) }
-    guard succeeded else {
+    defer { tokamak_bytes_free(reply) }
+    guard succeeded, let json = reply.contents else {
       throw RuntimeError.runtime(String(cString: error))
     }
-    return response.contents ?? Data()
+    let value = try JSONSerialization.jsonObject(with: json, options: .fragmentsAllowed)
+    return value is NSNull ? nil : value
   }
 
   func serverAuthority(host: String) -> AuthenticationMaterial<Data> {

@@ -1,7 +1,9 @@
 # tokamak Astro Example
 
 Astro SSR app using the Cloudflare adapter. It exercises server rendering, one
-prerendered route, asset serving, navigation, and a WebSocket endpoint.
+prerendered route, asset serving, navigation, a WebSocket endpoint, and
+lifecycle events: `src/tokamak.ts` records each start, resume and suspend in
+the `EVENTS` KV namespace, and the Events page lists them.
 
 `astro.config.mjs` adds the tokamak Vite plugin with the app's tokamak
 configuration. The example installs `@tokamakdev/tok` from the workspace, so

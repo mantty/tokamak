@@ -6,5 +6,6 @@
   "assets": {
     "directory": "dist/client",
     "binding": "ASSETS"
-  }
+  },
+  "kv_namespaces": [{ "binding": "EVENTS", "id": "events" }]
 }

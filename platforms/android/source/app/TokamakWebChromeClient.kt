@@ -13,7 +13,7 @@ private val RESOURCE_PERMISSIONS =
 
 /** Grants the app origin's media capture requests once the app holds their permissions. */
 internal class TokamakWebChromeClient(
-    private val tokamak: TokamakHost,
+    private val tokamak: TokamakApplication,
     private val host: String,
 ) : WebChromeClient() {
     private val waiting = mutableSetOf<PermissionRequest>()
@@ -30,7 +30,7 @@ internal class TokamakWebChromeClient(
             return
         }
         waiting += request
-        tokamak.requestPermissions(missing.toSet()) { if (waiting.remove(request)) decide(request) }
+        tokamak.permissionRequests.request(missing.toSet()) { if (waiting.remove(request)) decide(request) }
     }
 
     override fun onPermissionRequestCanceled(request: PermissionRequest) {
@@ -45,5 +45,5 @@ internal class TokamakWebChromeClient(
         request.resources.map(RESOURCE_PERMISSIONS::getValue).filterNot(::isGranted)
 
     private fun isGranted(permission: String): Boolean =
-        tokamak.context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+        tokamak.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 }

@@ -218,7 +218,7 @@ test_builds_each_plugin_as_a_library_module() {
   contains "$module/build.gradle" "implementation 'com.example:messaging:1.2.3'"
   contains "$gradle/settings.gradle" "include ':plugins:alerts'"
   contains "$gradle/app/build.gradle" "implementation project(':plugins:alerts')"
-  contains "$gradle/app/src/main/kotlin/com/tokamak/runtime/TokamakPluginRegistry.kt" "test.alerts.Plugin(host),"
+  contains "$gradle/app/src/main/kotlin/com/tokamak/runtime/TokamakPluginRegistry.kt" 'test.alerts.Plugin(app.host("alerts")),'
   contains "$gradle/app/src/main/AndroidManifest.xml" '<uses-permission android:name="android.permission.INTERNET" />'
   lacks "$gradle/app/src/main/AndroidManifest.xml" USE_BIOMETRIC
 }
@@ -235,30 +235,44 @@ test_rejects_invalid_plugin_classes_and_dependencies() {
   fails_with "plugin 'alerts' has invalid android dependency 'com.example:library:1.0''" entrypoint
 }
 
-# Whether the runtime library of the last build exports the storage entry point
-# and contains SQLite, which writes its header into every database.
-linked_storage() {
+# Whether the runtime library of the last build exports the entry point $1 and
+# contains $2, a string only that part's code holds.
+linked() {
   local library=$gradle/app/src/main/jniLibs/arm64-v8a/libtokamak.so
   local symbols
   symbols=$("$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-nm --dynamic --defined-only "$library")
   [[ $symbols == *" Java_"* ]] || fail "$library exports no JNI functions"
   echo "$library: $(wc -c < "$library") bytes" >&2
   printf '%s %s\n' \
-    "$([[ $symbols == *tokamak_storage* ]] && echo exported || echo absent)" \
-    "$(grep -q 'SQLite format 3' "$library" && echo sqlite || echo no-sqlite)"
+    "$([[ $symbols == *"$1"* ]] && echo exported || echo absent)" \
+    "$(grep -qF -- "$2" "$library" && echo linked || echo omitted)"
 }
 
 test_links_storage_from_the_platform_pack_while_the_app_declares_it() {
-  new_case linked
+  new_case linked-storage
   entrypoint
-  [[ $(linked_storage) == "absent no-sqlite" ]] || fail "storage is linked without a storage binding"
+  # SQLite writes this header into every database.
+  [[ $(linked tokamak_storage 'SQLite format 3') == "absent omitted" ]] || fail "storage is linked without a storage binding"
   printf '%s\n' tokamak_storage > "$input/metadata/exported-symbols"
   entrypoint
-  [[ $(linked_storage) == "exported sqlite" ]] || fail "storage is not linked with a storage binding"
+  [[ $(linked tokamak_storage 'SQLite format 3') == "exported linked" ]] || fail "storage is not linked with a storage binding"
+}
+
+test_links_development_from_the_platform_pack_while_the_app_declares_it() {
+  new_case linked-development
+  entrypoint
+  # The dev socket marks its requests with this header.
+  [[ $(linked tokamak_development x-tokamak-dev-socket) == "absent omitted" ]] || fail "development is linked into a release app"
+  printf '%s\n' tokamak_development > "$input/metadata/exported-symbols"
+  entrypoint
+  [[ $(linked tokamak_development x-tokamak-dev-socket) == "exported linked" ]] || fail "development is not linked while the app declares it"
 }
 
 if [[ -n "${TOKAMAK_TEST_ANDROID_PACK:-}" ]]; then
-  tests=(test_links_storage_from_the_platform_pack_while_the_app_declares_it)
+  tests=(
+    test_links_storage_from_the_platform_pack_while_the_app_declares_it
+    test_links_development_from_the_platform_pack_while_the_app_declares_it
+  )
 else
   tests=(
     test_builds_shrunk_lint_checked_release_apps
