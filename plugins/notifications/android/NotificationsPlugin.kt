@@ -24,6 +24,9 @@ private const val SHOW_IN_FOREGROUND = "show-in-foreground"
 
 /** FCM allows about 10 seconds for a message, including starting the app. */
 private const val PUSH_DEADLINE_MILLIS = 8_000L
+
+/** How long the Worker's listeners have for an opened notification. */
+private const val OPENED_DEADLINE_MILLIS = 10_000L
 private const val FCM_MESSAGE_ID_EXTRA = "google.message_id"
 private val LISTENERS = setOf("onMessage", "onNotificationOpened", "onSubscriptionChange")
 
@@ -85,7 +88,11 @@ class TokamakNotificationsPlugin(
                 ?: return
         intent.removeExtra(OPENED_EXTRA)
         intent.removeExtra(FCM_MESSAGE_ID_EXTRA)
-        emit("onNotificationOpened", opened)
+        notify("onNotificationOpened", opened)
+        Thread {
+            runCatching { host.emit("opened", opened.toString(), OPENED_DEADLINE_MILLIS) }
+                .onFailure { Log.w("tokamak", "opened notification failed: ${it.message}") }
+        }.start()
     }
 
     /** Reports a replaced token; `subscribe` reports the first. */
@@ -93,35 +100,34 @@ class TokamakNotificationsPlugin(
         val previous = preferences.getString(TOKEN, null) ?: return
         if (!preferences.getBoolean(SUBSCRIBED, false) || token == previous) return
         preferences.edit().putString(TOKEN, token).apply()
-        context.mainExecutor.execute { emit("onSubscriptionChange", fcmSubscription(token)) }
+        context.mainExecutor.execute { notify("onSubscriptionChange", fcmSubscription(token)) }
     }
 
     /**
-     * Delivers an FCM message to the page. Posts a data-only message to the Worker's push
-     * endpoint and shows the notification it returns. FCM calls this off the main thread.
+     * Delivers an FCM message to the page, and a data-only message to the Worker's `onPush`
+     * listeners, showing the notification they reply with. FCM calls this off the main thread.
      */
     internal fun onMessageReceived(message: JSONObject, visible: Boolean) {
-        context.mainExecutor.execute { emit("onMessage", message) }
+        context.mainExecutor.execute { notify("onMessage", message) }
         if (visible) {
             if (preferences.getBoolean(SHOW_IN_FOREGROUND, false)) notifier.post(content(message), "push")
             return
         }
-        runCatching { host.call("push", message.toString(), PUSH_DEADLINE_MILLIS) }
-            .onSuccess(::showReturned)
+        runCatching { host.emit("push", message.toString(), PUSH_DEADLINE_MILLIS) }
+            .onSuccess(::showReply)
             .onFailure { Log.w("tokamak", "push notification failed: ${it.message}") }
     }
 
-    /** Shows the notification a push response returns, if any. */
-    private fun showReturned(response: String) {
-        if (response.isEmpty()) return
+    /** Shows the notification `onPush` listeners reply with, if any. */
+    private fun showReply(reply: String) {
         runCatching {
-            val returned = JSONTokener(response).nextValue()
-            if (returned == JSONObject.NULL) return
-            notifier.post(Content.parse(returned as JSONObject, scheduled = false), "local")
-        }.onFailure { Log.w("tokamak", "the push response is not a notification", it) }
+            val notification = JSONTokener(reply).nextValue()
+            if (notification == JSONObject.NULL) return
+            notifier.post(Content.parse(notification as JSONObject, scheduled = false), "local")
+        }.onFailure { Log.w("tokamak", "the push reply is not a notification", it) }
     }
 
-    private fun emit(method: String, value: JSONObject) {
+    private fun notify(method: String, value: JSONObject) {
         val current = listeners[method].orEmpty().values.toList()
         if (method == "onNotificationOpened" && current.isEmpty()) heldOpened += value
         current.forEach { it(Result.success(value)) }

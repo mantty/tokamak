@@ -29,6 +29,8 @@ mod compiler;
 #[cfg(feature = "native")]
 mod dev_proxy;
 #[cfg(feature = "native")]
+mod dev_socket;
+#[cfg(feature = "native")]
 mod dispatcher;
 #[cfg(feature = "native")]
 mod event_loop;
@@ -57,9 +59,7 @@ mod storage;
 #[cfg(all(test, feature = "native"))]
 mod tests;
 #[cfg(feature = "native")]
-pub use dev_proxy::DevProxyConfig;
-#[cfg(feature = "native")]
-pub use server::{Config, DevelopmentConfig, Runtime};
+pub use server::{Config, DevProxyConfig, DevelopmentConfig, Runtime};
 #[cfg(feature = "native")]
 mod compat;
 mod env_vars;
@@ -69,6 +69,8 @@ mod readiness;
 mod tls;
 #[cfg(feature = "native")]
 mod transport;
+#[cfg(feature = "native")]
+mod worker_events;
 
 use thiserror::Error as Fail;
 
@@ -89,8 +91,18 @@ pub use quickjs::Error as QuickJsError;
 pub use quickjs::compile_module;
 
 /// The symbol the runtime's storage part exports its entry point as. An app
-/// links the part only when its executable exports this symbol.
+/// links the part only when the binary holding the runtime exports this
+/// symbol.
 pub const STORAGE_ENTRY_POINT: &str = "tokamak_storage";
+
+/// The symbol the runtime's development part exports its entry point as. An
+/// app links the part, which [`Runtime::start_development`] needs, only when
+/// the binary holding the runtime exports this symbol.
+pub const DEVELOPMENT_ENTRY_POINT: &str = "tokamak_development";
+
+/// The header that marks the development app's dev WebSocket, which carries
+/// its events, so `tok dev`'s relay forwards it to the tokamak Vite plugin.
+pub const DEV_SOCKET_HEADER: &str = "x-tokamak-dev-socket";
 
 /// Runtime result type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -130,6 +142,10 @@ pub enum Error {
     #[cfg(feature = "native")]
     #[error("certificate state is unavailable")]
     CertificatesUnavailable,
+    /// An event was not delivered to the Worker's listeners.
+    #[cfg(feature = "native")]
+    #[error("{0}")]
+    Event(String),
 }
 
 /// Return the URL a shell's `WebView` loads.

@@ -14,7 +14,9 @@ use std::sync::Arc;
 use rquickjs::{Ctx, Module};
 
 use crate::env_vars::StorageBinding;
+use crate::gateway::Handler;
 use crate::packaging::PackageLayout;
+use crate::server::DevProxyConfig;
 
 /// The storage part's entry point.
 pub(crate) struct StorageEntry {
@@ -35,12 +37,38 @@ pub(crate) trait StorageRuntime: Debug + Send + Sync {
     fn module<'js>(&self, ctx: &Ctx<'js>, name: &str) -> Option<rquickjs::Result<Module<'js>>>;
 }
 
+/// The development part's entry point.
+pub(crate) struct DevelopmentEntry {
+    /// The handler that forwards requests and events to the development
+    /// server `config` names.
+    pub(crate) handler: fn(&DevProxyConfig) -> io::Result<Arc<dyn Handler>>,
+}
+
 /// The storage part, when the app's link kept it.
 pub(crate) fn storage() -> Option<&'static StorageEntry> {
-    let name = CString::new(crate::STORAGE_ENTRY_POINT).ok()?;
-    let address = exported(&name)?;
     // SAFETY: the storage part exports its `StorageEntry` under this name.
-    Some(unsafe { &*address.cast::<StorageEntry>() })
+    unsafe { entry(crate::STORAGE_ENTRY_POINT) }
+}
+
+/// The development part, when the app's link kept it.
+pub(crate) fn development() -> Option<&'static DevelopmentEntry> {
+    // SAFETY: the development part exports its `DevelopmentEntry` under this
+    // name.
+    unsafe { entry(crate::DEVELOPMENT_ENTRY_POINT) }
+}
+
+/// The entry point the image containing the runtime exports as `name`.
+///
+/// # Safety
+///
+/// The symbol `name` must be an immutable `static` `T` of this build of the
+/// runtime.
+unsafe fn entry<T>(name: &str) -> Option<&'static T> {
+    let name = CString::new(name).ok()?;
+    let address = exported(&name)?;
+    // SAFETY: the caller guarantees the symbol is a `T` that is never
+    // written, and the image holding it stays loaded while the app runs.
+    Some(unsafe { &*address.cast::<T>() })
 }
 
 /// The address of the symbol `name` the image containing the runtime

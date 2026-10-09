@@ -13,9 +13,15 @@
   "dependencies": {
     "@astrojs/cloudflare": "13.1.8",
     "@tailwindcss/vite": "^4.2.2",
+    "@tokamakdev/plugin": "link:../../plugins/core",
     "@tokamakdev/plugin-location": "link:../../plugins/location",
     "@tokamakdev/tok": "file:../../tokamak-cli/npm",
     "astro": "6.1.5",
     "tailwindcss": "^4.2.2"
+  },
+  "pnpm": {
+    "overrides": {
+      "@tokamakdev/plugin": "link:../../plugins/core"
+    }
   }
 }

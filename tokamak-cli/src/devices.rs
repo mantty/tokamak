@@ -599,9 +599,21 @@ pub(super) fn install_and_launch_android(
         &["-s", device_id, "install", "-r", &bundle],
         "install the app on Android",
     )?;
+    // Monkey fails to send system key events on devices without hardware
+    // keys, such as emulators.
     run_action(
         &adb,
-        &["-s", device_id, "shell", "monkey", "-p", identifier, "1"],
+        &[
+            "-s",
+            device_id,
+            "shell",
+            "monkey",
+            "--pct-syskeys",
+            "0",
+            "-p",
+            identifier,
+            "1",
+        ],
         "launch the app on Android",
     )
 }

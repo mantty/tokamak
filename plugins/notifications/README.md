@@ -119,57 +119,31 @@ Every field is optional.
 
 ### Data-only messages
 
-In native builds, the plugin posts a message without a title or body to the
-Worker's `/tokamak/push` endpoint, whether the app is in the foreground, in the
-background, or started by the message. `handlePushRequest` serves the endpoint.
-Route `POST /tokamak/push` to it, in a plain Worker:
+In native builds, the Worker's `onPush` listeners receive each message without
+a title or body, whether the app is in the foreground, in the background, or
+started by the message. Register them in `src/tokamak.ts`, the module the
+tokamak Vite plugin runs only on the device:
 
 ```ts
-import { handlePushRequest } from "@tokamakdev/plugin-notifications/worker";
+// src/tokamak.ts
+import { onPush } from "@tokamakdev/plugin-notifications/events";
 
-export default {
-  async fetch(request, env, ctx) {
-    if (new URL(request.url).pathname === "/tokamak/push") {
-      return handlePushRequest<{ itemId: string }>(request, async (message) => {
-        const item = await fetch(`https://api.example.com/items/${message.data.itemId}`);
-        // Return a notification to show it, or return nothing.
-        return { id: `item-${message.data.itemId}`, title: "New item", body: (await item.json()).summary };
-      });
-    }
-    // ...
-  },
-};
+onPush(async (message) => {
+  const item = await fetch(`https://api.example.com/items/${String(message.data.itemId)}`);
+  // Return a notification to show it, or return nothing.
+  return { id: `item-${String(message.data.itemId)}`, title: "New item", body: (await item.json()).summary };
+});
 ```
 
-or in a framework's server route, such as `src/pages/tokamak/push.ts` in Astro:
+`message` is the `Message`, whose `data` is `Record<string, unknown>`; FCM
+delivers every `data` value as a string. The first notification a listener
+returns is shown as `show` shows one. The page also receives the message
+through `onMessage` while it is loaded. Builds for Cloudflare and the web
+include no listeners.
 
-```ts
-import type { APIRoute } from "astro";
-import { handlePushRequest } from "@tokamakdev/plugin-notifications/worker";
-
-export const POST: APIRoute = ({ request }) =>
-  handlePushRequest<{ itemId: string }>(request, (message) => {
-    // ...
-  });
-```
-
-`message` is the `Message`, with `data` of the type argument's type, which is
-not checked; FCM delivers every `data` value as a string. A returned
-notification is shown as `show` shows one. The page also receives the message
-through `onMessage` while it is loaded.
-
-`handlePushRequest` accepts requests in a tokamak app, where
-`process.env.TOKAMAK_RUNTIME` is `"true"`, and in development, where
-`process.env.NODE_ENV` is `development`, as in the development server `tok dev`
-delivers messages to. It responds 404 otherwise, so the endpoint serves nothing
-on Cloudflare. A build made with `NODE_ENV=development`, or a Worker that
-declares `TOKAMAK_RUNTIME` itself, accepts every request.
-
-An attempt waits for a 200 response until the plugin's time for the message
-runs out. After a failed attempt, the runtime tries again 1 second later, up to
-three attempts, while that time lasts, so a handler can run more than once for
-one message. The plugin logs a message it could not deliver to the device log
-as `push notification failed: <reason>`.
+The listeners have until the plugin's time for the message runs out, which
+includes starting the app. The plugin logs a message it could not deliver to
+the device log as `push notification failed: <reason>`.
 
 The platforms limit background delivery:
 
@@ -189,6 +163,19 @@ push. The plugin holds notifications opened before a page listens, including
 the one that launched the app, and delivers them to the first listener.
 Android does not pass the title or body of an FCM notification the system
 showed, so those are null.
+
+In native builds, the Worker's `onNotificationOpened` listeners, from
+`@tokamakdev/plugin-notifications/events`, also receive each opened
+notification, with the same `OpenedNotification`:
+
+```ts
+// src/tokamak.ts
+import { onNotificationOpened } from "@tokamakdev/plugin-notifications/events";
+
+onNotificationOpened((opened, env, ctx) => {
+  ctx.waitUntil(env.OPENS.put(opened.id, opened.source));
+});
+```
 
 ## Web
 

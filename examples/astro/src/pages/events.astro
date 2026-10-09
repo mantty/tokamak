@@ -1,0 +1,24 @@
+---
+// SSR page: lists the lifecycle events src/tokamak.ts records.
+import { env } from "cloudflare:workers";
+import Base from "../layouts/Base.astro";
+
+// Keys begin with the time, so the last are the newest.
+const { keys } = await env.EVENTS.list();
+const events = keys.slice(-20).reverse();
+---
+
+<Base title="Events - tokamak Example">
+  <h1 class="text-3xl font-bold text-white mb-6">Events</h1>
+
+  <div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
+    <p class="text-indigo-300 mb-4">
+      The app's start, resume and suspend events, which src/tokamak.ts records
+      in the EVENTS KV namespace. Reload to see new ones.
+    </p>
+    <ul class="font-mono text-sm bg-indigo-950/50 rounded-lg p-3 space-y-1">
+      {events.length === 0 && <li class="text-indigo-400">No events yet</li>}
+      {events.map(({ name }) => <li class="text-white">{name}</li>)}
+    </ul>
+  </div>
+</Base>

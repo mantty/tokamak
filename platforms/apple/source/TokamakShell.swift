@@ -219,7 +219,7 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
 }
 
 private final class TokamakController {
-  private let host: TokamakHost
+  private let app: TokamakApp
   private var runtime: RuntimeHandle?
   private var navigation: NavigationDelegate?
   private var pluginBridge: TokamakPluginBridge?
@@ -227,8 +227,8 @@ private final class TokamakController {
   private var dataStore: WKWebsiteDataStore?
   private var proxyPort: UInt16?
 
-  init(host: TokamakHost) {
-    self.host = host
+  init(app: TokamakApp) {
+    self.app = app
   }
 
   deinit {
@@ -236,7 +236,7 @@ private final class TokamakController {
   }
 
   func start(frame: CGRect, completion: @escaping (WKWebView) -> Void) {
-    host.whenStarted { result in
+    app.whenStarted { result in
       switch result {
       case .success(let runtime):
         self.runtime = runtime
@@ -274,7 +274,7 @@ private final class TokamakController {
     #endif
     configuration.mediaTypesRequiringUserActionForPlayback = []
 
-    let pluginBridge = TokamakPluginBridge(host: runtime.appHost, plugins: host.plugins)
+    let pluginBridge = TokamakPluginBridge(host: runtime.appHost, plugins: app.plugins)
     pluginBridge.install(in: configuration.userContentController)
     let navigation = NavigationDelegate(runtime: runtime, pluginBridge: pluginBridge)
     self.navigation = navigation
@@ -310,9 +310,11 @@ private final class TokamakController {
 
 #if os(macOS)
   private final class TokamakMacApplicationDelegate: NSObject, NSApplicationDelegate {
-    private lazy var host = TokamakHost()
-    private lazy var controller = TokamakController(host: host)
+    private lazy var app = TokamakApp()
+    private lazy var controller = TokamakController(app: app)
     private var window: NSWindow?
+    /// Whether the app is shown and its window is not miniaturised.
+    private var visible = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
       let window = NSWindow(
@@ -327,6 +329,9 @@ private final class TokamakController {
       window.makeKeyAndOrderFront(nil)
       NSApplication.shared.activate(ignoringOtherApps: true)
       self.window = window
+      visible = !NSApplication.shared.isHidden
+      app.start(foreground: visible)
+      observeVisibility()
 
       guard let content = window.contentView else { return }
       controller.start(frame: content.bounds) { webView in
@@ -343,21 +348,45 @@ private final class TokamakController {
       _ application: NSApplication,
       didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
-      host.didRegisterForRemoteNotifications(deviceToken: deviceToken)
+      app.didRegisterForRemoteNotifications(deviceToken: deviceToken)
     }
 
     func application(
       _ application: NSApplication,
       didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
-      host.didFailToRegisterForRemoteNotifications(error: error)
+      app.didFailToRegisterForRemoteNotifications(error: error)
     }
 
     func application(
       _ application: NSApplication,
       didReceiveRemoteNotification userInfo: [String: Any]
     ) {
-      host.didReceiveRemoteNotification(userInfo) { _ in }
+      app.didReceiveRemoteNotification(userInfo) { _ in }
+    }
+
+    /// Delivers `resume` and `suspend` as the app is hidden or shown, and as
+    /// its window is miniaturised or restored.
+    private func observeVisibility() {
+      let changes = [
+        NSApplication.didHideNotification,
+        NSApplication.didUnhideNotification,
+        NSWindow.didMiniaturizeNotification,
+        NSWindow.didDeminiaturizeNotification,
+      ]
+      for change in changes {
+        _ = NotificationCenter.default.addObserver(forName: change, object: nil, queue: .main) {
+          [weak self] _ in
+          self?.visibilityChanged()
+        }
+      }
+    }
+
+    private func visibilityChanged() {
+      let visible = !NSApplication.shared.isHidden && window?.isMiniaturized == false
+      guard visible != self.visible else { return }
+      self.visible = visible
+      app.moved(toForeground: visible)
     }
   }
 
@@ -393,20 +422,32 @@ private final class TokamakController {
 
   private class TokamakIOSApplicationDelegate: UIResponder, UIApplicationDelegate {
     /// Exists from launch, whether or not a scene connects.
-    let host = TokamakHost()
+    let app = TokamakApp()
+
+    /// Starts the runtime once launch finishes. A scene a user launches the
+    /// app into has entered the foreground by then.
+    func application(
+      _ application: UIApplication,
+      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+      DispatchQueue.main.async {
+        self.app.start(foreground: self.app.isInForeground)
+      }
+      return true
+    }
 
     func application(
       _ application: UIApplication,
       didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
-      host.didRegisterForRemoteNotifications(deviceToken: deviceToken)
+      app.didRegisterForRemoteNotifications(deviceToken: deviceToken)
     }
 
     func application(
       _ application: UIApplication,
       didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
-      host.didFailToRegisterForRemoteNotifications(error: error)
+      app.didFailToRegisterForRemoteNotifications(error: error)
     }
   }
 
@@ -416,7 +457,7 @@ private final class TokamakController {
       didReceiveRemoteNotification userInfo: [AnyHashable: Any],
       fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
-      host.didReceiveRemoteNotification(userInfo) { result in
+      app.didReceiveRemoteNotification(userInfo) { result in
         switch result {
         case .newData: completionHandler(.newData)
         case .noData: completionHandler(.noData)
@@ -431,6 +472,9 @@ private final class TokamakController {
   private final class TokamakSceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
     private var controller: TokamakController?
+    private var app: TokamakApp {
+      (UIApplication.shared.delegate as! TokamakIOSApplicationDelegate).app
+    }
 
     func scene(
       _ scene: UIScene,
@@ -438,14 +482,13 @@ private final class TokamakController {
       options connectionOptions: UIScene.ConnectionOptions
     ) {
       guard let scene = scene as? UIWindowScene else { return }
-      let host = (UIApplication.shared.delegate as! TokamakIOSApplicationDelegate).host
       let viewController = UIViewController()
       let window = UIWindow(windowScene: scene)
       window.rootViewController = viewController
       window.makeKeyAndVisible()
       self.window = window
 
-      let controller = TokamakController(host: host)
+      let controller = TokamakController(app: app)
       controller.start(frame: viewController.view.bounds) { webView in
         webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         viewController.view.addSubview(webView)
@@ -454,7 +497,12 @@ private final class TokamakController {
     }
 
     func sceneWillEnterForeground(_ scene: UIScene) {
+      app.sceneWillEnterForeground()
       controller?.restoreGateway()
+    }
+
+    func sceneDidEnterBackground(_ scene: UIScene) {
+      app.sceneDidEnterBackground()
     }
 
     /// Releases the scene's window and page, which a reconnection recreates.

@@ -10,7 +10,7 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "dependencies": {
+  "peerDependencies": {
     "@tokamakdev/plugin": "^0.1.0"
   },
   "files": [

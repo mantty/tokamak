@@ -11,7 +11,11 @@ struct TokamakPluginError: Error {
 
 typealias TokamakPluginReply = (Result<Any?, TokamakPluginError>) -> Void
 
-final class TokamakHost {}
+final class TokamakApp {}
+
+final class TokamakHost {
+  init(app: TokamakApp, plugin: String) {}
+}
 
 protocol TokamakPlugin: AnyObject {
   var id: String { get }

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Packages the CLI and platform-pack archives from the build matrix as @tokamakdev/tok and its optional dependencies.
-# Usage: package-cli-npm.sh <version> <archive-dir> <output-dir>
+# Packages the CLI and platform-pack archives from the build matrix as @tokamakdev/tok and its optional dependencies,
+# depending on @tokamakdev/plugin at the plugins' version.
+# Usage: package-cli-npm.sh <version> <plugin-version> <archive-dir> <output-dir>
 set -euo pipefail
 
 version="$1"
-archives="$2"
-output="$3"
+plugin_version="$2"
+archives="$3"
+output="$4"
 npm_root="$(cd "$(dirname "$0")/../tokamak-cli/npm" && pwd)"
 # npm platform package : CLI archive host
 platforms=(
@@ -46,5 +48,5 @@ for package in "$npm_root"/platform-packs/*/; do
   npm pack --silent --pack-destination "$output" "$package"
 done
 
-npm pkg set "version=$version" --prefix "$npm_root"
+npm pkg set "version=$version" "dependencies.@tokamakdev/plugin=$plugin_version" --prefix "$npm_root"
 npm pack --silent --pack-destination "$output" "$npm_root"

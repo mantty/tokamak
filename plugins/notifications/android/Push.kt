@@ -9,7 +9,7 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
-import com.tokamak.runtime.tokamakHost
+import com.tokamak.runtime.tokamakPlugin
 import java.util.UUID
 import org.json.JSONObject
 
@@ -67,7 +67,7 @@ class TokamakFirebaseInitializer : ContentProvider() {
 /** Receives FCM tokens and messages, including when FCM starts the app to deliver one. */
 class TokamakPushService : FirebaseMessagingService() {
     private val plugin: TokamakNotificationsPlugin?
-        get() = tokamakHost.plugin("notifications") as? TokamakNotificationsPlugin
+        get() = tokamakPlugin("notifications") as? TokamakNotificationsPlugin
 
     override fun onNewToken(token: String) {
         plugin?.onNewToken(token)

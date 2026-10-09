@@ -12,6 +12,31 @@ struct TokamakPluginError: Error {
 
 typealias TokamakPluginReply = (Result<Any?, TokamakPluginError>) -> Void
 
+/// The app as one plugin sees it.
+final class TokamakHost {
+  private unowned let app: TokamakApp
+  private let plugin: String
+
+  init(app: TokamakApp, plugin: String) {
+    self.app = app
+    self.plugin = plugin
+  }
+
+  /// Delivers the plugin's event `name`, which the Worker's listeners
+  /// receive as `<plugin>.<name>`, with `event`, JSON-serialisable, and calls
+  /// `completion` on the main thread with their reply, parsed from JSON, or
+  /// nil. Fails unless they return within `timeout`, which includes runtime
+  /// startup. Call it on the main thread.
+  func emit(
+    _ name: String,
+    event: Any,
+    timeout: TimeInterval,
+    completion: @escaping (Result<Any?, Error>) -> Void
+  ) {
+    app.emit("\(plugin).\(name)", event: event, timeout: timeout, completion: completion)
+  }
+}
+
 /// A native plugin, created once per process when the app launches.
 protocol TokamakPlugin: AnyObject {
   var id: String { get }

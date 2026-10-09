@@ -23,19 +23,19 @@ typedef struct {
 
 void *tokamak_runtime_start(const char *packaged_dir, const char *state_dir,
                             const char *storage_dir, const char *host,
-                            char *error, size_t error_len);
+                            bool foreground, char *error, size_t error_len);
 void *tokamak_runtime_start_development(const char *state_dir, const char *host,
                                      const char *endpoint,
-                                     const char *session_token, char *error,
+                                     const char *session_token,
+                                     bool foreground, char *error,
                                      size_t error_len);
 uint16_t tokamak_runtime_port(const void *runtime);
 uint16_t tokamak_runtime_restore_gateway(const void *runtime, char *error,
                                       size_t error_len);
 void tokamak_runtime_stop(void *runtime);
-bool tokamak_runtime_call(const void *runtime, const char *name,
-                          const char *body, uint64_t timeout_ms,
-                          TokamakBytes *response, char *error,
-                          size_t error_len);
+bool tokamak_runtime_emit(const void *runtime, const char *name,
+                          const char *event, uint64_t timeout_ms,
+                          TokamakBytes *reply, char *error, size_t error_len);
 
 int32_t tokamak_runtime_server_authority(const void *runtime, const char *host,
                                       TokamakBytes *authority);

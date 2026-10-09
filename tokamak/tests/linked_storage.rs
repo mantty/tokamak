@@ -14,12 +14,16 @@ use tokamak::{
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 const WORKER: &[u8] = br#"
-export default {
-  async fetch(request, env) {
-    if (new URL(request.url).pathname === "/tokamak/put") await env.SESSION.put("visits", "1");
-    return new Response(await env.SESSION.get("visits"));
-  },
-};
+import { WorkerEntrypoint } from "cloudflare:workers";
+
+export class TokamakEvents extends WorkerEntrypoint {
+  async dispatch(name) {
+    if (name === "put") await this.env.SESSION.put("visits", "1");
+    return { reply: await this.env.SESSION.get("visits"), listened: ["put", "get"] };
+  }
+}
+
+export default { fetch: () => new Response(null, { status: 404 }) };
 "#;
 
 #[test]
@@ -52,12 +56,13 @@ fn serves_storage_bindings_through_the_exported_entry_point() -> TestResult {
             state_dir: temporary.path().join("state"),
             storage_dir: temporary.path().join("storage"),
             host: "app.tokamak.local".to_owned(),
+            foreground: true,
         },
         |_| {},
     )?;
 
-    runtime.call("put", "{}", Duration::from_secs(5))?;
+    runtime.emit("put", "{}", Duration::from_secs(5))?;
 
-    assert_eq!(runtime.call("get", "{}", Duration::from_secs(5))?, b"1");
+    assert_eq!(runtime.emit("get", "{}", Duration::from_secs(5))?, r#""1""#);
     Ok(())
 }

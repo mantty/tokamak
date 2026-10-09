@@ -1,7 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
-import { normalizePath, type Plugin, type ResolvedBuildEnvironmentOptions } from "vite";
+import { fileURLToPath } from "node:url";
+import {
+  normalizePath,
+  type EnvironmentModuleNode,
+  type Plugin,
+  type ResolvedBuildEnvironmentOptions,
+} from "vite";
 
+import { openDevSocket } from "./dev-socket.mjs";
 import type { Config } from "./index.mjs";
 
 /** Modules tried in order when the options name none. */
@@ -12,8 +19,9 @@ const WRANGLER_FILES = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"];
 
 /**
  * Reports the app's tokamak configuration, and the development server's
- * address and Worker name, to `tok`, and makes the entry Worker import
- * `module`. Without `TOKAMAK_VITE_OUTPUT`, which `tok` sets, it adds no hooks.
+ * address, Worker name and dev socket port, to `tok`, and makes the entry
+ * Worker import `module` and export `TokamakEvents`. Without
+ * `TOKAMAK_VITE_OUTPUT`, which `tok` sets, it adds no hooks.
  */
 export function tokamak({
   module,
@@ -30,13 +38,23 @@ export function tokamak({
     return [];
   }
   let file: string | undefined;
+  const events = import.meta.resolve("@tokamakdev/plugin/events");
+  /** The module that defines `TokamakEvents`. */
+  const entrypoint = normalizePath(fileURLToPath(new URL("./entrypoint.js", events)));
+  /** The module that holds event listeners. */
+  const registryFile = normalizePath(fileURLToPath(new URL("./registry.ts", events)));
   /** The module IDs of each entry environment's inputs. */
   const entryIds = new Map<string, Promise<(string | undefined)[]>>();
-  /** The entry environments whose input imports the module. */
-  const importing = new Set<string>();
+  /** The entry environments whose input exports `TokamakEvents`. */
+  const exporting = new Set<string>();
   return [
     {
       name: "tokamak",
+      // Keeps @tokamakdev/plugin out of pre-bundled dependencies, so they
+      // share the one module that holds event listeners.
+      configEnvironment() {
+        return { optimizeDeps: { exclude: ["@tokamakdev/plugin"] } };
+      },
       configResolved({ root }) {
         file = findModule(root, module);
         writeJson(output, "config.json", { root, config });
@@ -46,22 +64,32 @@ export function tokamak({
         if (!httpServer) {
           return;
         }
-        const workerName = await readWorkerName(server.config.root);
-        httpServer.on("listening", () => {
-          const urls = server.resolvedUrls;
-          writeJson(output, "server.json", { url: urls?.local[0] ?? urls?.network[0], workerName });
+        const worker = await readWorker(server.config.root);
+        httpServer.once("listening", () => {
+          openDevSocket(worker?.name, process.env.TOKAMAK_SESSION_TOKEN).then(
+            (socket) => {
+              httpServer.once("close", () => void socket.close());
+              const urls = server.resolvedUrls;
+              writeJson(output, "server.json", {
+                url: urls?.local[0] ?? urls?.network[0],
+                workerName: worker?.topLevelName ?? worker?.name,
+                socketPort: socket.port,
+              });
+            },
+            (error: unknown) => server.config.logger.error(`tokamak could not open its dev socket: ${String(error)}`),
+          );
         });
       },
       async buildApp(builder) {
         const environments = Object.values(builder.environments);
-        if (file && !environments.some((environment) => buildsEntryWorker(environment.config))) {
-          throw new Error(`no environment builds the entry Worker to import ${file} into`);
+        if (!environments.some((environment) => buildsEntryWorker(environment.config))) {
+          throw new Error("no environment builds the entry Worker to export TokamakEvents from");
         }
       },
     },
     {
       name: "tokamak:entry",
-      applyToEnvironment: ({ config }) => file !== undefined && buildsEntryWorker(config),
+      applyToEnvironment: ({ config }) => buildsEntryWorker(config),
       async transform(code, id) {
         const environment = this.environment;
         const ids =
@@ -71,18 +99,48 @@ export function tokamak({
         if (!(await ids).includes(id)) {
           return;
         }
-        importing.add(environment.name);
+        exporting.add(environment.name);
         // In Cloudflare's Worker entry, which dev and build both start from,
         // this follows the imports of its polyfills and of the app's entry.
-        return { code: `${code}\nimport ${JSON.stringify(file)};\n`, map: null };
+        const imports = file ? `import ${JSON.stringify(file)};\n` : "";
+        return { code: `${code}\n${imports}export { TokamakEvents } from ${JSON.stringify(entrypoint)};\n`, map: null };
+      },
+      // A module that registers listeners adds them again each time it
+      // evaluates, so when an update re-evaluates one, the registry and every
+      // module that imports it evaluate again too.
+      async hotUpdate({ modules, timestamp }) {
+        const graph = this.environment.moduleGraph;
+        const registry = graph.getModuleById(registryFile);
+        if (!registry) {
+          return;
+        }
+        const entries = (await entryIds.get(this.environment.name)) ?? [];
+        const registering = [...withImporters(registry)].filter((module) => !entries.some((id) => id === module.id));
+        const updated = new Set(modules.flatMap((changed) => [...withImporters(changed)]));
+        if (registering.some((module) => updated.has(module))) {
+          graph.invalidateModule(registry, new Set(), timestamp, true);
+        }
       },
       generateBundle() {
-        if (!importing.has(this.environment.name)) {
-          this.error(`the input of the ${this.environment.name} environment did not import ${file}`);
+        if (!exporting.has(this.environment.name)) {
+          this.error(`the input of the ${this.environment.name} environment did not export TokamakEvents`);
         }
       },
     },
   ];
+}
+
+/** `module` and every module that imports it, directly or through others. */
+function withImporters(module: EnvironmentModuleNode): Set<EnvironmentModuleNode> {
+  const found = new Set<EnvironmentModuleNode>();
+  const pending = [module];
+  for (let current = pending.pop(); current; current = pending.pop()) {
+    if (!found.has(current)) {
+      found.add(current);
+      pending.push(...current.importers);
+    }
+  }
+  return found;
 }
 
 /** The module `name` under `root`, or else the first default under `root` that exists. */
@@ -96,18 +154,17 @@ function findModule(root: string, name: string | undefined): string | undefined 
 }
 
 /**
- * The name of the Worker in the Wrangler configuration file in `root`, found
- * as Cloudflare's plugin finds it without `configPath`, without the suffix of
- * the `CLOUDFLARE_ENV` environment.
+ * The Worker in the Wrangler configuration file in `root`, read as
+ * Cloudflare's plugin reads it without `configPath`, in the `CLOUDFLARE_ENV`
+ * environment: its name, and its name without the environment's suffix.
  */
-async function readWorkerName(root: string): Promise<string | undefined> {
+async function readWorker(root: string): Promise<{ name?: string; topLevelName?: string } | undefined> {
   const file = WRANGLER_FILES.map((name) => path.join(root, name)).find((candidate) => fs.existsSync(candidate));
   if (!file) {
     return undefined;
   }
   const { unstable_readConfig } = await import("wrangler");
-  const worker = unstable_readConfig({ config: file, env: process.env.CLOUDFLARE_ENV }, { hideWarnings: true });
-  return worker.topLevelName ?? worker.name;
+  return unstable_readConfig({ config: file, env: process.env.CLOUDFLARE_ENV }, { hideWarnings: true });
 }
 
 /**

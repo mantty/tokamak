@@ -4,6 +4,7 @@ use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
 use flume::Sender;
 use futures_util::TryStreamExt;
 use http_body_util::{BodyDataStream, BodyExt};
@@ -13,22 +14,30 @@ use hyper::upgrade::Upgraded;
 use hyper::{Response, StatusCode};
 use hyper_util::client::legacy;
 use hyper_util::rt::TokioIo;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+use crate::dev_socket::DevSocket;
 use crate::gateway::{
-    Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob, WebSocketOutbound,
+    Delivery, Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob,
+    WebSocketOutbound,
 };
+use crate::linked::DevelopmentEntry;
 use crate::network::http::{Client, full, reason_phrase};
+use crate::server::DevProxyConfig;
 use crate::transport::{
-    BodyChunk, HttpBody, HttpRequest, HttpResponse, WebSocketFrame, encode_websocket_frame,
-    invalid_data, parse_websocket_frame, queue_websocket_message, response_stream,
-    websocket_accept, websocket_close, websocket_close_payload,
+    BodyChunk, HttpBody, HttpRequest, HttpResponse, WebSocketFrame, invalid_data,
+    parse_websocket_frame, queue_websocket_message, response_stream, websocket_accept,
+    websocket_close, websocket_close_payload, write_frame,
 };
 
 const HTTP_RETRY_DELAY: Duration = Duration::from_millis(100);
 const HTTP_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
+/// The pause before a closed dev WebSocket is opened again.
+const DEV_SOCKET_REOPEN_DELAY: Duration = Duration::from_secs(1);
+/// How long opening the dev WebSocket may take.
+const DEV_SOCKET_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Headers that describe only one hop of a proxied exchange.
 const HOP_BY_HOP: [&str; 7] = [
@@ -40,29 +49,36 @@ const HOP_BY_HOP: [&str; 7] = [
     "transfer-encoding",
     "upgrade",
 ];
-/// Request headers the proxy sets itself.
-const PROXY_HEADERS: [&str; 5] = [
+/// Request headers the proxy sets itself, and the dev WebSocket's mark,
+/// which no page request carries.
+const PROXY_HEADERS: [&str; 6] = [
     "host",
     "content-length",
     "x-forwarded-host",
     "x-forwarded-proto",
     "x-tokamak-session",
+    crate::DEV_SOCKET_HEADER,
 ];
 
-/// Host development-server connection settings.
-#[derive(Clone, Debug)]
-pub struct DevProxyConfig {
-    /// HTTP or HTTPS endpoint exposed by the host development supervisor.
-    pub endpoint: String,
-    /// Credential identifying the current development session.
-    pub session_token: String,
+/// The development part's entry point, exported as
+/// [`crate::DEVELOPMENT_ENTRY_POINT`].
+#[unsafe(export_name = "tokamak_development")]
+static ENTRY: DevelopmentEntry = DevelopmentEntry { handler };
+
+/// The handler that forwards requests and events to the development server
+/// `config` names.
+fn handler(config: &DevProxyConfig) -> io::Result<Arc<dyn Handler>> {
+    Ok(Arc::new(DevProxy::new(config)?))
 }
 
-/// A gateway handler that forwards requests to the host development server.
-pub(crate) struct DevProxy {
+/// A gateway handler that forwards requests to the host development server,
+/// and events through the dev WebSocket it keeps open.
+#[derive(Clone)]
+struct DevProxy {
     client: Client,
     endpoint: Url,
     session_token: HeaderValue,
+    socket: Arc<DevSocket>,
 }
 
 /// A host response body of unknown length, forwarded as it arrives.
@@ -73,7 +89,7 @@ struct HostBody {
 }
 
 impl DevProxy {
-    pub(crate) fn new(config: &DevProxyConfig) -> io::Result<Arc<Self>> {
+    fn new(config: &DevProxyConfig) -> io::Result<Self> {
         let session_token = config.session_token.trim();
         if session_token.is_empty() || session_token.bytes().any(|byte| byte.is_ascii_control()) {
             return Err(io::Error::new(
@@ -81,12 +97,13 @@ impl DevProxy {
                 "development session token must be non-empty and contain no control characters",
             ));
         }
-        Ok(Arc::new(Self {
+        Ok(Self {
             client: crate::network::http::client()?,
             endpoint: endpoint(&config.endpoint)?,
             session_token: HeaderValue::from_bytes(session_token.as_bytes())
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
-        }))
+            socket: Arc::new(DevSocket::new()),
+        })
     }
 
     async fn forward_http(
@@ -154,6 +171,11 @@ impl DevProxy {
         Ok(self.client.request(upstream).await?)
     }
 
+    /// The host and port of the host server.
+    fn endpoint_host(&self) -> &str {
+        &self.endpoint[url::Position::BeforeHost..url::Position::AfterPort]
+    }
+
     /// The host server's URL for the request target `target`.
     fn url(&self, target: &str) -> Url {
         let (path, query) = target
@@ -183,9 +205,7 @@ impl DevProxy {
         }
         let host = match request.headers.get("host") {
             Some(host) => host.clone(),
-            None => HeaderValue::from_str(
-                &self.endpoint[url::Position::BeforeHost..url::Position::AfterPort],
-            )?,
+            None => HeaderValue::from_str(self.endpoint_host())?,
         };
         headers.try_insert("host", host.clone())?;
         headers.try_insert("x-forwarded-host", host)?;
@@ -230,21 +250,58 @@ impl DevProxy {
             .get("sec-websocket-key")
             .ok_or_else(|| invalid_data("WebSocket key is missing"))?
             .to_str()?;
-        let upgrade = self.send(request, true).await?;
-        if upgrade.status() != StatusCode::SWITCHING_PROTOCOLS {
-            let message = format!("host WebSocket upgrade returned HTTP {}", upgrade.status());
-            return Err(invalid_data(&message).into());
-        }
-        if upgrade
-            .headers()
-            .get("sec-websocket-accept")
-            .is_none_or(|actual| *actual != websocket_accept(key))
-        {
-            let message = "host WebSocket upgrade returned an invalid accept key";
-            return Err(invalid_data(message).into());
-        }
-        Ok(hyper::upgrade::on(upgrade).await?)
+        upgraded(self.send(request, true).await?, key).await
     }
+
+    /// Opens the dev WebSocket, which the relay forwards to the plugin by its
+    /// mark, again a second after each time it closes, until `stopped`.
+    async fn keep_dev_socket_open(self, stopped: CancellationToken) {
+        loop {
+            let opened =
+                tokio::time::timeout(DEV_SOCKET_OPEN_TIMEOUT, self.open_dev_socket()).await;
+            if let Ok(Ok(upgraded)) = opened {
+                self.socket.serve(upgraded, &stopped).await;
+            }
+            tokio::select! {
+                () = tokio::time::sleep(DEV_SOCKET_REOPEN_DELAY) => {}
+                () = stopped.cancelled() => return,
+            }
+        }
+    }
+
+    async fn open_dev_socket(&self) -> Result<Upgraded, HandlerError> {
+        let mut nonce = [0; 16];
+        getrandom::fill(&mut nonce)?;
+        let key = base64::engine::general_purpose::STANDARD.encode(nonce);
+        let mut request = hyper::Request::get(self.endpoint.as_str()).body(full(Vec::new()))?;
+        let headers = request.headers_mut();
+        headers.insert("host", HeaderValue::from_str(self.endpoint_host())?);
+        headers.insert("connection", HeaderValue::from_static("Upgrade"));
+        headers.insert("upgrade", HeaderValue::from_static("websocket"));
+        headers.insert("sec-websocket-version", HeaderValue::from_static("13"));
+        headers.insert("sec-websocket-key", HeaderValue::from_str(&key)?);
+        headers.insert("x-tokamak-session", self.session_token.clone());
+        headers.insert(crate::DEV_SOCKET_HEADER, HeaderValue::from_static("1"));
+        upgraded(self.client.request(request).await?, &key).await
+    }
+}
+
+/// The connection `response` upgrades to a WebSocket, once it has accepted
+/// `key`.
+async fn upgraded(response: Response<Incoming>, key: &str) -> Result<Upgraded, HandlerError> {
+    if response.status() != StatusCode::SWITCHING_PROTOCOLS {
+        let message = format!("host WebSocket upgrade returned HTTP {}", response.status());
+        return Err(invalid_data(&message).into());
+    }
+    if response
+        .headers()
+        .get("sec-websocket-accept")
+        .is_none_or(|actual| *actual != websocket_accept(key))
+    {
+        let message = "host WebSocket upgrade returned an invalid accept key";
+        return Err(invalid_data(message).into());
+    }
+    Ok(hyper::upgrade::on(response).await?)
 }
 
 impl HostBody {
@@ -285,6 +342,29 @@ impl Handler for DevProxy {
             });
         };
         tokio.block_on(self.forward_websocket(&request, &response, &websocket, stopped))
+    }
+
+    fn deliver(
+        &self,
+        name: &str,
+        event: &str,
+        deadline: Instant,
+        stopped: &CancellationToken,
+    ) -> Result<Delivery, HandlerError> {
+        let reply = tokio::runtime::Handle::try_current()?.block_on(async {
+            tokio::select! {
+                reply = self.socket.deliver(name, event, deadline) => reply,
+                () = stopped.cancelled() => Err("the runtime stopped".into()),
+            }
+        })?;
+        Ok(Delivery {
+            reply,
+            listened: None,
+        })
+    }
+
+    fn start(&self, tokio: &tokio::runtime::Handle, stopped: &CancellationToken) {
+        drop(tokio.spawn(self.clone().keep_dev_socket_open(stopped.clone())));
     }
 }
 
@@ -416,23 +496,13 @@ async fn write_close(
     write_frame(writer, 0x8, &websocket_close_payload(code, reason)?).await
 }
 
-async fn write_frame(
-    writer: &mut (impl AsyncWrite + Unpin),
-    opcode: u8,
-    payload: &[u8],
-) -> io::Result<()> {
-    writer
-        .write_all(&encode_websocket_frame(opcode, payload, true)?)
-        .await?;
-    writer.flush().await
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::TcpListener;
     use std::thread;
 
-    use super::{DevProxy, DevProxyConfig, HandlerError, can_retry, endpoint, full};
+    use super::{DevProxy, HandlerError, can_retry, endpoint, full};
+    use crate::DevProxyConfig;
 
     #[test]
     fn parses_host_endpoints() -> Result<(), Box<dyn std::error::Error>> {

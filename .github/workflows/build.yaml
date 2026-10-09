@@ -93,7 +93,7 @@ jobs:
       - name: Build platform pack
         run: cargo run -p xtask -- platform-pack --target "${{ matrix.target }}"
 
-      - name: Verify Android storage linking
+      - name: Verify Android runtime part linking
         if: matrix.target == 'android-arm64'
         env:
           TOKAMAK_TEST_ANDROID_PACK: ${{ github.workspace }}/target/tokamak-platform-packs/android-arm64
@@ -101,11 +101,11 @@ jobs:
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
           bash platforms/android/tests/pack.sh
 
-      - name: Verify Windows storage linking
+      - name: Verify Windows runtime part linking
         if: matrix.target == 'windows-x64'
         env:
           TOKAMAK_TEST_WINDOWS_PACK: ${{ github.workspace }}/target/tokamak-platform-packs/windows-x64
-        run: cargo test -p tokamak-cli --test build links_storage_from_the_windows_platform_pack_while_the_app_declares_it -- --ignored --nocapture
+        run: cargo test -p tokamak-cli --test build links_only_the_runtime_parts_the_windows_app_declares -- --ignored --nocapture
 
       - name: Verify packaged Worker mTLS
         if: matrix.target == 'macos-arm64'
@@ -264,7 +264,7 @@ jobs:
           for manifest in plugins/*/tokamak-plugin.json; do
             plugin="$(dirname "$manifest")"
             test "$(node -p "require('./$plugin/package.json').version")" = "$core_version"
-            npm pkg set "version=$version" "dependencies.@tokamakdev/plugin=$version" --prefix "$plugin"
+            npm pkg set "version=$version" "peerDependencies.@tokamakdev/plugin=$version" --prefix "$plugin"
           done
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -288,6 +288,7 @@ jobs:
     needs:
       - build-cli
       - build-platform-packs
+      - build-plugins
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -320,6 +321,12 @@ jobs:
           path: archives
           merge-multiple: true
 
+      - name: Download plugin packages
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: tokamak-plugins
+          path: plugin-artifacts
+
       - name: Install CLI package dependencies
         run: npm ci --prefix tokamak-cli/npm
 
@@ -332,22 +339,25 @@ jobs:
           echo "version=${version}-beta.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
 
       - name: Package CLI
-        run: scripts/package-cli-npm.sh "${{ steps.package-version.outputs.version }}" archives artifacts
+        run: scripts/package-cli-npm.sh "${{ steps.package-version.outputs.version }}" "${{ needs.build-plugins.outputs.version }}" archives artifacts
 
       - name: Smoke-test the packed launcher
         env:
           PACKAGE_VERSION: ${{ steps.package-version.outputs.version }}
+          PLUGIN_VERSION: ${{ needs.build-plugins.outputs.version }}
         run: |
           set -euo pipefail
           mkdir smoke
           cd smoke
           npm init -y >/dev/null
           npm install --no-audit --no-fund \
+            "../plugin-artifacts/tokamakdev-plugin-$PLUGIN_VERSION.tgz" \
             "../artifacts/tokamakdev-tok-$PACKAGE_VERSION.tgz" \
             "../artifacts/tokamakdev-tok-linux-x64-$PACKAGE_VERSION.tgz" \
             "../artifacts/tokamakdev-platform-android-arm64-$PACKAGE_VERSION.tgz"
           ./node_modules/.bin/tok targets | grep -Fx macos-arm64
           node --input-type=module -e "import { tokamak } from '@tokamakdev/tok/vite'"
+          node --input-type=module -e "import.meta.resolve('@tokamakdev/tok/events'); import.meta.resolve('@tokamakdev/plugin/events')"
           test -f node_modules/@tokamakdev/platform-android-arm64/android-arm64/platform-pack.json
 
       - name: Upload CLI packages

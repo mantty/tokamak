@@ -12,6 +12,7 @@ pub(crate) fn start(
     state_dir: &str,
     storage_dir: &str,
     host: &str,
+    foreground: bool,
     report: fn(&Event),
 ) -> Result<Runtime, String> {
     let config = Config {
@@ -19,6 +20,7 @@ pub(crate) fn start(
         state_dir: PathBuf::from(state_dir),
         storage_dir: PathBuf::from(storage_dir),
         host: host.to_owned(),
+        foreground,
     };
     Runtime::start(config, move |event| report(&event)).map_err(|error| error.to_string())
 }
@@ -30,6 +32,7 @@ pub(crate) fn start_development(
     host: &str,
     endpoint: &str,
     session_token: &str,
+    foreground: bool,
     report: fn(&Event),
 ) -> Result<Runtime, String> {
     let config = DevelopmentConfig {
@@ -39,6 +42,7 @@ pub(crate) fn start_development(
             endpoint: endpoint.to_owned(),
             session_token: session_token.to_owned(),
         },
+        foreground,
     };
     Runtime::start_development(config, move |event| report(&event))
         .map_err(|error| error.to_string())

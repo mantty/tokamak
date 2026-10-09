@@ -9,19 +9,19 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./service-worker": "./service-worker/index.ts",
-    "./worker": "./worker/index.ts"
+    "./events": "./events/index.ts",
+    "./service-worker": "./service-worker/index.ts"
   },
-  "dependencies": {
+  "peerDependencies": {
     "@tokamakdev/plugin": "^0.1.0"
   },
   "files": [
     "android",
     "apple",
+    "events",
     "service-worker",
     "src",
     "web",
-    "worker",
     "tokamak-plugin.json",
     "README.md"
   ],

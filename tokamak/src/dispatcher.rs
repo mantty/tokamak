@@ -2,6 +2,7 @@ use flume::Sender;
 use std::io;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::assets::{AssetResponse, Assets};
@@ -12,8 +13,8 @@ use crate::fs::{
     PROMISES_MODULE_NAME as NODE_FS_PROMISES_MODULE_NAME, install, read_bundle_file,
 };
 use crate::gateway::{
-    Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob, WebSocketOutbound,
-    WebSocketOutgoing,
+    Delivery, Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob,
+    WebSocketOutbound, WebSocketOutgoing,
 };
 use crate::globals::ResponseEncoder;
 use crate::linked::StorageRuntime;
@@ -57,6 +58,25 @@ impl Handler for Dispatcher {
         }
         execute_request(&self.worker, &self.config, job, stopped).map_err(Into::into)
     }
+
+    fn deliver(
+        &self,
+        name: &str,
+        event: &str,
+        deadline: Instant,
+        stopped: &CancellationToken,
+    ) -> Result<Delivery, HandlerError> {
+        tokio::runtime::Handle::try_current()?
+            .block_on(execute_event(
+                &self.worker,
+                &self.config,
+                name,
+                event,
+                deadline,
+                stopped,
+            ))
+            .map_err(Into::into)
+    }
 }
 
 #[cfg(test)]
@@ -83,16 +103,15 @@ pub(super) fn execute_request(
 }
 
 /// A fresh `QuickJS` runtime that loads the Worker's modules and is
-/// interrupted once `stopped` is cancelled.
+/// interrupted once `interrupted` returns true.
 async fn worker_runtime(
     worker: &WorkerBundle,
     storage: Option<&Arc<dyn StorageRuntime>>,
-    stopped: &CancellationToken,
+    interrupted: impl Fn() -> bool + Send + 'static,
 ) -> Result<(AsyncRuntime, AsyncContext), Error> {
     let runtime = AsyncRuntime::new().map_err(|error| js_error("runtime", error))?;
-    let interrupted = stopped.clone();
     runtime
-        .set_interrupt_handler(Some(Box::new(move || interrupted.is_cancelled())))
+        .set_interrupt_handler(Some(Box::new(interrupted)))
         .await;
     runtime
         .set_loader(
@@ -115,23 +134,20 @@ async fn execute_request_async(
     job: Job,
     stopped: &CancellationToken,
 ) -> Result<(), Error> {
-    let (runtime, context) = worker_runtime(worker, config.storage.as_ref(), stopped).await?;
+    let interrupted = stopped.clone();
+    let (runtime, context) = worker_runtime(worker, config.storage.as_ref(), move || {
+        interrupted.is_cancelled()
+    })
+    .await?;
     let awaited = crate::event_loop::AwaitedPromise::default();
     let request = context.async_with(async |ctx| -> Result<(), Error> {
-        ctx.store_userdata(awaited.clone())
-            .map_err(|error| js_error("request event loop", error))?;
         let Job {
             request,
             response: response_sender,
             websocket,
         } = job;
-        install_worker_globals(&ctx, config)?;
+        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited)?;
         let descriptor = install_request(&ctx, &request)?;
-        let bootstrap = initialize_worker_context(&ctx, worker)?;
-        if let Some(assets) = &config.assets {
-            install_assets(&ctx, &bootstrap, assets)
-                .map_err(|error| js_exception(&ctx, "assets", error))?;
-        }
         let response = invoke_worker(&ctx, worker, &bootstrap, descriptor, &request).await?;
         let response = response_from_js(&ctx, &bootstrap, response)?;
         if response.status == 101
@@ -151,6 +167,74 @@ async fn execute_request_async(
         result = request => result,
         () = stopped.cancelled() => Err(Error::Engine("Worker execution was stopped".to_owned())),
     }
+}
+
+/// Runs the Worker's listeners of the event `name` in a fresh `QuickJS`
+/// runtime, as a request runs, interrupting them at `deadline`. The reply
+/// stands once they return, whether or not their `waitUntil` promises settle
+/// before the deadline.
+pub(super) async fn execute_event(
+    worker: &WorkerBundle,
+    config: &RuntimeConfig,
+    name: &str,
+    event: &str,
+    deadline: Instant,
+    stopped: &CancellationToken,
+) -> Result<Delivery, Error> {
+    let interrupted = stopped.clone();
+    let (runtime, context) = worker_runtime(worker, config.storage.as_ref(), move || {
+        interrupted.is_cancelled() || Instant::now() >= deadline
+    })
+    .await?;
+    let awaited = crate::event_loop::AwaitedPromise::default();
+    let dispatch = context.async_with(async |ctx| -> Result<Delivery, Error> {
+        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited)?;
+        let exports = load_worker_exports(&ctx, worker).await?;
+        let pending: Promise = property::<Function>(&bootstrap, "dispatchEvent")?
+            .call((exports, name, event))
+            .map_err(|error| js_exception(&ctx, name, error))?;
+        let dispatched: Object = finish_promise(&ctx, &pending, "event").await?;
+        let listened: Vec<String> = property(&dispatched, "listened")?;
+        Ok(Delivery {
+            reply: property(&dispatched, "reply")?,
+            listened: Some(listened.into_iter().collect()),
+        })
+    });
+    let deadline = tokio::time::Instant::from_std(deadline);
+    let delivery = tokio::select! {
+        delivery = crate::event_loop::run(&runtime, &awaited, dispatch) => delivery?,
+        () = tokio::time::sleep_until(deadline) => {
+            let message = format!("{name} did not complete before its deadline");
+            return Err(io::Error::new(io::ErrorKind::TimedOut, message).into());
+        }
+        () = stopped.cancelled() => return Err(Error::Engine("Worker execution was stopped".to_owned())),
+    };
+    let drain = context.async_with(async |ctx| drain_wait_until(&ctx).await);
+    tokio::select! {
+        _ = crate::event_loop::run(&runtime, &awaited, drain) => {}
+        () = tokio::time::sleep_until(deadline) => {}
+        () = stopped.cancelled() => {}
+    }
+    Ok(delivery)
+}
+
+/// Installs the Worker's globals, the runtime bootstrap and the app's assets
+/// in `ctx`, returning the bootstrap's exports.
+fn prepare_worker_context<'js>(
+    ctx: &Ctx<'js>,
+    worker: &WorkerBundle,
+    config: &RuntimeConfig,
+    awaited: &crate::event_loop::AwaitedPromise,
+) -> Result<Object<'js>, Error> {
+    ctx.store_userdata(awaited.clone())
+        .map_err(|error| js_error("event loop", error))?;
+    install_worker_globals(ctx, config)?;
+    let bootstrap = initialize_worker_context(ctx, worker)?;
+    if let Some(assets) = &config.assets {
+        install_assets(ctx, &bootstrap, assets)
+            .map_err(|error| js_exception(ctx, "assets", error))?;
+    }
+    Ok(bootstrap)
 }
 
 async fn invoke_worker<'js>(
@@ -228,6 +312,33 @@ pub(super) async fn load_worker<'js>(
     ctx: &Ctx<'js>,
     bundle: &WorkerBundle,
 ) -> Result<Object<'js>, Error> {
+    let exports = load_worker_exports(ctx, bundle).await?;
+    let execution_context: Value = ctx
+        .globals()
+        .get("__tokamak_context")
+        .map_err(|error| js_error("execution context", error))?;
+    let environment: Value = ctx
+        .globals()
+        .get("__tokamak_env")
+        .map_err(|error| js_error("environment", error))?;
+    let default: Value = exports
+        .get("default")
+        .map_err(|error| js_error("worker export", error))?;
+    let instantiate = eval_function(
+        ctx,
+        "(worker, context, env) => typeof worker === 'function' ? new worker(context, env) : worker",
+        "worker entrypoint",
+    )?;
+    instantiate
+        .call((default, execution_context, environment))
+        .map_err(|error| js_error("worker entrypoint", error))
+}
+
+/// Evaluate the Worker's entry module and return its exports.
+async fn load_worker_exports<'js>(
+    ctx: &Ctx<'js>,
+    bundle: &WorkerBundle,
+) -> Result<Object<'js>, Error> {
     let bytes = read_worker_module(bundle, &bundle.entry)?;
     let module = unsafe { Module::load(ctx.clone(), &bytes) }
         .map_err(|error| js_exception(ctx, "load", error))?;
@@ -248,21 +359,7 @@ pub(super) async fn load_worker<'js>(
             .set("exports", exports.clone())
             .map_err(|error| js_error("execution context exports", error))?;
     }
-    let environment: Value = ctx
-        .globals()
-        .get("__tokamak_env")
-        .map_err(|error| js_error("environment", error))?;
-    let default: Value = exports
-        .get("default")
-        .map_err(|error| js_error("worker export", error))?;
-    let instantiate = eval_function(
-        ctx,
-        "(worker, context, env) => typeof worker === 'function' ? new worker(context, env) : worker",
-        "worker entrypoint",
-    )?;
-    instantiate
-        .call((default, execution_context, environment))
-        .map_err(|error| js_error("worker entrypoint", error))
+    Ok(exports)
 }
 
 /// The entrypoint's `fetch` handler bound to it, returning a promise.

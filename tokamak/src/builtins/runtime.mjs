@@ -18,6 +18,17 @@ export function installAssets(binding, fetchAsset) {
   };
 }
 
+// Delivers the event `name`, whose JSON is `event`, to the `TokamakEvents` the
+// Worker's entry module `exports`, returning the reply as JSON and the names of
+// the events that have listeners.
+export async function dispatchEvent(exports, name, event) {
+  const { TokamakEvents } = exports;
+  if (typeof TokamakEvents !== "function") throw new TypeError("The Worker does not export TokamakEvents");
+  const events = new TokamakEvents(globalThis.__tokamak_context, globalThis.__tokamak_env);
+  const { reply, listened } = await events.dispatch(name, JSON.parse(event));
+  return { reply: JSON.stringify(reply) ?? "null", listened };
+}
+
 // The storage part attaches the app's storage bindings when it has any.
 if (globalThis.__tokamak_storage) await (await import("../storage/bindings.mjs")).install(globalThis.__tokamak_env, globalThis.__tokamak_storage);
 const waitUntilValues = [];

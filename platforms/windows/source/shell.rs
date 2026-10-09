@@ -1,7 +1,10 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, RwLock};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -47,6 +50,9 @@ use wry::{
     NewWindowResponse, WebContext, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows,
 };
 
+/// How long the Worker has for `resume` and `suspend`.
+const LIFECYCLE_DEADLINE: Duration = Duration::from_secs(10);
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ShellConfig {
@@ -65,7 +71,7 @@ pub(crate) fn run() -> Result<()> {
     let root = executable_dir()?;
     let config = read_config(&root)?;
     let state = state_dir(&config.slug)?;
-    let runtime = start_runtime(&config, &root, &state, events)?;
+    let runtime = Arc::new(start_runtime(&config, &root, &state, events)?);
     let identity = ClientIdentity::install(&runtime.certificates(), &config.host)?;
     let client_certificate = Arc::new(RwLock::new(identity.der.clone()));
     let icon = load_window_icon(&root)?;
@@ -114,6 +120,9 @@ pub(crate) fn run() -> Result<()> {
     let certificates = runtime.certificates();
     let host = config.host.clone();
     let mut identity = identity;
+    let (lifecycle, deliveries) = deliver_lifecycle_events(Arc::clone(&runtime))?;
+    let mut minimized = false;
+    let window = &window;
     event_loop.run_return(move |event, _, flow| {
         *flow = ControlFlow::Wait;
         match event {
@@ -121,6 +130,14 @@ pub(crate) fn run() -> Result<()> {
                 if let Err(error) = identity.replace(&certificates, &host, &client_certificate) {
                     eprintln!("tokamak client certificate renewal failed: {error:#}");
                 }
+            }
+            // Windows resizes the window as it is minimised and restored.
+            TaoEvent::WindowEvent {
+                event: WindowEvent::Resized(_),
+                ..
+            } if window.is_minimized() != minimized => {
+                minimized = !minimized;
+                let _ = lifecycle.send(!minimized);
             }
             TaoEvent::WindowEvent {
                 event: WindowEvent::CloseRequested,
@@ -131,8 +148,27 @@ pub(crate) fn run() -> Result<()> {
     });
     drop(handlers);
     drop(webview);
+    let _ = deliveries.join();
     drop(runtime);
     Ok(())
+}
+
+/// Delivers `resume` for each `true` the returned sender receives and
+/// `suspend` for each `false`, one at a time, until the sender is dropped.
+fn deliver_lifecycle_events(runtime: Arc<Runtime>) -> Result<(Sender<bool>, JoinHandle<()>)> {
+    let (sender, receiver) = mpsc::channel::<bool>();
+    let deliveries = thread::Builder::new()
+        .name("tokamak-lifecycle".to_owned())
+        .spawn(move || {
+            for foreground in receiver {
+                let name = if foreground { "resume" } else { "suspend" };
+                if let Err(error) = runtime.emit(name, "{}", LIFECYCLE_DEADLINE) {
+                    eprintln!("tokamak {name} failed: {error}");
+                }
+            }
+        })
+        .context("start lifecycle events")?;
+    Ok((sender, deliveries))
 }
 
 fn start_runtime(
@@ -157,6 +193,7 @@ fn start_runtime(
                     endpoint: endpoint.to_owned(),
                     session_token: session_token.to_owned(),
                 },
+                foreground: true,
             },
             listener,
         )?),
@@ -166,6 +203,7 @@ fn start_runtime(
                 state_dir: state.join("runtime"),
                 storage_dir: state.join("storage"),
                 host: config.host.clone(),
+                foreground: true,
             },
             listener,
         )?),

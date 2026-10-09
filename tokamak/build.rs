@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target_os = env::var("CARGO_CFG_TARGET_OS")?;
     if env::var_os("CARGO_FEATURE_NATIVE").is_some() {
         compile_builtins()?;
-        export_storage_from_tests(&target_os);
+        export_parts_from_tests(&target_os);
     }
     if target_os == "android" {
         println!("cargo:rustc-link-lib=log");
@@ -48,14 +48,17 @@ fn builtin_sources() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     Ok(modules)
 }
 
-/// Export the storage part's entry point from test executables.
-fn export_storage_from_tests(target_os: &str) {
-    let argument = match target_os {
-        "macos" | "ios" => "-Wl,-exported_symbol,_tokamak_storage",
-        "windows" => "/EXPORT:tokamak_storage",
-        _ => "-Wl,--export-dynamic-symbol=tokamak_storage",
-    };
-    println!("cargo:rustc-link-arg-tests={argument}");
+/// Export the entry points of the storage and development parts from test
+/// executables.
+fn export_parts_from_tests(target_os: &str) {
+    for entry_point in ["tokamak_storage", "tokamak_development"] {
+        let argument = match target_os {
+            "macos" | "ios" => format!("-Wl,-exported_symbol,_{entry_point}"),
+            "windows" => format!("/EXPORT:{entry_point}"),
+            _ => format!("-Wl,--export-dynamic-symbol={entry_point}"),
+        };
+        println!("cargo:rustc-link-arg-tests={argument}");
+    }
 }
 
 /// Compile `sources` to bytecode in `output`, and write `table`, a Rust

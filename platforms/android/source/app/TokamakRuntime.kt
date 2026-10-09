@@ -11,11 +11,11 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
     fun restoreGateway(): Int = nativeRestoreGateway(handle)
 
     /**
-     * Posts the JSON [body] to the Worker's `/tokamak/<name>` endpoint, retrying a failed post,
-     * blocking until it responds 200 or [timeoutMillis] passes, and returns the response body.
+     * Delivers the event [name] with the JSON [event] to the Worker's listeners, blocking until
+     * they return or [timeoutMillis] passes, and returns their reply as JSON.
      */
-    fun call(name: String, body: String, timeoutMillis: Long): String =
-        nativeCall(handle, name, body, timeoutMillis)
+    fun emit(name: String, event: String, timeoutMillis: Long): String =
+        nativeEmit(handle, name, event, timeoutMillis)
 
     /**
      * The authority a server certificate for [host] must chain to, or null
@@ -35,23 +35,32 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             System.loadLibrary("tokamak")
         }
 
-        /** Start the runtime, throwing when it cannot serve the app. */
+        /**
+         * Start the runtime, which delivers `start` with [foreground], throwing when it cannot
+         * serve the app.
+         */
         fun start(
             packagedDir: File,
             stateDir: File,
             storageDir: File,
             host: String,
+            foreground: Boolean,
         ): TokamakRuntime =
-            TokamakRuntime(nativeStart(packagedDir.path, stateDir.path, storageDir.path, host))
+            TokamakRuntime(
+                nativeStart(packagedDir.path, stateDir.path, storageDir.path, host, foreground),
+            )
 
-        /** Start the runtime against a host development server. */
+        /** Start the runtime against a host development server, delivering `start` with [foreground]. */
         fun startDevelopment(
             stateDir: File,
             host: String,
             endpoint: String,
             sessionToken: String,
+            foreground: Boolean,
         ): TokamakRuntime =
-            TokamakRuntime(nativeStartDevelopment(stateDir.path, host, endpoint, sessionToken))
+            TokamakRuntime(
+                nativeStartDevelopment(stateDir.path, host, endpoint, sessionToken, foreground),
+            )
 
         @JvmStatic
         private external fun nativeStart(
@@ -59,6 +68,7 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             stateDir: String,
             storageDir: String,
             host: String,
+            foreground: Boolean,
         ): Long
 
         @JvmStatic
@@ -67,6 +77,7 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             host: String,
             endpoint: String,
             sessionToken: String,
+            foreground: Boolean,
         ): Long
 
         @JvmStatic
@@ -76,10 +87,10 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
         private external fun nativeRestoreGateway(handle: Long): Int
 
         @JvmStatic
-        private external fun nativeCall(
+        private external fun nativeEmit(
             handle: Long,
             name: String,
-            body: String,
+            event: String,
             timeoutMillis: Long,
         ): String
 

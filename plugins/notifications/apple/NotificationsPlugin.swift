@@ -13,6 +13,8 @@ private let showInForegroundKey = "tokamak.notifications.show-in-foreground"
 private let pendingLimit = 64
 /// The system allows about 30 seconds for a background remote notification.
 private let pushDeadline: TimeInterval = 25
+/// How long the Worker's listeners have for an opened notification.
+private let openedDeadline: TimeInterval = 10
 private let shown: UNNotificationPresentationOptions = [.banner, .list, .sound]
 
 #if os(iOS)
@@ -122,7 +124,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     defaults.set(subscription, forKey: subscriptionKey)
     finishRegistering(.success(subscription))
     if let previous, previous["token"] as? String != subscription["token"] as? String {
-      emit("onSubscriptionChange", subscription)
+      notify("onSubscriptionChange", subscription)
     }
   }
 
@@ -130,8 +132,8 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     finishRegistering(.failure(Self.registrationError(error)))
   }
 
-  /// Posts a data-only message to the Worker's push endpoint, showing the
-  /// notification it returns.
+  /// Delivers a data-only message to the Worker's `onPush` listeners,
+  /// showing the notification they reply with.
   func didReceiveRemoteNotification(
     _ userInfo: [AnyHashable: Any],
     completion: @escaping (TokamakBackgroundResult) -> Void
@@ -141,11 +143,11 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       completion(.noData)
       return
     }
-    emit("onMessage", fields.message)
-    host.call("push", body: fields.message, timeout: pushDeadline) { result in
+    notify("onMessage", fields.message)
+    host.emit("push", event: fields.message, timeout: pushDeadline) { result in
       switch result {
-      case .success(let response):
-        self.show(response) { completion(.newData) }
+      case .success(let reply):
+        self.show(reply) { completion(.newData) }
       case .failure(let error):
         print("push notification failed: \(error)")
         completion(.failed)
@@ -164,7 +166,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
         completionHandler(shown)
         return
       }
-      self.emit("onMessage", fields.message)
+      self.notify("onMessage", fields.message)
       completionHandler(self.defaults.bool(forKey: showInForegroundKey) ? shown : [])
     }
   }
@@ -176,12 +178,17 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
   ) {
     let opened = TokamakNotificationFields(response.notification).opened
     DispatchQueue.main.async {
-      self.emit("onNotificationOpened", opened)
-      completionHandler()
+      self.notify("onNotificationOpened", opened)
+      self.host.emit("opened", event: opened, timeout: openedDeadline) { result in
+        if case .failure(let error) = result {
+          print("opened notification failed: \(error)")
+        }
+        completionHandler()
+      }
     }
   }
 
-  private func emit(_ method: String, _ value: [String: Any]) {
+  private func notify(_ method: String, _ value: [String: Any]) {
     let current = listeners[method] ?? [:]
     if method == "onNotificationOpened" && current.isEmpty {
       heldOpened.append(value)
@@ -246,16 +253,14 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     }
   }
 
-  /// Shows the notification a push response returns, if any.
-  private func show(_ response: Data, completion: @escaping () -> Void) {
-    let returned = try? JSONSerialization.jsonObject(with: response, options: .fragmentsAllowed)
-    guard !response.isEmpty, !(returned is NSNull) else {
+  /// Shows the notification `onPush` listeners reply with, if any.
+  private func show(_ reply: Any?, completion: @escaping () -> Void) {
+    guard let reply else {
       completion()
       return
     }
-    guard let returned, let request = try? TokamakNotificationRequest(returned, scheduled: false)
-    else {
-      print("tokamak push response is not a notification")
+    guard let request = try? TokamakNotificationRequest(reply, scheduled: false) else {
+      print("tokamak push reply is not a notification")
       completion()
       return
     }

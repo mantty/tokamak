@@ -276,261 +276,6 @@ fn loads_split_worker_modules_through_the_quickjs_loader() -> Result<(), Box<dyn
     Ok(())
 }
 
-const CALL_WORKER: &[u8] = br#"
-export default {
-  async fetch(request, env, ctx) {
-    const path = new URL(request.url).pathname;
-    if (path === "/tokamak/missing") return new Response(null, { status: 404 });
-    if (path === "/tokamak/broken") throw new Error("handler exploded");
-    if (path === "/tokamak/slow") await new Promise((resolve) => setTimeout(resolve, 5000));
-    if (path === "/tokamak/relay") {
-      const { status } = await fetch((await request.json()).url);
-      return new Response(String(status), { status });
-    }
-    if (path === "/tokamak/later") {
-      const { notify } = await request.json();
-      ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 50)).then(() => fetch(notify)));
-      return Response.json(null);
-    }
-    if (path === "/tokamak/late") {
-      const { notify } = await request.json();
-      ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 400)).then(() => fetch(notify)));
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      return Response.json(null);
-    }
-    return Response.json({
-      method: request.method,
-      path,
-      type: request.headers.get("content-type"),
-      body: await request.text(),
-    });
-  },
-};
-"#;
-
-fn call_runtime()
--> Result<(crate::gateway::Runtime, tempfile::TempDir), Box<dyn std::error::Error + Send + Sync>> {
-    let directory = tempfile::tempdir()?;
-    let worker = WorkerBundle::of_source(CALL_WORKER, directory.path())?;
-    let dispatcher = Dispatcher::new(worker, runtime_config());
-    let runtime = crate::gateway::Runtime::start(
-        dispatcher,
-        certificates(directory.path())?,
-        HOST.to_owned(),
-        Events::new(drop),
-    )?;
-    Ok((runtime, directory))
-}
-
-fn call_worker(
-    name: &str,
-    timeout: Duration,
-) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
-    let (runtime, _directory) = call_runtime()?;
-    let body = runtime.call(name, r#"{"id":"1"}"#, timeout)?;
-    Ok(serde_json::from_slice(&body)?)
-}
-
-#[test]
-fn posts_a_runtime_call_to_the_worker_fetch_handler()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    assert_eq!(
-        call_worker("push", Duration::from_secs(5))?,
-        serde_json::json!({
-            "method": "POST",
-            "path": "/tokamak/push",
-            "type": "application/json",
-            "body": r#"{"id":"1"}"#,
-        })
-    );
-    Ok(())
-}
-
-#[test]
-fn fails_a_runtime_call_the_worker_does_not_answer_with_200()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let Err(error) = call_worker("missing", Duration::from_secs(5)) else {
-        return Err("the call succeeded".into());
-    };
-    assert_eq!(error.to_string(), "/tokamak/missing responded 404");
-    Ok(())
-}
-
-#[test]
-fn fails_a_runtime_call_the_worker_throws_in()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let Err(error) = call_worker("broken", Duration::from_secs(5)) else {
-        return Err("the call succeeded".into());
-    };
-    assert_eq!(error.to_string(), "/tokamak/broken responded 500");
-    Ok(())
-}
-
-/// A URL whose first request's line arrives on the returned receiver.
-fn notify_listener()
--> Result<(String, flume::Receiver<String>), Box<dyn std::error::Error + Send + Sync>> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let url = format!("http://127.0.0.1:{}/done", listener.local_addr()?.port());
-    let (arrived, arrival) = flume::bounded(1);
-    thread::spawn(move || -> io::Result<()> {
-        let (mut stream, _) = listener.accept()?;
-        let mut line = String::new();
-        BufReader::new(&stream).read_line(&mut line)?;
-        let _ = arrived.send(line);
-        stream.write_all(b"HTTP/1.1 204 No Content\r\n\r\n")
-    });
-    Ok((url, arrival))
-}
-
-/// A URL answering its requests with `statuses` in turn; each request's arrival
-/// reaches the returned receiver.
-fn status_server(
-    statuses: &'static [u16],
-) -> Result<(String, flume::Receiver<()>), Box<dyn std::error::Error + Send + Sync>> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let url = format!("http://127.0.0.1:{}/", listener.local_addr()?.port());
-    let (arrived, arrivals) = flume::unbounded();
-    thread::spawn(move || -> io::Result<()> {
-        for status in statuses {
-            let (mut stream, _) = listener.accept()?;
-            let mut reader = BufReader::new(&stream);
-            let mut line = String::new();
-            while reader.read_line(&mut line)? > 2 {
-                line.clear();
-            }
-            let _ = arrived.send(());
-            write!(
-                stream,
-                "HTTP/1.1 {status} Status\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            )?;
-        }
-        Ok(())
-    });
-    Ok((url, arrivals))
-}
-
-/// Calls the Worker's relay endpoint against [`status_server`], returning the
-/// response body or error, and the number of attempts.
-fn relay_call(
-    statuses: &'static [u16],
-    timeout: Duration,
-) -> Result<(String, usize), Box<dyn std::error::Error + Send + Sync>> {
-    let (url, arrivals) = status_server(statuses)?;
-    let (runtime, _directory) = call_runtime()?;
-    let body = serde_json::json!({ "url": url }).to_string();
-    let outcome = match runtime.call("relay", &body, timeout) {
-        Ok(response) => String::from_utf8(response)?,
-        Err(error) => error.to_string(),
-    };
-    Ok((outcome, arrivals.drain().count()))
-}
-
-#[test]
-fn retries_a_failed_runtime_call() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    assert_eq!(
-        relay_call(&[503, 200], Duration::from_secs(10))?,
-        ("200".to_owned(), 2)
-    );
-    Ok(())
-}
-
-#[test]
-fn fails_a_runtime_call_after_three_attempts()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    assert_eq!(
-        relay_call(&[503, 503, 503, 200], Duration::from_secs(10))?,
-        ("/tokamak/relay responded 503".to_owned(), 3)
-    );
-    Ok(())
-}
-
-#[test]
-fn retries_a_runtime_call_only_while_its_timeout_allows()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    assert_eq!(
-        relay_call(&[503, 200], Duration::from_millis(900))?,
-        ("/tokamak/relay responded 503".to_owned(), 1)
-    );
-    Ok(())
-}
-
-#[test]
-fn runs_wait_until_work_after_a_runtime_call_responds()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (notify, arrival) = notify_listener()?;
-    let (runtime, _directory) = call_runtime()?;
-
-    let body = runtime.call(
-        "later",
-        &serde_json::json!({ "notify": notify }).to_string(),
-        Duration::from_secs(5),
-    )?;
-
-    assert_eq!(body, b"null");
-    assert_eq!(
-        arrival.recv_timeout(Duration::from_secs(5))?,
-        "GET /done HTTP/1.1\r\n"
-    );
-    Ok(())
-}
-
-#[test]
-fn runs_wait_until_work_after_a_runtime_call_times_out()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (notify, arrival) = notify_listener()?;
-    let (runtime, _directory) = call_runtime()?;
-
-    let Err(error) = runtime.call(
-        "late",
-        &serde_json::json!({ "notify": notify }).to_string(),
-        Duration::from_millis(100),
-    ) else {
-        return Err("the call succeeded".into());
-    };
-
-    assert_eq!(
-        error.to_string(),
-        "/tokamak/late did not respond within 100ms"
-    );
-    assert_eq!(
-        arrival.recv_timeout(Duration::from_secs(5))?,
-        "GET /done HTTP/1.1\r\n"
-    );
-    Ok(())
-}
-
-#[test]
-fn fails_a_runtime_call_that_outlasts_its_timeout()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let started = std::time::Instant::now();
-
-    let Err(error) = call_worker("slow", Duration::from_millis(100)) else {
-        return Err("the call succeeded".into());
-    };
-
-    assert_eq!(
-        error.to_string(),
-        "/tokamak/slow did not respond within 100ms"
-    );
-    assert!(started.elapsed() < Duration::from_secs(2));
-    Ok(())
-}
-
-#[test]
-fn refuses_a_runtime_call_name_that_is_not_a_path_segment()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    for name in ["", "push/../admin", "push?x=1"] {
-        let Err(error) = call_worker(name, Duration::from_secs(5)) else {
-            return Err(format!("the call to {name:?} succeeded").into());
-        };
-        assert!(
-            error.to_string().contains("invalid runtime call name"),
-            "{error}"
-        );
-    }
-    Ok(())
-}
-
 #[test]
 fn loads_builtins_without_source_compilation() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -765,6 +510,16 @@ fn reports_handler_failures_through_the_event_listener()
         fn handle(&self, _: Job, _: &CancellationToken) -> Result<(), HandlerError> {
             Err("handler exploded".into())
         }
+
+        fn deliver(
+            &self,
+            _: &str,
+            _: &str,
+            _: std::time::Instant,
+            _: &CancellationToken,
+        ) -> Result<crate::gateway::Delivery, HandlerError> {
+            Err("handler must not run".into())
+        }
     }
     let directory = tempfile::tempdir()?;
     let tokio = tokio::runtime::Builder::new_current_thread().build()?;
@@ -816,6 +571,16 @@ fn reports_connection_failures_through_the_event_listener()
         fn handle(&self, _: Job, _: &CancellationToken) -> Result<(), HandlerError> {
             Err("handler must not run".into())
         }
+
+        fn deliver(
+            &self,
+            _: &str,
+            _: &str,
+            _: std::time::Instant,
+            _: &CancellationToken,
+        ) -> Result<crate::gateway::Delivery, HandlerError> {
+            Err("handler must not run".into())
+        }
     }
     let directory = tempfile::tempdir()?;
     let (sink, events) = flume::unbounded();
@@ -845,7 +610,7 @@ fn reports_connection_failures_through_the_event_listener()
     Ok(())
 }
 
-fn certificates(directory: &Path) -> io::Result<Arc<Certificates>> {
+pub(crate) fn certificates(directory: &Path) -> io::Result<Arc<Certificates>> {
     Certificates::start(directory.join("state"), HOST.to_owned())
         .map(Arc::new)
         .map_err(io::Error::other)
@@ -1002,7 +767,7 @@ fn spawn_blocking_request(
     })
 }
 
-fn runtime_config() -> RuntimeConfig {
+pub(crate) fn runtime_config() -> RuntimeConfig {
     RuntimeConfig {
         assets: None,
         cache: Arc::default(),
