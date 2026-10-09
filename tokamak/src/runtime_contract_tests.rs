@@ -81,9 +81,8 @@ fn runtime_config(
 ) -> RuntimeConfig {
     RuntimeConfig {
         assets,
-        cache: Arc::default(),
         environment,
-        storage: None,
+        ..crate::tests::runtime_config()
     }
 }
 
@@ -411,12 +410,7 @@ export default httpServerHandler(server);
 "#,
         directory.path(),
     )?;
-    let config = RuntimeConfig {
-        assets: None,
-        cache: Arc::default(),
-        environment: BTreeMap::new(),
-        storage: None,
-    };
+    let config = crate::tests::runtime_config();
     let request = HttpRequest {
         persistent: true,
         method: "POST".to_owned(),
@@ -598,15 +592,13 @@ fn storage_bindings_match_cloudflare() -> TestResult {
         },
     ];
     let config = RuntimeConfig {
-        assets: None,
-        cache: Arc::default(),
-        environment: BTreeMap::new(),
         storage: Some(Arc::new(Storage::open(
             &directory.path().join("storage"),
             &directory.path().join("scratch"),
             &PackageLayout::new(directory.path()),
             &bindings,
         )?)),
+        ..crate::tests::runtime_config()
     };
     let actual: serde_json::Value = serde_json::from_slice(&request_with(&worker, config)?)?;
     assert_contract_domains(&expected, &actual)
@@ -646,15 +638,13 @@ export default {{ async fetch(request, env) {{
         id: "files".to_owned(),
     }];
     let config = RuntimeConfig {
-        assets: None,
-        cache: Arc::default(),
-        environment: BTreeMap::new(),
         storage: Some(Arc::new(Storage::open(
             &directory.path().join("storage"),
             &directory.path().join("scratch"),
             &PackageLayout::new(directory.path()),
             &bindings,
         )?)),
+        ..crate::tests::runtime_config()
     };
 
     let actual = request_with(&worker, config);

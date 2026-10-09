@@ -30,8 +30,6 @@ struct State {
     started: bool,
     /// The events that have listeners, once the Worker has reported them.
     listened: Option<BTreeSet<String>>,
-    /// Whether the app is in the foreground.
-    foreground: bool,
 }
 
 impl WorkerEvents {
@@ -42,7 +40,6 @@ impl WorkerEvents {
             state: Mutex::new(State {
                 started: false,
                 listened: None,
-                foreground,
             }),
             started: Condvar::new(),
             lifecycle: Mutex::new(()),
@@ -58,8 +55,7 @@ impl WorkerEvents {
     }
 
     /// Delivers the event `name`, whose JSON is `event`, once `start` has
-    /// been, and returns the reply as JSON. A `resume` while in the
-    /// foreground, or a `suspend` while not, is not delivered.
+    /// been, and returns the reply as JSON.
     pub(crate) fn emit(
         &self,
         name: &str,
@@ -73,9 +69,6 @@ impl WorkerEvents {
         self.wait_for_start(name, deadline)?;
         let lifecycle = matches!(name, "resume" | "suspend");
         let _turn = lifecycle.then(|| lock(&self.lifecycle));
-        if lifecycle && !self.change_foreground(name == "resume") {
-            return Ok(NO_REPLY.to_owned());
-        }
         if !self.listens(name) {
             return Ok(NO_REPLY.to_owned());
         }
@@ -118,15 +111,6 @@ impl WorkerEvents {
                 .0;
         }
         Ok(())
-    }
-
-    /// Records that the app is in the foreground or not, returning whether
-    /// that changed.
-    fn change_foreground(&self, foreground: bool) -> bool {
-        let mut state = lock(&self.state);
-        let changed = state.foreground != foreground;
-        state.foreground = foreground;
-        changed
     }
 
     /// Whether the event `name` may have listeners.

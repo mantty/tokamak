@@ -23,6 +23,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     var timer: DispatchWorkItem?
   }
 
+  private let host: TokamakHost
   /// Updates watchers.
   private let updates = CLLocationManager()
   /// Takes single fixes for current position requests, apart from watching.
@@ -31,6 +32,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private var watchers: [UUID: TokamakPluginReply] = [:]
 
   init(host: TokamakHost) {
+    self.host = host
     super.init()
     for manager in [updates, fixes] {
       manager.delegate = self
@@ -60,10 +62,9 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     method: String,
     arguments: Any,
     reply: @escaping TokamakPluginReply
-  ) -> (() -> Void) {
+  ) throws(TokamakPluginError) -> (() -> Void) {
     guard method == "watchPosition" else {
-      reply(.failure(.notSupported("\(id).\(method) is not supported")))
-      return {}
+      throw .notSupported("\(id).\(method) is not supported")
     }
     let subscription = UUID()
     watchers[subscription] = reply
@@ -121,10 +122,15 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
       return
     }
     let status = updates.authorizationStatus
-    if status == .notDetermined {
-      updates.requestWhenInUseAuthorization()
-    } else {
+    guard status == .notDetermined else {
       serve(status)
+      return
+    }
+    do throws(TokamakPluginError) {
+      try host.requireUI()
+      updates.requestWhenInUseAuthorization()
+    } catch {
+      fail(error)
     }
   }
 

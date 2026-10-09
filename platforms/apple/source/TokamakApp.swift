@@ -1,5 +1,6 @@
 import Foundation
 import TokamakRuntime
+import os
 
 #if os(iOS)
   import UIKit
@@ -17,28 +18,79 @@ private let lifecycleDeadline: TimeInterval = 10
 /// WebView, so plugins receive app events before a page loads and a Worker
 /// event can run while no page is loaded.
 final class TokamakApp {
-  private(set) var plugins: [any TokamakPlugin] = []
+  /// Every plugin, by ID.
+  private(set) var plugins: [String: any TokamakPlugin] = [:]
   private var runtime: Result<RuntimeHandle, Error>?
   private var waiting: [(Result<RuntimeHandle, Error>) -> Void] = []
+  /// The Worker's calls and subscriptions on the plugins.
+  private lazy var workerRequests = TokamakPluginRequests<UInt64>(plugins: plugins) {
+    [unowned self] id, result in
+    whenStarted { started in
+      if case .success(let runtime) = started {
+        runtime.reply(id, result: result)
+      }
+    }
+  }
   /// Delivers `resume` and `suspend` one at a time, in order.
   private let lifecycle = DispatchQueue(label: "tokamak.lifecycle")
   #if os(iOS)
-    /// The scenes in the foreground.
-    private var foregroundScenes = 0
+    /// The scenes in the foreground, which plugins read on any thread.
+    private let foregroundScenes = OSAllocatedUnfairLock(initialState: 0)
   #endif
 
   /// Creates the plugins. Call it before launch finishes.
   init() {
-    plugins = tokamakPlugins(app: self)
+    for plugin in tokamakPlugins(app: self) {
+      precondition(plugins.updateValue(plugin, forKey: plugin.id) == nil, "Duplicate plugin ID")
+    }
   }
 
   /// Starts the runtime in the background, which delivers `start` with
   /// `foreground`. Call it once, on the main thread.
   func start(foreground: Bool) {
     dispatchPrecondition(condition: .onQueue(.main))
+    let plugins = workerPlugins
     DispatchQueue.global(qos: .userInitiated).async {
-      let result = Result { try RuntimeHandle(foreground: foreground) }
+      let result = Result { try RuntimeHandle(foreground: foreground, plugins: plugins) }
       DispatchQueue.main.async { self.started(result) }
+    }
+  }
+
+  /// The plugins as the runtime calls them, on its own threads. The app
+  /// outlives the runtime, which holds it unretained.
+  private var workerPlugins: TokamakPluginHandler {
+    TokamakPluginHandler(
+      context: Unmanaged.passUnretained(self).toOpaque(),
+      call: { context, id, plugin, method, arguments in
+        TokamakApp.receive(context, id, subscribe: false, plugin, method, arguments)
+      },
+      subscribe: { context, id, plugin, method, arguments in
+        TokamakApp.receive(context, id, subscribe: true, plugin, method, arguments)
+      },
+      unsubscribe: { context, id in
+        let app = Unmanaged<TokamakApp>.fromOpaque(context!).takeUnretainedValue()
+        DispatchQueue.main.async { app.workerRequests.cancel(id) }
+      }
+    )
+  }
+
+  /// Runs a call or subscription the Worker made through `context`'s app.
+  private static func receive(
+    _ context: UnsafeMutableRawPointer?,
+    _ id: UInt64,
+    subscribe: Bool,
+    _ plugin: UnsafePointer<CChar>?,
+    _ method: UnsafePointer<CChar>?,
+    _ arguments: UnsafePointer<CChar>?
+  ) {
+    let app = Unmanaged<TokamakApp>.fromOpaque(context!).takeUnretainedValue()
+    let (plugin, method) = (String(cString: plugin!), String(cString: method!))
+    let arguments =
+      (try? JSONSerialization.jsonObject(
+        with: Data(String(cString: arguments!).utf8), options: .fragmentsAllowed)) ?? NSNull()
+    DispatchQueue.main.async {
+      app.workerRequests.run(
+        id, subscribe: subscribe, plugin: plugin, method: method, arguments: arguments)
     }
   }
 
@@ -81,8 +133,9 @@ final class TokamakApp {
     }
   }
 
-  /// Delivers `resume` when the app moves into the foreground and `suspend`
-  /// when it moves out. Call it on the main thread.
+  /// Records the app moving into or out of the foreground once the runtime
+  /// has started, and delivers `resume` or `suspend` when that changed its
+  /// stage. Call it on the main thread.
   func moved(toForeground foreground: Bool) {
     let name = foreground ? "resume" : "suspend"
     #if os(iOS)
@@ -103,45 +156,57 @@ final class TokamakApp {
       let finish = {}
       let timeout = lifecycleDeadline
     #endif
-    emit(name, event: [String: Any](), timeout: timeout, on: lifecycle) { result in
-      if case .failure(let error) = result {
-        print("tokamak \(name) failed: \(error)")
+    whenStarted { started in
+      guard case .success(let runtime) = started, runtime.setForeground(foreground) else {
+        finish()
+        return
       }
-      finish()
+      self.emit(name, event: [String: Any](), timeout: timeout, on: self.lifecycle) { result in
+        if case .failure(let error) = result {
+          print("tokamak \(name) failed: \(error)")
+        }
+        finish()
+      }
     }
   }
 
   #if os(iOS)
     /// Delivers `resume` as the first scene enters the foreground.
     func sceneWillEnterForeground() {
-      foregroundScenes += 1
-      if foregroundScenes == 1 {
+      let first = foregroundScenes.withLock { scenes in
+        scenes += 1
+        return scenes == 1
+      }
+      if first {
         moved(toForeground: true)
       }
     }
 
     /// Delivers `suspend` as the last scene leaves the foreground.
     func sceneDidEnterBackground() {
-      foregroundScenes -= 1
-      if foregroundScenes == 0 {
+      let last = foregroundScenes.withLock { scenes in
+        scenes -= 1
+        return scenes == 0
+      }
+      if last {
         moved(toForeground: false)
       }
     }
 
-    /// Whether a scene is in the foreground.
+    /// Whether a scene is in the foreground. Read it on any thread.
     var isInForeground: Bool {
-      foregroundScenes > 0
+      foregroundScenes.withLock { $0 > 0 }
     }
   #endif
 
   func didRegisterForRemoteNotifications(deviceToken: Data) {
-    for plugin in plugins {
+    for plugin in plugins.values {
       plugin.didRegisterForRemoteNotifications(deviceToken: deviceToken)
     }
   }
 
   func didFailToRegisterForRemoteNotifications(error: Error) {
-    for plugin in plugins {
+    for plugin in plugins.values {
       plugin.didFailToRegisterForRemoteNotifications(error: error)
     }
   }
@@ -154,7 +219,7 @@ final class TokamakApp {
   ) {
     let group = DispatchGroup()
     var results: [TokamakBackgroundResult] = []
-    for plugin in plugins {
+    for plugin in plugins.values {
       group.enter()
       plugin.didReceiveRemoteNotification(userInfo) { result in
         DispatchQueue.main.async {
@@ -223,8 +288,9 @@ final class RuntimeHandle {
   let appHost: String
   private var handle: UnsafeMutableRawPointer?
 
-  /// Starts the runtime, which delivers `start` with `foreground`.
-  init(foreground: Bool) throws {
+  /// Starts the runtime, which delivers `start` with `foreground`, and whose
+  /// Worker calls `plugins`.
+  init(foreground: Bool, plugins: TokamakPluginHandler) throws {
     guard
       let appHost = Bundle.main.object(forInfoDictionaryKey: "TokamakHost") as? String,
       !appHost.isEmpty
@@ -250,6 +316,7 @@ final class RuntimeHandle {
                   endpoint,
                   sessionToken,
                   foreground,
+                  plugins,
                   error.baseAddress,
                   error.count
                 )
@@ -275,6 +342,7 @@ final class RuntimeHandle {
                   storagePath,
                   appHost,
                   foreground,
+                  plugins,
                   error.baseAddress,
                   error.count
                 )
@@ -345,6 +413,20 @@ final class RuntimeHandle {
     }
     let value = try JSONSerialization.jsonObject(with: json, options: .fragmentsAllowed)
     return value is NSNull ? nil : value
+  }
+
+  /// Records whether the app is in the foreground, which the Worker's
+  /// `getLifecycleStage()` reports from then on, and returns whether that
+  /// changed.
+  func setForeground(_ foreground: Bool) -> Bool {
+    tokamak_runtime_set_foreground(handle, foreground)
+  }
+
+  /// Passes a plugin's `result`, JSON-serialisable, to the Worker's call or
+  /// subscription `id`.
+  func reply(_ id: UInt64, result: [String: Any]) {
+    guard let json = try? JSONSerialization.data(withJSONObject: result) else { return }
+    String(decoding: json, as: UTF8.self).withCString { tokamak_runtime_reply(handle, id, $0) }
   }
 
   func serverAuthority(host: String) -> AuthenticationMaterial<Data> {

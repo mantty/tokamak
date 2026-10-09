@@ -377,8 +377,13 @@ manifest=$app/src/main/AndroidManifest.xml
     '</manifest>'
 } > "$manifest"
 
-# R8 keeps every name, so class names in errors and stack traces stay real.
-printf '%s\n' '-dontobfuscate' > "$app/tokamak-rules.pro"
+# R8 keeps every name, so class names in errors and stack traces stay real,
+# and the methods the runtime calls from native code.
+printf '%s\n' \
+  '-dontobfuscate' \
+  '-keep interface com.tokamak.runtime.TokamakRuntime$Plugins { *; }' \
+  '-keepclassmembers class * implements com.tokamak.runtime.TokamakRuntime$Plugins { *; }' \
+  > "$app/tokamak-rules.pro"
 
 gradle --no-daemon "-Ptokamak.version=$version" ":app:lint$task" ":app:assemble$task" --project-dir "$project"
 mkdir -p "$(dirname "$output")"

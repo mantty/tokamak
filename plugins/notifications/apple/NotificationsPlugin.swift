@@ -57,9 +57,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       case "permission":
         permission(reply)
       case "requestPermission":
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in
-          self.permission(reply)
-        }
+        requestPermission(reply)
       case "show":
         add(try TokamakNotificationRequest(arguments, scheduled: false), reply: reply)
       case "schedule":
@@ -94,10 +92,9 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     method: String,
     arguments: Any,
     reply: @escaping TokamakPluginReply
-  ) -> (() -> Void) {
+  ) throws(TokamakPluginError) -> (() -> Void) {
     guard ["onMessage", "onNotificationOpened", "onSubscriptionChange"].contains(method) else {
-      reply(.failure(.notSupported("\(id).\(method) is not supported")))
-      return {}
+      throw .notSupported("\(id).\(method) is not supported")
     }
     let key = UUID()
     listeners[method, default: [:]][key] = reply
@@ -195,6 +192,24 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     }
     for reply in current.values {
       reply(.success(value))
+    }
+  }
+
+  /// Asks for permission when the system has not yet, which shows its prompt.
+  private func requestPermission(_ reply: @escaping TokamakPluginReply) {
+    center.getNotificationSettings { settings in
+      guard settings.authorizationStatus == .notDetermined else {
+        reply(.success(Self.permission(settings.authorizationStatus)))
+        return
+      }
+      do throws(TokamakPluginError) {
+        try self.host.requireUI()
+        self.center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in
+          self.permission(reply)
+        }
+      } catch {
+        reply(.failure(error))
+      }
     }
   }
 

@@ -59,7 +59,10 @@ class TokamakLocationPlugin(
         }
     }
 
-    /** Passes [action] whether the app may read fine or coarse location, asking when it may not. */
+    /**
+     * Passes [action] whether the app may read fine or coarse location, asking when it may not.
+     * Throws `NeedsUIError` when asking would show UI while the app is in the background.
+     */
     private fun withPermission(action: (Boolean) -> Unit) {
         if (PERMISSIONS.any { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
             action(true)
@@ -93,8 +96,7 @@ class TokamakLocationPlugin(
                 context.mainExecutor,
             ) { location ->
                 handler.removeCallbacks(timeout)
-                if (location == null) reply(unavailable("Location is unavailable"))
-                else reply(Result.success(position(location)))
+                reply(if (location == null) missingFix() else Result.success(position(location)))
             }
         }.onFailure {
             handler.removeCallbacks(timeout)
@@ -165,6 +167,14 @@ class TokamakLocationPlugin(
     private fun permissionDenied(): Result<Any?> =
         Result.failure(TokamakPluginError("NotAllowedError", "Location permission was denied"))
 
+    /** Why no fix came: Android gives none in the background without background location permission. */
+    private fun missingFix(): Result<Any?> =
+        if (host.isInForeground || context.checkSelfPermission(BACKGROUND) == PackageManager.PERMISSION_GRANTED) {
+            unavailable("Location is unavailable")
+        } else {
+            Result.failure(TokamakPluginError("NotAllowedError", "Location permission does not cover the background"))
+        }
+
     private fun unavailable(message: String): Result<Any?> =
         Result.failure(TokamakPluginError("NotReadableError", message))
 
@@ -176,5 +186,6 @@ class TokamakLocationPlugin(
         /** The `timeout` that never expires, as the page sends it. */
         const val UNLIMITED = 0xffffffffL
         val PERMISSIONS = setOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+        const val BACKGROUND = Manifest.permission.ACCESS_BACKGROUND_LOCATION
     }
 }

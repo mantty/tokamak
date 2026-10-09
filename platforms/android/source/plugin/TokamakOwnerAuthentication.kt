@@ -21,7 +21,8 @@ fun TokamakHost.requireOwnerAuthentication(authenticators: Int) {
 /**
  * Shows the system prompt, titled [title], for the device owner to authenticate with
  * [authenticators], authorising [crypto] when given. Calls [succeeded] once they do; otherwise
- * [reply] receives the failure. Call it on the main thread.
+ * [reply] receives the failure. Throws `NeedsUIError` while the app is in the background. Call it
+ * on the main thread.
  */
 fun TokamakHost.authenticateOwner(
     title: CharSequence,
@@ -30,11 +31,7 @@ fun TokamakHost.authenticateOwner(
     reply: TokamakPluginReply,
     succeeded: () -> Unit,
 ) {
-    val activity =
-        activity ?: throw TokamakPluginError(
-            "InvalidStateError",
-            "The app has no activity to show the authentication prompt in",
-        )
+    val activity = requireForegroundActivity()
     val builder = BiometricPrompt.Builder(activity).setTitle(title).setAllowedAuthenticators(authenticators)
     if ((authenticators and Authenticators.DEVICE_CREDENTIAL) == 0) {
         builder.setNegativeButton(activity.getString(android.R.string.cancel), activity.mainExecutor) { _, _ ->

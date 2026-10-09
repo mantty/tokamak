@@ -201,7 +201,7 @@ export async function run(handlerEnv, ctx, constructors) {
   const globalSurface = new Set();
   for (let object = globalThis; object; object = Object.getPrototypeOf(object)) {
     for (const name of Object.getOwnPropertyNames(object)) {
-      if (!name.startsWith("__tokamak_") && name !== "WebAssembly") globalSurface.add(name);
+      if (!name.startsWith("__tokamak") && name !== "WebAssembly") globalSurface.add(name);
     }
   }
   output.globalSurface = [...globalSurface].sort();

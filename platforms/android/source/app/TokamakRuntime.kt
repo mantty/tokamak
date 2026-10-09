@@ -4,6 +4,19 @@ import java.io.File
 
 /** The tokamak runtime, running for the life of the process. */
 internal class TokamakRuntime private constructor(private val handle: Long) {
+    /**
+     * The app's plugins, which the Worker calls. The runtime calls these methods on its own
+     * threads, and each call or subscription is answered with [reply]: once for a call, and once
+     * per value for a subscription.
+     */
+    interface Plugins {
+        fun call(id: Long, plugin: String, method: String, arguments: String)
+
+        fun subscribe(id: Long, plugin: String, method: String, arguments: String)
+
+        fun unsubscribe(id: Long)
+    }
+
     /** The loopback port the gateway bound. */
     val port: Int
         get() = nativePort(handle)
@@ -16,6 +29,15 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
      */
     fun emit(name: String, event: String, timeoutMillis: Long): String =
         nativeEmit(handle, name, event, timeoutMillis)
+
+    /**
+     * Records whether the app is in the foreground, which the Worker's `getLifecycleStage()`
+     * reports from then on, and returns whether that changed.
+     */
+    fun setForeground(foreground: Boolean): Boolean = nativeSetForeground(handle, foreground)
+
+    /** Passes a plugin's JSON [result] to the Worker's call or subscription [id]. */
+    fun reply(id: Long, result: String) = nativeReply(handle, id, result)
 
     /**
      * The authority a server certificate for [host] must chain to, or null
@@ -36,8 +58,8 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
         }
 
         /**
-         * Start the runtime, which delivers `start` with [foreground], throwing when it cannot
-         * serve the app.
+         * Start the runtime, which delivers `start` with [foreground] and whose Worker calls
+         * [plugins], throwing when it cannot serve the app.
          */
         fun start(
             packagedDir: File,
@@ -45,21 +67,26 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             storageDir: File,
             host: String,
             foreground: Boolean,
+            plugins: Plugins,
         ): TokamakRuntime =
             TokamakRuntime(
-                nativeStart(packagedDir.path, stateDir.path, storageDir.path, host, foreground),
+                nativeStart(packagedDir.path, stateDir.path, storageDir.path, host, foreground, plugins),
             )
 
-        /** Start the runtime against a host development server, delivering `start` with [foreground]. */
+        /**
+         * Start the runtime against a host development server, delivering `start` with
+         * [foreground], whose development Worker calls [plugins].
+         */
         fun startDevelopment(
             stateDir: File,
             host: String,
             endpoint: String,
             sessionToken: String,
             foreground: Boolean,
+            plugins: Plugins,
         ): TokamakRuntime =
             TokamakRuntime(
-                nativeStartDevelopment(stateDir.path, host, endpoint, sessionToken, foreground),
+                nativeStartDevelopment(stateDir.path, host, endpoint, sessionToken, foreground, plugins),
             )
 
         @JvmStatic
@@ -69,6 +96,7 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             storageDir: String,
             host: String,
             foreground: Boolean,
+            plugins: Plugins,
         ): Long
 
         @JvmStatic
@@ -78,7 +106,14 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             endpoint: String,
             sessionToken: String,
             foreground: Boolean,
+            plugins: Plugins,
         ): Long
+
+        @JvmStatic
+        private external fun nativeSetForeground(handle: Long, foreground: Boolean): Boolean
+
+        @JvmStatic
+        private external fun nativeReply(handle: Long, id: Long, result: String)
 
         @JvmStatic
         private external fun nativePort(handle: Long): Int

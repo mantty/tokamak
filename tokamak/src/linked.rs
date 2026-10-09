@@ -16,6 +16,7 @@ use rquickjs::{Ctx, Module};
 use crate::env_vars::StorageBinding;
 use crate::gateway::Handler;
 use crate::packaging::PackageLayout;
+use crate::plugin_calls::PluginCalls;
 use crate::server::DevProxyConfig;
 
 /// The storage part's entry point.
@@ -40,9 +41,13 @@ pub(crate) trait StorageRuntime: Debug + Send + Sync {
 /// The development part's entry point.
 pub(crate) struct DevelopmentEntry {
     /// The handler that forwards requests and events to the development
-    /// server `config` names.
-    pub(crate) handler: fn(&DevProxyConfig) -> io::Result<Arc<dyn Handler>>,
+    /// server `config` names, and runs the development Worker's calls on the
+    /// plugins.
+    pub(crate) handler: fn(&DevProxyConfig, Arc<PluginCalls>) -> DevelopmentHandler,
 }
+
+/// The handler the development part created.
+pub(crate) type DevelopmentHandler = io::Result<Arc<dyn Handler>>;
 
 /// The storage part, when the app's link kept it.
 pub(crate) fn storage() -> Option<&'static StorageEntry> {

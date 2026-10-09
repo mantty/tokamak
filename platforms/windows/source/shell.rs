@@ -98,7 +98,7 @@ pub(crate) fn run() -> Result<()> {
     let host = config.host.clone();
     let mut identity = identity;
     let (lifecycle, deliveries) = deliver_lifecycle_events(Arc::clone(&runtime))?;
-    let mut minimized = false;
+    let stage = Arc::clone(&runtime);
     let window = &window;
     event_loop.run_return(move |event, _, flow| {
         *flow = ControlFlow::Wait;
@@ -112,9 +112,11 @@ pub(crate) fn run() -> Result<()> {
             TaoEvent::WindowEvent {
                 event: WindowEvent::Resized(_),
                 ..
-            } if window.is_minimized() != minimized => {
-                minimized = !minimized;
-                let _ = lifecycle.send(!minimized);
+            } => {
+                let foreground = !window.is_minimized();
+                if stage.set_foreground(foreground) {
+                    let _ = lifecycle.send(foreground);
+                }
             }
             TaoEvent::WindowEvent {
                 event: WindowEvent::CloseRequested,
@@ -167,6 +169,7 @@ fn build_webview(
 
 /// Delivers `resume` for each `true` the returned sender receives and
 /// `suspend` for each `false`, one at a time, until the sender is dropped.
+/// The event loop sends each change it records with `set_foreground`.
 fn deliver_lifecycle_events(runtime: Arc<Runtime>) -> Result<(Sender<bool>, JoinHandle<()>)> {
     let (sender, receiver) = mpsc::channel::<bool>();
     let deliveries = thread::Builder::new()
@@ -206,6 +209,7 @@ fn start_runtime(
                     session_token: session_token.to_owned(),
                 },
                 foreground: true,
+                plugins: None,
             },
             listener,
         )?),
@@ -216,6 +220,7 @@ fn start_runtime(
                 storage_dir: state.join("storage"),
                 host: config.host.clone(),
                 foreground: true,
+                plugins: None,
             },
             listener,
         )?),

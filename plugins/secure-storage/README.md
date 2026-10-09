@@ -57,6 +57,7 @@ the platform's default prompt is shown.
 | `NotSupportedError` | The platform, build or device cannot enforce the options |
 | `InvalidStateError` | The requested authentication is not set up on the device |
 | `NotAllowedError` | The user cancelled or failed authentication, or the device is locked |
+| `NeedsUIError` | Reading a value saved with `authentication` while the app is off screen on iOS or Android, where the system cannot show its prompt |
 | `NotReadableError` | A stored value can no longer be decrypted |
 | `TypeError` | An argument is missing or has an unsupported value |
 | `OperationError` | The platform reported another failure |

@@ -1,5 +1,6 @@
-//! The dev WebSocket, which carries events from the development app to the
-//! tokamak Vite plugin through `tok dev`'s relay.
+//! The dev WebSocket between the development app and the tokamak Vite plugin,
+//! through `tok dev`'s relay. It carries the app's events to the development
+//! Worker, and the development Worker's plugin calls to the app.
 
 use std::collections::HashMap;
 use std::io;
@@ -13,15 +14,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::gateway::HandlerError;
+use crate::plugin_calls::PluginCalls;
 use crate::transport::{parse_websocket_frame, write_frame};
 
 /// The development app's end of the dev WebSocket, while it is open.
 pub(crate) struct DevSocket {
     connection: watch::Sender<Option<Arc<Connection>>>,
     next_id: AtomicU64,
+    plugins: Arc<PluginCalls>,
 }
 
 /// One open dev WebSocket.
@@ -31,7 +35,7 @@ struct Connection {
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>,
 }
 
-/// A message the app sends.
+/// An event the app sends.
 #[derive(Serialize)]
 struct EventMessage<'a> {
     r#type: &'static str,
@@ -40,21 +44,27 @@ struct EventMessage<'a> {
     event: &'a RawValue,
 }
 
-/// A message the plugin sends: the reply to the event `id`, or why it failed.
+/// A message the plugin sends: the reply to the event `id` or why it failed,
+/// or a call, subscription or unsubscription of the development Worker.
 #[derive(Deserialize)]
-struct Answer<'a> {
+struct Received<'a> {
     r#type: &'a str,
     id: u64,
     #[serde(borrow)]
     reply: Option<&'a RawValue>,
     message: Option<String>,
+    plugin: Option<String>,
+    method: Option<String>,
+    #[serde(borrow)]
+    arguments: Option<&'a RawValue>,
 }
 
 impl DevSocket {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(plugins: Arc<PluginCalls>) -> Self {
         Self {
             connection: watch::Sender::new(None),
             next_id: AtomicU64::new(0),
+            plugins,
         }
     }
 
@@ -99,7 +109,8 @@ impl DevSocket {
     }
 
     /// Relays `upgraded`'s frames until it closes or `stopped` is cancelled,
-    /// delivering events through it meanwhile.
+    /// delivering events and running the development Worker's plugin calls
+    /// through it meanwhile. Its subscriptions end with it.
     pub(crate) async fn serve(&self, upgraded: Upgraded, stopped: &CancellationToken) {
         let (outgoing, messages) = mpsc::unbounded_channel();
         let connection = Arc::new(Connection {
@@ -107,10 +118,69 @@ impl DevSocket {
             pending: Mutex::default(),
         });
         self.connection.send_replace(Some(Arc::clone(&connection)));
-        let _ = relay(upgraded, &connection, messages, stopped).await;
+        let mut subscriptions = HashMap::new();
+        let _ = relay(upgraded, messages, stopped, |message| {
+            self.receive(&connection, &mut subscriptions, message);
+        })
+        .await;
         self.connection.send_replace(None);
         connection.pending().clear();
+        for subscription in subscriptions.values() {
+            subscription.abort();
+        }
     }
+
+    /// Passes the plugin's `message` to the delivery it answers, or runs the
+    /// call it carries, sending its results on `connection`.
+    fn receive(
+        &self,
+        connection: &Connection,
+        subscriptions: &mut HashMap<u64, AbortHandle>,
+        message: &[u8],
+    ) {
+        let Ok(message) = serde_json::from_slice::<Received>(message) else {
+            return;
+        };
+        let id = message.id;
+        let plugin = message.plugin.as_deref().unwrap_or_default();
+        let method = message.method.as_deref().unwrap_or_default();
+        let arguments = message.arguments.map_or("null", RawValue::get);
+        match message.r#type {
+            "reply" => connection.answer(id, Ok(message.reply.map_or("null", RawValue::get))),
+            "error" => connection.answer(id, Err(message.message.as_deref().unwrap_or_default())),
+            "call" => {
+                let result = self.plugins.call(plugin, method, arguments);
+                let outgoing = connection.outgoing.clone();
+                tokio::spawn(async move { send_result(&outgoing, id, &result.await) });
+            }
+            "subscribe" => {
+                let mut subscription = self.plugins.subscribe(plugin, method, arguments);
+                let outgoing = connection.outgoing.clone();
+                let task = tokio::spawn(async move {
+                    while let Some(result) = subscription.next().await {
+                        if !send_result(&outgoing, id, &result) {
+                            return;
+                        }
+                    }
+                });
+                subscriptions.retain(|_, subscription| !subscription.is_finished());
+                subscriptions.insert(id, task.abort_handle());
+            }
+            "unsubscribe" => {
+                if let Some(subscription) = subscriptions.remove(&id) {
+                    subscription.abort();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Sends the plugin's JSON `result` for the call or subscription `id`,
+/// returning whether the dev WebSocket is still open.
+fn send_result(outgoing: &mpsc::UnboundedSender<String>, id: u64, result: &str) -> bool {
+    let message = format!(r#"{{"type":"result","id":{id},"result":{result}}}"#);
+    outgoing.send(message).is_ok()
 }
 
 impl Connection {
@@ -120,27 +190,22 @@ impl Connection {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Passes the plugin's `message` to the delivery it answers.
-    fn answer(&self, message: &[u8]) {
-        let Ok(answer) = serde_json::from_slice::<Answer>(message) else {
-            return;
-        };
-        let result = match answer.r#type {
-            "reply" => Ok(answer.reply.map_or("null", RawValue::get).to_owned()),
-            "error" => Err(answer.message.unwrap_or_default()),
-            _ => return,
-        };
-        if let Some(sender) = self.pending().remove(&answer.id) {
-            let _ = sender.send(result);
+    /// Passes the plugin's `answer` to the delivery of the event `id`.
+    fn answer(&self, id: u64, answer: Result<&str, &str>) {
+        if let Some(sender) = self.pending().remove(&id) {
+            let _ = sender.send(answer.map(str::to_owned).map_err(str::to_owned));
         }
     }
 }
 
+/// Relays frames between `upgraded` and the app, passing each message the
+/// plugin sends to `receive` and sending each of `messages`, until either
+/// side closes or `stopped` is cancelled.
 async fn relay(
     upgraded: Upgraded,
-    connection: &Connection,
     mut messages: mpsc::UnboundedReceiver<String>,
     stopped: &CancellationToken,
+    mut receive: impl FnMut(&[u8]),
 ) -> io::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(TokioIo::new(upgraded));
     let mut buffer = Vec::new();
@@ -156,7 +221,7 @@ async fn relay(
                 _ => continue,
             }
             if frame.final_frame && matches!(frame.opcode, 0x0 | 0x1) {
-                connection.answer(&std::mem::take(&mut message));
+                receive(&std::mem::take(&mut message));
             }
         }
         tokio::select! {

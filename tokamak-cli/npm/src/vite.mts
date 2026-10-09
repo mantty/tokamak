@@ -10,7 +10,7 @@ import {
   type ResolvedBuildEnvironmentOptions,
 } from "vite";
 
-import { openDevSocket } from "./dev-socket.mjs";
+import { openDevSocket, type DevSocket } from "./dev-socket.mjs";
 import type { Config } from "./index.mjs";
 
 /** Modules tried in order when the options name none. */
@@ -22,11 +22,16 @@ const WRANGLER_FILES = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"];
 const MIDDLEWARE_MODE_ERROR =
   "Vite is running in middleware mode, so tokamak cannot find the development server's address; tok dev needs Vite's own dev server";
 
+/** The module that defines the development Worker's native calls. */
+const NATIVE_CALLS = normalizePath(fileURLToPath(new URL("./native.mjs", import.meta.url)));
+
 /**
  * Reports the app's tokamak configuration, and the development server's
  * address, HTTPS certificate, Worker name and dev socket port, to `tok`, and
- * makes the entry Worker import `module` and export `TokamakEvents`. Without
- * `TOKAMAK_VITE_OUTPUT`, which `tok` sets, it adds no hooks.
+ * makes the entry Worker import `module` and export `TokamakEvents`. In
+ * development, the entry Worker also defines native calls that reach the
+ * device through the dev socket. Without `TOKAMAK_VITE_OUTPUT`, which `tok`
+ * sets, it adds no hooks.
  */
 export function tokamak({
   module,
@@ -52,6 +57,9 @@ export function tokamak({
   const entryIds = new Map<string, Promise<(string | undefined)[]>>();
   /** The entry environments whose input exports `TokamakEvents`. */
   const exporting = new Set<string>();
+  /** The development server's dev socket, once open. */
+  let devSocket: DevSocket | undefined;
+  const token = process.env.TOKAMAK_SESSION_TOKEN;
   return [
     {
       name: "tokamak",
@@ -64,32 +72,34 @@ export function tokamak({
         file = findModule(root, module);
         writeJson(output, "config.json", { root, config });
       },
-      async configureServer(server) {
-        const httpServer = server.httpServer;
-        // A middleware-mode server beside a reported one, such as the server
-        // Astro syncs content with, leaves the report in place.
-        if (!httpServer) {
-          if (!fs.existsSync(path.join(output, "server.json"))) {
-            writeJson(output, "server.json", { error: MIDDLEWARE_MODE_ERROR });
+      // Runs before plugins that load the entry Worker, whose native calls
+      // need the dev socket's port.
+      configureServer: {
+        order: "pre",
+        async handler(server) {
+          const httpServer = server.httpServer;
+          // A middleware-mode server beside a reported one, such as the server
+          // Astro syncs content with, leaves the report in place.
+          if (!httpServer) {
+            if (!fs.existsSync(path.join(output, "server.json"))) {
+              writeJson(output, "server.json", { error: MIDDLEWARE_MODE_ERROR });
+            }
+            return;
           }
-          return;
-        }
-        const worker = await readWorker(server.config.root);
-        httpServer.once("listening", () => {
-          openDevSocket(worker?.name, process.env.TOKAMAK_SESSION_TOKEN).then(
-            (socket) => {
-              httpServer.once("close", () => void socket.close());
-              const urls = server.resolvedUrls;
-              writeJson(output, "server.json", {
-                url: urls?.local[0] ?? urls?.network[0],
-                workerName: worker?.topLevelName ?? worker?.name,
-                certificates: endEntityCertificates(server.config.server.https),
-                socketPort: socket.port,
-              });
-            },
-            (error: unknown) => server.config.logger.error(`tokamak could not open its dev socket: ${String(error)}`),
-          );
-        });
+          const worker = await readWorker(server.config.root);
+          const socket = await openDevSocket(worker?.name, token);
+          devSocket = socket;
+          httpServer.once("close", () => void socket.close());
+          httpServer.once("listening", () => {
+            const urls = server.resolvedUrls;
+            writeJson(output, "server.json", {
+              url: urls?.local[0] ?? urls?.network[0],
+              workerName: worker?.topLevelName ?? worker?.name,
+              certificates: endEntityCertificates(server.config.server.https),
+              socketPort: socket.port,
+            });
+          });
+        },
       },
       async buildApp(builder) {
         const environments = Object.values(builder.environments);
@@ -114,7 +124,11 @@ export function tokamak({
         // In Cloudflare's Worker entry, which dev and build both start from,
         // this follows the imports of its polyfills and of the app's entry.
         const imports = file ? `import ${JSON.stringify(file)};\n` : "";
-        return { code: `${code}\n${imports}export { TokamakEvents } from ${JSON.stringify(entrypoint)};\n`, map: null };
+        const native = environment.mode === "dev" && devSocket && token ? nativeCalls(devSocket.port, token) : "";
+        return {
+          code: `${code}\n${imports}export { TokamakEvents } from ${JSON.stringify(entrypoint)};\n${native}`,
+          map: null,
+        };
       },
       // A module that registers listeners adds them again each time it
       // evaluates, so when an update re-evaluates one, the registry and every
@@ -139,6 +153,18 @@ export function tokamak({
       },
     },
   ];
+}
+
+/**
+ * Code that defines the development Worker's native calls on the dev socket's
+ * `port`, with the session `token`, which only the entry Worker's environment
+ * sees.
+ */
+function nativeCalls(port: number, token: string): string {
+  return `import { waitUntil as __tokamakWaitUntil } from "cloudflare:workers";
+import { defineNativeCalls as __tokamakDefineNativeCalls } from ${JSON.stringify(NATIVE_CALLS)};
+__tokamakDefineNativeCalls(${String(port)}, ${JSON.stringify(token)}, __tokamakWaitUntil);
+`;
 }
 
 /** `module` and every module that imports it, directly or through others. */

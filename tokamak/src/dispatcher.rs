@@ -2,6 +2,7 @@ use flume::Sender;
 use std::io;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -13,10 +14,11 @@ use crate::fs::{
     PROMISES_MODULE_NAME as NODE_FS_PROMISES_MODULE_NAME, install, read_bundle_file,
 };
 use crate::gateway::{
-    Delivery, Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob,
+    Delivery, EventJob, Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob,
     WebSocketOutbound, WebSocketOutgoing,
 };
 use crate::globals::ResponseEncoder;
+use crate::globals::plugins::Listeners;
 use crate::linked::StorageRuntime;
 use crate::packaging::{self, ModuleType};
 use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
@@ -59,23 +61,13 @@ impl Handler for Dispatcher {
         execute_request(&self.worker, &self.config, job, stopped).map_err(Into::into)
     }
 
-    fn deliver(
-        &self,
-        name: &str,
-        event: &str,
-        deadline: Instant,
-        stopped: &CancellationToken,
-    ) -> Result<Delivery, HandlerError> {
-        tokio::runtime::Handle::try_current()?
-            .block_on(execute_event(
-                &self.worker,
-                &self.config,
-                name,
-                event,
-                deadline,
-                stopped,
-            ))
-            .map_err(Into::into)
+    fn deliver(&self, event: EventJob, stopped: &CancellationToken) {
+        match tokio::runtime::Handle::try_current() {
+            Ok(tokio) => tokio.block_on(execute_event(&self.worker, &self.config, event, stopped)),
+            Err(error) => {
+                let _ = event.delivered.send(Err(error.into()));
+            }
+        }
     }
 }
 
@@ -140,13 +132,14 @@ async fn execute_request_async(
     })
     .await?;
     let awaited = crate::event_loop::AwaitedPromise::default();
+    let listeners = Arc::new(Listeners::default());
     let request = context.async_with(async |ctx| -> Result<(), Error> {
         let Job {
             request,
             response: response_sender,
             websocket,
         } = job;
-        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited)?;
+        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &listeners)?;
         let descriptor = install_request(&ctx, &request)?;
         let response = invoke_worker(&ctx, worker, &bootstrap, descriptor, &request).await?;
         let response = response_from_js(&ctx, &bootstrap, response)?;
@@ -163,36 +156,54 @@ async fn execute_request_async(
         send_worker_response(&ctx, response, &response_sender).await
     });
     let request = crate::event_loop::run(&runtime, &awaited, request);
+    // A request that fails ends with the listeners it registered.
     tokio::select! {
-        result = request => result,
-        () = stopped.cancelled() => Err(Error::Engine("Worker execution was stopped".to_owned())),
+        result = request => result?,
+        () = stopped.cancelled() => return Err(Error::Engine("Worker execution was stopped".to_owned())),
     }
+    keep_listening(&runtime, &context, &awaited, &listeners, stopped).await;
+    Ok(())
 }
 
-/// Runs the Worker's listeners of the event `name` in a fresh `QuickJS`
-/// runtime, as a request runs, interrupting them at `deadline`. The reply
-/// stands once they return, whether or not their `waitUntil` promises settle
-/// before the deadline.
+/// Runs the Worker's listeners of `event` in a fresh `QuickJS` runtime, as a
+/// request runs, interrupting them at `event.deadline`, and sends what they
+/// did to `event.delivered`. The reply stands once they return, whether or not
+/// their `waitUntil` promises settle before the deadline. Listeners they
+/// register on plugins keep the context running after the reply.
 pub(super) async fn execute_event(
     worker: &WorkerBundle,
     config: &RuntimeConfig,
-    name: &str,
-    event: &str,
-    deadline: Instant,
+    event: EventJob,
     stopped: &CancellationToken,
-) -> Result<Delivery, Error> {
+) {
+    let EventJob {
+        name,
+        event,
+        deadline,
+        delivered,
+    } = event;
+    let listeners = Arc::new(Listeners::default());
+    let replied = Arc::new(AtomicBool::new(false));
     let interrupted = stopped.clone();
-    let (runtime, context) = worker_runtime(worker, config.storage.as_ref(), move || {
-        interrupted.is_cancelled() || Instant::now() >= deadline
+    let late = Arc::clone(&replied);
+    let invocation = worker_runtime(worker, config.storage.as_ref(), move || {
+        interrupted.is_cancelled() || (Instant::now() >= deadline && !late.load(Ordering::Acquire))
     })
-    .await?;
+    .await;
+    let (runtime, context) = match invocation {
+        Ok(invocation) => invocation,
+        Err(error) => {
+            let _ = delivered.send(Err(error.into()));
+            return;
+        }
+    };
     let awaited = crate::event_loop::AwaitedPromise::default();
     let dispatch = context.async_with(async |ctx| -> Result<Delivery, Error> {
-        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited)?;
+        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &listeners)?;
         let exports = load_worker_exports(&ctx, worker).await?;
         let pending: Promise = property::<Function>(&bootstrap, "dispatchEvent")?
-            .call((exports, name, event))
-            .map_err(|error| js_exception(&ctx, name, error))?;
+            .call((exports, name.as_str(), event.as_str()))
+            .map_err(|error| js_exception(&ctx, &name, error))?;
         let dispatched: Object = finish_promise(&ctx, &pending, "event").await?;
         let listened: Vec<String> = property(&dispatched, "listened")?;
         Ok(Delivery {
@@ -202,29 +213,57 @@ pub(super) async fn execute_event(
     });
     let deadline = tokio::time::Instant::from_std(deadline);
     let delivery = tokio::select! {
-        delivery = crate::event_loop::run(&runtime, &awaited, dispatch) => delivery?,
+        delivery = crate::event_loop::run(&runtime, &awaited, dispatch) => delivery,
         () = tokio::time::sleep_until(deadline) => {
             let message = format!("{name} did not complete before its deadline");
-            return Err(io::Error::new(io::ErrorKind::TimedOut, message).into());
+            Err(io::Error::new(io::ErrorKind::TimedOut, message).into())
         }
-        () = stopped.cancelled() => return Err(Error::Engine("Worker execution was stopped".to_owned())),
+        () = stopped.cancelled() => return,
     };
-    let drain = context.async_with(async |ctx| drain_wait_until(&ctx).await);
-    tokio::select! {
-        _ = crate::event_loop::run(&runtime, &awaited, drain) => {}
-        () = tokio::time::sleep_until(deadline) => {}
-        () = stopped.cancelled() => {}
+    if delivery.is_ok() {
+        let drain = context.async_with(async |ctx| drain_wait_until(&ctx).await);
+        tokio::select! {
+            _ = crate::event_loop::run(&runtime, &awaited, drain) => {}
+            () = tokio::time::sleep_until(deadline) => {}
+            () = stopped.cancelled() => {}
+        }
     }
-    Ok(delivery)
+    replied.store(true, Ordering::Release);
+    let _ = delivered.send(delivery.map_err(Into::into));
+    keep_listening(&runtime, &context, &awaited, &listeners, stopped).await;
 }
 
-/// Installs the Worker's globals, the runtime bootstrap and the app's assets
-/// in `ctx`, returning the bootstrap's exports.
+/// Runs an invocation's context while it has listeners, then until the
+/// `waitUntil` promises they left settle, or until the runtime stops.
+async fn keep_listening(
+    runtime: &AsyncRuntime,
+    context: &AsyncContext,
+    awaited: &crate::event_loop::AwaitedPromise,
+    listeners: &Listeners,
+    stopped: &CancellationToken,
+) {
+    if !listeners.any() {
+        return;
+    }
+    let listening = context.async_with(async |ctx| {
+        listeners.until_none().await;
+        drain_wait_until(&ctx).await
+    });
+    tokio::select! {
+        _ = crate::event_loop::run(runtime, awaited, listening) => {}
+        () = stopped.cancelled() => {}
+    }
+}
+
+/// Installs the Worker's globals, the runtime bootstrap, the app's assets and
+/// the native calls on its plugins, whose listeners `listeners` counts, in
+/// `ctx`, returning the bootstrap's exports.
 fn prepare_worker_context<'js>(
     ctx: &Ctx<'js>,
     worker: &WorkerBundle,
     config: &RuntimeConfig,
     awaited: &crate::event_loop::AwaitedPromise,
+    listeners: &Arc<Listeners>,
 ) -> Result<Object<'js>, Error> {
     ctx.store_userdata(awaited.clone())
         .map_err(|error| js_error("event loop", error))?;
@@ -234,6 +273,8 @@ fn prepare_worker_context<'js>(
         install_assets(ctx, &bootstrap, assets)
             .map_err(|error| js_exception(ctx, "assets", error))?;
     }
+    crate::globals::plugins::install(ctx, &bootstrap, &config.plugins, listeners)
+        .map_err(|error| js_exception(ctx, "plugins", error))?;
     Ok(bootstrap)
 }
 

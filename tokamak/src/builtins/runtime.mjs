@@ -1,5 +1,7 @@
 import "./globals.mjs";
 import { createTracing } from "./tracing.mjs";
+import { reportError } from "../events/web.mjs";
+import { DOMException } from "../globals/dom-exception.mjs";
 import { Request, Response } from "../network/fetch.mjs";
 import { URL } from "../network/url.mjs";
 
@@ -16,6 +18,34 @@ export function installAssets(binding, fetchAsset) {
       return new Response(body, { status, statusText, headers: contentType ? { "content-type": contentType } : {} });
     },
   };
+}
+
+// Defines the Worker's native calls on the shell's plugins, which
+// `call(plugin, method, arguments)` and `subscribe(plugin, method, arguments,
+// deliver)` make with JSON arguments and results.
+export function installPlugins(call, subscribe) {
+  Object.defineProperties(globalThis, {
+    __tokamakNativeCall: {
+      async value(plugin, method, args = null) {
+        const { value, error } = JSON.parse(await call(plugin, method, JSON.stringify(args)));
+        if (error) throw new DOMException(error.message, error.name);
+        return value;
+      },
+    },
+    __tokamakNativeListen: {
+      value(plugin, method, args, next, error) {
+        return subscribe(plugin, method, JSON.stringify(args ?? null), (result) => {
+          const { value, error: failure } = JSON.parse(result);
+          try {
+            if (failure) error(new DOMException(failure.message, failure.name));
+            else next(value);
+          } catch (thrown) {
+            reportError(thrown);
+          }
+        });
+      },
+    },
+  });
 }
 
 // Delivers the event `name`, whose JSON is `event`, to the `TokamakEvents` the

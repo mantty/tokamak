@@ -16,8 +16,9 @@ use std::io;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
+use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
-use tokamak::{DevProxyConfig, DevelopmentConfig, Event, Runtime};
+use tokamak::{DevProxyConfig, DevelopmentConfig, Event, PluginHandler, Runtime};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -144,6 +145,87 @@ fn delivers_events_through_the_dev_socket() -> TestResult {
             r#"{"type":"event","id":1,"name":"example.ping","event":{"id":"1"}}"#,
         ]
     );
+    Ok(())
+}
+
+/// Shell plugins that report each request as text.
+struct Shell(mpsc::Sender<(u64, String)>);
+
+impl PluginHandler for Shell {
+    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+        let _ = self
+            .0
+            .send((id, format!("call {plugin}.{method} {arguments}")));
+    }
+
+    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+        let _ = self
+            .0
+            .send((id, format!("subscribe {plugin}.{method} {arguments}")));
+    }
+
+    fn unsubscribe(&self, id: u64) {
+        let _ = self.0.send((id, "unsubscribe".to_owned()));
+    }
+}
+
+#[test]
+fn runs_the_development_workers_plugin_calls_on_the_device() -> TestResult {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let temporary = tempfile::tempdir()?;
+    let (sender, requests) = mpsc::channel();
+    let runtime = Runtime::start_development(
+        DevelopmentConfig {
+            state_dir: temporary.path().join("state"),
+            host: HOST.to_owned(),
+            proxy: DevProxyConfig {
+                endpoint: format!("http://127.0.0.1:{}", listener.local_addr()?.port()),
+                session_token: "test-session".to_owned(),
+            },
+            foreground: false,
+            plugins: Some(Arc::new(Shell(sender))),
+        },
+        |_| {},
+    )?;
+    let (mut socket, _) = accept_dev_socket(&listener)?;
+    answer_event(&mut socket)?;
+    let next_request = || requests.recv_timeout(Duration::from_secs(5));
+
+    send_message(
+        &mut socket,
+        &json!({ "type": "call", "id": 1, "plugin": "tokamak", "method": "lifecycleStage", "arguments": null }),
+    )?;
+    send_message(
+        &mut socket,
+        &json!({ "type": "call", "id": 2, "plugin": "location", "method": "getCurrentPosition", "arguments": { "timeout": 1 } }),
+    )?;
+    let (call, request) = next_request()?;
+    assert_eq!(request, r#"call location.getCurrentPosition {"timeout":1}"#);
+    runtime.reply(call, r#"{"value":{"latitude":51.5},"done":true}"#);
+    send_message(
+        &mut socket,
+        &json!({ "type": "subscribe", "id": 3, "plugin": "location", "method": "watchPosition", "arguments": null }),
+    )?;
+    let (subscription, request) = next_request()?;
+    assert_eq!(request, "subscribe location.watchPosition null");
+    runtime.reply(subscription, r#"{"value":1,"done":false}"#);
+    let mut results = [
+        read_message(&mut socket)?,
+        read_message(&mut socket)?,
+        read_message(&mut socket)?,
+    ];
+    results.sort_by_key(|result| result["id"].as_u64());
+    send_message(&mut socket, &json!({ "type": "unsubscribe", "id": 3 }))?;
+
+    assert_eq!(
+        results,
+        [
+            json!({ "type": "result", "id": 1, "result": { "value": "background", "done": true } }),
+            json!({ "type": "result", "id": 2, "result": { "value": { "latitude": 51.5 }, "done": true } }),
+            json!({ "type": "result", "id": 3, "result": { "value": 1, "done": false } }),
+        ]
+    );
+    assert_eq!(next_request()?, (subscription, "unsubscribe".to_owned()));
     Ok(())
 }
 
@@ -357,6 +439,7 @@ fn start_test_runtime_reporting(
                 session_token: "test-session".to_owned(),
             },
             foreground: true,
+            plugins: None,
         },
         events,
     )?;
@@ -531,6 +614,18 @@ fn answer_event(socket: &mut TcpStream) -> TestResult<String> {
     });
     write_frame(socket, 0x1, reply.to_string().as_bytes(), false)?;
     Ok(String::from_utf8(payload)?)
+}
+
+/// Sends `message` on the dev socket, as the plugin does.
+fn send_message(socket: &mut TcpStream, message: &Value) -> TestResult {
+    write_frame(socket, 0x1, message.to_string().as_bytes(), false)
+}
+
+/// The next message on the dev socket, as JSON.
+fn read_message(socket: &mut TcpStream) -> TestResult<Value> {
+    let (opcode, payload) = read_frame(socket)?;
+    assert_eq!(opcode, 0x1);
+    Ok(serde_json::from_slice(&payload)?)
 }
 
 /// The next connection to `listener` before `deadline`, with its request

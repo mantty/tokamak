@@ -21,14 +21,27 @@ typedef struct {
   TokamakBytes private_key;
 } TokamakIdentity;
 
+typedef void (*TokamakPluginRequest)(void *context, uint64_t id,
+                                     const char *plugin, const char *method,
+                                     const char *arguments);
+
+typedef struct {
+  void *context;
+  TokamakPluginRequest call;
+  TokamakPluginRequest subscribe;
+  void (*unsubscribe)(void *context, uint64_t id);
+} TokamakPluginHandler;
+
 void *tokamak_runtime_start(const char *packaged_dir, const char *state_dir,
                             const char *storage_dir, const char *host,
-                            bool foreground, char *error, size_t error_len);
+                            bool foreground, TokamakPluginHandler plugins,
+                            char *error, size_t error_len);
 void *tokamak_runtime_start_development(const char *state_dir, const char *host,
                                      const char *endpoint,
                                      const char *session_token,
-                                     bool foreground, char *error,
-                                     size_t error_len);
+                                     bool foreground,
+                                     TokamakPluginHandler plugins,
+                                     char *error, size_t error_len);
 uint16_t tokamak_runtime_port(const void *runtime);
 uint16_t tokamak_runtime_restore_gateway(const void *runtime, char *error,
                                       size_t error_len);
@@ -36,6 +49,8 @@ void tokamak_runtime_stop(void *runtime);
 bool tokamak_runtime_emit(const void *runtime, const char *name,
                           const char *event, uint64_t timeout_ms,
                           TokamakBytes *reply, char *error, size_t error_len);
+bool tokamak_runtime_set_foreground(const void *runtime, bool foreground);
+void tokamak_runtime_reply(const void *runtime, uint64_t id, const char *result);
 
 int32_t tokamak_runtime_server_authority(const void *runtime, const char *host,
                                       TokamakBytes *authority);

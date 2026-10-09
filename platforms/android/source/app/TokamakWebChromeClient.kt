@@ -30,7 +30,12 @@ internal class TokamakWebChromeClient(
             return
         }
         waiting += request
-        tokamak.permissionRequests.request(missing.toSet()) { if (waiting.remove(request)) decide(request) }
+        try {
+            tokamak.permissionRequests.request(missing.toSet()) { if (waiting.remove(request)) decide(request) }
+        } catch (_: TokamakPluginError) {
+            waiting -= request
+            request.deny()
+        }
     }
 
     override fun onPermissionRequestCanceled(request: PermissionRequest) {

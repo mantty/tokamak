@@ -1,11 +1,14 @@
 ---
-// SSR page: lists the lifecycle events src/tokamak.ts records.
+// SSR page: lists the events src/tokamak.ts records, and the app's stage.
 import { env } from "cloudflare:workers";
+import { getLifecycleStage } from "@tokamakdev/tok/events";
 import Base from "../layouts/Base.astro";
 
 // Keys begin with the time, so the last are the newest.
 const { keys } = await env.EVENTS.list();
 const events = keys.slice(-20).reverse();
+// Outside a tokamak app, such as on Cloudflare, there is no stage.
+const stage = await getLifecycleStage().catch((error: DOMException) => error.name);
 ---
 
 <Base title="Events - tokamak Example">
@@ -13,8 +16,12 @@ const events = keys.slice(-20).reverse();
 
   <div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
     <p class="text-indigo-300 mb-4">
-      The app's start, resume and suspend events, which src/tokamak.ts records
-      in the EVENTS KV namespace. Reload to see new ones.
+      The app's start, resume and suspend events, and where the app was when it
+      started on screen, which src/tokamak.ts records in the EVENTS KV
+      namespace. Reload to see new ones.
+    </p>
+    <p class="text-indigo-300 mb-4">
+      Stage now: <span id="stage" class="font-mono text-white">{stage}</span>
     </p>
     <ul class="font-mono text-sm bg-indigo-950/50 rounded-lg p-3 space-y-1">
       {events.length === 0 && <li class="text-indigo-400">No events yet</li>}

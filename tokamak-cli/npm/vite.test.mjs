@@ -366,3 +366,88 @@ test("refuses dev socket connections without the session token", async () => {
     }),
   );
 });
+
+/** Answers each plugin call and subscription the device receives on `socket` with `answer(message, send)`. */
+function answerPluginCalls(socket, answer) {
+  const send = (message) => socket.send(JSON.stringify(message));
+  socket.on("message", (data) => {
+    const message = JSON.parse(String(data));
+    if (["call", "subscribe", "unsubscribe"].includes(message.type)) answer(message, send);
+  });
+}
+
+/** The value of a plugin's result. */
+const result = (id, value, done = true) => ({ type: "result", id, result: { value, done } });
+
+test("passes the development Worker's plugin calls to the device and back", async () => {
+  const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
+  const app = project({
+    "src/index.ts": `import { getLifecycleStage } from ${JSON.stringify(events)};\nexport default { fetch: async () => new Response(await getLifecycleStage()) };\n`,
+  });
+  await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
+    serve(app, async () => {
+      const { url, socketPort } = readOutput(app, "server.json");
+      const socket = await openSocket(socketPort, "token");
+      const calls = [];
+      answerPluginCalls(socket, (message, send) => {
+        calls.push(`${message.plugin}.${message.method}`);
+        send(result(message.id, "background"));
+      });
+      try {
+        assert.equal(await (await fetch(url)).text(), "background");
+        assert.deepEqual(calls, ["tokamak.lifecycleStage"]);
+      } finally {
+        socket.close();
+      }
+    }),
+  );
+});
+
+test("keeps a development Worker's listener after its event until it is removed", async () => {
+  const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
+  const app = project({
+    "src/tokamak.ts": `import { onStart } from ${JSON.stringify(events)};
+onStart((_event, _env, ctx) => {
+  const stop = globalThis.__tokamakNativeListen("location", "watchPosition", null, (position) => {
+    if (position !== "stop") return void globalThis.__tokamakNativeCall("test", "received", position);
+    stop();
+    ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 500)).then(() => globalThis.__tokamakNativeCall("test", "stopped", null)));
+  }, () => undefined);
+});
+`,
+  });
+  await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
+    serve(app, async () => {
+      const socket = await openSocket(readOutput(app, "server.json").socketPort, "token");
+      const received = [];
+      const waiters = new Map();
+      const next = (type) => new Promise((resolve) => waiters.set(type, resolve));
+      answerPluginCalls(socket, (message, send) => {
+        if (message.type === "call") {
+          received.push(message.arguments);
+          send(result(message.id, null));
+        }
+        waiters.get(message.type)?.(message);
+      });
+      try {
+        const subscribed = next("subscribe");
+        await emit(socket, "start", { foreground: true });
+        const { id } = await subscribed;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        const call = next("call");
+        socket.send(JSON.stringify(result(id, { latitude: 51.5 }, false)));
+        await call;
+        const unsubscribed = next("unsubscribe");
+        const stopped = next("call");
+        socket.send(JSON.stringify(result(id, "stop", false)));
+
+        assert.equal((await unsubscribed).id, id);
+        assert.equal((await stopped).method, "stopped");
+        assert.deepEqual(received, [{ latitude: 51.5 }, null]);
+      } finally {
+        socket.close();
+      }
+    }),
+  );
+});

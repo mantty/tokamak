@@ -25,7 +25,7 @@ Apply the following model whenever working on a tokamak application. tokamak is 
 - Build and launch a native development shell on the selected device, simulator, emulator, or desktop.
 - Proxy the shell's secure app origin to the host development server, including WebSocket traffic, so framework HMR can work inside the native shell.
 - Expect server-side behavior during `tok dev` to come from the framework's host process. Do not use development mode as proof that a Worker API or Cloudflare binding exists in the packaged tokamak runtime. KV, D1 and R2 data in development lives in Wrangler's local state on the development machine, not on the device.
-- Expect native frontend plugins to remain available through the development shell.
+- Expect native plugins to remain available through the development shell, from the page and from the development Worker, whose calls reach the device through `tok dev`.
 
 ### `tok build`
 
@@ -136,7 +136,7 @@ ID, hardened runtime, notarisation) is not covered.
 - Under `tok dev`, events reach the development server's Worker through Cloudflare's dev registry, and editing `src/tokamak.ts` replaces its listeners. The registry holds one Worker per name, and a killed development server's registration blocks the next for 90 seconds. Cloudflare and web builds contain no event code.
 - Use standard request and response semantics and same-origin routes between the frontend and packaged Worker.
 - Expect a fresh JavaScript runtime and module graph for each packaged HTTP request and event. Do not use module globals, singleton objects, or in-memory caches as durable state across requests; use a KV, D1 or R2 binding.
-- Treat a WebSocket Worker context as lasting only for that WebSocket connection.
+- Treat a WebSocket Worker context as lasting only for that WebSocket connection, and a context with plugin listeners as lasting until the last is removed.
 - Treat the packaged `node:fs` view as request-scoped: `/bundle` contains read-only packaged files and `/tmp` is fresh for the request. Do not use it for persistent application data.
 - Check tokamak's current support before relying on a specific Cloudflare Worker or Node API. Similar syntax is not evidence that every Cloudflare or Node behavior exists.
 
@@ -183,7 +183,10 @@ ID, hardened runtime, notarisation) is not covered.
 
 - Import supported `@tokamakdev/*` frontend plugins for native capabilities instead of modeling those capabilities as Worker bindings.
 - Install plugins as project dependencies, for example `npm install @tokamakdev/plugin-location`. `tok build` and `tok dev` include native code for plugins listed in `dependencies`, `devDependencies`, or `peerDependencies`, found in the nearest `node_modules` of the project or a parent directory.
-- Call plugins from browser-side code, where the native bridge exists. Do not expect the bridge in the packaged Worker handler; native code reaches the Worker through events instead.
+- Call plugins from page code or the Worker alike: the same packages, methods, values and errors. A Worker listener such as `watchPosition` or `onMessage` keeps its invocation running until it is removed, after which the invocation ends once its `waitUntil` promises settle, so wrap work a listener starts in `ctx.waitUntil`; the OS ends listeners with the app, so register listeners the app needs throughout in `onStart`, which runs at every runtime start.
+- A call that would show UI while the app cannot present it rejects at once with a `DOMException` named `NeedsUIError`, distinct from `NotAllowedError` (the user refused or cancelled). iOS and Android present UI only in the foreground; macOS always can. Only calls that would show UI reject: permission requests that would prompt, biometric prompts, and secure storage reads of values saved with `authentication`. Ask again from `onResume`.
+- `getLifecycleStage()` from `@tokamakdev/tok/events` resolves to `"foreground"` or `"background"` now, which can differ from the last event delivered. It rejects with `NotSupportedError` in page code and on Cloudflare.
+- On Cloudflare, plugins fall back to their web implementations, which reject with `NotSupportedError` where the web API is missing; Windows has no native plugins, so its Worker's plugin calls reject the same way.
 - Preserve a plugin's web implementation or feature-detect availability when the same code also targets ordinary browsers.
 - Handle permission denial, unavailable hardware, cancellation, navigation, and page lifecycle as normal outcomes of a native capability request.
 - Inspect the installed plugin package before inventing a method, event, permission, or platform fallback.

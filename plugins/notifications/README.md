@@ -30,6 +30,11 @@ notifications.onSubscriptionChange((subscription) => {
 `requestPermission()` asks the user. No other method asks. On Android before
 13, notifications are allowed unless the user turns them off.
 
+While the app is off screen on iOS or Android, as when Worker code runs in the
+background, a `requestPermission()` that would show the prompt rejects with
+`NeedsUIError`; one the user has already answered resolves with the
+permission. Ask again once the app is on screen, for example from `onResume`.
+
 ## Local notifications
 
 - `show(notification)` shows a notification now, even while the page is
@@ -49,7 +54,20 @@ Showing or scheduling a notification with the `id` of another replaces it.
 ## Push notifications
 
 `subscribe()` subscribes to push messages and returns where the app's server
-sends them. It returns the existing subscription when there is one.
+sends them. It returns the existing subscription when there is one. In native
+builds it shows no UI, so the Worker can subscribe at every start, whether or
+not the app starts on screen:
+
+```ts
+// src/tokamak.ts
+import { onStart } from "@tokamakdev/tok/events";
+import { notifications } from "@tokamakdev/plugin-notifications";
+
+onStart(async () => {
+  const subscription = await notifications.subscribe();
+  await fetch("https://api.example.com/push-tokens", { method: "POST", body: JSON.stringify(subscription) });
+});
+```
 
 | Platform | Subscription | Push service |
 |---|---|---|
@@ -214,6 +232,8 @@ Android draws as a solid shape.
 ## Errors
 
 - `NotAllowedError`: permission has not been granted.
+- `NeedsUIError`: `requestPermission()` would show the prompt while the app is
+  off screen on iOS or Android.
 - `NotSupportedError`: the platform or build cannot perform the call.
 - `InvalidStateError`: the app has not made a declaration push requires.
 - `QuotaExceededError`: the platform's limit on scheduled notifications is

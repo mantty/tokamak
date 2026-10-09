@@ -1,4 +1,4 @@
-import { FrontendPlugin } from "@tokamakdev/plugin";
+import { Plugin } from "@tokamakdev/plugin";
 import * as web from "../web/index.js";
 
 export interface Coordinates {
@@ -27,7 +27,7 @@ export interface PositionOptions {
 export type PositionCallback = (position: Position) => void;
 export type PositionErrorCallback = (error: DOMException) => void;
 
-class Location extends FrontendPlugin {
+class Location extends Plugin {
   constructor() {
     super("location");
   }

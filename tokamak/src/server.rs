@@ -14,6 +14,7 @@ use crate::gateway;
 use crate::lifecycle_events::{Event, Events};
 use crate::linked::StorageRuntime;
 use crate::packaging::{PackageLayout, read_worker_manifest};
+use crate::plugin_calls::{PluginCalls, PluginHandler};
 use crate::quickjs::{RuntimeConfig, WorkerBundle};
 use crate::worker_events::WorkerEvents;
 
@@ -32,6 +33,9 @@ pub struct Config {
     pub host: String,
     /// Whether the app is in the foreground as the runtime starts.
     pub foreground: bool,
+    /// The shell's plugins, which the Worker calls; without them, the Worker's
+    /// plugin calls fail with `NotSupportedError`.
+    pub plugins: Option<Arc<dyn PluginHandler>>,
 }
 
 /// Host development-server connection settings.
@@ -54,6 +58,8 @@ pub struct DevelopmentConfig {
     pub proxy: DevProxyConfig,
     /// Whether the app is in the foreground as the runtime starts.
     pub foreground: bool,
+    /// The shell's plugins, which the development Worker calls.
+    pub plugins: Option<Arc<dyn PluginHandler>>,
 }
 
 /// A running tokamak service.
@@ -65,6 +71,7 @@ pub struct Runtime {
     certificates: Arc<Certificates>,
     _renewal: Renewal,
     events: Arc<WorkerEvents>,
+    plugins: Arc<PluginCalls>,
     gateway: gateway::Runtime,
 }
 
@@ -89,13 +96,15 @@ impl Runtime {
         )?);
         let worker = WorkerBundle::new(read_worker_manifest(&config.app)?, config.app.clone());
         validate_worker(&worker)?;
-        let handler = Dispatcher::new(worker, quickjs_config(&config)?);
+        let plugins = PluginCalls::new(config.plugins.clone(), config.foreground);
+        let handler = Dispatcher::new(worker, quickjs_config(&config, Arc::clone(&plugins))?);
         finish_start(
             events,
             config.host,
             config.foreground,
             certificates,
             handler,
+            plugins,
         )
     }
 
@@ -120,13 +129,15 @@ impl Runtime {
         let events = Events::new(listener);
         events.emit(Event::Starting);
         let certificates = Arc::new(Certificates::start(config.state_dir, config.host.clone())?);
-        let handler = (development.handler)(&config.proxy)?;
+        let plugins = PluginCalls::new(config.plugins, config.foreground);
+        let handler = (development.handler)(&config.proxy, Arc::clone(&plugins))?;
         finish_start(
             events,
             config.host,
             config.foreground,
             certificates,
             handler,
+            plugins,
         )
     }
 
@@ -158,9 +169,8 @@ impl Runtime {
     /// Blocks until the listeners and their `waitUntil` promises settle, or
     /// `timeout` passes. Events wait for `start`. `resume` and `suspend` are
     /// delivered one at a time, so a shell emits them from one thread to keep
-    /// their order, and only when they change whether the app is in the
-    /// foreground. A packaged app runs no Worker for an event without
-    /// listeners.
+    /// their order, each after [`Runtime::set_foreground`] reports a change.
+    /// A packaged app runs no Worker for an event without listeners.
     ///
     /// # Errors
     ///
@@ -170,6 +180,21 @@ impl Runtime {
         self.events
             .emit(name, event, timeout)
             .map_err(crate::Error::Event)
+    }
+
+    /// Record whether the app is in the foreground, which the Worker's
+    /// `getLifecycleStage()` reports from then on, and return whether that
+    /// changed. A shell calls it as the platform reports each change, and
+    /// emits `resume` or `suspend` when it returns true.
+    pub fn set_foreground(&self, foreground: bool) -> bool {
+        self.plugins.set_foreground(foreground)
+    }
+
+    /// Pass a plugin's JSON `result` to the Worker's call or subscription
+    /// `id`, as the shell's [`PluginHandler`] answers it. The runtime ignores
+    /// results for calls and subscriptions that have ended.
+    pub fn reply(&self, id: u64, result: &str) {
+        self.plugins.reply(id, result);
     }
 
     /// Certificate material for the shell's TLS challenge callbacks.
@@ -187,6 +212,7 @@ fn finish_start(
     foreground: bool,
     certificates: Arc<Certificates>,
     handler: Arc<dyn gateway::Handler>,
+    plugins: Arc<PluginCalls>,
 ) -> Result<Runtime> {
     let gateway = gateway::Runtime::start(
         handler,
@@ -200,6 +226,7 @@ fn finish_start(
         certificates,
         _renewal: renewal,
         events: WorkerEvents::start(Arc::clone(gateway.shared()), foreground),
+        plugins,
         gateway,
     })
 }
@@ -218,7 +245,7 @@ fn validate_worker(worker: &WorkerBundle) -> Result<()> {
 /// Set to "true" in a packaged app's Worker environment.
 const RUNTIME_MARKER: &str = "TOKAMAK_RUNTIME";
 
-fn quickjs_config(config: &Config) -> Result<RuntimeConfig> {
+fn quickjs_config(config: &Config, plugins: Arc<PluginCalls>) -> Result<RuntimeConfig> {
     let app = &config.app;
     let environment = load_environment(app)?;
     let storage = open_storage(config, &environment.storage)?;
@@ -233,6 +260,7 @@ fn quickjs_config(config: &Config) -> Result<RuntimeConfig> {
         cache: Arc::default(),
         environment: vars,
         storage,
+        plugins,
     })
 }
 
@@ -284,6 +312,7 @@ mod tests {
             storage_dir: root.join("storage"),
             host: "example.tokamak.local".to_owned(),
             foreground: true,
+            plugins: None,
         }
     }
     use crate::packaging::{
@@ -292,13 +321,21 @@ mod tests {
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+    fn plugins() -> std::sync::Arc<crate::plugin_calls::PluginCalls> {
+        crate::plugin_calls::PluginCalls::new(None, true)
+    }
+
     #[test]
     fn serves_assets_only_when_the_app_packages_them() -> TestResult {
         let directory = tempfile::tempdir()?;
         let app = PackageLayout::new(directory.path());
         write_environment(&app, &WorkerEnvironment::default())?;
 
-        assert!(quickjs_config(&config(directory.path()))?.assets.is_none());
+        assert!(
+            quickjs_config(&config(directory.path()), plugins())?
+                .assets
+                .is_none()
+        );
 
         write_asset_manifest(
             &app,
@@ -310,7 +347,11 @@ mod tests {
             },
         )?;
 
-        assert!(quickjs_config(&config(directory.path()))?.assets.is_some());
+        assert!(
+            quickjs_config(&config(directory.path()), plugins())?
+                .assets
+                .is_some()
+        );
         Ok(())
     }
 
@@ -327,7 +368,7 @@ mod tests {
         )?;
 
         assert_eq!(
-            quickjs_config(&config(directory.path()))?
+            quickjs_config(&config(directory.path()), plugins())?
                 .environment
                 .get("JSON"),
             Some(&json!({ "enabled": true }))
@@ -345,12 +386,12 @@ mod tests {
         std::fs::write(config.storage_dir.join("d1/app.sqlite"), "")?;
         std::fs::create_dir_all(config.state_dir.join("storage/r2/files"))?;
 
-        let runtime = quickjs_config(&config)?;
+        let runtime = quickjs_config(&config, plugins())?;
 
         assert!(runtime.storage.is_none());
         assert!(!config.storage_dir.exists());
         assert!(!config.state_dir.join("storage").exists());
-        assert!(quickjs_config(&config)?.storage.is_none());
+        assert!(quickjs_config(&config, plugins())?.storage.is_none());
         Ok(())
     }
 
@@ -374,7 +415,9 @@ mod tests {
         std::fs::create_dir_all(config.storage_dir.join("kv"))?;
         std::fs::write(config.storage_dir.join("kv/session.sqlite"), "")?;
 
-        let error = quickjs_config(&config).err().ok_or("storage opened")?;
+        let error = quickjs_config(&config, plugins())
+            .err()
+            .ok_or("storage opened")?;
 
         assert!(
             error.to_string().contains("linked without storage"),
@@ -399,6 +442,7 @@ mod tests {
                     session_token: "token".to_owned(),
                 },
                 foreground: true,
+                plugins: None,
             },
             |_| {},
         )
@@ -420,7 +464,7 @@ mod tests {
         write_environment(&app, &WorkerEnvironment::default())?;
 
         assert_eq!(
-            quickjs_config(&config(directory.path()))?
+            quickjs_config(&config(directory.path()), plugins())?
                 .environment
                 .get("TOKAMAK_RUNTIME"),
             Some(&json!("true"))
