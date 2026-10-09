@@ -15,7 +15,7 @@ use tao::event::{Event as TaoEvent, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::platform::windows::IconExtWindows;
-use tao::window::{Icon, WindowBuilder};
+use tao::window::{Icon, Window, WindowBuilder};
 use tokamak::{
     Certificates, Config, DevProxyConfig, DevelopmentConfig, Event, PackageLayout, Runtime,
     frontend_url,
@@ -47,7 +47,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, Interface, PCWSTR, PWSTR, w};
 use wry::{
-    NewWindowResponse, WebContext, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows,
+    NewWindowResponse, WebContext, WebView, WebViewBuilder, WebViewBuilderExtWindows,
+    WebViewExtWindows,
 };
 
 /// How long the Worker has for `resume` and `suspend`.
@@ -81,31 +82,7 @@ pub(crate) fn run() -> Result<()> {
         .build(&event_loop)
         .context("create app window")?;
     let mut context = WebContext::new(Some(state.join("webview")));
-    let navigation_host = config.host.clone();
-    let new_window_host = config.host.clone();
-    let webview = WebViewBuilder::new_with_web_context(&mut context)
-        .with_additional_browser_args(browser_arguments(&config.host, runtime.port()))
-        .with_navigation_handler(move |url| {
-            if is_app_origin(&url, &navigation_host) {
-                true
-            } else {
-                open_external(&url);
-                false
-            }
-        })
-        .with_new_window_req_handler(move |url, features| {
-            if is_app_origin(&url, &new_window_host) {
-                let url = HSTRING::from(url);
-                if let Err(error) = unsafe { features.opener.webview.Navigate(&url) } {
-                    eprintln!("tokamak could not reuse its WebView for a new window: {error}");
-                }
-            } else {
-                open_external(&url);
-            }
-            NewWindowResponse::Deny
-        })
-        .build(&window)
-        .context("create WebView2")?;
+    let webview = build_webview(&window, &mut context, &config.host, runtime.port())?;
     let handlers = Handlers::install(
         &webview,
         runtime.certificates(),
@@ -151,6 +128,41 @@ pub(crate) fn run() -> Result<()> {
     let _ = deliveries.join();
     drop(runtime);
     Ok(())
+}
+
+/// The WebView in `window`, which keeps the app's origin and opens other URLs
+/// in the default browser.
+fn build_webview(
+    window: &Window,
+    context: &mut WebContext,
+    host: &str,
+    port: u16,
+) -> Result<WebView> {
+    let navigation_host = host.to_owned();
+    let new_window_host = host.to_owned();
+    WebViewBuilder::new_with_web_context(context)
+        .with_additional_browser_args(browser_arguments(host, port))
+        .with_navigation_handler(move |url| {
+            if is_app_origin(&url, &navigation_host) {
+                true
+            } else {
+                open_external(&url);
+                false
+            }
+        })
+        .with_new_window_req_handler(move |url, features| {
+            if is_app_origin(&url, &new_window_host) {
+                let url = HSTRING::from(url);
+                if let Err(error) = unsafe { features.opener.webview.Navigate(&url) } {
+                    eprintln!("tokamak could not reuse its WebView for a new window: {error}");
+                }
+            } else {
+                open_external(&url);
+            }
+            NewWindowResponse::Deny
+        })
+        .build(window)
+        .context("create WebView2")
 }
 
 /// Delivers `resume` for each `true` the returned sender receives and
@@ -391,7 +403,7 @@ struct Handlers {
 
 impl Handlers {
     fn install(
-        webview: &wry::WebView,
+        webview: &WebView,
         certificates: std::sync::Arc<Certificates>,
         host: &str,
         name: &str,
