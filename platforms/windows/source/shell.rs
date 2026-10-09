@@ -98,7 +98,7 @@ pub(crate) fn run() -> Result<()> {
     let host = config.host.clone();
     let mut identity = identity;
     let (lifecycle, deliveries) = deliver_lifecycle_events(Arc::clone(&runtime))?;
-    let stage = Arc::clone(&runtime);
+    let set_foreground = |foreground| runtime.set_foreground(foreground);
     let window = &window;
     event_loop.run_return(move |event, _, flow| {
         *flow = ControlFlow::Wait;
@@ -114,7 +114,7 @@ pub(crate) fn run() -> Result<()> {
                 ..
             } => {
                 let foreground = !window.is_minimized();
-                if stage.set_foreground(foreground) {
+                if set_foreground(foreground) {
                     let _ = lifecycle.send(foreground);
                 }
             }
