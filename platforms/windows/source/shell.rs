@@ -130,8 +130,8 @@ pub(crate) fn run() -> Result<()> {
     Ok(())
 }
 
-/// The WebView in `window`, which keeps the app's origin and opens other URLs
-/// in the default browser.
+/// The `WebView` in `window`, which keeps the app's origin and opens other
+/// URLs in the default browser.
 fn build_webview(
     window: &Window,
     context: &mut WebContext,
