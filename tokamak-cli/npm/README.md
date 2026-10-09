@@ -12,7 +12,7 @@ npx tok targets
 | Entry | Contents |
 | --- | --- |
 | `@tokamakdev/tok` | The `Config` type of the Vite plugin's options |
-| `@tokamakdev/tok/events` | The app's events: `onStart`, `onResume` and `onSuspend` |
+| `@tokamakdev/tok/events` | The app's events, `onStart`, `onResume` and `onSuspend`, and `getLifecycleStage()` |
 | `@tokamakdev/tok/vite` | The Vite plugin, `tokamak()` |
 | `tok` | The CLI |
 
@@ -31,8 +31,9 @@ export default defineConfig({
 
 It does nothing unless `tok` runs the build or development command. Then it
 makes the entry Worker import `src/tokamak.ts` and export the entrypoint the
-runtime delivers events through, and in development it delivers the device's
-events to the development Worker through Cloudflare's dev registry.
+runtime delivers events through. In development it delivers the device's
+events to the development Worker through Cloudflare's dev registry, and passes
+the development Worker's plugin calls to the device.
 
 The package installs the `tok` binary for the current machine through an
 optional dependency (`@tokamakdev/tok-darwin-arm64`, `-darwin-x64`,

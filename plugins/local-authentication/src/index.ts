@@ -1,4 +1,4 @@
-import { FrontendPlugin } from "@tokamakdev/plugin";
+import { Plugin } from "@tokamakdev/plugin";
 
 /** The authentication the device owner performs. */
 export type Authentication = "biometricsOrPasscode" | "biometrics";
@@ -11,7 +11,7 @@ export interface AuthenticateOptions {
   readonly prompt: string;
 }
 
-class LocalAuthentication extends FrontendPlugin {
+class LocalAuthentication extends Plugin {
   constructor() {
     super("local-authentication");
   }

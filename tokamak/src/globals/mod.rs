@@ -24,6 +24,7 @@ mod html_rewriter;
 mod intl;
 pub(crate) mod native;
 mod objects;
+pub(crate) mod plugins;
 mod timers;
 mod url;
 

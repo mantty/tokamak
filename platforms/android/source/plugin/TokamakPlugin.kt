@@ -16,6 +16,9 @@ class TokamakPluginError(
         fun notSupported(message: String) = TokamakPluginError("NotSupportedError", message)
 
         fun typeError(message: String) = TokamakPluginError("TypeError", message)
+
+        /** UI was needed while the app is in the background, where it cannot show any. */
+        fun needsUI() = TokamakPluginError("NeedsUIError", "The app cannot show UI while it is in the background")
     }
 }
 
@@ -53,9 +56,25 @@ interface TokamakHost {
     /** The app's activity, or null while it has none. */
     val activity: Activity?
 
+    /** Whether the app is in the foreground, where it can show UI. Read it on the main thread. */
+    val isInForeground: Boolean
+
+    /**
+     * The activity to show UI in. Throws `NeedsUIError` while the app is in the background, where
+     * it cannot show UI. Call it on the main thread.
+     */
+    fun requireForegroundActivity(): Activity
+
+    /**
+     * Whether asking for [permission] shows the system prompt: the app does not hold it, and the
+     * user has not refused it for good. Call it on the main thread.
+     */
+    fun wouldPrompt(permission: String): Boolean
+
     /**
      * Asks the user for [permissions] in the app's activity once earlier requests finish, then
-     * passes [callback] whether each is granted. Without an activity, answers at once. Call it on
+     * passes [callback] whether each is granted. Answers at once, without UI, when none would
+     * prompt; throws `NeedsUIError` when one would while the app is in the background. Call it on
      * the main thread; [callback] runs on the main thread.
      */
     fun requestPermissions(permissions: Set<String>, callback: (Map<String, Boolean>) -> Unit)

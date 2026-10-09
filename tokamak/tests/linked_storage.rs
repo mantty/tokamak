@@ -57,6 +57,7 @@ fn serves_storage_bindings_through_the_exported_entry_point() -> TestResult {
             storage_dir: temporary.path().join("storage"),
             host: "app.tokamak.local".to_owned(),
             foreground: true,
+            plugins: None,
         },
         |_| {},
     )?;

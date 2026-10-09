@@ -20,11 +20,12 @@ use url::Url;
 
 use crate::dev_socket::DevSocket;
 use crate::gateway::{
-    Delivery, Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob,
+    Delivery, EventJob, Handler, HandlerError, Job, JobResponse, WebSocketInbound, WebSocketJob,
     WebSocketOutbound,
 };
-use crate::linked::DevelopmentEntry;
+use crate::linked::{DevelopmentEntry, DevelopmentHandler};
 use crate::network::http::{Client, full, reason_phrase};
+use crate::plugin_calls::PluginCalls;
 use crate::server::DevProxyConfig;
 use crate::transport::{
     BodyChunk, HttpBody, HttpRequest, HttpResponse, WebSocketFrame, invalid_data,
@@ -66,13 +67,13 @@ const PROXY_HEADERS: [&str; 6] = [
 static ENTRY: DevelopmentEntry = DevelopmentEntry { handler };
 
 /// The handler that forwards requests and events to the development server
-/// `config` names.
-fn handler(config: &DevProxyConfig) -> io::Result<Arc<dyn Handler>> {
-    Ok(Arc::new(DevProxy::new(config)?))
+/// `config` names, and runs the development Worker's calls on `plugins`.
+fn handler(config: &DevProxyConfig, plugins: Arc<PluginCalls>) -> DevelopmentHandler {
+    Ok(Arc::new(DevProxy::new(config, plugins)?))
 }
 
 /// A gateway handler that forwards requests to the host development server,
-/// and events through the dev WebSocket it keeps open.
+/// and events and plugin calls through the dev WebSocket it keeps open.
 #[derive(Clone)]
 struct DevProxy {
     client: Client,
@@ -89,7 +90,7 @@ struct HostBody {
 }
 
 impl DevProxy {
-    fn new(config: &DevProxyConfig) -> io::Result<Self> {
+    fn new(config: &DevProxyConfig, plugins: Arc<PluginCalls>) -> io::Result<Self> {
         let session_token = config.session_token.trim();
         if session_token.is_empty() || session_token.bytes().any(|byte| byte.is_ascii_control()) {
             return Err(io::Error::new(
@@ -102,7 +103,7 @@ impl DevProxy {
             endpoint: endpoint(&config.endpoint)?,
             session_token: HeaderValue::from_bytes(session_token.as_bytes())
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
-            socket: Arc::new(DevSocket::new()),
+            socket: Arc::new(DevSocket::new(plugins)),
         })
     }
 
@@ -344,23 +345,21 @@ impl Handler for DevProxy {
         tokio.block_on(self.forward_websocket(&request, &response, &websocket, stopped))
     }
 
-    fn deliver(
-        &self,
-        name: &str,
-        event: &str,
-        deadline: Instant,
-        stopped: &CancellationToken,
-    ) -> Result<Delivery, HandlerError> {
-        let reply = tokio::runtime::Handle::try_current()?.block_on(async {
-            tokio::select! {
-                reply = self.socket.deliver(name, event, deadline) => reply,
-                () = stopped.cancelled() => Err("the runtime stopped".into()),
-            }
-        })?;
-        Ok(Delivery {
+    fn deliver(&self, event: EventJob, stopped: &CancellationToken) {
+        let delivered = tokio::runtime::Handle::try_current()
+            .map_err(HandlerError::from)
+            .and_then(|tokio| {
+                tokio.block_on(async {
+                    tokio::select! {
+                        reply = self.socket.deliver(&event.name, &event.event, event.deadline) => reply,
+                        () = stopped.cancelled() => Err("the runtime stopped".into()),
+                    }
+                })
+            });
+        let _ = event.delivered.send(delivered.map(|reply| Delivery {
             reply,
             listened: None,
-        })
+        }));
     }
 
     fn start(&self, tokio: &tokio::runtime::Handle, stopped: &CancellationToken) {
@@ -528,10 +527,13 @@ mod tests {
     #[test]
     fn rejects_control_characters_in_session_tokens() {
         assert!(
-            DevProxy::new(&DevProxyConfig {
-                endpoint: "http://localhost:5173".to_owned(),
-                session_token: "token\nforged-header: value".to_owned(),
-            })
+            DevProxy::new(
+                &DevProxyConfig {
+                    endpoint: "http://localhost:5173".to_owned(),
+                    session_token: "token\nforged-header: value".to_owned(),
+                },
+                crate::plugin_calls::PluginCalls::new(None, true),
+            )
             .is_err()
         );
     }

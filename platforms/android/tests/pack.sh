@@ -136,7 +136,8 @@ test_builds_shrunk_lint_checked_release_apps() {
   contains "$script" "minifyEnabled true"
   contains "$script" "signingConfig signingConfigs.debug"
   lacks "$script" "signingConfigs {"
-  [[ $(<"$gradle/app/tokamak-rules.pro") == -dontobfuscate ]] || fail "R8 rules changed"
+  contains "$gradle/app/tokamak-rules.pro" "-dontobfuscate"
+  contains "$gradle/app/tokamak-rules.pro" '-keep interface com.tokamak.runtime.TokamakRuntime$Plugins { *; }'
   contains "$gradle/app/src/main/AndroidManifest.xml" 'android:label="Vigilus &amp; &lt;Co&gt; &quot;Pro&quot; &apos;X&apos;"'
   contains "$gradle/tokamak-exports.map" "    Java_*;"
   lacks "$gradle/tokamak-exports.map" tokamak_storage

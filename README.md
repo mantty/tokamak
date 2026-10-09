@@ -594,8 +594,8 @@ address to report, so `tok dev` stops. When Vite serves HTTPS, as with
 `server.https.cert`, and `tok dev` trusts only that certificate.
 
 The development app links the runtime's development code, which forwards its
-requests and events to the development server. Apps built with `tok build` leave
-it out.
+requests and events to the development server, and runs the development
+Worker's plugin calls on the device. Apps built with `tok build` leave it out.
 
 ## Events
 
@@ -650,7 +650,9 @@ no event.
   others still run. Events are not retried.
 - **State:** each event runs in a fresh Worker invocation, as each request
   does, so module state does not carry from one event to the next. Keep state
-  in a KV, D1 or R2 binding.
+  in a KV, D1 or R2 binding. An invocation with
+  [plugin listeners](#plugins-in-the-worker) runs on after its event until they
+  are removed.
 - **Cost:** a packaged app runs no Worker for an event without listeners,
   apart from `onStart`.
 
@@ -679,7 +681,8 @@ npm install @tokamakdev/plugin-location
 `dependencies`, `devDependencies`, or `peerDependencies`. tokamak finds each
 package as Node does, in the nearest `node_modules` of the project or a parent
 directory, so plugins installed at a workspace root are included. Call plugins
-from browser code. Each plugin's README describes its API.
+from the page or [the Worker](#plugins-in-the-worker). Each plugin's README
+describes its API.
 
 A plugin can also run Worker code through [events](#events), such as
 `onPush` from `@tokamakdev/plugin-notifications/events` for a data-only push
@@ -696,6 +699,63 @@ Android builds run lint's `NewApi` check over the shell and plugin sources. A
 call to an API newer than the app's minimum SDK fails the build, naming the
 file, line and required API level, unless a `Build.VERSION.SDK_INT` check
 guards it.
+
+### Plugins in the Worker
+
+Worker code calls plugins as page code does, with the same packages, methods,
+values and errors, at any time:
+
+```ts
+// src/tokamak.ts
+import { getLifecycleStage, onStart } from "@tokamakdev/tok/events";
+import { location } from "@tokamakdev/plugin-location";
+import { notifications } from "@tokamakdev/plugin-notifications";
+
+onStart(async (event, env) => {
+  const subscription = await notifications.subscribe();
+  await fetch("https://api.example.com/push-tokens", { method: "POST", body: JSON.stringify(subscription) });
+
+  if ((await getLifecycleStage()) === "foreground") {
+    location.watchPosition(
+      (position) => env.TRACK.put(String(position.timestamp), JSON.stringify(position.coords)),
+      (error) => console.error(error),
+    );
+  }
+});
+```
+
+- **Listeners**, such as `watchPosition` and `onMessage`, keep the Worker
+  invocation that registered them running, as an accepted WebSocket does,
+  until the last is removed or the runtime stops. The invocation then ends
+  once its `waitUntil` promises settle. The event or request that registered
+  them completes as usual: its deadline ends the event, not the invocation.
+  The OS ends listeners with the app, and `onStart` runs at every runtime
+  start, so register those the app needs throughout there.
+- **`getLifecycleStage()`**, from `@tokamakdev/tok/events`, resolves to
+  `"foreground"` or `"background"`: the app's stage now. Events report what
+  happened, in order, and the stage what is true now, so the two can differ:
+  an `onSuspend` listener that runs late reads `"foreground"` once the user has
+  returned. In page code it rejects with `NotSupportedError`.
+- **`NeedsUIError`:** a call that would show UI while the app cannot present it
+  rejects at once with a `DOMException` named `NeedsUIError`, whether the page
+  or the Worker makes it. iOS and Android present UI only in the foreground; a
+  hidden or minimised macOS app still shows system prompts. Only a call that
+  would show UI rejects: a permission request that would prompt, a biometric
+  prompt, or a secure storage read of a value saved with `authentication`. A
+  decided permission answers without UI, so `getCurrentPosition()` with
+  permission granted works in the background. Unlike `NotAllowedError`, which
+  means the user refused or cancelled, it means the app can ask again, for
+  example from `onResume`. A prompt already on screen when the app leaves it
+  stays up.
+- **Under `tok dev`,** the development Worker's calls reach the device's
+  plugins through the dev WebSocket. A call waits up to 10 seconds for the
+  device to connect, and calls pending when it disconnects reject with
+  `NetworkError`.
+- **On Cloudflare,** plugins use their web implementations, as a page without
+  tokamak does, which reject with `NotSupportedError` where the web API is
+  missing. `getLifecycleStage()` rejects with `NotSupportedError`.
+- **On Windows,** which has no native plugins, the Worker's plugin calls reject
+  with `NotSupportedError`.
 
 ### Camera and microphone
 
@@ -715,7 +775,7 @@ refused request rejects with `NotAllowedError`.
 
 [The Astro example](examples/astro) exercises server rendering, static assets,
 navigation, WebSockets, lifecycle events recorded in KV, and the native
-location plugin. It installs
+location plugin, from the page and from an `onStart` listener. It installs
 `@tokamakdev/tok` from this repository; its README lists the setup.
 
 ```sh

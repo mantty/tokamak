@@ -11,6 +11,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import java.io.File
 import java.util.concurrent.Executors
+import org.json.JSONTokener
 
 private const val HOST_METADATA = "tokamak.host"
 private const val DEV_ENDPOINT_METADATA = "tokamak.dev.endpoint"
@@ -39,8 +40,32 @@ class TokamakApplication : Application(), TokamakPlugins {
 
     internal val permissionRequests = TokamakPermissions(this)
 
+    private val started = lazy(::startRuntime)
+
     /** The running runtime, started on first use. Blocks while it starts. */
-    internal val runtime: TokamakRuntime by lazy(::startRuntime)
+    internal val runtime: TokamakRuntime by started
+
+    /** Whether the app is in the foreground, as the lifecycle last reported. Main thread only. */
+    private var foreground = false
+
+    /** The Worker's calls and subscriptions on the plugins. Main thread only. */
+    private val workerRequests by lazy {
+        TokamakPluginRequests<Long>(plugins) { id, result -> runtime.reply(id, result.toString()) }
+    }
+
+    /** The plugins as the runtime calls them, on its own threads. */
+    private val workerPlugins =
+        object : TokamakRuntime.Plugins {
+            override fun call(id: Long, plugin: String, method: String, arguments: String) =
+                mainExecutor.execute { workerRequests.run(id, false, plugin, method, parse(arguments)) }
+
+            override fun subscribe(id: Long, plugin: String, method: String, arguments: String) =
+                mainExecutor.execute { workerRequests.run(id, true, plugin, method, parse(arguments)) }
+
+            override fun unsubscribe(id: Long) = mainExecutor.execute { workerRequests.cancel(id) }
+
+            private fun parse(arguments: String): Any? = JSONTokener(arguments).nextValue()
+        }
 
     /** The host of the app origin, `https://<appHost>`. */
     val appHost: String by lazy {
@@ -72,6 +97,15 @@ class TokamakApplication : Application(), TokamakPlugins {
             override val activity: Activity?
                 get() = this@TokamakApplication.activity
 
+            override val isInForeground: Boolean
+                get() = foreground
+
+            override fun requireForegroundActivity(): Activity =
+                this@TokamakApplication.requireForegroundActivity()
+
+            override fun wouldPrompt(permission: String): Boolean =
+                permissionRequests.wouldPrompt(permission)
+
             override fun requestPermissions(
                 permissions: Set<String>,
                 callback: (Map<String, Boolean>) -> Unit,
@@ -80,6 +114,10 @@ class TokamakApplication : Application(), TokamakPlugins {
             override fun emit(name: String, event: String, timeoutMillis: Long): String =
                 emitEvent("$id.$name", event, timeoutMillis)
         }
+
+    /** The activity to show UI in; throws `NeedsUIError` while the app is in the background. */
+    internal fun requireForegroundActivity(): Activity =
+        activity?.takeIf { foreground } ?: throw TokamakPluginError.needsUI()
 
     /**
      * Delivers the event [name] with the JSON [event] to the Worker's listeners and returns their
@@ -91,26 +129,41 @@ class TokamakApplication : Application(), TokamakPlugins {
         return started.emit(name, event, deadline - SystemClock.elapsedRealtime())
     }
 
-    /** Delivers `resume` when the app moves into the foreground and `suspend` when it moves out. */
+    /** Records the app moving into or out of the foreground, once the runtime has started. */
     private fun moved(foreground: Boolean) {
+        this.foreground = foreground
+        if (started.isInitialized()) record(runtime)
+    }
+
+    /** Reports [foreground] to [runtime], delivering `resume` or `suspend` when it changed. */
+    private fun record(runtime: TokamakRuntime) {
+        if (!runtime.setForeground(foreground)) return
         val name = if (foreground) "resume" else "suspend"
         lifecycle.execute {
-            runCatching { emitEvent(name, "{}", LIFECYCLE_DEADLINE_MILLIS) }
+            runCatching { runtime.emit(name, "{}", LIFECYCLE_DEADLINE_MILLIS) }
                 .onFailure { Log.w("tokamak", "tokamak $name failed", it) }
         }
     }
 
-    /** Starts the runtime, which delivers `start` in the foreground when an activity started it. */
+    /**
+     * Starts the runtime, which delivers `start` in the foreground when an activity started it,
+     * then records where the app has moved since.
+     */
     private fun startRuntime(): TokamakRuntime {
         val metadata = metadata()
         val endpoint = metadata?.getString(DEV_ENDPOINT_METADATA)
         val sessionToken = metadata?.getString(DEV_SESSION_TOKEN_METADATA)
-        val foreground = activity != null
-        return if (!endpoint.isNullOrEmpty() && !sessionToken.isNullOrEmpty()) {
-            TokamakRuntime.startDevelopment(stateDir(), appHost, endpoint, sessionToken, foreground)
-        } else {
-            TokamakRuntime.start(unpackApp(), stateDir(), storageDir(), appHost, foreground)
-        }
+        val startsInForeground = activity != null
+        val runtime =
+            if (!endpoint.isNullOrEmpty() && !sessionToken.isNullOrEmpty()) {
+                TokamakRuntime.startDevelopment(
+                    stateDir(), appHost, endpoint, sessionToken, startsInForeground, workerPlugins,
+                )
+            } else {
+                TokamakRuntime.start(unpackApp(), stateDir(), storageDir(), appHost, startsInForeground, workerPlugins)
+            }
+        mainExecutor.execute { record(runtime) }
+        return runtime
     }
 
     private fun metadata() =

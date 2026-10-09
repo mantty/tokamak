@@ -1,4 +1,4 @@
-import { FrontendPlugin } from "@tokamakdev/plugin";
+import { Plugin } from "@tokamakdev/plugin";
 import * as web from "../web/index.js";
 
 /** Whether the app may show notifications. */
@@ -53,7 +53,7 @@ export interface SubscribeOptions {
 export type Listener<T> = (value: T) => void;
 export type ErrorListener = (error: DOMException) => void;
 
-class Notifications extends FrontendPlugin {
+class Notifications extends Plugin {
   constructor() {
     super("notifications");
   }

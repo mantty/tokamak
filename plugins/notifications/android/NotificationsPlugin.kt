@@ -3,7 +3,6 @@ package com.tokamak.plugins.notifications
 import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import com.google.firebase.FirebaseApp
@@ -17,7 +16,6 @@ import org.json.JSONObject
 import org.json.JSONTokener
 
 private const val PREFERENCES = "tokamak.notifications"
-private const val ASKED = "asked"
 private const val SUBSCRIBED = "subscribed"
 private const val TOKEN = "token"
 private const val SHOW_IN_FOREGROUND = "show-in-foreground"
@@ -141,24 +139,16 @@ class TokamakNotificationsPlugin(
         }
 
     /** Whether asking shows the system prompt, which Android 13 and later show until the user refuses twice. */
-    private fun canPrompt(): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
-        val permission = Manifest.permission.POST_NOTIFICATIONS
-        if (context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) return false
-        return !preferences.getBoolean(ASKED, false) ||
-            host.activity?.shouldShowRequestPermissionRationale(permission) == true
-    }
+    private fun canPrompt(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            host.wouldPrompt(Manifest.permission.POST_NOTIFICATIONS)
 
+    /** Asks for permission when that shows the system prompt, which needs the app in the foreground. */
     private fun requestPermission(reply: TokamakPluginReply) {
-        if (
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            host.activity == null ||
-            permission() != "prompt"
-        ) {
+        if (!canPrompt()) {
             reply(Result.success(permission()))
             return
         }
-        preferences.edit().putBoolean(ASKED, true).apply()
         host.requestPermissions(setOf(Manifest.permission.POST_NOTIFICATIONS)) {
             reply(Result.success(permission()))
         }

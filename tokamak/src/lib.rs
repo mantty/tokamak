@@ -47,6 +47,8 @@ mod linked;
 #[cfg(feature = "native")]
 mod network;
 mod packaging;
+#[cfg(feature = "native")]
+mod plugin_calls;
 mod quickjs;
 #[cfg(all(test, feature = "native"))]
 mod runtime_contract_tests;
@@ -87,6 +89,8 @@ pub use packaging::{
     WorkerManifest, read_asset_manifest, read_worker_manifest, read_worker_module,
     write_asset_manifest, write_worker,
 };
+#[cfg(feature = "native")]
+pub use plugin_calls::PluginHandler;
 pub use quickjs::Error as QuickJsError;
 pub use quickjs::compile_module;
 

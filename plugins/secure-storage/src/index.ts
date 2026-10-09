@@ -1,4 +1,4 @@
-import { FrontendPlugin } from "@tokamakdev/plugin";
+import { Plugin } from "@tokamakdev/plugin";
 
 /** When a stored value can be read. */
 export type Readable = "whenUnlocked" | "afterFirstUnlock";
@@ -22,7 +22,7 @@ export interface GetOptions {
   readonly prompt?: string;
 }
 
-class SecureStorage extends FrontendPlugin {
+class SecureStorage extends Plugin {
   constructor() {
     super("secure-storage");
   }

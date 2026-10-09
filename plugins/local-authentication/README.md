@@ -27,8 +27,9 @@ falling back to the device passcode, PIN, pattern or password) or `biometrics`.
 
 `authenticate` resolves when the device owner authenticates. It rejects with
 `NotAllowedError` when the user cancels or fails, `InvalidStateError` when the
-authentication is not set up, and `NotSupportedError` when the device cannot
-perform it.
+authentication is not set up, `NotSupportedError` when the device cannot
+perform it, and `NeedsUIError` while the app is off screen on iOS or Android,
+where the system cannot show its prompt.
 
 `authenticate` checks the device owner when the app asks; it does not protect
 any data. To bind a stored value to authentication, use

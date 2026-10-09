@@ -4,7 +4,11 @@ import LocalAuthentication
 final class TokamakLocalAuthenticationPlugin: TokamakPlugin {
   let id = "local-authentication"
 
-  init(host: TokamakHost) {}
+  private let host: TokamakHost
+
+  init(host: TokamakHost) {
+    self.host = host
+  }
 
   func call(
     method: String,
@@ -39,12 +43,19 @@ final class TokamakLocalAuthenticationPlugin: TokamakPlugin {
     }
   }
 
+  /// Shows the system prompt, which needs the app able to show UI, unless the
+  /// authentication fails without one.
   private func authenticate(
     _ policy: LAPolicy,
     prompt: String,
     reply: @escaping TokamakPluginReply
-  ) {
+  ) throws(TokamakPluginError) {
     let context = LAContext()
+    var error: NSError?
+    guard context.canEvaluatePolicy(policy, error: &error) else {
+      throw Self.failure(error)
+    }
+    try host.requireUI()
     if policy == .deviceOwnerAuthenticationWithBiometrics {
       // Hides the passcode fallback button, which this policy cannot use.
       context.localizedFallbackTitle = ""

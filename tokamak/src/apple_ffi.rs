@@ -2,11 +2,13 @@
 
 //! C ABI used by the native Apple application shell.
 
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr;
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::{Challenge, Decision, Event, Runtime, bridge};
+use crate::bridge::{self, Shell};
+use crate::{Challenge, Decision, Event, PluginHandler, Runtime};
 use p256::{SecretKey, pkcs8::DecodePrivateKey};
 
 const DECISION_DEFAULT: c_int = 0;
@@ -33,12 +35,86 @@ pub struct TokamakIdentity {
     pub private_key: TokamakBytes,
 }
 
-/// Start a tokamak runtime, which delivers `start` with `foreground`.
+/// A call or subscription of the Worker on the shell's plugin `plugin`.
+pub type TokamakPluginRequest = unsafe extern "C" fn(
+    context: *mut c_void,
+    id: u64,
+    plugin: *const c_char,
+    method: *const c_char,
+    arguments: *const c_char,
+);
+
+/// The shell's plugins, which the Worker calls. The runtime calls each
+/// function with `context`, on its own threads, and the shell answers with
+/// [`tokamak_runtime_reply`].
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct TokamakPluginHandler {
+    /// Passed to each function.
+    pub context: *mut c_void,
+    /// Calls `method` of `plugin` with the JSON `arguments`.
+    pub call: TokamakPluginRequest,
+    /// Subscribes to `method` of `plugin` with the JSON `arguments`.
+    pub subscribe: TokamakPluginRequest,
+    /// Ends the subscription `id`.
+    pub unsubscribe: unsafe extern "C" fn(context: *mut c_void, id: u64),
+}
+
+// SAFETY: the shell's functions take its context on any thread.
+unsafe impl Send for TokamakPluginHandler {}
+// SAFETY: as above.
+unsafe impl Sync for TokamakPluginHandler {}
+
+impl PluginHandler for TokamakPluginHandler {
+    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+        self.request(self.call, id, plugin, method, arguments);
+    }
+
+    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+        self.request(self.subscribe, id, plugin, method, arguments);
+    }
+
+    fn unsubscribe(&self, id: u64) {
+        // SAFETY: the shell's function takes its context.
+        unsafe { (self.unsubscribe)(self.context, id) };
+    }
+}
+
+impl TokamakPluginHandler {
+    /// Passes a call or subscription to `function`. A name containing NUL
+    /// names no plugin, so passes as empty.
+    fn request(
+        &self,
+        function: TokamakPluginRequest,
+        id: u64,
+        plugin: &str,
+        method: &str,
+        arguments: &str,
+    ) {
+        let [plugin, method, arguments] =
+            [plugin, method, arguments].map(|text| CString::new(text).unwrap_or_default());
+        // SAFETY: the shell's function takes its context and NUL-terminated
+        // strings that live for the call.
+        unsafe {
+            function(
+                self.context,
+                id,
+                plugin.as_ptr(),
+                method.as_ptr(),
+                arguments.as_ptr(),
+            );
+        }
+    }
+}
+
+/// Start a tokamak runtime, which delivers `start` with `foreground`, and
+/// whose Worker calls `plugins`.
 ///
 /// # Safety
 ///
-/// All string pointers must reference NUL-terminated UTF-8 strings. `error`
-/// must be writable for `error_len` bytes when non-null.
+/// All string pointers must reference NUL-terminated UTF-8 strings.
+/// `plugins` must stay valid until the runtime stops. `error` must be
+/// writable for `error_len` bytes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tokamak_runtime_start(
     packaged_dir: *const c_char,
@@ -46,20 +122,32 @@ pub unsafe extern "C" fn tokamak_runtime_start(
     storage_dir: *const c_char,
     host: *const c_char,
     foreground: bool,
+    plugins: TokamakPluginHandler,
     error: *mut c_char,
     error_len: usize,
 ) -> *mut c_void {
-    let result = unsafe { start(packaged_dir, state_dir, storage_dir, host, foreground) };
+    let result = unsafe {
+        start(
+            packaged_dir,
+            state_dir,
+            storage_dir,
+            host,
+            foreground,
+            plugins,
+        )
+    };
     into_handle(result, error, error_len)
 }
 
 /// Start a tokamak runtime that forwards requests to a host development
-/// server, and delivers `start` with `foreground`.
+/// server, and delivers `start` with `foreground`, and whose development
+/// Worker calls `plugins`.
 ///
 /// # Safety
 ///
-/// All string pointers must reference NUL-terminated UTF-8 strings. `error`
-/// must be writable for `error_len` bytes when non-null.
+/// All string pointers must reference NUL-terminated UTF-8 strings.
+/// `plugins` must stay valid until the runtime stops. `error` must be
+/// writable for `error_len` bytes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tokamak_runtime_start_development(
     state_dir: *const c_char,
@@ -67,10 +155,20 @@ pub unsafe extern "C" fn tokamak_runtime_start_development(
     endpoint: *const c_char,
     session_token: *const c_char,
     foreground: bool,
+    plugins: TokamakPluginHandler,
     error: *mut c_char,
     error_len: usize,
 ) -> *mut c_void {
-    let result = unsafe { start_development(state_dir, host, endpoint, session_token, foreground) };
+    let result = unsafe {
+        start_development(
+            state_dir,
+            host,
+            endpoint,
+            session_token,
+            foreground,
+            plugins,
+        )
+    };
     into_handle(result, error, error_len)
 }
 
@@ -156,6 +254,37 @@ pub unsafe extern "C" fn tokamak_runtime_emit(
             write_error(error, error_len, &message);
             false
         }
+    }
+}
+
+/// Record whether the app is in the foreground, returning whether that
+/// changed. The shell then emits `resume` or `suspend`.
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle returned by [`tokamak_runtime_start`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tokamak_runtime_set_foreground(
+    handle: *const c_void,
+    foreground: bool,
+) -> bool {
+    unsafe { runtime(handle) }.is_some_and(|runtime| runtime.set_foreground(foreground))
+}
+
+/// Pass a plugin's JSON `result` to the Worker's call or subscription `id`.
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle returned by [`tokamak_runtime_start`],
+/// and `result` must be a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tokamak_runtime_reply(
+    handle: *const c_void,
+    id: u64,
+    result: *const c_char,
+) {
+    if let Some(runtime) = unsafe { runtime(handle) } {
+        runtime.reply(id, unsafe { text(result) }.unwrap_or_default());
     }
 }
 
@@ -276,14 +405,14 @@ unsafe fn start(
     storage_dir: *const c_char,
     host: *const c_char,
     foreground: bool,
+    plugins: TokamakPluginHandler,
 ) -> Result<Runtime, String> {
     bridge::start(
         unsafe { text(packaged_dir) }.ok_or("packaged app path is not valid UTF-8")?,
         unsafe { text(state_dir) }.ok_or("state directory is not valid UTF-8")?,
         unsafe { text(storage_dir) }.ok_or("storage directory is not valid UTF-8")?,
         unsafe { text(host) }.ok_or("app host is not valid UTF-8")?,
-        foreground,
-        report,
+        shell(foreground, plugins),
     )
 }
 
@@ -293,15 +422,23 @@ unsafe fn start_development(
     endpoint: *const c_char,
     session_token: *const c_char,
     foreground: bool,
+    plugins: TokamakPluginHandler,
 ) -> Result<Runtime, String> {
     bridge::start_development(
         unsafe { text(state_dir) }.ok_or("development state path is not valid UTF-8")?,
         unsafe { text(host) }.ok_or("app host is not valid UTF-8")?,
         unsafe { text(endpoint) }.ok_or("development endpoint is not valid UTF-8")?,
         unsafe { text(session_token) }.ok_or("development session token is not valid UTF-8")?,
-        foreground,
-        report,
+        shell(foreground, plugins),
     )
+}
+
+fn shell(foreground: bool, plugins: TokamakPluginHandler) -> Shell {
+    Shell {
+        foreground,
+        plugins: Arc::new(plugins),
+        report,
+    }
 }
 
 unsafe fn emit(

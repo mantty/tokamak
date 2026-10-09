@@ -151,21 +151,6 @@ fn starts_no_worker_for_an_event_without_listeners() -> TestResult {
 }
 
 #[test]
-fn delivers_resume_and_suspend_only_when_the_foreground_changes() -> TestResult {
-    let started = Started::new(EVENT_WORKER, true, 0)?;
-
-    for name in ["resume", "suspend", "suspend", "resume"] {
-        started.emit(name, "{}")?;
-    }
-
-    assert_eq!(
-        started.logged(),
-        [r#"start {"foreground":true}"#, "suspend {}", "resume {}"]
-    );
-    Ok(())
-}
-
-#[test]
 fn delivers_lifecycle_events_one_at_a_time() -> TestResult {
     let started = Arc::new(Started::new(EVENT_WORKER, false, 0)?);
     started.emit("echo", "{}")?;

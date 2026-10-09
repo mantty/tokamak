@@ -82,6 +82,17 @@ export default {
 };
 "#;
 
+/// Responds, then removes the listener it registered on a plugin once that
+/// delivers a value.
+const LISTENING_WORKER: &[u8] = br#"
+export default {
+  fetch() {
+    const stop = globalThis.__tokamakNativeListen("location", "watchPosition", null, () => stop(), () => {});
+    return new Response("listening");
+  },
+};
+"#;
+
 /// Answers `job` with `handler` on a blocking Tokio thread, as the gateway does.
 fn handle_job(
     tokio: &tokio::runtime::Runtime,
@@ -128,6 +139,50 @@ fn keeps_cache_entries_for_the_life_of_their_runtime() -> Result<(), Box<dyn std
     assert_eq!(respond(&tokio, &running, "PUT")?, "stored");
     assert_eq!(respond(&tokio, &running, "GET")?, "cached hit");
     assert_eq!(respond(&tokio, &restarted, "GET")?, "miss");
+    Ok(())
+}
+
+#[test]
+fn keeps_a_request_with_listeners_running_after_it_responds()
+-> Result<(), Box<dyn std::error::Error>> {
+    /// Shell plugins that report each subscription's ID.
+    struct Shell(Sender<u64>);
+    impl crate::PluginHandler for Shell {
+        fn call(&self, _: u64, _: &str, _: &str, _: &str) {}
+
+        fn subscribe(&self, id: u64, _: &str, _: &str, _: &str) {
+            let _ = self.0.send(id);
+        }
+
+        fn unsubscribe(&self, _: u64) {}
+    }
+    let directory = tempfile::tempdir()?;
+    let worker = WorkerBundle::of_source(LISTENING_WORKER, directory.path())?;
+    let (subscriptions, subscribed) = flume::unbounded();
+    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Shell(subscriptions))), true);
+    let config = RuntimeConfig {
+        plugins: Arc::clone(&plugins),
+        ..runtime_config()
+    };
+    let tokio = tokio::runtime::Runtime::new()?;
+    let (response, responses) = flume::bounded(1);
+    let job = Job {
+        request: request("GET", "/"),
+        response,
+        websocket: None,
+    };
+
+    let handled = handle_job(&tokio, Dispatcher::new(worker, config), job);
+    let JobResponse::Http(response) = responses.recv_timeout(Duration::from_secs(5))? else {
+        return Err("Worker returned a non-HTTP response".into());
+    };
+    let subscription = subscribed.recv_timeout(Duration::from_secs(5))?;
+    thread::sleep(Duration::from_millis(100));
+
+    assert!(matches!(response.body, HttpBody::Buffered(body) if body == b"listening"));
+    assert!(!handled.is_finished());
+    plugins.reply(subscription, r#"{"value":1,"done":false}"#);
+    tokio.block_on(handled)??;
     Ok(())
 }
 
@@ -511,15 +566,7 @@ fn reports_handler_failures_through_the_event_listener()
             Err("handler exploded".into())
         }
 
-        fn deliver(
-            &self,
-            _: &str,
-            _: &str,
-            _: std::time::Instant,
-            _: &CancellationToken,
-        ) -> Result<crate::gateway::Delivery, HandlerError> {
-            Err("handler must not run".into())
-        }
+        fn deliver(&self, _: crate::gateway::EventJob, _: &CancellationToken) {}
     }
     let directory = tempfile::tempdir()?;
     let tokio = tokio::runtime::Builder::new_current_thread().build()?;
@@ -572,15 +619,7 @@ fn reports_connection_failures_through_the_event_listener()
             Err("handler must not run".into())
         }
 
-        fn deliver(
-            &self,
-            _: &str,
-            _: &str,
-            _: std::time::Instant,
-            _: &CancellationToken,
-        ) -> Result<crate::gateway::Delivery, HandlerError> {
-            Err("handler must not run".into())
-        }
+        fn deliver(&self, _: crate::gateway::EventJob, _: &CancellationToken) {}
     }
     let directory = tempfile::tempdir()?;
     let (sink, events) = flume::unbounded();
@@ -773,5 +812,6 @@ pub(crate) fn runtime_config() -> RuntimeConfig {
         cache: Arc::default(),
         environment: BTreeMap::new(),
         storage: None,
+        plugins: crate::plugin_calls::PluginCalls::new(None, true),
     }
 }

@@ -4,24 +4,104 @@
 //! moves values across the boundary; every decision belongs to the runtime.
 
 use std::ffi::{CString, c_char, c_int};
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::{Challenge, Decision, Event, Runtime, bridge};
-use jni::JNIEnv;
-use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString};
-use jni::sys::{jboolean, jint, jlong};
+use crate::bridge::{self, Shell};
+use crate::{Challenge, Decision, Event, PluginHandler, Runtime};
+use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue};
+use jni::sys::{JNI_TRUE, jboolean, jint, jlong};
+use jni::{JNIEnv, JavaVM};
 
 const LOG_TAG: &str = "tokamak";
 const LOG_INFO: c_int = 4;
 const LOG_ERROR: c_int = 6;
 const FAILURE: &str = "java/lang/IllegalStateException";
+/// The signature of `TokamakRuntime.Plugins.call` and `subscribe`.
+const REQUEST_SIGNATURE: &str = "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V";
 
 unsafe extern "C" {
     fn __android_log_write(priority: c_int, tag: *const c_char, text: *const c_char) -> c_int;
 }
 
-/// Start the runtime, which delivers `start` with `foreground`, and return an
-/// opaque handle, or throw on failure.
+/// The Kotlin shell's `TokamakRuntime.Plugins`, which the Worker calls.
+struct KotlinPlugins {
+    vm: JavaVM,
+    plugins: GlobalRef,
+}
+
+impl PluginHandler for KotlinPlugins {
+    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+        self.request("call", id, plugin, method, arguments);
+    }
+
+    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+        self.request("subscribe", id, plugin, method, arguments);
+    }
+
+    fn unsubscribe(&self, id: u64) {
+        self.invoke(|env| {
+            let id = JValue::Long(id.cast_signed());
+            env.call_method(&self.plugins, "unsubscribe", "(J)V", &[id])
+                .map(drop)
+        });
+    }
+}
+
+impl KotlinPlugins {
+    fn new(env: &mut JNIEnv, plugins: &JObject) -> Result<Self, String> {
+        let attached = |error: jni::errors::Error| error.to_string();
+        Ok(Self {
+            vm: env.get_java_vm().map_err(attached)?,
+            plugins: env.new_global_ref(plugins).map_err(attached)?,
+        })
+    }
+
+    /// Passes a call or subscription to the plugins' method `name`.
+    fn request(&self, name: &str, id: u64, plugin: &str, method: &str, arguments: &str) {
+        self.invoke(|env| {
+            let [plugin, method, arguments] = [
+                env.new_string(plugin)?,
+                env.new_string(method)?,
+                env.new_string(arguments)?,
+            ];
+            let arguments = [
+                JValue::Long(id.cast_signed()),
+                (&plugin).into(),
+                (&method).into(),
+                (&arguments).into(),
+            ];
+            env.call_method(&self.plugins, name, REQUEST_SIGNATURE, &arguments)
+                .map(drop)
+        });
+    }
+
+    /// Runs `call` on this thread, attached to the VM for good, logging what
+    /// fails or throws.
+    fn invoke(&self, call: impl FnOnce(&mut JNIEnv) -> jni::errors::Result<()>) {
+        let result = self
+            .vm
+            .attach_current_thread_permanently()
+            .and_then(|mut env| {
+                let result = env.with_local_frame(8, call);
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_describe();
+                    let _ = env.exception_clear();
+                }
+                result
+            });
+        if let Err(error) = result {
+            log(
+                LOG_ERROR,
+                &format!("tokamak plugin request failed: {error}"),
+            );
+        }
+    }
+}
+
+/// Start the runtime, which delivers `start` with `foreground`, and whose
+/// Worker calls `plugins`, a `TokamakRuntime.Plugins`. Return an opaque
+/// handle, or throw on failure.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStart(
     mut env: JNIEnv,
@@ -31,20 +111,20 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStart(
     storage_dir: JString,
     host: JString,
     foreground: jboolean,
+    plugins: JObject,
 ) -> jlong {
     let result = start(
         &mut env,
-        &packaged_dir,
-        &state_dir,
-        &storage_dir,
-        &host,
-        foreground != 0,
+        [&packaged_dir, &state_dir, &storage_dir, &host],
+        foreground == JNI_TRUE,
+        &plugins,
     );
     into_handle(&mut env, result, "runtime startup failed")
 }
 
 /// Start the development runtime, which delivers `start` with `foreground`,
-/// and return an opaque handle, or throw on failure.
+/// and whose development Worker calls `plugins`, a `TokamakRuntime.Plugins`.
+/// Return an opaque handle, or throw on failure.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStartDevelopment(
     mut env: JNIEnv,
@@ -54,16 +134,46 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeStartDevelo
     endpoint: JString,
     session_token: JString,
     foreground: jboolean,
+    plugins: JObject,
 ) -> jlong {
     let result = start_development(
         &mut env,
-        &state_dir,
-        &host,
-        &endpoint,
-        &session_token,
-        foreground != 0,
+        [&state_dir, &host, &endpoint, &session_token],
+        foreground == JNI_TRUE,
+        &plugins,
     );
     into_handle(&mut env, result, "development runtime startup failed")
+}
+
+/// Record whether the app is in the foreground, returning whether that
+/// changed. The shell then emits `resume` or `suspend`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeSetForeground(
+    _: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    foreground: jboolean,
+) -> jboolean {
+    let changed =
+        runtime(handle).is_some_and(|runtime| runtime.set_foreground(foreground == JNI_TRUE));
+    jboolean::from(changed)
+}
+
+/// Pass a plugin's JSON `result` to the Worker's call or subscription `id`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeReply(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    id: jlong,
+    result: JString,
+) {
+    if let Some(runtime) = runtime(handle) {
+        runtime.reply(
+            id.cast_unsigned(),
+            &text(&mut env, &result).unwrap_or_default(),
+        );
+    }
 }
 
 /// Return the loopback port the gateway bound.
@@ -177,38 +287,40 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeClientIdent
 
 fn start(
     env: &mut JNIEnv,
-    packaged_dir: &JString,
-    state_dir: &JString,
-    storage_dir: &JString,
-    host: &JString,
+    [packaged_dir, state_dir, storage_dir, host]: [&JString; 4],
     foreground: bool,
+    plugins: &JObject,
 ) -> Result<Runtime, String> {
     bridge::start(
         &text(env, packaged_dir)?,
         &text(env, state_dir)?,
         &text(env, storage_dir)?,
         &text(env, host)?,
-        foreground,
-        report,
+        shell(env, foreground, plugins)?,
     )
 }
 
 fn start_development(
     env: &mut JNIEnv,
-    state_dir: &JString,
-    host: &JString,
-    endpoint: &JString,
-    session_token: &JString,
+    [state_dir, host, endpoint, session_token]: [&JString; 4],
     foreground: bool,
+    plugins: &JObject,
 ) -> Result<Runtime, String> {
     bridge::start_development(
         &text(env, state_dir)?,
         &text(env, host)?,
         &text(env, endpoint)?,
         &text(env, session_token)?,
-        foreground,
-        report,
+        shell(env, foreground, plugins)?,
     )
+}
+
+fn shell(env: &mut JNIEnv, foreground: bool, plugins: &JObject) -> Result<Shell, String> {
+    Ok(Shell {
+        foreground,
+        plugins: Arc::new(KotlinPlugins::new(env, plugins)?),
+        report,
+    })
 }
 
 fn emit(

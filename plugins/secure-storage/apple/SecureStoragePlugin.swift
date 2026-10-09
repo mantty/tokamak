@@ -2,14 +2,21 @@ import Foundation
 import LocalAuthentication
 import Security
 
+#if os(iOS)
+  import UIKit
+#endif
+
 final class TokamakSecureStoragePlugin: TokamakPlugin {
   let id = "secure-storage"
 
   private let service = "tokamak.secure-storage"
   /// Keychain calls block while the system authentication prompt is shown.
   private let queue = DispatchQueue(label: "tokamak.secure-storage")
+  private let host: TokamakHost
 
-  init(host: TokamakHost) {}
+  init(host: TokamakHost) {
+    self.host = host
+  }
 
   private static let teamSigningRequired = TokamakPluginError.notSupported(
     "Secure storage requires a team-signed build"
@@ -31,14 +38,29 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     reply: @escaping TokamakPluginReply
   ) {
     let arguments = arguments as? [String: Any] ?? [:]
+    let unlocked = Self.isUnlocked
     queue.async {
-      reply(Result { () throws(TokamakPluginError) in try self.perform(method, arguments) })
+      reply(
+        Result { () throws(TokamakPluginError) in
+          try self.perform(method, arguments, unlocked: unlocked)
+        })
     }
+  }
+
+  /// Whether the device's protected data is available, which it is not while
+  /// an iPhone is locked. Read it on the main thread.
+  private static var isUnlocked: Bool {
+    #if os(iOS)
+      UIApplication.shared.isProtectedDataAvailable
+    #else
+      true
+    #endif
   }
 
   private func perform(
     _ method: String,
-    _ arguments: [String: Any]
+    _ arguments: [String: Any],
+    unlocked: Bool
   ) throws(TokamakPluginError) -> Any? {
     #if os(macOS)
       // Unentitled reads report errSecItemNotFound rather than a missing entitlement.
@@ -59,7 +81,8 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     case "get":
       return try get(
         requiredString(arguments, "name"),
-        prompt: optionalString(arguments, "prompt")
+        prompt: optionalString(arguments, "prompt"),
+        unlocked: unlocked
       )
     case "delete":
       try deleteItems(query(requiredString(arguments, "name")))
@@ -97,16 +120,29 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     try check(status)
   }
 
-  private func get(_ name: String, prompt: String?) throws(TokamakPluginError) -> String? {
+  /// Reads without UI first, so only a value saved with authentication needs
+  /// the app able to show the system prompt. While the device is locked, the
+  /// read fails without UI whatever the value needs.
+  private func get(
+    _ name: String,
+    prompt: String?,
+    unlocked: Bool
+  ) throws(TokamakPluginError) -> String? {
     var item = query(name)
     item[kSecReturnData] = true
-    if let prompt, !prompt.isEmpty {
-      let context = LAContext()
-      context.localizedReason = prompt
-      item[kSecUseAuthenticationContext] = context
-    }
+    item[kSecUseAuthenticationContext] = Self.contextWithoutUI()
     var data: CFTypeRef?
-    let status = SecItemCopyMatching(item as CFDictionary, &data)
+    var status = SecItemCopyMatching(item as CFDictionary, &data)
+    if status == errSecInteractionNotAllowed && unlocked {
+      try host.requireUI()
+      item[kSecUseAuthenticationContext] = prompt.flatMap { prompt -> LAContext? in
+        guard !prompt.isEmpty else { return nil }
+        let context = LAContext()
+        context.localizedReason = prompt
+        return context
+      }
+      status = SecItemCopyMatching(item as CFDictionary, &data)
+    }
     if status == errSecItemNotFound {
       guard try exists(name) else { return nil }
       throw TokamakPluginError(
@@ -154,11 +190,19 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
 
   /// `query` reading attributes only, which needs no authentication.
   private func attributesQuery(_ query: [CFString: Any]) -> [CFString: Any] {
-    let context = LAContext()
-    context.interactionNotAllowed = true
-    return query.merging([kSecReturnAttributes: true, kSecUseAuthenticationContext: context]) {
+    query.merging([
+      kSecReturnAttributes: true, kSecUseAuthenticationContext: Self.contextWithoutUI(),
+    ]) {
       _, attribute in attribute
     }
+  }
+
+  /// A context in which reads that need authentication fail with
+  /// `errSecInteractionNotAllowed` rather than show the system prompt.
+  private static func contextWithoutUI() -> LAContext {
+    let context = LAContext()
+    context.interactionNotAllowed = true
+    return context
   }
 
   /// All of the plugin's items. The data protection keychain is the only

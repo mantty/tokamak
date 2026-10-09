@@ -2,9 +2,20 @@
 //! every value as text.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::packaging::PackageLayout;
-use crate::{Config, DevProxyConfig, DevelopmentConfig, Event, Runtime};
+use crate::{Config, DevProxyConfig, DevelopmentConfig, Event, PluginHandler, Runtime};
+
+/// What the shell gives a runtime it starts.
+pub(crate) struct Shell {
+    /// Whether the app is in the foreground.
+    pub(crate) foreground: bool,
+    /// The plugins the Worker calls.
+    pub(crate) plugins: Arc<dyn PluginHandler>,
+    /// Logs the runtime's events.
+    pub(crate) report: fn(&Event),
+}
 
 /// Starts a runtime serving the app packaged in `packaged_dir`.
 pub(crate) fn start(
@@ -12,16 +23,17 @@ pub(crate) fn start(
     state_dir: &str,
     storage_dir: &str,
     host: &str,
-    foreground: bool,
-    report: fn(&Event),
+    shell: Shell,
 ) -> Result<Runtime, String> {
     let config = Config {
         app: PackageLayout::new(packaged_dir),
         state_dir: PathBuf::from(state_dir),
         storage_dir: PathBuf::from(storage_dir),
         host: host.to_owned(),
-        foreground,
+        foreground: shell.foreground,
+        plugins: Some(shell.plugins),
     };
+    let report = shell.report;
     Runtime::start(config, move |event| report(&event)).map_err(|error| error.to_string())
 }
 
@@ -32,8 +44,7 @@ pub(crate) fn start_development(
     host: &str,
     endpoint: &str,
     session_token: &str,
-    foreground: bool,
-    report: fn(&Event),
+    shell: Shell,
 ) -> Result<Runtime, String> {
     let config = DevelopmentConfig {
         state_dir: PathBuf::from(state_dir),
@@ -42,8 +53,10 @@ pub(crate) fn start_development(
             endpoint: endpoint.to_owned(),
             session_token: session_token.to_owned(),
         },
-        foreground,
+        foreground: shell.foreground,
+        plugins: Some(shell.plugins),
     };
+    let report = shell.report;
     Runtime::start_development(config, move |event| report(&event))
         .map_err(|error| error.to_string())
 }

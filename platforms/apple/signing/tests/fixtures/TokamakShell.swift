@@ -15,6 +15,8 @@ final class TokamakApp {}
 
 final class TokamakHost {
   init(app: TokamakApp, plugin: String) {}
+
+  func requireUI() throws(TokamakPluginError) {}
 }
 
 protocol TokamakPlugin: AnyObject {
@@ -25,7 +27,7 @@ protocol TokamakPlugin: AnyObject {
     method: String,
     arguments: Any,
     reply: @escaping TokamakPluginReply
-  ) -> (() -> Void)
+  ) throws(TokamakPluginError) -> (() -> Void)
 }
 
 extension TokamakPlugin {
@@ -33,9 +35,8 @@ extension TokamakPlugin {
     method: String,
     arguments: Any,
     reply: @escaping TokamakPluginReply
-  ) -> (() -> Void) {
-    reply(.failure(.notSupported("\(id).\(method) is not supported")))
-    return {}
+  ) throws(TokamakPluginError) -> (() -> Void) {
+    throw .notSupported("\(id).\(method) is not supported")
   }
 }
 

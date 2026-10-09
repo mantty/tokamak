@@ -58,18 +58,23 @@ pub(super) trait Handler: Send + Sync {
     /// Answers `job`, abandoning it once `stopped` is cancelled.
     fn handle(&self, job: Job, stopped: &CancellationToken) -> Result<(), HandlerError>;
 
-    /// Delivers the event `name`, whose JSON is `event`, to the Worker's
-    /// listeners, returning by `deadline`.
-    fn deliver(
-        &self,
-        name: &str,
-        event: &str,
-        deadline: Instant,
-        stopped: &CancellationToken,
-    ) -> Result<Delivery, HandlerError>;
+    /// Delivers `event` to the Worker's listeners, sending what they did to
+    /// `event.delivered` by its deadline. Their invocation may run on, for
+    /// listeners it registered on plugins, until `stopped` is cancelled.
+    fn deliver(&self, event: EventJob, stopped: &CancellationToken);
 
     /// Starts work that lasts until `stopped` is cancelled.
     fn start(&self, _tokio: &tokio::runtime::Handle, _stopped: &CancellationToken) {}
+}
+
+/// An event for the Worker's listeners.
+pub(crate) struct EventJob {
+    pub(crate) name: String,
+    /// The event's JSON.
+    pub(crate) event: String,
+    pub(crate) deadline: Instant,
+    /// Receives what the Worker did with the event, or why it failed.
+    pub(crate) delivered: Sender<Result<Delivery, HandlerError>>,
 }
 
 /// What the Worker did with an event.
@@ -206,21 +211,23 @@ pub(crate) fn deliver(
     event: &str,
     deadline: Instant,
 ) -> Result<Delivery, String> {
-    let (sender, result) = flume::bounded(1);
+    let (delivered, result) = flume::bounded(1);
+    let job = EventJob {
+        name: name.to_owned(),
+        event: event.to_owned(),
+        deadline,
+        delivered,
+    };
     let worker = Arc::clone(shared);
-    let stopped = format!("the runtime stopped before {name} was delivered");
-    let (name, event) = (name.to_owned(), event.to_owned());
     drop(shared.tokio.spawn_blocking(move || {
-        if worker.stopped.is_cancelled() {
-            return;
+        if !worker.stopped.is_cancelled() {
+            worker.handler.deliver(job, &worker.stopped);
         }
-        let delivered = worker
-            .handler
-            .deliver(&name, &event, deadline, &worker.stopped)
-            .map_err(|error| error.to_string());
-        let _ = sender.send(delivered);
     }));
-    result.recv().unwrap_or(Err(stopped))
+    match result.recv() {
+        Ok(delivery) => delivery.map_err(|error| error.to_string()),
+        Err(_) => Err(format!("the runtime stopped before {name} was delivered")),
+    }
 }
 
 impl Drop for Runtime {

@@ -508,6 +508,7 @@ fn start_runtime(temporary: &Path, app: PackageLayout) -> TestResult<(Runtime, P
             storage_dir: temporary.join("storage"),
             host: HOST.to_owned(),
             foreground: true,
+            plugins: None,
         },
         |_| {},
     )?;
