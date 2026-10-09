@@ -588,6 +588,11 @@ When the development server restarts, as Vite does when its config changes,
 settings apply to the app when `tok dev` restarts; `tok dev` says when the
 configuration changes.
 
+`tok dev` requires Vite's own dev server. In middleware mode, Vite has no
+address to report, so `tok dev` stops. When Vite serves HTTPS, as with
+`@vitejs/plugin-basic-ssl`, the plugin reports the certificate in
+`server.https.cert`, and `tok dev` trusts only that certificate.
+
 The development app links the runtime's development code, which forwards its
 requests and events to the development server. Apps built with `tok build` leave
 it out.

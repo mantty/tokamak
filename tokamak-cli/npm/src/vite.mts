@@ -1,4 +1,6 @@
+import { X509Certificate } from "node:crypto";
 import fs from "node:fs";
+import type { ServerOptions as HttpsServerOptions } from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -17,10 +19,13 @@ const DEFAULT_MODULES = ["src/tokamak.ts", "src/tokamak.js"];
 /** Wrangler configuration files Cloudflare's plugin tries in order. */
 const WRANGLER_FILES = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"];
 
+const MIDDLEWARE_MODE_ERROR =
+  "Vite is running in middleware mode, so tokamak cannot find the development server's address; tok dev needs Vite's own dev server";
+
 /**
  * Reports the app's tokamak configuration, and the development server's
- * address, Worker name and dev socket port, to `tok`, and makes the entry
- * Worker import `module` and export `TokamakEvents`. Without
+ * address, HTTPS certificate, Worker name and dev socket port, to `tok`, and
+ * makes the entry Worker import `module` and export `TokamakEvents`. Without
  * `TOKAMAK_VITE_OUTPUT`, which `tok` sets, it adds no hooks.
  */
 export function tokamak({
@@ -61,7 +66,12 @@ export function tokamak({
       },
       async configureServer(server) {
         const httpServer = server.httpServer;
+        // A middleware-mode server beside a reported one, such as the server
+        // Astro syncs content with, leaves the report in place.
         if (!httpServer) {
+          if (!fs.existsSync(path.join(output, "server.json"))) {
+            writeJson(output, "server.json", { error: MIDDLEWARE_MODE_ERROR });
+          }
           return;
         }
         const worker = await readWorker(server.config.root);
@@ -73,6 +83,7 @@ export function tokamak({
               writeJson(output, "server.json", {
                 url: urls?.local[0] ?? urls?.network[0],
                 workerName: worker?.topLevelName ?? worker?.name,
+                certificates: endEntityCertificates(server.config.server.https),
                 socketPort: socket.port,
               });
             },
@@ -165,6 +176,23 @@ async function readWorker(root: string): Promise<{ name?: string; topLevelName?:
   }
   const { unstable_readConfig } = await import("wrangler");
   return unstable_readConfig({ config: file, env: process.env.CLOUDFLARE_ENV }, { hideWarnings: true });
+}
+
+/**
+ * The PEM of the end-entity certificate of each chain in `https.cert`, which
+ * Vite reads from a file when a string names one.
+ */
+function endEntityCertificates(https: HttpsServerOptions | undefined): string | undefined {
+  const cert = typeof https?.cert === "string" ? readFileIfExists(https.cert) : https?.cert;
+  return cert && [cert].flat().map((chain) => new X509Certificate(chain).toString()).join("");
+}
+
+function readFileIfExists(file: string): string | Buffer {
+  try {
+    return fs.readFileSync(path.resolve(file));
+  } catch {
+    return file;
+  }
 }
 
 /**

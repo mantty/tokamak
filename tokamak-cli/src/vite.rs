@@ -5,7 +5,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -35,12 +35,24 @@ impl ConfigReport {
     }
 }
 
-/// The plugin's `server.json`: the development server, its Worker, and the
-/// plugin's dev socket.
+/// The plugin's `server.json`: the development server, its Worker and the
+/// plugin's dev socket, or why the plugin cannot report the server.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ServerFile {
+    Failed { error: String },
+    Reported(ServerReport),
+}
+
+/// The development server, its Worker, and the plugin's dev socket.
 #[derive(Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ServerReport {
     pub(crate) url: String,
+    /// The PEM of the end-entity certificate of each chain an HTTPS server
+    /// serves; empty when the plugin found none.
+    #[serde(default)]
+    pub(crate) certificates: String,
     /// The Worker's name without an environment's suffix; empty when the
     /// Wrangler configuration names none.
     #[serde(default)]
@@ -85,7 +97,11 @@ impl VitePlugin {
 
     /// The development server, once the plugin has reported it.
     pub(crate) fn server(&self) -> Result<Option<ServerReport>> {
-        self.report("server.json")
+        Ok(match self.report("server.json")? {
+            None => None,
+            Some(ServerFile::Reported(report)) => Some(report),
+            Some(ServerFile::Failed { error }) => bail!("{error}"),
+        })
     }
 
     fn report<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {

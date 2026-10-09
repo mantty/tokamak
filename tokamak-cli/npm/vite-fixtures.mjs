@@ -60,9 +60,12 @@ export async function build(app, vite) {
   await builder.buildApp();
 }
 
-/** Runs `use` with the development server of `app`, listening on any port, once it is reported. */
-export async function serve(app, use) {
-  const server = await createServer(viteConfig(app, { server: { port: 0 } }));
+/**
+ * Runs `use` with the development server of `app`, listening on any port,
+ * with Vite's `server` options, once it is reported.
+ */
+export async function serve(app, use, options = {}) {
+  const server = await createServer(viteConfig(app, { server: { port: 0, ...options } }));
   try {
     await server.listen();
     await reported(app, "server.json");

@@ -1,17 +1,24 @@
 //! Development-session orchestration.
 
 use std::fs;
-use std::io::{self, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::io::{self, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, ServerName};
 use tokamak_cli::Platform;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_rustls::TlsConnector;
+use tokio_rustls::client::TlsStream;
+use tokio_util::either::Either;
 
 use super::devices::{
     PreparedDevice, install_and_launch_android, install_and_launch_ios_device,
@@ -19,7 +26,7 @@ use super::devices::{
 };
 use super::packs::PlatformPack;
 use super::vite::{ConfigReport, PLUGIN_HINT, ServerReport, VitePlugin};
-use super::{devices, pipeline, settings};
+use super::{devices, pinned_tls, pipeline, settings};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_mins(1);
 const APP_CONNECTION_TIMEOUT: Duration = Duration::from_mins(1);
@@ -592,19 +599,28 @@ impl LaunchedApp {
     }
 }
 
-#[derive(Clone, Debug)]
+/// A connection to the development server, over TLS for an `https://` one.
+type ServerStream = Either<TcpStream, TlsStream<TcpStream>>;
+
+#[derive(Clone)]
 struct ServerEndpoint {
     url: String,
     authority: String,
     addresses: Vec<SocketAddr>,
+    /// The connector and name of an `https://` server.
+    tls: Option<(TlsConnector, ServerName<'static>)>,
 }
 
 impl ServerEndpoint {
-    /// The server at `value`, an `http://` URL whose path is ignored.
-    fn parse(value: &str) -> Result<Self> {
-        let address = value
-            .strip_prefix("http://")
-            .ok_or_else(|| anyhow::anyhow!("development server must use an http:// URL"))?;
+    /// The server at `url`, an `http://` or `https://` URL whose path is
+    /// ignored; an `https://` server must serve one of `certificates`, as PEM.
+    fn parse(url: &str, certificates: &str) -> Result<Self> {
+        let (scheme, address) = url
+            .split_once("://")
+            .filter(|(scheme, _)| matches!(*scheme, "http" | "https"))
+            .ok_or_else(|| {
+                anyhow::anyhow!("development server must use an http:// or https:// URL")
+            })?;
         let authority = address
             .split_once('/')
             .map_or(address, |(authority, _)| authority);
@@ -623,27 +639,47 @@ impl ServerEndpoint {
         if addresses.is_empty() {
             bail!("development server host did not resolve: {host}");
         }
+        let tls = if scheme == "https" {
+            let name = ServerName::try_from(host).context("development server host is invalid")?;
+            Some((pinned_connector(certificates)?, name))
+        } else {
+            None
+        };
         Ok(Self {
-            url: format!("http://{authority}"),
+            url: format!("{scheme}://{authority}"),
             authority: authority.to_owned(),
             addresses,
+            tls,
         })
     }
 
-    fn connect(&self) -> io::Result<TcpStream> {
-        let mut last_error = None;
-        for address in &self.addresses {
-            match TcpStream::connect_timeout(address, Duration::from_secs(1)) {
-                Ok(stream) => return Ok(stream),
-                Err(error) => last_error = Some(error),
-            }
+    async fn connect(&self) -> io::Result<ServerStream> {
+        let stream = TcpStream::connect(self.addresses.as_slice()).await?;
+        match &self.tls {
+            None => Ok(Either::Left(stream)),
+            Some((connector, name)) => Ok(Either::Right(
+                connector.connect(name.clone(), stream).await?,
+            )),
         }
-        Err(last_error.unwrap_or_else(|| io::Error::other("development server did not resolve")))
     }
 
     fn display_url(&self) -> &str {
         &self.url
     }
+}
+
+/// A TLS connector that trusts only `certificates`, as PEM.
+fn pinned_connector(certificates: &str) -> Result<TlsConnector> {
+    let certificates = CertificateDer::pem_slice_iter(certificates.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .context("read the development server's certificate")?;
+    if certificates.is_empty() {
+        bail!(
+            "the development server uses HTTPS, but the tokamak Vite plugin found no certificate in Vite's `server.https.cert`, which tok dev needs to trust the server"
+        );
+    }
+    let config = pinned_tls::client_config(certificates)?;
+    Ok(TlsConnector::from(Arc::new(config)))
 }
 
 fn parse_authority(authority: &str) -> Result<(String, u16)> {
@@ -682,7 +718,7 @@ struct Upstream {
 impl Upstream {
     fn parse(report: &ServerReport) -> Result<Self> {
         Ok(Self {
-            server: ServerEndpoint::parse(&report.url)?,
+            server: ServerEndpoint::parse(&report.url, &report.certificates)?,
             socket_port: report.socket_port,
         })
     }
@@ -691,16 +727,16 @@ impl Upstream {
     /// bytes to send it first: the dev socket for a marked request, which
     /// keeps its session token for the plugin to check, and otherwise the
     /// development server.
-    fn connect(&self, initial: Vec<u8>) -> io::Result<(TcpStream, Vec<u8>)> {
+    async fn connect(&self, initial: Vec<u8>) -> io::Result<(ServerStream, Vec<u8>)> {
         let marked = header_values(&initial, tokamak::DEV_SOCKET_HEADER.as_bytes())
             .next()
             .is_some();
         if marked {
-            let socket = TcpStream::connect((Ipv4Addr::LOCALHOST, self.socket_port))?;
-            return Ok((socket, initial));
+            let socket = TcpStream::connect((Ipv4Addr::LOCALHOST, self.socket_port)).await?;
+            return Ok((Either::Left(socket), initial));
         }
         let request = rewrite_request(&initial, &self.server.authority)?;
-        Ok((self.server.connect()?, request))
+        Ok((self.server.connect().await?, request))
     }
 }
 
@@ -709,34 +745,36 @@ struct DevRelay {
     advertised_host: IpAddr,
     upstream: Arc<Mutex<Upstream>>,
     app_connected: Arc<AtomicBool>,
-    stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    /// Runs the relay until it is dropped.
+    _runtime: tokio::runtime::Runtime,
 }
 
 impl DevRelay {
     fn bind(upstream: Upstream, session_token: String, host: IpAddr) -> Result<Self> {
-        let listener = TcpListener::bind((host, 0)).context("bind development relay")?;
-        listener
-            .set_nonblocking(true)
-            .context("configure development relay")?;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("tokamak-dev-relay")
+            .enable_io()
+            .build()
+            .context("start development relay")?;
+        let listener = runtime
+            .block_on(TcpListener::bind((host, 0)))
+            .context("bind development relay")?;
         let address = listener.local_addr()?;
         let upstream = Arc::new(Mutex::new(upstream));
-        let target = Arc::clone(&upstream);
         let app_connected = Arc::new(AtomicBool::new(false));
-        let connected = Arc::clone(&app_connected);
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopped = Arc::clone(&stop);
-        let thread = thread::Builder::new()
-            .name("tokamak-dev-relay".to_owned())
-            .spawn(move || relay_loop(listener, &target, session_token, connected, stopped))
-            .context("start development relay")?;
+        runtime.spawn(relay_loop(
+            listener,
+            Arc::clone(&upstream),
+            session_token,
+            Arc::clone(&app_connected),
+        ));
         Ok(Self {
             address,
             advertised_host: host,
             upstream,
             app_connected,
-            stop,
-            thread: Some(thread),
+            _runtime: runtime,
         })
     }
 
@@ -761,97 +799,62 @@ impl DevRelay {
     }
 }
 
-impl Drop for DevRelay {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        let _ = TcpStream::connect(self.address);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn relay_loop(
+async fn relay_loop(
     listener: TcpListener,
-    upstream: &Mutex<Upstream>,
+    upstream: Arc<Mutex<Upstream>>,
     session_token: String,
     app_connected: Arc<AtomicBool>,
-    stop: Arc<AtomicBool>,
 ) {
-    while !stop.load(Ordering::Acquire) {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                let upstream = upstream
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone();
-                let session_token = session_token.clone();
-                let app_connected = Arc::clone(&app_connected);
-                let _ = thread::Builder::new()
-                    .name("tokamak-dev-relay-connection".to_owned())
-                    .spawn(move || {
-                        if let Err(error) =
-                            relay_connection(stream, &upstream, &session_token, &app_connected)
-                        {
-                            eprintln!("tokamak development relay connection failed: {error}");
-                        }
-                    });
+    while let Ok((stream, _)) = listener.accept().await {
+        let upstream = upstream
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let session_token = session_token.clone();
+        let app_connected = Arc::clone(&app_connected);
+        tokio::spawn(async move {
+            if let Err(error) =
+                relay_connection(stream, &upstream, &session_token, &app_connected).await
+            {
+                eprintln!("tokamak development relay connection failed: {error}");
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(SERVER_POLL_INTERVAL);
-            }
-            Err(_) => break,
-        }
+        });
     }
 }
 
 /// Forwards an authorized connection to `target`.
-fn relay_connection(
+async fn relay_connection(
     mut downstream: TcpStream,
     target: &Upstream,
     session_token: &str,
     app_connected: &AtomicBool,
 ) -> io::Result<()> {
-    downstream.set_nonblocking(false)?;
-    let initial = read_headers(&mut downstream)?;
+    let initial = read_headers(&mut downstream).await?;
     if !authorized(&initial, session_token) {
-        let _ = downstream.write_all(
-            b"HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-        );
+        let _ = downstream
+            .write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await;
         return Ok(());
     }
-    let (mut upstream, request) = target.connect(initial)?;
-    upstream.set_nonblocking(false)?;
-    upstream.write_all(&request)?;
-    upstream.flush()?;
+    let (mut upstream, request) = target.connect(initial).await?;
+    upstream.write_all(&request).await?;
+    upstream.flush().await?;
     app_connected.store(true, Ordering::Release);
-
-    let mut downstream_read = downstream.try_clone()?;
-    let mut upstream_write = upstream.try_clone()?;
-    let forward = thread::spawn(move || {
-        let result = io::copy(&mut downstream_read, &mut upstream_write);
-        let _ = upstream_write.shutdown(Shutdown::Write);
-        result
-    });
-    let upstream_result = io::copy(&mut upstream, &mut downstream);
-    if let Err(error) = upstream_result {
-        eprintln!("tokamak relay upstream-to-downstream failed: {error}");
+    match tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await {
+        // HTTP delimits its own messages, so an HTTPS server closing without
+        // TLS close_notify ends the connection as an HTTP server's close does.
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(()),
+        result => result.map(drop),
     }
-    let _ = downstream.shutdown(Shutdown::Write);
-    match forward.join() {
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => eprintln!("tokamak relay downstream-to-upstream failed: {error}"),
-        Err(_) => eprintln!("tokamak relay downstream-to-upstream thread failed"),
-    }
-    Ok(())
 }
 
-fn read_headers(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
+async fn read_headers(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(4096);
     let mut chunk = [0_u8; 4096];
     loop {
-        let count = stream.read(&mut chunk)?;
+        let count = stream.read(&mut chunk).await?;
         if count == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -900,22 +903,35 @@ fn rewrite_request(request: &[u8], authority: &str) -> io::Result<Vec<u8>> {
             "development relay received an incomplete request",
         )
     })?;
+    let lines = request[..end]
+        .split(|byte| *byte == b'\n')
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line));
+    let upgrade = lines
+        .clone()
+        .skip(1)
+        .filter_map(header_parts)
+        .any(|(name, _)| name.eq_ignore_ascii_case(b"upgrade"));
     let mut rewritten = Vec::with_capacity(request.len());
-    for (index, line) in request[..end].split(|byte| *byte == b'\n').enumerate() {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
+    for (index, line) in lines.enumerate() {
         let name = header_parts(line)
             .filter(|_| index > 0)
             .map(|(name, _)| name);
-        if name.is_some_and(|name| name.eq_ignore_ascii_case(b"x-tokamak-session")) {
+        let named = |expected: &[u8]| name.is_some_and(|name| name.eq_ignore_ascii_case(expected));
+        if named(b"x-tokamak-session") || (named(b"connection") && !upgrade) {
             continue;
         }
-        if name.is_some_and(|name| name.eq_ignore_ascii_case(b"host")) {
+        if named(b"host") {
             rewritten.extend_from_slice(b"Host: ");
             rewritten.extend_from_slice(authority.as_bytes());
         } else {
             rewritten.extend_from_slice(line);
         }
         rewritten.extend_from_slice(b"\r\n");
+    }
+    // The relay rewrites only a connection's first request, so a request
+    // that does not upgrade the connection closes it.
+    if !upgrade {
+        rewritten.extend_from_slice(b"Connection: close\r\n");
     }
     rewritten.extend_from_slice(b"\r\n");
     rewritten.extend_from_slice(&request[end + 4..]);
@@ -934,11 +950,15 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
     #[cfg(unix)]
     use std::process::Command;
+    use std::sync::Arc;
     #[cfg(unix)]
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
     use std::time::Duration;
 
+    use anyhow::Context;
+    use rustls::pki_types::PrivatePkcs8KeyDer;
+    use rustls::{ServerConnection, StreamOwned};
     use serde_json::{Value, json};
 
     use super::{
@@ -948,6 +968,7 @@ mod tests {
     #[cfg(unix)]
     use super::{
         configure_process_group, process_group_is_running, stop_process, wait_for_app_connection,
+        wait_for_plugin,
     };
     use tokamak_cli::Platform;
 
@@ -955,7 +976,6 @@ mod tests {
     /// plugin, in a temporary directory, having reported them and no options.
     struct Reported {
         _server: TcpListener,
-        url: String,
         directory: tempfile::TempDir,
         plugin: VitePlugin,
         relay: DevRelay,
@@ -967,7 +987,7 @@ mod tests {
             let url = format!("http://{}", server.local_addr()?);
             let directory = tempfile::tempdir()?;
             let relay = DevRelay::bind(
-                upstream(&url, server.local_addr()?.port())?,
+                upstream(&url, 1)?,
                 "token".to_owned(),
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
             )?;
@@ -976,15 +996,10 @@ mod tests {
                 plugin: VitePlugin::new(directory.path().to_owned()),
                 directory,
                 relay,
-                url,
             };
-            reported.report("server.json", &reported.server_report())?;
+            reported.report("server.json", &json!({ "url": url, "socketPort": 1 }))?;
             reported.report("config.json", &json!({ "root": "/app", "config": {} }))?;
             Ok(reported)
-        }
-
-        fn server_report(&self) -> Value {
-            json!({ "url": self.url, "socketPort": 1 })
         }
 
         /// Write the plugin's report `name`.
@@ -997,10 +1012,7 @@ mod tests {
             Ok(FollowedServer {
                 plugin: &self.plugin,
                 relay: &self.relay,
-                report: self
-                    .plugin
-                    .server()?
-                    .ok_or_else(|| anyhow::anyhow!("no report"))?,
+                report: self.plugin.server()?.context("no server report")?,
                 config: self.plugin.config("the test")?,
             })
         }
@@ -1009,7 +1021,7 @@ mod tests {
     /// The development server at `url`, with the dev socket on `socket_port`.
     fn upstream(url: &str, socket_port: u16) -> anyhow::Result<Upstream> {
         Ok(Upstream {
-            server: ServerEndpoint::parse(url)?,
+            server: ServerEndpoint::parse(url, "")?,
             socket_port,
         })
     }
@@ -1049,10 +1061,45 @@ mod tests {
 
     #[test]
     fn takes_the_server_address_from_a_url() -> Result<(), Box<dyn std::error::Error>> {
-        let server = ServerEndpoint::parse("http://127.0.0.1:5174/")?;
+        let server = ServerEndpoint::parse("http://127.0.0.1:5174/", "")?;
         assert_eq!(server.display_url(), "http://127.0.0.1:5174");
         assert_eq!(server.authority, "127.0.0.1:5174");
-        assert!(ServerEndpoint::parse("https://127.0.0.1:5174/").is_err());
+        let certificate = TlsServer::new()?.certificate;
+        let server = ServerEndpoint::parse("https://localhost:5174/", &certificate)?;
+        assert_eq!(server.display_url(), "https://localhost:5174");
+        assert!(ServerEndpoint::parse("ftp://127.0.0.1:5174/", "").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn requires_the_certificate_of_an_https_server() {
+        assert!(
+            ServerEndpoint::parse("https://localhost:5174/", "").is_err_and(|error| error
+                .to_string()
+                .contains("found no certificate in Vite's `server.https.cert`"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stops_waiting_when_the_plugin_reports_an_error() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let plugin = VitePlugin::new(directory.path().to_owned());
+        let error = "Vite is running in middleware mode";
+        fs::write(
+            directory.path().join("server.json"),
+            json!({ "error": error }).to_string(),
+        )?;
+        let mut framework = Command::new("sleep").arg("30").spawn()?;
+
+        let result = wait_for_plugin(&mut framework, &plugin, &AtomicBool::new(false));
+        let _ = framework.kill();
+        let _ = framework.wait();
+
+        assert_eq!(
+            result.err().map(|error| error.to_string()),
+            Some(error.to_owned())
+        );
         Ok(())
     }
 
@@ -1187,7 +1234,21 @@ mod tests {
         let rewritten = rewrite_request(request, "127.0.0.1:5173").ok();
         assert_eq!(
             rewritten,
-            Some(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:5173\r\n\r\n".to_vec())
+            Some(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:5173\r\nConnection: close\r\n\r\n".to_vec())
+        );
+    }
+
+    #[test]
+    fn closes_the_connection_after_one_request_unless_it_upgrades() {
+        let request = b"POST / HTTP/1.1\r\nconnection: keep-alive\r\nContent-Length: 2\r\n\r\nhi";
+        assert_eq!(
+            rewrite_request(request, "127.0.0.1:5173").ok(),
+            Some(b"POST / HTTP/1.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".to_vec())
+        );
+        let upgrade = b"GET / HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n";
+        assert_eq!(
+            rewrite_request(upgrade, "127.0.0.1:5173").ok(),
+            Some(upgrade.to_vec())
         );
     }
 
@@ -1276,7 +1337,7 @@ mod tests {
     fn relays_an_authenticated_http_request() -> Result<(), Box<dyn std::error::Error>> {
         let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let upstream_endpoint = format!("http://{}", upstream.local_addr()?);
-        let endpoint = ServerEndpoint::parse(&upstream_endpoint)?;
+        let endpoint = ServerEndpoint::parse(&upstream_endpoint, "")?;
         let upstream_thread = thread::spawn(move || -> std::io::Result<()> {
             let (mut stream, _) = upstream.accept()?;
             let mut request = Vec::new();
@@ -1416,12 +1477,103 @@ mod tests {
     }
 
     #[test]
+    fn relays_requests_and_upgrades_to_an_https_server() -> Result<(), Box<dyn std::error::Error>> {
+        let server = TlsServer::new()?;
+        let relay = DevRelay::bind(
+            Upstream {
+                server: ServerEndpoint::parse(&server.url()?, &server.certificate)?,
+                socket_port: 1,
+            },
+            "token".to_owned(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        )?;
+        let upstream_thread = thread::spawn(move || -> std::io::Result<()> {
+            let mut request = server.accept()?;
+            if !read_head(&mut request)?.starts_with("GET / HTTP/1.1\r\nHost: localhost:") {
+                return Err(std::io::Error::other("relay did not forward the request"));
+            }
+            request.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")?;
+            request.conn.send_close_notify();
+            request.flush()?;
+
+            let mut upgrade = server.accept()?;
+            read_head(&mut upgrade)?;
+            upgrade.write_all(b"HTTP/1.1 101 Switching Protocols\r\n\r\nhello")?;
+            let mut ping = [0_u8; 4];
+            upgrade.read_exact(&mut ping)?;
+            if &ping != b"ping" {
+                return Err(std::io::Error::other(
+                    "relay did not forward upgraded bytes",
+                ));
+            }
+            upgrade.write_all(b"pong")
+        });
+
+        let mut client = relay_client(&relay)?;
+        client.write_all(
+            b"GET / HTTP/1.1\r\nHost: app.tokamak.local\r\nX-Tokamak-Session: token\r\n\r\n",
+        )?;
+        let mut response = String::new();
+        client.read_to_string(&mut response)?;
+        assert!(response.ends_with("\r\n\r\nok"));
+
+        let mut client = relay_client(&relay)?;
+        client.write_all(
+            b"GET /ws HTTP/1.1\r\nUpgrade: websocket\r\nX-Tokamak-Session: token\r\n\r\n",
+        )?;
+        assert_eq!(
+            read_head(&mut client)?,
+            "HTTP/1.1 101 Switching Protocols\r\n\r\n"
+        );
+        let mut hello = [0_u8; 5];
+        client.read_exact(&mut hello)?;
+        assert_eq!(&hello, b"hello");
+        client.write_all(b"ping")?;
+        let mut pong = [0_u8; 4];
+        client.read_exact(&mut pong)?;
+        assert_eq!(&pong, b"pong");
+        upstream_thread
+            .join()
+            .map_err(|_| "upstream thread panicked")??;
+        Ok(())
+    }
+
+    #[test]
+    fn refuses_an_https_server_with_another_certificate() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let server = TlsServer::new()?;
+        let other = TlsServer::new()?.certificate;
+        let relay = DevRelay::bind(
+            Upstream {
+                server: ServerEndpoint::parse(&server.url()?, &other)?,
+                socket_port: 1,
+            },
+            "token".to_owned(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        )?;
+        let upstream_thread = thread::spawn(move || server.accept().map(drop));
+
+        let mut client = relay_client(&relay)?;
+        client.write_all(b"GET / HTTP/1.1\r\nX-Tokamak-Session: token\r\n\r\n")?;
+        let mut response = Vec::new();
+        client.read_to_end(&mut response)?;
+        assert!(response.is_empty());
+        assert!(
+            upstream_thread
+                .join()
+                .map_err(|_| "upstream thread panicked")?
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn follows_the_dev_socket_to_its_new_port_quietly() -> anyhow::Result<()> {
         let reported = Reported::new()?;
         let mut server = reported.following()?;
         reported.report(
             "server.json",
-            &json!({ "url": reported.url, "socketPort": 2 }),
+            &json!({ "url": server.report.url, "socketPort": 2 }),
         )?;
         let mut output = Vec::new();
 
@@ -1435,6 +1587,117 @@ mod tests {
             .map_err(|_| anyhow::anyhow!("relay upstream poisoned"))?;
         assert_eq!(upstream.socket_port, 2);
         Ok(())
+    }
+
+    #[test]
+    fn follows_an_https_server_and_its_certificate() -> Result<(), Box<dyn std::error::Error>> {
+        let server = TlsServer::new()?;
+        let url = server.url()?;
+        let reported = Reported::new()?;
+        let mut followed = reported.following()?;
+        let mut output = Vec::new();
+
+        let previous = TlsServer::new()?.certificate;
+        reported.report(
+            "server.json",
+            &json!({ "url": url, "certificates": previous, "socketPort": 1 }),
+        )?;
+        followed.follow(&mut output)?;
+        reported.report(
+            "server.json",
+            &json!({ "url": url, "certificates": server.certificate, "socketPort": 1 }),
+        )?;
+        followed.follow(&mut output)?;
+        assert_eq!(
+            String::from_utf8(output)?,
+            format!(
+                "Development server moved to {}\n",
+                url.trim_end_matches('/')
+            )
+        );
+
+        let upstream_thread = thread::spawn(move || -> std::io::Result<()> {
+            let mut stream = server.accept()?;
+            read_head(&mut stream)?;
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nrestarted")?;
+            stream.conn.send_close_notify();
+            stream.flush()
+        });
+        let mut client = relay_client(&reported.relay)?;
+        client.write_all(b"GET / HTTP/1.1\r\nX-Tokamak-Session: token\r\n\r\n")?;
+        let mut response = String::new();
+        client.read_to_string(&mut response)?;
+        assert!(response.ends_with("\r\n\r\nrestarted"));
+        upstream_thread
+            .join()
+            .map_err(|_| "upstream thread panicked")??;
+        Ok(())
+    }
+
+    /// An HTTPS server on any port of 127.0.0.1, with a new self-signed
+    /// certificate for localhost.
+    struct TlsServer {
+        listener: TcpListener,
+        config: Arc<rustls::ServerConfig>,
+        /// The certificate, as PEM.
+        certificate: String,
+    }
+
+    impl TlsServer {
+        fn new() -> anyhow::Result<Self> {
+            let rcgen::CertifiedKey { cert, signing_key } =
+                rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
+            let key = PrivatePkcs8KeyDer::from(signing_key.serialize_der());
+            let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()?
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.der().clone()], key.into())?;
+            Ok(Self {
+                listener: TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?,
+                config: Arc::new(config),
+                certificate: cert.pem(),
+            })
+        }
+
+        /// The server's URL, as Vite reports it.
+        fn url(&self) -> std::io::Result<String> {
+            Ok(format!(
+                "https://localhost:{}/",
+                self.listener.local_addr()?.port()
+            ))
+        }
+
+        /// The next connection, once its handshake completes.
+        fn accept(&self) -> std::io::Result<StreamOwned<ServerConnection, TcpStream>> {
+            let (mut stream, _) = self.listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            let mut connection =
+                ServerConnection::new(Arc::clone(&self.config)).map_err(std::io::Error::other)?;
+            while connection.is_handshaking() {
+                connection.complete_io(&mut stream)?;
+            }
+            Ok(StreamOwned::new(connection, stream))
+        }
+    }
+
+    fn relay_client(relay: &DevRelay) -> std::io::Result<TcpStream> {
+        let client = TcpStream::connect((Ipv4Addr::LOCALHOST, relay.port()))?;
+        client.set_read_timeout(Some(Duration::from_secs(5)))?;
+        Ok(client)
+    }
+
+    /// The bytes of `stream` up to and including the blank line that ends an
+    /// HTTP head.
+    fn read_head(stream: &mut impl Read) -> std::io::Result<String> {
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0_u8];
+            stream.read_exact(&mut byte)?;
+            head.push(byte[0]);
+        }
+        String::from_utf8(head).map_err(std::io::Error::other)
     }
 
     #[test]
