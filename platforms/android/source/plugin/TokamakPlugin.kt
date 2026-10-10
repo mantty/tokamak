@@ -86,6 +86,13 @@ interface TokamakHost {
      * throws unless the listeners return within [timeoutMillis], which includes runtime startup.
      */
     fun emit(name: String, event: String, timeoutMillis: Long): String
+
+    /**
+     * What the app serves at [path], as its WebView would load it: a file the app ships or the
+     * Worker's response. Starts the runtime when it is not running. Blocks, so call it off the main
+     * thread; throws unless it arrives within [timeoutMillis].
+     */
+    fun fetch(path: String, timeoutMillis: Long): ByteArray
 }
 
 /** The app's plugins. The app's [android.app.Application] is one. */

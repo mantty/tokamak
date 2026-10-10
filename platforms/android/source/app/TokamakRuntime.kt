@@ -30,6 +30,9 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
     fun emit(name: String, event: String, timeoutMillis: Long): String =
         nativeEmit(handle, name, event, timeoutMillis)
 
+    /** What the app serves at [path], blocking until it arrives or [timeoutMillis] passes. */
+    fun fetch(path: String, timeoutMillis: Long): ByteArray = nativeFetch(handle, path, timeoutMillis)
+
     /**
      * Records whether the app is in the foreground, which the Worker's `getLifecycleStage()`
      * reports from then on, and returns whether that changed.
@@ -135,6 +138,9 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
             event: String,
             timeoutMillis: Long,
         ): String
+
+        @JvmStatic
+        private external fun nativeFetch(handle: Long, path: String, timeoutMillis: Long): ByteArray
 
         @JvmStatic
         private external fun nativeServerAuthority(handle: Long, host: String): ByteArray?

@@ -117,15 +117,39 @@ final class TokamakApp {
     completion: @escaping (Result<Any?, Error>) -> Void
   ) {
     let deadline = Date() + timeout
+    withRuntime(on: queue, completion: completion) { runtime in
+      try runtime.emit(name, event: event, timeout: deadline.timeIntervalSinceNow)
+    }
+  }
+
+  /// Fetches what the app serves at `path` and calls `completion` on the main
+  /// thread with the body. Fails unless it arrives within `timeout`, which
+  /// includes runtime startup. Call it on the main thread.
+  func fetch(
+    _ path: String,
+    timeout: TimeInterval,
+    completion: @escaping (Result<Data, Error>) -> Void
+  ) {
+    let deadline = Date() + timeout
+    withRuntime(on: .global(qos: .userInitiated), completion: completion) { runtime in
+      try runtime.fetch(path, timeout: deadline.timeIntervalSinceNow)
+    }
+  }
+
+  /// Runs `work` with the started runtime on `queue`, and calls `completion`
+  /// on the main thread with its result.
+  private func withRuntime<Value>(
+    on queue: DispatchQueue,
+    completion: @escaping (Result<Value, Error>) -> Void,
+    work: @escaping (RuntimeHandle) throws -> Value
+  ) {
     whenStarted { result in
       switch result {
       case .failure(let error):
         completion(.failure(error))
       case .success(let runtime):
         queue.async {
-          let outcome = Result {
-            try runtime.emit(name, event: event, timeout: deadline.timeIntervalSinceNow)
-          }
+          let outcome = Result { try work(runtime) }
           DispatchQueue.main.async { completion(outcome) }
         }
       }
@@ -414,6 +438,30 @@ final class RuntimeHandle {
     }
     let value = try JSONSerialization.jsonObject(with: json, options: .fragmentsAllowed)
     return value is NSNull ? nil : value
+  }
+
+  /// What the app serves at `path`, blocking until it arrives or `timeout`
+  /// passes.
+  func fetch(_ path: String, timeout: TimeInterval) throws -> Data {
+    var body = TokamakBytes()
+    var error = [CChar](repeating: 0, count: 1024)
+    let succeeded = path.withCString { path in
+      error.withUnsafeMutableBufferPointer { error in
+        tokamak_runtime_fetch(
+          handle,
+          path,
+          UInt64(max(timeout, 0) * 1000),
+          &body,
+          error.baseAddress,
+          error.count
+        )
+      }
+    }
+    defer { tokamak_bytes_free(body) }
+    guard succeeded else {
+      throw RuntimeError.runtime(String(cString: error))
+    }
+    return body.contents ?? Data()
   }
 
   /// Records whether the app is in the foreground, which the Worker's

@@ -1,4 +1,4 @@
-use flume::{Receiver, Sender, TryRecvError, bounded};
+use flume::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounded};
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -108,6 +108,24 @@ pub(super) fn response_stream() -> (Sender<BodyChunk>, CancellationToken, HttpBo
             cancelled,
         }),
     )
+}
+
+impl HttpBody {
+    /// The whole body, once it has all arrived by `deadline`.
+    pub(super) fn collect(self, deadline: Instant) -> Result<Vec<u8>, String> {
+        let stream = match self {
+            Self::Buffered(body) => return Ok(body),
+            Self::Stream(stream) => stream,
+        };
+        let mut body = Vec::new();
+        loop {
+            match stream.receiver.recv_deadline(deadline) {
+                Ok(chunk) => body.extend(chunk?),
+                Err(RecvTimeoutError::Disconnected) => return Ok(body),
+                Err(RecvTimeoutError::Timeout) => return Err("the body timed out".to_owned()),
+            }
+        }
+    }
 }
 
 impl Drop for BodyStream {

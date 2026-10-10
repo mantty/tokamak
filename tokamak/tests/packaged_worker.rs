@@ -14,12 +14,14 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
 use serde_json::json;
 use tokamak::{
-    Config, ModuleType, PackageLayout, Runtime, StorageBinding, WorkerEnvironment, WorkerManifest,
-    write_worker, write_worker_environment,
+    AssetManifest, Config, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout, Runtime,
+    StorageBinding, WorkerEnvironment, WorkerManifest, write_asset_manifest, write_worker,
+    write_worker_environment,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const HOST: &str = "app.tokamak.local";
+const TIMEOUT: Duration = Duration::from_secs(5);
 
 #[test]
 fn starts_a_packaged_worker_with_its_declared_environment() -> TestResult {
@@ -476,6 +478,47 @@ fn serves_the_astro_example_that_tok_packages() -> TestResult {
         assert!(response.starts_with("HTTP/1.1 200"), "{path}: {response}");
         assert!(response.contains(text), "{path}: {response}");
     }
+    Ok(())
+}
+
+#[test]
+fn fetches_what_the_app_serves_at_a_path() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let app = PackageLayout::new(temporary.path().join("app"));
+    fs::create_dir_all(app.assets().join("sounds"))?;
+    fs::write(app.assets().join("sounds/chime.caf"), b"chime")?;
+    write_asset_manifest(
+        &app,
+        &AssetManifest {
+            binding: "ASSETS".to_owned(),
+            files: BTreeMap::from([("sounds/chime.caf".to_owned(), "audio/x-caf".to_owned())]),
+            html_handling: HtmlHandling::default(),
+            not_found_handling: NotFoundHandling::default(),
+        },
+    )?;
+    let worker = br#"export default {
+      fetch: (request) => new URL(request.url).pathname === "/generated"
+        ? new Response("generated")
+        : new Response("missing", { status: 404 }),
+    };"#;
+    let (runtime, _) =
+        start_packaged_runtime(temporary.path(), worker, &WorkerEnvironment::default())?;
+
+    assert_eq!(runtime.fetch("/sounds/chime.caf", TIMEOUT)?, b"chime");
+    assert_eq!(runtime.fetch("/generated", TIMEOUT)?, b"generated");
+    let missing = runtime
+        .fetch("/missing", TIMEOUT)
+        .err()
+        .ok_or("fetched a missing path")?;
+    assert_eq!(missing.to_string(), "GET /missing answered 404 Not Found");
+    let relative = runtime
+        .fetch("sounds/chime.caf", TIMEOUT)
+        .err()
+        .ok_or("fetched a URL")?;
+    assert_eq!(
+        relative.to_string(),
+        "sounds/chime.caf is not a path the app serves"
+    );
     Ok(())
 }
 

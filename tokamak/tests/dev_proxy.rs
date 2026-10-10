@@ -328,6 +328,23 @@ fn fails_an_event_no_dev_socket_answers_before_its_deadline() -> TestResult {
 }
 
 #[test]
+fn fetches_a_path_from_the_host_server() -> TestResult {
+    let (listener, runtime, _temporary) = start_test_runtime()?;
+    let host_server = thread::spawn(move || -> TestResult {
+        let mut host = accept_request(&listener, "GET /sounds/chime.caf ")?;
+        host.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nchime")?;
+        Ok(())
+    });
+
+    assert_eq!(
+        runtime.fetch("/sounds/chime.caf", Duration::from_secs(5))?,
+        b"chime"
+    );
+    host_server.join().map_err(|_| "host server panicked")??;
+    Ok(())
+}
+
+#[test]
 fn forwards_chunked_host_responses_as_they_arrive() -> TestResult {
     let (listener, runtime, temporary) = start_test_runtime()?;
     let (release_sender, release_receiver) = mpsc::sync_channel(1);

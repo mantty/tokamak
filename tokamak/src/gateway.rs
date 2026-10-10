@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use hyper::header::HeaderMap;
 use tokio::runtime::{Builder as TokioBuilder, Runtime as TokioRuntime};
 use tokio_util::sync::CancellationToken;
 
@@ -15,7 +16,7 @@ use crate::lifecycle_events::{Event, Events};
 use crate::readiness::{Readiness, Waker};
 
 use crate::transport::{
-    HttpRequest, HttpResponse, ResponseOutcome, TlsStream, is_connect, is_websocket,
+    HttpRequest, HttpResponse, ResponseOutcome, TlsStream, append_header, is_connect, is_websocket,
     read_header_block, read_request, tls_accept, tls_close, websocket_session,
     write_plain_response, write_response,
 };
@@ -228,6 +229,40 @@ pub(crate) fn deliver(
         Ok(delivery) => delivery.map_err(|error| error.to_string()),
         Err(_) => Err(format!("the runtime stopped before {name} was delivered")),
     }
+}
+
+/// What the app serves at `path`, which the handler answers as it does the
+/// `WebView`'s requests, by `deadline`.
+pub(crate) fn fetch(
+    shared: &Arc<Shared>,
+    path: &str,
+    deadline: Instant,
+) -> Result<Vec<u8>, String> {
+    if !path.starts_with('/') {
+        return Err(format!("{path} is not a path the app serves"));
+    }
+    let mut headers = HeaderMap::new();
+    append_header(&mut headers, "host", &shared.host).map_err(|error| error.to_string())?;
+    let request = HttpRequest {
+        persistent: false,
+        method: "GET".to_owned(),
+        target: path.to_owned(),
+        url: format!("https://{}{path}", shared.host),
+        headers,
+        body: None,
+    };
+    let response = match spawn_job(shared, request, None).recv_deadline(deadline) {
+        Ok(JobResponse::Http(response)) => response,
+        Ok(JobResponse::WebSocket) => return Err(format!("GET {path} answered a WebSocket")),
+        Err(_) => return Err(format!("GET {path} timed out")),
+    };
+    if !(200..300).contains(&response.status) {
+        return Err(format!(
+            "GET {path} answered {} {}",
+            response.status, response.status_text
+        ));
+    }
+    response.body.collect(deadline)
 }
 
 impl Drop for Runtime {

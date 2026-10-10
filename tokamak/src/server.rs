@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::assets::Assets;
 use crate::certificates::{Certificates, Renewal};
@@ -180,6 +180,20 @@ impl Runtime {
         self.events
             .emit(name, event, timeout)
             .map_err(crate::Error::Event)
+    }
+
+    /// What the app serves at `path`, as the `WebView` would load it: a
+    /// packaged asset, the Worker's response, or in development the host
+    /// server's. Plugins read the files an app ships through it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `path` does not start with `/`, the app answers
+    /// with a status outside 200 to 299, or the body does not arrive within
+    /// `timeout`.
+    pub fn fetch(&self, path: &str, timeout: Duration) -> Result<Vec<u8>> {
+        gateway::fetch(self.gateway.shared(), path, Instant::now() + timeout)
+            .map_err(crate::Error::Fetch)
     }
 
     /// Record whether the app is in the foreground, which the Worker's
