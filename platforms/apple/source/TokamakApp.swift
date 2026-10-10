@@ -1,6 +1,5 @@
 import Foundation
 import TokamakRuntime
-import os
 
 #if os(iOS)
   import UIKit
@@ -34,8 +33,8 @@ final class TokamakApp {
   /// Delivers `resume` and `suspend` one at a time, in order.
   private let lifecycle = DispatchQueue(label: "tokamak.lifecycle")
   #if os(iOS)
-    /// The scenes in the foreground, which plugins read on any thread.
-    private let foregroundScenes = OSAllocatedUnfairLock(initialState: 0)
+    /// The scenes in the foreground.
+    private var foregroundScenes = 0
   #endif
 
   /// Creates the plugins. Call it before launch finishes.
@@ -173,29 +172,31 @@ final class TokamakApp {
   #if os(iOS)
     /// Delivers `resume` as the first scene enters the foreground.
     func sceneWillEnterForeground() {
-      let first = foregroundScenes.withLock { scenes in
-        scenes += 1
-        return scenes == 1
-      }
-      if first {
+      foregroundScenes += 1
+      if foregroundScenes == 1 {
         moved(toForeground: true)
       }
     }
 
     /// Delivers `suspend` as the last scene leaves the foreground.
     func sceneDidEnterBackground() {
-      let last = foregroundScenes.withLock { scenes in
-        scenes -= 1
-        return scenes == 0
-      }
-      if last {
+      foregroundScenes -= 1
+      if foregroundScenes == 0 {
         moved(toForeground: false)
       }
     }
 
-    /// Whether a scene is in the foreground. Read it on any thread.
+    /// Whether a scene is in the foreground.
+    var hasForegroundScene: Bool {
+      foregroundScenes > 0
+    }
+
+    /// Whether the app is in the foreground, as the runtime records it, or
+    /// until the runtime has started, whether a scene is in the foreground.
+    /// Read it on the main thread.
     var isInForeground: Bool {
-      foregroundScenes.withLock { $0 > 0 }
+      guard case .success(let runtime) = runtime else { return hasForegroundScene }
+      return runtime.isForeground
     }
   #endif
 
@@ -420,6 +421,11 @@ final class RuntimeHandle {
   /// changed.
   func setForeground(_ foreground: Bool) -> Bool {
     tokamak_runtime_set_foreground(handle, foreground)
+  }
+
+  /// Whether the app is in the foreground, as last recorded.
+  var isForeground: Bool {
+    tokamak_runtime_is_foreground(handle)
   }
 
   /// Passes a plugin's `result`, JSON-serialisable, to the Worker's call or

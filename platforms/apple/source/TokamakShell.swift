@@ -431,7 +431,7 @@ private final class TokamakController {
       didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
       DispatchQueue.main.async {
-        self.app.start(foreground: self.app.isInForeground)
+        self.app.start(foreground: self.app.hasForegroundScene)
       }
       return true
     }

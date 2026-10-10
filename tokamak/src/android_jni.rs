@@ -159,6 +159,16 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeSetForegrou
     jboolean::from(changed)
 }
 
+/// Return whether the app is in the foreground, as last recorded.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeIsForeground(
+    _: JNIEnv,
+    _: JClass,
+    handle: jlong,
+) -> jboolean {
+    jboolean::from(runtime(handle).is_some_and(Runtime::is_foreground))
+}
+
 /// Pass a plugin's JSON `result` to the Worker's call or subscription `id`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeReply(

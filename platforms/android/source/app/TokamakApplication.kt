@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import java.io.File
@@ -44,9 +45,6 @@ class TokamakApplication : Application(), TokamakPlugins {
 
     /** The running runtime, started on first use. Blocks while it starts. */
     internal val runtime: TokamakRuntime by started
-
-    /** Whether the app is in the foreground, as the lifecycle last reported. Main thread only. */
-    private var foreground = false
 
     /** The Worker's calls and subscriptions on the plugins. Main thread only. */
     private val workerRequests by lazy {
@@ -98,7 +96,7 @@ class TokamakApplication : Application(), TokamakPlugins {
                 get() = this@TokamakApplication.activity
 
             override val isInForeground: Boolean
-                get() = foreground
+                get() = this@TokamakApplication.isInForeground
 
             override fun requireForegroundActivity(): Activity =
                 this@TokamakApplication.requireForegroundActivity()
@@ -117,7 +115,14 @@ class TokamakApplication : Application(), TokamakPlugins {
 
     /** The activity to show UI in; throws `NeedsUIError` while the app is in the background. */
     internal fun requireForegroundActivity(): Activity =
-        activity?.takeIf { foreground } ?: throw TokamakPluginError.needsUI()
+        activity?.takeIf { isInForeground } ?: throw TokamakPluginError.needsUI()
+
+    /**
+     * Whether the app is in the foreground, as the runtime records it, or until the runtime has
+     * started, whether an activity exists to start it in the foreground.
+     */
+    private val isInForeground: Boolean
+        get() = if (started.isInitialized()) runtime.isForeground else activity != null
 
     /**
      * Delivers the event [name] with the JSON [event] to the Worker's listeners and returns their
@@ -131,12 +136,11 @@ class TokamakApplication : Application(), TokamakPlugins {
 
     /** Records the app moving into or out of the foreground, once the runtime has started. */
     private fun moved(foreground: Boolean) {
-        this.foreground = foreground
-        if (started.isInitialized()) record(runtime)
+        if (started.isInitialized()) record(runtime, foreground)
     }
 
-    /** Reports [foreground] to [runtime], delivering `resume` or `suspend` when it changed. */
-    private fun record(runtime: TokamakRuntime) {
+    /** Records [foreground] in [runtime], delivering `resume` or `suspend` when it changed. */
+    private fun record(runtime: TokamakRuntime, foreground: Boolean) {
         if (!runtime.setForeground(foreground)) return
         val name = if (foreground) "resume" else "suspend"
         lifecycle.execute {
@@ -162,7 +166,9 @@ class TokamakApplication : Application(), TokamakPlugins {
             } else {
                 TokamakRuntime.start(unpackApp(), stateDir(), storageDir(), appHost, startsInForeground, workerPlugins)
             }
-        mainExecutor.execute { record(runtime) }
+        mainExecutor.execute {
+            record(runtime, ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        }
         return runtime
     }
 

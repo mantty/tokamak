@@ -59,11 +59,11 @@ so only calls that would show UI fail:
   activity `requireForegroundActivity()` returns, which throws `NeedsUIError`
   in the background; `authenticateOwner` uses it. `isInForeground` reports the
   app's stage.
-- **Apple:** `requireUI()` throws `NeedsUIError` on iOS while no scene is in
-  the foreground. Call it where the plugin would show UI, and only when the
-  UI would appear, such as before `requestWhenInUseAuthorization` while the
-  authorization is not determined. A hidden macOS app still shows system
-  prompts, so it never throws there.
+- **Apple:** `requireUI()` throws `NeedsUIError` on iOS while the app is in
+  the background. Call it on the main thread where the plugin decides to show
+  UI, and only when the UI would appear, such as before
+  `requestWhenInUseAuthorization` while the authorization is not determined.
+  A hidden macOS app still shows system prompts, so it never throws there.
 
 ## Worker events
 
