@@ -16,9 +16,10 @@ const stage = await getLifecycleStage().catch((error: DOMException) => error.nam
 
   <div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
     <p class="text-indigo-300 mb-4">
-      The app's start, resume and suspend events, and where the app was when it
-      started on screen, which src/tokamak.ts records in the EVENTS KV
-      namespace. Reload to see new ones.
+      The app's start, resume and suspend events, where the app was when it
+      started on screen, data-only push messages and opened notifications,
+      which src/tokamak.ts records in the EVENTS KV namespace. Reload to see new
+      ones.
     </p>
     <p class="text-indigo-300 mb-4">
       Stage now: <span id="stage" class="font-mono text-white">{stage}</span>

@@ -1,0 +1,18 @@
+---
+// SSR page: each first-party plugin's calls and listeners, from the page.
+import Base from "../layouts/Base.astro";
+import LocalAuthentication from "../components/LocalAuthentication.astro";
+import Location from "../components/Location.astro";
+import Notifications from "../components/Notifications.astro";
+import SecureStorage from "../components/SecureStorage.astro";
+---
+
+<Base title="Plugins - tokamak Example">
+  <h1 class="text-3xl font-bold text-white mb-6">Plugins</h1>
+  <div class="grid gap-6">
+    <Location />
+    <Notifications />
+    <LocalAuthentication />
+    <SecureStorage />
+  </div>
+</Base>

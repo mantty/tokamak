@@ -777,8 +777,8 @@ refused request rejects with `NotAllowedError`.
 ## Example
 
 [The Astro example](examples/astro) exercises server rendering, static assets,
-navigation, WebSockets, lifecycle events recorded in KV, and the native
-location plugin, from the page and from an `onStart` listener. It installs
+navigation, WebSockets, lifecycle events recorded in KV, and every first-party
+plugin, from the page and from the Worker's listeners. It installs
 `@tokamakdev/tok` from this repository; its README lists the setup.
 
 ```sh

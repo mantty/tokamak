@@ -1,1 +1,11 @@
 @import "tailwindcss";
+
+@layer components {
+  .button {
+    @apply px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors font-medium cursor-pointer disabled:opacity-50;
+  }
+
+  .field {
+    @apply rounded-lg border border-indigo-800/50 bg-indigo-950/50 px-3 py-2 text-white;
+  }
+}

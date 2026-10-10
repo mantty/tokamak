@@ -1,64 +1,54 @@
-<div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
-  <h2 class="text-lg font-semibold text-white mb-4">Location</h2>
-  <div class="flex items-center gap-4 mb-4">
-    <button
-      id="location-btn"
-      class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors font-medium cursor-pointer"
-    >
-      Share location
-    </button>
-    <span id="location-status" class="text-sm text-indigo-400">
-      Location not requested
-    </span>
+---
+import PluginCard from "./PluginCard.astro";
+---
+
+<PluginCard title="Location" log="location-log">
+  <p class="text-indigo-300 mb-4">
+    Asks for location while the app is in use. When the app starts on screen,
+    src/tokamak.ts also records where the Worker first places the device.
+  </p>
+  <div class="flex flex-wrap gap-3">
+    <button id="location-current" class="button">Current position</button>
+    <button id="location-watch" class="button">Watch position</button>
   </div>
-  <div class="font-mono text-sm bg-indigo-950/50 rounded-lg p-4 grid gap-2">
-    <div>
-      <span class="text-indigo-400">Latitude:</span>
-      <span id="latitude" class="text-white">—</span>
-    </div>
-    <div>
-      <span class="text-indigo-400">Longitude:</span>
-      <span id="longitude" class="text-white">—</span>
-    </div>
-  </div>
-</div>
+</PluginCard>
 
 <script>
   import { location, type Position } from "@tokamakdev/plugin-location";
+  import { describe, logTo, onClick } from "../scripts/plugin-log";
 
-  const button = document.getElementById("location-btn") as HTMLButtonElement;
-  const status = document.getElementById("location-status")!;
-  const latitude = document.getElementById("latitude")!;
-  const longitude = document.getElementById("longitude")!;
+  const log = logTo("location-log");
+  const watch = document.getElementById("location-watch")!;
   let stopWatching: (() => void) | undefined;
 
-  function show(position: Position) {
-    latitude.textContent = position.coords.latitude.toFixed(6);
-    longitude.textContent = position.coords.longitude.toFixed(6);
-    status.textContent = "Receiving updates";
-    status.className = "text-sm text-emerald-400";
+  function format({ coords }: Position): string {
+    return `${coords.latitude.toFixed(5)}, ${coords.longitude.toFixed(5)} within ${Math.round(coords.accuracy)} m`;
   }
 
-  function showError(error: DOMException) {
-    status.textContent = `${error.name}: ${error.message}`;
-    status.className = "text-sm text-red-400";
-    button.disabled = false;
+  function stop() {
+    stopWatching?.();
+    stopWatching = undefined;
+    watch.textContent = "Watch position";
   }
 
-  button.addEventListener("click", async () => {
-    button.disabled = true;
-    status.textContent = "Requesting location...";
-    try {
-      show(await location.getCurrentPosition());
-      stopWatching = location.watchPosition(show, showError);
-    } catch (error) {
-      showError(
-        error instanceof DOMException
-          ? error
-          : new DOMException(String(error), "UnknownError"),
-      );
+  // Accepts a position up to a minute old, and waits up to 10 seconds for a new one.
+  onClick(log, "location-current", async () =>
+    format(await location.getCurrentPosition({ maximumAge: 60_000, timeout: 10_000 })),
+  );
+
+  watch.addEventListener("click", () => {
+    if (stopWatching) {
+      stop();
+      log("Stopped watching");
+      return;
     }
+    stopWatching = location.watchPosition(
+      (position) => log(`Position: ${format(position)}`),
+      (error) => {
+        stop();
+        log(`Watch position: ${describe(error)}`);
+      },
+    );
+    watch.textContent = "Stop watching";
   });
-
-  window.addEventListener("pagehide", () => stopWatching?.());
 </script>

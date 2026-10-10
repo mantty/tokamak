@@ -1,4 +1,5 @@
 import { location } from "@tokamakdev/plugin-location";
+import { onNotificationOpened, onPush } from "@tokamakdev/plugin-notifications/events";
 import { getLifecycleStage, onResume, onStart, onSuspend } from "@tokamakdev/tok/events";
 
 /** Records an event in the EVENTS store, which the Events page lists. */
@@ -27,4 +28,13 @@ onResume((_event, env, ctx) => {
 });
 onSuspend((_event, env, ctx) => {
   ctx.waitUntil(record(env, "suspend"));
+});
+
+// Records each data-only push message, and shows a notification of its data.
+onPush(async (message, env) => {
+  await record(env, `push message ${message.id}`);
+  return { id: `push-${message.id}`, title: "Push message", body: JSON.stringify(message.data) };
+});
+onNotificationOpened((opened, env, ctx) => {
+  ctx.waitUntil(record(env, `opened ${opened.source} notification ${opened.id}`));
 });

@@ -20,9 +20,18 @@ importers:
       '@tokamakdev/plugin':
         specifier: link:../../plugins/core
         version: link:../../plugins/core
+      '@tokamakdev/plugin-local-authentication':
+        specifier: link:../../plugins/local-authentication
+        version: link:../../plugins/local-authentication
       '@tokamakdev/plugin-location':
         specifier: link:../../plugins/location
         version: link:../../plugins/location
+      '@tokamakdev/plugin-notifications':
+        specifier: link:../../plugins/notifications
+        version: link:../../plugins/notifications
+      '@tokamakdev/plugin-secure-storage':
+        specifier: link:../../plugins/secure-storage
+        version: link:../../plugins/secure-storage
       '@tokamakdev/tok':
         specifier: file:../../tokamak-cli/npm
         version: file:../../tokamak-cli/npm(@cloudflare/vite-plugin@1.54.0(vite@7.3.6(jiti@2.7.0)(lightningcss@1.32.0))(wrangler@4.126.0))(vite@7.3.6(jiti@2.7.0)(lightningcss@1.32.0))(wrangler@4.126.0)
