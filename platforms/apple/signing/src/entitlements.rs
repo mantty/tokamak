@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use plist::{Dictionary, Value};
 
+#[cfg(any(target_os = "macos", test))]
+use crate::Platform;
 use crate::info_plist::overlay_dictionary;
 
 /// Entitlements signed with the profile's value, so one declaration serves
@@ -64,10 +66,26 @@ fn permits(allowed: &Value, declared: &Value) -> bool {
 }
 
 /// The profile's entitlements overlaid with the declared ones, keeping the
-/// profile's value for profile-valued entitlements.
+/// profile's value for profile-valued entitlements. The application identifier
+/// is the app's own, not the profile's pattern, and is the only keychain group
+/// unless groups are declared; the profile's `TEAMID.*` group is shared by
+/// every app of the team.
 #[cfg(any(target_os = "macos", test))]
-pub(crate) fn for_signing(profile: &Dictionary, declared: Option<&Dictionary>) -> Dictionary {
+pub(crate) fn for_signing(
+    profile: &Dictionary,
+    platform: Platform,
+    application_identifier: &str,
+    declared: Option<&Dictionary>,
+) -> Dictionary {
     let mut entitlements = profile.clone();
+    let identifier = Value::String(application_identifier.to_owned());
+    if entitlements.contains_key("keychain-access-groups") {
+        entitlements.insert(
+            "keychain-access-groups".to_owned(),
+            Value::Array(vec![identifier.clone()]),
+        );
+    }
+    entitlements.insert(platform.application_identifier_key().to_owned(), identifier);
     if let Some(declared) = declared {
         overlay_dictionary(&mut entitlements, declared.clone());
         for key in PROFILE_VALUED {
@@ -115,6 +133,7 @@ mod tests {
     use plist::{Dictionary, Value};
 
     use super::{first_requiring_profile, for_signing, for_simulator, unpermitted};
+    use crate::Platform;
 
     fn dictionary(values: &[(&str, Value)]) -> Dictionary {
         values
@@ -190,7 +209,12 @@ mod tests {
             ),
         ]);
 
-        let entitlements = for_signing(&profile(), Some(&declared));
+        let entitlements = for_signing(
+            &profile(),
+            Platform::Ios,
+            "TEAM.com.example.app",
+            Some(&declared),
+        );
 
         assert_eq!(
             entitlements.get("aps-environment"),
@@ -207,8 +231,31 @@ mod tests {
     }
 
     #[test]
-    fn signs_with_the_profile_entitlements_when_none_are_declared() {
-        assert_eq!(for_signing(&profile(), None), profile());
+    fn signs_with_the_apps_identifier_and_keychain_group_in_place_of_the_profiles_patterns() {
+        let mut wildcard = profile();
+        wildcard.insert("application-identifier".to_owned(), string("TEAM.*"));
+
+        let entitlements = for_signing(&wildcard, Platform::Ios, "TEAM.com.example.app", None);
+
+        let mut expected = profile();
+        expected.insert(
+            "keychain-access-groups".to_owned(),
+            strings(&["TEAM.com.example.app"]),
+        );
+        assert_eq!(entitlements, expected);
+    }
+
+    #[test]
+    fn signs_a_mac_app_with_its_own_identifier_and_no_ungranted_keychain_group() {
+        let profile = dictionary(&[("com.apple.application-identifier", string("TEAM.*"))]);
+
+        assert_eq!(
+            for_signing(&profile, Platform::Macos, "TEAM.com.example.app", None),
+            dictionary(&[(
+                "com.apple.application-identifier",
+                string("TEAM.com.example.app")
+            )])
+        );
     }
 
     #[test]

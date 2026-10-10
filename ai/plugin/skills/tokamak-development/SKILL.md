@@ -101,7 +101,9 @@ over the provisioning profile's entitlements at signing. Each declared
 entitlement must be permitted by the profile; automatic signing provisions a
 profile that permits them. Declare `aps-environment` (iOS) or
 `com.apple.developer.aps-environment` (macOS) for push notifications; signing
-uses the profile's value. Entitlements that need a profile require
+uses the profile's value. Each app's only keychain access group is its own
+application identifier; declare `keychain-access-groups` to share keychain
+items between apps of a team. Entitlements that need a profile require
 `macos.team-id` on macOS.
 
 The Android platform pack accepts an optional partial `AndroidManifest.xml`
