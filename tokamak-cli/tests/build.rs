@@ -1267,7 +1267,8 @@ const server = require("node:http").createServer((_, response) => response.end()
 server.listen(0, "127.0.0.1", () => {
   const url = `http://127.0.0.1:${server.address().port}/`;
   const report = require("node:path").join(process.env.TOKAMAK_VITE_OUTPUT, "server.json");
-  require("node:fs").writeFileSync(report, JSON.stringify({ url, workerName: "demo-app", socketPort: 1 }));
+  require("node:fs").writeFileSync(`${report}.tmp`, JSON.stringify({ url, workerName: "demo-app", socketPort: 1 }));
+  require("node:fs").renameSync(`${report}.tmp`, report);
 });
 "#;
 
