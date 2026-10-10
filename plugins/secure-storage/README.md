@@ -64,6 +64,9 @@ the platform's default prompt is shown.
 
 `get` resolves `null` when the name has no stored value.
 
+Names are not protected like values: `keys()` lists them whenever the device
+has been unlocked since it started, without authentication.
+
 ## Platforms
 
 - **iOS:** Keychain items, which survive deleting and reinstalling the app.

@@ -9,7 +9,12 @@ import Security
 final class TokamakSecureStoragePlugin: TokamakPlugin {
   let id = "secure-storage"
 
-  private let service = "tokamak.secure-storage"
+  /// Holds each value under a random ID.
+  private let values = "tokamak.secure-storage"
+  /// Holds each name's record: the ID of its value. Records have no access
+  /// control, so `keys()` needs no authentication; on a device, reading even the
+  /// attributes of an item saved with access control does.
+  private let names = "tokamak.secure-storage.names"
   /// Keychain calls block while the system authentication prompt is shown.
   private let queue = DispatchQueue(label: "tokamak.secure-storage")
   private let host: TokamakHost
@@ -75,10 +80,8 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
       try set(
         requiredString(arguments, "name"),
         value: requiredString(arguments, "value"),
-        accessibility: accessibility(
-          requiredString(arguments, "readable"),
-          thisDeviceOnly: requiredBool(arguments, "thisDeviceOnly")
-        ),
+        readable: requiredString(arguments, "readable"),
+        thisDeviceOnly: requiredBool(arguments, "thisDeviceOnly"),
         authentication: optionalString(arguments, "authentication")
       )
       return nil
@@ -89,39 +92,80 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
         prompting: prompting
       )
     case "delete":
-      try deleteItems(query(requiredString(arguments, "name")))
+      try delete(requiredString(arguments, "name"))
       return nil
     case "keys":
       return try keys()
     case "clear":
-      try deleteItems(serviceQuery())
+      try deleteItems(serviceQuery(values))
+      try deleteItems(serviceQuery(names))
       return nil
     default:
       throw .notSupported("\(id).\(method) is not supported")
     }
   }
 
-  /// Replaces an existing value only once the new item can be added, so a
-  /// failed write keeps the old value.
+  /// Stores the value under a new ID before pointing the name's record at it, so
+  /// a failed write leaves the previous value readable.
   private func set(
     _ name: String,
     value: String,
-    accessibility: CFString,
+    readable: String,
+    thisDeviceOnly: Bool,
     authentication: String?
   ) throws(TokamakPluginError) {
-    var item = query(name)
+    let accessibility = try accessibility(readable, thisDeviceOnly: thisDeviceOnly)
+    let id = UUID().uuidString
+    var item = query(values, id)
     item[kSecValueData] = Data(value.utf8)
     if let authentication {
       item[kSecAttrAccessControl] = try accessControl(accessibility, authentication)
     } else {
       item[kSecAttrAccessible] = accessibility
     }
-    var status = SecItemAdd(item as CFDictionary, nil)
-    if status == errSecDuplicateItem {
-      try deleteItems(query(name))
-      status = SecItemAdd(item as CFDictionary, nil)
+    let previous = try valueID(name)
+    try check(SecItemAdd(item as CFDictionary, nil))
+    do throws(TokamakPluginError) {
+      try point(name, at: id, thisDeviceOnly: thisDeviceOnly)
+    } catch {
+      SecItemDelete(query(values, id) as CFDictionary)
+      throw error
+    }
+    if let previous {
+      try deleteItems(query(values, previous))
+    }
+  }
+
+  /// Points `name`'s record at `id`. Records are readable after the first
+  /// unlock, so `keys()` works while the device is locked.
+  private func point(
+    _ name: String,
+    at id: String,
+    thisDeviceOnly: Bool
+  ) throws(TokamakPluginError) {
+    let record: [CFString: Any] = [
+      kSecValueData: Data(id.utf8),
+      kSecAttrAccessible: thisDeviceOnly
+        ? kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly : kSecAttrAccessibleAfterFirstUnlock,
+    ]
+    var status = SecItemUpdate(query(names, name) as CFDictionary, record as CFDictionary)
+    if status == errSecItemNotFound {
+      status = SecItemAdd(query(names, name).merging(record) { _, new in new } as CFDictionary, nil)
     }
     try check(status)
+  }
+
+  /// The ID of `name`'s value, or nil when `name` has no value.
+  private func valueID(_ name: String) throws(TokamakPluginError) -> String? {
+    var read = query(names, name)
+    read[kSecReturnData] = true
+    var data: CFTypeRef?
+    let status = SecItemCopyMatching(read as CFDictionary, &data)
+    if status == errSecItemNotFound {
+      return nil
+    }
+    try check(status)
+    return (data as? Data).map { String(decoding: $0, as: UTF8.self) }
   }
 
   /// Reads without UI first, so only a value saved with authentication needs
@@ -131,7 +175,8 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     prompt: String?,
     prompting: Result<Void, TokamakPluginError>?
   ) throws(TokamakPluginError) -> String? {
-    var item = query(name)
+    guard let id = try valueID(name) else { return nil }
+    var item = query(values, id)
     item[kSecReturnData] = true
     item[kSecUseAuthenticationContext] = Self.contextWithoutUI()
     var data: CFTypeRef?
@@ -147,7 +192,6 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
       status = SecItemCopyMatching(item as CFDictionary, &data)
     }
     if status == errSecItemNotFound {
-      guard try exists(name) else { return nil }
       throw TokamakPluginError(
         name: "NotReadableError",
         message: "The stored value can no longer be read"
@@ -160,11 +204,19 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     return String(decoding: data, as: UTF8.self)
   }
 
+  /// Deletes the value before its record, so a failure leaves the name listed.
+  private func delete(_ name: String) throws(TokamakPluginError) {
+    guard let id = try valueID(name) else { return }
+    try deleteItems(query(values, id))
+    try deleteItems(query(names, name))
+  }
+
   private func keys() throws(TokamakPluginError) -> [String] {
-    var items = attributesQuery(serviceQuery())
-    items[kSecMatchLimit] = kSecMatchLimitAll
+    var records = serviceQuery(names)
+    records[kSecReturnAttributes] = true
+    records[kSecMatchLimit] = kSecMatchLimitAll
     var attributes: CFTypeRef?
-    let status = SecItemCopyMatching(items as CFDictionary, &attributes)
+    let status = SecItemCopyMatching(records as CFDictionary, &attributes)
     if status == errSecItemNotFound {
       return []
     }
@@ -182,24 +234,6 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     }
   }
 
-  private func exists(_ name: String) throws(TokamakPluginError) -> Bool {
-    let status = SecItemCopyMatching(attributesQuery(query(name)) as CFDictionary, nil)
-    if status == errSecItemNotFound {
-      return false
-    }
-    try check(status)
-    return true
-  }
-
-  /// `query` reading attributes only, which needs no authentication.
-  private func attributesQuery(_ query: [CFString: Any]) -> [CFString: Any] {
-    query.merging([
-      kSecReturnAttributes: true, kSecUseAuthenticationContext: Self.contextWithoutUI(),
-    ]) {
-      _, attribute in attribute
-    }
-  }
-
   /// A context in which reads that need authentication fail with
   /// `errSecInteractionNotAllowed` rather than show the system prompt.
   private static func contextWithoutUI() -> LAContext {
@@ -208,9 +242,9 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     return context
   }
 
-  /// All of the plugin's items. The data protection keychain is the only
-  /// keychain on iOS; macOS needs a team-signed build to use it.
-  private func serviceQuery() -> [CFString: Any] {
+  /// All of the plugin's items in `service`. The data protection keychain is
+  /// the only keychain on iOS; macOS needs a team-signed build to use it.
+  private func serviceQuery(_ service: String) -> [CFString: Any] {
     [
       kSecClass: kSecClassGenericPassword,
       kSecAttrService: service,
@@ -218,8 +252,8 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     ]
   }
 
-  private func query(_ name: String) -> [CFString: Any] {
-    serviceQuery().merging([kSecAttrAccount: name]) { _, name in name }
+  private func query(_ service: String, _ account: String) -> [CFString: Any] {
+    serviceQuery(service).merging([kSecAttrAccount: account]) { _, account in account }
   }
 
   /// `ThisDeviceOnly` items restore only to the device they were stored on.
