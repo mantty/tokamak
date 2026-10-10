@@ -14,7 +14,10 @@
     "@astrojs/cloudflare": "13.1.8",
     "@tailwindcss/vite": "^4.2.2",
     "@tokamakdev/plugin": "link:../../plugins/core",
+    "@tokamakdev/plugin-local-authentication": "link:../../plugins/local-authentication",
     "@tokamakdev/plugin-location": "link:../../plugins/location",
+    "@tokamakdev/plugin-notifications": "link:../../plugins/notifications",
+    "@tokamakdev/plugin-secure-storage": "link:../../plugins/secure-storage",
     "@tokamakdev/tok": "file:../../tokamak-cli/npm",
     "astro": "6.1.5",
     "tailwindcss": "^4.2.2"

@@ -1,0 +1,64 @@
+---
+import PluginCard from "./PluginCard.astro";
+---
+
+<PluginCard title="Notifications" log="notifications-log">
+  <p class="text-indigo-300 mb-4">
+    Local notifications need only permission. Push needs the declarations the
+    plugin's README lists, which this example does not make, so subscribing
+    reports what is missing. src/tokamak.ts records push messages and opened
+    notifications on the Events page.
+  </p>
+  <div class="flex flex-wrap gap-3">
+    <button id="notifications-permission" class="button">Permission</button>
+    <button id="notifications-request" class="button">Request permission</button>
+    <button id="notifications-show" class="button">Show now</button>
+    <button id="notifications-schedule" class="button">Schedule in 10 s</button>
+    <button id="notifications-list" class="button">Scheduled and delivered</button>
+    <button id="notifications-remove" class="button">Remove both</button>
+    <button id="notifications-subscribe" class="button">Subscribe</button>
+    <button id="notifications-subscription" class="button">Subscription</button>
+    <button id="notifications-unsubscribe" class="button">Unsubscribe</button>
+  </div>
+</PluginCard>
+
+<script>
+  import { notifications } from "@tokamakdev/plugin-notifications";
+  import { describe, logTo, onClick } from "../scripts/plugin-log";
+
+  const log = logTo("notifications-log");
+  const reportError = (error: DOMException) => log(describe(error));
+
+  onClick(log, "notifications-permission", () => notifications.permission());
+  onClick(log, "notifications-request", () => notifications.requestPermission());
+  onClick(log, "notifications-show", () =>
+    notifications.show({ id: "example-now", title: "Shown now", body: "From the Plugins page" }),
+  );
+  onClick(log, "notifications-schedule", () =>
+    notifications.schedule({
+      id: "example-scheduled",
+      title: "Scheduled",
+      body: "Shown 10 seconds after scheduling",
+      data: { scheduledAt: Date.now() },
+      at: Date.now() + 10_000,
+    }),
+  );
+  onClick(log, "notifications-list", async () => ({
+    scheduled: await notifications.getScheduled(),
+    delivered: await notifications.getDelivered(),
+  }));
+  onClick(log, "notifications-remove", async () => {
+    await notifications.remove("example-now");
+    await notifications.remove("example-scheduled");
+  });
+  onClick(log, "notifications-subscribe", () => notifications.subscribe({ showInForeground: true }));
+  onClick(log, "notifications-subscription", () => notifications.getSubscription());
+  onClick(log, "notifications-unsubscribe", () => notifications.unsubscribe());
+
+  notifications.onMessage((message) => log(`Message: ${JSON.stringify(message)}`), reportError);
+  notifications.onNotificationOpened((opened) => log(`Opened: ${JSON.stringify(opened)}`), reportError);
+  notifications.onSubscriptionChange(
+    (subscription) => log(`Subscription changed: ${JSON.stringify(subscription)}`),
+    reportError,
+  );
+</script>

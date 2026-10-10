@@ -1,0 +1,68 @@
+---
+import PluginCard from "./PluginCard.astro";
+---
+
+<PluginCard title="Secure storage" log="secure-storage-log">
+  <p class="text-indigo-300 mb-4">
+    Values stay on the device. Reading one saved with authentication shows the
+    system prompt. macOS builds need a team, set with macos.team-id.
+  </p>
+  <div class="grid gap-3 sm:grid-cols-2 mb-4 text-sm text-indigo-300">
+    <label class="grid gap-1">
+      Name
+      <input id="secure-storage-name" class="field" value="example" />
+    </label>
+    <label class="grid gap-1">
+      Value
+      <input id="secure-storage-value" class="field" value="a secret" />
+    </label>
+    <label class="grid gap-1">
+      Readable
+      <select id="secure-storage-readable" class="field">
+        <option value="whenUnlocked">When unlocked</option>
+        <option value="afterFirstUnlock">After first unlock</option>
+      </select>
+    </label>
+    <label class="grid gap-1">
+      Authentication
+      <select id="secure-storage-authentication" class="field">
+        <option value="">None</option>
+        <option value="biometricsOrPasscode">Biometrics or passcode</option>
+        <option value="biometrics">Biometrics</option>
+        <option value="currentBiometrics">Current biometrics</option>
+      </select>
+    </label>
+    <label class="flex items-center gap-2">
+      <input id="secure-storage-this-device" type="checkbox" checked />
+      This device only
+    </label>
+  </div>
+  <div class="flex flex-wrap gap-3">
+    <button id="secure-storage-set" class="button">Save</button>
+    <button id="secure-storage-get" class="button">Read</button>
+    <button id="secure-storage-delete" class="button">Delete</button>
+    <button id="secure-storage-keys" class="button">Names</button>
+    <button id="secure-storage-clear" class="button">Delete all</button>
+  </div>
+</PluginCard>
+
+<script>
+  import { secureStorage, type Authentication, type Readable } from "@tokamakdev/plugin-secure-storage";
+  import { logTo, onClick } from "../scripts/plugin-log";
+
+  const log = logTo("secure-storage-log");
+  const value = (id: string) => (document.getElementById(id) as HTMLInputElement | HTMLSelectElement).value;
+  const name = () => value("secure-storage-name");
+
+  onClick(log, "secure-storage-set", () =>
+    secureStorage.set(name(), value("secure-storage-value"), {
+      readable: value("secure-storage-readable") as Readable,
+      authentication: (value("secure-storage-authentication") || undefined) as Authentication | undefined,
+      thisDeviceOnly: (document.getElementById("secure-storage-this-device") as HTMLInputElement).checked,
+    }),
+  );
+  onClick(log, "secure-storage-get", () => secureStorage.get(name(), { prompt: "Read the example's secret" }));
+  onClick(log, "secure-storage-delete", () => secureStorage.delete(name()));
+  onClick(log, "secure-storage-keys", () => secureStorage.keys());
+  onClick(log, "secure-storage-clear", () => secureStorage.clear());
+</script>

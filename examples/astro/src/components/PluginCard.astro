@@ -1,0 +1,14 @@
+---
+// A plugin's controls, then the log `log` names, which its script writes to.
+const { title, log } = Astro.props as { title: string; log: string };
+---
+
+<div class="rounded-xl border border-indigo-800/50 bg-indigo-900/30 p-6">
+  <h2 class="text-lg font-semibold text-white mb-2">{title}</h2>
+  <slot />
+  <div
+    id={log}
+    class="font-mono text-sm text-indigo-300 bg-indigo-950/50 rounded-lg p-4 h-40 overflow-y-auto mt-4"
+  >
+  </div>
+</div>

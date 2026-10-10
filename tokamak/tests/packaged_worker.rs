@@ -460,6 +460,7 @@ fn serves_the_astro_example_that_tok_packages() -> TestResult {
     for (path, text) in [
         ("/", "<html"),
         ("/about", "About - tokamak Example"),
+        ("/plugins", "Plugins - tokamak Example"),
         // Each entry begins with its time, which ends in Z.
         ("/events", "Z start in the foreground"),
         ("/events", "Z suspend"),

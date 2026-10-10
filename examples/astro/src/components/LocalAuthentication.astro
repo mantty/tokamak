@@ -1,0 +1,31 @@
+---
+import PluginCard from "./PluginCard.astro";
+---
+
+<PluginCard title="Local authentication" log="local-authentication-log">
+  <p class="text-indigo-300 mb-4">
+    Checks the device owner when the app asks. It protects no data: secure
+    storage binds a value to authentication.
+  </p>
+  <div class="flex flex-wrap gap-3">
+    <button id="local-authentication-status-passcode" class="button">Status: biometrics or passcode</button>
+    <button id="local-authentication-status-biometrics" class="button">Status: biometrics</button>
+    <button id="local-authentication-passcode" class="button">Authenticate: biometrics or passcode</button>
+    <button id="local-authentication-biometrics" class="button">Authenticate: biometrics</button>
+  </div>
+</PluginCard>
+
+<script>
+  import { localAuthentication } from "@tokamakdev/plugin-local-authentication";
+  import { logTo, onClick } from "../scripts/plugin-log";
+
+  const log = logTo("local-authentication-log");
+  const prompt = "Confirm it's you to try the example";
+
+  onClick(log, "local-authentication-status-passcode", () => localAuthentication.status("biometricsOrPasscode"));
+  onClick(log, "local-authentication-status-biometrics", () => localAuthentication.status("biometrics"));
+  onClick(log, "local-authentication-passcode", () =>
+    localAuthentication.authenticate("biometricsOrPasscode", { prompt }),
+  );
+  onClick(log, "local-authentication-biometrics", () => localAuthentication.authenticate("biometrics", { prompt }));
+</script>
