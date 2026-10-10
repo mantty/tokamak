@@ -209,7 +209,13 @@ pub fn sign_ios_bundle(
     {
         let declared = entitlements::declared(Platform::Ios.entitlements_variable())?;
         let selection = resolve_ios(project, bundle_id, device_id, declared.as_ref())?;
-        sign_bundle(Platform::Ios, bundle, &selection, declared.as_ref())
+        sign_bundle(
+            Platform::Ios,
+            bundle,
+            bundle_id,
+            &selection,
+            declared.as_ref(),
+        )
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -235,7 +241,13 @@ pub fn sign_macos_bundle(project: &Path, bundle: &Path, bundle_id: &str) -> Resu
         match configured_team_id("TOKAMAK_MACOS_TEAM_ID", environment_team.as_deref())? {
             Some(team_id) => {
                 let selection = resolve_macos(project, bundle_id, &team_id, declared.as_ref())?;
-                sign_bundle(Platform::Macos, bundle, &selection, declared.as_ref())
+                sign_bundle(
+                    Platform::Macos,
+                    bundle,
+                    bundle_id,
+                    &selection,
+                    declared.as_ref(),
+                )
             }
             None => sign_ad_hoc(bundle, declared.as_ref()),
         }
@@ -559,6 +571,7 @@ fn select_signing(
 fn sign_bundle(
     platform: Platform,
     bundle: &Path,
+    bundle_id: &str,
     selection: &Selection,
     declared: Option<&Dictionary>,
 ) -> Result<()> {
@@ -587,10 +600,16 @@ fn sign_bundle(
             platform.entitlements_setting()
         );
     }
+    let (prefix, _) = permitted
+        .get(platform.application_identifier_key())
+        .and_then(PlistValue::as_string)
+        .and_then(|identifier| identifier.split_once('.'))
+        .context("provisioning profile application identifier is missing")?;
+    let application_identifier = format!("{prefix}.{bundle_id}");
     codesign(
         bundle,
         &selection.identity,
-        &entitlements::for_signing(permitted, declared),
+        &entitlements::for_signing(permitted, platform, &application_identifier, declared),
     )
     .with_context(|| format!("sign {name} application bundle"))
 }

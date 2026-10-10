@@ -452,7 +452,10 @@ same value, `*`, or a prefix wildcard such as `TEAMID.*`. Automatic signing
 selects a profile that permits every declared entitlement and asks Xcode to
 provision one when none does, which enables the matching capabilities on the
 App ID. Manual signing fails when the profile does not permit one. The
-`aps-environment` entitlements take the profile's value. iOS Simulator builds
+`aps-environment` entitlements take the profile's value. The application
+identifier is the app's own, and so is its only keychain access group unless
+the file declares `keychain-access-groups`, so apps of one team do not share
+keychain items. iOS Simulator builds
 embed the declared entitlements in the executable. macOS builds without a team
 are signed with the file as given, and fail when it declares an entitlement
 only a provisioning profile can authorise.
