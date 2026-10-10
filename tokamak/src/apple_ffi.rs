@@ -257,6 +257,39 @@ pub unsafe extern "C" fn tokamak_runtime_emit(
     }
 }
 
+/// Fetch what the app serves at `path`, blocking for up to `timeout_ms`.
+/// Returns true with the body in `body`, or false with a message in `error`.
+///
+/// # Safety
+///
+/// `handle` must be live, `path` must be a NUL-terminated UTF-8 string,
+/// `body` must be writable, and `error` must be writable for `error_len`
+/// bytes when non-null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tokamak_runtime_fetch(
+    handle: *const c_void,
+    path: *const c_char,
+    timeout_ms: u64,
+    body: *mut TokamakBytes,
+    error: *mut c_char,
+    error_len: usize,
+) -> bool {
+    if body.is_null() {
+        return false;
+    }
+    unsafe { body.write(TokamakBytes::empty()) };
+    match unsafe { fetch(handle, path, Duration::from_millis(timeout_ms)) } {
+        Ok(bytes) => {
+            unsafe { body.write(TokamakBytes::from_vec(bytes)) };
+            true
+        }
+        Err(message) => {
+            write_error(error, error_len, &message);
+            false
+        }
+    }
+}
+
 /// Record whether the app is in the foreground, returning whether that
 /// changed. The shell then emits `resume` or `suspend`.
 ///
@@ -462,6 +495,18 @@ unsafe fn emit(
     let event = unsafe { text(event) }.ok_or("event is not valid UTF-8")?;
     runtime
         .emit(name, event, timeout)
+        .map_err(|error| error.to_string())
+}
+
+unsafe fn fetch(
+    handle: *const c_void,
+    path: *const c_char,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let runtime = unsafe { runtime(handle) }.ok_or("runtime is unavailable")?;
+    let path = unsafe { text(path) }.ok_or("path is not valid UTF-8")?;
+    runtime
+        .fetch(path, timeout)
         .map_err(|error| error.to_string())
 }
 

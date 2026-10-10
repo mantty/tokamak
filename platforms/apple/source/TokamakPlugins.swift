@@ -51,6 +51,18 @@ final class TokamakHost {
   ) {
     app.emit("\(plugin).\(name)", event: event, timeout: timeout, completion: completion)
   }
+
+  /// Fetches what the app serves at `path`, as its WebView would load it: a
+  /// file the app ships or the Worker's response. Calls `completion` on the
+  /// main thread with the body. Fails unless it arrives within `timeout`,
+  /// which includes runtime startup. Call it on the main thread.
+  func fetch(
+    _ path: String,
+    timeout: TimeInterval,
+    completion: @escaping (Result<Data, Error>) -> Void
+  ) {
+    app.fetch(path, timeout: timeout, completion: completion)
+  }
 }
 
 /// A native plugin, created once per process when the app launches. The page

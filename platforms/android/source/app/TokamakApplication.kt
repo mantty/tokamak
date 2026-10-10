@@ -111,6 +111,12 @@ class TokamakApplication : Application(), TokamakPlugins {
 
             override fun emit(name: String, event: String, timeoutMillis: Long): String =
                 emitEvent("$id.$name", event, timeoutMillis)
+
+            override fun fetch(path: String, timeoutMillis: Long): ByteArray {
+                val deadline = SystemClock.elapsedRealtime() + timeoutMillis
+                val started = runtime
+                return started.fetch(path, deadline - SystemClock.elapsedRealtime())
+            }
         }
 
     /** The activity to show UI in; throws `NeedsUIError` while the app is in the background. */

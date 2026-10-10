@@ -150,6 +150,10 @@ pub enum Error {
     #[cfg(feature = "native")]
     #[error("{0}")]
     Event(String),
+    /// The app did not serve a path.
+    #[cfg(feature = "native")]
+    #[error("{0}")]
+    Fetch(String),
 }
 
 /// Return the URL a shell's `WebView` loads.

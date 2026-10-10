@@ -237,6 +237,27 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeEmit<'local
     })
 }
 
+/// Fetch what the app serves at `path`, blocking for up to
+/// `timeout_millis`. Returns the body; throws when the fetch fails.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeFetch<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass,
+    handle: jlong,
+    path: JString,
+    timeout_millis: jlong,
+) -> JByteArray<'local> {
+    let timeout = Duration::from_millis(u64::try_from(timeout_millis).unwrap_or(0));
+    let result = fetch(&mut env, handle, &path, timeout).and_then(|body| {
+        env.byte_array_from_slice(&body)
+            .map_err(|error| error.to_string())
+    });
+    result.unwrap_or_else(|message| {
+        let _ = env.throw_new(FAILURE, message);
+        JByteArray::from(JObject::null())
+    })
+}
+
 /// Return the authority a server certificate for `host` must chain to, or
 /// null when tokamak does not vouch for the host.
 #[unsafe(no_mangle)]
@@ -345,6 +366,19 @@ fn emit(
     let event = text(env, event)?;
     runtime
         .emit(&name, &event, timeout)
+        .map_err(|error| error.to_string())
+}
+
+fn fetch(
+    env: &mut JNIEnv,
+    handle: jlong,
+    path: &JString,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let runtime = runtime(handle).ok_or("tokamak runtime is unavailable")?;
+    let path = text(env, path)?;
+    runtime
+        .fetch(&path, timeout)
         .map_err(|error| error.to_string())
 }
 
