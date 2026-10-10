@@ -50,6 +50,7 @@ bool tokamak_runtime_emit(const void *runtime, const char *name,
                           const char *event, uint64_t timeout_ms,
                           TokamakBytes *reply, char *error, size_t error_len);
 bool tokamak_runtime_set_foreground(const void *runtime, bool foreground);
+bool tokamak_runtime_is_foreground(const void *runtime);
 void tokamak_runtime_reply(const void *runtime, uint64_t id, const char *result);
 
 int32_t tokamak_runtime_server_authority(const void *runtime, const char *host,

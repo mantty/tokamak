@@ -190,6 +190,13 @@ impl Runtime {
         self.plugins.set_foreground(foreground)
     }
 
+    /// Whether the app is in the foreground, as last recorded. The shells'
+    /// plugin hosts read it to decide whether a prompt can show.
+    #[must_use]
+    pub fn is_foreground(&self) -> bool {
+        self.plugins.is_foreground()
+    }
+
     /// Pass a plugin's JSON `result` to the Worker's call or subscription
     /// `id`, as the shell's [`PluginHandler`] answers it. The runtime ignores
     /// results for calls and subscriptions that have ended.

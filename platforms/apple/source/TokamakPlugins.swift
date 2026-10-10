@@ -28,9 +28,10 @@ final class TokamakHost {
     self.plugin = plugin
   }
 
-  /// Throws `NeedsUIError` unless the app can show UI now: on iOS, while a
-  /// scene is in the foreground. A hidden or minimised macOS app still shows
-  /// system prompts. Call it where the plugin would show UI, on any thread.
+  /// Throws `NeedsUIError` unless the app can show UI now: on iOS, while it
+  /// is in the foreground. A hidden or minimised macOS app still shows system
+  /// prompts. Call it on the main thread, where the plugin decides to show
+  /// UI.
   func requireUI() throws(TokamakPluginError) {
     #if os(iOS)
       guard app.isInForeground else { throw .needsUI }

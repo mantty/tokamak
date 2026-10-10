@@ -223,8 +223,10 @@ fn answers_tokamak_calls_without_the_shell_plugins() -> TestResult {
     let started = Started::new(false)?;
 
     assert_eq!(started.reply_to("stage", &json!({}))?, "foreground");
+    assert!(started.runtime.is_foreground());
     assert!(started.runtime.set_foreground(false));
     assert!(!started.runtime.set_foreground(false));
+    assert!(!started.runtime.is_foreground());
     assert_eq!(started.reply_to("stage", &json!({}))?, "background");
     let failure = started.reply_to(
         "call",

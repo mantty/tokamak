@@ -271,6 +271,16 @@ pub unsafe extern "C" fn tokamak_runtime_set_foreground(
     unsafe { runtime(handle) }.is_some_and(|runtime| runtime.set_foreground(foreground))
 }
 
+/// Return whether the app is in the foreground, as last recorded.
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle returned by [`tokamak_runtime_start`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tokamak_runtime_is_foreground(handle: *const c_void) -> bool {
+    unsafe { runtime(handle) }.is_some_and(Runtime::is_foreground)
+}
+
 /// Pass a plugin's JSON `result` to the Worker's call or subscription `id`.
 ///
 /// # Safety

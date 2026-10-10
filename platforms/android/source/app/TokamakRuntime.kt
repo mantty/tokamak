@@ -36,6 +36,10 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
      */
     fun setForeground(foreground: Boolean): Boolean = nativeSetForeground(handle, foreground)
 
+    /** Whether the app is in the foreground, as last recorded. */
+    val isForeground: Boolean
+        get() = nativeIsForeground(handle)
+
     /** Passes a plugin's JSON [result] to the Worker's call or subscription [id]. */
     fun reply(id: Long, result: String) = nativeReply(handle, id, result)
 
@@ -111,6 +115,9 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
 
         @JvmStatic
         private external fun nativeSetForeground(handle: Long, foreground: Boolean): Boolean
+
+        @JvmStatic
+        private external fun nativeIsForeground(handle: Long): Boolean
 
         @JvmStatic
         private external fun nativeReply(handle: Long, id: Long, result: String)

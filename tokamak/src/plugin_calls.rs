@@ -160,6 +160,10 @@ impl PluginCalls {
         self.foreground.swap(foreground, Ordering::AcqRel) != foreground
     }
 
+    pub(crate) fn is_foreground(&self) -> bool {
+        self.foreground.load(Ordering::Acquire)
+    }
+
     /// The shell's handler, unless the runtime answers calls to `plugin`.
     fn shell(&self, plugin: &str) -> Option<&Arc<dyn PluginHandler>> {
         if plugin == RUNTIME_PLUGIN {
@@ -173,7 +177,7 @@ impl PluginCalls {
     fn answer(&self, plugin: &str, method: &str) -> String {
         match (plugin, method) {
             (RUNTIME_PLUGIN, "lifecycleStage") => {
-                let stage = if self.foreground.load(Ordering::Acquire) {
+                let stage = if self.is_foreground() {
                     "foreground"
                 } else {
                     "background"

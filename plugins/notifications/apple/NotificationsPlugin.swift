@@ -202,13 +202,15 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
         reply(.success(Self.permission(settings.authorizationStatus)))
         return
       }
-      do throws(TokamakPluginError) {
-        try self.host.requireUI()
-        self.center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in
-          self.permission(reply)
+      DispatchQueue.main.async {
+        do throws(TokamakPluginError) {
+          try self.host.requireUI()
+          self.center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in
+            self.permission(reply)
+          }
+        } catch {
+          reply(.failure(error))
         }
-      } catch {
-        reply(.failure(error))
       }
     }
   }

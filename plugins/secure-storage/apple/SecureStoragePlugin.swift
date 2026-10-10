@@ -38,18 +38,19 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     reply: @escaping TokamakPluginReply
   ) {
     let arguments = arguments as? [String: Any] ?? [:]
-    let unlocked = Self.isUnlocked
+    let prompting =
+      isUnlocked ? Result { () throws(TokamakPluginError) in try host.requireUI() } : nil
     queue.async {
       reply(
         Result { () throws(TokamakPluginError) in
-          try self.perform(method, arguments, unlocked: unlocked)
+          try self.perform(method, arguments, prompting: prompting)
         })
     }
   }
 
   /// Whether the device's protected data is available, which it is not while
   /// an iPhone is locked. Read it on the main thread.
-  private static var isUnlocked: Bool {
+  private var isUnlocked: Bool {
     #if os(iOS)
       UIApplication.shared.isProtectedDataAvailable
     #else
@@ -57,10 +58,13 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     #endif
   }
 
+  /// `prompting` is whether a read that needs authentication may show the
+  /// system prompt, decided on the main thread as the call arrives: nil while
+  /// the device is locked, where such a read fails without UI anyway.
   private func perform(
     _ method: String,
     _ arguments: [String: Any],
-    unlocked: Bool
+    prompting: Result<Void, TokamakPluginError>?
   ) throws(TokamakPluginError) -> Any? {
     #if os(macOS)
       // Unentitled reads report errSecItemNotFound rather than a missing entitlement.
@@ -82,7 +86,7 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
       return try get(
         requiredString(arguments, "name"),
         prompt: optionalString(arguments, "prompt"),
-        unlocked: unlocked
+        prompting: prompting
       )
     case "delete":
       try deleteItems(query(requiredString(arguments, "name")))
@@ -121,20 +125,19 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
   }
 
   /// Reads without UI first, so only a value saved with authentication needs
-  /// the app able to show the system prompt. While the device is locked, the
-  /// read fails without UI whatever the value needs.
+  /// the app able to show the system prompt.
   private func get(
     _ name: String,
     prompt: String?,
-    unlocked: Bool
+    prompting: Result<Void, TokamakPluginError>?
   ) throws(TokamakPluginError) -> String? {
     var item = query(name)
     item[kSecReturnData] = true
     item[kSecUseAuthenticationContext] = Self.contextWithoutUI()
     var data: CFTypeRef?
     var status = SecItemCopyMatching(item as CFDictionary, &data)
-    if status == errSecInteractionNotAllowed && unlocked {
-      try host.requireUI()
+    if status == errSecInteractionNotAllowed, let prompting {
+      try prompting.get()
       item[kSecUseAuthenticationContext] = prompt.flatMap { prompt -> LAContext? in
         guard !prompt.isEmpty else { return nil }
         let context = LAContext()
