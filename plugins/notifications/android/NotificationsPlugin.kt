@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import com.google.android.gms.tasks.Tasks
 import com.google.firebase.FirebaseApp
+import com.google.firebase.installations.FirebaseInstallations
 import com.google.firebase.messaging.FirebaseMessaging
 import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
@@ -14,13 +16,19 @@ import com.tokamak.runtime.TokamakPluginReply
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 private const val PREFERENCES = "tokamak.notifications"
 private const val SUBSCRIBED = "subscribed"
-private const val TOKEN = "token"
+/** The Firebase Installation ID (FID) FCM sends to. */
+private const val FID = "fid"
 
 /** FCM allows about 10 seconds for a message, including starting the app. */
 private const val PUSH_DEADLINE_MILLIS = 8_000L
+
+/** How long `subscribe` and `unsubscribe` wait for FCM. */
+private const val REGISTER_TIMEOUT_SECONDS = 30L
 
 /**
  * How long the Worker's listeners have for an opened or dismissed notification, within the 10
@@ -120,12 +128,12 @@ class TokamakNotificationsPlugin(
         }.start()
     }
 
-    /** Reports a replaced token; `subscribe` reports the first. */
-    internal fun onNewToken(token: String) {
-        val previous = preferences.getString(TOKEN, null) ?: return
-        if (!preferences.getBoolean(SUBSCRIBED, false) || token == previous) return
-        preferences.edit().putString(TOKEN, token).apply()
-        context.mainExecutor.execute { notify("onSubscriptionChange", fcmSubscription(token)) }
+    /** Reports a changed registration; `subscribe` reports the first. FCM calls this off the main thread. */
+    internal fun onRegistered(fid: String) {
+        val previous = preferences.getString(FID, null) ?: return
+        if (!preferences.getBoolean(SUBSCRIBED, false) || fid == previous) return
+        preferences.edit().putString(FID, fid).apply()
+        context.mainExecutor.execute { notify("onSubscriptionChange", fcmSubscription(fid)) }
     }
 
     /**
@@ -231,29 +239,35 @@ class TokamakNotificationsPlugin(
         )
         preferences.edit().putBoolean(SUBSCRIBED, true).apply()
         messaging.isAutoInitEnabled = true
-        messaging.token.addOnCompleteListener { task ->
-            when {
-                !preferences.getBoolean(SUBSCRIBED, false) ->
-                    reply(Result.failure(TokamakPluginError("AbortError", "unsubscribe was called")))
-                task.isSuccessful -> {
-                    preferences.edit().putString(TOKEN, task.result).apply()
-                    reply(Result.success(fcmSubscription(task.result)))
+        val installations = FirebaseInstallations.getInstance()
+        // getId rejects malformed Firebase values at once; register() never completes on them.
+        // Registering can replace the FID, so the FID is read again afterwards.
+        installations.id
+            .onSuccessTask { Tasks.withTimeout(messaging.register(), REGISTER_TIMEOUT_SECONDS, TimeUnit.SECONDS) }
+            .onSuccessTask { installations.id }
+            .addOnCompleteListener { task ->
+                when {
+                    !preferences.getBoolean(SUBSCRIBED, false) ->
+                        reply(Result.failure(TokamakPluginError("AbortError", "unsubscribe was called")))
+                    task.isSuccessful -> {
+                        preferences.edit().putString(FID, task.result).apply()
+                        reply(Result.success(fcmSubscription(task.result)))
+                    }
+                    else -> reply(Result.failure(operationError(task.exception)))
                 }
-                else -> reply(Result.failure(operationError(task.exception)))
             }
-        }
     }
 
     private fun subscription(): JSONObject? {
         if (!preferences.getBoolean(SUBSCRIBED, false)) return null
-        return preferences.getString(TOKEN, null)?.let(::fcmSubscription)
+        return preferences.getString(FID, null)?.let(::fcmSubscription)
     }
 
     private fun unsubscribe(reply: TokamakPluginReply) {
-        preferences.edit().remove(SUBSCRIBED).remove(TOKEN).apply()
+        preferences.edit().remove(SUBSCRIBED).remove(FID).apply()
         val messaging = messaging() ?: return reply(Result.success(null))
         messaging.isAutoInitEnabled = false
-        messaging.deleteToken().addOnCompleteListener { task ->
+        Tasks.withTimeout(messaging.unregister(), REGISTER_TIMEOUT_SECONDS, TimeUnit.SECONDS).addOnCompleteListener { task ->
             reply(if (task.isSuccessful) Result.success(null) else Result.failure(operationError(task.exception)))
         }
     }
@@ -261,8 +275,7 @@ class TokamakNotificationsPlugin(
     private fun messaging(): FirebaseMessaging? =
         if (FirebaseApp.getApps(context).isEmpty()) null else FirebaseMessaging.getInstance()
 
-    private fun fcmSubscription(token: String): JSONObject =
-        JSONObject().put("service", "fcm").put("token", token)
+    private fun fcmSubscription(fid: String): JSONObject = JSONObject().put("service", "fcm").put("fid", fid)
 
     /** An opened FCM notification: FCM passes its data map, but not its title or body. */
     private fun openedPush(intent: Intent, messageId: String): JSONObject {
@@ -298,7 +311,14 @@ class TokamakNotificationsPlugin(
 
         fun invalidState(message: String) = TokamakPluginError("InvalidStateError", message)
 
-        fun operationError(error: Throwable?) =
-            TokamakPluginError("OperationError", error?.message ?: "The push service failed")
+        fun operationError(error: Exception?) =
+            TokamakPluginError(
+                "OperationError",
+                if (error is TimeoutException) {
+                    "FCM did not respond within $REGISTER_TIMEOUT_SECONDS seconds"
+                } else {
+                    error?.message ?: "The push service failed"
+                },
+            )
     }
 }

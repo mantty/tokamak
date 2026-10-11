@@ -3,7 +3,7 @@ import { afterEach, test } from "node:test";
 
 import { connectNative, disconnectNative } from "@tokamakdev/plugin/testing";
 
-import { notifications } from "../src/index.js";
+import { notifications, type Subscription } from "../src/index.js";
 
 afterEach(disconnectNative);
 
@@ -71,7 +71,7 @@ void test("rejects an invalid setup without calling the native plugin", async ()
 
 void test("subscribes without the web's options", async () => {
   const native = connectNative();
-  const subscription = { service: "fcm", token: "token" };
+  const subscription: Subscription = { service: "fcm", fid: "fid" };
 
   const subscribed = notifications.subscribe({ applicationServerKey: "web only" });
   assert.equal(native.lastRequest().arguments, null);

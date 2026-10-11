@@ -194,13 +194,13 @@ onStart(async () => {
 | Platform | Subscription | Push service |
 |---|---|---|
 | iOS, macOS | `{ service: "apns", token, environment }` | APNs, in `environment` (`development` or `production`) |
-| Android | `{ service: "fcm", token }` | Firebase Cloud Messaging HTTP v1 |
+| Android | `{ service: "fcm", fid }` | Firebase Cloud Messaging HTTP v1, sending to the Firebase Installation ID as the message's `fid`; during FCM's transition, `token` also accepts it |
 | Web | `{ service: "webpush", endpoint, keys }` | Web Push, with the app's VAPID key pair |
 
 Push notifications that arrive while the page is visible reach `onMessage`,
 and show as `showInForeground` sets.
 `onSubscriptionChange` reports a replacement subscription, for example when FCM
-rotates a token.
+registers a new Firebase Installation ID.
 
 ### Declarations
 

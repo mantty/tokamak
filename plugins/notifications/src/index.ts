@@ -161,7 +161,8 @@ export type Subscription =
       readonly token: string;
       readonly environment: "development" | "production";
     }
-  | { readonly service: "fcm"; readonly token: string }
+  /** FCM sends to the Firebase Installation ID, as an HTTP v1 message's `fid`. */
+  | { readonly service: "fcm"; readonly fid: string }
   | {
       readonly service: "webpush";
       readonly endpoint: string;
