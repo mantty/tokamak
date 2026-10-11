@@ -819,7 +819,9 @@ pnpm --dir examples/astro install --frozen-lockfile
 cargo build --release -p tokamak-cli
 ```
 
-The executable is written to `target/release/tok` (`tok.exe` on Windows).
+The executable is written to `release/tok` (`tok.exe` on Windows) in Cargo's
+target directory, `target/` unless `CARGO_TARGET_DIR` or a Cargo configuration
+moves it.
 
 ### Build a platform pack
 

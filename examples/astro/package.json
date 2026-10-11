@@ -5,10 +5,10 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "tokamak:android": "../../target/release/tok build android",
-    "tokamak:macos": "../../target/release/tok build macos",
-    "tokamak:ios": "../../target/release/tok build ios",
-    "tokamak:ios-simulator": "../../target/release/tok build ios-simulator"
+    "tokamak:android": "cargo run --release -p tokamak-cli -- build android",
+    "tokamak:macos": "cargo run --release -p tokamak-cli -- build macos",
+    "tokamak:ios": "cargo run --release -p tokamak-cli -- build ios",
+    "tokamak:ios-simulator": "cargo run --release -p tokamak-cli -- build ios-simulator"
   },
   "dependencies": {
     "@astrojs/cloudflare": "13.1.8",

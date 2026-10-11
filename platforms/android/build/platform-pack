@@ -9,6 +9,8 @@ fi
 target=$2
 output=$3
 workspace=$PWD
+# Where Cargo builds, which `cargo run -p xtask -- platform-pack` passes.
+target_dir=${CARGO_TARGET_DIR:?run this recipe through cargo run -p xtask -- platform-pack}
 build=$workspace/platforms/android/build
 rust_target=aarch64-linux-android
 min_sdk=$(<"$build/min-sdk")
@@ -43,7 +45,7 @@ fi
 rm -rf "$output"
 runtime="$output/lib/TokamakRuntime"
 mkdir -p "$runtime" "$output/build" "$output/native-shell"
-libraries="$workspace/target/$rust_target/release/tokamak-link-libraries"
+libraries="$target_dir/$rust_target/release/tokamak-link-libraries"
 
 # Panics abort, so the runtime's code needs no unwind tables; only the
 # precompiled Rust standard library keeps its own. Native crash reports
@@ -63,7 +65,7 @@ cargo rustc \
   --crate-type staticlib \
   -- --print "native-static-libs=$libraries"
 
-library="$workspace/target/$rust_target/release/libtokamak.a"
+library="$target_dir/$rust_target/release/libtokamak.a"
 if [[ ! -f "$library" || ! -f "$libraries" ]]; then
   echo "tokamak runtime library was not produced: $library" >&2
   exit 1

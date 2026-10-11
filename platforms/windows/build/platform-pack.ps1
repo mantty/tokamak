@@ -14,16 +14,21 @@ if ($Command -ne "build" -or $Target -ne "windows-x64" -or [string]::IsNullOrWhi
 }
 
 $workspace = (Get-Location).Path
+# Where Cargo builds, which `cargo run -p xtask -- platform-pack` passes.
+$targetDir = $env:CARGO_TARGET_DIR
+if ([string]::IsNullOrWhiteSpace($targetDir)) {
+  throw "run this recipe through cargo run -p xtask -- platform-pack"
+}
 $rustTarget = "x86_64-pc-windows-msvc"
 $output = [System.IO.Path]::GetFullPath($Output)
 
-$libraries = Join-Path $workspace "target/$rustTarget/release/tokamak-link-libraries"
+$libraries = Join-Path $targetDir "$rustTarget/release/tokamak-link-libraries"
 & cargo rustc --package windows-shell --release --target $rustTarget --lib --crate-type staticlib -- --print "native-static-libs=$libraries"
 if ($LASTEXITCODE -ne 0) {
   throw "Windows app shell build failed with status $LASTEXITCODE"
 }
 
-$library = Join-Path $workspace "target/$rustTarget/release/windows_shell.lib"
+$library = Join-Path $targetDir "$rustTarget/release/windows_shell.lib"
 if (-not (Test-Path -LiteralPath $library -PathType Leaf) -or -not (Test-Path -LiteralPath $libraries -PathType Leaf)) {
   throw "Windows app shell library was not produced: $library"
 }

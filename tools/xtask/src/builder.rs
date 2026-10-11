@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use tokamak_cli::{
@@ -46,11 +47,36 @@ fn run_platform_recipe(workspace: &WorkspaceLayout, target: Target, output: &Pat
         bail!("platform-pack recipe is missing: {}", recipe.display());
     }
 
+    let target_dir = cargo_target_dir(workspace)?;
     run(script_command(&recipe)
         .args(["build", &target.to_string()])
         .arg(output)
-        .current_dir(workspace.root()))
+        .current_dir(workspace.root())
+        .env("CARGO_TARGET_DIR", target_dir))
     .with_context(|| format!("run platform-pack recipe {}", recipe.display()))
+}
+
+/// Where Cargo builds the workspace, which `CARGO_TARGET_DIR` or a Cargo
+/// configuration can move; recipes find what they built there.
+fn cargo_target_dir(workspace: &WorkspaceLayout) -> Result<PathBuf> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(workspace.root())
+        .output()
+        .context("run cargo metadata")?;
+    if !output.status.success() {
+        bail!(
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("parse cargo metadata")?;
+    metadata["target_directory"]
+        .as_str()
+        .map(PathBuf::from)
+        .context("cargo metadata has no target directory")
 }
 
 /// The variables a pack declares for `target`'s platform namespace.
@@ -103,10 +129,25 @@ mod tests {
 
     use anyhow::Context;
 
-    use super::{plugin_keys, target_variables, validate_entrypoint};
+    use super::{cargo_target_dir, plugin_keys, target_variables, validate_entrypoint};
     use tokamak_cli::{PluginKeyKind, Target, VariableKind};
 
     use crate::layout::WorkspaceLayout;
+
+    #[test]
+    fn finds_where_cargo_builds_the_workspace() -> anyhow::Result<()> {
+        let workspace = WorkspaceLayout::from_source().context("source workspace")?;
+
+        let target_dir = cargo_target_dir(&workspace)?;
+
+        // This test was built there, wherever Cargo was told to build.
+        assert!(
+            target_dir.is_absolute() && target_dir.is_dir(),
+            "{}",
+            target_dir.display()
+        );
+        Ok(())
+    }
 
     #[test]
     fn selects_the_variables_for_the_target_namespace() -> anyhow::Result<()> {
