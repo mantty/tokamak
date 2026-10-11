@@ -7,7 +7,8 @@ import { CloseEvent, EventTarget, MessageEvent } from "../events/web.mjs";
 // Connects two new sockets to each other, both open.
 let pair;
 // The host's end of `client`: `receive` and `close` deliver frames to the server socket,
-// `take()` returns the frames the server sent, and `listen(notify)` runs `notify` whenever it sends one.
+// `disconnect()` tells it the connection dropped without a close frame, `take()` returns
+// the frames the server sent, and `listen(notify)` runs `notify` whenever it sends one.
 let nativeWebSocket;
 
 export class WebSocket extends EventTarget {
@@ -64,14 +65,13 @@ export class WebSocket extends EventTarget {
 
   #receiveMessage(data) {
     if (this.#readyState === 3) return;
-    this.#readyState = 1;
     this.dispatchEvent(new MessageEvent("message", { data }));
   }
 
-  #receiveClose(code, reason) {
+  #receiveClose(code, reason, wasClean) {
     if (this.#readyState === 3) return;
     this.#readyState = 3;
-    this.dispatchEvent(new CloseEvent("close", { code, reason, wasClean: true }));
+    this.dispatchEvent(new CloseEvent("close", { code, reason, wasClean }));
   }
 
   static {
@@ -86,7 +86,8 @@ export class WebSocket extends EventTarget {
       if (server === undefined) throw new TypeError("The WebSocket has no peer");
       return {
         receive: data => server.#receiveMessage(data),
-        close: (code, reason) => server.#receiveClose(code, reason),
+        close: (code, reason) => server.#receiveClose(code, reason, true),
+        disconnect: () => server.#receiveClose(1006, "WebSocket disconnected without sending Close frame.", false),
         take: () => client.#outbox.splice(0),
         listen: notify => { client.#notify = notify; },
       };

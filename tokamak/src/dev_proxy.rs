@@ -226,18 +226,13 @@ impl DevProxy {
             upstream = self.open_websocket(request) => upstream?,
             () = stopped.cancelled() => return Ok(()),
         };
-        let gateway_closed =
-            || io::Error::new(io::ErrorKind::BrokenPipe, "WebSocket gateway closed");
         response
             .send(JobResponse::WebSocket)
-            .map_err(|_| gateway_closed())?;
-        websocket
-            .outgoing
-            .send(WebSocketOutbound::Ready)
-            .map_err(|_| gateway_closed())?;
+            .map_err(|_| io::Error::other("WebSocket gateway closed"))?;
+        websocket.outgoing.send(WebSocketOutbound::Ready);
         let result = relay_websocket(upstream, websocket, stopped).await;
         if result.is_err() {
-            let _ = websocket.outgoing.send(WebSocketOutbound::Close {
+            websocket.outgoing.send(WebSocketOutbound::Close {
                 code: 1011,
                 reason: "development server connection failed".to_owned(),
             });
@@ -399,8 +394,9 @@ fn can_retry(method: &str, error: &HandlerError) -> bool {
     idempotent && dropped
 }
 
-/// Relays frames between the `WebView`'s WebSocket and the host server's
-/// until either side closes or the runtime stops.
+/// Relays frames between the `WebView`'s WebSocket and the host server's until
+/// the `WebView` closes or leaves, the host leaves, or the runtime stops. After
+/// the host's close frame, the relay continues until the `WebView`'s answers it.
 async fn relay_websocket(
     upstream: Upgraded,
     websocket: &WebSocketJob,
@@ -412,9 +408,7 @@ async fn relay_websocket(
     let mut bytes = [0; 8192];
     loop {
         while let Some(frame) = parse_websocket_frame(&mut buffer, false)? {
-            if relay_host_frame(frame, websocket, &mut fragmented, &mut writer).await? {
-                return Ok(());
-            }
+            relay_host_frame(frame, websocket, &mut fragmented, &mut writer).await?;
         }
         let count = tokio::select! {
             () = stopped.cancelled() => {
@@ -429,7 +423,7 @@ async fn relay_websocket(
             count = reader.read(&mut bytes) => count?,
         };
         if count == 0 {
-            let _ = websocket.outgoing.send(WebSocketOutbound::Close {
+            websocket.outgoing.send(WebSocketOutbound::Close {
                 code: 1000,
                 reason: String::new(),
             });
@@ -439,33 +433,30 @@ async fn relay_websocket(
     }
 }
 
-/// Passes a host frame to the `WebView`, reporting whether it closed the connection.
+/// Passes a host frame to the `WebView`.
 async fn relay_host_frame(
     frame: WebSocketFrame,
     websocket: &WebSocketJob,
     fragmented: &mut Option<(u8, Vec<u8>)>,
     writer: &mut (impl AsyncWrite + Unpin),
-) -> io::Result<bool> {
+) -> io::Result<()> {
     match frame.opcode {
         0x8 => {
             let (code, reason) = websocket_close(&frame.payload)?;
-            let _ = websocket
+            websocket
                 .outgoing
                 .send(WebSocketOutbound::Close { code, reason });
-            Ok(true)
+            Ok(())
         }
-        0x9 => write_frame(writer, 0xA, &frame.payload)
-            .await
-            .map(|()| false),
-        0xA => Ok(false),
+        0x9 => write_frame(writer, 0xA, &frame.payload).await,
+        0xA => Ok(()),
         0x0..=0x2 => queue_websocket_message(
             &websocket.outgoing,
             fragmented,
             frame.final_frame,
             frame.opcode,
             frame.payload,
-        )
-        .map(|()| false),
+        ),
         _ => Err(invalid_data("invalid host WebSocket opcode")),
     }
 }
