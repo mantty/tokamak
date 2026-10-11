@@ -24,6 +24,7 @@
       "sources": [
         "android/NotificationsPlugin.kt",
         "android/Content.kt",
+        "android/Json.kt",
         "android/Notifier.kt",
         "android/Setup.kt",
         "android/Schedule.kt",

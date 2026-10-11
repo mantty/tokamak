@@ -1,5 +1,6 @@
 import { Plugin } from "@tokamakdev/plugin";
 import * as web from "../web/index.js";
+import { validateContent } from "./content.js";
 import { validateSetup } from "./setup.js";
 
 /** Whether the app may show notifications. */
@@ -15,7 +16,115 @@ export interface NotificationContent {
   readonly category?: string;
   /** Android only: a `setup` channel. Notifications that name none use `defaultChannel`. */
   readonly channel?: string;
+  /** Apple and Android: shows the notifications that name the same group together. */
+  readonly group?: string;
+  /** The app's badge count once the notification shows. */
+  readonly badge?: number;
+  /** Shows the notification without sound or vibration. */
+  readonly silent?: boolean;
+  /** Android and web: the time the notification shows, in milliseconds since the epoch. */
+  readonly timestamp?: number;
+  /** Apple only. */
+  readonly subtitle?: string;
+  /**
+   * Apple only: how urgently the notification interrupts. `timeSensitive` and `critical` need
+   * their entitlements.
+   */
+  readonly interruptionLevel?: "passive" | "active" | "timeSensitive" | "critical";
+  /** Apple only: from 0 to 1, how the notification ranks in the notification summary. */
+  readonly relevanceScore?: number;
+  /** Android only: a line shown with the app's name. */
+  readonly subText?: string;
+  /** Android only: the accent colour, as `#rrggbb`. */
+  readonly color?: string;
+  /** Android only. */
+  readonly style?: AndroidStyle;
+  /** Android only: a progress bar, which `indeterminate` animates without a value. */
+  readonly progress?:
+    | { readonly current: number; readonly max: number }
+    | { readonly indeterminate: true };
+  /** Android only: keeps the notification from being dismissed; from Android 14 the user can still swipe it away on an unlocked device. */
+  readonly ongoing?: boolean;
+  /** Android only: whether opening the notification removes it; true by default. */
+  readonly autoCancel?: boolean;
+  /** Android only: a replacement with the same id does not alert again. */
+  readonly onlyAlertOnce?: boolean;
+  /** Android only: removes the notification after this many milliseconds. */
+  readonly timeoutAfter?: number;
+  /** Android only: shows the time since `timestamp`, or until it with `countDown`. */
+  readonly chronometer?: boolean | { readonly countDown: boolean };
+  /** Android only: how much of the notification shows on the lock screen. */
+  readonly visibility?: "public" | "private" | "secret";
+  /** Android only: what the lock screen shows instead, with `visibility` `"private"`. */
+  readonly publicVersion?: { readonly title: string; readonly body?: string };
+  /** Android only: orders the notification among others of its group. */
+  readonly sortKey?: string;
+  /** Android only: what kind of notification this is, which ranking and Do Not Disturb use. */
+  readonly androidCategory?: AndroidCategory;
+  /** Web only: the notification stays until the user acts on it. */
+  readonly requireInteraction?: boolean;
+  /** Web only: a replacement with the same id alerts again. */
+  readonly renotify?: boolean;
+  /** Web only: a vibration pattern in milliseconds, alternating on and off. */
+  readonly vibrate?: readonly number[];
+  /** Web only: the text direction. */
+  readonly dir?: "auto" | "ltr" | "rtl";
+  /** Web only: the language of the text, as a BCP 47 tag. */
+  readonly lang?: string;
+  /** Web only: the URL of a small monochrome image that represents the app. */
+  readonly badgeImage?: string;
 }
+
+/** An Android notification style; Android shows the collapsed notification without it. */
+export type AndroidStyle =
+  | {
+      readonly type: "bigText";
+      readonly text: string;
+      readonly title?: string;
+      readonly summary?: string;
+    }
+  | {
+      readonly type: "inbox";
+      readonly lines: readonly string[];
+      readonly title?: string;
+      readonly summary?: string;
+    }
+  | {
+      readonly type: "messaging";
+      /** The name of the device's user, who sends the messages that name no sender. */
+      readonly user: string;
+      /** A group conversation's title. */
+      readonly conversationTitle?: string;
+      readonly messages: readonly {
+        readonly text: string;
+        /** Milliseconds since the epoch. */
+        readonly at: number;
+        readonly sender?: string;
+      }[];
+    };
+
+/** The kinds of Android notification, as `Notification.CATEGORY_*` names them. */
+export type AndroidCategory =
+  | "alarm"
+  | "call"
+  | "email"
+  | "error"
+  | "event"
+  | "locationSharing"
+  | "message"
+  | "missedCall"
+  | "navigation"
+  | "progress"
+  | "promo"
+  | "recommendation"
+  | "reminder"
+  | "service"
+  | "social"
+  | "status"
+  | "stopwatch"
+  | "system"
+  | "transport"
+  | "workout";
 
 export interface ScheduledNotification extends NotificationContent {
   /** Milliseconds since the epoch; the earliest time the notification is shown. */
@@ -200,13 +309,15 @@ class Notifications extends Plugin {
     return this.hasNativeTransport ? this.call("requestPermission") : web.requestPermission();
   }
 
-  /** Shows a notification now. */
-  show(notification: NotificationContent): Promise<void> {
+  /** Shows a notification now. Rejects with `TypeError`, showing nothing, when a value is invalid. */
+  async show(notification: NotificationContent): Promise<void> {
+    validateContent(notification, false);
     return this.hasNativeTransport ? this.call("show", notification) : web.show(notification);
   }
 
   /** Shows a notification at `at`, or now when `at` has passed. Not supported on the web. */
-  schedule(notification: ScheduledNotification): Promise<void> {
+  async schedule(notification: ScheduledNotification): Promise<void> {
+    validateContent(notification, true);
     return this.hasNativeTransport ? this.call("schedule", notification) : web.schedule();
   }
 
@@ -256,7 +367,7 @@ class Notifications extends Plugin {
 
   /**
    * Receives notifications the user dismissed. Apple platforms report only those of categories
-   * with `customDismissAction`.
+   * with `customDismissAction`; Android also reports those its `timeoutAfter` removed.
    */
   onNotificationDismissed(
     listener: Listener<DismissedNotification>,

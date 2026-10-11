@@ -20,9 +20,11 @@ import {
   type ServiceWorkerMessage,
   notificationData,
   pluginData,
+  setAppBadge,
   storeSetup,
   storedCategory,
   webActions,
+  webOptions,
   webPushSubscription,
 } from "./protocol.js";
 
@@ -46,6 +48,7 @@ export async function show(notification: NotificationContent): Promise<void> {
   const api = notificationApi();
   if (api.permission !== "granted") throw notAllowed();
   const options = {
+    ...webOptions(notification),
     body: notification.body,
     tag: notification.id,
     data: notificationData("local", notification.data, notification.category),
@@ -57,13 +60,14 @@ export async function show(notification: NotificationContent): Promise<void> {
       ...options,
       actions,
     } as NotificationOptions);
-    return;
+  } else {
+    try {
+      new api(notification.title, options);
+    } catch {
+      throw new DOMException("Showing notifications needs a service worker here", "NotSupportedError");
+    }
   }
-  try {
-    new api(notification.title, options);
-  } catch {
-    throw new DOMException("Showing notifications needs a service worker here", "NotSupportedError");
-  }
+  await setAppBadge(notification.badge);
 }
 
 export function schedule(): Promise<void> {

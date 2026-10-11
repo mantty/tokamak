@@ -67,7 +67,7 @@ class TokamakNotificationsPlugin(
             "requestPermission" -> requestPermission(reply)
             "show" -> show(Content.parse(arguments, scheduled = false), reply)
             "schedule" -> schedule(Content.parse(arguments, scheduled = true), reply)
-            "getScheduled" -> reply(Result.success(JSONArray(schedule.all().map(Content::toJson))))
+            "getScheduled" -> reply(Result.success(JSONArray(schedule.all().map { it.json })))
             "getDelivered" -> reply(Result.success(JSONArray(notifier.delivered())))
             "remove" -> remove(identifier(arguments), reply)
             "subscribe" -> subscribe(reply)
@@ -95,8 +95,10 @@ class TokamakNotificationsPlugin(
             intent.getStringExtra(OPENED_EXTRA)?.let { opened(intent, it) }
                 ?: intent.getStringExtra(FCM_MESSAGE_ID_EXTRA)?.let { openedPush(intent, it) }
                 ?: return
+        removeSummaryIfEmpty(intent, opened)
         intent.removeExtra(OPENED_EXTRA)
         intent.removeExtra(FCM_MESSAGE_ID_EXTRA)
+        intent.removeExtra(GROUP_EXTRA)
         deliver("onNotificationOpened", "opened", opened) {}
     }
 
@@ -104,11 +106,17 @@ class TokamakNotificationsPlugin(
     internal fun respond(intent: Intent, finish: () -> Unit) {
         val dismissed = intent.getStringExtra(DISMISSED_EXTRA)?.let(::JSONObject)
         val opened = intent.getStringExtra(OPENED_EXTRA)?.let { opened(intent, it) }
+        dismissed?.let { removeSummaryIfEmpty(intent, it) }
         when {
             dismissed != null -> deliver("onNotificationDismissed", "dismissed", dismissed, finish)
             opened != null -> deliver("onNotificationOpened", "opened", opened, finish)
             else -> finish()
         }
+    }
+
+    /** Removes the summary of the group of [notification], which Android removed, if it was the group's last. */
+    private fun removeSummaryIfEmpty(intent: Intent, notification: JSONObject) {
+        intent.getStringExtra(GROUP_EXTRA)?.let { notifier.removeSummaryIfEmpty(it, notification.getString("id")) }
     }
 
     /** An opened notification with the typed text, removing the notification after an action, as Apple does. */

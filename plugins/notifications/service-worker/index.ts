@@ -1,4 +1,10 @@
-import type { DismissedNotification, Message, OpenedNotification } from "../src/index.js";
+import type {
+  DismissedNotification,
+  Message,
+  NotificationContent,
+  OpenedNotification,
+} from "../src/index.js";
+import { pushContent } from "../src/content.js";
 import {
   DISMISSED,
   DISMISSED_CACHE,
@@ -10,8 +16,10 @@ import {
   type ServiceWorkerMessage,
   notificationData,
   pluginData,
+  setAppBadge,
   storedCategory,
   webActions,
+  webOptions,
   webPushSubscription,
 } from "../web/protocol.js";
 
@@ -54,12 +62,12 @@ interface ServiceWorkerScope {
 const scope = globalThis as unknown as ServiceWorkerScope;
 
 /**
- * Shows the notification in a push message's `{ id, title, body, data, category }` JSON
- * payload, with the `setup` category's actions, and forwards the message to open pages.
+ * Shows the notification in a push message's JSON payload, with the `setup` category's actions,
+ * and forwards the message to open pages. The payload has the fields `show` takes, all optional.
  */
 export function handlePush(event: PushEvent): void {
   const fields = payload(event.data?.text());
-  event.waitUntil(showAndForward(message(fields), category(fields)));
+  event.waitUntil(showAndForward(message(fields), isRecord(fields) ? pushContent(fields) : {}));
 }
 
 /**
@@ -96,14 +104,16 @@ export function handleSubscriptionChange(event: PushSubscriptionChangeEvent): vo
   event.waitUntil(forwardSubscription(event));
 }
 
-async function showAndForward(pushed: Message, categoryId: string | undefined): Promise<void> {
+async function showAndForward(pushed: Message, content: Partial<NotificationContent>): Promise<void> {
   await scope.registration.showNotification(pushed.title ?? "", {
+    ...webOptions(content),
     body: pushed.body ?? undefined,
     tag: pushed.id,
-    data: notificationData("push", pushed.data, categoryId),
-    actions: webActions(await storedCategory(categoryId)),
+    data: notificationData("push", pushed.data, content.category),
+    actions: webActions(await storedCategory(content.category)),
   } as NotificationOptions);
   await post({ type: MESSAGE, message: pushed });
+  await setAppBadge(content.badge);
 }
 
 function notification(shown: Notification, data: NotificationData["tokamak"]): DismissedNotification {
@@ -172,12 +182,6 @@ function payload(text: string | undefined): unknown {
   } catch {
     return { body: text };
   }
-}
-
-/** The `setup` category a push payload names, if any. */
-function category(payload: unknown): string | undefined {
-  const value = (payload as { category?: unknown } | undefined)?.category;
-  return typeof value === "string" ? value : undefined;
 }
 
 /** The message in a push payload; every field is optional. */

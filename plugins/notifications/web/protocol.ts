@@ -1,6 +1,7 @@
 import type {
   Category,
   Message,
+  NotificationContent,
   OpenedNotification,
   SetupConfig,
   Subscription,
@@ -67,6 +68,29 @@ export async function storedCategory(id: string | undefined): Promise<Category |
   const stored = await (await caches.open(SETUP_CACHE)).match(SETUP_URL);
   const config = stored ? ((await stored.json()) as SetupConfig) : {};
   return config.categories?.find((category) => category.id === id);
+}
+
+/** The options of `content` that `showNotification` takes besides its body, tag, data and actions. */
+export function webOptions(content: Partial<NotificationContent>): NotificationOptions {
+  return {
+    silent: content.silent,
+    timestamp: content.timestamp,
+    requireInteraction: content.requireInteraction,
+    renotify: content.renotify,
+    vibrate: content.vibrate,
+    dir: content.dir,
+    lang: content.lang,
+    badge: content.badgeImage,
+  } as NotificationOptions;
+}
+
+/**
+ * Sets the app badge where the Badging API exists. Browsers badge installed web apps only and may
+ * refuse elsewhere; the notification shows either way.
+ */
+export async function setAppBadge(count: number | undefined): Promise<void> {
+  if (count === undefined || !("setAppBadge" in navigator)) return;
+  await navigator.setAppBadge(count).catch(() => undefined);
 }
 
 /** A category's actions as `showNotification` takes them. */

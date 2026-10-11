@@ -23,7 +23,7 @@ internal class Schedule(private val context: Context) {
         preferences.all.values.map { Content.fromJson(JSONObject(it as String)) }
 
     fun add(content: Content) {
-        preferences.edit().putString(content.id, content.toJson().toString()).apply()
+        preferences.edit().putString(content.id, content.json.toString()).apply()
         arm(content)
     }
 

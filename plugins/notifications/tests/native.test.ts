@@ -60,6 +60,34 @@ void test("calls the native plugin with each operation's arguments", async () =>
   }
 });
 
+void test("passes every notification field to the native plugin", async () => {
+  const native = connectNative();
+  const notification = {
+    id: "n1",
+    title: "Ada",
+    group: "chats",
+    badge: 3,
+    silent: true,
+    style: { type: "inbox", lines: ["Lunch?", "At one?"], summary: "2 messages" },
+    progress: { indeterminate: true },
+    chronometer: true,
+  } as const;
+
+  const shown = notifications.show(notification);
+  assert.deepEqual(native.lastRequest().arguments, notification);
+  native.respond({ value: null });
+  await shown;
+});
+
+void test("rejects an invalid notification without calling the native plugin", async () => {
+  const native = connectNative();
+
+  const shown = notifications.show({ id: "n1", title: "Hi", badge: -1 });
+
+  assert.deepEqual(native.sent, []);
+  await assert.rejects(shown, (error: unknown) => error instanceof TypeError);
+});
+
 void test("rejects an invalid setup without calling the native plugin", async () => {
   const native = connectNative();
 
