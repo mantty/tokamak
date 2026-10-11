@@ -18,7 +18,8 @@ const subscription = await notifications.subscribe({ applicationServerKey: VAPID
 await fetch("/api/subscriptions", { method: "POST", body: JSON.stringify(subscription) });
 
 notifications.onMessage((message) => console.log(message.data));
-notifications.onNotificationOpened((opened) => console.log(opened.id, opened.source));
+notifications.onNotificationOpened((opened) => console.log(opened.id, opened.action, opened.input));
+notifications.onNotificationDismissed((dismissed) => console.log(dismissed.id));
 notifications.onSubscriptionChange((subscription) => {
   void fetch("/api/subscriptions", { method: "POST", body: JSON.stringify(subscription) });
 });
@@ -35,10 +36,131 @@ background, a `requestPermission()` that would show the prompt rejects with
 `NeedsUIError`; one the user has already answered resolves with the
 permission. Ask again once the app is on screen, for example from `onResume`.
 
+## Setup
+
+`setup(config)` configures notifications on every platform in one call. Each
+platform reads its own keys and ignores the others, so the same call runs
+everywhere:
+
+```ts
+// src/tokamak.ts
+import { onStart } from "@tokamakdev/tok/events";
+import { notifications } from "@tokamakdev/plugin-notifications";
+
+onStart((_event, _env, ctx) => {
+  ctx.waitUntil(
+    notifications.setup({
+      categories: [
+        {
+          id: "message",
+          actions: [
+            { id: "reply", title: "Reply", input: { button: "Send", placeholder: "Message" } },
+            { id: "read", title: "Mark as read" },
+            { id: "open", title: "Open", foreground: true },
+          ],
+          customDismissAction: true,
+        },
+      ],
+      showInForeground: { banner: true, list: true },
+      defaultChannel: { name: "General" },
+      channels: [{ id: "messages", name: "Messages", importance: "high" }],
+    }),
+  );
+});
+```
+
+```ts
+await notifications.show({ id: "message-1", title: "Ada", body: "Lunch?", category: "message", channel: "messages" });
+```
+
+Native builds run `src/tokamak.ts` at every start, including in the
+background. Web builds leave it out, so a web app calls `setup` from page
+code, for example where it registers its service worker. The page stores the
+configuration where the service worker reads it.
+
+The configuration is the whole of it, not a change to the last one:
+
+- `setup` checks every value first. An invalid one rejects with `TypeError`
+  and changes nothing.
+- It removes the categories, channels and channel groups an earlier
+  configuration had and this one leaves out.
+- The plugin keeps the configuration and applies it again when the app starts,
+  before the Worker runs, so an action that starts the app in the background
+  works. Calling `setup` at every start with the same configuration changes
+  nothing.
+
+The system shows action titles, placeholders and channel names as given, so
+pass them in the user's language.
+
+### Categories and actions
+
+A notification that names a `category` shows the category's actions. Choosing
+one removes the notification and reaches `onNotificationOpened` with the
+action's `id` as `action`, and the text typed into an action with `input` as
+`input`. An action without `foreground` does not open the app: the Worker's
+listeners receive it, starting the app in the background if it is not running,
+and so do the page's while it is loaded.
+
+| Key | iOS, macOS | Android | Web |
+|---|---|---|---|
+| `actions` | Every action, or the first two where space is short | Up to three | Up to `Notification.maxActions`, two in Chrome; none in Safari |
+| `input` | A text field with `button` and `placeholder` | An inline reply labelled `placeholder` | A text field labelled `placeholder`, in Chrome only |
+| `foreground` | Opens the app | Opens the app | Focuses a page, or opens `data.url` |
+| `destructive`, `authenticationRequired`, `systemImage` | Yes | No | No |
+| `hiddenPreviewsBodyPlaceholder`, `hiddenPreviewsShowTitle`, `hiddenPreviewsShowSubtitle`, `summaryFormat`, `customDismissAction` | Yes | No | No |
+| `allowInCarPlay` | iOS | No | No |
+
+Push notifications name a category in their payload: `aps.category` for APNs
+and `category` for Web Push. FCM notification messages have none; to give a
+push notification actions on Android, send a data-only message and return the
+notification, with its `category`, from `onPush`.
+
+### While the app is on screen
+
+`showInForeground` sets whether notifications show while the app is on screen,
+local or push: `true`, the default, or `false`. Apple platforms also take an
+object naming the parts to show, from `banner`, `list`, `sound` and `badge`.
+The web always shows notifications. Push messages reach `onMessage` either
+way.
+
+### Android channels
+
+Android files each notification under a channel, whose settings the user can
+change in system settings. A notification that names no `channel` uses the
+default channel, which is named after the app unless `defaultChannel` names
+it. `channels` adds channels, and `channelGroups` groups them in system
+settings. FCM notification messages use the channel their
+`android.notification.channel_id` names.
+
+- `importance`: `none`, `min`, `low`, `default` or `high`, which shows
+  heads-up notifications. Defaults to `default`.
+- `sound`: `"default"`, `"none"`, or the name of a sound in the `raw`
+  directory of the res directory set with `android.icon`.
+- `vibration`: whether to vibrate, or a non-empty pattern of milliseconds
+  alternating between off and on.
+- `lights`: the light's colour as `#rrggbb`, such as `"#00ff00"`, or false.
+- `showBadge`: whether the launcher shows a badge.
+- `bypassDnd`: whether notifications sound during Do Not Disturb. It takes
+  effect only for apps the user gave Do Not Disturb access.
+
+Android keeps an existing channel's settings as first created or as the user
+changed them, and lets `setup` change only its name and description, its
+group while it has none, and its importance downwards while the user has
+changed nothing. `setup` resolves with the settings it could not change:
+
+```ts
+const { unapplied } = await notifications.setup(config);
+// [{ channel: "messages", fields: ["importance"] }]
+```
+
+To change a channel's behaviour for existing installations, give it a new
+`id`. Android restores a removed channel's settings when an app creates a
+channel with its `id` again.
+
 ## Local notifications
 
-- `show(notification)` shows a notification now, even while the page is
-  visible.
+- `show(notification)` shows a notification now. While the app is on screen,
+  it shows as `showInForeground` sets.
 - `schedule(notification)` shows it at `at`, in milliseconds since the epoch,
   or now when `at` has passed. Scheduled notifications survive app and device
   restarts. Android may delay them by several minutes while the device is idle.
@@ -75,9 +197,8 @@ onStart(async () => {
 | Android | `{ service: "fcm", token }` | Firebase Cloud Messaging HTTP v1 |
 | Web | `{ service: "webpush", endpoint, keys }` | Web Push, with the app's VAPID key pair |
 
-Push notifications that arrive while the page is visible reach `onMessage`.
-They are also shown when `subscribe` was given `showInForeground: true`, on
-iOS, macOS and Android. The web shows every push notification.
+Push notifications that arrive while the page is visible reach `onMessage`,
+and show as `showInForeground` sets.
 `onSubscriptionChange` reports a replacement subscription, for example when FCM
 rotates a token.
 
@@ -132,7 +253,7 @@ The server sends each service's payload, and the plugin reports it as a
 | FCM | The message ID | `notification.title`, `notification.body` | The `data` map |
 | Web Push | `id` in the JSON payload | `title`, `body` in the payload | `data` in the payload |
 
-A Web Push payload is JSON: `{ "id": "...", "title": "...", "body": "...", "data": {} }`.
+A Web Push payload is JSON: `{ "id": "...", "title": "...", "body": "...", "data": {}, "category": "..." }`.
 Every field is optional.
 
 ### Data-only messages
@@ -174,24 +295,34 @@ The platforms limit background delivery:
 The web does not support data-only messages: browsers require every push
 message to show a notification.
 
-## Opened notifications
+## Opened and dismissed notifications
 
 `onNotificationOpened` receives each notification the user opens, local or
-push. The plugin holds notifications opened before a page listens, including
+push, and each action the user chooses. `action` is the action's `id`, or null
+for the notification itself, and `input` is the text typed into the action, or
+null. The plugin holds notifications opened before a page listens, including
 the one that launched the app, and delivers them to the first listener.
 Android does not pass the title or body of an FCM notification the system
 showed, so those are null.
 
-In native builds, the Worker's `onNotificationOpened` listeners, from
-`@tokamakdev/plugin-notifications/events`, also receive each opened
-notification, with the same `OpenedNotification`:
+`onNotificationDismissed` receives each notification the user dismisses, held
+in the same way. Apple platforms report only notifications whose category has
+`customDismissAction`. Android does not report notifications FCM showed, and
+the web reports only notifications its service worker showed.
+
+In native builds, the Worker's `onNotificationOpened` and
+`onNotificationDismissed` listeners, from
+`@tokamakdev/plugin-notifications/events`, also receive each notification,
+whether or not the app is on screen:
 
 ```ts
 // src/tokamak.ts
 import { onNotificationOpened } from "@tokamakdev/plugin-notifications/events";
 
 onNotificationOpened((opened, env, ctx) => {
-  ctx.waitUntil(env.OPENS.put(opened.id, opened.source));
+  if (opened.action === "reply" && opened.input !== null) {
+    ctx.waitUntil(env.REPLIES.put(opened.id, opened.input));
+  }
 });
 ```
 
@@ -203,20 +334,26 @@ the helpers to the app's own service worker:
 ```js
 import {
   handleNotificationClick,
+  handleNotificationClose,
   handlePush,
   handleSubscriptionChange,
 } from "@tokamakdev/plugin-notifications/service-worker";
 
 self.addEventListener("push", (event) => handlePush(event));
 self.addEventListener("notificationclick", (event) => handleNotificationClick(event));
+self.addEventListener("notificationclose", (event) => handleNotificationClose(event));
 self.addEventListener("pushsubscriptionchange", (event) => handleSubscriptionChange(event));
 ```
 
-- `handlePush` shows the payload's notification and forwards the message to
-  open pages.
-- `handleNotificationClick` focuses an open page, or opens `data.url` (default
-  `/`), and holds the notification for `onNotificationOpened`. It returns false
-  for notifications the plugin did not show.
+- `handlePush` shows the payload's notification, with its category's actions,
+  and forwards the message to open pages.
+- `handleNotificationClick` holds the notification, or the chosen action, for
+  `onNotificationOpened`. The notification itself and actions with
+  `foreground` then focus an open page, or open `data.url` (default `/`). It
+  returns false for notifications the plugin did not show.
+- `handleNotificationClose` holds a notification the user dismissed for
+  `onNotificationDismissed`. It returns false for notifications the plugin did
+  not show.
 - `handleSubscriptionChange` forwards a replacement subscription to open pages.
 
 Safari supports Web Push on macOS 13 and later, and on iOS and iPadOS 16.4 and

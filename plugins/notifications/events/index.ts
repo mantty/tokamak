@@ -1,6 +1,11 @@
 import { defineEvent } from "@tokamakdev/plugin/events";
 
-import type { Message, NotificationContent, OpenedNotification } from "../src/index.js";
+import type {
+  DismissedNotification,
+  Message,
+  NotificationContent,
+  OpenedNotification,
+} from "../src/index.js";
 
 /**
  * Receives each data-only push message in native builds, whether the app is in the foreground,
@@ -10,3 +15,9 @@ export const onPush = defineEvent<Message, NotificationContent>("notifications.p
 
 /** Receives each notification the user opens, local or push, including one that opens the app. */
 export const onNotificationOpened = defineEvent<OpenedNotification>("notifications.opened");
+
+/**
+ * Receives each notification the user dismisses, local or push. Apple platforms report only those
+ * of categories with `customDismissAction`.
+ */
+export const onNotificationDismissed = defineEvent<DismissedNotification>("notifications.dismissed");

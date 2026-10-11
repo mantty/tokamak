@@ -7,6 +7,23 @@ import { notifications } from "../src/index.js";
 
 afterEach(disconnectNative);
 
+const setupConfig = {
+  categories: [
+    {
+      id: "message",
+      actions: [
+        { id: "reply", title: "Reply", input: { button: "Send", placeholder: "Message" } },
+        { id: "open", title: "Open", foreground: true },
+      ],
+      customDismissAction: true,
+    },
+  ],
+  showInForeground: { banner: true, list: true },
+  defaultChannel: { name: "General" },
+  channelGroups: [{ id: "chats", name: "Chats" }],
+  channels: [{ id: "messages", name: "Messages", group: "chats", importance: "high" as const }],
+};
+
 void test("calls the native plugin with each operation's arguments", async () => {
   const native = connectNative();
   const cases: [() => Promise<unknown>, string, unknown][] = [
@@ -27,6 +44,7 @@ void test("calls the native plugin with each operation's arguments", async () =>
     [() => notifications.remove("reminder"), "remove", { id: "reminder" }],
     [() => notifications.getSubscription(), "getSubscription", null],
     [() => notifications.unsubscribe(), "unsubscribe", null],
+    [() => notifications.setup(setupConfig), "setup", setupConfig],
   ];
 
   for (const [operation, method, arguments_] of cases) {
@@ -42,17 +60,35 @@ void test("calls the native plugin with each operation's arguments", async () =>
   }
 });
 
-void test("subscribes without showing push notifications in the foreground by default", async () => {
+void test("rejects an invalid setup without calling the native plugin", async () => {
+  const native = connectNative();
+
+  const setup = notifications.setup({ channels: [{ id: "c", name: "C", group: "missing" }] });
+
+  assert.deepEqual(native.sent, []);
+  await assert.rejects(setup, (error: unknown) => error instanceof TypeError);
+});
+
+void test("subscribes without the web's options", async () => {
   const native = connectNative();
   const subscription = { service: "fcm", token: "token" };
 
   const subscribed = notifications.subscribe({ applicationServerKey: "web only" });
-  assert.deepEqual(native.lastRequest().arguments, { showInForeground: false });
+  assert.equal(native.lastRequest().arguments, null);
   native.respond({ value: subscription });
 
   assert.deepEqual(await subscribed, subscription);
-  void notifications.subscribe({ showInForeground: true });
-  assert.deepEqual(native.lastRequest().arguments, { showInForeground: true });
+});
+
+void test("listens for dismissed notifications", () => {
+  const native = connectNative();
+  const dismissed: unknown[] = [];
+
+  notifications.onNotificationDismissed((notification) => dismissed.push(notification.id));
+  assert.equal(native.lastRequest().method, "onNotificationDismissed");
+  native.respond({ value: { id: "1", title: "Hi", body: null, data: {}, source: "local" } }, false);
+
+  assert.deepEqual(dismissed, ["1"]);
 });
 
 void test("delivers native events to listeners until they stop", () => {

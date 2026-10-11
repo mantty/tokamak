@@ -11,6 +11,8 @@ struct TokamakNotificationRequest {
   let title: String
   let body: String?
   let data: [String: Any]
+  /// A `setup` category, whose actions the notification shows.
+  let category: String?
   /// Milliseconds since the epoch; nil to show now.
   let at: Double?
 
@@ -26,6 +28,10 @@ struct TokamakNotificationRequest {
     self.title = title
     body = arguments["body"] as? String
     data = arguments["data"] as? [String: Any] ?? [:]
+    category = arguments["category"] as? String
+    guard category != nil || arguments["category"] == nil else {
+      throw typeError("category must be a string")
+    }
     guard scheduled else {
       at = nil
       return
@@ -42,6 +48,7 @@ struct TokamakNotificationRequest {
     content.title = title
     content.body = body ?? ""
     content.sound = .default
+    content.categoryIdentifier = category ?? ""
     var userInfo: [String: Any] = [dataKey: try json(data)]
     var trigger: UNNotificationTrigger?
     if let at, at > Date().timeIntervalSince1970 * 1000 {
@@ -69,6 +76,7 @@ struct TokamakNotificationFields {
   let title: String?
   let body: String?
   let data: [String: Any]
+  let category: String?
   let isPush: Bool
 
   init(_ notification: UNNotification) {
@@ -76,6 +84,7 @@ struct TokamakNotificationFields {
     id = notification.request.identifier
     title = content.title.isEmpty ? nil : content.title
     body = content.body.isEmpty ? nil : content.body
+    category = content.categoryIdentifier.isEmpty ? nil : content.categoryIdentifier
     (data, isPush) = Self.data(content.userInfo)
   }
 
@@ -85,6 +94,7 @@ struct TokamakNotificationFields {
     id = UUID().uuidString
     title = (alert as? [String: Any])?["title"] as? String
     body = (alert as? [String: Any])?["body"] as? String ?? alert as? String
+    category = (userInfo["aps"] as? [String: Any])?["category"] as? String
     (data, isPush) = Self.data(userInfo)
   }
 
@@ -106,13 +116,20 @@ struct TokamakNotificationFields {
     ["id": id, "title": title ?? NSNull(), "body": body ?? NSNull(), "data": data]
   }
 
-  var opened: [String: Any] {
+  var dismissed: [String: Any] {
     message.merging(["source": isPush ? "push" : "local"]) { current, _ in current }
+  }
+
+  func opened(action: String?, input: String?) -> [String: Any] {
+    dismissed.merging(["action": action ?? NSNull(), "input": input ?? NSNull()]) {
+      current, _ in current
+    }
   }
 
   var content: [String: Any] {
     var content: [String: Any] = ["id": id, "title": title ?? "", "data": data]
     content["body"] = body
+    content["category"] = category
     return content
   }
 }
@@ -132,6 +149,7 @@ extension UNNotificationRequest {
       "at": at,
     ]
     scheduled["body"] = content.body.isEmpty ? nil : content.body
+    scheduled["category"] = content.categoryIdentifier.isEmpty ? nil : content.categoryIdentifier
     return scheduled
   }
 }

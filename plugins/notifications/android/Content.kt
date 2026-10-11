@@ -11,6 +11,10 @@ internal class Content(
     val data: JSONObject,
     /** Milliseconds since the epoch; null to show now. */
     val at: Long?,
+    /** A `setup` category, whose actions the notification shows. */
+    val category: String? = null,
+    /** A `setup` channel; null for the default channel. */
+    val channel: String? = null,
 ) {
     fun toJson(): JSONObject =
         JSONObject()
@@ -20,6 +24,8 @@ internal class Content(
             .apply {
                 body?.let { put("body", it) }
                 at?.let { put("at", it) }
+                category?.let { put("category", it) }
+                channel?.let { put("channel", it) }
             }
 
     companion object {
@@ -27,9 +33,17 @@ internal class Content(
             val json = arguments as? JSONObject ?: JSONObject()
             val id = json.opt("id") as? String
             if (id.isNullOrEmpty()) throw TokamakPluginError.typeError("id must be a non-empty string")
-            val title = json.opt("title") as? String ?: throw TokamakPluginError.typeError("title must be a string")
+            val title = requireString(json, "title")
             val at = if (scheduled) scheduledTime(json) else null
-            return Content(id, title, json.opt("body") as? String, json.optJSONObject("data") ?: JSONObject(), at)
+            return Content(
+                id,
+                title,
+                json.opt("body") as? String,
+                json.optJSONObject("data") ?: JSONObject(),
+                at,
+                optionalString(json, "category"),
+                optionalString(json, "channel"),
+            )
         }
 
         fun fromJson(json: JSONObject): Content = parse(json, json.has("at"))

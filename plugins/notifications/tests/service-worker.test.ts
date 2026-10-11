@@ -3,10 +3,11 @@ import { afterEach, beforeEach, test } from "node:test";
 
 import {
   handleNotificationClick,
+  handleNotificationClose,
   handlePush,
   handleSubscriptionChange,
 } from "../service-worker/index.js";
-import { OPENED_CACHE, notificationData } from "../web/protocol.js";
+import { DISMISSED_CACHE, OPENED_CACHE, notificationData, storeSetup } from "../web/protocol.js";
 import {
   FakeCacheStorage,
   FakePushSubscription,
@@ -90,6 +91,18 @@ void test("shows a pushed notification and forwards the message to open pages", 
   assert.deepEqual(page.posted, [{ type: "tokamak-notifications:message", message: payload }]);
 });
 
+void test("shows a pushed notification with its category's actions", async () => {
+  await storeSetup({ categories: [{ id: "message", actions: [{ id: "read", title: "Read" }] }] });
+  const payload = { id: "m1", title: "Hi", category: "message" };
+
+  await run((event) => {
+    handlePush({ ...event, data: { text: () => JSON.stringify(payload) } });
+  });
+
+  assert.deepEqual(registration.shown[0]?.actions, [{ action: "read", title: "Read" }]);
+  assert.deepEqual(registration.shown[0]?.data, notificationData("push", {}, "message"));
+});
+
 void test("normalises a push payload with missing fields", async () => {
   const page = client("https://app.example/");
   windows = [page];
@@ -131,8 +144,14 @@ void test("holds an opened notification and focuses an open page", async () => {
   windows = [page];
   const notification = clicked(notificationData("local", { n: 1 }));
 
+  // Browsers pass an empty action for a click on the notification itself.
   const handled = await run((event) =>
-    handleNotificationClick({ ...event, notification: notification as unknown as Notification }),
+    handleNotificationClick({
+      ...event,
+      notification: notification as unknown as Notification,
+      action: "",
+      reply: null,
+    }),
   );
 
   assert.equal(handled, true);
@@ -141,7 +160,70 @@ void test("holds an opened notification and focuses an open page", async () => {
   assert.deepEqual(page.posted, [{ type: "tokamak-notifications:opened" }]);
   const held = [...(cacheStorage.entries.get(OPENED_CACHE)?.values() ?? [])];
   assert.deepEqual(held.map((body) => JSON.parse(body) as unknown), [
-    { id: "n1", title: "Hi", body: null, data: { n: 1 }, source: "local" },
+    { id: "n1", title: "Hi", body: null, data: { n: 1 }, source: "local", action: null, input: null },
+  ]);
+});
+
+void test("reports an action and its typed text, opening the app only for a foreground action", async () => {
+  await storeSetup({
+    categories: [
+      {
+        id: "message",
+        actions: [
+          { id: "reply", title: "Reply", input: {} },
+          { id: "open", title: "Open", foreground: true },
+        ],
+      },
+    ],
+  });
+  const page = client("https://app.example/");
+  windows = [page];
+
+  await run((event) =>
+    handleNotificationClick({
+      ...event,
+      notification: clicked(notificationData("local", {}, "message")) as unknown as Notification,
+      action: "reply",
+      reply: "On my way",
+    }),
+  );
+  assert.equal(page.focused, false);
+  assert.deepEqual(page.posted, [{ type: "tokamak-notifications:opened" }]);
+  await run((event) =>
+    handleNotificationClick({
+      ...event,
+      notification: clicked(notificationData("local", {}, "message")) as unknown as Notification,
+      action: "open",
+    }),
+  );
+
+  assert.equal(page.focused, true);
+  const held = [...(cacheStorage.entries.get(OPENED_CACHE)?.values() ?? [])];
+  assert.deepEqual(
+    held.map((body) => JSON.parse(body) as { action: string; input: string | null }),
+    [
+      { id: "n1", title: "Hi", body: null, data: {}, source: "local", action: "reply", input: "On my way" },
+      { id: "n1", title: "Hi", body: null, data: {}, source: "local", action: "open", input: null },
+    ],
+  );
+});
+
+void test("holds a dismissed notification for the page", async () => {
+  const page = client("https://app.example/");
+  windows = [page];
+
+  const handled = await run((event) =>
+    handleNotificationClose({
+      ...event,
+      notification: clicked(notificationData("push", { n: 1 })) as unknown as Notification,
+    }),
+  );
+
+  assert.equal(handled, true);
+  assert.deepEqual(page.posted, [{ type: "tokamak-notifications:dismissed" }]);
+  const held = [...(cacheStorage.entries.get(DISMISSED_CACHE)?.values() ?? [])];
+  assert.deepEqual(held.map((body) => JSON.parse(body) as unknown), [
+    { id: "n1", title: "Hi", body: null, data: { n: 1 }, source: "push" },
   ]);
 });
 
@@ -156,14 +238,12 @@ void test("opens the notification's url when no page is open", async () => {
 });
 
 void test("leaves notifications the plugin did not show to the app", async () => {
-  const handled = await run((event) =>
-    handleNotificationClick({
-      ...event,
-      notification: clicked({ other: true }) as unknown as Notification,
-    }),
-  );
+  const notification = clicked({ other: true }) as unknown as Notification;
+  const handled = await run((event) => handleNotificationClick({ ...event, notification }));
+  const closed = await run((event) => handleNotificationClose({ ...event, notification }));
 
   assert.equal(handled, false);
+  assert.equal(closed, false);
   assert.equal(cacheStorage.entries.size, 0);
 });
 

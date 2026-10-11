@@ -1,12 +1,17 @@
-import type { Message, OpenedNotification } from "../src/index.js";
+import type { DismissedNotification, Message, OpenedNotification } from "../src/index.js";
 import {
+  DISMISSED,
+  DISMISSED_CACHE,
   MESSAGE,
+  type NotificationData,
   OPENED,
   OPENED_CACHE,
   SUBSCRIPTION,
   type ServiceWorkerMessage,
   notificationData,
   pluginData,
+  storedCategory,
+  webActions,
   webPushSubscription,
 } from "../web/protocol.js";
 
@@ -21,6 +26,10 @@ interface PushEvent extends ExtendableEvent {
 
 interface NotificationEvent extends ExtendableEvent {
   readonly notification: Notification;
+  /** The chosen action's id; empty or absent for the notification itself. */
+  readonly action?: string;
+  /** Chrome only: the text typed into an action. */
+  readonly reply?: string | null;
 }
 
 interface PushSubscriptionChangeEvent extends ExtendableEvent {
@@ -45,30 +54,40 @@ interface ServiceWorkerScope {
 const scope = globalThis as unknown as ServiceWorkerScope;
 
 /**
- * Shows the notification in a push message's `{ id, title, body, data }` JSON payload and
- * forwards the message to open pages.
+ * Shows the notification in a push message's `{ id, title, body, data, category }` JSON
+ * payload, with the `setup` category's actions, and forwards the message to open pages.
  */
 export function handlePush(event: PushEvent): void {
-  event.waitUntil(showAndForward(message(payload(event.data?.text()))));
+  const fields = payload(event.data?.text());
+  event.waitUntil(showAndForward(message(fields), category(fields)));
 }
 
 /**
- * Handles a click on a notification the plugin showed: holds it for the page's
- * `onNotificationOpened`, then focuses an open page or opens `data.url` (default `/`).
- * Returns false for other notifications.
+ * Handles a click on a notification the plugin showed, or on one of its actions: holds it for
+ * the page's `onNotificationOpened`. The notification itself and actions with `foreground` then
+ * focus an open page or open `data.url` (default `/`). Returns false for other notifications.
  */
 export function handleNotificationClick(event: NotificationEvent): boolean {
   const data = pluginData(event.notification.data);
   if (!data) return false;
   event.notification.close();
   const opened: OpenedNotification = {
-    id: event.notification.tag,
-    title: event.notification.title,
-    body: event.notification.body || null,
-    data: data.data,
-    source: data.source,
+    ...notification(event.notification, data),
+    action: event.action || null,
+    input: event.reply ?? null,
   };
-  event.waitUntil(open(opened));
+  event.waitUntil(open(opened, data.category));
+  return true;
+}
+
+/**
+ * Holds a notification the plugin showed, which the user dismissed, for the page's
+ * `onNotificationDismissed`. Returns false for other notifications.
+ */
+export function handleNotificationClose(event: NotificationEvent): boolean {
+  const data = pluginData(event.notification.data);
+  if (!data) return false;
+  event.waitUntil(dismiss(notification(event.notification, data)));
   return true;
 }
 
@@ -77,25 +96,54 @@ export function handleSubscriptionChange(event: PushSubscriptionChangeEvent): vo
   event.waitUntil(forwardSubscription(event));
 }
 
-async function showAndForward(pushed: Message): Promise<void> {
+async function showAndForward(pushed: Message, categoryId: string | undefined): Promise<void> {
   await scope.registration.showNotification(pushed.title ?? "", {
     body: pushed.body ?? undefined,
     tag: pushed.id,
-    data: notificationData("push", pushed.data),
-  });
+    data: notificationData("push", pushed.data, categoryId),
+    actions: webActions(await storedCategory(categoryId)),
+  } as NotificationOptions);
   await post({ type: MESSAGE, message: pushed });
 }
 
-async function open(opened: OpenedNotification): Promise<void> {
-  const cache = await caches.open(OPENED_CACHE);
-  await cache.put(`/__tokamak/notifications/opened/${crypto.randomUUID()}`, Response.json(opened));
-  const client = (await windows()).at(0);
-  if (client) {
-    await client.focus();
-  } else {
-    await scope.clients.openWindow(typeof opened.data.url === "string" ? opened.data.url : "/");
+function notification(shown: Notification, data: NotificationData["tokamak"]): DismissedNotification {
+  return {
+    id: shown.tag,
+    title: shown.title,
+    body: shown.body || null,
+    data: data.data,
+    source: data.source,
+  };
+}
+
+async function open(opened: OpenedNotification, categoryId: string | undefined): Promise<void> {
+  await hold(OPENED_CACHE, opened);
+  if (opened.action === null || (await foreground(opened.action, categoryId))) {
+    const client = (await windows()).at(0);
+    if (client) {
+      await client.focus();
+    } else {
+      await scope.clients.openWindow(typeof opened.data.url === "string" ? opened.data.url : "/");
+    }
   }
   await post({ type: OPENED });
+}
+
+/** Whether the `setup` action opens the app. */
+async function foreground(actionId: string, categoryId: string | undefined): Promise<boolean> {
+  const action = (await storedCategory(categoryId))?.actions.find(({ id }) => id === actionId);
+  return action?.foreground ?? false;
+}
+
+async function dismiss(dismissed: DismissedNotification): Promise<void> {
+  await hold(DISMISSED_CACHE, dismissed);
+  await post({ type: DISMISSED });
+}
+
+/** Keeps `value` in `cacheName` until a page takes it. */
+async function hold(cacheName: string, value: unknown): Promise<void> {
+  const cache = await caches.open(cacheName);
+  await cache.put(`/__tokamak/notifications/${crypto.randomUUID()}`, Response.json(value));
 }
 
 async function forwardSubscription(event: PushSubscriptionChangeEvent): Promise<void> {
@@ -124,6 +172,12 @@ function payload(text: string | undefined): unknown {
   } catch {
     return { body: text };
   }
+}
+
+/** The `setup` category a push payload names, if any. */
+function category(payload: unknown): string | undefined {
+  const value = (payload as { category?: unknown } | undefined)?.category;
+  return typeof value === "string" ? value : undefined;
 }
 
 /** The message in a push payload; every field is optional. */
