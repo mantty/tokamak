@@ -64,13 +64,13 @@ class TokamakFirebaseInitializer : ContentProvider() {
     ): Int = 0
 }
 
-/** Receives FCM tokens and messages, including when FCM starts the app to deliver one. */
+/** Receives FCM registrations and messages, including when FCM starts the app to deliver one. */
 class TokamakPushService : FirebaseMessagingService() {
     private val plugin: TokamakNotificationsPlugin?
         get() = tokamakPlugin("notifications") as? TokamakNotificationsPlugin
 
-    override fun onNewToken(token: String) {
-        plugin?.onNewToken(token)
+    override fun onRegistered(installationId: String) {
+        plugin?.onRegistered(installationId)
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
