@@ -103,6 +103,39 @@ void test("shows a pushed notification with its category's actions", async () =>
   assert.deepEqual(registration.shown[0]?.data, notificationData("push", {}, "message"));
 });
 
+void test("shows a pushed notification with the web's options, and sets the app badge", async () => {
+  const badges: number[] = [];
+  restores.push(
+    replaceGlobal("navigator", {
+      setAppBadge: (count: number) => {
+        badges.push(count);
+        return Promise.resolve();
+      },
+    }),
+  );
+  // The invalid `renotify` and the `vibrate` a silent notification cannot have are dropped.
+  const payload = { id: "m1", title: "Hi", silent: true, requireInteraction: true, badge: 2, renotify: "yes", vibrate: [100] };
+
+  await run((event) => {
+    handlePush({ ...event, data: { text: () => JSON.stringify(payload) } });
+  });
+
+  const options = registration.shown[0]?.options ?? {};
+  assert.deepEqual(
+    [options.silent, options.requireInteraction, options.renotify, options.vibrate],
+    [true, true, undefined, undefined],
+  );
+  assert.deepEqual(badges, [2]);
+});
+
+void test("keeps vibrate on a pushed notification that is not silent", async () => {
+  await run((event) => {
+    handlePush({ ...event, data: { text: () => JSON.stringify({ id: "m1", title: "Hi", vibrate: [100] }) } });
+  });
+
+  assert.deepEqual(registration.shown[0]?.options.vibrate, [100]);
+});
+
 void test("normalises a push payload with missing fields", async () => {
   const page = client("https://app.example/");
   windows = [page];

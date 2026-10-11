@@ -4,12 +4,14 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.Person
 import android.app.RemoteInput
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Icon
 import android.os.Bundle
+import android.service.notification.StatusBarNotification
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.tokamakPlugin
 import org.json.JSONArray
@@ -18,12 +20,18 @@ import org.json.JSONObject
 internal const val CHANNEL = "tokamak.notifications"
 internal const val OPENED_EXTRA = "com.tokamak.notifications.opened"
 internal const val DISMISSED_EXTRA = "com.tokamak.notifications.dismissed"
-private const val DATA_EXTRA = "com.tokamak.notifications.data"
-private const val CATEGORY_EXTRA = "com.tokamak.notifications.category"
+internal const val GROUP_EXTRA = "com.tokamak.notifications.group"
+private const val CONTENT_EXTRA = "com.tokamak.notifications.content"
 private const val INPUT_KEY = "com.tokamak.notifications.input"
 
 /** The plugin and FCM post every notification with this ID, telling them apart by tag. */
 private const val NOTIFICATION_ID = 0
+
+/** The plugin posts each group's summary with this ID, tagged with the group. */
+private const val SUMMARY_ID = 1
+
+/** The group of silent notifications that name none. */
+private const val SILENT_GROUP = "tokamak.silent"
 
 /** Posts, lists and removes the app's notifications, and keeps its channels as `setup` describes. */
 internal class Notifier(private val context: Context) {
@@ -72,61 +80,141 @@ internal class Notifier(private val context: Context) {
     fun post(content: Content, source: String) {
         ensureDefaultChannel()
         val channel = content.channel?.takeIf { manager.getNotificationChannel(it) != null } ?: CHANNEL
+        val described = described(content, source)
+        val opened = Intent().putExtra(OPENED_EXTRA, JSONObject(described.toString()).put("action", JSONObject.NULL).toString())
+        val dismissed = Intent().putExtra(DISMISSED_EXTRA, described.toString())
+        content.group?.let {
+            // Opening one removes it only with `autoCancel`.
+            if (content.autoCancel) opened.putExtra(GROUP_EXTRA, it)
+            dismissed.putExtra(GROUP_EXTRA, it)
+        }
         val builder =
             Notification.Builder(context, channel)
                 .setSmallIcon(icon())
                 .setContentTitle(content.title)
                 .setContentText(content.body)
-                .setAutoCancel(true)
-                .setContentIntent(
-                    launch("opened\n${content.id}", described(content, source).put("action", JSONObject.NULL), mutable = false),
-                )
-                .setDeleteIntent(
-                    respond("dismissed\n${content.id}", Intent().putExtra(DISMISSED_EXTRA, described(content, source).toString())),
-                )
-                .addExtras(
-                    Bundle().apply {
-                        putString(DATA_EXTRA, content.data.toString())
-                        putString(CATEGORY_EXTRA, content.category)
-                    },
-                )
+                .setContentIntent(launch("opened\n${content.id}", opened, mutable = false))
+                .setDeleteIntent(respond("dismissed\n${content.id}", dismissed))
+                .addExtras(Bundle().apply { putString(CONTENT_EXTRA, content.json.toString()) })
+                .setFields(content, channel)
         val actions = content.category?.let { Setup.stored(context)?.categories?.get(it) }.orEmpty()
         for (action in actions) builder.addAction(action(content, source, action))
+        val previousGroup = shown(content.id)?.notification?.group
         manager.notify(content.id, NOTIFICATION_ID, builder.build())
+        content.group?.let { postSummary(it, channel) }
+        if (previousGroup != null && previousGroup != content.group) removeSummaryIfEmpty(previousGroup, content.id)
     }
+
+    /** Sets what [content] says beyond its text, actions and intents. */
+    private fun Notification.Builder.setFields(content: Content, channel: String): Notification.Builder {
+        setAutoCancel(content.autoCancel)
+        setOngoing(content.ongoing)
+        setOnlyAlertOnce(content.onlyAlertOnce)
+        content.subText?.let(::setSubText)
+        content.color?.let(::setColor)
+        content.badge?.let(::setNumber)
+        content.timestamp?.let { setWhen(it).setShowWhen(true) }
+        if (content.chronometer) setUsesChronometer(true).setChronometerCountDown(content.chronometerCountsDown)
+        content.timeoutAfter?.let(::setTimeoutAfter)
+        content.sortKey?.let(::setSortKey)
+        content.visibility?.let(::setVisibility)
+        content.androidCategory?.let(::setCategory)
+        content.progress?.let { setProgress(it.max, it.current, it.indeterminate) }
+        content.publicVersion?.let { (title, body) ->
+            setPublicVersion(Notification.Builder(context, channel).setSmallIcon(icon()).setContentTitle(title).setContentText(body).build())
+        }
+        content.style?.let { setStyle(style(it)) }
+        // Silent as AndroidX's setSilent makes a notification: one that leaves alerting to its
+        // group's summary does not alert, and the plugin's summaries never alert.
+        if (content.silent) {
+            setGroup(content.group ?: SILENT_GROUP).setGroupAlertBehavior(Notification.GROUP_ALERT_SUMMARY)
+        } else {
+            content.group?.let(::setGroup)
+        }
+        return this
+    }
+
+    /** Posts the summary Android shows [group]'s notifications under, unless it has one; it never alerts. */
+    private fun postSummary(group: String, channel: String) {
+        if (manager.activeNotifications.any { it.id == SUMMARY_ID && it.tag == group }) return
+        val summary =
+            Notification.Builder(context, channel)
+                .setSmallIcon(icon())
+                .setGroup(group)
+                .setGroupSummary(true)
+                .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
+                .build()
+        manager.notify(group, SUMMARY_ID, summary)
+    }
+
+    /**
+     * Removes [group]'s summary once [removed] was its last notification. Android may still list
+     * [removed] while it cancels it, so it does not count.
+     */
+    fun removeSummaryIfEmpty(group: String, removed: String) {
+        val others =
+            manager.activeNotifications.any {
+                it.id == NOTIFICATION_ID && it.tag != removed && it.notification.group == group
+            }
+        if (!others) manager.cancel(group, SUMMARY_ID)
+    }
+
+    private fun style(style: Style): Notification.Style =
+        when (style) {
+            is Style.BigText ->
+                Notification.BigTextStyle().bigText(style.text).setBigContentTitle(style.title).setSummaryText(style.summary)
+            is Style.Inbox ->
+                Notification.InboxStyle()
+                    .setBigContentTitle(style.title)
+                    .setSummaryText(style.summary)
+                    .apply { style.lines.forEach(::addLine) }
+            is Style.Messaging ->
+                Notification.MessagingStyle(person(style.user)).apply {
+                    style.conversationTitle?.let {
+                        setConversationTitle(it)
+                        setGroupConversation(true)
+                    }
+                    for (message in style.messages) {
+                        addMessage(Notification.MessagingStyle.Message(message.text, message.at, message.sender?.let(::person)))
+                    }
+                }
+        }
+
+    private fun person(name: String): Person = Person.Builder().setName(name).build()
 
     /** The app's shown notifications, identified by tag, as the page sees them. */
     fun delivered(): List<JSONObject> =
         manager.activeNotifications.mapNotNull { shown ->
             val id = shown.tag?.takeIf { shown.id == NOTIFICATION_ID } ?: return@mapNotNull null
             val extras = shown.notification.extras
-            JSONObject()
-                .put("id", id)
-                .put("title", extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: "")
-                .put("data", JSONObject(extras.getString(DATA_EXTRA) ?: "{}"))
-                .apply {
-                    extras.getCharSequence(Notification.EXTRA_TEXT)?.let { put("body", it.toString()) }
-                    extras.getString(CATEGORY_EXTRA)?.let { put("category", it) }
-                    shown.notification.channelId.takeIf { it != CHANNEL }?.let { put("channel", it) }
-                }
+            // FCM posts notification messages itself, without the content the plugin keeps.
+            extras.getString(CONTENT_EXTRA)?.let { JSONObject(it).apply { remove("at") } }
+                ?: JSONObject()
+                    .put("id", id)
+                    .put("title", extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: "")
+                    .put("body", extras.getCharSequence(Notification.EXTRA_TEXT)?.toString())
+                    .put("data", JSONObject())
+                    .put("channel", shown.notification.channelId.takeIf { it != CHANNEL })
         }
 
-    fun remove(id: String) = manager.cancel(id, NOTIFICATION_ID)
+    fun remove(id: String) {
+        val group = shown(id)?.notification?.group
+        manager.cancel(id, NOTIFICATION_ID)
+        group?.let { removeSummaryIfEmpty(it, id) }
+    }
+
+    private fun shown(id: String): StatusBarNotification? =
+        manager.activeNotifications.firstOrNull { it.id == NOTIFICATION_ID && it.tag == id }
 
     /**
      * An action that launches the app when it has `foreground`, or otherwise reaches the plugin
      * without opening it. An action with a text field passes the text it receives.
      */
     private fun action(content: Content, source: String, action: Action): Notification.Action {
-        val opened = described(content, source).put("action", action.id)
+        val opened = Intent().putExtra(OPENED_EXTRA, described(content, source).put("action", action.id).toString())
         val identifier = "action\n${content.id}\n${action.id}"
         val mutable = action.inputLabel != null
-        val intent =
-            if (action.foreground) {
-                launch(identifier, opened, mutable)
-            } else {
-                respond(identifier, Intent().putExtra(OPENED_EXTRA, opened.toString()), mutable)
-            }
+        val intent = if (action.foreground) launch(identifier, opened, mutable) else respond(identifier, opened, mutable)
         val builder = Notification.Action.Builder(null as Icon?, action.title, intent)
         action.inputLabel?.let { builder.addRemoteInput(RemoteInput.Builder(INPUT_KEY).setLabel(it).build()) }
         return builder.build()
@@ -140,12 +228,12 @@ internal class Notifier(private val context: Context) {
             ?: context.applicationInfo.icon.takeIf { it != 0 }
             ?: android.R.drawable.sym_def_app_icon
 
-    /** Launches the app with [opened]. */
-    private fun launch(identifier: String, opened: JSONObject, mutable: Boolean): PendingIntent {
+    /** Launches the app with [response]'s extras. */
+    private fun launch(identifier: String, response: Intent, mutable: Boolean): PendingIntent {
         val intent =
             requireNotNull(context.packageManager.getLaunchIntentForPackage(context.packageName))
                 .setIdentifier(identifier)
-                .putExtra(OPENED_EXTRA, opened.toString())
+                .putExtras(response)
         return PendingIntent.getActivity(context, 0, intent, flags(mutable))
     }
 

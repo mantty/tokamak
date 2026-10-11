@@ -88,12 +88,14 @@ class TokamakPushService : FirebaseMessagingService() {
 
     /** A notification message's notification, shown as FCM would show it. */
     private fun notification(received: JSONObject, notification: RemoteMessage.Notification): Content =
-        Content(
-            received.getString("id"),
-            notification.title ?: "",
-            notification.body,
-            received.getJSONObject("data"),
-            null,
-            channel = notification.channelId,
+        Content.parse(
+            JSONObject()
+                .put("id", received.getString("id"))
+                .put("title", notification.title ?: "")
+                .put("data", received.getJSONObject("data"))
+                .put("body", notification.body)
+                .put("channel", notification.channelId)
+                .put("badge", notification.notificationCount),
+            scheduled = false,
         )
 }

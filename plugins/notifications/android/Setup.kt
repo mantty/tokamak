@@ -145,22 +145,3 @@ internal class ChannelSpec(val id: String, json: JSONObject) {
                 .build()
     }
 }
-
-internal fun objects(json: JSONObject, key: String): List<JSONObject> {
-    if (!json.has(key)) return emptyList()
-    val array = json.opt(key) as? JSONArray ?: throw TokamakPluginError.typeError("$key must be an array")
-    return List(array.length()) {
-        array.opt(it) as? JSONObject ?: throw TokamakPluginError.typeError("each of $key must be an object")
-    }
-}
-
-internal fun requireString(json: JSONObject, key: String): String =
-    json.opt(key) as? String ?: throw TokamakPluginError.typeError("$key must be a string")
-
-internal fun optionalString(json: JSONObject, key: String): String? =
-    if (json.has(key)) requireString(json, key) else null
-
-internal fun optionalBoolean(json: JSONObject, key: String): Boolean? {
-    if (!json.has(key)) return null
-    return json.opt(key) as? Boolean ?: throw TokamakPluginError.typeError("$key must be a boolean")
-}

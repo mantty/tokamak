@@ -172,6 +172,71 @@ channel with its `id` again.
   of a push notification FCM showed is its `tag`.
 
 Showing or scheduling a notification with the `id` of another replaces it.
+`show` and `schedule` check every field first and reject with `TypeError`,
+showing nothing, when one is invalid. On Apple platforms and Android,
+`getScheduled` and `getDelivered` return every field a local notification was
+given.
+
+### Content
+
+A notification has an `id`, a `title`, and optionally a `body`, `data`, a
+`setup` `category` and, on Android, a `setup` `channel`. These fields apply
+where their platforms have them:
+
+| Field | Platforms | Meaning |
+|---|---|---|
+| `group` | Apple, Android | Shows the notifications of a group together: Apple's thread, Android's group under a summary the plugin posts and removes |
+| `badge` | All | The app's badge count once the notification shows: Android's number, which launchers may show; the web's Badging API, for installed web apps only |
+| `silent` | All | No sound or vibration |
+| `timestamp` | Android, web | The time the notification shows, in milliseconds since the epoch |
+| `subtitle` | Apple | A line under the title |
+| `interruptionLevel` | Apple | `passive`, `active`, `timeSensitive` or `critical`; the last two need their entitlements |
+| `relevanceScore` | Apple | From 0 to 1, how the notification ranks in the notification summary |
+| `subText` | Android | A line with the app's name |
+| `color` | Android | The accent colour, as `#rrggbb` |
+| `style` | Android | `bigText`, `inbox` or `messaging`, below |
+| `progress` | Android | `{ current, max }`, or `{ indeterminate: true }` |
+| `ongoing` | Android | Keeps it from being dismissed; from Android 14, the user can still swipe it away on an unlocked device |
+| `autoCancel` | Android | Whether opening it removes it; true by default |
+| `onlyAlertOnce` | Android | A replacement does not alert again |
+| `timeoutAfter` | Android | Removes it after this many milliseconds |
+| `chronometer` | Android | Shows the time since `timestamp`, or until it with `{ countDown: true }` |
+| `visibility` | Android | `public`, `private` or `secret`: how much shows on the lock screen |
+| `publicVersion` | Android | `{ title, body }` the lock screen shows with `visibility` `private` |
+| `sortKey` | Android | Orders it among others of its group |
+| `androidCategory` | Android | `message`, `call`, `alarm`, `reminder`, `progress` and the other `Notification.CATEGORY_*` kinds, which ranking and Do Not Disturb use |
+| `requireInteraction`, `renotify`, `vibrate`, `dir`, `lang` | Web | As `showNotification` takes them |
+| `badgeImage` | Web | The URL of a small monochrome image that represents the app: `showNotification`'s `badge` |
+
+Android's styles show the expanded notification:
+
+```ts
+await notifications.show({
+  id: "chat-42",
+  title: "Ada",
+  body: "Are you coming tonight?",
+  group: "supper-club",
+  style: {
+    type: "messaging",
+    user: "Me",
+    conversationTitle: "Supper club",
+    messages: [
+      { text: "Shall we book for eight?", at: Date.parse("2026-10-11T18:00:00Z") },
+      { text: "Are you coming tonight?", at: Date.parse("2026-10-11T18:01:00Z"), sender: "Ada" },
+    ],
+  },
+});
+```
+
+- `{ type: "bigText", text, title?, summary? }` shows more text.
+- `{ type: "inbox", lines, title?, summary? }` shows a line of text for each
+  of `lines`, as many as Android fits.
+- `{ type: "messaging", user, conversationTitle?, messages }` shows a
+  conversation. A message without a `sender` is the device's user's, and a
+  `conversationTitle` makes it a group conversation.
+
+On Apple platforms the badge stays until a notification sets another count.
+On Android, a notification's number shows only while the notification does.
 
 ## Push notifications
 
@@ -253,8 +318,10 @@ The server sends each service's payload, and the plugin reports it as a
 | FCM | The message ID | `notification.title`, `notification.body` | The `data` map |
 | Web Push | `id` in the JSON payload | `title`, `body` in the payload | `data` in the payload |
 
-A Web Push payload is JSON: `{ "id": "...", "title": "...", "body": "...", "data": {}, "category": "..." }`.
-Every field is optional.
+A Web Push payload is JSON: `{ "id": "...", "title": "...", "body": "...", "data": {}, "category": "..." }`,
+with the web's content fields and `badge` as well. Every field is optional.
+FCM notification messages carry Android's badge as
+`android.notification.notification_count`.
 
 ### Data-only messages
 
@@ -307,8 +374,9 @@ showed, so those are null.
 
 `onNotificationDismissed` receives each notification the user dismisses, held
 in the same way. Apple platforms report only notifications whose category has
-`customDismissAction`. Android does not report notifications FCM showed, and
-the web reports only notifications its service worker showed.
+`customDismissAction`. Android also reports notifications its `timeoutAfter`
+removed, and does not report notifications FCM showed. The web reports only
+notifications its service worker showed.
 
 In native builds, the Worker's `onNotificationOpened` and
 `onNotificationDismissed` listeners, from

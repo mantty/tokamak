@@ -15,6 +15,9 @@ import PluginCard from "./PluginCard.astro";
     <button id="notifications-request" class="button">Request permission</button>
     <button id="notifications-show" class="button">Show now</button>
     <button id="notifications-message" class="button">Show a message</button>
+    <button id="notifications-group" class="button">Show a group</button>
+    <button id="notifications-progress" class="button">Show progress</button>
+    <button id="notifications-silent" class="button">Show silently, badge 5</button>
     <button id="notifications-schedule" class="button">Schedule in 10 s</button>
     <button id="notifications-list" class="button">Scheduled and delivered</button>
     <button id="notifications-remove" class="button">Remove all</button>
@@ -46,6 +49,60 @@ import PluginCard from "./PluginCard.astro";
       channel: "messages",
     }),
   );
+  // Grouped on Apple and Android, with Android's messaging and big text styles.
+  onClick(log, "notifications-group", async () => {
+    await notifications.show({
+      id: "example-group-ada",
+      title: "Ada",
+      subtitle: "Supper club",
+      body: "Are you coming tonight?",
+      group: "supper-club",
+      badge: 2,
+      timestamp: Date.now() - 60_000,
+      category: "message",
+      channel: "messages",
+      androidCategory: "message",
+      relevanceScore: 0.8,
+      style: {
+        type: "messaging",
+        user: "Me",
+        conversationTitle: "Supper club",
+        messages: [
+          { text: "Shall we book for eight?", at: Date.now() - 120_000 },
+          { text: "Are you coming tonight?", at: Date.now() - 60_000, sender: "Ada" },
+        ],
+      },
+    });
+    await notifications.show({
+      id: "example-group-grace",
+      title: "Grace",
+      subtitle: "Supper club",
+      body: "I'll bring dessert.",
+      group: "supper-club",
+      badge: 2,
+      channel: "messages",
+      style: { type: "bigText", text: "I'll bring dessert. Is anyone allergic to nuts?" },
+    });
+  });
+  // Android shows the bar, the elapsed time and the line under the app's name.
+  onClick(log, "notifications-progress", () =>
+    notifications.show({
+      id: "example-progress",
+      title: "Downloading",
+      body: "report.pdf",
+      subText: "3 of 10 MB",
+      progress: { current: 3, max: 10 },
+      timestamp: Date.now(),
+      chronometer: true,
+      ongoing: true,
+      onlyAlertOnce: true,
+      silent: true,
+      androidCategory: "progress",
+    }),
+  );
+  onClick(log, "notifications-silent", () =>
+    notifications.show({ id: "example-silent", title: "Silent", body: "No sound or vibration", silent: true, badge: 5 }),
+  );
   onClick(log, "notifications-schedule", () =>
     notifications.schedule({
       id: "example-scheduled",
@@ -62,6 +119,10 @@ import PluginCard from "./PluginCard.astro";
   onClick(log, "notifications-remove", async () => {
     await notifications.remove("example-now");
     await notifications.remove("example-message");
+    await notifications.remove("example-group-ada");
+    await notifications.remove("example-group-grace");
+    await notifications.remove("example-progress");
+    await notifications.remove("example-silent");
     await notifications.remove("example-scheduled");
   });
   onClick(log, "notifications-subscribe", () => notifications.subscribe());

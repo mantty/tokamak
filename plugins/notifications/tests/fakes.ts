@@ -6,6 +6,8 @@ export interface ShownNotification {
   readonly tag: string;
   readonly data: unknown;
   readonly actions: unknown;
+  /** Every option `showNotification` received. */
+  readonly options: Record<string, unknown>;
   closed: boolean;
   close(): void;
 }
@@ -50,6 +52,7 @@ export class FakeRegistration {
       tag: options.tag,
       data: options.data,
       actions: options.actions,
+      options,
       closed: false,
       close() {
         this.closed = true;

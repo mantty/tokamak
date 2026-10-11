@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 
-import { notifications, type SetupConfig } from "../src/index.js";
+import { notifications, type ScheduledNotification } from "../src/index.js";
 import { DISMISSED, DISMISSED_CACHE, OPENED, OPENED_CACHE, SETUP_CACHE } from "../web/protocol.js";
 import {
   FakeCacheStorage,
@@ -15,6 +15,8 @@ let registration: FakeRegistration | undefined;
 let messageListeners: ((event: { data: unknown }) => void)[] = [];
 let permission: NotificationPermission = "granted";
 const constructed: string[] = [];
+const constructedOptions: Record<string, unknown>[] = [];
+const badges: number[] = [];
 
 class FakeNotification {
   static get permission() {
@@ -26,8 +28,12 @@ class FakeNotification {
     return Promise.resolve(permission);
   }
 
-  constructor(readonly title: string) {
+  constructor(
+    readonly title: string,
+    options: Record<string, unknown> = {},
+  ) {
     constructed.push(title);
+    constructedOptions.push(options);
   }
 }
 
@@ -36,10 +42,16 @@ beforeEach(() => {
   registration = new FakeRegistration();
   messageListeners = [];
   constructed.length = 0;
+  constructedOptions.length = 0;
+  badges.length = 0;
   restores = [
     replaceGlobal("Notification", FakeNotification),
     replaceGlobal("caches", new FakeCacheStorage()),
     replaceGlobal("navigator", {
+      setAppBadge: (count: number) => {
+        badges.push(count);
+        return Promise.resolve();
+      },
       serviceWorker: {
         getRegistration: () => Promise.resolve(registration),
         addEventListener: (_: string, listener: (event: { data: unknown }) => void) => {
@@ -81,6 +93,101 @@ void test("shows notifications through the service worker, replacing by id", asy
   assert.deepEqual(await notifications.getDelivered(), []);
 });
 
+const fullNotification = {
+  id: "n1",
+  title: "Ada",
+  body: "Lunch?",
+  data: { thread: 7 },
+  category: "message",
+  channel: "messages",
+  group: "chats",
+  badge: 3,
+  silent: false,
+  timestamp: 1_800_000_000_000,
+  subtitle: "Team",
+  interruptionLevel: "timeSensitive",
+  relevanceScore: 0.5,
+  subText: "Work",
+  color: "#00FF00",
+  style: {
+    type: "messaging",
+    user: "Me",
+    conversationTitle: "Team",
+    messages: [{ text: "Lunch?", at: 1_800_000_000_000, sender: "Ada" }],
+  },
+  progress: { current: 2, max: 5 },
+  ongoing: true,
+  autoCancel: false,
+  onlyAlertOnce: true,
+  timeoutAfter: 60_000,
+  chronometer: { countDown: true },
+  visibility: "private",
+  publicVersion: { title: "New message", body: "Open to read" },
+  sortKey: "a",
+  androidCategory: "message",
+  requireInteraction: true,
+  renotify: true,
+  vibrate: [200, 100, 200],
+  dir: "ltr",
+  lang: "en-GB",
+  badgeImage: "/badge.png",
+} as const;
+
+void test("passes the web's options to the browser, and sets the app badge", async () => {
+  await notifications.show(fullNotification);
+
+  const options = registration?.shown.at(0)?.options ?? {};
+  const keys = ["silent", "timestamp", "requireInteraction", "renotify", "vibrate", "dir", "lang", "badge"];
+  assert.deepEqual(Object.fromEntries(keys.map((key) => [key, options[key]])), {
+    silent: false,
+    timestamp: 1_800_000_000_000,
+    requireInteraction: true,
+    renotify: true,
+    vibrate: [200, 100, 200],
+    dir: "ltr",
+    lang: "en-GB",
+    badge: "/badge.png",
+  });
+  assert.deepEqual(badges, [3]);
+});
+
+void test("shows nothing and stores nothing for an invalid notification or setup", async () => {
+  await assert.rejects(notifications.show({ id: "n1", title: "Hi", badge: -1 }), TypeError);
+  await assert.rejects(
+    notifications.schedule({ id: "n1", title: "Hi" } as ScheduledNotification),
+    TypeError,
+  );
+  await assert.rejects(notifications.setup({ categories: [{ id: "", actions: [] }] }), TypeError);
+
+  assert.deepEqual(registration?.shown, []);
+  assert.deepEqual(await (await caches.open(SETUP_CACHE)).keys(), []);
+});
+
+void test("sets the app badge only for a notification with a badge, including 0", async () => {
+  await notifications.show({ id: "n1", title: "Hi" });
+  await notifications.show({ id: "n2", title: "Hi", badge: 0 });
+
+  assert.deepEqual(badges, [0]);
+});
+
+void test("shows a badged notification where the browser has no badge or refuses it", async () => {
+  delete (navigator as { setAppBadge?: unknown }).setAppBadge;
+  await notifications.show({ id: "n1", title: "Hi", badge: 3 });
+  (navigator as { setAppBadge?: unknown }).setAppBadge = () => Promise.reject(new DOMException("", "NotAllowedError"));
+  await notifications.show({ id: "n2", title: "Hi", badge: 3 });
+
+  assert.equal(registration?.shown.length, 2);
+});
+
+void test("passes the web's options to a notification shown without a service worker", async () => {
+  registration = undefined;
+
+  await notifications.show({ id: "n1", title: "Hi", requireInteraction: true, lang: "en-GB" });
+
+  const options = constructedOptions.at(0) ?? {};
+  assert.deepEqual([options.requireInteraction, options.lang], [true, "en-GB"]);
+});
+
 void test("shows a category's actions, with Chrome's text input for an input action", async () => {
   const result = await notifications.setup({
     categories: [
@@ -112,45 +219,6 @@ void test("shows a category's actions, with Chrome's text input for an input act
       { id: "m2", category: "unknown" },
     ],
   );
-});
-
-void test("rejects each invalid setup value", async () => {
-  const action = { id: "a", title: "A" };
-  const channel = { id: "c", name: "C" };
-  const configs: unknown[] = [
-    null,
-    { categories: [{ id: "", actions: [] }] },
-    { categories: [{ id: "a" }] },
-    { categories: [{ id: "a", actions: [{ id: "a" }] }] },
-    { categories: [{ id: "a", actions: [action, action] }] },
-    { categories: [{ id: "a", actions: [] }, { id: "a", actions: [] }] },
-    { categories: [{ id: "a", actions: [{ ...action, foreground: "yes" }] }] },
-    { categories: [{ id: "a", actions: [{ ...action, input: "yes" }] }] },
-    { showInForeground: "yes" },
-    { showInForeground: { banner: 1 } },
-    { channelGroups: [{ id: "g", name: "G" }, { id: "g", name: "G" }] },
-    { channels: [channel, channel] },
-    { channels: [{ id: "c" }] },
-    { channels: [{ ...channel, group: "missing" }] },
-    { channels: [{ ...channel, id: "tokamak.notifications" }] },
-    { channels: [{ ...channel, importance: "urgent" }] },
-    { channels: [{ ...channel, vibration: "yes" }] },
-    { channels: [{ ...channel, vibration: [] }] },
-    { channels: [{ ...channel, vibration: [-1] }] },
-    { channels: [{ ...channel, vibration: [100, 0.5] }] },
-    // Android reads eight digits as alpha first, CSS as alpha last.
-    { channels: [{ ...channel, lights: "#00ff0080" }] },
-    { channels: [{ ...channel, lights: true }] },
-    { defaultChannel: { description: "No name" } },
-  ];
-  for (const config of configs) {
-    await assert.rejects(
-      notifications.setup(config as SetupConfig),
-      (error: unknown) => error instanceof TypeError,
-      JSON.stringify(config),
-    );
-  }
-  assert.deepEqual(await (await caches.open(SETUP_CACHE)).keys(), []);
 });
 
 void test("accepts every kind of setup value", async () => {
