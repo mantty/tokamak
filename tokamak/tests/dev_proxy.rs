@@ -63,6 +63,57 @@ fn forwards_http_and_websocket_traffic_to_the_host_server() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn relays_the_page_answer_to_a_host_close() -> TestResult {
+    let (failed, failures) = mpsc::channel();
+    let (listener, runtime, temporary) = start_test_runtime_reporting(move |event| {
+        if let Event::RequestFailed { message } = event {
+            let _ = failed.send(message);
+        }
+    })?;
+    let host_server = thread::spawn(move || -> TestResult<(u8, Vec<u8>)> {
+        let (mut websocket, _) = accept_closing_websocket(&listener)?;
+        read_frame(&mut websocket)
+    });
+    let state = temporary.path().join("state");
+
+    let mut websocket = open_page_websocket(&runtime, &state)?;
+    // 4000, "bye"
+    let close = [15, 160, b'b', b'y', b'e'];
+    assert_eq!(read_frame(&mut websocket)?, (0x8, close.to_vec()));
+    write_masked_frame(&mut websocket, 0x8, &close)?;
+
+    let answer = host_server.join().map_err(|_| "host server panicked")??;
+    assert_eq!(answer, (0x8, close.to_vec()));
+    let failure = failures.recv_timeout(Duration::from_millis(200));
+    assert!(failure.is_err(), "reported {failure:?}");
+    Ok(())
+}
+
+#[test]
+fn ends_quietly_when_the_host_closes_and_leaves() -> TestResult {
+    let (failed, failures) = mpsc::channel();
+    let (listener, runtime, temporary) = start_test_runtime_reporting(move |event| {
+        if let Event::RequestFailed { message } = event {
+            let _ = failed.send(message);
+        }
+    })?;
+    let host_server = thread::spawn(move || -> TestResult {
+        let (websocket, _) = accept_closing_websocket(&listener)?;
+        drop(websocket);
+        Ok(())
+    });
+    let state = temporary.path().join("state");
+
+    let mut websocket = open_page_websocket(&runtime, &state)?;
+    assert_eq!(read_frame(&mut websocket)?.0, 0x8);
+    host_server.join().map_err(|_| "host server panicked")??;
+
+    let failure = failures.recv_timeout(Duration::from_millis(200));
+    assert!(failure.is_err(), "reported {failure:?}");
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn closes_client_websocket_after_an_upstream_reset() -> TestResult {
@@ -519,6 +570,40 @@ fn serve_restarting_host(listener: &TcpListener) -> TestResult {
     let mut retry = accept_request(listener, "GET / HTTP/1.1")?;
     retry.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")?;
     Ok(())
+}
+
+/// Accepts the page's WebSocket and sends a close frame of 4000, "bye".
+fn accept_closing_websocket(listener: &TcpListener) -> TestResult<(TcpStream, String)> {
+    let (mut websocket, headers) = accept_page(listener)?;
+    let key = header_value(&headers, "sec-websocket-key").ok_or("missing WebSocket key")?;
+    let accept = websocket_accept(key);
+    write!(
+        websocket,
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+    )?;
+    write_frame(&mut websocket, 0x8, &[15, 160, b'b', b'y', b'e'], false)?;
+    Ok((websocket, headers))
+}
+
+/// The page's WebSocket to `/socket`, upgraded through the gateway.
+fn open_page_websocket(
+    runtime: &Runtime,
+    state: &Path,
+) -> TestResult<StreamOwned<ClientConnection, TcpStream>> {
+    let mut websocket = connect_gateway(runtime, state)?;
+    websocket.write_all(
+        b"GET /socket HTTP/1.1\r\nHost: dev.tokamak.local\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+    )?;
+    websocket.flush()?;
+    let upgrade = read_header_block(&mut websocket)?;
+    if !String::from_utf8(upgrade.clone())?.starts_with("HTTP/1.1 101") {
+        return Err(format!(
+            "unexpected WebSocket response: {:?}",
+            String::from_utf8_lossy(&upgrade)
+        )
+        .into());
+    }
+    Ok(websocket)
 }
 
 #[cfg(unix)]

@@ -1,4 +1,4 @@
-use flume::{Receiver, SendError, Sender};
+use flume::{Receiver, Sender};
 use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -16,9 +16,9 @@ use crate::lifecycle_events::{Event, Events};
 use crate::readiness::{Readiness, Waker};
 
 use crate::transport::{
-    HttpRequest, HttpResponse, ResponseOutcome, TlsStream, append_header, is_connect, is_websocket,
-    read_header_block, read_request, tls_accept, tls_close, websocket_session,
-    write_plain_response, write_response,
+    HttpRequest, HttpResponse, ResponseOutcome, TlsStream, append_header, connection_ended,
+    is_connect, is_websocket, read_header_block, read_request, tls_accept, tls_close,
+    websocket_session, write_plain_response, write_response,
 };
 
 const MAX_WEBSOCKET_QUEUE: usize = 100;
@@ -109,6 +109,9 @@ pub(super) struct WebSocketBridge {
 }
 
 /// Queues frames for the connection thread and wakes its readiness wait.
+///
+/// Frames sent once the connection has ended are dropped. The end reaches the
+/// handler through the job's `incoming` channel.
 pub(super) struct WebSocketOutgoing {
     // `sender` drops before `waker`, so the final wake finds the channel disconnected.
     sender: Sender<WebSocketOutbound>,
@@ -116,22 +119,16 @@ pub(super) struct WebSocketOutgoing {
 }
 
 impl WebSocketOutgoing {
-    pub(super) fn send(
-        &self,
-        frame: WebSocketOutbound,
-    ) -> Result<(), SendError<WebSocketOutbound>> {
-        self.sender.send(frame)?;
-        self.wake();
-        Ok(())
+    pub(super) fn send(&self, frame: WebSocketOutbound) {
+        if self.sender.send(frame).is_ok() {
+            self.wake();
+        }
     }
 
-    pub(super) async fn send_async(
-        &self,
-        frame: WebSocketOutbound,
-    ) -> Result<(), SendError<WebSocketOutbound>> {
-        self.sender.send_async(frame).await?;
-        self.wake();
-        Ok(())
+    pub(super) async fn send_async(&self, frame: WebSocketOutbound) {
+        if self.sender.send_async(frame).await.is_ok() {
+            self.wake();
+        }
     }
 
     fn wake(&self) {
@@ -343,7 +340,10 @@ fn spawn_connection(shared: &Arc<Shared>, stream: TcpStream) -> io::Result<JoinH
     thread::Builder::new()
         .name("tokamak-connection".to_owned())
         .spawn(move || {
-            if let Err(error) = serve_connection(&shared, stream) {
+            // A client that disconnects has not failed.
+            if let Err(error) = serve_connection(&shared, stream)
+                && !connection_ended(&error)
+            {
                 shared.events.emit(Event::RequestFailed {
                     message: error.to_string(),
                 });
@@ -565,12 +565,9 @@ fn dispatch(
         .transpose()?
         .unzip();
     let result = spawn_job(shared, request, websocket_job);
-    let response = result.recv().map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "the request ended without a response",
-        )
-    })?;
+    let response = result
+        .recv()
+        .map_err(|_| io::Error::other("the request ended without a response"))?;
     Ok((response, websocket_bridge))
 }
 

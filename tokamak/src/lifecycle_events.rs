@@ -21,7 +21,8 @@ pub enum Event {
         /// What went wrong.
         message: String,
     },
-    /// A request or WebSocket session failed after the gateway accepted it.
+    /// A request or WebSocket session failed after the gateway accepted it. A
+    /// client that disconnects, at any point, has not failed.
     RequestFailed {
         /// What went wrong.
         message: String,

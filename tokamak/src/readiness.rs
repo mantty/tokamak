@@ -85,7 +85,10 @@ impl Readiness {
     }
 
     fn set_interest(&mut self, interest: Interest) -> io::Result<()> {
-        let watched = self.watched.as_mut().ok_or(io::ErrorKind::NotConnected)?;
+        let watched = self
+            .watched
+            .as_mut()
+            .ok_or_else(|| io::Error::other("readiness watches no socket"))?;
         self.poll.registry().reregister(watched, TOKEN, interest)
     }
 }

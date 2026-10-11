@@ -177,7 +177,9 @@ fn read_optional_header_block(
     }
 }
 
-fn connection_ended(error: &io::Error) -> bool {
+/// Whether `error` means the client closed the connection, reset it or stopped
+/// responding. The gateway raises its own failures with other kinds.
+pub(super) fn connection_ended(error: &io::Error) -> bool {
     matches!(
         error.kind(),
         io::ErrorKind::UnexpectedEof
@@ -396,15 +398,13 @@ pub(super) fn websocket_session(
     } = bridge;
     readiness.watch(stream.get_ref())?;
     let mut codec = WebSocketCodec::new(ReadySocket { stream, readiness });
-    if wait_for_websocket_ready(&mut codec, &outgoing)? {
-        return Ok(());
-    }
+    wait_for_websocket_ready(&mut codec, &outgoing)?;
 
+    // After the handler's close frame, the session reads until the client's
+    // close frame answers it.
     let mut fragmented: Option<(u8, Vec<u8>)> = None;
     loop {
-        if flush_websocket_outbound(&mut codec, &outgoing)? {
-            return Ok(());
-        }
+        flush_websocket_outbound(&mut codec, &outgoing)?;
         match codec.read_frame()? {
             WebSocketRead::Closed => return Ok(()),
             WebSocketRead::Pending => codec.stream.readiness.wait(None)?,
@@ -481,6 +481,7 @@ struct WebSocketCodec<S> {
     stream: S,
     buffer: Vec<u8>,
     closed: bool,
+    close_sent: bool,
 }
 
 impl<S: Read + Write> WebSocketCodec<S> {
@@ -489,6 +490,7 @@ impl<S: Read + Write> WebSocketCodec<S> {
             stream,
             buffer: Vec::new(),
             closed: false,
+            close_sent: false,
         }
     }
 
@@ -520,7 +522,12 @@ impl<S: Read + Write> WebSocketCodec<S> {
         }
     }
 
+    /// Writes a frame, or nothing once the session has sent its close frame.
     fn write_frame(&mut self, opcode: u8, payload: &[u8]) -> io::Result<()> {
+        if self.close_sent {
+            return Ok(());
+        }
+        self.close_sent = opcode == 0x8;
         self.stream
             .write_all(&encode_websocket_frame(opcode, payload, false)?)?;
         self.stream.flush()
@@ -683,21 +690,21 @@ fn parse_websocket_header(buffer: &[u8], expect_mask: bool) -> io::Result<Option
     }))
 }
 
+/// Where a session delivers each whole message, which it drops once the
+/// other end has gone.
 pub(super) trait WebSocketSink {
-    fn deliver(&self, binary: bool, payload: Vec<u8>) -> io::Result<()>;
+    fn deliver(&self, binary: bool, payload: Vec<u8>);
 }
 
 impl WebSocketSink for Sender<WebSocketInbound> {
-    fn deliver(&self, binary: bool, payload: Vec<u8>) -> io::Result<()> {
-        self.send(WebSocketInbound::Message { binary, payload })
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "WebSocket worker closed"))
+    fn deliver(&self, binary: bool, payload: Vec<u8>) {
+        let _ = self.send(WebSocketInbound::Message { binary, payload });
     }
 }
 
 impl WebSocketSink for WebSocketOutgoing {
-    fn deliver(&self, binary: bool, payload: Vec<u8>) -> io::Result<()> {
-        self.send(WebSocketOutbound::Message { binary, payload })
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "WebSocket gateway closed"))
+    fn deliver(&self, binary: bool, payload: Vec<u8>) {
+        self.send(WebSocketOutbound::Message { binary, payload });
     }
 }
 
@@ -730,67 +737,57 @@ pub(super) fn queue_websocket_message(
         _ => return Err(invalid_data("invalid WebSocket opcode")),
     };
     if final_frame {
-        sink.deliver(message_opcode == 0x2, payload)?;
+        sink.deliver(message_opcode == 0x2, payload);
     } else {
         *fragmented = Some((message_opcode, payload));
     }
     Ok(())
 }
 
+/// Writes the handler's queued frames. A handler that ends without closing the
+/// connection has failed.
 fn flush_websocket_outbound<S: Read + Write>(
     codec: &mut WebSocketCodec<S>,
     outgoing: &Receiver<WebSocketOutbound>,
-) -> io::Result<bool> {
+) -> io::Result<()> {
     loop {
         let frame = match outgoing.try_recv() {
             Ok(frame) => frame,
-            Err(TryRecvError::Empty) => return Ok(false),
+            Err(TryRecvError::Empty) => return Ok(()),
+            Err(TryRecvError::Disconnected) if codec.close_sent => return Ok(()),
             Err(TryRecvError::Disconnected) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "WebSocket worker closed",
-                ));
+                return Err(io::Error::other("WebSocket worker closed"));
             }
         };
-        if write_outbound(codec, frame)? {
-            return Ok(true);
-        }
+        write_outbound(codec, frame)?;
     }
 }
 
+/// Writes the frames the handler queues until it is ready to receive.
 fn wait_for_websocket_ready<S: Read + Write>(
     codec: &mut WebSocketCodec<S>,
     outgoing: &Receiver<WebSocketOutbound>,
-) -> io::Result<bool> {
+) -> io::Result<()> {
     loop {
-        let frame = match outgoing.recv_timeout(Duration::from_secs(30)) {
-            Ok(WebSocketOutbound::Ready) => return Ok(false),
-            Ok(frame) => frame,
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "WebSocket worker did not become ready",
-                ));
-            }
-        };
-        if write_outbound(codec, frame)? {
-            return Ok(true);
+        match outgoing.recv_timeout(Duration::from_secs(30)) {
+            Ok(WebSocketOutbound::Ready) => return Ok(()),
+            Ok(frame) => write_outbound(codec, frame)?,
+            Err(_) => return Err(io::Error::other("WebSocket worker did not become ready")),
         }
     }
 }
 
-/// Writes a frame the worker queued, reporting whether it closed the connection.
+/// Writes a frame the handler queued.
 fn write_outbound<S: Read + Write>(
     codec: &mut WebSocketCodec<S>,
     frame: WebSocketOutbound,
-) -> io::Result<bool> {
+) -> io::Result<()> {
     let (opcode, payload) = match frame {
         WebSocketOutbound::Message { binary, payload } => (if binary { 0x2 } else { 0x1 }, payload),
         WebSocketOutbound::Close { code, reason } => (0x8, websocket_close_payload(code, &reason)?),
-        WebSocketOutbound::Ready => return Ok(false),
+        WebSocketOutbound::Ready => return Ok(()),
     };
-    codec.write_frame(opcode, &payload)?;
-    Ok(opcode == 0x8)
+    codec.write_frame(opcode, &payload)
 }
 
 pub(super) fn websocket_close(payload: &[u8]) -> io::Result<(u16, String)> {

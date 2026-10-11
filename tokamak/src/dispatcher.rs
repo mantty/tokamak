@@ -589,28 +589,29 @@ async fn websocket_loop<'js>(
         .map_err(|error| js_exception(ctx, "WebSocket", error))?;
     let receive: Function = property(native, "receive")?;
     let close: Function = property(native, "close")?;
+    let disconnect: Function = property(native, "disconnect")?;
     let take_outbox: Function = property(native, "take")?;
     drain_pending_jobs(ctx);
     drain_websocket_outbox(&take_outbox, &websocket.outgoing).await?;
-    send_outbound(&websocket.outgoing, WebSocketOutbound::Ready).await?;
+    websocket
+        .outgoing
+        .send_async(WebSocketOutbound::Ready)
+        .await;
 
     loop {
         if stopped.is_cancelled() {
             return Ok(());
         }
         let event = tokio::select! {
-            event = websocket.incoming.recv_async() => match event {
-                Ok(event) => event,
-                Err(_) => return Ok(()),
-            },
+            event = websocket.incoming.recv_async() => event,
             () = changed.notified() => {
                 drain_websocket_outbox(&take_outbox, &websocket.outgoing).await?;
                 continue;
             },
             () = stopped.cancelled() => return Ok(()),
         };
-        let should_close = match event {
-            WebSocketInbound::Message { binary, payload } => {
+        let open = match event {
+            Ok(WebSocketInbound::Message { binary, payload }) => {
                 if binary {
                     let data = ArrayBuffer::new_copy(ctx.clone(), payload)
                         .map_err(|error| js_error("WebSocket message", error))?;
@@ -623,21 +624,32 @@ async fn websocket_loop<'js>(
                         .call::<_, ()>((data, false))
                         .map_err(|error| js_exception(ctx, "WebSocket message", error))?;
                 }
-                false
+                true
             }
-            WebSocketInbound::Close { code, reason } => {
+            // The client's close frame ended the connection.
+            Ok(WebSocketInbound::Close { code, reason }) => {
                 close
                     .call::<_, ()>((code, reason))
                     .map_err(|error| js_exception(ctx, "WebSocket close", error))?;
-                true
+                false
+            }
+            // The connection ended without a close frame.
+            Err(_) => {
+                disconnect
+                    .call::<_, ()>(())
+                    .map_err(|error| js_exception(ctx, "WebSocket close", error))?;
+                false
             }
         };
         drain_pending_jobs(ctx);
-        drain_websocket_outbox(&take_outbox, &websocket.outgoing).await?;
-        send_outbound(&websocket.outgoing, WebSocketOutbound::Ready).await?;
-        if should_close {
+        if !open {
             return Ok(());
         }
+        drain_websocket_outbox(&take_outbox, &websocket.outgoing).await?;
+        websocket
+            .outgoing
+            .send_async(WebSocketOutbound::Ready)
+            .await;
     }
 }
 
@@ -688,19 +700,9 @@ async fn drain_websocket_outbox(
             }
             _ => return Err(Error::Engine("unknown WebSocket outbox entry".to_owned())),
         };
-        send_outbound(outgoing, frame).await?;
+        outgoing.send_async(frame).await;
     }
     Ok(())
-}
-
-async fn send_outbound(
-    outgoing: &WebSocketOutgoing,
-    frame: WebSocketOutbound,
-) -> Result<(), Error> {
-    outgoing
-        .send_async(frame)
-        .await
-        .map_err(|_| receiver_closed("WebSocket connection closed").into())
 }
 
 fn receiver_closed(message: &str) -> io::Error {

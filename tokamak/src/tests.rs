@@ -638,14 +638,20 @@ fn reports_connection_failures_through_the_event_listener()
         }
     );
 
-    // Hanging up before sending headers fails the connection thread's request read.
+    // A client that hangs up has not failed, but one that answers the tunnel
+    // with something other than TLS fails its connection.
     drop(TcpStream::connect(("127.0.0.1", runtime.port()))?);
+    let mut client = TcpStream::connect(("127.0.0.1", runtime.port()))?;
+    client
+        .write_all(format!("CONNECT {HOST}:443 HTTP/1.1\r\n\r\nnot a TLS handshake").as_bytes())?;
 
     let event = events.recv_timeout(Duration::from_secs(5))?;
     assert!(
-        matches!(&event, Event::RequestFailed { message } if !message.is_empty()),
+        matches!(&event, Event::RequestFailed { message } if message.contains("corrupt message")),
         "unexpected event: {event:?}"
     );
+    let late = events.recv_timeout(Duration::from_millis(200));
+    assert!(late.is_err(), "unexpected event: {late:?}");
     Ok(())
 }
 

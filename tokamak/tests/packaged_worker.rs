@@ -3,10 +3,11 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use rcgen::{CertificateParams, KeyPair};
@@ -14,8 +15,8 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
 use serde_json::json;
 use tokamak::{
-    AssetManifest, Config, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout, Runtime,
-    StorageBinding, WorkerEnvironment, WorkerManifest, write_asset_manifest, write_worker,
+    AssetManifest, Config, Event, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout,
+    Runtime, StorageBinding, WorkerEnvironment, WorkerManifest, write_asset_manifest, write_worker,
     write_worker_environment,
 };
 
@@ -242,7 +243,7 @@ fn assert_echoes(payload: &[u8], opcode: u8, expected: &[u8]) -> TestResult {
 #[test]
 fn closes_the_websocket_promptly_when_the_worker_fails() -> TestResult {
     let temporary = tempfile::tempdir()?;
-    let (runtime, state) = start_packaged_runtime(
+    let (runtime, state, failures) = start_reporting_runtime(
         temporary.path(),
         websocket_worker_source(),
         &WorkerEnvironment::default(),
@@ -257,6 +258,136 @@ fn closes_the_websocket_promptly_when_the_worker_fails() -> TestResult {
         elapsed < Duration::from_secs(1),
         "connection stayed open for {elapsed:?} after the worker failed"
     );
+    // The Worker's error, and the session it left open.
+    let reported = [
+        failures.recv_timeout(TIMEOUT)?,
+        failures.recv_timeout(TIMEOUT)?,
+    ];
+    assert!(
+        reported
+            .iter()
+            .any(|message| message.contains("worker failure")),
+        "{reported:?}"
+    );
+    assert!(
+        reported
+            .iter()
+            .any(|message| message == "WebSocket worker closed"),
+        "{reported:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn drops_what_the_worker_sends_after_the_client_leaves() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let worker = br#"
+export default {
+  async fetch() {
+    const [client, server] = Object.values(new WebSocketPair());
+    server.accept();
+    server.addEventListener("message", () => {
+      const until = Date.now() + 300;
+      while (Date.now() < until) {}
+      server.send("after the client left");
+    });
+    return new Response(null, { status: 101, webSocket: client });
+  }
+};
+"#;
+    let (runtime, state, failures) =
+        start_reporting_runtime(temporary.path(), worker, &WorkerEnvironment::default())?;
+    let mut tls = open_websocket(&runtime, &state)?;
+
+    write_masked_frame(&mut tls, true, 0x1, b"slow")?;
+    drop(tls);
+    let failure = failures.recv_timeout(Duration::from_secs(2));
+    assert!(failure.is_err(), "reported {failure:?}");
+    Ok(())
+}
+
+#[test]
+fn tells_the_worker_when_the_client_closes_its_websocket() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, state, failures) = start_close_runtime(temporary.path())?;
+    let mut tls = open_websocket(&runtime, &state)?;
+
+    // 1001, "away"
+    let close = [3, 233, b'a', b'w', b'a', b'y'];
+    write_masked_frame(&mut tls, true, 0x8, &close)?;
+    assert_eq!(read_server_frame(&mut tls)?, (0x8, close.to_vec()));
+    assert_eq!(recorded(&runtime, "close")?, json!([1001, "away", true]));
+    assert_no_failures(&failures);
+    Ok(())
+}
+
+#[test]
+fn tells_the_worker_when_the_client_drops_its_websocket() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, state, failures) = start_close_runtime(temporary.path())?;
+    let tls = open_websocket(&runtime, &state)?;
+
+    // Closes the connection without a close frame or a TLS close_notify.
+    drop(tls);
+    assert_eq!(
+        recorded(&runtime, "close")?,
+        json!([
+            1006,
+            "WebSocket disconnected without sending Close frame.",
+            false
+        ])
+    );
+    assert_no_failures(&failures);
+    Ok(())
+}
+
+#[test]
+fn tells_the_worker_how_the_client_answers_its_close() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, state, failures) = start_close_runtime(temporary.path())?;
+    let mut tls = open_websocket(&runtime, &state)?;
+
+    write_masked_frame(&mut tls, true, 0x1, b"close")?;
+    // 4000, "bye"
+    let close = [15, 160, b'b', b'y', b'e'];
+    assert_eq!(read_server_frame(&mut tls)?, (0x8, close.to_vec()));
+    write_masked_frame(&mut tls, true, 0x8, &close)?;
+    assert_eq!(recorded(&runtime, "close")?, json!([4000, "bye", true]));
+    // RFC 6455 allows each end one close frame.
+    assert!(read_server_frame(&mut tls).is_err());
+    assert_no_failures(&failures);
+    Ok(())
+}
+
+#[test]
+fn keeps_the_worker_websocket_closing_until_the_client_answers() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, state, failures) = start_close_runtime(temporary.path())?;
+    let mut tls = open_websocket(&runtime, &state)?;
+
+    write_masked_frame(&mut tls, true, 0x1, b"close")?;
+    assert_eq!(read_server_frame(&mut tls)?.0, 0x8);
+    write_masked_frame(&mut tls, true, 0x1, b"late")?;
+    // CLOSING, and `send` throws, as in workerd.
+    assert_eq!(recorded(&runtime, "late")?, json!(["late", 2, false]));
+    write_masked_frame(&mut tls, true, 0x8, &[15, 160])?;
+    assert_eq!(recorded(&runtime, "close")?, json!([4000, "", true]));
+    assert_no_failures(&failures);
+    Ok(())
+}
+
+#[test]
+fn ends_without_a_failure_when_the_client_leaves_mid_request() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, state, failures) = start_close_runtime(temporary.path())?;
+    let mut tls = connect_gateway(&runtime, &state)?;
+
+    tls.write_all(format!("GET / HTTP/1.1\r\nHost: {HOST}\r\n").as_bytes())?;
+    tls.flush()?;
+    tls.sock.shutdown(Shutdown::Write)?;
+    // The gateway closes the connection once it reads that the client left.
+    let _ = tls.read_to_end(&mut Vec::new());
+    assert_no_failures(&failures);
     Ok(())
 }
 
@@ -456,7 +587,7 @@ fn follows_cloudflare_where_local_r2_differs() -> TestResult {
 fn serves_the_astro_example_that_tok_packages() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let app = PackageLayout::new(std::env::var("TOKAMAK_TEST_ASTRO_APP")?);
-    let (runtime, state) = start_runtime(temporary.path(), app)?;
+    let (runtime, state) = start_runtime(temporary.path(), app, |_| {})?;
     // Events wait for `start`, so both are recorded once this returns.
     runtime.emit("suspend", "{}", Duration::from_secs(30))?;
     for (path, text) in [
@@ -527,6 +658,15 @@ fn start_packaged_runtime(
     worker: &[u8],
     environment: &WorkerEnvironment,
 ) -> TestResult<(Runtime, PathBuf)> {
+    start_runtime(temporary, package(temporary, worker, environment)?, |_| {})
+}
+
+/// `worker`, with `environment`, packaged in `temporary`.
+fn package(
+    temporary: &Path,
+    worker: &[u8],
+    environment: &WorkerEnvironment,
+) -> TestResult<PackageLayout> {
     let app = PackageLayout::new(temporary.join("app"));
     fs::create_dir_all(app.root())?;
     write_worker_environment(&app, environment)?;
@@ -539,11 +679,16 @@ fn start_packaged_runtime(
             modules: BTreeMap::from([("worker.mjs".to_owned(), ModuleType::EsModule)]),
         },
     )?;
-    start_runtime(temporary, app)
+    Ok(app)
 }
 
-/// The runtime of the packaged `app`, with its state in `temporary`.
-fn start_runtime(temporary: &Path, app: PackageLayout) -> TestResult<(Runtime, PathBuf)> {
+/// The runtime of the packaged `app`, with its state in `temporary`, which
+/// tells `listener` its events.
+fn start_runtime(
+    temporary: &Path,
+    app: PackageLayout,
+    listener: impl Fn(Event) + Send + Sync + 'static,
+) -> TestResult<(Runtime, PathBuf)> {
     let state = temporary.join("state");
     let runtime = Runtime::start(
         Config {
@@ -554,9 +699,56 @@ fn start_runtime(temporary: &Path, app: PackageLayout) -> TestResult<(Runtime, P
             foreground: true,
             plugins: None,
         },
-        |_| {},
+        listener,
     )?;
     Ok((runtime, state))
+}
+
+/// The runtime of a Worker that records how its WebSocket closed, and the
+/// request failures the runtime reports.
+fn start_close_runtime(temporary: &Path) -> TestResult<(Runtime, PathBuf, Receiver<String>)> {
+    let environment = WorkerEnvironment {
+        vars: BTreeMap::new(),
+        storage: vec![StorageBinding::Kv {
+            name: "CLOSES".to_owned(),
+            id: "closes".to_owned(),
+        }],
+    };
+    start_reporting_runtime(temporary, close_worker_source(), &environment)
+}
+
+/// The runtime of `worker`, with `environment`, and the request failures it reports.
+fn start_reporting_runtime(
+    temporary: &Path,
+    worker: &[u8],
+    environment: &WorkerEnvironment,
+) -> TestResult<(Runtime, PathBuf, Receiver<String>)> {
+    let app = package(temporary, worker, environment)?;
+    let (failed, failures) = mpsc::channel();
+    let (runtime, state) = start_runtime(temporary, app, move |event| {
+        if let Event::RequestFailed { message } = event {
+            let _ = failed.send(message);
+        }
+    })?;
+    Ok((runtime, state, failures))
+}
+
+/// What the Worker recorded as `name`, once it records it.
+fn recorded(runtime: &Runtime, name: &str) -> TestResult<serde_json::Value> {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let record = serde_json::from_str(&runtime.emit(name, "{}", TIMEOUT)?)?;
+        if record != serde_json::Value::Null || Instant::now() >= deadline {
+            return Ok(record);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Asserts the runtime reports no request failure, including one reported shortly after.
+fn assert_no_failures(failures: &Receiver<String>) {
+    let failure = failures.recv_timeout(Duration::from_millis(200));
+    assert!(failure.is_err(), "reported {failure:?}");
 }
 
 fn d1_environment(migrations: &[&str]) -> WorkerEnvironment {
@@ -650,6 +842,38 @@ export default {
     const connection = request.headers.get("connection") ?? "missing";
     const headers = { "content-type": "text/plain", "x-request-connection": connection };
     return new Response(null, { status: valid ? 204 : 500, headers });
+  }
+};
+"#
+}
+
+/// A Worker whose WebSocket closes when it receives `close`, and which records
+/// the close event its socket receives and the state it is in for any later
+/// message.
+fn close_worker_source() -> &'static [u8] {
+    br#"
+import { WorkerEntrypoint } from "cloudflare:workers";
+
+export class TokamakEvents extends WorkerEntrypoint {
+  async dispatch(name) {
+    return { reply: JSON.parse(await this.env.CLOSES.get(name) ?? "null"), listened: ["close", "late"] };
+  }
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    const [client, server] = Object.values(new WebSocketPair());
+    server.accept();
+    server.addEventListener("message", ({ data }) => {
+      if (data === "close") return server.close(4000, "bye");
+      let sent = true;
+      try { server.send("too late"); } catch { sent = false; }
+      ctx.waitUntil(env.CLOSES.put("late", JSON.stringify([data, server.readyState, sent])));
+    });
+    server.addEventListener("close", ({ code, reason, wasClean }) => {
+      ctx.waitUntil(env.CLOSES.put("close", JSON.stringify([code, reason, wasClean])));
+    });
+    return new Response(null, { status: 101, webSocket: client });
   }
 };
 "#
