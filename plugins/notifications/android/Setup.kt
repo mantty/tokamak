@@ -92,12 +92,7 @@ internal class ChannelSpec(val id: String, json: JSONObject) {
         (json.opt("vibration") as? JSONArray)?.let { steps -> LongArray(steps.length()) { steps.getLong(it) } }
     private val vibrate: Boolean? = if (vibrationPattern != null) true else optionalBoolean(json, "vibration")
     /** The light's colour; null when the light is off or unspecified. */
-    private val lightColor: Int? =
-        when (val lights = json.opt("lights")) {
-            null, false -> null
-            is String -> runCatching { Color.parseColor(lights) }.getOrElse { throw invalidLights() }
-            else -> throw invalidLights()
-        }
+    private val lightColor: Int? = (json.opt("lights") as? String)?.let(Color::parseColor)
     private val showLights: Boolean? = if (json.has("lights")) lightColor != null else null
     private val showBadge = optionalBoolean(json, "showBadge")
     private val bypassDnd = optionalBoolean(json, "bypassDnd")
@@ -143,8 +138,6 @@ internal class ChannelSpec(val id: String, json: JSONObject) {
         }
 
     private companion object {
-        fun invalidLights() = TokamakPluginError.typeError("lights must be false or a colour such as #00ff00")
-
         val AUDIO: AudioAttributes =
             AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_NOTIFICATION)

@@ -4,6 +4,7 @@ import type { Importance } from "./index.js";
 const DEFAULT_CHANNEL = "tokamak.notifications";
 
 const IMPORTANCES: readonly Importance[] = ["none", "min", "low", "default", "high"];
+const COLOUR = /^#[0-9a-f]{6}$/i;
 
 /** Throws `TypeError`, naming the first invalid value, unless `value` is a valid configuration. */
 export function validateSetup(value: unknown): void {
@@ -85,8 +86,7 @@ function channel(
     optionalFlag(vibration, `${path}.vibration`);
   }
   const lights = value.lights;
-  const colour = /^#[0-9a-f]{6}$/i;
-  if (lights !== undefined && lights !== false && !(typeof lights === "string" && colour.test(lights))) {
+  if (lights !== undefined && lights !== false && !(typeof lights === "string" && COLOUR.test(lights))) {
     throw new TypeError(`${path}.lights must be false or a colour such as "#00ff00"`);
   }
   optionalFlag(value.showBadge, `${path}.showBadge`);

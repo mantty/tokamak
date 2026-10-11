@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { notifications, type SetupConfig } from "../src/index.js";
-import { DISMISSED, DISMISSED_CACHE, OPENED, OPENED_CACHE } from "../web/protocol.js";
+import { DISMISSED, DISMISSED_CACHE, OPENED, OPENED_CACHE, SETUP_CACHE } from "../web/protocol.js";
 import {
   FakeCacheStorage,
   FakePushSubscription,
@@ -114,14 +114,6 @@ void test("shows a category's actions, with Chrome's text input for an input act
   );
 });
 
-void test("rejects a setup with an invalid value before storing it", async () => {
-  await assert.rejects(
-    notifications.setup({ categories: [{ id: "", actions: [] }] }),
-    (error: unknown) => error instanceof TypeError,
-  );
-  assert.deepEqual(await (await caches.open("tokamak-notifications-setup")).keys(), []);
-});
-
 void test("rejects each invalid setup value", async () => {
   const action = { id: "a", title: "A" };
   const channel = { id: "c", name: "C" };
@@ -133,6 +125,7 @@ void test("rejects each invalid setup value", async () => {
     { categories: [{ id: "a", actions: [action, action] }] },
     { categories: [{ id: "a", actions: [] }, { id: "a", actions: [] }] },
     { categories: [{ id: "a", actions: [{ ...action, foreground: "yes" }] }] },
+    { categories: [{ id: "a", actions: [{ ...action, input: "yes" }] }] },
     { showInForeground: "yes" },
     { showInForeground: { banner: 1 } },
     { channelGroups: [{ id: "g", name: "G" }, { id: "g", name: "G" }] },
@@ -141,6 +134,7 @@ void test("rejects each invalid setup value", async () => {
     { channels: [{ ...channel, group: "missing" }] },
     { channels: [{ ...channel, id: "tokamak.notifications" }] },
     { channels: [{ ...channel, importance: "urgent" }] },
+    { channels: [{ ...channel, vibration: "yes" }] },
     { channels: [{ ...channel, vibration: [] }] },
     { channels: [{ ...channel, vibration: [-1] }] },
     { channels: [{ ...channel, vibration: [100, 0.5] }] },
@@ -156,6 +150,7 @@ void test("rejects each invalid setup value", async () => {
       JSON.stringify(config),
     );
   }
+  assert.deepEqual(await (await caches.open(SETUP_CACHE)).keys(), []);
 });
 
 void test("accepts every kind of setup value", async () => {
@@ -188,7 +183,7 @@ void test("accepts every kind of setup value", async () => {
         importance: "high",
         sound: "default",
         vibration: [0, 250, 250, 250],
-        lights: "#00ff00",
+        lights: "#00FF00",
         showBadge: true,
         bypassDnd: false,
       },
@@ -203,9 +198,13 @@ void test("replaces the previous setup's categories", async () => {
   await notifications.setup({ categories: [{ id: "a", actions: [{ id: "x", title: "X" }] }] });
   await notifications.setup({ categories: [{ id: "b", actions: [{ id: "y", title: "Y" }] }] });
 
-  await notifications.show({ id: "n", title: "Hi", category: "a" });
+  await notifications.show({ id: "a", title: "Hi", category: "a" });
+  await notifications.show({ id: "b", title: "Hi", category: "b" });
 
-  assert.deepEqual(registration?.shown.at(0)?.actions, []);
+  assert.deepEqual(
+    registration?.shown.map(({ actions }) => actions),
+    [[], [{ action: "y", title: "Y" }]],
+  );
 });
 
 void test("shows notifications without a service worker", async () => {
@@ -281,11 +280,12 @@ void test("takes each dismissed notification the service worker holds", async ()
   const dismissed = { id: "1", title: "Hi", body: null, data: {}, source: "local" };
   const received: unknown[] = [];
 
-  notifications.onNotificationDismissed((notification) => received.push(notification));
+  const stop = notifications.onNotificationDismissed((notification) => received.push(notification));
   await new Promise((resolve) => setTimeout(resolve, 10));
   await cache.put("/__tokamak/notifications/1", Response.json(dismissed));
   for (const listener of messageListeners) listener({ data: { type: DISMISSED } });
   await new Promise((resolve) => setTimeout(resolve, 10));
+  stop();
 
   assert.deepEqual(received, [dismissed]);
 });
@@ -293,17 +293,18 @@ void test("takes each dismissed notification the service worker holds", async ()
 void test("takes each opened notification the service worker holds once", async () => {
   const cache = await caches.open(OPENED_CACHE);
   const opened = { id: "1", title: "Hi", body: null, data: {}, source: "push" };
-  await cache.put("/__tokamak/notifications/opened/1", Response.json(opened));
+  await cache.put("/__tokamak/notifications/1", Response.json(opened));
   const first: unknown[] = [];
   const second: unknown[] = [];
 
   const stop = notifications.onNotificationOpened((notification) => first.push(notification));
-  notifications.onNotificationOpened((notification) => second.push(notification));
+  const stopSecond = notifications.onNotificationOpened((notification) => second.push(notification));
   await new Promise((resolve) => setTimeout(resolve, 10));
-  await cache.put("/__tokamak/notifications/opened/2", Response.json({ ...opened, id: "2" }));
+  await cache.put("/__tokamak/notifications/2", Response.json({ ...opened, id: "2" }));
   stop();
   for (const listener of messageListeners) listener({ data: { type: OPENED } });
   await new Promise((resolve) => setTimeout(resolve, 10));
+  stopSecond();
 
   assert.deepEqual(first.map((notification) => (notification as { id: string }).id), ["1"]);
   assert.deepEqual(second.map((notification) => (notification as { id: string }).id), ["1", "2"]);

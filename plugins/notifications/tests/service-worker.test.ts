@@ -126,11 +126,11 @@ void test("shows a push payload that is not JSON as the body", async () => {
   ]);
 });
 
-function clicked(data: unknown) {
+function clicked(data: unknown, body = "") {
   return {
     tag: "n1",
     title: "Hi",
-    body: "",
+    body,
     data,
     closed: false,
     close() {
@@ -215,7 +215,7 @@ void test("holds a dismissed notification for the page", async () => {
   const handled = await run((event) =>
     handleNotificationClose({
       ...event,
-      notification: clicked(notificationData("push", { n: 1 })) as unknown as Notification,
+      notification: clicked(notificationData("push", { n: 1 }), "Lunch?") as unknown as Notification,
     }),
   );
 
@@ -223,7 +223,7 @@ void test("holds a dismissed notification for the page", async () => {
   assert.deepEqual(page.posted, [{ type: "tokamak-notifications:dismissed" }]);
   const held = [...(cacheStorage.entries.get(DISMISSED_CACHE)?.values() ?? [])];
   assert.deepEqual(held.map((body) => JSON.parse(body) as unknown), [
-    { id: "n1", title: "Hi", body: null, data: { n: 1 }, source: "push" },
+    { id: "n1", title: "Hi", body: "Lunch?", data: { n: 1 }, source: "push" },
   ]);
 });
 

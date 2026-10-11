@@ -19,16 +19,6 @@ void test("replies to a push message with the notification a listener returns", 
   assert.deepEqual(reply, { id: "item-42", title: "New item" });
 });
 
-void test("delivers opened notifications", async () => {
-  const opened = { id: "n1", title: "Hi", body: null, data: {}, source: "local" as const };
-  const received: unknown[] = [];
-  onNotificationOpened((notification) => void received.push(notification.source));
-
-  await dispatch("notifications.opened", opened);
-
-  assert.deepEqual(received, ["local"]);
-});
-
 void test("delivers opened actions and dismissed notifications", async () => {
   const notification = { id: "n1", title: "Hi", body: null, data: {}, source: "local" as const };
   const received: unknown[] = [];

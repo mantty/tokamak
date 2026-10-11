@@ -103,7 +103,7 @@ export interface ChannelSettings {
   readonly importance?: Importance;
   /** `"default"`, `"none"`, or the name of a raw resource the app ships. */
   readonly sound?: string;
-  /** Whether to vibrate, or a pattern of milliseconds alternating between off and on. */
+  /** Whether to vibrate, or a non-empty pattern of whole milliseconds alternating off and on. */
   readonly vibration?: boolean | readonly number[];
   /** The light's colour as `#rrggbb`, such as `"#00ff00"`, or false. */
   readonly lights?: string | false;

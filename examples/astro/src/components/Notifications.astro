@@ -17,7 +17,7 @@ import PluginCard from "./PluginCard.astro";
     <button id="notifications-message" class="button">Show a message</button>
     <button id="notifications-schedule" class="button">Schedule in 10 s</button>
     <button id="notifications-list" class="button">Scheduled and delivered</button>
-    <button id="notifications-remove" class="button">Remove both</button>
+    <button id="notifications-remove" class="button">Remove all</button>
     <button id="notifications-subscribe" class="button">Subscribe</button>
     <button id="notifications-subscription" class="button">Subscription</button>
     <button id="notifications-unsubscribe" class="button">Unsubscribe</button>
@@ -61,6 +61,7 @@ import PluginCard from "./PluginCard.astro";
   }));
   onClick(log, "notifications-remove", async () => {
     await notifications.remove("example-now");
+    await notifications.remove("example-message");
     await notifications.remove("example-scheduled");
   });
   onClick(log, "notifications-subscribe", () => notifications.subscribe());
