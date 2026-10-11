@@ -576,11 +576,13 @@ fn server_challenge(
         let certificate = unsafe { args.ServerCertificate()? };
         let pem = webview_string(|value| unsafe { certificate.ToPemEncoding(value) })?;
         let request_uri = webview_string(|value| unsafe { args.RequestUri(value) })?;
-        let action = if is_app_origin(&request_uri, &host)
-            && certificates.trusts_server_certificate(&host, &pem)
-        {
+        let app_origin = is_app_origin(&request_uri, &host);
+        let action = if app_origin && certificates.trusts_server_certificate(&host, &pem) {
             COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW
         } else {
+            if app_origin {
+                eprintln!("tokamak refused the gateway's certificate for {request_uri}");
+            }
             COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL
         };
         unsafe { args.SetAction(action) }

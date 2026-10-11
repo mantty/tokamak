@@ -46,7 +46,12 @@ internal class TokamakWebViewClient(
         val host = Uri.parse(error.url).host
         val authority = host?.let(runtime::serverAuthority)
         val trusted = authority != null && chainsTo(error, authority)
-        if (trusted) handler.proceed() else handler.cancel()
+        if (trusted) {
+            handler.proceed()
+            return
+        }
+        if (authority != null) android.util.Log.w("tokamak", "refused the gateway's certificate: $error")
+        handler.cancel()
     }
 
     override fun onReceivedClientCertRequest(view: WebView, request: ClientCertRequest) {
