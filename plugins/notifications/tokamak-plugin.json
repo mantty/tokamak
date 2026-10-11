@@ -4,11 +4,19 @@
   "platforms": {
     "macos": {
       "class": "TokamakNotificationsPlugin",
-      "sources": ["apple/NotificationContent.swift", "apple/NotificationsPlugin.swift"]
+      "sources": [
+        "apple/NotificationContent.swift",
+        "apple/NotificationSetup.swift",
+        "apple/NotificationsPlugin.swift"
+      ]
     },
     "ios": {
       "class": "TokamakNotificationsPlugin",
-      "sources": ["apple/NotificationContent.swift", "apple/NotificationsPlugin.swift"],
+      "sources": [
+        "apple/NotificationContent.swift",
+        "apple/NotificationSetup.swift",
+        "apple/NotificationsPlugin.swift"
+      ],
       "plist": "apple/Info.plist"
     },
     "android": {
@@ -17,6 +25,7 @@
         "android/NotificationsPlugin.kt",
         "android/Content.kt",
         "android/Notifier.kt",
+        "android/Setup.kt",
         "android/Schedule.kt",
         "android/Push.kt"
       ],

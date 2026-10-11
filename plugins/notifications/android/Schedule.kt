@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.tokamak.runtime.tokamakPlugin
 import org.json.JSONObject
 
 private const val PREFERENCES = "tokamak.notifications.schedule"
@@ -63,7 +64,7 @@ class TokamakAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = Schedule.scheduledId(intent) ?: return
         val content = Schedule(context).take(id) ?: return
-        Notifier(context).post(content, "local")
+        (context.tokamakPlugin("notifications") as? TokamakNotificationsPlugin)?.present(content, "local")
     }
 }
 

@@ -8,14 +8,16 @@ import UserNotifications
 #endif
 
 private let subscriptionKey = "tokamak.notifications.subscription"
-private let showInForegroundKey = "tokamak.notifications.show-in-foreground"
+/// The JSON of the configuration `setup` last applied.
+private let setupKey = "tokamak.notifications.setup"
 /// The system keeps only the soonest 64 pending requests.
 private let pendingLimit = 64
 /// The system allows about 30 seconds for a background remote notification.
 private let pushDeadline: TimeInterval = 25
-/// How long the Worker's listeners have for an opened notification.
-private let openedDeadline: TimeInterval = 10
-private let shown: UNNotificationPresentationOptions = [.banner, .list, .sound]
+/// How long the Worker's listeners have for an opened or dismissed notification.
+private let responseDeadline: TimeInterval = 10
+/// Listener methods that receive what happened before a page listened.
+private let heldMethods: Set = ["onNotificationOpened", "onNotificationDismissed"]
 
 #if os(iOS)
   private let pushEntitlement = "aps-environment"
@@ -32,16 +34,24 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
   private let center = UNUserNotificationCenter.current()
   private let defaults = UserDefaults.standard
   private var listeners: [String: [UUID: TokamakPluginReply]] = [:]
-  /// Notifications opened while no page listened for them.
-  private var heldOpened: [[String: Any]] = []
+  /// Notifications opened or dismissed while no page listened for them, by listener method.
+  private var held: [String: [[String: Any]]] = [:]
   private var registering: [TokamakPluginReply] = []
+  private var setup = TokamakNotificationSetup.initial
 
-  /// Becomes the notification centre's delegate before launch finishes, which
-  /// the system requires to deliver the notification that launched the app.
+  /// Becomes the notification centre's delegate and applies the last `setup`
+  /// before launch finishes, which the system requires to deliver the
+  /// notification that launched the app with its actions.
   init(host: TokamakHost) {
     self.host = host
     super.init()
     center.delegate = self
+    if let stored = defaults.data(forKey: setupKey),
+      let config = try? JSONSerialization.jsonObject(with: stored),
+      let setup = try? TokamakNotificationSetup(config)
+    {
+      apply(setup)
+    }
     if defaults.dictionary(forKey: subscriptionKey) != nil {
       registerForRemoteNotifications()
     }
@@ -54,6 +64,10 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
   ) {
     do throws(TokamakPluginError) {
       switch method {
+      case "setup":
+        apply(try TokamakNotificationSetup(arguments))
+        defaults.set(try? JSONSerialization.data(withJSONObject: arguments), forKey: setupKey)
+        reply(.success(["unapplied": [Any]()]))
       case "permission":
         permission(reply)
       case "requestPermission":
@@ -74,7 +88,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
         center.removeDeliveredNotifications(withIdentifiers: [id])
         reply(.success(nil))
       case "subscribe":
-        try subscribeToPush(arguments, reply: reply)
+        try subscribeToPush(reply: reply)
       case "getSubscription":
         reply(.success(defaults.dictionary(forKey: subscriptionKey)))
       case "unsubscribe":
@@ -93,17 +107,16 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     arguments: Any,
     reply: @escaping TokamakPluginReply
   ) throws(TokamakPluginError) -> (() -> Void) {
-    guard ["onMessage", "onNotificationOpened", "onSubscriptionChange"].contains(method) else {
+    let methods = [
+      "onMessage", "onNotificationOpened", "onNotificationDismissed", "onSubscriptionChange",
+    ]
+    guard methods.contains(method) else {
       throw .notSupported("\(id).\(method) is not supported")
     }
     let key = UUID()
     listeners[method, default: [:]][key] = reply
-    if method == "onNotificationOpened" {
-      let held = heldOpened
-      heldOpened.removeAll()
-      for opened in held {
-        reply(.success(opened))
-      }
+    for value in held.removeValue(forKey: method) ?? [] {
+      reply(.success(value))
     }
     return { [weak self] in
       self?.listeners[method]?.removeValue(forKey: key)
@@ -159,12 +172,10 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
   ) {
     let fields = TokamakNotificationFields(notification)
     DispatchQueue.main.async {
-      guard fields.isPush else {
-        completionHandler(shown)
-        return
+      if fields.isPush {
+        self.notify("onMessage", fields.message)
       }
-      self.notify("onMessage", fields.message)
-      completionHandler(self.defaults.bool(forKey: showInForegroundKey) ? shown : [])
+      completionHandler(self.setup.presentation)
     }
   }
 
@@ -173,22 +184,40 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     didReceive response: UNNotificationResponse,
     withCompletionHandler completionHandler: @escaping () -> Void
   ) {
-    let opened = TokamakNotificationFields(response.notification).opened
+    let fields = TokamakNotificationFields(response.notification)
+    let (method, event, value) =
+      switch response.actionIdentifier {
+      case UNNotificationDismissActionIdentifier:
+        ("onNotificationDismissed", "dismissed", fields.dismissed)
+      case let action:
+        (
+          "onNotificationOpened", "opened",
+          fields.opened(
+            action: action == UNNotificationDefaultActionIdentifier ? nil : action,
+            input: (response as? UNTextInputNotificationResponse)?.userText)
+        )
+      }
     DispatchQueue.main.async {
-      self.notify("onNotificationOpened", opened)
-      self.host.emit("opened", event: opened, timeout: openedDeadline) { result in
+      self.notify(method, value)
+      self.host.emit(event, event: value, timeout: responseDeadline) { result in
         if case .failure(let error) = result {
-          print("opened notification failed: \(error)")
+          print("\(event) notification failed: \(error)")
         }
         completionHandler()
       }
     }
   }
 
+  /// Uses `setup` from now on, registering its categories.
+  private func apply(_ setup: TokamakNotificationSetup) {
+    self.setup = setup
+    center.setNotificationCategories(setup.categories)
+  }
+
   private func notify(_ method: String, _ value: [String: Any]) {
     let current = listeners[method] ?? [:]
-    if method == "onNotificationOpened" && current.isEmpty {
-      heldOpened.append(value)
+    if heldMethods.contains(method) && current.isEmpty {
+      held[method, default: []].append(value)
     }
     for reply in current.values {
       reply(.success(value))
@@ -284,10 +313,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     add(request) { _ in completion() }
   }
 
-  private func subscribeToPush(
-    _ arguments: Any,
-    reply: @escaping TokamakPluginReply
-  ) throws(TokamakPluginError) {
+  private func subscribeToPush(reply: @escaping TokamakPluginReply) throws(TokamakPluginError) {
     #if os(macOS)
       guard Self.entitlement("com.apple.application-identifier") != nil else {
         throw .notSupported("Push requires a team-signed build")
@@ -301,8 +327,6 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
         )
       }
     #endif
-    let options = arguments as? [String: Any] ?? [:]
-    defaults.set(options["showInForeground"] as? Bool ?? false, forKey: showInForegroundKey)
     registering.append(reply)
     registerForRemoteNotifications()
   }
@@ -311,7 +335,6 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
   private func unsubscribe() {
     unregisterForRemoteNotifications()
     defaults.removeObject(forKey: subscriptionKey)
-    defaults.removeObject(forKey: showInForegroundKey)
     finishRegistering(
       .failure(TokamakPluginError(name: "AbortError", message: "unsubscribe was called")))
   }

@@ -18,15 +18,20 @@ import org.json.JSONTokener
 private const val PREFERENCES = "tokamak.notifications"
 private const val SUBSCRIBED = "subscribed"
 private const val TOKEN = "token"
-private const val SHOW_IN_FOREGROUND = "show-in-foreground"
 
 /** FCM allows about 10 seconds for a message, including starting the app. */
 private const val PUSH_DEADLINE_MILLIS = 8_000L
 
-/** How long the Worker's listeners have for an opened notification. */
-private const val OPENED_DEADLINE_MILLIS = 10_000L
+/**
+ * How long the Worker's listeners have for an opened or dismissed notification, within the 10
+ * seconds Android allows a broadcast receiver.
+ */
+private const val RESPONSE_DEADLINE_MILLIS = 8_000L
 private const val FCM_MESSAGE_ID_EXTRA = "google.message_id"
-private val LISTENERS = setOf("onMessage", "onNotificationOpened", "onSubscriptionChange")
+private val LISTENERS = setOf("onMessage", "onNotificationOpened", "onNotificationDismissed", "onSubscriptionChange")
+
+/** Listener methods that receive what happened before a page listened. */
+private val HELD = setOf("onNotificationOpened", "onNotificationDismissed")
 
 class TokamakNotificationsPlugin(
     private val host: TokamakHost,
@@ -40,15 +45,16 @@ class TokamakNotificationsPlugin(
     private val listeners = mutableMapOf<String, MutableMap<Int, TokamakPluginReply>>()
     private var nextListener = 0
 
-    /** Notifications opened while no page listened for them. */
-    private val heldOpened = mutableListOf<JSONObject>()
+    /** Notifications opened or dismissed while no page listened for them, by listener method. */
+    private val held = mutableMapOf<String, MutableList<JSONObject>>()
 
     init {
-        notifier.createChannel()
+        notifier.ensureDefaultChannel()
     }
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
         when (method) {
+            "setup" -> setup(arguments, reply)
             "permission" -> reply(Result.success(permission()))
             "requestPermission" -> requestPermission(reply)
             "show" -> show(Content.parse(arguments, scheduled = false), reply)
@@ -56,7 +62,7 @@ class TokamakNotificationsPlugin(
             "getScheduled" -> reply(Result.success(JSONArray(schedule.all().map(Content::toJson))))
             "getDelivered" -> reply(Result.success(JSONArray(notifier.delivered())))
             "remove" -> remove(identifier(arguments), reply)
-            "subscribe" -> subscribe(arguments, reply)
+            "subscribe" -> subscribe(reply)
             "getSubscription" -> reply(Result.success(subscription()))
             "unsubscribe" -> unsubscribe(reply)
             else -> super.call(method, arguments, reply)
@@ -71,25 +77,46 @@ class TokamakNotificationsPlugin(
         if (method !in LISTENERS) return super.subscribe(method, arguments, reply)
         val key = nextListener++
         listeners.getOrPut(method, ::mutableMapOf)[key] = reply
-        if (method == "onNotificationOpened") {
-            heldOpened.forEach { reply(Result.success(it)) }
-            heldOpened.clear()
-        }
+        held.remove(method)?.forEach { reply(Result.success(it)) }
         return { listeners[method]?.remove(key) }
     }
 
-    /** Delivers a notification the user opened, local or from FCM, that started the activity. */
+    /** Delivers a notification, or an action with `foreground`, that started the activity. */
     override fun onIntent(intent: Intent) {
         val opened =
-            intent.getStringExtra(OPENED_EXTRA)?.let(::JSONObject)
+            intent.getStringExtra(OPENED_EXTRA)?.let { opened(intent, it) }
                 ?: intent.getStringExtra(FCM_MESSAGE_ID_EXTRA)?.let { openedPush(intent, it) }
                 ?: return
         intent.removeExtra(OPENED_EXTRA)
         intent.removeExtra(FCM_MESSAGE_ID_EXTRA)
-        notify("onNotificationOpened", opened)
+        deliver("onNotificationOpened", "opened", opened) {}
+    }
+
+    /** Delivers an action without `foreground`, or a dismissed notification. Call it on the main thread. */
+    internal fun respond(intent: Intent, finish: () -> Unit) {
+        val dismissed = intent.getStringExtra(DISMISSED_EXTRA)?.let(::JSONObject)
+        val opened = intent.getStringExtra(OPENED_EXTRA)?.let { opened(intent, it) }
+        when {
+            dismissed != null -> deliver("onNotificationDismissed", "dismissed", dismissed, finish)
+            opened != null -> deliver("onNotificationOpened", "opened", opened, finish)
+            else -> finish()
+        }
+    }
+
+    /** An opened notification with the typed text, removing the notification after an action, as Apple does. */
+    private fun opened(intent: Intent, json: String): JSONObject {
+        val opened = JSONObject(json).put("input", Notifier.input(intent) ?: JSONObject.NULL)
+        if (!opened.isNull("action")) notifier.remove(opened.getString("id"))
+        return opened
+    }
+
+    /** Delivers [value] to the page's [method] listeners and the Worker's [event] listeners, then calls [finish]. */
+    private fun deliver(method: String, event: String, value: JSONObject, finish: () -> Unit) {
+        notify(method, value)
         Thread {
-            runCatching { host.emit("opened", opened.toString(), OPENED_DEADLINE_MILLIS) }
-                .onFailure { Log.w("tokamak", "opened notification failed: ${it.message}") }
+            runCatching { host.emit(event, value.toString(), RESPONSE_DEADLINE_MILLIS) }
+                .onFailure { Log.w("tokamak", "$event notification failed: ${it.message}") }
+            finish()
         }.start()
     }
 
@@ -105,10 +132,10 @@ class TokamakNotificationsPlugin(
      * Delivers an FCM message to the page, and a data-only message to the Worker's `onPush`
      * listeners, showing the notification they reply with. FCM calls this off the main thread.
      */
-    internal fun onMessageReceived(message: JSONObject, visible: Boolean) {
+    internal fun onMessageReceived(message: JSONObject, notification: Content?) {
         context.mainExecutor.execute { notify("onMessage", message) }
-        if (visible) {
-            if (preferences.getBoolean(SHOW_IN_FOREGROUND, false)) notifier.post(content(message), "push")
+        if (notification != null) {
+            context.mainExecutor.execute { present(notification, "push") }
             return
         }
         runCatching { host.emit("push", message.toString(), PUSH_DEADLINE_MILLIS) }
@@ -121,13 +148,14 @@ class TokamakNotificationsPlugin(
         runCatching {
             val notification = JSONTokener(reply).nextValue()
             if (notification == JSONObject.NULL) return
-            notifier.post(Content.parse(notification as JSONObject, scheduled = false), "local")
+            val content = Content.parse(notification as JSONObject, scheduled = false)
+            context.mainExecutor.execute { present(content, "local") }
         }.onFailure { Log.w("tokamak", "the push reply is not a notification", it) }
     }
 
     private fun notify(method: String, value: JSONObject) {
         val current = listeners[method].orEmpty().values.toList()
-        if (method == "onNotificationOpened" && current.isEmpty()) heldOpened += value
+        if (method in HELD && current.isEmpty()) held.getOrPut(method, ::mutableListOf) += value
         current.forEach { it(Result.success(value)) }
     }
 
@@ -154,21 +182,42 @@ class TokamakNotificationsPlugin(
         }
     }
 
+    /**
+     * Applies [arguments], all of which it parses first, and stores them for alarms and pushes
+     * that arrive before the Worker runs.
+     */
+    private fun setup(arguments: Any?, reply: TokamakPluginReply) {
+        val setup = Setup.parse(arguments)
+        val unapplied = notifier.configure(setup, Setup.stored(context))
+        setup.store(context)
+        reply(Result.success(JSONObject().put("unapplied", unapplied)))
+    }
+
     private fun show(content: Content, reply: TokamakPluginReply) {
         requireEnabled()
-        notifier.post(content, "local")
+        notifier.requireChannel(content)
+        present(content, "local")
         reply(Result.success(null))
     }
 
     private fun schedule(content: Content, reply: TokamakPluginReply) {
         requireEnabled()
+        notifier.requireChannel(content)
         if ((content.at ?: 0) <= System.currentTimeMillis()) {
-            notifier.post(content, "local")
+            present(content, "local")
         } else {
             schedule.add(content)
         }
         reply(Result.success(null))
     }
+
+    /** Shows a notification, unless the app is on screen and `setup` hides them there. Call it on the main thread. */
+    internal fun present(content: Content, source: String) {
+        if (host.isInForeground && !showInForeground()) return
+        notifier.post(content, source)
+    }
+
+    private fun showInForeground(): Boolean = Setup.stored(context)?.showInForeground ?: true
 
     private fun remove(id: String, reply: TokamakPluginReply) {
         schedule.remove(id)
@@ -176,15 +225,11 @@ class TokamakNotificationsPlugin(
         reply(Result.success(null))
     }
 
-    private fun subscribe(arguments: Any?, reply: TokamakPluginReply) {
+    private fun subscribe(reply: TokamakPluginReply) {
         val messaging = messaging() ?: throw invalidState(
             "Push requires the app's Firebase project values in its Android manifest",
         )
-        val showInForeground = (arguments as? JSONObject)?.optBoolean("showInForeground") ?: false
-        preferences.edit()
-            .putBoolean(SUBSCRIBED, true)
-            .putBoolean(SHOW_IN_FOREGROUND, showInForeground)
-            .apply()
+        preferences.edit().putBoolean(SUBSCRIBED, true).apply()
         messaging.isAutoInitEnabled = true
         messaging.token.addOnCompleteListener { task ->
             when {
@@ -205,7 +250,7 @@ class TokamakNotificationsPlugin(
     }
 
     private fun unsubscribe(reply: TokamakPluginReply) {
-        preferences.edit().remove(SUBSCRIBED).remove(TOKEN).remove(SHOW_IN_FOREGROUND).apply()
+        preferences.edit().remove(SUBSCRIBED).remove(TOKEN).apply()
         val messaging = messaging() ?: return reply(Result.success(null))
         messaging.isAutoInitEnabled = false
         messaging.deleteToken().addOnCompleteListener { task ->
@@ -215,16 +260,6 @@ class TokamakNotificationsPlugin(
 
     private fun messaging(): FirebaseMessaging? =
         if (FirebaseApp.getApps(context).isEmpty()) null else FirebaseMessaging.getInstance()
-
-    /** A received push message's notification, shown as FCM would show it. */
-    private fun content(message: JSONObject): Content =
-        Content(
-            message.getString("id"),
-            message.opt("title") as? String ?: "",
-            message.opt("body") as? String,
-            message.getJSONObject("data"),
-            null,
-        )
 
     private fun fcmSubscription(token: String): JSONObject =
         JSONObject().put("service", "fcm").put("token", token)
@@ -241,6 +276,8 @@ class TokamakNotificationsPlugin(
             .put("body", JSONObject.NULL)
             .put("data", data)
             .put("source", "push")
+            .put("action", JSONObject.NULL)
+            .put("input", JSONObject.NULL)
     }
 
     private fun requireEnabled() {

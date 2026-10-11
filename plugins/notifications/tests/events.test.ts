@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { dispatch } from "@tokamakdev/plugin/testing";
 
-import { onNotificationOpened, onPush } from "../events/index.js";
+import { onNotificationDismissed, onNotificationOpened, onPush } from "../events/index.js";
 
 void test("replies to a push message with the notification a listener returns", async () => {
   const message = { id: "m1", title: null, body: null, data: { itemId: "42" } };
@@ -19,14 +19,16 @@ void test("replies to a push message with the notification a listener returns", 
   assert.deepEqual(reply, { id: "item-42", title: "New item" });
 });
 
-void test("delivers opened notifications", async () => {
-  const opened = { id: "n1", title: "Hi", body: null, data: {}, source: "local" as const };
+void test("delivers opened actions and dismissed notifications", async () => {
+  const notification = { id: "n1", title: "Hi", body: null, data: {}, source: "local" as const };
   const received: unknown[] = [];
-  onNotificationOpened((notification) => void received.push(notification.source));
+  onNotificationOpened(({ action, input }) => void received.push({ action, input }));
+  onNotificationDismissed(({ id }) => void received.push(id));
 
-  await dispatch("notifications.opened", opened);
+  await dispatch("notifications.opened", { ...notification, action: "reply", input: "On my way" });
+  await dispatch("notifications.dismissed", notification);
 
-  assert.deepEqual(received, ["local"]);
+  assert.deepEqual(received, [{ action: "reply", input: "On my way" }, "n1"]);
 });
 
 void test("types the listeners", () => {
@@ -38,4 +40,11 @@ void test("types the listeners", () => {
   onPush(() => ({ title: "No id" }));
   // @ts-expect-error -- an opened notification has a source, and the event takes no reply.
   onNotificationOpened((notification) => notification.source);
+  onNotificationOpened(({ action, input }) => {
+    const chosen: string | null = action;
+    const typed: string | null = input;
+    void [chosen, typed];
+  });
+  // @ts-expect-error -- a dismissed notification has no action.
+  onNotificationDismissed(({ action }) => void action);
 });

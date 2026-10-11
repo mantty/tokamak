@@ -6,10 +6,13 @@ events, and every first-party plugin.
 
 The Plugins page calls each method of the location, notifications, local
 authentication and secure storage plugins, and listens for their events.
-`src/tokamak.ts`, which runs only on the device, records each start, resume
-and suspend, data-only push message and opened notification in the `EVENTS` KV
-namespace, and, when the app starts on screen, where the location plugin first
-places the device. The Events page lists them, with the app's lifecycle stage.
+`src/tokamak.ts`, which runs only on the device, sets up the notifications
+plugin at each start: a message category with reply, mark-as-read and open
+actions, and an Android channel for messages. It records each start, resume
+and suspend, data-only push message, and opened or dismissed notification in
+the `EVENTS` KV namespace, and, when the app starts on screen, where the
+location plugin first places the device. The Events page lists them, with the
+app's lifecycle stage.
 
 Push needs declarations the example does not make, because they need an Apple
 Developer Program team and a Firebase project; the notifications plugin's

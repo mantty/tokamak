@@ -74,7 +74,8 @@ class TokamakPushService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
-        plugin?.onMessageReceived(message(message), message.notification != null)
+        val received = message(message)
+        plugin?.onMessageReceived(received, message.notification?.let { notification(received, it) })
     }
 
     /** The page's view of an FCM message: its data is the message's data map. */
@@ -84,4 +85,15 @@ class TokamakPushService : FirebaseMessagingService() {
             .put("title", message.notification?.title ?: JSONObject.NULL)
             .put("body", message.notification?.body ?: JSONObject.NULL)
             .put("data", JSONObject(message.data as Map<*, *>))
+
+    /** A notification message's notification, shown as FCM would show it. */
+    private fun notification(received: JSONObject, notification: RemoteMessage.Notification): Content =
+        Content(
+            received.getString("id"),
+            notification.title ?: "",
+            notification.body,
+            received.getJSONObject("data"),
+            null,
+            channel = notification.channelId,
+        )
 }

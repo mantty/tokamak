@@ -5,6 +5,7 @@ export interface ShownNotification {
   readonly body: string;
   readonly tag: string;
   readonly data: unknown;
+  readonly actions: unknown;
   closed: boolean;
   close(): void;
 }
@@ -39,12 +40,16 @@ export class FakeRegistration {
     },
   };
 
-  showNotification(title: string, options: { body?: string; tag: string; data: unknown }) {
+  showNotification(
+    title: string,
+    options: { body?: string; tag: string; data: unknown; actions?: unknown },
+  ) {
     const notification: ShownNotification = {
       title,
       body: options.body ?? "",
       tag: options.tag,
       data: options.data,
+      actions: options.actions,
       closed: false,
       close() {
         this.closed = true;

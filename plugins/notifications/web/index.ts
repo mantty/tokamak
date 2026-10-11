@@ -1,13 +1,18 @@
 import type {
+  DismissedNotification,
   Listener,
   Message,
   NotificationContent,
   OpenedNotification,
   Permission,
+  SetupConfig,
+  SetupResult,
   SubscribeOptions,
   Subscription,
 } from "../src/index.js";
 import {
+  DISMISSED,
+  DISMISSED_CACHE,
   MESSAGE,
   OPENED,
   OPENED_CACHE,
@@ -15,8 +20,17 @@ import {
   type ServiceWorkerMessage,
   notificationData,
   pluginData,
+  storeSetup,
+  storedCategory,
+  webActions,
   webPushSubscription,
 } from "./protocol.js";
+
+/** Stores the configuration for the service worker. The web uses only its categories. */
+export async function setup(config: SetupConfig): Promise<SetupResult> {
+  await storeSetup(config);
+  return { unapplied: [] };
+}
 
 export function permission(): Promise<Permission> {
   return new Promise((resolve) => {
@@ -34,11 +48,15 @@ export async function show(notification: NotificationContent): Promise<void> {
   const options = {
     body: notification.body,
     tag: notification.id,
-    data: notificationData("local", notification.data),
+    data: notificationData("local", notification.data, notification.category),
   };
   const registration = await serviceWorkerRegistration();
   if (registration) {
-    await registration.showNotification(notification.title, options);
+    const actions = webActions(await storedCategory(notification.category));
+    await registration.showNotification(notification.title, {
+      ...options,
+      actions,
+    } as NotificationOptions);
     return;
   }
   try {
@@ -65,6 +83,7 @@ export async function getDelivered(): Promise<NotificationContent[]> {
       title: notification.title,
       body: notification.body,
       data: data.data,
+      ...(data.category === undefined ? {} : { category: data.category }),
     }];
   });
 }
@@ -118,29 +137,45 @@ export function onSubscriptionChange(listener: Listener<Subscription>): () => vo
 }
 
 const openedListeners = new Set<Listener<OpenedNotification>>();
+const dismissedListeners = new Set<Listener<DismissedNotification>>();
 
 /** Delivers opened notifications the service worker holds, then each one it reports. */
 export function onNotificationOpened(listener: Listener<OpenedNotification>): () => void {
-  openedListeners.add(listener);
+  return onHeld(OPENED, OPENED_CACHE, openedListeners, listener);
+}
+
+/** Delivers dismissed notifications the service worker holds, then each one it reports. */
+export function onNotificationDismissed(listener: Listener<DismissedNotification>): () => void {
+  return onHeld(DISMISSED, DISMISSED_CACHE, dismissedListeners, listener);
+}
+
+/** Adds `listener` to `listeners`, which take what the service worker holds in `cacheName`. */
+function onHeld<T>(
+  type: typeof OPENED | typeof DISMISSED,
+  cacheName: string,
+  listeners: Set<Listener<T>>,
+  listener: Listener<T>,
+): () => void {
+  listeners.add(listener);
   const stop = onServiceWorkerMessage((message) => {
-    if (message.type === OPENED) void takeOpened();
+    if (message.type === type) void takeHeld(cacheName, listeners);
   });
-  void takeOpened();
+  void takeHeld(cacheName, listeners);
   return () => {
-    openedListeners.delete(listener);
+    listeners.delete(listener);
     stop();
   };
 }
 
 /** Takes each held notification once, even when several pages take them at once. */
-async function takeOpened(): Promise<void> {
-  if (openedListeners.size === 0 || !("caches" in globalThis)) return;
-  const cache = await caches.open(OPENED_CACHE);
+async function takeHeld<T>(cacheName: string, listeners: Set<Listener<T>>): Promise<void> {
+  if (listeners.size === 0 || !("caches" in globalThis)) return;
+  const cache = await caches.open(cacheName);
   for (const request of await cache.keys()) {
     const response = await cache.match(request);
     if (!response || !(await cache.delete(request))) continue;
-    const opened = (await response.json()) as OpenedNotification;
-    for (const listener of openedListeners) listener(opened);
+    const held = (await response.json()) as T;
+    for (const listener of listeners) listener(held);
   }
 }
 

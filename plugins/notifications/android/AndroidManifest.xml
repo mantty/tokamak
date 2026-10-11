@@ -17,6 +17,9 @@
         android:name="com.tokamak.plugins.notifications.TokamakAlarmReceiver"
         android:exported="false" />
     <receiver
+        android:name="com.tokamak.plugins.notifications.TokamakResponseReceiver"
+        android:exported="false" />
+    <receiver
         android:name="com.tokamak.plugins.notifications.TokamakBootReceiver"
         android:exported="false">
       <intent-filter>
