@@ -9,6 +9,8 @@ fi
 target=$2
 output=$3
 workspace=$PWD
+# Where Cargo builds, which `cargo run -p xtask -- platform-pack` passes.
+target_dir=${CARGO_TARGET_DIR:?run this recipe through cargo run -p xtask -- platform-pack}
 build=$workspace/platforms/apple/build
 
 case "$target" in
@@ -50,8 +52,8 @@ for host_target in aarch64-apple-darwin x86_64-apple-darwin; do
 done
 
 lipo -create \
-  "$workspace/target/aarch64-apple-darwin/release/tokamak-apple-signing" \
-  "$workspace/target/x86_64-apple-darwin/release/tokamak-apple-signing" \
+  "$target_dir/aarch64-apple-darwin/release/tokamak-apple-signing" \
+  "$target_dir/x86_64-apple-darwin/release/tokamak-apple-signing" \
   -output "$output/tools/tokamak-apple-signing"
 
 cargo rustc \
@@ -62,7 +64,7 @@ cargo rustc \
   --lib \
   --crate-type staticlib
 
-library="$workspace/target/$rust_target/release/libtokamak.a"
+library="$target_dir/$rust_target/release/libtokamak.a"
 if [[ ! -f "$library" ]]; then
   echo "tokamak runtime library was not produced: $library" >&2
   exit 1
