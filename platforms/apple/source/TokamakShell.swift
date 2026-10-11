@@ -169,9 +169,10 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
       }
       let queue = DispatchQueue.global(qos: .userInitiated)
       queue.async {
-        SecTrustEvaluateAsyncWithError(trust, queue) { trust, trusted, _ in
+        SecTrustEvaluateAsyncWithError(trust, queue) { trust, trusted, error in
           DispatchQueue.main.async {
             guard trusted else {
+              print("tokamak refused the gateway's certificate: \(String(describing: error))")
               completion(.cancelAuthenticationChallenge, nil)
               return
             }

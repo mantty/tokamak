@@ -10,7 +10,7 @@ use hyper::{
     StatusCode,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
-use rustls::{ServerConfig, ServerConnection, StreamOwned};
+use rustls::{AlertDescription, ServerConfig, ServerConnection, StreamOwned};
 use serde::Serialize;
 use sha1::{Digest, Sha1};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -177,19 +177,36 @@ fn read_optional_header_block(
     }
 }
 
-/// Whether `error` means the client closed the connection, reset it or stopped
-/// responding. The gateway raises its own failures with other kinds.
+/// Whether `error` means the client closed the connection, reset it, stopped
+/// responding, or ended the TLS session or refused the gateway's certificate
+/// with an alert, as Android's `WebView` does before asking the app to trust
+/// it. The shells log a certificate the app refuses, and the gateway raises
+/// its own failures with other kinds.
 pub(super) fn connection_ended(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::UnexpectedEof
-            | io::ErrorKind::TimedOut
-            | io::ErrorKind::WouldBlock
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::BrokenPipe
-            | io::ErrorKind::NotConnected
-    )
+    let alerted = matches!(
+        error.get_ref().and_then(|inner| inner.downcast_ref()),
+        Some(rustls::Error::AlertReceived(
+            AlertDescription::CloseNotify
+                | AlertDescription::UserCanceled
+                | AlertDescription::CertificateUnknown
+                | AlertDescription::BadCertificate
+                | AlertDescription::UnsupportedCertificate
+                | AlertDescription::CertificateExpired
+                | AlertDescription::CertificateRevoked
+                | AlertDescription::UnknownCA
+        ))
+    );
+    alerted
+        || matches!(
+            error.kind(),
+            io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::TimedOut
+                | io::ErrorKind::WouldBlock
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::NotConnected
+        )
 }
 
 pub(super) fn is_connect(data: &[u8], host: &str) -> bool {
@@ -1023,15 +1040,32 @@ fn write_response_headers(
 #[cfg(test)]
 mod tests {
     use super::{
-        HttpBody, HttpResponse, ResponseOutcome, read_request, response_stream,
+        HttpBody, HttpResponse, ResponseOutcome, connection_ended, read_request, response_stream,
         write_response_inner,
     };
     use hyper::header::{HeaderMap, HeaderName, HeaderValue};
+    use rustls::AlertDescription;
     use std::io::{self, Cursor, Read};
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn counts_a_certificate_refusal_but_not_a_protocol_alert_as_the_client_leaving() {
+        let alert = |description| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                rustls::Error::AlertReceived(description),
+            )
+        };
+        assert!(connection_ended(&alert(
+            AlertDescription::CertificateUnknown
+        )));
+        assert!(connection_ended(&alert(AlertDescription::CloseNotify)));
+        assert!(!connection_ended(&alert(AlertDescription::DecodeError)));
+        assert!(!connection_ended(&alert(AlertDescription::BadRecordMac)));
+    }
 
     #[test]
     fn replaces_worker_connection_headers_with_the_gateway_decision()

@@ -392,6 +392,25 @@ fn ends_without_a_failure_when_the_client_leaves_mid_request() -> TestResult {
 }
 
 #[test]
+fn ends_without_a_failure_when_the_client_rejects_the_certificate() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let (runtime, _, failures) = start_close_runtime(temporary.path())?;
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()?
+        .with_root_certificates(RootCertStore::empty())
+        .with_no_client_auth();
+    let mut connection = ClientConnection::new(Arc::new(config), ServerName::try_from(HOST)?)?;
+
+    // The client trusts no certificate authority, as Android's WebView trusts
+    // none of the gateway's until the app approves it.
+    let handshake = connection.complete_io(&mut open_tunnel(&runtime)?);
+    assert!(handshake.is_err(), "the client trusted the certificate");
+    assert_no_failures(&failures);
+    Ok(())
+}
+
+#[test]
 fn marks_the_worker_environment_of_a_packaged_app() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let (runtime, _) = start_packaged_runtime(
@@ -1019,6 +1038,11 @@ fn connect_gateway(
     runtime: &Runtime,
     state: &Path,
 ) -> TestResult<StreamOwned<ClientConnection, TcpStream>> {
+    connect_tls(state, HOST, open_tunnel(runtime)?)
+}
+
+/// A connection the gateway's CONNECT tunnel has opened, before TLS.
+fn open_tunnel(runtime: &Runtime) -> TestResult<TcpStream> {
     let mut proxy = TcpStream::connect(("127.0.0.1", runtime.port()))?;
     proxy.set_read_timeout(Some(Duration::from_secs(2)))?;
     proxy
@@ -1027,7 +1051,7 @@ fn connect_gateway(
     let proxy_response =
         read_header_block(&mut proxy).map_err(|error| format!("proxy response: {error}"))?;
     assert!(String::from_utf8(proxy_response)?.starts_with("HTTP/1.1 200"));
-    connect_tls(state, HOST, proxy)
+    Ok(proxy)
 }
 
 fn open_websocket(
