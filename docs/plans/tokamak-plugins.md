@@ -43,6 +43,23 @@ resolved from the nearest `node_modules` of the app or a parent directory.
 A platform omitted from the manifest has no native implementation. Calls made
 without an implementation throw `NotSupportedError`.
 
+A manifest may declare build `settings`, each with a `kind` (`string` or
+`path`) and a `description`, as a platform pack's `variables.json` does. Apps
+set them under the plugin's ID: `--<id>-<key>`, `TOKAMAK_<ID>_<KEY>` and
+`<id>.<key>`, and for one platform `--<id>-<platform>-<key>`,
+`TOKAMAK_<ID>_<PLATFORM>_<KEY>` and `<id>.<platform>.<key>`. tok rejects plugin
+IDs that start with a platform name, a top-level key of the `tokamak()` options
+or the first word of one of its own options or environment variables, and
+settings whose options would start with another plugin's longer ID. A manifest
+that declares settings names a Node `build` script in the package, which tok
+runs for each platform the plugin has a section for, with
+`{ platform, settings }` as JSON on stdin. The script validates the settings,
+exiting non-zero with its message on stderr to fail the build, and prints a
+JSON object of keys to add to the plugin's section, whose files are absolute
+paths. The Apple packs take `resources`, files placed in the app bundle's
+resources directory, and the Android pack takes `raw`, files added as raw
+resources.
+
 ## Native build
 
 The tokamak runtime remains prebuilt. `tok build` stages each key of a

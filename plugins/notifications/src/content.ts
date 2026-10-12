@@ -5,6 +5,7 @@ import {
   colour,
   count,
   fields,
+  fileName,
   flag,
   fraction,
   nonEmptyText,
@@ -16,6 +17,7 @@ import {
   text,
   time,
 } from "./checks.js";
+import { validateTrigger } from "./triggers.js";
 
 const ANDROID_CATEGORIES = {
   alarm: true,
@@ -93,6 +95,14 @@ const CHECKS: Readonly<Record<string, Check>> = {
   attachments: array(ATTACHMENT),
   badge: count,
   silent: flag,
+  sound: (value, path) => {
+    if (value === "default" || value === "defaultCritical") return;
+    if (typeof value === "string") throw new TypeError(`${path} must be "default", "defaultCritical" or an object`);
+    object({ name: fileName, critical: flag, volume: fraction }, ["name"])(value, path);
+    if ((value as { volume?: unknown }).volume !== undefined && (value as { critical?: unknown }).critical !== true) {
+      throw new TypeError(`${path}.volume applies only to a critical sound`);
+    }
+  },
   timestamp: time,
   subtitle: text,
   interruptionLevel: oneOf("passive", "active", "timeSensitive", "critical"),
@@ -127,6 +137,7 @@ const CHECKS: Readonly<Record<string, Check>> = {
   publicVersion: object({ title: text, body: text }, ["title"]),
   sortKey: text,
   androidCategory: oneOf(...Object.keys(ANDROID_CATEGORIES)),
+  settingsText: nonEmptyText,
   requireInteraction: flag,
   renotify: flag,
   vibrate: pattern,
@@ -141,11 +152,14 @@ const CHECKS: Readonly<Record<string, Check>> = {
  */
 export function validateContent(value: unknown, scheduled: boolean): void {
   record(value, "notification");
-  const required = scheduled ? ["id", "title", "at"] : ["id", "title"];
-  fields(value, "", { ...CHECKS, id: nonEmptyText, title: text, at: time }, required);
+  fields(value, "", { ...CHECKS, id: nonEmptyText, title: text }, ["id", "title"]);
+  if (scheduled) validateTrigger(value);
   // Browsers reject the pair.
   if (value.silent === true && value.vibrate !== undefined) {
     throw new TypeError("vibrate must be left out of a silent notification");
+  }
+  if (value.silent === true && value.sound !== undefined) {
+    throw new TypeError("sound must be left out of a silent notification");
   }
   if ((value.style as { type?: unknown } | undefined)?.type === "bigPicture" && value.image === undefined) {
     throw new TypeError("image must be given with the bigPicture style");

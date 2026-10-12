@@ -13,7 +13,20 @@ export interface PlatformConfig {
   [key: string]: Value | undefined;
 }
 
-/** The app's tokamak configuration: the tokamak Vite plugin's options other than `module`. */
+/** One plugin's settings: values for every platform, and each platform's own. */
+export interface PluginConfig {
+  android?: Record<string, Value | undefined>;
+  ios?: Record<string, Value | undefined>;
+  macos?: Record<string, Value | undefined>;
+  windows?: Record<string, Value | undefined>;
+  /** A setting the plugin declares; `tok` validates it. */
+  [key: string]: Value | Record<string, Value | undefined> | undefined;
+}
+
+/**
+ * The app's tokamak configuration: the tokamak Vite plugin's options other than `module`. Other
+ * keys are plugins' settings, by plugin ID.
+ */
 export interface Config {
   /** Display name for every platform. */
   name?: string;
@@ -27,4 +40,6 @@ export interface Config {
   ios?: PlatformConfig;
   macos?: PlatformConfig;
   windows?: PlatformConfig;
+  /** A plugin's settings, by its ID. */
+  [plugin: string]: string | PlatformConfig | PluginConfig | undefined;
 }

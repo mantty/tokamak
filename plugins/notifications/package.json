@@ -18,12 +18,13 @@
   "files": [
     "android",
     "apple",
+    "build",
     "events",
     "service-worker",
     "src",
     "web",
-    "tokamak-plugin.json",
-    "README.md"
+    "README.md",
+    "tokamak-plugin.json"
   ],
   "publishConfig": {
     "access": "public"

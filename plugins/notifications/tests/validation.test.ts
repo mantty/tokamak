@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { validateContent } from "../src/content.js";
+import { validateBadge, validateOpenSettings, validatePermissionOptions, validateTopic } from "../src/options.js";
 import { validateSetup } from "../src/setup.js";
 
 const notification = { id: "n1", title: "Hi" };
@@ -52,6 +53,14 @@ const INVALID_NOTIFICATIONS: [unknown, string][] = [
   [{ ...notification, image: "/a\n/b.png" }, "image"],
   [{ ...notification, image: "/my photo.png" }, "image"],
   [{ ...notification, icon: "http://example.com/i.png" }, "icon"],
+  [{ ...notification, sound: "chime.caf" }, "sound"],
+  [{ ...notification, sound: {} }, "sound.name"],
+  [{ ...notification, sound: { name: "chime" } }, "sound.name"],
+  [{ ...notification, sound: { name: "sounds/chime.caf" } }, "sound.name"],
+  [{ ...notification, sound: { name: "chime.caf", volume: 0.5 } }, "sound.volume"],
+  [{ ...notification, sound: { name: "chime.caf", critical: true, volume: 2 } }, "sound.volume"],
+  [{ ...notification, silent: true, sound: "default" }, "sound"],
+  [{ ...notification, settingsText: "" }, "settingsText"],
   [{ ...notification, icon: 1 }, "icon"],
   [{ ...notification, attachments: {} }, "attachments"],
   [{ ...notification, attachments: [{}] }, "attachments[0].url"],
@@ -183,6 +192,8 @@ const INVALID_SETUPS: [unknown, string][] = [
   [{ channels: [{ ...channel, showBadge: "yes" }] }, "channels[0].showBadge"],
   [{ channels: [{ ...channel, bypassDnd: "yes" }] }, "channels[0].bypassDnd"],
   [{ defaultChannel: { description: "No name" } }, "defaultChannel.name"],
+  [{ defaultChannel: { name: "General", sound: "chime" } }, "defaultChannel.sound"],
+  [{ channels: [{ id: "c", name: "C", sound: "raw/chime.wav" }] }, "channels[0].sound"],
 ];
 
 /** Whether `error` is the `TypeError` that names the value at `path`. */
@@ -196,10 +207,48 @@ void test("rejects each invalid notification value, naming it", () => {
       validateContent(value, false);
     }, names(path), JSON.stringify(value));
   }
-  for (const at of [undefined, Number.POSITIVE_INFINITY]) {
+  for (const [trigger, path] of INVALID_TRIGGERS) {
     assert.throws(() => {
-      validateContent({ ...notification, at }, true);
-    }, names("at"));
+      validateContent({ ...notification, ...trigger }, true);
+    }, names(path), JSON.stringify(trigger));
+  }
+});
+
+const INVALID_TRIGGERS: [Record<string, unknown>, string][] = [
+  [{}, "a scheduled notification"],
+  [{ at: 1, every: { hours: 1 } }, "a scheduled notification"],
+  [{ at: Number.POSITIVE_INFINITY }, "at"],
+  [{ every: { seconds: 59 } }, "every"],
+  [{ every: { minutes: 0.5 } }, "every.minutes"],
+  [{ every: 60 }, "every"],
+  [{ on: {} }, "on"],
+  [{ on: { month: 13 } }, "on.month"],
+  [{ on: { weekday: 0 } }, "on.weekday"],
+  [{ on: { hour: 24 } }, "on.hour"],
+  [{ on: { minute: 1.5 } }, "on.minute"],
+  [{ region: { latitude: 91, longitude: 0, radius: 100 } }, "region.latitude"],
+  [{ region: { latitude: 0, longitude: 0, radius: 0 } }, "region.radius"],
+  [{ region: { latitude: 0, longitude: 0 } }, "region.radius"],
+  [{ region: { latitude: 0, longitude: 0, radius: 10, onEntry: false } }, "region"],
+  [{ at: 1, repeats: true }, "repeats"],
+  [{ every: { days: 1 }, repeats: true }, "repeats"],
+  [{ region: { latitude: 0, longitude: 0, radius: 10 }, exact: true }, "exact"],
+  [{ at: 1, exact: "yes" }, "exact"],
+];
+
+void test("accepts each kind of trigger", () => {
+  for (const trigger of [
+    { at: 0 },
+    { at: 1, exact: true },
+    { every: { seconds: 60 } },
+    { every: { minutes: 1 } },
+    { every: { days: 1, hours: 2 }, exact: true },
+    { on: { hour: 9, minute: 0 }, repeats: true },
+    { on: { year: 2027, month: 2, day: 29, weekday: 7, second: 59 } },
+    { region: { latitude: -90, longitude: 180, radius: 0.5 }, repeats: false },
+    { region: { latitude: 51.5, longitude: -0.1, radius: 100, onEntry: false, onExit: true } },
+  ]) {
+    validateContent({ ...notification, ...trigger }, true);
   }
 });
 
@@ -213,6 +262,11 @@ void test("accepts boundary notification values", () => {
     { chronometer: false },
     { silent: false, vibrate: [100] },
     { image: "https://example.com/i.png", icon: "/icon.png" },
+    { sound: "default" },
+    { sound: "defaultCritical" },
+    { sound: { name: "Chime Bell.caf" } },
+    { sound: { name: "alarm.wav", critical: true, volume: 0 } },
+    { settingsText: "Notification settings" },
     { image: "HTTPS://example.com:8443/i.png?size=2", icon: "/icons/a%20b.png?v=1" },
     { attachments: [] },
     { image: "/i.png", style: { type: "bigPicture", title: "Photo", showWhenCollapsed: true } },
@@ -238,6 +292,29 @@ void test("rejects each invalid setup value, naming it", () => {
 });
 
 void test("accepts showInForeground as a boolean", () => {
+  validateSetup({
+    defaultChannel: { name: "General", sound: "none" },
+    channels: [{ id: "chimes", name: "Chimes", sound: "chime.wav" }],
+  });
   validateSetup({ showInForeground: true });
   validateSetup({ showInForeground: false });
+});
+
+void test("rejects invalid options of the other methods, naming them", () => {
+  const cases: [() => void, string][] = [
+    [() => { validatePermissionOptions({ provisional: "yes" }); }, "options.provisional"],
+    [() => { validatePermissionOptions(null); }, "options"],
+    [() => { validateBadge(-1); }, "count"],
+    [() => { validateBadge(1.5); }, "count"],
+    [() => { validateOpenSettings({ channel: "" }); }, "options.channel"],
+    [() => { validateOpenSettings({ channel: "c", exactAlarms: true }); }, "options"],
+    [() => { validateTopic(""); }, "topic"],
+    [() => { validateTopic("news/today"); }, "topic"],
+    [() => { validateTopic("x".repeat(901)); }, "topic"],
+  ];
+  for (const [call, path] of cases) assert.throws(call, names(path), path);
+  validatePermissionOptions({ alert: false, carPlay: true, providesAppNotificationSettings: true });
+  validateBadge(0);
+  validateOpenSettings({ channel: "messages", exactAlarms: false });
+  validateTopic("weather-london_2.0~%41");
 });

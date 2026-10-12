@@ -310,6 +310,28 @@ void test("rejects showing and scheduling what the web cannot", async () => {
   assert.deepEqual(await notifications.getScheduled(), []);
 });
 
+void test("reports the permission as the settings, and sets the badge through the Badging API", async () => {
+  assert.deepEqual(await notifications.settings(), { permission: "granted" });
+  await notifications.setBadge(4);
+  await notifications.setBadge(0);
+  assert.deepEqual(badges, [4, 0]);
+
+  delete (navigator as { setAppBadge?: unknown }).setAppBadge;
+  await assert.rejects(notifications.setBadge(1), isDomException("NotSupportedError"));
+});
+
+void test("rejects what only native platforms have", async () => {
+  await assert.rejects(notifications.openSettings(), isDomException("NotSupportedError"));
+  await assert.rejects(notifications.subscribeToTopic("news"), isDomException("NotSupportedError"));
+  await assert.rejects(notifications.unsubscribeFromTopic("news"), isDomException("NotSupportedError"));
+  await assert.rejects(
+    notifications.schedule({ id: "a", title: "A", every: { minutes: 5 } }),
+    isDomException("NotSupportedError"),
+  );
+  const stop = notifications.onOpenSettings(() => assert.fail("the web has no settings link"));
+  stop();
+});
+
 void test("subscribes with the application server key and reuses the subscription", async () => {
   const subscription = await notifications.subscribe({ applicationServerKey: "BEl6" });
 

@@ -178,6 +178,7 @@ maven_coordinate='^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$'
 registry=$kotlin/TokamakPluginRegistry.kt
 printf '%s\n\n%s\n%s\n' 'package com.tokamak.runtime' 'internal fun tokamakPlugins(app: TokamakApplication): List<TokamakPlugin> =' '    listOf(' > "$registry"
 shopt -s nullglob
+raw_names=" "
 for plugin in "$input/plugins"/*/; do
   plugin_id=$(basename "$plugin")
   class=$(cat "$plugin/class" 2>/dev/null || true)
@@ -202,6 +203,19 @@ for plugin in "$input/plugins"/*/; do
   if [[ -f "$plugin/manifest" ]]; then
     cp "$plugin/manifest" "$module/src/main/AndroidManifest.xml"
   fi
+  for resource in "$plugin/raw"/*; do
+    [[ -f "$resource" ]] || continue
+    name=${resource##*/}
+    name=${name#*-}
+    # Android names a raw resource without its extension, across every plugin.
+    if [[ "$raw_names" == *" ${name%%.*} "* ]]; then
+      echo "plugin '$plugin_id' raw resource '$name' has the name of another plugin resource" >&2
+      exit 1
+    fi
+    raw_names+=" ${name%%.*} "
+    mkdir -p "$module/src/main/res/raw"
+    cp "$resource" "$module/src/main/res/raw/$name"
+  done
   {
     printf '%s\n' 'plugins {' "  id 'com.android.library'" "  id 'org.jetbrains.kotlin.android'"
     printf '%s\n\n' '}'

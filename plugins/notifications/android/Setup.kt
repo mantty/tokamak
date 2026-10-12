@@ -45,6 +45,11 @@ internal class Setup private constructor(val json: JSONObject) {
     val channelGroups: List<NotificationChannelGroup> = objects(json, "channelGroups").map(::channelGroup)
     val channels: List<ChannelSpec> = objects(json, "channels").map { ChannelSpec(requireString(it, "id"), it) }
 
+    /** Throws `NotFoundError` unless the app bundles each channel's sound. */
+    fun requireSounds(context: Context) {
+        (listOfNotNull(defaultChannel) + channels).forEach { it.requireSound(context) }
+    }
+
     fun store(context: Context) {
         context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putString(CONFIG, json.toString()).apply()
     }
@@ -93,7 +98,7 @@ internal class ChannelSpec(val id: String, json: JSONObject) {
             else -> throw TokamakPluginError.typeError("importance must be none, min, low, default or high")
         }
 
-    /** `"default"`, `"none"`, or a raw resource the app ships. */
+    /** `"default"`, `"none"`, or a file of the `sounds` build setting, which the app has as a raw resource. */
     private val sound = optionalString(json, "sound")
     /** A non-empty pattern, which turns vibration on. */
     private val vibrationPattern: LongArray? =
@@ -117,6 +122,14 @@ internal class ChannelSpec(val id: String, json: JSONObject) {
             showBadge?.let(channel::setShowBadge)
             bypassDnd?.let(channel::setBypassDnd)
         }
+
+    /** Throws `NotFoundError` unless the app bundles the channel's sound. */
+    fun requireSound(context: Context) {
+        val file = sound?.takeIf { it != "default" && it != "none" } ?: return
+        if (context.resources.getIdentifier(resourceName(file), "raw", context.packageName) == 0) {
+            throw TokamakPluginError("NotFoundError", "The app has no sound $file; add it to the notifications.sounds build setting")
+        }
+    }
 
     /** The settings this spec names that [existing] does not have, which Android kept. */
     fun unapplied(existing: NotificationChannel, context: Context): List<String> =
@@ -142,8 +155,11 @@ internal class ChannelSpec(val id: String, json: JSONObject) {
         when (sound) {
             "default" -> Settings.System.DEFAULT_NOTIFICATION_URI
             "none" -> null
-            else -> Uri.parse("${ContentResolver.SCHEME_ANDROID_RESOURCE}://${context.packageName}/raw/$sound")
+            else -> Uri.parse("${ContentResolver.SCHEME_ANDROID_RESOURCE}://${context.packageName}/raw/${resourceName(sound)}")
         }
+
+    /** The raw resource the build makes of the sound file [file]: its name without the extension. */
+    private fun resourceName(file: String): String = file.substringBeforeLast('.')
 
     private companion object {
         val AUDIO: AudioAttributes =

@@ -1,6 +1,13 @@
 {
   "schemaVersion": 1,
   "id": "notifications",
+  "settings": {
+    "sounds": {
+      "kind": "path",
+      "description": "Directory of notification sound files the app ships"
+    }
+  },
+  "build": "build/index.mjs",
   "platforms": {
     "macos": {
       "class": "TokamakNotificationsPlugin",
@@ -31,10 +38,13 @@
         "android/Notifier.kt",
         "android/Setup.kt",
         "android/Schedule.kt",
-        "android/Push.kt"
+        "android/Push.kt",
+        "android/Trigger.kt"
       ],
       "manifest": "android/AndroidManifest.xml",
-      "dependencies": ["com.google.firebase:firebase-messaging:25.1.3"]
+      "dependencies": [
+        "com.google.firebase:firebase-messaging:25.1.3"
+      ]
     }
   }
 }

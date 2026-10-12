@@ -13,6 +13,17 @@
         <action android:name="com.google.firebase.MESSAGING_EVENT" />
       </intent-filter>
     </service>
+    <!-- Settings opens the app here from its notification settings and the "Customize" link. -->
+    <activity-alias
+        android:name="com.tokamak.plugins.notifications.TokamakNotificationSettings"
+        android:targetActivity="com.tokamak.runtime.TokamakActivity"
+        android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.NOTIFICATION_PREFERENCES" />
+        <category android:name="android.intent.category.DEFAULT" />
+      </intent-filter>
+    </activity-alias>
     <receiver
         android:name="com.tokamak.plugins.notifications.TokamakAlarmReceiver"
         android:exported="false" />
@@ -25,6 +36,9 @@
       <intent-filter>
         <action android:name="android.intent.action.BOOT_COMPLETED" />
         <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+        <action android:name="android.intent.action.TIME_SET" />
+        <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+        <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
       </intent-filter>
     </receiver>
     <meta-data android:name="firebase_messaging_auto_init_enabled" android:value="false" />

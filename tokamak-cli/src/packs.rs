@@ -82,9 +82,9 @@ impl PlatformPack {
     }
 }
 
-/// `path` as Bash and PowerShell accept it: without the verbatim prefix of a
-/// canonical Windows drive path.
-fn command_path(path: &Path) -> PathBuf {
+/// `path` as Bash, PowerShell and Node accept it: without the verbatim prefix
+/// of a canonical Windows drive path.
+pub(crate) fn command_path(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {
         let value = path.to_string_lossy();

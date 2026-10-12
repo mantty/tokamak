@@ -13,22 +13,33 @@ import PluginCard from "./PluginCard.astro";
   <div class="flex flex-wrap gap-3">
     <button id="notifications-permission" class="button">Permission</button>
     <button id="notifications-request" class="button">Request permission</button>
+    <button id="notifications-settings" class="button">Settings</button>
+    <button id="notifications-open-settings" class="button">Open settings</button>
+    <button id="notifications-badge" class="button">Badge 3</button>
+    <button id="notifications-clear-badge" class="button">Clear badge</button>
     <button id="notifications-show" class="button">Show now</button>
     <button id="notifications-message" class="button">Show a message</button>
     <button id="notifications-group" class="button">Show a group</button>
     <button id="notifications-photo" class="button">Show a photo</button>
     <button id="notifications-progress" class="button">Show progress</button>
     <button id="notifications-silent" class="button">Show silently, badge 5</button>
+    <button id="notifications-chime" class="button">Show with a chime</button>
     <button id="notifications-schedule" class="button">Schedule in 10 s</button>
+    <button id="notifications-exact" class="button">Exact in 10 s (Android)</button>
+    <button id="notifications-every" class="button">Every minute</button>
+    <button id="notifications-daily" class="button">Daily at 9:00</button>
+    <button id="notifications-region" class="button">On leaving here (iOS)</button>
     <button id="notifications-list" class="button">Scheduled and delivered</button>
     <button id="notifications-remove" class="button">Remove all</button>
     <button id="notifications-subscribe" class="button">Subscribe</button>
     <button id="notifications-subscription" class="button">Subscription</button>
     <button id="notifications-unsubscribe" class="button">Unsubscribe</button>
+    <button id="notifications-topic" class="button">Subscribe to "news" (FCM)</button>
   </div>
 </PluginCard>
 
 <script>
+  import { location } from "@tokamakdev/plugin-location";
   import { notifications } from "@tokamakdev/plugin-notifications";
   import { describe, logTo, onClick } from "../scripts/plugin-log";
 
@@ -36,7 +47,14 @@ import PluginCard from "./PluginCard.astro";
   const reportError = (error: DOMException) => log(describe(error));
 
   onClick(log, "notifications-permission", () => notifications.permission());
-  onClick(log, "notifications-request", () => notifications.requestPermission());
+  // Apple platforms then link from their settings to the app's, which onOpenSettings receives.
+  onClick(log, "notifications-request", () =>
+    notifications.requestPermission({ providesAppNotificationSettings: true }),
+  );
+  onClick(log, "notifications-settings", () => notifications.settings());
+  onClick(log, "notifications-open-settings", () => notifications.openSettings());
+  onClick(log, "notifications-badge", () => notifications.setBadge(3));
+  onClick(log, "notifications-clear-badge", () => notifications.setBadge(0));
   onClick(log, "notifications-show", () =>
     notifications.show({ id: "example-now", title: "Shown now", body: "From the Plugins page" }),
   );
@@ -48,6 +66,7 @@ import PluginCard from "./PluginCard.astro";
       body: "Are you coming tonight?",
       category: "message",
       channel: "messages",
+      settingsText: "Notification settings",
     }),
   );
   // Grouped on Apple and Android, with Android's messaging and big text styles.
@@ -125,6 +144,40 @@ import PluginCard from "./PluginCard.astro";
       at: Date.now() + 10_000,
     }),
   );
+  // The sound is a file of the notifications.sounds build setting; Android plays the channel's.
+  onClick(log, "notifications-chime", () =>
+    notifications.show({
+      id: "example-chime",
+      title: "Chime",
+      body: "Played from the app's sounds",
+      sound: { name: "chime.wav" },
+      channel: "chimes",
+    }),
+  );
+  onClick(log, "notifications-exact", () =>
+    notifications.schedule({
+      id: "example-exact",
+      title: "Exact",
+      body: "Shown 10 seconds after scheduling, to the second",
+      at: Date.now() + 10_000,
+      exact: true,
+    }),
+  );
+  onClick(log, "notifications-every", () =>
+    notifications.schedule({ id: "example-every", title: "Every minute", body: "Until removed", every: { minutes: 1 } }),
+  );
+  onClick(log, "notifications-daily", () =>
+    notifications.schedule({ id: "example-daily", title: "Good morning", on: { hour: 9, minute: 0 }, repeats: true }),
+  );
+  onClick(log, "notifications-region", async () => {
+    const { coords } = await location.getCurrentPosition();
+    await notifications.schedule({
+      id: "example-region",
+      title: "You left",
+      body: "Shown on leaving where you scheduled it",
+      region: { latitude: coords.latitude, longitude: coords.longitude, radius: 200, onEntry: false, onExit: true },
+    });
+  });
   onClick(log, "notifications-list", async () => ({
     scheduled: await notifications.getScheduled(),
     delivered: await notifications.getDelivered(),
@@ -138,10 +191,14 @@ import PluginCard from "./PluginCard.astro";
     await notifications.remove("example-progress");
     await notifications.remove("example-silent");
     await notifications.remove("example-scheduled");
+    for (const id of ["example-chime", "example-exact", "example-every", "example-daily", "example-region"]) {
+      await notifications.remove(id);
+    }
   });
   onClick(log, "notifications-subscribe", () => notifications.subscribe());
   onClick(log, "notifications-subscription", () => notifications.getSubscription());
   onClick(log, "notifications-unsubscribe", () => notifications.unsubscribe());
+  onClick(log, "notifications-topic", () => notifications.subscribeToTopic("news"));
 
   notifications.onMessage((message) => log(`Message: ${JSON.stringify(message)}`), reportError);
   notifications.onNotificationOpened((opened) => log(`Opened: ${JSON.stringify(opened)}`), reportError);
@@ -149,6 +206,7 @@ import PluginCard from "./PluginCard.astro";
     (dismissed) => log(`Dismissed: ${JSON.stringify(dismissed)}`),
     reportError,
   );
+  notifications.onOpenSettings((request) => log(`Open settings: ${JSON.stringify(request)}`), reportError);
   notifications.onSubscriptionChange(
     (subscription) => log(`Subscription changed: ${JSON.stringify(subscription)}`),
     reportError,

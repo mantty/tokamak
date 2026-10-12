@@ -80,6 +80,7 @@ async function setUpNotifications(env: Cloudflare.Env): Promise<void> {
         group: "chats",
         importance: "high",
       },
+      { id: "chimes", name: "Chimes", description: "Notifications with a chime", importance: "high", sound: "chime.wav" },
     ],
   });
   for (const { channel, fields } of unapplied) {

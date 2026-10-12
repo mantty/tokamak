@@ -903,6 +903,83 @@ fn stages_the_plugins_installed_above_a_relative_project_directory() -> TestResu
     Ok(())
 }
 
+/// Install the `alerts` plugin, whose build script adds the Swift files in its
+/// `sounds` setting's directory to its macOS sources.
+#[cfg(unix)]
+fn install_plugin_with_settings(root: &Path) -> TestResult {
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"demo-app","scripts":{"build":"echo already-built"},"dependencies":{"alerts":"1.0.0"}}"#,
+    )?;
+    let plugin = root.join("node_modules/alerts");
+    fs::create_dir_all(&plugin)?;
+    fs::write(
+        plugin.join("tokamak-plugin.json"),
+        serde_json::json!({
+            "schemaVersion": 1,
+            "id": "alerts",
+            "settings": { "sounds": { "kind": "path", "description": "Sound files" } },
+            "build": "build.mjs",
+            "platforms": { "macos": { "class": "Alerts" } },
+        })
+        .to_string(),
+    )?;
+    fs::write(
+        plugin.join("build.mjs"),
+        r#"
+        import { readdirSync, readFileSync } from "node:fs";
+        const { settings } = JSON.parse(readFileSync(0, "utf8"));
+        const sources = readdirSync(settings.sounds).map((name) => `${settings.sounds}/${name}`);
+        console.log(JSON.stringify({ sources }));
+        "#,
+    )?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn stages_what_a_plugin_s_build_script_adds_from_its_settings() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
+    install_plugin_with_settings(&project)?;
+    fs::create_dir_all(project.join("sounds"))?;
+    fs::write(project.join("sounds/Chime.swift"), "// chime")?;
+
+    build_command("macos", &project, &platform_pack)?
+        .arg("--alerts-macos-sounds")
+        .arg(project.join("sounds"))
+        .assert()
+        .success();
+
+    let plugin = project.join("build/macos/demo-app.app/plugins/alerts");
+    assert_eq!(
+        fs::read_to_string(plugin.join("sources/0-Chime.swift"))?,
+        "// chime"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn lists_plugin_settings_in_help_and_rejects_undeclared_ones() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
+    install_plugin_with_settings(&project)?;
+
+    Command::cargo_bin("tok")?
+        .args(["build", "macos", "--help", "--project"])
+        .arg(&project)
+        .assert()
+        .success()
+        .stdout(contains("--alerts-sounds <PATH>").and(contains("Sound files")));
+    build_command("macos", &project, &platform_pack)?
+        .args(["--alerts-volume", "3"])
+        .assert()
+        .failure()
+        .stderr(contains(
+            "unknown option --alerts-volume; plugin alerts accepts --alerts-sounds",
+        ));
+    Ok(())
+}
+
 #[cfg(windows)]
 #[test]
 fn builds_windows_app_with_its_runtime_files() -> TestResult {
