@@ -25,9 +25,6 @@ const value = await secureStorage.get("identity/encryption", {
 
 await secureStorage.delete("identity/encryption");
 
-// string[], sorted
-const names = await secureStorage.keys();
-
 await secureStorage.clear();
 ```
 
@@ -47,6 +44,10 @@ decrypted until the device owner authenticates:
 | `biometrics` | Face ID, Touch ID or fingerprint | Readable |
 | `currentBiometrics` | Face ID, Touch ID or fingerprint enrolled when the value was stored | Permanently unreadable |
 
+On iOS, the system reports a read of a `currentBiometrics` value after an
+enrolment change as failed authentication, so `get` rejects with
+`NotAllowedError` rather than `NotReadableError`.
+
 `prompt` is the reason shown in the system authentication prompt. Without it,
 the platform's default prompt is shown.
 
@@ -63,9 +64,6 @@ the platform's default prompt is shown.
 | `OperationError` | The platform reported another failure |
 
 `get` resolves `null` when the name has no stored value.
-
-Names are not protected like values: `keys()` lists them whenever the device
-has been unlocked since it started, without authentication.
 
 ## Platforms
 

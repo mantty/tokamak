@@ -72,7 +72,6 @@ class TokamakSecureStoragePlugin(
                 delete(requireObject(arguments).requireString("name"))
                 reply(Result.success(null))
             }
-            "keys" -> execute(reply) { reply(Result.success(keys())) }
             "clear" -> execute(reply) {
                 clear()
                 reply(Result.success(null))
@@ -115,7 +114,7 @@ class TokamakSecureStoragePlugin(
         val previousAlias = read(file)?.let { alias(it.keyId) }
         val publicKey = generatePublicKey(spec)
         try {
-            write(file, seal(name, keyId, value, publicKey).encode())
+            write(file, seal(keyId, value, publicKey).encode())
         } catch (error: Throwable) {
             keyStore.deleteEntry(alias(keyId))
             throw error
@@ -147,7 +146,7 @@ class TokamakSecureStoragePlugin(
             .generatePublic(X509EncodedKeySpec(keyPair.public.encoded))
     }
 
-    private fun seal(name: String, keyId: ByteArray, value: String, publicKey: PublicKey): StoredValue {
+    private fun seal(keyId: ByteArray, value: String, publicKey: PublicKey): StoredValue {
         val dataKey = KeyGenerator.getInstance("AES").apply { init(DATA_KEY_SIZE) }.generateKey()
         val iv = ByteArray(IV_SIZE).also(random::nextBytes)
         val sealed =
@@ -158,7 +157,7 @@ class TokamakSecureStoragePlugin(
             Cipher.getInstance(WRAP)
                 .apply { init(Cipher.ENCRYPT_MODE, publicKey, OAEP) }
                 .doFinal(dataKey.encoded)
-        return StoredValue(name, keyId, wrapped, iv, sealed)
+        return StoredValue(keyId, wrapped, iv, sealed)
     }
 
     private fun get(request: JSONObject, reply: TokamakPluginReply) {
@@ -217,13 +216,6 @@ class TokamakSecureStoragePlugin(
         AtomicFile(file).delete()
         keyStore.deleteEntry(alias(stored.keyId))
     }
-
-    /** AtomicFile's in-progress and backup files carry a suffix; value files have none. */
-    private fun keys(): List<String> =
-        directory.listFiles { file -> '.' !in file.name }
-            .orEmpty()
-            .mapNotNull { read(it)?.name }
-            .sorted()
 
     private fun clear() {
         directory.deleteRecursively()
@@ -321,9 +313,8 @@ private const val KEY_ID_SIZE = 16
 private const val WRAPPED_KEY_SIZE = KEY_SIZE / 8
 private const val IV_SIZE = 12
 
-/** A value's file: its name, key ID, wrapped data key, IV, then sealed value. */
+/** A value's file: an unused string, then the key ID, wrapped data key, IV and sealed value. */
 private class StoredValue(
-    val name: String,
     val keyId: ByteArray,
     val wrappedKey: ByteArray,
     val iv: ByteArray,
@@ -332,7 +323,7 @@ private class StoredValue(
     fun encode(): ByteArray {
         val bytes = ByteArrayOutputStream()
         DataOutputStream(bytes).run {
-            writeUTF(name)
+            writeUTF("")
             write(keyId)
             write(wrappedKey)
             write(iv)
@@ -344,8 +335,8 @@ private class StoredValue(
     companion object {
         fun decode(bytes: ByteArray): StoredValue =
             DataInputStream(bytes.inputStream()).run {
+                readUTF()
                 StoredValue(
-                    name = readUTF(),
                     keyId = readExactly(KEY_ID_SIZE),
                     wrappedKey = readExactly(WRAPPED_KEY_SIZE),
                     iv = readExactly(IV_SIZE),
