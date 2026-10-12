@@ -231,6 +231,22 @@ mod tests {
     }
 
     #[test]
+    fn signs_an_app_moving_off_the_shared_team_group_with_its_own_group_first() {
+        let groups = strings(&["TEAM.com.example.app", "TEAM.*"]);
+        let declared = dictionary(&[("keychain-access-groups", groups.clone())]);
+
+        let entitlements = for_signing(
+            &profile(),
+            Platform::Ios,
+            "TEAM.com.example.app",
+            Some(&declared),
+        );
+
+        assert_eq!(unpermitted(&profile(), &declared), None);
+        assert_eq!(entitlements.get("keychain-access-groups"), Some(&groups));
+    }
+
+    #[test]
     fn signs_with_the_apps_identifier_and_keychain_group_in_place_of_the_profiles_patterns() {
         let mut wildcard = profile();
         wildcard.insert("application-identifier".to_owned(), string("TEAM.*"));

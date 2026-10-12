@@ -463,7 +463,10 @@ App ID. Manual signing fails when the profile does not permit one. The
 `aps-environment` entitlements take the profile's value. The application
 identifier is the app's own, and so is its only keychain access group unless
 the file declares `keychain-access-groups`, so apps of one team do not share
-keychain items. iOS Simulator builds
+keychain items. Builds made with tok 0.1.1-beta.87 or earlier used the
+profile's `TEAMID.*` group, which all of a team's apps built that way share; an
+app that stored keychain items in it declares its own group first and
+`TEAMID.*` second to keep them. iOS Simulator builds
 embed the declared entitlements in the executable. macOS builds without a team
 are signed with the file as given, and fail when it declares an entitlement
 only a provisioning profile can authorise.

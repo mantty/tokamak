@@ -15,6 +15,11 @@ export interface SetOptions {
    * false lets a backup restore it to a new device where the platform supports that.
    */
   readonly thisDeviceOnly?: boolean;
+  /**
+   * The reason shown in the system authentication prompt. Apple platforms ask for the
+   * authentication an existing value was saved with before replacing it.
+   */
+  readonly prompt?: string;
 }
 
 export interface GetOptions {
@@ -34,6 +39,7 @@ class SecureStorage extends Plugin {
       readable: options.readable,
       authentication: options.authentication ?? null,
       thisDeviceOnly: options.thisDeviceOnly ?? true,
+      prompt: options.prompt ?? null,
     });
   }
 
