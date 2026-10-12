@@ -51,6 +51,12 @@ enrolment change as failed authentication, so `get` rejects with
 `prompt` is the reason shown in the system authentication prompt. Without it,
 the platform's default prompt is shown.
 
+`set` replaces an existing value in place or adds a new one, so a failed `set`
+leaves the previous value. On Apple platforms the system asks for the
+authentication an existing value was saved with before replacing it, as it does
+for a read: `set` then shows its `prompt` and needs the app on screen. Android
+replaces values without asking.
+
 ## Errors
 
 | Name | When |
@@ -58,7 +64,7 @@ the platform's default prompt is shown.
 | `NotSupportedError` | The platform, build or device cannot enforce the options |
 | `InvalidStateError` | The requested authentication is not set up on the device |
 | `NotAllowedError` | The user cancelled or failed authentication, or the device is locked |
-| `NeedsUIError` | Reading a value saved with `authentication` while the app is off screen on iOS or Android, where the system cannot show its prompt |
+| `NeedsUIError` | Reading a value saved with `authentication` while the app is off screen on iOS or Android, or replacing one on iOS, where the system cannot show its prompt |
 | `NotReadableError` | A stored value can no longer be decrypted |
 | `TypeError` | An argument is missing or has an unsupported value |
 | `OperationError` | The platform reported another failure |
@@ -77,6 +83,26 @@ the platform's default prompt is shown.
   Keystore keys never leave the device, so `thisDeviceOnly: false` throws
   `NotSupportedError`.
 - **Web and Windows:** no implementation; calls throw `NotSupportedError`.
+
+### Values stored by builds from tok 0.1.1-beta.87 or earlier
+
+Team-signed iOS and macOS builds made with tok 0.1.1-beta.87 or earlier kept
+values in a keychain access group literally named `TEAMID.*`, which all of a
+team's apps built that way share. Later builds use the app's own group,
+`TEAMID.<bundle id>`, and cannot see those values. To keep them, declare both
+groups, the app's own first, in the app's entitlements file
+(`ios.entitlements`, `macos.entitlements`):
+
+```xml
+<key>keychain-access-groups</key>
+<array>
+  <string>TEAMID.com.example.app</string>
+  <string>TEAMID.*</string>
+</array>
+```
+
+New values go into the app's own group; existing values stay in the shared
+group even when replaced, so keep `TEAMID.*` while users may still hold them.
 
 Removing the device passcode or screen lock makes values stored with
 `authentication` permanently unreadable on Android.

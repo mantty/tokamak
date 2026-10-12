@@ -58,9 +58,9 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     #endif
   }
 
-  /// `prompting` is whether a read that needs authentication may show the
-  /// system prompt, decided on the main thread as the call arrives: nil while
-  /// the device is locked, where such a read fails without UI anyway.
+  /// `prompting` is whether a read or update that needs authentication may
+  /// show the system prompt, decided on the main thread as the call arrives:
+  /// nil while the device is locked, where either fails without UI anyway.
   private func perform(
     _ method: String,
     _ arguments: [String: Any],
@@ -77,7 +77,9 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
         value: requiredString(arguments, "value"),
         readable: requiredString(arguments, "readable"),
         thisDeviceOnly: requiredBool(arguments, "thisDeviceOnly"),
-        authentication: optionalString(arguments, "authentication")
+        authentication: optionalString(arguments, "authentication"),
+        prompt: optionalString(arguments, "prompt"),
+        prompting: prompting
       )
       return nil
     case "get":
@@ -97,31 +99,38 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     }
   }
 
-  /// Replaces an existing value by deleting it and adding the new one, because
-  /// updating an item saved with access control needs authentication and
-  /// deleting it does not. Invalid options fail before the existing value is
-  /// deleted.
+  /// Updates an existing value in place or adds a new one, so a failure
+  /// leaves the previous value. Checks without UI first, so only replacing a
+  /// value saved with authentication needs the system prompt.
   private func set(
     _ name: String,
     value: String,
     readable: String,
     thisDeviceOnly: Bool,
-    authentication: String?
+    authentication: String?,
+    prompt: String?,
+    prompting: Result<Void, TokamakPluginError>?
   ) throws(TokamakPluginError) {
     let accessibility = try accessibility(readable, thisDeviceOnly: thisDeviceOnly)
-    var item = query(name)
-    item[kSecValueData] = Data(value.utf8)
-    if let authentication {
-      item[kSecAttrAccessControl] = try accessControl(accessibility, authentication)
+    // Access control even without authentication, so an update removes any the existing value had.
+    let stored: [CFString: Any] = [
+      kSecValueData: Data(value.utf8),
+      kSecAttrAccessControl: try accessControl(accessibility, authentication),
+    ]
+    var existing = query(name)
+    existing[kSecUseAuthenticationContext] = Self.contextWithoutUI()
+    let status = SecItemCopyMatching(existing as CFDictionary, nil)
+    if status == errSecItemNotFound {
+      try check(SecItemAdd(query(name).merging(stored) { _, new in new } as CFDictionary, nil))
+      return
+    }
+    if status == errSecInteractionNotAllowed, let prompting {
+      try prompting.get()
+      existing[kSecUseAuthenticationContext] = Self.context(prompt: prompt)
     } else {
-      item[kSecAttrAccessible] = accessibility
+      try check(status)
     }
-    var status = SecItemAdd(item as CFDictionary, nil)
-    if status == errSecDuplicateItem {
-      try deleteItems(query(name))
-      status = SecItemAdd(item as CFDictionary, nil)
-    }
-    try check(status)
+    try check(SecItemUpdate(existing as CFDictionary, stored as CFDictionary))
   }
 
   /// Reads without UI first, so only a value saved with authentication needs
@@ -141,12 +150,7 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     }
     if status == errSecInteractionNotAllowed, let prompting {
       try prompting.get()
-      item[kSecUseAuthenticationContext] = prompt.flatMap { prompt -> LAContext? in
-        guard !prompt.isEmpty else { return nil }
-        let context = LAContext()
-        context.localizedReason = prompt
-        return context
-      }
+      item[kSecUseAuthenticationContext] = Self.context(prompt: prompt)
       status = SecItemCopyMatching(item as CFDictionary, &data)
       // The first read found the value, so it exists but the system can no longer decrypt it.
       if status == errSecItemNotFound {
@@ -175,6 +179,14 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
   private static func contextWithoutUI() -> LAContext {
     let context = LAContext()
     context.interactionNotAllowed = true
+    return context
+  }
+
+  /// A context whose system prompt shows `prompt`, or nil for the default prompt.
+  private static func context(prompt: String?) -> LAContext? {
+    guard let prompt, !prompt.isEmpty else { return nil }
+    let context = LAContext()
+    context.localizedReason = prompt
     return context
   }
 
@@ -208,16 +220,19 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
 
   private func accessControl(
     _ accessibility: CFString,
-    _ authentication: String
+    _ authentication: String?
   ) throws(TokamakPluginError) -> SecAccessControl {
-    let (flags, policy): (SecAccessControlCreateFlags, LAPolicy) =
+    let (flags, policy): (SecAccessControlCreateFlags, LAPolicy?) =
       switch authentication {
+      case nil: ([], nil)
       case "biometricsOrPasscode": (.userPresence, .deviceOwnerAuthentication)
       case "biometrics": (.biometryAny, .deviceOwnerAuthenticationWithBiometrics)
       case "currentBiometrics": (.biometryCurrentSet, .deviceOwnerAuthenticationWithBiometrics)
-      default: throw unsupportedArgument("authentication", authentication)
+      case let authentication?: throw unsupportedArgument("authentication", authentication)
       }
-    try requireSetUp(policy)
+    if let policy {
+      try requireSetUp(policy)
+    }
     guard let control = SecAccessControlCreateWithFlags(nil, accessibility, flags, nil) else {
       throw TokamakPluginError(name: "OperationError", message: "Access control is unavailable")
     }

@@ -20,6 +20,7 @@ void test("stores a value with its options", async () => {
   const stored = secureStorage.set("identity", "c2VjcmV0", {
     readable: "whenUnlocked",
     authentication: "biometricsOrPasscode",
+    prompt: "Confirm it's you",
   });
   assert.deepEqual(native.lastRequest(), {
     type: "call",
@@ -31,6 +32,7 @@ void test("stores a value with its options", async () => {
       readable: "whenUnlocked",
       authentication: "biometricsOrPasscode",
       thisDeviceOnly: true,
+      prompt: "Confirm it's you",
     },
   });
   native.respond({ value: null });
@@ -51,6 +53,7 @@ void test("stores a restorable value without authentication", async () => {
     readable: "afterFirstUnlock",
     authentication: null,
     thisDeviceOnly: false,
+    prompt: null,
   });
   native.respond({ value: null });
 
