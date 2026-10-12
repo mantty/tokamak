@@ -45,11 +45,6 @@ class SecureStorage extends Plugin {
     return this.call("delete", { name });
   }
 
-  /** The names of all stored values, sorted. */
-  keys(): Promise<string[]> {
-    return this.call("keys");
-  }
-
   /** Deletes every stored value. */
   clear(): Promise<void> {
     return this.call("clear");

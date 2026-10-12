@@ -97,16 +97,6 @@ void test("deletes a value", async () => {
   await deleted;
 });
 
-void test("lists the stored names", async () => {
-  const native = connectNative();
-
-  const names = secureStorage.keys();
-  assert.deepEqual(native.lastRequest(), { type: "call", plugin: "secure-storage", method: "keys", arguments: null });
-  native.respond({ value: ["device", "identity"] });
-
-  assert.deepEqual(await names, ["device", "identity"]);
-});
-
 void test("clears every value", async () => {
   const native = connectNative();
 
