@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import com.google.android.gms.tasks.Tasks
 import com.google.firebase.FirebaseApp
@@ -16,6 +17,7 @@ import com.tokamak.runtime.TokamakPluginReply
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
@@ -26,6 +28,12 @@ private const val FID = "fid"
 
 /** FCM allows about 10 seconds for a message, including starting the app. */
 private const val PUSH_DEADLINE_MILLIS = 8_000L
+
+/** How long a notification's images may take to load, within the 10 seconds Android allows a broadcast receiver. */
+private const val IMAGE_TIMEOUT_MILLIS = 8_000L
+
+/** How long posting a notification may take once its images load. */
+private const val POST_TIMEOUT_MILLIS = 1_000L
 
 /** How long `subscribe` and `unsubscribe` wait for FCM. */
 private const val REGISTER_TIMEOUT_SECONDS = 30L
@@ -50,6 +58,10 @@ class TokamakNotificationsPlugin(
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
     private val notifier = Notifier(context)
     private val schedule = Schedule(context)
+    private val images = Images(host)
+
+    /** The latest presentation of each notification whose images are loading, which [remove] cancels. */
+    private val presenting = mutableMapOf<String, Any>()
     private val listeners = mutableMapOf<String, MutableMap<Int, TokamakPluginReply>>()
     private var nextListener = 0
 
@@ -149,24 +161,31 @@ class TokamakNotificationsPlugin(
      * listeners, showing the notification they reply with. FCM calls this off the main thread.
      */
     internal fun onMessageReceived(message: JSONObject, notification: Content?) {
+        val deadline = SystemClock.elapsedRealtime() + PUSH_DEADLINE_MILLIS
         context.mainExecutor.execute { notify("onMessage", message) }
         if (notification != null) {
-            context.mainExecutor.execute { present(notification, "push") }
+            presentBeforeReturning(notification, "push", deadline)
             return
         }
         runCatching { host.emit("push", message.toString(), PUSH_DEADLINE_MILLIS) }
-            .onSuccess(::showReply)
+            .onSuccess { showReply(it, deadline) }
             .onFailure { Log.w("tokamak", "push notification failed: ${it.message}") }
     }
 
-    /** Shows the notification `onPush` listeners reply with, if any. */
-    private fun showReply(reply: String) {
+    /** Shows the notification `onPush` listeners reply with, if any, with the images that load by [deadline]. */
+    private fun showReply(reply: String, deadline: Long) {
         runCatching {
             val notification = JSONTokener(reply).nextValue()
             if (notification == JSONObject.NULL) return
-            val content = Content.parse(notification as JSONObject, scheduled = false)
-            context.mainExecutor.execute { present(content, "local") }
+            presentBeforeReturning(Content.parse(notification as JSONObject, scheduled = false), "local", deadline)
         }.onFailure { Log.w("tokamak", "the push reply is not a notification", it) }
+    }
+
+    /** Presents [content] from an FCM thread, waiting until it shows: FCM may stop the process once the thread returns. */
+    private fun presentBeforeReturning(content: Content, source: String, deadline: Long) {
+        val shown = CountDownLatch(1)
+        context.mainExecutor.execute { present(content, source, deadline) { shown.countDown() } }
+        shown.await(deadline + POST_TIMEOUT_MILLIS - SystemClock.elapsedRealtime(), TimeUnit.MILLISECONDS)
     }
 
     private fun notify(method: String, value: JSONObject) {
@@ -212,30 +231,45 @@ class TokamakNotificationsPlugin(
     private fun show(content: Content, reply: TokamakPluginReply) {
         requireEnabled()
         notifier.requireChannel(content)
-        present(content, "local")
-        reply(Result.success(null))
+        present(content, "local") { reply(it.map { null }) }
     }
 
     private fun schedule(content: Content, reply: TokamakPluginReply) {
+        if ((content.at ?: 0) <= System.currentTimeMillis()) return show(content, reply)
         requireEnabled()
         notifier.requireChannel(content)
-        if ((content.at ?: 0) <= System.currentTimeMillis()) {
-            present(content, "local")
-        } else {
-            schedule.add(content)
-        }
+        schedule.add(content)
         reply(Result.success(null))
     }
 
-    /** Shows a notification, unless the app is on screen and `setup` hides them there. Call it on the main thread. */
-    internal fun present(content: Content, source: String) {
-        if (host.isInForeground && !showInForeground()) return
-        notifier.post(content, source)
+    /**
+     * Shows a notification with the images that load by [deadline], in [SystemClock.elapsedRealtime]
+     * milliseconds, then calls [done] on the main thread with whether posting succeeded. Shows
+     * nothing when [remove] or a later presentation of the notification comes first, or when the
+     * app is on screen by then and `setup` hides notifications there. Call it on the main thread.
+     */
+    internal fun present(
+        content: Content,
+        source: String,
+        deadline: Long = SystemClock.elapsedRealtime() + IMAGE_TIMEOUT_MILLIS,
+        done: (Result<Unit>) -> Unit,
+    ) {
+        val presentation = Any()
+        presenting[content.id] = presentation
+        images.load(notifier.imageSources(content), deadline) { loaded ->
+            if (presenting[content.id] !== presentation) return@load done(Result.success(Unit))
+            presenting.remove(content.id)
+            if (host.isInForeground && !showInForeground()) return@load done(Result.success(Unit))
+            val posted = runCatching { notifier.post(content, source, loaded) }
+            posted.onFailure { Log.w("tokamak", "notification ${content.id} failed", it) }
+            done(posted)
+        }
     }
 
     private fun showInForeground(): Boolean = Setup.stored(context)?.showInForeground ?: true
 
     private fun remove(id: String, reply: TokamakPluginReply) {
+        presenting.remove(id)
         schedule.remove(id)
         notifier.remove(id)
         reply(Result.success(null))

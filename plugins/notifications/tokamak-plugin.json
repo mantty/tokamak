@@ -5,6 +5,7 @@
     "macos": {
       "class": "TokamakNotificationsPlugin",
       "sources": [
+        "apple/NotificationAttachments.swift",
         "apple/NotificationContent.swift",
         "apple/NotificationSetup.swift",
         "apple/NotificationsPlugin.swift"
@@ -13,6 +14,7 @@
     "ios": {
       "class": "TokamakNotificationsPlugin",
       "sources": [
+        "apple/NotificationAttachments.swift",
         "apple/NotificationContent.swift",
         "apple/NotificationSetup.swift",
         "apple/NotificationsPlugin.swift"
@@ -24,6 +26,7 @@
       "sources": [
         "android/NotificationsPlugin.kt",
         "android/Content.kt",
+        "android/Images.kt",
         "android/Json.kt",
         "android/Notifier.kt",
         "android/Setup.kt",

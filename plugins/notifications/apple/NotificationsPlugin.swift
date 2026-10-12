@@ -14,6 +14,8 @@ private let setupKey = "tokamak.notifications.setup"
 private let pendingLimit = 64
 /// The system allows about 30 seconds for a background remote notification.
 private let pushDeadline: TimeInterval = 25
+/// How long a notification's attachments may take to load.
+private let attachmentDeadline: TimeInterval = 10
 /// How long the Worker's listeners have for an opened or dismissed notification.
 private let responseDeadline: TimeInterval = 10
 /// Listener methods that receive what happened before a page listened.
@@ -38,12 +40,16 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
   private var held: [String: [[String: Any]]] = [:]
   private var registering: [TokamakPluginReply] = []
   private var setup = TokamakNotificationSetup.initial
+  private let attachments: TokamakNotificationAttachments
+  /// The latest add of each notification whose attachments are loading, which `remove` cancels.
+  private var adding: [String: UUID] = [:]
 
   /// Becomes the notification centre's delegate and applies the last `setup`
   /// before launch finishes, which the system requires to deliver the
   /// notification that launched the app with its actions.
   init(host: TokamakHost) {
     self.host = host
+    attachments = TokamakNotificationAttachments(host: host)
     super.init()
     center.delegate = self
     if let stored = defaults.data(forKey: setupKey),
@@ -75,7 +81,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       case "show":
         add(try TokamakNotificationRequest(arguments, scheduled: false), reply: reply)
       case "schedule":
-        schedule(try TokamakNotificationRequest(arguments, scheduled: true), reply: reply)
+        add(try TokamakNotificationRequest(arguments, scheduled: true), reply: reply)
       case "getScheduled":
         center.getPendingNotificationRequests { reply(.success($0.map(\.scheduled))) }
       case "getDelivered":
@@ -84,6 +90,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
         }
       case "remove":
         let id = try identifier(arguments)
+        adding[id] = nil
         center.removePendingNotificationRequests(withIdentifiers: [id])
         center.removeDeliveredNotifications(withIdentifiers: [id])
         reply(.success(nil))
@@ -154,10 +161,11 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       return
     }
     notify("onMessage", fields.message)
+    let deadline = Date() + pushDeadline
     host.emit("push", event: fields.message, timeout: pushDeadline) { result in
       switch result {
       case .success(let reply):
-        self.show(reply) { completion(.newData) }
+        self.show(reply, attachmentTimeout: deadline.timeIntervalSinceNow) { completion(.newData) }
       case .failure(let error):
         print("push notification failed: \(error)")
         completion(.failed)
@@ -258,49 +266,102 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     }
   }
 
-  private func schedule(_ request: TokamakNotificationRequest, reply: @escaping TokamakPluginReply)
-  {
-    center.getPendingNotificationRequests { pending in
-      let replaces = pending.contains { $0.identifier == request.id }
-      guard replaces || pending.count < pendingLimit else {
-        reply(
-          .failure(
-            TokamakPluginError(
-              name: "QuotaExceededError",
-              message: "The app has \(pendingLimit) scheduled notifications, the most allowed"
-            )))
+  /// Adds `request` with the attachments that load within `timeout`, unless `remove` or a later
+  /// add of its id comes first. Call it on the main thread.
+  private func add(
+    _ request: TokamakNotificationRequest,
+    attachmentTimeout timeout: TimeInterval = attachmentDeadline,
+    reply: @escaping TokamakPluginReply
+  ) {
+    let token = UUID()
+    adding[request.id] = token
+    checkAddable(request) { error in
+      if let error {
+        _ = self.endAdding(request.id, token)
+        reply(.failure(error))
         return
       }
-      self.add(request, reply: reply)
+      self.attachments.load(request.fields, timeout: timeout) { attachments in
+        self.add(request, attachments: attachments, token: token, reply: reply)
+      }
     }
   }
 
-  private func add(_ request: TokamakNotificationRequest, reply: @escaping TokamakPluginReply) {
-    let notification: UNNotificationRequest
-    do {
-      notification = try request.request()
-    } catch {
-      reply(.failure(error))
-      return
+  /// Whether `token` is still the latest add of notification `id`, which this ends.
+  private func endAdding(_ id: String, _ token: UUID) -> Bool {
+    guard adding[id] == token else { return false }
+    adding[id] = nil
+    return true
+  }
+
+  /// Calls `completion` on the main thread with nil when `request` may be added, or with the
+  /// error that prevents it: no permission, or a scheduled request beyond the system's limit.
+  private func checkAddable(
+    _ request: TokamakNotificationRequest,
+    completion: @escaping (TokamakPluginError?) -> Void
+  ) {
+    let complete: (TokamakPluginError?) -> Void = { error in
+      DispatchQueue.main.async { completion(error) }
     }
     center.getNotificationSettings { settings in
       guard Self.permission(settings.authorizationStatus) == "granted" else {
-        reply(
-          .failure(
-            TokamakPluginError(
-              name: "NotAllowedError",
-              message: "Notification permission has not been granted"
-            )))
+        complete(
+          TokamakPluginError(
+            name: "NotAllowedError", message: "Notification permission has not been granted"))
         return
       }
-      self.center.add(notification) { error in
-        reply(error.map { .failure(Self.operationError($0)) } ?? .success(nil))
+      guard request.at != nil else {
+        complete(nil)
+        return
+      }
+      self.center.getPendingNotificationRequests { pending in
+        let replaces = pending.contains { $0.identifier == request.id }
+        complete(
+          replaces || pending.count < pendingLimit
+            ? nil
+            : TokamakPluginError(
+              name: "QuotaExceededError",
+              message: "The app has \(pendingLimit) scheduled notifications, the most allowed"))
       }
     }
   }
 
-  /// Shows the notification `onPush` listeners reply with, if any.
-  private func show(_ reply: Any?, completion: @escaping () -> Void) {
+  /// Adds `request` with `attachments`, unless `remove` or a later add of its id ended add `token`.
+  private func add(
+    _ request: TokamakNotificationRequest, attachments: [UNNotificationAttachment], token: UUID,
+    reply: @escaping TokamakPluginReply
+  ) {
+    guard endAdding(request.id, token) else {
+      Self.removeFiles(of: attachments)
+      reply(.success(nil))
+      return
+    }
+    do throws(TokamakPluginError) {
+      center.add(try request.request(attachments: attachments)) { error in
+        if let error {
+          Self.removeFiles(of: attachments)
+          reply(.failure(Self.operationError(error)))
+        } else {
+          reply(.success(nil))
+        }
+      }
+    } catch {
+      Self.removeFiles(of: attachments)
+      reply(.failure(error))
+    }
+  }
+
+  /// Deletes the temporary files of `attachments` that were not added. The system moves the files
+  /// of the attachments it adds.
+  private static func removeFiles(of attachments: [UNNotificationAttachment]) {
+    for attachment in attachments { try? FileManager.default.removeItem(at: attachment.url) }
+  }
+
+  /// Shows the notification `onPush` listeners reply with, if any, with the attachments that load
+  /// within `timeout`.
+  private func show(
+    _ reply: Any?, attachmentTimeout timeout: TimeInterval, completion: @escaping () -> Void
+  ) {
     guard let reply else {
       completion()
       return
@@ -310,7 +371,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       completion()
       return
     }
-    add(request) { _ in completion() }
+    add(request, attachmentTimeout: timeout) { _ in completion() }
   }
 
   private func subscribeToPush(reply: @escaping TokamakPluginReply) throws(TokamakPluginError) {

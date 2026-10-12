@@ -17,7 +17,14 @@ private const val PREFERENCES = "tokamak.notifications.setup"
 private const val CONFIG = "config"
 
 /** An action of a `setup` category; [inputLabel] labels its text field, if it has one. */
-internal class Action(val id: String, val title: String, val inputLabel: String?, val foreground: Boolean)
+internal class Action(
+    val id: String,
+    val title: String,
+    val inputLabel: String?,
+    val foreground: Boolean,
+    /** An image for wearables, from an `https` URL or a path the app serves. */
+    val icon: String?,
+)
 
 /** The configuration `setup` applied, parsed in full before anything applies it. */
 internal class Setup private constructor(val json: JSONObject) {
@@ -60,6 +67,7 @@ internal class Setup private constructor(val json: JSONObject) {
                 title,
                 json.optJSONObject("input")?.let { optionalString(it, "placeholder") ?: title },
                 optionalBoolean(json, "foreground") ?: false,
+                optionalString(json, "icon"),
             )
         }
 

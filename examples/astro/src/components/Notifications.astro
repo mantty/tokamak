@@ -16,6 +16,7 @@ import PluginCard from "./PluginCard.astro";
     <button id="notifications-show" class="button">Show now</button>
     <button id="notifications-message" class="button">Show a message</button>
     <button id="notifications-group" class="button">Show a group</button>
+    <button id="notifications-photo" class="button">Show a photo</button>
     <button id="notifications-progress" class="button">Show progress</button>
     <button id="notifications-silent" class="button">Show silently, badge 5</button>
     <button id="notifications-schedule" class="button">Schedule in 10 s</button>
@@ -84,6 +85,18 @@ import PluginCard from "./PluginCard.astro";
       style: { type: "bigText", text: "I'll bring dessert. Is anyone allergic to nuts?" },
     });
   });
+  // Apple attaches the image; Android shows it in the big picture style, with the large icon.
+  onClick(log, "notifications-photo", () =>
+    notifications.show({
+      id: "example-photo",
+      title: "Grace",
+      body: "Sent a photo",
+      image: "/notifications/hero.jpg",
+      icon: "/notifications/icon.png",
+      channel: "messages",
+      style: { type: "bigPicture", summary: "From the supper club", showWhenCollapsed: true },
+    }),
+  );
   // Android shows the bar, the elapsed time and the line under the app's name.
   onClick(log, "notifications-progress", () =>
     notifications.show({
@@ -121,6 +134,7 @@ import PluginCard from "./PluginCard.astro";
     await notifications.remove("example-message");
     await notifications.remove("example-group-ada");
     await notifications.remove("example-group-grace");
+    await notifications.remove("example-photo");
     await notifications.remove("example-progress");
     await notifications.remove("example-silent");
     await notifications.remove("example-scheduled");

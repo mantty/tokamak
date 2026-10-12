@@ -64,7 +64,9 @@ class TokamakAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = Schedule.scheduledId(intent) ?: return
         val content = Schedule(context).take(id) ?: return
-        (context.tokamakPlugin("notifications") as? TokamakNotificationsPlugin)?.present(content, "local")
+        val plugin = context.tokamakPlugin("notifications") as? TokamakNotificationsPlugin ?: return
+        val pending = goAsync()
+        plugin.present(content, "local") { pending.finish() }
     }
 }
 

@@ -47,9 +47,12 @@ struct TokamakNotificationRequest {
   }
 
   /// The system request, due now when `at` is absent or has passed.
-  func request() throws(TokamakPluginError) -> UNNotificationRequest {
+  func request(attachments: [UNNotificationAttachment]) throws(TokamakPluginError)
+    -> UNNotificationRequest
+  {
     let content = UNMutableNotificationContent()
     content.title = title
+    content.attachments = attachments
     content.body = body ?? ""
     content.subtitle = fields["subtitle"] as? String ?? ""
     content.threadIdentifier = fields["group"] as? String ?? ""

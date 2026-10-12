@@ -26,6 +26,10 @@ internal class Content private constructor(val json: JSONObject) {
     /** A `setup` channel; null for the default channel. */
     val channel: String? = optionalString(json, "channel")
     val group: String? = optionalString(json, "group")
+
+    /** An `https` URL or a path the app serves. */
+    val image: String? = optionalString(json, "image")
+    val icon: String? = optionalString(json, "icon")
     val badge: Int? = optionalNumber(json, "badge")?.toInt()
     val silent: Boolean = optionalBoolean(json, "silent") ?: false
     val timestamp: Long? = optionalNumber(json, "timestamp")?.toLong()
@@ -121,6 +125,9 @@ internal class Content private constructor(val json: JSONObject) {
 internal sealed interface Style {
     class BigText(val text: String, val title: String?, val summary: String?) : Style
 
+    /** Shows the notification's `image`. */
+    class BigPicture(val title: String?, val summary: String?, val showWhenCollapsed: Boolean) : Style
+
     class Inbox(val lines: List<String>, val title: String?, val summary: String?) : Style
 
     /** A conversation; a message without a sender is the device's user's. */
@@ -132,6 +139,8 @@ internal sealed interface Style {
         fun parse(json: JSONObject): Style =
             when (val type = requireString(json, "type")) {
                 "bigText" -> BigText(requireString(json, "text"), optionalString(json, "title"), optionalString(json, "summary"))
+                "bigPicture" ->
+                    BigPicture(optionalString(json, "title"), optionalString(json, "summary"), optionalBoolean(json, "showWhenCollapsed") ?: false)
                 "inbox" -> Inbox(strings(json, "lines"), optionalString(json, "title"), optionalString(json, "summary"))
                 "messaging" ->
                     Messaging(
