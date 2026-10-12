@@ -18,10 +18,6 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     self.host = host
   }
 
-  private static let teamSigningRequired = TokamakPluginError.notSupported(
-    "Secure storage requires a team-signed build"
-  )
-
   #if os(macOS)
     /// macOS grants the data protection keychain only to apps whose provisioning
     /// profile provides an application identifier.
@@ -68,79 +64,102 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
   ) throws(TokamakPluginError) -> Any? {
     #if os(macOS)
       // Unentitled reads report errSecItemNotFound rather than a missing entitlement.
-      guard Self.hasApplicationIdentifier else { throw Self.teamSigningRequired }
+      guard Self.hasApplicationIdentifier else {
+        throw .notSupported("Secure storage requires a team-signed build")
+      }
     #endif
+    let group = try optionalString(arguments, "keychainGroup")
     switch method {
+    case "create":
+      try check(add(requiredString(arguments, "name"), group: group, stored(arguments)))
+      return nil
+    case "replace":
+      try check(
+        update(
+          requiredString(arguments, "name"),
+          group: group,
+          stored(arguments),
+          prompt: optionalString(arguments, "prompt"),
+          prompting: prompting
+        ))
+      return nil
     case "set":
-      try set(
-        requiredString(arguments, "name"),
-        value: requiredString(arguments, "value"),
-        readable: requiredString(arguments, "readable"),
-        thisDeviceOnly: requiredBool(arguments, "thisDeviceOnly"),
-        authentication: optionalString(arguments, "authentication"),
+      let name = try requiredString(arguments, "name")
+      let stored = try stored(arguments)
+      let status = try update(
+        name,
+        group: group,
+        stored,
         prompt: optionalString(arguments, "prompt"),
         prompting: prompting
       )
+      try check(status == errSecItemNotFound ? add(name, group: group, stored) : status)
       return nil
     case "get":
       return try get(
         requiredString(arguments, "name"),
+        group: group,
         prompt: optionalString(arguments, "prompt"),
         prompting: prompting
       )
     case "delete":
-      try deleteItems(query(requiredString(arguments, "name")))
+      try deleteItems(query(requiredString(arguments, "name"), group: group))
       return nil
     case "clear":
-      try deleteItems(serviceQuery())
+      try deleteItems(serviceQuery(group: group))
       return nil
     default:
       throw .notSupported("\(id).\(method) is not supported")
     }
   }
 
-  /// Updates an existing value in place or adds a new one, so a failure
-  /// leaves the previous value. Checks without UI first, so only replacing a
-  /// value saved with authentication needs the system prompt.
-  private func set(
+  /// The value and its protection, as keychain attributes. Access control even
+  /// without authentication, so an update removes any the existing value had.
+  private func stored(_ arguments: [String: Any]) throws(TokamakPluginError) -> [CFString: Any] {
+    let accessibility = try accessibility(
+      requiredString(arguments, "readable"),
+      thisDeviceOnly: requiredBool(arguments, "thisDeviceOnly")
+    )
+    return [
+      kSecValueData: Data(try requiredString(arguments, "value").utf8),
+      kSecAttrAccessControl: try accessControl(
+        accessibility, optionalString(arguments, "authentication")),
+    ]
+  }
+
+  /// Adds `name`'s value in one keychain call: errSecDuplicateItem when it has one.
+  private func add(_ name: String, group: String?, _ stored: [CFString: Any]) -> OSStatus {
+    SecItemAdd(query(name, group: group).merging(stored) { _, new in new } as CFDictionary, nil)
+  }
+
+  /// Updates `name`'s value in place, so a failure leaves the previous value:
+  /// errSecItemNotFound when it has none. Tries without UI
+  /// first, so only a value saved with authentication needs the system prompt.
+  private func update(
     _ name: String,
-    value: String,
-    readable: String,
-    thisDeviceOnly: Bool,
-    authentication: String?,
+    group: String?,
+    _ stored: [CFString: Any],
     prompt: String?,
     prompting: Result<Void, TokamakPluginError>?
-  ) throws(TokamakPluginError) {
-    let accessibility = try accessibility(readable, thisDeviceOnly: thisDeviceOnly)
-    // Access control even without authentication, so an update removes any the existing value had.
-    let stored: [CFString: Any] = [
-      kSecValueData: Data(value.utf8),
-      kSecAttrAccessControl: try accessControl(accessibility, authentication),
-    ]
-    var existing = query(name)
-    existing[kSecUseAuthenticationContext] = Self.contextWithoutUI()
-    let status = SecItemCopyMatching(existing as CFDictionary, nil)
-    if status == errSecItemNotFound {
-      try check(SecItemAdd(query(name).merging(stored) { _, new in new } as CFDictionary, nil))
-      return
-    }
-    if status == errSecInteractionNotAllowed, let prompting {
-      try prompting.get()
-      existing[kSecUseAuthenticationContext] = Self.context(prompt: prompt)
-    } else {
-      try check(status)
-    }
-    try check(SecItemUpdate(existing as CFDictionary, stored as CFDictionary))
+  ) throws(TokamakPluginError) -> OSStatus {
+    var item = query(name, group: group)
+    item[kSecUseAuthenticationContext] = Self.contextWithoutUI()
+    let status = SecItemUpdate(item as CFDictionary, stored as CFDictionary)
+    guard status == errSecInteractionNotAllowed, let prompting else { return status }
+    try prompting.get()
+    item[kSecUseAuthenticationContext] = Self.context(prompt: prompt)
+    return SecItemUpdate(item as CFDictionary, stored as CFDictionary)
   }
 
   /// Reads without UI first, so only a value saved with authentication needs
   /// the app able to show the system prompt.
   private func get(
     _ name: String,
+    group: String?,
     prompt: String?,
     prompting: Result<Void, TokamakPluginError>?
   ) throws(TokamakPluginError) -> String? {
-    var item = query(name)
+    var item = query(name, group: group)
     item[kSecReturnData] = true
     item[kSecUseAuthenticationContext] = Self.contextWithoutUI()
     var data: CFTypeRef?
@@ -174,7 +193,7 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     }
   }
 
-  /// A context in which reads that need authentication fail with
+  /// A context in which keychain calls that need authentication fail with
   /// `errSecInteractionNotAllowed` rather than show the system prompt.
   private static func contextWithoutUI() -> LAContext {
     let context = LAContext()
@@ -190,18 +209,22 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     return context
   }
 
-  /// All of the plugin's items. The data protection keychain is the only
-  /// keychain on iOS; macOS needs a team-signed build to use it.
-  private func serviceQuery() -> [CFString: Any] {
-    [
+  /// The plugin's items in keychain access group `group`, or in every group
+  /// of the app when nil, where an add uses the app's first group. The data
+  /// protection keychain is the only keychain on iOS; macOS needs a
+  /// team-signed build to use it.
+  private func serviceQuery(group: String?) -> [CFString: Any] {
+    var query: [CFString: Any] = [
       kSecClass: kSecClassGenericPassword,
       kSecAttrService: service,
       kSecUseDataProtectionKeychain: true,
     ]
+    query[kSecAttrAccessGroup] = group
+    return query
   }
 
-  private func query(_ name: String) -> [CFString: Any] {
-    serviceQuery().merging([kSecAttrAccount: name]) { _, name in name }
+  private func query(_ name: String, group: String?) -> [CFString: Any] {
+    serviceQuery(group: group).merging([kSecAttrAccount: name]) { _, name in name }
   }
 
   /// `ThisDeviceOnly` items restore only to the device they were stored on.
@@ -255,8 +278,12 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     guard status != errSecSuccess else { return }
     let message = SecCopyErrorMessageString(status, nil) as String? ?? "Keychain error \(status)"
     switch status {
+    case errSecDuplicateItem:
+      throw TokamakPluginError(name: "DuplicateItemError", message: message)
+    case errSecItemNotFound:
+      throw TokamakPluginError(name: "ItemNotFoundError", message: message)
     case errSecMissingEntitlement:
-      throw Self.teamSigningRequired
+      throw TokamakPluginError(name: "MissingEntitlementError", message: message)
     case errSecUserCanceled, errSecAuthFailed, errSecInteractionNotAllowed:
       throw TokamakPluginError(name: "NotAllowedError", message: message)
     default:

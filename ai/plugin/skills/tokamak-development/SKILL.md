@@ -106,7 +106,8 @@ application identifier; declare `keychain-access-groups` to share keychain
 items between apps of a team. Apps built with tok 0.1.1-beta.87 or earlier kept
 keychain items in the team's shared `TEAMID.*` group; to keep them, declare
 `keychain-access-groups` with the app's own `TEAMID.<bundle id>` first and
-`TEAMID.*` second. Entitlements that need a profile require
+`TEAMID.*` second. The secure storage plugin's `keychainGroup` option selects
+one group. Entitlements that need a profile require
 `macos.team-id` on macOS.
 
 The Android platform pack accepts an optional partial `AndroidManifest.xml`
@@ -189,7 +190,7 @@ ID, hardened runtime, notarisation) is not covered.
 - Import supported `@tokamakdev/*` frontend plugins for native capabilities instead of modeling those capabilities as Worker bindings.
 - Install plugins as project dependencies, for example `npm install @tokamakdev/plugin-location`. `tok build` and `tok dev` include native code for plugins listed in `dependencies`, `devDependencies`, or `peerDependencies`, found in the nearest `node_modules` of the project or a parent directory.
 - Call plugins from page code or the Worker alike: the same packages, methods, values and errors. A Worker listener such as `watchPosition` or `onMessage` keeps its invocation running until it is removed, after which the invocation ends once its `waitUntil` promises settle, so wrap work a listener starts in `ctx.waitUntil`; the OS ends listeners with the app, so register listeners the app needs throughout in `onStart`, which runs at every runtime start.
-- A call that would show UI while the app cannot present it rejects at once with a `DOMException` named `NeedsUIError`, distinct from `NotAllowedError` (the user refused or cancelled). iOS and Android present UI only in the foreground; macOS always can. Only calls that would show UI reject: permission requests that would prompt, biometric prompts, and secure storage reads of values saved with `authentication`. Ask again from `onResume`.
+- A call that would show UI while the app cannot present it rejects at once with a `DOMException` named `NeedsUIError`, distinct from `NotAllowedError` (the user refused or cancelled). iOS and Android present UI only in the foreground; macOS always can. Only calls that would show UI reject: permission requests that would prompt, biometric prompts, and secure storage reads of values saved with `authentication` (and, on iOS, replacements of them). Ask again from `onResume`.
 - `getLifecycleStage()` from `@tokamakdev/tok/events` resolves to `"foreground"` or `"background"` now, which can differ from the last event delivered. It rejects with `NotSupportedError` in page code and on Cloudflare.
 - On Cloudflare, plugins fall back to their web implementations, which reject with `NotSupportedError` where the web API is missing; Windows has no native plugins, so its Worker's plugin calls reject the same way.
 - Preserve a plugin's web implementation or feature-detect availability when the same code also targets ordinary browsers.
