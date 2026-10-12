@@ -34,6 +34,9 @@ private const val SUMMARY_ID = 1
 /** The group of silent notifications that name none. */
 private const val SILENT_GROUP = "tokamak.silent"
 
+/** A scheduled notification's trigger fields, which shown notifications leave out. */
+private val TRIGGER_KEYS = listOf("at", "every", "on", "region", "repeats", "exact")
+
 /** Posts, lists and removes the app's notifications, and keeps its channels as `setup` describes. */
 internal class Notifier(private val context: Context) {
     private val manager = context.getSystemService(NotificationManager::class.java)
@@ -68,7 +71,10 @@ internal class Notifier(private val context: Context) {
 
     /** Throws `TypeError` unless [content] names a channel that exists. */
     fun requireChannel(content: Content) {
-        val channel = content.channel ?: return
+        content.channel?.let(::requireChannel)
+    }
+
+    fun requireChannel(channel: String) {
         if (manager.getNotificationChannel(channel) == null) {
             throw TokamakPluginError.typeError("channel $channel is not a setup channel")
         }
@@ -131,6 +137,7 @@ internal class Notifier(private val context: Context) {
         if (content.chronometer) setUsesChronometer(true).setChronometerCountDown(content.chronometerCountsDown)
         content.timeoutAfter?.let(::setTimeoutAfter)
         content.sortKey?.let(::setSortKey)
+        content.settingsText?.let(::setSettingsText)
         content.visibility?.let(::setVisibility)
         content.androidCategory?.let(::setCategory)
         content.progress?.let { setProgress(it.max, it.current, it.indeterminate) }
@@ -213,7 +220,7 @@ internal class Notifier(private val context: Context) {
             val id = shown.tag?.takeIf { shown.id == NOTIFICATION_ID } ?: return@mapNotNull null
             val extras = shown.notification.extras
             // FCM posts notification messages itself, without the content the plugin keeps.
-            extras.getString(CONTENT_EXTRA)?.let { JSONObject(it).apply { remove("at") } }
+            extras.getString(CONTENT_EXTRA)?.let { content -> JSONObject(content).apply { TRIGGER_KEYS.forEach(::remove) } }
                 ?: JSONObject()
                     .put("id", id)
                     .put("title", extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: "")
@@ -297,6 +304,15 @@ internal class Notifier(private val context: Context) {
         /** The text typed into the action that sent [intent], if any. */
         fun input(intent: Intent): String? =
             RemoteInput.getResultsFromIntent(intent)?.getCharSequence(INPUT_KEY)?.toString()
+
+        /**
+         * The id of the notification the user opened the app's settings from, if it is one the
+         * plugin posted: a group's summary has the group as its tag.
+         */
+        fun settingsNotification(intent: Intent): String? =
+            intent.getStringExtra(Notification.EXTRA_NOTIFICATION_TAG)?.takeIf {
+                intent.getIntExtra(Notification.EXTRA_NOTIFICATION_ID, -1) == NOTIFICATION_ID
+            }
     }
 }
 

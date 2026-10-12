@@ -28,7 +28,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use packs::PlatformPack;
-use settings::{PlatformOptions, TopOptions};
+use settings::{NamespacedOptions, TopOptions};
 use tokamak_cli::{Platform, Target};
 
 const BUILD_PLATFORM_HELP: &str = "Platform options: run `tok build <platforms> --help` to list the options each platform accepts.";
@@ -109,8 +109,8 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    let (arguments, platform_options) = split_arguments(env::args_os().collect())?;
-    let matches = command(&arguments).get_matches_from(arguments);
+    let (arguments, namespaced_options, plugins) = split_arguments(env::args_os().collect())?;
+    let matches = command(&arguments, &plugins).get_matches_from(arguments);
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
 
     match cli.command {
@@ -130,7 +130,8 @@ fn run() -> Result<()> {
                 build_dir,
                 platform_pack_dir: platform_pack,
                 top,
-                platform_options,
+                namespaced_options,
+                plugins,
                 build_command,
                 skip_project_build,
             })?;
@@ -155,7 +156,8 @@ fn run() -> Result<()> {
             project_dir: project,
             platform_pack_dir: platform_pack,
             top,
-            platform_options,
+            namespaced_options,
+            plugins,
             host_address,
             command,
         }),
@@ -175,20 +177,53 @@ fn run() -> Result<()> {
     }
 }
 
-/// Split platform options from the arguments of the commands that take them.
-fn split_arguments(arguments: Vec<OsString>) -> Result<(Vec<OsString>, PlatformOptions)> {
+/// Split platform and plugin options from the arguments of the commands that
+/// take them, with the plugins of the project the arguments name.
+fn split_arguments(
+    arguments: Vec<OsString>,
+) -> Result<(Vec<OsString>, NamespacedOptions, Vec<plugins::Plugin>)> {
     let takes_platform_options = arguments
         .get(1)
         .is_some_and(|command| command == "build" || command == "dev");
-    if takes_platform_options {
-        settings::split_platform_options(arguments)
-    } else {
-        Ok((arguments, PlatformOptions::default()))
+    if !takes_platform_options {
+        return Ok((arguments, NamespacedOptions::default(), Vec::new()));
     }
+    // A missing project fails later with its own message.
+    let project = project_argument(&arguments);
+    let plugins = if project.is_dir() {
+        plugins::discover(&project)?
+    } else {
+        Vec::new()
+    };
+    let ids = plugins
+        .iter()
+        .map(|plugin| plugin.id.as_str())
+        .collect::<Vec<_>>();
+    let (arguments, options) = settings::split_namespaced_options(arguments, &ids)?;
+    Ok((arguments, options, plugins))
+}
+
+/// The `--project` argument's directory, or the current directory.
+fn project_argument(arguments: &[OsString]) -> PathBuf {
+    let mut arguments = arguments.iter().take_while(|argument| *argument != "--");
+    while let Some(argument) = arguments.next() {
+        if argument == "--project" {
+            return arguments
+                .next()
+                .map_or_else(|| PathBuf::from("."), PathBuf::from);
+        }
+        if let Some(project) = argument
+            .to_str()
+            .and_then(|argument| argument.strip_prefix("--project="))
+        {
+            return PathBuf::from(project);
+        }
+    }
+    PathBuf::from(".")
 }
 
 /// The argument parser; `--help` for named platforms lists their options.
-fn command(arguments: &[OsString]) -> clap::Command {
+fn command(arguments: &[OsString], plugins: &[plugins::Plugin]) -> clap::Command {
     let command = Cli::command();
     let is_help = |argument: &&OsString| *argument == "--help" || *argument == "-h";
     let asks_for_help = arguments
@@ -219,12 +254,14 @@ fn command(arguments: &[OsString]) -> clap::Command {
         ),
         _ => return command,
     };
-    match platforms {
-        Some(platforms) => command.mut_subcommand(subcommand, |subcommand| {
-            subcommand.after_help(platforms_help(&platforms, platform_pack.as_deref()))
-        }),
-        None => command,
+    let Some(platforms) = platforms else {
+        return command;
+    };
+    let mut help = platforms_help(&platforms, platform_pack.as_deref());
+    if let Some(plugins_help) = settings::plugins_help(plugins) {
+        help = format!("{help}\n{plugins_help}");
     }
+    command.mut_subcommand(subcommand, |subcommand| subcommand.after_help(help))
 }
 
 fn platforms_help(platforms: &[Platform], platform_pack: Option<&Path>) -> String {
@@ -258,10 +295,13 @@ fn list_targets() {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::path::PathBuf;
 
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
-    use super::{Cli, Command, Platform, parse_platforms, split_arguments};
+    use super::{
+        Cli, Command, Platform, parse_platforms, plugins, project_argument, split_arguments,
+    };
 
     #[test]
     fn parses_comma_separated_platforms() {
@@ -305,7 +345,7 @@ mod tests {
     #[test]
     fn splits_platform_options_only_for_build_and_dev() -> anyhow::Result<()> {
         let arguments = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
-        let (remaining, _) = split_arguments(arguments(&[
+        let (remaining, _, _) = split_arguments(arguments(&[
             "tok",
             "build",
             "ios",
@@ -313,12 +353,78 @@ mod tests {
             "Info.plist",
         ]))?;
         assert_eq!(remaining, arguments(&["tok", "build", "ios"]));
-        let (remaining, _) = split_arguments(arguments(&["tok", "targets", "--ios-plist", "x"]))?;
+        let (remaining, _, _) =
+            split_arguments(arguments(&["tok", "targets", "--ios-plist", "x"]))?;
         assert_eq!(
             remaining,
             arguments(&["tok", "targets", "--ios-plist", "x"])
         );
         Ok(())
+    }
+
+    #[test]
+    fn finds_the_project_argument_before_the_command_separator() {
+        let arguments = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
+        for (values, project) in [
+            (&["tok", "build", "ios", "--project", "app"][..], "app"),
+            (&["tok", "build", "ios", "--project=app"][..], "app"),
+            (&["tok", "build", "ios"][..], "."),
+            (
+                &["tok", "dev", "x", "--", "vite", "--project", "other"][..],
+                ".",
+            ),
+        ] {
+            assert_eq!(project_argument(&arguments(values)), PathBuf::from(project));
+        }
+    }
+
+    #[test]
+    fn splits_the_options_of_the_projects_plugins() -> anyhow::Result<()> {
+        let project = tempfile::tempdir()?;
+        std::fs::write(
+            project.path().join("package.json"),
+            r#"{"dependencies":{"alerts":"1.0.0"}}"#,
+        )?;
+        let plugin = project.path().join("node_modules/alerts");
+        std::fs::create_dir_all(&plugin)?;
+        std::fs::write(
+            plugin.join("tokamak-plugin.json"),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "id": "alerts",
+                "settings": { "sounds": { "kind": "path", "description": "Sounds" } },
+                "build": "build.mjs",
+            })
+            .to_string(),
+        )?;
+        let mut arguments = vec![OsString::from("tok"), "build".into(), "ios".into()];
+        arguments.extend(["--project".into(), project.path().as_os_str().to_owned()]);
+        arguments.extend(["--alerts-ios-sounds".into(), "sounds".into()]);
+
+        let (remaining, _, plugins) = split_arguments(arguments.clone())?;
+
+        assert_eq!(remaining, arguments[..5]);
+        assert_eq!(plugins.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn reserves_the_first_word_of_each_of_tok_s_own_options() {
+        let command = Cli::command();
+        for subcommand in ["build", "dev"] {
+            let options = command
+                .find_subcommand(subcommand)
+                .into_iter()
+                .flat_map(clap::Command::get_arguments)
+                .filter_map(clap::Arg::get_long);
+            for option in options {
+                let word = option.split('-').next().unwrap_or(option);
+                assert!(
+                    plugins::RESERVED_WORDS.contains(&word),
+                    "--{option} of tok {subcommand} starts with an unreserved word"
+                );
+            }
+        }
     }
 
     #[test]

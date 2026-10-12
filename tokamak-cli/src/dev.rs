@@ -26,7 +26,7 @@ use super::devices::{
 };
 use super::packs::PlatformPack;
 use super::vite::{ConfigReport, PLUGIN_HINT, ServerReport, VitePlugin};
-use super::{devices, pinned_tls, pipeline, settings};
+use super::{devices, pinned_tls, pipeline, plugins, settings};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_mins(1);
 const APP_CONNECTION_TIMEOUT: Duration = Duration::from_mins(1);
@@ -41,7 +41,9 @@ pub(crate) struct Request {
     pub(crate) project_dir: PathBuf,
     pub(crate) platform_pack_dir: Option<PathBuf>,
     pub(crate) top: settings::TopOptions,
-    pub(crate) platform_options: settings::PlatformOptions,
+    pub(crate) namespaced_options: settings::NamespacedOptions,
+    /// The project's plugins.
+    pub(crate) plugins: Vec<plugins::Plugin>,
     pub(crate) host_address: Option<String>,
     pub(crate) command: Vec<std::ffi::OsString>,
 }
@@ -61,9 +63,10 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     let pack = PlatformPack::load(device.platform, request.platform_pack_dir.as_deref())?;
     pipeline::check_settings(
         &request.top,
-        &request.platform_options,
+        &request.namespaced_options,
         device.platform,
         &pack.manifest,
+        &request.plugins,
     )?;
     let relay_host = relay_host(&device, request.host_address.as_deref())?;
     if device.platform == Platform::Ios && request.host_address.is_none() {
@@ -186,7 +189,8 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
         session_token: session.session_token,
         device_id: &session.device.id,
         top: &session.request.top,
-        platform_options: &session.request.platform_options,
+        namespaced_options: &session.request.namespaced_options,
+        plugins: &session.request.plugins,
     })?;
     if session.shutdown.load(Ordering::Acquire) {
         stop_process(session.framework)?;

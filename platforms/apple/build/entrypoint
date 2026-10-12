@@ -61,12 +61,14 @@ bundle=$output
 if [[ "$platform" == macos ]]; then
   contents=$bundle/Contents
   executable_dir=$contents/MacOS
-  app_dir=$contents/Resources/app
+  resources_dir=$contents/Resources
+  app_dir=$resources_dir/app
   icon=${TOKAMAK_MACOS_ICON:-}
   app_files=("${TOKAMAK_MACOS_PLIST:-}" "${TOKAMAK_MACOS_ENTITLEMENTS:-}")
 else
   contents=$bundle
   executable_dir=$bundle
+  resources_dir=$bundle
   app_dir=$bundle/app
   icon=${TOKAMAK_IOS_ICON:-}
   app_files=("${TOKAMAK_IOS_PLIST:-}" "${TOKAMAK_IOS_ENTITLEMENTS:-}")
@@ -137,16 +139,14 @@ cp -R "$input/app/." "$app_dir/"
 
 if [[ -n "$icon" ]]; then
   if [[ "$platform" == macos ]]; then
-    icon_output=$contents/Resources
     icon_targets=(--target-device mac)
   else
-    icon_output=$bundle
     icon_targets=(--target-device iphone --target-device ipad)
   fi
   # actool names the app icon after its package.
   cp -R "$icon" "$temporary/AppIcon.icon"
   xcrun --sdk "$sdk" actool \
-    --compile "$icon_output" \
+    --compile "$resources_dir" \
     --platform "$sdk" \
     --minimum-deployment-target "$minimum" \
     --app-icon AppIcon \
@@ -226,6 +226,19 @@ xcrun --sdk "$sdk" swiftc "${swift_args[@]}" -o "$executable_dir/$app_slug"
 xcrun --sdk "$sdk" strip -x "$executable_dir/$app_slug"
 
 write_plist
+
+# Plugins' resources go in the bundle's resources directory, where the system
+# finds files such as notification sounds by name.
+for resource in "$input/plugins"/*/resources/*; do
+  [[ -f "$resource" ]] || continue
+  name=${resource##*/}
+  name=${name#*-}
+  if [[ -e "$resources_dir/$name" ]]; then
+    echo "plugin resource '$name' would replace a file in the app bundle" >&2
+    exit 1
+  fi
+  cp "$resource" "$resources_dir/$name"
+done
 
 sign_bundle
 mkdir -p "$(dirname "$bundle_key_file")"

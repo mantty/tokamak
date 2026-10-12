@@ -18,7 +18,9 @@ pub(crate) struct BuildRequest {
     pub(crate) build_dir: Option<PathBuf>,
     pub(crate) platform_pack_dir: Option<PathBuf>,
     pub(crate) top: settings::TopOptions,
-    pub(crate) platform_options: settings::PlatformOptions,
+    pub(crate) namespaced_options: settings::NamespacedOptions,
+    /// The project's plugins.
+    pub(crate) plugins: Vec<plugins::Plugin>,
     /// `--build`; `TOKAMAK_BUILD` applies without it.
     pub(crate) build_command: Option<String>,
     pub(crate) skip_project_build: bool,
@@ -40,7 +42,8 @@ pub(crate) struct DevelopmentRequest<'a> {
     pub(crate) session_token: &'a str,
     pub(crate) device_id: &'a str,
     pub(crate) top: &'a settings::TopOptions,
-    pub(crate) platform_options: &'a settings::PlatformOptions,
+    pub(crate) namespaced_options: &'a settings::NamespacedOptions,
+    pub(crate) plugins: &'a [plugins::Plugin],
 }
 
 pub(crate) struct DevelopmentSummary {
@@ -64,6 +67,8 @@ struct PlatformBuild {
     platform: Platform,
     pack: PlatformPack,
     settings: settings::PlatformSettings,
+    /// The keys plugins' build scripts added for the platform.
+    generated: plugins::Generated,
     app: App,
 }
 
@@ -99,12 +104,14 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         .collect::<Result<Vec<_>>>()?;
     let current_dir = env::current_dir()?;
     let plugin = VitePlugin::new(build_dir.join(".tokamak").join("vite"));
+    let plugins = &request.plugins;
     for (platform, pack) in request.platforms.iter().zip(&packs) {
         check_settings(
             &request.top,
-            &request.platform_options,
+            &request.namespaced_options,
             *platform,
             &pack.manifest,
+            plugins,
         )?;
     }
     if !request.skip_project_build {
@@ -118,7 +125,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     let tokamak = plugin.config("the build")?.parse()?;
     let sources = settings::Sources::new(
         &request.top,
-        &request.platform_options,
+        &request.namespaced_options,
         Some(&tokamak),
         &current_dir,
     );
@@ -129,18 +136,20 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
     )?;
     project::check_output(&wrangler)?;
     warn_unsupported_bindings(&wrangler);
-    let plugins = plugins::discover(&request.project_dir)?;
     let builds = request
         .platforms
         .iter()
         .zip(packs)
         .map(|(platform, pack)| {
             let settings = settings::resolve(&sources, *platform, &pack.manifest)?;
-            plugins::check(&plugins, &pack.manifest)?;
+            let plugin_settings = settings::resolve_plugins(&sources, *platform, plugins)?;
+            let generated = plugins::generate(plugins, *platform, &plugin_settings)?;
+            plugins::check(plugins, &pack.manifest, &generated)?;
             Ok(PlatformBuild {
                 platform: *platform,
                 app: resolve_app(&settings, &wrangler.name, *platform)?,
                 settings,
+                generated,
                 pack,
             })
         })
@@ -151,7 +160,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         build_dir: &build_dir,
         wrangler: &wrangler,
         worker: &worker,
-        plugins: &plugins,
+        plugins,
         version: &version,
     };
 
@@ -161,17 +170,20 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         .collect()
 }
 
-/// Check the options and environment variables for `platform` before the
-/// project's command runs; the `tokamak()` options are read after it.
+/// Check the options and environment variables for `platform` and `plugins`
+/// before the project's command runs; the `tokamak()` options are read after
+/// it.
 pub(crate) fn check_settings(
     top: &settings::TopOptions,
-    platform_options: &settings::PlatformOptions,
+    namespaced_options: &settings::NamespacedOptions,
     platform: Platform,
     manifest: &PlatformPackManifest,
+    plugins: &[plugins::Plugin],
 ) -> Result<()> {
     let current_dir = env::current_dir()?;
-    let sources = settings::Sources::new(top, platform_options, None, &current_dir);
+    let sources = settings::Sources::new(top, namespaced_options, None, &current_dir);
     settings::resolve(&sources, platform, manifest)?;
+    settings::resolve_plugins(&sources, platform, plugins)?;
     Ok(())
 }
 
@@ -179,18 +191,20 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
     let current_dir = env::current_dir()?;
     let sources = settings::Sources::new(
         request.top,
-        request.platform_options,
+        request.namespaced_options,
         Some(request.tokamak),
         &current_dir,
     );
     let manifest = &request.pack.manifest;
     let platform_settings = settings::resolve(&sources, request.platform, manifest)?;
-    let plugins = plugins::discover(request.project)?;
+    let plugins = request.plugins;
+    let plugin_settings = settings::resolve_plugins(&sources, request.platform, plugins)?;
+    let generated = plugins::generate(plugins, request.platform, &plugin_settings)?;
     let app = resolve_app(&platform_settings, request.worker_name, request.platform)?;
     let version = settings::version(&sources)?;
     let build_dir = request.project.join("build");
     let (input, project) = prepare_platform_input(request.project, &build_dir, request.platform)?;
-    plugins::stage(&plugins, manifest, &input.join("plugins"))
+    plugins::stage(plugins, manifest, &generated, &input.join("plugins"))
         .context("stage native plugin inputs")?;
     fs::write(input.join("app/.tokamak-development"), b"")?;
     write_build_metadata(
@@ -250,6 +264,7 @@ fn build_platform(
         platform,
         pack,
         settings: platform_settings,
+        generated,
         app,
     } = build;
     let platform = *platform;
@@ -258,8 +273,13 @@ fn build_platform(
 
     worker::package(&input.join("app"), context.worker, context.wrangler)
         .context("prepare the tokamak application package")?;
-    plugins::stage(context.plugins, &pack.manifest, &input.join("plugins"))
-        .context("stage native plugin inputs")?;
+    plugins::stage(
+        context.plugins,
+        &pack.manifest,
+        generated,
+        &input.join("plugins"),
+    )
+    .context("stage native plugin inputs")?;
     write_build_metadata(
         &input,
         &project,

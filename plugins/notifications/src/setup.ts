@@ -3,6 +3,7 @@ import {
   array,
   colour,
   fields,
+  fileName,
   flag,
   nonEmptyText,
   object,
@@ -85,7 +86,9 @@ function channel(groups: ReadonlySet<unknown>): Check {
         if (!groups.has(group)) throw new TypeError(`${path} must be a channelGroups id`);
       },
       importance: oneOf("none", "min", "low", "default", "high"),
-      sound: text,
+      sound: (sound, path) => {
+        if (sound !== "default" && sound !== "none") fileName(sound, path);
+      },
       vibration: (vibration, path) => {
         if (typeof vibration === "boolean") return;
         if (!Array.isArray(vibration) || vibration.length === 0) {

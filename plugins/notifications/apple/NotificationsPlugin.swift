@@ -19,7 +19,9 @@ private let attachmentDeadline: TimeInterval = 10
 /// How long the Worker's listeners have for an opened or dismissed notification.
 private let responseDeadline: TimeInterval = 10
 /// Listener methods that receive what happened before a page listened.
-private let heldMethods: Set = ["onNotificationOpened", "onNotificationDismissed"]
+private let heldMethods: Set = [
+  "onNotificationOpened", "onNotificationDismissed", "onOpenSettings",
+]
 
 #if os(iOS)
   private let pushEntitlement = "aps-environment"
@@ -77,7 +79,20 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       case "permission":
         permission(reply)
       case "requestPermission":
-        requestPermission(reply)
+        requestPermission(Self.authorizationOptions(arguments), reply)
+      case "settings":
+        center.getNotificationSettings { reply(.success(Self.settings($0))) }
+      case "setBadge":
+        guard let count = (arguments as? [String: Any])?["count"] as? Int, count >= 0 else {
+          throw TokamakPluginError(
+            name: "TypeError", message: "count must be a whole number of at least 0")
+        }
+        center.setBadgeCount(count) { error in
+          reply(error.map { .failure(Self.operationError($0)) } ?? .success(nil))
+        }
+      case "openSettings":
+        try host.requireUI()
+        openSettings(reply)
       case "show":
         add(try TokamakNotificationRequest(arguments, scheduled: false), reply: reply)
       case "schedule":
@@ -101,6 +116,8 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       case "unsubscribe":
         unsubscribe()
         reply(.success(nil))
+      case "subscribeToTopic", "unsubscribeFromTopic":
+        throw .notSupported("Topics are an FCM feature, which APNs does not have")
       default:
         throw .notSupported("\(id).\(method) is not supported")
       }
@@ -116,6 +133,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
   ) throws(TokamakPluginError) -> (() -> Void) {
     let methods = [
       "onMessage", "onNotificationOpened", "onNotificationDismissed", "onSubscriptionChange",
+      "onOpenSettings",
     ]
     guard methods.contains(method) else {
       throw .notSupported("\(id).\(method) is not supported")
@@ -216,6 +234,17 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     }
   }
 
+  /// Reports the user's request, from the system's settings, for the app's own. The system offers
+  /// it once `requestPermission` asked for `providesAppNotificationSettings`.
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter, openSettingsFor notification: UNNotification?
+  ) {
+    let event: [String: Any] = [
+      "channel": NSNull(), "notification": notification?.request.identifier ?? NSNull(),
+    ]
+    DispatchQueue.main.async { self.notify("onOpenSettings", event) }
+  }
+
   /// Uses `setup` from now on, registering its categories.
   private func apply(_ setup: TokamakNotificationSetup) {
     self.setup = setup
@@ -232,17 +261,30 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     }
   }
 
-  /// Asks for permission when the system has not yet, which shows its prompt.
-  private func requestPermission(_ reply: @escaping TokamakPluginReply) {
+  /// Asks for `options` when the system has not asked yet, which shows its prompt, to turn a
+  /// provisional grant into a full one, or to add critical alerts or the settings link to a grant.
+  /// A provisional request shows no prompt.
+  private func requestPermission(
+    _ options: UNAuthorizationOptions, _ reply: @escaping TokamakPluginReply
+  ) {
+    let provisional = options.contains(.provisional)
     center.getNotificationSettings { settings in
-      guard settings.authorizationStatus == .notDetermined else {
-        reply(.success(Self.permission(settings.authorizationStatus)))
+      let status = settings.authorizationStatus
+      let adds =
+        (options.contains(.criticalAlert) && settings.criticalAlertSetting == .notSupported)
+        || (options.contains(.providesAppNotificationSettings)
+          && !settings.providesAppNotificationSettings)
+      let asks =
+        status == .notDetermined || (status == .provisional && !provisional)
+        || (status != .denied && adds)
+      guard asks else {
+        reply(.success(Self.permission(status)))
         return
       }
       DispatchQueue.main.async {
         do throws(TokamakPluginError) {
-          try self.host.requireUI()
-          self.center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in
+          if !provisional { try self.host.requireUI() }
+          self.center.requestAuthorization(options: options) { _, _ in
             self.permission(reply)
           }
         } catch {
@@ -251,6 +293,89 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       }
     }
   }
+
+  /// The authorisation `requestPermission`'s options name: alerts, sounds and badges unless
+  /// turned off, and the others when turned on.
+  private static func authorizationOptions(_ arguments: Any) -> UNAuthorizationOptions {
+    let given = arguments as? [String: Any] ?? [:]
+    var named: [(String, UNAuthorizationOptions, Bool)] = [
+      ("alert", .alert, true), ("sound", .sound, true), ("badge", .badge, true),
+      ("criticalAlert", .criticalAlert, false), ("provisional", .provisional, false),
+      ("providesAppNotificationSettings", .providesAppNotificationSettings, false),
+    ]
+    #if os(iOS)
+      named.append(("carPlay", .carPlay, false))
+    #endif
+    return named.reduce(into: []) { options, entry in
+      if given[entry.0] as? Bool ?? entry.2 { options.insert(entry.1) }
+    }
+  }
+
+  /// The page's view of the user's notification settings.
+  private static func settings(_ settings: UNNotificationSettings) -> [String: Any] {
+    var result: [String: Any] = [
+      "permission": permission(settings.authorizationStatus),
+      "authorizationStatus": authorizationStatus(settings.authorizationStatus),
+      "alertStyle": [.none: "none", .banner: "banner", .alert: "alert"][settings.alertStyle]
+        ?? "none",
+      "showPreviews": [
+        .always: "always", .whenAuthenticated: "whenAuthenticated", .never: "never",
+      ][
+        settings.showPreviewsSetting] ?? "always",
+      "alert": setting(settings.alertSetting),
+      "sound": setting(settings.soundSetting),
+      "badge": setting(settings.badgeSetting),
+      "lockScreen": setting(settings.lockScreenSetting),
+      "notificationCenter": setting(settings.notificationCenterSetting),
+      "criticalAlert": setting(settings.criticalAlertSetting),
+      "timeSensitive": setting(settings.timeSensitiveSetting),
+      "scheduledDelivery": setting(settings.scheduledDeliverySetting),
+      "directMessages": setting(settings.directMessagesSetting),
+      "providesAppNotificationSettings": settings.providesAppNotificationSettings,
+    ]
+    #if os(iOS)
+      result["carPlay"] = setting(settings.carPlaySetting)
+      result["announcement"] = setting(settings.announcementSetting)
+    #endif
+    return result
+  }
+
+  private static func authorizationStatus(_ status: UNAuthorizationStatus) -> String {
+    switch status {
+    case .denied: "denied"
+    case .authorized: "authorized"
+    case .provisional: "provisional"
+    case .ephemeral: "ephemeral"
+    default: "notDetermined"
+    }
+  }
+
+  private static func setting(_ setting: UNNotificationSetting) -> String {
+    switch setting {
+    case .enabled: "enabled"
+    case .disabled: "disabled"
+    default: "notSupported"
+    }
+  }
+
+  /// Opens the app's page of the system's notification settings.
+  private func openSettings(_ reply: @escaping TokamakPluginReply) {
+    #if os(iOS)
+      let url = URL(string: UIApplication.openNotificationSettingsURLString)!
+      UIApplication.shared.open(url) { opened in
+        reply(opened ? .success(nil) : .failure(Self.notOpened))
+      }
+    #else
+      // Undocumented; it opens the app's own page of Notifications settings.
+      let page =
+        "com.apple.Notifications-Settings.extension?id=\(Bundle.main.bundleIdentifier ?? "")"
+      let opened = URL(string: "x-apple.systempreferences:\(page)").map(NSWorkspace.shared.open)
+      reply(opened == true ? .success(nil) : .failure(Self.notOpened))
+    #endif
+  }
+
+  private static let notOpened = TokamakPluginError(
+    name: "OperationError", message: "The notification settings could not be opened")
 
   private func permission(_ reply: @escaping TokamakPluginReply) {
     center.getNotificationSettings { settings in
@@ -310,7 +435,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
             name: "NotAllowedError", message: "Notification permission has not been granted"))
         return
       }
-      guard request.at != nil else {
+      guard request.trigger != nil else {
         complete(nil)
         return
       }

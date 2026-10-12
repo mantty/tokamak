@@ -28,7 +28,28 @@ void test("calls the native plugin with each operation's arguments", async () =>
   const native = connectNative();
   const cases: [() => Promise<unknown>, string, unknown][] = [
     [() => notifications.permission(), "permission", null],
-    [() => notifications.requestPermission(), "requestPermission", null],
+    [() => notifications.requestPermission(), "requestPermission", {}],
+    [
+      () => notifications.requestPermission({ provisional: true, criticalAlert: true }),
+      "requestPermission",
+      { provisional: true, criticalAlert: true },
+    ],
+    [() => notifications.settings(), "settings", null],
+    [() => notifications.setBadge(3), "setBadge", { count: 3 }],
+    [() => notifications.openSettings(), "openSettings", {}],
+    [() => notifications.openSettings({ channel: "messages" }), "openSettings", { channel: "messages" }],
+    [() => notifications.subscribeToTopic("news"), "subscribeToTopic", { topic: "news" }],
+    [() => notifications.unsubscribeFromTopic("news"), "unsubscribeFromTopic", { topic: "news" }],
+    [
+      () => notifications.schedule({ id: "hourly", title: "Stretch", every: { hours: 1 } }),
+      "schedule",
+      { id: "hourly", title: "Stretch", every: { hours: 1 } },
+    ],
+    [
+      () => notifications.schedule({ id: "monday", title: "Plan", on: { weekday: 2, hour: 9 }, repeats: true }),
+      "schedule",
+      { id: "monday", title: "Plan", on: { weekday: 2, hour: 9 }, repeats: true },
+    ],
     [
       () => notifications.show({ id: "download", title: "Done", data: { file: "a.pdf" } }),
       "show",
@@ -95,6 +116,23 @@ void test("rejects an invalid setup without calling the native plugin", async ()
 
   assert.deepEqual(native.sent, []);
   await assert.rejects(setup, (error: unknown) => error instanceof TypeError);
+});
+
+void test("rejects invalid options without calling the native plugin", async () => {
+  const native = connectNative();
+  const calls: (() => Promise<unknown>)[] = [
+    () => notifications.requestPermission({ provisional: "yes" } as never),
+    () => notifications.setBadge(-1),
+    () => notifications.openSettings({ channel: "" }),
+    () => notifications.subscribeToTopic(""),
+    () => notifications.unsubscribeFromTopic("a/b"),
+    () => notifications.schedule({ id: "s", title: "S", every: { seconds: 1 } }),
+  ];
+
+  for (const call of calls) {
+    await assert.rejects(call(), (error: unknown) => error instanceof TypeError);
+  }
+  assert.deepEqual(native.sent, []);
 });
 
 void test("subscribes without the web's options", async () => {

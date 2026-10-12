@@ -1,10 +1,14 @@
 package com.tokamak.plugins.notifications
 
 import android.Manifest
+import android.app.Notification
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
 import com.google.android.gms.tasks.Tasks
 import com.google.firebase.FirebaseApp
@@ -44,10 +48,21 @@ private const val REGISTER_TIMEOUT_SECONDS = 30L
  */
 private const val RESPONSE_DEADLINE_MILLIS = 8_000L
 private const val FCM_MESSAGE_ID_EXTRA = "google.message_id"
-private val LISTENERS = setOf("onMessage", "onNotificationOpened", "onNotificationDismissed", "onSubscriptionChange")
+private val LISTENERS = setOf("onMessage", "onNotificationOpened", "onNotificationDismissed", "onSubscriptionChange", "onOpenSettings")
 
 /** Listener methods that receive what happened before a page listened. */
-private val HELD = setOf("onNotificationOpened", "onNotificationDismissed")
+private val HELD = setOf("onNotificationOpened", "onNotificationDismissed", "onOpenSettings")
+
+/** The names the page gives channel importances. */
+private val IMPORTANCES =
+    mapOf(
+        NotificationManager.IMPORTANCE_NONE to "none",
+        NotificationManager.IMPORTANCE_MIN to "min",
+        NotificationManager.IMPORTANCE_LOW to "low",
+        NotificationManager.IMPORTANCE_DEFAULT to "default",
+        NotificationManager.IMPORTANCE_HIGH to "high",
+        NotificationManager.IMPORTANCE_MAX to "high",
+    )
 
 class TokamakNotificationsPlugin(
     private val host: TokamakHost,
@@ -70,6 +85,8 @@ class TokamakNotificationsPlugin(
 
     init {
         notifier.ensureDefaultChannel()
+        // Force-stopping the app, or revoking exact alarms, clears its alarms.
+        schedule.armAll()
     }
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
@@ -77,6 +94,11 @@ class TokamakNotificationsPlugin(
             "setup" -> setup(arguments, reply)
             "permission" -> reply(Result.success(permission()))
             "requestPermission" -> requestPermission(reply)
+            "settings" -> reply(Result.success(settings()))
+            "setBadge" -> throw TokamakPluginError.notSupported("Android has no API for the launcher's badge count")
+            "openSettings" -> openSettings(arguments as? JSONObject ?: JSONObject(), reply)
+            "subscribeToTopic" -> topic(arguments, subscribe = true, reply)
+            "unsubscribeFromTopic" -> topic(arguments, subscribe = false, reply)
             "show" -> show(Content.parse(arguments, scheduled = false), reply)
             "schedule" -> schedule(Content.parse(arguments, scheduled = true), reply)
             "getScheduled" -> reply(Result.success(JSONArray(schedule.all().map { it.json })))
@@ -101,8 +123,20 @@ class TokamakNotificationsPlugin(
         return { listeners[method]?.remove(key) }
     }
 
-    /** Delivers a notification, or an action with `foreground`, that started the activity. */
+    /**
+     * Delivers the notification or `foreground` action that started the activity, or the system
+     * settings' request to open the app's own notification settings.
+     */
     override fun onIntent(intent: Intent) {
+        if (intent.hasCategory(Notification.INTENT_CATEGORY_NOTIFICATION_PREFERENCES)) {
+            intent.removeCategory(Notification.INTENT_CATEGORY_NOTIFICATION_PREFERENCES)
+            val settings =
+                JSONObject()
+                    .put("channel", intent.getStringExtra(Notification.EXTRA_CHANNEL_ID) ?: JSONObject.NULL)
+                    .put("notification", Notifier.settingsNotification(intent) ?: JSONObject.NULL)
+            notify("onOpenSettings", settings)
+            return
+        }
         val opened =
             intent.getStringExtra(OPENED_EXTRA)?.let { opened(intent, it) }
                 ?: intent.getStringExtra(FCM_MESSAGE_ID_EXTRA)?.let { openedPush(intent, it) }
@@ -223,6 +257,7 @@ class TokamakNotificationsPlugin(
      */
     private fun setup(arguments: Any?, reply: TokamakPluginReply) {
         val setup = Setup.parse(arguments)
+        setup.requireSounds(context)
         val unapplied = notifier.configure(setup, Setup.stored(context))
         setup.store(context)
         reply(Result.success(JSONObject().put("unapplied", unapplied)))
@@ -234,10 +269,20 @@ class TokamakNotificationsPlugin(
         present(content, "local") { reply(it.map { null }) }
     }
 
+    /** Shows a notification `at` a time now when the time has passed, as Apple platforms do. */
     private fun schedule(content: Content, reply: TokamakPluginReply) {
-        if ((content.at ?: 0) <= System.currentTimeMillis()) return show(content, reply)
+        val trigger = content.trigger ?: throw TokamakPluginError.typeError("a scheduled notification needs a trigger")
+        val now = System.currentTimeMillis()
+        if (trigger is Trigger.At && trigger.at <= now) return show(content, reply)
         requireEnabled()
         notifier.requireChannel(content)
+        if (trigger.exact && !schedule.canScheduleExact) {
+            throw TokamakPluginError(
+                "NotAllowedError",
+                "Exact alarms need the user's permission, which openSettings({ exactAlarms: true }) opens",
+            )
+        }
+        if (trigger.next(now, now) == null) throw TokamakPluginError.typeError("on matches no time from now")
         schedule.add(content)
         reply(Result.success(null))
     }
@@ -267,6 +312,49 @@ class TokamakNotificationsPlugin(
     }
 
     private fun showInForeground(): Boolean = Setup.stored(context)?.showInForeground ?: true
+
+    /** The user's notification settings: the permission, channels and special access. */
+    private fun settings(): JSONObject {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val channels =
+            manager.notificationChannels.map {
+                JSONObject().put("id", it.id).put("importance", IMPORTANCES[it.importance] ?: "default")
+            }
+        return JSONObject()
+            .put("permission", permission())
+            .put("channels", JSONArray(channels))
+            .put("blockedChannelGroups", JSONArray(manager.notificationChannelGroups.filter { it.isBlocked }.map { it.id }))
+            .put("doNotDisturbAccess", manager.isNotificationPolicyAccessGranted)
+            .put("exactAlarms", schedule.canScheduleExact)
+            .put(
+                "fullScreenIntent",
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE || manager.canUseFullScreenIntent(),
+            )
+    }
+
+    /** Opens the app's notification settings, a channel's, or the special access [options] names. */
+    private fun openSettings(options: JSONObject, reply: TokamakPluginReply) {
+        val app = Uri.fromParts("package", context.packageName, null)
+        val channel = optionalString(options, "channel")
+        val intent =
+            when {
+                optionalBoolean(options, "exactAlarms") == true -> Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, app)
+                optionalBoolean(options, "fullScreenIntent") == true ->
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, app)
+                    } else {
+                        throw TokamakPluginError.notSupported("Full-screen notification settings need Android 14")
+                    }
+                optionalBoolean(options, "doNotDisturbAccess") == true -> Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+                channel != null -> {
+                    notifier.requireChannel(channel)
+                    Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_CHANNEL_ID, channel)
+                }
+                else -> Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            }
+        host.requireForegroundActivity().startActivity(intent.putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
+        reply(Result.success(null))
+    }
 
     private fun remove(id: String, reply: TokamakPluginReply) {
         presenting.remove(id)
@@ -298,6 +386,18 @@ class TokamakNotificationsPlugin(
                     else -> reply(Result.failure(operationError(task.exception)))
                 }
             }
+    }
+
+    /** Subscribes this installation to an FCM topic, or unsubscribes it. */
+    private fun topic(arguments: Any?, subscribe: Boolean, reply: TokamakPluginReply) {
+        val topic = requireString(arguments as? JSONObject ?: JSONObject(), "topic")
+        val messaging = messaging() ?: throw invalidState(
+            "Topics require the app's Firebase project values in its Android manifest",
+        )
+        val task = if (subscribe) messaging.subscribeToTopic(topic) else messaging.unsubscribeFromTopic(topic)
+        Tasks.withTimeout(task, REGISTER_TIMEOUT_SECONDS, TimeUnit.SECONDS).addOnCompleteListener {
+            reply(if (it.isSuccessful) Result.success(null) else Result.failure(operationError(it.exception)))
+        }
     }
 
     private fun subscription(): JSONObject? {

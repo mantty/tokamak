@@ -3,6 +3,7 @@ import type {
   Listener,
   Message,
   NotificationContent,
+  NotificationSettings,
   OpenedNotification,
   Permission,
   SetupConfig,
@@ -68,6 +69,28 @@ export async function show(notification: NotificationContent): Promise<void> {
     }
   }
   await setAppBadge(notification.badge);
+}
+
+export async function settings(): Promise<NotificationSettings> {
+  return { permission: await permission() };
+}
+
+/** Sets the badge through the Badging API, which browsers give installed web apps. */
+export async function setBadge(count: number): Promise<void> {
+  if (!("setAppBadge" in navigator)) {
+    throw new DOMException("The Badging API is not available here", "NotSupportedError");
+  }
+  await navigator.setAppBadge(count);
+}
+
+export function openSettings(): Promise<void> {
+  return Promise.reject(
+    new DOMException("Browsers have no notification settings to open", "NotSupportedError"),
+  );
+}
+
+export function topics(): Promise<void> {
+  return Promise.reject(new DOMException("Topics are an FCM feature", "NotSupportedError"));
 }
 
 export function schedule(): Promise<void> {

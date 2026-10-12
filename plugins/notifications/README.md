@@ -13,6 +13,7 @@ await notifications.requestPermission(); // "granted" | "denied" | "prompt"
 
 await notifications.show({ id: "download-42", title: "Download finished", body: "report.pdf" });
 await notifications.schedule({ id: "reminder-7", title: "Check in", at: Date.parse("2026-10-01T09:00:00Z") });
+await notifications.schedule({ id: "standup", title: "Stand-up", on: { weekday: 2, hour: 9, minute: 30 }, repeats: true });
 
 const subscription = await notifications.subscribe({ applicationServerKey: VAPID_PUBLIC_KEY });
 await fetch("/api/subscriptions", { method: "POST", body: JSON.stringify(subscription) });
@@ -35,6 +36,51 @@ While the app is off screen on iOS or Android, as when Worker code runs in the
 background, a `requestPermission()` that would show the prompt rejects with
 `NeedsUIError`; one the user has already answered resolves with the
 permission. Ask again once the app is on screen, for example from `onResume`.
+
+On Apple platforms, `requestPermission(options)` asks for what `options`
+names. `alert`, `sound` and `badge` are true by default:
+
+- `provisional`: grants permission without a prompt, and notifications go
+  quietly to Notification Center until the user keeps them. A later
+  `requestPermission()` without it asks for full permission.
+- `criticalAlert`: critical alerts, which need the critical alerts
+  entitlement.
+- `providesAppNotificationSettings`: the system's notification settings link
+  to the app's own, which `onOpenSettings` receives.
+- `carPlay` (iOS).
+
+An app that already has permission can call `requestPermission` again to add
+`criticalAlert`, which shows its own prompt, or
+`providesAppNotificationSettings`, which shows none.
+
+### Settings
+
+- `settings()` returns `permission` and the platform's detail.
+  - **Apple:** `authorizationStatus`, `alertStyle`, `showPreviews`,
+    `providesAppNotificationSettings`, and each setting (`alert`, `sound`,
+    `badge`, `lockScreen`, `notificationCenter`, `criticalAlert`,
+    `timeSensitive`, `scheduledDelivery`, `directMessages`, and on iOS
+    `carPlay` and `announcement`) as `enabled`, `disabled` or `notSupported`.
+  - **Android:** each channel's current `importance`, which the user may
+    have changed (`none` when blocked), `blockedChannelGroups`,
+    `doNotDisturbAccess`, `exactAlarms` and `fullScreenIntent`.
+  - **Web:** `permission` only.
+- `setBadge(count)` sets the app's badge, and `0` removes it. The web uses the
+  Badging API, which browsers give installed web apps. Android has no API for
+  a launcher's count, so it rejects with `NotSupportedError`; a
+  notification's `badge` sets Android's number.
+- `openSettings(options?)` opens the app's page of the system's notification
+  settings, and needs the app on screen. On Android, `options` can name one
+  other page: a `channel`'s, `exactAlarms`, `fullScreenIntent` (Android 14) or
+  `doNotDisturbAccess`. The web rejects with `NotSupportedError`.
+- `onOpenSettings` receives the user's requests, from the system's
+  notification settings, for the app's own: `{ channel, notification }`, the
+  channel whose settings the user was in (Android) and the id of the
+  notification they came from, or null. On Apple platforms the system offers
+  the link after `requestPermission({ providesAppNotificationSettings: true })`.
+  Android shows it in the app's notification settings, and in a
+  notification's long-press menu as its `settingsText`. The plugin holds the
+  request that opened the app until a page listens.
 
 ## Setup
 
@@ -135,8 +181,8 @@ settings. FCM notification messages use the channel their
 
 - `importance`: `none`, `min`, `low`, `default` or `high`, which shows
   heads-up notifications. Defaults to `default`.
-- `sound`: `"default"`, `"none"`, or the name of a sound in the `raw`
-  directory of the res directory set with `android.icon`.
+- `sound`: `"default"`, `"none"`, or a file of the `sounds` build setting,
+  such as `"chime.wav"` (below).
 - `vibration`: whether to vibrate, or a non-empty pattern of milliseconds
   alternating between off and on.
 - `lights`: the light's colour as `#rrggbb`, such as `"#00ff00"`, or false.
@@ -162,11 +208,10 @@ channel with its `id` again.
 
 - `show(notification)` shows a notification now. While the app is on screen,
   it shows as `showInForeground` sets.
-- `schedule(notification)` shows it at `at`, in milliseconds since the epoch,
-  or now when `at` has passed. Scheduled notifications survive app and device
-  restarts. Android may delay them by several minutes while the device is idle.
-  iOS and macOS keep at most 64; scheduling more rejects with
-  `QuotaExceededError`. The web does not support scheduling.
+- `schedule(notification)` shows it when its trigger fires, below. Scheduled
+  notifications survive app and device restarts. iOS and macOS keep at most
+  64; scheduling more rejects with `QuotaExceededError`. The web does not
+  support scheduling.
 - `getScheduled()` lists scheduled notifications not yet shown, and
   `getDelivered()` lists shown notifications still in the notification centre.
 - `remove(id)` removes a scheduled or shown notification. On Android, the id
@@ -177,6 +222,45 @@ Showing or scheduling a notification with the `id` of another replaces it.
 showing nothing, when one is invalid. On Apple platforms and Android,
 `getScheduled` and `getDelivered` return every field a local notification was
 given.
+
+### Scheduling
+
+A scheduled notification has one trigger:
+
+```ts
+await notifications.schedule({ ...content, at: Date.parse("2026-11-01T09:00:00Z") });
+await notifications.schedule({ ...content, every: { hours: 1 } });
+await notifications.schedule({ ...content, on: { weekday: 2, hour: 9, minute: 0 }, repeats: true });
+await notifications.schedule({ ...content, region: { latitude, longitude, radius: 100, onExit: true } });
+await notifications.schedule({ ...content, at, exact: true });
+```
+
+- `at`: a time in milliseconds since the epoch. A time that has passed shows
+  the notification now.
+- `every`: `{ seconds?, minutes?, hours?, days? }`, at least 60 seconds in
+  all. The notification shows once each interval, the first time one interval
+  from now.
+- `on`: parts of a local date and time, `{ year?, month?, day?, weekday?,
+  hour?, minute?, second? }`, with `month` 1 for January and `weekday` 1 for
+  Sunday. Parts finer than the finest given one take their least value, so
+  `{ hour: 9 }` matches 9:00:00, and coarser ones match any value. With
+  `repeats`, the notification shows at every match. A match no time from now
+  meets rejects with `TypeError`.
+- `region` (iOS): `{ latitude, longitude, radius, onEntry?, onExit? }`, the
+  radius in metres. The notification shows on entering the region, or as
+  `onEntry` and `onExit` set, and with `repeats` each time. It needs location
+  permission, which the location plugin asks for, and rejects with
+  `NotAllowedError` without it. Other platforms reject with
+  `NotSupportedError`.
+- `exact` (Android): the alarm fires at the time rather than when Android
+  next wakes, which while the device is idle can be minutes later. It needs
+  the app to declare `SCHEDULE_EXACT_ALARM` in its Android manifest, and on
+  Android 14 the user to allow it through `openSettings({ exactAlarms: true
+  })`; without that, `schedule` rejects with `NotAllowedError`. Alarm and
+  calendar apps can declare `USE_EXACT_ALARM` instead, which needs no user
+  approval but which Google Play allows only for them.
+
+`getScheduled` returns each notification with its trigger.
 
 ### Content
 
@@ -192,6 +276,7 @@ where their platforms have them:
 | `group` | Apple, Android | Shows the notifications of a group together: Apple's thread, Android's group under a summary the plugin posts and removes |
 | `badge` | All | The app's badge count once the notification shows: Android's number, which launchers may show; the web's Badging API, for installed web apps only |
 | `silent` | All | No sound or vibration |
+| `sound` | Apple | `"default"`, `"defaultCritical"` or `{ name, critical?, volume? }`, below; Android plays the channel's sound |
 | `timestamp` | Android, web | The time the notification shows, in milliseconds since the epoch |
 | `subtitle` | Apple | A line under the title |
 | `interruptionLevel` | Apple | `passive`, `active`, `timeSensitive` or `critical`; the last two need their entitlements |
@@ -209,6 +294,7 @@ where their platforms have them:
 | `publicVersion` | Android | `{ title, body }` the lock screen shows with `visibility` `private` |
 | `sortKey` | Android | Orders it among others of its group |
 | `androidCategory` | Android | `message`, `call`, `alarm`, `reminder`, `progress` and the other `Notification.CATEGORY_*` kinds, which ranking and Do Not Disturb use |
+| `settingsText` | Android | The text of a link in the long-press menu that opens the app's notification settings, which `onOpenSettings` receives |
 | `requireInteraction`, `renotify`, `vibrate`, `dir`, `lang` | Web | As `showNotification` takes them |
 | `badgeImage` | Web | The URL of a small monochrome image that represents the app: `showNotification`'s `badge` |
 
@@ -244,6 +330,34 @@ await notifications.show({
 
 On Apple platforms the badge stays until a notification sets another count.
 On Android, a notification's number shows only while the notification does.
+
+### Sounds
+
+The `sounds` build setting names a directory of sound files the app ships:
+
+```js
+// vite.config.js
+tokamak({ notifications: { sounds: "sounds" } });
+```
+
+It also takes `--notifications-sounds <dir>` and
+`TOKAMAK_NOTIFICATIONS_SOUNDS`, and `notifications.ios.sounds` or
+`--notifications-ios-sounds` for one platform. The build checks each file for
+the platform it builds, and fails on one the platform cannot play:
+
+- **Apple:** AIFF, WAV or CAF holding Linear PCM, IMA4, µLaw or aLaw, at most
+  30 seconds long. A notification names a file with `sound: { name:
+  "chime.wav" }`. Critical sounds, `"defaultCritical"` and `{ name, critical:
+  true, volume? }`, play through the mute switch and Do Not Disturb, and need
+  the critical alerts entitlement. Naming a file the app does not have rejects
+  with `NotFoundError`.
+- **Android:** WAV, MP3, Ogg, M4A, AAC or FLAC, named with lowercase letters,
+  digits and underscores. A channel names a file with `sound: "chime.wav"`,
+  and `setup` rejects with `NotFoundError` when the app does not have it.
+
+A 16-bit PCM WAV with a lowercase name plays on both. APNs payloads name a
+file in `aps.sound`; FCM notification messages name one without its extension
+in `android.notification.sound`, as `"chime"`.
 
 ### Images
 
@@ -316,6 +430,11 @@ onStart(async () => {
 | iOS, macOS | `{ service: "apns", token, environment }` | APNs, in `environment` (`development` or `production`) |
 | Android | `{ service: "fcm", fid }` | Firebase Cloud Messaging HTTP v1, sending to the Firebase Installation ID as the message's `fid`; during FCM's transition, `token` also accepts it |
 | Web | `{ service: "webpush", endpoint, keys }` | Web Push, with the app's VAPID key pair |
+
+On Android, `subscribeToTopic(topic)` and `unsubscribeFromTopic(topic)`
+subscribe the installation to FCM topics, which the app's server sends to as
+the message's `topic`. Topic names are 1 to 900 letters, digits and `-_.~%`.
+Other platforms reject with `NotSupportedError`.
 
 Push notifications that arrive while the page is visible reach `onMessage`,
 and show as `showInForeground` sets.
@@ -491,7 +610,9 @@ Android draws as a solid shape.
 
 ## Errors
 
-- `NotAllowedError`: permission has not been granted.
+- `NotAllowedError`: permission has not been granted, including the exact
+  alarm and location permissions some triggers need.
+- `NotFoundError`: a sound the app does not ship.
 - `NeedsUIError`: `requestPermission()` would show the prompt while the app is
   off screen on iOS or Android.
 - `NotSupportedError`: the platform or build cannot perform the call.

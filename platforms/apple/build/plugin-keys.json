@@ -1,5 +1,6 @@
 {
   "class": "string",
   "sources": "paths",
-  "plist": "path"
+  "plist": "path",
+  "resources": "paths"
 }

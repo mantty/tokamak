@@ -334,7 +334,9 @@ tokamak({
 ```
 
 The top-level keys are `name`, `identifier`, `icon`, and `version`, which are
-defaults for every platform, and `module`; other top-level keys are rejected.
+defaults for every platform, and `module`. Another top-level object holds a
+plugin's settings, by plugin ID, such as `notifications: { sounds: "sounds" }`;
+other top-level keys are rejected.
 A platform object (`android`, `ios`, `macos`, `windows`) overrides `name`,
 `identifier`, or `icon` for that platform, and its other keys are settings for
 that platform's pack. `version` is top-level only. `ios` covers iOS devices
@@ -390,6 +392,8 @@ or a configuration key. A setting has the same name in each:
 |---|---|---|---|
 | Top-level | `--version` | `TOKAMAK_VERSION` | `version` |
 | Platform | `--ios-plist` | `TOKAMAK_IOS_PLIST` | `ios.plist` |
+| Plugin | `--notifications-sounds` | `TOKAMAK_NOTIFICATIONS_SOUNDS` | `notifications.sounds` |
+| Plugin, one platform | `--notifications-ios-sounds` | `TOKAMAK_NOTIFICATIONS_IOS_SOUNDS` | `notifications.ios.sounds` |
 
 An option takes precedence over an environment variable, which takes precedence
 over the configuration. Within each source, a platform's own value takes
@@ -404,6 +408,10 @@ precedence over a top-level one, so `--ios-identifier` overrides
   `tok build <platform> --help` and `tok dev <platform> --help` list them. A
   setting the pack does not declare is an error for the platform being built;
   settings for other platforms are ignored.
+- **Plugin settings:** the settings each plugin declares, under its ID, for
+  every platform or one. The plugin checks their values when the app builds,
+  and `tok build <platform> --help` lists them. A setting no plugin declares is
+  an error.
 - **Values:** option and environment values are strings. Configuration values
   may be strings, numbers, or booleans.
 - **Relative paths:** paths in options and environment variables are relative

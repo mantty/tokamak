@@ -10,15 +10,15 @@ import org.json.JSONObject
  * `getScheduled` and `getDelivered` return. Every field is read when it arrives, so a field of
  * the wrong type, as in a Worker's `onPush` reply, throws `TypeError` then.
  */
-internal class Content private constructor(val json: JSONObject) {
+internal class Content private constructor(val json: JSONObject, scheduled: Boolean) {
     val id: String = requireString(json, "id").takeIf { it.isNotEmpty() }
         ?: throw TokamakPluginError.typeError("id must be a non-empty string")
     val title: String = requireString(json, "title")
     val body: String? = optionalString(json, "body")
     val data: JSONObject = optionalObject(json, "data") ?: JSONObject()
 
-    /** Milliseconds since the epoch; null to show now. */
-    val at: Long? = optionalNumber(json, "at")?.toLong()
+    /** When a scheduled notification shows; null to show now. */
+    val trigger: Trigger? = if (scheduled) Trigger.parse(json) else null
 
     /** A `setup` category, whose actions the notification shows. */
     val category: String? = optionalString(json, "category")
@@ -78,6 +78,9 @@ internal class Content private constructor(val json: JSONObject) {
     val publicVersion: Pair<String, String?>? =
         optionalObject(json, "publicVersion")?.let { requireString(it, "title") to optionalString(it, "body") }
     val sortKey: String? = optionalString(json, "sortKey")
+
+    /** The text of the long-press menu's link to the app's notification settings. */
+    val settingsText: String? = optionalString(json, "settingsText")
     val androidCategory: String? =
         optionalString(json, "androidCategory")?.let {
             CATEGORIES[it] ?: throw TokamakPluginError.typeError("$it is not an androidCategory")
@@ -111,13 +114,11 @@ internal class Content private constructor(val json: JSONObject) {
 
         fun parse(arguments: Any?, scheduled: Boolean): Content {
             val json = arguments as? JSONObject ?: throw TokamakPluginError.typeError("a notification must be an object")
-            if (scheduled && optionalNumber(json, "at")?.toDouble()?.isFinite() != true) {
-                throw TokamakPluginError.typeError("at must be a number of milliseconds since the epoch")
-            }
-            return Content(json)
+            return Content(json, scheduled)
         }
 
-        fun fromJson(json: JSONObject): Content = parse(json, json.has("at"))
+        /** A notification the schedule stored. */
+        fun fromJson(json: JSONObject): Content = parse(json, scheduled = true)
     }
 }
 

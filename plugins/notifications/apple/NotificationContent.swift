@@ -1,12 +1,18 @@
 import Foundation
 import UserNotifications
 
-/// Keys the plugin stores in a local notification's `userInfo`.
-private let atKey = "tokamak.at"
-/// Every field of the notification, which `getScheduled` and `getDelivered` return.
+#if os(iOS)
+  import CoreLocation
+#endif
+
+/// Keys the plugin stores in a local notification's `userInfo`: every field of the notification,
+/// which `getScheduled` and `getDelivered` return.
 private let contentKey = "tokamak.content"
 /// The data of a notification scheduled without its content stored.
 private let dataKey = "tokamak.data"
+
+/// Fields of a scheduled notification's trigger, which shown ones leave out.
+private let triggerKeys = ["at", "every", "on", "region", "repeats", "exact"]
 
 /// A notification the page asked to show or schedule.
 struct TokamakNotificationRequest {
@@ -15,8 +21,8 @@ struct TokamakNotificationRequest {
   let body: String?
   /// A `setup` category, whose actions the notification shows.
   let category: String?
-  /// Milliseconds since the epoch; nil to show now.
-  let at: Double?
+  /// When the notification shows; nil to show now.
+  let trigger: UNNotificationTrigger?
   /// Every field of the notification, from the page or a Worker's `onPush` reply.
   let fields: [String: Any]
 
@@ -36,15 +42,78 @@ struct TokamakNotificationRequest {
     guard category != nil || arguments["category"] == nil else {
       throw typeError("category must be a string")
     }
-    guard scheduled else {
-      at = nil
-      return
-    }
-    guard let at = (arguments["at"] as? NSNumber)?.doubleValue, at.isFinite else {
-      throw typeError("at must be a number of milliseconds since the epoch")
-    }
-    self.at = at
+    trigger = scheduled ? try Self.trigger(arguments, id: id) : nil
   }
+
+  /// The trigger `arguments` give: `at` a time, nil once it has passed; `every` interval; `on`
+  /// the dates that match; or, on iOS, a `region`.
+  private static func trigger(_ arguments: [String: Any], id: String) throws(TokamakPluginError)
+    -> UNNotificationTrigger?
+  {
+    let repeats = arguments["repeats"] as? Bool ?? false
+    if let at = (arguments["at"] as? NSNumber)?.doubleValue {
+      guard at.isFinite else {
+        throw typeError("at must be a number of milliseconds since the epoch")
+      }
+      guard at > Date().timeIntervalSince1970 * 1000 else { return nil }
+      return UNCalendarNotificationTrigger(dateMatching: utcComponents(at), repeats: false)
+    }
+    if let every = arguments["every"] as? [String: Any] {
+      let seconds = ["seconds": 1.0, "minutes": 60, "hours": 3600, "days": 86400].reduce(0.0) {
+        total, unit in total + ((every[unit.key] as? NSNumber)?.doubleValue ?? 0) * unit.value
+      }
+      guard seconds >= 60 else { throw typeError("every must be at least 60 seconds") }
+      return UNTimeIntervalNotificationTrigger(timeInterval: seconds, repeats: true)
+    }
+    if let on = arguments["on"] as? [String: Any] {
+      // Android and the page number years and months as the Gregorian calendar does.
+      var components = DateComponents(calendar: Calendar(identifier: .gregorian))
+      components.year = on["year"] as? Int
+      components.month = on["month"] as? Int
+      components.day = on["day"] as? Int
+      components.weekday = on["weekday"] as? Int
+      components.hour = on["hour"] as? Int
+      components.minute = on["minute"] as? Int
+      components.second = on["second"] as? Int
+      let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: repeats)
+      guard trigger.nextTriggerDate() != nil else { throw typeError("on matches no time from now") }
+      return trigger
+    }
+    if let region = arguments["region"] as? [String: Any] {
+      return try regionTrigger(region, id: id, repeats: repeats)
+    }
+    throw typeError("a scheduled notification must have one of at, every, on or region")
+  }
+
+  #if os(iOS)
+    private static func regionTrigger(_ region: [String: Any], id: String, repeats: Bool)
+      throws(TokamakPluginError) -> UNNotificationTrigger
+    {
+      let status = CLLocationManager().authorizationStatus
+      guard status == .authorizedWhenInUse || status == .authorizedAlways else {
+        throw TokamakPluginError(
+          name: "NotAllowedError", message: "A region trigger needs location permission")
+      }
+      guard let latitude = region["latitude"] as? Double,
+        let longitude = region["longitude"] as? Double,
+        let radius = region["radius"] as? Double
+      else {
+        throw typeError("region must have a latitude, longitude and radius")
+      }
+      let circle = CLCircularRegion(
+        center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude), radius: radius,
+        identifier: id)
+      circle.notifyOnEntry = region["onEntry"] as? Bool ?? true
+      circle.notifyOnExit = region["onExit"] as? Bool ?? false
+      return UNLocationNotificationTrigger(region: circle, repeats: repeats)
+    }
+  #else
+    private static func regionTrigger(_ region: [String: Any], id: String, repeats: Bool)
+      throws(TokamakPluginError) -> UNNotificationTrigger
+    {
+      throw .notSupported("Region triggers are iOS only")
+    }
+  #endif
 
   /// The system request, due now when `at` is absent or has passed.
   func request(attachments: [UNNotificationAttachment]) throws(TokamakPluginError)
@@ -57,7 +126,7 @@ struct TokamakNotificationRequest {
     content.subtitle = fields["subtitle"] as? String ?? ""
     content.threadIdentifier = fields["group"] as? String ?? ""
     content.badge = fields["badge"] as? NSNumber
-    content.sound = fields["silent"] as? Bool == true ? nil : .default
+    content.sound = fields["silent"] as? Bool == true ? nil : try Self.sound(fields["sound"])
     content.categoryIdentifier = category ?? ""
     if #available(iOS 15, macOS 12, *) {
       if let level = (fields["interruptionLevel"] as? String).flatMap({
@@ -69,14 +138,34 @@ struct TokamakNotificationRequest {
         content.relevanceScore = score
       }
     }
-    var userInfo: [String: Any] = [contentKey: try json(fields)]
-    var trigger: UNNotificationTrigger?
-    if let at, at > Date().timeIntervalSince1970 * 1000 {
-      userInfo[atKey] = at
-      trigger = UNCalendarNotificationTrigger(dateMatching: components(at), repeats: false)
-    }
-    content.userInfo = userInfo
+    content.userInfo = [contentKey: try json(fields)]
     return UNNotificationRequest(identifier: id, content: content, trigger: trigger)
+  }
+
+  /// The sound `value` names: the default, the default critical sound, or a file the app bundles
+  /// from the `sounds` build setting.
+  private static func sound(_ value: Any?) throws(TokamakPluginError) -> UNNotificationSound {
+    switch value {
+    case nil, "default" as String:
+      return .default
+    case "defaultCritical" as String:
+      return .defaultCritical
+    case let sound as [String: Any]:
+      guard let name = sound["name"] as? String else {
+        throw typeError("sound.name must be a string")
+      }
+      guard Bundle.main.url(forResource: name, withExtension: nil) != nil else {
+        throw TokamakPluginError(
+          name: "NotFoundError",
+          message: "The app has no sound \(name); add it to the notifications.sounds build setting")
+      }
+      let named = UNNotificationSoundName(name)
+      guard sound["critical"] as? Bool == true else { return UNNotificationSound(named: named) }
+      let volume = (sound["volume"] as? NSNumber)?.floatValue ?? 1
+      return .criticalSoundNamed(named, withAudioVolume: volume)
+    default:
+      throw typeError("sound must be \"default\", \"defaultCritical\" or an object")
+    }
   }
 
   @available(iOS 15, macOS 12, *)
@@ -84,7 +173,7 @@ struct TokamakNotificationRequest {
     "passive": .passive, "active": .active, "timeSensitive": .timeSensitive, "critical": .critical,
   ]
 
-  private func components(_ at: Double) -> DateComponents {
+  private static func utcComponents(_ at: Double) -> DateComponents {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(identifier: "UTC")!
     return calendar.dateComponents(
@@ -160,7 +249,7 @@ struct TokamakNotificationFields {
 
   var content: [String: Any] {
     if var stored {
-      stored.removeValue(forKey: "at")
+      for key in triggerKeys { stored.removeValue(forKey: key) }
       return stored
     }
     var content: [String: Any] = ["id": id, "title": title ?? "", "data": data]
@@ -171,16 +260,15 @@ struct TokamakNotificationFields {
 }
 
 extension UNNotificationRequest {
-  /// The page's view of a pending request.
+  /// The page's view of a pending request: its fields, which name its trigger.
   var scheduled: [String: Any] {
+    if let stored = storedContent(content.userInfo) {
+      return stored
+    }
     let at =
-      content.userInfo[atKey] as? Double
-      ?? (trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate().map {
+      (trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate().map {
         $0.timeIntervalSince1970 * 1000
       } ?? 0
-    if let stored = storedContent(content.userInfo) {
-      return stored.merging(["at": at]) { _, at in at }
-    }
     var scheduled: [String: Any] = [
       "id": identifier,
       "title": content.title,
