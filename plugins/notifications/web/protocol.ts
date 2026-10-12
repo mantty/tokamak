@@ -36,6 +36,7 @@ export interface WebAction {
   readonly title: string;
   readonly type?: "text";
   readonly placeholder?: string;
+  readonly icon?: string;
 }
 
 export type ServiceWorkerMessage =
@@ -81,6 +82,8 @@ export function webOptions(content: Partial<NotificationContent>): NotificationO
     dir: content.dir,
     lang: content.lang,
     badge: content.badgeImage,
+    image: content.image,
+    icon: content.icon,
   } as NotificationOptions;
 }
 
@@ -95,10 +98,11 @@ export async function setAppBadge(count: number | undefined): Promise<void> {
 
 /** A category's actions as `showNotification` takes them. */
 export function webActions(category: Category | undefined): WebAction[] {
-  return (category?.actions ?? []).map(({ id, title, input }) => {
-    if (!input) return { action: id, title };
+  return (category?.actions ?? []).map(({ id, title, input, icon }) => {
+    const action = { action: id, title, ...(icon === undefined ? {} : { icon }) };
+    if (!input) return action;
     const placeholder = input.placeholder === undefined ? {} : { placeholder: input.placeholder };
-    return { action: id, title, type: "text", ...placeholder };
+    return { ...action, type: "text", ...placeholder };
   });
 }
 

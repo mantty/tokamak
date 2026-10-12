@@ -18,6 +18,16 @@ export interface NotificationContent {
   readonly channel?: string;
   /** Apple and Android: shows the notifications that name the same group together. */
   readonly group?: string;
+  /**
+   * An image, from an `https` URL or a path the app serves: Apple attaches it, Android shows it in
+   * the big picture style, and the web shows it. A failed download shows the notification without
+   * it.
+   */
+  readonly image?: string;
+  /** Android and web: a large icon, from an `https` URL or a path the app serves. */
+  readonly icon?: string;
+  /** Apple only: images, audio and movies shown with the notification, after `image`. */
+  readonly attachments?: readonly Attachment[];
   /** The app's badge count once the notification shows. */
   readonly badge?: number;
   /** Shows the notification without sound or vibration. */
@@ -75,6 +85,25 @@ export interface NotificationContent {
   readonly badgeImage?: string;
 }
 
+/** A file Apple platforms show with a notification. */
+export interface Attachment {
+  /**
+   * An `https` URL or a path the app serves: an image up to 10 MB, audio up to 5 MB or a movie up
+   * to 50 MB.
+   */
+  readonly url: string;
+  readonly hideThumbnail?: boolean;
+  /** The part of an image the thumbnail shows, as fractions of its width and height. */
+  readonly thumbnailClippingRect?: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  };
+  /** The time, in seconds, of the frame of a movie or animated image the thumbnail shows. */
+  readonly thumbnailTime?: number;
+}
+
 /** An Android notification style; Android shows the collapsed notification without it. */
 export type AndroidStyle =
   | {
@@ -82,6 +111,13 @@ export type AndroidStyle =
       readonly text: string;
       readonly title?: string;
       readonly summary?: string;
+    }
+  | {
+      /** Shows `image`; the collapsed notification shows it too with `showWhenCollapsed`. */
+      readonly type: "bigPicture";
+      readonly title?: string;
+      readonly summary?: string;
+      readonly showWhenCollapsed?: boolean;
     }
   | {
       readonly type: "inbox";
@@ -171,6 +207,11 @@ export interface NotificationAction {
   readonly authenticationRequired?: boolean;
   /** Apple only: an SF Symbol shown with the action. */
   readonly systemImage?: string;
+  /**
+   * Web and Android: an image for the action, from an `https` URL or a path the app serves. Android
+   * shows it on wearables only.
+   */
+  readonly icon?: string;
 }
 
 /** The actions of the notifications that name the category, with Apple's options for them. */

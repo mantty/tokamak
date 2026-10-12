@@ -1,5 +1,6 @@
 import {
   type Check,
+  array,
   colour,
   fields,
   flag,
@@ -8,6 +9,7 @@ import {
   oneOf,
   pattern,
   record,
+  source,
   text,
 } from "./checks.js";
 
@@ -23,6 +25,7 @@ const ACTION = object(
     destructive: flag,
     authenticationRequired: flag,
     systemImage: text,
+    icon: source,
   },
   ["id", "title"],
 );
@@ -107,13 +110,10 @@ function channel(groups: ReadonlySet<unknown>): Check {
 /** An array of entries `check` accepts, whose `id`s differ. */
 function list(check: Check): Check {
   return (value, path) => {
-    if (!Array.isArray(value)) throw new TypeError(`${path} must be an array`);
+    array(check)(value, path);
     const ids = new Set<unknown>();
-    for (const [index, entry] of (value as unknown[]).entries()) {
-      const entryPath = `${path}[${String(index)}]`;
-      check(entry, entryPath);
-      const id = (entry as { id: unknown }).id;
-      if (ids.has(id)) throw new TypeError(`${entryPath}.id repeats an earlier id`);
+    for (const [index, { id }] of (value as { id: unknown }[]).entries()) {
+      if (ids.has(id)) throw new TypeError(`${path}[${String(index)}].id repeats an earlier id`);
       ids.add(id);
     }
   };

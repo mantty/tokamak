@@ -106,6 +106,7 @@ and so do the page's while it is loaded.
 | `actions` | Every action, or the first two where space is short | Up to three | Up to `Notification.maxActions`, two in Chrome; none in Safari |
 | `input` | A text field with `button` and `placeholder` | An inline reply labelled `placeholder` | A text field labelled `placeholder`, in Chrome only |
 | `foreground` | Opens the app | Opens the app | Focuses a page, or opens `data.url` |
+| `icon` | No | On wearables | In Chrome |
 | `destructive`, `authenticationRequired`, `systemImage` | Yes | No | No |
 | `hiddenPreviewsBodyPlaceholder`, `hiddenPreviewsShowTitle`, `hiddenPreviewsShowSubtitle`, `summaryFormat`, `customDismissAction` | Yes | No | No |
 | `allowInCarPlay` | iOS | No | No |
@@ -185,6 +186,9 @@ where their platforms have them:
 
 | Field | Platforms | Meaning |
 |---|---|---|
+| `image` | All | An image, below: Apple's first attachment, Android's big picture, the web's `image` |
+| `icon` | Android, web | An image beside the text: Android's large icon, the web's `icon` |
+| `attachments` | Apple | Images, audio or video, below |
 | `group` | Apple, Android | Shows the notifications of a group together: Apple's thread, Android's group under a summary the plugin posts and removes |
 | `badge` | All | The app's badge count once the notification shows: Android's number, which launchers may show; the web's Badging API, for installed web apps only |
 | `silent` | All | No sound or vibration |
@@ -194,7 +198,7 @@ where their platforms have them:
 | `relevanceScore` | Apple | From 0 to 1, how the notification ranks in the notification summary |
 | `subText` | Android | A line with the app's name |
 | `color` | Android | The accent colour, as `#rrggbb` |
-| `style` | Android | `bigText`, `inbox` or `messaging`, below |
+| `style` | Android | `bigText`, `bigPicture`, `inbox` or `messaging`, below |
 | `progress` | Android | `{ current, max }`, or `{ indeterminate: true }` |
 | `ongoing` | Android | Keeps it from being dismissed; from Android 14, the user can still swipe it away on an unlocked device |
 | `autoCancel` | Android | Whether opening it removes it; true by default |
@@ -229,6 +233,9 @@ await notifications.show({
 ```
 
 - `{ type: "bigText", text, title?, summary? }` shows more text.
+- `{ type: "bigPicture", title?, summary?, showWhenCollapsed? }` shows
+  `image`, which it requires. With `showWhenCollapsed`, the collapsed
+  notification shows the image in place of the large icon.
 - `{ type: "inbox", lines, title?, summary? }` shows a line of text for each
   of `lines`, as many as Android fits.
 - `{ type: "messaging", user, conversationTitle?, messages }` shows a
@@ -237,6 +244,54 @@ await notifications.show({
 
 On Apple platforms the badge stays until a notification sets another count.
 On Android, a notification's number shows only while the notification does.
+
+### Images
+
+`image`, `icon`, `attachments` and actions' `icon` take an `https` URL or a
+path the app serves, such as `/notifications/photo.jpg`, which loads as the
+WebView would load it: a file the app ships or the Worker's response. Spaces
+in either must be percent-encoded, as `%20`.
+
+```ts
+await notifications.show({
+  id: "photo-7",
+  title: "Grace",
+  body: "Sent a photo",
+  image: "/notifications/photo.jpg",
+  icon: "https://example.com/avatars/grace.png",
+});
+```
+
+In native builds the plugin loads them before it shows the notification, and
+`show` resolves once it shows. One that does not load within 10 seconds, 8 on
+Android, or that the platform cannot use is left out, and the notification
+shows without it. A notification the Worker returns from `onPush` has what
+remains of the time the platform allows for the message. A `remove` while the
+images load keeps the notification from showing, and a later `show` with the
+same `id` replaces it.
+
+- On Apple platforms, `image` is the first attachment, and `attachments`
+  adds others, each `{ url, hideThumbnail?, thumbnailClippingRect?,
+  thumbnailTime? }`. The notification shows an attachment's thumbnail unless
+  `hideThumbnail`: the part of an image `thumbnailClippingRect` gives as
+  `{ x, y, width, height }` fractions, or a video's frame at `thumbnailTime`
+  seconds. An attachment's type comes from the response's `Content-Type`, the
+  path's extension or, for an image, its contents. Apple accepts JPEG, GIF and
+  PNG images up to 10 MB, AIFF, WAV, MP3 and MPEG-4 audio up to 5 MB, and MPEG,
+  MPEG-2, MPEG-4 and AVI video up to 50 MB.
+- On Android, `image` shows when the notification is expanded, in the
+  `bigPicture` style, or without a style; other styles leave it out. Images
+  are PNG, JPEG, WebP or other files Android decodes, and an `https` image is
+  at most 10 MB.
+- On the web, the browser decides whether it shows `image` and `icon`.
+
+An action's `icon` shows on Android wearables, not on phones, and in
+Chrome.
+
+FCM shows the image of a notification message itself while the app is off
+screen, and the plugin shows it while the app is on screen. APNs
+notifications show images only with a notification service extension, which
+tokamak builds do not include.
 
 ## Push notifications
 

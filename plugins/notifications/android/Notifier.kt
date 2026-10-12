@@ -9,6 +9,7 @@ import android.app.RemoteInput
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.drawable.Icon
 import android.os.Bundle
 import android.service.notification.StatusBarNotification
@@ -74,10 +75,11 @@ internal class Notifier(private val context: Context) {
     }
 
     /**
-     * Shows [content], replacing a notification with the same ID, with its category's actions.
-     * Opening it launches the app. A channel `setup` has since removed falls back to the default.
+     * Shows [content] with [images], the bitmaps of its [imageSources] that loaded, replacing a
+     * notification with the same ID. Opening it launches the app. A channel `setup` has since
+     * removed falls back to the default.
      */
-    fun post(content: Content, source: String) {
+    fun post(content: Content, source: String, images: Map<String, Bitmap>) {
         ensureDefaultChannel()
         val channel = content.channel?.takeIf { manager.getNotificationChannel(it) != null } ?: CHANNEL
         val described = described(content, source)
@@ -96,17 +98,29 @@ internal class Notifier(private val context: Context) {
                 .setContentIntent(launch("opened\n${content.id}", opened, mutable = false))
                 .setDeleteIntent(respond("dismissed\n${content.id}", dismissed))
                 .addExtras(Bundle().apply { putString(CONTENT_EXTRA, content.json.toString()) })
-                .setFields(content, channel)
-        val actions = content.category?.let { Setup.stored(context)?.categories?.get(it) }.orEmpty()
-        for (action in actions) builder.addAction(action(content, source, action))
+                .setFields(content, channel, images)
+        for (action in actions(content)) builder.addAction(action(content, source, action, images[action.icon]))
         val previousGroup = shown(content.id)?.notification?.group
         manager.notify(content.id, NOTIFICATION_ID, builder.build())
         content.group?.let { postSummary(it, channel) }
         if (previousGroup != null && previousGroup != content.group) removeSummaryIfEmpty(previousGroup, content.id)
     }
 
+    /** The images [content] and its category's actions show: its `image` only with the big picture style. */
+    fun imageSources(content: Content): List<String> {
+        val image = content.image.takeIf { content.style == null || content.style is Style.BigPicture }
+        return (listOfNotNull(image, content.icon) + actions(content).mapNotNull { it.icon }).distinct()
+    }
+
+    private fun actions(content: Content): List<Action> =
+        content.category?.let { Setup.stored(context)?.categories?.get(it) }.orEmpty()
+
     /** Sets what [content] says beyond its text, actions and intents. */
-    private fun Notification.Builder.setFields(content: Content, channel: String): Notification.Builder {
+    private fun Notification.Builder.setFields(
+        content: Content,
+        channel: String,
+        images: Map<String, Bitmap>,
+    ): Notification.Builder {
         setAutoCancel(content.autoCancel)
         setOngoing(content.ongoing)
         setOnlyAlertOnce(content.onlyAlertOnce)
@@ -123,7 +137,8 @@ internal class Notifier(private val context: Context) {
         content.publicVersion?.let { (title, body) ->
             setPublicVersion(Notification.Builder(context, channel).setSmallIcon(icon()).setContentTitle(title).setContentText(body).build())
         }
-        content.style?.let { setStyle(style(it)) }
+        content.icon?.let(images::get)?.let(::setLargeIcon)
+        style(content.style, content.image?.let(images::get))?.let(::setStyle)
         // Silent as AndroidX's setSilent makes a notification: one that leaves alerting to its
         // group's summary does not alert, and the plugin's summaries never alert.
         if (content.silent) {
@@ -159,8 +174,18 @@ internal class Notifier(private val context: Context) {
         if (!others) manager.cancel(group, SUMMARY_ID)
     }
 
-    private fun style(style: Style): Notification.Style =
-        when (style) {
+    /** The style Android shows: [given], or by default the big picture style when there is an [image]. */
+    private fun style(given: Style?, image: Bitmap?): Notification.Style? =
+        when (val style = given ?: Style.BigPicture(title = null, summary = null, showWhenCollapsed = false)) {
+            is Style.BigPicture ->
+                image?.let {
+                    Notification.BigPictureStyle()
+                        .bigPicture(it)
+                        .setBigContentTitle(style.title)
+                        .showBigPictureWhenCollapsed(style.showWhenCollapsed)
+                        // Even a null summary replaces the expanded notification's text.
+                        .apply { style.summary?.let(::setSummaryText) }
+                }
             is Style.BigText ->
                 Notification.BigTextStyle().bigText(style.text).setBigContentTitle(style.title).setSummaryText(style.summary)
             is Style.Inbox ->
@@ -208,14 +233,15 @@ internal class Notifier(private val context: Context) {
 
     /**
      * An action that launches the app when it has `foreground`, or otherwise reaches the plugin
-     * without opening it. An action with a text field passes the text it receives.
+     * without opening it. An action with a text field passes the text it receives; wearables show
+     * [icon].
      */
-    private fun action(content: Content, source: String, action: Action): Notification.Action {
+    private fun action(content: Content, source: String, action: Action, icon: Bitmap?): Notification.Action {
         val opened = Intent().putExtra(OPENED_EXTRA, described(content, source).put("action", action.id).toString())
         val identifier = "action\n${content.id}\n${action.id}"
         val mutable = action.inputLabel != null
         val intent = if (action.foreground) launch(identifier, opened, mutable) else respond(identifier, opened, mutable)
-        val builder = Notification.Action.Builder(null as Icon?, action.title, intent)
+        val builder = Notification.Action.Builder(icon?.let(Icon::createWithBitmap), action.title, intent)
         action.inputLabel?.let { builder.addRemoteInput(RemoteInput.Builder(INPUT_KEY).setLabel(it).build()) }
         return builder.build()
     }

@@ -95,7 +95,8 @@ class TokamakPushService : FirebaseMessagingService() {
                 .put("data", received.getJSONObject("data"))
                 .put("body", notification.body)
                 .put("channel", notification.channelId)
-                .put("badge", notification.notificationCount),
+                .put("badge", notification.notificationCount)
+                .put("image", notification.imageUrl?.toString()),
             scheduled = false,
         )
 }

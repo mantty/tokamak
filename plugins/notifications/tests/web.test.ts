@@ -131,13 +131,26 @@ const fullNotification = {
   dir: "ltr",
   lang: "en-GB",
   badgeImage: "/badge.png",
+  image: "/photo.png",
+  icon: "https://example.com/ada.png",
 } as const;
 
 void test("passes the web's options to the browser, and sets the app badge", async () => {
   await notifications.show(fullNotification);
 
   const options = registration?.shown.at(0)?.options ?? {};
-  const keys = ["silent", "timestamp", "requireInteraction", "renotify", "vibrate", "dir", "lang", "badge"];
+  const keys = [
+    "silent",
+    "timestamp",
+    "requireInteraction",
+    "renotify",
+    "vibrate",
+    "dir",
+    "lang",
+    "badge",
+    "image",
+    "icon",
+  ];
   assert.deepEqual(Object.fromEntries(keys.map((key) => [key, options[key]])), {
     silent: false,
     timestamp: 1_800_000_000_000,
@@ -147,6 +160,8 @@ void test("passes the web's options to the browser, and sets the app badge", asy
     dir: "ltr",
     lang: "en-GB",
     badge: "/badge.png",
+    image: "/photo.png",
+    icon: "https://example.com/ada.png",
   });
   assert.deepEqual(badges, [3]);
 });
@@ -194,8 +209,9 @@ void test("shows a category's actions, with Chrome's text input for an input act
       {
         id: "message",
         actions: [
-          { id: "reply", title: "Reply", input: { button: "Send", placeholder: "Message" } },
-          { id: "read", title: "Mark as read" },
+          { id: "reply", title: "Reply", input: { button: "Send", placeholder: "Message" }, icon: "/reply.png" },
+          { id: "read", title: "Mark as read", icon: "/read.png" },
+          { id: "note", title: "Note", input: {} },
         ],
       },
     ],
@@ -208,8 +224,9 @@ void test("shows a category's actions, with Chrome's text input for an input act
   const shown = registration?.shown ?? [];
   assert.deepEqual(result, { unapplied: [] });
   assert.deepEqual(shown.at(0)?.actions, [
-    { action: "reply", title: "Reply", type: "text", placeholder: "Message" },
-    { action: "read", title: "Mark as read" },
+    { action: "reply", title: "Reply", icon: "/reply.png", type: "text", placeholder: "Message" },
+    { action: "read", title: "Mark as read", icon: "/read.png" },
+    { action: "note", title: "Note", type: "text" },
   ]);
   assert.deepEqual(shown.at(1)?.actions, []);
   assert.deepEqual(
@@ -229,7 +246,7 @@ void test("accepts every kind of setup value", async () => {
         actions: [
           { id: "reply", title: "Reply", input: { button: "Send", placeholder: "Message" } },
           { id: "delete", title: "Delete", destructive: true, authenticationRequired: true, systemImage: "trash" },
-          { id: "open", title: "Open", foreground: true },
+          { id: "open", title: "Open", foreground: true, icon: "https://example.com/open.png" },
         ],
         hiddenPreviewsBodyPlaceholder: "New message",
         hiddenPreviewsShowTitle: true,

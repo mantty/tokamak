@@ -113,8 +113,18 @@ void test("shows a pushed notification with the web's options, and sets the app 
       },
     }),
   );
-  // The invalid `renotify` and the `vibrate` a silent notification cannot have are dropped.
-  const payload = { id: "m1", title: "Hi", silent: true, requireInteraction: true, badge: 2, renotify: "yes", vibrate: [100] };
+  // The invalid `renotify` and `image`, and the `vibrate` a silent notification cannot have, are dropped.
+  const payload = {
+    id: "m1",
+    title: "Hi",
+    silent: true,
+    requireInteraction: true,
+    badge: 2,
+    renotify: "yes",
+    vibrate: [100],
+    image: "http://example.com/i.png",
+    icon: "/icon.png",
+  };
 
   await run((event) => {
     handlePush({ ...event, data: { text: () => JSON.stringify(payload) } });
@@ -122,8 +132,8 @@ void test("shows a pushed notification with the web's options, and sets the app 
 
   const options = registration.shown[0]?.options ?? {};
   assert.deepEqual(
-    [options.silent, options.requireInteraction, options.renotify, options.vibrate],
-    [true, true, undefined, undefined],
+    [options.silent, options.requireInteraction, options.renotify, options.vibrate, options.image, options.icon],
+    [true, true, undefined, undefined, undefined, "/icon.png"],
   );
   assert.deepEqual(badges, [2]);
 });

@@ -1,16 +1,18 @@
 import type { AndroidCategory, NotificationContent } from "./index.js";
 import {
   type Check,
+  array,
   colour,
   count,
   fields,
   flag,
+  fraction,
   nonEmptyText,
   object,
   oneOf,
   pattern,
   record,
-  strings,
+  source,
   text,
   time,
 } from "./checks.js";
@@ -41,22 +43,43 @@ const ANDROID_CATEGORIES = {
 const STYLE_TEXT = { title: text, summary: text };
 const STYLES: Readonly<Record<string, Check>> = {
   bigText: object({ ...STYLE_TEXT, text }, ["text"]),
-  inbox: object({ ...STYLE_TEXT, lines: strings }, ["lines"]),
+  bigPicture: object({ ...STYLE_TEXT, showWhenCollapsed: flag }),
+  inbox: object({ ...STYLE_TEXT, lines: array(text) }, ["lines"]),
   messaging: object(
     {
       user: text,
       conversationTitle: text,
-      messages: (value, path) => {
-        if (!Array.isArray(value)) throw new TypeError(`${path} must be an array`);
-        const message = object({ text, at: time, sender: text }, ["text", "at"]);
-        for (const [index, entry] of (value as unknown[]).entries()) {
-          message(entry, `${path}[${String(index)}]`);
-        }
-      },
+      messages: array(object({ text, at: time, sender: text }, ["text", "at"])),
     },
     ["user", "messages"],
   ),
 };
+
+/** A part of an image, in fractions of its width and height. */
+const CLIPPING_RECT = object(
+  { x: fraction, y: fraction, width: fraction, height: fraction },
+  ["x", "y", "width", "height"],
+);
+
+const ATTACHMENT = object(
+  {
+    url: source,
+    hideThumbnail: flag,
+    thumbnailClippingRect: (value, path) => {
+      CLIPPING_RECT(value, path);
+      const { x, y, width, height } = value as Record<"x" | "y" | "width" | "height", number>;
+      if (width === 0 || height === 0 || x + width > 1 || y + height > 1) {
+        throw new TypeError(`${path} must lie within the image, with a width and height above 0`);
+      }
+    },
+    thumbnailTime: (value, path) => {
+      if (!(typeof value === "number" && Number.isFinite(value) && value >= 0)) {
+        throw new TypeError(`${path} must be a number of seconds of at least 0`);
+      }
+    },
+  },
+  ["url"],
+);
 
 /** The check of each optional field. */
 const CHECKS: Readonly<Record<string, Check>> = {
@@ -65,16 +88,15 @@ const CHECKS: Readonly<Record<string, Check>> = {
   category: nonEmptyText,
   channel: nonEmptyText,
   group: nonEmptyText,
+  image: source,
+  icon: source,
+  attachments: array(ATTACHMENT),
   badge: count,
   silent: flag,
   timestamp: time,
   subtitle: text,
   interruptionLevel: oneOf("passive", "active", "timeSensitive", "critical"),
-  relevanceScore: (value, path) => {
-    if (!(typeof value === "number" && value >= 0 && value <= 1)) {
-      throw new TypeError(`${path} must be a number from 0 to 1`);
-    }
-  },
+  relevanceScore: fraction,
   subText: text,
   color: colour,
   style: (value, path) => {
@@ -124,6 +146,9 @@ export function validateContent(value: unknown, scheduled: boolean): void {
   // Browsers reject the pair.
   if (value.silent === true && value.vibrate !== undefined) {
     throw new TypeError("vibrate must be left out of a silent notification");
+  }
+  if ((value.style as { type?: unknown } | undefined)?.type === "bigPicture" && value.image === undefined) {
+    throw new TypeError("image must be given with the bigPicture style");
   }
 }
 

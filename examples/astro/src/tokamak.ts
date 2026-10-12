@@ -61,7 +61,8 @@ async function setUpNotifications(env: Cloudflare.Env): Promise<void> {
         id: "message",
         actions: [
           { id: "reply", title: "Reply", input: { button: "Send", placeholder: "Message" } },
-          { id: "read", title: "Mark as read" },
+          // Wearables and the web show the icon.
+          { id: "read", title: "Mark as read", icon: "/notifications/icon.png" },
           { id: "open", title: "Open", foreground: true },
         ],
         hiddenPreviewsBodyPlaceholder: "New message",
