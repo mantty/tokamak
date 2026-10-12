@@ -30,7 +30,7 @@ await secureStorage.replace("identity/encryption", base64Value, {
 // Replaces the value, or creates it when the name has none.
 await secureStorage.set("identity/encryption", base64Value, options);
 
-// string | null
+// get, delete and clear reject with ItemNotFoundError when there is no value.
 const value = await secureStorage.get("identity/encryption", {
   prompt: "Confirm it's you to link a new device",
 });
@@ -75,7 +75,7 @@ screen. Android replaces values without asking.
 |---|---|
 | `NotSupportedError` | The platform, build or device cannot enforce the options |
 | `DuplicateItemError` | `create` was given a name that has a value |
-| `ItemNotFoundError` | `replace` was given a name that has no value |
+| `ItemNotFoundError` | `replace`, `get` or `delete` was given a name that has no value, or `clear` found no values |
 | `MissingEntitlementError` | `keychainGroup` is not one of the app's keychain access groups |
 | `InvalidStateError` | The requested authentication is not set up on the device |
 | `NotAllowedError` | The user cancelled or failed authentication, or the device is locked |
@@ -83,8 +83,6 @@ screen. Android replaces values without asking.
 | `NotReadableError` | A stored value can no longer be decrypted |
 | `TypeError` | An argument is missing or has an unsupported value |
 | `OperationError` | The platform reported another failure |
-
-`get` resolves `null` when the name has no stored value.
 
 ## Keychain access groups
 

@@ -64,15 +64,17 @@ class SecureStorage extends Plugin {
     return this.call("set", { ...stored(name, value, options), prompt: options.prompt ?? null });
   }
 
-  get(name: string, options: GetOptions = {}): Promise<string | null> {
+  /** Reads the value; rejects with `ItemNotFoundError` when `name` has none. */
+  get(name: string, options: GetOptions = {}): Promise<string> {
     return this.call("get", { name, prompt: options.prompt ?? null, keychainGroup: options.keychainGroup ?? null });
   }
 
+  /** Deletes the value; rejects with `ItemNotFoundError` when `name` has none. */
   delete(name: string, options: DeleteOptions = {}): Promise<void> {
     return this.call("delete", { name, keychainGroup: options.keychainGroup ?? null });
   }
 
-  /** Deletes every stored value. */
+  /** Deletes every stored value; rejects with `ItemNotFoundError` when there are none. */
   clear(options: DeleteOptions = {}): Promise<void> {
     return this.call("clear", { keychainGroup: options.keychainGroup ?? null });
   }

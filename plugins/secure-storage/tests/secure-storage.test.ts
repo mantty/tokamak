@@ -151,14 +151,14 @@ void test("reads a value with a prompt", async () => {
   assert.equal(await value, "c2VjcmV0");
 });
 
-void test("reads a missing value as null", async () => {
+void test("reads a value without a prompt", async () => {
   const native = connectNative();
 
   const value = secureStorage.get("identity");
   assert.deepEqual(native.lastRequest().arguments, { name: "identity", prompt: null, keychainGroup: null });
-  native.respond({ value: null });
+  native.respond({ value: "c2VjcmV0" });
 
-  assert.equal(await value, null);
+  assert.equal(await value, "c2VjcmV0");
 });
 
 void test("deletes a value", async () => {

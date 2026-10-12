@@ -134,7 +134,7 @@ class TokamakSecureStoragePlugin(
             throw TokamakPluginError("DuplicateItemError", "A value is already stored under this name")
         }
         if (previous == null && mode == Write.REPLACE) {
-            throw TokamakPluginError("ItemNotFoundError", "No value is stored under this name")
+            throw itemNotFound()
         }
         val previousAlias = previous?.let { alias(it.keyId) }
         val publicKey = generatePublicKey(spec)
@@ -188,11 +188,7 @@ class TokamakSecureStoragePlugin(
     private fun get(request: JSONObject, reply: TokamakPluginReply) {
         val name = request.requireString("name")
         val prompt = request.optionalString("prompt")
-        val stored = read(file(name))
-        if (stored == null) {
-            reply(Result.success(null))
-            return
-        }
+        val stored = read(file(name)) ?: throw itemNotFound()
         val privateKey =
             keyStore.getKey(alias(stored.keyId), null) as? PrivateKey
                 ?: throw notReadable()
@@ -237,16 +233,22 @@ class TokamakSecureStoragePlugin(
 
     private fun delete(name: String) {
         val file = file(name)
-        val stored = read(file) ?: return
+        val stored = read(file) ?: throw itemNotFound()
         AtomicFile(file).delete()
         keyStore.deleteEntry(alias(stored.keyId))
     }
 
+    /** Deletes every value, and any key an interrupted write left behind. */
     private fun clear() {
+        // An interrupted first write leaves only a `.new` file, which [read] ignores.
+        val hadValues = directory.list().orEmpty().any { !it.endsWith(".new") }
         directory.deleteRecursively()
         keyStore.aliases().toList()
             .filter { it.startsWith(ALIAS_PREFIX) }
             .forEach(keyStore::deleteEntry)
+        if (!hadValues) {
+            throw TokamakPluginError("ItemNotFoundError", "No values are stored")
+        }
     }
 
     private fun read(file: File): StoredValue? =
@@ -323,6 +325,8 @@ class TokamakSecureStoragePlugin(
 
         fun notReadable() =
             TokamakPluginError("NotReadableError", "The stored value can no longer be decrypted")
+
+        fun itemNotFound() = TokamakPluginError("ItemNotFoundError", "No value is stored under this name")
 
         fun pluginError(error: Throwable): Throwable =
             when (error) {

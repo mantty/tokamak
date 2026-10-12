@@ -103,10 +103,11 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
         prompting: prompting
       )
     case "delete":
-      try deleteItems(query(requiredString(arguments, "name"), group: group))
+      let name = try requiredString(arguments, "name")
+      try check(SecItemDelete(query(name, group: group) as CFDictionary))
       return nil
     case "clear":
-      try deleteItems(serviceQuery(group: group))
+      try check(SecItemDelete(serviceQuery(group: group) as CFDictionary))
       return nil
     default:
       throw .notSupported("\(id).\(method) is not supported")
@@ -158,15 +159,12 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     group: String?,
     prompt: String?,
     prompting: Result<Void, TokamakPluginError>?
-  ) throws(TokamakPluginError) -> String? {
+  ) throws(TokamakPluginError) -> String {
     var item = query(name, group: group)
     item[kSecReturnData] = true
     item[kSecUseAuthenticationContext] = Self.contextWithoutUI()
     var data: CFTypeRef?
     var status = SecItemCopyMatching(item as CFDictionary, &data)
-    if status == errSecItemNotFound {
-      return nil
-    }
     if status == errSecInteractionNotAllowed, let prompting {
       try prompting.get()
       item[kSecUseAuthenticationContext] = Self.context(prompt: prompt)
@@ -184,13 +182,6 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
       throw TokamakPluginError(name: "NotReadableError", message: "The stored value is not data")
     }
     return String(decoding: data, as: UTF8.self)
-  }
-
-  private func deleteItems(_ query: [CFString: Any]) throws(TokamakPluginError) {
-    let status = SecItemDelete(query as CFDictionary)
-    if status != errSecItemNotFound {
-      try check(status)
-    }
   }
 
   /// A context in which keychain calls that need authentication fail with
