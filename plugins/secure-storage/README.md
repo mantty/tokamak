@@ -11,12 +11,24 @@ npm install @tokamakdev/plugin-secure-storage
 ```ts
 import { secureStorage } from "@tokamakdev/plugin-secure-storage";
 
-await secureStorage.set("identity/encryption", base64Value, {
+const options = {
   // Required: "whenUnlocked" or "afterFirstUnlock".
   readable: "whenUnlocked",
   // Reads need no authentication when omitted.
   authentication: "biometricsOrPasscode",
+} as const;
+
+// Rejects with DuplicateItemError when the name has a value.
+await secureStorage.create("identity/encryption", base64Value, options);
+
+// Rejects with ItemNotFoundError when the name has no value.
+await secureStorage.replace("identity/encryption", base64Value, {
+  ...options,
+  prompt: "Confirm it's you to replace your key",
 });
+
+// Replaces the value, or creates it when the name has none.
+await secureStorage.set("identity/encryption", base64Value, options);
 
 // string | null
 const value = await secureStorage.get("identity/encryption", {
@@ -51,17 +63,20 @@ enrolment change as failed authentication, so `get` rejects with
 `prompt` is the reason shown in the system authentication prompt. Without it,
 the platform's default prompt is shown.
 
-`set` replaces an existing value in place or adds a new one, so a failed `set`
+`replace` and `set` replace an existing value in place, so a failed write
 leaves the previous value. On Apple platforms the system asks for the
 authentication an existing value was saved with before replacing it, as it does
-for a read: `set` then shows its `prompt` and needs the app on screen. Android
-replaces values without asking.
+for a read: `replace` and `set` then show their `prompt` and need the app on
+screen. Android replaces values without asking.
 
 ## Errors
 
 | Name | When |
 |---|---|
 | `NotSupportedError` | The platform, build or device cannot enforce the options |
+| `DuplicateItemError` | `create` was given a name that has a value |
+| `ItemNotFoundError` | `replace` was given a name that has no value |
+| `MissingEntitlementError` | `keychainGroup` is not one of the app's keychain access groups |
 | `InvalidStateError` | The requested authentication is not set up on the device |
 | `NotAllowedError` | The user cancelled or failed authentication, or the device is locked |
 | `NeedsUIError` | Reading a value saved with `authentication` while the app is off screen on iOS or Android, or replacing one on iOS, where the system cannot show its prompt |
@@ -70,6 +85,25 @@ replaces values without asking.
 | `OperationError` | The platform reported another failure |
 
 `get` resolves `null` when the name has no stored value.
+
+## Keychain access groups
+
+On Apple platforms an app can store values in each keychain access group its
+`keychain-access-groups` entitlement lists. `keychainGroup` selects one, as
+`kSecAttrAccessGroup` does in a native keychain query:
+
+- `create`, and `set` when the name has no value, store the value in
+  `keychainGroup`, or in the first listed group when it is omitted.
+- `get`, `replace`, `delete` and `clear`, and `set` when the name has a value,
+  act on `keychainGroup`, or on every group when it is omitted.
+
+A name can have a value in more than one group. Without `keychainGroup`, `get`
+resolves one of them, `delete` and `clear` delete all of them, and `replace`
+and `set` reject with `NotAllowedError`, which is how the keychain reports an
+update that matches more than one value (`errSecAuthFailed`).
+
+Other platforms have no equivalent and reject `keychainGroup` with
+`NotSupportedError`.
 
 ## Platforms
 
@@ -103,6 +137,8 @@ groups, the app's own first, in the app's entitlements file
 
 New values go into the app's own group; existing values stay in the shared
 group even when replaced, so keep `TEAMID.*` while users may still hold them.
+Pass `keychainGroup: "TEAMID.*"` to act on those values only, for example to
+delete one after creating it again in the app's own group.
 
 Removing the device passcode or screen lock makes values stored with
 `authentication` permanently unreadable on Android.

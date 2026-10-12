@@ -63,21 +63,39 @@ class TokamakSecureStoragePlugin(
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
         when (method) {
-            "set" -> execute(reply) {
-                set(requireObject(arguments))
+            "create" -> execute(reply) {
+                store(request(arguments), Write.CREATE)
                 reply(Result.success(null))
             }
-            "get" -> execute(reply) { get(requireObject(arguments), reply) }
+            "replace" -> execute(reply) {
+                store(request(arguments), Write.REPLACE)
+                reply(Result.success(null))
+            }
+            "set" -> execute(reply) {
+                store(request(arguments), Write.SET)
+                reply(Result.success(null))
+            }
+            "get" -> execute(reply) { get(request(arguments), reply) }
             "delete" -> execute(reply) {
-                delete(requireObject(arguments).requireString("name"))
+                delete(request(arguments).requireString("name"))
                 reply(Result.success(null))
             }
             "clear" -> execute(reply) {
+                request(arguments) // Rejects keychainGroup.
                 clear()
                 reply(Result.success(null))
             }
             else -> super.call(method, arguments, reply)
         }
+    }
+
+    /** The call's arguments, rejecting the Apple-only `keychainGroup`. */
+    private fun request(arguments: Any?): JSONObject {
+        val request = requireObject(arguments)
+        if (request.optionalString("keychainGroup") != null) {
+            throw TokamakPluginError.notSupported("keychainGroup is an Apple keychain feature")
+        }
+        return request
     }
 
     private fun execute(reply: TokamakPluginReply, operation: () -> Unit) =
@@ -90,7 +108,7 @@ class TokamakSecureStoragePlugin(
             runCatching(operation).onFailure { reply(Result.failure(pluginError(it))) }
         }
 
-    private fun set(request: JSONObject) {
+    private fun store(request: JSONObject, mode: Write) {
         val name = request.requireString("name")
         val value = request.requireString("value")
         val unlockedDeviceRequired =
@@ -111,7 +129,14 @@ class TokamakSecureStoragePlugin(
                 .setUnlockedDeviceRequired(unlockedDeviceRequired)
         request.optionalString("authentication")?.let { requireAuthentication(spec, it) }
         val file = file(name)
-        val previousAlias = read(file)?.let { alias(it.keyId) }
+        val previous = read(file)
+        if (previous != null && mode == Write.CREATE) {
+            throw TokamakPluginError("DuplicateItemError", "A value is already stored under this name")
+        }
+        if (previous == null && mode == Write.REPLACE) {
+            throw TokamakPluginError("ItemNotFoundError", "No value is stored under this name")
+        }
+        val previousAlias = previous?.let { alias(it.keyId) }
         val publicKey = generatePublicKey(spec)
         try {
             write(file, seal(keyId, value, publicKey).encode())
@@ -250,6 +275,9 @@ class TokamakSecureStoragePlugin(
     private fun alias(keyId: ByteArray) = ALIAS_PREFIX + keyId.toHex()
 
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
+
+    /** Whether a write requires the name to have no value, a value, or either. */
+    private enum class Write { CREATE, REPLACE, SET }
 
     private enum class Authentication(
         val wireName: String,

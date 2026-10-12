@@ -6,7 +6,7 @@ export type Readable = "whenUnlocked" | "afterFirstUnlock";
 /** The authentication a read requires. */
 export type Authentication = "biometricsOrPasscode" | "biometrics" | "currentBiometrics";
 
-export interface SetOptions {
+export interface CreateOptions {
   readonly readable: Readable;
   /** Reads need no authentication when omitted. */
   readonly authentication?: Authentication;
@@ -15,6 +15,15 @@ export interface SetOptions {
    * false lets a backup restore it to a new device where the platform supports that.
    */
   readonly thisDeviceOnly?: boolean;
+  /**
+   * Apple platforms: the keychain access group, one of the app's `keychain-access-groups`.
+   * When omitted, new values go into the first of them and updates match every group.
+   */
+  readonly keychainGroup?: string;
+}
+
+/** Options for `set` and `replace`. */
+export interface SetOptions extends CreateOptions {
   /**
    * The reason shown in the system authentication prompt. Apple platforms ask for the
    * authentication an existing value was saved with before replacing it.
@@ -25,6 +34,14 @@ export interface SetOptions {
 export interface GetOptions {
   /** The reason shown in the system authentication prompt. */
   readonly prompt?: string;
+  /** Apple platforms: the keychain access group to read from. Defaults to all of the app's. */
+  readonly keychainGroup?: string;
+}
+
+/** Options for `delete` and `clear`. */
+export interface DeleteOptions {
+  /** Apple platforms: the keychain access group to delete from. Defaults to all of the app's. */
+  readonly keychainGroup?: string;
 }
 
 class SecureStorage extends Plugin {
@@ -32,29 +49,44 @@ class SecureStorage extends Plugin {
     super("secure-storage");
   }
 
+  /** Stores a new value; rejects with `DuplicateItemError` when `name` has one. */
+  create(name: string, value: string, options: CreateOptions): Promise<void> {
+    return this.call("create", stored(name, value, options));
+  }
+
+  /** Replaces the value in place; rejects with `ItemNotFoundError` when `name` has none. */
+  replace(name: string, value: string, options: SetOptions): Promise<void> {
+    return this.call("replace", { ...stored(name, value, options), prompt: options.prompt ?? null });
+  }
+
+  /** Replaces the value in place, or stores a new one when `name` has none. */
   set(name: string, value: string, options: SetOptions): Promise<void> {
-    return this.call("set", {
-      name,
-      value,
-      readable: options.readable,
-      authentication: options.authentication ?? null,
-      thisDeviceOnly: options.thisDeviceOnly ?? true,
-      prompt: options.prompt ?? null,
-    });
+    return this.call("set", { ...stored(name, value, options), prompt: options.prompt ?? null });
   }
 
   get(name: string, options: GetOptions = {}): Promise<string | null> {
-    return this.call("get", { name, prompt: options.prompt ?? null });
+    return this.call("get", { name, prompt: options.prompt ?? null, keychainGroup: options.keychainGroup ?? null });
   }
 
-  delete(name: string): Promise<void> {
-    return this.call("delete", { name });
+  delete(name: string, options: DeleteOptions = {}): Promise<void> {
+    return this.call("delete", { name, keychainGroup: options.keychainGroup ?? null });
   }
 
   /** Deletes every stored value. */
-  clear(): Promise<void> {
-    return this.call("clear");
+  clear(options: DeleteOptions = {}): Promise<void> {
+    return this.call("clear", { keychainGroup: options.keychainGroup ?? null });
   }
+}
+
+function stored(name: string, value: string, options: CreateOptions) {
+  return {
+    name,
+    value,
+    readable: options.readable,
+    authentication: options.authentication ?? null,
+    thisDeviceOnly: options.thisDeviceOnly ?? true,
+    keychainGroup: options.keychainGroup ?? null,
+  };
 }
 
 export const secureStorage = new SecureStorage();
