@@ -43,11 +43,19 @@ resolved from the nearest `node_modules` of the app or a parent directory.
 A platform omitted from the manifest has no native implementation. Calls made
 without an implementation throw `NotSupportedError`.
 
-A manifest may declare build `settings`, each with a `kind` (`string` or
-`path`) and a `description`, as a platform pack's `variables.json` does. Apps
-set them under the plugin's ID: `--<id>-<key>`, `TOKAMAK_<ID>_<KEY>` and
-`<id>.<key>`, and for one platform `--<id>-<platform>-<key>`,
-`TOKAMAK_<ID>_<PLATFORM>_<KEY>` and `<id>.<platform>.<key>`. tok rejects plugin
+A manifest may declare build `settings`, each with a `kind`, a `description`
+and an optional `default` of its kind. A kind is `boolean`, `integer`,
+`number`, `string`, `path`, `enum` with `values`, or `list` or `map` with `of`,
+the kind of their items (`{ "kind": "map", "of": "string" }`). Apps set them
+under the plugin's ID: `--<id>-<key>`, `TOKAMAK_<ID>_<KEY>` and `<id>.<key>`,
+and for one platform `--<id>-<platform>-<key>`,
+`TOKAMAK_<ID>_<PLATFORM>_<KEY>` and `<id>.<platform>.<key>`. A boolean option
+is a flag that also takes `=true` or `=false`. A list's items, and a map's
+`key=value` items, are comma-separated in options and environment variables,
+and options also repeat; the configuration takes arrays and objects. tok
+parses each value into its kind, so a build script receives JSON of the kind,
+with paths absolute and defaults applied. `--help` lists the settings with
+their kinds, values and defaults. tok rejects plugin
 IDs that start with a platform name, a top-level key of the `tokamak()` options
 or the first word of one of its own options or environment variables, and
 settings whose options would start with another plugin's longer ID. A manifest

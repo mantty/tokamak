@@ -11,6 +11,7 @@ mod packs;
 mod paths;
 mod pinned_tls;
 mod pipeline;
+mod plugin_settings;
 mod plugins;
 mod project;
 mod settings;
@@ -109,9 +110,13 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    let (arguments, namespaced_options, plugins) = split_arguments(env::args_os().collect())?;
+    let (arguments, platform_options, plugins) = split_arguments(env::args_os().collect())?;
     let matches = command(&arguments, &plugins).get_matches_from(arguments);
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    let namespaced_options = match matches.subcommand() {
+        Some((_, matches)) => platform_options.with_plugin_options(matches, &plugins),
+        None => platform_options,
+    };
 
     match cli.command {
         Command::Build {
@@ -177,8 +182,8 @@ fn run() -> Result<()> {
     }
 }
 
-/// Split platform and plugin options from the arguments of the commands that
-/// take them, with the plugins of the project the arguments name.
+/// Split platform options from the arguments of the commands that take them,
+/// with the plugins of the project the arguments name.
 fn split_arguments(
     arguments: Vec<OsString>,
 ) -> Result<(Vec<OsString>, NamespacedOptions, Vec<plugins::Plugin>)> {
@@ -195,11 +200,7 @@ fn split_arguments(
     } else {
         Vec::new()
     };
-    let ids = plugins
-        .iter()
-        .map(|plugin| plugin.id.as_str())
-        .collect::<Vec<_>>();
-    let (arguments, options) = settings::split_namespaced_options(arguments, &ids)?;
+    let (arguments, options) = settings::split_namespaced_options(arguments)?;
     Ok((arguments, options, plugins))
 }
 
@@ -222,9 +223,13 @@ fn project_argument(arguments: &[OsString]) -> PathBuf {
     PathBuf::from(".")
 }
 
-/// The argument parser; `--help` for named platforms lists their options.
+/// The argument parser, with the plugins' options; `--help` for named
+/// platforms lists their options.
 fn command(arguments: &[OsString], plugins: &[plugins::Plugin]) -> clap::Command {
-    let command = Cli::command();
+    let plugin_arguments = settings::plugin_arguments(plugins);
+    let command = Cli::command()
+        .mut_subcommand("build", |build| build.args(plugin_arguments.clone()))
+        .mut_subcommand("dev", |dev| dev.args(plugin_arguments));
     let is_help = |argument: &&OsString| *argument == "--help" || *argument == "-h";
     let asks_for_help = arguments
         .iter()
@@ -234,7 +239,10 @@ fn command(arguments: &[OsString], plugins: &[plugins::Plugin]) -> clap::Command
         return command;
     }
     let without_help = arguments.iter().filter(|argument| !is_help(argument));
-    let Ok(cli) = Cli::try_parse_from(without_help) else {
+    let Ok(matches) = command.clone().try_get_matches_from(without_help) else {
+        return command;
+    };
+    let Ok(cli) = Cli::from_arg_matches(&matches) else {
         return command;
     };
     let (subcommand, platforms, platform_pack) = match cli.command {
@@ -300,7 +308,8 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::{
-        Cli, Command, Platform, parse_platforms, plugins, project_argument, split_arguments,
+        Cli, Command, Platform, command, parse_platforms, plugins, project_argument,
+        split_arguments,
     };
 
     #[test]
@@ -379,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn splits_the_options_of_the_projects_plugins() -> anyhow::Result<()> {
+    fn parses_the_options_of_the_projects_plugins() -> anyhow::Result<()> {
         let project = tempfile::tempdir()?;
         std::fs::write(
             project.path().join("package.json"),
@@ -392,19 +401,25 @@ mod tests {
             serde_json::json!({
                 "schemaVersion": 1,
                 "id": "alerts",
-                "settings": { "sounds": { "kind": "path", "description": "Sounds" } },
+                "settings": { "loud": { "kind": "boolean", "description": "Loud" } },
                 "build": "build.mjs",
             })
             .to_string(),
         )?;
         let mut arguments = vec![OsString::from("tok"), "build".into(), "ios".into()];
         arguments.extend(["--project".into(), project.path().as_os_str().to_owned()]);
-        arguments.extend(["--alerts-ios-sounds".into(), "sounds".into()]);
+        arguments.extend(["--alerts-ios-loud".into(), "--ios-plist=Info.plist".into()]);
 
         let (remaining, _, plugins) = split_arguments(arguments.clone())?;
+        let matches = command(&remaining, &plugins).try_get_matches_from(&remaining)?;
 
-        assert_eq!(remaining, arguments[..5]);
+        assert_eq!(remaining, arguments[..6]);
         assert_eq!(plugins.len(), 1);
+        assert!(matches!(
+            matches.subcommand(),
+            Some(("build", build)) if build.get_one::<serde_json::Value>("alerts-ios-loud")
+                == Some(&serde_json::Value::Bool(true))
+        ));
         Ok(())
     }
 

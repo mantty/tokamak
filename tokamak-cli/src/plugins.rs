@@ -10,11 +10,10 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use tokamak_cli::{
-    PackVariable, Platform, PlatformPackManifest, PluginKeyKind, copy_file, is_valid_key,
-};
+use tokamak_cli::{Platform, PlatformPackManifest, PluginKeyKind, copy_file, is_valid_key};
 
 use super::packs::command_path;
+use super::plugin_settings::Setting;
 
 const MANIFEST: &str = "tokamak-plugin.json";
 
@@ -49,7 +48,7 @@ pub(crate) struct Plugin {
     pub(crate) id: String,
     /// The build settings the plugin accepts, by key.
     #[serde(default)]
-    pub(crate) settings: BTreeMap<String, PackVariable>,
+    pub(crate) settings: BTreeMap<String, Setting>,
     /// A Node script, in the package, that checks the settings and adds keys
     /// to the plugin's platform section.
     build: Option<String>,
@@ -130,7 +129,7 @@ fn reject_shared_option_names(plugins: &[Plugin]) -> Result<()> {
 pub(crate) fn generate(
     plugins: &[Plugin],
     platform: Platform,
-    settings: &BTreeMap<String, BTreeMap<String, String>>,
+    settings: &BTreeMap<String, Map<String, Value>>,
 ) -> Result<Generated> {
     let namespace = platform.namespace();
     let mut generated = Generated::new();
@@ -847,7 +846,7 @@ mod tests {
         let plugins = discover(project.path())?;
         let settings = BTreeMap::from([(
             "alerts".to_owned(),
-            BTreeMap::from([("sounds".to_owned(), sounds.to_string_lossy().into_owned())]),
+            serde_json::Map::from_iter([("sounds".to_owned(), sounds.to_string_lossy().into())]),
         )]);
 
         let generated = generate(&plugins, Platform::Ios, &settings)?;
