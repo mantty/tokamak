@@ -65,19 +65,16 @@ impl TryFrom<RawSetting> for Setting {
     type Error = String;
 
     fn try_from(raw: RawSetting) -> Result<Self, String> {
-        let collection = matches!(raw.kind.as_str(), "list" | "map");
-        let item_kind = match (collection, raw.of) {
-            (true, Some(of)) => of,
-            (true, None) => return Err(format!("a {} needs `of`, its items' kind", raw.kind)),
-            (false, Some(_)) => return Err("only a list or map takes `of`".to_owned()),
-            (false, None) => raw.kind.clone(),
+        let (of_kind, item): (fn(Item) -> Kind, &str) = match (raw.kind.as_str(), &raw.of) {
+            ("list", Some(of)) => (Kind::List, of),
+            ("map", Some(of)) => (Kind::Map, of),
+            ("list" | "map", None) => {
+                return Err(format!("a {} needs `of`, its items' kind", raw.kind));
+            }
+            (_, Some(_)) => return Err("only a list or map takes `of`".to_owned()),
+            (kind, None) => (Kind::One, kind),
         };
-        let item = Item::declared(&item_kind, raw.values)?;
-        let kind = match raw.kind.as_str() {
-            "list" => Kind::List(item),
-            "map" => Kind::Map(item),
-            _ => Kind::One(item),
-        };
+        let kind = of_kind(Item::declared(item, raw.values)?);
         if raw.description.trim().is_empty() {
             return Err("a setting needs a description".to_owned());
         }
@@ -299,33 +296,24 @@ impl Kind {
     /// flag that also takes `=true` or `=false`, and a list's or map's items
     /// repeat or are comma-separated.
     pub(crate) fn argument(&self, name: String) -> Arg {
-        let numeric = matches!(self.item(), Item::Integer | Item::Number);
+        let item = self.item().clone();
         let argument = Arg::new(name.clone())
             .long(name)
-            .allow_negative_numbers(numeric);
+            .allow_negative_numbers(matches!(item, Item::Integer | Item::Number))
+            .value_parser(item.value_parser())
+            .value_name(item.value_name());
         match self {
             Self::One(Item::Boolean) => argument
                 .num_args(0..=1)
                 .require_equals(true)
-                .default_missing_value("true")
-                .value_parser(Item::Boolean.value_parser())
-                .value_name("BOOLEAN"),
-            Self::One(item) => argument
-                .value_parser(item.value_parser())
-                .value_name(item.value_name()),
-            Self::List(item) => argument
+                .default_missing_value("true"),
+            Self::One(_) => argument,
+            Self::List(_) => argument.action(ArgAction::Append).value_delimiter(','),
+            Self::Map(_) => argument
                 .action(ArgAction::Append)
                 .value_delimiter(',')
-                .value_parser(item.value_parser())
-                .value_name(item.value_name()),
-            Self::Map(item) => {
-                let item = item.clone();
-                argument
-                    .action(ArgAction::Append)
-                    .value_delimiter(',')
-                    .value_parser(StringValueParser::new().try_map(move |text| pair(&item, &text)))
-                    .value_name("KEY=VALUE")
-            }
+                .value_parser(StringValueParser::new().try_map(move |text| pair(&item, &text)))
+                .value_name("KEY=VALUE"),
         }
     }
 }
@@ -341,19 +329,29 @@ fn pair(item: &Item, text: &str) -> Result<(String, Value), String> {
     Ok((key.to_owned(), item.parse(value)?))
 }
 
-/// `value`, which a setting's options and default take, as options write it.
-pub(crate) fn option_texts(value: &Value) -> Vec<String> {
+/// `value`, of a setting's kind, as an option writes it.
+pub(crate) fn option_text(value: &Value) -> String {
     let text = |value: &Value| match value {
         Value::String(text) => text.clone(),
         value => value.to_string(),
     };
     match value {
-        Value::Array(items) => items.iter().map(text).collect(),
+        Value::Array(items) => items.iter().map(text).collect::<Vec<_>>().join(","),
         Value::Object(entries) => entries
             .iter()
             .map(|(key, value)| format!("{key}={}", text(value)))
-            .collect(),
-        value => vec![text(value)],
+            .collect::<Vec<_>>()
+            .join(","),
+        value => text(value),
+    }
+}
+
+/// The name, without `--`, of the option that sets plugin `id`'s `key` for
+/// every platform, or for the platform `namespace`.
+pub(crate) fn option_name(id: &str, namespace: Option<&str>, key: &str) -> String {
+    match namespace {
+        Some(namespace) => format!("{id}-{namespace}-{key}"),
+        None => format!("{id}-{key}"),
     }
 }
 

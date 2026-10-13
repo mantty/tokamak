@@ -13,7 +13,8 @@ use serde_json::{Map, Value, json};
 use tokamak_cli::{Platform, PlatformPackManifest, PluginKeyKind, copy_file, is_valid_key};
 
 use super::packs::command_path;
-use super::plugin_settings::Setting;
+use super::paths::reset_path;
+use super::plugin_settings::{Setting, option_name};
 
 const MANIFEST: &str = "tokamak-plugin.json";
 
@@ -93,19 +94,19 @@ pub(crate) fn discover(project: &Path) -> Result<Vec<Plugin>> {
 /// variable name, that starts with another plugin's longer ID: `secure`'s
 /// `storage-x` and `--secure-storage-x`, which goes to `secure-storage`.
 fn reject_shared_option_names(plugins: &[Plugin]) -> Result<()> {
-    let prefixes = std::iter::once(String::new())
+    let namespaces = std::iter::once(None)
         .chain(
             Platform::ALL
                 .iter()
-                .map(|platform| format!("{}-", platform.namespace())),
+                .map(|platform| Some(platform.namespace())),
         )
         .collect::<Vec<_>>();
-    let prefixes = prefixes.as_slice();
+    let namespaces = namespaces.as_slice();
     let names = plugins.iter().flat_map(|plugin| {
         plugin.settings.keys().flat_map(move |key| {
-            prefixes
+            namespaces
                 .iter()
-                .map(move |prefix| (plugin, key, format!("{}-{prefix}{key}", plugin.id)))
+                .map(move |namespace| (plugin, key, option_name(&plugin.id, *namespace, key)))
         })
     });
     for (plugin, key, name) in names {
@@ -161,11 +162,9 @@ pub(crate) fn generate(
     Ok(generated)
 }
 
-/// `directory`, emptied or created, as UTF-8.
+/// `directory`, emptied, as UTF-8.
 fn empty_directory(directory: &Path) -> Result<String> {
-    if directory.exists() {
-        fs::remove_dir_all(directory)?;
-    }
+    reset_path(directory)?;
     fs::create_dir_all(directory)?;
     directory
         .to_str()

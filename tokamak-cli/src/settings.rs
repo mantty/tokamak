@@ -24,14 +24,13 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::parser::ValueSource;
 use clap::{Arg, ArgMatches, Args};
 use serde_json::{Map, Value};
 use tokamak_cli::{
     Platform, PlatformPackManifest, SHARED_PLATFORM_KEYS, VariableKind, is_valid_key,
 };
 
-use super::plugin_settings::{Kind, Setting, option_texts};
+use super::plugin_settings::{Kind, Setting, option_name, option_text};
 use super::plugins::Plugin;
 use super::tokamak_config::{TokamakConfig, app_name_problem, value_problem};
 
@@ -86,12 +85,12 @@ impl NamespacedOptions {
     }
 
     /// These options with the values `matches` holds for the options
-    /// [`plugin_arguments`] adds. A setting's default is not an option's
-    /// value: resolving the setting applies it last.
+    /// [`plugin_arguments`] adds.
     pub(crate) fn with_plugin_options(mut self, matches: &ArgMatches, plugins: &[Plugin]) -> Self {
         for (plugin, key, setting) in plugin_settings(plugins) {
-            for name in plugin_option_names(&plugin.id, key) {
-                if matches.value_source(&name) != Some(ValueSource::CommandLine) {
+            for namespace in option_namespaces() {
+                let name = option_name(&plugin.id, namespace, key);
+                if !matches.contains_id(&name) {
                     continue;
                 }
                 let value = setting.kind.option_value(matches, &name);
@@ -431,9 +430,12 @@ fn plugin_value(
     setting: &Setting,
 ) -> Result<Option<(Value, PathBuf)>> {
     let in_current_dir = |value: Value| Some((value, sources.current_dir.to_path_buf()));
-    let option = [format!("{id}-{namespace}-{key}"), format!("{id}-{key}")]
-        .iter()
-        .find_map(|name| sources.options.plugins.get(name));
+    let option = [Some(namespace), None].into_iter().find_map(|namespace| {
+        sources
+            .options
+            .plugins
+            .get(&option_name(id, namespace, key))
+    });
     if let Some(value) = option {
         return Ok(in_current_dir(value.clone()));
     }
@@ -539,40 +541,38 @@ fn plugin_settings(plugins: &[Plugin]) -> impl Iterator<Item = (&Plugin, &String
     })
 }
 
-/// The names, without `--`, of the options that set plugin `id`'s `key`: for
-/// every platform, then for each one.
-fn plugin_option_names(id: &str, key: &str) -> impl Iterator<Item = String> {
-    std::iter::once(format!("{id}-{key}"))
-        .chain(namespaces().map(move |namespace| format!("{id}-{namespace}-{key}")))
+/// The namespaces of a plugin setting's options: none, for every platform,
+/// then each platform's.
+fn option_namespaces() -> impl Iterator<Item = Option<&'static str>> {
+    std::iter::once(None).chain(namespaces().map(Some))
 }
 
 /// The options that set the plugins' settings, for clap to parse:
 /// `--<id>-<key>`, listed in help with its default, and each platform's
-/// `--<id>-<platform>-<key>`, hidden.
+/// `--<id>-<platform>-<key>`, hidden. Resolving a setting applies its default.
 pub(crate) fn plugin_arguments(plugins: &[Plugin]) -> Vec<Arg> {
-    let mut arguments = Vec::new();
-    for (plugin, key, setting) in plugin_settings(plugins) {
-        let id = &plugin.id;
-        let help = format!(
-            "{} [`{}`, `{id}.{key}`]",
-            setting.description,
-            environment_name(Some(id), key)
-        );
-        let shared = setting
-            .kind
-            .argument(format!("{id}-{key}"))
-            .help(help)
-            .help_heading("Plugin options");
-        arguments.push(match &setting.default {
-            Some(default) => shared.default_values(option_texts(default)),
-            None => shared,
-        });
-        arguments.extend(namespaces().map(|namespace| {
-            let name = format!("{id}-{namespace}-{key}");
-            setting.kind.argument(name).hide(true)
-        }));
-    }
-    arguments
+    plugin_settings(plugins)
+        .flat_map(|(plugin, key, setting)| {
+            let id = &plugin.id;
+            let default = setting
+                .default
+                .as_ref()
+                .map(|default| format!(" [default: {}]", option_text(default)))
+                .unwrap_or_default();
+            let help = format!(
+                "{}{default} [`{}`, `{id}.{key}`]",
+                setting.description,
+                environment_name(Some(id), key)
+            );
+            option_namespaces().map(move |namespace| {
+                let argument = setting.kind.argument(option_name(id, namespace, key));
+                match namespace {
+                    None => argument.help(help.clone()).help_heading("Plugin options"),
+                    Some(_) => argument.hide(true),
+                }
+            })
+        })
+        .collect()
 }
 
 /// `TOKAMAK_<PLATFORM>_<KEY>`, or `TOKAMAK_<KEY>` for a top-level key.
@@ -1207,6 +1207,52 @@ mod tests {
     }
 
     #[test]
+    fn applies_list_map_and_path_defaults_as_declared() -> Result<()> {
+        let plugins: Vec<Plugin> = vec![serde_json::from_value(json!({
+            "schemaVersion": 1,
+            "id": "kit",
+            "settings": {
+                "names": { "kind": "list", "of": "string", "description": "Names", "default": ["a,b"] },
+                "purposes": {
+                    "kind": "map",
+                    "of": "string",
+                    "description": "Purposes",
+                    "default": { "Run": "Tracks, counts" },
+                },
+                "folder": { "kind": "path", "description": "Folder", "default": "assets" },
+            },
+            "build": "build.mjs",
+        }))?];
+        let mut fixture = Fixture::new();
+        fixture.options = parsed_options(&[], &plugins)?;
+        let resolve = |fixture: &Fixture| -> Result<Value> {
+            let mut resolved =
+                fixture.with(|sources| resolve_plugins(sources, Platform::Ios, &plugins))?;
+            Ok(Value::Object(resolved.remove("kit").unwrap_or_default()))
+        };
+
+        assert_eq!(
+            resolve(&fixture)?,
+            json!({
+                "names": ["a,b"],
+                "purposes": { "Run": "Tracks, counts" },
+                "folder": path("/work", "assets"),
+            })
+        );
+        fixture.config = configured(&json!({}))?;
+        assert_eq!(
+            resolve(&fixture)?["folder"],
+            json!(path("/config", "assets"))
+        );
+        let help = clap::Command::new("tok")
+            .args(plugin_arguments(&plugins))
+            .render_help()
+            .to_string();
+        assert!(help.contains("[default: Run=Tracks, counts]"), "{help}");
+        Ok(())
+    }
+
+    #[test]
     fn plugin_settings_prefer_options_then_environment_then_configuration() -> Result<()> {
         let mut fixture = Fixture::new();
         fixture.config = configured(&json!({
@@ -1341,7 +1387,11 @@ mod tests {
             help.contains("[`TOKAMAK_ALERTS_TONE`, `alerts.tone`]"),
             "{help}"
         );
-        assert!(help.contains("[default: soft]"), "{help}");
+        assert!(
+            help.contains("Tone [default: soft] [`TOKAMAK_ALERTS_TONE`"),
+            "{help}"
+        );
+        assert!(help.contains("Loud [default: false]"), "{help}");
         assert!(help.contains("[possible values: soft, sharp]"), "{help}");
         assert!(!help.contains("--alerts-ios-tone"), "{help}");
         assert!(plugins_help(&alerts()?).is_some());
