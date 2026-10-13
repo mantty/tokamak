@@ -1,5 +1,7 @@
 package com.tokamak.plugins.location
 
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -72,13 +74,21 @@ internal class LocationUpdates(private val context: Context) {
     }
 
     /**
-     * Requests the running updates again when Android [removed] the request, or their `PendingIntent`
-     * no longer exists. Throws `SecurityException` when the app no longer has permission.
+     * Requests the running updates again when Android [removed] the request, when their
+     * `PendingIntent` no longer exists, or after a force stop, which removes the request on Android
+     * 14. Throws `SecurityException` when the app no longer has permission.
      */
     fun restore(removed: Boolean) {
         val options = options ?: return
-        if (removed || pendingIntent(PendingIntent.FLAG_NO_CREATE) == null) request(options)
+        if (removed || forceStopped() || pendingIntent(PendingIntent.FLAG_NO_CREATE) == null) request(options)
     }
+
+    /** Whether the app's process last ended by the user's force stop. */
+    private fun forceStopped(): Boolean =
+        context.getSystemService(ActivityManager::class.java)
+            .getHistoricalProcessExitReasons(null, 0, 1)
+            .firstOrNull()
+            ?.reason == ApplicationExitInfo.REASON_USER_REQUESTED
 
     private fun request(options: JSONObject) {
         val accuracy = options.optString("accuracy", "high")

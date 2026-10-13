@@ -43,7 +43,9 @@ function it returns is called.
 Both ask for in-use permission when the user has not answered. Off screen
 without background permission, the platforms stop locating the app, so
 `getCurrentPosition` rejects with `NotAllowedError` there. iOS still locates
-the app for a few seconds after it leaves the screen.
+the app for a few seconds after it leaves the screen. With approximate
+permission, Android gives an app a new position at most every 10 minutes, so
+`getCurrentPosition` can wait that long.
 
 ## Permission
 
