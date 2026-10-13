@@ -6,22 +6,28 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import { declarations, type Settings } from "../build/declarations.mjs";
+import { declarations, type Declarations, type Settings } from "../build/declarations.mjs";
 
 const defaults: Settings = { background: false, "background-updates": false, precision: "precise" };
 
 const WHEN_IN_USE = "This app uses your location when you request location features.";
 
+/** The declarations of `settings` on `platform`, which must have no problems. */
+function declared(platform: string, settings: Partial<Settings> = {}): Declarations {
+  const result = declarations(platform, { ...defaults, ...settings });
+  assert.ok("contents" in result, JSON.stringify(result));
+  return result;
+}
+
 /** The plist file `declarations` writes, with each key and value on one line. */
 function plistLines(platform: string, settings: Partial<Settings> = {}): string[] {
-  const { contents } = declarations(platform, { ...defaults, ...settings });
-  return (contents ?? "").split("\n").map((line) => line.trim());
+  return declared(platform, settings).contents.split("\n").map((line) => line.trim());
 }
 
 /** The permissions the Android manifest of `settings` requests. */
 function permissions(settings: Partial<Settings> = {}): string[] {
-  const { contents } = declarations("android", { ...defaults, ...settings });
-  return [...(contents ?? "").matchAll(/android\.permission\.(\w+)/g)].map(([, name]) => name);
+  const { contents } = declared("android", settings);
+  return [...contents.matchAll(/android\.permission\.(\w+)/g)].map(([, name]) => name);
 }
 
 void test("declares in-use location on iOS by default", () => {
@@ -74,6 +80,16 @@ void test("declares what each iOS setting asks for", () => {
   ]);
 });
 
+void test("declares the location background mode and Always permission separately on iOS", () => {
+  const updates = plistLines("ios", { "background-updates": true });
+  const background = plistLines("ios", { background: true });
+
+  assert.ok(updates.includes("<key>UIBackgroundModes</key>"));
+  assert.ok(!updates.includes("<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>"));
+  assert.ok(!background.includes("<key>UIBackgroundModes</key>"));
+  assert.ok(!plistLines("ios", { "accuracy-purposes": {} }).includes("<key>NSLocationTemporaryUsageDescriptionDictionary</key>"));
+});
+
 void test("uses a generic Always reason without always-description", () => {
   assert.ok(
     plistLines("ios", { background: true }).includes(
@@ -83,14 +99,14 @@ void test("uses a generic Always reason without always-description", () => {
 });
 
 void test("declares the macOS usage key and the iOS keys it names with the same reason", () => {
-  const { contents, notices } = declarations("macos", {
-    ...defaults,
+  const { contents, notices } = declared("macos", {
     background: true,
     "background-updates": true,
     "when-in-use-description": "Finds you",
     "always-description": "Unused on macOS",
+    "accuracy-purposes": { Directions: "Shows directions" },
   });
-  const lines = (contents ?? "").split("\n").map((line) => line.trim());
+  const lines = contents.split("\n").map((line) => line.trim());
 
   assert.deepEqual(lines.slice(3, -2), [
     "<dict>",
@@ -100,18 +116,23 @@ void test("declares the macOS usage key and the iOS keys it names with the same 
     "<string>Finds you</string>",
     "<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>",
     "<string>Finds you</string>",
+    "<key>NSLocationTemporaryUsageDescriptionDictionary</key>",
+    "<dict>",
+    "<key>Directions</key>",
+    "<string>Shows directions</string>",
+    "</dict>",
     "</dict>",
   ]);
   assert.deepEqual(notices, []);
 });
 
 void test("notices that macOS cannot declare approximate location", () => {
-  const { notices, contents } = declarations("macos", { ...defaults, precision: "approximate" });
+  const { notices, contents } = declared("macos", { precision: "approximate" });
 
   assert.deepEqual(notices, [
     "macOS has no declaration of approximate location, so precision approximate applies to iOS and Android only",
   ]);
-  assert.ok(!contents?.includes("NSLocationDefaultAccuracyReduced"));
+  assert.ok(!contents.includes("NSLocationDefaultAccuracyReduced"));
 });
 
 void test("declares Android permissions for each setting", () => {
@@ -130,24 +151,35 @@ void test("declares Android permissions for each setting", () => {
     "FOREGROUND_SERVICE",
     "FOREGROUND_SERVICE_LOCATION",
   ]);
-  assert.equal(declarations("android", defaults).key, "manifest");
+  assert.deepEqual(permissions({ background: true, "background-updates": true, precision: "approximate" }), [
+    "ACCESS_COARSE_LOCATION",
+    "RECEIVE_BOOT_COMPLETED",
+    "ACCESS_BACKGROUND_LOCATION",
+    "FOREGROUND_SERVICE",
+    "FOREGROUND_SERVICE_LOCATION",
+  ]);
+  assert.equal(
+    declared("android", { "when-in-use-description": "Finds you", "accuracy-purposes": { Run: "Runs" } }).contents,
+    declared("android").contents,
+  );
+  assert.equal(declared("android").key, "manifest");
 });
 
 void test("declares the Android foreground service only with background-updates", () => {
-  const declared = (settings: Partial<Settings>) => declarations("android", { ...defaults, ...settings }).contents ?? "";
+  const manifest = (settings: Partial<Settings>) => declared("android", settings).contents;
 
   assert.match(
-    declared({ "background-updates": true }),
+    manifest({ "background-updates": true }),
     /<service android:name="com\.tokamak\.plugins\.location\.TokamakLocationService" android:exported="false"\s+android:foregroundServiceType="location" \/>/,
   );
-  assert.doesNotMatch(declared({}), /TokamakLocationService/);
+  assert.doesNotMatch(manifest({}), /TokamakLocationService/);
 });
 
 void test("declares the Android receivers of updates, regions and restarts", () => {
-  const { contents } = declarations("android", defaults);
+  const { contents } = declared("android");
 
-  assert.match(contents ?? "", /<receiver android:name="com\.tokamak\.plugins\.location\.TokamakLocationReceiver" android:exported="false" \/>/);
-  assert.match(contents ?? "", /TokamakLocationBootReceiver[\s\S]*BOOT_COMPLETED[\s\S]*MY_PACKAGE_REPLACED/);
+  assert.match(contents, /<receiver android:name="com\.tokamak\.plugins\.location\.TokamakLocationReceiver" android:exported="false" \/>/);
+  assert.match(contents, /TokamakLocationBootReceiver[\s\S]*BOOT_COMPLETED[\s\S]*MY_PACKAGE_REPLACED/);
 });
 
 void test("rejects always-description without background", () => {

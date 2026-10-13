@@ -68,7 +68,7 @@ final class TokamakLocationUpdates {
       } catch {
         if !Task.isCancelled {
           self?.events.fail(
-            TokamakPluginError(name: "NotReadableError", message: error.localizedDescription))
+            .locationUnavailable(error.localizedDescription))
         }
       }
     }

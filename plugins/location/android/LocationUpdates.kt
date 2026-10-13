@@ -11,6 +11,7 @@ private const val PREFERENCES = "tokamak.location"
 
 /** The JSON of the running updates' options, as `startUpdates` received them. */
 private const val UPDATES = "updates"
+private const val UPDATES_ACTION = "com.tokamak.plugins.location.UPDATES"
 private const val DEFAULT_INTERVAL_MILLIS = 10_000L
 
 private val QUALITIES =
@@ -106,8 +107,4 @@ internal class LocationUpdates(private val context: Context) {
             Intent(context, TokamakLocationReceiver::class.java).setAction(UPDATES_ACTION),
             flags or PendingIntent.FLAG_MUTABLE,
         )
-
-    companion object {
-        const val UPDATES_ACTION = "com.tokamak.plugins.location.UPDATES"
-    }
 }

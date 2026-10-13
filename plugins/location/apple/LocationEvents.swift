@@ -19,7 +19,8 @@ final class TokamakLocationEvents {
   private var positions: [[String: Any]] = []
   private var stationary: Bool?
   private var updating = false
-  /// The messages of the problems updates, or each region by id, reported last.
+  /// The messages of the problems last reported, by region id, or nil for
+  /// updates.
   private var problems: [String?: Set<String>] = [:]
 
   init(host: TokamakHost) {
@@ -135,5 +136,12 @@ final class TokamakLocationEvents {
 
   private static func milliseconds(_ date: Date) -> Double {
     date.timeIntervalSince1970 * 1000
+  }
+}
+
+extension TokamakPluginError {
+  /// Location could not be found, as `message` says.
+  static func locationUnavailable(_ message: String) -> Self {
+    Self(name: "NotReadableError", message: message)
   }
 }

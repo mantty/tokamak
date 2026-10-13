@@ -15,7 +15,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
-import android.util.Log
 import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
@@ -26,11 +25,6 @@ import com.tokamak.runtime.requireString
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** How long the Worker's listeners have for an event, within the time Android gives a broadcast. */
-private const val EVENT_DEADLINE_MILLIS = 8_000L
-
-/** The listener methods, which receive the Worker's events. */
-private val LISTENERS = setOf("onLocationUpdate", "onRegionTransition", "onVisit", "onLocationError")
 
 class TokamakLocationPlugin(
     private val host: TokamakHost,
@@ -56,13 +50,7 @@ class TokamakLocationPlugin(
 
     private val updates = LocationUpdates(context)
     private val regions = LocationRegions(context)
-    private val listeners = mutableMapOf<String, MutableMap<Int, TokamakPluginReply>>()
-    private var nextListener = 0
-
-    /** Positions that arrived while the Worker handled the previous update, and the broadcasts to finish once it has them. */
-    private val positions = mutableListOf<JSONObject>()
-    private val finishes = mutableListOf<() -> Unit>()
-    private var updating = false
+    private val events = LocationEvents(host)
 
     /** Whether the app's manifest declares the foreground service, as the `background-updates` build setting does. */
     private val declaresService: Boolean by lazy {
@@ -112,11 +100,7 @@ class TokamakLocationPlugin(
         arguments: Any?,
         reply: TokamakPluginReply,
     ): () -> Unit {
-        if (method in LISTENERS) {
-            val key = nextListener++
-            listeners.getOrPut(method, ::mutableMapOf)[key] = reply
-            return { listeners[method]?.remove(key) }
-        }
+        events.listen(method, reply)?.let { return it }
         if (method != "watchPosition") return super.subscribe(method, arguments, reply)
         var cancelled = false
         var stop = {}
@@ -227,8 +211,8 @@ class TokamakLocationPlugin(
         runCatching {
             updates.restore(updatesRemoved)
             if (host.isInForeground || (updatesRemoved && granted(BACKGROUND))) updates.startService()
-        }.onFailure { fail(locationError(it)) }
-        runCatching { regions.restore(regionsRemoved) }.onFailure { fail(locationError(it)) }
+        }.onFailure { events.fail(locationError(it)) }
+        runCatching { regions.restore(regionsRemoved) }.onFailure { events.fail(locationError(it)) }
     }
 
     /** Delivers the updates or region transition [intent] carries, then calls [finish]. Call it on the main thread. */
@@ -236,13 +220,11 @@ class TokamakLocationPlugin(
         if (intent.action == LocationRegions.REGION_ACTION) return transition(intent, finish)
         if (intent.hasExtra(LocationManager.KEY_PROVIDER_ENABLED)) {
             if (intent.getBooleanExtra(LocationManager.KEY_PROVIDER_ENABLED, true)) return finish()
-            return fail(TokamakPluginError("NotReadableError", "The location provider was turned off"), done = finish)
+            return events.fail(TokamakPluginError("NotReadableError", "The location provider was turned off"), finish)
         }
         val received = locations(intent).map(::position)
         if (received.isEmpty()) return finish()
-        positions += received
-        finishes += finish
-        if (!updating) sendUpdate()
+        events.update(received, finish)
     }
 
     /** Delivers a region's entry or exit, when the region reports it. */
@@ -251,48 +233,13 @@ class TokamakLocationPlugin(
         val entered = intent.getBooleanExtra(LocationManager.KEY_PROXIMITY_ENTERING, false)
         val region = regions.get(id) ?: return finish()
         if (!region.optBoolean(if (entered) "onEntry" else "onExit", true)) return finish()
-        val event =
-            JSONObject()
-                .put("id", id)
-                .put("transition", if (entered) "enter" else "exit")
-                .put("timestamp", System.currentTimeMillis())
-        send("onRegionTransition", "region", event, finish)
+        events.transition(id, entered, finish)
     }
 
     @Suppress("DEPRECATION")
     private fun locations(intent: Intent): List<Location> =
         intent.getParcelableArrayExtra(LocationManager.KEY_LOCATIONS)?.filterIsInstance<Location>()
             ?: listOfNotNull(intent.getParcelableExtra(LocationManager.KEY_LOCATION_CHANGED))
-
-    /** Sends the waiting positions as one update, then the positions that arrive meanwhile as the next. */
-    private fun sendUpdate() {
-        updating = positions.isNotEmpty()
-        if (!updating) return
-        val event = JSONObject().put("positions", JSONArray(positions.toList()))
-        val delivered = finishes.toList()
-        positions.clear()
-        finishes.clear()
-        send("onLocationUpdate", "update", event) {
-            delivered.forEach { it() }
-            sendUpdate()
-        }
-    }
-
-    /** Reports a background service's failure, which concerns the region [id] when given. */
-    private fun fail(error: TokamakPluginError, id: String? = null, done: () -> Unit = {}) {
-        val event = JSONObject().put("name", error.errorName).put("message", error.message).put("id", id)
-        send("onLocationError", "error", event, done)
-    }
-
-    /** Delivers [event] to the page's [method] listeners and the Worker's [name] listeners, then calls [done]. */
-    private fun send(method: String, name: String, event: JSONObject, done: () -> Unit = {}) {
-        listeners[method].orEmpty().values.toList().forEach { it(Result.success(event)) }
-        Thread {
-            runCatching { host.emit(name, event.toString(), EVENT_DEADLINE_MILLIS) }
-                .onFailure { Log.w("tokamak", "location $name failed: ${it.message}") }
-            context.mainExecutor.execute(done)
-        }.start()
-    }
 
     private fun openSettings(reply: TokamakPluginReply) {
         val app = Uri.fromParts("package", context.packageName, null)

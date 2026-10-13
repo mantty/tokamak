@@ -95,6 +95,33 @@ void test("subscribes each listener to its native events until removed", () => {
   }
 });
 
+void test("passes native listener failures to each listener's error callback", () => {
+  const native = connectNative();
+  const listeners = [
+    (error: (failure: DOMException) => void) => location.onLocationUpdate(() => assert.fail(), error),
+    (error: (failure: DOMException) => void) => location.onRegionTransition(() => assert.fail(), error),
+    (error: (failure: DOMException) => void) => location.onVisit(() => assert.fail(), error),
+    (error: (failure: DOMException) => void) => location.onLocationError(() => assert.fail(), error),
+  ];
+  for (const listen of listeners) {
+    const received: string[] = [];
+    listen((failure) => received.push(failure.name));
+
+    native.respond({ error: { name: "NotSupportedError", message: "Not here" } });
+
+    assert.deepEqual(received, ["NotSupportedError"]);
+  }
+});
+
+void test("checks update options before the web rejects them", async () => {
+  for (const options of [null, { foregroundService: null }, { interval: -1 }]) {
+    await assert.rejects(
+      location.startUpdates(options as unknown as UpdateOptions),
+      (error: unknown) => error instanceof TypeError,
+    );
+  }
+});
+
 void test("rejects updates on the web, whose listeners receive nothing", async () => {
   const unsupported = (error: unknown) => error instanceof DOMException && error.name === "NotSupportedError";
 

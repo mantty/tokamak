@@ -36,6 +36,8 @@ void test("rejects regions it cannot monitor", async () => {
     [{ ...home, latitude: 91 }, "region.latitude must be a number from -90 to 90"],
     [{ ...home, longitude: -181 }, "region.longitude must be a number from -180 to 180"],
     [{ ...home, radius: 0 }, "region.radius must be a finite number greater than 0"],
+    [{ ...home, radius: Infinity }, "region.radius must be a finite number greater than 0"],
+    [{ ...home, latitude: NaN }, "region.latitude must be a number from -90 to 90"],
     [{ ...home, onEntry: "yes" }, "region.onEntry must be a boolean"],
     [{ ...home, onEntry: false, onExit: false }, "region must report entry, exit or both"],
     [{ latitude: 1, longitude: 2, radius: 3 }, "region.id must be a non-empty string"],

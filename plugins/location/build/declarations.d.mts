@@ -8,7 +8,12 @@ export interface Settings {
   "accuracy-purposes"?: Record<string, string>;
 }
 
-export function declarations(
-  platform: string,
-  settings: Settings,
-): { key?: string; name?: string; contents?: string; notices?: string[]; problems?: string[] };
+/** The file that declares what the settings ask for, the plugin section key naming it, and notices. */
+export interface Declarations {
+  key: "plist" | "manifest";
+  name: string;
+  contents: string;
+  notices: string[];
+}
+
+export function declarations(platform: string, settings: Settings): Declarations | { problems: string[] };

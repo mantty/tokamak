@@ -65,6 +65,13 @@ void test("reports the web page's permission from the Permissions API", async ()
   assert.deepEqual(await location.permission(), { inUse: "granted", background: "denied", precision: "precise" });
 });
 
+void test("checks a permission request before the web rejects it", async () => {
+  await assert.rejects(
+    location.requestPermission({ background: "yes" } as unknown as PermissionRequest),
+    (error: unknown) => error instanceof TypeError && error.message === "options.background must be a boolean",
+  );
+});
+
 void test("rejects what only native apps have on the web", async () => {
   Reflect.deleteProperty(globalThis, "navigator");
   const unsupported = (error: unknown) => error instanceof DOMException && error.name === "NotSupportedError";

@@ -33,7 +33,7 @@ final class TokamakLocationRegions {
         }
       } catch {
         self?.events.fail(
-          TokamakPluginError(name: "NotReadableError", message: error.localizedDescription))
+          .locationUnavailable(error.localizedDescription))
       }
     }
   }
@@ -81,6 +81,7 @@ final class TokamakLocationRegions {
   /// The monitored regions, each with whether the device is inside it.
   func all() async -> [[String: Any]] {
     let monitor = await monitor.value
+    let regions = regions
     var all: [[String: Any]] = []
     for id in await monitor.identifiers {
       guard var region = regions[id] else { continue }

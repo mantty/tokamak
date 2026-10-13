@@ -25,23 +25,22 @@ export function declarations(platform, settings) {
 /** The Info.plist keys of `settings` on the Apple `platform`. */
 function appleKeys(platform, settings) {
   const whenInUse = settings["when-in-use-description"] ?? WHEN_IN_USE;
-  // macOS reads only NSLocationUsageDescription; its SDK headers still name the iOS keys.
-  const keys =
-    platform === "macos"
-      ? {
-          NSLocationUsageDescription: whenInUse,
-          NSLocationWhenInUseUsageDescription: whenInUse,
-          NSLocationAlwaysAndWhenInUseUsageDescription: whenInUse,
-        }
-      : { NSLocationWhenInUseUsageDescription: whenInUse };
-  if (platform === "ios" && settings.background) {
-    keys.NSLocationAlwaysAndWhenInUseUsageDescription = settings["always-description"] ?? ALWAYS;
-  }
-  if (platform === "ios" && settings["background-updates"]) keys.UIBackgroundModes = ["location"];
-  if (platform === "ios" && settings.precision === "approximate") keys.NSLocationDefaultAccuracyReduced = true;
   const purposes = settings["accuracy-purposes"] ?? {};
-  if (Object.keys(purposes).length > 0) keys.NSLocationTemporaryUsageDescriptionDictionary = purposes;
-  return keys;
+  const temporary = Object.keys(purposes).length > 0 ? { NSLocationTemporaryUsageDescriptionDictionary: purposes } : {};
+  if (platform === "macos") {
+    // macOS reads NSLocationUsageDescription, and its SDK headers name the iOS keys.
+    return {
+      NSLocationUsageDescription: whenInUse,
+      NSLocationWhenInUseUsageDescription: whenInUse,
+      NSLocationAlwaysAndWhenInUseUsageDescription: whenInUse,
+      ...temporary,
+    };
+  }
+  const keys = { NSLocationWhenInUseUsageDescription: whenInUse };
+  if (settings.background) keys.NSLocationAlwaysAndWhenInUseUsageDescription = settings["always-description"] ?? ALWAYS;
+  if (settings["background-updates"]) keys.UIBackgroundModes = ["location"];
+  if (settings.precision === "approximate") keys.NSLocationDefaultAccuracyReduced = true;
+  return { ...keys, ...temporary };
 }
 
 /** The Android manifest of `settings`. */

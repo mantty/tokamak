@@ -55,6 +55,7 @@
     "android": {
       "class": "com.tokamak.plugins.location.TokamakLocationPlugin",
       "sources": [
+        "android/LocationEvents.kt",
         "android/LocationPlugin.kt",
         "android/LocationReceiver.kt",
         "android/LocationRegions.kt",

@@ -45,8 +45,8 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
 
   private let host: TokamakHost
   private let defaults = UserDefaults.standard
-  /// Updates watchers, and asks for permission.
-  private let updates = CLLocationManager()
+  /// Locates for watchers, and asks for permission.
+  private let watching = CLLocationManager()
   /// Takes single fixes for current position requests, apart from watching.
   private let fixes = CLLocationManager()
   /// Delivers the significant changes and visits `setup` names.
@@ -55,7 +55,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private var watchers: [UUID: TokamakPluginReply] = [:]
   private var prompts: [UUID: Prompt] = [:]
   private let events: TokamakLocationEvents
-  private let liveUpdates: TokamakLocationUpdates
+  private let updates: TokamakLocationUpdates
   private let regions: TokamakLocationRegions
   #if os(iOS)
     /// The `CLServiceSession` iOS 18 needs for updates and regions to reach an
@@ -67,10 +67,10 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   init(host: TokamakHost) {
     self.host = host
     events = TokamakLocationEvents(host: host)
-    liveUpdates = TokamakLocationUpdates(events: events)
+    updates = TokamakLocationUpdates(events: events)
     regions = TokamakLocationRegions(events: events)
     super.init()
-    for manager in [updates, fixes] {
+    for manager in [watching, fixes] {
       manager.delegate = self
       manager.desiredAccuracy = kCLLocationAccuracyBest
     }
@@ -85,7 +85,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
         self, selector: #selector(didBecomeActive),
         name: UIApplication.didBecomeActiveNotification, object: nil)
     #endif
-    liveUpdates.resume()
+    updates.resume()
   }
 
   func call(
@@ -127,16 +127,16 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
         // A new background activity session starts only on screen.
         try host.requireUI()
         try requirePermission()
-        try liveUpdates.start(options)
+        try updates.start(options)
         reply(.success(nil))
       case "stopUpdates":
-        liveUpdates.stop()
+        updates.stop()
         reply(.success(nil))
       case "getUpdates":
-        reply(.success(liveUpdates.options))
+        reply(.success(updates.options))
       case "addRegion":
         try requirePermission()
-        guard updates.accuracyAuthorization == .fullAccuracy else {
+        guard watching.accuracyAuthorization == .fullAccuracy else {
           throw TokamakPluginError(
             name: "NotAllowedError", message: "Regions need precise location")
         }
@@ -183,17 +183,18 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     return { [weak self] in
       self?.watchers.removeValue(forKey: subscription)
       if self?.watchers.isEmpty == true {
-        self?.updates.stopUpdatingLocation()
+        self?.watching.stopUpdatingLocation()
       }
     }
   }
 
   /// Also called when each manager is created, before anything asks for a
-  /// position. Both managers report the app's one authorization.
+  /// position. Every manager reports the app's one authorization, which
+  /// `watching`'s calls handle.
   func locationManagerDidChangeAuthorization(
     _ manager: CLLocationManager
   ) {
-    guard manager === updates else { return }
+    guard manager === watching else { return }
     holdAlwaysSession()
     guard manager.authorizationStatus != .notDetermined else { return }
     answer(Array(prompts.keys))
@@ -221,16 +222,14 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     _ manager: CLLocationManager,
     didFailWithError error: Error
   ) {
-    guard (error as NSError).code == CLError.Code.locationUnknown.rawValue else {
-      if manager === monitoring {
-        events.fail(locationError(error))
-      } else {
-        deliver(.failure(locationError(error)), from: manager)
+    if (error as NSError).code == CLError.Code.locationUnknown.rawValue {
+      if manager === fixes && !current.isEmpty {
+        fixes.requestLocation()
       }
-      return
-    }
-    if manager === fixes && !current.isEmpty {
-      fixes.requestLocation()
+    } else if manager === monitoring {
+      events.fail(locationError(error))
+    } else {
+      deliver(.failure(locationError(error)), from: manager)
     }
   }
 
@@ -264,17 +263,17 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
 
   private func start(servicesEnabled: Bool) {
     guard servicesEnabled else {
-      fail(unavailable("Location services are disabled"))
+      fail(.locationUnavailable("Location services are disabled"))
       return
     }
-    let status = updates.authorizationStatus
+    let status = watching.authorizationStatus
     guard status == .notDetermined else {
       serve(status)
       return
     }
     do throws(TokamakPluginError) {
       try host.requireUI()
-      updates.requestWhenInUseAuthorization()
+      watching.requestWhenInUseAuthorization()
     } catch {
       fail(error)
     }
@@ -286,7 +285,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     switch status {
     case .authorizedAlways, .authorizedWhenInUse:
       if !watchers.isEmpty {
-        updates.startUpdatingLocation()
+        watching.startUpdatingLocation()
       }
       locate()
     case .denied, .restricted:
@@ -331,7 +330,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
 
   private func fail(_ error: TokamakPluginError) {
     deliver(.failure(error), from: fixes)
-    deliver(.failure(error), from: updates)
+    deliver(.failure(error), from: watching)
   }
 
   private func finish(_ key: UUID, _ result: Result<Any?, TokamakPluginError>) {
@@ -345,11 +344,11 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
 
   /// The app's in-use and background permission, and the precision it gets.
   private func permission() -> [String: Any] {
-    let status = updates.authorizationStatus
+    let status = watching.authorizationStatus
     return [
       "inUse": Self.permission(status),
       "background": backgroundPermission(status),
-      "precision": updates.accuracyAuthorization == .reducedAccuracy ? "approximate" : "precise",
+      "precision": watching.accuracyAuthorization == .reducedAccuracy ? "approximate" : "precise",
     ]
   }
 
@@ -368,9 +367,13 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     #endif
   }
 
+  private var hasPermission: Bool {
+    Self.permission(watching.authorizationStatus) == "granted"
+  }
+
   /// Throws `NotAllowedError` unless the app has location permission.
   private func requirePermission() throws(TokamakPluginError) {
-    guard Self.permission(updates.authorizationStatus) == "granted" else {
+    guard hasPermission else {
       throw TokamakPluginError(
         name: "NotAllowedError", message: "Location permission has not been granted")
     }
@@ -379,7 +382,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private func holdAlwaysSession() {
     #if os(iOS)
       guard #available(iOS 18, *) else { return }
-      let always = updates.authorizationStatus == .authorizedAlways
+      let always = watching.authorizationStatus == .authorizedAlways
       if always && alwaysSession == nil {
         alwaysSession = CLServiceSession(authorization: .always)
       } else if !always {
@@ -418,19 +421,19 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
         "Background location needs the location plugin's background build setting")
     }
     let prompt = Prompt(purpose: try Self.purpose(options), reply: reply)
-    let status = updates.authorizationStatus
+    let status = watching.authorizationStatus
     let upgrades = always && canUpgradeToAlways(status)
     guard status == .notDetermined || upgrades else {
-      finish(prompt)
+      respond(to: prompt)
       return
     }
     try host.requireUI()
     prompts[UUID()] = prompt
     if always {
       defaults.set(true, forKey: askedForAlwaysKey)
-      updates.requestAlwaysAuthorization()
+      watching.requestAlwaysAuthorization()
     } else {
-      updates.requestWhenInUseAuthorization()
+      watching.requestWhenInUseAuthorization()
     }
   }
 
@@ -464,17 +467,16 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private func answer(_ keys: [UUID]) {
     for key in keys {
       if let prompt = prompts.removeValue(forKey: key) {
-        finish(prompt)
+        respond(to: prompt)
       }
     }
   }
 
   /// Replies to `prompt` with the app's permission, first asking for temporary
   /// precise location for its purpose when the app has approximate location.
-  private func finish(_ prompt: Prompt) {
-    guard let purpose = prompt.purpose,
-      Self.permission(updates.authorizationStatus) == "granted",
-      updates.accuracyAuthorization == .reducedAccuracy
+  private func respond(to prompt: Prompt) {
+    guard let purpose = prompt.purpose, hasPermission,
+      watching.accuracyAuthorization == .reducedAccuracy
     else {
       prompt.reply(.success(permission()))
       return
@@ -485,7 +487,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
       prompt.reply(.failure(error))
       return
     }
-    updates.requestTemporaryFullAccuracyAuthorization(withPurposeKey: purpose) { _ in
+    watching.requestTemporaryFullAccuracyAuthorization(withPurposeKey: purpose) { _ in
       DispatchQueue.main.async { prompt.reply(.success(self.permission())) }
     }
   }
@@ -509,11 +511,6 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     if (error as NSError).code == CLError.Code.denied.rawValue {
       return Self.permissionDenied
     }
-    return unavailable(error.localizedDescription)
+    return .locationUnavailable(error.localizedDescription)
   }
-
-  private func unavailable(_ message: String) -> TokamakPluginError {
-    TokamakPluginError(name: "NotReadableError", message: message)
-  }
-
 }
