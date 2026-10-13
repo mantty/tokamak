@@ -700,7 +700,8 @@ describes its API.
 
 A plugin can also run Worker code through [events](#events), such as
 `onPush` from `@tokamakdev/plugin-notifications/events` for a data-only push
-notification.
+notification, or `onLocationUpdate` and `onRegionTransition` from
+`@tokamakdev/plugin-location/events` for locations that arrive off screen.
 
 `tok build android` produces a release APK, which R8 shrinks by removing
 unused code; it keeps every class and member name. The keystore settings sign

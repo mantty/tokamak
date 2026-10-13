@@ -138,10 +138,23 @@ unless the app's plist sets that key path.
 
 - `getCurrentPosition()`
 - `watchPosition(next, error)`, returning a stop function
+- `permission()`, `requestPermission()` for in-use, background and precise
+  location, `servicesEnabled()` and `openSettings()`
+- continuous updates (`startUpdates`, `stopUpdates`, `getUpdates`), circular
+  regions (`addRegion`, `getRegions`, `removeRegion`), and on Apple platforms
+  significant changes and visits (`setup`), which reach the Worker's
+  `onLocationUpdate`, `onRegionTransition`, `onVisit` and `onLocationError`
+  events and the plugin's listeners, including when the system launches the
+  app for them
 
 Web uses `navigator.geolocation`. macOS, iOS, and iOS Simulator use
-`CoreLocation`. Android uses `LocationManager`. Windows uses WebView2's
-location implementation, with consent restricted to the app origin.
+`CoreLocation`: `CLLocationUpdate.liveUpdates` for updates and `CLMonitor` for
+regions. Android uses `LocationManager`, with `PendingIntent` updates and
+proximity alerts that start the app's process, and a location foreground
+service. Windows uses WebView2's location implementation, with consent
+restricted to the app origin. The plugin's build settings declare background
+location, updates off screen and approximate precision; its build script
+writes the Info.plist and Android manifest from them.
 
 `@tokamakdev/plugin-secure-storage` stores device-only strings by name, in the
 Keychain on Apple platforms and with per-value Android Keystore keys on

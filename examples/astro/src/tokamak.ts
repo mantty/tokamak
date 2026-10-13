@@ -1,4 +1,10 @@
 import { location } from "@tokamakdev/plugin-location";
+import {
+  onLocationError,
+  onLocationUpdate,
+  onRegionTransition,
+  onVisit,
+} from "@tokamakdev/plugin-location/events";
 import { notifications } from "@tokamakdev/plugin-notifications";
 import {
   onNotificationDismissed,
@@ -17,6 +23,12 @@ function record(env: Cloudflare.Env, entry: string): Promise<void> {
 onStart(async (event, env, ctx) => {
   ctx.waitUntil(record(env, event.foreground ? "start in the foreground" : "start in the background"));
   ctx.waitUntil(setUpNotifications(env));
+  // Apple platforms then relaunch the app for significant changes and visits; Android ignores it.
+  ctx.waitUntil(
+    location.setup({ significantChanges: true, visits: true }).catch((error: DOMException) =>
+      record(env, `location setup failed: ${error.name}`),
+    ),
+  );
   if ((await getLifecycleStage()) !== "foreground") return;
   const stop = location.watchPosition(
     ({ coords }) => {
@@ -35,6 +47,21 @@ onResume((_event, env, ctx) => {
 onSuspend((_event, env, ctx) => {
   ctx.waitUntil(record(env, "suspend"));
 });
+
+// Records the updates, region transitions, visits and failures that reach the Worker, including
+// those the system launches the app for.
+onLocationUpdate(({ positions, stationary }, env) => {
+  const last = positions.at(-1)?.coords;
+  const at = last ? ` at ${last.latitude.toFixed(3)}, ${last.longitude.toFixed(3)}` : "";
+  return record(env, `location update of ${String(positions.length)}${at}${stationary ? ", stationary" : ""}`);
+});
+onRegionTransition(({ id, transition }, env) => record(env, `region ${id}: ${transition}`));
+onVisit(({ latitude, longitude, departure }, env) =>
+  record(env, `visit at ${latitude.toFixed(3)}, ${longitude.toFixed(3)}${departure === null ? "" : ", departed"}`),
+);
+onLocationError(({ name, message, id }, env) =>
+  record(env, `location failure${id === undefined ? "" : ` of ${id}`}: ${name}: ${message}`),
+);
 
 // Records each data-only push message, and shows a notification of its data.
 onPush(async (message, env) => {

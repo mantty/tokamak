@@ -4,12 +4,27 @@ import PluginCard from "./PluginCard.astro";
 
 <PluginCard title="Location" log="location-log">
   <p class="text-indigo-300 mb-4">
-    Asks for location while the app is in use. When the app starts on screen,
-    src/tokamak.ts also records where the Worker first places the device.
+    Positions on request, and updates and regions that continue off screen.
+    src/tokamak.ts records where the Worker first places the device, sets up
+    significant changes and visits on Apple platforms, and records every
+    update, region transition, visit and failure on the Events page. This card
+    logs them while it is open.
   </p>
   <div class="flex flex-wrap gap-3">
     <button id="location-current" class="button">Current position</button>
     <button id="location-watch" class="button">Watch position</button>
+    <button id="location-permission" class="button">Permission</button>
+    <button id="location-request" class="button">Request permission</button>
+    <button id="location-background" class="button">Request background</button>
+    <button id="location-precise" class="button">Request precise</button>
+    <button id="location-services" class="button">Services enabled</button>
+    <button id="location-settings" class="button">Open settings</button>
+    <button id="location-start" class="button">Start updates</button>
+    <button id="location-stop" class="button">Stop updates</button>
+    <button id="location-updates" class="button">Running updates</button>
+    <button id="location-add-region" class="button">Add a region here</button>
+    <button id="location-regions" class="button">Regions</button>
+    <button id="location-remove-region" class="button">Remove the region</button>
   </div>
 </PluginCard>
 
@@ -18,6 +33,7 @@ import PluginCard from "./PluginCard.astro";
   import { describe, logTo, onClick } from "../scripts/plugin-log";
 
   const log = logTo("location-log");
+  const reportError = (error: DOMException) => log(describe(error));
   const watch = document.getElementById("location-watch")!;
   let stopWatching: (() => void) | undefined;
 
@@ -51,4 +67,51 @@ import PluginCard from "./PluginCard.astro";
     );
     watch.textContent = "Stop watching";
   });
+
+  onClick(log, "location-permission", () => location.permission());
+  onClick(log, "location-request", () => location.requestPermission());
+  onClick(log, "location-background", () => location.requestPermission({ background: true }));
+  // astro.config.mjs gives the reason for the Directions purpose.
+  onClick(log, "location-precise", () =>
+    location.requestPermission({ precision: "precise", purpose: "Directions" }),
+  );
+  onClick(log, "location-services", () => location.servicesEnabled());
+  onClick(log, "location-settings", () => location.openSettings());
+  // Apple platforms take the activity, and Android the rest.
+  onClick(log, "location-start", () =>
+    location.startUpdates({
+      activity: "fitness",
+      accuracy: "high",
+      distance: 10,
+      interval: 5_000,
+      foregroundService: {
+        title: "Recording where you go",
+        body: "Tap to open the example",
+        channel: "Location updates",
+      },
+    }),
+  );
+  onClick(log, "location-stop", () => location.stopUpdates());
+  onClick(log, "location-updates", () => location.getUpdates());
+  onClick(log, "location-add-region", async () => {
+    const { coords } = await location.getCurrentPosition({ maximumAge: 60_000, timeout: 10_000 });
+    const { latitude, longitude } = coords;
+    await location.addRegion({ id: "example", latitude, longitude, radius: 200 });
+  });
+  onClick(log, "location-regions", () => location.getRegions());
+  onClick(log, "location-remove-region", () => location.removeRegion("example"));
+
+  location.onLocationUpdate(({ positions, stationary }) => {
+    log(`Update: ${positions.map(format).join("; ")}${stationary ? ", stationary" : ""}`);
+  }, reportError);
+  location.onRegionTransition(({ id, transition }) => {
+    log(`Region ${id}: ${transition}`);
+  }, reportError);
+  location.onVisit(({ latitude, longitude, departure }) => {
+    const departed = departure === null ? "" : ", departed";
+    log(`Visit at ${latitude.toFixed(5)}, ${longitude.toFixed(5)}${departed}`);
+  }, reportError);
+  location.onLocationError(({ name, message, id }) => {
+    log(`Failure${id === undefined ? "" : ` of ${id}`}: ${name}: ${message}`);
+  }, reportError);
 </script>
