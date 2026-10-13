@@ -54,6 +54,9 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private var current: [UUID: Request] = [:]
   private var watchers: [UUID: TokamakPluginReply] = [:]
   private var prompts: [UUID: Prompt] = [:]
+  /// The prompts waiting when the app resigned active, as a prompt showing
+  /// makes it.
+  private var shown: [UUID] = []
   private let events: TokamakLocationEvents
   private let updates: TokamakLocationUpdates
   private let regions: TokamakLocationRegions
@@ -81,6 +84,9 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
       apply(config)
     }
     #if os(iOS)
+      NotificationCenter.default.addObserver(
+        self, selector: #selector(willResignActive),
+        name: UIApplication.willResignActiveNotification, object: nil)
       NotificationCenter.default.addObserver(
         self, selector: #selector(didBecomeActive),
         name: UIApplication.didBecomeActiveNotification, object: nil)
@@ -452,13 +458,18 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   }
 
   #if os(iOS)
-    /// Answers the prompts showing as the app became active, as the system
-    /// reports no change when the user keeps When In Use.
+    @objc private func willResignActive() {
+      shown = Array(prompts.keys)
+    }
+
+    /// Answers the prompts that were showing, as the system reports no change
+    /// when the user keeps When In Use.
     @objc private func didBecomeActive() {
-      let showing = Array(prompts.keys)
-      guard !showing.isEmpty else { return }
+      let answered = shown
+      shown = []
+      guard !answered.isEmpty else { return }
       DispatchQueue.main.asyncAfter(deadline: .now() + authorizationChangeDelay) {
-        self.answer(showing)
+        self.answer(answered)
       }
     }
   #endif

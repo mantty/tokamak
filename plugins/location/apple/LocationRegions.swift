@@ -10,6 +10,8 @@ private let regionsKey = "tokamak.location.regions"
 /// `CLMonitor` monitors at most 20 conditions for an app, and reports no
 /// error beyond them.
 private let regionLimit = 20
+/// The monitor's name, which must be alphanumeric.
+private let monitorName = "TokamakLocation"
 
 /// Circular regions in one `CLMonitor`, which the plugin creates at launch
 /// and reads events from for the life of the process. The system launches the
@@ -23,7 +25,7 @@ final class TokamakLocationRegions {
     self.events = events
     let monitor = Task { @MainActor in
       await Self.protectedData()
-      return await CLMonitor("tokamak.location")
+      return await CLMonitor(monitorName)
     }
     self.monitor = monitor
     Task { @MainActor [weak self] in
