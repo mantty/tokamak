@@ -115,14 +115,22 @@ void test("notices that macOS cannot declare approximate location", () => {
 });
 
 void test("declares Android permissions for each setting", () => {
-  assert.deepEqual(permissions(), ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"]);
-  assert.deepEqual(permissions({ precision: "approximate" }), ["ACCESS_COARSE_LOCATION"]);
+  assert.deepEqual(permissions(), ["ACCESS_COARSE_LOCATION", "RECEIVE_BOOT_COMPLETED", "ACCESS_FINE_LOCATION"]);
+  assert.deepEqual(permissions({ precision: "approximate" }), ["ACCESS_COARSE_LOCATION", "RECEIVE_BOOT_COMPLETED"]);
   assert.deepEqual(permissions({ background: true }), [
     "ACCESS_COARSE_LOCATION",
+    "RECEIVE_BOOT_COMPLETED",
     "ACCESS_FINE_LOCATION",
     "ACCESS_BACKGROUND_LOCATION",
   ]);
   assert.equal(declarations("android", defaults).key, "manifest");
+});
+
+void test("declares the Android receivers of updates, regions and restarts", () => {
+  const { contents } = declarations("android", defaults);
+
+  assert.match(contents ?? "", /<receiver android:name="com\.tokamak\.plugins\.location\.TokamakLocationReceiver" android:exported="false" \/>/);
+  assert.match(contents ?? "", /TokamakLocationBootReceiver[\s\S]*BOOT_COMPLETED[\s\S]*MY_PACKAGE_REPLACED/);
 });
 
 void test("rejects always-description without background", () => {

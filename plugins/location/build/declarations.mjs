@@ -46,12 +46,21 @@ function appleKeys(platform, settings) {
 
 /** The Android manifest of `settings`. */
 function androidManifest(settings) {
-  const permissions = ["ACCESS_COARSE_LOCATION"];
+  const permissions = ["ACCESS_COARSE_LOCATION", "RECEIVE_BOOT_COMPLETED"];
   if (settings.precision !== "approximate") permissions.push("ACCESS_FINE_LOCATION");
   if (settings.background) permissions.push("ACCESS_BACKGROUND_LOCATION");
   return [
     '<manifest xmlns:android="http://schemas.android.com/apk/res/android">',
     ...permissions.map((name) => `  <uses-permission android:name="android.permission.${name}" />`),
+    "  <application>",
+    '    <receiver android:name="com.tokamak.plugins.location.TokamakLocationReceiver" android:exported="false" />',
+    '    <receiver android:name="com.tokamak.plugins.location.TokamakLocationBootReceiver" android:exported="false">',
+    "      <intent-filter>",
+    '        <action android:name="android.intent.action.BOOT_COMPLETED" />',
+    '        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />',
+    "      </intent-filter>",
+    "    </receiver>",
+    "  </application>",
     "</manifest>",
     "",
   ].join("\n");

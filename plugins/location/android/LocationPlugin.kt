@@ -14,13 +14,21 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.util.Log
 import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakPluginReply
 import com.tokamak.runtime.optionalString
 import com.tokamak.runtime.requireObject
+import org.json.JSONArray
 import org.json.JSONObject
+
+/** How long the Worker's listeners have for an event, within the time Android gives a broadcast. */
+private const val EVENT_DEADLINE_MILLIS = 8_000L
+
+/** The listener methods, which receive the Worker's events. */
+private val LISTENERS = setOf("onLocationUpdate", "onRegionTransition", "onVisit", "onLocationError")
 
 class TokamakLocationPlugin(
     private val host: TokamakHost,
@@ -44,6 +52,19 @@ class TokamakLocationPlugin(
     /** Foreground location permissions, which the `precision` build setting declares. */
     private val foreground: Set<String> by lazy { setOf(COARSE, FINE).filter(declared::contains).toSet() }
 
+    private val updates = LocationUpdates(context)
+    private val listeners = mutableMapOf<String, MutableMap<Int, TokamakPluginReply>>()
+    private var nextListener = 0
+
+    /** Positions that arrived while the Worker handled the previous update, and the broadcasts to finish once it has them. */
+    private val positions = mutableListOf<JSONObject>()
+    private val finishes = mutableListOf<() -> Unit>()
+    private var updating = false
+
+    init {
+        restore(always = false)
+    }
+
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
         when (method) {
             "getCurrentPosition" ->
@@ -54,6 +75,12 @@ class TokamakLocationPlugin(
             "requestPermission" -> requestPermission(requireObject(arguments), reply)
             "servicesEnabled" -> reply(Result.success(manager.isLocationEnabled))
             "openSettings" -> openSettings(reply)
+            "startUpdates" -> startUpdates(requireObject(arguments), reply)
+            "stopUpdates" -> {
+                updates.stop()
+                reply(Result.success(null))
+            }
+            "getUpdates" -> reply(Result.success(updates.options))
             else -> super.call(method, arguments, reply)
         }
     }
@@ -63,6 +90,11 @@ class TokamakLocationPlugin(
         arguments: Any?,
         reply: TokamakPluginReply,
     ): () -> Unit {
+        if (method in LISTENERS) {
+            val key = nextListener++
+            listeners.getOrPut(method, ::mutableMapOf)[key] = reply
+            return { listeners[method]?.remove(key) }
+        }
         if (method != "watchPosition") return super.subscribe(method, arguments, reply)
         var cancelled = false
         var stop = {}
@@ -129,6 +161,73 @@ class TokamakLocationPlugin(
             runCatching { host.requestPermissions(setOf(BACKGROUND)) { reply(Result.success(permission())) } }
                 .onFailure { reply(Result.failure(it)) }
         }
+    }
+
+    private fun requirePermission() {
+        if (!hasForegroundPermission()) throw TokamakPluginError("NotAllowedError", "Location permission has not been granted")
+    }
+
+    private fun startUpdates(options: JSONObject, reply: TokamakPluginReply) {
+        requirePermission()
+        runCatching { updates.start(options) }
+            .onSuccess { reply(Result.success(null)) }
+            .onFailure { reply(Result.failure(locationError(it))) }
+    }
+
+    /**
+     * Requests updates again where Android removed them, always or only when their `PendingIntent`
+     * no longer exists, reporting a failure such as revoked permission to `onLocationError`.
+     */
+    internal fun restore(always: Boolean) {
+        runCatching { updates.restore(always) }.onFailure { fail(locationError(it)) }
+    }
+
+    /** Delivers the updates [intent] carries, then calls [finish]. Call it on the main thread. */
+    internal fun receive(intent: Intent, finish: () -> Unit) {
+        if (intent.hasExtra(LocationManager.KEY_PROVIDER_ENABLED)) {
+            if (intent.getBooleanExtra(LocationManager.KEY_PROVIDER_ENABLED, true)) return finish()
+            return fail(TokamakPluginError("NotReadableError", "The location provider was turned off"), done = finish)
+        }
+        val received = locations(intent).map(::position)
+        if (received.isEmpty()) return finish()
+        positions += received
+        finishes += finish
+        if (!updating) sendUpdate()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun locations(intent: Intent): List<Location> =
+        intent.getParcelableArrayExtra(LocationManager.KEY_LOCATIONS)?.filterIsInstance<Location>()
+            ?: listOfNotNull(intent.getParcelableExtra(LocationManager.KEY_LOCATION_CHANGED))
+
+    /** Sends the waiting positions as one update, then the positions that arrive meanwhile as the next. */
+    private fun sendUpdate() {
+        updating = positions.isNotEmpty()
+        if (!updating) return
+        val event = JSONObject().put("positions", JSONArray(positions.toList()))
+        val delivered = finishes.toList()
+        positions.clear()
+        finishes.clear()
+        send("onLocationUpdate", "update", event) {
+            delivered.forEach { it() }
+            sendUpdate()
+        }
+    }
+
+    /** Reports a background service's failure, which concerns the region [id] when given. */
+    private fun fail(error: TokamakPluginError, id: String? = null, done: () -> Unit = {}) {
+        val event = JSONObject().put("name", error.errorName).put("message", error.message).put("id", id)
+        send("onLocationError", "error", event, done)
+    }
+
+    /** Delivers [event] to the page's [method] listeners and the Worker's [name] listeners, then calls [done]. */
+    private fun send(method: String, name: String, event: JSONObject, done: () -> Unit = {}) {
+        listeners[method].orEmpty().values.toList().forEach { it(Result.success(event)) }
+        Thread {
+            runCatching { host.emit(name, event.toString(), EVENT_DEADLINE_MILLIS) }
+                .onFailure { Log.w("tokamak", "location $name failed: ${it.message}") }
+            context.mainExecutor.execute(done)
+        }.start()
     }
 
     private fun openSettings(reply: TokamakPluginReply) {
@@ -213,25 +312,27 @@ class TokamakLocationPlugin(
         ).firstOrNull(manager::isProviderEnabled)
             ?: manager.getProviders(true).firstOrNull()
 
-    private fun position(location: Location): Map<String, Any?> =
-        mapOf(
-            "coords" to
-                mapOf(
-                    "latitude" to location.latitude,
-                    "longitude" to location.longitude,
-                    "accuracy" to location.accuracy.toDouble(),
-                    "altitude" to location.altitude.takeIf { location.hasAltitude() },
-                    "altitudeAccuracy" to
-                        location.verticalAccuracyMeters.toDouble()
-                            .takeIf { location.hasVerticalAccuracy() },
-                    "heading" to location.bearing.toDouble().takeIf { location.hasBearing() },
-                    "speed" to location.speed.toDouble().takeIf { location.hasSpeed() },
-                ),
-            "timestamp" to location.time,
-        )
+    private fun position(location: Location): JSONObject =
+        JSONObject()
+            .put(
+                "coords",
+                JSONObject()
+                    .put("latitude", location.latitude)
+                    .put("longitude", location.longitude)
+                    .put("accuracy", location.accuracy.toDouble())
+                    .put("altitude", nullable(location.hasAltitude(), location.altitude))
+                    .put(
+                        "altitudeAccuracy",
+                        nullable(location.hasVerticalAccuracy(), location.verticalAccuracyMeters.toDouble()),
+                    )
+                    .put("heading", nullable(location.hasBearing(), location.bearing.toDouble()))
+                    .put("speed", nullable(location.hasSpeed(), location.speed.toDouble())),
+            )
+            .put("timestamp", location.time)
 
-    private fun permissionDenied(): Result<Any?> =
-        Result.failure(TokamakPluginError("NotAllowedError", "Location permission was denied"))
+    private fun nullable(available: Boolean, value: Double): Any = if (available) value else JSONObject.NULL
+
+    private fun permissionDenied(): Result<Any?> = locationFailure(SecurityException())
 
     /** Why no fix came: Android gives none in the background without background location permission. */
     private fun missingFix(): Result<Any?> =
@@ -244,9 +345,14 @@ class TokamakLocationPlugin(
     private fun unavailable(message: String): Result<Any?> =
         Result.failure(TokamakPluginError("NotReadableError", message))
 
-    private fun locationFailure(error: Throwable): Result<Any?> =
-        if (error is SecurityException) permissionDenied()
-        else unavailable(error.message ?: "Location is unavailable")
+    private fun locationFailure(error: Throwable): Result<Any?> = Result.failure(locationError(error))
+
+    private fun locationError(error: Throwable): TokamakPluginError =
+        if (error is SecurityException) {
+            TokamakPluginError("NotAllowedError", "Location permission was denied")
+        } else {
+            TokamakPluginError("NotReadableError", error.message ?: "Location is unavailable")
+        }
 
     private companion object {
         /** The `timeout` that never expires, as the page sends it. */

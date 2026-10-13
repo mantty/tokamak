@@ -1,13 +1,20 @@
 import { Plugin } from "@tokamakdev/plugin";
 import * as web from "../web/index.js";
-import { validatePermissionRequest } from "./options.js";
+import { validatePermissionRequest, validateUpdateOptions } from "./options.js";
 import type {
+  ErrorListener,
+  Listener,
+  LocationErrorEvent,
   LocationPermission,
+  LocationUpdate,
   PermissionRequest,
   Position,
   PositionCallback,
   PositionErrorCallback,
   PositionOptions,
+  RegionTransition,
+  UpdateOptions,
+  Visit,
 } from "./types.js";
 
 export type * from "./types.js";
@@ -54,6 +61,49 @@ class Location extends Plugin {
   openSettings(): Promise<void> {
     return this.hasNativeTransport ? this.call("openSettings") : web.unsupported();
   }
+
+  /**
+   * Starts continuous updates, replacing any running, until `stopUpdates`. Their positions reach
+   * `onLocationUpdate`, including after the system ended the app. Rejects with `NotAllowedError`
+   * without in-use permission, and on iOS with `NeedsUIError` off screen.
+   */
+  async startUpdates(options: UpdateOptions = {}): Promise<void> {
+    validateUpdateOptions(options, "options");
+    return this.hasNativeTransport ? this.call("startUpdates", options) : web.unsupported();
+  }
+
+  stopUpdates(): Promise<void> {
+    return this.hasNativeTransport ? this.call("stopUpdates") : web.unsupported();
+  }
+
+  /** The options of the running updates, or null when none are running. */
+  getUpdates(): Promise<UpdateOptions | null> {
+    return this.hasNativeTransport ? this.call("getUpdates") : web.unsupported();
+  }
+
+  /** Receives the updates the Worker's `onLocationUpdate` receives, while the listening page or Worker runs. */
+  onLocationUpdate(listener: Listener<LocationUpdate>, error: ErrorListener = report): () => void {
+    return this.hasNativeTransport ? this.listen("onLocationUpdate", listener, error) : () => undefined;
+  }
+
+  /** Receives the transitions the Worker's `onRegionTransition` receives, while the listening page or Worker runs. */
+  onRegionTransition(listener: Listener<RegionTransition>, error: ErrorListener = report): () => void {
+    return this.hasNativeTransport ? this.listen("onRegionTransition", listener, error) : () => undefined;
+  }
+
+  /** Apple only: receives the visits the Worker's `onVisit` receives, while the listening page or Worker runs. */
+  onVisit(listener: Listener<Visit>, error: ErrorListener = report): () => void {
+    return this.hasNativeTransport ? this.listen("onVisit", listener, error) : () => undefined;
+  }
+
+  /** Receives the failures the Worker's `onLocationError` receives, while the listening page or Worker runs. */
+  onLocationError(listener: Listener<LocationErrorEvent>, error: ErrorListener = report): () => void {
+    return this.hasNativeTransport ? this.listen("onLocationError", listener, error) : () => undefined;
+  }
+}
+
+function report(error: DOMException): void {
+  console.error(error);
 }
 
 const unlimited = 0xffffffff;

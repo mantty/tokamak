@@ -50,9 +50,19 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private var current: [UUID: Request] = [:]
   private var watchers: [UUID: TokamakPluginReply] = [:]
   private var prompts: [UUID: Prompt] = [:]
+  private let events: TokamakLocationEvents
+  private let liveUpdates: TokamakLocationUpdates
+  #if os(iOS)
+    /// The `CLServiceSession` iOS 18 needs for updates and regions to reach an
+    /// app that is not in use, held while the app has Always permission.
+    private var alwaysSession: AnyObject?
+  #endif
 
+  /// Resumes what ran when the app last ended, before launch finishes.
   init(host: TokamakHost) {
     self.host = host
+    events = TokamakLocationEvents(host: host)
+    liveUpdates = TokamakLocationUpdates(events: events)
     super.init()
     for manager in [updates, fixes] {
       manager.delegate = self
@@ -63,6 +73,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
         self, selector: #selector(didBecomeActive),
         name: UIApplication.didBecomeActiveNotification, object: nil)
     #endif
+    liveUpdates.resume()
   }
 
   func call(
@@ -91,6 +102,17 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
       case "openSettings":
         try host.requireUI()
         openSettings(reply)
+      case "startUpdates":
+        // A new background activity session starts only on screen.
+        try host.requireUI()
+        try requirePermission()
+        try liveUpdates.start(options)
+        reply(.success(nil))
+      case "stopUpdates":
+        liveUpdates.stop()
+        reply(.success(nil))
+      case "getUpdates":
+        reply(.success(liveUpdates.options))
       default:
         throw .notSupported("\(id).\(method) is not supported")
       }
@@ -104,6 +126,9 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     arguments: Any,
     reply: @escaping TokamakPluginReply
   ) throws(TokamakPluginError) -> (() -> Void) {
+    if let remove = events.listen(method, reply) {
+      return remove
+    }
     guard method == "watchPosition" else {
       throw .notSupported("\(id).\(method) is not supported")
     }
@@ -123,7 +148,9 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   func locationManagerDidChangeAuthorization(
     _ manager: CLLocationManager
   ) {
-    guard manager === updates, manager.authorizationStatus != .notDetermined else { return }
+    guard manager === updates else { return }
+    holdAlwaysSession()
+    guard manager.authorizationStatus != .notDetermined else { return }
     answer(Array(prompts.keys))
     if !current.isEmpty || !watchers.isEmpty {
       serve(manager.authorizationStatus)
@@ -135,7 +162,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     didUpdateLocations locations: [CLLocation]
   ) {
     guard let location = locations.last else { return }
-    deliver(.success(position(location)), from: manager)
+    deliver(.success(TokamakLocationEvents.position(location)), from: manager)
   }
 
   /// A fix that is not yet available is taken again; updates continue.
@@ -201,7 +228,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private func locate() {
     for (key, request) in current where request.timer == nil {
       if let fix = fixes.location, -fix.timestamp.timeIntervalSinceNow <= request.maximumAge {
-        finish(key, .success(position(fix)))
+        finish(key, .success(TokamakLocationEvents.position(fix)))
         continue
       }
       let timer = DispatchWorkItem { [weak self] in self?.finish(key, .failure(Self.timedOut)) }
@@ -263,6 +290,27 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
       status == .authorizedWhenInUse && Self.declaresAlways && !askedForAlways
     #else
       false
+    #endif
+  }
+
+  /// Throws `NotAllowedError` unless the app has location permission.
+  private func requirePermission() throws(TokamakPluginError) {
+    guard Self.permission(updates.authorizationStatus) == "granted" else {
+      throw TokamakPluginError(
+        name: "NotAllowedError", message: "Location permission has not been granted")
+    }
+  }
+
+  private func holdAlwaysSession() {
+    #if os(iOS)
+      guard #available(iOS 18, *) else { return }
+      let always = updates.authorizationStatus == .authorizedAlways
+      if always && alwaysSession == nil {
+        alwaysSession = CLServiceSession(authorization: .always)
+      } else if !always {
+        (alwaysSession as? CLServiceSession)?.invalidate()
+        alwaysSession = nil
+      }
     #endif
   }
 
@@ -393,29 +441,4 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     TokamakPluginError(name: "NotReadableError", message: message)
   }
 
-  private func position(_ location: CLLocation) -> [String: Any] {
-    let coordinates = location.coordinate
-    return [
-      "coords": [
-        "latitude": coordinates.latitude,
-        "longitude": coordinates.longitude,
-        "accuracy": location.horizontalAccuracy,
-        "altitude": nullable(
-          location.verticalAccuracy >= 0,
-          location.altitude
-        ),
-        "altitudeAccuracy": nullable(
-          location.verticalAccuracy >= 0,
-          location.verticalAccuracy
-        ),
-        "heading": nullable(location.course >= 0, location.course),
-        "speed": nullable(location.speed >= 0, location.speed),
-      ],
-      "timestamp": location.timestamp.timeIntervalSince1970 * 1000,
-    ]
-  }
-
-  private func nullable(_ available: Bool, _ value: Double) -> Any {
-    available ? value : NSNull()
-  }
 }

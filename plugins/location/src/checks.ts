@@ -29,3 +29,17 @@ export function oneOf(...allowed: readonly string[]): Check {
     }
   };
 }
+
+/** A finite number of at least 0. */
+export function atLeastZero(value: unknown, path: string): void {
+  if (!(typeof value === "number" && Number.isFinite(value) && value >= 0)) {
+    throw new TypeError(`${path} must be a finite number of at least 0`);
+  }
+}
+
+/** A whole number of at least 0. */
+export function wholeAtLeastZero(value: unknown, path: string): void {
+  if (!(Number.isSafeInteger(value) && (value as number) >= 0)) {
+    throw new TypeError(`${path} must be a whole number of at least 0`);
+  }
+}

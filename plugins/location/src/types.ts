@@ -51,3 +51,70 @@ export interface PermissionRequest {
   /** Apple only: the key in the `accuracy-purposes` build setting of the reason to show. */
   readonly purpose?: string;
 }
+
+/**
+ * Apple only: the live update configuration, by Apple's name, which tunes when updates pause and
+ * how coordinates follow roads. `"maritime"` needs iOS 27 or macOS 27.
+ */
+export type Activity =
+  | "default"
+  | "automotiveNavigation"
+  | "otherNavigation"
+  | "fitness"
+  | "airborne"
+  | "maritime";
+
+/** `startUpdates` options. Each is platform-specific: Apple's relaunching updates take only an `activity`. */
+export interface UpdateOptions {
+  /** Apple only: `"default"` by default. */
+  readonly activity?: Activity;
+  /** Android only: the request's quality, precision traded against battery use; `"high"` by default. */
+  readonly accuracy?: "high" | "balanced" | "low";
+  /** Android only: metres the device moves before the next update; 0 by default. */
+  readonly distance?: number;
+  /** Android only: milliseconds between updates; 10 seconds by default. */
+  readonly interval?: number;
+}
+
+/** Positions from continuous updates or significant changes. */
+export interface LocationUpdate {
+  /** Oldest first: those that arrived while the Worker handled the previous update come together. */
+  readonly positions: readonly Position[];
+  /**
+   * Apple only, from iOS 18 and macOS 15: true on the last update before updates pause while the
+   * device is still. `positions` is empty when the update has no position.
+   */
+  readonly stationary?: boolean;
+}
+
+/** An entry into or exit from a monitored region. */
+export interface RegionTransition {
+  readonly id: string;
+  readonly transition: "enter" | "exit";
+  /** Milliseconds since the epoch. */
+  readonly timestamp: number;
+}
+
+/** Apple only: an arrival at or departure from a place where the user stays. */
+export interface Visit {
+  readonly latitude: number;
+  readonly longitude: number;
+  /** In metres. */
+  readonly accuracy: number;
+  /** Milliseconds since the epoch, or null when unknown. */
+  readonly arrival: number | null;
+  /** Milliseconds since the epoch, or null before the user leaves. */
+  readonly departure: number | null;
+}
+
+/** A failure of a background location service. */
+export interface LocationErrorEvent {
+  /** A `DOMException` name, such as `"NotAllowedError"` or `"NotReadableError"`. */
+  readonly name: string;
+  readonly message: string;
+  /** The region's id, when the failure concerns one. */
+  readonly id?: string;
+}
+
+export type Listener<T> = (event: T) => void;
+export type ErrorListener = (error: DOMException) => void;
