@@ -1,6 +1,17 @@
 import CoreLocation
 import Foundation
 
+#if os(iOS)
+  import UIKit
+#else
+  import AppKit
+#endif
+
+/// Whether the plugin asked for Always permission, which iOS asks once.
+private let askedForAlwaysKey = "tokamak.location.askedForAlways"
+/// How long an authorization change may take to arrive after the app is active again.
+private let authorizationChangeDelay: TimeInterval = 1
+
 final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   CLLocationManagerDelegate
 {
@@ -23,13 +34,22 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     var timer: DispatchWorkItem?
   }
 
+  /// A `requestPermission` waiting for the user to answer a prompt.
+  private struct Prompt {
+    /// The purpose key of the temporary precise location to ask for next.
+    let purpose: String?
+    let reply: TokamakPluginReply
+  }
+
   private let host: TokamakHost
-  /// Updates watchers.
+  private let defaults = UserDefaults.standard
+  /// Updates watchers, and asks for permission.
   private let updates = CLLocationManager()
   /// Takes single fixes for current position requests, apart from watching.
   private let fixes = CLLocationManager()
   private var current: [UUID: Request] = [:]
   private var watchers: [UUID: TokamakPluginReply] = [:]
+  private var prompts: [UUID: Prompt] = [:]
 
   init(host: TokamakHost) {
     self.host = host
@@ -38,6 +58,11 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
       manager.delegate = self
       manager.desiredAccuracy = kCLLocationAccuracyBest
     }
+    #if os(iOS)
+      NotificationCenter.default.addObserver(
+        self, selector: #selector(didBecomeActive),
+        name: UIApplication.didBecomeActiveNotification, object: nil)
+    #endif
   }
 
   func call(
@@ -45,17 +70,33 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     arguments: Any,
     reply: @escaping TokamakPluginReply
   ) {
-    guard method == "getCurrentPosition" else {
-      reply(.failure(.notSupported("\(id).\(method) is not supported")))
-      return
-    }
     let options = arguments as? [String: Any] ?? [:]
-    current[UUID()] = Request(
-      reply: reply,
-      maximumAge: (options["maximumAge"] as? Double ?? 0) / 1000,
-      timeout: (options["timeout"] as? Double ?? Double(UInt32.max)) / 1000
-    )
-    start()
+    do throws(TokamakPluginError) {
+      switch method {
+      case "getCurrentPosition":
+        current[UUID()] = Request(
+          reply: reply,
+          maximumAge: (options["maximumAge"] as? Double ?? 0) / 1000,
+          timeout: (options["timeout"] as? Double ?? Double(UInt32.max)) / 1000
+        )
+        start()
+      case "permission":
+        reply(.success(permission()))
+      case "requestPermission":
+        try requestPermission(options, reply)
+      case "servicesEnabled":
+        DispatchQueue.global(qos: .userInitiated).async {
+          reply(.success(CLLocationManager.locationServicesEnabled()))
+        }
+      case "openSettings":
+        try host.requireUI()
+        openSettings(reply)
+      default:
+        throw .notSupported("\(id).\(method) is not supported")
+      }
+    } catch {
+      reply(.failure(error))
+    }
   }
 
   func subscribe(
@@ -82,8 +123,11 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   func locationManagerDidChangeAuthorization(
     _ manager: CLLocationManager
   ) {
-    guard manager === updates, !current.isEmpty || !watchers.isEmpty else { return }
-    serve(manager.authorizationStatus)
+    guard manager === updates, manager.authorizationStatus != .notDetermined else { return }
+    answer(Array(prompts.keys))
+    if !current.isEmpty || !watchers.isEmpty {
+      serve(manager.authorizationStatus)
+    }
   }
 
   func locationManager(
@@ -195,6 +239,147 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     if current.isEmpty {
       fixes.stopUpdatingLocation()
     }
+  }
+
+  /// The app's in-use and background permission, and the precision it gets.
+  private func permission() -> [String: Any] {
+    let status = updates.authorizationStatus
+    return [
+      "inUse": Self.permission(status),
+      "background": backgroundPermission(status),
+      "precision": updates.accuracyAuthorization == .reducedAccuracy ? "approximate" : "precise",
+    ]
+  }
+
+  private func backgroundPermission(_ status: CLAuthorizationStatus) -> String {
+    if status == .authorizedAlways { return "granted" }
+    let asks = status == .notDetermined ? Self.declaresAlways : canUpgradeToAlways(status)
+    return asks ? "prompt" : "denied"
+  }
+
+  /// Whether asking for Always shows a prompt: once, from When In Use, on iOS.
+  private func canUpgradeToAlways(_ status: CLAuthorizationStatus) -> Bool {
+    #if os(iOS)
+      status == .authorizedWhenInUse && Self.declaresAlways && !askedForAlways
+    #else
+      false
+    #endif
+  }
+
+  private static func permission(_ status: CLAuthorizationStatus) -> String {
+    switch status {
+    case .notDetermined: "prompt"
+    case .denied, .restricted: "denied"
+    default: "granted"
+    }
+  }
+
+  /// Whether the Info.plist declares Always permission, as the `background`
+  /// build setting does on iOS and every macOS build does.
+  private static let declaresAlways =
+    Bundle.main.object(forInfoDictionaryKey: "NSLocationAlwaysAndWhenInUseUsageDescription") != nil
+
+  private var askedForAlways: Bool {
+    defaults.bool(forKey: askedForAlwaysKey)
+  }
+
+  /// Asks for in-use permission while the user has not answered, or for
+  /// Always permission once from When In Use, then for temporary precise
+  /// location when `options` name a purpose.
+  private func requestPermission(
+    _ options: [String: Any], _ reply: @escaping TokamakPluginReply
+  ) throws(TokamakPluginError) {
+    let always = options["background"] as? Bool == true
+    if always && !Self.declaresAlways {
+      throw .notSupported(
+        "Background location needs the location plugin's background build setting")
+    }
+    let prompt = Prompt(purpose: try Self.purpose(options), reply: reply)
+    let status = updates.authorizationStatus
+    let upgrades = always && canUpgradeToAlways(status)
+    guard status == .notDetermined || upgrades else {
+      finish(prompt)
+      return
+    }
+    try host.requireUI()
+    prompts[UUID()] = prompt
+    if always {
+      defaults.set(true, forKey: askedForAlwaysKey)
+      updates.requestAlwaysAuthorization()
+    } else {
+      updates.requestWhenInUseAuthorization()
+    }
+  }
+
+  /// The purpose key of the temporary precise location `options` ask for.
+  private static func purpose(_ options: [String: Any]) throws(TokamakPluginError) -> String? {
+    guard options["precision"] as? String == "precise" else { return nil }
+    let purposes =
+      Bundle.main.object(forInfoDictionaryKey: "NSLocationTemporaryUsageDescriptionDictionary")
+      as? [String: Any]
+    guard let purpose = options["purpose"] as? String, purposes?[purpose] != nil else {
+      throw TokamakPluginError(
+        name: "TypeError",
+        message: "precise location needs a purpose from the accuracy-purposes build setting")
+    }
+    return purpose
+  }
+
+  #if os(iOS)
+    /// Answers the prompts showing as the app became active, as the system
+    /// reports no change when the user keeps When In Use.
+    @objc private func didBecomeActive() {
+      let showing = Array(prompts.keys)
+      guard !showing.isEmpty else { return }
+      DispatchQueue.main.asyncAfter(deadline: .now() + authorizationChangeDelay) {
+        self.answer(showing)
+      }
+    }
+  #endif
+
+  /// Answers the prompts `keys` that still wait.
+  private func answer(_ keys: [UUID]) {
+    for key in keys {
+      if let prompt = prompts.removeValue(forKey: key) {
+        finish(prompt)
+      }
+    }
+  }
+
+  /// Replies to `prompt` with the app's permission, first asking for temporary
+  /// precise location for its purpose when the app has approximate location.
+  private func finish(_ prompt: Prompt) {
+    guard let purpose = prompt.purpose,
+      Self.permission(updates.authorizationStatus) == "granted",
+      updates.accuracyAuthorization == .reducedAccuracy
+    else {
+      prompt.reply(.success(permission()))
+      return
+    }
+    do throws(TokamakPluginError) {
+      try host.requireUI()
+    } catch {
+      prompt.reply(.failure(error))
+      return
+    }
+    updates.requestTemporaryFullAccuracyAuthorization(withPurposeKey: purpose) { _ in
+      DispatchQueue.main.async { prompt.reply(.success(self.permission())) }
+    }
+  }
+
+  /// Opens the app's page of the system settings on iOS, and Location Services on macOS.
+  private func openSettings(_ reply: @escaping TokamakPluginReply) {
+    let notOpened = TokamakPluginError(
+      name: "OperationError", message: "The location settings could not be opened")
+    #if os(iOS)
+      UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!) { opened in
+        reply(opened ? .success(nil) : .failure(notOpened))
+      }
+    #else
+      let page = "com.apple.preference.security?Privacy_LocationServices"
+      let opened = URL(string: "x-apple.systempreferences:\(page)").map(NSWorkspace.shared.open)
+      reply(opened == true ? .success(nil) : .failure(notOpened))
+    #endif
   }
 
   private func locationError(_ error: Error) -> TokamakPluginError {

@@ -1,21 +1,50 @@
 {
   "schemaVersion": 1,
   "id": "location",
+  "settings": {
+    "background": {
+      "kind": "boolean",
+      "default": false,
+      "description": "Declares background location permission: Apple's Always, Android's ACCESS_BACKGROUND_LOCATION"
+    },
+    "background-updates": {
+      "kind": "boolean",
+      "default": false,
+      "description": "Declares continuous updates off screen: iOS's location background mode, and Android's location foreground service"
+    },
+    "precision": {
+      "kind": "enum",
+      "values": ["precise", "approximate"],
+      "default": "precise",
+      "description": "The precision the app declares; approximate leaves out precise location"
+    },
+    "when-in-use-description": {
+      "kind": "string",
+      "description": "Apple only: the reason the in-use prompt shows"
+    },
+    "always-description": {
+      "kind": "string",
+      "description": "iOS only: the reason the Always prompt shows"
+    },
+    "accuracy-purposes": {
+      "kind": "map",
+      "of": "string",
+      "description": "Apple only: the reasons for temporary precise location, by purpose key"
+    }
+  },
+  "build": "build/index.mjs",
   "platforms": {
     "macos": {
       "class": "TokamakLocationPlugin",
-      "sources": ["apple/LocationPlugin.swift"],
-      "plist": "apple/macos/Info.plist"
+      "sources": ["apple/LocationPlugin.swift"]
     },
     "ios": {
       "class": "TokamakLocationPlugin",
-      "sources": ["apple/LocationPlugin.swift"],
-      "plist": "apple/ios/Info.plist"
+      "sources": ["apple/LocationPlugin.swift"]
     },
     "android": {
       "class": "com.tokamak.plugins.location.TokamakLocationPlugin",
-      "sources": ["android/LocationPlugin.kt"],
-      "manifest": "android/AndroidManifest.xml"
+      "sources": ["android/LocationPlugin.kt"]
     }
   }
 }

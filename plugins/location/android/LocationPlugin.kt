@@ -2,19 +2,24 @@ package com.tokamak.plugins.location
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakPluginReply
+import com.tokamak.runtime.optionalString
+import com.tokamak.runtime.requireObject
 import org.json.JSONObject
 
 class TokamakLocationPlugin(
@@ -27,14 +32,29 @@ class TokamakLocationPlugin(
         context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val handler = Handler(Looper.getMainLooper())
 
+    /** The permissions the app's manifest requests. */
+    private val declared: Set<String> by lazy {
+        context.packageManager
+            .getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)
+            .requestedPermissions
+            .orEmpty()
+            .toSet()
+    }
+
+    /** Foreground location permissions, which the `precision` build setting declares. */
+    private val foreground: Set<String> by lazy { setOf(COARSE, FINE).filter(declared::contains).toSet() }
+
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
-        if (method != "getCurrentPosition") {
-            super.call(method, arguments, reply)
-            return
-        }
-        val options = arguments as? JSONObject
-        withPermission { granted ->
-            if (granted) currentPosition(options, reply) else reply(permissionDenied())
+        when (method) {
+            "getCurrentPosition" ->
+                withPermission { granted ->
+                    if (granted) currentPosition(arguments as? JSONObject, reply) else reply(permissionDenied())
+                }
+            "permission" -> reply(Result.success(permission()))
+            "requestPermission" -> requestPermission(requireObject(arguments), reply)
+            "servicesEnabled" -> reply(Result.success(manager.isLocationEnabled))
+            "openSettings" -> openSettings(reply)
+            else -> super.call(method, arguments, reply)
         }
     }
 
@@ -64,11 +84,57 @@ class TokamakLocationPlugin(
      * Throws `NeedsUIError` when asking would show UI while the app is in the background.
      */
     private fun withPermission(action: (Boolean) -> Unit) {
-        if (PERMISSIONS.any { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
+        if (hasForegroundPermission()) {
             action(true)
             return
         }
-        host.requestPermissions(PERMISSIONS) { granted -> action(granted.containsValue(true)) }
+        host.requestPermissions(foreground) { granted -> action(granted.containsValue(true)) }
+    }
+
+    private fun granted(permission: String): Boolean =
+        context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+
+    private fun hasForegroundPermission(): Boolean = granted(FINE) || granted(COARSE)
+
+    /** The app's in-use and background permission, and the precision it gets, or would get once allowed. */
+    private fun permission(): JSONObject {
+        val inUse = if (hasForegroundPermission()) "granted" else state(COARSE)
+        val background = if (BACKGROUND in declared) state(BACKGROUND) else "denied"
+        val precise = granted(FINE) || (!granted(COARSE) && FINE in declared)
+        return JSONObject()
+            .put("inUse", inUse)
+            .put("background", background)
+            .put("precision", if (precise) "precise" else "approximate")
+    }
+
+    private fun state(permission: String): String =
+        when {
+            granted(permission) -> "granted"
+            host.wouldPrompt(permission) -> "prompt"
+            else -> "denied"
+        }
+
+    /**
+     * Asks for foreground permission, then for background permission when [options] ask for it, as
+     * Android grants background permission only to an app with foreground permission.
+     */
+    private fun requestPermission(options: JSONObject, reply: TokamakPluginReply) {
+        val background = options.optBoolean("background")
+        if (background && BACKGROUND !in declared) {
+            throw TokamakPluginError.notSupported("Background location needs the location plugin's background build setting")
+        }
+        val asked = if (options.optionalString("precision") == "approximate") setOf(COARSE) else foreground
+        host.requestPermissions(asked) { granted ->
+            if (!background || !granted.containsValue(true)) return@requestPermissions reply(Result.success(permission()))
+            runCatching { host.requestPermissions(setOf(BACKGROUND)) { reply(Result.success(permission())) } }
+                .onFailure { reply(Result.failure(it)) }
+        }
+    }
+
+    private fun openSettings(reply: TokamakPluginReply) {
+        val app = Uri.fromParts("package", context.packageName, null)
+        host.requireForegroundActivity().startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, app))
+        reply(Result.success(null))
     }
 
     /**
@@ -169,7 +235,7 @@ class TokamakLocationPlugin(
 
     /** Why no fix came: Android gives none in the background without background location permission. */
     private fun missingFix(): Result<Any?> =
-        if (host.isInForeground || context.checkSelfPermission(BACKGROUND) == PackageManager.PERMISSION_GRANTED) {
+        if (host.isInForeground || granted(BACKGROUND)) {
             unavailable("Location is unavailable")
         } else {
             Result.failure(TokamakPluginError("NotAllowedError", "Location permission does not cover the background"))
@@ -185,7 +251,8 @@ class TokamakLocationPlugin(
     private companion object {
         /** The `timeout` that never expires, as the page sends it. */
         const val UNLIMITED = 0xffffffffL
-        val PERMISSIONS = setOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+        const val FINE = Manifest.permission.ACCESS_FINE_LOCATION
+        const val COARSE = Manifest.permission.ACCESS_COARSE_LOCATION
         const val BACKGROUND = Manifest.permission.ACCESS_BACKGROUND_LOCATION
     }
 }

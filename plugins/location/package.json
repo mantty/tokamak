@@ -16,6 +16,7 @@
   "files": [
     "android",
     "apple",
+    "build",
     "src",
     "web",
     "tokamak-plugin.json",

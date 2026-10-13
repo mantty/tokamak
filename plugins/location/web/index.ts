@@ -1,9 +1,10 @@
 import type {
+  LocationPermission,
   Position,
   PositionCallback,
   PositionErrorCallback,
   PositionOptions,
-} from "../src/index.js";
+} from "../src/types.js";
 
 export function getCurrentPosition(options: PositionOptions): Promise<Position> {
   return new Promise((resolve, reject) => {
@@ -36,6 +37,19 @@ export function watchPosition(
   return () => {
     browserLocation.clearWatch(id);
   };
+}
+
+/** The page's location permission, which the web has only for pages in use. */
+export async function permission(): Promise<LocationPermission> {
+  const permissions = (globalThis as { navigator?: { permissions?: Permissions } }).navigator?.permissions;
+  if (!permissions) throw new DOMException("The Permissions API is unavailable", "NotSupportedError");
+  const { state } = await permissions.query({ name: "geolocation" });
+  return { inUse: state, background: "denied", precision: "precise" };
+}
+
+/** Rejects as the web does for what only native apps have. */
+export function unsupported(): Promise<never> {
+  return Promise.reject(new DOMException("Native location is unavailable", "NotSupportedError"));
 }
 
 function browserLocationApi(): Geolocation {
