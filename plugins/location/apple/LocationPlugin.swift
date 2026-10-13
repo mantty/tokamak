@@ -7,6 +7,8 @@ import Foundation
   import AppKit
 #endif
 
+/// The JSON of the configuration `setup` last applied.
+private let setupKey = "tokamak.location.setup"
 /// Whether the plugin asked for Always permission, which iOS asks once.
 private let askedForAlwaysKey = "tokamak.location.askedForAlways"
 /// How long an authorization change may take to arrive after the app is active again.
@@ -47,6 +49,8 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private let updates = CLLocationManager()
   /// Takes single fixes for current position requests, apart from watching.
   private let fixes = CLLocationManager()
+  /// Delivers the significant changes and visits `setup` names.
+  private let monitoring = CLLocationManager()
   private var current: [UUID: Request] = [:]
   private var watchers: [UUID: TokamakPluginReply] = [:]
   private var prompts: [UUID: Prompt] = [:]
@@ -70,6 +74,12 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
       manager.delegate = self
       manager.desiredAccuracy = kCLLocationAccuracyBest
     }
+    monitoring.delegate = self
+    if let stored = defaults.data(forKey: setupKey),
+      let config = try? JSONSerialization.jsonObject(with: stored) as? [String: Any]
+    {
+      apply(config)
+    }
     #if os(iOS)
       NotificationCenter.default.addObserver(
         self, selector: #selector(didBecomeActive),
@@ -86,6 +96,15 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     let options = arguments as? [String: Any] ?? [:]
     do throws(TokamakPluginError) {
       switch method {
+      case "setup":
+        if options["significantChanges"] as? Bool == true
+          && !CLLocationManager.significantLocationChangeMonitoringAvailable()
+        {
+          throw .notSupported("The device cannot monitor significant changes of location")
+        }
+        apply(options)
+        defaults.set(try? JSONSerialization.data(withJSONObject: options), forKey: setupKey)
+        reply(.success(nil))
       case "getCurrentPosition":
         current[UUID()] = Request(
           reply: reply,
@@ -187,6 +206,12 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     _ manager: CLLocationManager,
     didUpdateLocations locations: [CLLocation]
   ) {
+    if manager === monitoring {
+      for location in locations {
+        events.update(location)
+      }
+      return
+    }
     guard let location = locations.last else { return }
     deliver(.success(TokamakLocationEvents.position(location)), from: manager)
   }
@@ -197,11 +222,35 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     didFailWithError error: Error
   ) {
     guard (error as NSError).code == CLError.Code.locationUnknown.rawValue else {
-      deliver(.failure(locationError(error)), from: manager)
+      if manager === monitoring {
+        events.fail(locationError(error))
+      } else {
+        deliver(.failure(locationError(error)), from: manager)
+      }
       return
     }
     if manager === fixes && !current.isEmpty {
       fixes.requestLocation()
+    }
+  }
+
+  func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
+    events.visit(visit)
+  }
+
+  /// Starts the significant changes and visits `config` names, and stops the
+  /// others. After a launch for one of their events, starting them again
+  /// delivers it.
+  private func apply(_ config: [String: Any]) {
+    if config["significantChanges"] as? Bool == true {
+      monitoring.startMonitoringSignificantLocationChanges()
+    } else {
+      monitoring.stopMonitoringSignificantLocationChanges()
+    }
+    if config["visits"] as? Bool == true {
+      monitoring.startMonitoringVisits()
+    } else {
+      monitoring.stopMonitoringVisits()
     }
   }
 

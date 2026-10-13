@@ -11,6 +11,9 @@ import {
 } from "./checks.js";
 import type { Region } from "./types.js";
 
+/** Throws `TypeError` unless `config` is a configuration `setup` takes. */
+export const validateSetup = object({ significantChanges: flag, visits: flag });
+
 /** Throws `TypeError` unless `options` are options `requestPermission` takes. */
 export const validatePermissionRequest = object({
   background: flag,

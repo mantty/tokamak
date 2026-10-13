@@ -24,6 +24,17 @@ export interface PositionOptions {
 export type PositionCallback = (position: Position) => void;
 export type PositionErrorCallback = (error: DOMException) => void;
 
+/**
+ * What runs at every launch: `setup` starts what it names and stops what it leaves out. Apple only;
+ * other platforms ignore these keys. Each relaunches the app for its events with Always permission.
+ */
+export interface SetupConfig {
+  /** Delivers significant changes of location to `onLocationUpdate`. */
+  readonly significantChanges?: boolean;
+  /** Delivers arrivals at and departures from places to `onVisit`. */
+  readonly visits?: boolean;
+}
+
 /** Whether the user granted a permission, denied it, or has not been asked. */
 export type Permission = "granted" | "denied" | "prompt";
 

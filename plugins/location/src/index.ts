@@ -1,7 +1,7 @@
 import { Plugin } from "@tokamakdev/plugin";
 import * as web from "../web/index.js";
 import { nonEmptyText } from "./checks.js";
-import { monitoredRegion, validatePermissionRequest, validateUpdateOptions } from "./options.js";
+import { monitoredRegion, validatePermissionRequest, validateSetup, validateUpdateOptions } from "./options.js";
 import type {
   ErrorListener,
   Listener,
@@ -16,6 +16,7 @@ import type {
   PositionOptions,
   Region,
   RegionTransition,
+  SetupConfig,
   UpdateOptions,
   Visit,
 } from "./types.js";
@@ -25,6 +26,16 @@ export type * from "./types.js";
 class Location extends Plugin {
   constructor() {
     super("location");
+  }
+
+  /**
+   * Applies what runs at every launch, replacing the previous configuration, which the plugin keeps
+   * and applies again at each start. Rejects with `TypeError`, changing nothing, when a value is
+   * invalid.
+   */
+  async setup(config: SetupConfig): Promise<void> {
+    validateSetup(config, "config");
+    return this.hasNativeTransport ? this.call("setup", config) : web.unsupported();
   }
 
   getCurrentPosition(options: PositionOptions = {}): Promise<Position> {

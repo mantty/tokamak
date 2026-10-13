@@ -81,6 +81,8 @@ class TokamakLocationPlugin(
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
         when (method) {
+            // Significant changes and visits, setup's keys, are Apple's.
+            "setup" -> reply(Result.success(null))
             "getCurrentPosition" ->
                 withPermission { granted ->
                     if (granted) currentPosition(arguments as? JSONObject, reply) else reply(permissionDenied())

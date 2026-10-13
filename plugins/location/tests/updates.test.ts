@@ -3,12 +3,12 @@ import { afterEach, test } from "node:test";
 
 import { connectNative, disconnectNative, dispatch } from "@tokamakdev/plugin/testing";
 
-import { location, type LocationUpdate, type UpdateOptions } from "../src/index.js";
+import { location, type LocationUpdate, type SetupConfig, type UpdateOptions } from "../src/index.js";
 import { onLocationError, onLocationUpdate, onRegionTransition, onVisit } from "../events/index.js";
 
 afterEach(disconnectNative);
 
-void test("calls the native plugin with each update method's arguments", async () => {
+void test("calls the native plugin with each update and setup method's arguments", async () => {
   const native = connectNative();
   const options = {
     activity: "fitness",
@@ -22,6 +22,12 @@ void test("calls the native plugin with each update method's arguments", async (
     [() => location.startUpdates(options), "startUpdates", options],
     [() => location.stopUpdates(), "stopUpdates", null],
     [() => location.getUpdates(), "getUpdates", null],
+    [() => location.setup({}), "setup", {}],
+    [
+      () => location.setup({ significantChanges: true, visits: false }),
+      "setup",
+      { significantChanges: true, visits: false },
+    ],
   ];
   for (const [run, method, arguments_] of cases) {
     const result = run();
@@ -46,6 +52,19 @@ void test("rejects update options it cannot send", async () => {
     await assert.rejects(
       location.startUpdates(options as unknown as UpdateOptions),
       (error: unknown) => error instanceof TypeError && error.message.startsWith(message),
+    );
+  }
+});
+
+void test("rejects a setup configuration it cannot apply", async () => {
+  connectNative();
+  for (const [config, message] of [
+    [{ visits: "yes" }, "config.visits must be a boolean"],
+    [null, "config must be an object"],
+  ] as const) {
+    await assert.rejects(
+      location.setup(config as unknown as SetupConfig),
+      (error: unknown) => error instanceof TypeError && error.message === message,
     );
   }
 });
@@ -82,6 +101,7 @@ void test("rejects updates on the web, whose listeners receive nothing", async (
   await assert.rejects(location.startUpdates(), unsupported);
   await assert.rejects(location.stopUpdates(), unsupported);
   await assert.rejects(location.getUpdates(), unsupported);
+  await assert.rejects(location.setup({}), unsupported);
   for (const remove of [
     location.onLocationUpdate(() => assert.fail()),
     location.onRegionTransition(() => assert.fail()),
