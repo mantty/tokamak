@@ -113,6 +113,10 @@ void test("passes native listener failures to each listener's error callback", (
   }
 });
 
+void test("checks a setup configuration before the web rejects it", async () => {
+  await assert.rejects(location.setup({ visits: "yes" } as unknown as SetupConfig), TypeError);
+});
+
 void test("checks update options before the web rejects them", async () => {
   for (const options of [null, { foregroundService: null }, { interval: -1 }]) {
     await assert.rejects(

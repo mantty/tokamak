@@ -921,6 +921,36 @@ fn builds_the_location_plugin_s_declarations_from_its_settings() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn stages_the_location_plugin_s_generated_android_manifest() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("android-arm64")?;
+    install_location_plugin(&project)?;
+
+    build_command("android", &project, &platform_pack)?
+        .arg("--location-background-updates")
+        .assert()
+        .success();
+
+    let plugin = project.join("build/android/demo-app.apk/plugins/location");
+    let manifest = fs::read_to_string(plugin.join("manifest"))?;
+    for declaration in [
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
+        "com.tokamak.plugins.location.TokamakLocationService",
+        "com.tokamak.plugins.location.TokamakLocationBootReceiver",
+    ] {
+        assert!(
+            manifest.contains(declaration),
+            "{declaration} is missing from {manifest}"
+        );
+    }
+    assert!(
+        !manifest.contains("ACCESS_BACKGROUND_LOCATION"),
+        "{manifest}"
+    );
+    Ok(())
+}
+
 /// Install the `alerts` plugin, whose build script adds the Swift files in its
 /// `sounds` setting's directory to its macOS sources.
 #[cfg(unix)]

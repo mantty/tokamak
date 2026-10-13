@@ -53,6 +53,11 @@ void test("rejects regions it cannot monitor", async () => {
   );
 });
 
+void test("checks regions before the web rejects them", async () => {
+  await assert.rejects(location.addRegion({ ...home, radius: -1 }), TypeError);
+  await assert.rejects(location.removeRegion(""), TypeError);
+});
+
 void test("rejects regions on the web", async () => {
   const unsupported = (error: unknown) => error instanceof DOMException && error.name === "NotSupportedError";
 
