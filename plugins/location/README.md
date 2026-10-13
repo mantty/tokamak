@@ -166,8 +166,10 @@ app's process for each update.
 - `foregroundService: { title, body, channel }` runs updates in a foreground
   service, with that notification in a channel of that name, at the requested
   rate off screen. It needs the `background-updates` build setting, and
-  rejects with `NotSupportedError` without it. Off screen it needs
-  background permission, and rejects with `NeedsUIError` without it.
+  rejects with `NotSupportedError` without it. Off screen it needs background
+  permission, and Android starts the service only within 10 seconds of an
+  update; otherwise it rejects with `NeedsUIError`. A region transition does
+  not allow the start.
 - The plugin requests updates again after a restart, an app update and a
   force stop, and starts the service again on screen, or after a restart or
   update with background permission. Android restarts a service it ends for

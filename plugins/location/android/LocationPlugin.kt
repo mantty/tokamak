@@ -1,6 +1,7 @@
 package com.tokamak.plugins.location
 
 import android.Manifest
+import android.app.ForegroundServiceStartNotAllowedException
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -359,10 +360,11 @@ class TokamakLocationPlugin(
     private fun locationFailure(error: Throwable): Result<Any?> = Result.failure(locationError(error))
 
     private fun locationError(error: Throwable): TokamakPluginError =
-        if (error is SecurityException) {
-            TokamakPluginError("NotAllowedError", "Location permission was denied")
-        } else {
-            TokamakPluginError("NotReadableError", error.message ?: "Location is unavailable")
+        when (error) {
+            is SecurityException -> TokamakPluginError("NotAllowedError", "Location permission was denied")
+            // Off screen, Android starts a foreground service only in response to some events.
+            is ForegroundServiceStartNotAllowedException -> TokamakPluginError.needsUI()
+            else -> TokamakPluginError("NotReadableError", error.message ?: "Location is unavailable")
         }
 
     private companion object {
