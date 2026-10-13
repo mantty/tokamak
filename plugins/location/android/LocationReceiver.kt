@@ -14,14 +14,13 @@ class TokamakLocationReceiver : BroadcastReceiver() {
     }
 }
 
-/** Requests updates and regions again after a restart or an app update, which remove them. */
+/** Requests updates again after a restart or an app update, which remove them, and regions after a restart. */
 class TokamakLocationBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action !in ACTIONS) return
-        (context.tokamakPlugin("location") as? TokamakLocationPlugin)?.restore(always = true)
-    }
-
-    private companion object {
-        val ACTIONS = setOf(Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED)
+        val plugin = context.tokamakPlugin("location") as? TokamakLocationPlugin ?: return
+        when (intent.action) {
+            Intent.ACTION_BOOT_COMPLETED -> plugin.restore(updatesRemoved = true, regionsRemoved = true)
+            Intent.ACTION_MY_PACKAGE_REPLACED -> plugin.restore(updatesRemoved = true, regionsRemoved = false)
+        }
     }
 }

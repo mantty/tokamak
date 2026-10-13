@@ -1,4 +1,15 @@
-import { atLeastZero, flag, nonEmptyText, object, oneOf, text, wholeAtLeastZero } from "./checks.js";
+import {
+  atLeastZero,
+  between,
+  flag,
+  nonEmptyText,
+  object,
+  oneOf,
+  positive,
+  text,
+  wholeAtLeastZero,
+} from "./checks.js";
+import type { Region } from "./types.js";
 
 /** Throws `TypeError` unless `options` are options `requestPermission` takes. */
 export const validatePermissionRequest = object({
@@ -13,5 +24,28 @@ export const validateUpdateOptions = object({
   accuracy: oneOf("high", "balanced", "low"),
   distance: atLeastZero,
   interval: wholeAtLeastZero,
-  foregroundService: object({ title: nonEmptyText, body: text, channel: nonEmptyText }, ["title", "body", "channel"]),
+  foregroundService: object(
+    { title: nonEmptyText, body: text, channel: nonEmptyText },
+    ["title", "body", "channel"],
+  ),
 });
+
+const REGION = object(
+  {
+    id: nonEmptyText,
+    latitude: between(-90, 90),
+    longitude: between(-180, 180),
+    radius: positive,
+    onEntry: flag,
+    onExit: flag,
+  },
+  ["id", "latitude", "longitude", "radius"],
+);
+
+/** `region`, with `onEntry` and `onExit` given. Throws `TypeError` unless it is a region to monitor. */
+export function monitoredRegion(region: Region): Required<Region> {
+  REGION(region, "region");
+  const { id, latitude, longitude, radius, onEntry = true, onExit = true } = region;
+  if (!onEntry && !onExit) throw new TypeError("region must report entry, exit or both");
+  return { id, latitude, longitude, radius, onEntry, onExit };
+}

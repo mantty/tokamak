@@ -16,8 +16,6 @@ final class TokamakLocationUpdates {
     /// indicator.
     private var session: CLBackgroundActivitySession?
   #endif
-  /// The messages of the problems the latest update reported.
-  private var problems: Set<String> = []
 
   init(events: TokamakLocationEvents) {
     self.events = events
@@ -53,7 +51,7 @@ final class TokamakLocationUpdates {
       session?.invalidate()
       session = nil
     #endif
-    problems = []
+    events.report([])
   }
 
   private func run(_ configuration: CLLocationUpdate.LiveConfiguration) {
@@ -83,20 +81,10 @@ final class TokamakLocationUpdates {
       }
       return
     }
-    report(update)
+    events.report(Self.problems(update))
     if update.location != nil || update.stationary {
       events.update(update.location, stationary: update.stationary)
     }
-  }
-
-  /// Reports each problem `update` names that the previous update did not.
-  @available(iOS 18, macOS 15, *)
-  private func report(_ update: CLLocationUpdate) {
-    let current = Self.problems(update)
-    for problem in current where !problems.contains(problem.message) {
-      events.fail(problem)
-    }
-    problems = Set(current.map(\.message))
   }
 
   /// The problems that suspend updates, which `update` names.

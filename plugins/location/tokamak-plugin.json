@@ -39,6 +39,7 @@
       "sources": [
         "apple/LocationEvents.swift",
         "apple/LocationPlugin.swift",
+        "apple/LocationRegions.swift",
         "apple/LocationUpdates.swift"
       ]
     },
@@ -47,6 +48,7 @@
       "sources": [
         "apple/LocationEvents.swift",
         "apple/LocationPlugin.swift",
+        "apple/LocationRegions.swift",
         "apple/LocationUpdates.swift"
       ]
     },
@@ -55,6 +57,7 @@
       "sources": [
         "android/LocationPlugin.kt",
         "android/LocationReceiver.kt",
+        "android/LocationRegions.kt",
         "android/LocationService.kt",
         "android/LocationUpdates.kt"
       ]

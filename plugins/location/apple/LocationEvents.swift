@@ -19,6 +19,8 @@ final class TokamakLocationEvents {
   private var positions: [[String: Any]] = []
   private var stationary: Bool?
   private var updating = false
+  /// The messages of the problems updates, or each region by id, reported last.
+  private var problems: [String?: Set<String>] = [:]
 
   init(host: TokamakHost) {
     self.host = host
@@ -76,6 +78,16 @@ final class TokamakLocationEvents {
         ? NSNull() : Self.milliseconds(visit.departureDate),
     ]
     send("onVisit", "visit", event)
+  }
+
+  /// Reports each of `problems` that updates, or the region `id`, did not
+  /// report last time.
+  func report(_ problems: [TokamakPluginError], region id: String? = nil) {
+    let previous = self.problems[id] ?? []
+    for problem in problems where !previous.contains(problem.message) {
+      fail(problem, region: id)
+    }
+    self.problems[id] = Set(problems.map(\.message))
   }
 
   /// Reports a background service's failure, which concerns the region `id`

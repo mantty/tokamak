@@ -52,6 +52,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private var prompts: [UUID: Prompt] = [:]
   private let events: TokamakLocationEvents
   private let liveUpdates: TokamakLocationUpdates
+  private let regions: TokamakLocationRegions
   #if os(iOS)
     /// The `CLServiceSession` iOS 18 needs for updates and regions to reach an
     /// app that is not in use, held while the app has Always permission.
@@ -63,6 +64,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     self.host = host
     events = TokamakLocationEvents(host: host)
     liveUpdates = TokamakLocationUpdates(events: events)
+    regions = TokamakLocationRegions(events: events)
     super.init()
     for manager in [updates, fixes] {
       manager.delegate = self
@@ -113,6 +115,30 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
         reply(.success(nil))
       case "getUpdates":
         reply(.success(liveUpdates.options))
+      case "addRegion":
+        try requirePermission()
+        guard updates.accuracyAuthorization == .fullAccuracy else {
+          throw TokamakPluginError(
+            name: "NotAllowedError", message: "Regions need precise location")
+        }
+        Task { @MainActor in
+          do throws(TokamakPluginError) {
+            try await regions.add(options)
+            reply(.success(nil))
+          } catch {
+            reply(.failure(error))
+          }
+        }
+      case "getRegions":
+        Task { @MainActor in reply(.success(await regions.all())) }
+      case "removeRegion":
+        guard let id = options["id"] as? String else {
+          throw TokamakPluginError(name: "TypeError", message: "id must be a string")
+        }
+        Task { @MainActor in
+          await regions.remove(id)
+          reply(.success(nil))
+        }
       default:
         throw .notSupported("\(id).\(method) is not supported")
       }

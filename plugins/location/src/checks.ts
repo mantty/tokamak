@@ -47,3 +47,19 @@ export function wholeAtLeastZero(value: unknown, path: string): void {
     throw new TypeError(`${path} must be a whole number of at least 0`);
   }
 }
+
+/** A number from `min` to `max`. */
+export function between(min: number, max: number): Check {
+  return (value, path) => {
+    if (!(typeof value === "number" && value >= min && value <= max)) {
+      throw new TypeError(`${path} must be a number from ${String(min)} to ${String(max)}`);
+    }
+  };
+}
+
+/** A finite number greater than 0. */
+export function positive(value: unknown, path: string): void {
+  if (!(typeof value === "number" && Number.isFinite(value) && value > 0)) {
+    throw new TypeError(`${path} must be a finite number greater than 0`);
+  }
+}

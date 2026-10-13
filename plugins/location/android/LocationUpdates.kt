@@ -71,13 +71,12 @@ internal class LocationUpdates(private val context: Context) {
     }
 
     /**
-     * Requests the running updates again: always after a restart or an app update, which remove the
-     * request, and otherwise only when their `PendingIntent` no longer exists, as after Android 15's
-     * force stop. Throws `SecurityException` when the app no longer has permission.
+     * Requests the running updates again when Android [removed] the request, or their `PendingIntent`
+     * no longer exists. Throws `SecurityException` when the app no longer has permission.
      */
-    fun restore(always: Boolean) {
+    fun restore(removed: Boolean) {
         val options = options ?: return
-        if (always || pendingIntent(PendingIntent.FLAG_NO_CREATE) == null) request(options)
+        if (removed || pendingIntent(PendingIntent.FLAG_NO_CREATE) == null) request(options)
     }
 
     private fun request(options: JSONObject) {

@@ -1,17 +1,20 @@
 import { Plugin } from "@tokamakdev/plugin";
 import * as web from "../web/index.js";
-import { validatePermissionRequest, validateUpdateOptions } from "./options.js";
+import { nonEmptyText } from "./checks.js";
+import { monitoredRegion, validatePermissionRequest, validateUpdateOptions } from "./options.js";
 import type {
   ErrorListener,
   Listener,
   LocationErrorEvent,
   LocationPermission,
   LocationUpdate,
+  MonitoredRegion,
   PermissionRequest,
   Position,
   PositionCallback,
   PositionErrorCallback,
   PositionOptions,
+  Region,
   RegionTransition,
   UpdateOptions,
   Visit,
@@ -79,6 +82,27 @@ class Location extends Plugin {
   /** The options of the running updates, or null when none are running. */
   getUpdates(): Promise<UpdateOptions | null> {
     return this.hasNativeTransport ? this.call("getUpdates") : web.unsupported();
+  }
+
+  /**
+   * Monitors a circular region, replacing one with the same `id`, until `removeRegion`. Its entries
+   * and exits reach `onRegionTransition`, including when the system launches the app for one. A
+   * region starts outside, so a device already inside reports an entry. Rejects with
+   * `NotAllowedError` without precise location, and with `QuotaExceededError` beyond Apple's 20.
+   */
+  async addRegion(region: Region): Promise<void> {
+    const monitored = monitoredRegion(region);
+    return this.hasNativeTransport ? this.call("addRegion", monitored) : web.unsupported();
+  }
+
+  /** The monitored regions. */
+  getRegions(): Promise<MonitoredRegion[]> {
+    return this.hasNativeTransport ? this.call("getRegions") : web.unsupported();
+  }
+
+  async removeRegion(id: string): Promise<void> {
+    nonEmptyText(id, "id");
+    return this.hasNativeTransport ? this.call("removeRegion", { id }) : web.unsupported();
   }
 
   /** Receives the updates the Worker's `onLocationUpdate` receives, while the listening page or Worker runs. */

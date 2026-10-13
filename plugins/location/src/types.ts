@@ -100,6 +100,25 @@ export interface LocationUpdate {
   readonly stationary?: boolean;
 }
 
+/** A circular region to monitor, with the same fields as the notifications plugin's `Region`. */
+export interface Region {
+  readonly id: string;
+  readonly latitude: number;
+  readonly longitude: number;
+  /** In metres. */
+  readonly radius: number;
+  /** Whether entering the region reaches `onRegionTransition`; true by default. */
+  readonly onEntry?: boolean;
+  /** Whether leaving it does; true by default. */
+  readonly onExit?: boolean;
+}
+
+/** A monitored region. */
+export interface MonitoredRegion extends Required<Region> {
+  /** Apple only: whether the device is inside the region, as the system last determined. */
+  readonly state?: "inside" | "outside" | "unknown";
+}
+
 /** An entry into or exit from a monitored region. */
 export interface RegionTransition {
   readonly id: string;
