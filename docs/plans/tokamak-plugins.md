@@ -61,10 +61,12 @@ or the first word of one of its own options or environment variables, and
 settings whose options would start with another plugin's longer ID. A manifest
 that declares settings names a Node `build` script in the package, which tok
 runs for each platform the plugin has a section for, with
-`{ platform, settings }` as JSON on stdin. The script validates the settings,
-exiting non-zero with its message on stderr to fail the build, and prints a
-JSON object of keys to add to the plugin's section, whose files are absolute
-paths. The Apple packs take `resources`, files placed in the app bundle's
+`{ platform, settings, output }` as JSON on stdin. `output` is an empty
+directory in the build directory for files the script generates. The script
+validates the settings, exiting non-zero with its message on stderr to fail
+the build, and prints a JSON object of keys to add to the plugin's section,
+whose files are absolute paths. tok prints what a script that succeeds writes
+to stderr as warnings naming the plugin. The Apple packs take `resources`, files placed in the app bundle's
 resources directory, and the Android pack takes `raw`, files added as raw
 resources.
 

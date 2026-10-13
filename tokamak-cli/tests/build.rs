@@ -927,9 +927,12 @@ fn install_plugin_with_settings(root: &Path) -> TestResult {
     fs::write(
         plugin.join("build.mjs"),
         r#"
-        import { readdirSync, readFileSync } from "node:fs";
-        const { settings } = JSON.parse(readFileSync(0, "utf8"));
+        import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+        const { settings, output } = JSON.parse(readFileSync(0, "utf8"));
         const sources = readdirSync(settings.sounds).map((name) => `${settings.sounds}/${name}`);
+        writeFileSync(`${output}/Generated.swift`, "// generated");
+        sources.push(`${output}/Generated.swift`);
+        console.error(`staged ${sources.length} sources`);
         console.log(JSON.stringify({ sources }));
         "#,
     )?;
@@ -938,7 +941,7 @@ fn install_plugin_with_settings(root: &Path) -> TestResult {
 
 #[cfg(unix)]
 #[test]
-fn stages_what_a_plugin_s_build_script_adds_from_its_settings() -> TestResult {
+fn stages_what_a_plugin_s_build_script_generates_and_prints_its_notices() -> TestResult {
     let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
     install_plugin_with_settings(&project)?;
     fs::create_dir_all(project.join("sounds"))?;
@@ -948,12 +951,17 @@ fn stages_what_a_plugin_s_build_script_adds_from_its_settings() -> TestResult {
         .arg("--alerts-macos-sounds")
         .arg(project.join("sounds"))
         .assert()
-        .success();
+        .success()
+        .stderr(contains("warning: plugin 'alerts': staged 2 sources\n"));
 
     let plugin = project.join("build/macos/demo-app.app/plugins/alerts");
     assert_eq!(
         fs::read_to_string(plugin.join("sources/0-Chime.swift"))?,
         "// chime"
+    );
+    assert_eq!(
+        fs::read_to_string(plugin.join("sources/1-Generated.swift"))?,
+        "// generated"
     );
     Ok(())
 }
