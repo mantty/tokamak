@@ -23,12 +23,12 @@ pub(crate) struct TokamakConfig {
     pub(crate) plugins: BTreeMap<String, PluginConfig>,
 }
 
-/// The values configured for a plugin: for every platform, and each
-/// platform's own, by namespace. Numbers and booleans are written as strings.
+/// The values configured for a plugin, as JSON: for every platform, and each
+/// platform's own, by namespace. The plugin's settings declare their kinds.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PluginConfig {
-    pub(crate) values: BTreeMap<String, String>,
-    pub(crate) platforms: BTreeMap<String, BTreeMap<String, String>>,
+    pub(crate) values: BTreeMap<String, Value>,
+    pub(crate) platforms: BTreeMap<String, BTreeMap<String, Value>>,
 }
 
 /// The values configured for a platform.
@@ -136,7 +136,7 @@ fn plugin_config(id: &str, section: serde_json::Map<String, Value>) -> Result<Pl
             .iter()
             .any(|platform| platform.namespace() == key)
         {
-            if let Some(value) = setting_value(&field, &key, value)? {
+            if let Some(value) = plugin_value(&field, &key, value)? {
                 config.values.insert(key, value);
             }
             continue;
@@ -148,7 +148,7 @@ fn plugin_config(id: &str, section: serde_json::Map<String, Value>) -> Result<Pl
         };
         let platform = config.platforms.entry(key).or_default();
         for (key, value) in values {
-            if let Some(value) = setting_value(&format!("{field}.{key}"), &key, value)? {
+            if let Some(value) = plugin_value(&format!("{field}.{key}"), &key, value)? {
                 platform.insert(key, value);
             }
         }
@@ -182,7 +182,7 @@ fn platform_config(root: &Path, prefix: &str, raw: RawPlatformConfig) -> Result<
     let field = |key: &str| format!("{prefix}{key}");
     let mut pack = BTreeMap::new();
     for (key, value) in raw.pack {
-        if let Some(value) = setting_value(&field(&key), &key, value)? {
+        if let Some(value) = pack_value(&field(&key), &key, value)? {
             pack.insert(key, value);
         }
     }
@@ -203,13 +203,15 @@ fn platform_config(root: &Path, prefix: &str, raw: RawPlatformConfig) -> Result<
     })
 }
 
-/// A pack's or plugin's setting `key` at `field`.
-fn setting_value(field: &str, key: &str, value: Value) -> Result<Option<String>> {
-    if !is_valid_key(key) {
-        return Err(invalid(format!(
-            "{field} must be lowercase words joined by hyphens"
-        )));
-    }
+/// A plugin's setting `key` at `field`, unset when `null`; resolving it checks its kind.
+fn plugin_value(field: &str, key: &str, value: Value) -> Result<Option<Value>> {
+    check_key(field, key)?;
+    Ok((!value.is_null()).then_some(value))
+}
+
+/// A pack's setting `key` at `field`.
+fn pack_value(field: &str, key: &str, value: Value) -> Result<Option<String>> {
+    check_key(field, key)?;
     let value = match value {
         Value::Null => return Ok(None),
         Value::String(value) => value,
@@ -222,6 +224,15 @@ fn setting_value(field: &str, key: &str, value: Value) -> Result<Option<String>>
         }
     };
     validate_value(field, value).map(Some)
+}
+
+fn check_key(field: &str, key: &str) -> Result<()> {
+    if is_valid_key(key) {
+        return Ok(());
+    }
+    Err(invalid(format!(
+        "{field} must be lowercase words joined by hyphens"
+    )))
 }
 
 /// Why `name` cannot be an app display name, when it cannot.
@@ -244,10 +255,14 @@ fn validate_name(field: &str, value: String) -> Result<String> {
     }
 }
 
-/// Why `value` cannot be a setting value, when it cannot.
-pub(crate) fn value_problem(value: &str) -> Option<&'static str> {
+/// What a setting's text must be.
+pub(crate) const VALUE_FORM: &str =
+    "a non-empty value without surrounding whitespace or control characters";
+
+/// Why `value` cannot be a setting's text, when it cannot.
+pub(crate) fn value_problem(value: &str) -> Option<String> {
     (value.trim().is_empty() || value != value.trim() || value.chars().any(char::is_control))
-        .then_some("must be a non-empty value without surrounding whitespace or control characters")
+        .then(|| format!("must be {VALUE_FORM}"))
 }
 
 fn validate_value(field: &str, value: String) -> Result<String> {
@@ -444,12 +459,12 @@ mod tests {
     }
 
     #[test]
-    fn reads_other_top_level_objects_as_plugin_values() -> TestResult {
+    fn reads_other_top_level_objects_as_plugin_values_kept_as_json() -> TestResult {
         let temporary = tempfile::tempdir()?;
         let config = load(
             temporary.path(),
             r#"{
-              "notifications": { "sounds": "sounds", "limit": 3, "ios": { "sounds": "ios-sounds" }, "macos": null },
+              "notifications": { "sounds": "sounds", "limit": 3, "ios": { "names": ["a"] }, "macos": null },
               "secure-storage": {},
               "location": null
             }"#,
@@ -462,12 +477,12 @@ mod tests {
                     "notifications".to_owned(),
                     PluginConfig {
                         values: BTreeMap::from([
-                            ("limit".to_owned(), "3".to_owned()),
-                            ("sounds".to_owned(), "sounds".to_owned()),
+                            ("limit".to_owned(), serde_json::json!(3)),
+                            ("sounds".to_owned(), serde_json::json!("sounds")),
                         ]),
                         platforms: BTreeMap::from([(
                             "ios".to_owned(),
-                            BTreeMap::from([("sounds".to_owned(), "ios-sounds".to_owned())]),
+                            BTreeMap::from([("names".to_owned(), serde_json::json!(["a"]))]),
                         )]),
                     },
                 ),
@@ -494,12 +509,8 @@ mod tests {
                 "notifications.ios must be an object",
             ),
             (
-                r#"{ "notifications": { "ios": { "sounds": [] } } }"#,
-                "notifications.ios.sounds must be a string",
-            ),
-            (
-                r#"{ "notifications": { "sounds": " " } }"#,
-                "notifications.sounds must be a non-empty value",
+                r#"{ "notifications": { "ios": { "Sounds": [] } } }"#,
+                "notifications.ios.Sounds must be lowercase words",
             ),
         ];
         for (content, expected) in cases {

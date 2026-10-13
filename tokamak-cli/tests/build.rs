@@ -87,6 +87,7 @@ fn declare_storage(root: &Path) -> TestResult {
     )
 }
 
+/// Install this repository's location plugin.
 #[cfg(unix)]
 fn install_location_plugin(root: &Path) -> TestResult {
     fs::write(
@@ -94,28 +95,9 @@ fn install_location_plugin(root: &Path) -> TestResult {
         r#"{"name":"demo-app","scripts":{"build":"echo already-built"},"dependencies":{"@tokamakdev/plugin-location":"1.0.0"}}"#,
     )?;
     let plugin = root.join("node_modules/@tokamakdev/plugin-location");
-    fs::create_dir_all(plugin.join("apple/ios"))?;
-    fs::create_dir_all(plugin.join("apple/macos"))?;
-    for (path, contents) in [
-        (
-            "tokamak-plugin.json",
-            include_str!("../../plugins/location/tokamak-plugin.json"),
-        ),
-        (
-            "apple/LocationPlugin.swift",
-            include_str!("../../plugins/location/apple/LocationPlugin.swift"),
-        ),
-        (
-            "apple/ios/Info.plist",
-            include_str!("../../plugins/location/apple/ios/Info.plist"),
-        ),
-        (
-            "apple/macos/Info.plist",
-            include_str!("../../plugins/location/apple/macos/Info.plist"),
-        ),
-    ] {
-        fs::write(plugin.join(path), contents)?;
-    }
+    fs::create_dir_all(&plugin)?;
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/location");
+    tokamak_cli::copy_dir_contents(&source, &plugin)?;
     Ok(())
 }
 
@@ -895,11 +877,77 @@ fn stages_the_plugins_installed_above_a_relative_project_directory() -> TestResu
         fs::read_to_string(plugin.join("class"))?,
         "TokamakLocationPlugin"
     );
-    assert_eq!(
-        fs::read_to_string(plugin.join("plist"))?,
-        include_str!("../../plugins/location/apple/macos/Info.plist")
+    assert!(
+        fs::read_to_string(plugin.join("plist"))?.contains("<key>NSLocationUsageDescription</key>")
     );
-    assert!(plugin.join("sources/0-LocationPlugin.swift").is_file());
+    assert!(plugin.join("sources/1-LocationPlugin.swift").is_file());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn builds_the_location_plugin_s_declarations_from_its_settings() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("ios-arm64")?;
+    install_location_plugin(&project)?;
+
+    build_command("ios", &project, &platform_pack)?
+        .args([
+            "--location-background",
+            "--location-precision",
+            "approximate",
+        ])
+        .args([
+            "--location-accuracy-purposes",
+            "Directions=Shows directions",
+        ])
+        .assert()
+        .success();
+
+    let plist = fs::read_to_string(project.join("build/ios/demo-app.app/plugins/location/plist"))?;
+    for key in [
+        "NSLocationWhenInUseUsageDescription",
+        "NSLocationAlwaysAndWhenInUseUsageDescription",
+        "NSLocationDefaultAccuracyReduced",
+        "<key>Directions</key>",
+    ] {
+        assert!(plist.contains(key), "{key} is missing from {plist}");
+    }
+    assert!(!plist.contains("UIBackgroundModes"), "{plist}");
+    build_command("ios", &project, &platform_pack)?
+        .args(["--location-always-description", "Records runs"])
+        .assert()
+        .failure()
+        .stderr(contains("always-description needs background"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn stages_the_location_plugin_s_generated_android_manifest() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("android-arm64")?;
+    install_location_plugin(&project)?;
+
+    build_command("android", &project, &platform_pack)?
+        .arg("--location-background-updates")
+        .assert()
+        .success();
+
+    let plugin = project.join("build/android/demo-app.apk/plugins/location");
+    let manifest = fs::read_to_string(plugin.join("manifest"))?;
+    for declaration in [
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
+        "com.tokamak.plugins.location.TokamakLocationService",
+        "com.tokamak.plugins.location.TokamakLocationBootReceiver",
+    ] {
+        assert!(
+            manifest.contains(declaration),
+            "{declaration} is missing from {manifest}"
+        );
+    }
+    assert!(
+        !manifest.contains("ACCESS_BACKGROUND_LOCATION"),
+        "{manifest}"
+    );
     Ok(())
 }
 
@@ -927,9 +975,12 @@ fn install_plugin_with_settings(root: &Path) -> TestResult {
     fs::write(
         plugin.join("build.mjs"),
         r#"
-        import { readdirSync, readFileSync } from "node:fs";
-        const { settings } = JSON.parse(readFileSync(0, "utf8"));
+        import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+        const { settings, output } = JSON.parse(readFileSync(0, "utf8"));
         const sources = readdirSync(settings.sounds).map((name) => `${settings.sounds}/${name}`);
+        writeFileSync(`${output}/Generated.swift`, "// generated");
+        sources.push(`${output}/Generated.swift`);
+        console.error(`staged ${sources.length} sources`);
         console.log(JSON.stringify({ sources }));
         "#,
     )?;
@@ -938,7 +989,7 @@ fn install_plugin_with_settings(root: &Path) -> TestResult {
 
 #[cfg(unix)]
 #[test]
-fn stages_what_a_plugin_s_build_script_adds_from_its_settings() -> TestResult {
+fn stages_what_a_plugin_s_build_script_generates_and_prints_its_notices() -> TestResult {
     let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
     install_plugin_with_settings(&project)?;
     fs::create_dir_all(project.join("sounds"))?;
@@ -948,12 +999,17 @@ fn stages_what_a_plugin_s_build_script_adds_from_its_settings() -> TestResult {
         .arg("--alerts-macos-sounds")
         .arg(project.join("sounds"))
         .assert()
-        .success();
+        .success()
+        .stderr(contains("warning: plugin 'alerts': staged 2 sources\n"));
 
     let plugin = project.join("build/macos/demo-app.app/plugins/alerts");
     assert_eq!(
         fs::read_to_string(plugin.join("sources/0-Chime.swift"))?,
         "// chime"
+    );
+    assert_eq!(
+        fs::read_to_string(plugin.join("sources/1-Generated.swift"))?,
+        "// generated"
     );
     Ok(())
 }
@@ -974,9 +1030,51 @@ fn lists_plugin_settings_in_help_and_rejects_undeclared_ones() -> TestResult {
         .args(["--alerts-volume", "3"])
         .assert()
         .failure()
-        .stderr(contains(
-            "unknown option --alerts-volume; plugin alerts accepts --alerts-sounds",
-        ));
+        .stderr(contains("unexpected argument '--alerts-volume' found"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn passes_typed_settings_with_their_defaults_to_build_scripts() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
+    install_plugin_with_settings(&project)?;
+    let plugin = project.join("node_modules/alerts");
+    fs::write(
+        plugin.join("tokamak-plugin.json"),
+        serde_json::json!({
+            "schemaVersion": 1,
+            "id": "alerts",
+            "settings": {
+                "loud": { "kind": "boolean", "description": "Loud", "default": false },
+                "names": { "kind": "list", "of": "string", "description": "Names" },
+                "tone": {
+                    "kind": "enum",
+                    "values": ["soft", "sharp"],
+                    "description": "Tone",
+                    "default": "soft",
+                },
+            },
+            "build": "build.mjs",
+            "platforms": { "macos": { "class": "Alerts" } },
+        })
+        .to_string(),
+    )?;
+    fs::write(
+        plugin.join("build.mjs"),
+        r#"
+        import { readFileSync } from "node:fs";
+        console.error(JSON.stringify(JSON.parse(readFileSync(0, "utf8")).settings));
+        process.exit(1);
+        "#,
+    )?;
+
+    build_command("macos", &project, &platform_pack)?
+        .args(["--alerts-loud", "--alerts-names", "a,b"])
+        .env("TOKAMAK_ALERTS_MACOS_NAMES", "c")
+        .assert()
+        .failure()
+        .stderr(contains(r#"{"loud":true,"names":["a","b"],"tone":"soft"}"#));
     Ok(())
 }
 

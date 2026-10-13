@@ -43,22 +43,32 @@ resolved from the nearest `node_modules` of the app or a parent directory.
 A platform omitted from the manifest has no native implementation. Calls made
 without an implementation throw `NotSupportedError`.
 
-A manifest may declare build `settings`, each with a `kind` (`string` or
-`path`) and a `description`, as a platform pack's `variables.json` does. Apps
-set them under the plugin's ID: `--<id>-<key>`, `TOKAMAK_<ID>_<KEY>` and
-`<id>.<key>`, and for one platform `--<id>-<platform>-<key>`,
-`TOKAMAK_<ID>_<PLATFORM>_<KEY>` and `<id>.<platform>.<key>`. tok rejects plugin
+A manifest may declare build `settings`, each with a `kind`, a `description`
+and an optional `default` of its kind. A kind is `boolean`, `integer`,
+`number`, `string`, `path`, `enum` with `values`, or `list` or `map` with `of`,
+the kind of their items (`{ "kind": "map", "of": "string" }`). Apps set them
+under the plugin's ID: `--<id>-<key>`, `TOKAMAK_<ID>_<KEY>` and `<id>.<key>`,
+and for one platform `--<id>-<platform>-<key>`,
+`TOKAMAK_<ID>_<PLATFORM>_<KEY>` and `<id>.<platform>.<key>`. A boolean option
+is a flag that also takes `=true` or `=false`. A list's items, and a map's
+`key=value` items, are comma-separated in options and environment variables,
+and options also repeat; the configuration takes arrays and objects. tok
+parses each value into its kind, so a build script receives JSON of the kind,
+with paths absolute and defaults applied. `--help` lists the settings with
+their kinds, values and defaults. tok rejects plugin
 IDs that start with a platform name, a top-level key of the `tokamak()` options
 or the first word of one of its own options or environment variables, and
 settings whose options would start with another plugin's longer ID. A manifest
 that declares settings names a Node `build` script in the package, which tok
 runs for each platform the plugin has a section for, with
-`{ platform, settings }` as JSON on stdin. The script validates the settings,
-exiting non-zero with its message on stderr to fail the build, and prints a
-JSON object of keys to add to the plugin's section, whose files are absolute
-paths. The Apple packs take `resources`, files placed in the app bundle's
-resources directory, and the Android pack takes `raw`, files added as raw
-resources.
+`{ platform, settings, output }` as JSON on stdin. `output` is an empty
+directory in the build directory for files the script generates. The script
+validates the settings, exiting non-zero with its message on stderr to fail
+the build, and prints a JSON object of keys to add to the plugin's section,
+whose files are absolute paths. tok prints what a script that succeeds writes
+to stderr as warnings naming the plugin. The Apple packs take `resources`,
+files placed in the app bundle's resources directory, and the Android pack
+takes `raw`, files added as raw resources.
 
 ## Native build
 
@@ -128,10 +138,23 @@ unless the app's plist sets that key path.
 
 - `getCurrentPosition()`
 - `watchPosition(next, error)`, returning a stop function
+- `permission()`, `requestPermission()` for in-use, background and precise
+  location, `servicesEnabled()` and `openSettings()`
+- continuous updates (`startUpdates`, `stopUpdates`, `getUpdates`), circular
+  regions (`addRegion`, `getRegions`, `removeRegion`), and on Apple platforms
+  significant changes and visits (`setup`), which reach the Worker's
+  `onLocationUpdate`, `onRegionTransition`, `onVisit` and `onLocationError`
+  events and the plugin's listeners, including when the system launches the
+  app for them
 
 Web uses `navigator.geolocation`. macOS, iOS, and iOS Simulator use
-`CoreLocation`. Android uses `LocationManager`. Windows uses WebView2's
-location implementation, with consent restricted to the app origin.
+`CoreLocation`: `CLLocationUpdate.liveUpdates` for updates and `CLMonitor` for
+regions. Android uses `LocationManager`, with `PendingIntent` updates and
+proximity alerts that start the app's process, and a location foreground
+service. Windows uses WebView2's location implementation, with consent
+restricted to the app origin. The plugin's build settings declare background
+location, updates off screen and approximate precision; its build script
+writes the Info.plist and Android manifest from them.
 
 `@tokamakdev/plugin-secure-storage` stores device-only strings by name, in the
 Keychain on Apple platforms and with per-value Android Keystore keys on

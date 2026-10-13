@@ -143,7 +143,12 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         .map(|(platform, pack)| {
             let settings = settings::resolve(&sources, *platform, &pack.manifest)?;
             let plugin_settings = settings::resolve_plugins(&sources, *platform, plugins)?;
-            let generated = plugins::generate(plugins, *platform, &plugin_settings)?;
+            let generated = plugins::generate(
+                plugins,
+                *platform,
+                &plugin_settings,
+                &plugin_output(&build_dir, *platform),
+            )?;
             plugins::check(plugins, &pack.manifest, &generated)?;
             Ok(PlatformBuild {
                 platform: *platform,
@@ -199,10 +204,15 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
     let platform_settings = settings::resolve(&sources, request.platform, manifest)?;
     let plugins = request.plugins;
     let plugin_settings = settings::resolve_plugins(&sources, request.platform, plugins)?;
-    let generated = plugins::generate(plugins, request.platform, &plugin_settings)?;
+    let build_dir = request.project.join("build");
+    let generated = plugins::generate(
+        plugins,
+        request.platform,
+        &plugin_settings,
+        &plugin_output(&build_dir, request.platform),
+    )?;
     let app = resolve_app(&platform_settings, request.worker_name, request.platform)?;
     let version = settings::version(&sources)?;
-    let build_dir = request.project.join("build");
     let (input, project) = prepare_platform_input(request.project, &build_dir, request.platform)?;
     plugins::stage(plugins, manifest, &generated, &input.join("plugins"))
         .context("stage native plugin inputs")?;
@@ -237,6 +247,14 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
         app_slug: app.slug,
         identifier: app.identifier,
     })
+}
+
+/// Where plugins' build scripts write the files they generate for `platform`.
+fn plugin_output(build_dir: &Path, platform: Platform) -> PathBuf {
+    build_dir
+        .join(".tokamak")
+        .join("plugins")
+        .join(platform.directory_name())
 }
 
 fn validate_request(request: &BuildRequest) -> Result<()> {

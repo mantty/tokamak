@@ -10,11 +10,11 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use tokamak_cli::{
-    PackVariable, Platform, PlatformPackManifest, PluginKeyKind, copy_file, is_valid_key,
-};
+use tokamak_cli::{Platform, PlatformPackManifest, PluginKeyKind, copy_file, is_valid_key};
 
 use super::packs::command_path;
+use super::paths::reset_path;
+use super::plugin_settings::{Setting, option_name, option_namespaces};
 
 const MANIFEST: &str = "tokamak-plugin.json";
 
@@ -49,7 +49,7 @@ pub(crate) struct Plugin {
     pub(crate) id: String,
     /// The build settings the plugin accepts, by key.
     #[serde(default)]
-    pub(crate) settings: BTreeMap<String, PackVariable>,
+    pub(crate) settings: BTreeMap<String, Setting>,
     /// A Node script, in the package, that checks the settings and adds keys
     /// to the plugin's platform section.
     build: Option<String>,
@@ -94,19 +94,13 @@ pub(crate) fn discover(project: &Path) -> Result<Vec<Plugin>> {
 /// variable name, that starts with another plugin's longer ID: `secure`'s
 /// `storage-x` and `--secure-storage-x`, which goes to `secure-storage`.
 fn reject_shared_option_names(plugins: &[Plugin]) -> Result<()> {
-    let prefixes = std::iter::once(String::new())
-        .chain(
-            Platform::ALL
-                .iter()
-                .map(|platform| format!("{}-", platform.namespace())),
-        )
-        .collect::<Vec<_>>();
-    let prefixes = prefixes.as_slice();
+    let namespaces = option_namespaces().collect::<Vec<_>>();
+    let namespaces = namespaces.as_slice();
     let names = plugins.iter().flat_map(|plugin| {
         plugin.settings.keys().flat_map(move |key| {
-            prefixes
+            namespaces
                 .iter()
-                .map(move |prefix| (plugin, key, format!("{}-{prefix}{key}", plugin.id)))
+                .map(move |namespace| (plugin, key, option_name(&plugin.id, *namespace, key)))
         })
     });
     for (plugin, key, name) in names {
@@ -125,12 +119,15 @@ fn reject_shared_option_names(plugins: &[Plugin]) -> Result<()> {
 }
 
 /// Runs each plugin's build script for `platform` with its resolved
-/// `settings`, by plugin ID, and returns the keys the scripts add to the
-/// plugins' sections. Plugins without a section for the platform are skipped.
+/// `settings`, by plugin ID, and an empty directory for the files it
+/// generates, `<output>/<id>`. Returns the keys the scripts add to the
+/// plugins' sections, and prints what a script that succeeds writes to stderr
+/// as warnings. Plugins without a section for the platform are skipped.
 pub(crate) fn generate(
     plugins: &[Plugin],
     platform: Platform,
-    settings: &BTreeMap<String, BTreeMap<String, String>>,
+    settings: &BTreeMap<String, Map<String, Value>>,
+    output: &Path,
 ) -> Result<Generated> {
     let namespace = platform.namespace();
     let mut generated = Generated::new();
@@ -142,20 +139,36 @@ pub(crate) fn generate(
             continue;
         }
         let script = plugin.package_file("build script", script)?;
+        let output = empty_directory(&output.join(&plugin.id))?;
         let input = json!({
             "platform": namespace,
             "settings": settings.get(&plugin.id).cloned().unwrap_or_default(),
+            "output": output,
         });
-        let keys = run_build_script(&script, &input).with_context(|| {
+        let (keys, notices) = run_build_script(&script, &input).with_context(|| {
             format!("plugin '{}' build script failed for {namespace}", plugin.id)
         })?;
+        for notice in notices.lines().filter(|line| !line.trim().is_empty()) {
+            eprintln!("warning: plugin '{}': {notice}", plugin.id);
+        }
         generated.insert(plugin.id.clone(), keys);
     }
     Ok(generated)
 }
 
-/// The object `script` writes to stdout, given `input` as JSON on stdin.
-fn run_build_script(script: &Path, input: &Value) -> Result<Map<String, Value>> {
+/// `directory`, emptied, as UTF-8.
+fn empty_directory(directory: &Path) -> Result<String> {
+    reset_path(directory)?;
+    fs::create_dir_all(directory)?;
+    directory
+        .to_str()
+        .map(str::to_owned)
+        .with_context(|| format!("{} must be a UTF-8 path", directory.display()))
+}
+
+/// The object `script` writes to stdout, and what it writes to stderr, given
+/// `input` as JSON on stdin.
+fn run_build_script(script: &Path, input: &Value) -> Result<(Map<String, Value>, String)> {
     let mut child = Command::new("node")
         .arg(command_path(script))
         .stdin(Stdio::piped())
@@ -182,7 +195,9 @@ fn run_build_script(script: &Path, input: &Value) -> Result<Map<String, Value>> 
         }
         bail!("{}", message.trim());
     }
-    serde_json::from_slice(&output.stdout).context("the script must print a JSON object")
+    let keys =
+        serde_json::from_slice(&output.stdout).context("the script must print a JSON object")?;
+    Ok((keys, String::from_utf8_lossy(&output.stderr).into_owned()))
 }
 
 impl Plugin {
@@ -817,7 +832,8 @@ mod tests {
     }
 
     #[test]
-    fn stages_files_the_build_script_adds_from_the_settings() -> TestResult {
+    fn stages_files_the_build_script_adds_from_the_settings_and_writes_to_its_output() -> TestResult
+    {
         let project = tempfile::tempdir()?;
         let plugin = install_plugin(
             project.path(),
@@ -832,13 +848,17 @@ mod tests {
         fs::write(
             plugin.join("build.mjs"),
             r#"
-            import { readFileSync } from "node:fs";
-            const { platform, settings } = JSON.parse(readFileSync(0, "utf8"));
+            import { readFileSync, writeFileSync } from "node:fs";
+            const { platform, settings, output } = JSON.parse(readFileSync(0, "utf8"));
             if (platform === "android") {
               console.error("no sounds for android");
               process.exit(1);
             }
-            console.log(JSON.stringify({ sources: [settings.sounds + "/chime.swift"] }));
+            writeFileSync(output + "/Info.plist", "generated");
+            console.log(JSON.stringify({
+              sources: [settings.sounds + "/chime.swift"],
+              plist: output + "/Info.plist",
+            }));
             "#,
         )?;
         let sounds = project.path().join("sounds");
@@ -847,10 +867,13 @@ mod tests {
         let plugins = discover(project.path())?;
         let settings = BTreeMap::from([(
             "alerts".to_owned(),
-            BTreeMap::from([("sounds".to_owned(), sounds.to_string_lossy().into_owned())]),
+            serde_json::Map::from_iter([("sounds".to_owned(), sounds.to_string_lossy().into())]),
         )]);
 
-        let generated = generate(&plugins, Platform::Ios, &settings)?;
+        let output = project.path().join("output");
+        fs::create_dir_all(output.join("alerts"))?;
+        fs::write(output.join("alerts/stale"), "")?;
+        let generated = generate(&plugins, Platform::Ios, &settings, &output)?;
         let staged = project.path().join("staged");
         stage(&plugins, &pack(Target::IosArm64), &generated, &staged)?;
 
@@ -858,7 +881,12 @@ mod tests {
             fs::read_to_string(staged.join("alerts/sources/0-chime.swift"))?,
             "chime"
         );
-        let Err(error) = generate(&plugins, Platform::Android, &settings) else {
+        assert_eq!(
+            fs::read_to_string(staged.join("alerts/plist"))?,
+            "generated"
+        );
+        assert!(!output.join("alerts/stale").exists());
+        let Err(error) = generate(&plugins, Platform::Android, &settings, &output) else {
             return Err("the failing script was accepted".into());
         };
         let error = format!("{error:#}");
@@ -943,12 +971,13 @@ mod tests {
             fs::write(project.path().join("node_modules/build.mjs"), script)?;
             let plugins = discover(project.path())?;
 
-            let Err(error) = generate(&plugins, Platform::Ios, &BTreeMap::new()) else {
+            let output = project.path().join("output");
+            let Err(error) = generate(&plugins, Platform::Ios, &BTreeMap::new(), &output) else {
                 return Err(format!("{script} was accepted").into());
             };
 
             assert!(format!("{error:#}").contains(message), "{error:#}");
-            assert!(generate(&plugins, Platform::Android, &BTreeMap::new())?.is_empty());
+            assert!(generate(&plugins, Platform::Android, &BTreeMap::new(), &output)?.is_empty());
         }
         Ok(())
     }

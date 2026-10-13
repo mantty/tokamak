@@ -12,7 +12,9 @@
 //! Plugins declare settings too, under their ID: `--<id>-<key>`,
 //! `TOKAMAK_<ID>_<KEY>` and `<id>.<key>`, and for one platform
 //! `--<id>-<platform>-<key>`, `TOKAMAK_<ID>_<PLATFORM>_<KEY>` and
-//! `<id>.<platform>.<key>`, with the same precedence.
+//! `<id>.<platform>.<key>`, with the same precedence. Their options are clap
+//! arguments built from the plugins' manifests, and their values are JSON of
+//! the kind each setting declares.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -21,12 +23,14 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
-use clap::Args;
+use anyhow::{Context, Result, anyhow, bail};
+use clap::{Arg, ArgMatches, Args};
+use serde_json::{Map, Value};
 use tokamak_cli::{
     Platform, PlatformPackManifest, SHARED_PLATFORM_KEYS, VariableKind, is_valid_key,
 };
 
+use super::plugin_settings::{Kind, Setting, option_name, option_namespaces, option_text};
 use super::plugins::Plugin;
 use super::tokamak_config::{TokamakConfig, app_name_problem, value_problem};
 
@@ -54,21 +58,46 @@ pub(crate) struct TopOptions {
     pub(crate) version: Option<String>,
 }
 
-/// Values from `--<namespace>-<key>` options, by platform namespace or plugin
-/// ID, then key.
+/// Values from `--<namespace>-<key>` options: platforms' text, by namespace
+/// then key, and plugins' JSON, by option name without `--`.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct NamespacedOptions(BTreeMap<String, BTreeMap<String, String>>);
+pub(crate) struct NamespacedOptions {
+    platforms: BTreeMap<String, BTreeMap<String, String>>,
+    plugins: BTreeMap<String, Value>,
+}
 
 impl NamespacedOptions {
     fn value(&self, namespace: &str, key: &str) -> Result<Option<String>> {
-        let value = self.0.get(namespace).and_then(|values| values.get(key));
+        let value = self
+            .platforms
+            .get(namespace)
+            .and_then(|values| values.get(key));
         value
             .map(|value| valid(&format!("--{namespace}-{key}"), value.clone()))
             .transpose()
     }
 
     fn keys(&self, namespace: &str) -> impl Iterator<Item = &String> {
-        self.0.get(namespace).into_iter().flat_map(BTreeMap::keys)
+        self.platforms
+            .get(namespace)
+            .into_iter()
+            .flat_map(BTreeMap::keys)
+    }
+
+    /// These options with the values `matches` holds for the options
+    /// [`plugin_arguments`] adds.
+    pub(crate) fn with_plugin_options(mut self, matches: &ArgMatches, plugins: &[Plugin]) -> Self {
+        for (plugin, key, setting) in declared_settings(plugins) {
+            for namespace in option_namespaces() {
+                let name = option_name(&plugin.id, namespace, key);
+                if !matches.contains_id(&name) {
+                    continue;
+                }
+                let value = setting.kind.option_value(matches, &name);
+                self.plugins.insert(name, value);
+            }
+        }
+        self
     }
 }
 
@@ -121,13 +150,12 @@ pub(crate) struct PlatformSettings {
     pub(crate) pack_environment: BTreeMap<String, OsString>,
 }
 
-/// Split `--<namespace>-<key> <value>` and `--<namespace>-<key>=<value>`
-/// options out of `arguments`, which stop at `--`, where a namespace is a
-/// platform's or one of `plugin_ids`. Other arguments keep their order. A
-/// separate value may not start with `-`, as with other options.
+/// Split platforms' `--<namespace>-<key> <value>` and
+/// `--<namespace>-<key>=<value>` options out of `arguments`, which stop at
+/// `--`. Other arguments keep their order. A separate value may not start
+/// with `-`, as with other options.
 pub(crate) fn split_namespaced_options(
     arguments: Vec<OsString>,
-    plugin_ids: &[&str],
 ) -> Result<(Vec<OsString>, NamespacedOptions)> {
     let mut remaining = Vec::new();
     let mut options = NamespacedOptions::default();
@@ -139,7 +167,7 @@ pub(crate) fn split_namespaced_options(
             break;
         }
         let text = argument.to_string_lossy();
-        let Some((namespace, key, value)) = namespaced_option(&text, plugin_ids) else {
+        let Some((namespace, key, value)) = namespaced_option(&text) else {
             remaining.push(argument);
             continue;
         };
@@ -154,7 +182,7 @@ pub(crate) fn split_namespaced_options(
             Some(value) => value,
             None => separate_value(arguments.next(), &option)?,
         };
-        let values = options.0.entry(namespace.to_owned()).or_default();
+        let values = options.platforms.entry(namespace.to_owned()).or_default();
         if values.insert(key, value).is_some() {
             bail!("{option} is given more than once");
         }
@@ -162,27 +190,17 @@ pub(crate) fn split_namespaced_options(
     Ok((remaining, options))
 }
 
-/// The namespace, key, and inline value of a platform's or plugin's option,
-/// taking the longest namespace that matches.
-fn namespaced_option<'a>(
-    argument: &str,
-    plugin_ids: &[&'a str],
-) -> Option<(&'a str, String, Option<String>)> {
+/// The namespace, key, and inline value of a platform's option.
+fn namespaced_option(argument: &str) -> Option<(&'static str, String, Option<String>)> {
     let option = argument.strip_prefix("--")?;
     let (name, value) = match option.split_once('=') {
         Some((name, value)) => (name, Some(value.to_owned())),
         None => (option, None),
     };
-    Platform::ALL
-        .iter()
-        .map(|platform| platform.namespace())
-        .chain(plugin_ids.iter().copied())
-        .filter_map(|namespace| {
-            let key = name.strip_prefix(namespace)?.strip_prefix('-')?;
-            Some((namespace, key.to_owned()))
-        })
-        .max_by_key(|(namespace, _)| namespace.len())
-        .map(|(namespace, key)| (namespace, key, value))
+    option_namespaces().flatten().find_map(|namespace| {
+        let key = name.strip_prefix(namespace)?.strip_prefix('-')?;
+        Some((namespace, key.to_owned(), value.clone()))
+    })
 }
 
 fn separate_value(value: Option<OsString>, option: &str) -> Result<String> {
@@ -353,13 +371,14 @@ fn accepted_options(platform: Platform, manifest: &PlatformPackManifest) -> Stri
     format!("{} accepts {}", platform.display_name(), options.join(", "))
 }
 
-/// Each plugin's settings for `platform`, by plugin ID then key, with paths
-/// made absolute, rejecting keys and plugins that are not declared.
+/// Each plugin's settings for `platform`, by plugin ID then key, as JSON of
+/// their kinds with paths made absolute and defaults applied, rejecting keys
+/// and plugins that are not declared.
 pub(crate) fn resolve_plugins(
     sources: &Sources<'_>,
     platform: Platform,
     plugins: &[Plugin],
-) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
+) -> Result<BTreeMap<String, Map<String, Value>>> {
     if let Some(id) = sources
         .config
         .into_iter()
@@ -372,19 +391,17 @@ pub(crate) fn resolve_plugins(
     let mut resolved = BTreeMap::new();
     for plugin in plugins {
         reject_undeclared_plugin_keys(sources, plugin)?;
-        let mut values = BTreeMap::new();
+        let mut values = Map::new();
         for (key, setting) in &plugin.settings {
-            let Some((value, directory)) = plugin_value(sources, &plugin.id, namespace, key)?
+            let Some((value, directory)) =
+                resolve_setting(sources, &plugin.id, namespace, key, setting)?
             else {
                 continue;
             };
-            let value = match setting.kind {
-                VariableKind::String => value,
-                VariableKind::Path => match directory.join(&value).into_os_string().into_string() {
-                    Ok(path) => path,
-                    Err(_) => bail!("plugin {} setting {key} must be a UTF-8 path", plugin.id),
-                },
-            };
+            let value = setting
+                .kind
+                .resolve_paths(value, &directory)
+                .with_context(|| format!("plugin {} setting {key}", plugin.id))?;
             values.insert(key.clone(), value);
         }
         resolved.insert(plugin.id.clone(), values);
@@ -394,73 +411,99 @@ pub(crate) fn resolve_plugins(
 
 /// Plugin `id`'s value of `key` on the platform `namespace`, and the directory
 /// a relative path is relative to: the platform's own option, then the
-/// plugin's, then the environment variables and configuration likewise.
-fn plugin_value(
+/// plugin's, then the environment variables and configuration likewise, then
+/// the setting's default.
+fn resolve_setting(
     sources: &Sources<'_>,
     id: &str,
     namespace: &str,
     key: &str,
-) -> Result<Option<(String, PathBuf)>> {
-    let from_current_dir = |value| (value, sources.current_dir.to_path_buf());
-    if let Some(value) = sources.options.value(id, &format!("{namespace}-{key}"))? {
-        return Ok(Some(from_current_dir(value)));
-    }
-    if let Some(value) = sources.options.value(id, key)? {
-        return Ok(Some(from_current_dir(value)));
+    setting: &Setting,
+) -> Result<Option<(Value, PathBuf)>> {
+    let in_current_dir = |value: Value| Some((value, sources.current_dir.to_path_buf()));
+    let option = [Some(namespace), None].into_iter().find_map(|namespace| {
+        sources
+            .options
+            .plugins
+            .get(&option_name(id, namespace, key))
+    });
+    if let Some(value) = option {
+        return Ok(in_current_dir(value.clone()));
     }
     let platform_namespace = format!("{id}-{namespace}");
     for name in [
         environment_name(Some(&platform_namespace), key),
         environment_name(Some(id), key),
     ] {
-        if let Some(value) = environment_value(sources, &name)? {
-            return Ok(Some(from_current_dir(value)));
+        if let Some(text) = (sources.environment)(&name)? {
+            let value = setting
+                .kind
+                .parse(&text)
+                .map_err(|problem| anyhow!("{name} {problem}"))?;
+            return Ok(in_current_dir(value));
         }
     }
+    if let Some(configured) = configured_plugin_value(sources, id, namespace, key, &setting.kind)? {
+        return Ok(Some(configured));
+    }
+    let root = sources
+        .config
+        .map_or(sources.current_dir, |config| &config.root);
+    Ok(setting
+        .default
+        .clone()
+        .map(|value| (value, root.to_path_buf())))
+}
+
+/// Plugin `id`'s configured value of `key` on the platform `namespace`, of
+/// `kind`, and the Vite root.
+fn configured_plugin_value(
+    sources: &Sources<'_>,
+    id: &str,
+    namespace: &str,
+    key: &str,
+    kind: &Kind,
+) -> Result<Option<(Value, PathBuf)>> {
     let Some((configured, config)) = sources
         .config
         .and_then(|config| Some((config.plugins.get(id)?, config)))
     else {
         return Ok(None);
     };
-    let value = configured
+    let platform_value = configured
         .platforms
         .get(namespace)
         .and_then(|values| values.get(key))
-        .or_else(|| configured.values.get(key));
-    Ok(value.map(|value| (value.clone(), config.root.clone())))
+        .map(|value| (value, format!("{id}.{namespace}.{key}")));
+    let Some((value, field)) =
+        platform_value.or_else(|| Some((configured.values.get(key)?, format!("{id}.{key}"))))
+    else {
+        return Ok(None);
+    };
+    kind.check(value)
+        .map_err(|problem| anyhow!("invalid tokamak() options: {field} {problem}"))?;
+    Ok(Some((value.clone(), config.root.clone())))
 }
 
-/// Fails on a plugin option or configured key the plugin does not declare,
-/// for every platform or one.
+/// Fails on a configured key the plugin does not declare, for every platform
+/// or one. clap rejects options the plugin does not declare.
 fn reject_undeclared_plugin_keys(sources: &Sources<'_>, plugin: &Plugin) -> Result<()> {
-    let id = &plugin.id;
-    let declared = |key: &str| plugin.settings.contains_key(key);
-    let declared_for_a_platform = |key: &str| {
-        Platform::ALL.iter().any(|platform| {
-            key.strip_prefix(platform.namespace())
-                .and_then(|key| key.strip_prefix('-'))
-                .is_some_and(declared)
-        })
+    let Some(configured) = sources
+        .config
+        .and_then(|config| config.plugins.get(&plugin.id))
+    else {
+        return Ok(());
     };
+    let id = &plugin.id;
+    let declared = |key: &&String| plugin.settings.contains_key(*key);
     let accepted = || {
-        let keys = plugin.settings.keys().map(|key| format!("--{id}-{key}"));
+        let keys = plugin.settings.keys().map(|key| format!("{id}.{key}"));
         let keys = keys.collect::<Vec<_>>();
         if keys.is_empty() {
             format!("plugin {id} has no settings")
         } else {
             format!("plugin {id} accepts {}", keys.join(", "))
         }
-    };
-    if let Some(key) = sources
-        .options
-        .keys(id)
-        .find(|key| !declared(key) && !declared_for_a_platform(key))
-    {
-        bail!("unknown option --{id}-{key}; {}", accepted());
-    }
-    let Some(configured) = sources.config.and_then(|config| config.plugins.get(id)) else {
-        return Ok(());
     };
     if let Some(key) = configured.values.keys().find(|key| !declared(key)) {
         bail!(
@@ -477,6 +520,44 @@ fn reject_undeclared_plugin_keys(sources: &Sources<'_>, plugin: &Plugin) -> Resu
         }
     }
     Ok(())
+}
+
+/// Each plugin's settings, with the plugin.
+fn declared_settings(plugins: &[Plugin]) -> impl Iterator<Item = (&Plugin, &String, &Setting)> {
+    plugins.iter().flat_map(|plugin| {
+        plugin
+            .settings
+            .iter()
+            .map(move |(key, setting)| (plugin, key, setting))
+    })
+}
+
+/// The options that set the plugins' settings, for clap to parse:
+/// `--<id>-<key>`, listed in help with its default, and each platform's
+/// `--<id>-<platform>-<key>`, hidden. Resolving a setting applies its default.
+pub(crate) fn plugin_arguments(plugins: &[Plugin]) -> Vec<Arg> {
+    declared_settings(plugins)
+        .flat_map(|(plugin, key, setting)| {
+            let id = &plugin.id;
+            let default = setting
+                .default
+                .as_ref()
+                .map(|default| format!(" [default: {}]", option_text(default)))
+                .unwrap_or_default();
+            let help = format!(
+                "{}{default} [`{}`, `{id}.{key}`]",
+                setting.description,
+                environment_name(Some(id), key)
+            );
+            option_namespaces().map(move |namespace| {
+                let argument = setting.kind.argument(option_name(id, namespace, key));
+                match namespace {
+                    None => argument.help(help.clone()).help_heading("Plugin options"),
+                    Some(_) => argument.hide(true),
+                }
+            })
+        })
+        .collect()
 }
 
 /// `TOKAMAK_<PLATFORM>_<KEY>`, or `TOKAMAK_<KEY>` for a top-level key.
@@ -496,36 +577,17 @@ fn valid(source: &str, value: String) -> Result<String> {
     }
 }
 
-/// `--help` text listing the plugins' settings, if any declare one.
+/// `--help` text on the options that set one platform's value of a plugin's
+/// setting, if a plugin declares one.
 pub(crate) fn plugins_help(plugins: &[Plugin]) -> Option<String> {
-    let rows = plugins
+    plugins
         .iter()
-        .flat_map(|plugin| {
-            plugin.settings.iter().map(|(key, setting)| {
-                let value = match setting.kind {
-                    VariableKind::String => "<VALUE>",
-                    VariableKind::Path => "<PATH>",
-                };
-                (
-                    format!("--{}-{key} {value}", plugin.id),
-                    setting.description.as_str(),
-                )
-            })
+        .any(|plugin| !plugin.settings.is_empty())
+        .then(|| {
+            "Plugin options set one platform's value as --<id>-<platform>-<key>, \
+         TOKAMAK_<ID>_<PLATFORM>_<KEY>, or <id>.<platform>.<key> in the tokamak() options."
+                .to_owned()
         })
-        .collect::<Vec<_>>();
-    if rows.is_empty() {
-        return None;
-    }
-    let mut help = "Plugin options (also --<id>-<platform>-<key> for one platform, TOKAMAK_<ID>_<KEY>, or <id>.<key> in the tokamak() options):\n".to_owned();
-    let width = rows
-        .iter()
-        .map(|(option, _)| option.len())
-        .max()
-        .unwrap_or(0);
-    for (option, description) in rows {
-        let _ = writeln!(help, "  {option:width$}  {description}");
-    }
-    Some(help)
 }
 
 /// `--help` text listing a platform's options, noting when its pack cannot be loaded.
@@ -588,7 +650,7 @@ mod tests {
 
     use super::{
         NamespacedOptions, PlatformSettings, Plugin, SHARED_OPTIONS, Sources, TopOptions,
-        environment_name, platform_help, plugins_help, resolve, resolve_plugins,
+        environment_name, platform_help, plugin_arguments, plugins_help, resolve, resolve_plugins,
         split_namespaced_options, version,
     };
 
@@ -602,7 +664,7 @@ mod tests {
     }
 
     fn namespaced_options(values: &[&str]) -> Result<NamespacedOptions> {
-        Ok(split_namespaced_options(arguments(values), &[])?.1)
+        Ok(split_namespaced_options(arguments(values))?.1)
     }
 
     fn manifest(target: Target) -> PlatformPackManifest {
@@ -668,23 +730,20 @@ mod tests {
 
     #[test]
     fn splits_platform_options_from_other_arguments() -> Result<()> {
-        let (remaining, options) = split_namespaced_options(
-            arguments(&[
-                "tok",
-                "build",
-                "ios",
-                "--ios-plist",
-                "Info.plist",
-                "--project",
-                "app",
-                "--android-manifest=AndroidManifest.xml",
-                "--iosx",
-                "--",
-                "--ios-team-id",
-                "TEAM",
-            ]),
-            &[],
-        )?;
+        let (remaining, options) = split_namespaced_options(arguments(&[
+            "tok",
+            "build",
+            "ios",
+            "--ios-plist",
+            "Info.plist",
+            "--project",
+            "app",
+            "--android-manifest=AndroidManifest.xml",
+            "--iosx",
+            "--",
+            "--ios-team-id",
+            "TEAM",
+        ]))?;
 
         assert_eq!(
             remaining,
@@ -739,7 +798,7 @@ mod tests {
             ),
             (&["--ios-Plist=a"][..], "--ios-Plist is not a valid option"),
         ] {
-            let error = split_namespaced_options(arguments(values), &[]).map(|_| ());
+            let error = split_namespaced_options(arguments(values)).map(|_| ());
             assert!(
                 error
                     .as_ref()
@@ -755,12 +814,12 @@ mod tests {
         use std::os::unix::ffi::OsStringExt;
 
         let invalid = OsString::from_vec(b"--ios-plist=\xff".to_vec());
-        let error = split_namespaced_options(vec![invalid], &[]).map(|_| ());
+        let error = split_namespaced_options(vec![invalid]).map(|_| ());
         assert!(error.is_err_and(|error| error.to_string() == "--ios-plist must be valid UTF-8"));
 
         let invalid = OsString::from_vec(b"\xff".to_vec());
         let error =
-            split_namespaced_options(vec![OsString::from("--ios-plist"), invalid], &[]).map(|_| ());
+            split_namespaced_options(vec![OsString::from("--ios-plist"), invalid]).map(|_| ());
         assert!(error.is_err_and(|error| error.to_string() == "--ios-plist must be valid UTF-8"));
     }
 
@@ -927,57 +986,254 @@ mod tests {
             .into_owned()
     }
 
-    /// A plugin `notifications` with a `sounds` path and a `volume` string.
-    fn notifications() -> Result<Vec<Plugin>> {
+    /// A plugin `alerts` with a setting of each kind.
+    fn alerts() -> Result<Vec<Plugin>> {
         Ok(vec![serde_json::from_value(json!({
             "schemaVersion": 1,
-            "id": "notifications",
+            "id": "alerts",
             "settings": {
                 "sounds": { "kind": "path", "description": "Sounds" },
-                "volume": { "kind": "string", "description": "Volume" },
+                "volume": { "kind": "integer", "description": "Volume" },
+                "gain": { "kind": "number", "description": "Gain" },
+                "label": { "kind": "string", "description": "Label" },
+                "loud": { "kind": "boolean", "description": "Loud", "default": false },
+                "tone": {
+                    "kind": "enum",
+                    "values": ["soft", "sharp"],
+                    "description": "Tone",
+                    "default": "soft",
+                },
+                "names": { "kind": "list", "of": "string", "description": "Names" },
+                "purposes": { "kind": "map", "of": "string", "description": "Purposes" },
             },
+            "build": "build.mjs",
         }))?])
     }
 
+    /// The options tok reads from `values`: the platforms' split out, and the
+    /// plugins' parsed by clap.
+    fn parsed_options(values: &[&str], plugins: &[Plugin]) -> Result<NamespacedOptions> {
+        let mut arguments = arguments(&["tok"]);
+        arguments.extend(values.iter().map(OsString::from));
+        let (remaining, options) = split_namespaced_options(arguments)?;
+        let matches = clap::Command::new("tok")
+            .args(plugin_arguments(plugins))
+            .try_get_matches_from(remaining)?;
+        Ok(options.with_plugin_options(&matches, plugins))
+    }
+
     impl Fixture {
-        /// The notifications plugin's settings on `platform`.
-        fn plugin_settings(&self, platform: Platform) -> Result<BTreeMap<String, String>> {
-            let plugins = notifications()?;
+        /// The alerts plugin's settings on `platform`.
+        fn plugin_settings(&self, platform: Platform) -> Result<Value> {
+            let plugins = alerts()?;
             let mut resolved = self.with(|sources| resolve_plugins(sources, platform, &plugins))?;
-            Ok(resolved.remove("notifications").unwrap_or_default())
+            Ok(Value::Object(resolved.remove("alerts").unwrap_or_default()))
         }
     }
 
+    /// The alerts plugin's defaults, with `values`.
+    fn with_defaults(values: Value) -> Value {
+        let mut settings = json!({ "loud": false, "tone": "soft" });
+        if let (Some(settings), Value::Object(values)) = (settings.as_object_mut(), values) {
+            settings.extend(values);
+        }
+        settings
+    }
+
     #[test]
-    fn splits_plugin_options_by_the_longest_namespace() -> Result<()> {
-        let (remaining, options) = split_namespaced_options(
-            arguments(&[
-                "tok",
-                "build",
-                "--notifications-ios-sounds=ios",
-                "--secure-storage-mode",
-                "strict",
-                "--secure-x",
-                "1",
-                "--other-plugin-key",
-                "2",
-            ]),
-            &["notifications", "secure", "secure-storage"],
-        )?;
+    fn leaves_plugin_options_to_clap() -> Result<()> {
+        let (remaining, options) = split_namespaced_options(arguments(&[
+            "tok",
+            "build",
+            "--alerts-ios-sounds=ios",
+            "--ios-plist",
+            "Info.plist",
+        ]))?;
 
         assert_eq!(
             remaining,
-            arguments(&["tok", "build", "--other-plugin-key", "2"])
+            arguments(&["tok", "build", "--alerts-ios-sounds=ios"])
         );
         assert_eq!(
-            options.value("notifications", "ios-sounds")?.as_deref(),
-            Some("ios")
+            options.value("ios", "plist")?.as_deref(),
+            Some("Info.plist")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reads_each_kind_of_plugin_setting_from_options() -> Result<()> {
+        let mut fixture = Fixture::new();
+        fixture.options = parsed_options(
+            &[
+                "--alerts-sounds",
+                "sounds",
+                "--alerts-volume",
+                "-3",
+                "--alerts-gain=0.5",
+                "--alerts-label",
+                "Alarm",
+                "--alerts-loud",
+                "--alerts-tone",
+                "sharp",
+                "--alerts-names",
+                "a,b",
+                "--alerts-names",
+                "c",
+                "--alerts-purposes",
+                "Run=Tracks runs,Map=Shows a=b",
+                "--alerts-purposes=Walk=Counts steps",
+            ],
+            &alerts()?,
+        )?;
+
+        assert_eq!(
+            fixture.plugin_settings(Platform::Ios)?,
+            json!({
+                "sounds": path("/work", "sounds"),
+                "volume": -3,
+                "gain": 0.5,
+                "label": "Alarm",
+                "loud": true,
+                "tone": "sharp",
+                "names": ["a", "b", "c"],
+                "purposes": { "Run": "Tracks runs", "Map": "Shows a=b", "Walk": "Counts steps" },
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reads_each_kind_of_plugin_setting_from_environment_variables() -> Result<()> {
+        let mut fixture = Fixture::new();
+        fixture.environment.extend(
+            [
+                ("TOKAMAK_ALERTS_SOUNDS", "sounds"),
+                ("TOKAMAK_ALERTS_VOLUME", "3"),
+                ("TOKAMAK_ALERTS_GAIN", "1e-1"),
+                ("TOKAMAK_ALERTS_LABEL", "Alarm"),
+                ("TOKAMAK_ALERTS_LOUD", "true"),
+                ("TOKAMAK_ALERTS_TONE", "sharp"),
+                ("TOKAMAK_ALERTS_NAMES", "a,b"),
+                ("TOKAMAK_ALERTS_PURPOSES", "Run=Tracks runs,Map=Maps"),
+            ]
+            .map(|(name, value)| (name.to_owned(), value.to_owned())),
+        );
+
+        assert_eq!(
+            fixture.plugin_settings(Platform::Android)?,
+            json!({
+                "sounds": path("/work", "sounds"),
+                "volume": 3,
+                "gain": 0.1,
+                "label": "Alarm",
+                "loud": true,
+                "tone": "sharp",
+                "names": ["a", "b"],
+                "purposes": { "Run": "Tracks runs", "Map": "Maps" },
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reads_each_kind_of_plugin_setting_from_the_configuration() -> Result<()> {
+        let mut fixture = Fixture::new();
+        fixture.config = configured(&json!({
+            "alerts": {
+                "sounds": "sounds",
+                "volume": 3,
+                "gain": 1,
+                "label": "Alarm",
+                "loud": true,
+                "names": ["a", "b,c"],
+                "purposes": { "Run": "Tracks, counts" },
+                "ios": { "tone": "sharp", "names": [] },
+            },
+        }))?;
+
+        let shared = json!({
+            "sounds": path("/config", "sounds"),
+            "volume": 3,
+            "gain": 1,
+            "label": "Alarm",
+            "loud": true,
+            "tone": "soft",
+            "names": ["a", "b,c"],
+            "purposes": { "Run": "Tracks, counts" },
+        });
+        assert_eq!(fixture.plugin_settings(Platform::Macos)?, shared);
+        let mut ios = shared;
+        ios["tone"] = json!("sharp");
+        ios["names"] = json!([]);
+        assert_eq!(fixture.plugin_settings(Platform::IosSimulator)?, ios);
+        Ok(())
+    }
+
+    #[test]
+    fn applies_plugin_setting_defaults_last() -> Result<()> {
+        let mut fixture = Fixture::new();
+        assert_eq!(
+            fixture.plugin_settings(Platform::Ios)?,
+            with_defaults(json!({}))
+        );
+
+        fixture.config = configured(&json!({ "alerts": { "loud": true } }))?;
+        fixture.options = parsed_options(&["--alerts-ios-loud=false"], &alerts()?)?;
+        assert_eq!(
+            fixture.plugin_settings(Platform::Ios)?,
+            with_defaults(json!({ "loud": false }))
         );
         assert_eq!(
-            options.value("secure-storage", "mode")?.as_deref(),
-            Some("strict")
+            fixture.plugin_settings(Platform::Android)?,
+            with_defaults(json!({ "loud": true }))
         );
-        assert_eq!(options.value("secure", "x")?.as_deref(), Some("1"));
+        Ok(())
+    }
+
+    #[test]
+    fn applies_list_map_and_path_defaults_as_declared() -> Result<()> {
+        let plugins: Vec<Plugin> = vec![serde_json::from_value(json!({
+            "schemaVersion": 1,
+            "id": "kit",
+            "settings": {
+                "names": { "kind": "list", "of": "string", "description": "Names", "default": ["a,b"] },
+                "purposes": {
+                    "kind": "map",
+                    "of": "string",
+                    "description": "Purposes",
+                    "default": { "Run": "Tracks, counts" },
+                },
+                "folder": { "kind": "path", "description": "Folder", "default": "assets" },
+            },
+            "build": "build.mjs",
+        }))?];
+        let mut fixture = Fixture::new();
+        fixture.options = parsed_options(&[], &plugins)?;
+        let resolve = |fixture: &Fixture| -> Result<Value> {
+            let mut resolved =
+                fixture.with(|sources| resolve_plugins(sources, Platform::Ios, &plugins))?;
+            Ok(Value::Object(resolved.remove("kit").unwrap_or_default()))
+        };
+
+        assert_eq!(
+            resolve(&fixture)?,
+            json!({
+                "names": ["a,b"],
+                "purposes": { "Run": "Tracks, counts" },
+                "folder": path("/work", "assets"),
+            })
+        );
+        fixture.config = configured(&json!({}))?;
+        assert_eq!(
+            resolve(&fixture)?["folder"],
+            json!(path("/config", "assets"))
+        );
+        let help = clap::Command::new("tok")
+            .args(plugin_arguments(&plugins))
+            .render_help()
+            .to_string();
+        assert!(help.contains("[default: Run=Tracks, counts]"), "{help}");
         Ok(())
     }
 
@@ -985,50 +1241,29 @@ mod tests {
     fn plugin_settings_prefer_options_then_environment_then_configuration() -> Result<()> {
         let mut fixture = Fixture::new();
         fixture.config = configured(&json!({
-            "notifications": { "sounds": "sounds", "volume": 1, "ios": { "sounds": "ios-sounds" } },
+            "alerts": { "sounds": "sounds", "volume": 1, "ios": { "sounds": "ios-sounds" } },
         }))?;
         assert_eq!(
             fixture.plugin_settings(Platform::Ios)?,
-            BTreeMap::from([
-                ("sounds".to_owned(), path("/config", "ios-sounds")),
-                ("volume".to_owned(), "1".to_owned()),
-            ])
+            with_defaults(json!({ "sounds": path("/config", "ios-sounds"), "volume": 1 }))
         );
         assert_eq!(
             fixture.plugin_settings(Platform::Android)?,
-            BTreeMap::from([
-                ("sounds".to_owned(), path("/config", "sounds")),
-                ("volume".to_owned(), "1".to_owned()),
-            ])
+            with_defaults(json!({ "sounds": path("/config", "sounds"), "volume": 1 }))
         );
 
         fixture.environment.extend([
-            ("TOKAMAK_NOTIFICATIONS_SOUNDS".to_owned(), "env".to_owned()),
-            (
-                "TOKAMAK_NOTIFICATIONS_MACOS_VOLUME".to_owned(),
-                "2".to_owned(),
-            ),
+            ("TOKAMAK_ALERTS_SOUNDS".to_owned(), "env".to_owned()),
+            ("TOKAMAK_ALERTS_MACOS_VOLUME".to_owned(), "2".to_owned()),
         ]);
-        let plugins = notifications()?;
-        let ids = plugins
-            .iter()
-            .map(|plugin| plugin.id.as_str())
-            .collect::<Vec<_>>();
-        fixture.options =
-            split_namespaced_options(arguments(&["--notifications-android-volume", "3"]), &ids)?.1;
+        fixture.options = parsed_options(&["--alerts-android-volume", "3"], &alerts()?)?;
         assert_eq!(
             fixture.plugin_settings(Platform::Macos)?,
-            BTreeMap::from([
-                ("sounds".to_owned(), path("/work", "env")),
-                ("volume".to_owned(), "2".to_owned()),
-            ])
+            with_defaults(json!({ "sounds": path("/work", "env"), "volume": 2 }))
         );
         assert_eq!(
             fixture.plugin_settings(Platform::Android)?,
-            BTreeMap::from([
-                ("sounds".to_owned(), path("/work", "env")),
-                ("volume".to_owned(), "3".to_owned()),
-            ])
+            with_defaults(json!({ "sounds": path("/work", "env"), "volume": 3 }))
         );
         Ok(())
     }
@@ -1036,81 +1271,138 @@ mod tests {
     #[test]
     fn plugin_options_take_precedence_over_platform_environment_variables() -> Result<()> {
         let mut fixture = Fixture::new();
-        let plugins = notifications()?;
-        let ids = plugins
-            .iter()
-            .map(|plugin| plugin.id.as_str())
-            .collect::<Vec<_>>();
-        fixture.environment.insert(
-            "TOKAMAK_NOTIFICATIONS_IOS_VOLUME".to_owned(),
-            "env".to_owned(),
-        );
-        fixture.options =
-            split_namespaced_options(arguments(&["--notifications-volume", "option"]), &ids)?.1;
+        fixture
+            .environment
+            .insert("TOKAMAK_ALERTS_IOS_VOLUME".to_owned(), "1".to_owned());
+        fixture.options = parsed_options(&["--alerts-volume", "2"], &alerts()?)?;
 
         assert_eq!(
             fixture.plugin_settings(Platform::Ios)?,
-            BTreeMap::from([("volume".to_owned(), "option".to_owned())])
+            with_defaults(json!({ "volume": 2 }))
         );
         Ok(())
     }
 
     #[test]
-    fn lists_plugin_settings_in_help() -> Result<()> {
-        let help = plugins_help(&notifications()?).unwrap_or_default();
-        let lists = |option: &str, description: &str| {
-            help.lines()
-                .any(|line| line.trim_start().starts_with(option) && line.ends_with(description))
-        };
+    fn rejects_plugin_options_of_another_kind_with_clap_s_messages() -> Result<()> {
+        let plugins = alerts()?;
+        for (values, message) in [
+            (
+                &["--alerts-tone", "shrap"][..],
+                "a similar value exists: 'sharp'",
+            ),
+            (&["--alerts-volume", "loud"][..], "must be a whole number"),
+            (
+                &["--alerts-loud", "false"][..],
+                "unexpected argument 'false'",
+            ),
+            (&["--alerts-loud=yes"][..], "[possible values: true, false]"),
+            (&["--alerts-purposes", "Run"][..], "must be key=value"),
+            (
+                &["--alerts-sound", "x"][..],
+                "a similar argument exists: '--alerts-sounds'",
+            ),
+            (
+                &["--alerts-web-sounds", "x"][..],
+                "unexpected argument '--alerts-web-sounds'",
+            ),
+        ] {
+            let error = parsed_options(values, &plugins).err();
+            let error = error.map(|error| error.to_string()).unwrap_or_default();
+            assert!(error.contains(message), "{values:?}: {error}");
+        }
+        Ok(())
+    }
 
-        assert!(lists("--notifications-sounds <PATH>", "Sounds"), "{help}");
-        assert!(lists("--notifications-volume <VALUE>", "Volume"), "{help}");
+    #[test]
+    fn rejects_plugin_values_of_another_kind_naming_their_source() -> Result<()> {
+        let cases = [
+            (
+                ("TOKAMAK_ALERTS_TONE", "shrap"),
+                None,
+                "TOKAMAK_ALERTS_TONE must be one of soft, sharp",
+            ),
+            (
+                ("TOKAMAK_ALERTS_IOS_NAMES", " a"),
+                None,
+                "TOKAMAK_ALERTS_IOS_NAMES must be comma-separated values, each a non-empty value",
+            ),
+            (
+                ("", ""),
+                Some(json!({ "alerts": { "volume": "3" } })),
+                "invalid tokamak() options: alerts.volume must be a whole number",
+            ),
+            (
+                ("", ""),
+                Some(json!({ "alerts": { "ios": { "purposes": ["Run"] } } })),
+                "invalid tokamak() options: alerts.ios.purposes must be an object of values",
+            ),
+        ];
+        for ((name, value), config, expected) in cases {
+            let mut fixture = Fixture::new();
+            fixture
+                .environment
+                .insert(name.to_owned(), value.to_owned());
+            if let Some(config) = &config {
+                fixture.config = configured(config)?;
+            }
+
+            let Err(error) = fixture.plugin_settings(Platform::Ios) else {
+                anyhow::bail!("{expected}: accepted");
+            };
+
+            assert!(error.to_string().starts_with(expected), "{error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn lists_plugin_settings_in_help_with_their_kinds_and_defaults() -> Result<()> {
+        let help = clap::Command::new("tok")
+            .args(plugin_arguments(&alerts()?))
+            .render_help()
+            .to_string();
+        let lists = |line: &str| help.lines().any(|help| help.trim_start().starts_with(line));
+
+        assert!(help.contains("Plugin options:"), "{help}");
+        assert!(lists("--alerts-loud[=<BOOLEAN>]"), "{help}");
+        assert!(lists("--alerts-volume <INTEGER>"), "{help}");
+        assert!(lists("--alerts-purposes <KEY=VALUE>"), "{help}");
+        assert!(
+            help.contains("[`TOKAMAK_ALERTS_TONE`, `alerts.tone`]"),
+            "{help}"
+        );
+        assert!(
+            help.contains("Tone [default: soft] [`TOKAMAK_ALERTS_TONE`"),
+            "{help}"
+        );
+        assert!(help.contains("Loud [default: false]"), "{help}");
+        assert!(help.contains("[possible values: soft, sharp]"), "{help}");
+        assert!(!help.contains("--alerts-ios-tone"), "{help}");
+        assert!(plugins_help(&alerts()?).is_some());
         assert_eq!(plugins_help(&[]), None);
         Ok(())
     }
 
     #[test]
-    fn rejects_plugin_keys_and_plugins_that_are_not_declared() -> Result<()> {
-        let plugins = notifications()?;
-        let ids = plugins
-            .iter()
-            .map(|plugin| plugin.id.as_str())
-            .collect::<Vec<_>>();
+    fn rejects_configured_plugin_keys_and_plugins_that_are_not_declared() -> Result<()> {
         let cases = [
             (
-                Some(&["--notifications-sound", "x"][..]),
-                None,
-                "unknown option --notifications-sound; plugin notifications accepts --notifications-sounds, --notifications-volume",
+                json!({ "alerts": { "ios": { "sound": "x" } } }),
+                "unknown key alerts.ios.sound in the tokamak() options",
             ),
             (
-                Some(&["--notifications-web-sounds", "x"][..]),
-                None,
-                "unknown option --notifications-web-sounds",
+                json!({ "location": { "sounds": "x" } }),
+                "unknown key location in the tokamak() options; no plugin of the app has that ID",
             ),
             (
-                None,
-                Some(json!({ "notifications": { "ios": { "sound": "x" } } })),
-                "unknown key notifications.ios.sound in the tokamak() options",
-            ),
-            (
-                None,
-                Some(json!({ "alerts": { "sounds": "x" } })),
-                "unknown key alerts in the tokamak() options; no plugin of the app has that ID",
-            ),
-            (
-                None,
-                Some(json!({ "notifications": { "sound": "x" } })),
-                "unknown key notifications.sound in the tokamak() options; plugin notifications accepts",
+                json!({ "alerts": { "sound": "x" } }),
+                "unknown key alerts.sound in the tokamak() options; plugin alerts accepts alerts.gain",
             ),
         ];
-        for (options, config, expected) in cases {
+        for (config, expected) in cases {
             let mut fixture = Fixture::new();
-            if let Some(options) = options {
-                fixture.options = split_namespaced_options(arguments(options), &ids)?.1;
-            }
-            if let Some(config) = &config {
-                fixture.config = configured(config)?;
-            }
+            fixture.config = configured(&config)?;
 
             let Err(error) = fixture.plugin_settings(Platform::Ios) else {
                 anyhow::bail!("{expected}: accepted");

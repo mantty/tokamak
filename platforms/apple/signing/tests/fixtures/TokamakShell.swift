@@ -17,6 +17,15 @@ final class TokamakHost {
   init(app: TokamakApp, plugin: String) {}
 
   func requireUI() throws(TokamakPluginError) {}
+
+  func emit(
+    _ name: String,
+    event: Any,
+    timeout: TimeInterval,
+    completion: @escaping (Result<Any?, Error>) -> Void
+  ) {
+    completion(.success(nil))
+  }
 }
 
 protocol TokamakPlugin: AnyObject {

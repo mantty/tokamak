@@ -316,13 +316,40 @@ fn packages_the_app_and_its_plugins_into_the_macos_bundle() -> Result<()> {
     let plugin = fixture.input().join("plugins/location");
     fs::create_dir_all(plugin.join("sources"))?;
     fs::write(plugin.join("class"), "TokamakLocationPlugin")?;
-    fs::write(
-        plugin.join("sources/0-LocationPlugin.swift"),
-        include_str!("../../../../plugins/location/apple/LocationPlugin.swift"),
-    )?;
+    for (index, (name, source)) in [
+        (
+            "LocationEvents.swift",
+            include_str!("../../../../plugins/location/apple/LocationEvents.swift"),
+        ),
+        (
+            "LocationPlugin.swift",
+            include_str!("../../../../plugins/location/apple/LocationPlugin.swift"),
+        ),
+        (
+            "LocationRegions.swift",
+            include_str!("../../../../plugins/location/apple/LocationRegions.swift"),
+        ),
+        (
+            "LocationUpdates.swift",
+            include_str!("../../../../plugins/location/apple/LocationUpdates.swift"),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        fs::write(plugin.join(format!("sources/{index}-{name}")), source)?;
+    }
     fs::write(
         plugin.join("plist"),
-        include_str!("../../../../plugins/location/apple/macos/Info.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSLocationUsageDescription</key>
+	<string>Finds you</string>
+</dict>
+</plist>
+"#,
     )?;
 
     run(&mut fixture.build())?;
