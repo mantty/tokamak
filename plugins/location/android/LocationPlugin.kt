@@ -59,7 +59,7 @@ class TokamakLocationPlugin(
     }
 
     init {
-        restore(updatesRemoved = false, regionsRemoved = false)
+        restore(updatesRemoved = false)
     }
 
     /** Starts the updates' foreground service again once the app is on screen. */
@@ -201,18 +201,18 @@ class TokamakLocationPlugin(
     }
 
     /**
-     * Requests updates and regions again: those Android removed, as a restart removes both and an app
-     * update removes update requests, and otherwise those whose `PendingIntent` no longer exists, as
-     * after Android 15's force stop. Starts the updates' foreground service again where Android
-     * allows it: on screen, or after a restart or an update with background permission. Reports a
-     * failure, such as revoked permission, to `onLocationError`.
+     * Requests updates again when Android removed them, as a restart or an app update does, and
+     * updates and regions whose `PendingIntent` no longer exists, as after a restart or Android 15's
+     * force stop. Starts the updates' foreground service again where Android allows it: on screen,
+     * or after a restart or an update with background permission. Reports a failure, such as revoked
+     * permission, to `onLocationError`.
      */
-    internal fun restore(updatesRemoved: Boolean, regionsRemoved: Boolean) {
+    internal fun restore(updatesRemoved: Boolean) {
         runCatching {
             updates.restore(updatesRemoved)
             if (host.isInForeground || (updatesRemoved && granted(BACKGROUND))) updates.startService()
         }.onFailure { events.fail(locationError(it)) }
-        runCatching { regions.restore(regionsRemoved) }.onFailure { events.fail(locationError(it)) }
+        runCatching { regions.restore() }.onFailure { events.fail(locationError(it)) }
     }
 
     /** Delivers the updates or region transition [intent] carries, then calls [finish]. Call it on the main thread. */

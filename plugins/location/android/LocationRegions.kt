@@ -50,12 +50,12 @@ internal class LocationRegions(private val context: Context) {
     }
 
     /**
-     * Adds the regions again: all when Android [removed] them, and otherwise those whose
-     * `PendingIntent` no longer exists. Throws `SecurityException` without precise location.
+     * Adds the regions whose `PendingIntent` no longer exists again, as after a restart or Android
+     * 15's force stop. Adding one resets its state. Throws `SecurityException` without precise
+     * location.
      */
-    fun restore(removed: Boolean) {
-        all().filter { removed || pendingIntent(it.getString("id"), PendingIntent.FLAG_NO_CREATE) == null }
-            .forEach(::add)
+    fun restore() {
+        all().filter { pendingIntent(it.getString("id"), PendingIntent.FLAG_NO_CREATE) == null }.forEach(::add)
     }
 
     /** The region [id]'s `PendingIntent`, mutable so `LocationManager` adds whether the device entered. */
