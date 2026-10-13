@@ -87,6 +87,7 @@ fn declare_storage(root: &Path) -> TestResult {
     )
 }
 
+/// Install this repository's location plugin.
 #[cfg(unix)]
 fn install_location_plugin(root: &Path) -> TestResult {
     fs::write(
@@ -94,28 +95,9 @@ fn install_location_plugin(root: &Path) -> TestResult {
         r#"{"name":"demo-app","scripts":{"build":"echo already-built"},"dependencies":{"@tokamakdev/plugin-location":"1.0.0"}}"#,
     )?;
     let plugin = root.join("node_modules/@tokamakdev/plugin-location");
-    fs::create_dir_all(plugin.join("apple/ios"))?;
-    fs::create_dir_all(plugin.join("apple/macos"))?;
-    for (path, contents) in [
-        (
-            "tokamak-plugin.json",
-            include_str!("../../plugins/location/tokamak-plugin.json"),
-        ),
-        (
-            "apple/LocationPlugin.swift",
-            include_str!("../../plugins/location/apple/LocationPlugin.swift"),
-        ),
-        (
-            "apple/ios/Info.plist",
-            include_str!("../../plugins/location/apple/ios/Info.plist"),
-        ),
-        (
-            "apple/macos/Info.plist",
-            include_str!("../../plugins/location/apple/macos/Info.plist"),
-        ),
-    ] {
-        fs::write(plugin.join(path), contents)?;
-    }
+    fs::create_dir_all(&plugin)?;
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/location");
+    tokamak_cli::copy_dir_contents(&source, &plugin)?;
     Ok(())
 }
 
@@ -895,11 +877,47 @@ fn stages_the_plugins_installed_above_a_relative_project_directory() -> TestResu
         fs::read_to_string(plugin.join("class"))?,
         "TokamakLocationPlugin"
     );
-    assert_eq!(
-        fs::read_to_string(plugin.join("plist"))?,
-        include_str!("../../plugins/location/apple/macos/Info.plist")
+    assert!(
+        fs::read_to_string(plugin.join("plist"))?.contains("<key>NSLocationUsageDescription</key>")
     );
-    assert!(plugin.join("sources/0-LocationPlugin.swift").is_file());
+    assert!(plugin.join("sources/1-LocationPlugin.swift").is_file());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn builds_the_location_plugin_s_declarations_from_its_settings() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("ios-arm64")?;
+    install_location_plugin(&project)?;
+
+    build_command("ios", &project, &platform_pack)?
+        .args([
+            "--location-background",
+            "--location-precision",
+            "approximate",
+        ])
+        .args([
+            "--location-accuracy-purposes",
+            "Directions=Shows directions",
+        ])
+        .assert()
+        .success();
+
+    let plist = fs::read_to_string(project.join("build/ios/demo-app.app/plugins/location/plist"))?;
+    for key in [
+        "NSLocationWhenInUseUsageDescription",
+        "NSLocationAlwaysAndWhenInUseUsageDescription",
+        "NSLocationDefaultAccuracyReduced",
+        "<key>Directions</key>",
+    ] {
+        assert!(plist.contains(key), "{key} is missing from {plist}");
+    }
+    assert!(!plist.contains("UIBackgroundModes"), "{plist}");
+    build_command("ios", &project, &platform_pack)?
+        .args(["--location-always-description", "Records runs"])
+        .assert()
+        .failure()
+        .stderr(contains("always-description needs background"));
     Ok(())
 }
 
