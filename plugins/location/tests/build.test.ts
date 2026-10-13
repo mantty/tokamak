@@ -123,7 +123,24 @@ void test("declares Android permissions for each setting", () => {
     "ACCESS_FINE_LOCATION",
     "ACCESS_BACKGROUND_LOCATION",
   ]);
+  assert.deepEqual(permissions({ "background-updates": true }), [
+    "ACCESS_COARSE_LOCATION",
+    "RECEIVE_BOOT_COMPLETED",
+    "ACCESS_FINE_LOCATION",
+    "FOREGROUND_SERVICE",
+    "FOREGROUND_SERVICE_LOCATION",
+  ]);
   assert.equal(declarations("android", defaults).key, "manifest");
+});
+
+void test("declares the Android foreground service only with background-updates", () => {
+  const declared = (settings: Partial<Settings>) => declarations("android", { ...defaults, ...settings }).contents ?? "";
+
+  assert.match(
+    declared({ "background-updates": true }),
+    /<service android:name="com\.tokamak\.plugins\.location\.TokamakLocationService" android:exported="false"\s+android:foregroundServiceType="location" \/>/,
+  );
+  assert.doesNotMatch(declared({}), /TokamakLocationService/);
 });
 
 void test("declares the Android receivers of updates, regions and restarts", () => {

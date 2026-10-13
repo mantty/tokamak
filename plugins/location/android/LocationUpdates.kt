@@ -22,8 +22,9 @@ private val QUALITIES =
 
 /**
  * Continuous updates, which `LocationManager` sends to [TokamakLocationReceiver] through a
- * `PendingIntent`, starting the app's process when it has ended. The options persist until [stop],
- * and [restore] requests them again where Android removed the request. Use it on the main thread.
+ * `PendingIntent`, starting the app's process when it has ended, with [TokamakLocationService] when
+ * their options name a `foregroundService`. The options persist until [stop], and [restore] requests
+ * them again where Android removed the request. Use it on the main thread.
  */
 internal class LocationUpdates(private val context: Context) {
     private val manager = context.getSystemService(LocationManager::class.java)
@@ -33,18 +34,40 @@ internal class LocationUpdates(private val context: Context) {
     val options: JSONObject?
         get() = preferences.getString(UPDATES, null)?.let(::JSONObject)
 
-    /** Starts updates with [options], replacing any running. Throws `SecurityException` without permission. */
+    /**
+     * Starts updates with [options], replacing any running, in the foreground service when they name
+     * one, which stops otherwise. Throws `SecurityException` without permission.
+     */
     fun start(options: JSONObject) {
+        val notification = options.optJSONObject("foregroundService")
+        if (notification == null) stopService() else startService(notification)
         request(options)
         preferences.edit().putString(UPDATES, options.toString()).apply()
     }
 
     fun stop() {
         preferences.edit().remove(UPDATES).apply()
+        stopService()
         pendingIntent(PendingIntent.FLAG_NO_CREATE)?.let {
             manager.removeUpdates(it)
             it.cancel()
         }
+    }
+
+    /** Starts the running updates' foreground service, if they have one. */
+    fun startService() {
+        options?.optJSONObject("foregroundService")?.let(::startService)
+    }
+
+    private fun startService(notification: JSONObject) {
+        val start =
+            Intent(context, TokamakLocationService::class.java)
+                .putExtra(TokamakLocationService.NOTIFICATION_EXTRA, notification.toString())
+        context.startForegroundService(start)
+    }
+
+    private fun stopService() {
+        context.stopService(Intent(context, TokamakLocationService::class.java))
     }
 
     /**

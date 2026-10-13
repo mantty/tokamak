@@ -1,6 +1,7 @@
 package com.tokamak.plugins.location
 
 import android.Manifest
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -61,8 +62,19 @@ class TokamakLocationPlugin(
     private val finishes = mutableListOf<() -> Unit>()
     private var updating = false
 
+    /** Whether the app's manifest declares the foreground service, as the `background-updates` build setting does. */
+    private val declaresService: Boolean by lazy {
+        runCatching { context.packageManager.getServiceInfo(ComponentName(context, TokamakLocationService::class.java), 0) }
+            .isSuccess
+    }
+
     init {
         restore(always = false)
+    }
+
+    /** Starts the updates' foreground service again once the app is on screen. */
+    override fun onIntent(intent: Intent) {
+        if (host.isInForeground) updates.startService()
     }
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
@@ -169,17 +181,34 @@ class TokamakLocationPlugin(
 
     private fun startUpdates(options: JSONObject, reply: TokamakPluginReply) {
         requirePermission()
+        if (options.has("foregroundService")) requireService()
         runCatching { updates.start(options) }
             .onSuccess { reply(Result.success(null)) }
             .onFailure { reply(Result.failure(locationError(it))) }
     }
 
     /**
-     * Requests updates again where Android removed them, always or only when their `PendingIntent`
-     * no longer exists, reporting a failure such as revoked permission to `onLocationError`.
+     * Throws unless the app declares the foreground service and may start it now: Android 14 and
+     * later allow a location foreground service off screen only with background permission.
+     */
+    private fun requireService() {
+        if (!declaresService) {
+            throw TokamakPluginError.notSupported("The foreground service needs the location plugin's background-updates build setting")
+        }
+        if (!host.isInForeground && !granted(BACKGROUND)) throw TokamakPluginError.needsUI()
+    }
+
+    /**
+     * Requests updates again where Android removed them: always after a restart or an update, and
+     * otherwise only when their `PendingIntent` no longer exists. Starts their foreground service
+     * again where Android allows it: on screen, or after a restart or an update with background
+     * permission. Reports a failure, such as revoked permission, to `onLocationError`.
      */
     internal fun restore(always: Boolean) {
-        runCatching { updates.restore(always) }.onFailure { fail(locationError(it)) }
+        runCatching {
+            updates.restore(always)
+            if (host.isInForeground || (always && granted(BACKGROUND))) updates.startService()
+        }.onFailure { fail(locationError(it)) }
     }
 
     /** Delivers the updates [intent] carries, then calls [finish]. Call it on the main thread. */

@@ -1,4 +1,4 @@
-import { atLeastZero, flag, nonEmptyText, object, oneOf, wholeAtLeastZero } from "./checks.js";
+import { atLeastZero, flag, nonEmptyText, object, oneOf, text, wholeAtLeastZero } from "./checks.js";
 
 /** Throws `TypeError` unless `options` are options `requestPermission` takes. */
 export const validatePermissionRequest = object({
@@ -13,4 +13,5 @@ export const validateUpdateOptions = object({
   accuracy: oneOf("high", "balanced", "low"),
   distance: atLeastZero,
   interval: wholeAtLeastZero,
+  foregroundService: object({ title: nonEmptyText, body: text, channel: nonEmptyText }, ["title", "body", "channel"]),
 });

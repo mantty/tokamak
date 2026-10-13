@@ -49,10 +49,18 @@ function androidManifest(settings) {
   const permissions = ["ACCESS_COARSE_LOCATION", "RECEIVE_BOOT_COMPLETED"];
   if (settings.precision !== "approximate") permissions.push("ACCESS_FINE_LOCATION");
   if (settings.background) permissions.push("ACCESS_BACKGROUND_LOCATION");
+  if (settings["background-updates"]) permissions.push("FOREGROUND_SERVICE", "FOREGROUND_SERVICE_LOCATION");
+  const service = settings["background-updates"]
+    ? [
+        '    <service android:name="com.tokamak.plugins.location.TokamakLocationService" android:exported="false"',
+        '        android:foregroundServiceType="location" />',
+      ]
+    : [];
   return [
     '<manifest xmlns:android="http://schemas.android.com/apk/res/android">',
     ...permissions.map((name) => `  <uses-permission android:name="android.permission.${name}" />`),
     "  <application>",
+    ...service,
     '    <receiver android:name="com.tokamak.plugins.location.TokamakLocationReceiver" android:exported="false" />',
     '    <receiver android:name="com.tokamak.plugins.location.TokamakLocationBootReceiver" android:exported="false">',
     "      <intent-filter>",

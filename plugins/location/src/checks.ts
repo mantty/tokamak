@@ -18,6 +18,10 @@ export function flag(value: unknown, path: string): void {
   if (typeof value !== "boolean") throw new TypeError(`${path} must be a boolean`);
 }
 
+export function text(value: unknown, path: string): void {
+  if (typeof value !== "string") throw new TypeError(`${path} must be a string`);
+}
+
 export function nonEmptyText(value: unknown, path: string): void {
   if (typeof value !== "string" || value === "") throw new TypeError(`${path} must be a non-empty string`);
 }

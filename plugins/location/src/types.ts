@@ -74,6 +74,19 @@ export interface UpdateOptions {
   readonly distance?: number;
   /** Android only: milliseconds between updates; 10 seconds by default. */
   readonly interval?: number;
+  /**
+   * Android only: runs updates in a foreground service showing this notification, so they arrive at
+   * the requested rate off screen. Needs the `background-updates` build setting.
+   */
+  readonly foregroundService?: ServiceNotification;
+}
+
+/** Android only: the foreground service's notification, set from JavaScript so apps can translate it. */
+export interface ServiceNotification {
+  readonly title: string;
+  readonly body: string;
+  /** The name of the notification channel, which Android's settings show. */
+  readonly channel: string;
 }
 
 /** Positions from continuous updates or significant changes. */

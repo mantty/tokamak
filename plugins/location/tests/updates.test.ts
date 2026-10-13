@@ -10,7 +10,13 @@ afterEach(disconnectNative);
 
 void test("calls the native plugin with each update method's arguments", async () => {
   const native = connectNative();
-  const options = { activity: "fitness", accuracy: "balanced", distance: 5.5, interval: 1000 } as const;
+  const options = {
+    activity: "fitness",
+    accuracy: "balanced",
+    distance: 5.5,
+    interval: 1000,
+    foregroundService: { title: "Recording your run", body: "", channel: "Run recording" },
+  } as const;
   const cases: [() => Promise<unknown>, string, unknown][] = [
     [() => location.startUpdates(), "startUpdates", {}],
     [() => location.startUpdates(options), "startUpdates", options],
@@ -33,6 +39,9 @@ void test("rejects update options it cannot send", async () => {
     [{ distance: -1 }, "options.distance must be a finite number of at least 0"],
     [{ distance: Infinity }, "options.distance must be a finite number of at least 0"],
     [{ interval: 1.5 }, "options.interval must be a whole number of at least 0"],
+    [{ foregroundService: { title: "Run", body: "" } }, "options.foregroundService.channel must be a non-empty string"],
+    [{ foregroundService: { title: "", body: "", channel: "Runs" } }, "options.foregroundService.title must be"],
+    [{ foregroundService: { title: "Run", body: 1, channel: "Runs" } }, "options.foregroundService.body must be a string"],
   ] as const) {
     await assert.rejects(
       location.startUpdates(options as unknown as UpdateOptions),

@@ -55,6 +55,7 @@
       "sources": [
         "android/LocationPlugin.kt",
         "android/LocationReceiver.kt",
+        "android/LocationService.kt",
         "android/LocationUpdates.kt"
       ]
     }
