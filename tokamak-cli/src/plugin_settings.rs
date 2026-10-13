@@ -6,6 +6,7 @@
 //! kind. A list's and a map's items are comma-separated in text, and a map's
 //! are `key=value`.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
@@ -13,6 +14,7 @@ use clap::builder::{PossibleValuesParser, StringValueParser, TypedValueParser, V
 use clap::{Arg, ArgAction, ArgMatches};
 use serde::Deserialize;
 use serde_json::{Number, Value};
+use tokamak_cli::Platform;
 
 use super::tokamak_config::{VALUE_FORM, value_problem};
 
@@ -344,6 +346,16 @@ pub(crate) fn option_text(value: &Value) -> String {
             .join(","),
         value => text(value),
     }
+}
+
+/// The namespaces of a plugin setting's options: none, for every platform,
+/// then each platform's, once.
+pub(crate) fn option_namespaces() -> impl Iterator<Item = Option<&'static str>> {
+    let platforms = Platform::ALL
+        .iter()
+        .map(|platform| platform.namespace())
+        .collect::<BTreeSet<_>>();
+    std::iter::once(None).chain(platforms.into_iter().map(Some))
 }
 
 /// The name, without `--`, of the option that sets plugin `id`'s `key` for

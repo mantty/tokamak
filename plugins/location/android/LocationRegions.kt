@@ -29,7 +29,7 @@ internal class LocationRegions(private val context: Context) {
      */
     fun add(region: JSONObject) {
         val id = region.getString("id")
-        val alert = pendingIntent(id, PendingIntent.FLAG_UPDATE_CURRENT) ?: return
+        val alert = checkNotNull(pendingIntent(id, PendingIntent.FLAG_UPDATE_CURRENT))
         manager.removeProximityAlert(alert)
         manager.addProximityAlert(
             region.getDouble("latitude"),

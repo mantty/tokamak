@@ -66,9 +66,9 @@ directory in the build directory for files the script generates. The script
 validates the settings, exiting non-zero with its message on stderr to fail
 the build, and prints a JSON object of keys to add to the plugin's section,
 whose files are absolute paths. tok prints what a script that succeeds writes
-to stderr as warnings naming the plugin. The Apple packs take `resources`, files placed in the app bundle's
-resources directory, and the Android pack takes `raw`, files added as raw
-resources.
+to stderr as warnings naming the plugin. The Apple packs take `resources`,
+files placed in the app bundle's resources directory, and the Android pack
+takes `raw`, files added as raw resources.
 
 ## Native build
 

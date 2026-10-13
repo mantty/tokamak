@@ -352,7 +352,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private func permission() -> [String: Any] {
     let status = watching.authorizationStatus
     return [
-      "inUse": Self.permission(status),
+      "inUse": Self.state(status),
       "background": backgroundPermission(status),
       "precision": watching.accuracyAuthorization == .reducedAccuracy ? "approximate" : "precise",
     ]
@@ -374,7 +374,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   }
 
   private var hasPermission: Bool {
-    Self.permission(watching.authorizationStatus) == "granted"
+    ![.notDetermined, .denied, .restricted].contains(watching.authorizationStatus)
   }
 
   /// Throws `NotAllowedError` unless the app has location permission.
@@ -398,7 +398,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     #endif
   }
 
-  private static func permission(_ status: CLAuthorizationStatus) -> String {
+  private static func state(_ status: CLAuthorizationStatus) -> String {
     switch status {
     case .notDetermined: "prompt"
     case .denied, .restricted: "denied"

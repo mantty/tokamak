@@ -79,7 +79,9 @@ class Location extends Plugin {
   /**
    * Starts continuous updates, replacing any running, until `stopUpdates`. Their positions reach
    * `onLocationUpdate`, including after the system ended the app. Rejects with `NotAllowedError`
-   * without in-use permission, and on iOS with `NeedsUIError` off screen.
+   * without in-use permission, and on iOS with `NeedsUIError` off screen. Android's
+   * `foregroundService` rejects with `NotSupportedError` without the `background-updates` build
+   * setting, and with `NeedsUIError` when Android does not allow the service to start off screen.
    */
   async startUpdates(options: UpdateOptions = {}): Promise<void> {
     validateUpdateOptions(options, "options");

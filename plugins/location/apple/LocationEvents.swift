@@ -42,7 +42,9 @@ final class TokamakLocationEvents {
   /// reach it together as the next.
   func update(_ location: CLLocation?, stationary: Bool? = nil) {
     positions += location.map { [Self.position($0)] } ?? []
-    self.stationary = stationary
+    if let stationary {
+      self.stationary = stationary
+    }
     if !updating {
       sendUpdate()
     }

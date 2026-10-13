@@ -17,7 +17,7 @@
 //! the kind each setting declares.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -30,7 +30,7 @@ use tokamak_cli::{
     Platform, PlatformPackManifest, SHARED_PLATFORM_KEYS, VariableKind, is_valid_key,
 };
 
-use super::plugin_settings::{Kind, Setting, option_name, option_text};
+use super::plugin_settings::{Kind, Setting, option_name, option_namespaces, option_text};
 use super::plugins::Plugin;
 use super::tokamak_config::{TokamakConfig, app_name_problem, value_problem};
 
@@ -87,7 +87,7 @@ impl NamespacedOptions {
     /// These options with the values `matches` holds for the options
     /// [`plugin_arguments`] adds.
     pub(crate) fn with_plugin_options(mut self, matches: &ArgMatches, plugins: &[Plugin]) -> Self {
-        for (plugin, key, setting) in plugin_settings(plugins) {
+        for (plugin, key, setting) in declared_settings(plugins) {
             for namespace in option_namespaces() {
                 let name = option_name(&plugin.id, namespace, key);
                 if !matches.contains_id(&name) {
@@ -197,19 +197,10 @@ fn namespaced_option(argument: &str) -> Option<(&'static str, String, Option<Str
         Some((name, value)) => (name, Some(value.to_owned())),
         None => (option, None),
     };
-    namespaces().find_map(|namespace| {
+    option_namespaces().flatten().find_map(|namespace| {
         let key = name.strip_prefix(namespace)?.strip_prefix('-')?;
         Some((namespace, key.to_owned(), value.clone()))
     })
-}
-
-/// Each platform namespace, once.
-fn namespaces() -> impl Iterator<Item = &'static str> {
-    Platform::ALL
-        .iter()
-        .map(|platform| platform.namespace())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
 }
 
 fn separate_value(value: Option<OsString>, option: &str) -> Result<String> {
@@ -403,7 +394,7 @@ pub(crate) fn resolve_plugins(
         let mut values = Map::new();
         for (key, setting) in &plugin.settings {
             let Some((value, directory)) =
-                plugin_value(sources, &plugin.id, namespace, key, setting)?
+                resolve_setting(sources, &plugin.id, namespace, key, setting)?
             else {
                 continue;
             };
@@ -422,7 +413,7 @@ pub(crate) fn resolve_plugins(
 /// a relative path is relative to: the platform's own option, then the
 /// plugin's, then the environment variables and configuration likewise, then
 /// the setting's default.
-fn plugin_value(
+fn resolve_setting(
     sources: &Sources<'_>,
     id: &str,
     namespace: &str,
@@ -532,7 +523,7 @@ fn reject_undeclared_plugin_keys(sources: &Sources<'_>, plugin: &Plugin) -> Resu
 }
 
 /// Each plugin's settings, with the plugin.
-fn plugin_settings(plugins: &[Plugin]) -> impl Iterator<Item = (&Plugin, &String, &Setting)> {
+fn declared_settings(plugins: &[Plugin]) -> impl Iterator<Item = (&Plugin, &String, &Setting)> {
     plugins.iter().flat_map(|plugin| {
         plugin
             .settings
@@ -541,17 +532,11 @@ fn plugin_settings(plugins: &[Plugin]) -> impl Iterator<Item = (&Plugin, &String
     })
 }
 
-/// The namespaces of a plugin setting's options: none, for every platform,
-/// then each platform's.
-fn option_namespaces() -> impl Iterator<Item = Option<&'static str>> {
-    std::iter::once(None).chain(namespaces().map(Some))
-}
-
 /// The options that set the plugins' settings, for clap to parse:
 /// `--<id>-<key>`, listed in help with its default, and each platform's
 /// `--<id>-<platform>-<key>`, hidden. Resolving a setting applies its default.
 pub(crate) fn plugin_arguments(plugins: &[Plugin]) -> Vec<Arg> {
-    plugin_settings(plugins)
+    declared_settings(plugins)
         .flat_map(|(plugin, key, setting)| {
             let id = &plugin.id;
             let default = setting

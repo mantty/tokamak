@@ -14,7 +14,7 @@ use tokamak_cli::{Platform, PlatformPackManifest, PluginKeyKind, copy_file, is_v
 
 use super::packs::command_path;
 use super::paths::reset_path;
-use super::plugin_settings::{Setting, option_name};
+use super::plugin_settings::{Setting, option_name, option_namespaces};
 
 const MANIFEST: &str = "tokamak-plugin.json";
 
@@ -94,13 +94,7 @@ pub(crate) fn discover(project: &Path) -> Result<Vec<Plugin>> {
 /// variable name, that starts with another plugin's longer ID: `secure`'s
 /// `storage-x` and `--secure-storage-x`, which goes to `secure-storage`.
 fn reject_shared_option_names(plugins: &[Plugin]) -> Result<()> {
-    let namespaces = std::iter::once(None)
-        .chain(
-            Platform::ALL
-                .iter()
-                .map(|platform| Some(platform.namespace())),
-        )
-        .collect::<Vec<_>>();
+    let namespaces = option_namespaces().collect::<Vec<_>>();
     let namespaces = namespaces.as_slice();
     let names = plugins.iter().flat_map(|plugin| {
         plugin.settings.keys().flat_map(move |key| {

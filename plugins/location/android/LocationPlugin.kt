@@ -26,7 +26,6 @@ import com.tokamak.runtime.requireString
 import org.json.JSONArray
 import org.json.JSONObject
 
-
 class TokamakLocationPlugin(
     private val host: TokamakHost,
 ) : TokamakPlugin {
@@ -74,7 +73,7 @@ class TokamakLocationPlugin(
             "setup" -> reply(Result.success(null))
             "getCurrentPosition" ->
                 withPermission { granted ->
-                    if (granted) currentPosition(arguments as? JSONObject, reply) else reply(permissionDenied())
+                    if (granted) currentPosition(arguments as? JSONObject, reply) else reply(Result.failure(permissionDenied()))
                 }
             "permission" -> reply(Result.success(permission()))
             "requestPermission" -> requestPermission(requireObject(arguments), reply)
@@ -107,7 +106,7 @@ class TokamakLocationPlugin(
         var stop = {}
         withPermission { granted ->
             if (!granted) {
-                reply(permissionDenied())
+                reply(Result.failure(permissionDenied()))
             } else if (!cancelled) {
                 stop = watchPosition(reply)
             }
@@ -202,11 +201,8 @@ class TokamakLocationPlugin(
     }
 
     /**
-     * Requests updates again when Android removed them, as a restart or an app update does, and
-     * updates and regions whose `PendingIntent` no longer exists, as after a restart or Android 15's
-     * force stop. Starts the updates' foreground service again where Android allows it: on screen,
-     * or after a restart or an update with background permission. Reports a failure, such as revoked
-     * permission, to `onLocationError`.
+     * Restores updates and regions, and starts the updates' foreground service on screen, or after a
+     * restart or an update with background permission. Reports a failure to `onLocationError`.
      */
     internal fun restore(updatesRemoved: Boolean) {
         runCatching {
@@ -344,7 +340,7 @@ class TokamakLocationPlugin(
 
     private fun nullable(available: Boolean, value: Double): Any = if (available) value else JSONObject.NULL
 
-    private fun permissionDenied(): Result<Any?> = locationFailure(SecurityException())
+    private fun permissionDenied() = TokamakPluginError("NotAllowedError", "Location permission was denied")
 
     /** Why no fix came: Android gives none in the background without background location permission. */
     private fun missingFix(): Result<Any?> =
@@ -361,7 +357,7 @@ class TokamakLocationPlugin(
 
     private fun locationError(error: Throwable): TokamakPluginError =
         when (error) {
-            is SecurityException -> TokamakPluginError("NotAllowedError", "Location permission was denied")
+            is SecurityException -> permissionDenied()
             // Off screen, Android starts a foreground service only in response to some events.
             is ForegroundServiceStartNotAllowedException -> TokamakPluginError.needsUI()
             else -> TokamakPluginError("NotReadableError", error.message ?: "Location is unavailable")

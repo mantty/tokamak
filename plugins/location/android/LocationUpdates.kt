@@ -97,7 +97,7 @@ internal class LocationUpdates(private val context: Context) {
                 .setQuality(QUALITIES[accuracy] ?: LocationRequest.QUALITY_HIGH_ACCURACY)
                 .setMinUpdateDistanceMeters(options.optDouble("distance", 0.0).toFloat())
                 .build()
-        val updates = pendingIntent(PendingIntent.FLAG_UPDATE_CURRENT) ?: return
+        val updates = checkNotNull(pendingIntent(PendingIntent.FLAG_UPDATE_CURRENT))
         manager.requestLocationUpdates(provider(accuracy), request, updates)
     }
 
