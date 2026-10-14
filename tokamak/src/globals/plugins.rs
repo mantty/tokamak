@@ -103,11 +103,7 @@ fn listen<'js>(
                 result = subscription.next() => result,
             };
             let Some(result) = result else { return };
-            // `deliver` reports what its callbacks throw; this clears anything that escapes.
-            if deliver.call::<_, ()>((result,)).is_err() {
-                let _ = deliver.ctx().catch();
-            }
-            while deliver.ctx().execute_pending_job() {}
+            super::run_task(&deliver, (result,), &removed);
         }
     });
     Function::new(ctx.clone(), move || remove.cancel())
