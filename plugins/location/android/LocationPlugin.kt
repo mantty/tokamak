@@ -81,8 +81,7 @@ class TokamakLocationPlugin(
             "openSettings" -> openSettings(reply)
             "startUpdates" -> startUpdates(requireObject(arguments), reply)
             "stopUpdates" -> {
-                updates.stop()
-                TokamakLocationService.stop(context)
+                stopUpdates()
                 reply(Result.success(null))
             }
             "getUpdates" -> reply(Result.success(updates.options))
@@ -123,11 +122,7 @@ class TokamakLocationPlugin(
      * Throws `NeedsUIError` when asking would show UI while the app is in the background.
      */
     private fun withPermission(action: (Boolean) -> Unit) {
-        if (hasForegroundPermission()) {
-            action(true)
-            return
-        }
-        askForeground(foreground, action)
+        if (hasForegroundPermission()) action(true) else askForeground(foreground, action)
     }
 
     /**
@@ -196,10 +191,14 @@ class TokamakLocationPlugin(
             updates.start(options)
         }.onSuccess { reply(Result.success(null)) }
             .onFailure {
-                updates.stop()
-                TokamakLocationService.stop(context)
+                stopUpdates()
                 reply(Result.failure(locationError(it)))
             }
+    }
+
+    private fun stopUpdates() {
+        updates.stop()
+        TokamakLocationService.stop(context)
     }
 
     private fun startService() {
@@ -212,12 +211,14 @@ class TokamakLocationPlugin(
      */
     private fun setup(config: JSONObject, reply: TokamakPluginReply) {
         val options = JSONObject(SIGNIFICANT_CHANGE_OPTIONS)
-        when {
-            !config.optBoolean("significantChanges") -> significantChanges.stop()
-            hasForegroundPermission() -> significantChanges.start(options)
-            else -> significantChanges.keep(options)
-        }
-        reply(Result.success(null))
+        runCatching {
+            when {
+                !config.optBoolean("significantChanges") -> significantChanges.stop()
+                hasForegroundPermission() -> significantChanges.start(options)
+                else -> significantChanges.keep(options)
+            }
+        }.onSuccess { reply(Result.success(null)) }
+            .onFailure { reply(Result.failure(locationError(it))) }
     }
 
     /**

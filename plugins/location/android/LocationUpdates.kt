@@ -44,7 +44,7 @@ internal class LocationUpdates(private val context: Context, private val name: S
      * change nothing. Throws `SecurityException` without permission.
      */
     fun start(options: JSONObject) {
-        if (options.toString() == this.options?.toString() && isRequested()) return
+        if (options.toString() == preferences.getString(name, null) && isRequested()) return
         keep(options)
         request(options)
     }
