@@ -53,6 +53,9 @@ class TokamakLocationPlugin(
     private val regions = LocationRegions(context)
     private val events = LocationEvents(host)
 
+    /** Whether the provider was on when last reported, as each request reports its changes. */
+    private var providerEnabled = true
+
     /** Whether the app's manifest declares the foreground service, as the `background-updates` build setting does. */
     private val declaresService: Boolean by lazy {
         runCatching { context.packageManager.getServiceInfo(ComponentName(context, TokamakLocationService::class.java), 0) }
@@ -259,12 +262,13 @@ class TokamakLocationPlugin(
     internal fun receive(intent: Intent, finish: () -> Unit) {
         if (intent.action == LocationRegions.REGION_ACTION) return transition(intent, finish)
         if (intent.hasExtra(LocationManager.KEY_PROVIDER_ENABLED)) {
-            if (intent.getBooleanExtra(LocationManager.KEY_PROVIDER_ENABLED, true)) return finish()
+            val enabled = intent.getBooleanExtra(LocationManager.KEY_PROVIDER_ENABLED, true)
+            val turnedOff = providerEnabled && !enabled
+            providerEnabled = enabled
+            if (!turnedOff) return finish()
             return events.fail(TokamakPluginError("NotReadableError", "The location provider was turned off"), finish)
         }
-        val received = locations(intent).map(::position)
-        if (received.isEmpty()) return finish()
-        events.update(received, finish)
+        events.update(locations(intent).map(::position), finish)
     }
 
     /** Delivers a region's entry or exit, when the region reports it. */

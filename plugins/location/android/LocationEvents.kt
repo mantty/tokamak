@@ -23,6 +23,9 @@ internal class LocationEvents(private val host: TokamakHost) {
     private val finishes = mutableListOf<() -> Unit>()
     private var updating = false
 
+    /** The time of the newest position delivered, as requests that run together receive the same positions. */
+    private var latest = Long.MIN_VALUE
+
     /** Adds a page's or Worker's listener of [method], returning its removal, or null for another method. */
     fun listen(method: String, reply: TokamakPluginReply): (() -> Unit)? {
         if (method !in LISTENERS) return null
@@ -32,11 +35,14 @@ internal class LocationEvents(private val host: TokamakHost) {
     }
 
     /**
-     * Delivers [received] positions, then calls [finish]. Positions that arrive while the Worker
-     * handles an update reach it together as the next.
+     * Delivers the [received] positions newer than those delivered, then calls [finish]. Positions
+     * that arrive while the Worker handles an update reach it together as the next.
      */
     fun update(received: List<JSONObject>, finish: () -> Unit) {
-        positions += received
+        val newer = received.filter { it.getLong("timestamp") > latest }
+        if (newer.isEmpty()) return finish()
+        latest = newer.maxOf { it.getLong("timestamp") }
+        positions += newer
         finishes += finish
         if (!updating) sendUpdate()
     }
