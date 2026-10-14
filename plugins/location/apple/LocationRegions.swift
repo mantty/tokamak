@@ -139,15 +139,14 @@ final class TokamakLocationRegions {
     return flags.filter(\.0).map { TokamakPluginError(name: $0.1, message: $0.2) }
   }
 
-  /// Returns once the device has been unlocked since it started, as `CLMonitor` keeps its
-  /// conditions in a file that data protection makes readable from then. The system launches the
-  /// app for their events while the device is locked.
+  /// Returns once the device has been unlocked since it booted, from when `CLMonitor` can read the
+  /// file that keeps its conditions, even while the device is locked.
   @MainActor
   private static func firstUnlock() async {
     #if os(iOS)
       let unlocked = NotificationCenter.default.notifications(
         named: UIApplication.protectedDataDidBecomeAvailableNotification)
-      guard !unlockedSinceStart() else { return }
+      guard !unlockedSinceBoot() else { return }
       for await _ in unlocked {
         return
       }
@@ -155,9 +154,9 @@ final class TokamakLocationRegions {
   }
 
   #if os(iOS)
-    /// Whether the device has been unlocked since it started, as only then can a file protected
+    /// Whether the device has been unlocked since it booted, as only then can a file protected
     /// until the first unlock be written.
-    private static func unlockedSinceStart() -> Bool {
+    private static func unlockedSinceBoot() -> Bool {
       let probe = FileManager.default.temporaryDirectory.appending(path: "TokamakLocation.unlocked")
       let protection = Data.WritingOptions.completeFileProtectionUntilFirstUserAuthentication
       return (try? Data().write(to: probe, options: protection)) != nil
