@@ -3,9 +3,10 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::time::Duration;
 
-use rquickjs::{Ctx, Function, function::MutFn};
-use tokio::sync::{Notify, oneshot};
+use rquickjs::{Ctx, Function};
+use tokio::sync::Notify;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Default)]
 struct TimerQueue {
@@ -40,14 +41,9 @@ fn schedule<'js>(
     callback: Function<'js>,
     milliseconds: u64,
 ) -> rquickjs::Result<Function<'js>> {
-    let (sender, cancelled) = oneshot::channel::<()>();
-    let mut sender = Some(sender);
-    let cancel = Function::new(
-        ctx.clone(),
-        MutFn::new(move || {
-            sender.take();
-        }),
-    )?;
+    let cancelled = CancellationToken::new();
+    let cancelling = cancelled.clone();
+    let cancel = Function::new(ctx.clone(), move || cancelling.cancel())?;
     let deadline = Instant::now() + Duration::from_millis(milliseconds);
     let sequence = queue.next.get();
     queue.next.set(sequence + 1);
@@ -59,7 +55,7 @@ fn schedule<'js>(
     ctx.spawn(async move {
         tokio::select! {
             biased;
-            _ = cancelled => {},
+            () = cancelled.cancelled() => {},
             () = async {
                 tokio::time::sleep_until(deadline).await;
                 // Tokio may wake simultaneous timers in any order. Only the
@@ -69,13 +65,7 @@ fn schedule<'js>(
                     if pending.queue.pending.borrow().first() == Some(&pending.key) { break; }
                     changed.await;
                 }
-            } => {
-                // Timer callbacks log their own errors; this clears any that escape.
-                if callback.call::<_, ()>(()).is_err() {
-                    let _ = callback.ctx().catch();
-                }
-                while callback.ctx().execute_pending_job() {}
-            }
+            } => super::run_task(&callback, (), &cancelled),
         }
         drop(pending);
     });
@@ -89,6 +79,7 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+    use std::time::Duration;
 
     struct Capture(Arc<AtomicUsize>);
 
@@ -96,6 +87,62 @@ mod tests {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// What a 0 ms timer that is due when first polled, and the microtask
+    /// `microtask` queued before it, push to `order`. `clear` cancels the timer.
+    fn order_with_a_due_timer(microtask: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let executor = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()?;
+        // Another thread turns the time driver, so the timer is due when it is first polled.
+        executor.spawn(async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        });
+        let order = executor.block_on(async {
+            let runtime = AsyncRuntime::new()?;
+            let context = AsyncContext::full(&runtime).await?;
+            context
+                .async_with(async |ctx| {
+                    ctx.eval::<(), _>("globalThis.order = []")?;
+                    let callback: Function = ctx.eval("() => order.push('timeout')")?;
+                    let queue = std::rc::Rc::new(super::TimerQueue::default());
+                    let clear = super::schedule(ctx.clone(), &queue, callback, 0)?;
+                    ctx.globals().set("clear", clear)?;
+                    ctx.eval::<(), _>(format!("Promise.resolve().then(() => {{ {microtask} }})"))?;
+                    std::thread::sleep(Duration::from_millis(5));
+                    // The timer leaves the queue once it has run or been cleared.
+                    while !queue.pending.borrow().is_empty() {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    ctx.eval::<String, _>("order.join()")
+                })
+                .await
+        })?;
+        Ok(order)
+    }
+
+    #[test]
+    fn runs_waiting_microtasks_before_a_timer_that_is_due() -> Result<(), Box<dyn std::error::Error>>
+    {
+        assert_eq!(
+            order_with_a_due_timer("order.push('microtask')")?,
+            "microtask,timeout"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn skips_a_due_timer_that_a_waiting_microtask_clears() -> Result<(), Box<dyn std::error::Error>>
+    {
+        assert_eq!(
+            order_with_a_due_timer("clear(); order.push('microtask')")?,
+            "microtask"
+        );
+        Ok(())
     }
 
     #[test]
