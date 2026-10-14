@@ -81,9 +81,10 @@ export type Activity =
   | "maritime";
 
 /**
- * `startUpdates` options, for continuous tracking such as a run or navigation, which shows the system's
- * indicator: the blue pill on iOS with in-use permission, and the foreground service's notification on
- * Android. Each option is platform-specific: Apple's relaunching updates take only an `activity`.
+ * `startUpdates` options, for continuous tracking such as a run or navigation, which can show the
+ * system's indicator: the blue pill on iOS with in-use permission, and the notification of Android's
+ * `foregroundService`. Each option is platform-specific: Apple's relaunching updates take only an
+ * `activity`.
  */
 export interface UpdateOptions {
   /** Apple only: `"default"` by default. */

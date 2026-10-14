@@ -141,17 +141,19 @@ Worker runs, and return the function that removes the listener.
 little power and no indicator. Call it from `onStart` in `src/tokamak.ts`, so
 it applies at every launch; the plugin also keeps it and applies it again
 itself. The configuration replaces the previous one, and an invalid one
-rejects with `TypeError` and changes nothing.
+rejects with `TypeError` and changes nothing. Apple platforms reject with
+`NotSupportedError` where the device cannot monitor significant changes.
 
 - `significantChanges` delivers moves of 500 metres or more, at most every 5
   minutes, to `onLocationUpdate`, located from cellular and Wi-Fi rather than
   GPS. Apple platforms use the significant-change service. Android uses a
   low-power request with the same thresholds, which it limits to a few an hour
-  off screen. Without permission they start once the app has it.
+  off screen. Without permission they start once the app has it on Apple
+  platforms, and on Android after the plugin's prompt or at the next launch.
 - `visits`, Apple only, delivers arrivals at and departures from the places
   the user stays to `onVisit`. It uses the least power of all.
 
-With Always permission, iOS relaunches the app for both, and Android starts
+With background permission, iOS relaunches the app for both, and Android starts
 the app's process for significant changes. [Regions](#regions) wake the app
 the same way.
 
@@ -159,8 +161,9 @@ the same way.
 
 `startUpdates(options)` starts continuous updates for an activity the user
 follows, such as a run or navigation, replacing any running, until
-`stopUpdates()`. Off screen the system shows that the app is tracking: iOS's
-blue location pill, and the notification of Android's foreground service.
+`stopUpdates()`. Off screen the system can show that the app is tracking:
+iOS's blue location pill with in-use permission, and the notification of
+Android's foreground service.
 `getUpdates()` resolves with the running updates' options, or null. Updates
 need in-use permission, and reject with `NotAllowedError` without it. The
 plugin keeps them across launches and restarts.

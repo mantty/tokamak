@@ -31,7 +31,8 @@ class Location extends Plugin {
   /**
    * Applies long-term location awareness, replacing the previous configuration, which the plugin keeps
    * and applies again at each start. Rejects with `TypeError`, changing nothing, when a value is
-   * invalid.
+   * invalid, and on Apple platforms with `NotSupportedError` where the device cannot monitor
+   * significant changes.
    */
   async setup(config: SetupConfig): Promise<void> {
     validateSetup(config, "config");
@@ -77,9 +78,8 @@ class Location extends Plugin {
   }
 
   /**
-   * Starts continuous tracking, replacing any running, until `stopUpdates`, which shows the system's
-   * indicator; `setup` gives long-term awareness without one. Their positions reach
-   * `onLocationUpdate`, including after the system ended the app. Rejects with `NotAllowedError`
+   * Starts continuous tracking, replacing any running, until `stopUpdates`; `setup` gives long-term
+   * awareness instead. The updates' positions reach `onLocationUpdate`, including after the system ended the app. Rejects with `NotAllowedError`
    * without in-use permission, and on iOS with `NeedsUIError` off screen. Android's
    * `foregroundService` rejects with `NotSupportedError` without the `background-updates` build
    * setting, and with `NeedsUIError` when Android does not allow the service to start off screen.
