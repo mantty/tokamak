@@ -19,6 +19,9 @@ final class TokamakLocationEvents {
   private var positions: [[String: Any]] = []
   private var stationary: Bool?
   private var updating = false
+  /// The time of the newest position delivered, as services that run together
+  /// report the same positions.
+  private var latest = Date.distantPast
   /// The messages of the problems last reported, by region id, or nil for
   /// updates.
   private var problems: [String?: Set<String>] = [:]
@@ -37,11 +40,14 @@ final class TokamakLocationEvents {
     }
   }
 
-  /// Delivers `location`, with Apple's `stationary` flag when the system
-  /// reports it. Positions that arrive while the Worker handles an update
-  /// reach it together as the next.
+  /// Delivers `location` when it is newer than the positions delivered, with
+  /// Apple's `stationary` flag when the system reports it. Positions that
+  /// arrive while the Worker handles an update reach it together as the next.
   func update(_ location: CLLocation?, stationary: Bool? = nil) {
-    positions += location.map { [Self.position($0)] } ?? []
+    if let location, location.timestamp > latest {
+      latest = location.timestamp
+      positions.append(Self.position(location))
+    }
     if let stationary {
       self.stationary = stationary
     }

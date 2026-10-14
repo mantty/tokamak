@@ -112,11 +112,14 @@ export interface ServiceNotification {
 
 /** Positions from continuous updates or significant changes. */
 export interface LocationUpdate {
-  /** Oldest first: those that arrived while the Worker handled the previous update come together. */
+  /**
+   * Oldest first: those that arrived while the Worker handled the previous update come together. Each
+   * is newer than those delivered before it, so one that several services report arrives once.
+   */
   readonly positions: readonly Position[];
   /**
    * Apple only, from iOS 18 and macOS 15: true on the last update before updates pause while the
-   * device is still. `positions` is empty when the update has no position.
+   * device is still. `positions` is empty when the update has no new position.
    */
   readonly stationary?: boolean;
 }

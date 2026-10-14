@@ -127,9 +127,11 @@ event:
 | `onLocationError` | `{ name, message, id? }` when a background service fails, with the region's `id` when it concerns one. |
 
 `positions` holds the positions that arrived while the Worker handled the
-previous update, oldest first, so a slow Worker never builds a queue. Apple's
-`stationary`, from iOS 18 and macOS 15, is true on the last update before
-updates pause while the device is still.
+previous update, oldest first, so a slow Worker never builds a queue. Each is
+newer than those delivered before it, so a position that both updates and
+significant changes report arrives once. Apple's `stationary`, from iOS 18
+and macOS 15, is true on the last update before updates pause while the
+device is still.
 
 The plugin's `onLocationUpdate`, `onRegionTransition`, `onVisit` and
 `onLocationError` methods receive the same events while the listening page or
