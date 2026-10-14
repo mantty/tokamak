@@ -48,7 +48,8 @@ class TokamakLocationPlugin(
     /** Foreground location permissions, which the `precision` build setting declares. */
     private val foreground: Set<String> by lazy { setOf(COARSE, FINE).filter(declared::contains).toSet() }
 
-    private val updates = LocationUpdates(context)
+    private val updates = LocationUpdates(context, LocationUpdates.UPDATES)
+    private val significantChanges = LocationUpdates(context, LocationUpdates.SIGNIFICANT_CHANGES)
     private val regions = LocationRegions(context)
     private val events = LocationEvents(host)
 
@@ -64,13 +65,12 @@ class TokamakLocationPlugin(
 
     /** Starts the updates' foreground service again once the app is on screen. */
     override fun onIntent(intent: Intent) {
-        if (host.isInForeground) updates.startService()
+        if (host.isInForeground) startService()
     }
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
         when (method) {
-            // Significant changes and visits, setup's keys, are Apple's.
-            "setup" -> reply(Result.success(null))
+            "setup" -> setup(requireObject(arguments), reply)
             "getCurrentPosition" ->
                 withPermission { granted ->
                     if (granted) currentPosition(arguments as? JSONObject, reply) else reply(Result.failure(permissionDenied()))
@@ -82,6 +82,7 @@ class TokamakLocationPlugin(
             "startUpdates" -> startUpdates(requireObject(arguments), reply)
             "stopUpdates" -> {
                 updates.stop()
+                TokamakLocationService.stop(context)
                 reply(Result.success(null))
             }
             "getUpdates" -> reply(Result.success(updates.options))
@@ -126,7 +127,19 @@ class TokamakLocationPlugin(
             action(true)
             return
         }
-        host.requestPermissions(foreground) { granted -> action(granted.containsValue(true)) }
+        askForeground(foreground, action)
+    }
+
+    /**
+     * Asks for the foreground [permissions], then passes [action] whether the app has one, first
+     * starting what waited for permission.
+     */
+    private fun askForeground(permissions: Set<String>, action: (Boolean) -> Unit) {
+        host.requestPermissions(permissions) { granted ->
+            val allowed = granted.containsValue(true)
+            if (allowed) restore(updatesRemoved = false)
+            action(allowed)
+        }
     }
 
     private fun granted(permission: String): Boolean =
@@ -162,8 +175,8 @@ class TokamakLocationPlugin(
             throw TokamakPluginError.notSupported("Background location needs the location plugin's background build setting")
         }
         val asked = if (options.optionalString("precision") == "approximate") setOf(COARSE) else foreground
-        host.requestPermissions(asked) { granted ->
-            if (!background || !granted.containsValue(true)) return@requestPermissions reply(Result.success(permission()))
+        askForeground(asked) { allowed ->
+            if (!background || !allowed) return@askForeground reply(Result.success(permission()))
             runCatching { host.requestPermissions(setOf(BACKGROUND)) { reply(Result.success(permission())) } }
                 .onFailure { reply(Result.failure(it)) }
         }
@@ -173,12 +186,38 @@ class TokamakLocationPlugin(
         if (!hasForegroundPermission()) throw TokamakPluginError("NotAllowedError", "Location permission has not been granted")
     }
 
+    /** Starts updates in the foreground service when [options] name one, which stops otherwise. On failure, none run. */
     private fun startUpdates(options: JSONObject, reply: TokamakPluginReply) {
         requirePermission()
-        if (options.has("foregroundService")) requireService()
-        runCatching { updates.start(options) }
-            .onSuccess { reply(Result.success(null)) }
-            .onFailure { reply(Result.failure(locationError(it))) }
+        val notification = options.optJSONObject("foregroundService")
+        if (notification != null) requireService()
+        runCatching {
+            if (notification == null) TokamakLocationService.stop(context) else TokamakLocationService.start(context, notification)
+            updates.start(options)
+        }.onSuccess { reply(Result.success(null)) }
+            .onFailure {
+                updates.stop()
+                TokamakLocationService.stop(context)
+                reply(Result.failure(locationError(it)))
+            }
+    }
+
+    private fun startService() {
+        updates.options?.optJSONObject("foregroundService")?.let { TokamakLocationService.start(context, it) }
+    }
+
+    /**
+     * Starts significant changes when [config] names them, and stops them otherwise. Without
+     * permission they start once the app has it.
+     */
+    private fun setup(config: JSONObject, reply: TokamakPluginReply) {
+        val options = JSONObject(SIGNIFICANT_CHANGE_OPTIONS)
+        when {
+            !config.optBoolean("significantChanges") -> significantChanges.stop()
+            hasForegroundPermission() -> significantChanges.start(options)
+            else -> significantChanges.keep(options)
+        }
+        reply(Result.success(null))
     }
 
     /**
@@ -201,13 +240,16 @@ class TokamakLocationPlugin(
     }
 
     /**
-     * Restores updates and regions, and starts the updates' foreground service on screen, or after a
-     * restart or an update with background permission. Reports a failure to `onLocationError`.
+     * Restores updates, significant changes and regions where the app has permission, as Android
+     * pauses them without it, and starts the updates' foreground service on screen, or after a restart
+     * or an update with background permission. Reports a failure to `onLocationError`.
      */
     internal fun restore(updatesRemoved: Boolean) {
+        if (!hasForegroundPermission()) return
         runCatching {
             updates.restore(updatesRemoved)
-            if (host.isInForeground || (updatesRemoved && granted(BACKGROUND))) updates.startService()
+            significantChanges.restore(updatesRemoved)
+            if (host.isInForeground || (updatesRemoved && granted(BACKGROUND))) startService()
         }.onFailure { events.fail(locationError(it)) }
         runCatching { regions.restore() }.onFailure { events.fail(locationError(it)) }
     }
@@ -369,5 +411,8 @@ class TokamakLocationPlugin(
         const val FINE = Manifest.permission.ACCESS_FINE_LOCATION
         const val COARSE = Manifest.permission.ACCESS_COARSE_LOCATION
         const val BACKGROUND = Manifest.permission.ACCESS_BACKGROUND_LOCATION
+
+        /** Apple's significant-change service's thresholds: 500 metres or more, at most every 5 minutes, without GPS. */
+        const val SIGNIFICANT_CHANGE_OPTIONS = """{"accuracy":"low","interval":300000,"distance":500}"""
     }
 }

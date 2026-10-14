@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
@@ -25,7 +26,7 @@ class TokamakLocationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val content =
             intent?.getStringExtra(NOTIFICATION_EXTRA)?.let(::JSONObject)
-                ?: LocationUpdates(this).options?.optJSONObject("foregroundService")
+                ?: LocationUpdates(this, LocationUpdates.UPDATES).options?.optJSONObject("foregroundService")
         if (content == null) {
             stopSelf()
             return START_NOT_STICKY
@@ -59,6 +60,16 @@ class TokamakLocationService : Service() {
 
     companion object {
         /** The start intent's notification, as JSON. */
-        const val NOTIFICATION_EXTRA = "com.tokamak.plugins.location.NOTIFICATION"
+        private const val NOTIFICATION_EXTRA = "com.tokamak.plugins.location.NOTIFICATION"
+
+        /** Starts the service showing [notification], or shows it in the running service. */
+        fun start(context: Context, notification: JSONObject) {
+            val start = Intent(context, TokamakLocationService::class.java).putExtra(NOTIFICATION_EXTRA, notification.toString())
+            context.startForegroundService(start)
+        }
+
+        fun stop(context: Context) {
+            context.stopService(Intent(context, TokamakLocationService::class.java))
+        }
     }
 }

@@ -29,7 +29,7 @@ class Location extends Plugin {
   }
 
   /**
-   * Applies what runs at every launch, replacing the previous configuration, which the plugin keeps
+   * Applies long-term location awareness, replacing the previous configuration, which the plugin keeps
    * and applies again at each start. Rejects with `TypeError`, changing nothing, when a value is
    * invalid.
    */
@@ -77,7 +77,8 @@ class Location extends Plugin {
   }
 
   /**
-   * Starts continuous updates, replacing any running, until `stopUpdates`. Their positions reach
+   * Starts continuous tracking, replacing any running, until `stopUpdates`, which shows the system's
+   * indicator; `setup` gives long-term awareness without one. Their positions reach
    * `onLocationUpdate`, including after the system ended the app. Rejects with `NotAllowedError`
    * without in-use permission, and on iOS with `NeedsUIError` off screen. Android's
    * `foregroundService` rejects with `NotSupportedError` without the `background-updates` build

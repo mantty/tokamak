@@ -1,8 +1,8 @@
 # @tokamakdev/plugin-location
 
-Location for tokamak applications and the web: positions on request, and
-updates, regions, significant changes and visits that reach the app's Worker
-off screen.
+Location for tokamak applications and the web: positions on request,
+long-term location awareness from significant changes, visits and regions,
+and continuous tracking, all of which reach the app's Worker off screen.
 
 ```sh
 npm install @tokamakdev/plugin-location
@@ -15,16 +15,20 @@ const position = await location.getCurrentPosition();
 const stop = location.watchPosition((next) => console.log(next.coords), console.error);
 
 await location.requestPermission({ background: true });
-await location.startUpdates({ activity: "fitness", accuracy: "high", distance: 10 });
 await location.addRegion({ id: "home", latitude: 51.5, longitude: -0.12, radius: 150 });
 ```
 
 ```ts
 // src/tokamak.ts
+import { location } from "@tokamakdev/plugin-location";
 import { onLocationUpdate, onRegionTransition } from "@tokamakdev/plugin-location/events";
+import { onStart } from "@tokamakdev/tok/events";
 
-onLocationUpdate(async ({ positions }, env) => {
-  await fetch("https://example.com/track", { method: "POST", body: JSON.stringify(positions) });
+onStart(async () => {
+  await location.setup({ significantChanges: true, visits: true });
+});
+onLocationUpdate(async ({ positions }) => {
+  await fetch("https://example.com/whereabouts", { method: "POST", body: JSON.stringify(positions) });
 });
 onRegionTransition(({ id, transition }) => console.log(id, transition));
 ```
@@ -131,13 +135,35 @@ The plugin's `onLocationUpdate`, `onRegionTransition`, `onVisit` and
 `onLocationError` methods receive the same events while the listening page or
 Worker runs, and return the function that removes the listener.
 
-## Updates
+## Long-term awareness
 
-`startUpdates(options)` starts continuous updates, replacing any running,
-until `stopUpdates()`. `getUpdates()` resolves with the running updates'
-options, or null. Updates need in-use permission, and reject with
-`NotAllowedError` without it. The plugin keeps them across launches and
-restarts.
+`setup(config)` keeps the app aware of where the device is over days, with
+little power and no indicator. Call it from `onStart` in `src/tokamak.ts`, so
+it applies at every launch; the plugin also keeps it and applies it again
+itself. The configuration replaces the previous one, and an invalid one
+rejects with `TypeError` and changes nothing.
+
+- `significantChanges` delivers moves of 500 metres or more, at most every 5
+  minutes, to `onLocationUpdate`, located from cellular and Wi-Fi rather than
+  GPS. Apple platforms use the significant-change service. Android uses a
+  low-power request with the same thresholds, which it limits to a few an hour
+  off screen. Without permission they start once the app has it.
+- `visits`, Apple only, delivers arrivals at and departures from the places
+  the user stays to `onVisit`. It uses the least power of all.
+
+With Always permission, iOS relaunches the app for both, and Android starts
+the app's process for significant changes. [Regions](#regions) wake the app
+the same way.
+
+## Continuous tracking
+
+`startUpdates(options)` starts continuous updates for an activity the user
+follows, such as a run or navigation, replacing any running, until
+`stopUpdates()`. Off screen the system shows that the app is tracking: iOS's
+blue location pill, and the notification of Android's foreground service.
+`getUpdates()` resolves with the running updates' options, or null. Updates
+need in-use permission, and reject with `NotAllowedError` without it. The
+plugin keeps them across launches and restarts.
 
 **Apple** uses `CLLocationUpdate.liveUpdates`.
 
@@ -147,9 +173,9 @@ restarts.
 - Updates pause while the device is still and resume when it moves.
 - If iOS ends the app while updates run, it launches the app for the next
   update, and the plugin resumes them.
-- Off screen, updates need the `background-updates` build setting, which
-  shows the location indicator, or Always permission. `startUpdates` rejects
-  with `NeedsUIError` off screen on iOS.
+- Off screen, updates need Always permission, or the `background-updates`
+  build setting, whose background activity session shows the pill.
+  `startUpdates` rejects with `NeedsUIError` off screen on iOS.
 - From iOS 18, failures such as denied permission or lost location reach
   `onLocationError` once each.
 - `getCurrentPosition` and `watchPosition` can change the coordinates updates
@@ -196,16 +222,6 @@ and background permission off screen.
   minutes or less often, so a transition can arrive that long after it
   happens. Adding a region again, as the plugin does after a restart, reports
   an entry again for a device inside.
-
-## Significant changes and visits
-
-On Apple platforms, `setup(config)` starts what runs at every launch:
-`significantChanges` delivers significant changes of location to
-`onLocationUpdate`, and `visits` delivers visits to `onVisit`. Call it from
-`onStart` in `src/tokamak.ts`. The configuration replaces the previous one,
-which the plugin keeps and applies again at each launch; an invalid one
-rejects with `TypeError` and changes nothing. With Always permission, the
-system relaunches the app for both. Android ignores `setup`'s keys.
 
 ## Platforms
 

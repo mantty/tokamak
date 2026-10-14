@@ -4,11 +4,12 @@ import PluginCard from "./PluginCard.astro";
 
 <PluginCard title="Location" log="location-log">
   <p class="text-indigo-300 mb-4">
-    Positions on request, and updates and regions that continue off screen.
-    src/tokamak.ts records where the Worker first places the device, sets up
-    significant changes and visits on Apple platforms, and records every
-    update, region transition, visit and failure on the Events page. This card
-    logs them while it is open.
+    Positions on request, long-term awareness, and tracking. src/tokamak.ts
+    sets up significant changes and visits at each start, which run off screen
+    with little power and no indicator, and records every update, region
+    transition, visit and failure on the Events page. Tracking shows the
+    system's indicator while it runs. This card logs the events while it is
+    open.
   </p>
   <div class="flex flex-wrap gap-3">
     <button id="location-current" class="button">Current position</button>
@@ -19,9 +20,9 @@ import PluginCard from "./PluginCard.astro";
     <button id="location-precise" class="button">Request precise</button>
     <button id="location-services" class="button">Services enabled</button>
     <button id="location-settings" class="button">Open settings</button>
-    <button id="location-start" class="button">Start updates</button>
-    <button id="location-stop" class="button">Stop updates</button>
-    <button id="location-updates" class="button">Running updates</button>
+    <button id="location-start" class="button">Start tracking</button>
+    <button id="location-stop" class="button">Stop tracking</button>
+    <button id="location-updates" class="button">Tracking</button>
     <button id="location-add-region" class="button">Add a region here</button>
     <button id="location-regions" class="button">Regions</button>
     <button id="location-remove-region" class="button">Remove the region</button>

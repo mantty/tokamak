@@ -9,11 +9,8 @@ import android.location.LocationManager
 import android.location.LocationRequest
 import org.json.JSONObject
 
+/** The JSON of each kind of updates' options, by name. */
 private const val PREFERENCES = "tokamak.location"
-
-/** The JSON of the running updates' options, as `startUpdates` received them. */
-private const val UPDATES = "updates"
-private const val UPDATES_ACTION = "com.tokamak.plugins.location.UPDATES"
 private const val DEFAULT_INTERVAL_MILLIS = 10_000L
 
 private val QUALITIES =
@@ -24,53 +21,40 @@ private val QUALITIES =
     )
 
 /**
- * Continuous updates, which `LocationManager` sends to [TokamakLocationReceiver] through a
- * `PendingIntent`, starting the app's process when it has ended, with [TokamakLocationService] when
- * their options name a `foregroundService`. The options persist until [stop], and [restore] requests
- * them again where Android removed the request. Use it on the main thread.
+ * Location updates of one kind, [name]: `startUpdates`' or significant changes'. `LocationManager`
+ * sends them to [TokamakLocationReceiver] through a `PendingIntent`, starting the app's process when
+ * it has ended. Their options persist until [stop], and [restore] requests them where they are not
+ * running. Use it on the main thread.
  */
-internal class LocationUpdates(private val context: Context) {
+internal class LocationUpdates(private val context: Context, private val name: String) {
     private val manager = context.getSystemService(LocationManager::class.java)
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
-    /** The options of the running updates, or null. */
+    /** The options of the updates, or null. */
     val options: JSONObject?
-        get() = preferences.getString(UPDATES, null)?.let(::JSONObject)
+        get() = preferences.getString(name, null)?.let(::JSONObject)
+
+    /** Keeps [options], which [restore] requests. */
+    fun keep(options: JSONObject) {
+        preferences.edit().putString(name, options.toString()).apply()
+    }
 
     /**
-     * Starts updates with [options], replacing any running, in the foreground service when they name
-     * one, which stops otherwise. Throws `SecurityException` without permission.
+     * Keeps [options] and requests updates with them, replacing others; the same options running
+     * change nothing. Throws `SecurityException` without permission.
      */
     fun start(options: JSONObject) {
-        val notification = options.optJSONObject("foregroundService")
-        if (notification == null) stopService() else startService(notification)
+        if (options.toString() == this.options?.toString() && isRequested()) return
+        keep(options)
         request(options)
-        preferences.edit().putString(UPDATES, options.toString()).apply()
     }
 
     fun stop() {
-        preferences.edit().remove(UPDATES).apply()
-        stopService()
+        preferences.edit().remove(name).apply()
         pendingIntent(PendingIntent.FLAG_NO_CREATE)?.let {
             manager.removeUpdates(it)
             it.cancel()
         }
-    }
-
-    /** Starts the running updates' foreground service, if they have one. */
-    fun startService() {
-        options?.optJSONObject("foregroundService")?.let(::startService)
-    }
-
-    private fun startService(notification: JSONObject) {
-        val start =
-            Intent(context, TokamakLocationService::class.java)
-                .putExtra(TokamakLocationService.NOTIFICATION_EXTRA, notification.toString())
-        context.startForegroundService(start)
-    }
-
-    private fun stopService() {
-        context.stopService(Intent(context, TokamakLocationService::class.java))
     }
 
     /**
@@ -80,8 +64,10 @@ internal class LocationUpdates(private val context: Context) {
      */
     fun restore(removed: Boolean) {
         val options = options ?: return
-        if (removed || forceStopped() || pendingIntent(PendingIntent.FLAG_NO_CREATE) == null) request(options)
+        if (removed || forceStopped() || !isRequested()) request(options)
     }
+
+    private fun isRequested(): Boolean = pendingIntent(PendingIntent.FLAG_NO_CREATE) != null
 
     /** Whether the app's process last ended by the user's force stop. */
     private fun forceStopped(): Boolean =
@@ -98,7 +84,13 @@ internal class LocationUpdates(private val context: Context) {
                 .setMinUpdateDistanceMeters(options.optDouble("distance", 0.0).toFloat())
                 .build()
         val updates = checkNotNull(pendingIntent(PendingIntent.FLAG_UPDATE_CURRENT))
-        manager.requestLocationUpdates(provider(accuracy), request, updates)
+        try {
+            manager.requestLocationUpdates(provider(accuracy), request, updates)
+        } catch (error: Exception) {
+            // Without the `PendingIntent`, [restore] requests them again.
+            updates.cancel()
+            throw error
+        }
     }
 
     /** The fused provider when the device has one, and otherwise GPS for high accuracy and the network for less. */
@@ -114,7 +106,15 @@ internal class LocationUpdates(private val context: Context) {
         PendingIntent.getBroadcast(
             context,
             0,
-            Intent(context, TokamakLocationReceiver::class.java).setAction(UPDATES_ACTION),
+            Intent(context, TokamakLocationReceiver::class.java).setAction("com.tokamak.plugins.location.${name.uppercase()}"),
             flags or PendingIntent.FLAG_MUTABLE,
         )
+
+    companion object {
+        /** `startUpdates`' updates. */
+        const val UPDATES = "updates"
+
+        /** Significant changes, as `setup` starts them. */
+        const val SIGNIFICANT_CHANGES = "significantChanges"
+    }
 }

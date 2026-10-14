@@ -23,7 +23,7 @@ function record(env: Cloudflare.Env, entry: string): Promise<void> {
 onStart(async (event, env, ctx) => {
   ctx.waitUntil(record(env, event.foreground ? "start in the foreground" : "start in the background"));
   ctx.waitUntil(setUpNotifications(env));
-  // Apple platforms then relaunch the app for significant changes and visits; Android ignores it.
+  // Long-term awareness: significant changes everywhere, and visits on Apple platforms.
   ctx.waitUntil(
     location.setup({ significantChanges: true, visits: true }).catch((error: DOMException) =>
       record(env, `location setup failed: ${error.name}`),
