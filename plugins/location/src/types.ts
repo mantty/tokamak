@@ -25,13 +25,18 @@ export type PositionCallback = (position: Position) => void;
 export type PositionErrorCallback = (error: DOMException) => void;
 
 /**
- * What runs at every launch: `setup` starts what it names and stops what it leaves out. Apple only;
- * other platforms ignore these keys. Each relaunches the app for its events with Always permission.
+ * Long-term location awareness, which runs across launches and restarts, uses little power and shows
+ * no indicator: `setup` starts what it names and stops what it leaves out. Off screen it needs
+ * background permission, with which the system launches the app for its events.
  */
 export interface SetupConfig {
-  /** Delivers significant changes of location to `onLocationUpdate`. */
+  /**
+   * Delivers moves of 500 metres or more, at most every 5 minutes, to `onLocationUpdate`, located
+   * from cellular and Wi-Fi rather than GPS: Apple's significant-change service, and on Android a
+   * low-power request with the same thresholds, which Android limits to a few an hour off screen.
+   */
   readonly significantChanges?: boolean;
-  /** Delivers arrivals at and departures from places to `onVisit`. */
+  /** Apple only: delivers arrivals at and departures from places to `onVisit`. */
   readonly visits?: boolean;
 }
 
@@ -75,7 +80,12 @@ export type Activity =
   | "airborne"
   | "maritime";
 
-/** `startUpdates` options. Each is platform-specific: Apple's relaunching updates take only an `activity`. */
+/**
+ * `startUpdates` options, for continuous tracking such as a run or navigation, which can show the
+ * system's indicator: the blue pill on iOS with in-use permission, and the notification of
+ * Android's `foregroundService`. Each option is platform-specific: Apple's relaunching updates
+ * take only an `activity`.
+ */
 export interface UpdateOptions {
   /** Apple only: `"default"` by default. */
   readonly activity?: Activity;

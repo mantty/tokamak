@@ -7,6 +7,8 @@ import Foundation
 
 /// The JSON of each monitored region, as `addRegion` received it, by id.
 private let regionsKey = "tokamak.location.regions"
+/// The ids of the regions whose last transition was an entry.
+private let insideKey = "tokamak.location.inside"
 /// `CLMonitor` monitors at most 20 conditions for an app, and reports no
 /// error beyond them.
 private let regionLimit = 20
@@ -24,7 +26,7 @@ final class TokamakLocationRegions {
   init(events: TokamakLocationEvents) {
     self.events = events
     let monitor = Task { @MainActor in
-      await Self.protectedData()
+      await Self.firstUnlock()
       return await CLMonitor(monitorName)
     }
     self.monitor = monitor
@@ -51,6 +53,11 @@ final class TokamakLocationRegions {
     }
   }
 
+  private var inside: Set<String> {
+    get { Set(defaults.stringArray(forKey: insideKey) ?? []) }
+    set { defaults.set(Array(newValue), forKey: insideKey) }
+  }
+
   /// Monitors the region `region` describes, replacing one with the same id.
   /// It starts outside, so a device already inside reports an entry, as on
   /// Android.
@@ -71,11 +78,13 @@ final class TokamakLocationRegions {
     let center = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     let condition = CLMonitor.CircularGeographicCondition(center: center, radius: radius)
     regions[id] = region
+    inside.remove(id)
     await monitor.add(condition, identifier: id, assuming: .unsatisfied)
   }
 
   func remove(_ id: String) async {
     regions[id] = nil
+    inside.remove(id)
     events.report([], region: id)
     await monitor.value.remove(id)
   }
@@ -98,19 +107,20 @@ final class TokamakLocationRegions {
     return all
   }
 
+  /// Reports the event's problems, and its transition when it changes whether the device is
+  /// inside the region, as events can repeat the state.
   private func receive(_ event: CLMonitor.Event) {
     let id = event.identifier
     if #available(iOS 18, macOS 15, *) {
       events.report(Self.problems(event), region: id)
     }
-    guard let region = regions[id] else { return }
-    switch event.state {
-    case .satisfied where region["onEntry"] as? Bool != false:
-      events.transition(id, entered: true, at: event.date)
-    case .unsatisfied where region["onExit"] as? Bool != false:
-      events.transition(id, entered: false, at: event.date)
-    default:
-      break
+    guard let region = regions[id], event.state == .satisfied || event.state == .unsatisfied
+    else { return }
+    let entered = event.state == .satisfied
+    guard entered != inside.contains(id) else { return }
+    inside = entered ? inside.union([id]) : inside.subtracting([id])
+    if region[entered ? "onEntry" : "onExit"] as? Bool != false {
+      events.transition(id, entered: entered, at: event.date)
     }
   }
 
@@ -133,22 +143,33 @@ final class TokamakLocationRegions {
       ),
       (
         event.persistenceUnavailable, "NotReadableError",
-        "Regions are unavailable until the device is first unlocked"
+        "The system cannot store the app's regions"
       ),
     ]
     return flags.filter(\.0).map { TokamakPluginError(name: $0.1, message: $0.2) }
   }
 
-  /// Returns once protected data is available, which `CLMonitor` needs.
+  /// Returns once the device has been unlocked since it booted, from when `CLMonitor` can read the
+  /// file that keeps its conditions, even while the device is locked.
   @MainActor
-  private static func protectedData() async {
+  private static func firstUnlock() async {
     #if os(iOS)
-      guard !UIApplication.shared.isProtectedDataAvailable else { return }
-      let available = NotificationCenter.default.notifications(
+      let unlocked = NotificationCenter.default.notifications(
         named: UIApplication.protectedDataDidBecomeAvailableNotification)
-      for await _ in available {
+      guard !unlockedSinceBoot() else { return }
+      for await _ in unlocked {
         return
       }
     #endif
   }
+
+  #if os(iOS)
+    /// Whether the device has been unlocked since it booted, as only then can a file protected
+    /// until the first unlock be written.
+    private static func unlockedSinceBoot() -> Bool {
+      let probe = FileManager.default.temporaryDirectory.appending(path: "TokamakLocation.unlocked")
+      let protection = Data.WritingOptions.completeFileProtectionUntilFirstUserAuthentication
+      return (try? Data().write(to: probe, options: protection)) != nil
+    }
+  #endif
 }

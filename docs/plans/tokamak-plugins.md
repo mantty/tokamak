@@ -140,12 +140,13 @@ unless the app's plist sets that key path.
 - `watchPosition(next, error)`, returning a stop function
 - `permission()`, `requestPermission()` for in-use, background and precise
   location, `servicesEnabled()` and `openSettings()`
-- continuous updates (`startUpdates`, `stopUpdates`, `getUpdates`), circular
-  regions (`addRegion`, `getRegions`, `removeRegion`), and on Apple platforms
-  significant changes and visits (`setup`), which reach the Worker's
-  `onLocationUpdate`, `onRegionTransition`, `onVisit` and `onLocationError`
-  events and the plugin's listeners, including when the system launches the
-  app for them
+- long-term awareness with little power and no indicator: significant changes
+  everywhere and visits on Apple platforms (`setup`), and circular regions
+  (`addRegion`, `getRegions`, `removeRegion`); and continuous tracking, which
+  shows the system's indicator (`startUpdates`, `stopUpdates`, `getUpdates`).
+  All reach the Worker's `onLocationUpdate`, `onRegionTransition`, `onVisit`
+  and `onLocationError` events and the plugin's listeners, including when the
+  system launches the app for them
 
 Web uses `navigator.geolocation`. macOS, iOS, and iOS Simulator use
 `CoreLocation`: `CLLocationUpdate.liveUpdates` for updates and `CLMonitor` for

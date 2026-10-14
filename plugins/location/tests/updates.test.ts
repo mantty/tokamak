@@ -60,6 +60,7 @@ void test("rejects a setup configuration it cannot apply", async () => {
   connectNative();
   for (const [config, message] of [
     [{ visits: "yes" }, "config.visits must be a boolean"],
+    [{ significantChanges: 1 }, "config.significantChanges must be a boolean"],
     [null, "config must be an object"],
   ] as const) {
     await assert.rejects(

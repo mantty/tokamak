@@ -239,8 +239,11 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     }
   }
 
+  /// Core Location delivers each visit to every manager's delegate.
   func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
-    events.visit(visit)
+    if manager === monitoring {
+      events.visit(visit)
+    }
   }
 
   /// Starts the significant changes and visits `config` names, and stops the
