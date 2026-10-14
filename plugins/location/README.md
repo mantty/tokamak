@@ -176,9 +176,9 @@ plugin keeps them across launches and restarts.
   `"otherNavigation"`, `"fitness"`, `"airborne"`, or `"maritime"` (iOS 27 and
   macOS 27). It tunes when updates pause and how coordinates follow roads.
 - Updates pause while the device is still and resume when it moves.
-- If iOS ends the app while updates run, or the user swipes it away, iOS
-  launches it for the next update, and the plugin resumes them until
-  `stopUpdates()`.
+- If iOS ends the app while updates run, it launches the app for the next
+  update, and the plugin resumes them until `stopUpdates()`. With Always
+  permission, swiping the app away does not stop them either.
 - Off screen, updates need Always permission, or the `background-updates`
   build setting, whose background activity session shows the pill.
   `startUpdates` rejects with `NeedsUIError` off screen on iOS.
