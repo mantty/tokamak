@@ -24,7 +24,7 @@ final class TokamakLocationRegions {
   init(events: TokamakLocationEvents) {
     self.events = events
     let monitor = Task { @MainActor in
-      await Self.protectedData()
+      await Self.firstUnlock()
       return await CLMonitor(monitorName)
     }
     self.monitor = monitor
@@ -133,22 +133,34 @@ final class TokamakLocationRegions {
       ),
       (
         event.persistenceUnavailable, "NotReadableError",
-        "Regions are unavailable until the device is first unlocked"
+        "The system cannot store the app's regions"
       ),
     ]
     return flags.filter(\.0).map { TokamakPluginError(name: $0.1, message: $0.2) }
   }
 
-  /// Returns once protected data is available, which `CLMonitor` needs.
+  /// Returns once the device has been unlocked since it started, as `CLMonitor` keeps its
+  /// conditions in a file that data protection makes readable from then. The system launches the
+  /// app for their events while the device is locked.
   @MainActor
-  private static func protectedData() async {
+  private static func firstUnlock() async {
     #if os(iOS)
-      guard !UIApplication.shared.isProtectedDataAvailable else { return }
-      let available = NotificationCenter.default.notifications(
+      let unlocked = NotificationCenter.default.notifications(
         named: UIApplication.protectedDataDidBecomeAvailableNotification)
-      for await _ in available {
+      guard !unlockedSinceStart() else { return }
+      for await _ in unlocked {
         return
       }
     #endif
   }
+
+  #if os(iOS)
+    /// Whether the device has been unlocked since it started, as only then can a file protected
+    /// until the first unlock be written.
+    private static func unlockedSinceStart() -> Bool {
+      let probe = FileManager.default.temporaryDirectory.appending(path: "TokamakLocation.unlocked")
+      let protection = Data.WritingOptions.completeFileProtectionUntilFirstUserAuthentication
+      return (try? Data().write(to: probe, options: protection)) != nil
+    }
+  #endif
 }
