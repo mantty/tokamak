@@ -307,7 +307,7 @@ fn build_platform(
             version: Some(context.version),
             development: None,
             device_id: None,
-            exported_symbols: exported_symbols(context.wrangler),
+            exported_symbols: &exported_symbols(context.wrangler),
         },
     )
     .context("write platform build metadata")?;
@@ -491,14 +491,13 @@ fn write_build_metadata(input: &Path, project: &Path, metadata: &BuildMetadata<'
     Ok(())
 }
 
-/// The entry points of the optional runtime parts an app with `wrangler`'s
-/// bindings links.
-fn exported_symbols(wrangler: &WranglerConfig) -> &'static [&'static str] {
-    if wrangler.storage.is_empty() {
-        &[]
-    } else {
-        &[tokamak::STORAGE_ENTRY_POINT]
+/// Runtime components required by packaged Workers and their bindings.
+fn exported_symbols(wrangler: &WranglerConfig) -> Vec<&'static str> {
+    let mut symbols = vec![tokamak::WASM_ENTRY_POINT];
+    if !wrangler.storage.is_empty() {
+        symbols.push(tokamak::STORAGE_ENTRY_POINT);
     }
+    symbols
 }
 
 fn warn_unsupported_bindings(wrangler: &WranglerConfig) {
@@ -537,18 +536,18 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("wrangler.json");
         for (bindings, symbols) in [
-            ("", &[][..]),
+            ("", &["tokamak_wasm"][..]),
             (
                 r#", "kv_namespaces": [{ "binding": "KV", "id": "kv" }]"#,
-                &["tokamak_storage"][..],
+                &["tokamak_wasm", "tokamak_storage"][..],
             ),
             (
                 r#", "d1_databases": [{ "binding": "DB", "database_id": "db" }]"#,
-                &["tokamak_storage"][..],
+                &["tokamak_wasm", "tokamak_storage"][..],
             ),
             (
                 r#", "r2_buckets": [{ "binding": "FILES", "bucket_name": "files" }]"#,
-                &["tokamak_storage"][..],
+                &["tokamak_wasm", "tokamak_storage"][..],
             ),
         ] {
             fs::write(

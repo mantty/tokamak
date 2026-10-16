@@ -245,6 +245,8 @@ fn create_windows_inputs() -> TestResult<(tempfile::TempDir, PathBuf, PathBuf)> 
 const WINDOWS_TEST_RUNTIME: &str = r#"
 #[unsafe(export_name = "tokamak_storage")]
 pub static STORAGE: u8 = 0;
+#[unsafe(export_name = "tokamak_wasm")]
+pub static WASM: u8 = 0;
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -333,9 +335,9 @@ fn stages_the_entry_points_of_the_runtime_parts_the_app_links() -> TestResult {
         ))?)
     };
 
-    assert_eq!(exported_symbols()?, "");
+    assert_eq!(exported_symbols()?, "tokamak_wasm\n");
     declare_storage(&project)?;
-    assert_eq!(exported_symbols()?, "tokamak_storage\n");
+    assert_eq!(exported_symbols()?, "tokamak_wasm\ntokamak_storage\n");
     Ok(())
 }
 
@@ -687,16 +689,20 @@ fn compiles_es_modules_and_copies_text_and_data_modules() -> TestResult {
 }
 
 #[test]
-fn rejects_a_webassembly_module() -> TestResult {
+fn packages_a_webassembly_module() -> TestResult {
     let (_temporary, project, manifest) = create_inputs("macos-arm64")?;
-    fs::write(project.join("dist/app/add.wasm"), [0, 0x61, 0x73, 0x6d])?;
+    let bytes = [0, 0x61, 0x73, 0x6d, 1, 0, 0, 0];
+    fs::write(project.join("dist/app/add.wasm"), bytes)?;
 
     build_command("macos", &project, &manifest)?
         .assert()
-        .failure()
-        .stderr(contains(
-            "Worker module add.wasm is a CompiledWasm module; tokamak supports ESModule, Text and Data modules",
-        ));
+        .success();
+    let app = PackageLayout::new(project.join("build/macos/demo-app.app/app"));
+    assert_eq!(
+        read_worker_manifest(&app)?.modules["add.wasm"],
+        ModuleType::CompiledWasm
+    );
+    assert_eq!(fs::read(app.bundle().join("add.wasm"))?, bytes);
     Ok(())
 }
 

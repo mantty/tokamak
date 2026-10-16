@@ -120,6 +120,8 @@ pub enum ModuleType {
     Text,
     /// Binary data, imported as an `ArrayBuffer`.
     Data,
+    /// WebAssembly bytecode, imported as a `WebAssembly.Module`.
+    CompiledWasm,
 }
 
 /// A packaged Worker's modules: ES modules as bytecode in
@@ -211,7 +213,7 @@ pub fn write_worker(layout: &PackageLayout, root: &Path, manifest: &WorkerManife
                     &compile_worker_module(name, &source)?,
                 )?;
             }
-            ModuleType::Text | ModuleType::Data => {
+            ModuleType::Text | ModuleType::Data | ModuleType::CompiledWasm => {
                 write_file(&layout.bundle().join(name), &source)?;
             }
         }

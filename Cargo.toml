@@ -7,6 +7,7 @@ members = [
     "platforms/apple/signing",
     "platforms/windows",
     "tools/xtask",
+    "wamr-sys",
 ]
 
 [workspace.package]

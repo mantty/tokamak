@@ -1,0 +1,16 @@
+{
+  "name": "tokamak-example-wasm",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "tokamak:macos": "cargo run -p tokamak-cli -- build macos"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.62.5",
+    "@tokamakdev/tok": "file:../../tokamak-cli/npm",
+    "vite": "8.3.2",
+    "wrangler": "4.147.0"
+  }
+}

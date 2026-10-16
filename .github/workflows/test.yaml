@@ -47,7 +47,10 @@ jobs:
           toolchain="$(find "${ndk}/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d -print -quit)"
           min_sdk="$(cat platforms/android/build/min-sdk)"
           {
+            echo "ANDROID_NDK_HOME=${ndk}"
+            echo "ANDROID_PLATFORM=android-${min_sdk}"
             echo "CC_aarch64_linux_android=${toolchain}/bin/aarch64-linux-android${min_sdk}-clang"
+            echo "CXX_aarch64_linux_android=${toolchain}/bin/aarch64-linux-android${min_sdk}-clang++"
             echo "AR_aarch64_linux_android=${toolchain}/bin/llvm-ar"
             echo "RANLIB_aarch64_linux_android=${toolchain}/bin/llvm-ranlib"
             echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android${min_sdk} --sysroot=${toolchain}/sysroot"

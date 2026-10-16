@@ -195,8 +195,9 @@ its directory that the configuration's module rules, then Wrangler's default
 rules, match. ES modules are compiled to bytecode. As on Cloudflare, `Text`
 modules (`.txt`, `.html` and `.sql` by default) import as strings and `Data`
 modules (`.bin`) as `ArrayBuffer`s; both are also files under `/bundle` for
-`node:fs`. A `CompiledWasm` (`.wasm`) or `CommonJS` module fails the build:
-the runtime has no WebAssembly and loads only ES modules.
+`node:fs`. `CompiledWasm` (`.wasm`) modules import as `WebAssembly.Module` objects
+and execute through WAMR. See [WebAssembly support and limits](docs/wasm.md).
+`CommonJS` modules fail the build; JavaScript modules must use ES modules.
 
 ### Storage
 
@@ -986,5 +987,6 @@ modules are private. Unsupported builtin imports fail during module loading;
 Text decoding uses WHATWG encoding labels, streaming state, BOM handling, and
 fatal/replacement modes. Random bytes come from the operating system.
 The contract suite covers these APIs, Base64, binary bodies, and builtin identity;
-it is not a claim of complete Workers API coverage. WebAssembly is unsupported.
+it is not a claim of complete Workers API coverage. The WebAssembly spike has a
+separate [support contract](docs/wasm.md).
 Tokamak does not emulate historical Cloudflare compatibility-date modes.

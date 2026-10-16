@@ -99,11 +99,13 @@ pub(super) fn execute_request(
 async fn worker_runtime(
     worker: &WorkerBundle,
     storage: Option<&Arc<dyn StorageRuntime>>,
-    interrupted: impl Fn() -> bool + Send + 'static,
+    interrupted: impl Fn() -> bool + Send + Sync + 'static,
 ) -> Result<(AsyncRuntime, AsyncContext), Error> {
     let runtime = AsyncRuntime::new().map_err(|error| js_error("runtime", error))?;
+    let interrupted = Arc::new(interrupted);
+    let js_interrupted = interrupted.clone();
     runtime
-        .set_interrupt_handler(Some(Box::new(interrupted)))
+        .set_interrupt_handler(Some(Box::new(move || js_interrupted())))
         .await;
     runtime
         .set_loader(
@@ -117,6 +119,12 @@ async fn worker_runtime(
     let context = AsyncContext::full(&runtime)
         .await
         .map_err(|error| js_error("context", error))?;
+    context
+        .with(|ctx| {
+            ctx.store_userdata(ExecutionInterrupt(interrupted))
+                .map_err(|error| js_error("interrupt", error))
+        })
+        .await?;
     Ok((runtime, context))
 }
 
@@ -269,6 +277,9 @@ fn prepare_worker_context<'js>(
         .map_err(|error| js_error("event loop", error))?;
     install_worker_globals(ctx, config)?;
     let bootstrap = initialize_worker_context(ctx, worker)?;
+    if let Some(wasm) = crate::linked::wasm() {
+        (wasm.install)(ctx).map_err(|error| js_exception(ctx, "WebAssembly", error))?;
+    }
     if let Some(assets) = &config.assets {
         install_assets(ctx, &bootstrap, assets)
             .map_err(|error| js_exception(ctx, "assets", error))?;
@@ -418,6 +429,9 @@ fn worker_fetch<'js>(ctx: &Ctx<'js>, entrypoint: &Object<'js>) -> Result<Functio
     fetch.ok_or_else(|| Error::Engine("worker fetch: the Worker does not export fetch".to_owned()))
 }
 
+#[derive(Clone, rquickjs::JsLifetime)]
+pub(crate) struct ExecutionInterrupt(pub(crate) Arc<dyn Fn() -> bool + Send + Sync>);
+
 pub(super) struct WorkerResolver;
 
 impl Resolver for WorkerResolver {
@@ -433,7 +447,9 @@ impl Resolver for WorkerResolver {
         }
         // Runtime implementation modules are not part of the application API.
         if name.starts_with("tokamak:") {
-            return if base.starts_with("tokamak:") || (base.is_empty() && name == compat::BOOTSTRAP)
+            return if base.starts_with("tokamak:")
+                || (base.is_empty()
+                    && (name == compat::BOOTSTRAP || name == "tokamak:wasm/api.mjs"))
             {
                 Ok(name.to_owned())
             } else {
@@ -485,7 +501,9 @@ impl Loader for WorkerLoader {
             _ => {
                 let storage = self.storage.as_ref();
                 let module = storage.and_then(|storage| storage.module(ctx, name));
-                module.unwrap_or_else(|| self.load_module(ctx, name))
+                module
+                    .or_else(|| crate::linked::wasm().and_then(|wasm| (wasm.module)(ctx, name)))
+                    .unwrap_or_else(|| self.load_module(ctx, name))
             }
         }
     }
@@ -504,6 +522,15 @@ impl WorkerLoader {
             ModuleType::EsModule => self.load_bytecode(ctx, name),
             ModuleType::Text => Module::declare_def::<TextModule, _>(ctx.clone(), name),
             ModuleType::Data => Module::declare_def::<DataModule, _>(ctx.clone(), name),
+            ModuleType::CompiledWasm => crate::linked::wasm().map_or_else(
+                || {
+                    Err(rquickjs::Error::new_loading_message(
+                        name,
+                        "WebAssembly support is not linked",
+                    ))
+                },
+                |wasm| (wasm.compiled)(ctx, name),
+            ),
         }
     }
 
@@ -549,7 +576,10 @@ impl ModuleDef for DataModule {
 }
 
 /// The contents of the `/bundle` file behind the module `exports` belongs to.
-fn module_file<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<Vec<u8>> {
+pub(crate) fn module_file<'js>(
+    ctx: &Ctx<'js>,
+    exports: &Exports<'js>,
+) -> rquickjs::Result<Vec<u8>> {
     read_bundle_file(ctx, &exports.module().name::<String>()?)
 }
 

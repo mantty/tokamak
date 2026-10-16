@@ -31,6 +31,10 @@ fn compile_builtins() -> Result<(), Box<dyn std::error::Error>> {
     let (storage, builtins): (Vec<_>, Vec<_>) = builtin_sources()?
         .into_iter()
         .partition(|module| module.starts_with("storage/"));
+    let (wasm, builtins): (Vec<_>, Vec<_>) = builtins
+        .into_iter()
+        .partition(|module| module.starts_with("wasm/"));
+    write_builtin_table(&output, "wasm_builtins.rs", "WASM_BUILTINS", &wasm)?;
     write_builtin_table(&output, "builtins.rs", "BUILTINS", &builtins)?;
     write_builtin_table(&output, "storage_builtins.rs", "STORAGE_BUILTINS", &storage)
 }
@@ -48,16 +52,20 @@ fn builtin_sources() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     Ok(modules)
 }
 
-/// Export the entry points of the storage and development parts from test
-/// executables.
+/// Export optional runtime entry points from this crate's test executables.
 fn export_parts_from_tests(target_os: &str) {
-    for entry_point in ["tokamak_storage", "tokamak_development"] {
+    for entry_point in ["tokamak_storage", "tokamak_development", "tokamak_wasm"] {
         let argument = match target_os {
             "macos" | "ios" => format!("-Wl,-exported_symbol,_{entry_point}"),
             "windows" => format!("/EXPORT:{entry_point}"),
             _ => format!("-Wl,--export-dynamic-symbol={entry_point}"),
         };
-        println!("cargo:rustc-link-arg-tests={argument}");
+        let scope = if entry_point == "tokamak_wasm" {
+            "rustc-link-arg"
+        } else {
+            "rustc-link-arg-tests"
+        };
+        println!("cargo:{scope}={argument}");
     }
 }
 

@@ -145,8 +145,9 @@ fn module_type(name: &str, rule_type: WranglerModuleType) -> Result<ModuleType> 
         WranglerModuleType::ESModule => Ok(ModuleType::EsModule),
         WranglerModuleType::Text => Ok(ModuleType::Text),
         WranglerModuleType::Data => Ok(ModuleType::Data),
-        WranglerModuleType::CommonJS | WranglerModuleType::CompiledWasm => bail!(
-            "Worker module {name} is a {rule_type:?} module; tokamak supports ESModule, Text and Data modules"
+        WranglerModuleType::CompiledWasm => Ok(ModuleType::CompiledWasm),
+        WranglerModuleType::CommonJS => bail!(
+            "Worker module {name} is a {rule_type:?} module; tokamak supports ESModule, Text, Data and CompiledWasm modules"
         ),
     }
 }
@@ -217,30 +218,45 @@ mod tests {
     }
 
     #[test]
-    fn rejects_webassembly_and_commonjs_modules() -> Result<()> {
-        for (file, rules, expected) in [
-            (
-                "assets/add.wasm",
-                "[]",
-                "assets/add.wasm is a CompiledWasm module",
-            ),
-            (
-                "legacy.cjs",
-                r#"[{"type":"CommonJS","globs":["**/*.cjs"]}]"#,
-                "legacy.cjs is a CommonJS module",
-            ),
-        ] {
-            let directory = tempfile::tempdir()?;
-            write(directory.path(), &["index.js", file])?;
-            let error = collect_modules(&worker(directory.path(), rules)?).map(|_| ());
-            assert!(
-                error.as_ref().is_err_and(|error| error.to_string()
-                    == format!(
-                        "Worker module {expected}; tokamak supports ESModule, Text and Data modules"
-                    )),
-                "{error:?}"
-            );
-        }
+    fn packages_wasm_as_a_compiled_module() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        write(root, &["index.js", "assets/add.wasm"])?;
+        let wasm = b"\0asm\x01\0\0\0";
+        fs::write(root.join("assets/add.wasm"), wasm)?;
+        let config = worker(root, "[]")?;
+        let (_, manifest) = collect_modules(&config)?;
+        assert_eq!(
+            manifest.modules["assets/add.wasm"],
+            ModuleType::CompiledWasm
+        );
+        let output = tempfile::tempdir()?;
+        let compiled = compile(output.path(), &config)?;
+        assert_eq!(
+            fs::read(
+                PackageLayout::new(compiled)
+                    .bundle()
+                    .join("assets/add.wasm")
+            )?,
+            wasm
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_commonjs_modules() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        write(directory.path(), &["index.js", "legacy.cjs"])?;
+        let config = worker(
+            directory.path(),
+            r#"[{"type":"CommonJS","globs":["**/*.cjs"]}]"#,
+        )?;
+        let result = collect_modules(&config);
+        assert!(
+            result.as_ref().is_err_and(|error| error.to_string() ==
+                "Worker module legacy.cjs is a CommonJS module; tokamak supports ESModule, Text, Data and CompiledWasm modules"),
+            "{result:?}"
+        );
         Ok(())
     }
 

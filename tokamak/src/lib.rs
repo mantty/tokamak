@@ -72,6 +72,8 @@ mod tls;
 #[cfg(feature = "native")]
 mod transport;
 #[cfg(feature = "native")]
+mod wasm;
+#[cfg(feature = "native")]
 mod worker_events;
 
 use thiserror::Error as Fail;
@@ -103,6 +105,9 @@ pub const STORAGE_ENTRY_POINT: &str = "tokamak_storage";
 /// app links the part, which [`Runtime::start_development`] needs, only when
 /// the binary holding the runtime exports this symbol.
 pub const DEVELOPMENT_ENTRY_POINT: &str = "tokamak_development";
+
+/// The optional WebAssembly interpreter's entry point.
+pub const WASM_ENTRY_POINT: &str = "tokamak_wasm";
 
 /// The header that marks the development app's dev WebSocket, which carries
 /// its events, so `tok dev`'s relay forwards it to the tokamak Vite plugin.

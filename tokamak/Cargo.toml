@@ -9,6 +9,7 @@ build = "build.rs"
 [features]
 default = []
 native = [
+    "dep:tokamak-wamr-sys",
     "dep:aes",
     "dep:aes-kw",
     "dep:cbc",
@@ -74,6 +75,7 @@ native = [
 ]
 
 [dependencies]
+tokamak-wamr-sys = { path = "../wamr-sys", optional = true }
 aes = { workspace = true, optional = true }
 aes-kw = { workspace = true, optional = true }
 cbc = { workspace = true, optional = true }
@@ -141,6 +143,7 @@ const-oid = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
+wat = "1.245"
 mime_guess.workspace = true
 # Independent certificate tooling that checks the generated certificates.
 rcgen = { workspace = true, features = ["pem", "x509-parser"] }

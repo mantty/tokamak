@@ -19,6 +19,18 @@ use crate::packaging::PackageLayout;
 use crate::plugin_calls::PluginCalls;
 use crate::server::DevProxyConfig;
 
+/// The optional WebAssembly implementation.
+pub(crate) struct WasmEntry {
+    pub(crate) install: for<'js> fn(&Ctx<'js>) -> rquickjs::Result<()>,
+    pub(crate) module: for<'js> fn(&Ctx<'js>, &str) -> Option<rquickjs::Result<Module<'js>>>,
+    pub(crate) compiled: for<'js> fn(&Ctx<'js>, &str) -> rquickjs::Result<Module<'js>>,
+}
+
+pub(crate) fn wasm() -> Option<&'static WasmEntry> {
+    // SAFETY: the Wasm part exports an immutable WasmEntry under this name.
+    unsafe { entry(crate::WASM_ENTRY_POINT) }
+}
+
 /// The storage part's entry point.
 pub(crate) struct StorageEntry {
     /// Open the stores `bindings` name, in a storage directory and, for

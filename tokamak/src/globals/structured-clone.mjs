@@ -5,6 +5,9 @@ import { hostObjectKinds } from "./objects.mjs";
 // How each cloneable host object kind is copied: `copy(value, clone, keep)` returns the copy,
 // passing it through `keep` before copying nested values with `clone`.
 export const hostObjectCopies = new Map();
+const nonTransferableBuffers = new WeakSet();
+export const markNonTransferableBuffer = WeakSet.prototype.add.bind(nonTransferableBuffers);
+export const isNonTransferableBuffer = WeakSet.prototype.has.bind(nonTransferableBuffers);
 
 const errors = { Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, AggregateError };
 const typedArrays = Object.fromEntries(["Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "Float16Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array"].map(name => [name, globalThis[name]]));
@@ -93,6 +96,7 @@ export function structuredClone(value, options = {}) {
       const buffer = ArrayBuffer.isView(item) ? (objectClass(item) === "DataView" ? dataBuffer : typedBuffer).call(item) : item;
       const kind = objectClass(buffer);
       if (kind === "SharedArrayBuffer") throw uncloneable();
+      if (isNonTransferableBuffer(buffer)) throw uncloneable();
       if (kind !== "ArrayBuffer") throw new TypeError("Only buffers and views can be transferred.");
       transferred.add(buffer);
     }

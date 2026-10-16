@@ -24,6 +24,9 @@ use crate::transport::{HttpBody, HttpRequest};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+#[path = "wasm/tests.rs"]
+mod wasm;
+
 fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/quickjs_runtime")
 }
@@ -50,6 +53,7 @@ fn module_worker(root: &Path, entry: &str, output: &Path) -> TestResult<WorkerBu
             Some("mjs" | "js") => ModuleType::EsModule,
             Some("txt") => ModuleType::Text,
             Some("bin") => ModuleType::Data,
+            Some("wasm") => ModuleType::CompiledWasm,
             _ => continue,
         };
         let name = file.path().strip_prefix(root)?.to_string_lossy();

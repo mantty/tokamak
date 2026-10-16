@@ -50,9 +50,12 @@ libraries="$target_dir/$rust_target/release/tokamak-link-libraries"
 # Panics abort, so the runtime's code needs no unwind tables; only the
 # precompiled Rust standard library keeps its own. Native crash reports
 # unwind the rest of the runtime less reliably.
+ANDROID_NDK_HOME="$ndk" \
+ANDROID_PLATFORM="android-$min_sdk" \
 CFLAGS_aarch64_linux_android="-fno-asynchronous-unwind-tables -fno-unwind-tables" \
 CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C force-unwind-tables=no" \
 CC_aarch64_linux_android="$compiler" \
+CXX_aarch64_linux_android="$host/bin/aarch64-linux-android$min_sdk-clang++" \
 AR_aarch64_linux_android="$host/bin/llvm-ar" \
 RANLIB_aarch64_linux_android="$host/bin/llvm-ranlib" \
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--target=aarch64-linux-android$min_sdk --sysroot=$sysroot" \
