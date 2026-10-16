@@ -2,35 +2,59 @@
 
 `vendor/` contains `core/`, `build-scripts/`, and `LICENSE` from
 [WAMR 2.4.5](https://github.com/wasm-micro-runtime/wasm-micro-runtime/releases/tag/WAMR-2.4.5).
-Cargo builds the vendored C sources without downloading build-time dependencies.
+`simde/` contains the headers and license from
+[SIMDe v0.8.2](https://github.com/simd-everywhere/simde/releases/tag/v0.8.2).
+Cargo builds these sources without downloading build-time dependencies.
 
-The interpreter uses software bounds checks and does not allocate executable
-memory. JIT, AOT, WASI, native libc imports, threads, SIMD, and dynamic module
-linking are disabled. Each JavaScript instance owns its WAMR store. The process
-owns one WAMR engine. Stores stay on their creating runtime thread.
+The fast interpreter uses software bounds checks and SIMDe for fixed-width SIMD.
+It does not allocate executable memory. JIT, AOT, built-in WASI/libc imports,
+threads, and dynamic module discovery are disabled.
 
-`bridge.c` confines access to WAMR's internal types. The Rust interface uses
-opaque handles, explicit vector lengths, and the C API's tagged numeric union.
-Memory views retain the instance's store; growth detaches old JavaScript buffers
-before JavaScript resumes, including callbacks from Wasm.
+## Ownership and linking
+
+The process owns one WAMR engine. Each Worker JavaScript context owns a native
+object registry containing modules, instances, memories, tables, globals, and
+functions. Registry IDs preserve identity across imports, exports, and function
+references. Objects remain allocated until the context is released.
+
+`bridge.c` uses WAMR's C API for loading and type metadata, and its interpreter
+embedding API for linking and invocation. `tokamak.h` declares the engine hooks.
+Rust uses opaque handles and tagged values. JavaScript wrappers retain externref
+values and map them to numeric reference IDs.
+
+Imported memories use the same native allocation. Imported globals point to the
+same value storage. Tables have stable headers and separately growable element
+arrays. Function references identify their owning instance; cross-instance calls
+use that instance's invocation stack, including reentry through JavaScript.
+
+External memory buffers retain the registry. Growth detaches old buffers before
+JavaScript resumes, including callbacks and zero-page growth. Invocation state
+exists before element segments can expose functions from a failed instantiation.
 
 ## Upstream changes
 
-- `build-scripts/version.cmake` uses the pinned `core/version.h` without rewriting
-  the source tree.
-- `interpreter/wasm.h` adds `c_api_instantiation` to loaded modules.
-- `common/wasm_c_api.c` marks C API modules and executes their start function
-  after installing imports. A failed start returns its trap.
-- `interpreter/wasm_runtime.c` skips automatic native startup hooks for C API
-  modules. JavaScript instantiation runs the Wasm start section only; exported
-  `__wasm_call_ctors`, `_initialize`, and `__post_instantiate` are ordinary exports.
-- `interpreter/wasm_loader.c` allows memory growth from the JavaScript host even
-  when the module contains no `memory.grow` instruction.
-- `common/wasm_memory.c` and `interpreter/wasm_runtime.h` track successful memory
-  growth, including zero-page growth, to detach all exported buffer aliases.
-- `interpreter/wasm_interp_{fast,classic}.c` polls the active invocation's
-  cancellation callback every 4096 instructions. The callback also covers start
-  functions. Execution remains synchronous on the JavaScript thread.
+- `build-scripts/version.cmake` reads the pinned `core/version.h`.
+- `build-scripts/runtime_lib.cmake` uses vendored SIMDe on every target.
+- `interpreter/wasm.h` adds the embedding context, C API instantiation marker,
+  and original import-section positions.
+- `interpreter/wasm_loader.c` preserves import declaration order and permits
+  host memory growth when no `memory.grow` instruction exists.
+- `common/wasm_c_api.c` marks C API modules and runs start functions after linking.
+- `interpreter/wasm_runtime.h` adds shared global storage, table element storage,
+  function ownership, and memory growth generations.
+- `interpreter/wasm_runtime.c` links imported resources through the registry,
+  initializes canonical references, prepares invocation state before segments,
+  and retains partially initialized instances. It skips automatic native startup
+  exports for C API modules; JavaScript instantiation runs only the start section.
+- `common/wasm_runtime_common.c` routes embedding callbacks through raw cells,
+  preserving numeric reference IDs.
+- `interpreter/wasm_interp_fast.c` accesses shared resources and canonical
+  references, invokes foreign functions on their own stacks, copies all callback
+  results, and supports SIMD parameters and host returns in tail calls.
+- `common/wasm_memory.c` tracks successful memory growth, including zero growth.
+- `interpreter/wasm_interp_{fast,classic}.c` checks invocation cancellation every
+  4096 instructions, including during start functions.
 
-These changes do not modify QuickJS. Reapply them when updating WAMR and run the
-Worker differential and cancellation tests.
+These patches do not modify QuickJS. Reapply them when updating WAMR and run the
+Worker differential, feature audit, and cancellation tests. Unsupported features
+are listed in [the runtime documentation](../docs/wasm.md).

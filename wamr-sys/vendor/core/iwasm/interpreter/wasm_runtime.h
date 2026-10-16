@@ -190,6 +190,7 @@ struct WASMTableInstance {
     /* Maximum size */
     uint32 max_size;
     /* Table elements */
+    table_elem_type_t *host_elems; /* TOKAMAK: stable table identity across growth. */
     table_elem_type_t elems[1];
 };
 
@@ -203,6 +204,7 @@ struct WASMGlobalInstance {
     uint32 data_offset;
     /* initial value */
     WASMValue initial_value;
+    uint8 *host_data; /* TOKAMAK: imported globals share their storage. */
 #if WASM_ENABLE_GC != 0
     WASMRefType *ref_type;
 #endif
@@ -214,6 +216,7 @@ struct WASMGlobalInstance {
 };
 
 struct WASMFunctionInstance {
+    WASMModuleInstance *host_owner; /* TOKAMAK: function references carry their instance. */
     /* whether it is import function or WASM function */
     bool is_import_func;
     /* parameter count */

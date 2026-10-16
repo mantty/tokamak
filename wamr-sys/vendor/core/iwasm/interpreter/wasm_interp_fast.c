@@ -1,3 +1,4 @@
+#include "tokamak.h"
 /*
  * Copyright (C) 2019 Intel Corporation.  All rights reserved.
  * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -1214,6 +1215,7 @@ wasm_interp_call_func_native(WASMModuleInstance *module_inst,
     uint8 *frame_ref;
 #endif
 
+    if (local_cell_num < cur_func->ret_cell_num) local_cell_num = cur_func->ret_cell_num;
     all_cell_num = local_cell_num;
 #if WASM_ENABLE_GC != 0
     all_cell_num += (local_cell_num + 3) / 4;
@@ -1297,7 +1299,10 @@ wasm_interp_call_func_native(WASMModuleInstance *module_inst,
     }
 #endif
 
-    if (cur_func->ret_cell_num == 1) {
+    if (func_import->call_conv_wasm_c_api) {
+        word_copy(prev_frame->lp + prev_frame->ret_offset, frame->lp, cur_func->ret_cell_num);
+    }
+    else if (cur_func->ret_cell_num == 1) {
         prev_frame->lp[prev_frame->ret_offset] = argv_ret[0];
     }
     else if (cur_func->ret_cell_num == 2) {
@@ -1382,6 +1387,37 @@ wasm_interp_call_func_import(WASMModuleInstance *module_inst,
                                       (WASMModuleInstanceCommon *)module_inst);
 }
 #endif
+
+
+/* TOKAMAK: each instance keeps its own invocation stack during JS reentry. */
+static void
+call_foreign_function(WASMModuleInstance *caller, WASMExecEnv *exec_env,
+                      WASMFunctionInstance *function, WASMInterpFrame *frame)
+{
+    WASMModuleInstance *owner = function->host_owner;
+    WASMExecEnv *other = wasm_runtime_get_exec_env_singleton((WASMModuleInstanceCommon *)owner);
+    WASMInterpFrame *arguments = wasm_exec_env_wasm_stack_top(exec_env);
+    uint32 count = function->param_cell_num > function->ret_cell_num
+                       ? function->param_cell_num : function->ret_cell_num;
+    uint32 *cells = wasm_runtime_malloc((uint64)(count ? count : 1) * sizeof(uint32));
+    if (!cells || !other) {
+        if (cells) wasm_runtime_free(cells);
+        wasm_set_exception(caller, "allocate foreign invocation failed");
+        return;
+    }
+    if (function->param_cell_num)
+        word_copy(cells, arguments->operand + function->const_cell_num, function->param_cell_num);
+    wasm_set_exception(owner, NULL);
+    if (wasm_call_function(other, function, function->param_cell_num, cells)) {
+        if (function->ret_cell_num)
+            word_copy(frame->lp + frame->ret_offset, cells, function->ret_cell_num);
+    }
+    else {
+        wasm_set_exception(caller, wasm_get_exception(owner));
+        wasm_set_exception(owner, NULL);
+    }
+    wasm_runtime_free(cells);
+}
 
 #if WASM_ENABLE_THREAD_MGR != 0
 #define CHECK_SUSPEND_FLAGS()                               \
@@ -1487,6 +1523,7 @@ static void **global_handle_table;
 static inline uint8 *
 get_global_addr(uint8 *global_data, WASMGlobalInstance *global)
 {
+    if (global->host_data) return global->host_data;
 #if WASM_ENABLE_MULTI_MODULE == 0
     return global_data + global->data_offset;
 #else
@@ -1787,13 +1824,13 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
 
                 /* clang-format off */
 #if WASM_ENABLE_GC == 0
-                fidx = (uint32)tbl_inst->elems[val];
+                fidx = (uint32)tokamak_table_elements(tbl_inst)[val];
                 if (fidx == (uint32)-1) {
                     wasm_set_exception(module, "uninitialized element");
                     goto got_exception;
                 }
 #else
-                func_obj = (WASMFuncObjectRef)tbl_inst->elems[val];
+                func_obj = (WASMFuncObjectRef)tokamak_table_elements(tbl_inst)[val];
                 if (!func_obj) {
                     wasm_set_exception(module, "uninitialized element");
                     goto got_exception;
@@ -1807,13 +1844,13 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                  * another module. in that case, we don't validate
                  * the elem value while loading
                  */
-                if (fidx >= module->e->function_count) {
+                cur_func = tokamak_resolve_function(module, fidx);
+                if (!cur_func) {
                     wasm_set_exception(module, "unknown function");
                     goto got_exception;
                 }
 
-                /* always call module own functions */
-                cur_func = module->e->functions + fidx;
+                /* TOKAMAK: references resolve to their owning instance. */
 
                 if (cur_func->is_import_func)
                     cur_func_type = cur_func->u.func_import->func_type;
@@ -1822,7 +1859,7 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
 
                     /* clang-format off */
 #if WASM_ENABLE_GC == 0
-                if (cur_type != cur_func_type) {
+                if (!tokamak_same_function_type(cur_type, cur_func_type)) {
                     wasm_set_exception(module, "indirect call type mismatch");
                     goto got_exception;
                 }
@@ -1970,9 +2007,9 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 }
 
 #if WASM_ENABLE_GC == 0
-                PUSH_I32(tbl_inst->elems[elem_idx]);
+                PUSH_I32(tokamak_table_elements(tbl_inst)[elem_idx]);
 #else
-                PUSH_REF(tbl_inst->elems[elem_idx]);
+                PUSH_REF(tokamak_table_elements(tbl_inst)[elem_idx]);
 #endif
                 HANDLE_OP_END();
             }
@@ -1999,7 +2036,7 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                     goto got_exception;
                 }
 
-                tbl_inst->elems[elem_idx] = elem_val;
+                tokamak_table_elements(tbl_inst)[elem_idx] = elem_val;
                 HANDLE_OP_END();
             }
 
@@ -2031,7 +2068,7 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 uint32 func_idx = read_uint32(frame_ip);
 
 #if WASM_ENABLE_GC == 0
-                PUSH_I32(func_idx);
+                PUSH_I32(tokamak_function_ref(module, func_idx));
 #else
                 SYNC_ALL_TO_FRAME();
                 if (!(gc_obj = wasm_create_func_obj(module, func_idx, true,
@@ -5313,7 +5350,7 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                         bh_assert(elem_idx < module->module->table_seg_count);
 
                         tbl_idx = read_uint32(frame_ip);
-                        bh_assert(tbl_idx < module->module->table_count);
+                        bh_assert(tbl_idx < module->table_count);
 
                         tbl_inst = wasm_get_table_inst(module, tbl_idx);
 
@@ -5344,7 +5381,7 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                             break;
                         }
 
-                        table_elems = tbl_inst->elems + d;
+                        table_elems = tokamak_table_elements(tbl_inst) + d;
                         init_values = tbl_seg_init_values + s;
 #if WASM_ENABLE_GC != 0
                         SYNC_ALL_TO_FRAME();
@@ -5353,11 +5390,14 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                             /* UINT32_MAX indicates that it is a null ref */
                             bh_assert(init_values[i].init_expr_type
                                           == INIT_EXPR_TYPE_REFNULL_CONST
+                                      || init_values[i].init_expr_type == INIT_EXPR_TYPE_GET_GLOBAL
                                       || init_values[i].init_expr_type
                                              == INIT_EXPR_TYPE_FUNCREF_CONST);
 #if WASM_ENABLE_GC == 0
-                            table_elems[i] = (table_elem_type_t)init_values[i]
-                                                 .u.unary.v.ref_index;
+                            if (init_values[i].init_expr_type == INIT_EXPR_TYPE_GET_GLOBAL)
+                                table_elems[i] = module->e->globals[init_values[i].u.unary.v.global_index].initial_value.ref_index;
+                            else
+                                table_elems[i] = tokamak_function_ref(module, init_values[i].u.unary.v.ref_index);
 #else
                             if (init_values[i].u.unary.v.ref_index
                                 != UINT32_MAX) {
@@ -5417,13 +5457,11 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                         /* if s >= d, copy from front to back */
                         /* if s < d, copy from back to front */
                         /* merge all together */
-                        bh_memmove_s((uint8 *)dst_tbl_inst
-                                         + offsetof(WASMTableInstance, elems)
+                        bh_memmove_s((uint8 *)tokamak_table_elements(dst_tbl_inst)
                                          + d * sizeof(table_elem_type_t),
                                      (uint32)((dst_tbl_inst->cur_size - d)
                                               * sizeof(table_elem_type_t)),
-                                     (uint8 *)src_tbl_inst
-                                         + offsetof(WASMTableInstance, elems)
+                                     (uint8 *)tokamak_table_elements(src_tbl_inst)
                                          + s * sizeof(table_elem_type_t),
                                      (uint32)(n * sizeof(table_elem_type_t)));
                         break;
@@ -5497,7 +5535,7 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                         }
 
                         for (; n != 0; i++, n--) {
-                            tbl_inst->elems[i] = fill_val;
+                            tokamak_table_elements(tbl_inst)[i] = fill_val;
                         }
 
                         break;
@@ -7562,7 +7600,11 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
             goto got_exception;
         }
         for (i = 0; i < cur_func->param_count; i++) {
-            if (cur_func->param_types[i] == VALUE_TYPE_I64
+            if (cur_func->param_types[i] == VALUE_TYPE_V128) {
+                PUT_V128_TO_ADDR(lp, GET_OPERAND_V128(2 * (cur_func->param_count - i - 1)));
+                lp += 4;
+            }
+            else if (cur_func->param_types[i] == VALUE_TYPE_I64
                 || cur_func->param_types[i] == VALUE_TYPE_F64) {
                 PUT_I64_TO_ADDR(
                     lp, GET_OPERAND(uint64, I64,
@@ -7670,7 +7712,10 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
 
     call_func_from_entry:
     {
-        if (cur_func->is_import_func) {
+        if (cur_func->is_import_func || (cur_func->host_owner && cur_func->host_owner != module)) {
+            if (cur_func->host_owner && cur_func->host_owner != module)
+                call_foreign_function(module, exec_env, cur_func, prev_frame);
+            else
 #if WASM_ENABLE_MULTI_MODULE != 0
             if (cur_func->import_func_inst) {
                 wasm_interp_call_func_import(module, exec_env, cur_func,
@@ -7688,6 +7733,7 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
                 /* the frame was freed before tail calling and
                    the prev_frame was set as exec_env's cur_frame,
                    so here we recover context from prev_frame */
+                if (!prev_frame->ip) return;
                 RECOVER_CONTEXT(prev_frame);
             }
             else

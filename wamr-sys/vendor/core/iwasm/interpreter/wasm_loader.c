@@ -3755,6 +3755,7 @@ load_import_section(const uint8 *buf, const uint8 *buf_end, WASMModule *module,
                                   "invalid import kind");
                     return false;
             }
+            import->source_index = i;
             import->kind = kind;
             import->u.names.module_name = sub_module_name;
             import->u.names.field_name = field_name;

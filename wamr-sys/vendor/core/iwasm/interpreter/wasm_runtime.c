@@ -1,3 +1,4 @@
+#include "tokamak.h"
 /*
  * Copyright (C) 2019 Intel Corporation.  All rights reserved.
  * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -241,6 +242,8 @@ memories_deinstantiate(WASMModuleInstance *module_inst,
     if (memories) {
         for (i = 0; i < count; i++) {
             if (memories[i]) {
+                if (module_inst->module->tokamak_context && i < module_inst->module->import_memory_count)
+                    continue; /* TOKAMAK: the embedding store owns imported memory. */
 #if WASM_ENABLE_MULTI_MODULE != 0
                 WASMModule *module = module_inst->module;
                 if (i < module->import_memory_count
@@ -529,6 +532,10 @@ memories_instantiate(const WASMModule *module, WASMModuleInstance *module_inst,
             import->u.memory.mem_type.max_page_count);
         uint32 flags = import->u.memory.mem_type.flags;
         uint32 actual_heap_size = heap_size;
+        if (module->tokamak_context) {
+            memories[mem_index++] = tokamak_import_memory(module, i);
+            continue;
+        }
 
 #if WASM_ENABLE_MULTI_MODULE != 0
         if (import->u.memory.import_module != NULL) {
@@ -613,6 +620,8 @@ tables_instantiate(const WASMModule *module, WASMModuleInstance *module_inst,
     uint32 table_count = module->import_table_count + module->table_count;
     uint64 total_size = (uint64)sizeof(WASMTableInstance *) * table_count;
     WASMTableInstance **tables, *table = first_table;
+    if (module->tokamak_context)
+        return tokamak_instantiate_tables(module_inst, error_buf, error_buf_size);
 #if WASM_ENABLE_MULTI_MODULE != 0
     uint64 total_size_of_tables_linked =
         (uint64)sizeof(WASMTableInstance *) * module->import_table_count;
@@ -1297,6 +1306,9 @@ globals_instantiate(WASMModule *module, WASMModuleInstance *module_inst,
 #if WASM_ENABLE_FAST_JIT != 0
         bh_assert(global_data_offset == global_import->data_offset);
 #endif
+        global->host_data = tokamak_import_global(module, i);
+        if (global->host_data)
+            memcpy(&global->initial_value, global->host_data, wasm_value_type_size(global->type));
         global->data_offset = global_data_offset;
         global_data_offset += wasm_value_type_size(global->type);
 
@@ -1411,6 +1423,8 @@ globals_instantiate(WASMModule *module, WASMModuleInstance *module_inst,
                 break;
         }
 
+        if (module->tokamak_context && flag == INIT_EXPR_TYPE_FUNCREF_CONST)
+            global->initial_value.ref_index = tokamak_function_ref(module_inst, global->initial_value.ref_index);
         global++;
     }
 
@@ -1968,6 +1982,7 @@ check_linked_symbol(WASMModuleInstance *module_inst, char *error_buf,
 {
     WASMModule *module = module_inst->module;
     uint32 i;
+    if (module->tokamak_context) return true; /* TOKAMAK: imports are checked by the embedding. */
 
     for (i = 0; i < module->import_function_count; i++) {
         WASMFunctionImport *func =
@@ -2197,7 +2212,7 @@ wasm_table_traverse_gc_rootset(WASMModuleInstance *module_inst, void *heap)
 
     for (i = 0; i < table_count; i++) {
         table = tables[i];
-        table_elems = (WASMObjectRef *)table->elems;
+        table_elems = (WASMObjectRef *)tokamak_table_elements(table);
         for (j = 0; j < table->cur_size; j++) {
             gc_obj = table_elems[j];
             if (wasm_obj_is_created_from_heap(gc_obj)) {
@@ -2492,6 +2507,7 @@ wasm_instantiate(WASMModule *module, WASMModuleInstance *parent,
                                                : table->table_type.init_size);
 #endif
     }
+    if (module->tokamak_context) table_size = 0; /* TOKAMAK: tables are owned by the embedding store. */
     total_size += table_size;
 
     /* The offset of WASMModuleInstanceExtra, make it 8-byte aligned */
@@ -2508,6 +2524,8 @@ wasm_instantiate(WASMModule *module, WASMModuleInstance *parent,
 
     module_inst->module_type = Wasm_Module_Bytecode;
     module_inst->module = module;
+    tokamak_bind_instance(module_inst);
+    module_inst->default_wasm_stack_size = stack_size ? stack_size : DEFAULT_WASM_STACK_SIZE;
     module_inst->e =
         (WASMModuleInstanceExtra *)((uint8 *)module_inst + extra_info_offset);
 
@@ -2776,6 +2794,11 @@ wasm_instantiate(WASMModule *module, WASMModuleInstance *parent,
         goto fail;
     }
 
+    if (!tokamak_prepare_instance(module_inst)) {
+        set_error_buf(error_buf, error_buf_size, "allocate invocation state failed");
+        goto fail;
+    }
+
     /* Initialize the memory data with data segment section */
     for (i = 0; i < module->data_seg_count; i++) {
         WASMMemoryInstance *memory = NULL;
@@ -2902,7 +2925,7 @@ wasm_instantiate(WASMModule *module, WASMModuleInstance *parent,
             continue;
         }
 
-        table_data = table_inst->elems;
+        table_data = tokamak_table_elements(table_inst);
 
         bh_assert(
             table->init_expr.init_expr_type == INIT_EXPR_TYPE_GET_GLOBAL
@@ -2997,7 +3020,7 @@ wasm_instantiate(WASMModule *module, WASMModuleInstance *parent,
         (void)tbl_max_size;
 #endif /* end of WASM_ENABLE_REF_TYPES != 0 || WASM_ENABLE_GC != 0 */
 
-        table_data = table->elems;
+        table_data = tokamak_table_elements(table);
 #if WASM_ENABLE_MULTI_MODULE != 0
         if (table_seg->table_index < module->import_table_count
             && module_inst->e->table_insts_linked[table_seg->table_index]) {
@@ -3083,12 +3106,12 @@ wasm_instantiate(WASMModule *module, WASMModuleInstance *parent,
 
             switch (flag) {
                 case INIT_EXPR_TYPE_REFNULL_CONST:
-                    ref = NULL;
+                    ref = (void *)(uintptr_t)NULL_REF;
                     break;
                 case INIT_EXPR_TYPE_FUNCREF_CONST:
                 {
 #if WASM_ENABLE_GC == 0
-                    ref = (void *)(uintptr_t)init_expr->u.unary.v.ref_index;
+                    ref = (void *)(uintptr_t)tokamak_function_ref(module_inst, init_expr->u.unary.v.ref_index);
 #else
                     WASMFuncObjectRef func_obj;
                     uint32 func_idx = init_expr->u.unary.v.ref_index;
@@ -3107,6 +3130,11 @@ wasm_instantiate(WASMModule *module, WASMModuleInstance *parent,
 #endif /* end of WASM_ENABLE_GC != 0 */
                     break;
                 }
+#if WASM_ENABLE_GC == 0
+                case INIT_EXPR_TYPE_GET_GLOBAL:
+                    ref = (void *)(uintptr_t)globals[init_expr->u.unary.v.global_index].initial_value.ref_index;
+                    break;
+#endif
 #if WASM_ENABLE_GC != 0
                 case INIT_EXPR_TYPE_GET_GLOBAL:
                 {
@@ -3335,7 +3363,8 @@ wasm_instantiate(WASMModule *module, WASMModuleInstance *parent,
     return module_inst;
 
 fail:
-    wasm_deinstantiate(module_inst, false);
+    /* TOKAMAK: element segments can expose references even when instantiation fails. */
+    if (!module->tokamak_context) wasm_deinstantiate(module_inst, false);
     return NULL;
 }
 
@@ -3967,6 +3996,8 @@ wasm_enlarge_table(WASMModuleInstance *module_inst, uint32 table_idx,
     table_elem_type_t *new_table_data_start;
     WASMTableInstance *table_inst;
 
+    if (module_inst->module->tokamak_context)
+        return tokamak_grow_table(module_inst->tables[table_idx], inc_size, init_val);
     if (!inc_size) {
         return true;
     }
@@ -3987,7 +4018,7 @@ wasm_enlarge_table(WASMModuleInstance *module_inst, uint32 table_idx,
     }
 
     /* fill in */
-    new_table_data_start = table_inst->elems + table_inst->cur_size;
+    new_table_data_start = tokamak_table_elements(table_inst) + table_inst->cur_size;
     for (i = 0; i < inc_size; ++i) {
         new_table_data_start[i] = init_val;
     }
@@ -4021,7 +4052,7 @@ call_indirect(WASMExecEnv *exec_env, uint32 tbl_idx, uint32 tbl_elem_idx,
         goto got_exception;
     }
 
-    tbl_elem_val = ((table_elem_type_t *)table_inst->elems)[tbl_elem_idx];
+    tbl_elem_val = ((table_elem_type_t *)tokamak_table_elements(table_inst))[tbl_elem_idx];
     if (tbl_elem_val == NULL_REF) {
         wasm_set_exception(module_inst, "uninitialized element");
         goto got_exception;
@@ -4762,7 +4793,7 @@ llvm_jit_table_init(WASMModuleInstance *module_inst, uint32 tbl_idx,
         return;
     }
 
-    table_elems = tbl_inst->elems + dst_offset;
+    table_elems = tokamak_table_elements(tbl_inst) + dst_offset;
     init_values = tbl_seg_init_values + src_offset;
 
     for (i = 0; i < length; i++) {
@@ -4837,7 +4868,7 @@ llvm_jit_table_fill(WASMModuleInstance *module_inst, uint32 tbl_idx,
     }
 
     for (; length != 0; data_offset++, length--) {
-        tbl_inst->elems[data_offset] = (table_elem_type_t)val;
+        tokamak_table_elements(tbl_inst)[data_offset] = (table_elem_type_t)val;
     }
 }
 
@@ -4882,7 +4913,7 @@ llvm_jit_table_grow(WASMModuleInstance *module_inst, uint32 tbl_idx,
 
     /* fill in */
     for (i = 0; i < inc_size; ++i) {
-        tbl_inst->elems[tbl_inst->cur_size + i] = (table_elem_type_t)init_val;
+        tokamak_table_elements(tbl_inst)[tbl_inst->cur_size + i] = (table_elem_type_t)init_val;
     }
 
     tbl_inst->cur_size = total_size;

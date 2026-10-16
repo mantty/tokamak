@@ -3,6 +3,8 @@ use std::env;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=CMakeLists.txt");
     println!("cargo:rerun-if-changed=bridge.c");
+    println!("cargo:rerun-if-changed=tokamak.h");
+    println!("cargo:rerun-if-changed=simde");
     println!("cargo:rerun-if-changed=vendor");
     let os = env::var("CARGO_CFG_TARGET_OS")?;
     let arch = env::var("CARGO_CFG_TARGET_ARCH")?;

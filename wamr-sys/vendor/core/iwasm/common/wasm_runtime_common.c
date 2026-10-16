@@ -1,3 +1,4 @@
+#include "tokamak.h"
 /*
  * Copyright (C) 2019 Intel Corporation.  All rights reserved.
  * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -7229,6 +7230,8 @@ wasm_runtime_invoke_c_api_native(WASMModuleInstanceCommon *module_inst,
                                  uint32 argc, uint32 *argv, bool with_env,
                                  void *wasm_c_api_env)
 {
+    if (module_inst->module_type == Wasm_Module_Bytecode && ((WASMModuleInstance *)module_inst)->module->tokamak_context)
+        return tokamak_invoke_import((WASMModuleInstance *)module_inst, func_type, argv, wasm_c_api_env);
     wasm_val_t params_buf[16] = { 0 }, results_buf[4] = { 0 };
     wasm_val_t *params = params_buf, *results = results_buf;
     wasm_trap_t *trap = NULL;

@@ -666,6 +666,7 @@ typedef struct WASMGlobalImport {
 
 typedef struct WASMImport {
     uint8 kind;
+    uint32 source_index; /* TOKAMAK: preserve import evaluation order. */
     union {
         WASMFunctionImport function;
         WASMTableImport table;
@@ -891,6 +892,7 @@ struct WASMModule {
     /* the package version read from the WASM file */
     uint32 package_version;
     bool c_api_instantiation;
+    void *tokamak_context; /* TOKAMAK: per-instance embedding state. */
 
     uint32 type_count;
     uint32 import_count;

@@ -148,7 +148,7 @@ fn cancellation_child(start: bool) -> TestResult {
 }
 
 #[test]
-fn wasm_rejects_unsupported_imports_instead_of_ignoring_them() -> TestResult {
+fn wasm_rejects_invalid_imports() -> TestResult {
     for import in [
         "(import \"env\" \"value\" (memory 1))",
         "(import \"env\" \"value\" (table 1 funcref))",
@@ -167,6 +167,122 @@ fn wasm_rejects_unsupported_imports_instead_of_ignoring_them() -> TestResult {
         )?;
         let worker = module_worker(&input, "worker.mjs", &directory.path().join("app"))?;
         assert_eq!(request(&worker, "")?, b"LinkError");
+    }
+    Ok(())
+}
+
+#[test]
+fn wasm_shared_imports_tables_references_and_simd_match_cloudflare() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let input = directory.path().join("input");
+    fs::create_dir(&input)?;
+    let fixtures = fixture_root().join("wasm");
+    for name in ["imports", "simd", "forward", "failed"] {
+        fs::write(
+            input.join(format!("{name}.wasm")),
+            wat::parse_file(fixtures.join(format!("{name}.wat")))?,
+        )?;
+    }
+    fs::copy(
+        fixtures.join("import-contracts.mjs"),
+        input.join("contracts.mjs"),
+    )?;
+    let reference = Command::new("node")
+        .arg(fixture_root().join("wasm-reference.mjs"))
+        .arg(&input)
+        .output()?;
+    assert!(
+        reference.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reference.stderr)
+    );
+    let expected: serde_json::Value = serde_json::from_slice(&reference.stdout)?;
+    assert_eq!(expected["simd"], true, "workerd reference: {expected}");
+    let worker = module_worker(&input, "contracts.mjs", &directory.path().join("app"))?;
+    let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "")?)?;
+    assert_eq!(actual, expected);
+    Ok(())
+}
+
+#[test]
+fn wasm_feature_compatibility_audit() -> TestResult {
+    let cases = [
+        (
+            "simd",
+            "(module (func (result v128) v128.const i32x4 0 0 0 0))",
+        ),
+        ("tailCalls", "(module (func $f) (func return_call $f))"),
+        (
+            "extendedConstants",
+            "(module (global i32 (i32.add (i32.const 1) (i32.const 2))))",
+        ),
+        ("sharedMemory", "(module (memory 1 2 shared))"),
+        ("memory64", "(module (memory i64 1))"),
+        ("table64", "(module (table i64 1 funcref))"),
+        ("multipleMemories", "(module (memory 1) (memory 1))"),
+        ("exceptions", "(module (tag $e) (func throw $e))"),
+        ("gc", "(module (type (struct (field i32))))"),
+        (
+            "typedFunctions",
+            "(module (type $f (func)) (func (param (ref $f)) local.get 0 call_ref $f))",
+        ),
+        (
+            "relaxedSimd",
+            "(module (func (param v128 v128) (result v128) local.get 0 local.get 1 i8x16.relaxed_swizzle))",
+        ),
+    ];
+    let modules = cases
+        .into_iter()
+        .map(|(name, wat)| Ok((name, wat::parse_str(wat)?)))
+        .collect::<Result<std::collections::BTreeMap<_, _>, wat::Error>>()?;
+    let source = format!(
+        r"
+        const modules = {};
+        export default {{ fetch() {{
+            const binary = Object.fromEntries(Object.entries(modules).map(([name, bytes]) => [name, WebAssembly.validate(new Uint8Array(bytes))]));
+            const api = Object.fromEntries(['Tag', 'Exception', 'Suspending', 'promising'].map(name => [name, typeof WebAssembly[name] === 'function']));
+            api.resizableMemory = typeof WebAssembly.Memory.prototype.toResizableBuffer === 'function';
+            return Response.json({{ binary, api }});
+        }} }};
+    ",
+        serde_json::to_string(&modules)?
+    );
+    let directory = tempfile::tempdir()?;
+    let input = directory.path().join("input");
+    fs::create_dir(&input)?;
+    fs::write(input.join("contracts.mjs"), source)?;
+    let reference = Command::new("node")
+        .arg(fixture_root().join("wasm-reference.mjs"))
+        .arg(&input)
+        .output()?;
+    assert!(
+        reference.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reference.stderr)
+    );
+    let expected: serde_json::Value = serde_json::from_slice(&reference.stdout)?;
+    let worker = module_worker(&input, "contracts.mjs", &directory.path().join("app"))?;
+    let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "")?)?;
+    eprintln!("Wasm feature audit: workerd={expected}; tokamak={actual}");
+    for name in ["simd", "tailCalls", "extendedConstants"] {
+        assert_eq!(expected["binary"][name], true, "workerd {name}");
+        assert_eq!(actual["binary"][name], true, "tokamak {name}");
+    }
+    for name in [
+        "sharedMemory",
+        "memory64",
+        "table64",
+        "multipleMemories",
+        "exceptions",
+        "gc",
+        "typedFunctions",
+        "relaxedSimd",
+    ] {
+        assert_eq!(expected["binary"][name], true, "workerd {name}");
+        assert_eq!(
+            actual["binary"][name], false,
+            "update the documented gap for {name}"
+        );
     }
     Ok(())
 }
