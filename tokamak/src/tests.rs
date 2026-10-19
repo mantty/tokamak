@@ -82,8 +82,7 @@ export default {
 };
 "#;
 
-/// Responds, then removes the listener it registered on a plugin once that
-/// delivers a value.
+/// Registers an invocation-owned listener and responds.
 const LISTENING_WORKER: &[u8] = br#"
 export default {
   fetch() {
@@ -114,6 +113,8 @@ fn respond(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let (response, responses) = flume::bounded(1);
     let job = Job {
+        cancelled: CancellationToken::new(),
+        deadline: None,
         request: request(method, "/page"),
         response,
         websocket: None,
@@ -143,10 +144,10 @@ fn keeps_cache_entries_for_the_life_of_their_runtime() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn keeps_a_request_with_listeners_running_after_it_responds()
+fn releases_invocation_owned_listeners_when_the_request_finishes()
 -> Result<(), Box<dyn std::error::Error>> {
     /// Shell plugins that report each subscription's ID.
-    struct Shell(Sender<u64>);
+    struct Shell(Sender<u64>, Sender<u64>);
     impl crate::PluginHandler for Shell {
         fn call(&self, _: u64, _: &str, _: &str, _: &str) {}
 
@@ -154,19 +155,25 @@ fn keeps_a_request_with_listeners_running_after_it_responds()
             let _ = self.0.send(id);
         }
 
-        fn unsubscribe(&self, _: u64) {}
+        fn unsubscribe(&self, id: u64) {
+            let _ = self.1.send(id);
+        }
     }
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::of_source(LISTENING_WORKER, directory.path())?;
     let (subscriptions, subscribed) = flume::unbounded();
-    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Shell(subscriptions))), true);
+    let (removed, unsubscribed) = flume::unbounded();
+    let plugins =
+        crate::plugin_calls::PluginCalls::new(Some(Arc::new(Shell(subscriptions, removed))), true);
     let config = RuntimeConfig {
-        plugins: Arc::clone(&plugins),
+        plugins: Some(Arc::clone(&plugins)),
         ..runtime_config()
     };
     let tokio = tokio::runtime::Runtime::new()?;
     let (response, responses) = flume::bounded(1);
     let job = Job {
+        cancelled: CancellationToken::new(),
+        deadline: None,
         request: request("GET", "/"),
         response,
         websocket: None,
@@ -177,11 +184,12 @@ fn keeps_a_request_with_listeners_running_after_it_responds()
         return Err("Worker returned a non-HTTP response".into());
     };
     let subscription = subscribed.recv_timeout(Duration::from_secs(5))?;
-    thread::sleep(Duration::from_millis(100));
 
     assert!(matches!(response.body, HttpBody::Buffered(body) if body == b"listening"));
-    assert!(!handled.is_finished());
-    plugins.reply(subscription, r#"{"value":1,"done":false}"#);
+    assert_eq!(
+        unsubscribed.recv_timeout(Duration::from_secs(5))?,
+        subscription
+    );
     tokio.block_on(handled)??;
     Ok(())
 }
@@ -195,6 +203,163 @@ fn request(method: &str, path: &str) -> HttpRequest {
         headers: HeaderMap::new(),
         body: None,
     }
+}
+
+#[test]
+fn http_wait_until_survives_caller_cancellation_but_ends_at_the_host_deadline()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct Shell(Sender<String>);
+    impl crate::PluginHandler for Shell {
+        fn call(&self, _: u64, _: &str, method: &str, _: &str) {
+            let _ = self.0.send(method.into());
+        }
+        fn subscribe(&self, _: u64, _: &str, _: &str, _: &str) {}
+        fn unsubscribe(&self, _: u64) {}
+    }
+    let directory = tempfile::tempdir()?;
+    let worker = WorkerBundle::of_source(
+        br"
+export default {
+  async fetch(request, env, ctx) {
+    ctx.waitUntil((async () => {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      await globalThis.__tokamakNativeCall('gate', 'retained');
+    })());
+    await globalThis.__tokamakNativeCall('gate', 'handler');
+    return new Response('finished');
+  }
+};",
+        directory.path(),
+    )?;
+    let (events, received) = flume::unbounded();
+    let config = RuntimeConfig {
+        plugins: Some(crate::plugin_calls::PluginCalls::new(
+            Some(Arc::new(Shell(events))),
+            true,
+        )),
+        ..runtime_config()
+    };
+    let tokio = tokio::runtime::Runtime::new()?;
+    let stopped = CancellationToken::new();
+    let _shutdown = stopped.clone().drop_guard();
+    let caller = CancellationToken::new();
+    let (response, responses) = flume::bounded(1);
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let job = Job {
+        cancelled: caller.clone(),
+        deadline: Some(deadline),
+        request: request("GET", "/"),
+        response,
+        websocket: None,
+    };
+    let execution = tokio.spawn_blocking(move || execute_request(&worker, &config, job, &stopped));
+    assert_eq!(received.recv_timeout(Duration::from_secs(2))?, "handler");
+    caller.cancel();
+    assert_eq!(received.recv_timeout(Duration::from_secs(2))?, "retained");
+    let finished =
+        tokio.block_on(async { tokio::time::timeout(Duration::from_secs(2), execution).await });
+    assert!(
+        finished.is_ok(),
+        "HTTP waitUntil exceeded its host deadline"
+    );
+    assert!(finished??.is_err(), "the host deadline was not reported");
+    assert!(std::time::Instant::now() >= deadline);
+    assert!(responses.try_recv().is_err());
+    Ok(())
+}
+
+#[test]
+fn cancels_the_http_body_while_independent_background_work_is_retained()
+-> Result<(), Box<dyn std::error::Error>> {
+    check_http_body_cleanup(true)
+}
+
+#[test]
+fn completes_response_cancellation_cleanup_without_other_background_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    check_http_body_cleanup(false)
+}
+
+fn check_http_body_cleanup(retained: bool) -> Result<(), Box<dyn std::error::Error>> {
+    struct Shell(Sender<(u64, String)>);
+    impl crate::PluginHandler for Shell {
+        fn call(&self, id: u64, _: &str, method: &str, _: &str) {
+            let _ = self.0.send((id, method.into()));
+        }
+        fn subscribe(&self, _: u64, _: &str, _: &str, _: &str) {}
+        fn unsubscribe(&self, _: u64) {}
+    }
+    let directory = tempfile::tempdir()?;
+    let worker = WorkerBundle::of_source(
+        br"
+const gate = name => globalThis.__tokamakNativeCall('gate', name);
+export default {
+  fetch(request, env, ctx) {
+    if (env.RETAIN) ctx.waitUntil(gate('retained').then(() => gate('followup')));
+    return new Response(new ReadableStream({
+      pull() { return gate('pull'); },
+      cancel() {
+        let sum = 0;
+        for (let i = 0; i < 50000; i++) sum += i;
+        if (sum !== 1249975000) throw new Error('cleanup calculation failed');
+        return gate('cancelled');
+      },
+    }));
+  }
+};",
+        directory.path(),
+    )?;
+    let (sent, received) = flume::unbounded();
+    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Shell(sent))), true);
+    let config = RuntimeConfig {
+        plugins: Some(Arc::clone(&plugins)),
+        environment: [("RETAIN".into(), retained.into())].into(),
+        ..runtime_config()
+    };
+    let tokio = tokio::runtime::Runtime::new()?;
+    let stopped = CancellationToken::new();
+    let _shutdown = stopped.clone().drop_guard();
+    let caller = CancellationToken::new();
+    let (response, responses) = flume::bounded(1);
+    let job = Job {
+        cancelled: caller.clone(),
+        deadline: None,
+        request: request("GET", "/"),
+        response,
+        websocket: None,
+    };
+    let execution = tokio.spawn_blocking(move || execute_request(&worker, &config, job, &stopped));
+    let JobResponse::Http(response) = responses.recv_timeout(Duration::from_secs(5))? else {
+        return Err("expected HTTP response".into());
+    };
+    let mut pending = std::collections::BTreeMap::new();
+    for _ in 0..=usize::from(retained) {
+        let (id, method) = received.recv_timeout(Duration::from_secs(5))?;
+        pending.insert(method, id);
+    }
+    caller.cancel();
+    let followup = if retained {
+        plugins.reply(pending["retained"], r#"{"value":null,"done":true}"#);
+        let (id, method) = received.recv_timeout(Duration::from_secs(5))?;
+        assert_eq!(method, "followup");
+        Some(id)
+    } else {
+        None
+    };
+    drop(response);
+    let (cleanup, method) = received.recv_timeout(Duration::from_secs(5))?;
+    assert_eq!(method, "cancelled");
+    assert!(
+        !execution.is_finished(),
+        "background work ended with the response body"
+    );
+    if let Some(followup) = followup {
+        plugins.reply(followup, r#"{"value":null,"done":true}"#);
+    }
+    plugins.reply(cleanup, r#"{"value":null,"done":true}"#);
+    tokio
+        .block_on(async { tokio::time::timeout(Duration::from_secs(5), execution).await })???;
+    Ok(())
 }
 
 #[test]
@@ -212,6 +377,8 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
         &tokio,
         dispatcher,
         Job {
+            cancelled: CancellationToken::new(),
+            deadline: None,
             request: request("GET", "/socket"),
             response: response_sender,
             websocket: Some(websocket),
@@ -268,6 +435,8 @@ fn streams_worker_response_chunks_without_buffering_the_body()
         &tokio,
         dispatcher,
         Job {
+            cancelled: CancellationToken::new(),
+            deadline: None,
             request,
             response: response_sender,
             websocket: None,
@@ -400,6 +569,8 @@ fn run_worker(
     let worker = WorkerBundle::of_source(source, directory.path())?;
     let (response, responses) = flume::bounded(1);
     let job = Job {
+        cancelled: CancellationToken::new(),
+        deadline: None,
         request,
         response,
         websocket: None,
@@ -588,6 +759,8 @@ fn reports_handler_failures_through_the_event_listener()
     execute_job(
         &shared,
         Job {
+            cancelled: CancellationToken::new(),
+            deadline: None,
             request: request("GET", "/"),
             response,
             websocket: None,
@@ -816,8 +989,9 @@ pub(crate) fn runtime_config() -> RuntimeConfig {
     RuntimeConfig {
         assets: None,
         cache: Arc::default(),
+        services: None,
         environment: BTreeMap::new(),
         storage: None,
-        plugins: crate::plugin_calls::PluginCalls::new(None, true),
+        plugins: Some(crate::plugin_calls::PluginCalls::new(None, true)),
     }
 }

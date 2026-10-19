@@ -69,6 +69,7 @@ pub(crate) fn package(app_dir: &Path, compiled: &Path, wrangler: &WranglerConfig
     write_worker_environment(
         &layout,
         &WorkerEnvironment {
+            services: BTreeMap::new(),
             vars: wrangler.vars.clone(),
             storage: storage::package(wrangler, &layout)?,
         },

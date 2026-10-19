@@ -21,9 +21,15 @@ use crate::server::DevProxyConfig;
 
 /// The storage part's entry point.
 pub(crate) struct StorageEntry {
-    /// Open the stores `bindings` name, in a storage directory and, for
-    /// temporary files, a scratch directory.
-    pub(crate) open: fn(&Path, &Path, &PackageLayout, &[StorageBinding]) -> OpenedStorage,
+    /// Open the app's shared stores, retaining those named by any Worker.
+    pub(crate) open: fn(&Path, &Path, &[StorageBinding]) -> OpenedCatalog,
+}
+
+pub(crate) type OpenedCatalog = io::Result<Box<dyn StorageCatalog>>;
+
+/// Application-owned stores with a separate binding view for each Worker.
+pub(crate) trait StorageCatalog {
+    fn bind(&mut self, app: &PackageLayout, bindings: &[StorageBinding]) -> OpenedStorage;
 }
 
 /// The stores the storage part opened.

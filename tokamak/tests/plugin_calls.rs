@@ -49,22 +49,33 @@ export class TokamakEvents extends WorkerEntrypoint {
     globalThis.__tokamakNativeListen("location", "watchPosition", null, (position) => {
       void call("test", "received", position);
     }, () => undefined);
+    this.ctx.waitUntil(call("test", "retained"));
   }
 
-  // Reports each position with `test.received` until one is "stop", then
-  // with `test.stopped` in `waitUntil`, and with `test.alive` if the context
-  // still runs half a second later.
   watch() {
-    const stop = globalThis.__tokamakNativeListen("location", "watchPosition", null, (position) => {
-      if (position !== "stop") return void call("test", "received", position);
-      stop();
-      this.ctx.waitUntil(call("test", "stopped"));
-      setTimeout(() => void call("test", "alive"), 500);
-    }, (error) => void call("test", "failed", failure(error)));
+    this.ctx.waitUntil(new Promise(resolve => {
+      const stop = globalThis.__tokamakNativeListen("location", "watchPosition", null, (position) => {
+        if (position !== "stop") return void call("test", "received", position);
+        stop();
+        this.ctx.waitUntil(call("test", "stopped"));
+        resolve();
+        setTimeout(() => void call("test", "alive"), 500);
+      }, (error) => {
+        void call("test", "failed", failure(error));
+        if (error.name === "NotSupportedError") resolve();
+      });
+    }));
   }
+
 }
 
-export default { fetch: () => new Response(null, { status: 204 }) };
+export default {
+  fetch(request, env, ctx) {
+    globalThis.__tokamakNativeListen("location", "watchPosition", null, () => {}, () => {});
+    ctx.waitUntil(call("test", "retained"));
+    return new Response(null, { status: 204 });
+  }
+};
 "#;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -252,12 +263,11 @@ fn records_the_stage_while_a_lifecycle_event_runs() -> TestResult {
 }
 
 #[test]
-fn keeps_listening_past_the_deadline_until_the_last_listener_is_removed() -> TestResult {
+fn delivers_listener_values_and_errors_during_registered_work() -> TestResult {
     let started = Started::new(true)?;
-    join(started.emit("watch", &json!({}), Duration::from_millis(300)))?;
+    let event = started.emit("watch", &json!({}), TIMEOUT);
     let subscription = started.next_request()?;
     assert_eq!(subscription.text, "subscribe location.watchPosition null");
-    thread::sleep(Duration::from_millis(500));
 
     let deliver = |result: &str| started.runtime.reply(subscription.id, result);
     deliver(r#"{"value":1,"done":false}"#);
@@ -280,6 +290,7 @@ fn keeps_listening_past_the_deadline_until_the_last_listener_is_removed() -> Tes
     started
         .runtime
         .reply(stopped.id, r#"{"value":null,"done":true}"#);
+    assert_eq!(join(event)?, Value::Null);
     let alive = started.requests.recv_timeout(Duration::from_secs(1));
     assert!(alive.is_err(), "the context still ran: {alive:?}");
     Ok(())
@@ -288,45 +299,63 @@ fn keeps_listening_past_the_deadline_until_the_last_listener_is_removed() -> Tes
 #[test]
 fn keeps_a_listener_whose_remove_function_is_discarded() -> TestResult {
     let started = Started::new(true)?;
-    join(started.emit("forget", &json!({}), TIMEOUT))?;
+    let event = started.emit("forget", &json!({}), TIMEOUT);
     let subscription = started.next_request()?;
+    let retained = started.next_request()?;
+    assert_eq!(retained.text, "call test.retained null");
 
     started
         .runtime
         .reply(subscription.id, r#"{"value":1,"done":false}"#);
 
     assert_eq!(started.next_request()?.text, "call test.received 1");
+    started
+        .runtime
+        .reply(retained.id, r#"{"value":null,"done":true}"#);
+    assert_eq!(join(event)?, Value::Null);
+    let removed = started.next_request()?;
+    assert_eq!(
+        (removed.id, removed.text.as_str()),
+        (subscription.id, "unsubscribe")
+    );
     Ok(())
 }
 
 #[test]
 fn ends_a_listener_whose_result_is_done() -> TestResult {
     let started = Started::new(true)?;
-    join(started.emit("watch", &json!({}), TIMEOUT))?;
+    let event = started.emit("forget", &json!({}), TIMEOUT);
     let subscription = started.next_request()?;
+    let retained = started.next_request()?;
+    assert_eq!(retained.text, "call test.retained null");
 
-    started.runtime.reply(
-        subscription.id,
-        r#"{"error":{"name":"NotSupportedError","message":"Unsupported"},"done":true}"#,
-    );
-    assert_eq!(
-        started.next_request()?.text,
-        r#"call test.failed {"name":"NotSupportedError","message":"Unsupported","domException":true}"#
-    );
     started
         .runtime
-        .reply(subscription.id, r#"{"value":1,"done":false}"#);
+        .reply(subscription.id, r#"{"value":1,"done":true}"#);
+    assert_eq!(started.next_request()?.text, "call test.received 1");
+    started
+        .runtime
+        .reply(subscription.id, r#"{"value":2,"done":false}"#);
 
     let after = started.requests.recv_timeout(Duration::from_secs(1));
     assert!(after.is_err(), "the listener still ran: {after:?}");
+    assert!(
+        !event.is_finished(),
+        "independent work must still be running"
+    );
+    started
+        .runtime
+        .reply(retained.id, r#"{"value":null,"done":true}"#);
+    assert_eq!(join(event)?, Value::Null);
     Ok(())
 }
 
 #[test]
 fn unsubscribes_listeners_when_the_runtime_stops() -> TestResult {
     let started = Started::new(true)?;
-    join(started.emit("watch", &json!({}), TIMEOUT))?;
+    started.runtime.fetch("/", TIMEOUT)?;
     let subscription = started.next_request()?;
+    assert_eq!(started.next_request()?.text, "call test.retained null");
 
     let Started {
         runtime, requests, ..
@@ -338,5 +367,25 @@ fn unsubscribes_listeners_when_the_runtime_stops() -> TestResult {
         (unsubscribed.id, unsubscribed.text.as_str()),
         (subscription.id, "unsubscribe")
     );
+    Ok(())
+}
+
+#[test]
+fn event_deadlines_release_listeners_and_later_events_get_fresh_invocations() -> TestResult {
+    let started = Started::new(true)?;
+    let mut previous = None;
+    for _ in 0..2 {
+        let event = started.emit("watch", &json!({}), Duration::from_millis(300));
+        let subscription = started.next_request()?;
+        assert_eq!(subscription.text, "subscribe location.watchPosition null");
+        assert_ne!(Some(subscription.id), previous);
+        assert_eq!(join(event)?, Value::Null);
+        let removed = started.next_request()?;
+        assert_eq!(
+            (removed.id, removed.text.as_str()),
+            (subscription.id, "unsubscribe")
+        );
+        previous = Some(subscription.id);
+    }
     Ok(())
 }

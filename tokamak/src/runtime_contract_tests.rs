@@ -847,6 +847,8 @@ fn fixture_request(
     let dispatcher = Dispatcher::new(worker.clone(), config);
     let (sender, receiver) = flume::bounded(1);
     let job = Job {
+        cancelled: CancellationToken::new(),
+        deadline: None,
         request,
         response: sender,
         websocket: None,

@@ -5,6 +5,8 @@ import { DOMException } from "../globals/dom-exception.mjs";
 import { Request, Response } from "../network/fetch.mjs";
 import { URL } from "../network/url.mjs";
 
+export { installServices, invokeService } from "../services/bindings.mjs";
+
 export { hostRequest, hostResponse } from "../network/fetch.mjs";
 
 // Binds `binding` in the environment, unless taken, to the app's assets, which
@@ -62,8 +64,18 @@ export async function dispatchEvent(exports, name, event) {
 // The storage part attaches the app's storage bindings when it has any.
 if (globalThis.__tokamak_storage) await (await import("../storage/bindings.mjs")).install(globalThis.__tokamak_env, globalThis.__tokamak_storage);
 const waitUntilValues = [];
+let observeWaitUntil;
+export function trackWaitUntil(observer) { observeWaitUntil = observer; }
 class ExecutionContext {
-  waitUntil(value) { waitUntilValues.push(Promise.resolve(value)); }
+  waitUntil(value) {
+    const task = Promise.resolve(value);
+    waitUntilValues.push(task);
+    if (observeWaitUntil) {
+      observeWaitUntil(true);
+      const settled = () => observeWaitUntil(false);
+      task.then(settled, settled);
+    }
+  }
   abort() { throw new Error("The Worker isolate was aborted"); }
   passThroughOnException() {}
 }
@@ -83,3 +95,5 @@ globalThis.__tokamak_context = Object.assign(Object.create(ExecutionContext.prot
   props: {},
   tracing: createTracing(),
 });
+
+export { openServiceStream, receiveServiceStream } from "../services/streams.mjs";

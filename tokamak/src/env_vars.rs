@@ -32,6 +32,18 @@ pub struct WorkerEnvironment {
     /// Bindings backed by stores on the device.
     #[serde(default)]
     pub storage: Vec<StorageBinding>,
+    /// Bindings to packaged Workers and their exported entrypoints.
+    #[serde(default)]
+    pub services: BTreeMap<String, ServiceBinding>,
+}
+
+/// A receiving Worker and its module export.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ServiceBinding {
+    /// Packaged service name: `main` or `tokamak`.
+    pub service: String,
+    /// Exported entrypoint, including `default`.
+    pub entrypoint: String,
 }
 
 /// A binding to a store on the device, identified as Cloudflare identifies
@@ -145,7 +157,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{StorageBinding, WorkerEnvironment, load, store_id_problem, write};
+    use super::{ServiceBinding, StorageBinding, WorkerEnvironment, load, store_id_problem, write};
     use crate::packaging::PackageLayout;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -155,6 +167,13 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let layout = PackageLayout::new(directory.path());
         let environment = WorkerEnvironment {
+            services: BTreeMap::from([(
+                "DEVICE".to_owned(),
+                ServiceBinding {
+                    service: "tokamak".to_owned(),
+                    entrypoint: "Device".to_owned(),
+                },
+            )]),
             vars: BTreeMap::from([
                 ("TEXT".to_owned(), json!("value")),
                 ("JSON".to_owned(), json!({ "enabled": true })),

@@ -31,6 +31,7 @@ fn starts_a_packaged_worker_with_its_declared_environment() -> TestResult {
         temporary.path(),
         worker_source(),
         &WorkerEnvironment {
+            services: BTreeMap::new(),
             vars: BTreeMap::from([
                 ("TEXT".to_owned(), json!("value")),
                 ("JSON".to_owned(), json!({ "enabled": true })),
@@ -93,6 +94,7 @@ fn keeps_the_connection_open_between_requests_until_the_client_closes_it() -> Te
         temporary.path(),
         worker_source(),
         &WorkerEnvironment {
+            services: BTreeMap::new(),
             vars: BTreeMap::from([
                 ("TEXT".to_owned(), json!("value")),
                 ("JSON".to_owned(), json!({ "enabled": true })),
@@ -388,6 +390,104 @@ fn ends_without_a_failure_when_the_client_leaves_mid_request() -> TestResult {
     // The gateway closes the connection once it reads that the client left.
     let _ = tls.read_to_end(&mut Vec::new());
     assert_no_failures(&failures);
+    Ok(())
+}
+
+#[test]
+fn cancels_service_calls_and_streams_when_the_http_client_disconnects() -> TestResult {
+    struct Shell(mpsc::Sender<u64>, mpsc::Sender<u64>);
+    impl tokamak::PluginHandler for Shell {
+        fn call(&self, _: u64, _: &str, _: &str, _: &str) {}
+        fn subscribe(&self, id: u64, _: &str, _: &str, _: &str) {
+            let _ = self.0.send(id);
+        }
+        fn unsubscribe(&self, id: u64) {
+            let _ = self.1.send(id);
+        }
+    }
+    let temporary = tempfile::tempdir()?;
+    let app = package(
+        temporary.path(),
+        br"
+import { WorkerEntrypoint } from 'cloudflare:workers';
+export default class extends WorkerEntrypoint {
+  async fetch(request) { return new Response(await this.env.SELF.hold(new URL(request.url).pathname)); }
+  async hold(path) {
+    globalThis.__tokamakNativeListen('gate', 'watch', null, () => {}, () => {});
+    if (path === '/stream') return new ReadableStream({ pull() { return globalThis.__tokamakNativeCall('gate', 'hold'); } });
+    return await globalThis.__tokamakNativeCall('gate', 'hold');
+  }
+}
+",
+        &WorkerEnvironment {
+            services: BTreeMap::from([(
+                "SELF".into(),
+                tokamak::ServiceBinding {
+                    service: "main".into(),
+                    entrypoint: "default".into(),
+                },
+            )]),
+            ..WorkerEnvironment::default()
+        },
+    )?;
+    let (subscribed, subscriptions) = mpsc::channel();
+    let (removed, removals) = mpsc::channel();
+    let (failed, failures) = mpsc::channel();
+    let state = temporary.path().join("state");
+    let runtime = Runtime::start(
+        Config {
+            app,
+            state_dir: state.clone(),
+            storage_dir: temporary.path().join("storage"),
+            host: HOST.into(),
+            foreground: true,
+            plugins: Some(Arc::new(Shell(subscribed, removed))),
+        },
+        move |event| {
+            if let Event::RequestFailed { message } = event {
+                let _ = failed.send(message);
+            }
+        },
+    )?;
+
+    for path in ["/", "/stream", "/pipelined"] {
+        let mut tls = connect_gateway(&runtime, &state)?;
+        tls.write_all(format!("GET {path} HTTP/1.1\r\nHost: {HOST}\r\n\r\n").as_bytes())?;
+        tls.flush()?;
+        let id = subscriptions.recv_timeout(TIMEOUT)?;
+        if path == "/stream" {
+            assert!(String::from_utf8(read_header_block(&mut tls)?)?.starts_with("HTTP/1.1 200"));
+        }
+        if path == "/pipelined" {
+            tls.write_all(format!("GET /next HTTP/1.1\r\nHost: {HOST}\r\n\r\n").as_bytes())?;
+            tls.flush()?;
+        }
+        reset_connection(&tls.sock)?;
+        drop(tls);
+        assert_eq!(removals.recv_timeout(TIMEOUT)?, id);
+        assert_no_failures(&failures);
+    }
+    Ok(())
+}
+
+#[test]
+fn preserves_pipelined_requests_while_waiting_for_the_worker() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let (runtime, state) = start_packaged_runtime(directory.path(), br"
+export default {
+  async fetch(request) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    return new Response(null, { status: 204, headers: { 'x-path': new URL(request.url).pathname } });
+  }
+};", &WorkerEnvironment::default())?;
+    let mut tls = connect_gateway(&runtime, &state)?;
+    tls.write_all(format!("GET /first HTTP/1.1\r\nHost: {HOST}\r\n\r\nGET /second HTTP/1.1\r\nHost: {HOST}\r\n\r\n").as_bytes())?;
+    tls.flush()?;
+    for path in ["/first", "/second"] {
+        let response = String::from_utf8(read_header_block(&mut tls)?)?;
+        assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+        assert!(response.contains(&format!("x-path: {path}")), "{response}");
+    }
     Ok(())
 }
 
@@ -727,6 +827,7 @@ fn start_runtime(
 /// request failures the runtime reports.
 fn start_close_runtime(temporary: &Path) -> TestResult<(Runtime, PathBuf, Receiver<String>)> {
     let environment = WorkerEnvironment {
+        services: BTreeMap::new(),
         vars: BTreeMap::new(),
         storage: vec![StorageBinding::Kv {
             name: "CLOSES".to_owned(),
@@ -772,6 +873,7 @@ fn assert_no_failures(failures: &Receiver<String>) {
 
 fn d1_environment(migrations: &[&str]) -> WorkerEnvironment {
     WorkerEnvironment {
+        services: BTreeMap::new(),
         vars: BTreeMap::new(),
         storage: vec![StorageBinding::D1 {
             name: "DB".to_owned(),
@@ -784,6 +886,7 @@ fn d1_environment(migrations: &[&str]) -> WorkerEnvironment {
 
 fn r2_environment() -> WorkerEnvironment {
     WorkerEnvironment {
+        services: BTreeMap::new(),
         vars: BTreeMap::new(),
         storage: vec![StorageBinding::R2 {
             name: "FILES".to_owned(),
@@ -1102,4 +1205,60 @@ fn connect_tls(
         tls.conn.complete_io(&mut tls.sock)?;
     }
     Ok(tls)
+}
+
+fn reset_connection(stream: &TcpStream) -> TestResult {
+    use std::os::fd::AsRawFd;
+
+    let linger = libc::linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    let linger_size = libc::socklen_t::try_from(std::mem::size_of_val(&linger))?;
+    let result = unsafe {
+        libc::setsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_LINGER,
+            (&raw const linger).cast(),
+            linger_size,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().into())
+    }
+}
+
+#[test]
+fn sends_the_response_after_the_client_half_closes_its_sending_side() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let (runtime, state) = start_packaged_runtime(
+        directory.path(),
+        br"
+export default {
+  async fetch() {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    return new Response(null, { status: 204 });
+  }
+};",
+        &WorkerEnvironment::default(),
+    )?;
+    for tls_close in [false, true] {
+        let mut tls = connect_gateway(&runtime, &state)?;
+        tls.write_all(
+            format!("GET / HTTP/1.1\r\nHost: {HOST}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )?;
+        tls.flush()?;
+        if tls_close {
+            tls.conn.send_close_notify();
+            tls.flush()?;
+        } else {
+            tls.sock.shutdown(Shutdown::Write)?;
+        }
+        let response = String::from_utf8(read_header_block(&mut tls)?)?;
+        assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+    }
+    Ok(())
 }

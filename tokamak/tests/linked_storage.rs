@@ -34,6 +34,7 @@ fn serves_storage_bindings_through_the_exported_entry_point() -> TestResult {
     write_worker_environment(
         &app,
         &WorkerEnvironment {
+            services: BTreeMap::new(),
             vars: BTreeMap::new(),
             storage: vec![StorageBinding::Kv {
                 name: "SESSION".to_owned(),

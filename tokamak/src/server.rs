@@ -1,5 +1,7 @@
 //! Application lifecycle and packaged-worker startup.
 
+mod services;
+
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -8,12 +10,11 @@ use std::time::{Duration, Instant};
 
 use crate::assets::Assets;
 use crate::certificates::{Certificates, Renewal};
-use crate::dispatcher::Dispatcher;
-use crate::env_vars::{StorageBinding, load as load_environment};
+use crate::env_vars::StorageBinding;
 use crate::gateway;
 use crate::lifecycle_events::{Event, Events};
-use crate::linked::StorageRuntime;
-use crate::packaging::{PackageLayout, read_worker_manifest};
+use crate::linked::{StorageCatalog, StorageRuntime};
+use crate::packaging::PackageLayout;
 use crate::plugin_calls::{PluginCalls, PluginHandler};
 use crate::quickjs::{RuntimeConfig, WorkerBundle};
 use crate::worker_events::WorkerEvents;
@@ -94,10 +95,8 @@ impl Runtime {
             config.state_dir.clone(),
             config.host.clone(),
         )?);
-        let worker = WorkerBundle::new(read_worker_manifest(&config.app)?, config.app.clone());
-        validate_worker(&worker)?;
         let plugins = PluginCalls::new(config.plugins.clone(), config.foreground);
-        let handler = Dispatcher::new(worker, quickjs_config(&config, Arc::clone(&plugins))?);
+        let handler = services::load(&config, &plugins)?;
         finish_start(
             events,
             config.host,
@@ -266,11 +265,22 @@ fn validate_worker(worker: &WorkerBundle) -> Result<()> {
 /// Set to "true" in a packaged app's Worker environment.
 const RUNTIME_MARKER: &str = "TOKAMAK_RUNTIME";
 
+#[cfg(test)]
 fn quickjs_config(config: &Config, plugins: Arc<PluginCalls>) -> Result<RuntimeConfig> {
-    let app = &config.app;
-    let environment = load_environment(app)?;
-    let storage = open_storage(config, &environment.storage)?;
-    let mut vars = environment.vars;
+    let environment = crate::env_vars::load(&config.app)?;
+    let storage = open_storage(config, &environment.storage)?
+        .map(|mut catalog| catalog.bind(&config.app, &environment.storage))
+        .transpose()?;
+    service_config(&config.app, &environment, storage, Some(plugins))
+}
+
+fn service_config(
+    app: &PackageLayout,
+    environment: &crate::env_vars::WorkerEnvironment,
+    storage: Option<Arc<dyn StorageRuntime>>,
+    plugins: Option<Arc<PluginCalls>>,
+) -> Result<RuntimeConfig> {
+    let mut vars = environment.vars.clone();
     vars.insert(RUNTIME_MARKER.to_owned(), "true".into());
     Ok(RuntimeConfig {
         assets: app
@@ -279,6 +289,7 @@ fn quickjs_config(config: &Config, plugins: Arc<PluginCalls>) -> Result<RuntimeC
             .transpose()?
             .map(Arc::new),
         cache: Arc::default(),
+        services: None,
         environment: vars,
         storage,
         plugins,
@@ -290,7 +301,7 @@ fn quickjs_config(config: &Config, plugins: Arc<PluginCalls>) -> Result<RuntimeC
 fn open_storage(
     config: &Config,
     bindings: &[StorageBinding],
-) -> Result<Option<Arc<dyn StorageRuntime>>> {
+) -> Result<Option<Box<dyn StorageCatalog>>> {
     let scratch = config.state_dir.join("storage");
     if bindings.is_empty() {
         remove_directory(&config.storage_dir)?;
@@ -302,12 +313,7 @@ fn open_storage(
             "the app declares storage bindings, but its runtime was linked without storage",
         )
     })?;
-    Ok(Some((entry.open)(
-        &config.storage_dir,
-        &scratch,
-        &config.app,
-        bindings,
-    )?))
+    Ok(Some((entry.open)(&config.storage_dir, &scratch, bindings)?))
 }
 
 fn remove_directory(directory: &Path) -> io::Result<()> {
@@ -383,6 +389,7 @@ mod tests {
         write_environment(
             &app,
             &WorkerEnvironment {
+                services: BTreeMap::new(),
                 vars: BTreeMap::from([("JSON".to_owned(), json!({ "enabled": true }))]),
                 storage: Vec::new(),
             },
@@ -425,6 +432,7 @@ mod tests {
         write_environment(
             &app,
             &WorkerEnvironment {
+                services: BTreeMap::new(),
                 vars: BTreeMap::new(),
                 storage: vec![StorageBinding::Kv {
                     name: "SESSION".to_owned(),

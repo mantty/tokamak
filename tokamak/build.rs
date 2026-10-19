@@ -31,6 +31,8 @@ fn compile_builtins() -> Result<(), Box<dyn std::error::Error>> {
     let (storage, builtins): (Vec<_>, Vec<_>) = builtin_sources()?
         .into_iter()
         .partition(|module| module.starts_with("storage/"));
+    let mut builtins = builtins;
+    builtins.extend(["values", "streams", "http"].map(|name| format!("rpc/{name}.mjs")));
     write_builtin_table(&output, "builtins.rs", "BUILTINS", &builtins)?;
     write_builtin_table(&output, "storage_builtins.rs", "STORAGE_BUILTINS", &storage)
 }
@@ -71,7 +73,12 @@ fn write_builtin_table(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut modules = format!("const {constant}: &[(&str, &[u8])] = &[\n");
     for module in sources {
-        let source = Path::new("src").join(module);
+        let source = if module.starts_with("rpc/") {
+            Path::new("../plugins/core/src").join(module)
+        } else {
+            Path::new("src").join(module)
+        };
+        println!("cargo:rerun-if-changed={}", source.display());
         let name = format!("tokamak:{module}");
         let bytecode =
             compiler::compile_module(&name, &fs::read(&source)?, compiler::SourceText::Stripped)

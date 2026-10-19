@@ -1,9 +1,11 @@
+mod invocation;
+mod service;
+pub(crate) use service::execute_service;
+
 use flume::Sender;
 use std::io;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::assets::{AssetResponse, Assets};
@@ -18,7 +20,6 @@ use crate::gateway::{
     WebSocketOutbound, WebSocketOutgoing,
 };
 use crate::globals::ResponseEncoder;
-use crate::globals::plugins::Listeners;
 use crate::linked::StorageRuntime;
 use crate::packaging::{self, ModuleType};
 use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
@@ -37,6 +38,7 @@ use rquickjs::{
 pub(crate) struct Dispatcher {
     worker: Arc<WorkerBundle>,
     config: RuntimeConfig,
+    events: Option<Arc<Self>>,
 }
 
 impl Dispatcher {
@@ -44,6 +46,19 @@ impl Dispatcher {
         Arc::new(Self {
             worker: Arc::new(bundle),
             config,
+            events: None,
+        })
+    }
+
+    pub(crate) fn with_events(
+        bundle: WorkerBundle,
+        config: RuntimeConfig,
+        events: Arc<Self>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            worker: Arc::new(bundle),
+            config,
+            events: Some(events),
         })
     }
 }
@@ -62,6 +77,10 @@ impl Handler for Dispatcher {
     }
 
     fn deliver(&self, event: EventJob, stopped: &CancellationToken) {
+        if let Some(receiver) = &self.events {
+            receiver.deliver(event, stopped);
+            return;
+        }
         match tokio::runtime::Handle::try_current() {
             Ok(tokio) => tokio.block_on(execute_event(&self.worker, &self.config, event, stopped)),
             Err(error) => {
@@ -126,22 +145,34 @@ async fn execute_request_async(
     job: Job,
     stopped: &CancellationToken,
 ) -> Result<(), Error> {
-    let interrupted = stopped.clone();
+    let lifetime = crate::services::Lifetime {
+        caller: job.cancelled.clone(),
+        stopped: stopped.clone(),
+        deadline: job.deadline,
+    };
+    let services = crate::services::Scope::within(&lifetime);
+    let owner = invocation::Invocation::new(lifetime.clone(), Arc::clone(&services.streams));
+    let interrupted = Arc::clone(&owner);
     let (runtime, context) = worker_runtime(worker, config.storage.as_ref(), move || {
-        interrupted.is_cancelled()
+        interrupted.interrupted()
     })
     .await?;
     let awaited = crate::event_loop::AwaitedPromise::default();
-    let listeners = Arc::new(Listeners::default());
     let request = context.async_with(async |ctx| -> Result<(), Error> {
         let Job {
+            cancelled: _,
+            deadline: _,
             request,
             response: response_sender,
             websocket,
         } = job;
-        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &listeners)?;
+        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &services)?;
+        owner.track_wait_until(&ctx, &bootstrap)?;
         let descriptor = install_request(&ctx, &request)?;
-        let response = invoke_worker(&ctx, worker, &bootstrap, descriptor, &request).await?;
+        let response = tokio::select! {
+            response = invoke_worker(&ctx, worker, &bootstrap, descriptor, &request) => response?,
+            () = lifetime.cancelled() => return Ok(()),
+        };
         let response = response_from_js(&ctx, &bootstrap, response)?;
         if response.status == 101
             && let (Some(native), Some(websocket)) = (&response.web_socket, websocket)
@@ -151,25 +182,29 @@ async fn execute_request_async(
                 .await
                 .map_err(|_| receiver_closed("WebSocket response receiver closed"))?;
             websocket_loop(&ctx, native, &websocket, stopped).await?;
-            return drain_wait_until(&ctx).await;
+            return Ok(());
         }
-        send_worker_response(&ctx, response, &response_sender).await
+        send_worker_response(&ctx, response, &response_sender, &owner).await
     });
     let request = crate::event_loop::run(&runtime, &awaited, request);
-    // A request that fails ends with the listeners it registered.
-    tokio::select! {
-        result = request => result?,
-        () = stopped.cancelled() => return Err(Error::Engine("Worker execution was stopped".to_owned())),
+    let result = tokio::select! {
+        result = request => result,
+        () = lifetime.terminated() => Ok(()),
+    };
+    let background = owner
+        .finish(&runtime, &context, &awaited, std::future::ready(()))
+        .await;
+    if owner.caller_interrupted() {
+        Ok(())
+    } else {
+        result.and(background)
     }
-    keep_listening(&runtime, &context, &awaited, &listeners, stopped).await;
-    Ok(())
 }
 
 /// Runs the Worker's listeners of `event` in a fresh `QuickJS` runtime, as a
 /// request runs, interrupting them at `event.deadline`, and sends what they
 /// did to `event.delivered`. The reply stands once they return, whether or not
-/// their `waitUntil` promises settle before the deadline. Listeners they
-/// register on plugins keep the context running after the reply.
+/// their `waitUntil` promises settle before the deadline.
 pub(super) async fn execute_event(
     worker: &WorkerBundle,
     config: &RuntimeConfig,
@@ -182,12 +217,16 @@ pub(super) async fn execute_event(
         deadline,
         delivered,
     } = event;
-    let listeners = Arc::new(Listeners::default());
-    let replied = Arc::new(AtomicBool::new(false));
-    let interrupted = stopped.clone();
-    let late = Arc::clone(&replied);
+    let lifetime = crate::services::Lifetime {
+        caller: stopped.child_token(),
+        stopped: stopped.clone(),
+        deadline: Some(deadline),
+    };
+    let services = crate::services::Scope::until(stopped, deadline);
+    let owner = invocation::Invocation::new(lifetime, Arc::clone(&services.streams));
+    let interrupted = Arc::clone(&owner);
     let invocation = worker_runtime(worker, config.storage.as_ref(), move || {
-        interrupted.is_cancelled() || (Instant::now() >= deadline && !late.load(Ordering::Acquire))
+        interrupted.interrupted()
     })
     .await;
     let (runtime, context) = match invocation {
@@ -199,7 +238,8 @@ pub(super) async fn execute_event(
     };
     let awaited = crate::event_loop::AwaitedPromise::default();
     let dispatch = context.async_with(async |ctx| -> Result<Delivery, Error> {
-        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &listeners)?;
+        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &services)?;
+        owner.track_wait_until(&ctx, &bootstrap)?;
         let exports = load_worker_exports(&ctx, worker).await?;
         let pending: Promise = property::<Function>(&bootstrap, "dispatchEvent")?
             .call((exports, name.as_str(), event.as_str()))
@@ -220,50 +260,24 @@ pub(super) async fn execute_event(
         }
         () = stopped.cancelled() => return,
     };
-    if delivery.is_ok() {
-        let drain = context.async_with(async |ctx| drain_wait_until(&ctx).await);
-        tokio::select! {
-            _ = crate::event_loop::run(&runtime, &awaited, drain) => {}
-            () = tokio::time::sleep_until(deadline) => {}
-            () = stopped.cancelled() => {}
-        }
+    if delivery.is_ok()
+        && let Err(error) = owner
+            .finish(&runtime, &context, &awaited, std::future::ready(()))
+            .await
+    {
+        eprintln!("tokamak event waitUntil: {error}");
     }
-    replied.store(true, Ordering::Release);
     let _ = delivered.send(delivery.map_err(Into::into));
-    keep_listening(&runtime, &context, &awaited, &listeners, stopped).await;
-}
-
-/// Runs an invocation's context while it has listeners, then until the
-/// `waitUntil` promises they left settle, or until the runtime stops.
-async fn keep_listening(
-    runtime: &AsyncRuntime,
-    context: &AsyncContext,
-    awaited: &crate::event_loop::AwaitedPromise,
-    listeners: &Listeners,
-    stopped: &CancellationToken,
-) {
-    if !listeners.any() {
-        return;
-    }
-    let listening = context.async_with(async |ctx| {
-        listeners.until_none().await;
-        drain_wait_until(&ctx).await
-    });
-    tokio::select! {
-        _ = crate::event_loop::run(runtime, awaited, listening) => {}
-        () = stopped.cancelled() => {}
-    }
 }
 
 /// Installs the Worker's globals, the runtime bootstrap, the app's assets and
-/// the native calls on its plugins, whose listeners `listeners` counts, in
-/// `ctx`, returning the bootstrap's exports.
+/// the native calls on its plugins, returning the bootstrap's exports.
 fn prepare_worker_context<'js>(
     ctx: &Ctx<'js>,
     worker: &WorkerBundle,
     config: &RuntimeConfig,
     awaited: &crate::event_loop::AwaitedPromise,
-    listeners: &Arc<Listeners>,
+    services: &crate::services::Scope,
 ) -> Result<Object<'js>, Error> {
     ctx.store_userdata(awaited.clone())
         .map_err(|error| js_error("event loop", error))?;
@@ -273,8 +287,14 @@ fn prepare_worker_context<'js>(
         install_assets(ctx, &bootstrap, assets)
             .map_err(|error| js_exception(ctx, "assets", error))?;
     }
-    crate::globals::plugins::install(ctx, &bootstrap, &config.plugins, listeners)
-        .map_err(|error| js_exception(ctx, "plugins", error))?;
+    if let Some(plugins) = &config.plugins {
+        crate::globals::plugins::install(ctx, &bootstrap, plugins)
+            .map_err(|error| js_exception(ctx, "plugins", error))?;
+    }
+    if let Some(bindings) = &config.services {
+        crate::services::install(ctx, &bootstrap, bindings, services)
+            .map_err(|error| js_exception(ctx, "service bindings", error))?;
+    }
     Ok(bootstrap)
 }
 
@@ -790,6 +810,7 @@ async fn send_worker_response<'js>(
     ctx: &Ctx<'js>,
     response: JsResponse<'js>,
     response_sender: &Sender<JobResponse>,
+    owner: &invocation::Invocation,
 ) -> Result<(), Error> {
     let JsResponse {
         status,
@@ -799,7 +820,6 @@ async fn send_worker_response<'js>(
         body,
         ..
     } = response;
-    // A caller that stopped waiting gets no response, and `waitUntil` work still finishes.
     match body {
         JsResponseBody::Buffered(body) if encoder.is_none() => {
             let mut response = HttpResponse::buffered(status, headers, body);
@@ -807,7 +827,7 @@ async fn send_worker_response<'js>(
             let _ = response_sender
                 .send_async(JobResponse::Http(response))
                 .await;
-            drain_wait_until(ctx).await
+            Ok(())
         }
         body => {
             let (sender, cancelled, output) = response_stream();
@@ -824,13 +844,19 @@ async fn send_worker_response<'js>(
                     send_response_chunk(&bytes, true, &mut encoder, &sender).await
                 }
                 JsResponseBody::Stream(reader) => {
-                    pump_response_stream(ctx, &reader, &mut encoder, &sender, &cancelled).await
+                    let result =
+                        pump_response_stream(ctx, &reader, &mut encoder, &sender, &cancelled).await;
+                    if cancelled.is_cancelled() || result.is_err() {
+                        owner.background_deadline();
+                        cancel_response_stream(ctx, &property(&reader, "cancel")?)?;
+                    }
+                    result
                 }
             };
             if let Err(error) = result {
                 let _ = sender.send_async(Err(error.to_string())).await;
             }
-            drain_wait_until(ctx).await
+            Ok(())
         }
     }
 }
@@ -843,10 +869,8 @@ async fn pump_response_stream<'js>(
     cancelled: &CancellationToken,
 ) -> Result<(), Error> {
     let read: Function = property(reader, "read")?;
-    let cancel: Function = property(reader, "cancel")?;
     loop {
         if cancelled.is_cancelled() {
-            cancel_response_stream(ctx, &cancel).await;
             return Ok(());
         }
         let pending: Promise = read
@@ -855,7 +879,6 @@ async fn pump_response_stream<'js>(
         let chunk: Option<TypedArray<u8>> = tokio::select! {
             chunk = finish_promise(ctx, &pending, "response stream read") => chunk?,
             () = cancelled.cancelled() => {
-                cancel_response_stream(ctx, &cancel).await;
                 return Ok(());
             }
         };
@@ -867,10 +890,7 @@ async fn pump_response_stream<'js>(
                 "response stream chunk was detached".to_owned(),
             ));
         };
-        if let Err(error) = send_response_chunk(bytes, false, encoder, sender).await {
-            cancel_response_stream(ctx, &cancel).await;
-            return Err(error);
-        }
+        send_response_chunk(bytes, false, encoder, sender).await?;
     }
 }
 
@@ -898,11 +918,17 @@ async fn send_response_chunk(
     }
 }
 
-async fn cancel_response_stream<'js>(ctx: &Ctx<'js>, cancel: &Function<'js>) {
-    let Ok(pending) = cancel.call::<_, Promise>(()) else {
-        return;
-    };
-    let _ = finish_promise::<Value>(ctx, &pending, "response stream cancel").await;
+fn cancel_response_stream<'js>(ctx: &Ctx<'js>, cancel: &Function<'js>) -> Result<(), Error> {
+    let pending: Promise = cancel
+        .call(())
+        .map_err(|error| js_exception(ctx, "response stream cancel", error))?;
+    let context: Object = ctx
+        .globals()
+        .get("__tokamak_context")
+        .map_err(|error| js_exception(ctx, "execution context", error))?;
+    property::<Function>(&context, "waitUntil")?
+        .call((pending,))
+        .map_err(|error| js_exception(ctx, "response stream cleanup", error))
 }
 
 async fn finish_promise<'js, T: rquickjs::FromJs<'js>>(

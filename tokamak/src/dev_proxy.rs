@@ -324,6 +324,8 @@ impl HostBody {
 impl Handler for DevProxy {
     fn handle(&self, job: Job, stopped: &CancellationToken) -> Result<(), HandlerError> {
         let Job {
+            cancelled,
+            deadline: _,
             request,
             response,
             websocket,
@@ -334,10 +336,16 @@ impl Handler for DevProxy {
                 tokio::select! {
                     result = self.forward_http(&request, &response) => result,
                     () = stopped.cancelled() => Ok(()),
+                    () = cancelled.cancelled() => Ok(()),
                 }
             });
         };
-        tokio.block_on(self.forward_websocket(&request, &response, &websocket, stopped))
+        tokio.block_on(async {
+            tokio::select! {
+                result = self.forward_websocket(&request, &response, &websocket, stopped) => result,
+                () = cancelled.cancelled() => Ok(()),
+            }
+        })
     }
 
     fn deliver(&self, event: EventJob, stopped: &CancellationToken) {

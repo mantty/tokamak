@@ -56,6 +56,12 @@ impl PackageLayout {
         &self.root
     }
 
+    /// The native-specific Worker's package.
+    #[must_use]
+    pub fn tokamak_worker(&self) -> Self {
+        Self::new(self.root.join("tokamak"))
+    }
+
     /// The manifest describing the split `QuickJS` Worker modules.
     #[must_use]
     pub fn worker_manifest(&self) -> PathBuf {

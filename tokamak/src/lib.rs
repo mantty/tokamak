@@ -57,6 +57,8 @@ mod runtime_modules;
 #[cfg(feature = "native")]
 mod server;
 #[cfg(feature = "native")]
+mod services;
+#[cfg(feature = "native")]
 mod storage;
 #[cfg(all(test, feature = "native"))]
 mod tests;
@@ -79,7 +81,7 @@ use thiserror::Error as Fail;
 #[cfg(feature = "native")]
 pub use certificates::{Certificates, Challenge, Decision};
 pub use env_vars::{
-    Error as WorkerEnvironmentError, StorageBinding, WorkerEnvironment,
+    Error as WorkerEnvironmentError, ServiceBinding, StorageBinding, WorkerEnvironment,
     load as load_worker_environment, store_id_problem, write as write_worker_environment,
 };
 #[cfg(feature = "native")]
