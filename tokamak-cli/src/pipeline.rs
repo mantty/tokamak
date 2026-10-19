@@ -9,8 +9,9 @@ use tokamak_cli::{Platform, PlatformPackManifest};
 use super::packs::PlatformPack;
 use super::tokamak_config::{TokamakConfig, app_name_problem, slug};
 use super::vite::VitePlugin;
-use super::wrangler_config::{self, WranglerConfig};
-use super::{paths, plugins, project, settings, worker};
+use super::worker_graph::{CompiledWorker, WorkerGraph};
+use super::wrangler_config::WranglerConfig;
+use super::{paths, plugins, project, settings};
 
 pub(crate) struct BuildRequest {
     pub(crate) platforms: Vec<Platform>,
@@ -55,9 +56,7 @@ pub(crate) struct DevelopmentSummary {
 
 struct BuildContext<'a> {
     build_dir: &'a Path,
-    wrangler: &'a WranglerConfig,
-    /// The compiled Worker's package directory.
-    worker: &'a Path,
+    workers: &'a [CompiledWorker<'a>],
     plugins: &'a [plugins::Plugin],
     version: &'a str,
 }
@@ -130,12 +129,10 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         &current_dir,
     );
     let version = required_version(&sources)?;
-    let wrangler = wrangler_config::load_config(
-        &wrangler_config::deploy_config_path(&project)
-            .context("find the Wrangler configuration the build generated")?,
-    )?;
-    project::check_output(&wrangler)?;
-    warn_unsupported_bindings(&wrangler);
+    let graph = WorkerGraph::load(&project)?;
+    for (_, config) in graph.workers() {
+        warn_unsupported_bindings(config);
+    }
     let builds = request
         .platforms
         .iter()
@@ -152,19 +149,17 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
             plugins::check(plugins, &pack.manifest, &generated)?;
             Ok(PlatformBuild {
                 platform: *platform,
-                app: resolve_app(&settings, &wrangler.name, *platform)?,
+                app: resolve_app(&settings, &graph.main.name, *platform)?,
                 settings,
                 generated,
                 pack,
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let worker = worker::compile(&build_dir.join(".tokamak").join("worker"), &wrangler)
-        .context("compile the Worker")?;
+    let workers = graph.compile(&build_dir.join(".tokamak").join("worker"))?;
     let context = BuildContext {
         build_dir: &build_dir,
-        wrangler: &wrangler,
-        worker: &worker,
+        workers: &workers,
         plugins,
         version: &version,
     };
@@ -289,8 +284,11 @@ fn build_platform(
     let (input, project) =
         prepare_platform_input(&request.project_dir, context.build_dir, platform)?;
 
-    worker::package(&input.join("app"), context.worker, context.wrangler)
-        .context("prepare the tokamak application package")?;
+    for worker in context.workers {
+        worker
+            .package(&input.join("app"))
+            .context("prepare the tokamak application package")?;
+    }
     plugins::stage(
         context.plugins,
         &pack.manifest,
@@ -307,7 +305,7 @@ fn build_platform(
             version: Some(context.version),
             development: None,
             device_id: None,
-            exported_symbols: exported_symbols(context.wrangler),
+            exported_symbols: exported_symbols(context.workers.iter().map(|worker| worker.config)),
         },
     )
     .context("write platform build metadata")?;
@@ -493,11 +491,13 @@ fn write_build_metadata(input: &Path, project: &Path, metadata: &BuildMetadata<'
 
 /// The entry points of the optional runtime parts an app with `wrangler`'s
 /// bindings links.
-fn exported_symbols(wrangler: &WranglerConfig) -> &'static [&'static str] {
-    if wrangler.storage.is_empty() {
-        &[]
-    } else {
+fn exported_symbols<'a>(
+    workers: impl IntoIterator<Item = &'a WranglerConfig>,
+) -> &'static [&'static str] {
+    if workers.into_iter().any(|config| !config.storage.is_empty()) {
         &[tokamak::STORAGE_ENTRY_POINT]
+    } else {
+        &[]
     }
 }
 
@@ -556,7 +556,7 @@ mod tests {
                 format!(r#"{{ "name": "app", "main": "worker.js"{bindings} }}"#),
             )?;
             assert_eq!(
-                exported_symbols(&wrangler_config::load_config(&path)?),
+                exported_symbols([&wrangler_config::load_config(&path)?]),
                 symbols
             );
         }

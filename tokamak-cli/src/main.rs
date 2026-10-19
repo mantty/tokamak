@@ -19,6 +19,7 @@ mod storage;
 mod tokamak_config;
 mod vite;
 mod worker;
+mod worker_graph;
 mod wrangler_config;
 
 use std::env;

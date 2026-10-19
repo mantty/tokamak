@@ -21,6 +21,8 @@ pub(crate) struct WranglerConfig {
     pub(crate) path: PathBuf,
     /// Top-level Worker name used as the tokamak application identity.
     pub(crate) name: String,
+    /// Environment-specific name used by service bindings.
+    pub(crate) service_name: String,
     /// Worker entrypoint, resolved relative to the config file directory.
     pub(crate) main: PathBuf,
     /// Static asset configuration, when the Worker declares assets.
@@ -34,6 +36,30 @@ pub(crate) struct WranglerConfig {
     pub(crate) bindings: Vec<WranglerBinding>,
     /// Storage bindings declared by the configuration.
     pub(crate) storage: Vec<WranglerStorage>,
+    /// Service bindings declared by the configuration.
+    pub(crate) services: Vec<WranglerService>,
+}
+
+/// A binding to a Worker's exported entrypoint.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WranglerService {
+    pub(crate) binding: String,
+    pub(crate) service: String,
+    entrypoint: Option<String>,
+    #[serde(flatten)]
+    pub(crate) options: BTreeMap<String, Value>,
+}
+
+impl WranglerService {
+    pub(crate) fn entrypoint(&self) -> &str {
+        self.entrypoint.as_deref().unwrap_or("default")
+    }
+}
+
+/// Configurations emitted by Cloudflare's build integration.
+pub(crate) struct DeployConfig {
+    pub(crate) main: PathBuf,
+    pub(crate) auxiliaries: Vec<PathBuf>,
 }
 
 /// A storage binding declared in a Wrangler configuration, with the store
@@ -115,7 +141,7 @@ pub(crate) struct WranglerBinding {
 
 /// The Wrangler configuration keys of the bindings, other than storage, that
 /// the packaged app does not provide, each with its Cloudflare feature.
-const BINDING_KINDS: [(&str, &str); 15] = [
+const BINDING_KINDS: [(&str, &str); 14] = [
     ("ai", "Workers AI"),
     ("analytics_engine_datasets", "Analytics Engine"),
     ("browser", "Browser Rendering"),
@@ -129,7 +155,6 @@ const BINDING_KINDS: [(&str, &str); 15] = [
     ("rate_limiting", "rate limiting"),
     ("secrets_store_secrets", "Secrets Store"),
     ("send_email", "Email Routing"),
-    ("services", "service bindings"),
     ("vectorize", "Vectorize"),
 ];
 
@@ -173,10 +198,17 @@ pub(crate) struct WranglerAssets {
 /// The configuration a build generated for deployment, found as Wrangler
 /// finds it: through the `configPath` of the first `.wrangler/deploy/config.json`
 /// in `start` or its parent directories, relative to that file's directory.
-pub(crate) fn deploy_config_path(start: &Path) -> Result<PathBuf> {
+pub(crate) fn deploy_config(start: &Path) -> Result<DeployConfig> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
-    struct DeployConfig {
+    struct RawDeployConfig {
+        config_path: PathBuf,
+        #[serde(default)]
+        auxiliary_workers: Vec<AuxiliaryWorker>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AuxiliaryWorker {
         config_path: PathBuf,
     }
 
@@ -190,15 +222,22 @@ pub(crate) fn deploy_config_path(start: &Path) -> Result<PathBuf> {
                 start.display()
             )
         })?;
-    let deploy: DeployConfig = parse_config(&pointer)?;
-    let path = pointer
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join(deploy.config_path);
-    if !path.is_file() {
-        bail!("wrangler config not found starting from {}", path.display());
-    }
-    Ok(path)
+    let deploy: RawDeployConfig = parse_config(&pointer)?;
+    let resolve = |path: PathBuf| -> Result<PathBuf> {
+        let path = pointer.parent().unwrap_or(Path::new(".")).join(path);
+        if !path.is_file() {
+            bail!("wrangler config not found starting from {}", path.display());
+        }
+        Ok(path)
+    };
+    Ok(DeployConfig {
+        main: resolve(deploy.config_path)?,
+        auxiliaries: deploy
+            .auxiliary_workers
+            .into_iter()
+            .map(|worker| resolve(worker.config_path))
+            .collect::<Result<_>>()?,
+    })
 }
 
 /// Load a generated Wrangler configuration file: fail when it cannot be read
@@ -210,10 +249,11 @@ pub(crate) fn load_config(config_path: &Path) -> Result<WranglerConfig> {
     let main = raw
         .main
         .ok_or_else(|| missing_field(&config_path, "main"))?;
-    let name = raw
-        .top_level_name
-        .or(raw.name)
+    let service_name = raw
+        .name
+        .or_else(|| raw.top_level_name.clone())
         .ok_or_else(|| missing_field(&config_path, "name"))?;
+    let name = raw.top_level_name.unwrap_or_else(|| service_name.clone());
     let assets = raw
         .assets
         .map(|assets| resolve_assets(&config_path, config_dir, assets))
@@ -232,8 +272,10 @@ pub(crate) fn load_config(config_path: &Path) -> Result<WranglerConfig> {
                 .collect::<Result<Vec<_>>>()?,
         ),
         storage,
+        services: raw.services,
         bindings: collect_bindings(&raw.other),
         name,
+        service_name,
         path: config_path,
     })
 }
@@ -257,6 +299,8 @@ struct RawWranglerConfig {
     #[serde(default)]
     vars: BTreeMap<String, Value>,
     rules: Option<Vec<WranglerRule>>,
+    #[serde(default)]
+    services: Vec<WranglerService>,
     #[serde(flatten)]
     other: BTreeMap<String, Value>,
 }
@@ -610,7 +654,7 @@ mod tests {
 
     use super::{
         HtmlHandling, NotFoundHandling, WranglerMigrations, WranglerModuleType, WranglerRule,
-        WranglerStorage, applied_rules, collect_bindings, deploy_config_path, load_config,
+        WranglerStorage, applied_rules, collect_bindings, deploy_config, load_config,
         normalize_relative_path, pattern_within,
     };
 
@@ -778,7 +822,9 @@ mod tests {
             r#"{ "name": "app-production", "topLevelName": "app", "main": "index.js" }"#,
         )?;
 
-        assert_eq!(load_config(&config)?.name, "app");
+        let loaded = load_config(&config)?;
+        assert_eq!(loaded.name, "app");
+        assert_eq!(loaded.service_name, "app-production");
         Ok(())
     }
 
@@ -797,7 +843,7 @@ mod tests {
         )?;
 
         assert_eq!(
-            deploy_config_path(&directory.path().join("src"))?,
+            deploy_config(&directory.path().join("src"))?.main,
             deploy.join("../../dist/app/wrangler.json")
         );
         Ok(())
@@ -806,7 +852,7 @@ mod tests {
     #[test]
     fn reports_a_missing_deploy_config_or_generated_config() -> Result<()> {
         let directory = tempfile::tempdir()?;
-        let Err(error) = deploy_config_path(directory.path()) else {
+        let Err(error) = deploy_config(directory.path()) else {
             bail!("found a deploy config");
         };
         assert_eq!(
@@ -823,7 +869,7 @@ mod tests {
             deploy.join("config.json"),
             r#"{ "configPath": "missing.json" }"#,
         )?;
-        let Err(error) = deploy_config_path(directory.path()) else {
+        let Err(error) = deploy_config(directory.path()) else {
             bail!("found a missing generated config");
         };
         assert!(error.to_string().ends_with("missing.json"), "{error}");

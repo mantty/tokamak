@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokamak::{
-    AssetManifest, ModuleType, PackageLayout, WorkerEnvironment, WorkerManifest, write_worker,
-    write_worker_environment,
+    AssetManifest, ModuleType, PackageLayout, ServiceBinding, WorkerEnvironment, WorkerManifest,
+    write_worker, write_worker_environment,
 };
 use tokamak_cli::copy_dir_contents;
 use walkdir::WalkDir;
@@ -64,12 +64,17 @@ pub(crate) fn compile(cache_dir: &Path, wrangler: &WranglerConfig) -> Result<Pat
 
 /// Package the app in `app_dir`: the `compiled` Worker with its environment,
 /// storage and assets.
-pub(crate) fn package(app_dir: &Path, compiled: &Path, wrangler: &WranglerConfig) -> Result<()> {
+pub(crate) fn package(
+    app_dir: &Path,
+    compiled: &Path,
+    wrangler: &WranglerConfig,
+    services: BTreeMap<String, ServiceBinding>,
+) -> Result<()> {
     let layout = PackageLayout::new(app_dir);
     write_worker_environment(
         &layout,
         &WorkerEnvironment {
-            services: BTreeMap::new(),
+            services,
             vars: wrangler.vars.clone(),
             storage: storage::package(wrangler, &layout)?,
         },
