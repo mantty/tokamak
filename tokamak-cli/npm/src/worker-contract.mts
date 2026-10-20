@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 import { checkRpcMethod } from "./rpc-contract.mjs";
@@ -34,7 +35,7 @@ export function readWorkerContract(entry: string, root: string): WorkerContract 
   if (!instance || !concrete || constructor?.typeParameters?.length) {
     throw new Error(`Tokamak entrypoint ${entry} must default-export a concrete class.`);
   }
-  const prototypes = applicationPrototypes(checker, instance, entry);
+  const prototypes = applicationPrototypes(program, checker, instance, entry);
   const methods: string[] = [];
   for (const property of instance.getProperties()) {
     if (!property.declarations?.some((node) => prototypes.has(node.parent))) continue;
@@ -51,20 +52,31 @@ export function readWorkerContract(entry: string, root: string): WorkerContract 
   };
 }
 
-function applicationPrototypes(checker: ts.TypeChecker, instance: ts.Type, entry: string): Set<ts.Node> {
+function applicationPrototypes(program: ts.Program, checker: ts.TypeChecker, instance: ts.Type, entry: string): Set<ts.Node> {
   const module = checker.getAmbientModules().find((symbol) => symbol.name === '"cloudflare:workers"');
   const exported = module && checker.getExportsOfModule(module).find((symbol) => symbol.name === "WorkerEntrypoint");
   const base = exported && (exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported);
+  const native = nativeEntrypoint(program, checker, entry);
   const prototypes = new Set<ts.Node>();
   let current: ts.Type | undefined = instance;
   const seen = new Set<ts.Type>();
   while (current && !seen.has(current)) {
-    if (base && current.getSymbol() === base) return prototypes;
+    const symbol = current.getSymbol();
+    if (symbol && (symbol === base || symbol === native)) return prototypes;
     seen.add(current);
     for (const node of current.getSymbol()?.declarations ?? []) prototypes.add(node);
     current = checker.getBaseTypes(current as ts.InterfaceType)?.[0];
   }
-  throw new Error(`Tokamak entrypoint ${entry} must extend WorkerEntrypoint from cloudflare:workers; include the Workers type declarations.`);
+  throw new Error(`Tokamak entrypoint ${entry} must extend TokamakEntrypoint from @tokamakdev/tok or WorkerEntrypoint from cloudflare:workers; include its type declarations.`);
+}
+
+function nativeEntrypoint(program: ts.Program, checker: ts.TypeChecker, entry: string): ts.Symbol | undefined {
+  const options = program.getCompilerOptions();
+  const sdk = ts.resolveModuleName("@tokamakdev/tok", entry, options, ts.sys).resolvedModule?.resolvedFileName;
+  const core = ts.resolveModuleName("@tokamakdev/plugin/worker", sdk ?? fileURLToPath(import.meta.url), options, ts.sys).resolvedModule;
+  const source = core && program.getSourceFile(core.resolvedFileName);
+  const module = source && checker.getSymbolAtLocation(source);
+  return module && checker.getExportsOfModule(module).find((symbol) => symbol.name === "TokamakEntrypoint");
 }
 
 function exposedMethod(property: ts.Symbol): boolean {

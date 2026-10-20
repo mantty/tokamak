@@ -12,6 +12,10 @@ export interface Dispatched {
 /** Every listener, by event name, in registration order. */
 const listeners = new Map<string, RegisteredListener[]>();
 
+export function listenedEvents(): string[] {
+  return [...listeners.keys()];
+}
+
 export function register(name: string, listener: RegisteredListener): void {
   const registered = listeners.get(name);
   if (registered) registered.push(listener);
@@ -36,5 +40,5 @@ export async function dispatch(
     if (result.status === "rejected") reportError(result.reason);
     else if (reply === undefined) reply = result.value;
   }
-  return { reply, listened: [...listeners.keys()] };
+  return { reply, listened: listenedEvents() };
 }

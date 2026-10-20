@@ -11,7 +11,7 @@ npx tok targets
 
 | Entry | Contents |
 | --- | --- |
-| `@tokamakdev/tok` | The `Config` type of the Vite plugin's options |
+| `@tokamakdev/tok` | `TokamakEntrypoint`, `TokamakContext`, `TokamakEvent`, and the Vite plugin's `Config` type |
 | `@tokamakdev/tok/events` | The app's events, `onStart`, `onResume` and `onSuspend`, and `getLifecycleStage()` |
 | `@tokamakdev/tok/vite` | The Vite plugin, `tokamak()` |
 | `@tokamakdev/tok/astro` | The Astro adapter, `tokamak()` |
@@ -34,13 +34,20 @@ Cloudflare adapter options as the second argument.
 
 Web builds use the ordinary Cloudflare integration. When `tok` runs the
 command, `src/tokamak.ts` becomes a separate native worker. Its default export
-is a `WorkerEntrypoint` subclass; public methods are checked against Tokamak's
+extends `TokamakEntrypoint`; public methods are checked against Tokamak's
 RPC contract. The main worker calls it through `env.TOKAMAK`; the native worker
 calls the main worker through `env.MAIN`. Development delivers native events
 through Cloudflare's dev registry and gives only the native worker the device
 relay. Vite reloads its modules and listeners when their source changes.
 Run `wrangler types` to generate the project's Workers declarations before
 building or starting development.
+
+The entrypoint receives its own bindings in `this.env` and native invocation
+context in `this.ctx`. Its default `event()` runs registered listeners; an
+override receives `{ type, data }` and can return a reply or promise. Native
+events use this handler independently of page requests. `event()` is excluded
+from the service binding's public methods. Listener callbacks receive the same
+invocation context and register follow-up work with `ctx.waitUntil()`.
 
 The package installs the `tok` binary for the current machine through an
 optional dependency (`@tokamakdev/tok-darwin-arm64`, `-darwin-x64`,

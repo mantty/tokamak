@@ -250,6 +250,27 @@ fn refuses_to_emit_start() -> TestResult {
 }
 
 #[test]
+fn custom_event_handlers_receive_events_without_a_registered_listener_list() -> TestResult {
+    let started = Started::new(
+        br"
+import { WorkerEntrypoint } from 'cloudflare:workers';
+export class TokamakEvents extends WorkerEntrypoint {
+  dispatch(name, data) { return { reply: { name, data } }; }
+}
+export default { fetch: () => new Response(null) };
+",
+        false,
+        0,
+    )?;
+    for name in ["location.update", "push.received"] {
+        let reply: serde_json::Value =
+            serde_json::from_str(&started.emit(name, r#"{"value":1}"#)?)?;
+        assert_eq!(reply, json!({ "name": name, "data": { "value": 1 } }));
+    }
+    Ok(())
+}
+
+#[test]
 fn reports_a_failed_start_and_still_delivers_events() -> TestResult {
     let started = Started::new(
         b"export default { fetch: () => new Response(null) };",

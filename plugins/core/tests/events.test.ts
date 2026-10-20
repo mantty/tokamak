@@ -4,9 +4,10 @@ import { afterEach, beforeEach, test } from "node:test";
 import { defineEvent, type EventContext } from "../src/events.js";
 import { dispatch } from "../src/registry.js";
 import * as testing from "../src/testing.js";
+import { createNativeContext } from "../src/context.js";
 
 const env = {};
-const ctx: EventContext = { waitUntil: () => undefined };
+const ctx: EventContext = createNativeContext({ waitUntil: () => undefined });
 let reported: unknown[] = [];
 
 beforeEach(() => {

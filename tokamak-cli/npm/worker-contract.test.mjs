@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { readWorkerContract } from "./dist/worker-contract.mjs";
 import { workerTypes } from "./worker-fixtures.mjs";
@@ -104,11 +105,11 @@ test("accepts checked JavaScript and reports untyped exposed parameters", (t) =>
 });
 
 test("requires the actual WorkerEntrypoint base, including through re-exports", (t) => {
-  assert.throws(project(t, "export default class Native { ping() { return 1; } }"), /must extend WorkerEntrypoint/);
+  assert.throws(project(t, "export default class Native { ping() { return 1; } }"), /must extend.*Entrypoint/);
   const impostor = project(t, 'export { Native as default } from "./native";', {
     "src/native.ts": "class WorkerEntrypoint {} export class Native extends WorkerEntrypoint { ping() { return 1; } }",
   });
-  assert.throws(impostor, /must extend WorkerEntrypoint/);
+  assert.throws(impostor, /must extend.*Entrypoint/);
   const valid = project(t, 'export { Native as default } from "./native";', {
     "src/base.ts": 'export { WorkerEntrypoint as Base } from "cloudflare:workers";',
     "src/native.ts": 'import { Base } from "./base"; export class Native extends Base { ping() { return 1; } }',
@@ -121,4 +122,13 @@ test("ignores inherited framework handlers but validates application overrides",
   assert.deepEqual(read().methods, ["ping"]);
   const invalid = project(t, "export default class Native extends WorkerEntrypoint { scheduled(callback: () => void) {} }");
   assert.throws(invalid, /Unsupported RPC type at scheduled.callback/);
+});
+
+test("accepts the Tokamak entrypoint and excludes its host event handler", (t) => {
+  const sdk = JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/tok")));
+  const read = project(t, `import { TokamakEntrypoint } from ${sdk};
+    export default class Native extends TokamakEntrypoint {
+      echo(value: string): string { return value; }
+    }`);
+  assert.deepEqual(read().methods, ["echo"]);
 });

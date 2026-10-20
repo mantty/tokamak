@@ -51,7 +51,7 @@ export default class extends WorkerEntrypoint {
   async fetch() {
     writeFileSync('/tmp/owner', 'main');
     const result = await this.env.DEVICE.describe();
-    return Response.json({ result, native: typeof globalThis.__tokamakNativeCall, file: existsSync('/tmp/owner') });
+    return Response.json({ result, native: typeof this.ctx[Symbol.for('tokamak.native')], file: existsSync('/tmp/owner') });
   }
   name() { return this.env.NAME; }
 }
@@ -65,7 +65,10 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { existsSync } from 'node:fs';
 export class Device extends WorkerEntrypoint {
   async describe() {
-    return { name: this.env.NAME, main: await this.env.MAIN.name(), file: existsSync('/tmp/owner'), native: typeof globalThis.__tokamakNativeCall };
+    return {
+      name: this.env.NAME, main: await this.env.MAIN.name(), file: existsSync('/tmp/owner'),
+      stage: await this.ctx[Symbol.for('tokamak.native')].call('tokamak', 'lifecycleStage'),
+    };
   }
 }
 export class TokamakEvents extends WorkerEntrypoint {
@@ -83,7 +86,7 @@ export default { fetch: () => new Response('device') };
     assert_eq!(
         response,
         json!({
-            "result": { "name": "device", "main": "main", "file": false, "native": "function" },
+            "result": { "name": "device", "main": "main", "file": false, "stage": "foreground" },
             "native": "undefined", "file": true,
         })
     );

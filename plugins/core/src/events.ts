@@ -1,18 +1,8 @@
 import { register, type RegisteredListener } from "./registry.js";
-
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace -- `wrangler types` declares the Worker's bindings here.
-  namespace Cloudflare {
-    // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- the app's `wrangler types` declares the members.
-    interface Env {}
-  }
-}
+import type { TokamakContext } from "./context.js";
 
 /** The invocation a listener runs in. */
-export interface EventContext {
-  /** Keeps the event running until `promise` settles or the event's deadline passes. */
-  waitUntil(promise: Promise<unknown>): void;
-}
+export type EventContext = TokamakContext;
 
 /** Receives an event of type `T` with the Worker's `env`, and may return a `Reply`. */
 export type Listener<T, Reply = void> = (

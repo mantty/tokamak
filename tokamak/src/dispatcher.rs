@@ -245,10 +245,10 @@ pub(super) async fn execute_event(
             .call((exports, name.as_str(), event.as_str()))
             .map_err(|error| js_exception(&ctx, &name, error))?;
         let dispatched: Object = finish_promise(&ctx, &pending, "event").await?;
-        let listened: Vec<String> = property(&dispatched, "listened")?;
+        let listened: Option<Vec<String>> = property(&dispatched, "listened")?;
         Ok(Delivery {
             reply: property(&dispatched, "reply")?,
-            listened: Some(listened.into_iter().collect()),
+            listened: listened.map(|names| names.into_iter().collect()),
         })
     });
     let deadline = tokio::time::Instant::from_std(deadline);

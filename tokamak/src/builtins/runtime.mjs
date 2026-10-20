@@ -48,6 +48,11 @@ export function installPlugins(call, subscribe) {
       },
     },
   });
+  globalThis[Symbol.for("tokamak.native")] = {
+    call: globalThis.__tokamakNativeCall,
+    listen: globalThis.__tokamakNativeListen,
+  };
+  globalThis.__tokamak_context[Symbol.for("tokamak.native")] = globalThis[Symbol.for("tokamak.native")];
 }
 
 // Delivers the event `name`, whose JSON is `event`, to the `TokamakEvents` the

@@ -36,7 +36,8 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
   function refresh(): void {
     contract = entry ? readWorkerContract(entry, root) : { methods: [], files: [] };
     const source = serviceEntrypoint(entry, contract.methods);
-    writeChanged(generated, `${source}export { TokamakEvents } from ${JSON.stringify(events)};\n`);
+    writeChanged(generated, `${source}import { eventEntrypoint } from ${JSON.stringify(events)};
+export const TokamakEvents = eventEntrypoint(Worker);\n`);
     writeChanged(path.join(output, "methods.json"), `${JSON.stringify(contract.methods)}\n`);
   }
   const configure = (config: ServiceConfiguration): void => {
@@ -105,13 +106,16 @@ export function workerName(main: string): string {
 }
 
 function serviceEntrypoint(entry: string | undefined, methods: string[]): string {
-  const base = `import { WorkerEntrypoint } from "cloudflare:workers";\n`;
-  if (!entry) return `${base}export default class extends WorkerEntrypoint {}\n`;
+  const sdk = normalizePath(fileURLToPath(import.meta.resolve("@tokamakdev/plugin/worker")));
+  const base = `import { WorkerEntrypoint } from "cloudflare:workers";
+import { createNativeContext${entry ? "" : ", TokamakEntrypoint as Worker"} } from ${JSON.stringify(sdk)};
+${entry ? `import Worker from ${JSON.stringify(normalizePath(entry))};` : ""}
+`;
   const operations = methods.map((method) =>
     `async [${JSON.stringify(method)}](...args) { return this.#worker[${JSON.stringify(method)}](...args); }`);
-  return `${base}import Worker from ${JSON.stringify(normalizePath(entry))};
+  return `${base}
 export default class extends WorkerEntrypoint {
-  #worker = new Worker(this.ctx, this.env);
+  #worker = new Worker(createNativeContext(this.ctx), this.env);
   fetch(request) {
     if (typeof this.#worker.fetch !== "function") throw new TypeError("The Tokamak worker has no fetch handler");
     return this.#worker.fetch(request);

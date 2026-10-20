@@ -1,4 +1,5 @@
 import { dispatch as dispatchEvent, type Dispatched } from "./registry.js";
+import { createNativeContext } from "./context.js";
 
 /** A native transport that records the page's messages and replies as the native bridges do. */
 export class FakeNativeTransport {
@@ -48,7 +49,7 @@ export async function dispatch(
   name: string,
   event: unknown,
   env: unknown = {},
-  ctx: unknown = { waitUntil: () => undefined },
+  ctx: unknown = createNativeContext({ waitUntil: () => undefined }),
 ): Promise<Dispatched & { reported: unknown[] }> {
   const reported: unknown[] = [];
   const previous = Reflect.get(globalThis, "reportError") as unknown;

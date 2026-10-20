@@ -54,6 +54,10 @@ export function defineNativeCalls(port: number, token: string, waitUntil: (promi
       listening.abort();
     };
   };
+  Reflect.set(globalThis, Symbol.for("tokamak.native"), {
+    call: globalThis.__tokamakNativeCall,
+    listen: globalThis.__tokamakNativeListen,
+  });
 }
 
 /** Each line of `response`'s body, parsed as a result. */

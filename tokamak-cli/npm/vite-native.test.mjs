@@ -29,15 +29,22 @@ function project(t, cloudflareOptions = {}) {
     }
   };`);
   const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
+  const sdk = fileURLToPath(import.meta.resolve("@tokamakdev/tok"));
+  const context = fileURLToPath(import.meta.resolve("@tokamakdev/plugin/worker"));
   fs.writeFileSync(path.join(root, "src/listeners.ts"), `import { onStart } from ${JSON.stringify(events)};
-    onStart((event, env) => ({ label: env.LABEL, foreground: event.foreground, revision: "first" }));`);
-  fs.writeFileSync(path.join(root, "src/tokamak.ts"), `import { WorkerEntrypoint } from "cloudflare:workers";
+    import { nativeConnection } from ${JSON.stringify(context)};
+    onStart(async (event, env, ctx) => ({
+      label: env.LABEL, foreground: event.foreground, revision: "first",
+      stage: await ctx[nativeConnection].call("tokamak", "lifecycleStage"),
+    }));`);
+  fs.writeFileSync(path.join(root, "src/tokamak.ts"), `import { TokamakEntrypoint, type TokamakEvent } from ${JSON.stringify(sdk)};
+    import { nativeConnection } from ${JSON.stringify(context)};
     import "./listeners";
     globalThis.nativeLoaded = true;
-    export default class Native extends WorkerEntrypoint {
+    export default class Native extends TokamakEntrypoint {
       async describe(): Promise<{ label: string; stage: string }> {
-        const stage = await globalThis.__tokamakNativeCall("tokamak", "lifecycleStage");
-        return { label: this.env.LABEL, stage };
+        const stage = await this.ctx[nativeConnection].call("tokamak", "lifecycleStage");
+        return { label: this.env.LABEL, stage: stage as string };
       }
     }`);
   const output = path.join(root, ".tokamak/vite");
@@ -132,15 +139,15 @@ test("development routes device calls and reloaded events through the native wor
       pending.delete(message.id);
     }
   });
-  const event = async () => {
+  const event = async (name = "start") => {
     const result = new Promise(resolve => pending.set(100, resolve));
-    socket.send(JSON.stringify({ type: "event", id: 100, name: "start", event: { foreground: false } }));
+    socket.send(JSON.stringify({ type: "event", id: 100, name, event: { foreground: false } }));
     return result;
   };
   assert.deepEqual(await (await fetch(report.url + "isolation")).json(), { bridge: "undefined", loaded: false });
   assert.deepEqual(await (await fetch(report.url)).json(), { label: "configured", stage: "background" });
   assert.deepEqual(calls, ["tokamak.lifecycleStage"]);
-  assert.deepEqual((await event()).reply, { label: "configured", foreground: false, revision: "first" });
+  assert.deepEqual((await event()).reply, { label: "configured", foreground: false, revision: "first", stage: "background" });
   const listeners = path.join(root, "src/listeners.ts");
   fs.writeFileSync(listeners, fs.readFileSync(listeners, "utf8").replace('"first"', '"second"'));
   let updated;
@@ -149,5 +156,19 @@ test("development routes device calls and reloaded events through the native wor
     if (updated.reply?.revision === "second") break;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  assert.deepEqual(updated.reply, { label: "configured", foreground: false, revision: "second" });
+  assert.deepEqual(updated.reply, { label: "configured", foreground: false, revision: "second", stage: "background" });
+  const entry = path.join(root, "src/tokamak.ts");
+  fs.writeFileSync(entry, fs.readFileSync(entry, "utf8").replace(
+    "async describe()",
+    `async event(event: TokamakEvent) {
+      return { type: event.type, data: event.data, stage: await this.ctx[nativeConnection].call("tokamak", "lifecycleStage") };
+    }
+    async describe()`,
+  ));
+  for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
+    updated = await event("plugin.background");
+    if (updated.reply?.type === "plugin.background") break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.deepEqual(updated.reply, { type: "plugin.background", data: { foreground: false }, stage: "background" });
 });
