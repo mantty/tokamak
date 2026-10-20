@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 import { createBuilder, createServer } from "vite";
@@ -73,6 +74,23 @@ test("a plugin callback signature is rejected before building its service", asyn
     }
   `);
   await assert.rejects(async () => (await createBuilder(config)).buildApp(), /onChange.callback/);
+});
+
+test("plugin methods that pass native references stay in the Tokamak worker", async t => {
+  const sdk = JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/plugin")));
+  const { root, graph } = project(t, `
+    import type { NativeReference } from ${sdk};
+    export function widgets(ctx: TokamakContext) {
+      return {
+        echo(value: string): string { return value; },
+        capture(): Promise<NativeReference> { throw new Error("native"); },
+        encode(frames: { frame: NativeReference }[]): Promise<number> { throw new Error("native"); },
+      };
+    }
+  `);
+  await graph.types.resolve(async id => ({ id }));
+  assert.deepEqual(graph.types.plugins[0].methods, ["echo"]);
+  assert.doesNotMatch(fs.readFileSync(path.join(root, "tokamak-env.d.ts"), "utf8"), /capture|encode/);
 });
 
 test("a plugin factory requires the receiving native invocation context", async t => {

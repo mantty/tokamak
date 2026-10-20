@@ -5,10 +5,23 @@ import WebKit
 final class TokamakCorePlugin: TokamakPlugin {
   let id = "tokamak"
   private let host: TokamakHost
+  private let queue = DispatchQueue(label: "tokamak.core")
 
   init(host: TokamakHost) { self.host = host }
 
+  /// WebView operations run on the main thread, which WebKit requires.
+  func executor(for method: String) -> DispatchQueue {
+    method.hasPrefix("webview.") ? .main : queue
+  }
+
   func call(method: String, arguments: Any, reply: @escaping TokamakPluginReply) -> (() -> Void)? {
+    if method == "resource.read" {
+      reply(
+        Result { () throws(TokamakPluginError) -> Any? in
+          try host.resources.get(arguments, as: Data.self)
+        })
+      return nil
+    }
     guard let view = host.webView, let page = view.url else {
       reply(.failure(.init(name: "InvalidStateError", message: "No page is loaded")))
       return nil

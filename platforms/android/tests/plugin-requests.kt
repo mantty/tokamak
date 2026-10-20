@@ -66,5 +66,21 @@ fun main() {
         check(serial.awaitTermination(2, TimeUnit.SECONDS))
         check(cleanups == 1)
     }
-    println("Passed off-main calls, replies, terminal streams, and cancellation before hook installation")
+    testResources()
+    println("Passed off-main calls, replies, terminal streams, cancellation before hook installation, and resources")
 }
+
+/** A retained object is shared as itself until its release. */
+fun testResources() {
+    val resources = TokamakResources()
+    val frame = byteArrayOf(0, -1, 7)
+    var id: Any? = null
+    val release = resources.retain(frame) { id = it.getOrThrow() }
+    check(resources.get(id, ByteArray::class.java) === frame)
+    check(failure { resources.get(id, String::class.java) } == "TypeError")
+    release()
+    check(failure { resources.get(id, ByteArray::class.java) } == "InvalidStateError")
+}
+
+fun failure(operation: () -> Unit): String? =
+    runCatching(operation).exceptionOrNull()?.let { (it as TokamakPluginError).errorName }

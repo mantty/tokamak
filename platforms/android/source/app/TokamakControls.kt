@@ -1,14 +1,25 @@
 package com.tokamak.runtime
 
-import java.net.URI
 import android.net.Uri
+import java.net.URI
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import org.json.JSONObject
 
 /** Core device operations use the same endpoint and ownership as plugins. */
 internal class TokamakCorePlugin(private val app: TokamakApplication) : TokamakPlugin {
     override val id = "tokamak"
+    private val executor = Executors.newSingleThreadExecutor()
+
+    /** WebView operations run on the main thread, which WebView requires. */
+    override fun executor(method: String): Executor =
+        if (method.startsWith("webview.")) super.executor(method) else executor
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
+        if (method == "resource.read") {
+            reply(Result.success(app.resources.get(arguments, ByteArray::class.java)))
+            return null
+        }
         val view = (app.activity as? TokamakActivity)?.webView
         val page = view?.url?.let(::URI)
         if (view == null || page == null) {

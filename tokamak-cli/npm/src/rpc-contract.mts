@@ -12,20 +12,27 @@ const errors = new Set(["Error", "DOMException", "AggregateError", "EvalError", 
 interface Traversal {
   seen: Set<ts.Type>;
   depth: number;
+  workerOnly?: ts.Symbol;
 }
 
-/** Validates every overload before generating a remote method. */
-export function checkRpcMethod(checker: ts.TypeChecker, method: ts.Type, name: string): void {
+/** A method that passes a value only the Tokamak worker can hold. */
+export class WorkerOnlyMethod extends Error {}
+
+/**
+ * Validates every overload before generating a remote method. A signature containing the
+ * `workerOnly` type throws `WorkerOnlyMethod`.
+ */
+export function checkRpcMethod(checker: ts.TypeChecker, method: ts.Type, name: string, workerOnly?: ts.Symbol): void {
   const signatures = method.getCallSignatures();
   if (!signatures.length) reject(checker, method, name, "expected a callable method");
-  for (const signature of signatures) checkSignature(checker, signature, name);
+  for (const signature of signatures) checkSignature(checker, signature, name, workerOnly);
 }
 
-function checkSignature(checker: ts.TypeChecker, signature: ts.Signature, name: string): void {
+function checkSignature(checker: ts.TypeChecker, signature: ts.Signature, name: string, workerOnly?: ts.Symbol): void {
   if (signature.typeParameters?.length) {
     throw new Error(`Unsupported RPC signature at ${name}: generic methods need a concrete service signature.`);
   }
-  const traversal: Traversal = { seen: new Set(), depth: 0 };
+  const traversal: Traversal = { seen: new Set(), depth: 0, workerOnly };
   for (const parameter of signature.parameters) {
     checkValue(checker, checker.getTypeOfSymbol(parameter), `${name}.${parameter.name}`, traversal);
   }
@@ -83,6 +90,9 @@ function checkObject(checker: ts.TypeChecker, type: ts.Type, path: string, trave
     return;
   }
   if (!(type.flags & ts.TypeFlags.Object)) reject(checker, type, path);
+  if (traversal.workerOnly && type.getSymbol() === traversal.workerOnly) {
+    throw new WorkerOnlyMethod(`${path} is ${checker.typeToString(type)}, which stays in the Tokamak worker.`);
+  }
   if (type.getCallSignatures().length || type.getConstructSignatures().length) reject(checker, type, path);
   const name = builtin(checker, type);
   if (name === "Date" || name === "RegExp" || name === "ArrayBuffer") return;

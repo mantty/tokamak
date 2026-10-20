@@ -38,7 +38,9 @@ struct TokamakPluginResult {
   }
 }
 
+/// `value` as a payload: `Data` as it is, and any other value as JSON.
 private func encodePluginValue(_ value: Any?) -> Result<Data, TokamakPluginError> {
+  if let data = value as? Data { return .success(data) }
   do {
     return .success(
       try JSONSerialization.data(
@@ -65,6 +67,9 @@ final class TokamakHost {
   }
 
   var webView: WKWebView? { app.webView }
+
+  /// The native objects plugins share with each other by ID.
+  var resources: TokamakResources { app.resources }
 
   /// Throws `NeedsUIError` unless the app can show UI now: on iOS, while it
   /// is in the foreground. A hidden or minimised macOS app still shows system

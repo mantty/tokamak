@@ -19,6 +19,7 @@ private let lifecycleDeadline: TimeInterval = 10
 /// event can run while no page is loaded.
 final class TokamakApp {
   weak var webView: WKWebView?
+  let resources = TokamakResources()
   /// Every plugin, by ID.
   private(set) var plugins: [String: any TokamakPlugin] = [:]
   private let runtimeLock = NSLock()

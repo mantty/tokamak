@@ -41,6 +41,8 @@ class TokamakApplication : Application(), TokamakPlugins {
 
     internal val permissionRequests = TokamakPermissions(this)
 
+    internal val resources = TokamakResources()
+
     private val started = lazy(::startRuntime)
 
     /** The running runtime, started on first use. Blocks while it starts. */
@@ -94,6 +96,9 @@ class TokamakApplication : Application(), TokamakPlugins {
 
             override val isInForeground: Boolean
                 get() = this@TokamakApplication.isInForeground
+
+            override val resources: TokamakResources
+                get() = this@TokamakApplication.resources
 
             override fun requireForegroundActivity(): Activity =
                 this@TokamakApplication.requireForegroundActivity()

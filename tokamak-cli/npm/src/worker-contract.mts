@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
-import { checkRpcMethod } from "./rpc-contract.mjs";
+import { checkRpcMethod, WorkerOnlyMethod } from "./rpc-contract.mjs";
 import { serviceTypes, type ServiceMethod } from "./service-types.mjs";
 import type { PluginDefinition } from "./plugin-manifest.mjs";
 
@@ -120,6 +120,7 @@ function pluginContract(module: ReturnType<typeof workerModule>, definition: Plu
   if (!apiObject(checker, api)) {
     throw new Error(`Plugin ${definition.id} factory must return a synchronous object with declared methods.`);
   }
+  const reference = nativeSdkExport(program, checker, module.entry, "NativeReference", "@tokamakdev/plugin");
   const methods: ServiceMethod[] = [];
   for (const property of api.getProperties()) {
     if (privateProperty(property)) continue;
@@ -132,7 +133,13 @@ function pluginContract(module: ReturnType<typeof workerModule>, definition: Plu
     if (!method.getCallSignatures().length || String(property.escapedName).startsWith("__@")) {
       throw new Error(`Plugin ${definition.id}.${property.name} must be a method.`);
     }
-    if (validate) checkRpcMethod(checker, method, `${definition.id}.${property.name}`);
+    try {
+      checkRpcMethod(checker, method, `${definition.id}.${property.name}`, reference);
+    } catch (error) {
+      // Methods that pass native references are available only in the Tokamak worker.
+      if (error instanceof WorkerOnlyMethod) continue;
+      if (validate) throw error;
+    }
     methods.push(methodDeclaration(checker, property, method));
   }
   methods.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
@@ -247,11 +254,12 @@ function applicationPrototypes(program: ts.Program, checker: ts.TypeChecker, ins
   return undefined;
 }
 
-function nativeSdkExport(program: ts.Program, checker: ts.TypeChecker, entry: string, name: string): ts.Symbol | undefined {
+/** The symbol `name` exported by the core SDK module `specifier`, which `@tokamakdev/tok` uses for `entry`. */
+function nativeSdkExport(program: ts.Program, checker: ts.TypeChecker, entry: string, name: string, specifier = "@tokamakdev/plugin/worker"): ts.Symbol | undefined {
   const options = program.getCompilerOptions();
   const sdk = ts.resolveModuleName("@tokamakdev/tok", entry, options, ts.sys).resolvedModule?.resolvedFileName;
-  const core = ts.resolveModuleName("@tokamakdev/plugin/worker", sdk ?? fileURLToPath(import.meta.url), options, ts.sys).resolvedModule;
-  const source = core && program.getSourceFile(core.resolvedFileName);
+  const resolved = ts.resolveModuleName(specifier, sdk ?? fileURLToPath(import.meta.url), options, ts.sys).resolvedModule;
+  const source = resolved && program.getSourceFile(resolved.resolvedFileName);
   const module = source && checker.getSymbolAtLocation(source);
   const exported = module && checker.getExportsOfModule(module).find(symbol => symbol.name === name);
   return exported && (exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported);

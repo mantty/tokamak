@@ -63,9 +63,32 @@ values; `callBytes` carries raw bytes; `stream` returns encoded values consumed
 with `decodeValues` from `@tokamakdev/plugin/streams`.
 
 Swift `TokamakPlugin.call` and Kotlin `TokamakPlugin.call` receive decoded JSON
-and return ordinary values through their reply callback. Override `callBytes`
-or `subscribeBytes` when your capability needs its own binary format. Routing,
-failure and completion travel separately from payload bytes.
+and return ordinary values through their reply callback. A reply of Swift `Data`
+or Kotlin `ByteArray` is sent as raw bytes, which TypeScript reads with
+`callBytes`. Override `callBytes` or `subscribeBytes` when your capability needs
+its own binary argument format. Routing, failure and completion travel
+separately from payload bytes.
+
+Large native data stays native. A subscription retains an object with
+`host.resources.retain(object, reply:)` and returns the release it gives back.
+TypeScript acquires it with the protected `resource(method)`, which resolves to
+a `NativeReference` owned by the invocation. Pass it to another plugin with
+`reference(value)` inside the call's arguments; that plugin's native code finds
+the same object with `host.resources.get(id, as:)` on Apple or
+`host.resources.get(id, Type::class.java)` on Android. `close()`, the end of the
+invocation, or garbage collection releases it. `bytes()` copies the current
+contents of a retained `Data` or `ByteArray` into JavaScript.
+
+```ts
+class Camera extends Plugin {
+  capture(): Promise<NativeReference> { return this.resource("capture"); }
+}
+class Encoder extends Plugin {
+  encode(frame: NativeReference): Promise<number> {
+    return this.call("encode", { frame: this.reference(frame) });
+  }
+}
+```
 
 Native plugins select a serial executor per operation with `executor(for:)`
 on Apple or `executor(method)` on Android. The default is the UI thread; use a

@@ -127,7 +127,61 @@ enum PluginRequestsTests {
     queued.release.signal()
     queued.queue.sync {}
     precondition(queued.calls == 0)
-    print("Passed native bytes, codecs, completion, cancellation, isolation, and late-reply tests")
+    testResources(app)
+    print(
+      "Passed native bytes, codecs, completion, cancellation, isolation, late-reply and resource tests"
+    )
+  }
+
+  /// A retained object reaches another plugin as itself, its bytes are read
+  /// off the main thread, and cancelling the retaining subscription releases it.
+  private static func testResources(_ app: TokamakApp) {
+    let producer = Producer(host: TokamakHost(app: app, plugin: "producer"))
+    let consumer = Consumer(host: TokamakHost(app: app, plugin: "consumer"))
+    let lock = NSLock()
+    var results: [Int: TokamakPluginResult] = [:]
+    let replied = DispatchSemaphore(value: 0)
+    let requests = TokamakPluginRequests<Int>(plugins: [
+      "producer": producer, "consumer": consumer,
+      "tokamak": TokamakCorePlugin(host: TokamakHost(app: app, plugin: "tokamak")),
+    ]) { key, result in
+      if key == 3 { precondition(!Thread.isMainThread, "Reading bytes waited for the UI thread") }
+      lock.withLock { results[key] = result }
+      replied.signal()
+    }
+    func request(
+      _ key: Int, _ plugin: String, _ method: String, _ payload: String, subscribe: Bool = false
+    )
+      -> TokamakPluginResult
+    {
+      requests.run(
+        key, subscribe: subscribe, plugin: plugin, method: method, payload: Data(payload.utf8))
+      while lock.withLock({ results[key] }) == nil {
+        drain()
+        _ = replied.wait(timeout: .now() + 0.01)
+      }
+      return lock.withLock { results.removeValue(forKey: key)! }
+    }
+
+    let retained = request(1, "producer", "frame", "null", subscribe: true)
+    precondition(!retained.failed && !retained.done)
+    let id = String(decoding: retained.payload, as: UTF8.self)
+    let encoded = request(2, "consumer", "encode", "{\"frame\":\(id)}")
+    precondition(String(decoding: encoded.payload, as: UTF8.self) == "3")
+    precondition(consumer.received === producer.frame, "The consumer received a copy")
+    let bytes = request(3, "tokamak", "resource.read", id)
+    precondition(!bytes.failed && bytes.payload == Data([0, 255, 7]))
+    let object = request(4, "producer", "object", "null", subscribe: true)
+    let wrongType = request(
+      5, "tokamak", "resource.read", String(decoding: object.payload, as: UTF8.self))
+    precondition(
+      wrongType.failed && String(decoding: wrongType.payload, as: UTF8.self).contains("TypeError"))
+    requests.cancel(1)
+    drain()
+    let released = request(6, "consumer", "encode", "{\"frame\":\(id)}")
+    precondition(
+      released.failed
+        && String(decoding: released.payload, as: UTF8.self).contains("InvalidStateError"))
   }
 
   private static func drain() {
@@ -197,6 +251,7 @@ private final class TestPlugin: TokamakPlugin {
 // The request dispatcher does not use the app's runtime or background-event facilities.
 final class TokamakApp {
   weak var webView: WKWebView?
+  let resources = TokamakResources()
   var isInForeground = true
   func emit(
     _ name: String, event: Any, timeout: TimeInterval,
@@ -223,6 +278,34 @@ private final class BinaryPlugin: TokamakPlugin {
     () -> Void
   )? {
     reply(TokamakPluginResult(.success(payload), done: true))
+    return nil
+  }
+}
+
+private final class Producer: TokamakPlugin {
+  let id = "producer"
+  let frame = NSData(bytes: [0, 255, 7] as [UInt8], length: 3)
+  private let host: TokamakHost
+  init(host: TokamakHost) { self.host = host }
+  func subscribe(method: String, arguments: Any, reply: @escaping TokamakPluginReply)
+    throws(TokamakPluginError) -> (() -> Void)
+  {
+    host.resources.retain(method == "frame" ? frame : NSObject(), reply: reply)
+  }
+}
+
+private final class Consumer: TokamakPlugin {
+  let id = "consumer"
+  private(set) var received: NSData?
+  private let host: TokamakHost
+  init(host: TokamakHost) { self.host = host }
+  func call(method: String, arguments: Any, reply: @escaping TokamakPluginReply) -> (() -> Void)? {
+    reply(
+      Result { () throws(TokamakPluginError) -> Any? in
+        let frame = (arguments as? [String: Any])?["frame"] as Any
+        received = try host.resources.get(frame, as: NSData.self)
+        return received?.length
+      })
     return nil
   }
 }

@@ -43,7 +43,9 @@ data class TokamakPluginResult(val payload: ByteArray, val failed: Boolean, val 
     }
 }
 
+/** [value] as a payload: a [ByteArray] as it is, and any other value as JSON. */
 private fun encodePluginValue(value: Any?): ByteArray {
+    if (value is ByteArray) return value
     val wrapped = JSONObject.wrap(value)
     if (value != null && wrapped == null) throw TokamakPluginError("DataCloneError", "The plugin value cannot be encoded as JSON")
     val json = when (wrapped) {
@@ -109,6 +111,9 @@ interface TokamakHost {
 
     /** Whether the app is in the foreground, where it can show UI. Read it on the main thread. */
     val isInForeground: Boolean
+
+    /** The native objects plugins share with each other by ID. */
+    val resources: TokamakResources
 
     /**
      * The activity to show UI in. Throws `NeedsUIError` while the app is in the background, where

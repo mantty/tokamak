@@ -73,7 +73,7 @@ jobs:
       - name: Test native plugin requests
         run: |
           android_jar="$(ls "$ANDROID_HOME"/platforms/android-*/android.jar | sort -V | tail -1)"
-          kotlinc -classpath "$android_jar" platforms/android/source/plugin/TokamakPlugin.kt platforms/android/source/app/TokamakPluginRequests.kt platforms/android/tests/plugin-requests.kt -include-runtime -d "$RUNNER_TEMP/plugin-requests.jar"
+          kotlinc -classpath "$android_jar" platforms/android/source/plugin/TokamakPlugin.kt platforms/android/source/plugin/TokamakResources.kt platforms/android/source/app/TokamakPluginRequests.kt platforms/android/tests/plugin-requests.kt -include-runtime -d "$RUNNER_TEMP/plugin-requests.jar"
           java -cp "$RUNNER_TEMP/plugin-requests.jar:$android_jar" com.tokamak.runtime.Plugin_requestsKt
 
       - name: Install plugin dependencies
@@ -150,7 +150,7 @@ jobs:
 
       - name: Test native plugin requests
         run: |
-          xcrun swiftc -parse-as-library platforms/apple/source/TokamakPlugins.swift platforms/apple/source/TokamakOrigin.swift platforms/apple/tests/plugin-requests.swift -o "$RUNNER_TEMP/plugin-requests"
+          xcrun swiftc -parse-as-library platforms/apple/source/TokamakPlugins.swift platforms/apple/source/TokamakOrigin.swift platforms/apple/source/TokamakResources.swift platforms/apple/source/TokamakControls.swift platforms/apple/tests/plugin-requests.swift -o "$RUNNER_TEMP/plugin-requests"
           "$RUNNER_TEMP/plugin-requests"
 
       - name: Lint Apple Rust
