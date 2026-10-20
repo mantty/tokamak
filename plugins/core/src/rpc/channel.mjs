@@ -67,7 +67,7 @@ export function openChannel(socket) {
   async function transmit(frame) {
     await ready.promise;
     if (ended) throw failure;
-    try { socket.send(frame); }
+    try { await socket.send(frame); }
     catch (error) { close(error); throw error; }
   }
 
@@ -190,7 +190,7 @@ export function openChannel(socket) {
   }
 
   function onOpen() { ready.resolve(); }
-  function onClose() { close(); }
+  function onClose(event) { close(event.error); }
   socket.addEventListener('open', onOpen);
   socket.addEventListener('message', onMessage);
   socket.addEventListener('close', onClose);
