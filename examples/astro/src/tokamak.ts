@@ -1,3 +1,4 @@
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { location } from "@tokamakdev/plugin-location";
 import {
   onLocationError,
@@ -12,6 +13,8 @@ import {
   onPush,
 } from "@tokamakdev/plugin-notifications/events";
 import { getLifecycleStage, onResume, onStart, onSuspend } from "@tokamakdev/tok/events";
+
+export default class Native extends WorkerEntrypoint<Cloudflare.Env> {}
 
 /** Records an event in the EVENTS store, which the Events page lists. */
 function record(env: Cloudflare.Env, entry: string): Promise<void> {

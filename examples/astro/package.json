@@ -2,8 +2,8 @@
   "name": "tokamak-example-astro",
   "type": "module",
   "scripts": {
-    "dev": "astro dev",
-    "build": "astro build",
+    "dev": "wrangler types && astro dev",
+    "build": "wrangler types && astro build",
     "preview": "astro preview",
     "tokamak:android": "cargo run --release -p tokamak-cli -- build android",
     "tokamak:macos": "cargo run --release -p tokamak-cli -- build macos",
@@ -21,6 +21,9 @@
     "@tokamakdev/tok": "file:../../tokamak-cli/npm",
     "astro": "6.1.5",
     "tailwindcss": "^4.2.2"
+  },
+  "devDependencies": {
+    "wrangler": "4.126.0"
   },
   "pnpm": {
     "overrides": {

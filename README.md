@@ -96,23 +96,27 @@ RedwoodSDK, Vike, Next.js through vinext, React and Vue apps, and plain
 Workers, including Hono, with a `vite.config.ts`. SvelteKit, Nuxt, Analog,
 Solid (Nitro), Qwik, Angular and Next.js through OpenNext are not supported.
 
-Add tokamak's Vite plugin next to Cloudflare's. Its options are the app's
+Use tokamak's Vite integration. Its options are the app's
 [configuration](#configuration):
 
 ```ts
 // vite.config.ts
-import { cloudflare } from "@cloudflare/vite-plugin";
 import { tokamak } from "@tokamakdev/tok/vite";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  plugins: [cloudflare(), tokamak({ name: "My App", version: "1.0.0" })],
+  plugins: [tokamak({ name: "My App", version: "1.0.0" })],
 });
 ```
 
-In Astro, add `tokamak()` to `vite.plugins` in `astro.config.mjs`. The plugin
-does nothing unless `tok` runs the build or development command, so builds for
-Cloudflare and the web are unchanged.
+The integration includes Cloudflare's Vite plugin. Pass its options as the
+second argument to `tokamak()`.
+
+In Astro, use `tokamak()` from `@tokamakdev/tok/astro` as the `adapter` in
+`astro.config.mjs`. Its second argument accepts the Cloudflare adapter's
+options. Web builds use the ordinary Cloudflare integration. When `tok` runs
+the build or development command, `src/tokamak.ts` becomes a separate native
+worker.
 
 `tok build` runs the project's build command with the plugin active: the
 command given with `--build` or `TOKAMAK_BUILD`, or else the `package.json`
@@ -355,13 +359,14 @@ const base: Config = { identifier: "com.example.myapp", version: "1.0.0" };
 tokamak({ ...base, name: process.env.APP_NAME ?? "My App" });
 ```
 
-In tokamak builds and development the entry Worker imports `module`, a path
-relative to the Vite root, for code that runs only on the device, such as
-[event](#events) listeners. It defaults to `src/tokamak.ts`, then
+In tokamak builds and development, `module` names the separate native worker
+entrypoint relative to the Vite root. It owns device calls and
+[event](#events) listeners, and defaults to `src/tokamak.ts`, then
 `src/tokamak.js`, when one exists; a `module` that does not exist fails the
-build. Its top-level code runs whenever the Worker is evaluated, including
-during Astro's prerendering at build time, so keep it cheap and safe to run
-there. Builds for Cloudflare and the web do not include it.
+build. Default-export a `WorkerEntrypoint` subclass from this module and run
+`wrangler types` to generate the project's Workers declarations. Keep its
+top-level code cheap and safe: build tooling evaluates Worker exports too.
+Builds for Cloudflare and the web do not include it.
 
 Every value is optional. Names retain their spelling and capitalization for
 display. Tokamak derives a lower-case ASCII slug for bundle filenames,
@@ -618,8 +623,11 @@ level of `src/tokamak.ts` or the modules it imports:
 
 ```ts
 // src/tokamak.ts
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { onResume, onStart, onSuspend } from "@tokamakdev/tok/events";
 import { onPush } from "@tokamakdev/plugin-notifications/events";
+
+export default class Native extends WorkerEntrypoint<Cloudflare.Env> {}
 
 onStart((event, env, ctx) => {
   ctx.waitUntil(env.DB.prepare("INSERT INTO launches (foreground) VALUES (?)").bind(event.foreground).run());

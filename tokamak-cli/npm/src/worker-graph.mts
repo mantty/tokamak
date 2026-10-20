@@ -1,76 +1,106 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { PluginConfig } from "@cloudflare/vite-plugin";
 import { normalizePath, type Plugin } from "vite";
 
 import { readWorkerContract, type WorkerContract } from "./worker-contract.mjs";
 
-/** Generated worker configuration and the Vite hook that refreshes its contract. */
+type MainCustomizer = Extract<NonNullable<PluginConfig["config"]>, (...args: never[]) => unknown>;
+type ServiceConfiguration = Pick<Parameters<MainCustomizer>[0], "name" | "topLevelName" | "services">;
+type Auxiliary = NonNullable<PluginConfig["auxiliaryWorkers"]>[number];
+type AuxiliaryCustomizer = Extract<Extract<Auxiliary, { config: unknown }>["config"], (...args: never[]) => unknown>;
 export interface WorkerGraph {
-  cloudflare: PluginConfig;
-  plugin: Plugin;
+  generated: string;
+  configure(config: ServiceConfiguration): void;
+  native: AuxiliaryCustomizer;
+  names(): { main: string; native: string; app: string };
   contract(): WorkerContract;
+  cloudflare: PluginConfig;
+  plugin: Plugin & {
+    buildStart: Extract<Plugin["buildStart"], (...args: never[]) => unknown>;
+    hotUpdate: Extract<Plugin["hotUpdate"], (...args: never[]) => unknown>;
+  };
 }
 
 /** Configure the two bundles through Cloudflare's public auxiliary-worker API. */
-export function createWorkerGraph(root: string, entry: string, output: string): WorkerGraph {
+export function createWorkerGraph(root: string, entry: string | undefined, output: string): WorkerGraph {
   const generated = path.join(output, "worker.mjs");
+  const events = normalizePath(fileURLToPath(new URL("./entrypoint.js", import.meta.resolve("@tokamakdev/plugin/events"))));
   let contract: WorkerContract;
   let mainName: string;
   let nativeName: string;
+  let appName: string;
   function refresh(): void {
-    contract = readWorkerContract(entry, root);
-    writeChanged(generated, `export { default } from ${JSON.stringify(normalizePath(entry))};\n`);
+    contract = entry ? readWorkerContract(entry, root) : { methods: [], files: [] };
+    const source = entry
+      ? `export { default } from ${JSON.stringify(normalizePath(entry))};\n`
+      : `import { WorkerEntrypoint } from "cloudflare:workers";\nexport default class extends WorkerEntrypoint {}\n`;
+    writeChanged(generated, `${source}export { TokamakEvents } from ${JSON.stringify(events)};\n`);
     writeChanged(path.join(output, "methods.json"), `${JSON.stringify(contract.methods)}\n`);
   }
+  const configure = (config: ServiceConfiguration): void => {
+    if (!config.name) throw new Error("Tokamak requires a name in the main Worker's configuration.");
+    if (config.services?.some((binding) => binding.binding === "TOKAMAK")) {
+      throw new Error("TOKAMAK is reserved for the generated native worker binding.");
+    }
+    mainName = config.name;
+    nativeName = workerName(mainName);
+    appName = config.topLevelName ?? mainName;
+    config.services = [...config.services ?? [], { binding: "TOKAMAK", service: nativeName }];
+  };
+  const native: AuxiliaryCustomizer = (_config, { entryWorkerConfig }) => {
+    if (!mainName) throw new Error("The main Worker must be configured before the Tokamak worker.");
+    const { configPath, userConfigPath, compatibility_date, compatibility_flags, vars, kv_namespaces, d1_databases, r2_buckets } = entryWorkerConfig;
+    return {
+      configPath,
+      userConfigPath,
+      name: nativeName,
+      main: generated,
+      compatibility_date,
+      compatibility_flags,
+      vars,
+      kv_namespaces,
+      d1_databases,
+      r2_buckets,
+      services: [{ binding: "MAIN", service: mainName }],
+    };
+  };
   refresh();
   return {
+    generated: normalizePath(generated),
+    configure,
+    native,
+    names: () => ({ main: mainName, native: nativeName, app: appName }),
     contract: () => contract,
     cloudflare: {
-      config(config) {
-        if (!config.name) throw new Error("Tokamak requires a name in the main Worker's configuration.");
-        if (config.services?.some((binding) => binding.binding === "TOKAMAK")) {
-          throw new Error("TOKAMAK is reserved for the generated native worker binding.");
-        }
-        mainName = config.name;
-        nativeName = workerName(mainName);
-        config.services = [...config.services ?? [], { binding: "TOKAMAK", service: nativeName }];
-      },
+      config: configure,
       auxiliaryWorkers: [{
         viteEnvironment: { name: "tokamak" },
-        config(_config, { entryWorkerConfig }) {
-          if (!mainName) throw new Error("The main Worker must be configured before the Tokamak worker.");
-          const { compatibility_date, compatibility_flags, vars, kv_namespaces, d1_databases, r2_buckets } = entryWorkerConfig;
-          return {
-            name: nativeName,
-            main: generated,
-            compatibility_date,
-            compatibility_flags,
-            vars,
-            kv_namespaces,
-            d1_databases,
-            r2_buckets,
-            services: [{ binding: "MAIN", service: mainName }],
-          };
-        },
+        config: native,
       }],
     },
     plugin: {
       name: "tokamak:worker-graph",
       buildStart() {
+        if (this.environment.name !== "tokamak") return;
         refresh();
         for (const file of contract.files) this.addWatchFile(file);
       },
-      hotUpdate() {
-        if (this.environment.name === "tokamak") refresh();
+      hotUpdate({ file, modules }) {
+        if (this.environment.name !== "tokamak" || (!modules.length && !contract.files.includes(file))) return;
+        refresh();
+        this.environment.moduleGraph.invalidateAll();
+        this.environment.hot.send({ type: "full-reload" });
+        return [];
       },
-    },
+    } satisfies Plugin,
   };
 }
 
-function workerName(main: string): string {
+export function workerName(main: string): string {
   const name = `${main}-tokamak`;
   if (name.length <= 63) return name;
   return `${main.slice(0, 46)}-${createHash("sha256").update(main).digest("hex").slice(0, 8)}-tokamak`;
