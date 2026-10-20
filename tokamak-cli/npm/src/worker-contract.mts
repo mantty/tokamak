@@ -42,18 +42,38 @@ export function readServiceContracts(entry: string, root: string): Record<string
 /** Analyze both entrypoints in one TypeScript program. */
 export function readWorkerContracts(entry: string | undefined, main: string | undefined, root: string, validate: boolean, plugins: PluginDefinition[] = []): {
   native: WorkerContract;
+  named: Record<string, WorkerContract>;
   main: Record<string, WorkerContract>;
   plugins: PluginContract[];
 } {
   const entries = [entry, main, ...plugins.flatMap(plugin => [plugin.api.module, plugin.web?.module])]
     .filter((file): file is string => !!file);
   const project = entries.length ? workerProgram(entries, root) : undefined;
+  const native = entry && project ? workerModule(entry, project) : undefined;
   return {
-    native: entry && project ? classContract(workerModule(entry, project), "default", true, validate)
+    native: native ? classContract(native, "default", true, validate)
       : { methods: [], files: [], declarations: serviceTypes("{}", []) },
+    named: native ? namedContracts(native, validate) : {},
     main: main && project ? serviceContracts(workerModule(main, project), validate) : {},
     plugins: project ? plugins.map(plugin => pluginContract(workerModule(plugin.api.module, project), plugin, validate)) : [],
   };
+}
+
+/** The Tokamak worker's named entrypoints: its other exported concrete entrypoint classes. */
+function namedContracts(module: ReturnType<typeof workerModule>, validate: boolean): Record<string, WorkerContract> {
+  const contracts: Record<string, WorkerContract> = {};
+  for (const [name, type] of module.exports) {
+    const instance = type.getConstructSignatures()[0]?.getReturnType();
+    const abstract = instance?.symbol?.declarations?.some(node =>
+      ts.getModifiers(node as ts.ClassDeclaration)?.some(modifier => modifier.kind === ts.SyntaxKind.AbstractKeyword));
+    if (name === "default" || !instance || abstract ||
+      !applicationPrototypes(module.program, module.checker, instance, module.entry, true)) continue;
+    if (name === "TokamakEvents" || name.startsWith("TOKAMAK_")) {
+      throw new Error(`Tokamak entrypoint ${name} has a name the generated worker reserves.`);
+    }
+    contracts[name] = classContract(module, name, true, validate);
+  }
+  return contracts;
 }
 
 function serviceContracts(module: ReturnType<typeof workerModule>, validate: boolean): Record<string, WorkerContract> {
@@ -229,7 +249,8 @@ function classContract(module: ReturnType<typeof workerModule>, name: string, na
     (ts.isClassDeclaration(node) || ts.isClassExpression(node)) &&
     !ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.AbstractKeyword));
   if (!instance || !concrete || constructor?.typeParameters?.length) {
-    throw new Error(`Tokamak entrypoint ${entry} must default-export a concrete class.`);
+    throw new Error(name === "default" ? `Tokamak entrypoint ${entry} must default-export a concrete class.`
+      : `Tokamak entrypoint ${name} must be a concrete class.`);
   }
   const prototypes = applicationPrototypes(program, checker, instance, entry, native);
   if (!prototypes) {

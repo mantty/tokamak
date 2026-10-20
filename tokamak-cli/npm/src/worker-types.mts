@@ -10,9 +10,23 @@ type MainCustomizer = Extract<NonNullable<PluginConfig["config"]>, (...args: nev
 export type WorkerConfiguration = Parameters<MainCustomizer>[0];
 export type BindingConfiguration = Partial<Pick<WorkerConfiguration, "main" | "configPath" | "vars" | "kv_namespaces" | "d1_databases" | "r2_buckets">>;
 
+/** A generated binding to an entrypoint of the Tokamak worker, and the page client of its operations. */
+export interface NativeService {
+  binding: string;
+  /** The entrypoint's export name in the generated Tokamak worker. */
+  entrypoint: string;
+  client: string;
+  /** The frontend RPC route. */
+  route: string;
+  contract: WorkerContract;
+  plugin?: PluginContract;
+}
+
 /** Shared contracts for the two entrypoints and their generated callers. */
 export class WorkerTypes {
   native: WorkerContract = { methods: [], files: [], declarations: serviceTypes("{}", []) };
+  /** The Tokamak worker's named entrypoints. */
+  named: Record<string, WorkerContract> = {};
   main: Record<string, WorkerContract> = {};
   plugins: PluginContract[] = [];
   definitions: PluginDefinition[];
@@ -66,6 +80,27 @@ export class WorkerTypes {
     this.#read(false);
   }
 
+  /** Every generated binding to the Tokamak worker: the app's entrypoints, then the plugins'. */
+  services(): NativeService[] {
+    const services: NativeService[] = [
+      { binding: "TOKAMAK", entrypoint: "default", client: "virtual:tokamak/client", route: "/_tokamak/app", contract: this.native },
+      ...Object.entries(this.named).map(([name, contract]) => ({
+        binding: `TOKAMAK_${constantCase(name)}`, entrypoint: name, client: `virtual:tokamak/client/${name}`,
+        route: `/_tokamak/app/${name}`, contract,
+      })),
+      ...this.plugins.map(plugin => ({
+        binding: plugin.definition.binding, entrypoint: plugin.definition.binding, client: plugin.definition.client,
+        route: `/_tokamak/plugin/${plugin.definition.id}`, contract: plugin, plugin,
+      })),
+    ];
+    const bindings = new Set<string>();
+    for (const { binding, entrypoint } of services) {
+      if (bindings.has(binding)) throw new Error(`The generated binding ${binding} of entrypoint ${entrypoint} has the name of another.`);
+      bindings.add(binding);
+    }
+    return services;
+  }
+
   get metadata(): string[] {
     return [path.join(this.root, "package.json"), ...this.definitions.map(plugin => plugin.manifest)]
       .map(file => file.split(path.sep).join("/"));
@@ -77,8 +112,8 @@ export class WorkerTypes {
     this.#ready = false;
     this.discover();
     // Declare both APIs before checking signatures inferred from cross-worker calls.
-    writeEnvironmentTypes(this.root, this.native.declarations,
-      this.main.default?.declarations ?? serviceTypes("{}", [], "Main"), this.#bindings, this.plugins);
+    writeEnvironmentTypes(this.root, this.services(),
+      this.main.default?.declarations ?? serviceTypes("{}", [], "Main"), this.#bindings);
     this.#read(true);
     this.#ready = true;
     this.#change = change;
@@ -87,7 +122,13 @@ export class WorkerTypes {
   #read(validate: boolean): void {
     const contracts = readWorkerContracts(this.entry, this.mainModule, this.root, validate, this.definitions);
     this.native = contracts.native;
+    this.named = contracts.named;
     this.main = contracts.main;
     this.plugins = contracts.plugins;
   }
+}
+
+/** `name` in upper case with words joined by underscores: `DataSync` becomes `DATA_SYNC`. */
+function constantCase(name: string): string {
+  return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/([A-Z])([A-Z][a-z])/g, "$1_$2").toUpperCase();
 }

@@ -8,7 +8,6 @@ import { WorkerTypes, type BindingConfiguration } from "./worker-types.mjs";
 const MODULE = "virtual:tokamak/client";
 /** The Tokamak worker's page module of each plugin operation's support on the app's platform. */
 const CAPABILITIES = "/_tokamak/capabilities.js";
-const RESOLVED = `\0${MODULE}`;
 const TRANSPORT = normalizePath(fileURLToPath(new URL("./rpc/client.mjs", import.meta.resolve("@tokamakdev/plugin/events"))));
 
 /** The app's public methods, without its native implementation. */
@@ -16,6 +15,9 @@ export function createClientPlugin(module: string | undefined, native: boolean, 
   configure(config: BindingConfiguration): void;
 } {
   let root: string;
+  /** Whether `id` is a generated client: the app's, a named entrypoint's or a plugin's. */
+  const isClient = (id: string) => id === MODULE || id.startsWith(`${MODULE}/`) ||
+    contracts.definitions.some(plugin => plugin.client === id);
   let contracts: WorkerTypes;
   let files: string[] = [];
   const clients = new Set<string>();
@@ -34,27 +36,28 @@ export function createClientPlugin(module: string | undefined, native: boolean, 
     },
     resolveId(id) {
       if (id === CAPABILITIES) return { id, external: true };
-      if (id === MODULE) return RESOLVED;
-      if (contracts.definitions.some(plugin => plugin.client === id)) return `\0${id}`;
+      if (isClient(id)) return `\0${id}`;
     },
     async load(id) {
-      const definition = contracts.definitions.find(plugin => `\0${plugin.client}` === id);
-      if (id !== RESOLVED && !definition) return;
+      const name = id.slice(1);
+      if (!id.startsWith("\0") || !isClient(name)) return;
       await contracts.resolve(source => this.resolve(source, undefined, { skipSelf: true }));
-      const plugin = definition && contracts.plugins.find(plugin => plugin.definition.id === definition.id)!;
-      const contract = plugin ?? contracts.native;
+      const service = contracts.services().find(service => service.client === name);
+      if (!service) throw new Error(`${name} names no Tokamak worker entrypoint.`);
       clients.add(id);
       files = [...contracts.native.files, ...contracts.plugins.flatMap(plugin => plugin.files)]
         .filter(file => file !== normalizePath(path.join(root, "tokamak-env.d.ts")));
       for (const file of files) this.addWatchFile(file);
-      const methods = JSON.stringify(contract.methods);
-      if (native && definition) return `import { createClient } from ${JSON.stringify(TRANSPORT)};
+      const methods = JSON.stringify(service.contract.methods);
+      const route = JSON.stringify(service.route);
+      const plugin = service.plugin;
+      if (native && plugin) return `import { createClient } from ${JSON.stringify(TRANSPORT)};
 import capabilities from ${JSON.stringify(CAPABILITIES)};
-export default createClient(${methods}, ${JSON.stringify(`/_tokamak/plugin/${definition.id}`)}, capabilities[${JSON.stringify(definition.id)}]);`;
+export default createClient(${methods}, ${route}, capabilities[${JSON.stringify(plugin.definition.id)}]);`;
       // The app's own operations run wherever its Tokamak worker does.
       if (native) return `import { createClient } from ${JSON.stringify(TRANSPORT)};
-export default createClient(${methods}, "/_tokamak/app", Object.fromEntries(${methods}.map(method => [method, true])));`;
-      const browser = definition?.web;
+export default createClient(${methods}, ${route}, Object.fromEntries(${methods}.map(method => [method, true])));`;
+      const browser = plugin?.definition.web;
       const fallback = browser
         ? `import { ${JSON.stringify(browser.export)} as browser } from ${JSON.stringify(browser.module)};`
         : "const browser = {};";

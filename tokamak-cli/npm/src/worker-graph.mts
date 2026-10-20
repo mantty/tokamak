@@ -8,7 +8,7 @@ import { normalizePath, type Plugin } from "vite";
 
 import type { Availability, NativePlatform } from "@tokamakdev/plugin/capabilities";
 import type { PluginContract, WorkerContract } from "./worker-contract.mjs";
-import { WorkerTypes, type WorkerConfiguration } from "./worker-types.mjs";
+import { WorkerTypes, type NativeService, type WorkerConfiguration } from "./worker-types.mjs";
 
 type ServiceConfiguration = Pick<WorkerConfiguration, "name" | "topLevelName" | "services" | "main" | "configPath" | "vars" | "kv_namespaces" | "d1_databases" | "r2_buckets">;
 type Auxiliary = NonNullable<PluginConfig["auxiliaryWorkers"]>[number];
@@ -57,16 +57,12 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
   let relay: Relay | undefined;
   const serviceModule = (role: string) => `virtual:tokamak/service/${role}`;
   const bindingsModule = (role: string) => `\0tokamak:bindings:${role}`;
-  const nativeContracts = () => Object.fromEntries([
-    ["default", contracts.native],
-    ...contracts.plugins.map(plugin => [plugin.definition.binding, plugin]),
-  ]) as Record<string, WorkerContract>;
+  const nativeContracts = (): Record<string, WorkerContract> =>
+    Object.fromEntries(contracts.services().map(service => [service.entrypoint, service.contract]));
   const sources = () => [...contracts.native.files, ...Object.values(contracts.main).flatMap(value => value.files),
     ...contracts.plugins.flatMap(plugin => plugin.files)];
-  const services = (name: string) => [
-    { binding: "TOKAMAK", service: workerName(name) },
-    ...contracts.definitions.map(plugin => ({ binding: plugin.binding, service: workerName(name), entrypoint: plugin.binding })),
-  ];
+  const services = (name: string) => contracts.services().map(({ binding, entrypoint }) =>
+    entrypoint === "default" ? { binding, service: workerName(name) } : { binding, service: workerName(name), entrypoint });
   function bindings(role: string): Record<string, string[]> {
     const services = role === "main" ? mainServices : [{ binding: "MAIN", service: mainName }];
     const result: Record<string, string[]> = {};
@@ -85,7 +81,7 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
     return JSON.stringify({ bindings: bindings(role), methods: Object.entries(targets).map(([name, value]) => [name, value.methods]) });
   }
   function refresh(): void {
-    const source = serviceEntrypoint(entry, contracts.native.methods, contracts.plugins);
+    const source = serviceEntrypoint(entry, contracts.services());
     writeChanged(generated, `${source}import { eventEntrypoint } from ${JSON.stringify(events)};
 export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
     writeChanged(path.join(output, "methods.json"), `${JSON.stringify(contracts.native.methods)}\n`);
@@ -267,48 +263,64 @@ function availability(plugins: PluginContract[]): Availability {
   ]));
 }
 
-function serviceEntrypoint(entry: string | undefined, methods: string[], plugins: PluginContract[]): string {
+function serviceEntrypoint(entry: string | undefined, services: NativeService[]): string {
   const sdk = normalizePath(fileURLToPath(import.meta.resolve("@tokamakdev/plugin/worker")));
   const rpc = normalizePath(fileURLToPath(new URL("./rpc/endpoint.mjs", import.meta.resolve("@tokamakdev/plugin/events"))));
-  const base = `import { WorkerEntrypoint } from "cloudflare:workers";
+  const plugins = services.flatMap(service => service.plugin ? [service.plugin] : []);
+  const imports = services.map((service, index) => {
+    if (service.plugin) {
+      const { api } = service.plugin.definition;
+      return `import { ${JSON.stringify(api.export)} as Service${index} } from ${JSON.stringify(api.module)};`;
+    }
+    if (!entry) return `import { TokamakEntrypoint as Service${index} } from ${JSON.stringify(sdk)};`;
+    const name = service.entrypoint === "default" ? "default" : JSON.stringify(service.entrypoint);
+    return `import { ${name} as Service${index} } from ${JSON.stringify(normalizePath(entry))};`;
+  });
+  const table = services.map((service, index) => `  { route: ${JSON.stringify(service.route)}, methods: ${JSON.stringify(service.contract.methods)}, create: ${service.plugin
+    ? `ctx => Service${index}(nativeContext(ctx))`
+    : `(ctx, env) => new Service${index}(nativeContext(ctx), env)`} },`);
+  const methods = (methods: string[], instance: string) => methods.map(method =>
+    `async [${JSON.stringify(method)}](...args) { return this.${instance}[${JSON.stringify(method)}](...args); }`).join("\n  ");
+  const named = services.slice(1).map((service, index) => `
+export class ${service.entrypoint} extends WorkerEntrypoint {
+  #api;
+  get #instance() { return this.#api ??= services[${index + 1}].create(this.ctx, this.env); }
+  fetch(request) {
+    ${service.plugin
+      ? `return rpcResponse(request, ctx => services[${index + 1}].create(ctx, this.env), services[${index + 1}].methods, this.ctx);`
+      : `if (typeof this.#instance.fetch !== "function") throw new TypeError("The ${service.entrypoint} entrypoint has no fetch handler");
+    return this.#instance.fetch(request);`}
+  }
+  ${methods(service.contract.methods, "#instance")}
+}
+`);
+  return `import { WorkerEntrypoint } from "cloudflare:workers";
 import { rpcResponse } from ${JSON.stringify(rpc)};
-import { capabilitiesModule, createNativeContext${entry ? "" : ", TokamakEntrypoint as Worker"} } from ${JSON.stringify(sdk)};
+import { capabilitiesModule, createNativeContext } from ${JSON.stringify(sdk)};
 import { connect } from ${JSON.stringify(NATIVE_CONNECTION)};
-${entry ? `import Worker from ${JSON.stringify(normalizePath(entry))};` : ""}
-${plugins.map((plugin, index) => `import { ${JSON.stringify(plugin.definition.api.export)} as plugin${index} } from ${JSON.stringify(plugin.definition.api.module)};`).join("\n")}
-`;
-  const operations = methods.map((method) =>
-    `async [${JSON.stringify(method)}](...args) { return this.#instance[${JSON.stringify(method)}](...args); }`);
-  return `${base}
+${imports.join("\n")}
+
 const availability = ${JSON.stringify(availability(plugins))};
 const nativeContext = ctx => createNativeContext(ctx, connect(ctx), availability);
+const services = [
+${table.join("\n")}
+];
+const Worker = Service0;
 
 export default class extends WorkerEntrypoint {
   #worker;
-  get #instance() { return this.#worker ??= new Worker(nativeContext(this.ctx), this.env); }
+  get #instance() { return this.#worker ??= services[0].create(this.ctx, this.env); }
   fetch(request) {
-    if (new URL(request.url).pathname === "/_tokamak/capabilities.js") return capabilitiesModule(nativeContext(this.ctx));
-    if (new URL(request.url).pathname === "/_tokamak/app") {
-      return rpcResponse(request, ctx => new Worker(nativeContext(ctx), this.env), ${JSON.stringify(methods)}, this.ctx);
-    }
-    ${plugins.map((plugin, index) => `if (new URL(request.url).pathname === ${JSON.stringify(`/_tokamak/plugin/${plugin.definition.id}`)}) {
-      return rpcResponse(request, ctx => plugin${index}(nativeContext(ctx)), ${JSON.stringify(plugin.methods)}, this.ctx);
-    }`).join("\n    ")}
+    const { pathname } = new URL(request.url);
+    if (pathname === "/_tokamak/capabilities.js") return capabilitiesModule(nativeContext(this.ctx));
+    const service = services.find(service => service.route === pathname);
+    if (service) return rpcResponse(request, ctx => service.create(ctx, this.env), service.methods, this.ctx);
     if (typeof this.#instance.fetch !== "function") throw new TypeError("The Tokamak worker has no fetch handler");
     return this.#instance.fetch(request);
   }
-  ${operations.join("\n  ")}
+  ${methods(services[0]?.contract.methods ?? [], "#instance")}
 }
-${plugins.map((plugin, index) => `
-export class ${plugin.definition.binding} extends WorkerEntrypoint {
-  #api;
-  get #instance() { return this.#api ??= plugin${index}(nativeContext(this.ctx)); }
-  fetch(request) {
-    return rpcResponse(request, ctx => plugin${index}(nativeContext(ctx)), ${JSON.stringify(plugin.methods)}, this.ctx);
-  }
-  ${plugin.methods.map(method => `async [${JSON.stringify(method)}](...args) { return this.#instance[${JSON.stringify(method)}](...args); }`).join("\n  ")}
-}
-`).join("\n")}
+${named.join("")}
 `;
 }
 
