@@ -21,17 +21,11 @@ final class TokamakApp {
   weak var webView: WKWebView?
   /// Every plugin, by ID.
   private(set) var plugins: [String: any TokamakPlugin] = [:]
+  private let runtimeLock = NSLock()
   private var runtime: Result<RuntimeHandle, Error>?
   private var waiting: [(Result<RuntimeHandle, Error>) -> Void] = []
   /// The Worker's calls and subscriptions on the plugins.
-  private lazy var workerRequests = TokamakPluginRequests<UInt64>(plugins: plugins) {
-    [unowned self] id, result in
-    whenStarted { started in
-      if case .success(let runtime) = started {
-        runtime.reply(id, result: result)
-      }
-    }
-  }
+  private var workerRequests: TokamakPluginRequests<UInt64>!
   /// Delivers `resume` and `suspend` one at a time, in order.
   private let lifecycle = DispatchQueue(label: "tokamak.lifecycle")
   #if os(iOS)
@@ -44,6 +38,11 @@ final class TokamakApp {
     plugins["tokamak"] = TokamakCorePlugin(host: TokamakHost(app: self, plugin: "tokamak"))
     for plugin in tokamakPlugins(app: self) {
       precondition(plugins.updateValue(plugin, forKey: plugin.id) == nil, "Duplicate plugin ID")
+    }
+    workerRequests = TokamakPluginRequests(plugins: plugins) { [unowned self] id, result in
+      ready { started in
+        if case .success(let runtime) = started { runtime.reply(id, result: result) }
+      }
     }
   }
 
@@ -71,7 +70,7 @@ final class TokamakApp {
       },
       cancel: { context, id in
         let app = Unmanaged<TokamakApp>.fromOpaque(context!).takeUnretainedValue()
-        DispatchQueue.main.async { app.workerRequests.cancel(id) }
+        app.workerRequests.cancel(id)
       }
     )
   }
@@ -89,21 +88,22 @@ final class TokamakApp {
     let app = Unmanaged<TokamakApp>.fromOpaque(context!).takeUnretainedValue()
     let (plugin, method) = (String(cString: plugin!), String(cString: method!))
     let payload = count == 0 ? Data() : Data(bytes: payload!, count: count)
-    DispatchQueue.main.async {
-      app.workerRequests.run(
-        id, subscribe: subscribe, plugin: plugin, method: method, payload: payload)
-    }
+    app.workerRequests.run(
+      id, subscribe: subscribe, plugin: plugin, method: method, payload: payload)
   }
 
   /// Calls `completion` on the main thread once the runtime has started or
   /// failed to start.
   func whenStarted(_ completion: @escaping (Result<RuntimeHandle, Error>) -> Void) {
-    dispatchPrecondition(condition: .onQueue(.main))
-    if let runtime {
-      completion(runtime)
-    } else {
-      waiting.append(completion)
+    ready { result in DispatchQueue.main.async { completion(result) } }
+  }
+
+  private func ready(_ completion: @escaping (Result<RuntimeHandle, Error>) -> Void) {
+    let current = runtimeLock.withLock {
+      if runtime == nil { waiting.append(completion) }
+      return runtime
     }
+    if let current { completion(current) }
   }
 
   /// Delivers the event `name` with `event`, JSON-serialisable, to the
@@ -264,9 +264,12 @@ final class TokamakApp {
     if case .failure(let error) = result {
       RuntimeHandle.recordStartupFailure(error)
     }
-    runtime = result
-    let callbacks = waiting
-    waiting.removeAll()
+    let callbacks = runtimeLock.withLock {
+      runtime = result
+      let callbacks = waiting
+      waiting.removeAll()
+      return callbacks
+    }
     for callback in callbacks {
       callback(result)
     }

@@ -3,6 +3,9 @@ package com.tokamak.runtime
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
+import java.util.concurrent.Executor
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -53,12 +56,20 @@ private fun encodePluginValue(value: Any?): ByteArray {
     return json.toByteArray(Charsets.UTF_8)
 }
 
+private val uiExecutor by lazy {
+    val main = Handler(Looper.getMainLooper())
+    Executor { main.post(it) }
+}
+
 /**
  * A native plugin, created once per process with the app's [TokamakHost]. A [call] or [subscribe]
  * that throws replies with the exception.
  */
 interface TokamakPlugin {
     val id: String
+
+    /** Serial executor for this operation and its cancellation. */
+    fun executor(method: String): Executor = uiExecutor
 
     fun callBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply): (() -> Unit)? =
         call(method, JSONTokener(payload.toString(Charsets.UTF_8)).nextValue()) {

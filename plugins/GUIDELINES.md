@@ -67,6 +67,11 @@ and return ordinary values through their reply callback. Override `callBytes`
 or `subscribeBytes` when your capability needs its own binary format. Routing,
 failure and completion travel separately from payload bytes.
 
+Native plugins select a serial executor per operation with `executor(for:)`
+on Apple or `executor(method)` on Android. The default is the UI thread; use a
+plugin-owned queue for work that does not need it. Cancellation uses that same
+executor. Replies can arrive on any thread and go directly to the runtime.
+
 Return cancellation for pending native work. Subscription cancellation releases
 its resources when the stream ends or the invocation is torn down. App-owned
 background registrations need stable IDs and documented restoration rules;

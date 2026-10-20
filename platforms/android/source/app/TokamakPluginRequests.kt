@@ -1,58 +1,68 @@
 package com.tokamak.runtime
 
-import android.os.Handler
-import android.os.Looper
+import java.util.concurrent.Executor
 
-/** Runs the Tokamak worker's byte requests on the main thread. */
+/** Runs the Worker's requests on the executor each plugin chooses, and passes replies straight to the runtime. */
 internal class TokamakPluginRequests<K>(
     private val plugins: Map<String, TokamakPlugin>,
     private val send: (K, TokamakPluginResult) -> Unit,
 ) {
-    private val cancellations = mutableMapOf<K, () -> Unit>()
-    private val main = Handler(Looper.getMainLooper())
+    /** A pending call or subscription. Only its serial executor touches [cancellation], so a cancellation runs after the operation started. */
+    private class Request(val executor: Executor) {
+        var cancellation: (() -> Unit)? = null
+    }
 
-    /** Calls [method] of [plugin], or subscribes to it when [subscribe]. */
+    private val pending = mutableMapOf<K, Request>()
+
     fun run(key: K, subscribe: Boolean, plugin: String, method: String, payload: ByteArray) {
         val target = plugins[plugin]
         if (target == null || method.isEmpty()) {
-            fail(key, TokamakPluginError.notSupported("Plugin is not supported"))
+            send(key, failure(TokamakPluginError.notSupported("Plugin is not supported")))
             return
         }
-        cancellations[key] = {}
+        val request = Request(target.executor(method))
+        synchronized(pending) { pending[key] = request }
         val reply: TokamakPluginBytesReply = { result ->
-            val snapshot = result.copy(payload = result.payload.copyOf())
-            main.post {
-                if (!cancellations.containsKey(key)) return@post
-                if (!subscribe || snapshot.done) cancellations.remove(key)
-                send(key, snapshot)
+            val last = !subscribe || result.done
+            if (if (last) remove(key, request) else isPending(key, request)) {
+                send(key, result)
+                if (subscribe && result.done) cancel(request)
             }
         }
-        try {
-            if (subscribe) {
-                cancellations[key] = target.subscribeBytes(method, payload, reply)
-            } else {
-                cancellations[key] = target.callBytes(method, payload, reply) ?: {}
+        request.executor.execute {
+            if (!isPending(key, request)) return@execute
+            try {
+                request.cancellation =
+                    if (subscribe) target.subscribeBytes(method, payload, reply) else target.callBytes(method, payload, reply)
+            } catch (error: Exception) {
+                if (remove(key, request)) send(key, failure(error))
             }
-        } catch (error: Exception) {
-            fail(key, error)
         }
     }
 
-    /** Ends the request [key] with [error]. */
-    fun fail(key: K, error: Throwable) {
-        cancel(key)
-        send(key, TokamakPluginResult.encoded(Result.failure(error), done = true))
-    }
-
-    /** Cancels the pending call or subscription [key]. */
     fun cancel(key: K) {
-        cancellations.remove(key)?.invoke()
+        synchronized(pending) { pending.remove(key) }?.let(::cancel)
     }
 
-    /** Cancels every pending call and subscription. */
     fun cancelAll() {
-        val cancelAll = cancellations.values.toList()
-        cancellations.clear()
-        cancelAll.forEach { it() }
+        val requests = synchronized(pending) { pending.values.toList().also { pending.clear() } }
+        requests.forEach(::cancel)
     }
+
+    /** Runs the operation's cancellation on its executor. */
+    private fun cancel(request: Request) {
+        request.executor.execute {
+            request.cancellation?.invoke()
+            request.cancellation = null
+        }
+    }
+
+    private fun isPending(key: K, request: Request) = synchronized(pending) { pending[key] === request }
+
+    /** Removes [request], returning whether it was pending. */
+    private fun remove(key: K, request: Request) = synchronized(pending) {
+        (pending[key] === request).also { if (it) pending.remove(key) }
+    }
+
+    private fun failure(error: Throwable) = TokamakPluginResult.encoded(Result.failure(error), done = true)
 }

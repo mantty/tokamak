@@ -103,11 +103,14 @@ final class TokamakHost {
   }
 }
 
-/// A native plugin, created once per process and called on the main thread.
+/// A native plugin, created once per process.
 protocol TokamakPlugin: AnyObject {
   var id: String { get }
 
   init(host: TokamakHost)
+
+  /// Serial executor for this operation and its cancellation.
+  func executor(for method: String) -> DispatchQueue
 
   func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (
     () -> Void
@@ -143,6 +146,8 @@ protocol TokamakPlugin: AnyObject {
 }
 
 extension TokamakPlugin {
+  func executor(for method: String) -> DispatchQueue { .main }
+
   func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (
     () -> Void
   )? {
@@ -193,61 +198,85 @@ extension TokamakPlugin {
   }
 }
 
-/// Runs the Tokamak worker's byte requests on the main thread.
+/// Runs the Worker's requests on the executor each plugin chooses, and passes
+/// replies straight to the runtime.
 final class TokamakPluginRequests<Key: Hashable> {
+  /// A pending call or subscription. Only its serial executor touches
+  /// `cancellation`, so a cancellation runs after the operation started.
+  private final class Request {
+    let queue: DispatchQueue
+    var cancellation: (() -> Void)?
+    init(queue: DispatchQueue) { self.queue = queue }
+  }
+
   private let plugins: [String: any TokamakPlugin]
   private let send: (Key, TokamakPluginResult) -> Void
-  private var cancellations: [Key: () -> Void] = [:]
+  private let lock = NSLock()
+  private var pending: [Key: Request] = [:]
 
   init(plugins: [String: any TokamakPlugin], send: @escaping (Key, TokamakPluginResult) -> Void) {
     self.plugins = plugins
     self.send = send
   }
 
-  /// Calls `method` of `plugin`, or subscribes to it when `subscribe`.
   func run(_ key: Key, subscribe: Bool, plugin: String, method: String, payload: Data) {
     guard let target = plugins[plugin], !method.isEmpty else {
-      fail(key, .notSupported("Plugin is not supported"))
+      send(key, TokamakPluginResult(.failure(.notSupported("Plugin is not supported")), done: true))
       return
     }
-    cancellations[key] = {}
-    // Plugins reply from any thread.
-    let reply: TokamakPluginBytesReply = { [weak self] result in
-      DispatchQueue.main.async {
-        guard let self, self.cancellations[key] != nil else { return }
-        if !subscribe || result.done { self.cancellations.removeValue(forKey: key) }
-        self.send(key, result)
+    let request = Request(queue: target.executor(for: method))
+    lock.withLock { pending[key] = request }
+    // A weak request lets a completed call release its cancellation.
+    let reply: TokamakPluginBytesReply = { [weak self, weak request] result in
+      guard let self, let request else { return }
+      let last = !subscribe || result.done
+      guard last ? remove(key, request) : isPending(key, request) else { return }
+      send(key, result)
+      if subscribe && result.done { cancel(request) }
+    }
+    request.queue.async { [self] in
+      guard isPending(key, request) else { return }
+      do throws(TokamakPluginError) {
+        request.cancellation =
+          try subscribe
+          ? target.subscribeBytes(method: method, payload: payload, reply: reply)
+          : target.callBytes(method: method, payload: payload, reply: reply)
+      } catch {
+        if remove(key, request) { send(key, TokamakPluginResult(.failure(error), done: true)) }
       }
     }
-    guard subscribe else {
-      cancellations[key] = target.callBytes(method: method, payload: payload, reply: reply) ?? {}
-      return
-    }
-    do {
-      cancellations[key] = try target.subscribeBytes(method: method, payload: payload, reply: reply)
-    } catch {
-      fail(key, error)
-    }
   }
 
-  /// Ends the request `key` with `error`.
-  func fail(_ key: Key, _ error: TokamakPluginError) {
-    cancel(key)
-    send(key, TokamakPluginResult(.failure(error), done: true))
-  }
-
-  /// Cancels the pending call or subscription `key`.
   func cancel(_ key: Key) {
-    cancellations.removeValue(forKey: key)?()
+    if let request = lock.withLock({ pending.removeValue(forKey: key) }) { cancel(request) }
   }
 
-  /// Cancels every pending call and subscription.
   func cancelAll() {
-    let cancelAll = Array(cancellations.values)
-    cancellations.removeAll()
-    for cancel in cancelAll {
-      cancel()
+    let requests = lock.withLock {
+      defer { pending.removeAll() }
+      return Array(pending.values)
+    }
+    for request in requests { cancel(request) }
+  }
+
+  /// Runs the operation's cancellation on its executor.
+  private func cancel(_ request: Request) {
+    request.queue.async {
+      request.cancellation?()
+      request.cancellation = nil
     }
   }
 
+  private func isPending(_ key: Key, _ request: Request) -> Bool {
+    lock.withLock { pending[key] === request }
+  }
+
+  /// Removes `request`, returning whether it was pending.
+  private func remove(_ key: Key, _ request: Request) -> Bool {
+    lock.withLock {
+      guard pending[key] === request else { return false }
+      pending[key] = nil
+      return true
+    }
+  }
 }

@@ -23,6 +23,7 @@ enum PluginRequestsTests {
     func run(_ id: Int, _ method: String, subscribe: Bool = false) {
       requests.run(
         id, subscribe: subscribe, plugin: "test", method: method, payload: Data("null".utf8))
+      drain()
     }
 
     run(1, "abandoned")
@@ -38,6 +39,7 @@ enum PluginRequestsTests {
     precondition(received.count == 1 && received[0].0 == 2)
     precondition(received[0].1.done)
     requests.cancel(2)
+    drain()
     precondition(plugin.cancelled == ["abandoned"])
 
     run(3, "call")
@@ -55,13 +57,9 @@ enum PluginRequestsTests {
     precondition(received.count == 3)
     precondition(Set(plugin.cancelled) == ["abandoned", "call", "stream"])
 
-    run(5, "pending")
-    requests.fail(5, .notSupported("failed"))
-    plugin.replies["pending"]?(.success("late"))
-    drain()
+    requests.run(5, subscribe: false, plugin: "missing", method: "call", payload: Data())
     precondition(received.count == 4 && received[3].0 == 5)
-    precondition(received[3].1.done)
-    precondition(plugin.cancelled.last == "pending")
+    precondition(received[3].1.failed && received[3].1.done)
     requests.run(
       6, subscribe: false, plugin: "binary", method: "echo", payload: Data([0, 255, 192, 175]))
     drain()
@@ -70,6 +68,65 @@ enum PluginRequestsTests {
     requests.run(7, subscribe: false, plugin: "test", method: "immediate", payload: Data([255]))
     drain()
     precondition(received[5].1.failed && received[5].1.done)
+    let replied = DispatchSemaphore(value: 0)
+    let background = TokamakPluginRequests<Int>(plugins: [
+      "binary": BinaryPlugin(host: TokamakHost(app: app, plugin: "binary"))
+    ]) { _, result in
+      precondition(!Thread.isMainThread)
+      precondition(result.payload == Data([0, 255]))
+      replied.signal()
+    }
+    background.run(
+      8, subscribe: false, plugin: "binary", method: "background", payload: Data([0, 255]))
+    precondition(
+      replied.wait(timeout: .now() + 2) == .success, "A native call required the blocked UI thread")
+    for method in ["immediate", "deferred"] {
+      weak var released: TestPlugin?
+      do {
+        let completing = TestPlugin(host: TokamakHost(app: app, plugin: "test"))
+        released = completing
+        let calls = TokamakPluginRequests<Int>(plugins: ["test": completing]) { _, _ in }
+        calls.run(9, subscribe: false, plugin: "test", method: method, payload: Data("null".utf8))
+        drain()
+        if method == "deferred" { completing.replies[method]?(.success("done")) }
+        drain()
+      }
+      drain()
+      precondition(released == nil, "A completed call retained its plugin through cancellation")
+    }
+    for subscribe in [false, true] {
+      let gated = GatedPlugin(host: TokamakHost(app: app, plugin: "gated"))
+      let calls = TokamakPluginRequests<Int>(plugins: ["gated": gated]) { _, _ in
+        preconditionFailure("A cancelled operation delivered a late reply")
+      }
+      calls.run(10, subscribe: subscribe, plugin: "gated", method: "wait", payload: Data())
+      precondition(gated.entered.wait(timeout: .now() + 2) == .success)
+      if subscribe {
+        calls.cancelAll()
+        calls.cancelAll()
+      } else {
+        calls.cancel(10)
+        calls.cancel(10)
+      }
+      gated.release.signal()
+      precondition(gated.cancelled.wait(timeout: .now() + 2) == .success)
+      gated.queue.sync {}
+      precondition(gated.cancellations == 1)
+    }
+    let queued = GatedPlugin(host: TokamakHost(app: app, plugin: "gated"))
+    queued.queue.async {
+      queued.entered.signal()
+      queued.release.wait()
+    }
+    precondition(queued.entered.wait(timeout: .now() + 2) == .success)
+    let cancelledBeforeStart = TokamakPluginRequests<Int>(plugins: ["gated": queued]) { _, _ in
+      preconditionFailure("An unstarted operation replied")
+    }
+    cancelledBeforeStart.run(11, subscribe: false, plugin: "gated", method: "wait", payload: Data())
+    cancelledBeforeStart.cancel(11)
+    queued.release.signal()
+    queued.queue.sync {}
+    precondition(queued.calls == 0)
     print("Passed native bytes, codecs, completion, cancellation, isolation, and late-reply tests")
   }
 
@@ -81,6 +138,37 @@ enum PluginRequestsTests {
       RunLoop.main.run(until: Date().addingTimeInterval(0.001))
     }
     precondition(delivered, "The main queue did not drain")
+  }
+}
+
+private final class GatedPlugin: TokamakPlugin {
+  let id = "gated"
+  let queue = DispatchQueue(label: "test.gated")
+  let entered = DispatchSemaphore(value: 0)
+  let release = DispatchSemaphore(value: 0)
+  let cancelled = DispatchSemaphore(value: 0)
+  var cancellations = 0
+  var calls = 0
+  init(host: TokamakHost) {}
+  func executor(for method: String) -> DispatchQueue { queue }
+  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (
+    () -> Void
+  )? {
+    begin(reply)
+  }
+  func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
+    throws(TokamakPluginError) -> (() -> Void)
+  { begin(reply) }
+  private func begin(_ reply: @escaping TokamakPluginBytesReply) -> (() -> Void) {
+    calls += 1
+    entered.signal()
+    precondition(release.wait(timeout: .now() + 2) == .success)
+    return {
+      dispatchPrecondition(condition: .onQueue(self.queue))
+      self.cancellations += 1
+      reply(TokamakPluginResult(.success(Data()), done: true))
+      self.cancelled.signal()
+    }
   }
 }
 
@@ -128,7 +216,9 @@ enum TokamakBackgroundResult {
 
 private final class BinaryPlugin: TokamakPlugin {
   let id = "binary"
+  private let queue = DispatchQueue(label: "test.binary")
   init(host: TokamakHost) {}
+  func executor(for method: String) -> DispatchQueue { method == "background" ? queue : .main }
   func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (
     () -> Void
   )? {

@@ -34,6 +34,7 @@ import java.security.PublicKey
 import java.security.SecureRandom
 import java.security.spec.MGF1ParameterSpec
 import java.security.spec.X509EncodedKeySpec
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import javax.crypto.BadPaddingException
 import javax.crypto.Cipher
@@ -62,32 +63,34 @@ class TokamakSecureStoragePlugin(
     private val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
     private val random = SecureRandom()
 
+    override fun executor(method: String) = worker
+
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
         val cancellation = CancellationSignal()
         when (method) {
-            "create" -> execute(reply, cancellation) {
+            "create" -> attempt(reply) {
                 store(request(arguments), Write.CREATE)
                 reply(Result.success(null))
             }
-            "replace" -> execute(reply, cancellation) {
+            "replace" -> attempt(reply) {
                 store(request(arguments), Write.REPLACE)
                 reply(Result.success(null))
             }
-            "set" -> execute(reply, cancellation) {
+            "set" -> attempt(reply) {
                 store(request(arguments), Write.SET)
                 reply(Result.success(null))
             }
-            "get" -> execute(reply, cancellation) { get(request(arguments), reply, cancellation) }
-            "delete" -> execute(reply, cancellation) {
+            "get" -> attempt(reply) { get(request(arguments), reply, cancellation) }
+            "delete" -> attempt(reply) {
                 delete(request(arguments).requireString("name"))
                 reply(Result.success(null))
             }
-            "clear" -> execute(reply, cancellation) {
+            "clear" -> attempt(reply) {
                 request(arguments) // Rejects keychainGroup.
                 clear()
                 reply(Result.success(null))
             }
-            else -> super.call(method, arguments, reply)
+            else -> return super.call(method, arguments, reply)
         }
         return { cancellation.cancel() }
     }
@@ -101,17 +104,14 @@ class TokamakSecureStoragePlugin(
         return request
     }
 
-    private fun execute(reply: TokamakPluginReply, cancellation: CancellationSignal, operation: () -> Unit) =
-        worker.execute task@{
-            if (cancellation.isCanceled) return@task
-            runCatching(operation).onFailure { reply(Result.failure(pluginError(it))) }
-        }
+    /** Runs [operation], replying with what it throws. */
+    private fun attempt(reply: TokamakPluginReply, operation: () -> Unit) {
+        runCatching(operation).onFailure { reply(Result.failure(pluginError(it))) }
+    }
 
-    private fun onUiThread(reply: TokamakPluginReply, cancellation: CancellationSignal, operation: () -> Unit) =
-        context.mainExecutor.execute {
-            if (cancellation.isCanceled) return@execute
-            runCatching(operation).onFailure { reply(Result.failure(pluginError(it))) }
-        }
+    /** Runs [operation] on [executor] unless the call was cancelled first. */
+    private fun resume(executor: Executor, reply: TokamakPluginReply, cancellation: CancellationSignal, operation: () -> Unit) =
+        executor.execute { if (!cancellation.isCanceled) attempt(reply, operation) }
 
     private fun store(request: JSONObject, mode: Write) {
         val name = request.requireString("name")
@@ -222,9 +222,9 @@ class TokamakSecureStoragePlugin(
         cancellation: CancellationSignal,
     ) {
         val title = prompt?.takeIf { it.isNotEmpty() } ?: context.applicationInfo.loadLabel(context.packageManager)
-        onUiThread(reply, cancellation) {
+        resume(context.mainExecutor, reply, cancellation) {
             host.authenticateOwner(title, authenticators, BiometricPrompt.CryptoObject(unwrap), reply, cancellation) {
-                execute(reply, cancellation) { reply(Result.success(open(stored, unwrap))) }
+                resume(worker, reply, cancellation) { reply(Result.success(open(stored, unwrap))) }
             }
         }
     }

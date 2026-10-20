@@ -18,6 +18,10 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     self.host = host
   }
 
+  func executor(for method: String) -> DispatchQueue {
+    ["get", "replace", "set"].contains(method) ? .main : queue
+  }
+
   #if os(macOS)
     /// macOS grants the data protection keychain only to apps whose provisioning
     /// profile provides an application identifier.
@@ -35,7 +39,8 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
   ) -> (() -> Void)? {
     let arguments = arguments as? [String: Any] ?? [:]
     let prompting =
-      isUnlocked ? Result { () throws(TokamakPluginError) in try host.requireUI() } : nil
+      ["get", "replace", "set"].contains(method) && isUnlocked
+      ? Result { () throws(TokamakPluginError) in try host.requireUI() } : nil
     let authentication = LAContext()
     queue.async {
       reply(

@@ -70,6 +70,12 @@ jobs:
           cache: pnpm
           cache-dependency-path: plugins/pnpm-lock.yaml
 
+      - name: Test native plugin requests
+        run: |
+          android_jar="$(ls "$ANDROID_HOME"/platforms/android-*/android.jar | sort -V | tail -1)"
+          kotlinc -classpath "$android_jar" platforms/android/source/plugin/TokamakPlugin.kt platforms/android/source/app/TokamakPluginRequests.kt platforms/android/tests/plugin-requests.kt -include-runtime -d "$RUNNER_TEMP/plugin-requests.jar"
+          java -cp "$RUNNER_TEMP/plugin-requests.jar:$android_jar" com.tokamak.runtime.Plugin_requestsKt
+
       - name: Install plugin dependencies
         working-directory: plugins
         run: pnpm install --frozen-lockfile
