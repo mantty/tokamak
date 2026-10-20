@@ -6,6 +6,8 @@ import { findModule } from "./worker-contract.mjs";
 import { WorkerTypes, type BindingConfiguration } from "./worker-types.mjs";
 
 const MODULE = "virtual:tokamak/client";
+/** The Tokamak worker's page module of each plugin operation's support on the app's platform. */
+const CAPABILITIES = "/_tokamak/capabilities.js";
 const RESOLVED = `\0${MODULE}`;
 const TRANSPORT = normalizePath(fileURLToPath(new URL("./rpc/client.mjs", import.meta.resolve("@tokamakdev/plugin/events"))));
 
@@ -31,6 +33,7 @@ export function createClientPlugin(module: string | undefined, native: boolean, 
       for (const file of contracts.metadata) this.addWatchFile(file);
     },
     resolveId(id) {
+      if (id === CAPABILITIES) return { id, external: true };
       if (id === MODULE) return RESOLVED;
       if (contracts.definitions.some(plugin => plugin.client === id)) return `\0${id}`;
     },
@@ -45,9 +48,12 @@ export function createClientPlugin(module: string | undefined, native: boolean, 
         .filter(file => file !== normalizePath(path.join(root, "tokamak-env.d.ts")));
       for (const file of files) this.addWatchFile(file);
       const methods = JSON.stringify(contract.methods);
-      const endpoint = definition ? `/_tokamak/plugin/${definition.id}` : "/_tokamak/app";
+      if (native && definition) return `import { createClient } from ${JSON.stringify(TRANSPORT)};
+import capabilities from ${JSON.stringify(CAPABILITIES)};
+export default createClient(${methods}, ${JSON.stringify(`/_tokamak/plugin/${definition.id}`)}, capabilities[${JSON.stringify(definition.id)}]);`;
+      // The app's own operations run wherever its Tokamak worker does.
       if (native) return `import { createClient } from ${JSON.stringify(TRANSPORT)};
-export default createClient(${methods}, ${JSON.stringify(endpoint)});`;
+export default createClient(${methods}, "/_tokamak/app", Object.fromEntries(${methods}.map(method => [method, true])));`;
       const browser = definition?.web;
       const fallback = browser
         ? `import { ${JSON.stringify(browser.export)} as browser } from ${JSON.stringify(browser.module)};`
@@ -56,7 +62,8 @@ export default createClient(${methods}, ${JSON.stringify(endpoint)});`;
       return `${fallback}
 async function unavailable() { throw new DOMException("This operation requires a native app", "NotSupportedError"); }
 const supported = new Set(${webMethods});
-export default Object.fromEntries(${methods}.map(method => [method, supported.has(method) ? (...args) => Promise.resolve().then(() => browser[method](...args)) : unavailable]));`;
+const client = Object.fromEntries(${methods}.map(method => [method, supported.has(method) ? (...args) => Promise.resolve().then(() => browser[method](...args)) : unavailable]));
+export default Object.assign(client, { capabilities: Object.freeze(Object.fromEntries(${methods}.map(method => [method, supported.has(method)]))) });`;
     },
     hotUpdate({ file, timestamp, server }) {
       if (contracts.metadata.includes(file)) {

@@ -17,12 +17,13 @@ export async function invoke(socket, method, args) {
   return result.value;
 }
 
-/** Generate only the declared public operations; each call owns its connection. */
-export function createClient(methods, endpoint) {
-  return Object.fromEntries(methods.map(method => [method, async (...args) => {
+/** Generate only the declared public operations, with their `capabilities`; each call owns its connection. */
+export function createClient(methods, endpoint, capabilities) {
+  const client = Object.fromEntries(methods.map(method => [method, async (...args) => {
     const url = new URL(endpoint, globalThis.location?.href);
     if (url.protocol === 'http:') url.protocol = 'ws:';
     if (url.protocol === 'https:') url.protocol = 'wss:';
     return invoke(new WebSocket(url), method, args);
   }]));
+  return Object.assign(client, { capabilities: Object.freeze({ ...capabilities }) });
 }

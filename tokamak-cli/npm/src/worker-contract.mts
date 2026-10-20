@@ -5,7 +5,7 @@ import ts from "typescript";
 
 import { checkRpcMethod, WorkerOnlyMethod } from "./rpc-contract.mjs";
 import { serviceTypes, type ServiceMethod } from "./service-types.mjs";
-import type { PluginDefinition } from "./plugin-manifest.mjs";
+import type { NativePlatform, PluginDefinition } from "./plugin-manifest.mjs";
 
 /** The callable prototype methods and source dependencies of a Worker entrypoint. */
 export interface WorkerContract {
@@ -17,6 +17,8 @@ export interface WorkerContract {
 export interface PluginContract extends WorkerContract {
   definition: PluginDefinition;
   webMethods: string[];
+  /** Every operation of the native SDK, including those only the Tokamak worker can call. */
+  operations: string[];
 }
 
 export function findModule(root: string, name: string | undefined): string | undefined {
@@ -122,6 +124,7 @@ function pluginContract(module: ReturnType<typeof workerModule>, definition: Plu
   }
   const reference = nativeSdkExport(program, checker, module.entry, "NativeReference", "@tokamakdev/plugin");
   const methods: ServiceMethod[] = [];
+  const operations: string[] = [];
   for (const property of api.getProperties()) {
     if (privateProperty(property)) continue;
     if (property.name === "capabilities") continue;
@@ -133,6 +136,7 @@ function pluginContract(module: ReturnType<typeof workerModule>, definition: Plu
     if (!method.getCallSignatures().length || String(property.escapedName).startsWith("__@")) {
       throw new Error(`Plugin ${definition.id}.${property.name} must be a method.`);
     }
+    operations.push(property.name);
     try {
       checkRpcMethod(checker, method, `${definition.id}.${property.name}`, reference);
     } catch (error) {
@@ -143,11 +147,37 @@ function pluginContract(module: ReturnType<typeof workerModule>, definition: Plu
     methods.push(methodDeclaration(checker, property, method));
   }
   methods.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+  const unknown = Object.keys(definition.operations).find(name => !operations.includes(name));
+  if (unknown) throw new Error(`${definition.manifest}: operations.${unknown} names no method of ${definition.api.export}.`);
+  const webMethods = browserMethods(module, definition, methods, validate);
+  for (const method of methods) {
+    method.documentation = [method.documentation, availability(definition, method.name, webMethods.includes(method.name))]
+      .filter(Boolean).join("\n\n");
+  }
   return {
     definition, methods: methods.map(method => method.name), files: [...module.files, definition.manifest],
-    webMethods: browserMethods(module, definition, methods, validate),
+    webMethods, operations: operations.sort(),
     declarations: serviceTypes(`ReturnType<typeof import(${JSON.stringify(definition.api.module)}, { with: { "resolution-mode": "import" } })[${JSON.stringify(definition.api.export)}]>`, methods),
   };
+}
+
+const platformNames: Record<NativePlatform, string> = {
+  ios: "iOS", macos: "macOS", android: "Android", windows: "Windows", linux: "Linux",
+};
+
+/** Where the operation `name` is implemented, and what it needs there, for editor documentation. */
+function availability(definition: PluginDefinition, name: string, web: boolean): string {
+  const operation = definition.operations[name];
+  const platforms = operation?.platforms ?? definition.platforms.map(platform => ({ name: platform, minimum: undefined }));
+  const native = platforms.map(({ name, minimum }) => {
+    const version = name === "android" ? `API ${minimum ?? ""}` : minimum;
+    return minimum ? `${platformNames[name]} ${version}+` : platformNames[name];
+  });
+  const foreground = operation?.foreground.map(platform => platformNames[platform]) ?? [];
+  return [
+    `Native: ${native.join(", ") || "none"}. Web: ${web ? "browser implementation" : "not supported"}.`,
+    foreground.length ? `May need the app in the foreground on ${foreground.join(", ")}, to show UI.` : "",
+  ].filter(Boolean).join(" ");
 }
 
 function browserMethods(project: ReturnType<typeof workerModule>, definition: PluginDefinition, methods: ServiceMethod[], validate: boolean): string[] {

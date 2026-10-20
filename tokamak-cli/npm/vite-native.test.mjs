@@ -43,14 +43,15 @@ function project(t, cloudflareOptions = {}) {
     import "./listeners";
     globalThis.nativeLoaded = true;
     export default class Native extends TokamakEntrypoint {
-      async describe(): Promise<{ label: string; stage: string }> {
+      async describe(): Promise<{ label: string; stage: string; platform: string | undefined }> {
         const stage = JSON.parse(new TextDecoder().decode(await this.ctx[nativeConnection].call("tokamak", "lifecycleStage", new Uint8Array())));
-        return { label: this.env.LABEL, stage: stage as string };
+        return { label: this.env.LABEL, stage: stage as string, platform: this.ctx.platform };
       }
     }`);
   const output = path.join(root, ".tokamak/vite");
   process.env.TOKAMAK_VITE_OUTPUT = output;
   process.env.TOKAMAK_SESSION_TOKEN = "native-test";
+  process.env.TOKAMAK_PLATFORM = "android";
   let plugins;
   try {
     plugins = tokamak({ name: "Native App", version: "1.0.0" }, {
@@ -59,6 +60,7 @@ function project(t, cloudflareOptions = {}) {
   } finally {
     delete process.env.TOKAMAK_VITE_OUTPUT;
     delete process.env.TOKAMAK_SESSION_TOKEN;
+    delete process.env.TOKAMAK_PLATFORM;
   }
   return { root, output, config: { root, configFile: false, logLevel: "silent", plugins } };
 }
@@ -152,7 +154,14 @@ test("development routes device calls and reloaded events through the native wor
     return result;
   };
   assert.deepEqual(await (await fetch(report.url + "isolation")).json(), { bridge: "undefined", loaded: false });
-  assert.deepEqual(await (await fetch(report.url)).json(), { label: "configured", stage: "background" });
+  assert.deepEqual(await (await fetch(report.url)).json(), { label: "configured", stage: "background", platform: "android" });
+  for (const capabilities of [
+    await fetch(report.url + "_tokamak/capabilities.js"),
+    await fetch(`http://127.0.0.1:${report.socketPort}/_tokamak/capabilities.js`, { headers: { "x-tokamak-session": "native-test" } }),
+  ]) {
+    assert.equal(capabilities.headers.get("content-type"), "text/javascript; charset=utf-8");
+    assert.equal(await capabilities.text(), "export default {};\n");
+  }
   assert.deepEqual(calls, ["tokamak.lifecycleStage"]);
   assert.deepEqual((await event()).reply, { label: "configured", foreground: false, revision: "first", stage: "background" });
   const listeners = path.join(root, "src/listeners.ts");

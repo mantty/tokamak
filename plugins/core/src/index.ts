@@ -1,10 +1,11 @@
-import { nativeConnection, type CallOptions, type NativeConnection, type Overflow, type TokamakContext } from "./context.js";
+import { capabilitiesOf, nativeConnection, type CallOptions, type NativeConnection, type Overflow, type TokamakContext } from "./context.js";
 import { byteStream, type JsonStream } from "./streams.js";
 import { decodeJson, encodeJson } from "./codec.js";
 import { NativeReference } from "./resources.js";
 
 export type { TokamakContext } from "./worker.js";
-export type { CallOptions, Overflow } from "./context.js";
+export type { CallOptions, NativePlatform, Overflow } from "./context.js";
+export { capabilitiesOf } from "./context.js";
 export type { JsonStream } from "./streams.js";
 export type { JsonValue } from "./codec.js";
 export { decodeJson, encodeJson } from "./codec.js";
@@ -22,6 +23,14 @@ export abstract class Plugin {
 
   protected async call<T>(method: string, value: unknown = null, options?: CallOptions): Promise<T> {
     return decodeJson<T>(await this.callBytes(method, encodeJson(value), options));
+  }
+
+  /**
+   * Whether each operation has an implementation on the platform the app runs on. It does not
+   * report permission or promise that a call succeeds.
+   */
+  get capabilities(): Readonly<Record<string, boolean>> {
+    return capabilitiesOf(this.ctx, this.pluginId);
   }
 
   protected callBytes(method: string, payload: Uint8Array, options?: CallOptions): Promise<Uint8Array> {

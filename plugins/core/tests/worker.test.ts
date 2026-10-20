@@ -3,7 +3,8 @@ import { test } from "node:test";
 
 import { defineEvent } from "../src/events.js";
 import type { NativeConnection } from "../src/context.js";
-import { createNativeContext, nativeConnection, TokamakEntrypoint, type TokamakEvent } from "../src/worker.js";
+import { capabilitiesModule, createNativeContext, nativeConnection, TokamakEntrypoint, type TokamakEvent } from "../src/worker.js";
+import { connectNative } from "../src/testing.js";
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace -- test events merge into Tokamak.Events.
@@ -67,4 +68,11 @@ void test("an event override receives typed events and can reply synchronously",
   assert.equal(worker.event({ type: "resume", data: {} }), "device:resume");
   // @ts-expect-error -- events have declared types.
   worker.event({ type: "push", data: {} });
+});
+
+void test("the capabilities module reports each plugin operation on the context's platform", async () => {
+  const { ctx } = connectNative("android", { maps: { route: ["ios", "android"], tile: ["ios"] } });
+  const response = capabilitiesModule(ctx);
+  assert.equal(response.headers.get("content-type"), "text/javascript; charset=utf-8");
+  assert.equal(await response.text(), 'export default {"maps":{"route":true,"tile":false}};\n');
 });

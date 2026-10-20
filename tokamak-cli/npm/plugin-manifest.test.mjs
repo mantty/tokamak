@@ -123,3 +123,37 @@ test("browser implementations must match the generated frontend API", async t =>
     await assert.rejects(graph.types.resolve(async id => ({ id })), /web method/);
   }
 });
+
+test("manifest operations describe each operation's platforms and foreground needs", async t => {
+  const { root, dependency } = project(t);
+  const manifest = path.join(dependency, "tokamak-plugin.json");
+  const write = operations => fs.writeFileSync(manifest, JSON.stringify({
+    schemaVersion: 2, id: "widgets", api: { module: "./src/index.ts", export: "widgets" },
+    platforms: { ios: {}, android: {} }, operations,
+  }));
+  write({ connected: { platforms: { ios: "17.0", android: "26" }, foreground: ["ios"] } });
+  const [plugin] = discoverPlugins(root);
+  assert.deepEqual(plugin.platforms, ["ios", "android"]);
+  assert.deepEqual(plugin.operations, {
+    connected: { platforms: [{ name: "ios", minimum: "17.0" }, { name: "android", minimum: "26" }], foreground: ["ios"] },
+  });
+  const graph = createWorkerGraph(root, undefined, path.join(root, ".tokamak"));
+  await graph.types.resolve(async id => ({ id }));
+  assert.deepEqual(graph.availability(), { widgets: { connected: ["ios", "android"], echo: ["ios", "android"] } });
+  const types = fs.readFileSync(path.join(root, "tokamak-env.d.ts"), "utf8");
+  assert.match(types, /Native: iOS 17\.0\+, Android API 26\+\. Web: not supported\. May need the app in the foreground on iOS, to show UI\./);
+  assert.match(types, /Native: iOS, Android\. Web: not supported\./);
+  assert.match(types, /readonly capabilities: Readonly<Record<"connected" \| "echo", boolean>>/);
+
+  for (const [operations, message] of [
+    [{ connected: { platforms: { macos: "14.0" } } }, /names macos, which the plugin does not build for/],
+    [{ connected: { foreground: ["windows"] } }, /names windows, which the plugin does not build for/],
+    [{ connected: { visible: true } }, /unknown keys: visible/],
+    [{ connected: { platforms: { ios: 17 } } }, /must map platforms to a minimum OS version/],
+  ]) {
+    write(operations);
+    assert.throws(() => discoverPlugins(root), message);
+  }
+  write({ missing: {} });
+  assert.throws(() => createWorkerGraph(root, undefined, path.join(root, ".tokamak")), /operations\.missing names no method of widgets/);
+});

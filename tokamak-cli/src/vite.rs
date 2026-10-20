@@ -11,6 +11,7 @@ use serde::de::DeserializeOwned;
 
 use super::paths;
 use super::tokamak_config::{self, TokamakConfig};
+use tokamak_cli::Platform;
 
 /// How a missing report is fixed.
 pub(crate) const PLUGIN_HINT: &str =
@@ -79,13 +80,19 @@ impl VitePlugin {
     }
 
     /// The environment variables that activate the plugin in a development
-    /// server whose dev socket takes connections carrying `session_token`.
+    /// server for a device on `platform`, whose dev socket takes connections
+    /// carrying `session_token`.
     pub(crate) fn development_environment<'a>(
         &'a self,
         session_token: &'a str,
-    ) -> [(&'static str, &'a OsStr); 2] {
+        platform: Platform,
+    ) -> [(&'static str, &'a OsStr); 3] {
         let [output] = self.environment();
-        [output, ("TOKAMAK_SESSION_TOKEN", OsStr::new(session_token))]
+        [
+            output,
+            ("TOKAMAK_SESSION_TOKEN", OsStr::new(session_token)),
+            ("TOKAMAK_PLATFORM", OsStr::new(platform.namespace())),
+        ]
     }
 
     /// The app's configuration as `command`, which ran the plugin, reported it.

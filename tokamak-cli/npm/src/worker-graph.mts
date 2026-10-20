@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { PluginConfig } from "@cloudflare/vite-plugin";
 import { normalizePath, type Plugin } from "vite";
 
+import type { Availability, NativePlatform } from "@tokamakdev/plugin/capabilities";
 import type { PluginContract, WorkerContract } from "./worker-contract.mjs";
 import { WorkerTypes, type WorkerConfiguration } from "./worker-types.mjs";
 
@@ -14,8 +15,10 @@ type Auxiliary = NonNullable<PluginConfig["auxiliaryWorkers"]>[number];
 type AuxiliaryCustomizer = Extract<Extract<Auxiliary, { config: unknown }>["config"], (...args: never[]) => unknown>;
 export interface WorkerGraph {
   generated: string;
-  /** Connects development invocations to the device through the relay on `port`. */
-  relay(port: number, token: string): void;
+  /** Connects development invocations to a device on `platform` through the relay on `port`. */
+  relay(port: number, token: string, platform: NativePlatform | undefined): void;
+  /** Each plugin operation's native platforms, by plugin ID. */
+  availability(): Availability;
   configure(config: ServiceConfiguration): void;
   services(name: string): NonNullable<ServiceConfiguration["services"]>;
   native: AuxiliaryCustomizer;
@@ -33,7 +36,7 @@ export interface WorkerGraph {
   };
 }
 
-const NATIVE_CONTEXT = "virtual:tokamak/native-context";
+const NATIVE_CONNECTION = "virtual:tokamak/native-connection";
 const NATIVE_CALLS = normalizePath(fileURLToPath(new URL("./native.mjs", import.meta.url)));
 
 /** Configure the two bundles through Cloudflare's public auxiliary-worker API. */
@@ -51,7 +54,7 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
   let mainServices: ServiceConfiguration["services"];
   const signatures = new Map<string, string>();
   const development = normalizePath(fileURLToPath(new URL("./rpc/binding.mjs", import.meta.resolve("@tokamakdev/plugin/events"))));
-  let relay: { port: number; token: string } | undefined;
+  let relay: Relay | undefined;
   const serviceModule = (role: string) => `virtual:tokamak/service/${role}`;
   const bindingsModule = (role: string) => `\0tokamak:bindings:${role}`;
   const nativeContracts = () => Object.fromEntries([
@@ -123,7 +126,8 @@ export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
   refresh();
   return {
     generated: normalizePath(generated),
-    relay(port, token) { relay = { port, token }; },
+    relay(port, token, platform) { relay = { port, token, platform }; },
+    availability: () => availability(contracts.plugins),
     configure,
     services,
     native,
@@ -168,14 +172,14 @@ export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
         return [];
       },
       resolveId(id) {
-        if (id === NATIVE_CONTEXT) return `\0${NATIVE_CONTEXT}`;
+        if (id === NATIVE_CONNECTION) return `\0${NATIVE_CONNECTION}`;
         if (id.startsWith("\0tokamak:") || id.startsWith("\0virtual:tokamak/")) return id;
         const role = id === serviceModule("native") ? "native" : id === serviceModule("main") ? "main" : undefined;
         if (!role) return;
         return `\0${serviceModule(role)}`;
       },
       async load(id) {
-        if (id === `\0${NATIVE_CONTEXT}`) return nativeContextModule(dev ? relay : undefined);
+        if (id === `\0${NATIVE_CONNECTION}`) return nativeConnectionModule(dev ? relay : undefined);
         const role = id.endsWith(":main") || id.endsWith("/main") ? "main" : "native";
         if (id !== bindingsModule(role) && id !== `\0${serviceModule(role)}`) return;
         await contracts.resolve(source => this.resolve(source, undefined, { skipSelf: true }));
@@ -235,17 +239,32 @@ export function workerName(main: string): string {
   return `${main.slice(0, 46)}-${createHash("sha256").update(main).digest("hex").slice(0, 8)}-tokamak`;
 }
 
+/** The device relay a development Worker reaches native code through. */
+interface Relay {
+  port: number;
+  token: string;
+  platform: NativePlatform | undefined;
+}
+
 /**
- * The module that gives each invocation its native context: from the device relay during
- * development, otherwise from the connection the host attaches to the execution context.
+ * The module whose `connect(ctx)` gives an invocation its native connection: the device relay
+ * during development, otherwise none, so the context uses the connection the host attached.
  */
-function nativeContextModule(relay: { port: number; token: string } | undefined): string {
-  const sdk = JSON.stringify(normalizePath(fileURLToPath(import.meta.resolve("@tokamakdev/plugin/worker"))));
-  if (!relay) return `import { createNativeContext } from ${sdk};
-export const nativeContext = ctx => createNativeContext(ctx);`;
-  return `import { createNativeContext } from ${sdk};
-import { connectDevice } from ${JSON.stringify(NATIVE_CALLS)};
-export const nativeContext = ctx => createNativeContext(ctx, connectDevice(${String(relay.port)}, ${JSON.stringify(relay.token)}, ctx));`;
+function nativeConnectionModule(relay: Relay | undefined): string {
+  if (!relay) return "export const connect = () => undefined;";
+  return `import { connectDevice } from ${JSON.stringify(NATIVE_CALLS)};
+export const connect = ctx => connectDevice(${String(relay.port)}, ${JSON.stringify(relay.token)}, ctx, ${JSON.stringify(relay.platform ?? null)} ?? undefined);`;
+}
+
+/** Each plugin operation's native platforms: those its manifest names, or every one the plugin builds for. */
+function availability(plugins: PluginContract[]): Availability {
+  return Object.fromEntries(plugins.map(({ definition, operations }) => [
+    definition.id,
+    Object.fromEntries(operations.map(operation => [
+      operation,
+      definition.operations[operation]?.platforms.map(({ name }) => name) ?? definition.platforms,
+    ])),
+  ]));
 }
 
 function serviceEntrypoint(entry: string | undefined, methods: string[], plugins: PluginContract[]): string {
@@ -253,17 +272,22 @@ function serviceEntrypoint(entry: string | undefined, methods: string[], plugins
   const rpc = normalizePath(fileURLToPath(new URL("./rpc/endpoint.mjs", import.meta.resolve("@tokamakdev/plugin/events"))));
   const base = `import { WorkerEntrypoint } from "cloudflare:workers";
 import { rpcResponse } from ${JSON.stringify(rpc)};
-import { nativeContext } from ${JSON.stringify(NATIVE_CONTEXT)};
-${entry ? `import Worker from ${JSON.stringify(normalizePath(entry))};` : `import { TokamakEntrypoint as Worker } from ${JSON.stringify(sdk)};`}
+import { capabilitiesModule, createNativeContext${entry ? "" : ", TokamakEntrypoint as Worker"} } from ${JSON.stringify(sdk)};
+import { connect } from ${JSON.stringify(NATIVE_CONNECTION)};
+${entry ? `import Worker from ${JSON.stringify(normalizePath(entry))};` : ""}
 ${plugins.map((plugin, index) => `import { ${JSON.stringify(plugin.definition.api.export)} as plugin${index} } from ${JSON.stringify(plugin.definition.api.module)};`).join("\n")}
 `;
   const operations = methods.map((method) =>
     `async [${JSON.stringify(method)}](...args) { return this.#instance[${JSON.stringify(method)}](...args); }`);
   return `${base}
+const availability = ${JSON.stringify(availability(plugins))};
+const nativeContext = ctx => createNativeContext(ctx, connect(ctx), availability);
+
 export default class extends WorkerEntrypoint {
   #worker;
   get #instance() { return this.#worker ??= new Worker(nativeContext(this.ctx), this.env); }
   fetch(request) {
+    if (new URL(request.url).pathname === "/_tokamak/capabilities.js") return capabilitiesModule(nativeContext(this.ctx));
     if (new URL(request.url).pathname === "/_tokamak/app") {
       return rpcResponse(request, ctx => new Worker(nativeContext(ctx), this.env), ${JSON.stringify(methods)}, this.ctx);
     }

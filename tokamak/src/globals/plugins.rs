@@ -62,8 +62,21 @@ pub(crate) fn install<'js>(
     )?;
     bootstrap
         .get::<_, Function>("installPlugins")?
-        .call((call, subscribe))
+        .call((call, subscribe, PLATFORM))
 }
+
+/// The native platform the runtime runs on, as the Worker names it.
+const PLATFORM: &str = if cfg!(target_os = "ios") {
+    "ios"
+} else if cfg!(target_os = "android") {
+    "android"
+} else if cfg!(target_os = "windows") {
+    "windows"
+} else if cfg!(target_os = "macos") {
+    "macos"
+} else {
+    "linux"
+};
 
 /// The promise of `result`, which rejects with `AbortError` once
 /// `cancelled`, cancelling the native work.

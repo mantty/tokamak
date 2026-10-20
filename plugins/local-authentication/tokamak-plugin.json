@@ -26,5 +26,13 @@
   "api": {
     "module": "src/index.ts",
     "export": "localAuthentication"
+  },
+  "operations": {
+    "authenticate": {
+      "foreground": [
+        "ios",
+        "android"
+      ]
+    }
   }
 }

@@ -22,8 +22,8 @@ export function installAssets(binding, fetchAsset) {
   };
 }
 
-// Connects the Worker's byte endpoints to the native host.
-export function installPlugins(call, subscribe) {
+// Connects the Worker's byte endpoints to the native host on `platform`.
+export function installPlugins(call, subscribe, platform) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const decoded = payload => JSON.parse(decoder.decode(payload));
@@ -49,6 +49,7 @@ export function installPlugins(call, subscribe) {
     }
   };
   const connection = {
+    platform,
     async call(plugin, method, payload, { body, signal } = {}) {
       signal?.throwIfAborted();
       const reader = body?.getReader();

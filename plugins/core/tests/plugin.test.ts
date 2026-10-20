@@ -89,3 +89,10 @@ void test("a stream passes its overflow policy to the native subscription", () =
   void new Transfers(native.ctx).samples().getReader().read();
   assert.equal(native.sent[0]?.overflow, "dropOldest");
 });
+
+void test("capabilities report the operations implemented on the context's platform", () => {
+  const availability = { transfers: { upload: ["ios", "android"], samples: ["ios"] } } as const;
+  assert.deepEqual(new Transfers(connectNative("android", availability).ctx).capabilities, { upload: true, samples: false });
+  assert.deepEqual(new Transfers(connectNative("ios", availability).ctx).capabilities, { upload: true, samples: true });
+  assert.equal(connectNative("macos").ctx.platform, "macos");
+});

@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { normalizePath, type Plugin, type ViteDevServer } from "vite";
 
+import { capabilitiesFor, type NativePlatform } from "@tokamakdev/plugin/capabilities";
 import { openDevSocket, type DevSocket } from "./dev-socket.mjs";
 import type { Config } from "./index.mjs";
 import { findModule } from "./worker-contract.mjs";
@@ -15,6 +16,7 @@ export type TokamakOptions = Config & {
   module?: string;
 };
 
+const CAPABILITIES = "/_tokamak/capabilities.js";
 const MIDDLEWARE_MODE_ERROR =
   "Vite is running in middleware mode, so tokamak cannot find the development server's address; tok dev needs Vite's own dev server";
 
@@ -26,6 +28,7 @@ export function createNativeWorker(
 ): { plugin: Plugin; graph(): WorkerGraph } {
   const { module, ...config } = options;
   const token = process.env.TOKAMAK_SESSION_TOKEN;
+  const platform = process.env.TOKAMAK_PLATFORM as NativePlatform | undefined;
   let graph: WorkerGraph;
   const plugin: Plugin = {
     name: "tokamak",
@@ -58,7 +61,13 @@ export function createNativeWorker(
       order: "pre",
       async handler(server) {
         const devSocket = await serveNativeWorker(server, graph.names(), output, token);
-        if (devSocket && token) graph.relay(devSocket.port, token);
+        if (devSocket && token) graph.relay(devSocket.port, token, platform);
+        // A page loaded from this server, not the device, still gets the device's capabilities.
+        server.middlewares.use(CAPABILITIES, (_request, response) => {
+          const capabilities = capabilitiesFor(graph.availability(), platform);
+          response.setHeader("content-type", "text/javascript; charset=utf-8");
+          response.end(`export default ${JSON.stringify(capabilities)};\n`);
+        });
       },
     },
   };

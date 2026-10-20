@@ -13,9 +13,12 @@
     "./events": "./src/events.ts",
     "./worker": "./src/worker.ts",
     "./testing": "./src/testing.ts",
-    "./native-protocol": "./src/native-protocol.mjs"
+    "./native-protocol": "./src/native-protocol.mjs",
+    "./capabilities": "./src/capabilities.mjs"
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "publishConfig": {
     "access": "public"
   }

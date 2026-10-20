@@ -20,7 +20,12 @@ async function client(root, native) {
     build: { outDir, lib: { entry, formats: ["es"], fileName: () => "client.mjs" } },
   });
   const file = path.join(outDir, "client.mjs");
-  assert.doesNotMatch(fs.readFileSync(file, "utf8"), /cloudflare:workers|TokamakContext|nativeConnection|NATIVE_WIDGET_IMPLEMENTATION/);
+  const source = fs.readFileSync(file, "utf8");
+  assert.doesNotMatch(source, /cloudflare:workers|TokamakContext|nativeConnection|NATIVE_WIDGET_IMPLEMENTATION/);
+  // The page imports the Tokamak worker's capabilities from the app origin.
+  const capabilities = path.join(outDir, "capabilities.mjs");
+  fs.writeFileSync(capabilities, 'export default { widgets: { echo: true, connected: false, fail: true } };');
+  fs.writeFileSync(file, source.replace('"/_tokamak/capabilities.js"', JSON.stringify(pathToFileURL(capabilities).href)));
   return (await import(pathToFileURL(file).href)).default;
 }
 
@@ -53,6 +58,7 @@ test("a generated package client calls its plugin without an app-native entrypoi
       } }); }
     };
     const value = { count: 42n, bytes: new Uint8Array([1, 2]) };
+    assert.deepEqual(plugin.capabilities, { echo: true, connected: false, fail: true });
     assert.deepEqual(await plugin.echo(value), value);
     await assert.rejects(plugin.fail(), { message: "NATIVE_WIDGET_IMPLEMENTATION" });
   }));
@@ -61,7 +67,8 @@ test("a generated package client calls its plugin without an app-native entrypoi
 test("a native-only plugin client rejects unavailable calls on the web", async t => {
   const { root } = project(t);
   const plugin = await client(root, false);
-  assert.deepEqual(Object.keys(plugin).sort(), ["connected", "echo"]);
+  assert.deepEqual(Object.keys(plugin).sort(), ["capabilities", "connected", "echo"]);
+  assert.deepEqual(plugin.capabilities, { connected: false, echo: false });
   await assert.rejects(plugin.echo("hello"), { name: "NotSupportedError" });
 });
 
@@ -79,6 +86,7 @@ test("web clients use declared browser methods and reject omitted operations", a
   }));
   const plugin = await client(root, false);
   assert.equal(await plugin.echo("hello"), "BROWSER_WIDGET_IMPLEMENTATION hello");
+  assert.deepEqual(plugin.capabilities, { connected: false, echo: true });
   await assert.rejects(plugin.connected(), { name: "NotSupportedError" });
   await client(root, true);
   assert.doesNotMatch(fs.readFileSync(path.join(root, "native-client/client.mjs"), "utf8"), /BROWSER_WIDGET_IMPLEMENTATION/);

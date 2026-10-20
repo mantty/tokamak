@@ -1,5 +1,5 @@
 import { dispatch as dispatchEvent, type Dispatched } from "./registry.js";
-import { createNativeContext, type Overflow, type TokamakContext } from "./context.js";
+import { createNativeContext, type Availability, type NativeConnection, type NativePlatform, type Overflow, type TokamakContext } from "./context.js";
 import { encodeJson, decodeJson } from "./codec.js";
 
 type Reply = (payload: Uint8Array, error: DOMException | undefined, done: boolean) => void;
@@ -22,26 +22,36 @@ export class FakeNativeTransport {
   readonly sent: SentRequest[] = [];
   private nextId = 1;
   private readonly pending = new Map<number, Reply>();
-  readonly ctx: TokamakContext = createNativeContext({ waitUntil: () => undefined }, {
-    call: (plugin, method, payload, { body, signal } = {}) => new Promise((resolve, reject) => {
-      signal?.throwIfAborted();
-      const id = this.request({ type: "call", plugin, method, payload, body }, (value, error) => {
-        if (error) reject(error);
-        else resolve(value);
-      });
-      signal?.addEventListener("abort", () => {
-        this.cancel(id);
-        reject(signal.reason as Error);
-      }, { once: true });
-    }),
-    listen: (plugin, method, payload, { next, error, overflow = "error" }) => {
-      const id = this.request({ type: "subscribe", plugin, method, payload, overflow }, (value, failure, done) => {
-        if (failure) error(failure, done);
-        else next(value, done);
-      });
-      return () => { this.cancel(id); };
-    },
-  });
+  readonly ctx: TokamakContext;
+
+  /** An invocation on `platform`, whose plugins' operations have `availability`. */
+  constructor(platform: NativePlatform = "ios", availability: Availability = {}) {
+    this.ctx = createNativeContext({ waitUntil: () => undefined }, this.connection(platform), availability);
+  }
+
+  private connection(platform: NativePlatform): NativeConnection {
+    return {
+      platform,
+      call: (plugin, method, payload, { body, signal } = {}) => new Promise((resolve, reject) => {
+        signal?.throwIfAborted();
+        const id = this.request({ type: "call", plugin, method, payload, body }, (value, error) => {
+          if (error) reject(error);
+          else resolve(value);
+        });
+        signal?.addEventListener("abort", () => {
+          this.cancel(id);
+          reject(signal.reason as Error);
+        }, { once: true });
+      }),
+      listen: (plugin, method, payload, { next, error, overflow = "error" }) => {
+        const id = this.request({ type: "subscribe", plugin, method, payload, overflow }, (value, failure, done) => {
+          if (failure) error(failure, done);
+          else next(value, done);
+        });
+        return () => { this.cancel(id); };
+      },
+    };
+  }
 
   private request(request: Omit<SentRequest, "id">, reply: Reply): number {
     const id = this.nextId++;
@@ -72,7 +82,9 @@ export class FakeNativeTransport {
   }
 }
 
-export function connectNative(): FakeNativeTransport { return new FakeNativeTransport(); }
+export function connectNative(platform?: NativePlatform, availability?: Availability): FakeNativeTransport {
+  return new FakeNativeTransport(platform, availability);
+}
 
 /**
  * Runs the listeners of the event `name` as the runtime does, returning the reply, the events

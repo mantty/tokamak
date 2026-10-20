@@ -74,5 +74,41 @@
   "web": {
     "module": "web/client.ts",
     "export": "location"
+  },
+  "operations": {
+    "getCurrentPosition": {
+      "foreground": [
+        "ios"
+      ]
+    },
+    "watchPosition": {
+      "foreground": [
+        "ios"
+      ]
+    },
+    "requestPermission": {
+      "foreground": [
+        "ios",
+        "android"
+      ]
+    },
+    "openSettings": {
+      "foreground": [
+        "ios",
+        "android"
+      ]
+    },
+    "startUpdates": {
+      "foreground": [
+        "ios",
+        "android"
+      ]
+    },
+    "onVisit": {
+      "platforms": {
+        "ios": true,
+        "macos": true
+      }
+    }
   }
 }

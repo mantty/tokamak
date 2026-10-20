@@ -1,13 +1,14 @@
 import { decodeMessage, encodeMessage, messages, type MessageHeader, type NativeMessage } from "@tokamakdev/plugin/native-protocol";
+import type { NativePlatform } from "@tokamakdev/plugin/capabilities";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
- * The development invocation `ctx`'s native connection, which reaches the device's byte
- * endpoints through the relay on `port`. Its subscriptions are `ctx`'s `waitUntil` work.
+ * The development invocation `ctx`'s native connection, which reaches the byte endpoints of a
+ * device on `platform` through the relay on `port`. Its subscriptions are `ctx`'s `waitUntil` work.
  */
-export function connectDevice(port: number, token: string, ctx: { waitUntil(promise: Promise<unknown>): void }) {
+export function connectDevice(port: number, token: string, ctx: { waitUntil(promise: Promise<unknown>): void }, platform?: NativePlatform) {
   const post = async (path: string, request: Uint8Array | ReadableStream<Uint8Array>, signal?: AbortSignal) => {
     const response = await fetch(`http://127.0.0.1:${String(port)}${path}`, {
       method: "POST",
@@ -27,6 +28,7 @@ export function connectDevice(port: number, token: string, ctx: { waitUntil(prom
     return payload;
   };
   return {
+    platform,
     async call(plugin: string, method: string, payload: Uint8Array, { body, signal }: { body?: ReadableStream<Uint8Array>; signal?: AbortSignal } = {}) {
       signal?.throwIfAborted();
       const header = { type: body ? "callWithBody" : "call", plugin, method };

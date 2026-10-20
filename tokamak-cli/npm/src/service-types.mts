@@ -21,15 +21,21 @@ export function serviceTypes(instance: string, methods: ServiceMethod[], name = 
     const comment = documentation ? `  /** ${documentation.replaceAll("*/", "* /").replaceAll("\n", "\n   * ")} */\n` : "";
     return `${comment}  ${JSON.stringify(name)}: Async${overloads}<Worker[${JSON.stringify(name)}]>;`;
   });
+  const operations = methods.map(({ name }) => JSON.stringify(name)).join(" | ") || "never";
   return `type Worker = ${instance};
 
 ${helpers.join("\n\n")}
 
-export interface ${name}Client {
+export interface ${name}Operations {
 ${members.join("\n")}
 }
 
-export interface ${name}Service extends ${name}Client {
+export interface ${name}Client extends ${name}Operations {
+  /** Whether each operation is implemented where the app runs. It does not report permission or promise that a call succeeds. */
+  readonly capabilities: Readonly<Record<${operations}, boolean>>;
+}
+
+export interface ${name}Service extends ${name}Operations {
   fetch(input: Request | string | URL, init?: RequestInit): Promise<Response>;
 }
 `;

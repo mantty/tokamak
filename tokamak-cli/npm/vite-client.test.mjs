@@ -55,7 +55,8 @@ async function bundledClient(app, native) {
 test("the web client has the declared API and reports unavailable native operations", async () => {
   const app = project({ "src/tokamak.ts": WORKER });
   const client = await bundledClient(app, false);
-  assert.deepEqual(Object.keys(client).sort(), ["echo", "fail", "stream"]);
+  assert.deepEqual(Object.keys(client).sort(), ["capabilities", "echo", "fail", "stream"]);
+  assert.deepEqual(client.capabilities, { echo: false, fail: false, stream: false });
   await assert.rejects(client.echo({ count: 1n, bytes: new Uint8Array() }), { name: "NotSupportedError" });
 });
 

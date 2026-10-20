@@ -26,5 +26,25 @@
   "api": {
     "module": "src/index.ts",
     "export": "secureStorage"
+  },
+  "operations": {
+    "get": {
+      "foreground": [
+        "ios",
+        "android"
+      ]
+    },
+    "replace": {
+      "foreground": [
+        "ios",
+        "android"
+      ]
+    },
+    "set": {
+      "foreground": [
+        "ios",
+        "android"
+      ]
+    }
   }
 }
