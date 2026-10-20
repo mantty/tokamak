@@ -156,13 +156,15 @@ async fn runtime_endpoints_encode_their_own_values_and_errors() -> TestResult {
             .payload,
         br#""background""#
     );
-    let error = calls.call("tokamak", "unknown", &[]).await;
+    assert!(shell.requests().is_empty());
+    let error = PluginCalls::new(None, false)
+        .call("tokamak", "unknown", &[])
+        .await;
     assert!(error.failed && error.done);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&error.payload)?["name"],
         "NotSupportedError"
     );
-    assert!(shell.requests().is_empty());
     Ok(())
 }
 

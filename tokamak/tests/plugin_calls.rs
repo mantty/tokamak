@@ -313,6 +313,26 @@ fn records_the_stage_while_a_lifecycle_event_runs() -> TestResult {
 }
 
 #[test]
+fn routes_core_device_operations_to_the_shell() -> TestResult {
+    let started = Started::new(true)?;
+    let event = started.emit(
+        "call",
+        &json!({
+            "plugin": "tokamak", "method": "webview.getCurrentPage", "arguments": null,
+        }),
+        TIMEOUT,
+    );
+    let request = started.next_request()?;
+    assert_eq!(request.text, "call tokamak.webview.getCurrentPage null");
+    started.runtime.reply(
+        request.id,
+        value(br#""https://app.tokamak.local/recipes""#, true),
+    );
+    assert_eq!(join(event)?, json!("https://app.tokamak.local/recipes"));
+    Ok(())
+}
+
+#[test]
 fn delivers_listener_values_and_errors_during_registered_work() -> TestResult {
     let started = Started::new(true)?;
     let event = started.emit("watch", &json!({}), TIMEOUT);

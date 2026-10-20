@@ -5192,6 +5192,7 @@ dependencies = [
  "serde_json",
  "tao",
  "tokamak",
+ "url",
  "webview2-com",
  "windows",
  "wry",

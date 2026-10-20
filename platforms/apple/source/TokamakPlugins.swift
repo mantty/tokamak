@@ -1,4 +1,5 @@
 import Foundation
+import WebKit
 
 struct TokamakPluginError: Error {
   let name: String
@@ -62,6 +63,8 @@ final class TokamakHost {
     self.app = app
     self.plugin = plugin
   }
+
+  var webView: WKWebView? { app.webView }
 
   /// Throws `NeedsUIError` unless the app can show UI now: on iOS, while it
   /// is in the foreground. A hidden or minimised macOS app still shows system

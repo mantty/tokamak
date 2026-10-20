@@ -1,5 +1,5 @@
 import { dispatch as dispatchEvent, type Dispatched } from "./registry.js";
-import { createNativeContext, nativeConnection, type TokamakContext } from "./context.js";
+import { createNativeContext, type TokamakContext } from "./context.js";
 import { encodeJson, decodeJson } from "./codec.js";
 
 type Reply = (payload: Uint8Array, error: DOMException | undefined, done: boolean) => void;
@@ -9,23 +9,20 @@ export class FakeNativeTransport {
   readonly sent: { type: string; id: number; plugin?: string; method?: string; payload?: Uint8Array }[] = [];
   private nextId = 1;
   private readonly pending = new Map<number, Reply>();
-  readonly ctx: TokamakContext = {
-    waitUntil: () => undefined,
-    [nativeConnection]: {
-      call: (plugin, method, payload) => new Promise((resolve, reject) => {
-        this.request("call", plugin, method, payload, (value, error) => { if (error) reject(error); else resolve(value); });
-      }),
-      listen: (plugin, method, payload, next, error) => {
-        const id = this.request("subscribe", plugin, method, payload, (value, failure, done) => {
-          if (failure) error(failure, done);
-          else next(value, done);
-        });
-        return () => {
-          if (this.pending.delete(id)) this.sent.push({ type: "cancel", id });
-        };
-      },
+  readonly ctx: TokamakContext = createNativeContext({ waitUntil: () => undefined }, {
+    call: (plugin, method, payload) => new Promise((resolve, reject) => {
+      this.request("call", plugin, method, payload, (value, error) => { if (error) reject(error); else resolve(value); });
+    }),
+    listen: (plugin, method, payload, next, error) => {
+      const id = this.request("subscribe", plugin, method, payload, (value, failure, done) => {
+        if (failure) error(failure, done);
+        else next(value, done);
+      });
+      return () => {
+        if (this.pending.delete(id)) this.sent.push({ type: "cancel", id });
+      };
     },
-  };
+  });
 
   private request(type: string, plugin: string, method: string, payload: Uint8Array, reply: Reply): number {
     const id = this.nextId++;

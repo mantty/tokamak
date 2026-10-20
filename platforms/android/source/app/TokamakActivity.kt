@@ -21,7 +21,8 @@ private const val UNSUPPORTED =
 class TokamakActivity : Activity() {
     private val tokamak: TokamakApplication
         get() = application as TokamakApplication
-    private lateinit var webView: WebView
+    internal lateinit var webView: WebView
+        private set
     private var runtime: TokamakRuntime? = null
     private var proxyPort: Int? = null
     private var restoreGeneration = 0L

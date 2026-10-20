@@ -32,6 +32,7 @@ class TokamakApplication : Application(), TokamakPlugins {
     /** Every plugin, by ID. */
     val plugins: Map<String, TokamakPlugin> by lazy {
         buildMap {
+            put("tokamak", TokamakCorePlugin(this@TokamakApplication))
             tokamakPlugins(this@TokamakApplication).forEach { plugin ->
                 check(put(plugin.id, plugin) == null) { "Duplicate plugin ID" }
             }

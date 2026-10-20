@@ -269,6 +269,7 @@ private final class TokamakController {
     #endif
     webView.allowsLinkPreview = false
     activeWebView = webView
+    app.webView = webView
     webView.navigationDelegate = navigation
     webView.uiDelegate = navigation
     webView.load(URLRequest(url: URL(string: "https://\(runtime.appHost)/")!))

@@ -1,5 +1,6 @@
 import Foundation
 import TokamakRuntime
+import WebKit
 
 #if os(iOS)
   import UIKit
@@ -17,6 +18,7 @@ private let lifecycleDeadline: TimeInterval = 10
 /// WebView, so plugins receive app events before a page loads and a Worker
 /// event can run while no page is loaded.
 final class TokamakApp {
+  weak var webView: WKWebView?
   /// Every plugin, by ID.
   private(set) var plugins: [String: any TokamakPlugin] = [:]
   private var runtime: Result<RuntimeHandle, Error>?
@@ -39,6 +41,7 @@ final class TokamakApp {
 
   /// Creates the plugins. Call it before launch finishes.
   init() {
+    plugins["tokamak"] = TokamakCorePlugin(host: TokamakHost(app: self, plugin: "tokamak"))
     for plugin in tokamakPlugins(app: self) {
       precondition(plugins.updateValue(plugin, forKey: plugin.id) == nil, "Duplicate plugin ID")
     }

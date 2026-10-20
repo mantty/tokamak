@@ -179,8 +179,8 @@ impl PluginCalls {
     }
 
     /// The shell's handler, unless the runtime answers calls to `plugin`.
-    fn shell(&self, plugin: &str) -> Option<&Arc<dyn PluginHandler>> {
-        if plugin == RUNTIME_PLUGIN {
+    fn shell(&self, plugin: &str, method: &str) -> Option<&Arc<dyn PluginHandler>> {
+        if plugin == RUNTIME_PLUGIN && method == "lifecycleStage" {
             None
         } else {
             self.handler.as_ref()
@@ -218,7 +218,7 @@ impl PluginCalls {
         waiting: Waiting,
         request: impl FnOnce(&dyn PluginHandler, u64),
     ) -> Option<Registration> {
-        let Some(handler) = self.shell(plugin) else {
+        let Some(handler) = self.shell(plugin, method) else {
             waiting.send(self.answer(plugin, method));
             return None;
         };

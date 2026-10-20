@@ -134,3 +134,14 @@ import { dispatch } from "@tokamakdev/plugin/testing";
 onRing(() => 5);
 const { reply, reported } = await dispatch("alarms.ring", { id: "a1" }, env);
 ```
+## WebView controls
+
+Inside the Tokamak worker, use `this.ctx.webview.navigate("/recipes")`,
+`await this.ctx.webview.getCurrentPage()`, or
+`await this.ctx.webview.postMessage({ recipeId: "42" })`. A page receives messages
+through its standard `window.addEventListener("message", handler)`.
+
+Navigation accepts URLs within the app's origin and resolves when the native
+view accepts the navigation. Messaging resolves after dispatch into the current
+page. These operations reject with `InvalidStateError` when no page is loaded;
+they neither create a view nor queue messages for a later page.

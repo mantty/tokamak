@@ -1,8 +1,17 @@
 import Foundation
+import WebKit
 
 @main
 enum PluginRequestsTests {
   static func main() {
+    for address in ["https://app.example/next", "HTTPS://APP.EXAMPLE:443/next"] {
+      precondition(URL(string: address)!.isAppOrigin("app.example"))
+    }
+    for address in [
+      "https://app.example:444/next", "https://other.example/", "http://app.example/",
+    ] {
+      precondition(!URL(string: address)!.isAppOrigin("app.example"))
+    }
     let app = TokamakApp()
     let plugin = TestPlugin(host: TokamakHost(app: app, plugin: "test"))
     var received: [(Int, TokamakPluginResult)] = []
@@ -99,6 +108,7 @@ private final class TestPlugin: TokamakPlugin {
 
 // The request dispatcher does not use the app's runtime or background-event facilities.
 final class TokamakApp {
+  weak var webView: WKWebView?
   var isInForeground = true
   func emit(
     _ name: String, event: Any, timeout: TimeInterval,

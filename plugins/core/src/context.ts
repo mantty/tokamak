@@ -1,3 +1,5 @@
+import { webview, type WebView } from "./webview.js";
+
 /** The native connection supplied by the host. */
 export const nativeConnection = Symbol.for("tokamak.native");
 
@@ -15,6 +17,7 @@ export interface NativeConnection {
 /** The receiving invocation and its native connection. */
 export interface TokamakContext {
   waitUntil(promise: Promise<unknown>): void;
+  readonly webview: WebView;
   readonly [nativeConnection]: NativeConnection;
 }
 
@@ -28,9 +31,12 @@ const disconnected: NativeConnection = {
 };
 
 /** Attaches the host's connection to the receiving execution context. */
-export function createNativeContext(ctx: Pick<TokamakContext, "waitUntil">): TokamakContext {
-  const connection = Reflect.get(globalThis, nativeConnection) as NativeConnection | undefined;
-  return Object.assign(ctx, { [nativeConnection]: connection ?? disconnected });
+export function createNativeContext(
+  ctx: Pick<TokamakContext, "waitUntil">,
+  connection = Reflect.get(globalThis, nativeConnection) as NativeConnection | undefined,
+): TokamakContext {
+  const native = connection ?? disconnected;
+  return Object.assign(ctx, { [nativeConnection]: native, webview: webview(native) });
 }
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace -- the generated app declarations supply the native bindings.
