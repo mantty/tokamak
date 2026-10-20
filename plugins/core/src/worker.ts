@@ -11,7 +11,7 @@ export interface TokamakEvent<T = unknown> {
 }
 
 /** The application's native worker entrypoint. */
-export class TokamakEntrypoint<Env = Cloudflare.Env> {
+export class TokamakEntrypoint<Env = Tokamak.Env> {
   constructor(
     protected readonly ctx: TokamakContext,
     protected readonly env: Env,

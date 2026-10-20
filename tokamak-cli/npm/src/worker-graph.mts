@@ -6,11 +6,10 @@ import { fileURLToPath } from "node:url";
 import type { PluginConfig } from "@cloudflare/vite-plugin";
 import { normalizePath, type Plugin } from "vite";
 
-import { readServiceContracts, readWorkerContract, type WorkerContract } from "./worker-contract.mjs";
-import { serviceTypes, writeEnvironmentTypes } from "./service-types.mjs";
+import type { WorkerContract } from "./worker-contract.mjs";
+import { WorkerTypes, type WorkerConfiguration } from "./worker-types.mjs";
 
-type MainCustomizer = Extract<NonNullable<PluginConfig["config"]>, (...args: never[]) => unknown>;
-type ServiceConfiguration = Pick<Parameters<MainCustomizer>[0], "name" | "topLevelName" | "services" | "main" | "configPath">;
+type ServiceConfiguration = Pick<WorkerConfiguration, "name" | "topLevelName" | "services" | "main" | "configPath" | "vars" | "kv_namespaces" | "d1_databases" | "r2_buckets">;
 type Auxiliary = NonNullable<PluginConfig["auxiliaryWorkers"]>[number];
 type AuxiliaryCustomizer = Extract<Extract<Auxiliary, { config: unknown }>["config"], (...args: never[]) => unknown>;
 export interface WorkerGraph {
@@ -19,6 +18,7 @@ export interface WorkerGraph {
   native: AuxiliaryCustomizer;
   names(): { main: string; native: string; app: string };
   contract(): WorkerContract;
+  types: WorkerTypes;
   cloudflare: PluginConfig;
   plugin: Plugin & {
     config: Extract<Plugin["config"], (...args: never[]) => unknown>;
@@ -34,55 +34,41 @@ export interface WorkerGraph {
 export function createWorkerGraph(root: string, entry: string | undefined, output: string): WorkerGraph {
   const generated = path.join(output, "worker.mjs");
   const types = path.join(root, "tokamak-env.d.ts");
+  const contracts = new WorkerTypes(root, entry);
+  contracts.discover();
   const events = normalizePath(fileURLToPath(new URL("./entrypoint.js", import.meta.resolve("@tokamakdev/plugin/events"))));
-  let contract: WorkerContract;
   let mainName: string;
   let nativeName: string;
   let appName: string;
-  let mainEntry: string;
-  let mainModule: string;
   let mainEnvironment: string;
   let dev = false;
   let mainServices: ServiceConfiguration["services"];
-  let mainContracts: Record<string, WorkerContract> = {};
   const signatures = new Map<string, string>();
   const development = normalizePath(fileURLToPath(new URL("./rpc/binding.mjs", import.meta.resolve("@tokamakdev/plugin/events"))));
   const serviceModule = (role: string) => `virtual:tokamak/service/${role}`;
   const bindingsModule = (role: string) => `\0tokamak:bindings:${role}`;
-  async function resolveMain(resolve: (id: string) => Promise<{ id: string } | null>): Promise<void> {
-    if (mainModule) return;
-    const resolved = await resolve(mainEntry);
-    const source = resolved?.id.split(/[?#]/, 1)[0];
-    if (!source || !fs.existsSync(source)) {
-      throw new Error(`Cannot resolve the main Worker's service contract: ${mainEntry} (${resolved?.id ?? "unresolved"}).`);
-    }
-    mainContracts = readServiceContracts(source, root);
-    mainModule = normalizePath(source);
-  }
   function bindings(role: string): Record<string, string[]> {
     const services = role === "main" ? mainServices : [{ binding: "MAIN", service: mainName }];
     const result: Record<string, string[]> = {};
     for (const service of services ?? []) {
-      const contracts = service.service === mainName ? mainContracts
-        : service.service === nativeName ? { default: contract } : undefined;
-      if (!contracts) continue;
-      const target = contracts[service.entrypoint ?? "default"];
+      const targets = service.service === mainName ? contracts.main
+        : service.service === nativeName ? { default: contracts.native } : undefined;
+      if (!targets) continue;
+      const target = targets[service.entrypoint ?? "default"];
       if (!target) throw new Error(`Binding ${service.binding} refers to an unknown Worker entrypoint ${service.entrypoint}.`);
       result[service.binding] = target.methods;
     }
     return result;
   }
   function signature(role: string): string {
-    const contracts = role === "main" ? mainContracts : { default: contract };
-    return JSON.stringify({ bindings: bindings(role), methods: Object.entries(contracts).map(([name, value]) => [name, value.methods]) });
+    const targets = role === "main" ? contracts.main : { default: contracts.native };
+    return JSON.stringify({ bindings: bindings(role), methods: Object.entries(targets).map(([name, value]) => [name, value.methods]) });
   }
   function refresh(): void {
-    contract = entry ? readWorkerContract(entry, root) : { methods: [], files: [], declarations: serviceTypes("{}", []) };
-    const source = serviceEntrypoint(entry, contract.methods);
+    const source = serviceEntrypoint(entry, contracts.native.methods);
     writeChanged(generated, `${source}import { eventEntrypoint } from ${JSON.stringify(events)};
 export const TokamakEvents = eventEntrypoint(Worker);\n`);
-    writeChanged(path.join(output, "methods.json"), `${JSON.stringify(contract.methods)}\n`);
-    writeEnvironmentTypes(root, contract.declarations);
+    writeChanged(path.join(output, "methods.json"), `${JSON.stringify(contracts.native.methods)}\n`);
   }
   const configure = (config: ServiceConfiguration): void => {
     if (!config.name) throw new Error("Tokamak requires a name in the main Worker's configuration.");
@@ -92,15 +78,14 @@ export const TokamakEvents = eventEntrypoint(Worker);\n`);
     mainName = config.name;
     nativeName = workerName(mainName);
     appName = config.topLevelName ?? mainName;
-    if (!config.main) throw new Error("Tokamak requires a main Worker entrypoint.");
-    const source = path.resolve(config.configPath ? path.dirname(config.configPath) : root, config.main);
-    mainEntry = fs.existsSync(source) ? normalizePath(source) : config.main;
+    contracts.configure(config);
     if (dev) config.main = serviceModule("main");
     config.services = [...config.services ?? [], { binding: "TOKAMAK", service: nativeName }];
     mainServices = config.services;
   };
   const native: AuxiliaryCustomizer = (_config, { entryWorkerConfig }) => {
     if (!mainName) throw new Error("The main Worker must be configured before the Tokamak worker.");
+    contracts.bindings(entryWorkerConfig);
     const { configPath, userConfigPath, compatibility_date, compatibility_flags, vars, kv_namespaces, d1_databases, r2_buckets } = entryWorkerConfig;
     return {
       configPath,
@@ -122,7 +107,8 @@ export const TokamakEvents = eventEntrypoint(Worker);\n`);
     configure,
     native,
     names: () => ({ main: mainName, native: nativeName, app: appName }),
-    contract: () => contract,
+    contract: () => contracts.native,
+    types: contracts,
     cloudflare: {
       config: configure,
       auxiliaryWorkers: [{
@@ -136,48 +122,49 @@ export const TokamakEvents = eventEntrypoint(Worker);\n`);
         dev = environment.command === "serve";
       },
       configEnvironment() {
-        return { optimizeDeps: { exclude: [mainEntry] } };
+        return { optimizeDeps: { exclude: contracts.mainEntry ? [contracts.mainEntry] : [] } };
       },
       async buildStart() {
         if (this.environment.name !== "tokamak") return;
+        await contracts.resolve(id => this.resolve(id, undefined, { skipSelf: true }));
         refresh();
-        await resolveMain(id => this.resolve(id, undefined, { skipSelf: true }));
-        for (const file of [...contract.files, ...Object.values(mainContracts).flatMap(value => value.files)]) this.addWatchFile(file);
+        for (const file of [...contracts.native.files, ...Object.values(contracts.main).flatMap(value => value.files)]) this.addWatchFile(file);
       },
-      hotUpdate({ file, modules }) {
+      hotUpdate({ file, modules, timestamp }) {
         if (file === normalizePath(types)) return;
         const role = this.environment.name === "tokamak" ? "native"
           : this.environment.name === mainEnvironment ? "main" : undefined;
         if (!role) return;
-        const files = [...contract.files, ...Object.values(mainContracts).flatMap(value => value.files)];
+        const files = [...contracts.native.files, ...Object.values(contracts.main).flatMap(value => value.files)];
         if (!files.includes(file) && (this.environment.name !== "tokamak" || !modules.length)) return;
+        contracts.refresh({ file, timestamp });
         refresh();
-        if (mainModule) mainContracts = readServiceContracts(mainModule, root);
         if (!modules.length && signatures.get(role) === signature(role)) return;
         this.environment.moduleGraph.invalidateAll();
         this.environment.hot.send({ type: "full-reload" });
         return [];
       },
-      async resolveId(id) {
+      resolveId(id) {
         if (id.startsWith("\0tokamak:") || id.startsWith("\0virtual:tokamak/")) return id;
         const role = id === serviceModule("native") ? "native" : id === serviceModule("main") ? "main" : undefined;
         if (!role) return;
-        if (role === "main") mainEnvironment = this.environment.name;
-        await resolveMain(source => this.resolve(source, undefined, { skipSelf: true }));
         return `\0${serviceModule(role)}`;
       },
-      load(id) {
+      async load(id) {
         const role = id.endsWith(":main") || id.endsWith("/main") ? "main" : "native";
+        if (id !== bindingsModule(role) && id !== `\0${serviceModule(role)}`) return;
+        await contracts.resolve(source => this.resolve(source, undefined, { skipSelf: true }));
+        refresh();
+        if (role === "main") mainEnvironment = this.environment.name;
         if (id === bindingsModule(role)) {
           return `import { env } from "cloudflare:workers";
 import { installBindings } from ${JSON.stringify(development)};
 installBindings(env, ${JSON.stringify(bindings(role))});`;
         }
-        if (id !== `\0${serviceModule(role)}`) return;
         signatures.set(role, signature(role));
-        const source = JSON.stringify(role === "main" ? mainModule : normalizePath(generated));
-        const contracts = role === "main" ? mainContracts : { default: contract };
-        const exports = Object.entries(contracts).map(([name, value], index) =>
+        const source = JSON.stringify(role === "main" ? contracts.mainModule : normalizePath(generated));
+        const targets = role === "main" ? contracts.main : { default: contracts.native };
+        const exports = Object.entries(targets).map(([name, value], index) =>
           `const Service${index} = developmentEntrypoint(module[${JSON.stringify(name)}], ${JSON.stringify(value.methods)}, ${JSON.stringify(bindings(role))});
 export { Service${index} as ${JSON.stringify(name)} };`);
         const hostEvents = role === "native"

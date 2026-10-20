@@ -3,7 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { tokamak } from "@tokamakdev/tok/vite";
 
 import { createBuilder, createServer } from "vite";
 import { createWorkerGraph } from "./dist/worker-graph.mjs";
@@ -30,8 +32,8 @@ function checkTypes(root, source) {
     ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")), []);
 }
 
-test("generates editor declarations for optional native bindings and the client contract", (t) => {
-  const { root } = project(t, {
+test("generates editor declarations for optional native bindings and the client contract", async (t) => {
+  const { root, graph } = project(t, {
     "tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
     export default class Native extends WorkerEntrypoint {
       /** Gets the regional recipe.
@@ -40,6 +42,7 @@ test("generates editor declarations for optional native bindings and the client 
       recipe(longitude: number, latitude: number): { title: string } { return { title: "Soup" }; }
     }`,
   });
+  await graph.types.resolve(async id => ({ id }));
   checkTypes(root, `
     // @ts-expect-error native bindings are absent on Cloudflare
     env.TOKAMAK.recipe(1, 2);
@@ -56,32 +59,116 @@ test("generates editor declarations for optional native bindings and the client 
   `);
 });
 
-test("preserves existing user declarations when their filename conflicts with generated types", (t) => {
+test("infers calls through MAIN on a clean build and keeps native bindings separate", async t => {
+  const sdk = JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/tok")));
+  const events = JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/plugin/events")).replace(/\.ts$/, ".js"));
+  const { root, config } = project(t, {
+    "main.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
+      export default class Main extends WorkerEntrypoint<Cloudflare.Env> {
+        recipe(id: number): { title: string } { return { title: String(id) }; }
+        async fetch() { return Response.json(await this.env.TOKAMAK?.recipe(1)); }
+      }`,
+    "tokamak.ts": `import { TokamakEntrypoint } from ${sdk};
+      import { defineEvent } from ${events};
+      defineEvent<string>("example")((_event, env, ctx) => {
+        const title: Promise<{ title: string }> = env.MAIN.recipe(1);
+        ctx.waitUntil(title);
+        // @ts-expect-error the native worker has its own binding set
+        env.TOKAMAK;
+      });
+      export default class Native extends TokamakEntrypoint {
+        recipe(id: number) { return this.env.MAIN.recipe(id); }
+        label() { return this.env.LABEL; }
+        // @ts-expect-error the native worker has no main-only binding
+        #mainOnly = this.env.OTHER;
+      }`,
+  });
+  fs.appendFileSync(path.join(root, "worker-configuration.d.ts"), `
+    declare namespace Cloudflare {
+      interface Env { LABEL: string; DB: D1Database; OTHER: { invoke(): void } }
+    }
+  `);
+  const builder = await createBuilder(config);
+  await builder.buildApp();
+  checkTypes(root, `
+    declare const native: Tokamak.Env;
+    const result: Promise<{ title: string }> = native.MAIN.recipe(1);
+    const title: Promise<{ title: string }> = client.recipe(1);
+    const label: Promise<string> = client.label();
+    const variable: string = native.LABEL;
+    const database: D1Database = native.DB;
+    // @ts-expect-error MAIN is only a native binding
+    env.MAIN;
+    // @ts-expect-error native code does not inherit unrelated main bindings
+    native.OTHER;
+    // @ts-expect-error the native worker does not call itself through TOKAMAK
+    native.TOKAMAK;
+    // @ts-expect-error incorrect main method argument
+    native.MAIN.recipe("one");
+    // @ts-expect-error service methods are asynchronous
+    const sync: { title: string } = native.MAIN.recipe(1);
+    // @ts-expect-error remote-object APIs are outside the contract
+    native.MAIN.dup();
+  `);
+});
+
+test("generates the same inferred client contract for a clean web build", async t => {
+  const sdk = JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/tok")));
+  const { root } = project(t, {
+    "main.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
+      import client from "virtual:tokamak/client";
+      export default class Main extends WorkerEntrypoint {
+        recipe(id: number): { title: string } { return { title: String(id) }; }
+        fetch() { return Response.json(Object.keys(client)); }
+      }`,
+    "tokamak.ts": `import { TokamakEntrypoint } from ${sdk};
+      export default class Native extends TokamakEntrypoint {
+        recipe(id: number) { return this.env.MAIN.recipe(id); }
+      }`,
+  });
+  fs.rmSync(path.join(root, ".tokamak"), { recursive: true });
+  fs.rmSync(path.join(root, "tokamak-env.d.ts"), { force: true });
+  const builder = await createBuilder({
+    root, configFile: false, logLevel: "silent",
+    plugins: tokamak({}, { inspectorPort: false, remoteBindings: false, persistState: false }),
+  });
+  await builder.buildApp();
+  checkTypes(root, `
+    const recipe: Promise<{ title: string }> = client.recipe(1);
+    // @ts-expect-error incorrect native method argument
+    client.recipe("one");
+  `);
+  const deploy = JSON.parse(fs.readFileSync(path.join(root, ".wrangler/deploy/config.json"), "utf8"));
+  assert.deepEqual(deploy.auxiliaryWorkers ?? [], []);
+});
+
+test("preserves existing user declarations when their filename conflicts with generated types", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tokamak-type-conflict-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const file = path.join(root, "tokamak-env.d.ts");
   const source = "declare const application: string;\n";
   fs.writeFileSync(file, source);
-  assert.throws(() => createWorkerGraph(root, undefined, path.join(root, ".tokamak")), /reserved for generated Tokamak types/);
+  const graph = createWorkerGraph(root, undefined, path.join(root, ".tokamak"));
+  await assert.rejects(graph.types.resolve(async id => ({ id })), /reserved for generated Tokamak types/);
   assert.equal(fs.readFileSync(file, "utf8"), source);
 });
 
-test("keeps editor types valid when an entrypoint is added, moved, or its build output is cleared", (t) => {
+test("keeps editor types valid when an entrypoint is added, moved, or its build output is cleared", async (t) => {
   const { root } = project(t, {
     "tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
     export default class Native extends WorkerEntrypoint { echo(value: string): string { return value; } }`,
   });
   const output = path.join(root, ".tokamak");
-  createWorkerGraph(root, undefined, output);
+  await createWorkerGraph(root, undefined, output).types.resolve(async id => ({ id }));
   checkTypes(root, `
     // @ts-expect-error the entrypoint has no operations yet
     client.echo("value");
   `);
-  createWorkerGraph(root, path.join(root, "src/tokamak.ts"), output);
+  await createWorkerGraph(root, path.join(root, "src/tokamak.ts"), output).types.resolve(async id => ({ id }));
   const usage = 'const value: Promise<string> = client.echo("value");';
   checkTypes(root, usage);
   fs.renameSync(path.join(root, "src/tokamak.ts"), path.join(root, "src/native.ts"));
-  createWorkerGraph(root, path.join(root, "src/native.ts"), output);
+  await createWorkerGraph(root, path.join(root, "src/native.ts"), output).types.resolve(async id => ({ id }));
   fs.rmSync(output, { recursive: true, force: true });
   checkTypes(root, usage);
 });

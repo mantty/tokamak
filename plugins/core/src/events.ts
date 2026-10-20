@@ -7,7 +7,7 @@ export type EventContext = TokamakContext;
 /** Receives an event of type `T` with the Worker's `env`, and may return a `Reply`. */
 export type Listener<T, Reply = void> = (
   event: T,
-  env: Cloudflare.Env,
+  env: Tokamak.Env,
   ctx: EventContext,
 ) => Reply | undefined | Promise<Reply | undefined>;
 

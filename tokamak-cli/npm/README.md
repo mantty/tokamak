@@ -49,6 +49,9 @@ It adds the optional
 `Cloudflare.Env.TOKAMAK` binding and exports `TokamakService` and `TokamakClient`
 types from `virtual:tokamak/client`. Service methods return ordinary promises,
 preserve the entrypoint's overloads, and expose only its public RPC operations.
+`Tokamak.Env` describes the native worker's required `MAIN` service plus its
+shared variables, KV, D1, and R2 bindings. `this.env` in a `TokamakEntrypoint`
+and the `env` argument of native listeners use this type.
 
 Page code imports the generated client as the module's default export:
 

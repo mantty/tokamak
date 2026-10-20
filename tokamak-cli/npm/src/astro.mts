@@ -5,26 +5,53 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import cloudflare, { type Options as CloudflareOptions } from "@astrojs/cloudflare";
 import type { AstroIntegration } from "astro";
+import { sessionDrivers } from "astro/config";
 import { normalizePath, type Plugin, type ViteDevServer } from "vite";
 import { experimental_readRawConfig, unstable_readConfig, type Unstable_RawConfig } from "wrangler";
 
 import { createNativeWorker, type TokamakOptions } from "./native-worker.mjs";
 import { createClientPlugin } from "./client.mjs";
 import { workerName } from "./worker-graph.mjs";
+import type { BindingConfiguration } from "./worker-types.mjs";
 
 /** Astro's Cloudflare adapter, with Tokamak's native worker and development relay. */
 export function tokamak(options: TokamakOptions = {}, cloudflareOptions: CloudflareOptions = {}): AstroIntegration {
   const output = process.env.TOKAMAK_VITE_OUTPUT;
-  const client = createClientPlugin(options.module, !!output);
+  const client = createClientPlugin(options.module, !!output, output ? () => native.graph().types : undefined);
   if (!output) {
     const adapter = cloudflare(cloudflareOptions);
+    let sessionBinding: string | undefined;
     return {
       ...adapter,
       hooks: {
         ...adapter.hooks,
         async "astro:config:setup"(context) {
-          context.updateConfig({ vite: { plugins: [client] } });
+          const types: Plugin = {
+            name: "tokamak:astro-types",
+            config(vite) {
+              const root = path.resolve(vite.root ?? process.cwd());
+              const source = configuration(root, cloudflareOptions.configPath, false);
+              const raw = source ? experimental_readRawConfig({ config: source }, { useRedirectIfAvailable: false }).rawConfig : {};
+              const environment = process.env.CLOUDFLARE_ENV;
+              const selected: BindingConfiguration = source ? unstable_readConfig({ config: source, env: environment }, { hideWarnings: true }) : {};
+              client.configure({
+                ...selected,
+                main: (environment ? raw.env?.[environment]?.main : undefined) ?? raw.main ?? "@astrojs/cloudflare/entrypoints/server",
+                kv_namespaces: [...selected.kv_namespaces ?? [], ...sessionBinding ? [{ binding: sessionBinding }] : []],
+              });
+            },
+          };
+          context.updateConfig({ vite: { plugins: [client, types] } });
           await adapter.hooks["astro:config:setup"]?.(context);
+        },
+        async "astro:config:done"(context) {
+          await adapter.hooks["astro:config:done"]?.(context);
+          const driver = context.config.session?.driver;
+          const entry = typeof driver === "string" ? driver : driver?.entrypoint.toString();
+          if (entry === "cloudflareKVBinding" || entry?.endsWith("cloudflare-kv-binding") ||
+            entry === sessionDrivers.cloudflareKVBinding().entrypoint) {
+            sessionBinding = cloudflareOptions.sessionKVBindingName ?? "SESSION";
+          }
         },
       },
     };
@@ -118,10 +145,12 @@ export function tokamak(options: TokamakOptions = {}, cloudflareOptions: Cloudfl
   };
 }
 
-function configuration(root: string, configured: string | undefined): string {
+function configuration(root: string, configured: string | undefined): string;
+function configuration(root: string, configured: string | undefined, required: false): string | undefined;
+function configuration(root: string, configured: string | undefined, required = true): string | undefined {
   if (configured) return path.resolve(root, configured);
   const file = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"]
     .map(name => path.join(root, name)).find(file => fs.existsSync(file));
-  if (!file) throw new Error("Tokamak requires a Wrangler configuration in the Astro project root.");
+  if (!file && required) throw new Error("Tokamak requires a Wrangler configuration in the Astro project root.");
   return file;
 }

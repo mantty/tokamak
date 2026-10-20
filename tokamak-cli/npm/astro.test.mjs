@@ -1,54 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { build, dev } from "astro";
-import { workerTypes } from "./worker-fixtures.mjs";
-
-function project(t) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tokamak-astro-")));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  for (const directory of ["src/pages", "config", "db"]) fs.mkdirSync(path.join(root, directory), { recursive: true });
-  fs.symlinkSync(fileURLToPath(new URL("./node_modules", import.meta.url)), path.join(root, "node_modules"), "junction");
-  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "astro-fixture", type: "module" }));
-  fs.writeFileSync(path.join(root, "worker-configuration.d.ts"), workerTypes);
-  const wrangler = {
-    name: "astro-app", main: "@astrojs/cloudflare/entrypoints/server", compatibility_date: "2026-09-01",
-    compatibility_flags: ["nodejs_compat"], assets: { directory: "../dist/client", binding: "ASSETS" },
-    vars: { LABEL: "default" },
-    env: { staging: {
-      name: "astro-staging", vars: { LABEL: "staging" },
-      d1_databases: [{ binding: "DB", database_id: "00000000-0000-0000-0000-000000000000",
-        database_name: "app", migrations_dir: "../db" }],
-    } },
-  };
-  fs.writeFileSync(path.join(root, "config/wrangler.json"), JSON.stringify(wrangler));
-  fs.writeFileSync(path.join(root, "db/001.sql"), "CREATE TABLE entries (value TEXT);");
-  fs.writeFileSync(path.join(root, "astro.config.mjs"), `import { defineConfig } from "astro/config";
-    import { tokamak } from ${JSON.stringify(new URL("./dist/astro.mjs", import.meta.url).href)};
-    export default defineConfig({
-      output: "server",
-      adapter: tokamak({ name: "Astro Native", version: "1.0.0" }, {
-        configPath: "config/wrangler.json", inspectorPort: false, persistState: false, remoteBindings: false,
-      }),
-      vite: { server: { watch: { usePolling: true } } },
-    });`);
-  fs.writeFileSync(path.join(root, "src/pages/index.astro"), `---
-    import { env } from "cloudflare:workers";
-    const message = await env.TOKAMAK.describe();
-    ---
-    <h1>{message}</h1>`);
-  fs.writeFileSync(path.join(root, "src/shared.ts"), 'export const greeting = "first";');
-  fs.writeFileSync(path.join(root, "src/tokamak.ts"), `import { WorkerEntrypoint } from "cloudflare:workers";
-    import { greeting } from "./shared";
-    export default class Native extends WorkerEntrypoint {
-      describe(): string { return this.env.LABEL + " " + greeting; }
-    }`);
-  return { root, wrangler };
-}
+import { project } from "./astro-fixture.mjs";
 
 async function environment(root, run) {
   const values = {
@@ -68,7 +25,12 @@ async function environment(root, run) {
 }
 
 test("Astro builds the worker graph while preserving environment settings and relative paths", async t => {
-  const { root, wrangler } = project(t);
+  const { root, wrangler } = project(t, { sessionKVBindingName: "APP_SESSION" });
+  const sdk = JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/tok")));
+  fs.writeFileSync(path.join(root, "src/tokamak.ts"), `import { TokamakEntrypoint } from ${sdk};
+    export default class Native extends TokamakEntrypoint {
+      describe() { return this.env.APP_SESSION.get("description"); }
+    }`);
   delete wrangler.main;
   fs.writeFileSync(path.join(root, "config/wrangler.json"), JSON.stringify(wrangler));
   await environment(root, () => build({ root: pathToFileURL(`${root}/`), logLevel: "silent" }));
@@ -80,7 +42,7 @@ test("Astro builds the worker graph while preserving environment settings and re
   assert.deepEqual(main.services, [{ binding: "TOKAMAK", service: "astro-staging-tokamak" }]);
   assert.deepEqual(native.services, [{ binding: "MAIN", service: "astro-staging" }]);
   assert.equal(native.vars.LABEL, "staging");
-  assert.ok(native.kv_namespaces.some(binding => binding.binding === "SESSION"));
+  assert.ok(native.kv_namespaces.some(binding => binding.binding === "APP_SESSION"));
   assert.equal(fs.readFileSync(path.resolve(path.dirname(nativePath), native.d1_databases[0].migrations_dir, "001.sql"), "utf8"),
     "CREATE TABLE entries (value TEXT);");
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "config/wrangler.json"), "utf8")), wrangler);

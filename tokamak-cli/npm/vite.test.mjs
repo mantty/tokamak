@@ -157,6 +157,7 @@ test("reports again when the development server restarts", async () => {
     await server.restart();
     assert.deepEqual(readOutput(app, "config.json").config, { name: "App" });
     assert.equal((await reported(app, "server.json")).url, server.resolvedUrls.local[0]);
+    assert.equal(await (await fetch(server.resolvedUrls.local[0])).text(), "worker");
   });
 });
 

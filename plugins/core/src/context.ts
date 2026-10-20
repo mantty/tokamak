@@ -33,9 +33,9 @@ export function createNativeContext(ctx: Pick<TokamakContext, "waitUntil">): Tok
   return Object.assign(ctx, { [nativeConnection]: connection ?? disconnected });
 }
 declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace -- `wrangler types` declares the Worker's bindings here.
-  namespace Cloudflare {
-    // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- the app's `wrangler types` declares the members.
+  // eslint-disable-next-line @typescript-eslint/no-namespace -- the generated app declarations supply the native bindings.
+  namespace Tokamak {
+    // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- the app's generated types declare the members.
     interface Env {}
   }
 }

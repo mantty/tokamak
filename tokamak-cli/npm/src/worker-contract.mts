@@ -23,20 +23,37 @@ export function findModule(root: string, name: string | undefined): string | und
 
 /** Resolve the application's types before generating its service adapters. */
 export function readWorkerContract(entry: string, root: string): WorkerContract {
-  const module = workerModule(entry, root);
-  return classContract(module, "default", true);
+  return readWorkerContracts(entry, undefined, root, true).native;
 }
 
 /** Check every WorkerEntrypoint exported by an application service bundle. */
 export function readServiceContracts(entry: string, root: string): Record<string, WorkerContract> {
-  const module = workerModule(entry, root);
+  return readWorkerContracts(undefined, entry, root, true).main;
+}
+
+/** Analyze both entrypoints in one TypeScript program. */
+export function readWorkerContracts(entry: string | undefined, main: string | undefined, root: string, validate: boolean): {
+  native: WorkerContract;
+  main: Record<string, WorkerContract>;
+} {
+  const entries = [entry, main].filter((file): file is string => !!file);
+  const project = entries.length ? workerProgram(entries, root) : undefined;
+  return {
+    native: entry && project ? classContract(workerModule(entry, project), "default", true, validate)
+      : { methods: [], files: [], declarations: serviceTypes("{}", []) },
+    main: main && project ? serviceContracts(workerModule(main, project), validate) : {},
+  };
+}
+
+function serviceContracts(module: ReturnType<typeof workerModule>, validate: boolean): Record<string, WorkerContract> {
+  const { entry } = module;
   const contracts: Record<string, WorkerContract> = {};
   for (const [name, type] of module.exports) {
     const instance = type.getConstructSignatures()[0]?.getReturnType();
     if (instance && applicationPrototypes(module.program, module.checker, instance, entry)) {
-      contracts[name] = classContract(module, name, false);
+      contracts[name] = classContract(module, name, false, validate);
     } else if (name === "default" && (type.flags & ts.TypeFlags.Object) && !type.getCallSignatures().length && !instance) {
-      contracts[name] = { methods: [], files: module.files, declarations: serviceTypes("{}", []) };
+      contracts[name] = { methods: [], files: module.files, declarations: serviceTypes("{}", [], "Main") };
     } else if (name === "default") {
       throw new Error(`Service entrypoint ${entry} must export a handler object or extend WorkerEntrypoint.`);
     }
@@ -44,31 +61,36 @@ export function readServiceContracts(entry: string, root: string): Record<string
   return contracts;
 }
 
-function workerModule(entry: string, root: string) {
+function workerProgram(entries: string[], root: string) {
   const config = projectConfig(root);
   const program = ts.createProgram({
-    rootNames: [...new Set([entry, ...config.fileNames.filter((file) => /\.d\.[cm]?ts$/.test(file))])],
+    rootNames: [...new Set([...entries, ...config.fileNames.filter((file) => /\.d\.[cm]?ts$/.test(file))])],
     options: config.options,
     projectReferences: config.projectReferences,
   });
-  const source = program.getSourceFile(entry);
-  if (!source) throw new Error(`Cannot read Tokamak entrypoint ${entry}.`);
   const syntax = program.getSyntacticDiagnostics();
   if (syntax.length) throw diagnostics(syntax);
   const checker = program.getTypeChecker();
+  const files = [...new Set([
+    ...config.configFiles,
+    ...program.getSourceFiles().filter((file) => !program.isSourceFileDefaultLibrary(file)).map((file) => file.fileName),
+  ])].sort();
+  return { program, checker, files };
+}
+
+function workerModule(entry: string, project: ReturnType<typeof workerProgram>) {
+  const { program, checker } = project;
+  const source = program.getSourceFile(entry);
+  if (!source) throw new Error(`Cannot read Tokamak entrypoint ${entry}.`);
   const module = checker.getSymbolAtLocation(source);
   const exports = new Map((module ? checker.getExportsOfModule(module) : []).map(exported => {
     const symbol = exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported;
     return [exported.name, checker.getTypeOfSymbolAtLocation(symbol, source)];
   }));
-  const files = [...new Set([
-    ...config.configFiles,
-    ...program.getSourceFiles().filter((file) => !program.isSourceFileDefaultLibrary(file)).map((file) => file.fileName),
-  ])].sort();
-  return { entry, program, checker, source, exports, files };
+  return { ...project, entry, source, exports };
 }
 
-function classContract(module: ReturnType<typeof workerModule>, name: string, native: boolean): WorkerContract {
+function classContract(module: ReturnType<typeof workerModule>, name: string, native: boolean, validate: boolean): WorkerContract {
   const { entry, program, checker, source } = module;
   const constructor = module.exports.get(name)?.getConstructSignatures()[0];
   const instance = constructor?.getReturnType();
@@ -88,7 +110,7 @@ function classContract(module: ReturnType<typeof workerModule>, name: string, na
     if (!property.declarations?.some((node) => prototypes.has(node.parent))) continue;
     if (!exposedMethod(property)) continue;
     const type = checker.getTypeOfSymbolAtLocation(property, source);
-    checkRpcMethod(checker, type, property.name);
+    if (validate) checkRpcMethod(checker, type, property.name);
     methods.push({
       name: property.name,
       overloads: type.getCallSignatures().length,
@@ -104,6 +126,7 @@ function classContract(module: ReturnType<typeof workerModule>, name: string, na
     declarations: serviceTypes(
       `InstanceType<typeof import(${JSON.stringify(entry.split(path.sep).join("/"))}, { with: { "resolution-mode": "import" } })[${JSON.stringify(name)}]>`,
       methods,
+      native ? "Tokamak" : "Main",
     ),
     files: module.files,
   };
