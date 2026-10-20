@@ -17,7 +17,7 @@ export interface PluginDefinition {
   client: string;
 }
 
-const reservedIds = ["android", "ios", "macos", "windows", "name", "identifier", "icon", "version",
+const reservedIds = ["tokamak", "android", "ios", "macos", "windows", "name", "identifier", "icon", "version",
   "module", "build", "project", "platform", "skip", "host", "help", "vite", "session"];
 
 /** Installed direct dependencies select the application's plugin services. */

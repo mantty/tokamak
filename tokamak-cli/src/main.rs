@@ -14,6 +14,7 @@ mod pipeline;
 mod plugin_settings;
 mod plugins;
 mod project;
+mod scaffold;
 mod settings;
 mod storage;
 mod tokamak_config;
@@ -46,6 +47,14 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Create a publishable plugin package.
+    Plugin {
+        /// New directory, named with lowercase words joined by hyphens.
+        directory: PathBuf,
+        /// Include an Apple or Android native implementation; otherwise compose APIs in TypeScript.
+        #[arg(long, value_enum)]
+        native: Option<scaffold::Native>,
+    },
     /// Build native app bundles for one or more platforms.
     #[command(after_help = BUILD_PLATFORM_HELP)]
     Build {
@@ -120,6 +129,7 @@ fn run() -> Result<()> {
     };
 
     match cli.command {
+        Command::Plugin { directory, native } => scaffold::create(&directory, native),
         Command::Build {
             platforms,
             project,

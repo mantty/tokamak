@@ -17,6 +17,12 @@ npx tok targets
 | `@tokamakdev/tok/astro` | The Astro adapter, `tokamak()` |
 | `tok` | The CLI |
 
+Create a plugin with `tok plugin my-plugin`. It starts as a TypeScript package
+composing native context APIs. Add `--native apple` or `--native android` for a
+small Swift or Kotlin implementation. Install it in an app as a workspace or
+local npm dependency; Tokamak generates its clients and service bindings.
+The generated README covers checking, local development, packing and publishing.
+
 The Vite integration includes Cloudflare's plugin. Its options are the app's
 tokamak configuration; the second argument accepts Cloudflare plugin options:
 

@@ -79,7 +79,9 @@ fn perform(
             format!("{plugin}.{method} is not supported"),
         ));
     }
-    let current = view.url().map_err(operation)?;
+    let current = view
+        .url()
+        .map_err(|error| ("OperationError", error.to_string()))?;
     let page =
         Url::parse(&current).map_err(|_| ("InvalidStateError", "No page is loaded".into()))?;
     if page.scheme() != "https" {
@@ -95,7 +97,8 @@ fn perform(
                 .and_then(|path| page.join(path).ok())
                 .filter(|url| url.origin() == page.origin())
                 .ok_or(("TypeError", "Navigation requires an app URL".into()))?;
-            view.load_url(url.as_str()).map_err(operation)?;
+            view.load_url(url.as_str())
+                .map_err(|error| ("OperationError", error.to_string()))?;
             Ok(Some(Value::Null))
         }
         "webview.postMessage" => {
@@ -115,7 +118,7 @@ fn perform(
                     },
                 );
             })
-            .map_err(operation)?;
+            .map_err(|error| ("OperationError", error.to_string()))?;
             Ok(None)
         }
         _ => Err((
@@ -123,8 +126,4 @@ fn perform(
             format!("{plugin}.{method} is not supported"),
         )),
     }
-}
-
-fn operation(error: wry::Error) -> (&'static str, String) {
-    ("OperationError", error.to_string())
 }

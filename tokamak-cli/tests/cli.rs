@@ -5,6 +5,99 @@ use predicates::str::contains;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 #[test]
+fn scaffolds_plugin_names_that_are_javascript_keywords() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let path = root.path().join("class");
+    Command::cargo_bin("tok")?
+        .arg("plugin")
+        .arg(&path)
+        .assert()
+        .success();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path.join("tokamak-plugin.json"))?)?;
+    assert_eq!(manifest["api"]["export"], "createClass");
+    assert!(
+        std::fs::read_to_string(path.join("src/index.ts"))?
+            .contains("export function createClass(")
+    );
+    Ok(())
+}
+
+#[test]
+fn scaffolds_publishable_plugins_without_overwriting_existing_projects() -> TestResult {
+    let root = tempfile::tempdir()?;
+    for (name, native, platforms) in [
+        ("page-tools", None, vec![]),
+        ("apple-tools", Some("apple"), vec!["ios", "macos"]),
+        ("android-tools", Some("android"), vec!["android"]),
+    ] {
+        // Avoid reserved CLI option prefixes in the plugin's ID.
+        let path = root.path().join(format!("example-{name}"));
+        let mut command = Command::cargo_bin("tok")?;
+        command.arg("plugin").arg(&path);
+        if let Some(native) = native {
+            command.args(["--native", native]);
+        }
+        command.assert().success();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path.join("tokamak-plugin.json"))?)?;
+        let package: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path.join("package.json"))?)?;
+        assert_eq!(package["type"], "module");
+        assert_eq!(manifest["schemaVersion"], 2);
+        assert!(
+            path.join(manifest["api"]["module"].as_str().ok_or("missing API")?)
+                .is_file()
+        );
+        let declared = manifest["platforms"]
+            .as_object()
+            .ok_or("missing platforms")?;
+        assert_eq!(declared.len(), platforms.len());
+        for platform in platforms {
+            for source in declared[platform]["sources"]
+                .as_array()
+                .ok_or("missing sources")?
+            {
+                assert!(
+                    path.join(source.as_str().ok_or("invalid source")?)
+                        .is_file()
+                );
+            }
+        }
+        let readme = path.join("README.md");
+        std::fs::write(&readme, "author's work")?;
+        Command::cargo_bin("tok")?
+            .arg("plugin")
+            .arg(&path)
+            .assert()
+            .failure();
+        assert_eq!(std::fs::read_to_string(readme)?, "author's work");
+    }
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_plugin_names_before_creating_files() -> TestResult {
+    let root = tempfile::tempdir()?;
+    for name in [
+        "BadName",
+        "double--hyphen",
+        "tokamak",
+        "tokamak-device",
+        "ios-helper",
+    ] {
+        let path = root.path().join(name);
+        Command::cargo_bin("tok")?
+            .arg("plugin")
+            .arg(&path)
+            .assert()
+            .failure();
+        assert!(!path.exists());
+    }
+    Ok(())
+}
+
+#[test]
 fn explains_the_cert_inventory_command() -> TestResult {
     Command::cargo_bin("tok")?
         .args(["certs", "--help"])

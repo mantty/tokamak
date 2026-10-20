@@ -23,6 +23,7 @@ const MANIFEST: &str = "tokamak-plugin.json";
 /// options and environment variables, since a plugin's settings are
 /// `--<id>-<key>`, `TOKAMAK_<ID>_<KEY>` and `<id>.<key>`.
 pub(crate) const RESERVED_WORDS: &[&str] = &[
+    "tokamak",
     "android",
     "ios",
     "macos",
