@@ -69,8 +69,8 @@ pub(super) trait Handler: Send + Sync {
 /// An event for the Worker's listeners.
 pub(crate) struct EventJob {
     pub(crate) name: String,
-    /// The event's JSON.
-    pub(crate) event: String,
+    /// The encoded event payload.
+    pub(crate) event: Vec<u8>,
     pub(crate) deadline: Instant,
     /// Receives what the Worker did with the event, or why it failed.
     pub(crate) delivered: Sender<Result<Delivery, HandlerError>>,
@@ -78,8 +78,8 @@ pub(crate) struct EventJob {
 
 /// What the Worker did with an event.
 pub(crate) struct Delivery {
-    /// The reply, as JSON.
-    pub(crate) reply: String,
+    /// The encoded reply payload.
+    pub(crate) reply: Vec<u8>,
     /// The events that have listeners, when the Worker reports them.
     pub(crate) listened: Option<BTreeSet<String>>,
 }
@@ -206,7 +206,7 @@ impl Runtime {
 pub(crate) fn deliver(
     shared: &Arc<Shared>,
     name: &str,
-    event: &str,
+    event: &[u8],
     deadline: Instant,
 ) -> Result<Delivery, String> {
     let (delivered, result) = flume::bounded(1);

@@ -28,7 +28,7 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
      * they return or [timeoutMillis] passes, and returns their reply as JSON.
      */
     fun emit(name: String, event: String, timeoutMillis: Long): String =
-        nativeEmit(handle, name, event, timeoutMillis)
+        String(nativeEmit(handle, name, event.toByteArray(Charsets.UTF_8), timeoutMillis), Charsets.UTF_8)
 
     /** What the app serves at [path], blocking until it arrives or [timeoutMillis] passes. */
     fun fetch(path: String, timeoutMillis: Long): ByteArray = nativeFetch(handle, path, timeoutMillis)
@@ -136,9 +136,9 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
         private external fun nativeEmit(
             handle: Long,
             name: String,
-            event: String,
+            event: ByteArray,
             timeoutMillis: Long,
-        ): String
+        ): ByteArray
 
         @JvmStatic
         private external fun nativeFetch(handle: Long, path: String, timeoutMillis: Long): ByteArray

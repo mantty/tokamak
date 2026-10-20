@@ -410,19 +410,17 @@ final class RuntimeHandle {
     guard JSONSerialization.isValidJSONObject([event]) else {
       throw RuntimeError.runtime("the \(name) event is not JSON")
     }
-    let event = String(
-      decoding: try JSONSerialization.data(withJSONObject: event, options: .fragmentsAllowed),
-      as: UTF8.self
-    )
+    let event = try JSONSerialization.data(withJSONObject: event, options: .fragmentsAllowed)
     var reply = TokamakBytes()
     var error = [CChar](repeating: 0, count: 1024)
     let succeeded = name.withCString { name in
-      event.withCString { event in
+      event.withUnsafeBytes { event in
         error.withUnsafeMutableBufferPointer { error in
           tokamak_runtime_emit(
             handle,
             name,
-            event,
+            event.bindMemory(to: UInt8.self).baseAddress,
+            event.count,
             UInt64(max(timeout, 0) * 1000),
             &reply,
             error.baseAddress,

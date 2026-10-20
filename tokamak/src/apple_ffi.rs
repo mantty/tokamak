@@ -220,22 +220,24 @@ pub unsafe extern "C" fn tokamak_runtime_stop(handle: *mut c_void) {
     }
 }
 
-/// Deliver the event `name`, whose JSON is `event`, to the Worker's
+/// Deliver the event `name`, whose encoded payload is `event`, to the Worker's
 /// listeners, blocking for up to `timeout_ms`.
 ///
-/// Returns true with the reply's JSON in `reply`, or false with a message in
+/// Returns true with the encoded reply in `reply`, or false with a message in
 /// `error`.
 ///
 /// # Safety
 ///
-/// `handle` must be live, `name` and `event` must be NUL-terminated UTF-8
-/// strings, `reply` must be writable, and `error` must be writable for
-/// `error_len` bytes when non-null.
+/// `handle` must be live, `name` must be a NUL-terminated UTF-8 string,
+/// `event` must be readable for `event_len` bytes (or null when empty),
+/// `reply` must be writable, and `error` must be writable for `error_len`
+/// bytes when non-null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tokamak_runtime_emit(
     handle: *const c_void,
     name: *const c_char,
-    event: *const c_char,
+    event: *const u8,
+    event_len: usize,
     timeout_ms: u64,
     reply: *mut TokamakBytes,
     error: *mut c_char,
@@ -246,9 +248,9 @@ pub unsafe extern "C" fn tokamak_runtime_emit(
     }
     unsafe { reply.write(TokamakBytes::empty()) };
     let timeout = Duration::from_millis(timeout_ms);
-    match unsafe { emit(handle, name, event, timeout) } {
-        Ok(json) => {
-            unsafe { reply.write(TokamakBytes::from_vec(json.into_bytes())) };
+    match unsafe { emit(handle, name, event, event_len, timeout) } {
+        Ok(payload) => {
+            unsafe { reply.write(TokamakBytes::from_vec(payload)) };
             true
         }
         Err(message) => {
@@ -504,14 +506,22 @@ fn shell(foreground: bool, plugins: TokamakPluginHandler) -> Shell {
 unsafe fn emit(
     handle: *const c_void,
     name: *const c_char,
-    event: *const c_char,
+    event: *const u8,
+    event_len: usize,
     timeout: Duration,
-) -> Result<String, String> {
+) -> Result<Vec<u8>, String> {
     let runtime = unsafe { runtime(handle) }.ok_or("runtime is unavailable")?;
     let name = unsafe { text(name) }.ok_or("event name is not valid UTF-8")?;
-    let event = unsafe { text(event) }.ok_or("event is not valid UTF-8")?;
+    let event = if event_len == 0 {
+        &[]
+    } else {
+        if event.is_null() {
+            return Err("event payload is null".into());
+        }
+        unsafe { std::slice::from_raw_parts(event, event_len) }
+    };
     runtime
-        .emit(name, event, timeout)
+        .emit_bytes(name, event, timeout)
         .map_err(|error| error.to_string())
 }
 

@@ -12,7 +12,7 @@ use crate::lifecycle_events::Event;
 const START_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The reply of an event no listener answered.
-const NO_REPLY: &str = "null";
+const NO_REPLY: &[u8] = b"null";
 
 /// Delivers events to the Worker: `start` first, then other events, with
 /// lifecycle events one at a time. A packaged Worker reports the events it
@@ -59,9 +59,9 @@ impl WorkerEvents {
     pub(crate) fn emit(
         &self,
         name: &str,
-        event: &str,
+        event: &[u8],
         timeout: Duration,
-    ) -> Result<String, String> {
+    ) -> Result<Vec<u8>, String> {
         let deadline = Instant::now() + timeout;
         if name.is_empty() || name == "start" {
             return Err(format!("{name:?} cannot be emitted"));
@@ -77,7 +77,7 @@ impl WorkerEvents {
 
     fn deliver_start(&self, foreground: bool) {
         let event = format!(r#"{{"foreground":{foreground}}}"#);
-        let delivered = self.deliver("start", &event, Instant::now() + START_DEADLINE);
+        let delivered = self.deliver("start", event.as_bytes(), Instant::now() + START_DEADLINE);
         self.finish_start(
             delivered
                 .err()
@@ -121,7 +121,7 @@ impl WorkerEvents {
             .is_none_or(|listened| listened.contains(name))
     }
 
-    fn deliver(&self, name: &str, event: &str, deadline: Instant) -> Result<String, String> {
+    fn deliver(&self, name: &str, event: &[u8], deadline: Instant) -> Result<Vec<u8>, String> {
         let delivery = gateway::deliver(&self.shared, name, event, deadline)?;
         if let Some(listened) = delivery.listened {
             lock(&self.state).listened = Some(listened);

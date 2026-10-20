@@ -248,12 +248,20 @@ pub(super) async fn execute_event(
         owner.track_wait_until(&ctx, &bootstrap)?;
         let exports = load_worker_exports(&ctx, worker).await?;
         let pending: Promise = property::<Function>(&bootstrap, "dispatchEvent")?
-            .call((exports, name.as_str(), event.as_str()))
+            .call((
+                exports,
+                name.as_str(),
+                rquickjs::ArrayBuffer::new(ctx.clone(), event)
+                    .map_err(|error| js_error("event payload", error))?,
+            ))
             .map_err(|error| js_exception(&ctx, &name, error))?;
         let dispatched: Object = finish_promise(&ctx, &pending, "event").await?;
         let listened: Option<Vec<String>> = property(&dispatched, "listened")?;
         Ok(Delivery {
-            reply: property(&dispatched, "reply")?,
+            reply: property::<rquickjs::ArrayBuffer>(&dispatched, "reply")?
+                .as_bytes()
+                .ok_or_else(|| js_error("event", "detached reply buffer"))?
+                .to_vec(),
             listened: listened.map(|names| names.into_iter().collect()),
         })
     });

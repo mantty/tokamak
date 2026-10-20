@@ -140,15 +140,41 @@ impl Started {
     fn new(plugins: bool) -> TestResult<Self> {
         let directory = tempfile::tempdir()?;
         let app = PackageLayout::new(directory.path().join("app"));
-        fs::create_dir_all(app.root())?;
-        write_worker_environment(&app, &WorkerEnvironment::default())?;
+        let native = app.tokamak_worker();
+        fs::create_dir_all(native.root())?;
+        write_worker_environment(&native, &WorkerEnvironment::default())?;
         fs::write(directory.path().join("worker.mjs"), WORKER)?;
         write_worker(
-            &app,
+            &native,
             directory.path(),
             &WorkerManifest {
                 entry: "worker.mjs".to_owned(),
                 modules: BTreeMap::from([("worker.mjs".to_owned(), ModuleType::EsModule)]),
+            },
+        )?;
+        write_worker_environment(
+            &app,
+            &WorkerEnvironment {
+                services: BTreeMap::from([(
+                    "TOKAMAK".into(),
+                    tokamak::ServiceBinding {
+                        service: "tokamak".into(),
+                        entrypoint: "default".into(),
+                    },
+                )]),
+                ..WorkerEnvironment::default()
+            },
+        )?;
+        fs::write(
+            directory.path().join("worker.mjs"),
+            "export default { fetch: (request, env) => env.TOKAMAK.fetch(request) };",
+        )?;
+        write_worker(
+            &app,
+            directory.path(),
+            &WorkerManifest {
+                entry: "worker.mjs".into(),
+                modules: BTreeMap::from([("worker.mjs".into(), ModuleType::EsModule)]),
             },
         )?;
         let (sender, requests) = mpsc::channel();

@@ -13,6 +13,37 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 #[test]
+fn main_workers_have_portable_contexts_in_single_and_dual_bundle_apps() -> TestResult {
+    for split in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let app = PackageLayout::new(directory.path().join("app"));
+        package(
+            &app,
+            r"
+export default {
+  fetch(request, env, ctx) {
+    return Response.json({
+      context: typeof ctx[Symbol.for('tokamak.native')],
+      global: typeof globalThis[Symbol.for('tokamak.native')]
+    });
+  }
+};",
+            &json!({}),
+        )?;
+        if split {
+            package(&app.tokamak_worker(), "export default {};", &json!({}))?;
+        }
+        let runtime = Runtime::start(config(directory.path(), app), |_| {})?;
+        let result: Value = serde_json::from_slice(&runtime.fetch("/", TIMEOUT)?)?;
+        assert_eq!(
+            result,
+            json!({"context": "undefined", "global": "undefined"})
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn native_http_routes_keep_the_page_path_and_receiving_context() -> TestResult {
     let directory = tempfile::tempdir()?;
     let app = PackageLayout::new(directory.path().join("app"));

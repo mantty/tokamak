@@ -27,11 +27,13 @@ pub(crate) struct DevSocket {
     plugins: Arc<PluginCalls>,
 }
 
+type PendingReplies = HashMap<u64, oneshot::Sender<Result<Vec<u8>, String>>>;
+
 /// One open dev WebSocket.
 struct Connection {
     outgoing: mpsc::Sender<(Header, Vec<u8>)>,
     /// Where each delivery waiting for its answer receives it, by message ID.
-    pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>,
+    pending: Mutex<PendingReplies>,
 }
 
 impl DevSocket {
@@ -43,15 +45,15 @@ impl DevSocket {
         }
     }
 
-    /// Sends the event `name`, whose JSON is `event`, once the dev WebSocket
-    /// is open, and returns the JSON reply the plugin answers with by
+    /// Sends the encoded event `name` once the dev WebSocket is open,
+    /// and returns the encoded reply the plugin answers with by
     /// `deadline`.
     pub(crate) async fn deliver(
         &self,
         name: &str,
-        event: &str,
+        event: &[u8],
         deadline: Instant,
-    ) -> Result<String, HandlerError> {
+    ) -> Result<Vec<u8>, HandlerError> {
         let deadline = tokio::time::Instant::from_std(deadline);
         let late = || format!("{name} did not complete before its deadline");
         let closed = || format!("the dev socket closed before {name} completed");
@@ -69,7 +71,7 @@ impl DevSocket {
                 name: Some(name.into()),
                 ..Header::default()
             },
-            event.as_bytes().to_vec(),
+            event.to_vec(),
         );
         let (sender, answer) = oneshot::channel();
         connection.pending().insert(id, sender);
@@ -126,9 +128,7 @@ impl DevSocket {
         requests.retain(|_, request| !request.is_finished());
         let task = match message.r#type.as_str() {
             "reply" => {
-                let reply =
-                    std::str::from_utf8(payload).map_err(|_| "Invalid event reply encoding");
-                connection.answer(id, reply);
+                connection.answer(id, Ok(payload));
                 return Ok(());
             }
             "error" => {
@@ -194,16 +194,14 @@ async fn send_result(
 }
 
 impl Connection {
-    fn pending(
-        &self,
-    ) -> std::sync::MutexGuard<'_, HashMap<u64, oneshot::Sender<Result<String, String>>>> {
+    fn pending(&self) -> std::sync::MutexGuard<'_, PendingReplies> {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Passes the plugin's `answer` to the delivery of the event `id`.
-    fn answer(&self, id: u64, answer: Result<&str, &str>) {
+    fn answer(&self, id: u64, answer: Result<&[u8], &str>) {
         if let Some(sender) = self.pending().remove(&id) {
-            let _ = sender.send(answer.map(str::to_owned).map_err(str::to_owned));
+            let _ = sender.send(answer.map(<[u8]>::to_vec).map_err(str::to_owned));
         }
     }
 }

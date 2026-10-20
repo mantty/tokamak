@@ -16,6 +16,17 @@ use crate::tests::{certificates, runtime_config};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+#[test]
+fn rejects_malformed_utf8_at_the_json_event_endpoint() -> TestResult {
+    let started = Started::new(EVENT_WORKER, true, 0)?;
+    let result = started
+        .events
+        .emit("echo", &[b'"', 255, b'"'], Duration::from_secs(5));
+    assert!(result.is_err(), "invalid UTF-8 was accepted: {result:?}");
+    assert_eq!(started.logged(), [r#"start {"foreground":true}"#]);
+    Ok(())
+}
+
 /// Logs each event to `env.LOG` as it begins; waits `event.wait`, or
 /// `env.START_DELAY` for `start`, then logs that it is done; and lingers in
 /// `waitUntil` for `event.linger`.
@@ -85,7 +96,10 @@ impl Started {
     }
 
     fn emit(&self, name: &str, event: &str) -> Result<String, String> {
-        self.events.emit(name, event, Duration::from_secs(5))
+        let reply = self
+            .events
+            .emit(name, event.as_bytes(), Duration::from_secs(5))?;
+        String::from_utf8(reply).map_err(|error| error.to_string())
     }
 
     /// Everything logged so far.
@@ -203,7 +217,8 @@ fn replies_at_the_deadline_while_wait_until_promises_are_pending() -> TestResult
 
     let reply = started
         .events
-        .emit("echo", r#"{"linger":60000}"#, Duration::from_secs(2))?;
+        .emit("echo", br#"{"linger":60000}"#, Duration::from_secs(2))?;
+    let reply = String::from_utf8(reply)?;
 
     assert!(reply.contains(r#""linger":60000"#), "{reply}");
     assert!(begun.elapsed() < Duration::from_secs(10));
@@ -218,7 +233,7 @@ fn fails_an_event_whose_listeners_outlast_the_deadline() -> TestResult {
 
     let error = started
         .events
-        .emit("echo", r#"{"wait":3000}"#, Duration::from_millis(300))
+        .emit("echo", br#"{"wait":3000}"#, Duration::from_millis(300))
         .err()
         .ok_or("the event completed")?;
 

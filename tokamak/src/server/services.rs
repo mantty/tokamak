@@ -42,7 +42,7 @@ pub(super) fn load(config: &Config, plugins: &Arc<PluginCalls>) -> Result<Arc<Di
     for (name, package) in packages {
         let bundle = package.worker;
         let environment = package.environment;
-        let native = (name == "tokamak" || !split).then(|| Arc::clone(plugins));
+        let native = (name == "tokamak").then(|| Arc::clone(plugins));
         let storage = stores
             .as_mut()
             .filter(|_| !environment.storage.is_empty())

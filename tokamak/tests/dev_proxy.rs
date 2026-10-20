@@ -204,6 +204,31 @@ fn does_not_retry_post_after_an_upstream_disconnect() -> TestResult {
 }
 
 #[test]
+fn preserves_opaque_event_payloads_and_replies() -> TestResult {
+    let (listener, runtime, _temporary) = start_test_runtime()?;
+    let bytes = [0, 255, 128, b'{', 0];
+    let host_server = thread::spawn(move || -> TestResult {
+        let (mut socket, _) = accept_dev_socket(&listener)?;
+        answer_event(&mut socket)?;
+        let (opcode, frame) = read_frame(&mut socket)?;
+        assert_eq!(opcode, 0x2);
+        let length = u32::from_le_bytes(frame[4..8].try_into()?) as usize;
+        let header: Value = serde_json::from_slice(&frame[8..8 + length])?;
+        assert_eq!(header["name"], "example.binary");
+        assert_eq!(&frame[8 + length..], &bytes);
+        let reply = encode_payload(&json!({ "type": "reply", "id": header["id"] }), &bytes)?;
+        write_frame(&mut socket, 0x2, &reply, false)?;
+        Ok(())
+    });
+    assert_eq!(
+        runtime.emit_bytes("example.binary", &bytes, Duration::from_secs(5))?,
+        bytes
+    );
+    host_server.join().map_err(|_| "host server panicked")??;
+    Ok(())
+}
+
+#[test]
 fn delivers_events_through_the_dev_socket() -> TestResult {
     let (listener, runtime, _temporary) = start_test_runtime()?;
     let host_server = thread::spawn(move || -> TestResult<(String, Vec<String>)> {
@@ -795,12 +820,16 @@ fn encode_message(message: &Value) -> TestResult<Vec<u8>> {
             .into_bytes(),
         _ => vec![],
     };
-    let metadata = serde_json::to_vec(&header)?;
+    encode_payload(&header, &payload)
+}
+
+fn encode_payload(header: &Value, payload: &[u8]) -> TestResult<Vec<u8>> {
+    let metadata = serde_json::to_vec(header)?;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&u32::try_from(4 + metadata.len() + payload.len())?.to_le_bytes());
     bytes.extend_from_slice(&u32::try_from(metadata.len())?.to_le_bytes());
     bytes.extend_from_slice(&metadata);
-    bytes.extend_from_slice(&payload);
+    bytes.extend_from_slice(payload);
     Ok(bytes)
 }
 

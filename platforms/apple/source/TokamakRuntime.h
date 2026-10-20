@@ -47,7 +47,7 @@ uint16_t tokamak_runtime_restore_gateway(const void *runtime, char *error,
                                       size_t error_len);
 void tokamak_runtime_stop(void *runtime);
 bool tokamak_runtime_emit(const void *runtime, const char *name,
-                          const char *event, uint64_t timeout_ms,
+                          const uint8_t *event, size_t event_len, uint64_t timeout_ms,
                           TokamakBytes *reply, char *error, size_t error_len);
 bool tokamak_runtime_fetch(const void *runtime, const char *path,
                            uint64_t timeout_ms, TokamakBytes *body, char *error,

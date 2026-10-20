@@ -62,8 +62,8 @@ export async function dispatchEvent(exports, name, event) {
   const { TokamakEvents } = exports;
   if (typeof TokamakEvents !== "function") throw new TypeError("The Worker does not export TokamakEvents");
   const events = new TokamakEvents(globalThis.__tokamak_context, globalThis.__tokamak_env);
-  const { reply, listened } = await events.dispatch(name, JSON.parse(event));
-  return { reply: JSON.stringify(reply) ?? "null", listened };
+  const { reply, listened } = await events.dispatch(name, JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(event)));
+  return { reply: new TextEncoder().encode(JSON.stringify(reply) ?? "null").buffer, listened };
 }
 
 // The storage part attaches the app's storage bindings when it has any.

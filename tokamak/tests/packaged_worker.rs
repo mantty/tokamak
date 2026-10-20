@@ -407,11 +407,9 @@ impl tokamak::PluginHandler for CancellablePlugins {
     }
 }
 
-#[test]
-fn cancels_service_calls_and_streams_when_the_http_client_disconnects() -> TestResult {
-    let temporary = tempfile::tempdir()?;
-    let app = package(
-        temporary.path(),
+fn cancellable_package(temporary: &Path) -> TestResult<PackageLayout> {
+    let native = package(
+        &temporary.join("native"),
         br"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
 const nativeListen = (plugin, method, value, next, error) => globalThis[Symbol.for('tokamak.native')].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
 
@@ -429,13 +427,35 @@ export default class extends WorkerEntrypoint {
             services: BTreeMap::from([(
                 "SELF".into(),
                 tokamak::ServiceBinding {
-                    service: "main".into(),
+                    service: "tokamak".into(),
                     entrypoint: "default".into(),
                 },
             )]),
             ..WorkerEnvironment::default()
         },
     )?;
+    let app = package(
+        temporary,
+        b"export default { fetch: (request, env) => env.TOKAMAK.fetch(request) };",
+        &WorkerEnvironment {
+            services: BTreeMap::from([(
+                "TOKAMAK".into(),
+                tokamak::ServiceBinding {
+                    service: "tokamak".into(),
+                    entrypoint: "default".into(),
+                },
+            )]),
+            ..WorkerEnvironment::default()
+        },
+    )?;
+    fs::rename(native.root(), app.tokamak_worker().root())?;
+    Ok(app)
+}
+
+#[test]
+fn cancels_service_calls_and_streams_when_the_http_client_disconnects() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let app = cancellable_package(temporary.path())?;
     let (subscribed, subscriptions) = mpsc::channel();
     let (removed, removals) = mpsc::channel();
     let (failed, failures) = mpsc::channel();

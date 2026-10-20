@@ -233,15 +233,17 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeEmit<'local
     _: JClass,
     handle: jlong,
     name: JString,
-    event: JString,
+    event: JByteArray,
     timeout_millis: jlong,
-) -> JString<'local> {
+) -> JByteArray<'local> {
     let timeout = Duration::from_millis(u64::try_from(timeout_millis).unwrap_or(0));
-    let result = emit(&mut env, handle, &name, &event, timeout)
-        .and_then(|reply| env.new_string(reply).map_err(|error| error.to_string()));
+    let result = emit(&mut env, handle, &name, &event, timeout).and_then(|reply| {
+        env.byte_array_from_slice(&reply)
+            .map_err(|error| error.to_string())
+    });
     result.unwrap_or_else(|message| {
         let _ = env.throw_new(FAILURE, message);
-        JString::from(JObject::null())
+        JByteArray::from(JObject::null())
     })
 }
 
@@ -366,14 +368,16 @@ fn emit(
     env: &mut JNIEnv,
     handle: jlong,
     name: &JString,
-    event: &JString,
+    event: &JByteArray,
     timeout: Duration,
-) -> Result<String, String> {
+) -> Result<Vec<u8>, String> {
     let runtime = runtime(handle).ok_or("tokamak runtime is unavailable")?;
     let name = text(env, name)?;
-    let event = text(env, event)?;
+    let event = env
+        .convert_byte_array(event)
+        .map_err(|error| error.to_string())?;
     runtime
-        .emit(&name, &event, timeout)
+        .emit_bytes(&name, &event, timeout)
         .map_err(|error| error.to_string())
 }
 

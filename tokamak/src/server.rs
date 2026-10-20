@@ -176,6 +176,16 @@ impl Runtime {
     /// Returns an error when `name` is `start`, the Worker cannot run, or
     /// `timeout` passes before every listener returns.
     pub fn emit(&self, name: &str, event: &str, timeout: Duration) -> Result<String> {
+        String::from_utf8(self.emit_bytes(name, event.as_bytes(), timeout)?)
+            .map_err(|error| crate::Error::Event(error.to_string()))
+    }
+
+    /// Deliver an encoded event and return its encoded reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when delivery fails or exceeds `timeout`.
+    pub fn emit_bytes(&self, name: &str, event: &[u8], timeout: Duration) -> Result<Vec<u8>> {
         self.events
             .emit(name, event, timeout)
             .map_err(crate::Error::Event)
