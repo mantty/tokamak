@@ -9,7 +9,7 @@ import { createBuilder, createServer } from "vite";
 import { createWorkerGraph } from "./dist/worker-graph.mjs";
 import { workerTypes } from "./worker-fixtures.mjs";
 
-function project(t) {
+function project(t, sources = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tokamak-graph-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, "src"));
@@ -36,6 +36,7 @@ function project(t) {
   fs.writeFileSync(path.join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: {
     baseUrl: ".", paths: { "@app/*": ["src/*"] }
   } }));
+  for (const [file, source] of Object.entries(sources)) fs.writeFileSync(path.join(root, "src", file), source);
   const graph = createWorkerGraph(root, path.join(root, "src/tokamak.ts"), path.join(root, ".tokamak"));
   return { root, graph, config: {
     root, configFile: false, logLevel: "silent",
@@ -92,4 +93,56 @@ test("rejects an unsupported public signature before building a bundle", async (
   }`);
   const builder = await createBuilder(config);
   await assert.rejects(builder.buildApp(), /Unsupported RPC type at listen.callback/);
+});
+
+test("service bindings expose validated methods and fetch while keeping events and properties local", async (t) => {
+  const { root, config } = project(t, {
+    "tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
+    class Base extends WorkerEntrypoint {
+      inherited(value: string): string { return this.env.LABEL + ":" + value; }
+    }
+    export default class Native extends Base {
+      #prefix = "private";
+      field = () => "local field";
+      get value() { return "local property"; }
+      event(): string { return "host only"; }
+      describe(): string { return this.#prefix; }
+      fetch(request: Request): Response { return new Response(request.url); }
+    }`,
+    "main.ts": `export default {
+    async fetch(request, env) {
+      const method = new URL(request.url).pathname.slice(1);
+      try {
+        if (method === "fetch") return env.TOKAMAK.fetch("https://service.example/native");
+        const value = method === "value" ? await env.TOKAMAK.value : await env.TOKAMAK[method]("argument");
+        return Response.json({ value });
+      } catch (error) { return Response.json({ error: error.message }, { status: 400 }); }
+    }
+  };`,
+  });
+  const server = await createServer({ ...config, server: { port: 0, watch: { usePolling: true } } });
+  t.after(() => server.close());
+  await server.listen();
+  const get = (method) => fetch(server.resolvedUrls.local[0] + method);
+  assert.deepEqual(await (await get("describe")).json(), { value: "private" });
+  assert.deepEqual(await (await get("inherited")).json(), { value: "configured:argument" });
+  assert.equal(await (await get("fetch")).text(), "https://service.example/native");
+  for (const method of ["event", "field", "value"]) {
+    const response = await get(method);
+    assert.equal(response.status, 400, `${method} must not be exposed by the service binding`);
+    assert.match((await response.json()).error, /does not implement|not a function|not.*exposed/i);
+  }
+  const entry = path.join(root, "src/tokamak.ts");
+  fs.writeFileSync(entry, fs.readFileSync(entry, "utf8").replace(
+    'describe(): string { return this.#prefix; }',
+    'added(): string { return this.#prefix + ":updated"; }',
+  ));
+  let updated;
+  for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
+    updated = await get("added");
+    if (updated.ok) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.deepEqual(await updated.json(), { value: "private:updated" });
+  assert.equal((await get("describe")).status, 400);
 });

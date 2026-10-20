@@ -35,9 +35,7 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
   let appName: string;
   function refresh(): void {
     contract = entry ? readWorkerContract(entry, root) : { methods: [], files: [] };
-    const source = entry
-      ? `export { default } from ${JSON.stringify(normalizePath(entry))};\n`
-      : `import { WorkerEntrypoint } from "cloudflare:workers";\nexport default class extends WorkerEntrypoint {}\n`;
+    const source = serviceEntrypoint(entry, contract.methods);
     writeChanged(generated, `${source}export { TokamakEvents } from ${JSON.stringify(events)};\n`);
     writeChanged(path.join(output, "methods.json"), `${JSON.stringify(contract.methods)}\n`);
   }
@@ -104,6 +102,23 @@ export function workerName(main: string): string {
   const name = `${main}-tokamak`;
   if (name.length <= 63) return name;
   return `${main.slice(0, 46)}-${createHash("sha256").update(main).digest("hex").slice(0, 8)}-tokamak`;
+}
+
+function serviceEntrypoint(entry: string | undefined, methods: string[]): string {
+  const base = `import { WorkerEntrypoint } from "cloudflare:workers";\n`;
+  if (!entry) return `${base}export default class extends WorkerEntrypoint {}\n`;
+  const operations = methods.map((method) =>
+    `async [${JSON.stringify(method)}](...args) { return this.#worker[${JSON.stringify(method)}](...args); }`);
+  return `${base}import Worker from ${JSON.stringify(normalizePath(entry))};
+export default class extends WorkerEntrypoint {
+  #worker = new Worker(this.ctx, this.env);
+  fetch(request) {
+    if (typeof this.#worker.fetch !== "function") throw new TypeError("The Tokamak worker has no fetch handler");
+    return this.#worker.fetch(request);
+  }
+  ${operations.join("\n  ")}
+}
+`;
 }
 
 function writeChanged(file: string, source: string): void {
