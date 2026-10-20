@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import ts from "typescript";
 
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { createBuilder, createServer } from "vite";
@@ -44,6 +45,81 @@ function project(t, sources = {}) {
     plugins: [graph.plugin, cloudflare({ ...graph.cloudflare, inspectorPort: false, remoteBindings: false, persistState: false })]
   } };
 }
+
+function checkTypes(root, source) {
+  const consumer = path.join(root, "src/typecheck.mts");
+  fs.writeFileSync(consumer, `import type { TokamakClient, TokamakService } from "virtual:tokamak/client";
+    declare const client: TokamakClient;
+    declare const service: TokamakService;
+    declare const env: Cloudflare.Env;
+    ${source}`);
+  const config = ts.readConfigFile(path.join(root, "tsconfig.json"), ts.sys.readFile);
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root);
+  const program = ts.createProgram([
+    consumer, path.join(root, "tokamak-env.d.ts"), path.join(root, "worker-configuration.d.ts"),
+  ], {
+    ...parsed.options, target: ts.ScriptTarget.ES2023, module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    strict: true, noEmit: true, types: [], lib: ["lib.es2023.d.ts"],
+  });
+  assert.deepEqual(ts.getPreEmitDiagnostics(program).map((diagnostic) =>
+    ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")), []);
+}
+
+test("generates editor declarations for optional native bindings and the client contract", (t) => {
+  const { root } = project(t, {
+    "tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
+    export default class Native extends WorkerEntrypoint {
+      /** Gets the regional recipe.
+       * @deprecated Use a recipe identifier.
+       */
+      recipe(longitude: number, latitude: number): { title: string } { return { title: "Soup" }; }
+    }`,
+  });
+  checkTypes(root, `
+    // @ts-expect-error native bindings are absent on Cloudflare
+    env.TOKAMAK.recipe(1, 2);
+    if (env.TOKAMAK) {
+      const result: Promise<{ title: string }> = env.TOKAMAK.recipe(1, 2);
+    }
+    const recipe: Promise<{ title: string }> = client.recipe(1, 2);
+    const response: Promise<Response> = service.fetch("https://app.example");
+    // @ts-expect-error wrong coordinates
+    client.recipe("east", "north");
+    // @ts-expect-error unsupported remote-object lifetime methods
+    service.dup();
+  `);
+});
+
+test("preserves existing user declarations when their filename conflicts with generated types", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tokamak-type-conflict-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "tokamak-env.d.ts");
+  const source = "declare const application: string;\n";
+  fs.writeFileSync(file, source);
+  assert.throws(() => createWorkerGraph(root, undefined, path.join(root, ".tokamak")), /reserved for generated Tokamak types/);
+  assert.equal(fs.readFileSync(file, "utf8"), source);
+});
+
+test("keeps editor types valid when an entrypoint is added, moved, or its build output is cleared", (t) => {
+  const { root } = project(t, {
+    "tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
+    export default class Native extends WorkerEntrypoint { echo(value: string): string { return value; } }`,
+  });
+  const output = path.join(root, ".tokamak");
+  createWorkerGraph(root, undefined, output);
+  checkTypes(root, `
+    // @ts-expect-error the entrypoint has no operations yet
+    client.echo("value");
+  `);
+  createWorkerGraph(root, path.join(root, "src/tokamak.ts"), output);
+  const usage = 'const value: Promise<string> = client.echo("value");';
+  checkTypes(root, usage);
+  fs.renameSync(path.join(root, "src/tokamak.ts"), path.join(root, "src/native.ts"));
+  createWorkerGraph(root, path.join(root, "src/native.ts"), output);
+  fs.rmSync(output, { recursive: true, force: true });
+  checkTypes(root, usage);
+});
 
 test("builds two separate bundles with generated service bindings and project aliases", async (t) => {
   const { root, graph, config } = project(t);
@@ -98,7 +174,7 @@ test("rejects an unsupported public signature before building a bundle", async (
 test("service bindings expose validated methods and fetch while keeping events and properties local", async (t) => {
   const { root, config } = project(t, {
     "tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
-    class Base extends WorkerEntrypoint {
+    class Base extends WorkerEntrypoint<{ LABEL: string }> {
       inherited(value: string): string { return this.env.LABEL + ":" + value; }
     }
     export default class Native extends Base {
@@ -125,6 +201,10 @@ test("service bindings expose validated methods and fetch while keeping events a
   await server.listen();
   const get = (method) => fetch(server.resolvedUrls.local[0] + method);
   assert.deepEqual(await (await get("describe")).json(), { value: "private" });
+  checkTypes(root, `
+    const before: Promise<string> = client.describe();
+    const inherited: Promise<string> = client.inherited("argument");
+  `);
   assert.deepEqual(await (await get("inherited")).json(), { value: "configured:argument" });
   assert.equal(await (await get("fetch")).text(), "https://service.example/native");
   for (const method of ["event", "field", "value"]) {
@@ -145,4 +225,9 @@ test("service bindings expose validated methods and fetch while keeping events a
   }
   assert.deepEqual(await updated.json(), { value: "private:updated" });
   assert.equal((await get("describe")).status, 400);
+  checkTypes(root, `
+    const after: Promise<string> = client.added();
+    // @ts-expect-error the removed method is absent from refreshed declarations
+    client.describe();
+  `);
 });

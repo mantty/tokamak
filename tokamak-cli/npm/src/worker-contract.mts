@@ -3,11 +3,13 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 import { checkRpcMethod } from "./rpc-contract.mjs";
+import { serviceTypes, type ServiceMethod } from "./service-types.mjs";
 
 /** The callable prototype methods and source dependencies of a Worker entrypoint. */
 export interface WorkerContract {
   methods: string[];
   files: string[];
+  declarations: string;
 }
 
 /** Resolve the application's types before generating its service adapters. */
@@ -36,15 +38,28 @@ export function readWorkerContract(entry: string, root: string): WorkerContract 
     throw new Error(`Tokamak entrypoint ${entry} must default-export a concrete class.`);
   }
   const prototypes = applicationPrototypes(program, checker, instance, entry);
-  const methods: string[] = [];
+  const methods: ServiceMethod[] = [];
   for (const property of instance.getProperties()) {
     if (!property.declarations?.some((node) => prototypes.has(node.parent))) continue;
     if (!exposedMethod(property)) continue;
-    checkRpcMethod(checker, checker.getTypeOfSymbolAtLocation(property, source), property.name);
-    methods.push(property.name);
+    const type = checker.getTypeOfSymbolAtLocation(property, source);
+    checkRpcMethod(checker, type, property.name);
+    methods.push({
+      name: property.name,
+      overloads: type.getCallSignatures().length,
+      documentation: [
+        ts.displayPartsToString(property.getDocumentationComment(checker)),
+        ...property.getJsDocTags(checker).map((tag) => `@${tag.name} ${ts.displayPartsToString(tag.text)}`.trim()),
+      ].filter(Boolean).join("\n"),
+    });
   }
+  methods.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
   return {
-    methods: methods.sort(),
+    methods: methods.map((method) => method.name),
+    declarations: serviceTypes(
+      `InstanceType<typeof import(${JSON.stringify(entry.split(path.sep).join("/"))}, { with: { "resolution-mode": "import" } }).default>`,
+      methods,
+    ),
     files: [...new Set([
       ...config.configFiles,
       ...program.getSourceFiles().filter((file) => !program.isSourceFileDefaultLibrary(file)).map((file) => file.fileName),

@@ -42,6 +42,14 @@ relay. Vite reloads its modules and listeners when their source changes.
 Run `wrangler types` to generate the project's Workers declarations before
 building or starting development.
 
+Tokamak generates `tokamak-env.d.ts` in the project root, refreshing it during
+development. Include it in the project's TypeScript inputs alongside
+`worker-configuration.d.ts`, and ignore the generated file in version control.
+It adds the optional
+`Cloudflare.Env.TOKAMAK` binding and exports `TokamakService` and `TokamakClient`
+types from `virtual:tokamak/client`. Service methods return ordinary promises,
+preserve the entrypoint's overloads, and expose only its public RPC operations.
+
 The entrypoint receives its own bindings in `this.env` and native invocation
 context in `this.ctx`. Its default `event()` runs registered listeners; an
 override receives `{ type, data }` and can return a reply or promise. Native
