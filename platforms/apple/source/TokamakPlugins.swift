@@ -1,6 +1,12 @@
 import Foundation
 import WebKit
 
+#if os(iOS)
+  import UIKit
+#else
+  import AppKit
+#endif
+
 struct TokamakPluginError: Error {
   let name: String
   let message: String
@@ -8,6 +14,9 @@ struct TokamakPluginError: Error {
   static func notSupported(_ message: String) -> Self {
     Self(name: "NotSupportedError", message: message)
   }
+
+  /// A native screen was needed while the app has no window.
+  static let noWindow = Self(name: "InvalidStateError", message: "The app has no window")
 
   /// UI was needed while the app cannot show it.
   static let needsUI = Self(
@@ -103,6 +112,25 @@ final class TokamakHost {
       guard app.isInForeground else { throw .needsUI }
     #endif
   }
+
+  #if os(iOS)
+    /// The view controller to present a native screen from: the top of the
+    /// app window's presentation stack. Throws `NeedsUIError` unless the app
+    /// can show UI now. Call it on the main thread.
+    func presenter() throws(TokamakPluginError) -> UIViewController {
+      try requireUI()
+      guard var top = webView?.window?.rootViewController else { throw .noWindow }
+      while let presented = top.presentedViewController { top = presented }
+      return top
+    }
+  #else
+    /// The app window, to present a native screen over. Call it on the main
+    /// thread.
+    func presenter() throws(TokamakPluginError) -> NSWindow {
+      guard let window = webView?.window else { throw .noWindow }
+      return window
+    }
+  #endif
 
   /// Delivers the plugin's event `name`, which the Worker's listeners
   /// receive as `<plugin>.<name>`, with its encoded `payload`, and calls

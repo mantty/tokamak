@@ -131,6 +131,19 @@ its resources when the stream ends or the invocation is torn down. App-owned
 background registrations need stable IDs and documented restoration rules;
 they must survive the short invocation that configured them.
 
+## Native screens and sessions
+
+A plugin shows a native screen from Swift `host.presenter()`, a view controller
+on iOS and the window on macOS, or Kotlin `host.requireForegroundActivity()`, on
+the main thread. Both reject with `NeedsUIError` while the app cannot show UI.
+The plugin presents and dismisses its screen; the page is unaffected.
+
+An operation that leaves a screen or a hardware session open after its call
+completes returns a session ID and offers an explicit close or stop operation.
+The session belongs to the app, so a later invocation ends it by that ID. A
+session that belongs to one invocation is a `NativeReference` or a stream
+instead, which closing or the invocation's end releases.
+
 The manifest's `platforms` entries name the native class and source files.
 Support one platform if that is what the capability needs. Add permissions and
 other packaging metadata through the existing platform build hooks.
