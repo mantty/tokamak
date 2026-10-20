@@ -5,12 +5,18 @@ import ts from "typescript";
 
 import { checkRpcMethod } from "./rpc-contract.mjs";
 import { serviceTypes, type ServiceMethod } from "./service-types.mjs";
+import type { PluginDefinition } from "./plugin-manifest.mjs";
 
 /** The callable prototype methods and source dependencies of a Worker entrypoint. */
 export interface WorkerContract {
   methods: string[];
   files: string[];
   declarations: string;
+}
+
+export interface PluginContract extends WorkerContract {
+  definition: PluginDefinition;
+  webMethods: string[];
 }
 
 export function findModule(root: string, name: string | undefined): string | undefined {
@@ -32,16 +38,19 @@ export function readServiceContracts(entry: string, root: string): Record<string
 }
 
 /** Analyze both entrypoints in one TypeScript program. */
-export function readWorkerContracts(entry: string | undefined, main: string | undefined, root: string, validate: boolean): {
+export function readWorkerContracts(entry: string | undefined, main: string | undefined, root: string, validate: boolean, plugins: PluginDefinition[] = []): {
   native: WorkerContract;
   main: Record<string, WorkerContract>;
+  plugins: PluginContract[];
 } {
-  const entries = [entry, main].filter((file): file is string => !!file);
+  const entries = [entry, main, ...plugins.flatMap(plugin => [plugin.api.module, plugin.web?.module])]
+    .filter((file): file is string => !!file);
   const project = entries.length ? workerProgram(entries, root) : undefined;
   return {
     native: entry && project ? classContract(workerModule(entry, project), "default", true, validate)
       : { methods: [], files: [], declarations: serviceTypes("{}", []) },
     main: main && project ? serviceContracts(workerModule(main, project), validate) : {},
+    plugins: project ? plugins.map(plugin => pluginContract(workerModule(plugin.api.module, project), plugin, validate)) : [],
   };
 }
 
@@ -63,8 +72,11 @@ function serviceContracts(module: ReturnType<typeof workerModule>, validate: boo
 
 function workerProgram(entries: string[], root: string) {
   const config = projectConfig(root);
+  const modules = new Map(entries.map(entry => [entry,
+    ts.resolveModuleName(entry, path.join(root, "tokamak.ts"), config.options, ts.sys).resolvedModule?.resolvedFileName ?? entry,
+  ]));
   const program = ts.createProgram({
-    rootNames: [...new Set([...entries, ...config.fileNames.filter((file) => /\.d\.[cm]?ts$/.test(file))])],
+    rootNames: [...new Set([...modules.values(), ...config.fileNames.filter((file) => /\.d\.[cm]?ts$/.test(file))])],
     options: config.options,
     projectReferences: config.projectReferences,
   });
@@ -72,15 +84,16 @@ function workerProgram(entries: string[], root: string) {
   if (syntax.length) throw diagnostics(syntax);
   const checker = program.getTypeChecker();
   const files = [...new Set([
+    ...entries,
     ...config.configFiles,
     ...program.getSourceFiles().filter((file) => !program.isSourceFileDefaultLibrary(file)).map((file) => file.fileName),
   ])].sort();
-  return { program, checker, files };
+  return { program, checker, files, modules };
 }
 
 function workerModule(entry: string, project: ReturnType<typeof workerProgram>) {
   const { program, checker } = project;
-  const source = program.getSourceFile(entry);
+  const source = program.getSourceFile(project.modules.get(entry) ?? entry);
   if (!source) throw new Error(`Cannot read Tokamak entrypoint ${entry}.`);
   const module = checker.getSymbolAtLocation(source);
   const exports = new Map((module ? checker.getExportsOfModule(module) : []).map(exported => {
@@ -88,6 +101,86 @@ function workerModule(entry: string, project: ReturnType<typeof workerProgram>) 
     return [exported.name, checker.getTypeOfSymbolAtLocation(symbol, source)];
   }));
   return { ...project, entry, source, exports };
+}
+
+function pluginContract(module: ReturnType<typeof workerModule>, definition: PluginDefinition, validate: boolean): PluginContract {
+  const { checker, program, source } = module;
+  const signatures = module.exports.get(definition.api.export)?.getCallSignatures() ?? [];
+  const signature = signatures[0];
+  const parameter = signature?.parameters[0];
+  const parameterType = parameter && checker.getTypeOfSymbol(parameter);
+  const symbol = nativeSdkExport(program, checker, module.entry, "TokamakContext");
+  const context = symbol && checker.getDeclaredTypeOfSymbol(symbol);
+  if (signatures.length !== 1 || signature.typeParameters?.length || signature.parameters.length !== 1 ||
+    !parameterType || parameterType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown) || !context ||
+    !checker.isTypeAssignableTo(parameterType, context) || !checker.isTypeAssignableTo(context, parameterType)) {
+    throw new Error(`Plugin ${definition.id} factory must accept one TokamakContext.`);
+  }
+  const api = signature.getReturnType();
+  if (!apiObject(checker, api)) {
+    throw new Error(`Plugin ${definition.id} factory must return a synchronous object with declared methods.`);
+  }
+  const methods: ServiceMethod[] = [];
+  for (const property of api.getProperties()) {
+    if (privateProperty(property)) continue;
+    if (property.name === "capabilities") continue;
+    assertMethodName(property.name);
+    if (["fetch", "event", "queue", "scheduled", "email", "tail", "trace", "tailStream", "test"].includes(property.name)) {
+      throw new Error(`Plugin method ${property.name} is reserved for a Worker handler.`);
+    }
+    const method = checker.getTypeOfSymbolAtLocation(property, source);
+    if (!method.getCallSignatures().length || String(property.escapedName).startsWith("__@")) {
+      throw new Error(`Plugin ${definition.id}.${property.name} must be a method.`);
+    }
+    if (validate) checkRpcMethod(checker, method, `${definition.id}.${property.name}`);
+    methods.push(methodDeclaration(checker, property, method));
+  }
+  methods.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+  return {
+    definition, methods: methods.map(method => method.name), files: [...module.files, definition.manifest],
+    webMethods: browserMethods(module, definition, methods, validate),
+    declarations: serviceTypes(`ReturnType<typeof import(${JSON.stringify(definition.api.module)}, { with: { "resolution-mode": "import" } })[${JSON.stringify(definition.api.export)}]>`, methods),
+  };
+}
+
+function browserMethods(project: ReturnType<typeof workerModule>, definition: PluginDefinition, methods: ServiceMethod[], validate: boolean): string[] {
+  if (!definition.web) return [];
+  const { checker } = project;
+  const module = workerModule(definition.web.module, project);
+  const api = module.exports.get(definition.web.export);
+  if (!api || !apiObject(checker, api)) {
+    throw new Error(`Plugin ${definition.id} web export must be an object implementing its frontend methods.`);
+  }
+  const clientModule = checker.getAmbientModules().find(symbol => symbol.name === JSON.stringify(definition.client));
+  const clientSymbol = clientModule && checker.getExportsOfModule(clientModule).find(symbol => symbol.name === "TokamakClient");
+  const client = clientSymbol && checker.getDeclaredTypeOfSymbol(clientSymbol);
+  return api.getProperties().filter(property => !privateProperty(property)).map(property => {
+    const method = methods.find(method => method.name === property.name);
+    if (!method) throw new Error(`Plugin ${definition.id} web method ${property.name} has no native API method.`);
+    if (validate) {
+      const expected = client?.getProperty(property.name);
+      const actual = checker.getTypeOfSymbolAtLocation(property, module.source);
+      checkRpcMethod(checker, actual, `${definition.id}.web.${property.name}`);
+      if (!expected || !checker.isTypeAssignableTo(actual, checker.getTypeOfSymbol(expected))) {
+        throw new Error(`Plugin ${definition.id} web method ${property.name} must implement its generated asynchronous frontend signature.`);
+      }
+    }
+    return property.name;
+  }).sort();
+}
+
+function privateProperty(property: ts.Symbol): boolean {
+  return property.declarations?.some(node => {
+    const name = (node as ts.NamedDeclaration).name;
+    return Boolean(ts.getCombinedModifierFlags(node) & (ts.ModifierFlags.Private | ts.ModifierFlags.Protected)) ||
+      Boolean(name && ts.isPrivateIdentifier(name));
+  }) ?? false;
+}
+
+function apiObject(checker: ts.TypeChecker, type: ts.Type): boolean {
+  if (type.isUnionOrIntersection()) return type.types.every(member => apiObject(checker, member));
+  return Boolean(type.flags & ts.TypeFlags.Object) && !type.getCallSignatures().length &&
+    !type.getConstructSignatures().length && !type.getProperty("then") && !checker.getIndexInfosOfType(type).length;
 }
 
 function classContract(module: ReturnType<typeof workerModule>, name: string, native: boolean, validate: boolean): WorkerContract {
@@ -111,14 +204,7 @@ function classContract(module: ReturnType<typeof workerModule>, name: string, na
     if (!exposedMethod(property)) continue;
     const type = checker.getTypeOfSymbolAtLocation(property, source);
     if (validate) checkRpcMethod(checker, type, property.name);
-    methods.push({
-      name: property.name,
-      overloads: type.getCallSignatures().length,
-      documentation: [
-        ts.displayPartsToString(property.getDocumentationComment(checker)),
-        ...property.getJsDocTags(checker).map((tag) => `@${tag.name} ${ts.displayPartsToString(tag.text)}`.trim()),
-      ].filter(Boolean).join("\n"),
-    });
+    methods.push(methodDeclaration(checker, property, type));
   }
   methods.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
   return {
@@ -132,11 +218,22 @@ function classContract(module: ReturnType<typeof workerModule>, name: string, na
   };
 }
 
+function methodDeclaration(checker: ts.TypeChecker, property: ts.Symbol, type: ts.Type): ServiceMethod {
+  return {
+    name: property.name,
+    overloads: type.getCallSignatures().length,
+    documentation: [
+      ts.displayPartsToString(property.getDocumentationComment(checker)),
+      ...property.getJsDocTags(checker).map(tag => `@${tag.name} ${ts.displayPartsToString(tag.text)}`.trim()),
+    ].filter(Boolean).join("\n"),
+  };
+}
+
 function applicationPrototypes(program: ts.Program, checker: ts.TypeChecker, instance: ts.Type, entry: string, allowNative = false): Set<ts.Node> | undefined {
   const module = checker.getAmbientModules().find((symbol) => symbol.name === '"cloudflare:workers"');
   const exported = module && checker.getExportsOfModule(module).find((symbol) => symbol.name === "WorkerEntrypoint");
   const base = exported && (exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported);
-  const native = allowNative ? nativeEntrypoint(program, checker, entry) : undefined;
+  const native = allowNative ? nativeSdkExport(program, checker, entry, "TokamakEntrypoint") : undefined;
   const prototypes = new Set<ts.Node>();
   let current: ts.Type | undefined = instance;
   const seen = new Set<ts.Type>();
@@ -150,13 +247,14 @@ function applicationPrototypes(program: ts.Program, checker: ts.TypeChecker, ins
   return undefined;
 }
 
-function nativeEntrypoint(program: ts.Program, checker: ts.TypeChecker, entry: string): ts.Symbol | undefined {
+function nativeSdkExport(program: ts.Program, checker: ts.TypeChecker, entry: string, name: string): ts.Symbol | undefined {
   const options = program.getCompilerOptions();
   const sdk = ts.resolveModuleName("@tokamakdev/tok", entry, options, ts.sys).resolvedModule?.resolvedFileName;
   const core = ts.resolveModuleName("@tokamakdev/plugin/worker", sdk ?? fileURLToPath(import.meta.url), options, ts.sys).resolvedModule;
   const source = core && program.getSourceFile(core.resolvedFileName);
   const module = source && checker.getSymbolAtLocation(source);
-  return module && checker.getExportsOfModule(module).find((symbol) => symbol.name === "TokamakEntrypoint");
+  const exported = module && checker.getExportsOfModule(module).find(symbol => symbol.name === name);
+  return exported && (exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported);
 }
 
 function exposedMethod(property: ts.Symbol): boolean {
@@ -167,10 +265,14 @@ function exposedMethod(property: ts.Symbol): boolean {
     modifier.kind === ts.SyntaxKind.PrivateKeyword || modifier.kind === ts.SyntaxKind.ProtectedKeyword))) {
     throw new Error(`Method ${property.name} is on the public JavaScript prototype; use a #private method for a local helper.`);
   }
-  if (["then", "connect", "dup", "constructor", "alarm", "webSocketMessage", "webSocketClose", "webSocketError", "__tokamakRpc"].includes(property.name)) {
-    throw new Error(`Method ${property.name} is reserved by the service binding contract.`);
-  }
+  assertMethodName(property.name);
   return !["fetch", "event", "queue", "scheduled", "email", "tail", "trace", "tailStream", "test"].includes(property.name);
+}
+
+function assertMethodName(name: string): void {
+  if (["then", "connect", "dup", "constructor", "alarm", "webSocketMessage", "webSocketClose", "webSocketError", "__tokamakRpc"].includes(name)) {
+    throw new Error(`Method ${name} is reserved by the service binding contract.`);
+  }
 }
 
 function projectConfig(root: string): ts.ParsedCommandLine & { configFiles: string[] } {

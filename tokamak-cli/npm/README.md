@@ -53,6 +53,37 @@ preserve the entrypoint's overloads, and expose only its public RPC operations.
 shared variables, KV, D1, and R2 bindings. `this.env` in a `TokamakEntrypoint`
 and the `env` argument of native listeners use this type.
 
+Workspace implementation and API-reference edits reload through Vite.
+Installing, removing, or renaming plugins requires restarting `tok dev` so the
+native shell and worker bindings use the same installed capabilities.
+
+Plugin packages declare their native API factory in `tokamak-plugin.json`:
+
+```json
+{
+  "schemaVersion": 2,
+  "id": "widgets",
+  "api": { "module": "./src/index.ts", "export": "widgets" }
+}
+```
+
+The factory accepts a `TokamakContext` from `@tokamakdev/plugin` and returns
+an object with typed public methods. Its module path is relative to the package.
+Published JavaScript can supply adjacent TypeScript declarations. Existing
+native platform sections and build settings remain in the same manifest.
+
+Installing the package generates `env.TOKAMAK_WIDGETS` and its named native
+entrypoint. Page code imports the generated default client from
+`<package-name>/client`; native code calls `widgets(ctx)` directly. Both callers
+use the same declared methods and RPC value contract. Workspace dependencies
+work without publishing, and API source edits reload through Vite.
+
+A plugin can add `"web": { "module": "./web.ts", "export": "web" }` to the
+manifest. That export is an object implementing any subset of its generated
+asynchronous client methods. The generator checks the signatures. Web clients
+use those implementations and reject omitted methods with `NotSupportedError`;
+native clients always call the native worker.
+
 Page code imports the generated client as the module's default export:
 
 ```ts

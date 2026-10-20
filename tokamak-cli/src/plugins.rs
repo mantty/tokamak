@@ -372,7 +372,7 @@ fn package_root(project: &Path, name: &str) -> Option<PathBuf> {
 
 fn load(root: &Path, path: &Path) -> Result<Plugin> {
     let mut plugin: Plugin = serde_json::from_slice(&fs::read(path)?)?;
-    if plugin.schema_version != 1 {
+    if !matches!(plugin.schema_version, 1 | 2) {
         bail!(
             "unsupported plugin schema version {}",
             plugin.schema_version
@@ -620,6 +620,34 @@ mod tests {
         fs::create_dir_all(&plugin)?;
         fs::write(plugin.join("tokamak-plugin.json"), manifest.to_string())?;
         Ok(plugin)
+    }
+
+    #[test]
+    fn stages_native_sources_of_plugins_with_worker_api_factories() -> TestResult {
+        let project = tempfile::tempdir()?;
+        let plugin = install_plugin(
+            project.path(),
+            &serde_json::json!({
+                "schemaVersion": 2,
+                "id": "widgets",
+                "api": { "module": "./index.ts", "export": "widgets" },
+                "platforms": { "ios": { "class": "Widgets", "sources": ["Widgets.swift"] } },
+            }),
+        )?;
+        fs::write(plugin.join("Widgets.swift"), "native source")?;
+        let plugins = discover(project.path())?;
+        let staged = project.path().join("staged");
+        stage(
+            &plugins,
+            &pack(Target::IosArm64),
+            &Generated::new(),
+            &staged,
+        )?;
+        assert_eq!(
+            fs::read_to_string(staged.join("widgets/sources/0-Widgets.swift"))?,
+            "native source"
+        );
+        Ok(())
     }
 
     #[test]

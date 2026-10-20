@@ -11,7 +11,6 @@ import { experimental_readRawConfig, unstable_readConfig, type Unstable_RawConfi
 
 import { createNativeWorker, type TokamakOptions } from "./native-worker.mjs";
 import { createClientPlugin } from "./client.mjs";
-import { workerName } from "./worker-graph.mjs";
 import type { BindingConfiguration } from "./worker-types.mjs";
 
 /** Astro's Cloudflare adapter, with Tokamak's native worker and development relay. */
@@ -96,10 +95,12 @@ export function tokamak(options: TokamakOptions = {}, cloudflareOptions: Cloudfl
     for (const [env, config] of environments) {
       const resolved = unstable_readConfig({ config: source, env }, { hideWarnings: true });
       if (!resolved.name) throw new Error("Tokamak requires a name in the main Worker's configuration.");
-      if (config.services?.some(binding => binding.binding === "TOKAMAK")) {
-        throw new Error("TOKAMAK is reserved for the generated native worker binding.");
+      const services = graph.services(resolved.name);
+      const reserved = config.services?.find(binding => services.some(service => service.binding === binding.binding));
+      if (reserved) {
+        throw new Error(`${reserved.binding} is reserved for a generated native worker binding.`);
       }
-      config.services = [...config.services ?? [], { binding: "TOKAMAK", service: workerName(resolved.name) }];
+      config.services = [...config.services ?? [], ...services];
       if (selected.main !== main) config.main = selected.main;
     }
     // Keeping the generated configuration beside its source preserves relative paths and .dev.vars.

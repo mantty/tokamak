@@ -2,8 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PluginConfig } from "@cloudflare/vite-plugin";
 
-import { readWorkerContracts, type WorkerContract } from "./worker-contract.mjs";
+import { readWorkerContracts, type PluginContract, type WorkerContract } from "./worker-contract.mjs";
 import { serviceTypes, writeEnvironmentTypes } from "./service-types.mjs";
+import { discoverPlugins, type PluginDefinition } from "./plugin-manifest.mjs";
 
 type MainCustomizer = Extract<NonNullable<PluginConfig["config"]>, (...args: never[]) => unknown>;
 export type WorkerConfiguration = Parameters<MainCustomizer>[0];
@@ -13,13 +14,17 @@ export type BindingConfiguration = Partial<Pick<WorkerConfiguration, "main" | "c
 export class WorkerTypes {
   native: WorkerContract = { methods: [], files: [], declarations: serviceTypes("{}", []) };
   main: Record<string, WorkerContract> = {};
+  plugins: PluginContract[] = [];
+  definitions: PluginDefinition[];
   mainEntry?: string;
   mainModule?: string;
   #bindings: string[] = [];
   #ready = false;
   #change?: { file: string; timestamp: number };
 
-  constructor(readonly root: string, readonly entry: string | undefined) {}
+  constructor(readonly root: string, readonly entry: string | undefined) {
+    this.definitions = discoverPlugins(root);
+  }
 
   configure(config: BindingConfiguration): void {
     if (!config.main) throw new Error("Tokamak requires a main Worker entrypoint.");
@@ -52,7 +57,18 @@ export class WorkerTypes {
   }
 
   discover(): void {
+    const definitions = discoverPlugins(this.root);
+    if (definitions.length !== this.definitions.length || definitions.some((plugin, index) =>
+      plugin.id !== this.definitions[index].id || plugin.package !== this.definitions[index].package)) {
+      throw new Error("Restart tok dev after installing, removing, or renaming a Tokamak plugin.");
+    }
+    this.definitions = definitions;
     this.#read(false);
+  }
+
+  get metadata(): string[] {
+    return [path.join(this.root, "package.json"), ...this.definitions.map(plugin => plugin.manifest)]
+      .map(file => file.split(path.sep).join("/"));
   }
 
   refresh(change?: { file: string; timestamp: number }): void {
@@ -62,15 +78,16 @@ export class WorkerTypes {
     this.discover();
     // Declare both APIs before checking signatures inferred from cross-worker calls.
     writeEnvironmentTypes(this.root, this.native.declarations,
-      this.main.default?.declarations ?? serviceTypes("{}", [], "Main"), this.#bindings);
+      this.main.default?.declarations ?? serviceTypes("{}", [], "Main"), this.#bindings, this.plugins);
     this.#read(true);
     this.#ready = true;
     this.#change = change;
   }
 
   #read(validate: boolean): void {
-    const contracts = readWorkerContracts(this.entry, this.mainModule, this.root, validate);
+    const contracts = readWorkerContracts(this.entry, this.mainModule, this.root, validate, this.definitions);
     this.native = contracts.native;
     this.main = contracts.main;
+    this.plugins = contracts.plugins;
   }
 }

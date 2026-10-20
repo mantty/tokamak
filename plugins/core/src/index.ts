@@ -1,3 +1,5 @@
+export type { TokamakContext } from "./worker.js";
+
 interface NativeTransport {
   postMessage(message: string): void;
   onmessage: ((event: { data: string }) => void) | null;
@@ -114,7 +116,7 @@ function pageTransport(): NativeTransport | undefined {
 
 function connect(transport: NativeTransport): void {
   if (!connected) {
-    const page: { addEventListener?: (type: string, listener: () => void) => void } = globalThis;
+    const page: { addEventListener?(type: string, listener: () => void): void } = globalThis;
     page.addEventListener?.("pagehide", cancelSubscriptions);
   }
   connected = transport;
