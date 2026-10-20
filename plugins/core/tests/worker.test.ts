@@ -30,16 +30,16 @@ void test("native contexts carry the host connection while ordinary contexts can
   // @ts-expect-error -- ordinary execution contexts do not contain a native connection.
   new TokamakEntrypoint(ordinary, {});
   const offline = createNativeContext(ordinary);
-  await assert.rejects(offline[nativeConnection].call("example", "run"), { name: "NotSupportedError" });
+  await assert.rejects(offline[nativeConnection].call("example", "run", new Uint8Array()), { name: "NotSupportedError" });
   const connection: NativeConnection = {
-    call: () => Promise.resolve("native"),
+    call: () => Promise.resolve(new Uint8Array([42])),
     listen: () => () => undefined,
   };
   Reflect.set(globalThis, nativeConnection, connection);
   const ctx = createNativeContext({ waitUntil: () => undefined });
   assert.equal(ctx[nativeConnection], connection);
-  assert.equal(await ctx[nativeConnection].call("example", "run"), "native");
-  await assert.rejects(offline[nativeConnection].call("example", "run"), { name: "NotSupportedError" });
+  assert.deepEqual(await ctx[nativeConnection].call("example", "run", new Uint8Array()), new Uint8Array([42]));
+  await assert.rejects(offline[nativeConnection].call("example", "run", new Uint8Array()), { name: "NotSupportedError" });
 });
 
 void test("an event override can return a reply synchronously", () => {

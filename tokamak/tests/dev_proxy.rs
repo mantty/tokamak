@@ -234,13 +234,15 @@ fn delivers_events_through_the_dev_socket() -> TestResult {
 struct Shell(mpsc::Sender<(u64, String)>);
 
 impl PluginHandler for Shell {
-    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
+        let arguments = String::from_utf8_lossy(arguments);
         let _ = self
             .0
             .send((id, format!("call {plugin}.{method} {arguments}")));
     }
 
-    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
+        let arguments = String::from_utf8_lossy(arguments);
         let _ = self
             .0
             .send((id, format!("subscribe {plugin}.{method} {arguments}")));
@@ -283,14 +285,14 @@ fn runs_the_development_workers_plugin_calls_on_the_device() -> TestResult {
     )?;
     let (call, request) = next_request()?;
     assert_eq!(request, r#"call location.getCurrentPosition {"timeout":1}"#);
-    runtime.reply(call, r#"{"value":{"latitude":51.5},"done":true}"#);
+    runtime.reply(call, value(br#"{"latitude":51.5}"#, true));
     send_message(
         &mut socket,
         &json!({ "type": "subscribe", "id": 3, "plugin": "location", "method": "watchPosition", "arguments": null }),
     )?;
     let (subscription, request) = next_request()?;
     assert_eq!(request, "subscribe location.watchPosition null");
-    runtime.reply(subscription, r#"{"value":1,"done":false}"#);
+    runtime.reply(subscription, value(b"1", false));
     let mut results = [
         read_message(&mut socket)?,
         read_message(&mut socket)?,
@@ -321,7 +323,7 @@ fn runs_the_development_workers_plugin_calls_on_the_device() -> TestResult {
             send_message(&mut socket, &json!({ "type": "cancel", "id": id }))?;
         }
         assert_eq!(next_request()?, (call, "cancel".to_owned()));
-        runtime.reply(call, r#"{"value":"late","done":true}"#);
+        runtime.reply(call, value(br#""late""#, true));
     }
     Ok(())
 }
@@ -356,13 +358,13 @@ fn assembles_a_reply_sent_in_fragments() -> TestResult {
     let host_server = thread::spawn(move || -> TestResult {
         let (mut socket, _) = accept_dev_socket(&listener)?;
         answer_event(&mut socket)?;
-        let (_, event) = read_frame(&mut socket)?;
-        let id = serde_json::from_slice::<serde_json::Value>(&event)?["id"].clone();
-        let reply = serde_json::json!({ "type": "reply", "id": id, "reply": "joined" }).to_string();
+        let event = read_message(&mut socket)?;
+        let reply =
+            encode_message(&json!({ "type": "reply", "id": event["id"], "reply": "joined" }))?;
         let (first, last) = reply.split_at(reply.len() / 2);
-        socket.write_all(&[0x01, u8::try_from(first.len())?])?;
-        socket.write_all(first.as_bytes())?;
-        write_frame(&mut socket, 0x0, last.as_bytes(), false)
+        socket.write_all(&[0x02, u8::try_from(first.len())?])?;
+        socket.write_all(first)?;
+        write_frame(&mut socket, 0x0, last, false)
     });
 
     let reply = runtime.emit("example.ping", "{}", Duration::from_secs(5))?;
@@ -382,13 +384,13 @@ fn fails_an_event_the_plugin_answers_with_an_error_or_too_late() -> TestResult {
             serde_json::json!({ "type": "error", "message": "listener exploded" }),
             serde_json::json!({ "type": "reply", "reply": "late" }),
         ] {
-            let (_, event) = read_frame(&mut socket)?;
+            let event = read_message(&mut socket)?;
             let mut answer = answer;
-            answer["id"] = serde_json::from_slice::<serde_json::Value>(&event)?["id"].clone();
+            answer["id"] = event["id"].clone();
             if answer["type"] == "reply" {
                 thread::sleep(Duration::from_millis(500));
             }
-            write_frame(&mut socket, 0x1, answer.to_string().as_bytes(), false)?;
+            send_message(&mut socket, &answer)?;
         }
         Ok(())
     });
@@ -752,28 +754,80 @@ fn accept_dev_socket(listener: &TcpListener) -> TestResult<(TcpStream, String)> 
 /// Reads an event from the dev socket and replies to it with its name,
 /// returning the event's message.
 fn answer_event(socket: &mut TcpStream) -> TestResult<String> {
-    let (opcode, payload) = read_frame(socket)?;
-    assert_eq!(opcode, 0x1);
-    let message: serde_json::Value = serde_json::from_slice(&payload)?;
-    let reply = serde_json::json!({
-        "type": "reply",
-        "id": message["id"],
-        "reply": if message["name"] == "example.ping" { serde_json::json!({ "echo": message["name"] }) } else { serde_json::Value::Null },
-    });
-    write_frame(socket, 0x1, reply.to_string().as_bytes(), false)?;
-    Ok(String::from_utf8(payload)?)
+    let message = read_message(socket)?;
+    send_message(
+        socket,
+        &json!({
+            "type": "reply", "id": message["id"],
+            "reply": if message["name"] == "example.ping" { json!({ "echo": message["name"] }) } else { Value::Null },
+        }),
+    )?;
+    // Keep event assertions independent of routing metadata defaults.
+    Ok(format!(
+        r#"{{"type":"event","id":{},"name":{},"event":{}}}"#,
+        message["id"], message["name"], message["event"]
+    ))
 }
 
-/// Sends `message` on the dev socket, as the plugin does.
+fn encode_message(message: &Value) -> TestResult<Vec<u8>> {
+    let mut header = message.clone();
+    let payload = match message["type"].as_str() {
+        Some("call" | "subscribe") => header
+            .as_object_mut()
+            .ok_or("no header")?
+            .remove("arguments")
+            .unwrap_or(Value::Null)
+            .to_string()
+            .into_bytes(),
+        Some("reply") => header
+            .as_object_mut()
+            .ok_or("no header")?
+            .remove("reply")
+            .unwrap_or(Value::Null)
+            .to_string()
+            .into_bytes(),
+        Some("error") => header
+            .as_object_mut()
+            .ok_or("no header")?
+            .remove("message")
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default()
+            .into_bytes(),
+        _ => vec![],
+    };
+    let metadata = serde_json::to_vec(&header)?;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&u32::try_from(4 + metadata.len() + payload.len())?.to_le_bytes());
+    bytes.extend_from_slice(&u32::try_from(metadata.len())?.to_le_bytes());
+    bytes.extend_from_slice(&metadata);
+    bytes.extend_from_slice(&payload);
+    Ok(bytes)
+}
+
 fn send_message(socket: &mut TcpStream, message: &Value) -> TestResult {
-    write_frame(socket, 0x1, message.to_string().as_bytes(), false)
+    write_frame(socket, 0x2, &encode_message(message)?, false)
 }
 
-/// The next message on the dev socket, as JSON.
 fn read_message(socket: &mut TcpStream) -> TestResult<Value> {
-    let (opcode, payload) = read_frame(socket)?;
-    assert_eq!(opcode, 0x1);
-    Ok(serde_json::from_slice(&payload)?)
+    let (opcode, bytes) = read_frame(socket)?;
+    assert_eq!(opcode, 0x2);
+    let metadata = u32::from_le_bytes(bytes[4..8].try_into()?) as usize;
+    let mut message: Value = serde_json::from_slice(&bytes[8..8 + metadata])?;
+    let payload: Value = serde_json::from_slice(&bytes[8 + metadata..])?;
+    if message["type"] == "event" {
+        message["event"] = payload;
+    } else if message["type"] == "result" {
+        let key = if message["failed"] == true {
+            "error"
+        } else {
+            "value"
+        };
+        message["result"] = json!({ key: payload, "done": message["done"] });
+    }
+    let header = message.as_object_mut().ok_or("no header")?;
+    header.remove("failed");
+    header.remove("done");
+    Ok(message)
 }
 
 /// The next connection to `listener` before `deadline`, with its request
@@ -941,4 +995,12 @@ fn connect_tls(
         tls.conn.complete_io(&mut tls.sock)?;
     }
     Ok(tls)
+}
+
+fn value(payload: &[u8], done: bool) -> tokamak::PluginReply {
+    tokamak::PluginReply {
+        payload: payload.to_vec(),
+        failed: false,
+        done,
+    }
 }

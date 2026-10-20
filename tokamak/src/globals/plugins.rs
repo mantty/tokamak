@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use rquickjs::{Ctx, Function, Object, Promise};
+use rquickjs::{ArrayBuffer, Ctx, Exception, Function, IntoJs, Object, Promise, Value};
 use tokio_util::sync::CancellationToken;
 
-use crate::plugin_calls::{PluginCalls, Subscription};
+use crate::plugin_calls::{PluginCalls, PluginReply, Subscription};
 
 /// Gives the Worker its native calls and invocation-owned subscriptions.
 pub(crate) fn install<'js>(
@@ -16,8 +16,13 @@ pub(crate) fn install<'js>(
     let calling = Arc::clone(calls);
     let call = Function::new(
         ctx.clone(),
-        move |ctx: Ctx<'js>, plugin: String, method: String, arguments: String| {
-            Promise::wrap_future(&ctx, calling.call(&plugin, &method, &arguments))
+        move |ctx: Ctx<'js>, plugin: String, method: String, arguments: ArrayBuffer<'js>| {
+            let payload = arguments
+                .as_bytes()
+                .ok_or_else(|| Exception::throw_type(&ctx, "Detached plugin payload"))?;
+            let result = calling.call(&plugin, &method, payload);
+            let context = ctx.clone();
+            Promise::wrap_future(&ctx, async move { reply(&context, result.await) })
         },
     )?;
     let subscribing = Arc::clone(calls);
@@ -26,9 +31,12 @@ pub(crate) fn install<'js>(
         move |ctx: Ctx<'js>,
               plugin: String,
               method: String,
-              arguments: String,
+              arguments: ArrayBuffer<'js>,
               deliver: Function<'js>| {
-            let subscription = subscribing.subscribe(&plugin, &method, &arguments);
+            let payload = arguments
+                .as_bytes()
+                .ok_or_else(|| Exception::throw_type(&ctx, "Detached plugin payload"))?;
+            let subscription = subscribing.subscribe(&plugin, &method, payload);
             listen(&ctx, subscription, deliver)
         },
     )?;
@@ -59,4 +67,18 @@ fn listen<'js>(
         }
     });
     Function::new(ctx.clone(), move || remove.cancel())
+}
+
+impl<'js> IntoJs<'js> for PluginReply {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<Value<'js>> {
+        Ok(reply(ctx, self)?.into_value())
+    }
+}
+
+fn reply<'js>(ctx: &Ctx<'js>, result: PluginReply) -> rquickjs::Result<Object<'js>> {
+    let value = Object::new(ctx.clone())?;
+    value.set("payload", ArrayBuffer::new(ctx.clone(), result.payload)?)?;
+    value.set("failed", result.failed)?;
+    value.set("done", result.done)?;
+    Ok(value)
 }

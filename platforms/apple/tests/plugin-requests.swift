@@ -5,12 +5,15 @@ enum PluginRequestsTests {
   static func main() {
     let app = TokamakApp()
     let plugin = TestPlugin(host: TokamakHost(app: app, plugin: "test"))
-    var received: [(Int, [String: Any])] = []
-    let requests = TokamakPluginRequests<Int>(plugins: ["test": plugin]) {
+    var received: [(Int, TokamakPluginResult)] = []
+    let requests = TokamakPluginRequests<Int>(plugins: [
+      "test": plugin, "binary": BinaryPlugin(host: TokamakHost(app: app, plugin: "binary")),
+    ]) {
       received.append(($0, $1))
     }
     func run(_ id: Int, _ method: String, subscribe: Bool = false) {
-      requests.run(id, subscribe: subscribe, plugin: "test", method: method, arguments: NSNull())
+      requests.run(
+        id, subscribe: subscribe, plugin: "test", method: method, payload: Data("null".utf8))
     }
 
     run(1, "abandoned")
@@ -24,7 +27,7 @@ enum PluginRequestsTests {
     run(2, "immediate")
     drain()
     precondition(received.count == 1 && received[0].0 == 2)
-    precondition(received[0].1["done"] as? Bool == true)
+    precondition(received[0].1.done)
     requests.cancel(2)
     precondition(plugin.cancelled == ["abandoned"])
 
@@ -36,7 +39,7 @@ enum PluginRequestsTests {
     plugin.replies["stream"]?(.success("two"))
     drain()
     precondition(received.map(\.0) == [2, 4, 4])
-    precondition(received[1].1["done"] as? Bool == false)
+    precondition(received[1].1.done == false)
     requests.cancelAll()
     plugin.replies["stream"]?(.success("late"))
     drain()
@@ -48,9 +51,17 @@ enum PluginRequestsTests {
     plugin.replies["pending"]?(.success("late"))
     drain()
     precondition(received.count == 4 && received[3].0 == 5)
-    precondition(received[3].1["done"] as? Bool == true)
+    precondition(received[3].1.done)
     precondition(plugin.cancelled.last == "pending")
-    print("Passed native request completion, cancellation, isolation, and late-reply tests")
+    requests.run(
+      6, subscribe: false, plugin: "binary", method: "echo", payload: Data([0, 255, 192, 175]))
+    drain()
+    precondition(received[4].1.payload == Data([0, 255, 192, 175]))
+    precondition(!received[4].1.failed && received[4].1.done)
+    requests.run(7, subscribe: false, plugin: "test", method: "immediate", payload: Data([255]))
+    drain()
+    precondition(received[5].1.failed && received[5].1.done)
+    print("Passed native bytes, codecs, completion, cancellation, isolation, and late-reply tests")
   }
 
   private static func drain() {
@@ -103,4 +114,15 @@ enum TokamakBackgroundResult {
   case newData
   case noData
   case failed
+}
+
+private final class BinaryPlugin: TokamakPlugin {
+  let id = "binary"
+  init(host: TokamakHost) {}
+  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (
+    () -> Void
+  )? {
+    reply(TokamakPluginResult(.success(payload), done: true))
+    return nil
+  }
 }

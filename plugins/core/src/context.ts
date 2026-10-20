@@ -2,13 +2,13 @@
 export const nativeConnection = Symbol.for("tokamak.native");
 
 export interface NativeConnection {
-  call(plugin: string, method: string, arguments_?: unknown): Promise<unknown>;
+  call(plugin: string, method: string, payload: Uint8Array): Promise<Uint8Array>;
   listen(
     plugin: string,
     method: string,
-    arguments_: unknown,
-    next: (value: unknown) => void,
-    error: (error: DOMException) => void,
+    payload: Uint8Array,
+    next: (value: Uint8Array, done: boolean) => void,
+    error: (error: DOMException, done: boolean) => void,
   ): () => void;
 }
 

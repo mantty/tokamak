@@ -22,36 +22,50 @@ export function installAssets(binding, fetchAsset) {
   };
 }
 
-// Defines the Worker's native calls on the shell's plugins, which
-// `call(plugin, method, arguments)` and `subscribe(plugin, method, arguments,
-// deliver)` make with JSON arguments and results.
+// Connects the Worker's byte endpoints to the native host.
 export function installPlugins(call, subscribe) {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const encoded = value => encoder.encode(JSON.stringify(value ?? null));
+  const decoded = payload => JSON.parse(decoder.decode(payload));
+  const buffer = value => value.byteOffset === 0 && value.byteLength === value.buffer.byteLength
+    ? value.buffer : value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+  const result = ({ payload, failed }) => {
+    if (failed) {
+      const error = decoded(payload);
+      throw new DOMException(error.message, error.name);
+    }
+    return new Uint8Array(payload);
+  };
+  const connection = {
+    async call(plugin, method, payload) {
+      return result(await call(plugin, method, buffer(payload)));
+    },
+    listen(plugin, method, payload, next, error) {
+      return subscribe(plugin, method, buffer(payload), reply => {
+        let value;
+        try { value = result(reply); }
+        catch (failure) {
+          try { error(failure, reply.done); } catch (thrown) { reportError(thrown); }
+          return;
+        }
+        try { next(value, reply.done); } catch (thrown) { reportError(thrown); }
+      });
+    },
+  };
   Object.defineProperties(globalThis, {
     __tokamakNativeCall: {
       async value(plugin, method, args = null) {
-        const { value, error } = JSON.parse(await call(plugin, method, JSON.stringify(args)));
-        if (error) throw new DOMException(error.message, error.name);
-        return value;
+        return decoded(await connection.call(plugin, method, encoded(args)));
       },
     },
     __tokamakNativeListen: {
       value(plugin, method, args, next, error) {
-        return subscribe(plugin, method, JSON.stringify(args ?? null), (result) => {
-          const { value, error: failure } = JSON.parse(result);
-          try {
-            if (failure) error(new DOMException(failure.message, failure.name));
-            else next(value);
-          } catch (thrown) {
-            reportError(thrown);
-          }
-        });
+        return connection.listen(plugin, method, encoded(args), value => next(decoded(value)), error);
       },
     },
   });
-  globalThis[Symbol.for("tokamak.native")] = {
-    call: globalThis.__tokamakNativeCall,
-    listen: globalThis.__tokamakNativeListen,
-  };
+  globalThis[Symbol.for("tokamak.native")] = connection;
   globalThis.__tokamak_context[Symbol.for("tokamak.native")] = globalThis[Symbol.for("tokamak.native")];
 }
 

@@ -1,5 +1,4 @@
 import Foundation
-import WebKit
 
 struct TokamakPluginError: Error {
   let name: String
@@ -17,6 +16,42 @@ struct TokamakPluginError: Error {
 }
 
 typealias TokamakPluginReply = (Result<Any?, TokamakPluginError>) -> Void
+typealias TokamakPluginBytesReply = (TokamakPluginResult) -> Void
+
+struct TokamakPluginResult {
+  let payload: Data
+  let failed: Bool
+  let done: Bool
+
+  init(_ result: Result<Data, TokamakPluginError>, done: Bool) {
+    self.done = done
+    switch result {
+    case .success(let payload):
+      self.payload = payload
+      failed = false
+    case .failure(let error):
+      payload = try! JSONSerialization.data(
+        withJSONObject: ["name": error.name, "message": error.message])
+      failed = true
+    }
+  }
+}
+
+private func encodePluginValue(_ value: Any?) -> Result<Data, TokamakPluginError> {
+  do {
+    return .success(
+      try JSONSerialization.data(
+        withJSONObject: value ?? NSNull(), options: .fragmentsAllowed))
+  } catch {
+    return .failure(.init(name: "DataCloneError", message: error.localizedDescription))
+  }
+}
+
+private func decodePluginValue(_ payload: Data) throws(TokamakPluginError) -> Any {
+  do { return try JSONSerialization.jsonObject(with: payload, options: .fragmentsAllowed) } catch {
+    throw .init(name: "DataCloneError", message: error.localizedDescription)
+  }
+}
 
 /// The app as one plugin sees it.
 final class TokamakHost {
@@ -65,12 +100,17 @@ final class TokamakHost {
   }
 }
 
-/// A native plugin, created once per process when the app launches. The page
-/// and the Worker call it on the main thread.
+/// A native plugin, created once per process and called on the main thread.
 protocol TokamakPlugin: AnyObject {
   var id: String { get }
 
   init(host: TokamakHost)
+
+  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (
+    () -> Void
+  )?
+  func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
+    throws(TokamakPluginError) -> (() -> Void)
 
   /// Returns cancellation for pending work when the platform supports it.
   func call(
@@ -100,6 +140,27 @@ protocol TokamakPlugin: AnyObject {
 }
 
 extension TokamakPlugin {
+  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (
+    () -> Void
+  )? {
+    do {
+      return call(method: method, arguments: try decodePluginValue(payload)) {
+        reply(TokamakPluginResult($0.flatMap(encodePluginValue), done: true))
+      }
+    } catch {
+      reply(TokamakPluginResult(.failure(error), done: true))
+      return nil
+    }
+  }
+
+  func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
+    throws(TokamakPluginError) -> (() -> Void)
+  {
+    try subscribe(method: method, arguments: decodePluginValue(payload)) {
+      reply(TokamakPluginResult($0.flatMap(encodePluginValue), done: false))
+    }
+  }
+
   func call(
     method: String,
     arguments: Any,
@@ -129,41 +190,38 @@ extension TokamakPlugin {
   }
 }
 
-/// Runs one caller's calls and subscriptions, the page's or the Worker's, on
-/// the app's plugins, keyed by `Key`. `send` receives each result on the main
-/// thread, as the JSON object the page's native transport receives without its
-/// session and ID. Use it on the main thread.
+/// Runs the Tokamak worker's byte requests on the main thread.
 final class TokamakPluginRequests<Key: Hashable> {
   private let plugins: [String: any TokamakPlugin]
-  private let send: (Key, [String: Any]) -> Void
+  private let send: (Key, TokamakPluginResult) -> Void
   private var cancellations: [Key: () -> Void] = [:]
 
-  init(plugins: [String: any TokamakPlugin], send: @escaping (Key, [String: Any]) -> Void) {
+  init(plugins: [String: any TokamakPlugin], send: @escaping (Key, TokamakPluginResult) -> Void) {
     self.plugins = plugins
     self.send = send
   }
 
   /// Calls `method` of `plugin`, or subscribes to it when `subscribe`.
-  func run(_ key: Key, subscribe: Bool, plugin: String, method: String, arguments: Any) {
+  func run(_ key: Key, subscribe: Bool, plugin: String, method: String, payload: Data) {
     guard let target = plugins[plugin], !method.isEmpty else {
       fail(key, .notSupported("Plugin is not supported"))
       return
     }
     cancellations[key] = {}
     // Plugins reply from any thread.
-    let reply: TokamakPluginReply = { [weak self] result in
+    let reply: TokamakPluginBytesReply = { [weak self] result in
       DispatchQueue.main.async {
         guard let self, self.cancellations[key] != nil else { return }
-        if !subscribe { self.cancellations.removeValue(forKey: key) }
-        self.send(key, Self.result(result, done: !subscribe))
+        if !subscribe || result.done { self.cancellations.removeValue(forKey: key) }
+        self.send(key, result)
       }
     }
     guard subscribe else {
-      cancellations[key] = target.call(method: method, arguments: arguments, reply: reply) ?? {}
+      cancellations[key] = target.callBytes(method: method, payload: payload, reply: reply) ?? {}
       return
     }
     do {
-      cancellations[key] = try target.subscribe(method: method, arguments: arguments, reply: reply)
+      cancellations[key] = try target.subscribeBytes(method: method, payload: payload, reply: reply)
     } catch {
       fail(key, error)
     }
@@ -172,7 +230,7 @@ final class TokamakPluginRequests<Key: Hashable> {
   /// Ends the request `key` with `error`.
   func fail(_ key: Key, _ error: TokamakPluginError) {
     cancel(key)
-    send(key, Self.result(.failure(error), done: true))
+    send(key, TokamakPluginResult(.failure(error), done: true))
   }
 
   /// Cancels the pending call or subscription `key`.
@@ -189,127 +247,4 @@ final class TokamakPluginRequests<Key: Hashable> {
     }
   }
 
-  /// `result` as JSON, or the failure to make it JSON.
-  private static func result(
-    _ result: Result<Any?, TokamakPluginError>,
-    done: Bool
-  ) -> [String: Any] {
-    switch result {
-    case .success(let value):
-      let json: [String: Any] = ["value": value ?? NSNull(), "done": done]
-      if JSONSerialization.isValidJSONObject(json) {
-        return json
-      }
-      let error = TokamakPluginError(
-        name: "OperationError", message: "The plugin's value is not JSON")
-      return Self.result(.failure(error), done: done)
-    case .failure(let error):
-      return ["error": ["name": error.name, "message": error.message], "done": done]
-    }
-  }
-}
-
-final class TokamakPluginBridge: NSObject, WKScriptMessageHandler {
-  private struct RequestKey: Hashable {
-    let session: String
-    let id: Int
-  }
-
-  private let host: String
-  private let plugins: [String: any TokamakPlugin]
-  private lazy var requests = TokamakPluginRequests<RequestKey>(plugins: plugins) {
-    [weak self] key, result in
-    self?.deliver(key: key, result: result)
-  }
-  weak var webView: WKWebView?
-
-  init(host: String, plugins: [String: any TokamakPlugin]) {
-    self.host = host
-    self.plugins = plugins
-  }
-
-  func install(in controller: WKUserContentController) {
-    controller.add(self, name: "tokamak")
-    controller.addUserScript(
-      WKUserScript(
-        source: Self.bootstrap(host: host),
-        injectionTime: .atDocumentStart,
-        forMainFrameOnly: true
-      )
-    )
-  }
-
-  func close() {
-    requests.cancelAll()
-  }
-
-  func userContentController(
-    _ userContentController: WKUserContentController,
-    didReceive message: WKScriptMessage
-  ) {
-    guard
-      message.frameInfo.isMainFrame,
-      message.frameInfo.securityOrigin.isAppOrigin(host),
-      let encoded = message.body as? String,
-      let data = encoded.data(using: .utf8),
-      let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      let type = request["type"] as? String,
-      let session = request["session"] as? String
-    else {
-      return
-    }
-
-    if type == "reset" {
-      close()
-      return
-    }
-    guard let id = request["id"] as? Int else { return }
-    let key = RequestKey(session: session, id: id)
-    switch type {
-    case "cancel":
-      requests.cancel(key)
-    case "call", "subscribe":
-      requests.run(
-        key,
-        subscribe: type == "subscribe",
-        plugin: request["plugin"] as? String ?? "",
-        method: request["method"] as? String ?? "",
-        arguments: request["arguments"] ?? NSNull()
-      )
-    default:
-      requests.fail(key, .notSupported("Plugin operation is not supported"))
-    }
-  }
-
-  private func deliver(key: RequestKey, result: [String: Any]) {
-    var response = result
-    response["session"] = key.session
-    response["id"] = key.id
-    guard
-      let data = try? JSONSerialization.data(withJSONObject: response),
-      let json = String(data: data, encoding: .utf8),
-      webView?.url?.isAppOrigin(host) == true
-    else {
-      return
-    }
-    webView?.callAsyncJavaScript(
-      "globalThis.__tokamakNative?.onmessage?.({ data })",
-      arguments: ["data": json],
-      in: nil,
-      in: .page
-    )
-  }
-
-  private static func bootstrap(host: String) -> String {
-    """
-    if (globalThis.location.origin === "https://\(host)") {
-      globalThis.__tokamakNative = {
-        onmessage: null,
-        postMessage(message) {
-          globalThis.webkit.messageHandlers.tokamak.postMessage(message);
-        }
-      };
-    }
-    """
-  }
 }

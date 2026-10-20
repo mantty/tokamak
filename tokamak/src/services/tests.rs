@@ -311,10 +311,10 @@ export default class extends WorkerEntrypoint {
 struct Gate(flume::Sender<(u64, String)>);
 
 impl crate::PluginHandler for Gate {
-    fn call(&self, id: u64, _: &str, method: &str, _: &str) {
+    fn call(&self, id: u64, _: &str, method: &str, _: &[u8]) {
         let _ = self.0.send((id, method.to_owned()));
     }
-    fn subscribe(&self, _: u64, _: &str, _: &str, _: &str) {}
+    fn subscribe(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
     fn cancel(&self, _: u64) {}
 }
 
@@ -378,11 +378,11 @@ export default class extends WorkerEntrypoint {
         let (waiting, method) =
             tokio::time::timeout(Duration::from_secs(5), received.recv_async()).await??;
         assert_eq!(method, "wait");
-        plugins.reply(waiting, r#"{"value":null,"done":true}"#);
+        plugins.reply(waiting, native_completion());
         let (complete, method) =
             tokio::time::timeout(Duration::from_secs(5), received.recv_async()).await??;
         assert_eq!(method, "complete");
-        plugins.reply(complete, r#"{"value":null,"done":true}"#);
+        plugins.reply(complete, native_completion());
         stopped.cancel();
         Ok::<_, Box<dyn std::error::Error>>(())
     })
@@ -480,11 +480,11 @@ export default class extends WorkerEntrypoint {
                 .await??
                 .is_err()
         );
-        plugins.reply(pending["retained"], r#"{"value":null,"done":true}"#);
+        plugins.reply(pending["retained"], native_completion());
         let (complete, method) =
             tokio::time::timeout(Duration::from_secs(5), received.recv_async()).await??;
         assert_eq!(method, "complete");
-        plugins.reply(complete, r#"{"value":null,"done":true}"#);
+        plugins.reply(complete, native_completion());
         Ok::<_, Box<dyn std::error::Error>>(())
     })
 }
@@ -569,11 +569,11 @@ export default class extends WorkerEntrypoint {
             "stream cleanup must keep its invocation alive"
         );
         if !expire {
-            plugins.reply(cleanup, r#"{"value":null,"done":true}"#);
+            plugins.reply(cleanup, native_completion());
             let (complete, method) =
                 tokio::time::timeout(Duration::from_secs(2), received.recv_async()).await??;
             assert_eq!(method, "complete");
-            plugins.reply(complete, r#"{"value":null,"done":true}"#);
+            plugins.reply(complete, native_completion());
         }
         tokio::time::timeout(Duration::from_secs(2), execution).await???;
         if expire {
@@ -642,4 +642,12 @@ export default class extends WorkerEntrypoint {
         drop(response);
         Ok::<_, Box<dyn std::error::Error>>(())
     })
+}
+
+fn native_completion() -> crate::PluginReply {
+    crate::PluginReply {
+        payload: b"null".to_vec(),
+        failed: false,
+        done: true,
+    }
 }

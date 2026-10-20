@@ -45,6 +45,8 @@ mod lifecycle_events;
 #[cfg(feature = "native")]
 mod linked;
 #[cfg(feature = "native")]
+mod native_protocol;
+#[cfg(feature = "native")]
 mod network;
 mod packaging;
 #[cfg(feature = "native")]
@@ -92,7 +94,7 @@ pub use packaging::{
     write_asset_manifest, write_worker,
 };
 #[cfg(feature = "native")]
-pub use plugin_calls::PluginHandler;
+pub use plugin_calls::{PluginHandler, PluginReply};
 pub use quickjs::Error as QuickJsError;
 pub use quickjs::compile_module;
 

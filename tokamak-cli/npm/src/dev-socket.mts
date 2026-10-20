@@ -5,6 +5,7 @@ import { pipeline } from "node:stream/promises";
 import type { ReadableStream } from "node:stream/web";
 
 import { WebSocketServer, type WebSocket } from "ws";
+import { decodeMessage, encodeMessage, type NativeMessage } from "@tokamakdev/plugin/native-protocol";
 import { DevWorker, type WorkerSocket } from "./dev-worker.mjs";
 
 /** The header that carries the device's session token, which `tok dev`'s relay forwards. */
@@ -13,23 +14,11 @@ export const SESSION_HEADER = "x-tokamak-session";
 /** How long a plugin call waits for the device to connect. */
 const CONNECT_TIMEOUT = 10_000;
 
-/** A message the device sends: an event, or a plugin's result for a call or subscription. */
-type DeviceMessage =
-  | { type: "event"; id: number; name: string; event: unknown }
-  | { type: "result"; id: number; result: PluginResult };
-
-/** A plugin's result, as the page's native transport receives it. */
+/** The native endpoint's opaque result and completion status. */
 export interface PluginResult {
-  value?: unknown;
-  error?: { name: string; message: string };
+  payload: Uint8Array;
+  failed: boolean;
   done: boolean;
-}
-
-/** A call or subscription the development Worker makes on a plugin. */
-interface PluginRequest {
-  plugin: string;
-  method: string;
-  arguments: unknown;
 }
 
 /** The loopback server the device's dev WebSocket reaches through `tok dev`'s relay. */
@@ -146,68 +135,63 @@ function serve(websocket: WebSocket, worker: DevWorker, device: Device): void {
   // The device opens another dev WebSocket after this one fails.
   websocket.on("error", () => websocket.terminate());
   websocket.on("message", (data) => {
-    const message = parseMessage(String(data));
-    if (message?.type === "result") {
-      device.receive(message.id, message.result);
+    let message: NativeMessage;
+    try {
+      const bytes = Array.isArray(data) ? Buffer.concat(data) : new Uint8Array(data as ArrayBuffer);
+      message = decodeMessage(bytes);
+    } catch {
+      websocket.close(1002, "Invalid native message");
       return;
     }
-    if (message?.type !== "event") return;
-    worker.dispatch(message.name, message.event).then(
-      (reply) => websocket.send(JSON.stringify({ type: "reply", id: message.id, reply })),
-      (error: unknown) => websocket.send(JSON.stringify({ type: "error", id: message.id, message: String(error) })),
+    const { header, payload } = message;
+    if (header.type === "result" && header.id !== undefined) {
+      device.receive(header.id, { payload, failed: header.failed === true, done: header.done === true });
+      return;
+    }
+    if (header.type !== "event" || header.id === undefined || !header.name) return;
+    const send = (type: string, value: string) => {
+      if (websocket.readyState === websocket.OPEN) websocket.send(encodeMessage({ type, id: header.id }, encoder.encode(value)));
+    };
+    Promise.resolve().then(() => worker.dispatch(header.name!, JSON.parse(decoder.decode(payload)))).then(
+      (reply) => send("reply", JSON.stringify(reply) ?? "null"),
+      (error: unknown) => send("error", String(error)),
     );
   });
 }
 
-/**
- * Passes the plugin call `request` carries to the device. A call's response is its result; a
- * subscription's streams each result as a line of JSON until one is done. Closing either cancels
- * its native request.
- */
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8", { fatal: true });
+
+/** Relays opaque endpoint payloads; closing the response cancels the native request. */
 async function forward(device: Device, request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
-  let call: PluginRequest;
+  let call: NativeMessage;
   try {
-    call = JSON.parse(await readBody(request)) as PluginRequest;
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(chunk as Buffer);
+    call = decodeMessage(Buffer.concat(chunks));
+    if (!call.header.plugin || !call.header.method) throw new TypeError("Missing native endpoint");
   } catch {
     response.writeHead(400).end();
     return;
   }
-  response.writeHead(200, { "content-type": "application/json" });
+  response.writeHead(200, { "content-type": "application/octet-stream" });
   const subscribe = request.url === "/subscribe";
   if (subscribe) response.flushHeaders();
-  const cancel = device.send(subscribe ? "subscribe" : "call", call, (result) => {
-    if (!subscribe) {
-      response.end(JSON.stringify(result));
-      return;
+  const cancel = device.send(subscribe ? "subscribe" : "call", call, ({ payload, failed, done }) => {
+    const frame = encodeMessage({ type: "result", failed, done }, payload);
+    if (!subscribe || done) response.end(frame);
+    else {
+      response.write(frame);
+      if (response.writableLength > 1024 * 1024) response.destroy(new Error("Native subscription consumer is too slow"));
     }
-    response.write(`${JSON.stringify(result)}\n`);
-    if (result.done) response.end();
   });
   response.once("close", () => {
     if (!response.writableEnded) cancel();
   });
 }
 
-function readBody(request: http.IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    request.on("data", (chunk: Buffer) => chunks.push(chunk));
-    request.once("end", () => resolve(Buffer.concat(chunks).toString()));
-    request.once("error", reject);
-  });
-}
-
-function parseMessage(text: string): DeviceMessage | undefined {
-  try {
-    return JSON.parse(text) as DeviceMessage;
-  } catch {
-    return undefined;
-  }
-}
-
-/** A failed result, which ends a subscription. */
 function failure(name: string, message: string): PluginResult {
-  return { error: { name, message }, done: true };
+  return { payload: encoder.encode(JSON.stringify({ name, message })), failed: true, done: true };
 }
 
 /** The device, through its latest dev WebSocket, and the plugin calls waiting for its results. */
@@ -241,7 +225,7 @@ class Device {
    * Sends a call or subscription once the device is connected, waiting up to 10 seconds for it,
    * and passes each of its results to `receive`. Returns the function that cancels the request.
    */
-  send(type: "call" | "subscribe", request: PluginRequest, receive: (result: PluginResult) => void): () => void {
+  send(type: "call" | "subscribe", request: NativeMessage, receive: (result: PluginResult) => void): () => void {
     const id = this.#nextId++;
     let cancelled = false;
     void this.#connection().then((socket) => {
@@ -251,14 +235,14 @@ class Device {
         return;
       }
       this.#pending.set(id, { type, socket, receive });
-      socket.send(JSON.stringify({ type, id, ...request }));
+      socket.send(encodeMessage({ ...request.header, type, id }, request.payload));
     });
     return () => {
       cancelled = true;
       const pending = this.#pending.get(id);
       if (!pending) return;
       this.#pending.delete(id);
-      pending.socket.send(JSON.stringify({ type: "cancel", id }));
+      pending.socket.send(encodeMessage({ type: "cancel", id }));
     };
   }
 

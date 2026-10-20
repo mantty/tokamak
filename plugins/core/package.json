@@ -11,7 +11,8 @@
     ".": "./src/index.ts",
     "./events": "./src/events.ts",
     "./worker": "./src/worker.ts",
-    "./testing": "./src/testing.ts"
+    "./testing": "./src/testing.ts",
+    "./native-protocol": "./src/native-protocol.mjs"
   },
   "files": ["src"],
   "publishConfig": {

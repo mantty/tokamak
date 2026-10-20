@@ -1,3 +1,4 @@
+import { decodeDevice, encodeDevice } from "./fixtures/native-device.mjs";
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
@@ -28,8 +29,8 @@ async function devSocket() {
 /** A device on the dev socket at `port` that passes each message to `answer(message, send)`. */
 async function connectDevice(port, answer) {
   const socket = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { [SESSION_HEADER]: TOKEN } });
-  const send = (message) => socket.send(JSON.stringify(message));
-  socket.on("message", (data) => answer(JSON.parse(String(data)), send));
+  const send = (message) => socket.send(encodeDevice(message));
+  socket.on("message", (data) => answer(decodeDevice(data), send));
   await new Promise((resolve, reject) => {
     socket.once("open", resolve);
     socket.once("error", reject);
@@ -84,7 +85,7 @@ test("cancels an abandoned native call while allowing another call to complete",
   const response = fetch(`http://127.0.0.1:${port}/call`, {
     method: "POST",
     headers: { [SESSION_HEADER]: TOKEN },
-    body: JSON.stringify({ plugin: "test", method: "hold", arguments: null }),
+    body: encodeDevice({ type: "call", plugin: "test", method: "hold", arguments: null }),
     signal: controller.signal,
   });
   const failure = assert.rejects(response, { name: "AbortError" });
@@ -209,4 +210,65 @@ test("cancels on the dev WebSocket that carried the subscription", async () => {
 
   assert.deepEqual(first, ["subscribe", "cancel"]);
   assert.deepEqual(second, []);
+});
+
+test("byte endpoints preserve binary calls and streams including subarray offsets", { timeout: 5000 }, async () => {
+  const { encodeMessage, decodeMessage } = await import("@tokamakdev/plugin/native-protocol");
+  const { port, waited } = await devSocket();
+  const device = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { [SESSION_HEADER]: TOKEN } });
+  await new Promise(resolve => device.once("open", resolve));
+  const received = [];
+  device.on("message", bytes => {
+    const { header, payload } = decodeMessage(bytes);
+    received.push(Array.from(payload));
+    device.send(encodeMessage({ type: "result", id: header.id, done: true }, payload));
+  });
+  const native = globalThis[Symbol.for("tokamak.native")];
+  const input = new Uint8Array([99, 0, 255, 192, 175, 88]).subarray(1, 5);
+  const expected = new Uint8Array(input);
+  const pending = native.call("bytes", "echo", input);
+  input.fill(42);
+  assert.deepEqual(await pending, expected);
+  const values = [];
+  native.listen("bytes", "watch", expected, (value, done) => values.push([Array.from(value), done]), assert.fail);
+  await Promise.all(waited);
+  assert.deepEqual(received, [[0, 255, 192, 175], [0, 255, 192, 175]]);
+  assert.deepEqual(values, [[[0, 255, 192, 175], true]]);
+});
+
+test("listener exceptions are reported without becoming native failures", async () => {
+  const { port, waited } = await devSocket();
+  await connectDevice(port, (message, send) => send({ type: "result", id: message.id, result: { value: 1, done: true } }));
+  const previous = globalThis.reportError;
+  const reported = [];
+  const failure = new Error("consumer failed");
+  globalThis.reportError = error => reported.push(error);
+  try {
+    globalThis[Symbol.for("tokamak.native")].listen("test", "watch", new Uint8Array(), () => { throw failure; }, assert.fail);
+    await Promise.all(waited);
+    assert.deepEqual(reported, [failure]);
+  } finally { globalThis.reportError = previous; }
+});
+
+test("malformed routing closes only the offending device connection", async () => {
+  const { encodeMessage } = await import("@tokamakdev/plugin/native-protocol");
+  const { port } = await devSocket();
+  const broken = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { [SESSION_HEADER]: TOKEN } });
+  await new Promise(resolve => broken.once("open", resolve));
+  const closed = new Promise(resolve => broken.once("close", resolve));
+  broken.send(encodeMessage(null));
+  assert.equal(await closed, 1002);
+  await connectDevice(port, (message, send) => send({ type: "result", id: message.id, result: { value: "alive", done: true } }));
+  assert.equal(await globalThis.__tokamakNativeCall("test", "read"), "alive");
+});
+
+test("error replies retain recoverable and terminal completion status", async () => {
+  const { port, waited } = await devSocket();
+  await connectDevice(port, (message, send) => {
+    for (const done of [false, true]) send({ type: "result", id: message.id, result: { error: { name: "NotReadableError", message: "No fix" }, done } });
+  });
+  const failures = [];
+  globalThis[Symbol.for("tokamak.native")].listen("location", "watch", new Uint8Array(), assert.fail, (error, done) => failures.push([error.name, done]));
+  await Promise.all(waited);
+  assert.deepEqual(failures, [["NotReadableError", false], ["NotReadableError", true]]);
 });

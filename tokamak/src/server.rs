@@ -210,10 +210,10 @@ impl Runtime {
         self.plugins.is_foreground()
     }
 
-    /// Pass a plugin's JSON `result` to the Worker's call or subscription
+    /// Pass a plugin's encoded result to the Worker's call or subscription
     /// `id`, as the shell's [`PluginHandler`] answers it. The runtime ignores
     /// results for calls and subscriptions that have ended.
-    pub fn reply(&self, id: u64, result: &str) {
+    pub fn reply(&self, id: u64, result: crate::PluginReply) {
         self.plugins.reply(id, result);
     }
 

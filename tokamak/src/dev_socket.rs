@@ -10,15 +10,14 @@ use std::time::Instant;
 
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue;
 use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::gateway::HandlerError;
-use crate::plugin_calls::PluginCalls;
+use crate::native_protocol::{self, Header};
+use crate::plugin_calls::{PluginCalls, PluginReply};
 use crate::transport::{parse_websocket_frame, write_frame};
 
 /// The development app's end of the dev WebSocket, while it is open.
@@ -30,33 +29,9 @@ pub(crate) struct DevSocket {
 
 /// One open dev WebSocket.
 struct Connection {
-    outgoing: mpsc::UnboundedSender<String>,
+    outgoing: mpsc::Sender<(Header, Vec<u8>)>,
     /// Where each delivery waiting for its answer receives it, by message ID.
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>,
-}
-
-/// An event the app sends.
-#[derive(Serialize)]
-struct EventMessage<'a> {
-    r#type: &'static str,
-    id: u64,
-    name: &'a str,
-    event: &'a RawValue,
-}
-
-/// A message the plugin sends: the reply to the event `id` or why it failed,
-/// or a call, subscription or cancellation of the development Worker.
-#[derive(Deserialize)]
-struct Received<'a> {
-    r#type: &'a str,
-    id: u64,
-    #[serde(borrow)]
-    reply: Option<&'a RawValue>,
-    message: Option<String>,
-    plugin: Option<String>,
-    method: Option<String>,
-    #[serde(borrow)]
-    arguments: Option<&'a RawValue>,
 }
 
 impl DevSocket {
@@ -87,15 +62,21 @@ impl DevSocket {
             .clone()
             .ok_or_else(late)?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let message = serde_json::to_string(&EventMessage {
-            r#type: "event",
-            id,
-            name,
-            event: serde_json::from_str(event)?,
-        })?;
+        let message = (
+            Header {
+                r#type: "event".into(),
+                id,
+                name: Some(name.into()),
+                ..Header::default()
+            },
+            event.as_bytes().to_vec(),
+        );
         let (sender, answer) = oneshot::channel();
         connection.pending().insert(id, sender);
-        if connection.outgoing.send(message).is_err() {
+        if !matches!(
+            tokio::time::timeout_at(deadline, connection.outgoing.send(message)).await,
+            Ok(Ok(()))
+        ) {
             connection.pending().remove(&id);
             return Err(closed().into());
         }
@@ -112,7 +93,7 @@ impl DevSocket {
     /// delivering events and running the development Worker's plugin calls
     /// through it meanwhile. Its pending calls and subscriptions end with it.
     pub(crate) async fn serve(&self, upgraded: Upgraded, stopped: &CancellationToken) {
-        let (outgoing, messages) = mpsc::unbounded_channel();
+        let (outgoing, messages) = mpsc::channel(64);
         let connection = Arc::new(Connection {
             outgoing,
             pending: Mutex::default(),
@@ -120,7 +101,7 @@ impl DevSocket {
         self.connection.send_replace(Some(Arc::clone(&connection)));
         let mut requests = HashMap::new();
         let _ = relay(upgraded, messages, stopped, |message| {
-            self.receive(&connection, &mut requests, message);
+            self.receive(&connection, &mut requests, message)
         })
         .await;
         self.connection.send_replace(None);
@@ -137,35 +118,39 @@ impl DevSocket {
         connection: &Connection,
         requests: &mut HashMap<u64, AbortHandle>,
         message: &[u8],
-    ) {
-        let Ok(message) = serde_json::from_slice::<Received>(message) else {
-            return;
-        };
+    ) -> io::Result<()> {
+        let (message, payload) = native_protocol::decode(message)?;
         let id = message.id;
         let plugin = message.plugin.as_deref().unwrap_or_default();
         let method = message.method.as_deref().unwrap_or_default();
-        let arguments = message.arguments.map_or("null", RawValue::get);
         requests.retain(|_, request| !request.is_finished());
-        let task = match message.r#type {
+        let task = match message.r#type.as_str() {
             "reply" => {
-                return connection.answer(id, Ok(message.reply.map_or("null", RawValue::get)));
+                let reply =
+                    std::str::from_utf8(payload).map_err(|_| "Invalid event reply encoding");
+                connection.answer(id, reply);
+                return Ok(());
             }
             "error" => {
-                return connection.answer(id, Err(message.message.as_deref().unwrap_or_default()));
+                connection.answer(
+                    id,
+                    Err(std::str::from_utf8(payload).unwrap_or("Invalid event error encoding")),
+                );
+                return Ok(());
             }
             "call" => {
-                let result = self.plugins.call(plugin, method, arguments);
+                let result = self.plugins.call(plugin, method, payload);
                 let outgoing = connection.outgoing.clone();
                 tokio::spawn(async move {
-                    send_result(&outgoing, id, &result.await);
+                    send_result(&outgoing, id, result.await).await;
                 })
             }
             "subscribe" => {
-                let mut subscription = self.plugins.subscribe(plugin, method, arguments);
+                let mut subscription = self.plugins.subscribe(plugin, method, payload);
                 let outgoing = connection.outgoing.clone();
                 tokio::spawn(async move {
                     while let Some(result) = subscription.next().await {
-                        if !send_result(&outgoing, id, &result) {
+                        if !send_result(&outgoing, id, result).await {
                             return;
                         }
                     }
@@ -175,21 +160,37 @@ impl DevSocket {
                 if let Some(request) = requests.remove(&id) {
                     request.abort();
                 }
-                return;
+                return Ok(());
             }
-            _ => return,
+            _ => return Ok(()),
         };
         if let Some(previous) = requests.insert(id, task.abort_handle()) {
             previous.abort();
         }
+        Ok(())
     }
 }
 
-/// Sends the plugin's JSON `result` for the call or subscription `id`,
+/// Sends the plugin's encoded result for the call or subscription,
 /// returning whether the dev WebSocket is still open.
-fn send_result(outgoing: &mpsc::UnboundedSender<String>, id: u64, result: &str) -> bool {
-    let message = format!(r#"{{"type":"result","id":{id},"result":{result}}}"#);
-    outgoing.send(message).is_ok()
+async fn send_result(
+    outgoing: &mpsc::Sender<(Header, Vec<u8>)>,
+    id: u64,
+    result: PluginReply,
+) -> bool {
+    outgoing
+        .send((
+            Header {
+                r#type: "result".into(),
+                id,
+                failed: result.failed,
+                done: result.done,
+                ..Header::default()
+            },
+            result.payload,
+        ))
+        .await
+        .is_ok()
 }
 
 impl Connection {
@@ -212,9 +213,9 @@ impl Connection {
 /// side closes or `stopped` is cancelled.
 async fn relay(
     upgraded: Upgraded,
-    mut messages: mpsc::UnboundedReceiver<String>,
+    mut messages: mpsc::Receiver<(Header, Vec<u8>)>,
     stopped: &CancellationToken,
-    mut receive: impl FnMut(&[u8]),
+    mut receive: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> io::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(TokioIo::new(upgraded));
     let mut buffer = Vec::new();
@@ -224,19 +225,19 @@ async fn relay(
     loop {
         while let Some(frame) = parse_websocket_frame(&mut buffer, false)? {
             match frame.opcode {
-                0x0 | 0x1 => message.extend_from_slice(&frame.payload),
+                0x0 | 0x2 => message.extend_from_slice(&frame.payload),
                 0x8 => return Ok(()),
                 0x9 => write_frame(&mut writer, 0xA, &frame.payload).await?,
                 _ => continue,
             }
-            if frame.final_frame && matches!(frame.opcode, 0x0 | 0x1) {
-                receive(&std::mem::take(&mut message));
+            if frame.final_frame && matches!(frame.opcode, 0x0 | 0x2) {
+                receive(&std::mem::take(&mut message))?;
             }
         }
         tokio::select! {
             () = stopped.cancelled() => return Ok(()),
             message = messages.recv() => match message {
-                Some(message) => write_frame(&mut writer, 0x1, message.as_bytes()).await?,
+                Some((header, payload)) => write_frame(&mut writer, 0x2, &native_protocol::encode(&header, &payload)?).await?,
                 None => return Ok(()),
             },
             count = reader.read(&mut bytes) => match count? {

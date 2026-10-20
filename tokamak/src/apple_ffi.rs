@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bridge::{self, Shell};
-use crate::{Challenge, Decision, Event, PluginHandler, Runtime};
+use crate::{Challenge, Decision, Event, PluginHandler, PluginReply, Runtime};
 use p256::{SecretKey, pkcs8::DecodePrivateKey};
 
 const DECISION_DEFAULT: c_int = 0;
@@ -41,7 +41,8 @@ pub type TokamakPluginRequest = unsafe extern "C" fn(
     id: u64,
     plugin: *const c_char,
     method: *const c_char,
-    arguments: *const c_char,
+    payload: *const u8,
+    payload_len: usize,
 );
 
 /// The shell's plugins, which the Worker calls. The runtime calls each
@@ -52,9 +53,9 @@ pub type TokamakPluginRequest = unsafe extern "C" fn(
 pub struct TokamakPluginHandler {
     /// Passed to each function.
     pub context: *mut c_void,
-    /// Calls `method` of `plugin` with the JSON `arguments`.
+    /// Calls `method` of `plugin` with encoded arguments.
     pub call: TokamakPluginRequest,
-    /// Subscribes to `method` of `plugin` with the JSON `arguments`.
+    /// Subscribes to `method` of `plugin` with encoded arguments.
     pub subscribe: TokamakPluginRequest,
     /// Cancels the pending call or subscription `id`.
     pub cancel: unsafe extern "C" fn(context: *mut c_void, id: u64),
@@ -66,11 +67,11 @@ unsafe impl Send for TokamakPluginHandler {}
 unsafe impl Sync for TokamakPluginHandler {}
 
 impl PluginHandler for TokamakPluginHandler {
-    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
         self.request(self.call, id, plugin, method, arguments);
     }
 
-    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
         self.request(self.subscribe, id, plugin, method, arguments);
     }
 
@@ -89,10 +90,9 @@ impl TokamakPluginHandler {
         id: u64,
         plugin: &str,
         method: &str,
-        arguments: &str,
+        arguments: &[u8],
     ) {
-        let [plugin, method, arguments] =
-            [plugin, method, arguments].map(|text| CString::new(text).unwrap_or_default());
+        let [plugin, method] = [plugin, method].map(|text| CString::new(text).unwrap_or_default());
         // SAFETY: the shell's function takes its context and NUL-terminated
         // strings that live for the call.
         unsafe {
@@ -102,6 +102,7 @@ impl TokamakPluginHandler {
                 plugin.as_ptr(),
                 method.as_ptr(),
                 arguments.as_ptr(),
+                arguments.len(),
             );
         }
     }
@@ -314,20 +315,36 @@ pub unsafe extern "C" fn tokamak_runtime_is_foreground(handle: *const c_void) ->
     unsafe { runtime(handle) }.is_some_and(Runtime::is_foreground)
 }
 
-/// Pass a plugin's JSON `result` to the Worker's call or subscription `id`.
+/// Pass a plugin's encoded result to the Worker's call or subscription.
 ///
 /// # Safety
 ///
 /// `handle` must be null or a live handle returned by [`tokamak_runtime_start`],
-/// and `result` must be a NUL-terminated string.
+/// and `payload` must reference `payload_len` readable bytes, or be null when empty.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tokamak_runtime_reply(
     handle: *const c_void,
     id: u64,
-    result: *const c_char,
+    payload: *const u8,
+    payload_len: usize,
+    failed: bool,
+    done: bool,
 ) {
     if let Some(runtime) = unsafe { runtime(handle) } {
-        runtime.reply(id, unsafe { text(result) }.unwrap_or_default());
+        let payload = if payload_len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: The caller supplies a readable buffer for the duration of this call.
+            unsafe { std::slice::from_raw_parts(payload, payload_len) }.to_vec()
+        };
+        runtime.reply(
+            id,
+            PluginReply {
+                payload,
+                failed,
+                done,
+            },
+        );
     }
 }
 

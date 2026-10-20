@@ -1,22 +1,19 @@
 //! Plugin calls from the Worker. The shell's plugins answer them, apart from
 //! calls to the reserved plugin `tokamak`, which the runtime answers itself.
 //!
-//! A result is the JSON object the page's native transport receives, without
-//! its session and ID: `{"value": …, "done": …}` or
-//! `{"error": {"name": …, "message": …}, "done": …}`. `done` ends a
-//! subscription.
+//! Payloads are opaque bytes; reply metadata controls completion.
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 
 /// The plugin ID the runtime answers calls to itself.
 const RUNTIME_PLUGIN: &str = "tokamak";
+const SUBSCRIPTION_CAPACITY: usize = 64;
 
 /// The shell's plugins, which run the Worker's calls and subscriptions.
 ///
@@ -25,14 +22,25 @@ const RUNTIME_PLUGIN: &str = "tokamak";
 /// runtime cancels. The runtime calls these methods on its own threads,
 /// and they must return promptly.
 pub trait PluginHandler: Send + Sync {
-    /// Calls `method` of `plugin` with the JSON `arguments`.
-    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &str);
+    /// Calls `method` of `plugin` with its encoded arguments.
+    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]);
 
-    /// Subscribes to `method` of `plugin` with the JSON `arguments`.
-    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &str);
+    /// Subscribes to `method` of `plugin` with its encoded arguments.
+    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]);
 
     /// Cancels the pending call or subscription `id`, releasing its resources.
     fn cancel(&self, id: u64);
+}
+
+/// A native endpoint's encoded value or error and completion status.
+#[derive(Clone, Debug)]
+pub struct PluginReply {
+    /// Endpoint-owned encoding, passed through the host without interpretation.
+    pub payload: Vec<u8>,
+    /// Whether the payload encodes an error.
+    pub failed: bool,
+    /// Whether the call or subscription has finished.
+    pub done: bool,
 }
 
 impl std::fmt::Debug for dyn PluginHandler {
@@ -52,15 +60,11 @@ pub(crate) struct PluginCalls {
 
 /// Where the results of a call or subscription go.
 enum Waiting {
-    Call(oneshot::Sender<String>),
-    Subscription(mpsc::UnboundedSender<String>),
-}
-
-/// The part of a result that ends a subscription.
-#[derive(Deserialize)]
-struct Done {
-    #[serde(default)]
-    done: bool,
+    Call(oneshot::Sender<PluginReply>),
+    Subscription {
+        sender: mpsc::Sender<PluginReply>,
+        overflow: oneshot::Sender<PluginReply>,
+    },
 }
 
 /// A subscription's results, which it ends when dropped.
@@ -68,7 +72,8 @@ pub(crate) struct Subscription {
     // Drops before `results`, so the shell is cancelled while it still has
     // a reader.
     _shell: Option<Registration>,
-    results: mpsc::UnboundedReceiver<String>,
+    results: mpsc::Receiver<PluginReply>,
+    overflow: Option<oneshot::Receiver<PluginReply>>,
 }
 
 /// A call or subscription the shell runs, which stops waiting for results
@@ -88,14 +93,13 @@ impl PluginCalls {
         })
     }
 
-    /// Calls `method` of `plugin` with the JSON `arguments`, resolving to its
-    /// result.
+    /// Calls `method` of `plugin`, resolving to its encoded result.
     pub(crate) fn call(
         self: &Arc<Self>,
         plugin: &str,
         method: &str,
-        arguments: &str,
-    ) -> impl Future<Output = String> + Send + 'static {
+        arguments: &[u8],
+    ) -> impl Future<Output = PluginReply> + Send + 'static {
         let (sender, receiver) = oneshot::channel();
         let registration = self.start(plugin, method, Waiting::Call(sender), |handler, id| {
             handler.call(id, plugin, method, arguments);
@@ -108,18 +112,19 @@ impl PluginCalls {
         }
     }
 
-    /// Subscribes to `method` of `plugin` with the JSON `arguments`.
+    /// Subscribes to `method` of `plugin`.
     pub(crate) fn subscribe(
         self: &Arc<Self>,
         plugin: &str,
         method: &str,
-        arguments: &str,
+        arguments: &[u8],
     ) -> Subscription {
-        let (sender, results) = mpsc::unbounded_channel();
+        let (sender, results) = mpsc::channel(SUBSCRIPTION_CAPACITY);
+        let (overflow, failure) = oneshot::channel();
         let shell = self.start(
             plugin,
             method,
-            Waiting::Subscription(sender),
+            Waiting::Subscription { sender, overflow },
             |handler, id| {
                 handler.subscribe(id, plugin, method, arguments);
             },
@@ -127,16 +132,13 @@ impl PluginCalls {
         Subscription {
             _shell: shell,
             results,
+            overflow: Some(failure),
         }
     }
 
-    /// Passes the shell's `result` to the call or subscription `id`. A
-    /// result that is not a JSON object is replaced with an error.
-    pub(crate) fn reply(&self, id: u64, result: &str) {
-        let (result, done) = match serde_json::from_str::<Done>(result) {
-            Ok(Done { done }) => (result.to_owned(), done),
-            Err(_) => (not_json(), false),
-        };
+    /// Passes the shell's encoded result to the call or subscription.
+    pub(crate) fn reply(&self, id: u64, result: PluginReply) {
+        let done = result.done;
         let mut waiting = self.waiting();
         let Some(destination) = waiting.remove(&id) else {
             return;
@@ -145,12 +147,24 @@ impl PluginCalls {
             Waiting::Call(sender) => {
                 let _ = sender.send(result);
             }
-            Waiting::Subscription(sender) => {
-                let _ = sender.send(result);
-                if !done {
-                    waiting.insert(id, Waiting::Subscription(sender));
+            Waiting::Subscription { sender, overflow } => match sender.try_send(result) {
+                Ok(()) if !done => {
+                    waiting.insert(id, Waiting::Subscription { sender, overflow });
                 }
-            }
+                Ok(()) => {}
+                Err(failure) => {
+                    if matches!(failure, mpsc::error::TrySendError::Full(_)) {
+                        let _ = overflow.send(error(
+                            "QuotaExceededError",
+                            "Native subscription consumer is too slow",
+                        ));
+                    }
+                    drop(waiting);
+                    if let Some(handler) = &self.handler {
+                        handler.cancel(id);
+                    }
+                }
+            },
         }
     }
 
@@ -174,7 +188,7 @@ impl PluginCalls {
     }
 
     /// The runtime's own result for `method` of `plugin`.
-    fn answer(&self, plugin: &str, method: &str) -> String {
+    fn answer(&self, plugin: &str, method: &str) -> PluginReply {
         match (plugin, method) {
             (RUNTIME_PLUGIN, "lifecycleStage") => {
                 let stage = if self.is_foreground() {
@@ -182,7 +196,11 @@ impl PluginCalls {
                 } else {
                     "background"
                 };
-                json!({ "value": stage, "done": true }).to_string()
+                PluginReply {
+                    payload: json!(stage).to_string().into_bytes(),
+                    failed: false,
+                    done: true,
+                }
             }
             _ => error(
                 "NotSupportedError",
@@ -229,18 +247,21 @@ impl std::fmt::Debug for PluginCalls {
 }
 
 impl Waiting {
-    fn send(self, result: String) {
+    fn send(self, result: PluginReply) {
         match self {
             Self::Call(sender) => drop(sender.send(result)),
-            Self::Subscription(sender) => drop(sender.send(result)),
+            Self::Subscription { sender, .. } => drop(sender.try_send(result)),
         }
     }
 }
 
 impl Subscription {
     /// The next result, or `None` once the last was `done`.
-    pub(crate) async fn next(&mut self) -> Option<String> {
-        self.results.recv().await
+    pub(crate) async fn next(&mut self) -> Option<PluginReply> {
+        if let Some(result) = self.results.recv().await {
+            return Some(result);
+        }
+        self.overflow.take()?.await.ok()
     }
 }
 
@@ -254,18 +275,14 @@ impl Drop for Registration {
 }
 
 /// A failed result, which ends a subscription.
-pub(crate) fn error(name: &str, message: &str) -> String {
-    json!({ "error": { "name": name, "message": message }, "done": true }).to_string()
-}
-
-/// The error that replaces a result that is not JSON, which leaves a
-/// subscription running.
-fn not_json() -> String {
-    json!({
-        "error": { "name": "OperationError", "message": "the plugin's result is not JSON" },
-        "done": false,
-    })
-    .to_string()
+pub(crate) fn error(name: &str, message: &str) -> PluginReply {
+    PluginReply {
+        payload: json!({ "name": name, "message": message })
+            .to_string()
+            .into_bytes(),
+        failed: true,
+        done: true,
+    }
 }
 
 #[cfg(test)]

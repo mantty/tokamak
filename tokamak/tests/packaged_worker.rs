@@ -396,10 +396,10 @@ fn ends_without_a_failure_when_the_client_leaves_mid_request() -> TestResult {
 struct CancellablePlugins(mpsc::Sender<u64>, mpsc::Sender<u64>);
 
 impl tokamak::PluginHandler for CancellablePlugins {
-    fn call(&self, id: u64, _: &str, _: &str, _: &str) {
+    fn call(&self, id: u64, _: &str, _: &str, _: &[u8]) {
         let _ = self.0.send(id);
     }
-    fn subscribe(&self, id: u64, _: &str, _: &str, _: &str) {
+    fn subscribe(&self, id: u64, _: &str, _: &str, _: &[u8]) {
         let _ = self.0.send(id);
     }
     fn cancel(&self, id: u64) {

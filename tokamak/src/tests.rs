@@ -149,9 +149,9 @@ fn releases_invocation_owned_listeners_when_the_request_finishes()
     /// Shell plugins that report each subscription's ID.
     struct Shell(Sender<u64>, Sender<u64>);
     impl crate::PluginHandler for Shell {
-        fn call(&self, _: u64, _: &str, _: &str, _: &str) {}
+        fn call(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
 
-        fn subscribe(&self, id: u64, _: &str, _: &str, _: &str) {
+        fn subscribe(&self, id: u64, _: &str, _: &str, _: &[u8]) {
             let _ = self.0.send(id);
         }
 
@@ -210,10 +210,10 @@ fn http_wait_until_survives_caller_cancellation_but_ends_at_the_host_deadline()
 -> Result<(), Box<dyn std::error::Error>> {
     struct Shell(Sender<String>);
     impl crate::PluginHandler for Shell {
-        fn call(&self, _: u64, _: &str, method: &str, _: &str) {
+        fn call(&self, _: u64, _: &str, method: &str, _: &[u8]) {
             let _ = self.0.send(method.into());
         }
-        fn subscribe(&self, _: u64, _: &str, _: &str, _: &str) {}
+        fn subscribe(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
         fn cancel(&self, _: u64) {}
     }
     let directory = tempfile::tempdir()?;
@@ -283,10 +283,10 @@ fn completes_response_cancellation_cleanup_without_other_background_work()
 fn check_http_body_cleanup(retained: bool) -> Result<(), Box<dyn std::error::Error>> {
     struct Shell(Sender<(u64, String)>);
     impl crate::PluginHandler for Shell {
-        fn call(&self, id: u64, _: &str, method: &str, _: &str) {
+        fn call(&self, id: u64, _: &str, method: &str, _: &[u8]) {
             let _ = self.0.send((id, method.into()));
         }
-        fn subscribe(&self, _: u64, _: &str, _: &str, _: &str) {}
+        fn subscribe(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
         fn cancel(&self, _: u64) {}
     }
     let directory = tempfile::tempdir()?;
@@ -339,7 +339,7 @@ export default {
     }
     caller.cancel();
     let followup = if retained {
-        plugins.reply(pending["retained"], r#"{"value":null,"done":true}"#);
+        plugins.reply(pending["retained"], native_completion());
         let (id, method) = received.recv_timeout(Duration::from_secs(5))?;
         assert_eq!(method, "followup");
         Some(id)
@@ -354,9 +354,9 @@ export default {
         "background work ended with the response body"
     );
     if let Some(followup) = followup {
-        plugins.reply(followup, r#"{"value":null,"done":true}"#);
+        plugins.reply(followup, native_completion());
     }
-    plugins.reply(cleanup, r#"{"value":null,"done":true}"#);
+    plugins.reply(cleanup, native_completion());
     tokio
         .block_on(async { tokio::time::timeout(Duration::from_secs(5), execution).await })???;
     Ok(())
@@ -993,5 +993,13 @@ pub(crate) fn runtime_config() -> RuntimeConfig {
         environment: BTreeMap::new(),
         storage: None,
         plugins: Some(crate::plugin_calls::PluginCalls::new(None, true)),
+    }
+}
+
+fn native_completion() -> crate::PluginReply {
+    crate::PluginReply {
+        payload: b"null".to_vec(),
+        failed: false,
+        done: true,
     }
 }

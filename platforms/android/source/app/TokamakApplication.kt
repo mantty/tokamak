@@ -12,7 +12,6 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import java.io.File
 import java.util.concurrent.Executors
-import org.json.JSONTokener
 
 private const val HOST_METADATA = "tokamak.host"
 private const val DEV_ENDPOINT_METADATA = "tokamak.dev.endpoint"
@@ -48,21 +47,20 @@ class TokamakApplication : Application(), TokamakPlugins {
 
     /** The Worker's calls and subscriptions on the plugins. Main thread only. */
     private val workerRequests by lazy {
-        TokamakPluginRequests<Long>(plugins) { id, result -> runtime.reply(id, result.toString()) }
+        TokamakPluginRequests<Long>(plugins) { id, result -> runtime.reply(id, result) }
     }
 
     /** The plugins as the runtime calls them, on its own threads. */
     private val workerPlugins =
         object : TokamakRuntime.Plugins {
-            override fun call(id: Long, plugin: String, method: String, arguments: String) =
-                mainExecutor.execute { workerRequests.run(id, false, plugin, method, parse(arguments)) }
+            override fun call(id: Long, plugin: String, method: String, payload: ByteArray) =
+                mainExecutor.execute { workerRequests.run(id, false, plugin, method, payload) }
 
-            override fun subscribe(id: Long, plugin: String, method: String, arguments: String) =
-                mainExecutor.execute { workerRequests.run(id, true, plugin, method, parse(arguments)) }
+            override fun subscribe(id: Long, plugin: String, method: String, payload: ByteArray) =
+                mainExecutor.execute { workerRequests.run(id, true, plugin, method, payload) }
 
             override fun cancel(id: Long) = mainExecutor.execute { workerRequests.cancel(id) }
 
-            private fun parse(arguments: String): Any? = JSONTokener(arguments).nextValue()
         }
 
     /** The host of the app origin, `https://<appHost>`. */

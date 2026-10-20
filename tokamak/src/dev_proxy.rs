@@ -224,10 +224,12 @@ impl DevProxy {
         response: &Sender<JobResponse>,
         websocket: &WebSocketJob,
         stopped: &CancellationToken,
+        cancelled: &CancellationToken,
     ) -> Result<(), HandlerError> {
         let upstream = tokio::select! {
             upstream = self.open_websocket(request) => upstream?,
             () = stopped.cancelled() => return Ok(()),
+            () = cancelled.cancelled() => return Ok(()),
         };
         response
             .send(JobResponse::WebSocket)
@@ -343,12 +345,8 @@ impl Handler for DevProxy {
                 }
             });
         };
-        tokio.block_on(async {
-            tokio::select! {
-                result = self.forward_websocket(&request, &response, &websocket, stopped) => result,
-                () = cancelled.cancelled() => Ok(()),
-            }
-        })
+        // The incoming channel carries the client's close frame before disconnection.
+        tokio.block_on(self.forward_websocket(&request, &response, &websocket, stopped, &cancelled))
     }
 
     fn deliver(&self, event: EventJob, stopped: &CancellationToken) {

@@ -27,7 +27,7 @@ fn native_http_routes_keep_the_page_path_and_receiving_context() -> TestResult {
 import { WorkerEntrypoint } from 'cloudflare:workers';
 export default class extends WorkerEntrypoint {
   async fetch(request) {
-    const stage = await this.ctx[Symbol.for('tokamak.native')].call('tokamak', 'lifecycleStage');
+    const stage = JSON.parse(new TextDecoder().decode(await this.ctx[Symbol.for('tokamak.native')].call('tokamak', 'lifecycleStage', new Uint8Array())));
     return Response.json({ url: request.url, stage });
   }
 }
@@ -168,7 +168,7 @@ export class Device extends WorkerEntrypoint {
   async describe() {
     return {
       name: this.env.NAME, main: await this.env.MAIN.name(), file: existsSync('/tmp/owner'),
-      stage: await this.ctx[Symbol.for('tokamak.native')].call('tokamak', 'lifecycleStage'),
+      stage: JSON.parse(new TextDecoder().decode(await this.ctx[Symbol.for('tokamak.native')].call('tokamak', 'lifecycleStage', new Uint8Array()))),
     };
   }
 }

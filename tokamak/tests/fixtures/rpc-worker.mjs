@@ -4,7 +4,7 @@ import { rpcResponse } from './endpoint.mjs';
 class Native extends WorkerEntrypoint {
   echo(value) { return value; }
   async stage() {
-    return this.ctx[Symbol.for('tokamak.native')].call('tokamak', 'lifecycleStage');
+    return JSON.parse(new TextDecoder().decode(await this.ctx[Symbol.for('tokamak.native')].call('tokamak', 'lifecycleStage', new Uint8Array())));
   }
   fail() { throw Object.assign(new Error('Denied'), { code: 'DENIED' }); }
   invalid() { return { callback() {} }; }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bridge::{self, Shell};
-use crate::{Challenge, Decision, Event, PluginHandler, Runtime};
+use crate::{Challenge, Decision, Event, PluginHandler, PluginReply, Runtime};
 use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{JNI_TRUE, jboolean, jint, jlong};
 use jni::{JNIEnv, JavaVM};
@@ -18,7 +18,7 @@ const LOG_INFO: c_int = 4;
 const LOG_ERROR: c_int = 6;
 const FAILURE: &str = "java/lang/IllegalStateException";
 /// The signature of `TokamakRuntime.Plugins.call` and `subscribe`.
-const REQUEST_SIGNATURE: &str = "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V";
+const REQUEST_SIGNATURE: &str = "(JLjava/lang/String;Ljava/lang/String;[B)V";
 
 unsafe extern "C" {
     fn __android_log_write(priority: c_int, tag: *const c_char, text: *const c_char) -> c_int;
@@ -31,11 +31,11 @@ struct KotlinPlugins {
 }
 
 impl PluginHandler for KotlinPlugins {
-    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
         self.request("call", id, plugin, method, arguments);
     }
 
-    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
         self.request("subscribe", id, plugin, method, arguments);
     }
 
@@ -58,13 +58,10 @@ impl KotlinPlugins {
     }
 
     /// Passes a call or subscription to the plugins' method `name`.
-    fn request(&self, name: &str, id: u64, plugin: &str, method: &str, arguments: &str) {
+    fn request(&self, name: &str, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
         self.invoke(|env| {
-            let [plugin, method, arguments] = [
-                env.new_string(plugin)?,
-                env.new_string(method)?,
-                env.new_string(arguments)?,
-            ];
+            let [plugin, method] = [env.new_string(plugin)?, env.new_string(method)?];
+            let arguments = env.byte_array_from_slice(arguments)?;
             let arguments = [
                 JValue::Long(id.cast_signed()),
                 (&plugin).into(),
@@ -169,20 +166,31 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeIsForegroun
     jboolean::from(runtime(handle).is_some_and(Runtime::is_foreground))
 }
 
-/// Pass a plugin's JSON `result` to the Worker's call or subscription `id`.
+/// Pass a plugin's encoded result to the Worker's call or subscription.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeReply(
     mut env: JNIEnv,
     _: JClass,
     handle: jlong,
     id: jlong,
-    result: JString,
+    payload: JByteArray,
+    failed: jboolean,
+    done: jboolean,
 ) {
     if let Some(runtime) = runtime(handle) {
-        runtime.reply(
-            id.cast_unsigned(),
-            &text(&mut env, &result).unwrap_or_default(),
-        );
+        match env.convert_byte_array(payload) {
+            Ok(payload) => runtime.reply(
+                id.cast_unsigned(),
+                PluginReply {
+                    payload,
+                    failed: failed == JNI_TRUE,
+                    done: done == JNI_TRUE,
+                },
+            ),
+            Err(error) => {
+                let _ = env.throw_new(FAILURE, error.to_string());
+            }
+        }
     }
 }
 

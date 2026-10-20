@@ -1,3 +1,4 @@
+import { decodeDevice, encodeDevice } from "./fixtures/native-device.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -35,7 +36,7 @@ function project(t, cloudflareOptions = {}) {
     import { nativeConnection } from ${JSON.stringify(context)};
     onStart(async (event, env, ctx) => ({
       label: env.LABEL, foreground: event.foreground, revision: "first",
-      stage: await ctx[nativeConnection].call("tokamak", "lifecycleStage"),
+      stage: JSON.parse(new TextDecoder().decode(await ctx[nativeConnection].call("tokamak", "lifecycleStage", new Uint8Array()))),
     }));`);
   fs.writeFileSync(path.join(root, "src/tokamak.ts"), `import { TokamakEntrypoint, type TokamakEvent } from ${JSON.stringify(sdk)};
     import { nativeConnection } from ${JSON.stringify(context)};
@@ -43,7 +44,7 @@ function project(t, cloudflareOptions = {}) {
     globalThis.nativeLoaded = true;
     export default class Native extends TokamakEntrypoint {
       async describe(): Promise<{ label: string; stage: string }> {
-        const stage = await this.ctx[nativeConnection].call("tokamak", "lifecycleStage");
+        const stage = JSON.parse(new TextDecoder().decode(await this.ctx[nativeConnection].call("tokamak", "lifecycleStage", new Uint8Array())));
         return { label: this.env.LABEL, stage: stage as string };
       }
     }`);
@@ -130,10 +131,10 @@ test("development routes device calls and reloaded events through the native wor
   const calls = [];
   const pending = new Map();
   socket.on("message", data => {
-    const message = JSON.parse(String(data));
+    const message = decodeDevice(data);
     if (message.type === "call") {
       calls.push(`${message.plugin}.${message.method}`);
-      socket.send(JSON.stringify({ type: "result", id: message.id, result: { value: "background", done: true } }));
+      socket.send(encodeDevice({ type: "result", id: message.id, result: { value: "background", done: true } }));
     } else {
       pending.get(message.id)?.(message);
       pending.delete(message.id);
@@ -141,7 +142,7 @@ test("development routes device calls and reloaded events through the native wor
   });
   const event = async (name = "start") => {
     const result = new Promise(resolve => pending.set(100, resolve));
-    socket.send(JSON.stringify({ type: "event", id: 100, name, event: { foreground: false } }));
+    socket.send(encodeDevice({ type: "event", id: 100, name, event: { foreground: false } }));
     return result;
   };
   assert.deepEqual(await (await fetch(report.url + "isolation")).json(), { bridge: "undefined", loaded: false });
@@ -161,7 +162,7 @@ test("development routes device calls and reloaded events through the native wor
   fs.writeFileSync(entry, fs.readFileSync(entry, "utf8").replace(
     "async describe()",
     `async event(event: TokamakEvent) {
-      return { type: event.type, data: event.data, stage: await this.ctx[nativeConnection].call("tokamak", "lifecycleStage") };
+      return { type: event.type, data: event.data, stage: JSON.parse(new TextDecoder().decode(await this.ctx[nativeConnection].call("tokamak", "lifecycleStage", new Uint8Array()))) };
     }
     async describe()`,
   ));

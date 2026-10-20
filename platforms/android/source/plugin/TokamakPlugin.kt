@@ -3,10 +3,13 @@ package com.tokamak.runtime
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import org.json.JSONArray
+import org.json.JSONObject
+import org.json.JSONTokener
 
 /**
- * A failure a plugin reports to the page as a `DOMException` named [errorName]. Other exceptions
- * reach the page as an `OperationError`.
+ * A failure a plugin reports to the worker as a `DOMException` named [errorName]. Other exceptions
+ * reach the worker as an `OperationError`.
  */
 class TokamakPluginError(
     val errorName: String,
@@ -23,6 +26,32 @@ class TokamakPluginError(
 }
 
 typealias TokamakPluginReply = (Result<Any?>) -> Unit
+typealias TokamakPluginBytesReply = (TokamakPluginResult) -> Unit
+
+data class TokamakPluginResult(val payload: ByteArray, val failed: Boolean, val done: Boolean) {
+    companion object {
+        fun encoded(result: Result<ByteArray>, done: Boolean): TokamakPluginResult {
+            val error = result.exceptionOrNull()
+                ?: return TokamakPluginResult(result.getOrThrow(), false, done)
+            val name = (error as? TokamakPluginError)?.errorName ?: "OperationError"
+            val payload = JSONObject().put("name", name).put("message", error.message ?: error.javaClass.name)
+            return TokamakPluginResult(payload.toString().toByteArray(Charsets.UTF_8), true, done)
+        }
+    }
+}
+
+private fun encodePluginValue(value: Any?): ByteArray {
+    val wrapped = JSONObject.wrap(value)
+    if (value != null && wrapped == null) throw TokamakPluginError("DataCloneError", "The plugin value cannot be encoded as JSON")
+    val json = when (wrapped) {
+        null, JSONObject.NULL -> "null"
+        is String -> JSONObject.quote(wrapped)
+        is Number -> JSONObject.numberToString(wrapped)
+        is Boolean, is JSONObject, is JSONArray -> wrapped.toString()
+        else -> throw TokamakPluginError("DataCloneError", "The plugin value cannot be encoded as JSON")
+    }
+    return json.toByteArray(Charsets.UTF_8)
+}
 
 /**
  * A native plugin, created once per process with the app's [TokamakHost]. A [call] or [subscribe]
@@ -30,6 +59,16 @@ typealias TokamakPluginReply = (Result<Any?>) -> Unit
  */
 interface TokamakPlugin {
     val id: String
+
+    fun callBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply): (() -> Unit)? =
+        call(method, JSONTokener(payload.toString(Charsets.UTF_8)).nextValue()) {
+            reply(TokamakPluginResult.encoded(it.mapCatching(::encodePluginValue), true))
+        }
+
+    fun subscribeBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply): () -> Unit =
+        subscribe(method, JSONTokener(payload.toString(Charsets.UTF_8)).nextValue()) {
+            reply(TokamakPluginResult.encoded(it.mapCatching(::encodePluginValue), false))
+        }
 
     /** Returns cancellation for pending work when the platform supports it. */
     fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
@@ -42,8 +81,7 @@ interface TokamakPlugin {
         arguments: Any?,
         reply: TokamakPluginReply,
     ): () -> Unit {
-        reply(Result.failure(TokamakPluginError.notSupported("$id.$method is not supported")))
-        return {}
+        throw TokamakPluginError.notSupported("$id.$method is not supported")
     }
 
     /** Receives the intent that started the app's activity, and each intent it receives later. */

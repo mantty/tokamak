@@ -2,41 +2,36 @@ package com.tokamak.runtime
 
 import android.os.Handler
 import android.os.Looper
-import org.json.JSONObject
 
-/**
- * Runs one caller's calls and subscriptions, the page's or the Worker's, on the app's plugins,
- * keyed by [K]. [send] receives each result on the main thread as the JSON
- * object the page's native transport receives without its session and ID. Use it on the main
- * thread.
- */
+/** Runs the Tokamak worker's byte requests on the main thread. */
 internal class TokamakPluginRequests<K>(
     private val plugins: Map<String, TokamakPlugin>,
-    private val send: (K, JSONObject) -> Unit,
+    private val send: (K, TokamakPluginResult) -> Unit,
 ) {
     private val cancellations = mutableMapOf<K, () -> Unit>()
     private val main = Handler(Looper.getMainLooper())
 
     /** Calls [method] of [plugin], or subscribes to it when [subscribe]. */
-    fun run(key: K, subscribe: Boolean, plugin: String, method: String, arguments: Any?) {
+    fun run(key: K, subscribe: Boolean, plugin: String, method: String, payload: ByteArray) {
         val target = plugins[plugin]
         if (target == null || method.isEmpty()) {
             fail(key, TokamakPluginError.notSupported("Plugin is not supported"))
             return
         }
         cancellations[key] = {}
-        val reply: TokamakPluginReply = { result ->
+        val reply: TokamakPluginBytesReply = { result ->
+            val snapshot = result.copy(payload = result.payload.copyOf())
             main.post {
                 if (!cancellations.containsKey(key)) return@post
-                if (!subscribe) cancellations.remove(key)
-                send(key, result(result, done = !subscribe))
+                if (!subscribe || snapshot.done) cancellations.remove(key)
+                send(key, snapshot)
             }
         }
         try {
             if (subscribe) {
-                cancellations[key] = target.subscribe(method, arguments, reply)
+                cancellations[key] = target.subscribeBytes(method, payload, reply)
             } else {
-                cancellations[key] = target.call(method, arguments, reply) ?: {}
+                cancellations[key] = target.callBytes(method, payload, reply) ?: {}
             }
         } catch (error: Exception) {
             fail(key, error)
@@ -46,7 +41,7 @@ internal class TokamakPluginRequests<K>(
     /** Ends the request [key] with [error]. */
     fun fail(key: K, error: Throwable) {
         cancel(key)
-        send(key, result(Result.failure(error), done = true))
+        send(key, TokamakPluginResult.encoded(Result.failure(error), done = true))
     }
 
     /** Cancels the pending call or subscription [key]. */
@@ -59,12 +54,5 @@ internal class TokamakPluginRequests<K>(
         val cancelAll = cancellations.values.toList()
         cancellations.clear()
         cancelAll.forEach { it() }
-    }
-
-    private fun result(result: Result<Any?>, done: Boolean): JSONObject {
-        val json = JSONObject().put("done", done)
-        val error = result.exceptionOrNull() ?: return json.put("value", JSONObject.wrap(result.getOrNull()))
-        val name = (error as? TokamakPluginError)?.errorName ?: "OperationError"
-        return json.put("error", JSONObject().put("name", name).put("message", error.message ?: error.javaClass.name))
     }
 }

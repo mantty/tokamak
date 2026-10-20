@@ -633,10 +633,13 @@ pub(super) async fn write_frame(
     opcode: u8,
     payload: &[u8],
 ) -> io::Result<()> {
-    writer
-        .write_all(&encode_websocket_frame(opcode, payload, true)?)
-        .await?;
-    writer.flush().await
+    let frame = encode_websocket_frame(opcode, payload, true)?;
+    tokio::time::timeout(WEBSOCKET_WRITE_TIMEOUT, async {
+        writer.write_all(&frame).await?;
+        writer.flush().await
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "WebSocket write timed out"))?
 }
 
 /// Removes the first complete frame from `buffer`, failing when its masking
@@ -1062,6 +1065,22 @@ fn write_response_headers(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn bounds_writes_to_a_peer_that_stops_reading() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (mut writer, _peer) = tokio::io::duplex(1);
+        let result = tokio::time::timeout(
+            super::WEBSOCKET_WRITE_TIMEOUT + std::time::Duration::from_secs(1),
+            super::write_frame(&mut writer, 0x2, b"payload"),
+        )
+        .await?;
+        assert_eq!(
+            result.err().ok_or("the blocked write succeeded")?.kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        Ok(())
+    }
+
     use super::{
         HttpBody, HttpResponse, ResponseOutcome, connection_ended, read_request, response_stream,
         write_response_inner,

@@ -1,3 +1,4 @@
+import { decodeDevice, encodeDevice } from "./fixtures/native-device.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -243,7 +244,7 @@ async function emit(socket, name, event) {
     const closed = () => { cleanup(); reject(new Error("the dev socket closed")); };
     const unanswered = setTimeout(() => { cleanup(); reject(new Error(`${name} was not answered`)); }, 30_000);
     function receive(data) {
-      const message = JSON.parse(String(data));
+      const message = decodeDevice(data);
       if (message.id !== id) return;
       cleanup();
       resolve(message);
@@ -251,7 +252,7 @@ async function emit(socket, name, event) {
     socket.once("close", closed);
     socket.on("message", receive);
   });
-  socket.send(JSON.stringify({ type: "event", id, name, event }));
+  socket.send(encodeDevice({ type: "event", id, name, event }));
   return answer;
 }
 
@@ -395,9 +396,9 @@ test("refuses dev socket connections without the session token", async () => {
 
 /** Answers each plugin call and subscription the device receives on `socket` with `answer(message, send)`. */
 function answerPluginCalls(socket, answer) {
-  const send = (message) => socket.send(JSON.stringify(message));
+  const send = (message) => socket.send(encodeDevice(message));
   socket.on("message", (data) => {
-    const message = JSON.parse(String(data));
+    const message = decodeDevice(data);
     if (["call", "subscribe", "cancel"].includes(message.type)) answer(message, send);
   });
 }
@@ -465,11 +466,11 @@ onStart((_event, _env, ctx) => {
         await new Promise((resolve) => setTimeout(resolve, 1000));
 
         const call = next("call");
-        socket.send(JSON.stringify(result(id, { latitude: 51.5 }, false)));
+        socket.send(encodeDevice(result(id, { latitude: 51.5 }, false)));
         await call;
         const cancelled = next("cancel");
         const stopped = next("call");
-        socket.send(JSON.stringify(result(id, "stop", false)));
+        socket.send(encodeDevice(result(id, "stop", false)));
 
         assert.equal((await cancelled).id, id);
         assert.equal((await stopped).method, "stopped");

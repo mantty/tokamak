@@ -60,11 +60,11 @@ final class TokamakApp {
   private var workerPlugins: TokamakPluginHandler {
     TokamakPluginHandler(
       context: Unmanaged.passUnretained(self).toOpaque(),
-      call: { context, id, plugin, method, arguments in
-        TokamakApp.receive(context, id, subscribe: false, plugin, method, arguments)
+      call: { context, id, plugin, method, payload, count in
+        TokamakApp.receive(context, id, subscribe: false, plugin, method, payload, count)
       },
-      subscribe: { context, id, plugin, method, arguments in
-        TokamakApp.receive(context, id, subscribe: true, plugin, method, arguments)
+      subscribe: { context, id, plugin, method, payload, count in
+        TokamakApp.receive(context, id, subscribe: true, plugin, method, payload, count)
       },
       cancel: { context, id in
         let app = Unmanaged<TokamakApp>.fromOpaque(context!).takeUnretainedValue()
@@ -80,16 +80,15 @@ final class TokamakApp {
     subscribe: Bool,
     _ plugin: UnsafePointer<CChar>?,
     _ method: UnsafePointer<CChar>?,
-    _ arguments: UnsafePointer<CChar>?
+    _ payload: UnsafePointer<UInt8>?,
+    _ count: Int
   ) {
     let app = Unmanaged<TokamakApp>.fromOpaque(context!).takeUnretainedValue()
     let (plugin, method) = (String(cString: plugin!), String(cString: method!))
-    let arguments =
-      (try? JSONSerialization.jsonObject(
-        with: Data(String(cString: arguments!).utf8), options: .fragmentsAllowed)) ?? NSNull()
+    let payload = count == 0 ? Data() : Data(bytes: payload!, count: count)
     DispatchQueue.main.async {
       app.workerRequests.run(
-        id, subscribe: subscribe, plugin: plugin, method: method, arguments: arguments)
+        id, subscribe: subscribe, plugin: plugin, method: method, payload: payload)
     }
   }
 
@@ -476,11 +475,13 @@ final class RuntimeHandle {
     tokamak_runtime_is_foreground(handle)
   }
 
-  /// Passes a plugin's `result`, JSON-serialisable, to the Worker's call or
-  /// subscription `id`.
-  func reply(_ id: UInt64, result: [String: Any]) {
-    guard let json = try? JSONSerialization.data(withJSONObject: result) else { return }
-    String(decoding: json, as: UTF8.self).withCString { tokamak_runtime_reply(handle, id, $0) }
+  /// Passes an encoded plugin result to its native invocation.
+  func reply(_ id: UInt64, result: TokamakPluginResult) {
+    result.payload.withUnsafeBytes {
+      tokamak_runtime_reply(
+        handle, id, $0.bindMemory(to: UInt8.self).baseAddress,
+        $0.count, result.failed, result.done)
+    }
   }
 
   func serverAuthority(host: String) -> AuthenticationMaterial<Data> {
