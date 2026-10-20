@@ -174,6 +174,12 @@ fn validate_bindings(config: &WranglerConfig) -> Result<()> {
                 binding.binding
             );
         }
+        if binding.entrypoint() == "TokamakEvents" {
+            bail!(
+                "service binding {} targets TokamakEvents, which only native events reach",
+                binding.binding
+            );
+        }
     }
     Ok(())
 }
@@ -306,6 +312,14 @@ mod tests {
                 "services",
                 json!([{ "binding": "TOKAMAK", "service": "native", "entrypoint": "Location" }]),
                 "TOKAMAK must bind",
+            ),
+            (
+                "services",
+                json!([
+                    { "binding": "TOKAMAK", "service": "native" },
+                    { "binding": "EVENTS", "service": "native", "entrypoint": "TokamakEvents" }
+                ]),
+                "only native events reach",
             ),
         ] {
             let mut main = main.clone();

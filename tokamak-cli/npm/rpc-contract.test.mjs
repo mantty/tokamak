@@ -51,6 +51,8 @@ export function remapped(values: { [Key in "a" | "b" as Uppercase<Key>]: number 
 export function stringKeys(values: { "__@field": string }) { return values; }
 export function branded(value: [ID, Count]) { return value; }
 export async function streams(source: ReadableStream<Uint8Array>): Promise<{ body: ReadableStream<Uint8Array> }> { return { body: source }; }
+type JsonStream<T> = ReadableStream<Uint8Array> & { readonly "~values"?: T };
+export function typedStream(): JsonStream<{ latitude: number }> { throw new Error(); }
 export async function nothing(): Promise<void> {}
 export function rest(...values: readonly [string, ...number[]]) { return values; }
 export function fail(): never { throw new Error("failed"); }
@@ -67,7 +69,7 @@ export function overload(value: number): number;
 export function overload(value: string | number) { return value; }
 `);
 
-for (const name of ["data", "dictionary", "mapped", "remapped", "stringKeys", "branded", "streams", "nothing", "rest", "fail", "errors", "failures", "genericFailure", "readonly", "optionalReturn", "accessor", "specialized", "overload"]) {
+for (const name of ["data", "dictionary", "mapped", "remapped", "stringKeys", "branded", "streams", "typedStream", "nothing", "rest", "fail", "errors", "failures", "genericFailure", "readonly", "optionalReturn", "accessor", "specialized", "overload"]) {
   test(`accepts the ${name} RPC signature`, () => valid(name));
 }
 
@@ -90,6 +92,7 @@ export function untypedView(value: Uint8Array<any>) {}
 export function writable(value: WritableStream<Uint8Array>) {}
 export function transform(value: TransformStream<Uint8Array, Uint8Array>) {}
 export function objects(value: ReadableStream<{ value: string }>) {}
+export function typedCallbacks(): ReadableStream<Uint8Array> & { readonly "~values"?: () => void } { throw new Error(); }
 export function nested(value: { result: Promise<string> }) {}
 export function request(value: Request) {}
 export function response(): Response { return new Response(); }
@@ -120,7 +123,7 @@ for (const [name, location] of [
   ["shared", "shared.value"], ["sharedView", "sharedView.value"],
   ["untypedView", "untypedView.value"],
   ["writable", "writable.value"], ["transform", "transform.value"],
-  ["objects", "objects.value"], ["nested", "nested.value.result"],
+  ["objects", "objects.value"], ["typedCallbacks", "typedCallbacks.result.~values"], ["nested", "nested.value.result"],
   ["request", "request.value"], ["response", "response.result"],
   ["symbol", "symbol.value"], ["weak", "weak.value"],
   ["anything", "anything.value"], ["unknown", "unknown.value"],

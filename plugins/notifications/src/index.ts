@@ -1,10 +1,14 @@
-import { Plugin, type TokamakContext } from "@tokamakdev/plugin";
+import { Plugin, type JsonStream, type TokamakContext } from "@tokamakdev/plugin";
 import { validateContent } from "./content.js";
 import { validateBadge, validateOpenSettings, validatePermissionOptions, validateTopic } from "./options.js";
 import { validateSetup } from "./setup.js";
 import type {
+  DismissedNotification,
+  Message,
   NotificationContent,
   NotificationSettings,
+  OpenedNotification,
+  OpenSettingsEvent,
   OpenSettingsOptions,
   Permission,
   PermissionOptions,
@@ -120,12 +124,12 @@ class Notifications extends Plugin {
   }
 
   /** Receives push messages that arrive while the page is loaded. */
-  onMessage(): ReadableStream<Uint8Array> {
+  onMessage(): JsonStream<Message> {
     return this.stream("onMessage");
   }
 
   /** Receives opened notifications, local or push, including the one that opened the app. */
-  onNotificationOpened(): ReadableStream<Uint8Array> {
+  onNotificationOpened(): JsonStream<OpenedNotification> {
     return this.stream("onNotificationOpened");
   }
 
@@ -133,7 +137,7 @@ class Notifications extends Plugin {
    * Receives notifications the user dismissed. Apple platforms report only those of categories
    * with `customDismissAction`; Android also reports those its `timeoutAfter` removed.
    */
-  onNotificationDismissed(): ReadableStream<Uint8Array> {
+  onNotificationDismissed(): JsonStream<DismissedNotification> {
     return this.stream("onNotificationDismissed");
   }
 
@@ -143,12 +147,12 @@ class Notifications extends Plugin {
    * `providesAppNotificationSettings`; Android links from the app's notification settings and from
    * a notification's `settingsText`.
    */
-  onOpenSettings(): ReadableStream<Uint8Array> {
+  onOpenSettings(): JsonStream<OpenSettingsEvent> {
     return this.stream("onOpenSettings");
   }
 
   /** Receives the replacement when the push service changes the subscription. */
-  onSubscriptionChange(): ReadableStream<Uint8Array> {
+  onSubscriptionChange(): JsonStream<Subscription> {
     return this.stream("onSubscriptionChange");
   }
 }

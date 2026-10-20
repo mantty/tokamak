@@ -76,7 +76,7 @@ void test("each native event stream delivers values until cancelled", async () =
   const location = createApi(native.ctx);
   const update: LocationUpdate = { positions: [], stationary: false };
   for (const method of ["onLocationUpdate", "onRegionTransition", "onVisit", "onLocationError"] as const) {
-    const values = decodeValues<LocationUpdate>(location[method]());
+    const values = decodeValues<unknown>(location[method]());
     assert.deepEqual(native.lastRequest(), { type: "subscribe", plugin: "location", method, arguments: null });
     native.respond({ value: update }, false);
     assert.deepEqual((await values.next()).value, update);
@@ -89,7 +89,7 @@ void test("native event stream failures reject their readers", async () => {
   const native = connectNative();
   const location = createApi(native.ctx);
   for (const method of ["onLocationUpdate", "onRegionTransition", "onVisit", "onLocationError"] as const) {
-    const values = decodeValues(location[method]());
+    const values = decodeValues<unknown>(location[method]());
     native.respond({ error: { name: "NotSupportedError", message: "Not here" } });
     await assert.rejects(values.next(), { name: "NotSupportedError" });
   }

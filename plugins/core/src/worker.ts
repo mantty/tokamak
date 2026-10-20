@@ -4,6 +4,7 @@ import { dispatch } from "./registry.js";
 
 export { createNativeContext, nativeConnection } from "./context.js";
 export type { TokamakContext } from "./context.js";
+export type { WebView } from "./webview.js";
 export type { EventReply, EventType, TokamakEvent } from "./events.js";
 
 /** The application's native worker entrypoint. */

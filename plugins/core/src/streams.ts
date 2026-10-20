@@ -2,6 +2,12 @@ import { encodeJson } from "./codec.js";
 import type { Overflow } from "./context.js";
 
 type Source<T> = (next: (value: T) => void, error: (error: unknown) => void, close: () => void) => () => void;
+
+/** A byte stream of newline-delimited JSON values of type `T`, which `decodeValues` reads. */
+export type JsonStream<T> = ReadableStream<Uint8Array> & {
+  /** Type only: the values the stream carries. */
+  readonly "~values"?: T;
+};
 const maxBufferedBytes = 1024 * 1024;
 
 /**
@@ -57,7 +63,7 @@ export function byteStream(subscribe: Source<Uint8Array>, overflow: Overflow = "
 }
 
 /** Encodes a typed push source as newline-delimited JSON. Errors terminate the stream. */
-export function valueStream<T>(subscribe: Source<T>, overflow: Overflow = "error"): ReadableStream<Uint8Array> {
+export function valueStream<T>(subscribe: Source<T>, overflow: Overflow = "error"): JsonStream<T> {
   return byteStream((next, error, close) => subscribe((value) => {
     try {
       const payload = encodeJson(value);
@@ -70,7 +76,7 @@ export function valueStream<T>(subscribe: Source<T>, overflow: Overflow = "error
 }
 
 /** Decodes JSON values; ending iteration cancels the source. */
-export async function* decodeValues<T>(source: ReadableStream<Uint8Array> | Promise<ReadableStream<Uint8Array>>, signal: AbortSignal = new AbortController().signal): AsyncGenerator<T, void, unknown> {
+export async function* decodeValues<T>(source: JsonStream<T> | Promise<JsonStream<T>>, signal: AbortSignal = new AbortController().signal): AsyncGenerator<T, void, unknown> {
   const reader = (await source).getReader();
   const cancel = () => { void reader.cancel().catch(() => undefined); };
   if (signal.aborted) cancel();

@@ -89,11 +89,8 @@ export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
   }
   const configure = (config: ServiceConfiguration): void => {
     if (!config.name) throw new Error("Tokamak requires a name in the main Worker's configuration.");
-    const reserved = new Set(services(config.name).map(service => service.binding));
-    const names = [...Object.keys(config.vars ?? {}), ...[
-      ...config.services ?? [], ...config.kv_namespaces ?? [], ...config.d1_databases ?? [], ...config.r2_buckets ?? [],
-    ].map(value => value.binding)];
-    const collision = names.find(name => reserved.has(name));
+    const reserved = new Set(["MAIN", "TOKAMAK_RUNTIME", ...services(config.name).map(service => service.binding)]);
+    const collision = bindingNames(config).find(name => reserved.has(name));
     if (collision) {
       throw new Error(`${collision} is reserved for a generated native worker binding.`);
     }
@@ -207,6 +204,29 @@ ${hostEvents}`;
       },
     } satisfies Plugin,
   };
+}
+
+/** The binding kinds of a Worker configuration besides variables, whose entries name bindings. */
+const BINDING_KINDS = [
+  "ai", "analytics_engine_datasets", "assets", "browser", "d1_databases", "dispatch_namespaces", "durable_objects",
+  "hyperdrive", "images", "kv_namespaces", "mtls_certificates", "pipelines", "queues", "r2_buckets", "rate_limiting",
+  "secrets_store_secrets", "send_email", "services", "vectorize", "version_metadata", "workflows",
+];
+
+/** Every binding name `config` declares, as the native packager reads them. */
+function bindingNames(config: object): string[] {
+  const names = Object.keys((config as { vars?: object }).vars ?? {});
+  const collect = (value: unknown): void => {
+    if (Array.isArray(value)) return value.forEach(collect);
+    if (!value || typeof value !== "object") return;
+    const entry = value as Record<string, unknown>;
+    const nested = ["bindings", "producers", "consumers"].filter(key => key in entry);
+    if (nested.length) return nested.forEach(key => { collect(entry[key]); });
+    const name = ["binding", "name", "queue", "dataset"].map(key => entry[key]).find(name => typeof name === "string");
+    if (typeof name === "string") names.push(name);
+  };
+  for (const kind of BINDING_KINDS) collect((config as Record<string, unknown>)[kind]);
+  return names;
 }
 
 export function workerName(main: string): string {

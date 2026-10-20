@@ -1,15 +1,19 @@
-import { Plugin, type TokamakContext } from "@tokamakdev/plugin";
+import { Plugin, type JsonStream, type TokamakContext } from "@tokamakdev/plugin";
 import { nonEmptyText } from "./checks.js";
 import { monitoredRegion, validatePermissionRequest, validateSetup, validateUpdateOptions } from "./options.js";
 import type {
+  LocationErrorEvent,
   LocationPermission,
+  LocationUpdate,
   MonitoredRegion,
   PermissionRequest,
   Position,
   PositionOptions,
   Region,
+  RegionTransition,
   SetupConfig,
   UpdateOptions,
+  Visit,
 } from "./types.js";
 
 export type * from "./types.js";
@@ -37,8 +41,9 @@ class Location extends Plugin {
     });
   }
 
-  watchPosition(): ReadableStream<Uint8Array> {
-    return this.stream("watchPosition");
+  /** Positions as the device moves. A slow reader receives the newest. */
+  watchPosition(): JsonStream<Position> {
+    return this.stream("watchPosition", null, "dropOldest");
   }
 
   /** The app's in-use and background permission, and the precision it gets. Never asks. */
@@ -110,22 +115,22 @@ class Location extends Plugin {
   }
 
   /** Receives the updates the Worker's `onLocationUpdate` receives, while the listening page or Worker runs. */
-  onLocationUpdate(): ReadableStream<Uint8Array> {
-    return this.stream("onLocationUpdate");
+  onLocationUpdate(): JsonStream<LocationUpdate> {
+    return this.stream("onLocationUpdate", null, "dropOldest");
   }
 
   /** Receives the transitions the Worker's `onRegionTransition` receives, while the listening page or Worker runs. */
-  onRegionTransition(): ReadableStream<Uint8Array> {
+  onRegionTransition(): JsonStream<RegionTransition> {
     return this.stream("onRegionTransition");
   }
 
   /** Apple only: receives the visits the Worker's `onVisit` receives, while the listening page or Worker runs. */
-  onVisit(): ReadableStream<Uint8Array> {
+  onVisit(): JsonStream<Visit> {
     return this.stream("onVisit");
   }
 
   /** Receives the failures the Worker's `onLocationError` receives, while the listening page or Worker runs. */
-  onLocationError(): ReadableStream<Uint8Array> {
+  onLocationError(): JsonStream<LocationErrorEvent> {
     return this.stream("onLocationError");
   }
 }

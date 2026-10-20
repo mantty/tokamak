@@ -103,10 +103,16 @@ test("Cloudflare configuration customizations apply to both worker bundles", asy
 });
 
 test("a user binding cannot replace the generated native worker binding", async t => {
-  const { config } = project(t, {
-    config: { services: [{ binding: "TOKAMAK", service: "somewhere-else" }] },
-  });
-  await assert.rejects(createBuilder(config), /TOKAMAK is reserved/);
+  for (const [binding, user] of [
+    ["TOKAMAK", { services: [{ binding: "TOKAMAK", service: "somewhere-else" }] }],
+    ["MAIN", { vars: { MAIN: "shadowed" } }],
+    ["TOKAMAK", { ai: { binding: "TOKAMAK" } }],
+    ["MAIN", { durable_objects: { bindings: [{ name: "MAIN", class_name: "Counter" }] } }],
+    ["MAIN", { queues: { producers: [{ binding: "MAIN", queue: "jobs" }] } }],
+  ]) {
+    const { config } = project(t, { config: user });
+    await assert.rejects(createBuilder(config), new RegExp(`${binding} is reserved`));
+  }
 });
 
 test("development routes device calls and reloaded events through the native worker", { timeout: 30_000 }, async t => {
