@@ -2,17 +2,19 @@ import { cloudflare, type PluginConfig } from "@cloudflare/vite-plugin";
 import type { Plugin } from "vite";
 
 import { createNativeWorker, type TokamakOptions } from "./native-worker.mjs";
+import { createClientPlugin } from "./client.mjs";
 export type { TokamakOptions } from "./native-worker.mjs";
 
 /** Cloudflare's Vite integration, with a separate native worker when run by tok. */
 export function tokamak(options: TokamakOptions = {}, cloudflareOptions: PluginConfig = {}): Plugin[] {
   const output = process.env.TOKAMAK_VITE_OUTPUT;
-  if (!output) return cloudflare(cloudflareOptions);
+  const client = createClientPlugin(options.module, !!output);
+  if (!output) return [client, ...cloudflare(cloudflareOptions)];
   if (cloudflareOptions.auxiliaryWorkers?.length) {
     throw new Error("Tokamak hosts the main and native workers; additional auxiliary workers are not supported.");
   }
   const native = createNativeWorker(options, output);
-  return [native.plugin, ...cloudflare({
+  return [native.plugin, client, ...cloudflare({
     ...cloudflareOptions,
     config(worker) {
       const custom = typeof cloudflareOptions.config === "function"

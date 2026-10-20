@@ -48,7 +48,7 @@ function project(t, sources = {}) {
 
 function checkTypes(root, source) {
   const consumer = path.join(root, "src/typecheck.mts");
-  fs.writeFileSync(consumer, `import type { TokamakClient, TokamakService } from "virtual:tokamak/client";
+  fs.writeFileSync(consumer, `import generated, { type TokamakClient, type TokamakService } from "virtual:tokamak/client";
     declare const client: TokamakClient;
     declare const service: TokamakService;
     declare const env: Cloudflare.Env;
@@ -83,6 +83,7 @@ test("generates editor declarations for optional native bindings and the client 
       const result: Promise<{ title: string }> = env.TOKAMAK.recipe(1, 2);
     }
     const recipe: Promise<{ title: string }> = client.recipe(1, 2);
+    const generatedRecipe: Promise<{ title: string }> = generated.recipe(1, 2);
     const response: Promise<Response> = service.fetch("https://app.example");
     // @ts-expect-error wrong coordinates
     client.recipe("east", "north");

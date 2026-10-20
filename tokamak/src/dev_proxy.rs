@@ -212,6 +212,9 @@ impl DevProxy {
         headers.try_insert("x-forwarded-host", host)?;
         headers.try_insert("x-forwarded-proto", HeaderValue::from_static("https"))?;
         headers.try_insert("x-tokamak-session", self.session_token.clone())?;
+        if request.target.starts_with(crate::NATIVE_ROUTE_PREFIX) {
+            headers.try_insert(crate::DEV_SOCKET_HEADER, HeaderValue::from_static("1"))?;
+        }
         Ok(headers)
     }
 

@@ -38,7 +38,7 @@ use rquickjs::{
 pub(crate) struct Dispatcher {
     worker: Arc<WorkerBundle>,
     config: RuntimeConfig,
-    events: Option<Arc<Self>>,
+    native: Option<Arc<Self>>,
 }
 
 impl Dispatcher {
@@ -46,25 +46,31 @@ impl Dispatcher {
         Arc::new(Self {
             worker: Arc::new(bundle),
             config,
-            events: None,
+            native: None,
         })
     }
 
-    pub(crate) fn with_events(
+    pub(crate) fn with_native(
         bundle: WorkerBundle,
         config: RuntimeConfig,
-        events: Arc<Self>,
+        native: Arc<Self>,
     ) -> Arc<Self> {
         Arc::new(Self {
             worker: Arc::new(bundle),
             config,
-            events: Some(events),
+            native: Some(native),
         })
     }
 }
 
 impl Handler for Dispatcher {
     fn handle(&self, job: Job, stopped: &CancellationToken) -> Result<(), HandlerError> {
+        if let Some(native) = &self.native
+            && job.request.target.starts_with(crate::NATIVE_ROUTE_PREFIX)
+        {
+            return execute_request(&native.worker, &native.config, job, stopped)
+                .map_err(Into::into);
+        }
         if let Some(assets) = &self.config.assets
             && let Some(asset) = assets.route(&job.request)?
         {
@@ -77,7 +83,7 @@ impl Handler for Dispatcher {
     }
 
     fn deliver(&self, event: EventJob, stopped: &CancellationToken) {
-        if let Some(receiver) = &self.events {
+        if let Some(receiver) = &self.native {
             receiver.deliver(event, stopped);
             return;
         }

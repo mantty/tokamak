@@ -25,6 +25,37 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 const HOST: &str = "dev.tokamak.local";
 
 #[test]
+fn marks_native_routes_for_the_authenticated_worker_relay() -> TestResult {
+    let (listener, runtime, temporary) = start_test_runtime()?;
+    let host_server = thread::spawn(move || -> TestResult<String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while let Some((mut connection, headers)) = accept_before(&listener, deadline)? {
+            if headers.starts_with("GET /_tokamak/app ") {
+                connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nnative")?;
+                return Ok(headers);
+            }
+            connection.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")?;
+        }
+        Err("the native request did not arrive".into())
+    });
+    let mut request = connect_gateway(&runtime, &temporary.path().join("state"))?;
+    request.write_all(
+        b"GET /_tokamak/app HTTP/1.1\r\nHost: dev.tokamak.local\r\nX-Tokamak-Session: forged\r\nX-Forwarded-Host: forged\r\n\r\n",
+    )?;
+    request.flush()?;
+    assert!(read_http_response(&mut request)?.ends_with("native"));
+    let headers = host_server.join().map_err(|_| "host server panicked")??;
+    assert_eq!(header_value(&headers, "x-tokamak-dev-socket"), Some("1"));
+    assert_eq!(
+        header_value(&headers, "x-tokamak-session"),
+        Some("test-session")
+    );
+    assert_eq!(header_value(&headers, "x-forwarded-host"), Some(HOST));
+    assert_eq!(header_value(&headers, "x-forwarded-proto"), Some("https"));
+    Ok(())
+}
+
+#[test]
 fn forwards_http_and_websocket_traffic_to_the_host_server() -> TestResult {
     let (listener, runtime, temporary) = start_test_runtime()?;
     let host_server = thread::spawn(move || serve_host(&listener));

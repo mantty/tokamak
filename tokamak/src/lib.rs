@@ -109,6 +109,7 @@ pub const DEVELOPMENT_ENTRY_POINT: &str = "tokamak_development";
 /// The header that marks the development app's dev WebSocket, which carries
 /// its events, so `tok dev`'s relay forwards it to the tokamak Vite plugin.
 pub const DEV_SOCKET_HEADER: &str = "x-tokamak-dev-socket";
+pub(crate) const NATIVE_ROUTE_PREFIX: &str = "/_tokamak/";
 
 /// Runtime result type.
 pub type Result<T> = std::result::Result<T, Error>;

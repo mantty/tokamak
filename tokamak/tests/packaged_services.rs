@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -11,19 +12,119 @@ use tokamak::{Config, ModuleType, PackageLayout, Runtime, WorkerManifest, write_
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const TIMEOUT: Duration = Duration::from_secs(5);
 
+#[test]
+fn native_http_routes_keep_the_page_path_and_receiving_context() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let app = PackageLayout::new(directory.path().join("app"));
+    package(
+        &app,
+        "export default { fetch: () => new Response('main') };",
+        &json!({}),
+    )?;
+    package(
+        &app.tokamak_worker(),
+        r"
+import { WorkerEntrypoint } from 'cloudflare:workers';
+export default class extends WorkerEntrypoint {
+  async fetch(request) {
+    const stage = await this.ctx[Symbol.for('tokamak.native')].call('tokamak', 'lifecycleStage');
+    return Response.json({ url: request.url, stage });
+  }
+}
+export class TokamakEvents extends WorkerEntrypoint {
+  dispatch() { return { reply: null, listened: [] }; }
+}
+",
+        &json!({}),
+    )?;
+    let runtime = Runtime::start(config(directory.path(), app), |_| {})?;
+    assert_eq!(runtime.fetch("/", TIMEOUT)?, b"main");
+    assert_eq!(runtime.fetch("/_tokamak-other", TIMEOUT)?, b"main");
+    let result: Value = serde_json::from_slice(&runtime.fetch("/_tokamak/app?value=1", TIMEOUT)?)?;
+    assert_eq!(
+        result,
+        json!({ "url": "https://services.tokamak.local/_tokamak/app?value=1", "stage": "foreground" })
+    );
+    Ok(())
+}
+
 fn package(app: &PackageLayout, source: &str, environment: &Value) -> TestResult {
+    package_modules(app, &BTreeMap::from([("worker.mjs", source)]), environment)
+}
+
+fn package_modules(
+    app: &PackageLayout,
+    modules: &BTreeMap<&str, &str>,
+    environment: &Value,
+) -> TestResult {
     fs::create_dir_all(app.root())?;
     let sources = tempfile::tempdir()?;
-    fs::write(sources.path().join("worker.mjs"), source)?;
+    for (name, source) in modules {
+        fs::write(sources.path().join(name), source)?;
+    }
     write_worker(
         app,
         sources.path(),
         &WorkerManifest {
             entry: "worker.mjs".into(),
-            modules: BTreeMap::from([("worker.mjs".into(), ModuleType::EsModule)]),
+            modules: modules
+                .keys()
+                .map(|name| ((*name).into(), ModuleType::EsModule))
+                .collect(),
         },
     )?;
     fs::write(app.worker_environment(), serde_json::to_vec(environment)?)?;
+    Ok(())
+}
+
+#[test]
+fn frontend_rpc_uses_the_packaged_native_worker_and_owns_its_streams() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let app = PackageLayout::new(directory.path().join("app"));
+    package(
+        &app,
+        "export default { fetch: () => new Response('main') };",
+        &json!({}),
+    )?;
+    package_modules(
+        &app.tokamak_worker(),
+        &BTreeMap::from([
+            ("worker.mjs", include_str!("fixtures/rpc-worker.mjs")),
+            (
+                "endpoint.mjs",
+                include_str!("../../plugins/core/src/rpc/endpoint.mjs"),
+            ),
+            (
+                "channel.mjs",
+                include_str!("../../plugins/core/src/rpc/channel.mjs"),
+            ),
+            (
+                "frames.mjs",
+                include_str!("../../plugins/core/src/rpc/frames.mjs"),
+            ),
+            (
+                "streams.mjs",
+                include_str!("../../plugins/core/src/rpc/streams.mjs"),
+            ),
+            (
+                "values.mjs",
+                include_str!("../../plugins/core/src/rpc/values.mjs"),
+            ),
+        ]),
+        &json!({}),
+    )?;
+    let runtime = Runtime::start(config(directory.path(), app), |_| {})?;
+    let output = Command::new("node")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rpc-client.mjs"))
+        .arg(runtime.port().to_string())
+        .arg(directory.path().join("state"))
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     Ok(())
 }
 

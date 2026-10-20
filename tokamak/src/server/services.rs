@@ -72,11 +72,11 @@ pub(super) fn load(config: &Config, plugins: &Arc<PluginCalls>) -> Result<Arc<Di
     if !split {
         return Ok(Dispatcher::new(worker, config));
     }
-    let (events, native) = registry.worker("tokamak")?;
-    Ok(Dispatcher::with_events(
+    let (native, native_config) = registry.worker("tokamak")?;
+    Ok(Dispatcher::with_native(
         worker,
         config,
-        Dispatcher::new(events, native),
+        Dispatcher::new(native, native_config),
     ))
 }
 

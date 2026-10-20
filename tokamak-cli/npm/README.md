@@ -50,6 +50,34 @@ It adds the optional
 types from `virtual:tokamak/client`. Service methods return ordinary promises,
 preserve the entrypoint's overloads, and expose only its public RPC operations.
 
+Page code imports the generated client as the module's default export:
+
+```ts
+// src/tokamak.ts
+import { TokamakEntrypoint } from "@tokamakdev/tok";
+
+export default class Native extends TokamakEntrypoint {
+  greeting(name: string): string {
+    return `Hello, ${name}`;
+  }
+}
+```
+
+```ts
+// Page code
+import native from "virtual:tokamak/client";
+
+const message = await native.greeting("Ada");
+```
+
+Native clients call the Tokamak worker through the reserved `/_tokamak/app`
+route. The native worker also receives other requests under `/_tokamak/` in
+its `fetch` handler. Arguments and results support the RPC value and readable
+byte-stream contract. Stream cancellation reaches its producer, and leaving
+the page closes its calls. Web builds expose the same app-method names, rejecting calls with
+`NotSupportedError`. The client bundle contains the callable interface and
+transport.
+
 The entrypoint receives its own bindings in `this.env` and native invocation
 context in `this.ctx`. Its default `event()` runs registered listeners; an
 override receives `{ type, data }` and can return a reply or promise. Native

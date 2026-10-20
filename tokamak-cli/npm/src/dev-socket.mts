@@ -1,41 +1,17 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { Readable, type Duplex } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream } from "node:stream/web";
 
 import { WebSocketServer, type WebSocket } from "ws";
+import { DevWorker, type WorkerSocket } from "./dev-worker.mjs";
 
 /** The header that carries the device's session token, which `tok dev`'s relay forwards. */
 export const SESSION_HEADER = "x-tokamak-session";
 
 /** How long a plugin call waits for the device to connect. */
 const CONNECT_TIMEOUT = 10_000;
-
-/** Calls `TokamakEvents` in the Worker its `TOKAMAK` service binding names, through the dev registry. */
-const CALLER = `export default {
-  async fetch(request, env) {
-    const { name, event } = await request.json();
-    try {
-      const { reply } = await env.TOKAMAK.dispatch(name, event);
-      return Response.json({ reply: reply ?? null });
-    } catch (error) {
-      return new Response(error?.stack ?? String(error), { status: 500 });
-    }
-  },
-};`;
-
-/** The parts of Miniflare the dev socket uses. */
-interface Miniflare {
-  readonly ready: Promise<unknown>;
-  dispatchFetch(url: string, init: { method: string; body: string }): Promise<Response>;
-  dispose(): Promise<void>;
-}
-
-interface MiniflareModule {
-  Miniflare: new (options: unknown) => Miniflare;
-  convertV4MiniflareOptions(options: unknown): unknown;
-  getDefaultDevRegistryPath(): string;
-}
 
 /** A message the device sends: an event, or a plugin's result for a call or subscription. */
 type DeviceMessage =
@@ -76,6 +52,10 @@ export async function openDevSocket(workerName: string | undefined, token: strin
       response.writeHead(401).end();
       return;
     }
+    if (request.url?.startsWith("/_tokamak/")) {
+      void forwardWorker(worker, request, response);
+      return;
+    }
     if (request.method === "POST" && (request.url === "/call" || request.url === "/subscribe")) {
       void forward(device, request, response);
       return;
@@ -86,6 +66,10 @@ export async function openDevSocket(workerName: string | undefined, token: strin
   server.on("upgrade", (request, socket, head) => {
     if (!token || request.headers[SESSION_HEADER] !== token) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      return;
+    }
+    if (request.url?.startsWith("/_tokamak/")) {
+      void upgradeWorker(worker, request, socket, head, sockets);
       return;
     }
     sockets.handleUpgrade(request, socket, head, (websocket) => serve(websocket, worker, device));
@@ -103,6 +87,58 @@ export async function openDevSocket(workerName: string | undefined, token: strin
       await worker.dispose();
     },
   };
+}
+
+async function forwardWorker(worker: DevWorker, request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+  const abort = new AbortController();
+  response.once("close", () => abort.abort());
+  try {
+    const result = await worker.fetch(request, abort.signal);
+    response.writeHead(result.status, [...result.headers].flat());
+    if (result.body) await pipeline(Readable.fromWeb(result.body as ReadableStream<Uint8Array>), response);
+    else response.end();
+  } catch (error) {
+    if (response.headersSent) response.destroy(error instanceof Error ? error : new Error(String(error)));
+    else response.writeHead(502).end(String(error));
+  }
+}
+
+async function upgradeWorker(
+  worker: DevWorker, request: http.IncomingMessage, socket: Duplex, head: Buffer, sockets: WebSocketServer,
+): Promise<void> {
+  const abort = new AbortController();
+  let pending: WorkerSocket | undefined;
+  const release = () => {
+    const pair = pending;
+    pending = undefined;
+    if (!pair) return;
+    pair.accept();
+    pair.close(1000, "Caller disconnected");
+  };
+  socket.once("close", () => { abort.abort(); release(); });
+  socket.once("error", () => socket.destroy());
+  try {
+    const result = await worker.fetch(request, abort.signal);
+    const pair = result.webSocket;
+    if (!pair) {
+      socket.end(`HTTP/1.1 ${result.status} ${result.statusText}\r\nConnection: close\r\n\r\n`);
+      return;
+    }
+    pending = pair;
+    if (socket.destroyed) {
+      release();
+      return;
+    }
+    sockets.handleUpgrade(request, socket, head, websocket => {
+      void worker.couple(websocket, pair).then(
+        () => { pending = undefined; },
+        () => { release(); websocket.terminate(); },
+      );
+    });
+  } catch {
+    release();
+    socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+  }
 }
 
 function serve(websocket: WebSocket, worker: DevWorker, device: Device): void {
@@ -240,48 +276,5 @@ class Device {
       }, CONNECT_TIMEOUT);
       this.#connected.push(connected);
     });
-  }
-}
-
-/** The development Worker's `TokamakEvents`, called through a Miniflare session started on first use. */
-class DevWorker {
-  #miniflare: Promise<Miniflare> | undefined;
-
-  constructor(private readonly name: string | undefined) {}
-
-  async dispatch(name: string, event: unknown): Promise<unknown> {
-    this.#miniflare ??= this.#start().catch((error: unknown) => {
-      this.#miniflare = undefined;
-      throw error;
-    });
-    const miniflare = await this.#miniflare;
-    const response = await miniflare.dispatchFetch("http://tokamak/", {
-      method: "POST",
-      body: JSON.stringify({ name, event }),
-    });
-    if (!response.ok) throw new Error(await response.text());
-    return ((await response.json()) as { reply: unknown }).reply;
-  }
-
-  async dispose(): Promise<void> {
-    await (await this.#miniflare?.catch(() => undefined))?.dispose();
-  }
-
-  /** A Miniflare session from the Miniflare that Cloudflare's plugin uses. */
-  async #start(): Promise<Miniflare> {
-    if (!this.name) throw new Error("the Wrangler configuration names no Worker to deliver events to");
-    const require = createRequire(import.meta.resolve("@cloudflare/vite-plugin"));
-    const module = (await import(pathToFileURL(require.resolve("miniflare")).href)) as MiniflareModule;
-    const miniflare = new module.Miniflare(
-      module.convertV4MiniflareOptions({
-        modules: true,
-        script: CALLER,
-        compatibilityDate: "2025-01-01",
-        serviceBindings: { TOKAMAK: { name: this.name, entrypoint: "TokamakEvents" } },
-        unsafeDevRegistryPath: module.getDefaultDevRegistryPath(),
-      }),
-    );
-    await miniflare.ready;
-    return miniflare;
   }
 }

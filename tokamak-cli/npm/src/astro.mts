@@ -9,12 +9,26 @@ import { normalizePath, type Plugin, type ViteDevServer } from "vite";
 import { experimental_readRawConfig, unstable_readConfig, type Unstable_RawConfig } from "wrangler";
 
 import { createNativeWorker, type TokamakOptions } from "./native-worker.mjs";
+import { createClientPlugin } from "./client.mjs";
 import { workerName } from "./worker-graph.mjs";
 
 /** Astro's Cloudflare adapter, with Tokamak's native worker and development relay. */
 export function tokamak(options: TokamakOptions = {}, cloudflareOptions: CloudflareOptions = {}): AstroIntegration {
   const output = process.env.TOKAMAK_VITE_OUTPUT;
-  if (!output) return cloudflare(cloudflareOptions);
+  const client = createClientPlugin(options.module, !!output);
+  if (!output) {
+    const adapter = cloudflare(cloudflareOptions);
+    return {
+      ...adapter,
+      hooks: {
+        ...adapter.hooks,
+        async "astro:config:setup"(context) {
+          context.updateConfig({ vite: { plugins: [client] } });
+          await adapter.hooks["astro:config:setup"]?.(context);
+        },
+      },
+    };
+  }
   if (cloudflareOptions.auxiliaryWorkers?.length) {
     throw new Error("Tokamak hosts the main and native workers; additional auxiliary workers are not supported.");
   }
@@ -83,7 +97,7 @@ export function tokamak(options: TokamakOptions = {}, cloudflareOptions: Cloudfl
         context.updateConfig({
           vite: {
             server: { fs: { deny: [normalizePath(source)] } },
-            plugins: [native.plugin, lifecycle],
+            plugins: [native.plugin, client, lifecycle],
           },
         });
         await adapter.hooks["astro:config:setup"]?.(context);

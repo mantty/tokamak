@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
@@ -10,6 +11,14 @@ export interface WorkerContract {
   methods: string[];
   files: string[];
   declarations: string;
+}
+
+export function findModule(root: string, name: string | undefined): string | undefined {
+  const candidates = (name ? [name] : ["src/tokamak.ts", "src/tokamak.js"])
+    .map(candidate => path.resolve(root, candidate).split(path.sep).join("/"));
+  const file = candidates.find(candidate => fs.existsSync(candidate));
+  if (name && !file) throw new Error(`tokamak module not found: ${candidates[0]}`);
+  return file;
 }
 
 /** Resolve the application's types before generating its service adapters. */

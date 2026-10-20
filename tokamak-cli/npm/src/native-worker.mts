@@ -8,6 +8,7 @@ import { normalizePath, type Plugin, type ViteDevServer } from "vite";
 
 import { openDevSocket, type DevSocket } from "./dev-socket.mjs";
 import type { Config } from "./index.mjs";
+import { findModule } from "./worker-contract.mjs";
 import { createWorkerGraph, type WorkerGraph } from "./worker-graph.mjs";
 
 export type TokamakOptions = Config & {
@@ -97,14 +98,6 @@ function nativeCalls(port: number, token: string): string {
 import { defineNativeCalls as __tokamakDefineNativeCalls } from ${JSON.stringify(NATIVE_CALLS)};
 __tokamakDefineNativeCalls(${String(port)}, ${JSON.stringify(token)}, __tokamakWaitUntil);
 `;
-}
-
-function findModule(root: string, name: string | undefined): string | undefined {
-  const candidates = (name ? [name] : ["src/tokamak.ts", "src/tokamak.js"])
-    .map((candidate) => normalizePath(path.resolve(root, candidate)));
-  const file = candidates.find((candidate) => fs.existsSync(candidate));
-  if (name && !file) throw new Error(`tokamak module not found: ${candidates[0]}`);
-  return file;
 }
 
 function endEntityCertificates(https: HttpsServerOptions | undefined): string | undefined {
