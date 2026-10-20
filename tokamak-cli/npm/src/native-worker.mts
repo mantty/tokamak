@@ -33,20 +33,29 @@ export function createNativeWorker(
   const plugin: Plugin = {
     name: "tokamak",
     enforce: "pre",
-    async config(vite) {
+    async config(vite, environment) {
       const root = normalizePath(path.resolve(vite.root ?? process.cwd()));
       graph = createWorkerGraph(root, findModule(root, module), path.join(output, "worker"));
+      graph.plugin.config.call(this, vite, environment);
       await prepare?.(root, graph);
       writeJson(output, "config.json", { root, config });
     },
     configEnvironment(name) {
-      if (name === "tokamak") return { optimizeDeps: { exclude: ["@tokamakdev/plugin"] } };
+      const configured = graph.plugin.configEnvironment();
+      if (name === "tokamak") configured.optimizeDeps.exclude.push("@tokamakdev/plugin");
+      return configured;
     },
     buildStart(options) {
       return graph.plugin.buildStart.call(this, options);
     },
     hotUpdate(options) {
       return graph.plugin.hotUpdate.call(this, options);
+    },
+    resolveId(...args) {
+      return graph.plugin.resolveId.call(this, ...args);
+    },
+    load(...args) {
+      return graph.plugin.load.call(this, ...args);
     },
     configureServer: {
       order: "pre",

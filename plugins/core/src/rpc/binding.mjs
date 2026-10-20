@@ -1,6 +1,8 @@
-import { RpcTarget } from 'cloudflare:workers';
+import { RpcTarget, WorkerEntrypoint } from 'cloudflare:workers';
 import { invoke } from './client.mjs';
 import { serveRpc } from './endpoint.mjs';
+
+const original = Symbol.for('tokamak.dev.service');
 
 class Port extends RpcTarget {
   #socket;
@@ -41,7 +43,7 @@ export function createRpcPort(peer, createWorker, methods, ctx) {
 
 /** Enforce Tokamak's RPC contract over a development worker's service binding. */
 export function createBinding(service, methods) {
-  return {
+  const binding = {
     ...Object.fromEntries(methods.map(method => [method, async (...args) => {
       const socket = new Socket();
       service.__tokamakRpc(new Port(socket)).then(peer => socket.connect(peer), error => socket.fail(error));
@@ -56,5 +58,52 @@ export function createBinding(service, methods) {
       }
       return response;
     },
+  };
+  Object.defineProperty(binding, original, { value: service });
+  return binding;
+}
+
+/** Install generated local bindings before the application's modules are evaluated. */
+export function installBindings(env, bindings) {
+  for (const [name, methods] of Object.entries(bindings)) {
+    const binding = env[name];
+    const service = Object.getOwnPropertyDescriptor(binding, original)?.value ?? binding;
+    env[name] = createBinding(service, methods);
+  }
+  return env;
+}
+
+function instance(Type, ctx, env) {
+  return typeof Type === 'function' ? new Type(ctx, env) : Type;
+}
+
+/** Route development RPC through the shared contract and preserve standard Worker handlers. */
+export function developmentEntrypoint(Type, methods, bindings) {
+  class Entry extends WorkerEntrypoint {
+    __tokamakRpc(peer) {
+      const env = installBindings(this.env, bindings);
+      return createRpcPort(peer, ctx => instance(Type, ctx, env), methods, this.ctx);
+    }
+  }
+  for (const name of ['fetch', 'queue', 'scheduled', 'email', 'tail', 'trace', 'tailStream', 'test']) {
+    if (typeof (typeof Type === 'function' ? Type.prototype : Type)?.[name] !== 'function') continue;
+    Object.defineProperty(Entry.prototype, name, {
+      value(event) {
+        const env = installBindings(this.env, bindings);
+        const worker = instance(Type, this.ctx, env);
+        return worker[name](event, env, this.ctx);
+      },
+    });
+  }
+  return Entry;
+}
+
+/** Install local bindings for host event dispatch. */
+export function developmentEvents(Type, bindings) {
+  return class extends Type {
+    dispatch(name, data) {
+      installBindings(this.env, bindings);
+      return super.dispatch(name, data);
+    }
   };
 }

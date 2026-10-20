@@ -288,6 +288,26 @@ test("delivers dev socket events to the development Worker's listeners", async (
   );
 });
 
+test("host event handlers call the main worker through the checked binding", async () => {
+  const app = listeningProject('env.MAIN.echo(event.foreground ? "main reply" : (() => "callback")).catch(error => error.name)');
+  fs.writeFileSync(path.join(app.root, "src/index.ts"), `import { WorkerEntrypoint } from "cloudflare:workers";
+    export default class Main extends WorkerEntrypoint {
+      echo(value: string): string { return value; }
+      fetch() { return new Response("main"); }
+    }`);
+  await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
+    serve(app, async () => {
+      const socket = await openSocket(readOutput(app, "server.json").socketPort, "token");
+      try {
+        assert.equal((await emit(socket, "start", { foreground: true })).reply, "main reply");
+        assert.equal((await emit(socket, "start", { foreground: false })).reply, "DataCloneError");
+      } finally {
+        socket.close();
+      }
+    }),
+  );
+});
+
 // The first listener's reply wins, so a stale listener would still reply "first".
 for (const file of ["src/tokamak.ts", "src/listeners.ts"]) {
   test(`replaces the development Worker's listeners when ${file} changes`, async () => {

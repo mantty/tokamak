@@ -5,46 +5,10 @@ import path from "node:path";
 import { test } from "node:test";
 import ts from "typescript";
 
-import { cloudflare } from "@cloudflare/vite-plugin";
 import { createBuilder, createServer } from "vite";
 import { createWorkerGraph } from "./dist/worker-graph.mjs";
-import { workerTypes } from "./worker-fixtures.mjs";
+import { project } from "./worker-graph-fixture.mjs";
 
-function project(t, sources = {}) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tokamak-graph-")));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  fs.mkdirSync(path.join(root, "src"));
-  fs.writeFileSync(path.join(root, "worker-configuration.d.ts"), workerTypes);
-  fs.writeFileSync(path.join(root, "wrangler.json"), JSON.stringify({
-    name: "graph-app", main: "src/main.ts", compatibility_date: "2026-09-01", vars: { LABEL: "configured" },
-    d1_databases: [{ binding: "DB", database_id: "00000000-0000-0000-0000-000000000000", database_name: "app", migrations_dir: "db/migrations" }]
-  }));
-  fs.mkdirSync(path.join(root, "db/migrations"), { recursive: true });
-  fs.writeFileSync(path.join(root, "db/migrations/001.sql"), "CREATE TABLE entries (value TEXT);");
-  fs.writeFileSync(path.join(root, "src/main.ts"), `import { WorkerEntrypoint } from "cloudflare:workers";
-    export default class Main extends WorkerEntrypoint {
-      async fetch() { return Response.json(await this.env.TOKAMAK.describe()); }
-      label() { return "main-only"; }
-    }`);
-  fs.writeFileSync(path.join(root, "src/shared.ts"), 'export const shared = "shared-source";');
-  fs.writeFileSync(path.join(root, "src/tokamak.ts"), `import { WorkerEntrypoint } from "cloudflare:workers";
-    import { shared } from "@app/shared";
-    export default class Native extends WorkerEntrypoint {
-      async describe(): Promise<{ label: string; main: string; shared: string }> {
-        return { label: this.env.LABEL, main: await this.env.MAIN.label(), shared };
-      }
-    }`);
-  fs.writeFileSync(path.join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: {
-    baseUrl: ".", paths: { "@app/*": ["src/*"] }
-  } }));
-  for (const [file, source] of Object.entries(sources)) fs.writeFileSync(path.join(root, "src", file), source);
-  const graph = createWorkerGraph(root, path.join(root, "src/tokamak.ts"), path.join(root, ".tokamak"));
-  return { root, graph, config: {
-    root, configFile: false, logLevel: "silent",
-    resolve: { alias: { "@app": path.join(root, "src") } },
-    plugins: [graph.plugin, cloudflare({ ...graph.cloudflare, inspectorPort: false, remoteBindings: false, persistState: false })]
-  } };
-}
 
 function checkTypes(root, source) {
   const consumer = path.join(root, "src/typecheck.mts");
@@ -151,6 +115,7 @@ test("serves bidirectional RPC and reloads imported native code through Vite", a
   t.after(() => server.close());
   await server.listen();
   const response = await fetch(server.resolvedUrls.local[0]);
+  assert.ok(response.ok, await response.clone().text());
   assert.deepEqual(await response.json(), { label: "configured", main: "main-only", shared: "shared-source" });
   fs.writeFileSync(path.join(root, "src/shared.ts"), 'export const shared = "updated-source";');
   let result;
@@ -191,7 +156,7 @@ test("service bindings expose validated methods and fetch while keeping events a
       const method = new URL(request.url).pathname.slice(1);
       try {
         if (method === "fetch") return env.TOKAMAK.fetch("https://service.example/native");
-        const value = method === "value" ? await env.TOKAMAK.value : await env.TOKAMAK[method]("argument");
+        const value = method === "value" ? typeof env.TOKAMAK.value : await env.TOKAMAK[method]("argument");
         return Response.json({ value });
       } catch (error) { return Response.json({ error: error.message }, { status: 400 }); }
     }
@@ -208,7 +173,8 @@ test("service bindings expose validated methods and fetch while keeping events a
   `);
   assert.deepEqual(await (await get("inherited")).json(), { value: "configured:argument" });
   assert.equal(await (await get("fetch")).text(), "https://service.example/native");
-  for (const method of ["event", "field", "value"]) {
+  assert.deepEqual(await (await get("value")).json(), { value: "undefined" });
+  for (const method of ["event", "field"]) {
     const response = await get(method);
     assert.equal(response.status, 400, `${method} must not be exposed by the service binding`);
     assert.match((await response.json()).error, /does not implement|not a function|not.*exposed/i);
@@ -231,4 +197,17 @@ test("service bindings expose validated methods and fetch while keeping events a
     // @ts-expect-error the removed method is absent from refreshed declarations
     client.describe();
   `);
+});
+
+
+test("rejects an unsupported main service signature during generation", async (t) => {
+  const { config } = project(t, {
+    "main.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
+      export default class Main extends WorkerEntrypoint {
+        fetch() { return new Response("main"); }
+        onChange(callback: () => void): void {}
+      }`,
+  });
+  const builder = await createBuilder(config);
+  await assert.rejects(builder.buildApp(), /Unsupported RPC type at onChange.callback/);
 });

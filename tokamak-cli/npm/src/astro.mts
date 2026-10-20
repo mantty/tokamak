@@ -59,7 +59,11 @@ export function tokamak(options: TokamakOptions = {}, cloudflareOptions: Cloudfl
     const rawConfig: Unstable_RawConfig = experimental_readRawConfig(
       { config: source }, { useRedirectIfAvailable: false },
     ).rawConfig;
-    const selected = unstable_readConfig({ config: source, env: process.env.CLOUDFLARE_ENV }, { hideWarnings: true });
+    const environment = process.env.CLOUDFLARE_ENV;
+    const selected = unstable_readConfig({ config: source, env: environment }, { hideWarnings: true });
+    selected.main = (environment ? rawConfig.env?.[environment]?.main : undefined)
+      ?? rawConfig.main ?? "@astrojs/cloudflare/entrypoints/server";
+    const main = selected.main;
     graph.configure(selected);
     const environments = [[undefined, rawConfig], ...Object.entries(rawConfig.env ?? {})] as const;
     for (const [env, config] of environments) {
@@ -69,6 +73,7 @@ export function tokamak(options: TokamakOptions = {}, cloudflareOptions: Cloudfl
         throw new Error("TOKAMAK is reserved for the generated native worker binding.");
       }
       config.services = [...config.services ?? [], { binding: "TOKAMAK", service: workerName(resolved.name) }];
+      if (selected.main !== main) config.main = selected.main;
     }
     // Keeping the generated configuration beside its source preserves relative paths and .dev.vars.
     const content = `${JSON.stringify(rawConfig, null, 2)}\n`;

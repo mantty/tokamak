@@ -4,15 +4,25 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
-async function service(t, caller) {
+async function createRuntime(t, workers) {
   const require = createRequire(import.meta.resolve('@cloudflare/vite-plugin'));
   const { Miniflare, convertV4MiniflareOptions } = await import(pathToFileURL(require.resolve('miniflare')).href);
-  const modules = ['binding', 'client', 'endpoint', 'channel', 'frames', 'values', 'streams'].map(name => ({
+  const runtime = new Miniflare(convertV4MiniflareOptions({ workers }));
+  t.after(() => runtime.dispose());
+  return runtime;
+}
+
+function rpcModules() {
+  return ['binding', 'client', 'endpoint', 'channel', 'frames', 'values', 'streams'].map(name => ({
     type: 'ESModule', path: `/rpc/${name}.mjs`,
     contents: fs.readFileSync(new URL(`../../plugins/core/src/rpc/${name}.mjs`, import.meta.url), 'utf8'),
   }));
+}
+
+async function service(t, caller) {
+  const modules = rpcModules();
   const methods = ['echo', 'fail', 'invalid', 'count', 'ignore', 'consume', 'consumed', 'produce', 'producerCancelled', 'nested'];
-  const runtime = new Miniflare(convertV4MiniflareOptions({ workers: [{
+  return createRuntime(t, [{
     name: 'main', compatibilityDate: '2025-01-01', modulesRoot: '/',
     serviceBindings: { NATIVE: 'native' },
     modules: [{
@@ -78,9 +88,42 @@ async function service(t, caller) {
           }), ${JSON.stringify(methods)}, this.ctx);
         } };`,
     }, ...modules],
-  }] }));
-  t.after(() => runtime.dispose());
-  return runtime;
+  }]);
+}
+
+for (const [name, handler] of Object.entries({
+  class: `class Main extends WorkerEntrypoint {
+    scheduled(event) { this.ctx.waitUntil(later([event.cron, this.env.LABEL])); }
+    queue(batch) { this.ctx.waitUntil(later([batch.queue, batch.messages.map(message => message.body)])); batch.ackAll(); }
+    fetch() { return Response.json(records); }
+  }`,
+  object: `const Main = {
+    scheduled(event, env, ctx) { ctx.waitUntil(later([event.cron, env.LABEL])); },
+    queue(batch, env, ctx) { ctx.waitUntil(later([batch.queue, batch.messages.map(message => message.body)])); batch.ackAll(); },
+    fetch() { return Response.json(records); },
+  };`,
+})) {
+  test(`development ${name} handlers receive scheduled and queue events, bindings, and invocation context`, { timeout: 10_000 }, async t => {
+    const runtime = await createRuntime(t, [{
+      name: 'handlers', compatibilityDate: '2025-01-01', modulesRoot: '/', bindings: { LABEL: 'configured' },
+      modules: [{
+        type: 'ESModule', path: '/main.mjs',
+        contents: `import { WorkerEntrypoint } from 'cloudflare:workers';
+          import { developmentEntrypoint } from './rpc/binding.mjs';
+          const records = [];
+          function later(value) { return new Promise(resolve => setTimeout(resolve, 5)).then(() => records.push(value)); }
+          ${handler}
+          export default developmentEntrypoint(Main, [], {});`,
+      }, ...rpcModules()],
+    }]);
+    const worker = await runtime.getWorker('handlers');
+    await worker.scheduled({ cron: '* * * * *' });
+    const result = await worker.queue('items', [{ id: '1', timestamp: new Date(), body: { value: 1 }, attempts: 1 }]);
+    assert.equal(result.ackAll, true);
+    assert.deepEqual(await (await worker.fetch('https://handlers.example')).json(), [
+      ['* * * * *', 'configured'], ['items', [{ value: 1 }]],
+    ]);
+  });
 }
 
 test('development bindings preserve the RPC value graph and error fields independently of compatibility dates', { timeout: 10_000 }, async t => {

@@ -23,6 +23,28 @@ export function findModule(root: string, name: string | undefined): string | und
 
 /** Resolve the application's types before generating its service adapters. */
 export function readWorkerContract(entry: string, root: string): WorkerContract {
+  const module = workerModule(entry, root);
+  return classContract(module, "default", true);
+}
+
+/** Check every WorkerEntrypoint exported by an application service bundle. */
+export function readServiceContracts(entry: string, root: string): Record<string, WorkerContract> {
+  const module = workerModule(entry, root);
+  const contracts: Record<string, WorkerContract> = {};
+  for (const [name, type] of module.exports) {
+    const instance = type.getConstructSignatures()[0]?.getReturnType();
+    if (instance && applicationPrototypes(module.program, module.checker, instance, entry)) {
+      contracts[name] = classContract(module, name, false);
+    } else if (name === "default" && (type.flags & ts.TypeFlags.Object) && !type.getCallSignatures().length && !instance) {
+      contracts[name] = { methods: [], files: module.files, declarations: serviceTypes("{}", []) };
+    } else if (name === "default") {
+      throw new Error(`Service entrypoint ${entry} must export a handler object or extend WorkerEntrypoint.`);
+    }
+  }
+  return contracts;
+}
+
+function workerModule(entry: string, root: string) {
   const config = projectConfig(root);
   const program = ts.createProgram({
     rootNames: [...new Set([entry, ...config.fileNames.filter((file) => /\.d\.[cm]?ts$/.test(file))])],
@@ -35,9 +57,20 @@ export function readWorkerContract(entry: string, root: string): WorkerContract 
   if (syntax.length) throw diagnostics(syntax);
   const checker = program.getTypeChecker();
   const module = checker.getSymbolAtLocation(source);
-  const exported = module && checker.getExportsOfModule(module).find((symbol) => symbol.name === "default");
-  const symbol = exported && (exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported);
-  const constructor = symbol && checker.getTypeOfSymbolAtLocation(symbol, source).getConstructSignatures()[0];
+  const exports = new Map((module ? checker.getExportsOfModule(module) : []).map(exported => {
+    const symbol = exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported;
+    return [exported.name, checker.getTypeOfSymbolAtLocation(symbol, source)];
+  }));
+  const files = [...new Set([
+    ...config.configFiles,
+    ...program.getSourceFiles().filter((file) => !program.isSourceFileDefaultLibrary(file)).map((file) => file.fileName),
+  ])].sort();
+  return { entry, program, checker, source, exports, files };
+}
+
+function classContract(module: ReturnType<typeof workerModule>, name: string, native: boolean): WorkerContract {
+  const { entry, program, checker, source } = module;
+  const constructor = module.exports.get(name)?.getConstructSignatures()[0];
   const instance = constructor?.getReturnType();
   const declarations = instance?.symbol?.declarations ?? [];
   const concrete = declarations.some((node) =>
@@ -46,7 +79,10 @@ export function readWorkerContract(entry: string, root: string): WorkerContract 
   if (!instance || !concrete || constructor?.typeParameters?.length) {
     throw new Error(`Tokamak entrypoint ${entry} must default-export a concrete class.`);
   }
-  const prototypes = applicationPrototypes(program, checker, instance, entry);
+  const prototypes = applicationPrototypes(program, checker, instance, entry, native);
+  if (!prototypes) {
+    throw new Error(`Tokamak entrypoint ${entry} must extend TokamakEntrypoint from @tokamakdev/tok or WorkerEntrypoint from cloudflare:workers; include its type declarations.`);
+  }
   const methods: ServiceMethod[] = [];
   for (const property of instance.getProperties()) {
     if (!property.declarations?.some((node) => prototypes.has(node.parent))) continue;
@@ -66,21 +102,18 @@ export function readWorkerContract(entry: string, root: string): WorkerContract 
   return {
     methods: methods.map((method) => method.name),
     declarations: serviceTypes(
-      `InstanceType<typeof import(${JSON.stringify(entry.split(path.sep).join("/"))}, { with: { "resolution-mode": "import" } }).default>`,
+      `InstanceType<typeof import(${JSON.stringify(entry.split(path.sep).join("/"))}, { with: { "resolution-mode": "import" } })[${JSON.stringify(name)}]>`,
       methods,
     ),
-    files: [...new Set([
-      ...config.configFiles,
-      ...program.getSourceFiles().filter((file) => !program.isSourceFileDefaultLibrary(file)).map((file) => file.fileName),
-    ])].sort(),
+    files: module.files,
   };
 }
 
-function applicationPrototypes(program: ts.Program, checker: ts.TypeChecker, instance: ts.Type, entry: string): Set<ts.Node> {
+function applicationPrototypes(program: ts.Program, checker: ts.TypeChecker, instance: ts.Type, entry: string, allowNative = false): Set<ts.Node> | undefined {
   const module = checker.getAmbientModules().find((symbol) => symbol.name === '"cloudflare:workers"');
   const exported = module && checker.getExportsOfModule(module).find((symbol) => symbol.name === "WorkerEntrypoint");
   const base = exported && (exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported);
-  const native = nativeEntrypoint(program, checker, entry);
+  const native = allowNative ? nativeEntrypoint(program, checker, entry) : undefined;
   const prototypes = new Set<ts.Node>();
   let current: ts.Type | undefined = instance;
   const seen = new Set<ts.Type>();
@@ -91,7 +124,7 @@ function applicationPrototypes(program: ts.Program, checker: ts.TypeChecker, ins
     for (const node of current.getSymbol()?.declarations ?? []) prototypes.add(node);
     current = checker.getBaseTypes(current as ts.InterfaceType)?.[0];
   }
-  throw new Error(`Tokamak entrypoint ${entry} must extend TokamakEntrypoint from @tokamakdev/tok or WorkerEntrypoint from cloudflare:workers; include its type declarations.`);
+  return undefined;
 }
 
 function nativeEntrypoint(program: ts.Program, checker: ts.TypeChecker, entry: string): ts.Symbol | undefined {
@@ -111,10 +144,10 @@ function exposedMethod(property: ts.Symbol): boolean {
     modifier.kind === ts.SyntaxKind.PrivateKeyword || modifier.kind === ts.SyntaxKind.ProtectedKeyword))) {
     throw new Error(`Method ${property.name} is on the public JavaScript prototype; use a #private method for a local helper.`);
   }
-  if (["then", "connect", "dup", "constructor", "alarm", "webSocketMessage", "webSocketClose", "webSocketError"].includes(property.name)) {
+  if (["then", "connect", "dup", "constructor", "alarm", "webSocketMessage", "webSocketClose", "webSocketError", "__tokamakRpc"].includes(property.name)) {
     throw new Error(`Method ${property.name} is reserved by the service binding contract.`);
   }
-  return !["fetch", "event"].includes(property.name);
+  return !["fetch", "event", "queue", "scheduled", "email", "tail", "trace", "tailStream", "test"].includes(property.name);
 }
 
 function projectConfig(root: string): ts.ParsedCommandLine & { configFiles: string[] } {

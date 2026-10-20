@@ -69,6 +69,8 @@ async function environment(root, run) {
 
 test("Astro builds the worker graph while preserving environment settings and relative paths", async t => {
   const { root, wrangler } = project(t);
+  delete wrangler.main;
+  fs.writeFileSync(path.join(root, "config/wrangler.json"), JSON.stringify(wrangler));
   await environment(root, () => build({ root: pathToFileURL(`${root}/`), logLevel: "silent" }));
   const pointer = path.join(root, ".wrangler/deploy/config.json");
   const deploy = JSON.parse(fs.readFileSync(pointer, "utf8"));

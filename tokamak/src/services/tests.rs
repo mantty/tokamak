@@ -47,7 +47,7 @@ fn run(client: &str, server: &str) -> TestResult {
         let scope = super::Scope::new(&CancellationToken::new());
         let call = registry.invoke(
             Target::new("main", "default"),
-            "test".into(),
+            "run".into(),
             super::Message::empty_arguments(),
             scope.lifetime.clone(),
         );
@@ -64,8 +64,11 @@ fn service_methods_preserve_framework_reserved_names() -> TestResult {
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import assert from 'node:assert/strict';
 export default class extends WorkerEntrypoint {
-  async test() {
-    for (const name of ['dup', 'alarm', 'webSocketMessage', 'webSocketClose', 'webSocketError']) {
+  async run() {
+    for (const name of [
+      'dup', 'alarm', 'webSocketMessage', 'webSocketClose', 'webSocketError',
+      'queue', 'scheduled', 'email', 'tail', 'trace', 'tailStream', 'test', '__tokamakRpc',
+    ]) {
       await assert.rejects(this.env.DEVICE[name](), { name: 'TypeError' });
     }
     assert.equal(await this.env.DEVICE.ping(), 'pong');
@@ -80,6 +83,14 @@ export default class extends WorkerEntrypoint {
   webSocketMessage() { return 'reserved'; }
   webSocketClose() { return 'reserved'; }
   webSocketError() { return 'reserved'; }
+  queue() { return 'reserved'; }
+  scheduled() { return 'reserved'; }
+  email() { return 'reserved'; }
+  tail() { return 'reserved'; }
+  trace() { return 'reserved'; }
+  tailStream() { return 'reserved'; }
+  test() { return 'reserved'; }
+  __tokamakRpc() { return 'reserved'; }
   ping() { return 'pong'; }
 }
 ",
@@ -94,7 +105,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import assert from 'node:assert/strict';
 import { writeFileSync, existsSync } from 'node:fs';
 export default class extends WorkerEntrypoint {
-  async test() {
+  async run() {
     writeFileSync('/tmp/owner', 'main');
     assert.deepEqual(await this.env.DEVICE.describe(), { name: 'device', calls: 1, file: false, fromMain: 'main' });
     assert.deepEqual(await this.env.DEVICE.describe(), { name: 'device', calls: 1, file: false, fromMain: 'main' });
@@ -125,7 +136,7 @@ fn service_values_preserve_graphs_bytes_and_errors_between_runtimes() -> TestRes
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import assert from 'node:assert/strict';
 export default class extends WorkerEntrypoint {
-  async test() {
+  async run() {
     const buffer = new ArrayBuffer(8);
     const value = { bytes: new Uint8Array(buffer), view: new DataView(buffer), date: new Date(1000), numbers: [undefined, NaN, Infinity, -0, 2n ** 90n], map: new Map() };
     value.self = value;
@@ -167,7 +178,7 @@ fn service_fetch_preserves_http_metadata_and_streams_request_and_response_bodies
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import assert from 'node:assert/strict';
 export default class extends WorkerEntrypoint {
-  async test() {
+  async run() {
     const input = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('streamed upload')); c.close(); } });
     const response = await this.env.DEVICE.fetch('https://device.example/upload?q=1', {
       method: 'POST', headers: { 'x-caller': 'main' }, body: input,
@@ -218,7 +229,7 @@ fn byte_streams_transfer_in_both_directions_with_cancellation_and_errors() -> Te
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import assert from 'node:assert/strict';
 export default class extends WorkerEntrypoint {
-  async test() {
+  async run() {
     let cancelled;
     const input = new ReadableStream({
       pull(c) { c.enqueue(new Uint8Array([1, 2, 3])); },
@@ -276,7 +287,7 @@ fn service_methods_expose_only_public_prototype_operations() -> TestResult {
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import assert from 'node:assert/strict';
 export default class extends WorkerEntrypoint {
-  async test() {
+  async run() {
     for (const method of ['event', 'constructor', 'connect', 'toString', 'secret', 'getter', 'own']) {
       await assert.rejects(this.env.DEVICE[method](), { name: 'TypeError' });
     }
@@ -314,7 +325,7 @@ fn wait_until_continues_after_the_caller_receives_its_result() -> TestResult {
         r"
 import { WorkerEntrypoint } from 'cloudflare:workers';
 export default class extends WorkerEntrypoint {
-  async test() { return await this.env.DEVICE.start(); }
+  async run() { return await this.env.DEVICE.start(); }
 }
 ",
         "main",
@@ -355,7 +366,7 @@ export default class extends WorkerEntrypoint {
             Duration::from_secs(5),
             registry.invoke(
                 Target::new("main", "default"),
-                "test".into(),
+                "run".into(),
                 super::Message::empty_arguments(),
                 scope.lifetime.clone(),
             ),

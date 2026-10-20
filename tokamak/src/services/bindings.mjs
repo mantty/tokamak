@@ -24,7 +24,10 @@ export function installServices(names, dispatch) {
 }
 
 function operation(worker, method) {
-  if (['event', 'fetch', 'constructor', 'connect', 'then', 'dup', 'alarm', 'webSocketMessage', 'webSocketClose', 'webSocketError'].includes(method)) {
+  if ([
+    'event', 'fetch', 'queue', 'scheduled', 'email', 'tail', 'trace', 'tailStream', 'test',
+    'constructor', 'connect', 'then', 'dup', 'alarm', 'webSocketMessage', 'webSocketClose', 'webSocketError', '__tokamakRpc',
+  ].includes(method)) {
     throw new TypeError(`Reserved service method ${method}`);
   }
   let prototype = Object.getPrototypeOf(worker);

@@ -27,7 +27,7 @@ export function tokamak(options: TokamakOptions = {}, cloudflareOptions: PluginC
       const graph = native.graph();
       graph.configure(configured);
       // Cloudflare merges returned service entries with those already in the config.
-      return { ...custom, services: [...custom?.services ?? [], { binding: "TOKAMAK", service: graph.names().native }] };
+      return { ...custom, main: configured.main, services: [...custom?.services ?? [], { binding: "TOKAMAK", service: graph.names().native }] };
     },
     auxiliaryWorkers: [{
       viteEnvironment: { name: "tokamak" },

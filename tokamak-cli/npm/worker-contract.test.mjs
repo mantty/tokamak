@@ -6,10 +6,10 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
-import { readWorkerContract } from "./dist/worker-contract.mjs";
+import { readWorkerContract, readServiceContracts } from "./dist/worker-contract.mjs";
 import { workerTypes } from "./worker-fixtures.mjs";
 
-function project(t, source, files = {}) {
+function project(t, source, files = {}, read = readWorkerContract) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tokamak-contract-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   for (const [name, text] of Object.entries({
@@ -21,7 +21,7 @@ function project(t, source, files = {}) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, text);
   }
-  return () => readWorkerContract(path.join(root, "src/tokamak.ts"), root);
+  return () => read(path.join(root, "src/tokamak.ts"), root);
 }
 
 function checkClient(contract, source) {
@@ -217,11 +217,20 @@ test("requires the actual WorkerEntrypoint base, including through re-exports", 
   assert.deepEqual(valid().methods, ["ping"]);
 });
 
-test("ignores inherited framework handlers but validates application overrides", (t) => {
+test("ignores framework handlers but validates application RPC methods", (t) => {
   const read = project(t, "export default class Native extends WorkerEntrypoint { ping() { return 1; } }");
   assert.deepEqual(read().methods, ["ping"]);
-  const invalid = project(t, "export default class Native extends WorkerEntrypoint { scheduled(callback: () => void) {} }");
-  assert.throws(invalid, /Unsupported RPC type at scheduled.callback/);
+  const invalid = project(t, "export default class Native extends WorkerEntrypoint { ping(callback: () => void) {} }");
+  assert.throws(invalid, /Unsupported RPC type at ping.callback/);
+});
+
+test("keeps class-based platform event handlers outside the RPC contract", (t) => {
+  const read = project(t, `export default class Main extends WorkerEntrypoint {
+    queue(batch: MessageBatch<string>): void { batch.ackAll(); }
+    scheduled(controller: ScheduledController): void { controller.noRetry(); }
+    echo(value: string): string { return value; }
+  }`, {}, readServiceContracts);
+  assert.deepEqual(read().default.methods, ["echo"]);
 });
 
 test("accepts the Tokamak entrypoint and excludes its host event handler", (t) => {
@@ -231,4 +240,29 @@ test("accepts the Tokamak entrypoint and excludes its host event handler", (t) =
       echo(value: string): string { return value; }
     }`);
   assert.deepEqual(read().methods, ["echo"]);
+});
+
+test("discovers default and named Worker services while preserving other module exports", (t) => {
+  const read = project(t, `
+    export default { fetch(request: Request) { return new Response(request.url); } };
+    export class Recipes extends WorkerEntrypoint { title(id: number): string { return String(id); } }
+    export class LocalHelper { callback(value: () => void) {} }
+    export const label = "application";
+  `, {}, readServiceContracts);
+  const services = read();
+  assert.deepEqual(Object.keys(services).sort(), ["Recipes", "default"]);
+  assert.deepEqual(services.default.methods, []);
+  assert.deepEqual(services.Recipes.methods, ["title"]);
+});
+
+test("validates main and named service signatures using the same RPC contract", (t) => {
+  for (const name of ["default", "Other"]) {
+    const source = `${name === "default" ? "export default" : "export"} class ${name === "default" ? "Main" : name} extends WorkerEntrypoint {
+      call(value: () => void) {}
+    }`;
+    assert.throws(project(t, source, {}, readServiceContracts), /Unsupported RPC type at call.value/);
+  }
+  assert.throws(project(t, `export default class Main extends WorkerEntrypoint {
+    __tokamakRpc(): void {}
+  }`), /__tokamakRpc.*reserved/);
 });
