@@ -45,9 +45,13 @@ fn scaffolds_publishable_plugins_without_overwriting_existing_projects() -> Test
             serde_json::from_slice(&std::fs::read(path.join("package.json"))?)?;
         assert_eq!(package["type"], "module");
         assert_eq!(manifest["schemaVersion"], 2);
-        assert!(
-            path.join(manifest["api"]["module"].as_str().ok_or("missing API")?)
-                .is_file()
+        for module in [&manifest["api"]["module"], &manifest["web"]["module"]] {
+            assert!(path.join(module.as_str().ok_or("missing module")?).is_file());
+        }
+        assert_eq!(
+            package["exports"].get("./events").is_some(),
+            native.is_some(),
+            "{package}"
         );
         let declared = manifest["platforms"]
             .as_object()

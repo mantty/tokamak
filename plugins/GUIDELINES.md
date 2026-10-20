@@ -14,8 +14,9 @@ tok plugin device-tools --native android
 ```
 
 The default scaffold composes `ctx.webview` in TypeScript. Native scaffolds add
-one small Swift or Kotlin endpoint. Neither requires Rust, a custom protocol,
-or a separately maintained frontend router. The directory must be new.
+one small Swift or Kotlin endpoint that emits an event, declared in `/events`.
+Each has a browser implementation in `web/`. None requires Rust, a custom
+protocol, or a separately maintained frontend router. The directory must be new.
 
 Install dependencies in the package and run `npm run check`. Add it to your
 app with `npm install ../page-tools`, a pnpm workspace dependency, or Yarn's

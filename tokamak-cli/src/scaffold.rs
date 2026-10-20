@@ -48,6 +48,20 @@ pub(crate) fn create(directory: &Path, native: Option<Native>) -> Result<()> {
         include_str!("../templates/plugin/index.ts")
     };
     fs::write(directory.join("src/index.ts"), template(source))?;
+    fs::create_dir(directory.join("web"))?;
+    let web = if native.is_some() {
+        include_str!("../templates/plugin/native-web.ts")
+    } else {
+        include_str!("../templates/plugin/web.ts")
+    };
+    fs::write(directory.join("web/index.ts"), template(web))?;
+    if native.is_some() {
+        fs::create_dir(directory.join("events"))?;
+        fs::write(
+            directory.join("events/index.ts"),
+            template(include_str!("../templates/plugin/events.ts")),
+        )?;
+    }
     let platforms = match native {
         None => json!({}),
         Some(Native::Apple) => {
@@ -72,10 +86,11 @@ pub(crate) fn create(directory: &Path, native: Option<Native>) -> Result<()> {
         directory,
         "tokamak-plugin.json",
         &json!({
-            "schemaVersion": 2, "id": id, "api": { "module": "src/index.ts", "export": factory }, "platforms": platforms,
+            "schemaVersion": 2, "id": id, "api": { "module": "src/index.ts", "export": factory },
+            "web": { "module": "web/index.ts", "export": "web" }, "platforms": platforms,
         }),
     )?;
-    write_package(directory, id)?;
+    write_package(directory, id, native.is_some())?;
     fs::write(
         directory.join("README.md"),
         template(include_str!("../templates/plugin/README.md")),
@@ -105,14 +120,19 @@ fn plugin_id(directory: &Path) -> Result<&str> {
     Ok(id)
 }
 
-fn write_package(directory: &Path, id: &str) -> Result<()> {
+/// The npm package, exporting `/events` when the plugin has native events.
+fn write_package(directory: &Path, id: &str, events: bool) -> Result<()> {
+    let mut exports = json!({ ".": "./src/index.ts" });
+    if events {
+        exports["./events"] = json!("./events/index.ts");
+    }
     write_json(
         directory,
         "package.json",
         &json!({
             "name": format!("tokamak-plugin-{id}"), "version": "0.1.0", "type": "module",
-            "exports": { ".": "./src/index.ts" },
-            "files": ["src", "apple", "android", "tokamak-plugin.json", "README.md"],
+            "exports": exports,
+            "files": ["src", "web", "events", "apple", "android", "tokamak-plugin.json", "README.md"],
             "peerDependencies": { "@tokamakdev/plugin": "^0.1.0" },
             "devDependencies": { "@tokamakdev/plugin": "^0.1.0", "typescript": "^5.9.3" },
             "scripts": { "check": "tsc --noEmit" },
@@ -122,8 +142,8 @@ fn write_package(directory: &Path, id: &str) -> Result<()> {
         directory,
         "tsconfig.json",
         &json!({
-            "compilerOptions": { "target": "ES2022", "module": "NodeNext", "strict": true, "noEmit": true },
-            "include": ["src"],
+            "compilerOptions": { "target": "ES2022", "module": "NodeNext", "strict": true, "noEmit": true, "lib": ["ES2022", "DOM"] },
+            "include": ["src", "web", "events"],
         }),
     )?;
     Ok(())
