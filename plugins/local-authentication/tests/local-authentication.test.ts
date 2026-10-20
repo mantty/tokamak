@@ -1,21 +1,19 @@
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { test } from "node:test";
 
-import { connectNative, disconnectNative } from "@tokamakdev/plugin/testing";
+import { connectNative } from "@tokamakdev/plugin/testing";
 
-import { localAuthentication } from "../src/index.js";
+import { localAuthentication as createApi } from "../src/index.js";
 
-afterEach(disconnectNative);
 
-void test("rejects without a native bridge", async () => {
-  await assert.rejects(
-    localAuthentication.status("biometrics"),
-    (error: unknown) => error instanceof DOMException && error.name === "NotSupportedError",
-  );
+void test("requires a Tokamak invocation context", () => {
+  // @ts-expect-error -- native APIs require a receiving invocation.
+  assert.throws(() => createApi(), TypeError);
 });
 
 void test("reports whether an authentication is available", async () => {
   const native = connectNative();
+  const localAuthentication = createApi(native.ctx);
 
   const status = localAuthentication.status("biometricsOrPasscode");
   assert.deepEqual(native.lastRequest(), {
@@ -31,6 +29,7 @@ void test("reports whether an authentication is available", async () => {
 
 void test("authenticates the device owner with a prompt", async () => {
   const native = connectNative();
+  const localAuthentication = createApi(native.ctx);
 
   const authenticated = localAuthentication.authenticate("biometrics", {
     prompt: "Confirm it's you",
@@ -48,6 +47,7 @@ void test("authenticates the device owner with a prompt", async () => {
 
 void test("rejects a cancelled authentication", async () => {
   const native = connectNative();
+  const localAuthentication = createApi(native.ctx);
 
   const authenticated = localAuthentication.authenticate("biometricsOrPasscode", {
     prompt: "Confirm it's you",

@@ -332,13 +332,14 @@ export default class extends WorkerEntrypoint {
         directory.path(),
     )?;
     let mut device = service(
-        r"
+        r"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+
 import { WorkerEntrypoint } from 'cloudflare:workers';
 export default class extends WorkerEntrypoint {
   start() {
     this.ctx.waitUntil((async () => {
-      await globalThis.__tokamakNativeCall('gate', 'wait');
-      await globalThis.__tokamakNativeCall('gate', 'complete');
+      await nativeCall('gate', 'wait');
+      await nativeCall('gate', 'complete');
     })());
     return 'accepted';
   }
@@ -431,15 +432,16 @@ export default class extends WorkerEntrypoint { run() { while (true) {} } }
 fn caller_cancellation_preserves_registered_wait_until_work() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut worker = service(
-        r"
+        r"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+
 import { WorkerEntrypoint } from 'cloudflare:workers';
 export default class extends WorkerEntrypoint {
   async run() {
     this.ctx.waitUntil((async () => {
-      await globalThis.__tokamakNativeCall('gate', 'retained');
-      await globalThis.__tokamakNativeCall('gate', 'complete');
+      await nativeCall('gate', 'retained');
+      await nativeCall('gate', 'complete');
     })());
-    await globalThis.__tokamakNativeCall('gate', 'handler');
+    await nativeCall('gate', 'handler');
   }
 }
 ",
@@ -507,7 +509,8 @@ fn host_deadline_ends_blocked_rpc_stream_cleanup() -> TestResult {
 fn check_rpc_stream_cleanup(expire: bool, drop_stream: bool) -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut worker = service(
-        r"
+        r"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+
 import { WorkerEntrypoint } from 'cloudflare:workers';
 export default class extends WorkerEntrypoint {
   run() {
@@ -517,8 +520,8 @@ export default class extends WorkerEntrypoint {
         let sum = 0;
         for (let i = 0; i < 50000; i++) sum += i;
         if (sum !== 1249975000) throw new Error('cleanup calculation failed');
-        await globalThis.__tokamakNativeCall('gate', 'cleanup');
-        await globalThis.__tokamakNativeCall('gate', 'complete');
+        await nativeCall('gate', 'cleanup');
+        await nativeCall('gate', 'complete');
       },
     });
   }
@@ -591,11 +594,12 @@ export default class extends WorkerEntrypoint {
 fn an_inherited_deadline_finishes_wait_until_blocked_on_native_io() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut worker = service(
-        r"
+        r"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+
 import { WorkerEntrypoint } from 'cloudflare:workers';
 export default class extends WorkerEntrypoint {
   run() {
-    this.ctx.waitUntil(globalThis.__tokamakNativeCall('gate', 'retained'));
+    this.ctx.waitUntil(nativeCall('gate', 'retained'));
     return new ReadableStream({ pull() { return new Promise(() => {}); } });
   }
 }

@@ -1,45 +1,58 @@
 import { dispatch as dispatchEvent, type Dispatched } from "./registry.js";
-import { createNativeContext } from "./context.js";
+import { createNativeContext, nativeConnection, type TokamakContext } from "./context.js";
+import { encodeJson, decodeJson } from "./codec.js";
 
-/** A native transport that records the page's messages and replies as the native bridges do. */
+type Reply = (payload: Uint8Array, error: DOMException | undefined, done: boolean) => void;
+
+/** An invocation with an inspectable native endpoint. */
 export class FakeNativeTransport {
-  /** Every message the page posted, parsed. */
-  readonly sent: Record<string, unknown>[] = [];
-  onmessage: ((event: { data: string }) => void) | null = null;
+  readonly sent: { type: string; id: number; plugin?: string; method?: string; payload?: Uint8Array }[] = [];
+  private nextId = 1;
+  private readonly pending = new Map<number, Reply>();
+  readonly ctx: TokamakContext = {
+    waitUntil: () => undefined,
+    [nativeConnection]: {
+      call: (plugin, method, payload) => new Promise((resolve, reject) => {
+        this.request("call", plugin, method, payload, (value, error) => { if (error) reject(error); else resolve(value); });
+      }),
+      listen: (plugin, method, payload, next, error) => {
+        const id = this.request("subscribe", plugin, method, payload, (value, failure, done) => {
+          if (failure) error(failure, done);
+          else next(value, done);
+        });
+        return () => {
+          if (this.pending.delete(id)) this.sent.push({ type: "cancel", id });
+        };
+      },
+    },
+  };
 
-  postMessage(message: string): void {
-    this.sent.push(JSON.parse(message) as Record<string, unknown>);
+  private request(type: string, plugin: string, method: string, payload: Uint8Array, reply: Reply): number {
+    const id = this.nextId++;
+    this.sent.push({ type, id, plugin, method, payload: payload.slice() });
+    this.pending.set(id, reply);
+    return id;
   }
 
-  /** The last message's type, plugin, method and arguments. */
   lastRequest(): Record<string, unknown> {
-    const { type, plugin, method, arguments: arguments_ } = this.sent.at(-1) ?? {};
-    return { type, plugin, method, arguments: arguments_ };
+    const { type, plugin, method, payload } = this.sent.at(-1) ?? {};
+    return { type, plugin, method, arguments: payload ? decodeJson(payload) : undefined };
   }
 
-  /** Replies to the last message. */
   respond(reply: { value?: unknown; error?: { name: string; message: string } }, done = true): void {
-    const { session, id } = this.sent.at(-1) ?? {};
-    this.deliver({ session, id, done, ...reply });
+    this.respondBytes(encodeJson(reply.value), done, reply.error && new DOMException(reply.error.message, reply.error.name));
   }
 
-  /** Delivers `response` to the page. */
-  deliver(response: Record<string, unknown>): void {
-    this.onmessage?.({ data: JSON.stringify(response) });
+  respondBytes(payload: Uint8Array, done = true, error?: DOMException): void {
+    const id = this.sent.at(-1)?.id;
+    if (id === undefined) throw new Error("No native request is pending");
+    const reply = this.pending.get(id);
+    if (done) this.pending.delete(id);
+    reply?.(payload.slice(), error, done);
   }
 }
 
-/** Installs a new fake as the page's native transport. */
-export function connectNative(): FakeNativeTransport {
-  const transport = new FakeNativeTransport();
-  globalThis.__tokamakNative = transport;
-  return transport;
-}
-
-/** Removes the page's native transport. */
-export function disconnectNative(): void {
-  Reflect.deleteProperty(globalThis, "__tokamakNative");
-}
+export function connectNative(): FakeNativeTransport { return new FakeNativeTransport(); }
 
 /**
  * Runs the listeners of the event `name` as the runtime does, returning the reply, the events

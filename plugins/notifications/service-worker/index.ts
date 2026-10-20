@@ -1,3 +1,4 @@
+import type { JsonValue } from "@tokamakdev/plugin";
 import type {
   DismissedNotification,
   Message,
@@ -195,6 +196,6 @@ function message(payload: unknown): Message {
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isRecord(value: unknown): value is Record<string, JsonValue> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

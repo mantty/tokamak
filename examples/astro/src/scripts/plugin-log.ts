@@ -1,3 +1,5 @@
+import { decodeValues } from "@tokamakdev/plugin/streams";
+
 /** Appends each line, with the time, to the element with `id`. */
 export function logTo(id: string): (line: string) => void {
   const element = document.getElementById(id)!;
@@ -26,4 +28,17 @@ export function onClick(log: (line: string) => void, id: string, operation: () =
       log(`${label}: ${describe(error)}`);
     }
   });
+}
+
+/** Consumes a plugin stream until cancelled or the page leaves. */
+export function listen<T>(source: Promise<ReadableStream<Uint8Array>>, next: (value: T) => void, error: (error: unknown) => void): () => void {
+  const abort = new AbortController();
+  const stop = () => abort.abort();
+  addEventListener("pagehide", stop, { once: true });
+  void (async () => {
+    try { for await (const value of decodeValues<T>(source, abort.signal)) next(value); }
+    catch (failure) { error(failure); }
+    finally { removeEventListener("pagehide", stop); }
+  })();
+  return stop;
 }

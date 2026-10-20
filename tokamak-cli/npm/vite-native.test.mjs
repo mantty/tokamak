@@ -24,7 +24,7 @@ function project(t, cloudflareOptions = {}) {
   fs.writeFileSync(path.join(root, "src/main.ts"), `export default {
     async fetch(request, env) {
       if (new URL(request.url).pathname === "/isolation") {
-        return Response.json({ bridge: typeof globalThis.__tokamakNativeCall, loaded: globalThis.nativeLoaded ?? false });
+        return Response.json({ bridge: typeof globalThis[Symbol.for("tokamak.native")], loaded: globalThis.nativeLoaded ?? false });
       }
       return Response.json(await env.TOKAMAK.describe());
     }

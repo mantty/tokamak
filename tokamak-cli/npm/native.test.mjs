@@ -1,3 +1,5 @@
+const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for("tokamak.native")].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+const nativeListen = (plugin, method, value, next, error) => globalThis[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
 import { decodeDevice, encodeDevice } from "./fixtures/native-device.mjs";
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
@@ -58,7 +60,7 @@ test("calls a plugin on the device and resolves with its value", async () => {
     send({ type: "result", id: message.id, result: { value: { latitude: 51.5 }, done: true } });
   });
 
-  const value = await globalThis.__tokamakNativeCall("location", "getCurrentPosition", { timeout: 1 });
+  const value = await nativeCall("location", "getCurrentPosition", { timeout: 1 });
 
   assert.deepEqual(value, { latitude: 51.5 });
   assert.deepEqual(requests, [
@@ -93,7 +95,7 @@ test("cancels an abandoned native call while allowing another call to complete",
   controller.abort();
   await failure;
   assert.equal(await stopped, id);
-  assert.equal(await globalThis.__tokamakNativeCall("test", "read", null), "retained");
+  assert.equal(await nativeCall("test", "read", null), "retained");
 });
 
 test("rejects with the DOMException the plugin names", async () => {
@@ -103,7 +105,7 @@ test("rejects with the DOMException the plugin names", async () => {
   );
 
   await assert.rejects(
-    globalThis.__tokamakNativeCall("notifications", "requestPermission", null),
+    nativeCall("notifications", "requestPermission", null),
     (error) => error instanceof DOMException && error.name === "NeedsUIError" && error.message === "Off screen",
   );
 });
@@ -111,7 +113,7 @@ test("rejects with the DOMException the plugin names", async () => {
 test("waits for the device to connect", async () => {
   const { port } = await devSocket();
 
-  const value = globalThis.__tokamakNativeCall("tokamak", "lifecycleStage", null);
+  const value = nativeCall("tokamak", "lifecycleStage", null);
   await new Promise((resolve) => setTimeout(resolve, 100));
   await connectDevice(port, (message, send) =>
     send({ type: "result", id: message.id, result: { value: "background", done: true } }),
@@ -135,7 +137,7 @@ test("streams subscription results to a listener until it is removed", async () 
   });
   const listener = collector(3);
 
-  const stop = globalThis.__tokamakNativeListen("location", "watchPosition", null, listener.next, listener.error);
+  const stop = nativeListen("location", "watchPosition", null, listener.next, listener.error);
   await listener.ended;
   stop();
   await removed;
@@ -153,7 +155,7 @@ test("ends a listener at a done result", async () => {
   });
   const listener = collector(1);
 
-  globalThis.__tokamakNativeListen("location", "watch", null, listener.next, listener.error);
+  nativeListen("location", "watch", null, listener.next, listener.error);
   await Promise.all(waited);
 
   assert.deepEqual(listener.received, ["NotSupportedError: No"]);
@@ -166,9 +168,9 @@ test("fails calls and listeners with NetworkError when the device disconnects", 
   });
   const listener = collector(1);
 
-  const call = globalThis.__tokamakNativeCall("location", "getCurrentPosition", null);
+  const call = nativeCall("location", "getCurrentPosition", null);
   const failure = assert.rejects(call, (error) => error instanceof DOMException && error.name === "NetworkError");
-  globalThis.__tokamakNativeListen("location", "watchPosition", null, listener.next, listener.error);
+  nativeListen("location", "watchPosition", null, listener.next, listener.error);
   await Promise.all(waited);
 
   await failure;
@@ -183,7 +185,7 @@ test("refuses plugin calls without the session token", async () => {
 
   assert.equal(response.status, 401);
   await assert.rejects(
-    globalThis.__tokamakNativeCall("location", "getCurrentPosition", null),
+    nativeCall("location", "getCurrentPosition", null),
     (error) => error instanceof DOMException && error.name === "NetworkError" && /HTTP 401/.test(error.message),
   );
 });
@@ -202,7 +204,7 @@ test("cancels on the dev WebSocket that carried the subscription", async () => {
     if (message.type === "cancel") cancelled();
   });
 
-  const stop = globalThis.__tokamakNativeListen("location", "watchPosition", null, () => undefined, () => undefined);
+  const stop = nativeListen("location", "watchPosition", null, () => undefined, () => undefined);
   await subscription;
   await connectDevice(port, (message) => second.push(message.type));
   stop();
@@ -259,7 +261,7 @@ test("malformed routing closes only the offending device connection", async () =
   broken.send(encodeMessage(null));
   assert.equal(await closed, 1002);
   await connectDevice(port, (message, send) => send({ type: "result", id: message.id, result: { value: "alive", done: true } }));
-  assert.equal(await globalThis.__tokamakNativeCall("test", "read"), "alive");
+  assert.equal(await nativeCall("test", "read"), "alive");
 });
 
 test("error replies retain recoverable and terminal completion status", async () => {

@@ -1,49 +1,65 @@
 # @tokamakdev/plugin
 
-The shared base of tokamak plugins: the native transport, Worker events, and
-test fakes.
+Native plugin APIs, endpoint codecs, event contracts and test fixtures.
 
 | Entry | Contents |
 | --- | --- |
-| `@tokamakdev/plugin` | `Plugin`, the base class of a plugin's API, which the page and the Worker call alike |
-| `@tokamakdev/plugin/events` | `defineEvent`, which defines a plugin's Worker events |
-| `@tokamakdev/plugin/testing` | A fake native transport, and `dispatch`, which runs event listeners as the runtime does |
+| `@tokamakdev/plugin` | `Plugin`, `TokamakContext`, JSON codec and value types |
+| `@tokamakdev/plugin/streams` | Bounded push streams and typed JSON stream decoding |
+| `@tokamakdev/plugin/events` | `defineEvent` |
+| `@tokamakdev/plugin/testing` | Invocation fixture and event dispatch |
 
-A plugin lists `@tokamakdev/plugin` as a peer dependency, so an app has one
-copy of it, shared with `@tokamakdev/tok`, which depends on it.
-
-## Calls
-
-A plugin's API extends `Plugin`, whose `call` and `listen` reach its native
-code from the page through the shell's bridge, and from the Worker through the
-runtime. `hasNativeTransport` is false outside a tokamak app, such as on the
-web and Cloudflare, where the plugin uses its web implementation or rejects
-with `NotSupportedError`:
+Plugin packages declare this package as a peer dependency. Native APIs require
+the receiving Tokamak worker invocation's context:
 
 ```ts
-import { Plugin } from "@tokamakdev/plugin";
+import { Plugin, type TokamakContext } from "@tokamakdev/plugin";
 
 class Alarms extends Plugin {
-  constructor() {
-    super("alarms");
-  }
-
-  set(at: number): Promise<void> {
-    return this.call("set", { at });
-  }
-
-  onRing(next: (id: string) => void, error: (error: DOMException) => void): () => void {
-    return this.listen("onRing", next, error);
-  }
+  constructor(ctx: TokamakContext) { super(ctx, "alarms"); }
+  set(at: number): Promise<void> { return this.call("set", { at }); }
+  rings(): ReadableStream<Uint8Array> { return this.stream("rings"); }
 }
-
-export const alarms = new Alarms();
+export function alarms(ctx: TokamakContext) { return new Alarms(ctx); }
 ```
 
-The native side runs each call and subscription on the main thread, for the
-page and the Worker alike. A `subscribe` that throws, as for a method the
-plugin does not have, ends the subscription; a failure it replies with does
-not.
+`call` uses the standard JSON endpoint codec. `callBytes` sends and receives
+opaque bytes. `stream` exposes JSON values as a cancellable byte stream;
+`decodeValues<T>` consumes it. Errors terminate a stream. A slow consumer
+exceeding its bounded buffer receives `QuotaExceededError`.
+
+Declare the factory in `tokamak-plugin.json` alongside native build metadata:
+
+```json
+{
+  "schemaVersion": 2,
+  "id": "alarms",
+  "api": { "module": "src/index.ts", "export": "alarms" }
+}
+```
+
+Tooling generates the `example-alarms/client` default export for pages and the
+`env.TOKAMAK_ALARMS` binding for the main worker. Public API methods use the
+supported service-value and byte-stream types. Callback parameters, native
+objects and arbitrary classes are rejected at build time.
+
+An optional `web` module/export reference supplies an object implementing
+frontend methods. Those methods return promises; omitted methods reject with
+`NotSupportedError`. Browser code belongs in that module, separate from the
+native factory. A native factory never tests browser globals.
+
+In `src/tokamak.ts`, call `alarms(ctx).set(at)` using the context passed to an
+event handler, or `alarms(this.ctx)` in a `TokamakEntrypoint` method. Dependencies
+and build tooling belong to the same app project.
+
+Tests construct an invocation without installing global transports:
+
+```ts
+const native = connectNative();
+const result = alarms(native.ctx).set(123);
+native.respond({ value: null });
+await result;
+```
 
 ## Showing UI
 
@@ -67,7 +83,7 @@ so only calls that would show UI fail:
 
 ## Worker events
 
-A plugin's native code delivers events to the app's Worker, whose listeners
+A plugin's native code delivers events to the app's Tokamak worker, whose listeners
 register in `src/tokamak.ts` and run even when no page is loaded, such as when
 the system starts the app in the background.
 

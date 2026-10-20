@@ -1,20 +1,30 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "secure-storage",
   "platforms": {
     "macos": {
       "class": "TokamakSecureStoragePlugin",
-      "sources": ["apple/SecureStoragePlugin.swift"]
+      "sources": [
+        "apple/SecureStoragePlugin.swift"
+      ]
     },
     "ios": {
       "class": "TokamakSecureStoragePlugin",
-      "sources": ["apple/SecureStoragePlugin.swift"],
+      "sources": [
+        "apple/SecureStoragePlugin.swift"
+      ],
       "plist": "apple/Info.plist"
     },
     "android": {
       "class": "com.tokamak.plugins.securestorage.TokamakSecureStoragePlugin",
-      "sources": ["android/SecureStoragePlugin.kt"],
+      "sources": [
+        "android/SecureStoragePlugin.kt"
+      ],
       "manifest": "android/AndroidManifest.xml"
     }
+  },
+  "api": {
+    "module": "src/index.ts",
+    "export": "secureStorage"
   }
 }

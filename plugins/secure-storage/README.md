@@ -8,8 +8,12 @@ Add it to your project's dependencies:
 npm install @tokamakdev/plugin-secure-storage
 ```
 
+Pages import the generated `/client` SDK. In `src/tokamak.ts`, import the
+package root and call its factory with the handler's `ctx`. The main worker
+uses its generated `env.TOKAMAK_SECURE_STORAGE` service binding when present.
+
 ```ts
-import { secureStorage } from "@tokamakdev/plugin-secure-storage";
+import secureStorage from "@tokamakdev/plugin-secure-storage/client";
 
 const options = {
   // Required: "whenUnlocked" or "afterFirstUnlock".

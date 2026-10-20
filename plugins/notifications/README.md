@@ -6,8 +6,12 @@ Local and push notifications for tokamak applications and the web.
 npm install @tokamakdev/plugin-notifications
 ```
 
+Pages import the generated `/client` SDK. In `src/tokamak.ts`, import the
+package root and call its factory with the handler's `ctx`. The main worker
+uses its generated `env.TOKAMAK_NOTIFICATIONS` service binding when present.
+
 ```ts
-import { notifications } from "@tokamakdev/plugin-notifications";
+import notifications from "@tokamakdev/plugin-notifications/client";
 
 await notifications.requestPermission(); // "granted" | "denied" | "prompt"
 
@@ -18,13 +22,16 @@ await notifications.schedule({ id: "standup", title: "Stand-up", on: { weekday: 
 const subscription = await notifications.subscribe({ applicationServerKey: VAPID_PUBLIC_KEY });
 await fetch("/api/subscriptions", { method: "POST", body: JSON.stringify(subscription) });
 
-notifications.onMessage((message) => console.log(message.data));
-notifications.onNotificationOpened((opened) => console.log(opened.id, opened.action, opened.input));
-notifications.onNotificationDismissed((dismissed) => console.log(dismissed.id));
-notifications.onSubscriptionChange((subscription) => {
-  void fetch("/api/subscriptions", { method: "POST", body: JSON.stringify(subscription) });
-});
+import { decodeValues } from "@tokamakdev/plugin/streams";
+import type { Message } from "@tokamakdev/plugin-notifications";
+for await (const message of decodeValues<Message>(notifications.onMessage())) {
+  console.log(message.data);
+}
 ```
+
+Subscription methods return byte streams of JSON values. Use `decodeValues<T>`
+to read them and cancel the stream when finished. Stream errors terminate
+the subscription. Background handlers are registered separately via `/events`.
 
 ## Permission
 
@@ -95,7 +102,7 @@ import { notifications } from "@tokamakdev/plugin-notifications";
 
 onStart((_event, _env, ctx) => {
   ctx.waitUntil(
-    notifications.setup({
+    notifications(ctx).setup({
       categories: [
         {
           id: "message",
@@ -419,8 +426,8 @@ not the app starts on screen:
 import { onStart } from "@tokamakdev/tok/events";
 import { notifications } from "@tokamakdev/plugin-notifications";
 
-onStart(async () => {
-  const subscription = await notifications.subscribe();
+onStart(async (_event, _env, ctx) => {
+  const subscription = await notifications(ctx).subscribe();
   await fetch("https://api.example.com/push-tokens", { method: "POST", body: JSON.stringify(subscription) });
 });
 ```

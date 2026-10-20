@@ -410,9 +410,9 @@ test("passes the development Worker's plugin calls to the device and back", asyn
   const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
   const app = project({
     "src/index.ts": `export default { fetch: async (_request, env) => new Response(await env.TOKAMAK.stage()) };`,
-    "src/tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
+    "src/tokamak.ts": `import { TokamakEntrypoint } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/tok")))};
       import { getLifecycleStage } from ${JSON.stringify(events)};
-      export default class Native extends WorkerEntrypoint { stage(): Promise<string> { return getLifecycleStage(); } }`,
+      export default class Native extends TokamakEntrypoint { stage(): Promise<string> { return getLifecycleStage(this.ctx); } }`,
   });
   await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
     serve(app, async () => {
@@ -436,12 +436,14 @@ test("passes the development Worker's plugin calls to the device and back", asyn
 test("keeps a development Worker's listener after its event until it is removed", async () => {
   const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
   const app = project({
-    "src/tokamak.ts": `${NATIVE_WORKER}\nimport { onStart } from ${JSON.stringify(events)};
+    "src/tokamak.ts": `const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for("tokamak.native")].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+const nativeListen = (plugin, method, value, next, error) => globalThis[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
+${NATIVE_WORKER}\nimport { onStart } from ${JSON.stringify(events)};
 onStart((_event, _env, ctx) => {
-  const stop = globalThis.__tokamakNativeListen("location", "watchPosition", null, (position) => {
-    if (position !== "stop") return void globalThis.__tokamakNativeCall("test", "received", position);
+  const stop = nativeListen("location", "watchPosition", null, (position) => {
+    if (position !== "stop") return void nativeCall("test", "received", position);
     stop();
-    ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 500)).then(() => globalThis.__tokamakNativeCall("test", "stopped", null)));
+    ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 500)).then(() => nativeCall("test", "stopped", null)));
   }, () => undefined);
 });
 `,

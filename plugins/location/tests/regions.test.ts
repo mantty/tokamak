@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { test } from "node:test";
 
-import { connectNative, disconnectNative } from "@tokamakdev/plugin/testing";
+import { connectNative } from "@tokamakdev/plugin/testing";
 
-import { location, type Region } from "../src/index.js";
+import { location as createApi, type Region } from "../src/index.js";
 
-afterEach(disconnectNative);
 
 const home = { id: "home", latitude: 51.5, longitude: -0.1, radius: 100 };
 
 void test("calls the native plugin with each region method's arguments", async () => {
   const native = connectNative();
+  const location = createApi(native.ctx);
   const cases: [() => Promise<unknown>, string, unknown][] = [
     [() => location.addRegion(home), "addRegion", { ...home, onEntry: true, onExit: true }],
     [
@@ -30,7 +30,7 @@ void test("calls the native plugin with each region method's arguments", async (
 });
 
 void test("rejects regions it cannot monitor", async () => {
-  connectNative();
+  const location = createApi(connectNative().ctx);
   for (const [region, message] of [
     [{ ...home, id: "" }, "region.id must be a non-empty string"],
     [{ ...home, latitude: 91 }, "region.latitude must be a number from -90 to 90"],
@@ -51,17 +51,4 @@ void test("rejects regions it cannot monitor", async () => {
     location.removeRegion(""),
     (error: unknown) => error instanceof TypeError && error.message === "id must be a non-empty string",
   );
-});
-
-void test("checks regions before the web rejects them", async () => {
-  await assert.rejects(location.addRegion({ ...home, radius: -1 }), TypeError);
-  await assert.rejects(location.removeRegion(""), TypeError);
-});
-
-void test("rejects regions on the web", async () => {
-  const unsupported = (error: unknown) => error instanceof DOMException && error.name === "NotSupportedError";
-
-  await assert.rejects(location.addRegion(home), unsupported);
-  await assert.rejects(location.getRegions(), unsupported);
-  await assert.rejects(location.removeRegion("home"), unsupported);
 });

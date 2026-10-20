@@ -1,3 +1,4 @@
+import type { JsonValue } from "@tokamakdev/plugin";
 import type {
   Category,
   Message,
@@ -25,7 +26,7 @@ const SETUP_URL = "/__tokamak/notifications/setup";
 export interface NotificationData {
   readonly tokamak: {
     readonly source: OpenedNotification["source"];
-    readonly data: Record<string, unknown>;
+    readonly data: Record<string, JsonValue>;
     readonly category?: string;
   };
 }
@@ -47,7 +48,7 @@ export type ServiceWorkerMessage =
 
 export function notificationData(
   source: OpenedNotification["source"],
-  data: Record<string, unknown> = {},
+  data: Record<string, JsonValue> = {},
   category?: string,
 ): NotificationData {
   return { tokamak: category === undefined ? { source, data } : { source, data, category } };

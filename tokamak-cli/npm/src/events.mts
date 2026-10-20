@@ -1,4 +1,4 @@
-import { Plugin } from "@tokamakdev/plugin";
+import { Plugin, type TokamakContext } from "@tokamakdev/plugin";
 import { defineEvent } from "@tokamakdev/plugin/events";
 
 /** An event that carries no data. */
@@ -18,8 +18,8 @@ export type LifecycleStage = "foreground" | "background";
 
 /** The functions the runtime answers itself, as the reserved plugin `tokamak`. */
 class Tokamak extends Plugin {
-  constructor() {
-    super("tokamak");
+  constructor(ctx: TokamakContext) {
+    super(ctx, "tokamak");
   }
 
   lifecycleStage(): Promise<LifecycleStage> {
@@ -27,13 +27,12 @@ class Tokamak extends Plugin {
   }
 }
 
-const tokamak = new Tokamak();
 
 /**
  * The app's stage now, which can differ from the last event delivered: an `onSuspend` listener
  * that runs late reads `"foreground"` once the user has returned. Rejects with
  * `NotSupportedError` outside a tokamak Worker.
  */
-export function getLifecycleStage(): Promise<LifecycleStage> {
-  return tokamak.lifecycleStage();
+export function getLifecycleStage(ctx: TokamakContext): Promise<LifecycleStage> {
+  return new Tokamak(ctx).lifecycleStage();
 }

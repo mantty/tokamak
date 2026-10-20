@@ -1,31 +1,22 @@
-import { Plugin } from "@tokamakdev/plugin";
-import * as web from "../web/index.js";
+import { Plugin, type TokamakContext } from "@tokamakdev/plugin";
 import { nonEmptyText } from "./checks.js";
 import { monitoredRegion, validatePermissionRequest, validateSetup, validateUpdateOptions } from "./options.js";
 import type {
-  ErrorListener,
-  Listener,
-  LocationErrorEvent,
   LocationPermission,
-  LocationUpdate,
   MonitoredRegion,
   PermissionRequest,
   Position,
-  PositionCallback,
-  PositionErrorCallback,
   PositionOptions,
   Region,
-  RegionTransition,
   SetupConfig,
   UpdateOptions,
-  Visit,
 } from "./types.js";
 
 export type * from "./types.js";
 
 class Location extends Plugin {
-  constructor() {
-    super("location");
+  constructor(ctx: TokamakContext) {
+    super(ctx, "location");
   }
 
   /**
@@ -36,25 +27,23 @@ class Location extends Plugin {
    */
   async setup(config: SetupConfig): Promise<void> {
     validateSetup(config, "config");
-    return this.hasNativeTransport ? this.call("setup", config) : web.unsupported();
+    return this.call("setup", config);
   }
 
   getCurrentPosition(options: PositionOptions = {}): Promise<Position> {
-    if (!this.hasNativeTransport) return web.getCurrentPosition(options);
     return this.call("getCurrentPosition", {
       maximumAge: milliseconds(options.maximumAge ?? 0),
       timeout: milliseconds(options.timeout ?? unlimited),
     });
   }
 
-  watchPosition(next: PositionCallback, error: PositionErrorCallback): () => void {
-    if (!this.hasNativeTransport) return web.watchPosition(next, error);
-    return this.listen("watchPosition", next, error);
+  watchPosition(): ReadableStream<Uint8Array> {
+    return this.stream("watchPosition");
   }
 
   /** The app's in-use and background permission, and the precision it gets. Never asks. */
   permission(): Promise<LocationPermission> {
-    return this.hasNativeTransport ? this.call("permission") : web.permission();
+    return this.call("permission");
   }
 
   /**
@@ -64,17 +53,17 @@ class Location extends Plugin {
    */
   async requestPermission(options: PermissionRequest = {}): Promise<LocationPermission> {
     validatePermissionRequest(options, "options");
-    return this.hasNativeTransport ? this.call("requestPermission", options) : web.unsupported();
+    return this.call("requestPermission", options);
   }
 
   /** Whether location services are on for the device. While they are off, nothing locates. */
   servicesEnabled(): Promise<boolean> {
-    return this.hasNativeTransport ? this.call("servicesEnabled") : web.unsupported();
+    return this.call("servicesEnabled");
   }
 
   /** Opens the app's page in the system settings, where the user changes its location permission. */
   openSettings(): Promise<void> {
-    return this.hasNativeTransport ? this.call("openSettings") : web.unsupported();
+    return this.call("openSettings");
   }
 
   /**
@@ -87,16 +76,16 @@ class Location extends Plugin {
    */
   async startUpdates(options: UpdateOptions = {}): Promise<void> {
     validateUpdateOptions(options, "options");
-    return this.hasNativeTransport ? this.call("startUpdates", options) : web.unsupported();
+    return this.call("startUpdates", options);
   }
 
   stopUpdates(): Promise<void> {
-    return this.hasNativeTransport ? this.call("stopUpdates") : web.unsupported();
+    return this.call("stopUpdates");
   }
 
   /** The options of the running updates, or null when none are running. */
   getUpdates(): Promise<UpdateOptions | null> {
-    return this.hasNativeTransport ? this.call("getUpdates") : web.unsupported();
+    return this.call("getUpdates");
   }
 
   /**
@@ -107,43 +96,40 @@ class Location extends Plugin {
    */
   async addRegion(region: Region): Promise<void> {
     const monitored = monitoredRegion(region);
-    return this.hasNativeTransport ? this.call("addRegion", monitored) : web.unsupported();
+    return this.call("addRegion", monitored);
   }
 
   /** The monitored regions. */
   getRegions(): Promise<MonitoredRegion[]> {
-    return this.hasNativeTransport ? this.call("getRegions") : web.unsupported();
+    return this.call("getRegions");
   }
 
   async removeRegion(id: string): Promise<void> {
     nonEmptyText(id, "id");
-    return this.hasNativeTransport ? this.call("removeRegion", { id }) : web.unsupported();
+    return this.call("removeRegion", { id });
   }
 
   /** Receives the updates the Worker's `onLocationUpdate` receives, while the listening page or Worker runs. */
-  onLocationUpdate(listener: Listener<LocationUpdate>, error: ErrorListener = report): () => void {
-    return this.hasNativeTransport ? this.listen("onLocationUpdate", listener, error) : () => undefined;
+  onLocationUpdate(): ReadableStream<Uint8Array> {
+    return this.stream("onLocationUpdate");
   }
 
   /** Receives the transitions the Worker's `onRegionTransition` receives, while the listening page or Worker runs. */
-  onRegionTransition(listener: Listener<RegionTransition>, error: ErrorListener = report): () => void {
-    return this.hasNativeTransport ? this.listen("onRegionTransition", listener, error) : () => undefined;
+  onRegionTransition(): ReadableStream<Uint8Array> {
+    return this.stream("onRegionTransition");
   }
 
   /** Apple only: receives the visits the Worker's `onVisit` receives, while the listening page or Worker runs. */
-  onVisit(listener: Listener<Visit>, error: ErrorListener = report): () => void {
-    return this.hasNativeTransport ? this.listen("onVisit", listener, error) : () => undefined;
+  onVisit(): ReadableStream<Uint8Array> {
+    return this.stream("onVisit");
   }
 
   /** Receives the failures the Worker's `onLocationError` receives, while the listening page or Worker runs. */
-  onLocationError(listener: Listener<LocationErrorEvent>, error: ErrorListener = report): () => void {
-    return this.hasNativeTransport ? this.listen("onLocationError", listener, error) : () => undefined;
+  onLocationError(): ReadableStream<Uint8Array> {
+    return this.stream("onLocationError");
   }
 }
 
-function report(error: DOMException): void {
-  console.error(error);
-}
 
 const unlimited = 0xffffffff;
 
@@ -152,4 +138,4 @@ function milliseconds(value: number): number {
   return Number.isNaN(value) ? 0 : Math.min(Math.max(Math.round(value), 0), unlimited);
 }
 
-export const location = new Location();
+export function location(ctx: TokamakContext): Location { return new Location(ctx); }

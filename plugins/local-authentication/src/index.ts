@@ -1,4 +1,4 @@
-import { Plugin } from "@tokamakdev/plugin";
+import { Plugin, type TokamakContext } from "@tokamakdev/plugin";
 
 /** The authentication the device owner performs. */
 export type Authentication = "biometricsOrPasscode" | "biometrics";
@@ -12,8 +12,8 @@ export interface AuthenticateOptions {
 }
 
 class LocalAuthentication extends Plugin {
-  constructor() {
-    super("local-authentication");
+  constructor(ctx: TokamakContext) {
+    super(ctx, "local-authentication");
   }
 
   status(authentication: Authentication): Promise<Status> {
@@ -25,4 +25,4 @@ class LocalAuthentication extends Plugin {
   }
 }
 
-export const localAuthentication = new LocalAuthentication();
+export function localAuthentication(ctx: TokamakContext): LocalAuthentication { return new LocalAuthentication(ctx); }

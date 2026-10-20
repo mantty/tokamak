@@ -83,10 +83,11 @@ export default {
 "#;
 
 /// Registers an invocation-owned listener and responds.
-const LISTENING_WORKER: &[u8] = br#"
+const LISTENING_WORKER: &[u8] = br#"const nativeListen = (plugin, method, value, next, error) => globalThis[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
+
 export default {
   fetch() {
-    const stop = globalThis.__tokamakNativeListen("location", "watchPosition", null, () => stop(), () => {});
+    const stop = nativeListen("location", "watchPosition", null, () => stop(), () => {});
     return new Response("listening");
   },
 };
@@ -218,14 +219,15 @@ fn http_wait_until_survives_caller_cancellation_but_ends_at_the_host_deadline()
     }
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::of_source(
-        br"
+        br"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+
 export default {
   async fetch(request, env, ctx) {
     ctx.waitUntil((async () => {
       await new Promise(resolve => setTimeout(resolve, 100));
-      await globalThis.__tokamakNativeCall('gate', 'retained');
+      await nativeCall('gate', 'retained');
     })());
-    await globalThis.__tokamakNativeCall('gate', 'handler');
+    await nativeCall('gate', 'handler');
     return new Response('finished');
   }
 };",
@@ -291,8 +293,9 @@ fn check_http_body_cleanup(retained: bool) -> Result<(), Box<dyn std::error::Err
     }
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::of_source(
-        br"
-const gate = name => globalThis.__tokamakNativeCall('gate', name);
+        br"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+
+const gate = name => nativeCall('gate', name);
 export default {
   fetch(request, env, ctx) {
     if (env.RETAIN) ctx.waitUntil(gate('retained').then(() => gate('followup')));

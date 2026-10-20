@@ -24,9 +24,7 @@ export function installAssets(binding, fetchAsset) {
 
 // Connects the Worker's byte endpoints to the native host.
 export function installPlugins(call, subscribe) {
-  const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  const encoded = value => encoder.encode(JSON.stringify(value ?? null));
   const decoded = payload => JSON.parse(decoder.decode(payload));
   const buffer = value => value.byteOffset === 0 && value.byteLength === value.buffer.byteLength
     ? value.buffer : value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
@@ -53,18 +51,6 @@ export function installPlugins(call, subscribe) {
       });
     },
   };
-  Object.defineProperties(globalThis, {
-    __tokamakNativeCall: {
-      async value(plugin, method, args = null) {
-        return decoded(await connection.call(plugin, method, encoded(args)));
-      },
-    },
-    __tokamakNativeListen: {
-      value(plugin, method, args, next, error) {
-        return connection.listen(plugin, method, encoded(args), value => next(decoded(value)), error);
-      },
-    },
-  });
   globalThis[Symbol.for("tokamak.native")] = connection;
   globalThis.__tokamak_context[Symbol.for("tokamak.native")] = globalThis[Symbol.for("tokamak.native")];
 }

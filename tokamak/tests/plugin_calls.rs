@@ -17,10 +17,12 @@ use tokamak::{
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Runs the method of `TokamakEvents` each event names.
-const WORKER: &[u8] = br#"
+const WORKER: &[u8] = br#"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for("tokamak.native")].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+const nativeListen = (plugin, method, value, next, error) => globalThis[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
+
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-const call = (plugin, method, args) => globalThis.__tokamakNativeCall(plugin, method, args);
+const call = (plugin, method, args) => nativeCall(plugin, method, args);
 const failure = (error) => ({ name: error.name, message: error.message, domException: error instanceof DOMException });
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -52,7 +54,7 @@ export class TokamakEvents extends WorkerEntrypoint {
   // Reports each position with `test.received`, discarding the function that
   // removes the listener.
   forget() {
-    globalThis.__tokamakNativeListen("location", "watchPosition", null, (position) => {
+    nativeListen("location", "watchPosition", null, (position) => {
       void call("test", "received", position);
     }, () => undefined);
     this.ctx.waitUntil(call("test", "retained"));
@@ -60,7 +62,7 @@ export class TokamakEvents extends WorkerEntrypoint {
 
   watch() {
     this.ctx.waitUntil(new Promise(resolve => {
-      const stop = globalThis.__tokamakNativeListen("location", "watchPosition", null, (position) => {
+      const stop = nativeListen("location", "watchPosition", null, (position) => {
         if (position !== "stop") return void call("test", "received", position);
         stop();
         this.ctx.waitUntil(call("test", "stopped"));
@@ -77,7 +79,7 @@ export class TokamakEvents extends WorkerEntrypoint {
 
 export default {
   fetch(request, env, ctx) {
-    globalThis.__tokamakNativeListen("location", "watchPosition", null, () => {}, () => {});
+    nativeListen("location", "watchPosition", null, () => {}, () => {});
     ctx.waitUntil(call("test", "retained"));
     return new Response(null, { status: 204 });
   }

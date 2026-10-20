@@ -1,4 +1,4 @@
-import { WorkerEntrypoint } from "cloudflare:workers";
+import { TokamakEntrypoint, type TokamakContext } from "@tokamakdev/tok";
 import { location } from "@tokamakdev/plugin-location";
 import {
   onLocationError,
@@ -14,10 +14,12 @@ import {
 } from "@tokamakdev/plugin-notifications/events";
 import { getLifecycleStage, onResume, onStart, onSuspend } from "@tokamakdev/tok/events";
 
-export default class Native extends WorkerEntrypoint<Cloudflare.Env> {}
+export default class Native extends TokamakEntrypoint {
+  lifecycleStage() { return getLifecycleStage(this.ctx); }
+}
 
 /** Records an event in the EVENTS store, which the Events page lists. */
-function record(env: Cloudflare.Env, entry: string): Promise<void> {
+function record(env: Tokamak.Env, entry: string): Promise<void> {
   return env.EVENTS.put(`${new Date().toISOString()} ${entry}`, "");
 }
 
@@ -25,24 +27,20 @@ function record(env: Cloudflare.Env, entry: string): Promise<void> {
 // listener keeps this Worker invocation running until it removes itself.
 onStart(async (event, env, ctx) => {
   ctx.waitUntil(record(env, event.foreground ? "start in the foreground" : "start in the background"));
-  ctx.waitUntil(setUpNotifications(env));
+  ctx.waitUntil(setUpNotifications(env, ctx));
   // Long-term awareness: significant changes everywhere, and visits on Apple platforms.
   ctx.waitUntil(
-    location.setup({ significantChanges: true, visits: true }).catch((error: DOMException) =>
+    location(ctx).setup({ significantChanges: true, visits: true }).catch((error: DOMException) =>
       record(env, `location setup failed: ${error.name}`),
     ),
   );
-  if ((await getLifecycleStage()) !== "foreground") return;
-  const stop = location.watchPosition(
-    ({ coords }) => {
-      stop();
-      ctx.waitUntil(record(env, `located at ${coords.latitude.toFixed(3)}, ${coords.longitude.toFixed(3)}`));
-    },
-    (error) => {
-      stop();
-      ctx.waitUntil(record(env, `location failed: ${error.name}`));
-    },
-  );
+  if ((await getLifecycleStage(ctx)) !== "foreground") return;
+  try {
+    const { coords } = await location(ctx).getCurrentPosition({ timeout: 10_000 });
+    await record(env, `located at ${coords.latitude.toFixed(3)}, ${coords.longitude.toFixed(3)}`);
+  } catch (error) {
+    await record(env, `location failed: ${String(error)}`);
+  }
 });
 onResume((_event, env, ctx) => {
   ctx.waitUntil(record(env, "resume"));
@@ -84,8 +82,8 @@ onNotificationDismissed((dismissed, env, ctx) => {
  * Configures notifications on every platform at each start, recording channel settings Android
  * kept. Pass text in the user's language: the system shows these names and titles.
  */
-async function setUpNotifications(env: Cloudflare.Env): Promise<void> {
-  const { unapplied } = await notifications.setup({
+async function setUpNotifications(env: Tokamak.Env, ctx: TokamakContext): Promise<void> {
+  const { unapplied } = await notifications(ctx).setup({
     categories: [
       {
         id: "message",

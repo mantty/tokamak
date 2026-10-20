@@ -9,6 +9,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./streams": "./src/streams.ts",
     "./events": "./src/events.ts",
     "./worker": "./src/worker.ts",
     "./testing": "./src/testing.ts",

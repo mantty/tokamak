@@ -88,3 +88,23 @@ async function waitForPage(root, message) {
   }
   assert.fail(`Expected page to contain ${JSON.stringify(message)}; received ${result}`);
 }
+
+test("Astro web development serves generated clients without optimizing the server entrypoint", async t => {
+  const { root } = project(t);
+  fs.writeFileSync(path.join(root, "src/pages/index.astro"),
+    '<h1>Web client</h1><script>import client from "virtual:tokamak/client"; console.log(client);</script>');
+  await environment(root, async () => {
+    delete process.env.TOKAMAK_VITE_OUTPUT;
+    const server = await dev({ root: pathToFileURL(`${root}/`), logLevel: "silent", server: { port: 0, host: "127.0.0.1" } });
+    try {
+      const origin = `http://127.0.0.1:${server.address.port}`;
+      assert.equal((await fetch(origin)).status, 200);
+      const response = await fetch(`${origin}/@id/__x00__virtual:tokamak/client`);
+      const body = await response.text();
+      assert.equal(response.status, 200, body);
+      assert.match(body, /describe/);
+    } finally {
+      await server.stop();
+    }
+  });
+});

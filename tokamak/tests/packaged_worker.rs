@@ -412,14 +412,16 @@ fn cancels_service_calls_and_streams_when_the_http_client_disconnects() -> TestR
     let temporary = tempfile::tempdir()?;
     let app = package(
         temporary.path(),
-        br"
+        br"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+const nativeListen = (plugin, method, value, next, error) => globalThis[Symbol.for('tokamak.native')].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
+
 import { WorkerEntrypoint } from 'cloudflare:workers';
 export default class extends WorkerEntrypoint {
   async fetch(request) { return new Response(await this.env.SELF.hold(new URL(request.url).pathname)); }
   async hold(path) {
-    globalThis.__tokamakNativeListen('gate', 'watch', null, () => {}, () => {});
-    if (path === '/stream') return new ReadableStream({ pull() { return globalThis.__tokamakNativeCall('gate', 'hold'); } });
-    return await globalThis.__tokamakNativeCall('gate', 'hold');
+    nativeListen('gate', 'watch', null, () => {}, () => {});
+    if (path === '/stream') return new ReadableStream({ pull() { return nativeCall('gate', 'hold'); } });
+    return await nativeCall('gate', 'hold');
   }
 }
 ",

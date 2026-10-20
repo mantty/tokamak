@@ -2,9 +2,7 @@ import { decodeMessage, encodeMessage, messages, type NativeMessage } from "@tok
 
 /** Connects the development worker's native byte endpoints to the device relay. */
 export function defineNativeCalls(port: number, token: string, waitUntil: (promise: Promise<unknown>) => void): void {
-  const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-  const encoded = (value: unknown) => encoder.encode(JSON.stringify(value ?? null));
   const decoded = (payload: Uint8Array): unknown => JSON.parse(decoder.decode(payload));
   const post = async (path: string, plugin: string, method: string, payload: Uint8Array, signal?: AbortSignal) => {
     const response = await fetch(`http://127.0.0.1:${String(port)}${path}`, {
@@ -55,8 +53,6 @@ export function defineNativeCalls(port: number, token: string, waitUntil: (promi
     },
   };
   Reflect.set(globalThis, Symbol.for("tokamak.native"), connection);
-  globalThis.__tokamakNativeCall = async (plugin, method, args) => decoded(await connection.call(plugin, method, encoded(args)));
-  globalThis.__tokamakNativeListen = (plugin, method, args, next, error) => connection.listen(plugin, method, encoded(args), value => next(decoded(value)), error);
 }
 
 function networkError(error: unknown): DOMException {

@@ -1,20 +1,30 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "local-authentication",
   "platforms": {
     "macos": {
       "class": "TokamakLocalAuthenticationPlugin",
-      "sources": ["apple/LocalAuthenticationPlugin.swift"]
+      "sources": [
+        "apple/LocalAuthenticationPlugin.swift"
+      ]
     },
     "ios": {
       "class": "TokamakLocalAuthenticationPlugin",
-      "sources": ["apple/LocalAuthenticationPlugin.swift"],
+      "sources": [
+        "apple/LocalAuthenticationPlugin.swift"
+      ],
       "plist": "apple/Info.plist"
     },
     "android": {
       "class": "com.tokamak.plugins.localauthentication.TokamakLocalAuthenticationPlugin",
-      "sources": ["android/LocalAuthenticationPlugin.kt"],
+      "sources": [
+        "android/LocalAuthenticationPlugin.kt"
+      ],
       "manifest": "android/AndroidManifest.xml"
     }
+  },
+  "api": {
+    "module": "src/index.ts",
+    "export": "localAuthentication"
   }
 }

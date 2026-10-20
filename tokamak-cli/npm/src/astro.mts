@@ -33,9 +33,13 @@ export function tokamak(options: TokamakOptions = {}, cloudflareOptions: Cloudfl
               const raw = source ? experimental_readRawConfig({ config: source }, { useRedirectIfAvailable: false }).rawConfig : {};
               const environment = process.env.CLOUDFLARE_ENV;
               const selected: BindingConfiguration = source ? unstable_readConfig({ config: source, env: environment }, { hideWarnings: true }) : {};
+              const main = (environment ? raw.env?.[environment]?.main : undefined)
+                ?? raw.main ?? "@astrojs/cloudflare/entrypoints/server";
               client.configure({
                 ...selected,
-                main: (environment ? raw.env?.[environment]?.main : undefined) ?? raw.main ?? "@astrojs/cloudflare/entrypoints/server",
+                // Type inspection needs the server source, not a client-optimized module.
+                main: main === "@astrojs/cloudflare/entrypoints/server"
+                  ? fileURLToPath(import.meta.resolve(main)) : main,
                 kv_namespaces: [...selected.kv_namespaces ?? [], ...sessionBinding ? [{ binding: sessionBinding }] : []],
               });
             },

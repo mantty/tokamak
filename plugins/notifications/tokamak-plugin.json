@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "notifications",
   "settings": {
     "sounds": {
@@ -46,5 +46,13 @@
         "com.google.firebase:firebase-messaging:25.1.3"
       ]
     }
+  },
+  "api": {
+    "module": "src/index.ts",
+    "export": "notifications"
+  },
+  "web": {
+    "module": "web/client.ts",
+    "export": "notifications"
   }
 }

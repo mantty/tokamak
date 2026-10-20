@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "location",
   "settings": {
     "background": {
@@ -14,7 +14,10 @@
     },
     "precision": {
       "kind": "enum",
-      "values": ["precise", "approximate"],
+      "values": [
+        "precise",
+        "approximate"
+      ],
       "default": "precise",
       "description": "The precision the app declares; approximate leaves out precise location"
     },
@@ -63,5 +66,13 @@
         "android/LocationUpdates.kt"
       ]
     }
+  },
+  "api": {
+    "module": "src/index.ts",
+    "export": "location"
+  },
+  "web": {
+    "module": "web/client.ts",
+    "export": "location"
   }
 }

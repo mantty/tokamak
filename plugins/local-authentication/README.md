@@ -8,8 +8,12 @@ Add it to your project's dependencies:
 npm install @tokamakdev/plugin-local-authentication
 ```
 
+Pages import the generated `/client` SDK. In `src/tokamak.ts`, import the
+package root and call its factory with the handler's `ctx`. The main worker
+uses its generated `env.TOKAMAK_LOCAL_AUTHENTICATION` service binding when present.
+
 ```ts
-import { localAuthentication } from "@tokamakdev/plugin-local-authentication";
+import localAuthentication from "@tokamakdev/plugin-local-authentication/client";
 
 // "available" | "notEnrolled" | "unavailable"
 const status = await localAuthentication.status("biometricsOrPasscode");
