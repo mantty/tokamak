@@ -58,3 +58,34 @@ void test("ordinary execution contexts do not grant native access", () => {
   // @ts-expect-error -- the native connection is required.
   assert.throws(() => new Example({ waitUntil() {} }), TypeError);
 });
+
+class Transfers extends Plugin {
+  constructor(ctx: TokamakContext) { super(ctx, "transfers"); }
+  upload(body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<number> { return this.call("upload", { name: "a" }, { body, signal }); }
+  samples(): ReadableStream<Uint8Array> { return this.stream("samples", null, "dropOldest"); }
+}
+
+void test("a call carries its body to the native endpoint", async () => {
+  const native = connectNative();
+  const body = new ReadableStream<Uint8Array>();
+  const uploaded = new Transfers(native.ctx).upload(body);
+  assert.equal(native.sent[0]?.body, body);
+  native.respond({ value: 3 });
+  assert.equal(await uploaded, 3);
+});
+
+void test("aborting a call cancels the native work and rejects with the reason", async () => {
+  const native = connectNative();
+  const controller = new AbortController();
+  const uploaded = new Transfers(native.ctx).upload(new ReadableStream(), controller.signal);
+  controller.abort(new DOMException("stopped", "AbortError"));
+  await assert.rejects(uploaded, { name: "AbortError", message: "stopped" });
+  assert.deepEqual(native.sent.at(-1), { type: "cancel", id: 1 });
+  await assert.rejects(new Transfers(native.ctx).upload(new ReadableStream(), controller.signal), { message: "stopped" });
+});
+
+void test("a stream passes its overflow policy to the native subscription", () => {
+  const native = connectNative();
+  void new Transfers(native.ctx).samples().getReader().read();
+  assert.equal(native.sent[0]?.overflow, "dropOldest");
+});

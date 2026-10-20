@@ -26,7 +26,7 @@ export function decodeMessage(bytes) {
   const header = JSON.parse(decoder.decode(bytes.subarray(8, 8 + metadata)));
   if (header === null || typeof header !== "object" || Array.isArray(header) || typeof header.type !== "string" ||
       (header.id !== undefined && (!Number.isSafeInteger(header.id) || header.id < 0)) ||
-      ["plugin", "method", "name"].some(key => header[key] !== undefined && typeof header[key] !== "string") ||
+      ["plugin", "method", "name", "overflow"].some(key => header[key] !== undefined && typeof header[key] !== "string") ||
       ["failed", "done"].some(key => header[key] !== undefined && typeof header[key] !== "boolean")) {
     throw new TypeError("Invalid native routing header");
   }

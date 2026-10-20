@@ -24,6 +24,7 @@ export function installAssets(binding, fetchAsset) {
 
 // Connects the Worker's byte endpoints to the native host.
 export function installPlugins(call, subscribe) {
+  const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const decoded = payload => JSON.parse(decoder.decode(payload));
   const buffer = value => value.byteOffset === 0 && value.byteLength === value.buffer.byteLength
@@ -35,11 +36,36 @@ export function installPlugins(call, subscribe) {
     }
     return new Uint8Array(payload);
   };
+  // The next chunk of a call's body, with a failure encoded as an endpoint error.
+  const pull = reader => async () => {
+    try {
+      const { value, done } = await reader.read();
+      if (done) return { payload: new Uint8Array(), failed: false, done: true };
+      if (!(value instanceof Uint8Array)) throw new TypeError("A native call's body must contain Uint8Array chunks");
+      return { payload: value, failed: false, done: false };
+    } catch (error) {
+      const failure = { name: error?.name ?? "Error", message: String(error?.message ?? error) };
+      return { payload: encoder.encode(JSON.stringify(failure)), failed: true, done: true };
+    }
+  };
   const connection = {
-    async call(plugin, method, payload) {
-      return result(await call(plugin, method, buffer(payload)));
+    async call(plugin, method, payload, { body, signal } = {}) {
+      signal?.throwIfAborted();
+      const reader = body?.getReader();
+      const [reply, cancel] = reader
+        ? call(plugin, method, buffer(payload), pull(reader))
+        : call(plugin, method, buffer(payload));
+      signal?.addEventListener("abort", cancel, { once: true });
+      try {
+        return result(await reply);
+      } catch (error) {
+        throw signal?.aborted ? signal.reason : error;
+      } finally {
+        signal?.removeEventListener("abort", cancel);
+        reader?.cancel().catch(() => undefined);
+      }
     },
-    listen(plugin, method, payload, next, error) {
+    listen(plugin, method, payload, { next, error, overflow = "error" }) {
       return subscribe(plugin, method, buffer(payload), reply => {
         let value;
         try { value = result(reply); }
@@ -48,7 +74,7 @@ export function installPlugins(call, subscribe) {
           return;
         }
         try { next(value, reply.done); } catch (thrown) { reportError(thrown); }
-      });
+      }, overflow);
     },
   };
   globalThis.__tokamak_context[Symbol.for("tokamak.native")] = connection;

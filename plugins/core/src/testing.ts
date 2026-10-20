@@ -1,34 +1,57 @@
 import { dispatch as dispatchEvent, type Dispatched } from "./registry.js";
-import { createNativeContext, type TokamakContext } from "./context.js";
+import { createNativeContext, type Overflow, type TokamakContext } from "./context.js";
 import { encodeJson, decodeJson } from "./codec.js";
 
 type Reply = (payload: Uint8Array, error: DOMException | undefined, done: boolean) => void;
 
+/** A request the native endpoint received. */
+export interface SentRequest {
+  type: string;
+  id: number;
+  plugin?: string;
+  method?: string;
+  payload?: Uint8Array;
+  /** A call's body. */
+  body?: ReadableStream<Uint8Array>;
+  /** A subscription's overflow policy. */
+  overflow?: Overflow;
+}
+
 /** An invocation with an inspectable native endpoint. */
 export class FakeNativeTransport {
-  readonly sent: { type: string; id: number; plugin?: string; method?: string; payload?: Uint8Array }[] = [];
+  readonly sent: SentRequest[] = [];
   private nextId = 1;
   private readonly pending = new Map<number, Reply>();
   readonly ctx: TokamakContext = createNativeContext({ waitUntil: () => undefined }, {
-    call: (plugin, method, payload) => new Promise((resolve, reject) => {
-      this.request("call", plugin, method, payload, (value, error) => { if (error) reject(error); else resolve(value); });
+    call: (plugin, method, payload, { body, signal } = {}) => new Promise((resolve, reject) => {
+      signal?.throwIfAborted();
+      const id = this.request({ type: "call", plugin, method, payload, body }, (value, error) => {
+        if (error) reject(error);
+        else resolve(value);
+      });
+      signal?.addEventListener("abort", () => {
+        this.cancel(id);
+        reject(signal.reason as Error);
+      }, { once: true });
     }),
-    listen: (plugin, method, payload, next, error) => {
-      const id = this.request("subscribe", plugin, method, payload, (value, failure, done) => {
+    listen: (plugin, method, payload, { next, error, overflow = "error" }) => {
+      const id = this.request({ type: "subscribe", plugin, method, payload, overflow }, (value, failure, done) => {
         if (failure) error(failure, done);
         else next(value, done);
       });
-      return () => {
-        if (this.pending.delete(id)) this.sent.push({ type: "cancel", id });
-      };
+      return () => { this.cancel(id); };
     },
   });
 
-  private request(type: string, plugin: string, method: string, payload: Uint8Array, reply: Reply): number {
+  private request(request: Omit<SentRequest, "id">, reply: Reply): number {
     const id = this.nextId++;
-    this.sent.push({ type, id, plugin, method, payload: payload.slice() });
+    this.sent.push({ ...request, id, payload: request.payload?.slice() });
     this.pending.set(id, reply);
     return id;
+  }
+
+  private cancel(id: number): void {
+    if (this.pending.delete(id)) this.sent.push({ type: "cancel", id });
   }
 
   lastRequest(): Record<string, unknown> {

@@ -14,6 +14,8 @@ pub(crate) struct Header {
     pub method: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<String>,
     #[serde(default)]
     pub failed: bool,
     #[serde(default)]

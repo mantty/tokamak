@@ -1,39 +1,63 @@
 import { encodeJson } from "./codec.js";
+import type { Overflow } from "./context.js";
 
 type Source<T> = (next: (value: T) => void, error: (error: unknown) => void, close: () => void) => () => void;
 const maxBufferedBytes = 1024 * 1024;
 
-/** Adapts a push source with bounded buffering and explicit cancellation. */
-export function byteStream(subscribe: Source<Uint8Array>): ReadableStream<Uint8Array> {
-  let stop: (() => void) | undefined;
-  let active = true;
+/**
+ * Adapts a push source with explicit cancellation, buffering up to 1 MiB for a slow reader. Past
+ * that, `overflow` ends the stream with `QuotaExceededError` or drops the oldest buffered values.
+ * An error ends the stream at once; closing it delivers what is buffered first.
+ */
+export function byteStream(subscribe: Source<Uint8Array>, overflow: Overflow = "error"): ReadableStream<Uint8Array> {
+  const buffered: Uint8Array[] = [];
+  let bytes = 0;
+  let end: { error?: unknown } | undefined;
+  let stop = () => {};
+  let wake = () => {};
+  const finish = (error?: unknown) => {
+    if (end) return;
+    end = { error };
+    if (error !== undefined) buffered.length = 0;
+    stop();
+    wake();
+  };
+  const push = (value: Uint8Array) => {
+    if (end) return;
+    buffered.push(value);
+    bytes += value.byteLength;
+    while (bytes > maxBufferedBytes) {
+      const oldest = overflow === "dropOldest" && buffered.length > 1 ? buffered.shift() : undefined;
+      if (!oldest) {
+        finish(new DOMException("The stream consumer is too slow", "QuotaExceededError"));
+        return;
+      }
+      bytes -= oldest.byteLength;
+    }
+    wake();
+  };
   return new ReadableStream<Uint8Array>({
-    start(controller) {
-      const finish = (error?: unknown) => {
-        if (!active) return;
-        active = false;
-        if (error === undefined) controller.close();
-        else controller.error(error);
-        stop?.();
-      };
+    start() {
       try {
-        stop = subscribe((value) => {
-          if (!active) return;
-          if (value.byteLength > (controller.desiredSize ?? 0)) {
-            finish(new DOMException("The stream consumer is too slow", "QuotaExceededError"));
-            return;
-          }
-          controller.enqueue(value);
-        }, finish, () => { finish(); });
-        if (!active) stop();
+        stop = subscribe(push, finish, () => { finish(); });
+        if (end) stop();
       } catch (error) { finish(error); }
     },
-    cancel() { active = false; stop?.(); },
-  }, { highWaterMark: maxBufferedBytes, size: (value) => value.byteLength });
+    async pull(controller) {
+      while (!buffered.length && !end) await new Promise<void>((resolve) => { wake = resolve; });
+      const value = buffered.shift();
+      if (value) {
+        bytes -= value.byteLength;
+        controller.enqueue(value);
+      } else if (end?.error === undefined) controller.close();
+      else controller.error(end.error);
+    },
+    cancel() { finish(); },
+  }, { highWaterMark: 0 });
 }
 
 /** Encodes a typed push source as newline-delimited JSON. Errors terminate the stream. */
-export function valueStream<T>(subscribe: Source<T>): ReadableStream<Uint8Array> {
+export function valueStream<T>(subscribe: Source<T>, overflow: Overflow = "error"): ReadableStream<Uint8Array> {
   return byteStream((next, error, close) => subscribe((value) => {
     try {
       const payload = encodeJson(value);
@@ -42,7 +66,7 @@ export function valueStream<T>(subscribe: Source<T>): ReadableStream<Uint8Array>
       line[payload.byteLength] = 10;
       next(line);
     } catch (failure) { error(failure); }
-  }, error, close));
+  }, error, close), overflow);
 }
 
 /** Decodes JSON values; ending iteration cancels the source. */

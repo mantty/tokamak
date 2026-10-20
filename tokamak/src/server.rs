@@ -218,6 +218,13 @@ impl Runtime {
         self.plugins.reply(id, result);
     }
 
+    /// Ask the Worker for the next chunk of the body of the call `id`, which
+    /// arrives through [`PluginHandler::chunk`]. A shell pulls one chunk at a
+    /// time; the runtime ignores pulls for calls that have ended.
+    pub fn pull(&self, id: u64) {
+        self.plugins.pull(id);
+    }
+
     /// Certificate material for the shell's TLS challenge callbacks.
     #[must_use]
     pub fn certificates(&self) -> Arc<Certificates> {

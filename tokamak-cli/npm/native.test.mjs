@@ -1,6 +1,6 @@
 let connection;
 const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await connection.call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
-const nativeListen = (plugin, method, value, next, error) => connection.listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
+const nativeListen = (plugin, method, value, next, error) => connection.listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), { next: payload => next(JSON.parse(new TextDecoder().decode(payload))), error });
 import { decodeDevice, encodeDevice } from "./fixtures/native-device.mjs";
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
@@ -233,7 +233,7 @@ test("byte endpoints preserve binary calls and streams including subarray offset
   input.fill(42);
   assert.deepEqual(await pending, expected);
   const values = [];
-  native.listen("bytes", "watch", expected, (value, done) => values.push([Array.from(value), done]), assert.fail);
+  native.listen("bytes", "watch", expected, { next: (value, done) => values.push([Array.from(value), done]), error: assert.fail });
   await Promise.all(waited);
   assert.deepEqual(received, [[0, 255, 192, 175], [0, 255, 192, 175]]);
   assert.deepEqual(values, [[[0, 255, 192, 175], true]]);
@@ -247,7 +247,7 @@ test("listener exceptions are reported without becoming native failures", async 
   const failure = new Error("consumer failed");
   globalThis.reportError = error => reported.push(error);
   try {
-    connection.listen("test", "watch", new Uint8Array(), () => { throw failure; }, assert.fail);
+    connection.listen("test", "watch", new Uint8Array(), { next: () => { throw failure; }, error: assert.fail });
     await Promise.all(waited);
     assert.deepEqual(reported, [failure]);
   } finally { globalThis.reportError = previous; }
@@ -271,7 +271,67 @@ test("error replies retain recoverable and terminal completion status", async ()
     for (const done of [false, true]) send({ type: "result", id: message.id, result: { error: { name: "NotReadableError", message: "No fix" }, done } });
   });
   const failures = [];
-  connection.listen("location", "watch", new Uint8Array(), assert.fail, (error, done) => failures.push([error.name, done]));
+  connection.listen("location", "watch", new Uint8Array(), { next: assert.fail, error: (error, done) => failures.push([error.name, done]) });
   await Promise.all(waited);
   assert.deepEqual(failures, [["NotReadableError", false], ["NotReadableError", true]]);
+});
+
+test("a call's body reaches the device one chunk per pull", { timeout: 5000 }, async () => {
+  const { encodeMessage, decodeMessage } = await import("@tokamakdev/plugin/native-protocol");
+  const { port } = await devSocket();
+  const device = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { [SESSION_HEADER]: TOKEN } });
+  await new Promise(resolve => device.once("open", resolve));
+  const received = [];
+  device.on("message", bytes => {
+    const { header, payload } = decodeMessage(bytes);
+    received.push([header.type, Array.from(payload), header.done === true]);
+    if (header.type === "chunk" && header.done) {
+      device.send(encodeMessage({ type: "result", id: header.id, done: true }, new TextEncoder().encode("3")));
+    } else device.send(encodeMessage({ type: "pull", id: header.id }));
+  });
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array([1, 2]));
+      controller.enqueue(new Uint8Array([3]));
+      controller.close();
+    },
+  });
+  const reply = await connection.call("files", "write", new TextEncoder().encode("{}"), { body });
+  assert.equal(new TextDecoder().decode(reply), "3");
+  assert.deepEqual(received, [
+    ["callWithBody", Array.from(new TextEncoder().encode("{}")), false],
+    ["chunk", [1, 2], false],
+    ["chunk", [3], false],
+    ["chunk", [], true],
+  ]);
+});
+
+test("aborting a call cancels it on the device and rejects with the reason", { timeout: 5000 }, async () => {
+  const { port } = await devSocket();
+  const types = [];
+  let cancelled;
+  const cancel = new Promise(resolve => (cancelled = resolve));
+  await connectDevice(port, (message) => {
+    types.push(message.type);
+    if (message.type === "cancel") cancelled();
+  });
+  const controller = new AbortController();
+  const pending = connection.call("test", "hang", new Uint8Array(), { signal: controller.signal });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  controller.abort(new DOMException("stopped", "AbortError"));
+  await assert.rejects(pending, { name: "AbortError", message: "stopped" });
+  await cancel;
+  assert.deepEqual(types, ["call", "cancel"]);
+});
+
+test("a subscription's overflow policy reaches the device", { timeout: 5000 }, async () => {
+  const { port, waited } = await devSocket();
+  let policy;
+  await connectDevice(port, (message, send) => {
+    policy = message.overflow;
+    send({ type: "result", id: message.id, result: { value: 1, done: true } });
+  });
+  connection.listen("sensor", "watch", new Uint8Array(), { next: () => undefined, error: assert.fail, overflow: "dropOldest" });
+  await Promise.all(waited);
+  assert.equal(policy, "dropOldest");
 });

@@ -22,7 +22,8 @@ enum PluginRequestsTests {
     }
     func run(_ id: Int, _ method: String, subscribe: Bool = false) {
       requests.run(
-        id, subscribe: subscribe, plugin: "test", method: method, payload: Data("null".utf8))
+        id, subscribe ? .subscribe : .call, plugin: "test", method: method,
+        payload: Data("null".utf8))
       drain()
     }
 
@@ -57,15 +58,15 @@ enum PluginRequestsTests {
     precondition(received.count == 3)
     precondition(Set(plugin.cancelled) == ["abandoned", "call", "stream"])
 
-    requests.run(5, subscribe: false, plugin: "missing", method: "call", payload: Data())
+    requests.run(5, .call, plugin: "missing", method: "call", payload: Data())
     precondition(received.count == 4 && received[3].0 == 5)
     precondition(received[3].1.failed && received[3].1.done)
     requests.run(
-      6, subscribe: false, plugin: "binary", method: "echo", payload: Data([0, 255, 192, 175]))
+      6, .call, plugin: "binary", method: "echo", payload: Data([0, 255, 192, 175]))
     drain()
     precondition(received[4].1.payload == Data([0, 255, 192, 175]))
     precondition(!received[4].1.failed && received[4].1.done)
-    requests.run(7, subscribe: false, plugin: "test", method: "immediate", payload: Data([255]))
+    requests.run(7, .call, plugin: "test", method: "immediate", payload: Data([255]))
     drain()
     precondition(received[5].1.failed && received[5].1.done)
     let replied = DispatchSemaphore(value: 0)
@@ -77,7 +78,7 @@ enum PluginRequestsTests {
       replied.signal()
     }
     background.run(
-      8, subscribe: false, plugin: "binary", method: "background", payload: Data([0, 255]))
+      8, .call, plugin: "binary", method: "background", payload: Data([0, 255]))
     precondition(
       replied.wait(timeout: .now() + 2) == .success, "A native call required the blocked UI thread")
     for method in ["immediate", "deferred"] {
@@ -86,7 +87,7 @@ enum PluginRequestsTests {
         let completing = TestPlugin(host: TokamakHost(app: app, plugin: "test"))
         released = completing
         let calls = TokamakPluginRequests<Int>(plugins: ["test": completing]) { _, _ in }
-        calls.run(9, subscribe: false, plugin: "test", method: method, payload: Data("null".utf8))
+        calls.run(9, .call, plugin: "test", method: method, payload: Data("null".utf8))
         drain()
         if method == "deferred" { completing.replies[method]?(.success("done")) }
         drain()
@@ -99,7 +100,8 @@ enum PluginRequestsTests {
       let calls = TokamakPluginRequests<Int>(plugins: ["gated": gated]) { _, _ in
         preconditionFailure("A cancelled operation delivered a late reply")
       }
-      calls.run(10, subscribe: subscribe, plugin: "gated", method: "wait", payload: Data())
+      calls.run(
+        10, subscribe ? .subscribe : .call, plugin: "gated", method: "wait", payload: Data())
       precondition(gated.entered.wait(timeout: .now() + 2) == .success)
       if subscribe {
         calls.cancelAll()
@@ -122,15 +124,58 @@ enum PluginRequestsTests {
     let cancelledBeforeStart = TokamakPluginRequests<Int>(plugins: ["gated": queued]) { _, _ in
       preconditionFailure("An unstarted operation replied")
     }
-    cancelledBeforeStart.run(11, subscribe: false, plugin: "gated", method: "wait", payload: Data())
+    cancelledBeforeStart.run(11, .call, plugin: "gated", method: "wait", payload: Data())
     cancelledBeforeStart.cancel(11)
     queued.release.signal()
     queued.queue.sync {}
     precondition(queued.calls == 0)
     testResources(app)
+    testBodies(app)
     print(
-      "Passed native bytes, codecs, completion, cancellation, isolation, late-reply and resource tests"
+      "Passed native bytes, codecs, completion, cancellation, isolation, late-reply, resource and body tests"
     )
+  }
+
+  /// A call reads its body one chunk per pull, on its executor, until the
+  /// last chunk or the Worker's error.
+  private static func testBodies(_ app: TokamakApp) {
+    let reader = BodyReader(host: TokamakHost(app: app, plugin: "reader"))
+    let lock = NSLock()
+    var results: [Int: TokamakPluginResult] = [:]
+    let pulled = DispatchSemaphore(value: 0)
+    let replied = DispatchSemaphore(value: 0)
+    let requests = TokamakPluginRequests<Int>(
+      plugins: ["reader": reader],
+      send: { key, result in
+        lock.withLock { results[key] = result }
+        replied.signal()
+      },
+      pull: { _ in pulled.signal() })
+    func send(_ key: Int, _ chunks: [TokamakPluginResult]) -> TokamakPluginResult {
+      requests.run(key, .callWithBody, plugin: "reader", method: "sum", payload: Data("null".utf8))
+      for chunk in chunks {
+        precondition(pulled.wait(timeout: .now() + 2) == .success, "The plugin did not pull")
+        requests.chunk(key, chunk)
+      }
+      precondition(replied.wait(timeout: .now() + 2) == .success, "The plugin did not reply")
+      return lock.withLock { results[key]! }
+    }
+    let summed = send(
+      1,
+      [
+        TokamakPluginResult(payload: Data([1, 2]), failed: false, done: false),
+        TokamakPluginResult(payload: Data([3]), failed: false, done: false),
+        TokamakPluginResult(payload: Data(), failed: false, done: true),
+      ])
+    precondition(String(decoding: summed.payload, as: UTF8.self) == "6")
+    let failed = send(
+      2,
+      [
+        TokamakPluginResult(
+          .failure(.init(name: "NotReadableError", message: "Stopped")), done: true)
+      ])
+    precondition(
+      failed.failed && String(decoding: failed.payload, as: UTF8.self).contains("NotReadableError"))
   }
 
   /// A retained object reaches another plugin as itself, its bytes are read
@@ -155,7 +200,8 @@ enum PluginRequestsTests {
       -> TokamakPluginResult
     {
       requests.run(
-        key, subscribe: subscribe, plugin: plugin, method: method, payload: Data(payload.utf8))
+        key, subscribe ? .subscribe : .call, plugin: plugin, method: method,
+        payload: Data(payload.utf8))
       while lock.withLock({ results[key] }) == nil {
         drain()
         _ = replied.wait(timeout: .now() + 0.01)
@@ -306,6 +352,32 @@ private final class Consumer: TokamakPlugin {
         received = try host.resources.get(frame, as: NSData.self)
         return received?.length
       })
+    return nil
+  }
+}
+
+private final class BodyReader: TokamakPlugin {
+  let id = "reader"
+  private let queue = DispatchQueue(label: "test.reader")
+  init(host: TokamakHost) {}
+  func executor(for method: String) -> DispatchQueue { queue }
+  func call(
+    method: String, arguments: Any, body: TokamakPluginBody, reply: @escaping TokamakPluginReply
+  ) -> (() -> Void)? {
+    var sum = 0
+    func next() {
+      body.read { chunk in
+        dispatchPrecondition(condition: .onQueue(self.queue))
+        switch chunk {
+        case .success(let bytes?):
+          sum += bytes.reduce(0) { $0 + Int($1) }
+          next()
+        case .success(nil): reply(.success(sum))
+        case .failure(let error): reply(.failure(error))
+        }
+      }
+    }
+    next()
     return nil
   }
 }

@@ -40,11 +40,18 @@ final class TokamakApp {
     for plugin in tokamakPlugins(app: self) {
       precondition(plugins.updateValue(plugin, forKey: plugin.id) == nil, "Duplicate plugin ID")
     }
-    workerRequests = TokamakPluginRequests(plugins: plugins) { [unowned self] id, result in
-      ready { started in
-        if case .success(let runtime) = started { runtime.reply(id, result: result) }
-      }
-    }
+    workerRequests = TokamakPluginRequests(
+      plugins: plugins,
+      send: { [unowned self] id, result in
+        ready { started in
+          if case .success(let runtime) = started { runtime.reply(id, result: result) }
+        }
+      },
+      pull: { [unowned self] id in
+        ready { started in
+          if case .success(let runtime) = started { runtime.pull(id) }
+        }
+      })
   }
 
   /// Starts the runtime in the background, which delivers `start` with
@@ -64,10 +71,19 @@ final class TokamakApp {
     TokamakPluginHandler(
       context: Unmanaged.passUnretained(self).toOpaque(),
       call: { context, id, plugin, method, payload, count in
-        TokamakApp.receive(context, id, subscribe: false, plugin, method, payload, count)
+        TokamakApp.receive(context, id, .call, plugin, method, payload, count)
+      },
+      call_with_body: { context, id, plugin, method, payload, count in
+        TokamakApp.receive(context, id, .callWithBody, plugin, method, payload, count)
+      },
+      chunk: { context, id, payload, count, failed, done in
+        let app = Unmanaged<TokamakApp>.fromOpaque(context!).takeUnretainedValue()
+        let payload = count == 0 ? Data() : Data(bytes: payload!, count: count)
+        app.workerRequests.chunk(
+          id, TokamakPluginResult(payload: payload, failed: failed, done: done))
       },
       subscribe: { context, id, plugin, method, payload, count in
-        TokamakApp.receive(context, id, subscribe: true, plugin, method, payload, count)
+        TokamakApp.receive(context, id, .subscribe, plugin, method, payload, count)
       },
       cancel: { context, id in
         let app = Unmanaged<TokamakApp>.fromOpaque(context!).takeUnretainedValue()
@@ -80,7 +96,7 @@ final class TokamakApp {
   private static func receive(
     _ context: UnsafeMutableRawPointer?,
     _ id: UInt64,
-    subscribe: Bool,
+    _ kind: TokamakPluginRequest,
     _ plugin: UnsafePointer<CChar>?,
     _ method: UnsafePointer<CChar>?,
     _ payload: UnsafePointer<UInt8>?,
@@ -89,8 +105,7 @@ final class TokamakApp {
     let app = Unmanaged<TokamakApp>.fromOpaque(context!).takeUnretainedValue()
     let (plugin, method) = (String(cString: plugin!), String(cString: method!))
     let payload = count == 0 ? Data() : Data(bytes: payload!, count: count)
-    app.workerRequests.run(
-      id, subscribe: subscribe, plugin: plugin, method: method, payload: payload)
+    app.workerRequests.run(id, kind, plugin: plugin, method: method, payload: payload)
   }
 
   /// Calls `completion` on the main thread once the runtime has started or
@@ -322,10 +337,7 @@ final class RuntimeHandle {
   /// Starts the runtime, which delivers `start` with `foreground`, and whose
   /// Worker calls `plugins`.
   init(foreground: Bool, plugins: TokamakPluginHandler) throws {
-    guard
-      let appHost = Bundle.main.object(forInfoDictionaryKey: "TokamakHost") as? String,
-      !appHost.isEmpty
-    else {
+    guard let appHost = Bundle.main.tokamakHost, !appHost.isEmpty else {
       throw RuntimeError.configuration("TokamakHost is required")
     }
     self.appHost = appHost
@@ -473,6 +485,11 @@ final class RuntimeHandle {
   /// Whether the app is in the foreground, as last recorded.
   var isForeground: Bool {
     tokamak_runtime_is_foreground(handle)
+  }
+
+  /// Asks the Worker for the next chunk of the body of the call `id`.
+  func pull(_ id: UInt64) {
+    tokamak_runtime_pull(handle, id)
   }
 
   /// Passes an encoded plugin result to its native invocation.

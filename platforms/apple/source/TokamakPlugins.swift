@@ -24,6 +24,12 @@ struct TokamakPluginResult {
   let failed: Bool
   let done: Bool
 
+  init(payload: Data, failed: Bool, done: Bool) {
+    self.payload = payload
+    self.failed = failed
+    self.done = done
+  }
+
   init(_ result: Result<Data, TokamakPluginError>, done: Bool) {
     self.done = done
     switch result {
@@ -49,6 +55,22 @@ private func encodePluginValue(_ value: Any?) -> Result<Data, TokamakPluginError
     return .failure(.init(name: "DataCloneError", message: "The value cannot be encoded as JSON"))
   }
   return .success(json)
+}
+
+/// Decodes `payload` as JSON for `call`, and encodes its reply.
+private func callJSON(
+  _ payload: Data,
+  _ reply: @escaping TokamakPluginBytesReply,
+  _ call: (Any, @escaping TokamakPluginReply) -> (() -> Void)?
+) -> (() -> Void)? {
+  do {
+    return call(try decodePluginValue(payload)) {
+      reply(TokamakPluginResult($0.flatMap(encodePluginValue), done: true))
+    }
+  } catch {
+    reply(TokamakPluginResult(.failure(error), done: true))
+    return nil
+  }
 }
 
 private func decodePluginValue(_ payload: Data) throws(TokamakPluginError) -> Any {
@@ -145,6 +167,10 @@ protocol TokamakPlugin: AnyObject {
   func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (
     () -> Void
   )?
+  func callBytes(
+    method: String, payload: Data, body: TokamakPluginBody,
+    reply: @escaping TokamakPluginBytesReply
+  ) -> (() -> Void)?
   func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
     throws(TokamakPluginError) -> (() -> Void)
 
@@ -152,6 +178,15 @@ protocol TokamakPlugin: AnyObject {
   func call(
     method: String,
     arguments: Any,
+    reply: @escaping TokamakPluginReply
+  ) -> (() -> Void)?
+
+  /// A call whose `body` of bytes the Worker streams, which the plugin reads
+  /// one chunk at a time.
+  func call(
+    method: String,
+    arguments: Any,
+    body: TokamakPluginBody,
     reply: @escaping TokamakPluginReply
   ) -> (() -> Void)?
 
@@ -181,14 +216,14 @@ extension TokamakPlugin {
   func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (
     () -> Void
   )? {
-    do {
-      return call(method: method, arguments: try decodePluginValue(payload)) {
-        reply(TokamakPluginResult($0.flatMap(encodePluginValue), done: true))
-      }
-    } catch {
-      reply(TokamakPluginResult(.failure(error), done: true))
-      return nil
-    }
+    callJSON(payload, reply) { call(method: method, arguments: $0, reply: $1) }
+  }
+
+  func callBytes(
+    method: String, payload: Data, body: TokamakPluginBody,
+    reply: @escaping TokamakPluginBytesReply
+  ) -> (() -> Void)? {
+    callJSON(payload, reply) { call(method: method, arguments: $0, body: body, reply: $1) }
   }
 
   func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
@@ -205,6 +240,16 @@ extension TokamakPlugin {
     reply: @escaping TokamakPluginReply
   ) -> (() -> Void)? {
     reply(.failure(.notSupported("\(id).\(method) is not supported")))
+    return nil
+  }
+
+  func call(
+    method: String,
+    arguments: Any,
+    body: TokamakPluginBody,
+    reply: @escaping TokamakPluginReply
+  ) -> (() -> Void)? {
+    reply(.failure(.notSupported("\(id).\(method) does not take a body")))
     return nil
   }
 
@@ -228,6 +273,52 @@ extension TokamakPlugin {
   }
 }
 
+/// The bytes the Worker streams to a call, which the plugin reads one chunk
+/// at a time.
+final class TokamakPluginBody {
+  typealias Chunk = (Result<Data?, TokamakPluginError>) -> Void
+
+  private let queue: DispatchQueue
+  private let pull: () -> Void
+  private let lock = NSLock()
+  private var reading: Chunk?
+
+  init(queue: DispatchQueue, pull: @escaping () -> Void) {
+    self.queue = queue
+    self.pull = pull
+  }
+
+  /// Reads the next chunk: its bytes, nil after the last, or the Worker's
+  /// error. `handler` runs on the call's executor; read again only after it
+  /// has.
+  func read(_ handler: @escaping Chunk) {
+    lock.withLock { reading = handler }
+    pull()
+  }
+
+  /// Answers the pending read with the chunk the Worker sent.
+  fileprivate func receive(_ chunk: TokamakPluginResult) {
+    let handler = lock.withLock {
+      defer { reading = nil }
+      return reading
+    }
+    guard let handler else { return }
+    queue.async {
+      if chunk.failed {
+        let error = try? JSONSerialization.jsonObject(with: chunk.payload) as? [String: String]
+        handler(.failure(.init(name: error?["name"] ?? "Error", message: error?["message"] ?? "")))
+      } else {
+        handler(.success(chunk.done ? nil : chunk.payload))
+      }
+    }
+  }
+}
+
+/// What the Worker asked a plugin for.
+enum TokamakPluginRequest {
+  case call, callWithBody, subscribe
+}
+
 /// Runs the Worker's requests on the executor each plugin chooses, and passes
 /// replies straight to the runtime.
 final class TokamakPluginRequests<Key: Hashable> {
@@ -235,27 +326,42 @@ final class TokamakPluginRequests<Key: Hashable> {
   /// `cancellation`, so a cancellation runs after the operation started.
   private final class Request {
     let queue: DispatchQueue
+    var body: TokamakPluginBody?
     var cancellation: (() -> Void)?
     init(queue: DispatchQueue) { self.queue = queue }
   }
 
   private let plugins: [String: any TokamakPlugin]
   private let send: (Key, TokamakPluginResult) -> Void
+  private let pull: (Key) -> Void
   private let lock = NSLock()
   private var pending: [Key: Request] = [:]
 
-  init(plugins: [String: any TokamakPlugin], send: @escaping (Key, TokamakPluginResult) -> Void) {
+  /// Routes requests to `plugins`, sending their results with `send` and
+  /// asking the Worker for the next chunk of a call's body with `pull`.
+  init(
+    plugins: [String: any TokamakPlugin],
+    send: @escaping (Key, TokamakPluginResult) -> Void,
+    pull: @escaping (Key) -> Void = { _ in }
+  ) {
     self.plugins = plugins
     self.send = send
+    self.pull = pull
   }
 
-  func run(_ key: Key, subscribe: Bool, plugin: String, method: String, payload: Data) {
+  func run(
+    _ key: Key, _ kind: TokamakPluginRequest, plugin: String, method: String, payload: Data
+  ) {
     guard let target = plugins[plugin], !method.isEmpty else {
       send(key, TokamakPluginResult(.failure(.notSupported("Plugin is not supported")), done: true))
       return
     }
     let request = Request(queue: target.executor(for: method))
+    if kind == .callWithBody {
+      request.body = TokamakPluginBody(queue: request.queue) { [weak self] in self?.pull(key) }
+    }
     lock.withLock { pending[key] = request }
+    let subscribe = kind == .subscribe
     // A weak request lets a completed call release its cancellation.
     let reply: TokamakPluginBytesReply = { [weak self, weak request] result in
       guard let self, let request else { return }
@@ -267,14 +373,25 @@ final class TokamakPluginRequests<Key: Hashable> {
     request.queue.async { [self] in
       guard isPending(key, request) else { return }
       do throws(TokamakPluginError) {
-        request.cancellation =
-          try subscribe
-          ? target.subscribeBytes(method: method, payload: payload, reply: reply)
-          : target.callBytes(method: method, payload: payload, reply: reply)
+        if subscribe {
+          request.cancellation = try target.subscribeBytes(
+            method: method, payload: payload, reply: reply)
+        } else if let body = request.body {
+          request.cancellation = target.callBytes(
+            method: method, payload: payload, body: body, reply: reply)
+        } else {
+          request.cancellation = target.callBytes(method: method, payload: payload, reply: reply)
+        }
       } catch {
         if remove(key, request) { send(key, TokamakPluginResult(.failure(error), done: true)) }
       }
     }
+  }
+
+  /// Answers the pending read of the call `key`'s body with the chunk the
+  /// Worker sent.
+  func chunk(_ key: Key, _ chunk: TokamakPluginResult) {
+    lock.withLock { pending[key]?.body }?.receive(chunk)
   }
 
   func cancel(_ key: Key) {

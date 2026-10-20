@@ -43,6 +43,44 @@ data class TokamakPluginResult(val payload: ByteArray, val failed: Boolean, val 
     }
 }
 
+private fun decodePluginValue(payload: ByteArray): Any? = JSONTokener(payload.toString(Charsets.UTF_8)).nextValue()
+
+/**
+ * The bytes the Worker streams to a call, which the plugin reads one chunk at a time on the call's
+ * [executor]; [pull] asks the Worker for the next.
+ */
+class TokamakPluginBody internal constructor(private val executor: Executor, private val pull: () -> Unit) {
+    private var reading: ((Result<ByteArray?>) -> Unit)? = null
+
+    /**
+     * Reads the next chunk: its bytes, null after the last, or the Worker's error. [handler] runs on
+     * the call's executor; read again only after it has.
+     */
+    fun read(handler: (Result<ByteArray?>) -> Unit) {
+        synchronized(this) { reading = handler }
+        pull()
+    }
+
+    /** Answers the pending read with the chunk the Worker sent. */
+    internal fun receive(chunk: TokamakPluginResult) {
+        val handler = synchronized(this) { reading.also { reading = null } } ?: return
+        executor.execute {
+            handler(
+                when {
+                    chunk.failed -> Result.failure(chunkError(chunk.payload))
+                    chunk.done -> Result.success(null)
+                    else -> Result.success(chunk.payload)
+                },
+            )
+        }
+    }
+
+    private fun chunkError(payload: ByteArray): TokamakPluginError {
+        val error = runCatching { JSONObject(payload.toString(Charsets.UTF_8)) }.getOrNull()
+        return TokamakPluginError(error?.optString("name", "Error") ?: "Error", error?.optString("message", "") ?: "")
+    }
+}
+
 /** [value] as a payload: a [ByteArray] as it is, and any other value as JSON. */
 private fun encodePluginValue(value: Any?): ByteArray {
     if (value is ByteArray) return value
@@ -74,18 +112,32 @@ interface TokamakPlugin {
     fun executor(method: String): Executor = uiExecutor
 
     fun callBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply): (() -> Unit)? =
-        call(method, JSONTokener(payload.toString(Charsets.UTF_8)).nextValue()) {
+        call(method, decodePluginValue(payload)) { reply(TokamakPluginResult.encoded(it.mapCatching(::encodePluginValue), true)) }
+
+    fun callBytes(
+        method: String,
+        payload: ByteArray,
+        body: TokamakPluginBody,
+        reply: TokamakPluginBytesReply,
+    ): (() -> Unit)? =
+        call(method, decodePluginValue(payload), body) {
             reply(TokamakPluginResult.encoded(it.mapCatching(::encodePluginValue), true))
         }
 
     fun subscribeBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply): () -> Unit =
-        subscribe(method, JSONTokener(payload.toString(Charsets.UTF_8)).nextValue()) {
+        subscribe(method, decodePluginValue(payload)) {
             reply(TokamakPluginResult.encoded(it.mapCatching(::encodePluginValue), false))
         }
 
     /** Returns cancellation for pending work when the platform supports it. */
     fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
         reply(Result.failure(TokamakPluginError.notSupported("$id.$method is not supported")))
+        return null
+    }
+
+    /** A call whose [body] of bytes the Worker streams, which the plugin reads one chunk at a time. */
+    fun call(method: String, arguments: Any?, body: TokamakPluginBody, reply: TokamakPluginReply): (() -> Unit)? {
+        reply(Result.failure(TokamakPluginError.notSupported("$id.$method does not take a body")))
         return null
     }
 

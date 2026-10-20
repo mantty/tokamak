@@ -26,9 +26,9 @@ fun main() {
         check(result.payload.contentEquals(byteArrayOf(0, -1)))
         replied.countDown()
     }
-    requests.run(1, false, "test", "echo", byteArrayOf(0, -1))
+    requests.run(1, TokamakPluginRequest.CALL, "test", "echo", byteArrayOf(0, -1))
     check(replied.await(2, TimeUnit.SECONDS))
-    requests.run(2, true, "test", "once", byteArrayOf(0, -1))
+    requests.run(2, TokamakPluginRequest.SUBSCRIBE, "test", "once", byteArrayOf(0, -1))
     check(cancelled.await(2, TimeUnit.SECONDS))
     requests.cancelAll()
     executor.shutdown()
@@ -57,7 +57,7 @@ fun main() {
             override fun subscribeBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply) = begin(reply)
         }
         val calls = TokamakPluginRequests<Int>(mapOf("gated" to gated)) { _, _ -> error("Cancelled request replied") }
-        calls.run(1, subscribe, "gated", "wait", byteArrayOf())
+        calls.run(1, if (subscribe) TokamakPluginRequest.SUBSCRIBE else TokamakPluginRequest.CALL, "gated", "wait", byteArrayOf())
         check(entered.await(2, TimeUnit.SECONDS))
         if (subscribe) { calls.cancelAll(); calls.cancelAll() } else { calls.cancel(1); calls.cancel(1) }
         release.countDown()
@@ -67,7 +67,8 @@ fun main() {
         check(cleanups == 1)
     }
     testResources()
-    println("Passed off-main calls, replies, terminal streams, cancellation before hook installation, and resources")
+    testBodies()
+    println("Passed off-main calls, replies, terminal streams, cancellation before hook installation, resources and bodies")
 }
 
 /** A retained object is shared as itself until its release. */
@@ -84,3 +85,35 @@ fun testResources() {
 
 fun failure(operation: () -> Unit): String? =
     runCatching(operation).exceptionOrNull()?.let { (it as TokamakPluginError).errorName }
+
+/** A call reads its body one chunk per pull, on its executor, until the last chunk. */
+fun testBodies() {
+    val executor = Executors.newSingleThreadExecutor()
+    val pulls = LinkedBlockingQueue<Long>()
+    val replies = LinkedBlockingQueue<TokamakPluginResult>()
+    val reader = object : TokamakPlugin {
+        override val id = "reader"
+        override fun executor(method: String) = executor
+        override fun callBytes(method: String, payload: ByteArray, body: TokamakPluginBody, reply: TokamakPluginBytesReply): (() -> Unit)? {
+            var sum = 0
+            fun next() {
+                body.read { chunk ->
+                    check(Thread.currentThread().name != "main")
+                    val bytes = chunk.getOrThrow()
+                    if (bytes == null) reply(TokamakPluginResult(byteArrayOf(sum.toByte()), false, true))
+                    else { sum += bytes.sum(); next() }
+                }
+            }
+            next()
+            return null
+        }
+    }
+    val requests = TokamakPluginRequests<Long>(mapOf("reader" to reader), pull = { pulls.put(it) }) { _, result -> replies.put(result) }
+    requests.run(1, TokamakPluginRequest.CALL_WITH_BODY, "reader", "sum", byteArrayOf())
+    for (chunk in listOf(TokamakPluginResult(byteArrayOf(1, 2), false, false), TokamakPluginResult(byteArrayOf(3), false, false), TokamakPluginResult(byteArrayOf(), false, true))) {
+        check(pulls.poll(2, TimeUnit.SECONDS) == 1L)
+        requests.chunk(1, chunk)
+    }
+    check(replies.poll(2, TimeUnit.SECONDS)?.payload?.contentEquals(byteArrayOf(6)) == true)
+    executor.shutdown()
+}

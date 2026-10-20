@@ -3,6 +3,7 @@
 //! Worker, and the development Worker's plugin calls to the app.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -17,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::gateway::HandlerError;
 use crate::native_protocol::{self, Header};
-use crate::plugin_calls::{PluginCalls, PluginReply};
+use crate::plugin_calls::{Body, Overflow, PluginCalls, PluginReply, error};
 use crate::transport::{parse_websocket_frame, write_frame};
 
 /// The development app's end of the dev WebSocket, while it is open.
@@ -101,14 +102,14 @@ impl DevSocket {
             pending: Mutex::default(),
         });
         self.connection.send_replace(Some(Arc::clone(&connection)));
-        let mut requests = HashMap::new();
+        let mut requests = Requests::default();
         let _ = relay(upgraded, messages, stopped, |message| {
             self.receive(&connection, &mut requests, message)
         })
         .await;
         self.connection.send_replace(None);
         connection.pending().clear();
-        for request in requests.values() {
+        for request in requests.tasks.values() {
             request.abort();
         }
     }
@@ -118,14 +119,16 @@ impl DevSocket {
     fn receive(
         &self,
         connection: &Connection,
-        requests: &mut HashMap<u64, AbortHandle>,
+        requests: &mut Requests,
         message: &[u8],
     ) -> io::Result<()> {
         let (message, payload) = native_protocol::decode(message)?;
         let id = message.id;
         let plugin = message.plugin.as_deref().unwrap_or_default();
         let method = message.method.as_deref().unwrap_or_default();
-        requests.retain(|_, request| !request.is_finished());
+        requests.tasks.retain(|_, request| !request.is_finished());
+        requests.bodies.retain(|_, chunks| !chunks.is_closed());
+        let outgoing = connection.outgoing.clone();
         let task = match message.r#type.as_str() {
             "reply" => {
                 connection.answer(id, Ok(payload));
@@ -140,15 +143,42 @@ impl DevSocket {
             }
             "call" => {
                 let result = self.plugins.call(plugin, method, payload);
-                let outgoing = connection.outgoing.clone();
                 tokio::spawn(async move {
                     send_result(&outgoing, id, result.await).await;
                 })
             }
-            "subscribe" => {
-                let mut subscription = self.plugins.subscribe(plugin, method, payload);
-                let outgoing = connection.outgoing.clone();
+            "callWithBody" => {
+                let (result, body) = self.plugins.call_with_body(plugin, method, payload);
+                let (chunks, received) = mpsc::unbounded_channel();
+                requests.bodies.insert(id, chunks);
                 tokio::spawn(async move {
+                    let result = with_body(result, body, received, &outgoing, id).await;
+                    send_result(&outgoing, id, result).await;
+                })
+            }
+            "chunk" => {
+                if let Some(chunks) = requests.bodies.get(&id) {
+                    let _ = chunks.send(PluginReply {
+                        payload: payload.to_vec(),
+                        failed: message.failed,
+                        done: message.done,
+                    });
+                }
+                return Ok(());
+            }
+            "subscribe" => {
+                let overflow = message
+                    .overflow
+                    .as_deref()
+                    .map_or(Some(Overflow::Error), Overflow::named);
+                let mut subscription = overflow
+                    .map(|overflow| self.plugins.subscribe(plugin, method, payload, overflow));
+                tokio::spawn(async move {
+                    let Some(subscription) = &mut subscription else {
+                        let unknown = error("TypeError", "Unknown overflow policy");
+                        send_result(&outgoing, id, unknown).await;
+                        return;
+                    };
                     while let Some(result) = subscription.next().await {
                         if !send_result(&outgoing, id, result).await {
                             return;
@@ -157,17 +187,61 @@ impl DevSocket {
                 })
             }
             "cancel" => {
-                if let Some(request) = requests.remove(&id) {
+                if let Some(request) = requests.tasks.remove(&id) {
                     request.abort();
                 }
                 return Ok(());
             }
             _ => return Ok(()),
         };
-        if let Some(previous) = requests.insert(id, task.abort_handle()) {
+        if let Some(previous) = requests.tasks.insert(id, task.abort_handle()) {
             previous.abort();
         }
         Ok(())
+    }
+}
+
+/// The development Worker's calls and subscriptions running on the app.
+#[derive(Default)]
+struct Requests {
+    tasks: HashMap<u64, AbortHandle>,
+    /// Where the host's chunks of each call's body go.
+    bodies: HashMap<u64, mpsc::UnboundedSender<PluginReply>>,
+}
+
+/// The result of a call whose `body` the shell pulls: each pull goes to the
+/// host, whose chunk arrives on `chunks`.
+async fn with_body(
+    result: impl Future<Output = PluginReply>,
+    body: Option<Body>,
+    mut chunks: mpsc::UnboundedReceiver<PluginReply>,
+    outgoing: &mpsc::Sender<(Header, Vec<u8>)>,
+    id: u64,
+) -> PluginReply {
+    let relay = async {
+        let Some(mut body) = body else { return };
+        while body.pulled().await {
+            let pull = Header {
+                r#type: "pull".into(),
+                id,
+                ..Header::default()
+            };
+            if outgoing.send((pull, Vec::new())).await.is_err() {
+                return;
+            }
+            let Some(chunk) = chunks.recv().await else {
+                return;
+            };
+            body.send(&chunk);
+            if chunk.done {
+                return;
+            }
+        }
+    };
+    tokio::pin!(result);
+    tokio::select! {
+        result = &mut result => result,
+        () = relay => result.await,
     }
 }
 

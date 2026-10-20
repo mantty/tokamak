@@ -27,15 +27,18 @@ export class NativeReference {
       const id = await new Promise<Uint8Array>((resolve, reject) => {
         let settled = false;
         // Later replies are ignored: a released object fails where it is used.
-        release = ctx[nativeConnection].listen(plugin, method, payload, (value, done) => {
-          if (settled) return;
-          settled = true;
-          if (done) reject(new DOMException("The native object was not retained", "InvalidStateError"));
-          else resolve(value);
-        }, (error) => {
-          if (settled) return;
-          settled = true;
-          reject(error);
+        release = ctx[nativeConnection].listen(plugin, method, payload, {
+          next(value, done) {
+            if (settled) return;
+            settled = true;
+            if (done) reject(new DOMException("The native object was not retained", "InvalidStateError"));
+            else resolve(value);
+          },
+          error(error) {
+            if (settled) return;
+            settled = true;
+            reject(error);
+          },
         });
       });
       return new NativeReference(ctx, decodeJson<string>(id), release);

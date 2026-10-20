@@ -442,7 +442,7 @@ test("keeps a development Worker's listener after its event until it is removed"
   const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
   const app = project({
     "src/tokamak.ts": `const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for("tokamak.native")].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
-const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
+const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), { next: payload => next(JSON.parse(new TextDecoder().decode(payload))), error });
 ${NATIVE_WORKER}\nimport { onStart } from ${JSON.stringify(events)};
 onStart((_event, _env, ctx) => {
   const stop = nativeListen(ctx, "location", "watchPosition", null, (position) => {

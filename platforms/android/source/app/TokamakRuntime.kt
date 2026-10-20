@@ -12,6 +12,12 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
     interface Plugins {
         fun call(id: Long, plugin: String, method: String, payload: ByteArray)
 
+        /** A call with a body, whose chunks the shell asks for with [pull] and receives in [chunk]. */
+        fun callWithBody(id: Long, plugin: String, method: String, payload: ByteArray)
+
+        /** The chunk of the call [id]'s body the shell pulled: bytes, or an encoded error when [failed]. */
+        fun chunk(id: Long, payload: ByteArray, failed: Boolean, done: Boolean)
+
         fun subscribe(id: Long, plugin: String, method: String, payload: ByteArray)
 
         fun cancel(id: Long)
@@ -43,6 +49,9 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
     /** Whether the app is in the foreground, as last recorded. */
     val isForeground: Boolean
         get() = nativeIsForeground(handle)
+
+    /** Asks the Worker for the next chunk of the body of the call [id]. */
+    fun pull(id: Long) = nativePull(handle, id)
 
     /** Passes an encoded plugin result to its native invocation. */
     fun reply(id: Long, result: TokamakPluginResult) =
@@ -126,6 +135,9 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
 
         @JvmStatic
         private external fun nativeReply(handle: Long, id: Long, payload: ByteArray, failed: Boolean, done: Boolean)
+
+        @JvmStatic
+        private external fun nativePull(handle: Long, id: Long)
 
         @JvmStatic
         private external fun nativePort(handle: Long): Int

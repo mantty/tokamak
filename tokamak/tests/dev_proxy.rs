@@ -266,6 +266,18 @@ impl PluginHandler for Shell {
             .send((id, format!("call {plugin}.{method} {arguments}")));
     }
 
+    fn call_with_body(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
+        let arguments = String::from_utf8_lossy(arguments);
+        let _ = self
+            .0
+            .send((id, format!("body {plugin}.{method} {arguments}")));
+    }
+
+    fn chunk(&self, id: u64, chunk: &tokamak::PluginReply) {
+        let payload = String::from_utf8_lossy(&chunk.payload);
+        let _ = self.0.send((id, format!("chunk {payload} {}", chunk.done)));
+    }
+
     fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
         let arguments = String::from_utf8_lossy(arguments);
         let _ = self
@@ -350,6 +362,54 @@ fn runs_the_development_workers_plugin_calls_on_the_device() -> TestResult {
         assert_eq!(next_request()?, (call, "cancel".to_owned()));
         runtime.reply(call, value(br#""late""#, true));
     }
+    Ok(())
+}
+
+#[test]
+fn relays_a_call_body_as_the_device_pulls_each_chunk() -> TestResult {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let temporary = tempfile::tempdir()?;
+    let (sender, requests) = mpsc::channel();
+    let runtime = Runtime::start_development(
+        DevelopmentConfig {
+            state_dir: temporary.path().join("state"),
+            host: HOST.to_owned(),
+            proxy: DevProxyConfig {
+                endpoint: format!("http://127.0.0.1:{}", listener.local_addr()?.port()),
+                session_token: "test-session".to_owned(),
+            },
+            foreground: false,
+            plugins: Some(Arc::new(Shell(sender))),
+        },
+        |_| {},
+    )?;
+    let (mut socket, _) = accept_dev_socket(&listener)?;
+    answer_event(&mut socket)?;
+    let next_request = || requests.recv_timeout(Duration::from_secs(5));
+    send_message(
+        &mut socket,
+        &json!({ "type": "callWithBody", "id": 7, "plugin": "files", "method": "write", "arguments": {} }),
+    )?;
+    let (call, request) = next_request()?;
+    assert_eq!(request, "body files.write {}");
+
+    for (payload, done) in [(&b"part"[..], false), (&b""[..], true)] {
+        runtime.pull(call);
+        assert_eq!(
+            read_message(&mut socket)?,
+            json!({ "type": "pull", "id": 7 })
+        );
+        let chunk = json!({ "type": "chunk", "id": 7, "done": done });
+        write_frame(&mut socket, 0x2, &encode_payload(&chunk, payload)?, false)?;
+        let text = String::from_utf8_lossy(payload);
+        assert_eq!(next_request()?, (call, format!("chunk {text} {done}")));
+    }
+    runtime.reply(call, value(br#""written""#, true));
+
+    assert_eq!(
+        read_message(&mut socket)?,
+        json!({ "type": "result", "id": 7, "result": { "value": "written", "done": true } })
+    );
     Ok(())
 }
 
@@ -797,7 +857,7 @@ fn answer_event(socket: &mut TcpStream) -> TestResult<String> {
 fn encode_message(message: &Value) -> TestResult<Vec<u8>> {
     let mut header = message.clone();
     let payload = match message["type"].as_str() {
-        Some("call" | "subscribe") => header
+        Some("call" | "callWithBody" | "subscribe") => header
             .as_object_mut()
             .ok_or("no header")?
             .remove("arguments")
@@ -842,7 +902,12 @@ fn read_message(socket: &mut TcpStream) -> TestResult<Value> {
     assert_eq!(opcode, 0x2);
     let metadata = u32::from_le_bytes(bytes[4..8].try_into()?) as usize;
     let mut message: Value = serde_json::from_slice(&bytes[8..8 + metadata])?;
-    let payload: Value = serde_json::from_slice(&bytes[8 + metadata..])?;
+    let payload = &bytes[8 + metadata..];
+    let payload: Value = if payload.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(payload)?
+    };
     if message["type"] == "event" {
         message["event"] = payload;
     } else if message["type"] == "result" {

@@ -83,7 +83,7 @@ export default {
 "#;
 
 /// Registers an invocation-owned listener and responds.
-const LISTENING_WORKER: &[u8] = br#"const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
+const LISTENING_WORKER: &[u8] = br#"const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), { next: payload => next(JSON.parse(new TextDecoder().decode(payload))), error });
 
 export default {
   fetch(request, env, ctx) {
@@ -152,6 +152,10 @@ fn releases_invocation_owned_listeners_when_the_request_finishes()
     impl crate::PluginHandler for Shell {
         fn call(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
 
+        fn call_with_body(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
+
+        fn chunk(&self, _: u64, _: &crate::PluginReply) {}
+
         fn subscribe(&self, id: u64, _: &str, _: &str, _: &[u8]) {
             let _ = self.0.send(id);
         }
@@ -214,6 +218,8 @@ fn http_wait_until_survives_caller_cancellation_but_ends_at_the_host_deadline()
         fn call(&self, _: u64, _: &str, method: &str, _: &[u8]) {
             let _ = self.0.send(method.into());
         }
+        fn call_with_body(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
+        fn chunk(&self, _: u64, _: &crate::PluginReply) {}
         fn subscribe(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
         fn cancel(&self, _: u64) {}
     }
@@ -282,15 +288,20 @@ fn completes_response_cancellation_cleanup_without_other_background_work()
     check_http_body_cleanup(false)
 }
 
-fn check_http_body_cleanup(retained: bool) -> Result<(), Box<dyn std::error::Error>> {
-    struct Shell(Sender<(u64, String)>);
-    impl crate::PluginHandler for Shell {
-        fn call(&self, id: u64, _: &str, method: &str, _: &[u8]) {
-            let _ = self.0.send((id, method.into()));
-        }
-        fn subscribe(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
-        fn cancel(&self, _: u64) {}
+/// Shell plugins that record each call's ID and method.
+struct Gate(Sender<(u64, String)>);
+
+impl crate::PluginHandler for Gate {
+    fn call(&self, id: u64, _: &str, method: &str, _: &[u8]) {
+        let _ = self.0.send((id, method.into()));
     }
+    fn call_with_body(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
+    fn chunk(&self, _: u64, _: &crate::PluginReply) {}
+    fn subscribe(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
+    fn cancel(&self, _: u64) {}
+}
+
+fn check_http_body_cleanup(retained: bool) -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::of_source(
         br"const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
@@ -313,7 +324,7 @@ export default {
         directory.path(),
     )?;
     let (sent, received) = flume::unbounded();
-    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Shell(sent))), true);
+    let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(sent))), true);
     let config = RuntimeConfig {
         plugins: Some(Arc::clone(&plugins)),
         environment: [("RETAIN".into(), retained.into())].into(),

@@ -4,7 +4,7 @@ import type { TokamakContext } from "@tokamakdev/plugin";
 export function {{factory}}(ctx: TokamakContext) {
   return {
     /** The current native page's URL. */
-    getCurrentPage(): Promise<string> {
+    getCurrentPage(): Promise<string | null> {
       return ctx.webview.getCurrentPage();
     },
   };

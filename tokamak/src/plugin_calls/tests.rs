@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use super::{PluginCalls, PluginHandler, PluginReply, SUBSCRIPTION_CAPACITY};
+use super::{Overflow, PluginCalls, PluginHandler, PluginReply, SUBSCRIPTION_CAPACITY};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -25,6 +25,12 @@ impl Shell {
 impl PluginHandler for Shell {
     fn call(&self, id: u64, plugin: &str, method: &str, payload: &[u8]) {
         self.record(id, format!("{plugin}.{method}"), payload);
+    }
+    fn call_with_body(&self, id: u64, plugin: &str, method: &str, payload: &[u8]) {
+        self.record(id, format!("{plugin}.{method} with body"), payload);
+    }
+    fn chunk(&self, id: u64, chunk: &PluginReply) {
+        self.record(id, format!("chunk done={}", chunk.done), &chunk.payload);
     }
     fn subscribe(&self, id: u64, plugin: &str, method: &str, payload: &[u8]) {
         self.record(id, format!("{plugin}.{method}"), payload);
@@ -66,7 +72,7 @@ async fn carries_arbitrary_bytes_without_decoding_and_resolves_once() {
 #[tokio::test]
 async fn delivers_values_and_errors_until_explicit_completion() -> TestResult {
     let (shell, calls) = with_shell();
-    let mut stream = calls.subscribe("binary", "watch", &[]);
+    let mut stream = calls.subscribe("binary", "watch", &[], Overflow::Error);
     calls.reply(1, value(&[255], false));
     calls.reply(
         1,
@@ -96,7 +102,7 @@ async fn delivers_values_and_errors_until_explicit_completion() -> TestResult {
 async fn cancelled_requests_release_native_resources_without_affecting_other_calls() {
     let (shell, calls) = with_shell();
     drop(calls.call("a", "call", &[]));
-    drop(calls.subscribe("a", "stream", &[]));
+    drop(calls.subscribe("a", "stream", &[], Overflow::Error));
     let retained = calls.call("b", "call", &[]);
     calls.reply(1, value(b"late", true));
     calls.reply(3, value(b"retained", true));
@@ -115,7 +121,7 @@ async fn cancelled_requests_release_native_resources_without_affecting_other_cal
 #[tokio::test]
 async fn overflowing_a_subscription_reports_failure_and_cancels_native_work() -> TestResult {
     let (shell, calls) = with_shell();
-    let mut stream = calls.subscribe("binary", "watch", &[]);
+    let mut stream = calls.subscribe("binary", "watch", &[], Overflow::Error);
     for _ in 0..=SUBSCRIPTION_CAPACITY {
         calls.reply(1, value(&[1], false));
     }
@@ -179,8 +185,81 @@ async fn missing_native_handler_fails_calls_and_subscriptions() -> TestResult {
         error["message"],
         "location.getCurrentPosition is not supported"
     );
-    let mut stream = calls.subscribe("location", "watch", &[]);
+    let mut stream = calls.subscribe("location", "watch", &[], Overflow::Error);
     assert!(stream.next().await.ok_or("missing error")?.failed);
     assert!(stream.next().await.is_none());
     Ok(())
+}
+
+#[tokio::test]
+async fn a_drop_oldest_subscription_keeps_the_newest_results() -> TestResult {
+    let (shell, calls) = with_shell();
+    let mut stream = calls.subscribe("sensor", "watch", &[], Overflow::DropOldest);
+    for value in 0..=SUBSCRIPTION_CAPACITY {
+        calls.reply(1, value_of(value));
+    }
+    for value in 1..=SUBSCRIPTION_CAPACITY {
+        assert_eq!(
+            stream.next().await.ok_or("missing value")?.payload,
+            value_of(value).payload
+        );
+    }
+    calls.reply(1, value(b"last", true));
+    assert_eq!(
+        stream.next().await.ok_or("missing last value")?.payload,
+        b"last"
+    );
+    assert!(stream.next().await.is_none());
+    assert!(
+        shell
+            .requests()
+            .iter()
+            .all(|(_, method, _)| method != "cancel")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_call_body_sends_each_chunk_the_shell_pulls_until_the_call_ends() -> TestResult {
+    let (shell, calls) = with_shell();
+    let (result, body) = calls.call_with_body("files", "write", b"args");
+    let mut body = body.ok_or("the shell runs the call")?;
+    calls.pull(1);
+    assert!(body.pulled().await);
+    body.send(&value(&[0, 255], false));
+    calls.pull(1);
+    assert!(body.pulled().await);
+    body.send(&value(&[], true));
+    calls.reply(1, value(b"written", true));
+    assert_eq!(result.await.payload, b"written");
+    calls.pull(1);
+    assert!(!body.pulled().await, "an ended call still pulled");
+    assert_eq!(
+        shell.requests(),
+        [
+            (1, "files.write with body".into(), b"args".to_vec()),
+            (1, "chunk done=false".into(), vec![0, 255]),
+            (1, "chunk done=true".into(), vec![]),
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelling_a_call_with_a_body_ends_its_body() -> TestResult {
+    let (shell, calls) = with_shell();
+    let (result, body) = calls.call_with_body("files", "write", &[]);
+    drop(result);
+    let mut body = body.ok_or("the shell runs the call")?;
+    assert!(!body.pulled().await);
+    assert_eq!(shell.requests().last(), Some(&(1, "cancel".into(), vec![])));
+    Ok(())
+}
+
+fn value_of(value: usize) -> PluginReply {
+    super::PluginReply {
+        payload: value.to_le_bytes().to_vec(),
+        failed: false,
+        done: false,
+    }
 }

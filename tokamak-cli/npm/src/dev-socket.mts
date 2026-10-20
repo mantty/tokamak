@@ -5,7 +5,7 @@ import { pipeline } from "node:stream/promises";
 import type { ReadableStream } from "node:stream/web";
 
 import { WebSocketServer, type WebSocket } from "ws";
-import { decodeMessage, encodeMessage, type NativeMessage } from "@tokamakdev/plugin/native-protocol";
+import { decodeMessage, encodeMessage, messages, type NativeMessage } from "@tokamakdev/plugin/native-protocol";
 import { DevWorker, type WorkerSocket } from "./dev-worker.mjs";
 
 /** The header that carries the device's session token, which `tok dev`'s relay forwards. */
@@ -148,6 +148,10 @@ function serve(websocket: WebSocket, worker: DevWorker, device: Device): void {
       device.receive(header.id, { payload, failed: header.failed === true, done: header.done === true });
       return;
     }
+    if (header.type === "pull" && header.id !== undefined) {
+      device.pull(header.id);
+      return;
+    }
     if (header.type !== "event" || header.id === undefined || !header.name) return;
     const send = (type: string, value: Uint8Array) => {
       if (websocket.readyState === websocket.OPEN) websocket.send(encodeMessage({ type, id: header.id }, value));
@@ -161,13 +165,17 @@ function serve(websocket: WebSocket, worker: DevWorker, device: Device): void {
 
 const encoder = new TextEncoder();
 
-/** Relays opaque endpoint payloads; closing the response cancels the native request. */
+/**
+ * Relays opaque endpoint payloads; closing the response cancels the native request. A call with a
+ * body sends its later messages to the device as the device pulls them.
+ */
 async function forward(device: Device, request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+  const frames = messages(request);
   let call: NativeMessage;
   try {
-    const chunks: Buffer[] = [];
-    for await (const chunk of request) chunks.push(chunk as Buffer);
-    call = decodeMessage(Buffer.concat(chunks));
+    const first = await frames.next();
+    if (first.done) throw new TypeError("Missing native request");
+    call = first.value;
     if (!call.header.plugin || !call.header.method) throw new TypeError("Missing native endpoint");
   } catch {
     response.writeHead(400).end();
@@ -175,22 +183,75 @@ async function forward(device: Device, request: http.IncomingMessage, response: 
   }
   response.writeHead(200, { "content-type": "application/octet-stream" });
   const subscribe = request.url === "/subscribe";
+  const type = subscribe ? "subscribe" : call.header.type === "callWithBody" ? "callWithBody" : "call";
   if (subscribe) response.flushHeaders();
-  const cancel = device.send(subscribe ? "subscribe" : "call", call, ({ payload, failed, done }) => {
+  const write = subscribe ? subscriptionWriter(response, call.header.overflow, () => { cancel(); }) : undefined;
+  const cancel = device.send(type, call, ({ payload, failed, done }) => {
     const frame = encodeMessage({ type: "result", failed, done }, payload);
-    if (!subscribe || done) response.end(frame);
-    else {
-      response.write(frame);
-      if (response.writableLength > 1024 * 1024) response.destroy(new Error("Native subscription consumer is too slow"));
-    }
+    if (write) write(frame, done);
+    else response.end(frame);
+  }, async () => {
+    const next = await frames.next().catch(() => ({ done: true as const, value: undefined }));
+    return next.done ? failure("DataCloneError", "The call's body ended early") : chunkResult(next.value);
   });
   response.once("close", () => {
     if (!response.writableEnded) cancel();
   });
 }
 
+function chunkResult({ header, payload }: NativeMessage): PluginResult {
+  return { payload, failed: header.failed === true, done: header.done === true };
+}
+
+/** The most a subscription's response holds while the Worker is not reading it. */
+const SUBSCRIPTION_BUFFER = 1024 * 1024;
+
+/**
+ * Writes a subscription's frames to `response`, holding those it cannot take yet. Past
+ * `SUBSCRIPTION_BUFFER`, `overflow` drops the oldest held frame or ends the subscription with
+ * `fail`.
+ */
+function subscriptionWriter(response: http.ServerResponse, overflow: string | undefined, fail: () => void) {
+  const held: { frame: Uint8Array; done: boolean }[] = [];
+  let bytes = 0;
+  let writable = true;
+  const flush = () => {
+    while (writable && held.length) {
+      const { frame, done } = held.shift()!;
+      bytes -= frame.byteLength;
+      if (done) response.end(frame);
+      else writable = response.write(frame);
+    }
+  };
+  response.on("drain", () => {
+    writable = true;
+    flush();
+  });
+  return (frame: Uint8Array, done: boolean) => {
+    held.push({ frame, done });
+    bytes += frame.byteLength;
+    while (bytes > SUBSCRIPTION_BUFFER && held.length > 1) {
+      if (overflow !== "dropOldest") {
+        response.destroy(new Error("Native subscription consumer is too slow"));
+        fail();
+        return;
+      }
+      bytes -= held.shift()!.frame.byteLength;
+    }
+    flush();
+  };
+}
+
 function failure(name: string, message: string): PluginResult {
   return { payload: encoder.encode(JSON.stringify({ name, message })), failed: true, done: true };
+}
+
+/** A request the device runs: where its results go, and how its body's next chunk is read. */
+interface Pending {
+  type: string;
+  socket: WebSocket;
+  receive(result: PluginResult): void;
+  pull?(): Promise<PluginResult>;
 }
 
 /** The device, through its latest dev WebSocket, and the plugin calls waiting for its results. */
@@ -198,7 +259,7 @@ class Device {
   #socket: WebSocket | undefined;
   #connected: (() => void)[] = [];
   #nextId = 1;
-  #pending = new Map<number, { type: "call" | "subscribe"; socket: WebSocket; receive(result: PluginResult): void }>();
+  #pending = new Map<number, Pending>();
 
   connect(socket: WebSocket): void {
     this.#socket = socket;
@@ -216,15 +277,24 @@ class Device {
   receive(id: number, result: PluginResult): void {
     const pending = this.#pending.get(id);
     if (!pending) return;
-    if (result.done || pending.type === "call") this.#pending.delete(id);
+    if (result.done || pending.type !== "subscribe") this.#pending.delete(id);
     pending.receive(result);
+  }
+
+  /** Sends the device the next chunk of the body of the call `id`, which it pulled. */
+  pull(id: number): void {
+    const pending = this.#pending.get(id);
+    void pending?.pull?.().then(({ payload, failed, done }) => {
+      if (this.#pending.get(id) === pending) pending.socket.send(encodeMessage({ type: "chunk", id, failed, done }, payload));
+    });
   }
 
   /**
    * Sends a call or subscription once the device is connected, waiting up to 10 seconds for it,
-   * and passes each of its results to `receive`. Returns the function that cancels the request.
+   * and passes each of its results to `receive`; `pull` reads the next chunk of a call's body.
+   * Returns the function that cancels the request.
    */
-  send(type: "call" | "subscribe", request: NativeMessage, receive: (result: PluginResult) => void): () => void {
+  send(type: string, request: NativeMessage, receive: (result: PluginResult) => void, pull?: () => Promise<PluginResult>): () => void {
     const id = this.#nextId++;
     let cancelled = false;
     void this.#connection().then((socket) => {
@@ -233,7 +303,7 @@ class Device {
         receive(failure("NetworkError", "The device is not connected"));
         return;
       }
-      this.#pending.set(id, { type, socket, receive });
+      this.#pending.set(id, { type, socket, receive, pull });
       socket.send(encodeMessage({ ...request.header, type, id }, request.payload));
     });
     return () => {

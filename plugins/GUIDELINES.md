@@ -29,7 +29,7 @@ import type { TokamakContext } from "@tokamakdev/plugin";
 
 export function pageTools(ctx: TokamakContext) {
   return {
-    getCurrentPage(): Promise<string> {
+    getCurrentPage(): Promise<string | null> {
       return ctx.webview.getCurrentPage();
     },
   };
@@ -61,6 +61,18 @@ Keep low-level native objects inside the Tokamak worker.
 Extend `Plugin` for native endpoints. Its protected `call` encodes ordinary
 values; `callBytes` carries raw bytes; `stream` returns encoded values consumed
 with `decodeValues` from `@tokamakdev/plugin/streams`.
+
+Both calls take `{ signal, body }`. Aborting `signal` cancels the native work.
+A `body` is a `ReadableStream<Uint8Array>` that the native endpoint reads one
+chunk at a time, through Swift `call(method:arguments:body:reply:)` or Kotlin
+`call(method, arguments, body, reply)`: each `body.read` pulls the next chunk,
+nil after the last, so the Worker sends no faster than the plugin reads. A
+native source the reader drives, such as a file, is a call per chunk from a
+`ReadableStream`'s `pull`.
+
+`stream(method, value, overflow)` buffers up to 1 MiB for a slow reader. Pass
+`"dropOldest"` for samples where only recent values matter, such as sensor
+readings; the default `"error"` ends the stream with `QuotaExceededError`.
 
 Swift `TokamakPlugin.call` and Kotlin `TokamakPlugin.call` receive decoded JSON
 and return ordinary values through their reply callback. A reply of Swift `Data`

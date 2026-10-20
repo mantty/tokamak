@@ -10,15 +10,15 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokamak::{
-    Config, ModuleType, PackageLayout, PluginHandler, Runtime, WorkerEnvironment, WorkerManifest,
-    write_worker, write_worker_environment,
+    Config, ModuleType, PackageLayout, PluginHandler, PluginReply, Runtime, WorkerEnvironment,
+    WorkerManifest, write_worker, write_worker_environment,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Runs the method of `TokamakEvents` each event names.
 const WORKER: &[u8] = br#"const call = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for("tokamak.native")].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
-const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
+const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), { next: payload => next(JSON.parse(new TextDecoder().decode(payload))), error });
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 
@@ -31,7 +31,7 @@ export class TokamakEvents extends WorkerEntrypoint {
     const reply = name === "start" || name === "suspend" ? undefined : await this[name](event);
     return {
       reply: reply === undefined ? new Uint8Array() : new TextEncoder().encode(JSON.stringify(reply)),
-      listened: ["start", "resume", "suspend", "call", "stage", "watch", "forget", "raw"],
+      listened: ["start", "resume", "suspend", "call", "stage", "watch", "forget", "raw", "upload", "abort"],
     };
   }
 
@@ -52,6 +52,24 @@ export class TokamakEvents extends WorkerEntrypoint {
     const input = Uint8Array.from(event.bytes);
     const output = await this.ctx[Symbol.for("tokamak.native")].call("bytes", "echo", input.subarray(1, 5));
     return Array.from(output);
+  }
+
+  async upload(event) {
+    const body = new ReadableStream({
+      start(controller) {
+        for (const chunk of event.chunks) controller.enqueue(new Uint8Array(chunk));
+        controller.close();
+      },
+    });
+    const reply = await this.ctx[Symbol.for("tokamak.native")].call("files", "write", new TextEncoder().encode("{}"), { body });
+    return new TextDecoder().decode(reply);
+  }
+
+  async abort() {
+    const controller = new AbortController();
+    const pending = this.ctx[Symbol.for("tokamak.native")].call("test", "hang", new Uint8Array(), { signal: controller.signal });
+    setTimeout(() => controller.abort(new DOMException("stopped", "AbortError")));
+    return pending.then(() => "resolved", error => error.message);
   }
 
   // Reports each position with `test.received`, discarding the function that
@@ -117,6 +135,22 @@ impl PluginHandler for Shell {
     fn call(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
         let text = String::from_utf8_lossy(arguments);
         self.record(id, format!("call {plugin}.{method} {text}"), arguments);
+    }
+
+    fn call_with_body(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
+        let text = String::from_utf8_lossy(arguments);
+        self.record(id, format!("body {plugin}.{method} {text}"), arguments);
+    }
+
+    fn chunk(&self, id: u64, chunk: &PluginReply) {
+        let state = if chunk.failed {
+            "failed"
+        } else if chunk.done {
+            "done"
+        } else {
+            "more"
+        };
+        self.record(id, format!("chunk {state}"), &chunk.payload);
     }
 
     fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
@@ -510,6 +544,47 @@ fn carries_binary_subarrays_between_quickjs_and_native_endpoints() -> TestResult
         },
     );
     assert_eq!(join(event)?, json!([0, 255, 192, 175]));
+    Ok(())
+}
+
+#[test]
+fn streams_a_call_body_as_the_shell_pulls_each_chunk() -> TestResult {
+    let started = Started::new(true)?;
+    let event = started.emit("upload", &json!({ "chunks": [[0, 255], [7]] }), TIMEOUT);
+    let call = started.next_request()?;
+    assert_eq!(call.text, "body files.write {}");
+
+    let mut chunks = Vec::new();
+    for _ in 0..3 {
+        started.runtime.pull(call.id);
+        let chunk = started.next_request()?;
+        assert_eq!(chunk.id, call.id);
+        chunks.push((chunk.text, chunk.payload));
+    }
+    started.runtime.reply(call.id, value(b"written", true));
+
+    assert_eq!(
+        chunks,
+        [
+            ("chunk more".to_owned(), vec![0, 255]),
+            ("chunk more".to_owned(), vec![7]),
+            ("chunk done".to_owned(), vec![]),
+        ]
+    );
+    assert_eq!(join(event)?, json!("written"));
+    Ok(())
+}
+
+#[test]
+fn an_aborted_call_cancels_the_shell_work_and_rejects_with_the_reason() -> TestResult {
+    let started = Started::new(true)?;
+    let event = started.emit("abort", &json!({}), TIMEOUT);
+    let call = started.next_request()?;
+    let cancel = started.next_request()?;
+
+    assert_eq!(call.text, "call test.hang ");
+    assert_eq!((cancel.id, cancel.text.as_str()), (call.id, "cancel"));
+    assert_eq!(join(event)?, json!("stopped"));
     Ok(())
 }
 

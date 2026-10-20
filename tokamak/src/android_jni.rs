@@ -17,7 +17,7 @@ const LOG_TAG: &str = "tokamak";
 const LOG_INFO: c_int = 4;
 const LOG_ERROR: c_int = 6;
 const FAILURE: &str = "java/lang/IllegalStateException";
-/// The signature of `TokamakRuntime.Plugins.call` and `subscribe`.
+/// The signature of `TokamakRuntime.Plugins.call`, `callWithBody` and `subscribe`.
 const REQUEST_SIGNATURE: &str = "(JLjava/lang/String;Ljava/lang/String;[B)V";
 
 unsafe extern "C" {
@@ -33,6 +33,24 @@ struct KotlinPlugins {
 impl PluginHandler for KotlinPlugins {
     fn call(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
         self.request("call", id, plugin, method, arguments);
+    }
+
+    fn call_with_body(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
+        self.request("callWithBody", id, plugin, method, arguments);
+    }
+
+    fn chunk(&self, id: u64, chunk: &PluginReply) {
+        self.invoke(|env| {
+            let payload = env.byte_array_from_slice(&chunk.payload)?;
+            let arguments = [
+                JValue::Long(id.cast_signed()),
+                (&payload).into(),
+                JValue::Bool(chunk.failed.into()),
+                JValue::Bool(chunk.done.into()),
+            ];
+            env.call_method(&self.plugins, "chunk", "(J[BZZ)V", &arguments)
+                .map(drop)
+        });
     }
 
     fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
@@ -191,6 +209,20 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeReply(
                 let _ = env.throw_new(FAILURE, error.to_string());
             }
         }
+    }
+}
+
+/// Ask the Worker for the next chunk of the body of the call `id`, which
+/// arrives through `TokamakRuntime.Plugins.chunk`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativePull(
+    _: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    id: jlong,
+) {
+    if let Some(runtime) = runtime(handle) {
+        runtime.pull(id.cast_unsigned());
     }
 }
 

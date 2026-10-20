@@ -16,27 +16,20 @@ internal class TokamakCorePlugin(private val app: TokamakApplication) : TokamakP
         if (method.startsWith("webview.")) super.executor(method) else executor
 
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
-        if (method == "resource.read") {
-            reply(Result.success(app.resources.get(arguments, ByteArray::class.java)))
-            return null
-        }
         val view = (app.activity as? TokamakActivity)?.webView
-        val page = view?.url?.let(::URI)
-        if (view == null || page == null) {
-            throw TokamakPluginError("InvalidStateError", "No page is loaded")
-        }
         when (method) {
-            "webview.getCurrentPage" -> reply(Result.success(page.toString()))
+            "resource.read" -> reply(Result.success(app.resources.get(arguments, ByteArray::class.java)))
+            "webview.getCurrentPage" -> reply(Result.success(view?.url))
             "webview.navigate" -> {
-                val url = page.resolve(arguments as? String
-                    ?: throw TokamakPluginError.typeError("Navigation requires an app URL"))
-                if (!Uri.parse(url.toString()).isAppOrigin(app.appHost)) {
-                    throw TokamakPluginError.typeError("Navigation requires an app URL")
-                }
+                if (view == null) throw noView()
+                val base = view.url?.let(::URI) ?: URI("https://${app.appHost}/")
+                val url = base.resolve(arguments as? String ?: throw notAppUrl())
+                if (!Uri.parse(url.toString()).isAppOrigin(app.appHost)) throw notAppUrl()
                 view.loadUrl(url.toString())
                 reply(Result.success(null))
             }
             "webview.postMessage" -> {
+                if (view?.url == null) throw TokamakPluginError("InvalidStateError", "No page is loaded")
                 val data = JSONObject().put("data", arguments ?: JSONObject.NULL).toString()
                 view.evaluateJavascript(
                     "(() => { const value = JSON.parse(${JSONObject.quote(data)});" +
@@ -50,4 +43,8 @@ internal class TokamakCorePlugin(private val app: TokamakApplication) : TokamakP
         }
         return null
     }
+
+    private fun noView() = TokamakPluginError("InvalidStateError", "The app has no WebView")
+
+    private fun notAppUrl() = TokamakPluginError.typeError("Navigation requires an app URL")
 }

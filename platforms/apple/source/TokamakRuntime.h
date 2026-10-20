@@ -28,6 +28,9 @@ typedef void (*TokamakPluginRequest)(void *context, uint64_t id,
 typedef struct {
   void *context;
   TokamakPluginRequest call;
+  TokamakPluginRequest call_with_body;
+  void (*chunk)(void *context, uint64_t id, const uint8_t *payload,
+                size_t payload_len, bool failed, bool done);
   TokamakPluginRequest subscribe;
   void (*cancel)(void *context, uint64_t id);
 } TokamakPluginHandler;
@@ -57,6 +60,7 @@ bool tokamak_runtime_is_foreground(const void *runtime);
 void tokamak_runtime_reply(const void *runtime, uint64_t id,
                           const uint8_t *payload, size_t payload_len,
                           bool failed, bool done);
+void tokamak_runtime_pull(const void *runtime, uint64_t id);
 
 int32_t tokamak_runtime_server_authority(const void *runtime, const char *host,
                                       TokamakBytes *authority);

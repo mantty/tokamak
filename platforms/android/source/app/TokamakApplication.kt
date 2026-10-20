@@ -54,10 +54,16 @@ class TokamakApplication : Application(), TokamakPlugins {
     private val workerPlugins =
         object : TokamakRuntime.Plugins {
             override fun call(id: Long, plugin: String, method: String, payload: ByteArray) =
-                workerRequests.run(id, false, plugin, method, payload)
+                workerRequests.run(id, TokamakPluginRequest.CALL, plugin, method, payload)
+
+            override fun callWithBody(id: Long, plugin: String, method: String, payload: ByteArray) =
+                workerRequests.run(id, TokamakPluginRequest.CALL_WITH_BODY, plugin, method, payload)
+
+            override fun chunk(id: Long, payload: ByteArray, failed: Boolean, done: Boolean) =
+                workerRequests.chunk(id, TokamakPluginResult(payload, failed, done))
 
             override fun subscribe(id: Long, plugin: String, method: String, payload: ByteArray) =
-                workerRequests.run(id, true, plugin, method, payload)
+                workerRequests.run(id, TokamakPluginRequest.SUBSCRIBE, plugin, method, payload)
 
             override fun cancel(id: Long) = workerRequests.cancel(id)
 
@@ -73,7 +79,7 @@ class TokamakApplication : Application(), TokamakPlugins {
 
     override fun onCreate() {
         super.onCreate()
-        workerRequests = TokamakPluginRequests(plugins) { id, result -> runtime.reply(id, result) }
+        workerRequests = TokamakPluginRequests(plugins, pull = { id -> runtime.pull(id) }) { id, result -> runtime.reply(id, result) }
         ProcessLifecycleOwner.get().lifecycle.addObserver(
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) = moved(foreground = true)

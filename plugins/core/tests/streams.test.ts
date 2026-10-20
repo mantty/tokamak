@@ -61,3 +61,32 @@ void test("a synchronously completed value source preserves its final value", as
   assert.equal((await values.next()).done, true);
   assert.equal(cancelled, 1);
 });
+
+void test("a drop-oldest source keeps the newest values within its buffer", async () => {
+  const megabyte = 1024 * 1024;
+  const stream = byteStream(next => {
+    for (const marker of [1, 2, 3]) next(new Uint8Array(megabyte / 2).fill(marker));
+    return () => undefined;
+  }, "dropOldest");
+  const reader = stream.getReader();
+  assert.equal((await reader.read()).value?.[0], 2);
+  assert.equal((await reader.read()).value?.[0], 3);
+});
+
+void test("closing delivers buffered values while an error discards them", async () => {
+  const closed = byteStream((next, _error, close) => {
+    next(new Uint8Array([1]));
+    close();
+    return () => undefined;
+  });
+  const reader = closed.getReader();
+  assert.deepEqual((await reader.read()).value, new Uint8Array([1]));
+  assert.equal((await reader.read()).done, true);
+
+  const failed = byteStream((next, error) => {
+    next(new Uint8Array([1]));
+    error(new DOMException("Denied", "NotAllowedError"));
+    return () => undefined;
+  });
+  await assert.rejects(failed.getReader().read(), { name: "NotAllowedError" });
+});

@@ -314,6 +314,8 @@ impl crate::PluginHandler for Gate {
     fn call(&self, id: u64, _: &str, method: &str, _: &[u8]) {
         let _ = self.0.send((id, method.to_owned()));
     }
+    fn call_with_body(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
+    fn chunk(&self, _: u64, _: &crate::PluginReply) {}
     fn subscribe(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
     fn cancel(&self, _: u64) {}
 }

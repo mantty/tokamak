@@ -29,6 +29,12 @@ impl PluginHandler for Controls {
         });
     }
 
+    fn call_with_body(&self, id: u64, _: &str, _: &str, _: &[u8]) {
+        let _ = self.0.send_event(ShellEvent::Unsupported(id));
+    }
+
+    fn chunk(&self, _: u64, _: &PluginReply) {}
+
     fn subscribe(&self, id: u64, _: &str, _: &str, _: &[u8]) {
         let _ = self.0.send_event(ShellEvent::Unsupported(id));
     }
@@ -79,29 +85,33 @@ fn perform(
             format!("{plugin}.{method} is not supported"),
         ));
     }
-    let current = view
-        .url()
+    let origin = Url::parse(&format!("https://{}/", runtime.host()))
         .map_err(|error| ("OperationError", error.to_string()))?;
-    let page =
-        Url::parse(&current).map_err(|_| ("InvalidStateError", "No page is loaded".into()))?;
-    if page.scheme() != "https" {
-        return Err(("InvalidStateError", "No app page is loaded".into()));
-    }
+    let page = view
+        .url()
+        .ok()
+        .and_then(|current| Url::parse(&current).ok())
+        .filter(|page| page.origin() == origin.origin());
     let value: Value =
         serde_json::from_slice(payload).map_err(|error| ("DataCloneError", error.to_string()))?;
     match method {
-        "webview.getCurrentPage" => Ok(Some(Value::String(current))),
+        "webview.getCurrentPage" => Ok(Some(
+            page.map_or(Value::Null, |page| Value::String(page.into())),
+        )),
         "webview.navigate" => {
             let url = value
                 .as_str()
-                .and_then(|path| page.join(path).ok())
-                .filter(|url| url.origin() == page.origin())
+                .and_then(|path| page.as_ref().unwrap_or(&origin).join(path).ok())
+                .filter(|url| url.origin() == origin.origin())
                 .ok_or(("TypeError", "Navigation requires an app URL".into()))?;
             view.load_url(url.as_str())
                 .map_err(|error| ("OperationError", error.to_string()))?;
             Ok(Some(Value::Null))
         }
         "webview.postMessage" => {
+            if page.is_none() {
+                return Err(("InvalidStateError", "No page is loaded".into()));
+            }
             let runtime = Arc::clone(runtime);
             let data = Value::String(value.to_string());
             let script = format!(

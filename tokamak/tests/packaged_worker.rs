@@ -399,6 +399,10 @@ impl tokamak::PluginHandler for CancellablePlugins {
     fn call(&self, id: u64, _: &str, _: &str, _: &[u8]) {
         let _ = self.0.send(id);
     }
+    fn call_with_body(&self, id: u64, _: &str, _: &str, _: &[u8]) {
+        let _ = self.0.send(id);
+    }
+    fn chunk(&self, _: u64, _: &tokamak::PluginReply) {}
     fn subscribe(&self, id: u64, _: &str, _: &str, _: &[u8]) {
         let _ = self.0.send(id);
     }
@@ -413,7 +417,7 @@ fn cancellable_package(temporary: &Path) -> TestResult<PackageLayout> {
         temporary,
         &app.tokamak_worker(),
         br"const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
-const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for('tokamak.native')].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
+const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for('tokamak.native')].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), { next: payload => next(JSON.parse(new TextDecoder().decode(payload))), error });
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 export default class extends WorkerEntrypoint {

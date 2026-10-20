@@ -4,6 +4,7 @@ export interface MessageHeader {
   plugin?: string;
   method?: string;
   name?: string;
+  overflow?: string;
   failed?: boolean;
   done?: boolean;
 }

@@ -55,6 +55,19 @@ pub struct TokamakPluginHandler {
     pub context: *mut c_void,
     /// Calls `method` of `plugin` with encoded arguments.
     pub call: TokamakPluginRequest,
+    /// Calls `method` of `plugin` with encoded arguments and a body, whose
+    /// chunks the shell pulls with [`tokamak_runtime_pull`].
+    pub call_with_body: TokamakPluginRequest,
+    /// Passes the chunk of the call `id`'s body that the shell pulled: bytes,
+    /// or an encoded error when `failed`, and `done` with the last.
+    pub chunk: unsafe extern "C" fn(
+        context: *mut c_void,
+        id: u64,
+        payload: *const u8,
+        payload_len: usize,
+        failed: bool,
+        done: bool,
+    ),
     /// Subscribes to `method` of `plugin` with encoded arguments.
     pub subscribe: TokamakPluginRequest,
     /// Cancels the pending call or subscription `id`.
@@ -69,6 +82,26 @@ unsafe impl Sync for TokamakPluginHandler {}
 impl PluginHandler for TokamakPluginHandler {
     fn call(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
         self.request(self.call, id, plugin, method, arguments);
+    }
+
+    fn call_with_body(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
+        self.request(self.call_with_body, id, plugin, method, arguments);
+    }
+
+    fn chunk(&self, id: u64, chunk: &PluginReply) {
+        let payload = &chunk.payload;
+        // SAFETY: the shell's function takes its context and a buffer that
+        // lives for the call.
+        unsafe {
+            (self.chunk)(
+                self.context,
+                id,
+                payload.as_ptr(),
+                payload.len(),
+                chunk.failed,
+                chunk.done,
+            );
+        };
     }
 
     fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
@@ -347,6 +380,19 @@ pub unsafe extern "C" fn tokamak_runtime_reply(
                 done,
             },
         );
+    }
+}
+
+/// Ask the Worker for the next chunk of the body of the call `id`, which
+/// arrives through the plugin handler's `chunk`.
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle returned by [`tokamak_runtime_start`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tokamak_runtime_pull(handle: *const c_void, id: u64) {
+    if let Some(runtime) = unsafe { runtime(handle) } {
+        runtime.pull(id);
     }
 }
 
