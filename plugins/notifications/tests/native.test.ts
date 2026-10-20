@@ -102,44 +102,6 @@ void test("passes every notification field to the native plugin", async () => {
   await shown;
 });
 
-void test("rejects an invalid notification without calling the native plugin", async () => {
-  const native = connectNative();
-  const notifications = createApi(native.ctx);
-
-  const shown = notifications.show({ id: "n1", title: "Hi", badge: -1 });
-
-  assert.deepEqual(native.sent, []);
-  await assert.rejects(shown, (error: unknown) => error instanceof TypeError);
-});
-
-void test("rejects an invalid setup without calling the native plugin", async () => {
-  const native = connectNative();
-  const notifications = createApi(native.ctx);
-
-  const setup = notifications.setup({ channels: [{ id: "c", name: "C", group: "missing" }] });
-
-  assert.deepEqual(native.sent, []);
-  await assert.rejects(setup, (error: unknown) => error instanceof TypeError);
-});
-
-void test("rejects invalid options without calling the native plugin", async () => {
-  const native = connectNative();
-  const notifications = createApi(native.ctx);
-  const calls: (() => Promise<unknown>)[] = [
-    () => notifications.requestPermission({ provisional: "yes" } as never),
-    () => notifications.setBadge(-1),
-    () => notifications.openSettings({ channel: "" }),
-    () => notifications.subscribeToTopic(""),
-    () => notifications.unsubscribeFromTopic("a/b"),
-    () => notifications.schedule({ id: "s", title: "S", every: { seconds: 1 } }),
-  ];
-
-  for (const call of calls) {
-    await assert.rejects(call(), (error: unknown) => error instanceof TypeError);
-  }
-  assert.deepEqual(native.sent, []);
-});
-
 void test("passes subscription options to the native endpoint", async () => {
   const native = connectNative();
   const notifications = createApi(native.ctx);

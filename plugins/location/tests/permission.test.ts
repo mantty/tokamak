@@ -4,7 +4,7 @@ import { afterEach, test } from "node:test";
 import { connectNative } from "@tokamakdev/plugin/testing";
 
 import { location } from "../web/client.js";
-import { location as createApi, type PermissionRequest } from "../src/index.js";
+import { location as createApi } from "../src/index.js";
 
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
 
@@ -34,21 +34,6 @@ void test("calls the native plugin with each permission method's arguments", asy
     assert.deepEqual(native.lastRequest(), { type: "call", plugin: "location", method, arguments: arguments_ });
     native.respond({ value: granted });
     assert.deepEqual(await result, granted);
-  }
-});
-
-void test("rejects permission requests it cannot send", async () => {
-  const location = createApi(connectNative().ctx);
-  for (const [options, message] of [
-    [{ background: "yes" }, "options.background must be a boolean"],
-    [{ precision: "exact" }, 'options.precision must be one of "precise", "approximate"'],
-    [{ purpose: "" }, "options.purpose must be a non-empty string"],
-    [null, "options must be an object"],
-  ] as const) {
-    await assert.rejects(
-      location.requestPermission(options as unknown as PermissionRequest),
-      (error: unknown) => error instanceof TypeError && error.message === message,
-    );
   }
 });
 

@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { connectNative } from "@tokamakdev/plugin/testing";
 
-import { location as createApi, type Region } from "../src/index.js";
+import { location as createApi } from "../src/index.js";
 
 
 const home = { id: "home", latitude: 51.5, longitude: -0.1, radius: 100 };
@@ -12,12 +12,8 @@ void test("calls the native plugin with each region method's arguments", async (
   const native = connectNative();
   const location = createApi(native.ctx);
   const cases: [() => Promise<unknown>, string, unknown][] = [
-    [() => location.addRegion(home), "addRegion", { ...home, onEntry: true, onExit: true }],
-    [
-      () => location.addRegion({ ...home, onExit: false }),
-      "addRegion",
-      { ...home, onEntry: true, onExit: false },
-    ],
+    [() => location.addRegion(home), "addRegion", home],
+    [() => location.addRegion({ ...home, onExit: false }), "addRegion", { ...home, onExit: false }],
     [() => location.getRegions(), "getRegions", null],
     [() => location.removeRegion("home"), "removeRegion", { id: "home" }],
   ];
@@ -29,26 +25,3 @@ void test("calls the native plugin with each region method's arguments", async (
   }
 });
 
-void test("rejects regions it cannot monitor", async () => {
-  const location = createApi(connectNative().ctx);
-  for (const [region, message] of [
-    [{ ...home, id: "" }, "region.id must be a non-empty string"],
-    [{ ...home, latitude: 91 }, "region.latitude must be a number from -90 to 90"],
-    [{ ...home, longitude: -181 }, "region.longitude must be a number from -180 to 180"],
-    [{ ...home, radius: 0 }, "region.radius must be a finite number greater than 0"],
-    [{ ...home, radius: Infinity }, "region.radius must be a finite number greater than 0"],
-    [{ ...home, latitude: NaN }, "region.latitude must be a number from -90 to 90"],
-    [{ ...home, onEntry: "yes" }, "region.onEntry must be a boolean"],
-    [{ ...home, onEntry: false, onExit: false }, "region must report entry, exit or both"],
-    [{ latitude: 1, longitude: 2, radius: 3 }, "region.id must be a non-empty string"],
-  ] as const) {
-    await assert.rejects(
-      location.addRegion(region as unknown as Region),
-      (error: unknown) => error instanceof TypeError && error.message === message,
-    );
-  }
-  await assert.rejects(
-    location.removeRegion(""),
-    (error: unknown) => error instanceof TypeError && error.message === "id must be a non-empty string",
-  );
-});

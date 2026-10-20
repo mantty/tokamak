@@ -17,7 +17,6 @@ import {
   text,
   time,
 } from "./checks.js";
-import { validateTrigger } from "./triggers.js";
 
 const ANDROID_CATEGORIES = {
   alarm: true,
@@ -145,26 +144,6 @@ const CHECKS: Readonly<Record<string, Check>> = {
   lang: text,
   badgeImage: text,
 };
-
-/**
- * Throws `TypeError`, naming the first invalid value, unless `value` is a notification `show` or,
- * with `scheduled`, `schedule` takes.
- */
-export function validateContent(value: unknown, scheduled: boolean): void {
-  record(value, "notification");
-  fields(value, "", { ...CHECKS, id: nonEmptyText, title: text }, ["id", "title"]);
-  if (scheduled) validateTrigger(value);
-  // Browsers reject the pair.
-  if (value.silent === true && value.vibrate !== undefined) {
-    throw new TypeError("vibrate must be left out of a silent notification");
-  }
-  if (value.silent === true && value.sound !== undefined) {
-    throw new TypeError("sound must be left out of a silent notification");
-  }
-  if ((value.style as { type?: unknown } | undefined)?.type === "bigPicture" && value.image === undefined) {
-    throw new TypeError("image must be given with the bigPicture style");
-  }
-}
 
 /** The content fields of a Web Push payload, without those that are invalid. */
 export function pushContent(payload: Record<string, unknown>): Partial<NotificationContent> {

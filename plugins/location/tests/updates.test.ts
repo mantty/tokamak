@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 import { connectNative, dispatch } from "@tokamakdev/plugin/testing";
 
-import { location as createApi, type LocationUpdate, type SetupConfig, type UpdateOptions } from "../src/index.js";
+import { location as createApi, type LocationUpdate } from "../src/index.js";
 import { onLocationError, onLocationUpdate, onRegionTransition, onVisit } from "../events/index.js";
 
 
@@ -35,39 +35,6 @@ void test("calls the native plugin with each update and setup method's arguments
     assert.deepEqual(native.lastRequest(), { type: "call", plugin: "location", method, arguments: arguments_ });
     native.respond({ value: null });
     assert.equal(await result, null);
-  }
-});
-
-void test("rejects update options it cannot send", async () => {
-  const location = createApi(connectNative().ctx);
-  for (const [options, message] of [
-    [{ activity: "walking" }, "options.activity must be one of"],
-    [{ accuracy: "best" }, 'options.accuracy must be one of "high", "balanced", "low"'],
-    [{ distance: -1 }, "options.distance must be a finite number of at least 0"],
-    [{ distance: Infinity }, "options.distance must be a finite number of at least 0"],
-    [{ interval: 1.5 }, "options.interval must be a whole number of at least 0"],
-    [{ foregroundService: { title: "Run", body: "" } }, "options.foregroundService.channel must be a non-empty string"],
-    [{ foregroundService: { title: "", body: "", channel: "Runs" } }, "options.foregroundService.title must be"],
-    [{ foregroundService: { title: "Run", body: 1, channel: "Runs" } }, "options.foregroundService.body must be a string"],
-  ] as const) {
-    await assert.rejects(
-      location.startUpdates(options as unknown as UpdateOptions),
-      (error: unknown) => error instanceof TypeError && error.message.startsWith(message),
-    );
-  }
-});
-
-void test("rejects a setup configuration it cannot apply", async () => {
-  const location = createApi(connectNative().ctx);
-  for (const [config, message] of [
-    [{ visits: "yes" }, "config.visits must be a boolean"],
-    [{ significantChanges: 1 }, "config.significantChanges must be a boolean"],
-    [null, "config must be an object"],
-  ] as const) {
-    await assert.rejects(
-      location.setup(config as unknown as SetupConfig),
-      (error: unknown) => error instanceof TypeError && error.message === message,
-    );
   }
 });
 

@@ -54,15 +54,14 @@ void test("passes position options to browser location", async () => {
   assert.deepEqual(received, { maximumAge: 1000, timeout: 5000 });
 });
 
-void test("sends native position options as whole milliseconds", async () => {
+void test("passes position options to the native plugin as given", async () => {
   const native = connectNative();
   const location = createApi(native.ctx);
 
   for (const [options, expected] of [
-    [undefined, { maximumAge: 0, timeout: 0xffffffff }],
-    [{ maximumAge: 1500.4 }, { maximumAge: 1500, timeout: 0xffffffff }],
-    [{ maximumAge: Infinity, timeout: -1 }, { maximumAge: 0xffffffff, timeout: 0 }],
-    [{ timeout: NaN }, { maximumAge: 0, timeout: 0 }],
+    [undefined, {}],
+    [{ maximumAge: 1500 }, { maximumAge: 1500 }],
+    [{ maximumAge: 0, timeout: 10 }, { maximumAge: 0, timeout: 10 }],
   ] as const) {
     const position = location.getCurrentPosition(options);
     assert.deepEqual(native.lastRequest().arguments, expected);

@@ -1,6 +1,4 @@
 import { Plugin, type JsonStream, type TokamakContext } from "@tokamakdev/plugin";
-import { nonEmptyText } from "./checks.js";
-import { monitoredRegion, validatePermissionRequest, validateSetup, validateUpdateOptions } from "./options.js";
 import type {
   LocationErrorEvent,
   LocationPermission,
@@ -25,20 +23,15 @@ class Location extends Plugin {
 
   /**
    * Applies long-term location awareness, replacing the previous configuration, which the plugin keeps
-   * and applies again at each start. Rejects with `TypeError`, changing nothing, when a value is
-   * invalid, and on Apple platforms with `NotSupportedError` where the device cannot monitor
-   * significant changes.
+   * and applies again at each start. Rejects on Apple platforms with `NotSupportedError` where the
+   * device cannot monitor significant changes.
    */
-  async setup(config: SetupConfig): Promise<void> {
-    validateSetup(config, "config");
+  setup(config: SetupConfig): Promise<void> {
     return this.call("setup", config);
   }
 
   getCurrentPosition(options: PositionOptions = {}): Promise<Position> {
-    return this.call("getCurrentPosition", {
-      maximumAge: milliseconds(options.maximumAge ?? 0),
-      timeout: milliseconds(options.timeout ?? unlimited),
-    });
+    return this.call("getCurrentPosition", options);
   }
 
   /** Positions as the device moves. A slow reader receives the newest. */
@@ -56,8 +49,7 @@ class Location extends Plugin {
    * Android asks for background permission once in-use permission is granted. Rejects with
    * `NeedsUIError` when a prompt would show off screen.
    */
-  async requestPermission(options: PermissionRequest = {}): Promise<LocationPermission> {
-    validatePermissionRequest(options, "options");
+  requestPermission(options: PermissionRequest = {}): Promise<LocationPermission> {
     return this.call("requestPermission", options);
   }
 
@@ -79,8 +71,7 @@ class Location extends Plugin {
    * without the `background-updates` build setting, and with `NeedsUIError` when Android does not
    * allow the service to start off screen.
    */
-  async startUpdates(options: UpdateOptions = {}): Promise<void> {
-    validateUpdateOptions(options, "options");
+  startUpdates(options: UpdateOptions = {}): Promise<void> {
     return this.call("startUpdates", options);
   }
 
@@ -99,9 +90,8 @@ class Location extends Plugin {
    * region starts outside, so a device already inside reports an entry. Rejects with
    * `NotAllowedError` without precise location, and with `QuotaExceededError` beyond Apple's 20.
    */
-  async addRegion(region: Region): Promise<void> {
-    const monitored = monitoredRegion(region);
-    return this.call("addRegion", monitored);
+  addRegion(region: Region): Promise<void> {
+    return this.call("addRegion", region);
   }
 
   /** The monitored regions. */
@@ -109,8 +99,7 @@ class Location extends Plugin {
     return this.call("getRegions");
   }
 
-  async removeRegion(id: string): Promise<void> {
-    nonEmptyText(id, "id");
+  removeRegion(id: string): Promise<void> {
     return this.call("removeRegion", { id });
   }
 
@@ -135,12 +124,5 @@ class Location extends Plugin {
   }
 }
 
-
-const unlimited = 0xffffffff;
-
-/** `value` clamped to whole milliseconds, as the Geolocation API reads its options. */
-function milliseconds(value: number): number {
-  return Number.isNaN(value) ? 0 : Math.min(Math.max(Math.round(value), 0), unlimited);
-}
 
 export function location(ctx: TokamakContext): Location { return new Location(ctx); }

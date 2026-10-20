@@ -1,7 +1,4 @@
 import { Plugin, type JsonStream, type TokamakContext } from "@tokamakdev/plugin";
-import { validateContent } from "./content.js";
-import { validateBadge, validateOpenSettings, validatePermissionOptions, validateTopic } from "./options.js";
-import { validateSetup } from "./setup.js";
 import type {
   DismissedNotification,
   Message,
@@ -26,12 +23,8 @@ class Notifications extends Plugin {
     super(ctx, "notifications");
   }
 
-  /**
-   * Applies the configuration of every platform, replacing the previous one. Rejects with
-   * `TypeError`, changing nothing, when a value is invalid.
-   */
-  async setup(config: SetupConfig): Promise<SetupResult> {
-    validateSetup(config);
+  /** Applies the configuration of every platform, replacing the previous one. */
+  setup(config: SetupConfig): Promise<SetupResult> {
     return this.call("setup", config);
   }
 
@@ -44,8 +37,7 @@ class Notifications extends Plugin {
    * Apple platforms ask for what `options` names: a provisional grant asks again without
    * `provisional`, and a grant gains `criticalAlert` or `providesAppNotificationSettings` when asked.
    */
-  async requestPermission(options: PermissionOptions = {}): Promise<Permission> {
-    validatePermissionOptions(options);
+  requestPermission(options: PermissionOptions = {}): Promise<Permission> {
     return this.call("requestPermission", options);
   }
 
@@ -55,20 +47,17 @@ class Notifications extends Plugin {
   }
 
   /** Sets the app's badge count, or removes the badge with 0. Not supported on Android. */
-  async setBadge(count: number): Promise<void> {
-    validateBadge(count);
+  setBadge(count: number): Promise<void> {
     return this.call("setBadge", { count });
   }
 
   /** Opens the app's notification settings in the system's. Not supported on the web. */
-  async openSettings(options: OpenSettingsOptions = {}): Promise<void> {
-    validateOpenSettings(options);
+  openSettings(options: OpenSettingsOptions = {}): Promise<void> {
     return this.call("openSettings", options);
   }
 
-  /** Shows a notification now. Rejects with `TypeError`, showing nothing, when a value is invalid. */
-  async show(notification: NotificationContent): Promise<void> {
-    validateContent(notification, false);
+  /** Shows a notification now. */
+  show(notification: NotificationContent): Promise<void> {
     return this.call("show", notification);
   }
 
@@ -77,8 +66,7 @@ class Notifications extends Plugin {
    * `every` interval; at the dates `on` matches; or, on iOS, on entering or leaving a `region`.
    * Not supported on the web.
    */
-  async schedule(notification: ScheduledNotification): Promise<void> {
-    validateContent(notification, true);
+  schedule(notification: ScheduledNotification): Promise<void> {
     return this.call("schedule", notification);
   }
 
@@ -112,14 +100,12 @@ class Notifications extends Plugin {
   }
 
   /** FCM only: receives the push messages the app's server sends to `topic`. */
-  async subscribeToTopic(topic: string): Promise<void> {
-    validateTopic(topic);
+  subscribeToTopic(topic: string): Promise<void> {
     return this.call("subscribeToTopic", { topic });
   }
 
   /** FCM only: stops receiving the push messages sent to `topic`. */
-  async unsubscribeFromTopic(topic: string): Promise<void> {
-    validateTopic(topic);
+  unsubscribeFromTopic(topic: string): Promise<void> {
     return this.call("unsubscribeFromTopic", { topic });
   }
 

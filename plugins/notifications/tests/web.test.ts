@@ -3,7 +3,7 @@ import { afterEach, beforeEach, test } from "node:test";
 
 import { notifications } from "../web/client.js";
 import { decodeValues } from "@tokamakdev/plugin/streams";
-import { DISMISSED_CACHE, OPENED, OPENED_CACHE, SETUP_CACHE } from "../web/protocol.js";
+import { DISMISSED_CACHE, OPENED, OPENED_CACHE } from "../web/protocol.js";
 import {
   FakeCacheStorage,
   FakeRegistration,
@@ -164,14 +164,6 @@ void test("passes the web's options to the browser, and sets the app badge", asy
     icon: "https://example.com/ada.png",
   });
   assert.deepEqual(badges, [3]);
-});
-
-void test("shows nothing and stores nothing for an invalid notification or setup", async () => {
-  await assert.rejects(notifications.show({ id: "n1", title: "Hi", badge: -1 }), TypeError);
-  await assert.rejects(notifications.setup({ categories: [{ id: "", actions: [] }] }), TypeError);
-
-  assert.deepEqual(registration?.shown, []);
-  assert.deepEqual(await (await caches.open(SETUP_CACHE)).keys(), []);
 });
 
 void test("sets the app badge only for a notification with a badge, including 0", async () => {
