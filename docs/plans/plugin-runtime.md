@@ -272,11 +272,13 @@ boundary between portable backend code and native behaviour.
 
 ### Service graph and routing
 
-**This subsystem does not exist in the packaged runtime today.** In
-`tokamak/src/builtins/cloudflare-workers.mjs`, `ServiceStub.fetch` and `connect`
-throw unsupported errors, and `WorkerEntrypoint` only stores `ctx` and `env`.
-`Dispatcher` currently owns one Worker bundle. Neither those class exports nor
-working Miniflare bindings provide packaged multi-worker execution.
+**Service bindings and RPC are a new packaged-runtime subsystem in this plan.**
+Its implementation includes hosting both bundles, resolving default/named
+entrypoints, transferring values between separate QuickJS runtimes, and owning
+calls, streams, cancellation, and invocation lifetimes. The existing
+`WorkerEntrypoint` constructor and unsupported `ServiceStub` methods are API
+shells, not that machinery. Working Miniflare bindings do not establish
+packaged-runtime support.
 
 Generate `env.TOKAMAK` in the main worker for the app's public Tokamak methods,
 and `env.MAIN` in the Tokamak worker for the main worker's HTTP/RPC interface.
@@ -299,6 +301,11 @@ Keep dispatch asynchronous so nested calls do not hold a service lock while
 waiting for another invocation.
 
 ### Initial service-binding and RPC contract
+
+Support HTTP `fetch`, asynchronous method calls with the structured data
+listed below, errors, and byte-oriented `ReadableStream`s. Do not support
+function stubs, `RpcTarget`, or other remote objects. The generator must reject
+signatures outside this subset; it must not generate a full Cloudflare RPC stub.
 
 This is an explicit subset of Cloudflare's API. It applies in both directions
 between the main and Tokamak workers, to generated plugin entrypoints, and to
