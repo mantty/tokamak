@@ -24,7 +24,9 @@ export function installServices(names, dispatch) {
 }
 
 function operation(worker, method) {
-  if (['event', 'fetch', 'constructor', 'connect'].includes(method)) throw new TypeError(`Reserved service method ${method}`);
+  if (['event', 'fetch', 'constructor', 'connect', 'then', 'dup', 'alarm', 'webSocketMessage', 'webSocketClose', 'webSocketError'].includes(method)) {
+    throw new TypeError(`Reserved service method ${method}`);
+  }
   let prototype = Object.getPrototypeOf(worker);
   while (prototype && prototype !== WorkerEntrypoint.prototype && prototype !== Object.prototype) {
     const descriptor = Object.getOwnPropertyDescriptor(prototype, method);

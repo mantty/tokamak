@@ -361,6 +361,13 @@ diagnostic naming the method and offending parameter/result path. JavaScript
 authors can provide checked JSDoc or declarations. Private worker helpers are
 not subject to this transport restriction.
 
+Resolve the actual entrypoint base and discover only application prototype
+methods, including inherited application methods. Framework handlers are not
+app operations. Reject Cloudflare's reserved RPC names (`connect`, `dup`,
+`constructor`, `alarm`, and `webSocketMessage`/`webSocketClose`/`webSocketError`)
+and the promise-like `then` name. Treat `fetch` and `event` as their dedicated
+handlers.
+
 A `void` or `Promise<void>` method returns `undefined` across the boundary.
 For example, reject `onChange(callback: () => void)` at `onChange.callback`
 and `open(): RpcTarget` at `open.result`; neither generates a client method.

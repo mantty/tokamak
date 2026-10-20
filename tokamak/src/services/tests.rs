@@ -58,6 +58,35 @@ fn run(client: &str, server: &str) -> TestResult {
 }
 
 #[test]
+fn service_methods_preserve_framework_reserved_names() -> TestResult {
+    run(
+        r"
+import { WorkerEntrypoint } from 'cloudflare:workers';
+import assert from 'node:assert/strict';
+export default class extends WorkerEntrypoint {
+  async test() {
+    for (const name of ['dup', 'alarm', 'webSocketMessage', 'webSocketClose', 'webSocketError']) {
+      await assert.rejects(this.env.DEVICE[name](), { name: 'TypeError' });
+    }
+    assert.equal(await this.env.DEVICE.ping(), 'pong');
+  }
+}
+",
+        r"
+import { WorkerEntrypoint } from 'cloudflare:workers';
+export default class extends WorkerEntrypoint {
+  dup() { return 'reserved'; }
+  alarm() { return 'reserved'; }
+  webSocketMessage() { return 'reserved'; }
+  webSocketClose() { return 'reserved'; }
+  webSocketError() { return 'reserved'; }
+  ping() { return 'pong'; }
+}
+",
+    )
+}
+
+#[test]
 fn service_calls_use_the_receivers_bindings_and_isolated_state() -> TestResult {
     run(
         r"
