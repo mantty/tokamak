@@ -69,7 +69,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     method: String,
     arguments: Any,
     reply: @escaping TokamakPluginReply
-  ) {
+  ) -> (() -> Void)? {
     do throws(TokamakPluginError) {
       switch method {
       case "setup":
@@ -124,6 +124,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     } catch {
       reply(.failure(error))
     }
+    return nil
   }
 
   func subscribe(

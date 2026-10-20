@@ -84,7 +84,7 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug)]
 struct Request {
     id: u64,
-    /// The operation, plugin, method and arguments, or `unsubscribe`.
+    /// The operation, plugin, method and arguments, or `cancel`.
     text: String,
 }
 
@@ -106,8 +106,8 @@ impl PluginHandler for Shell {
         self.record(id, format!("subscribe {plugin}.{method} {arguments}"));
     }
 
-    fn unsubscribe(&self, id: u64) {
-        self.record(id, "unsubscribe".to_owned());
+    fn cancel(&self, id: u64) {
+        self.record(id, "cancel".to_owned());
     }
 }
 
@@ -174,6 +174,11 @@ impl Started {
 
     fn next_request(&self) -> TestResult<Request> {
         Ok(self.requests.recv_timeout(TIMEOUT)?)
+    }
+
+    fn acknowledge(&self, request: &Request) {
+        self.runtime
+            .reply(request.id, r#"{"value":null,"done":true}"#);
     }
 }
 
@@ -271,21 +276,25 @@ fn delivers_listener_values_and_errors_during_registered_work() -> TestResult {
 
     let deliver = |result: &str| started.runtime.reply(subscription.id, result);
     deliver(r#"{"value":1,"done":false}"#);
-    assert_eq!(started.next_request()?.text, "call test.received 1");
+    let received = started.next_request()?;
+    assert_eq!(received.text, "call test.received 1");
+    started.acknowledge(&received);
     deliver(r#"{"error":{"name":"NotReadableError","message":"No fix"},"done":false}"#);
+    let failed = started.next_request()?;
     assert_eq!(
-        started.next_request()?.text,
+        failed.text,
         r#"call test.failed {"name":"NotReadableError","message":"No fix","domException":true}"#
     );
+    started.acknowledge(&failed);
     deliver(r#"{"value":"stop","done":false}"#);
 
     let mut requests = [started.next_request()?, started.next_request()?];
     requests.sort_by_key(|request| request.text.clone());
-    let [stopped, unsubscribed] = requests;
+    let [stopped, cancelled] = requests;
     assert_eq!(stopped.text, "call test.stopped null");
     assert_eq!(
-        (unsubscribed.id, unsubscribed.text.as_str()),
-        (subscription.id, "unsubscribe")
+        (cancelled.id, cancelled.text.as_str()),
+        (subscription.id, "cancel")
     );
     started
         .runtime
@@ -308,7 +317,9 @@ fn keeps_a_listener_whose_remove_function_is_discarded() -> TestResult {
         .runtime
         .reply(subscription.id, r#"{"value":1,"done":false}"#);
 
-    assert_eq!(started.next_request()?.text, "call test.received 1");
+    let received = started.next_request()?;
+    assert_eq!(received.text, "call test.received 1");
+    started.acknowledge(&received);
     started
         .runtime
         .reply(retained.id, r#"{"value":null,"done":true}"#);
@@ -316,7 +327,7 @@ fn keeps_a_listener_whose_remove_function_is_discarded() -> TestResult {
     let removed = started.next_request()?;
     assert_eq!(
         (removed.id, removed.text.as_str()),
-        (subscription.id, "unsubscribe")
+        (subscription.id, "cancel")
     );
     Ok(())
 }
@@ -332,7 +343,9 @@ fn ends_a_listener_whose_result_is_done() -> TestResult {
     started
         .runtime
         .reply(subscription.id, r#"{"value":1,"done":true}"#);
-    assert_eq!(started.next_request()?.text, "call test.received 1");
+    let received = started.next_request()?;
+    assert_eq!(received.text, "call test.received 1");
+    started.acknowledge(&received);
     started
         .runtime
         .reply(subscription.id, r#"{"value":2,"done":false}"#);
@@ -351,22 +364,50 @@ fn ends_a_listener_whose_result_is_done() -> TestResult {
 }
 
 #[test]
-fn unsubscribes_listeners_when_the_runtime_stops() -> TestResult {
+fn cancels_calls_and_listeners_when_the_runtime_stops() -> TestResult {
     let started = Started::new(true)?;
     started.runtime.fetch("/", TIMEOUT)?;
     let subscription = started.next_request()?;
-    assert_eq!(started.next_request()?.text, "call test.retained null");
+    let call = started.next_request()?;
+    assert_eq!(call.text, "call test.retained null");
 
     let Started {
         runtime, requests, ..
     } = started;
     drop(Arc::into_inner(runtime).ok_or("the runtime is still shared")?);
 
-    let unsubscribed = requests.recv_timeout(TIMEOUT)?;
+    let mut cancelled = [
+        requests.recv_timeout(TIMEOUT)?,
+        requests.recv_timeout(TIMEOUT)?,
+    ];
+    cancelled.sort_by_key(|request| request.id);
     assert_eq!(
-        (unsubscribed.id, unsubscribed.text.as_str()),
-        (subscription.id, "unsubscribe")
+        cancelled.map(|request| (request.id, request.text)),
+        [
+            (subscription.id, "cancel".to_owned()),
+            (call.id, "cancel".to_owned())
+        ]
     );
+    Ok(())
+}
+
+#[test]
+fn event_deadlines_cancel_pending_native_calls() -> TestResult {
+    let started = Started::new(true)?;
+    let event = started.emit(
+        "call",
+        &call_event("location", "getCurrentPosition", &Value::Null),
+        Duration::from_millis(300),
+    );
+    let call = started.next_request()?;
+    assert_eq!(call.text, "call location.getCurrentPosition null");
+    assert!(join(event).is_err());
+    let cancelled = started.next_request()?;
+    assert_eq!((cancelled.id, cancelled.text.as_str()), (call.id, "cancel"));
+    started
+        .runtime
+        .reply(call.id, r#"{"value":"late","done":true}"#);
+    assert_eq!(started.reply_to("stage", &json!({}))?, "foreground");
     Ok(())
 }
 
@@ -383,7 +424,7 @@ fn event_deadlines_release_listeners_and_later_events_get_fresh_invocations() ->
         let removed = started.next_request()?;
         assert_eq!(
             (removed.id, removed.text.as_str()),
-            (subscription.id, "unsubscribe")
+            (subscription.id, "cancel")
         );
         previous = Some(subscription.id);
     }

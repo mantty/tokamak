@@ -29,7 +29,7 @@ typedef struct {
   void *context;
   TokamakPluginRequest call;
   TokamakPluginRequest subscribe;
-  void (*unsubscribe)(void *context, uint64_t id);
+  void (*cancel)(void *context, uint64_t id);
 } TokamakPluginHandler;
 
 void *tokamak_runtime_start(const char *packaged_dir, const char *state_dir,

@@ -45,7 +45,7 @@ struct EventMessage<'a> {
 }
 
 /// A message the plugin sends: the reply to the event `id` or why it failed,
-/// or a call, subscription or unsubscription of the development Worker.
+/// or a call, subscription or cancellation of the development Worker.
 #[derive(Deserialize)]
 struct Received<'a> {
     r#type: &'a str,
@@ -110,7 +110,7 @@ impl DevSocket {
 
     /// Relays `upgraded`'s frames until it closes or `stopped` is cancelled,
     /// delivering events and running the development Worker's plugin calls
-    /// through it meanwhile. Its subscriptions end with it.
+    /// through it meanwhile. Its pending calls and subscriptions end with it.
     pub(crate) async fn serve(&self, upgraded: Upgraded, stopped: &CancellationToken) {
         let (outgoing, messages) = mpsc::unbounded_channel();
         let connection = Arc::new(Connection {
@@ -118,15 +118,15 @@ impl DevSocket {
             pending: Mutex::default(),
         });
         self.connection.send_replace(Some(Arc::clone(&connection)));
-        let mut subscriptions = HashMap::new();
+        let mut requests = HashMap::new();
         let _ = relay(upgraded, messages, stopped, |message| {
-            self.receive(&connection, &mut subscriptions, message);
+            self.receive(&connection, &mut requests, message);
         })
         .await;
         self.connection.send_replace(None);
         connection.pending().clear();
-        for subscription in subscriptions.values() {
-            subscription.abort();
+        for request in requests.values() {
+            request.abort();
         }
     }
 
@@ -135,7 +135,7 @@ impl DevSocket {
     fn receive(
         &self,
         connection: &Connection,
-        subscriptions: &mut HashMap<u64, AbortHandle>,
+        requests: &mut HashMap<u64, AbortHandle>,
         message: &[u8],
     ) {
         let Ok(message) = serde_json::from_slice::<Received>(message) else {
@@ -145,33 +145,42 @@ impl DevSocket {
         let plugin = message.plugin.as_deref().unwrap_or_default();
         let method = message.method.as_deref().unwrap_or_default();
         let arguments = message.arguments.map_or("null", RawValue::get);
-        match message.r#type {
-            "reply" => connection.answer(id, Ok(message.reply.map_or("null", RawValue::get))),
-            "error" => connection.answer(id, Err(message.message.as_deref().unwrap_or_default())),
+        requests.retain(|_, request| !request.is_finished());
+        let task = match message.r#type {
+            "reply" => {
+                return connection.answer(id, Ok(message.reply.map_or("null", RawValue::get)));
+            }
+            "error" => {
+                return connection.answer(id, Err(message.message.as_deref().unwrap_or_default()));
+            }
             "call" => {
                 let result = self.plugins.call(plugin, method, arguments);
                 let outgoing = connection.outgoing.clone();
-                tokio::spawn(async move { send_result(&outgoing, id, &result.await) });
+                tokio::spawn(async move {
+                    send_result(&outgoing, id, &result.await);
+                })
             }
             "subscribe" => {
                 let mut subscription = self.plugins.subscribe(plugin, method, arguments);
                 let outgoing = connection.outgoing.clone();
-                let task = tokio::spawn(async move {
+                tokio::spawn(async move {
                     while let Some(result) = subscription.next().await {
                         if !send_result(&outgoing, id, &result) {
                             return;
                         }
                     }
-                });
-                subscriptions.retain(|_, subscription| !subscription.is_finished());
-                subscriptions.insert(id, task.abort_handle());
+                })
             }
-            "unsubscribe" => {
-                if let Some(subscription) = subscriptions.remove(&id) {
-                    subscription.abort();
+            "cancel" => {
+                if let Some(request) = requests.remove(&id) {
+                    request.abort();
                 }
+                return;
             }
-            _ => {}
+            _ => return,
+        };
+        if let Some(previous) = requests.insert(id, task.abort_handle()) {
+            previous.abort();
         }
     }
 }

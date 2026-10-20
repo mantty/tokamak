@@ -3,7 +3,7 @@
 #![cfg(feature = "native")]
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -215,8 +215,8 @@ impl PluginHandler for Shell {
             .send((id, format!("subscribe {plugin}.{method} {arguments}")));
     }
 
-    fn unsubscribe(&self, id: u64) {
-        let _ = self.0.send((id, "unsubscribe".to_owned()));
+    fn cancel(&self, id: u64) {
+        let _ = self.0.send((id, "cancel".to_owned()));
     }
 }
 
@@ -266,7 +266,7 @@ fn runs_the_development_workers_plugin_calls_on_the_device() -> TestResult {
         read_message(&mut socket)?,
     ];
     results.sort_by_key(|result| result["id"].as_u64());
-    send_message(&mut socket, &json!({ "type": "unsubscribe", "id": 3 }))?;
+    send_message(&mut socket, &json!({ "type": "cancel", "id": 3 }))?;
 
     assert_eq!(
         results,
@@ -276,7 +276,22 @@ fn runs_the_development_workers_plugin_calls_on_the_device() -> TestResult {
             json!({ "type": "result", "id": 3, "result": { "value": 1, "done": false } }),
         ]
     );
-    assert_eq!(next_request()?, (subscription, "unsubscribe".to_owned()));
+    assert_eq!(next_request()?, (subscription, "cancel".to_owned()));
+    for (id, disconnect) in [(4, false), (5, true)] {
+        send_message(
+            &mut socket,
+            &json!({ "type": "call", "id": id, "plugin": "location", "method": "getCurrentPosition" }),
+        )?;
+        let (call, request) = next_request()?;
+        assert_eq!(request, "call location.getCurrentPosition null");
+        if disconnect {
+            socket.shutdown(Shutdown::Both)?;
+        } else {
+            send_message(&mut socket, &json!({ "type": "cancel", "id": id }))?;
+        }
+        assert_eq!(next_request()?, (call, "cancel".to_owned()));
+        runtime.reply(call, r#"{"value":"late","done":true}"#);
+    }
     Ok(())
 }
 

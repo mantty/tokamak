@@ -56,8 +56,8 @@ pub struct TokamakPluginHandler {
     pub call: TokamakPluginRequest,
     /// Subscribes to `method` of `plugin` with the JSON `arguments`.
     pub subscribe: TokamakPluginRequest,
-    /// Ends the subscription `id`.
-    pub unsubscribe: unsafe extern "C" fn(context: *mut c_void, id: u64),
+    /// Cancels the pending call or subscription `id`.
+    pub cancel: unsafe extern "C" fn(context: *mut c_void, id: u64),
 }
 
 // SAFETY: the shell's functions take its context on any thread.
@@ -74,9 +74,9 @@ impl PluginHandler for TokamakPluginHandler {
         self.request(self.subscribe, id, plugin, method, arguments);
     }
 
-    fn unsubscribe(&self, id: u64) {
+    fn cancel(&self, id: u64) {
         // SAFETY: the shell's function takes its context.
-        unsafe { (self.unsubscribe)(self.context, id) };
+        unsafe { (self.cancel)(self.context, id) };
     }
 }
 

@@ -39,10 +39,10 @@ impl PluginHandler for KotlinPlugins {
         self.request("subscribe", id, plugin, method, arguments);
     }
 
-    fn unsubscribe(&self, id: u64) {
+    fn cancel(&self, id: u64) {
         self.invoke(|env| {
             let id = JValue::Long(id.cast_signed());
-            env.call_method(&self.plugins, "unsubscribe", "(J)V", &[id])
+            env.call_method(&self.plugins, "cancel", "(J)V", &[id])
                 .map(drop)
         });
     }

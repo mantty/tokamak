@@ -304,7 +304,7 @@ impl crate::PluginHandler for Gate {
         let _ = self.0.send((id, method.to_owned()));
     }
     fn subscribe(&self, _: u64, _: &str, _: &str, _: &str) {}
-    fn unsubscribe(&self, _: u64) {}
+    fn cancel(&self, _: u64) {}
 }
 
 #[test]

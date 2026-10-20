@@ -2,6 +2,7 @@ package com.tokamak.plugins.securestorage
 
 import android.hardware.biometrics.BiometricManager.Authenticators
 import android.hardware.biometrics.BiometricPrompt
+import android.os.CancellationSignal
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyPermanentlyInvalidatedException
@@ -61,32 +62,34 @@ class TokamakSecureStoragePlugin(
     private val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
     private val random = SecureRandom()
 
-    override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
+    override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
+        val cancellation = CancellationSignal()
         when (method) {
-            "create" -> execute(reply) {
+            "create" -> execute(reply, cancellation) {
                 store(request(arguments), Write.CREATE)
                 reply(Result.success(null))
             }
-            "replace" -> execute(reply) {
+            "replace" -> execute(reply, cancellation) {
                 store(request(arguments), Write.REPLACE)
                 reply(Result.success(null))
             }
-            "set" -> execute(reply) {
+            "set" -> execute(reply, cancellation) {
                 store(request(arguments), Write.SET)
                 reply(Result.success(null))
             }
-            "get" -> execute(reply) { get(request(arguments), reply) }
-            "delete" -> execute(reply) {
+            "get" -> execute(reply, cancellation) { get(request(arguments), reply, cancellation) }
+            "delete" -> execute(reply, cancellation) {
                 delete(request(arguments).requireString("name"))
                 reply(Result.success(null))
             }
-            "clear" -> execute(reply) {
+            "clear" -> execute(reply, cancellation) {
                 request(arguments) // Rejects keychainGroup.
                 clear()
                 reply(Result.success(null))
             }
             else -> super.call(method, arguments, reply)
         }
+        return { cancellation.cancel() }
     }
 
     /** The call's arguments, rejecting the Apple-only `keychainGroup`. */
@@ -98,13 +101,15 @@ class TokamakSecureStoragePlugin(
         return request
     }
 
-    private fun execute(reply: TokamakPluginReply, operation: () -> Unit) =
-        worker.execute {
+    private fun execute(reply: TokamakPluginReply, cancellation: CancellationSignal, operation: () -> Unit) =
+        worker.execute task@{
+            if (cancellation.isCanceled) return@task
             runCatching(operation).onFailure { reply(Result.failure(pluginError(it))) }
         }
 
-    private fun onUiThread(reply: TokamakPluginReply, operation: () -> Unit) =
+    private fun onUiThread(reply: TokamakPluginReply, cancellation: CancellationSignal, operation: () -> Unit) =
         context.mainExecutor.execute {
+            if (cancellation.isCanceled) return@execute
             runCatching(operation).onFailure { reply(Result.failure(pluginError(it))) }
         }
 
@@ -185,7 +190,7 @@ class TokamakSecureStoragePlugin(
         return StoredValue(keyId, wrapped, iv, sealed)
     }
 
-    private fun get(request: JSONObject, reply: TokamakPluginReply) {
+    private fun get(request: JSONObject, reply: TokamakPluginReply, cancellation: CancellationSignal) {
         val name = request.requireString("name")
         val prompt = request.optionalString("prompt")
         val stored = read(file(name)) ?: throw itemNotFound()
@@ -204,7 +209,7 @@ class TokamakSecureStoragePlugin(
         val authenticators =
             if (credential) Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL
             else Authenticators.BIOMETRIC_STRONG
-        authenticate(authenticators, prompt, unwrap, stored, reply)
+        authenticate(authenticators, prompt, unwrap, stored, reply, cancellation)
     }
 
     /** Authorises [unwrap] with the device owner's authentication, then replies with the opened value. */
@@ -214,11 +219,12 @@ class TokamakSecureStoragePlugin(
         unwrap: Cipher,
         stored: StoredValue,
         reply: TokamakPluginReply,
+        cancellation: CancellationSignal,
     ) {
         val title = prompt?.takeIf { it.isNotEmpty() } ?: context.applicationInfo.loadLabel(context.packageManager)
-        onUiThread(reply) {
-            host.authenticateOwner(title, authenticators, BiometricPrompt.CryptoObject(unwrap), reply) {
-                execute(reply) { reply(Result.success(open(stored, unwrap))) }
+        onUiThread(reply, cancellation) {
+            host.authenticateOwner(title, authenticators, BiometricPrompt.CryptoObject(unwrap), reply, cancellation) {
+                execute(reply, cancellation) { reply(Result.success(open(stored, unwrap))) }
             }
         }
     }

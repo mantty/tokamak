@@ -393,18 +393,22 @@ fn ends_without_a_failure_when_the_client_leaves_mid_request() -> TestResult {
     Ok(())
 }
 
+struct CancellablePlugins(mpsc::Sender<u64>, mpsc::Sender<u64>);
+
+impl tokamak::PluginHandler for CancellablePlugins {
+    fn call(&self, id: u64, _: &str, _: &str, _: &str) {
+        let _ = self.0.send(id);
+    }
+    fn subscribe(&self, id: u64, _: &str, _: &str, _: &str) {
+        let _ = self.0.send(id);
+    }
+    fn cancel(&self, id: u64) {
+        let _ = self.1.send(id);
+    }
+}
+
 #[test]
 fn cancels_service_calls_and_streams_when_the_http_client_disconnects() -> TestResult {
-    struct Shell(mpsc::Sender<u64>, mpsc::Sender<u64>);
-    impl tokamak::PluginHandler for Shell {
-        fn call(&self, _: u64, _: &str, _: &str, _: &str) {}
-        fn subscribe(&self, id: u64, _: &str, _: &str, _: &str) {
-            let _ = self.0.send(id);
-        }
-        fn unsubscribe(&self, id: u64) {
-            let _ = self.1.send(id);
-        }
-    }
     let temporary = tempfile::tempdir()?;
     let app = package(
         temporary.path(),
@@ -441,7 +445,7 @@ export default class extends WorkerEntrypoint {
             storage_dir: temporary.path().join("storage"),
             host: HOST.into(),
             foreground: true,
-            plugins: Some(Arc::new(Shell(subscribed, removed))),
+            plugins: Some(Arc::new(CancellablePlugins(subscribed, removed))),
         },
         move |event| {
             if let Event::RequestFailed { message } = event {
@@ -454,7 +458,11 @@ export default class extends WorkerEntrypoint {
         let mut tls = connect_gateway(&runtime, &state)?;
         tls.write_all(format!("GET {path} HTTP/1.1\r\nHost: {HOST}\r\n\r\n").as_bytes())?;
         tls.flush()?;
-        let id = subscriptions.recv_timeout(TIMEOUT)?;
+        let mut ids = [
+            subscriptions.recv_timeout(TIMEOUT)?,
+            subscriptions.recv_timeout(TIMEOUT)?,
+        ];
+        ids.sort_unstable();
         if path == "/stream" {
             assert!(String::from_utf8(read_header_block(&mut tls)?)?.starts_with("HTTP/1.1 200"));
         }
@@ -464,7 +472,12 @@ export default class extends WorkerEntrypoint {
         }
         reset_connection(&tls.sock)?;
         drop(tls);
-        assert_eq!(removals.recv_timeout(TIMEOUT)?, id);
+        let mut cancelled = [
+            removals.recv_timeout(TIMEOUT)?,
+            removals.recv_timeout(TIMEOUT)?,
+        ];
+        cancelled.sort_unstable();
+        assert_eq!(cancelled, ids);
         assert_no_failures(&failures);
     }
     Ok(())

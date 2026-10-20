@@ -377,7 +377,7 @@ function answerPluginCalls(socket, answer) {
   const send = (message) => socket.send(JSON.stringify(message));
   socket.on("message", (data) => {
     const message = JSON.parse(String(data));
-    if (["call", "subscribe", "unsubscribe"].includes(message.type)) answer(message, send);
+    if (["call", "subscribe", "cancel"].includes(message.type)) answer(message, send);
   });
 }
 
@@ -446,11 +446,11 @@ onStart((_event, _env, ctx) => {
         const call = next("call");
         socket.send(JSON.stringify(result(id, { latitude: 51.5 }, false)));
         await call;
-        const unsubscribed = next("unsubscribe");
+        const cancelled = next("cancel");
         const stopped = next("call");
         socket.send(JSON.stringify(result(id, "stop", false)));
 
-        assert.equal((await unsubscribed).id, id);
+        assert.equal((await cancelled).id, id);
         assert.equal((await stopped).method, "stopped");
         assert.deepEqual(received, [{ latitude: 51.5 }, null]);
       } finally {

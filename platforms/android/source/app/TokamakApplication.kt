@@ -60,7 +60,7 @@ class TokamakApplication : Application(), TokamakPlugins {
             override fun subscribe(id: Long, plugin: String, method: String, arguments: String) =
                 mainExecutor.execute { workerRequests.run(id, true, plugin, method, parse(arguments)) }
 
-            override fun unsubscribe(id: Long) = mainExecutor.execute { workerRequests.cancel(id) }
+            override fun cancel(id: Long) = mainExecutor.execute { workerRequests.cancel(id) }
 
             private fun parse(arguments: String): Any? = JSONTokener(arguments).nextValue()
         }

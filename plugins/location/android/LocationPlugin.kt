@@ -71,13 +71,10 @@ class TokamakLocationPlugin(
         if (host.isInForeground) startService()
     }
 
-    override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
+    override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
         when (method) {
             "setup" -> setup(requireObject(arguments), reply)
-            "getCurrentPosition" ->
-                withPermission { granted ->
-                    if (granted) currentPosition(arguments as? JSONObject, reply) else reply(Result.failure(permissionDenied()))
-                }
+            "getCurrentPosition" -> return requestPosition(arguments as? JSONObject, reply)
             "permission" -> reply(Result.success(permission()))
             "requestPermission" -> requestPermission(requireObject(arguments), reply)
             "servicesEnabled" -> reply(Result.success(manager.isLocationEnabled))
@@ -95,6 +92,20 @@ class TokamakLocationPlugin(
                 reply(Result.success(null))
             }
             else -> super.call(method, arguments, reply)
+        }
+        return null
+    }
+
+    private fun requestPosition(options: JSONObject?, reply: TokamakPluginReply): () -> Unit {
+        var cancelled = false
+        var stop = {}
+        withPermission { granted ->
+            if (cancelled) return@withPermission
+            if (granted) stop = currentPosition(options, reply) else reply(Result.failure(permissionDenied()))
+        }
+        return {
+            cancelled = true
+            stop()
         }
     }
 
@@ -295,13 +306,13 @@ class TokamakLocationPlugin(
      * Replies with a fix no older than the `maximumAge` option, taking a new one when there is
      * none, or fails after the `timeout` option.
      */
-    private fun currentPosition(options: JSONObject?, reply: TokamakPluginReply) {
-        val provider = availableProvider(reply) ?: return
+    private fun currentPosition(options: JSONObject?, reply: TokamakPluginReply): () -> Unit {
+        val provider = availableProvider(reply) ?: return {}
         val maximumAge = options?.optLong("maximumAge", 0) ?: 0
         val recent = runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
         if (recent != null && ageMillis(recent) <= maximumAge) {
             reply(Result.success(position(recent)))
-            return
+            return {}
         }
         val cancellation = CancellationSignal()
         val timeout = Runnable {
@@ -321,6 +332,10 @@ class TokamakLocationPlugin(
         }.onFailure {
             handler.removeCallbacks(timeout)
             reply(locationFailure(it))
+        }
+        return {
+            handler.removeCallbacks(timeout)
+            cancellation.cancel()
         }
     }
 

@@ -35,8 +35,8 @@ impl PluginHandler for Shell {
         self.record(format!("subscribe {id} {plugin}.{method} {arguments}"));
     }
 
-    fn unsubscribe(&self, id: u64) {
-        self.record(format!("unsubscribe {id}"));
+    fn cancel(&self, id: u64) {
+        self.record(format!("cancel {id}"));
     }
 }
 
@@ -106,7 +106,7 @@ async fn delivers_each_subscription_result_until_one_is_done() -> TestResult {
 }
 
 #[test]
-fn unsubscribes_at_the_shell_when_a_subscription_is_dropped() {
+fn cancels_at_the_shell_when_a_subscription_is_dropped() {
     let (shell, calls) = with_shell();
 
     drop(calls.subscribe("location", "watchPosition", "null"));
@@ -114,22 +114,30 @@ fn unsubscribes_at_the_shell_when_a_subscription_is_dropped() {
 
     assert_eq!(
         shell.requests(),
-        ["subscribe 1 location.watchPosition null", "unsubscribe 1"]
+        ["subscribe 1 location.watchPosition null", "cancel 1"]
     );
 }
 
-#[test]
-fn ignores_the_result_of_a_call_no_longer_waited_for() {
+#[tokio::test]
+async fn cancels_an_abandoned_call_without_ending_other_calls() -> TestResult {
     let (shell, calls) = with_shell();
 
     drop(calls.call("location", "getCurrentPosition", "null"));
+    let retained = calls.call("storage", "read", "null");
     calls.reply(1, r#"{"value":1,"done":true}"#);
     calls.reply(7, r#"{"value":1,"done":true}"#);
+    calls.reply(2, r#"{"value":2,"done":true}"#);
+    assert_eq!(parse(&retained.await)?["value"], 2);
 
     assert_eq!(
         shell.requests(),
-        ["call 1 location.getCurrentPosition null"]
+        [
+            "call 1 location.getCurrentPosition null",
+            "cancel 1",
+            "call 2 storage.read null",
+        ]
     );
+    Ok(())
 }
 
 #[tokio::test]
@@ -152,7 +160,7 @@ async fn replaces_a_result_that_is_not_json_with_an_error() -> TestResult {
     drop(subscription);
     assert_eq!(
         shell.requests().last().map(String::as_str),
-        Some("unsubscribe 2")
+        Some("cancel 2")
     );
     Ok(())
 }

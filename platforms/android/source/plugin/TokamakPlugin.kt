@@ -31,8 +31,10 @@ typealias TokamakPluginReply = (Result<Any?>) -> Unit
 interface TokamakPlugin {
     val id: String
 
-    fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
+    /** Returns cancellation for pending work when the platform supports it. */
+    fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
         reply(Result.failure(TokamakPluginError.notSupported("$id.$method is not supported")))
+        return null
     }
 
     fun subscribe(

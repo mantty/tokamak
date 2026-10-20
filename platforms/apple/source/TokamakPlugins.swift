@@ -72,11 +72,12 @@ protocol TokamakPlugin: AnyObject {
 
   init(host: TokamakHost)
 
+  /// Returns cancellation for pending work when the platform supports it.
   func call(
     method: String,
     arguments: Any,
     reply: @escaping TokamakPluginReply
-  )
+  ) -> (() -> Void)?
 
   /// Replies with each value until the returned function is called. Throws
   /// when the subscription cannot start, which ends it.
@@ -103,8 +104,9 @@ extension TokamakPlugin {
     method: String,
     arguments: Any,
     reply: @escaping TokamakPluginReply
-  ) {
+  ) -> (() -> Void)? {
     reply(.failure(.notSupported("\(id).\(method) is not supported")))
+    return nil
   }
 
   func subscribe(
@@ -147,14 +149,17 @@ final class TokamakPluginRequests<Key: Hashable> {
       fail(key, .notSupported("Plugin is not supported"))
       return
     }
+    cancellations[key] = {}
     // Plugins reply from any thread.
     let reply: TokamakPluginReply = { [weak self] result in
       DispatchQueue.main.async {
-        self?.send(key, Self.result(result, done: !subscribe))
+        guard let self, self.cancellations[key] != nil else { return }
+        if !subscribe { self.cancellations.removeValue(forKey: key) }
+        self.send(key, Self.result(result, done: !subscribe))
       }
     }
     guard subscribe else {
-      target.call(method: method, arguments: arguments, reply: reply)
+      cancellations[key] = target.call(method: method, arguments: arguments, reply: reply) ?? {}
       return
     }
     do {
@@ -166,15 +171,16 @@ final class TokamakPluginRequests<Key: Hashable> {
 
   /// Ends the request `key` with `error`.
   func fail(_ key: Key, _ error: TokamakPluginError) {
+    cancel(key)
     send(key, Self.result(.failure(error), done: true))
   }
 
-  /// Ends the subscription `key`.
+  /// Cancels the pending call or subscription `key`.
   func cancel(_ key: Key) {
     cancellations.removeValue(forKey: key)?()
   }
 
-  /// Ends every subscription.
+  /// Cancels every pending call and subscription.
   func cancelAll() {
     let cancelAll = Array(cancellations.values)
     cancellations.removeAll()

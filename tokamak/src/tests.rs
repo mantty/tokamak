@@ -155,14 +155,14 @@ fn releases_invocation_owned_listeners_when_the_request_finishes()
             let _ = self.0.send(id);
         }
 
-        fn unsubscribe(&self, id: u64) {
+        fn cancel(&self, id: u64) {
             let _ = self.1.send(id);
         }
     }
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::of_source(LISTENING_WORKER, directory.path())?;
     let (subscriptions, subscribed) = flume::unbounded();
-    let (removed, unsubscribed) = flume::unbounded();
+    let (removed, cancelled) = flume::unbounded();
     let plugins =
         crate::plugin_calls::PluginCalls::new(Some(Arc::new(Shell(subscriptions, removed))), true);
     let config = RuntimeConfig {
@@ -187,7 +187,7 @@ fn releases_invocation_owned_listeners_when_the_request_finishes()
 
     assert!(matches!(response.body, HttpBody::Buffered(body) if body == b"listening"));
     assert_eq!(
-        unsubscribed.recv_timeout(Duration::from_secs(5))?,
+        cancelled.recv_timeout(Duration::from_secs(5))?,
         subscription
     );
     tokio.block_on(handled)??;
@@ -214,7 +214,7 @@ fn http_wait_until_survives_caller_cancellation_but_ends_at_the_host_deadline()
             let _ = self.0.send(method.into());
         }
         fn subscribe(&self, _: u64, _: &str, _: &str, _: &str) {}
-        fn unsubscribe(&self, _: u64) {}
+        fn cancel(&self, _: u64) {}
     }
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::of_source(
@@ -287,7 +287,7 @@ fn check_http_body_cleanup(retained: bool) -> Result<(), Box<dyn std::error::Err
             let _ = self.0.send((id, method.into()));
         }
         fn subscribe(&self, _: u64, _: &str, _: &str, _: &str) {}
-        fn unsubscribe(&self, _: u64) {}
+        fn cancel(&self, _: u64) {}
     }
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::of_source(

@@ -66,7 +66,7 @@ final class TokamakApp {
       subscribe: { context, id, plugin, method, arguments in
         TokamakApp.receive(context, id, subscribe: true, plugin, method, arguments)
       },
-      unsubscribe: { context, id in
+      cancel: { context, id in
         let app = Unmanaged<TokamakApp>.fromOpaque(context!).takeUnretainedValue()
         DispatchQueue.main.async { app.workerRequests.cancel(id) }
       }

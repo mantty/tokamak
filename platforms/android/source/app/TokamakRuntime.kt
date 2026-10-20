@@ -14,7 +14,7 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
 
         fun subscribe(id: Long, plugin: String, method: String, arguments: String)
 
-        fun unsubscribe(id: Long)
+        fun cancel(id: Long)
     }
 
     /** The loopback port the gateway bound. */

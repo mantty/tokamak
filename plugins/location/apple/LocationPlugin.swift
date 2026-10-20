@@ -98,7 +98,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     method: String,
     arguments: Any,
     reply: @escaping TokamakPluginReply
-  ) {
+  ) -> (() -> Void)? {
     let options = arguments as? [String: Any] ?? [:]
     do throws(TokamakPluginError) {
       switch method {
@@ -112,12 +112,18 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
         defaults.set(try? JSONSerialization.data(withJSONObject: options), forKey: setupKey)
         reply(.success(nil))
       case "getCurrentPosition":
-        current[UUID()] = Request(
+        let key = UUID()
+        current[key] = Request(
           reply: reply,
           maximumAge: (options["maximumAge"] as? Double ?? 0) / 1000,
           timeout: (options["timeout"] as? Double ?? Double(UInt32.max)) / 1000
         )
         start()
+        return { [weak self] in
+          guard let self else { return }
+          self.current.removeValue(forKey: key)?.timer?.cancel()
+          if self.current.isEmpty { self.fixes.stopUpdatingLocation() }
+        }
       case "permission":
         reply(.success(permission()))
       case "requestPermission":
@@ -170,6 +176,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     } catch {
       reply(.failure(error))
     }
+    return nil
   }
 
   func subscribe(
@@ -271,6 +278,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   }
 
   private func start(servicesEnabled: Bool) {
+    guard !current.isEmpty || !watchers.isEmpty else { return }
     guard servicesEnabled else {
       fail(.locationUnavailable("Location services are disabled"))
       return

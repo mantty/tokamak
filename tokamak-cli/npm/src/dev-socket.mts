@@ -125,8 +125,8 @@ function serve(websocket: WebSocket, worker: DevWorker, device: Device): void {
 
 /**
  * Passes the plugin call `request` carries to the device. A call's response is its result; a
- * subscription's streams each result as a line of JSON until one is done, and closing it ends the
- * subscription.
+ * subscription's streams each result as a line of JSON until one is done. Closing either cancels
+ * its native request.
  */
 async function forward(device: Device, request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
   let call: PluginRequest;
@@ -137,12 +137,13 @@ async function forward(device: Device, request: http.IncomingMessage, response: 
     return;
   }
   response.writeHead(200, { "content-type": "application/json" });
-  if (request.url === "/call") {
-    response.end(JSON.stringify(await new Promise<PluginResult>((resolve) => device.send("call", call, resolve))));
-    return;
-  }
-  response.flushHeaders();
-  const cancel = device.send("subscribe", call, (result) => {
+  const subscribe = request.url === "/subscribe";
+  if (subscribe) response.flushHeaders();
+  const cancel = device.send(subscribe ? "subscribe" : "call", call, (result) => {
+    if (!subscribe) {
+      response.end(JSON.stringify(result));
+      return;
+    }
     response.write(`${JSON.stringify(result)}\n`);
     if (result.done) response.end();
   });
@@ -202,7 +203,7 @@ class Device {
 
   /**
    * Sends a call or subscription once the device is connected, waiting up to 10 seconds for it,
-   * and passes each of its results to `receive`. Returns the function that unsubscribes.
+   * and passes each of its results to `receive`. Returns the function that cancels the request.
    */
   send(type: "call" | "subscribe", request: PluginRequest, receive: (result: PluginResult) => void): () => void {
     const id = this.#nextId++;
@@ -221,7 +222,7 @@ class Device {
       const pending = this.#pending.get(id);
       if (!pending) return;
       this.#pending.delete(id);
-      pending.socket.send(JSON.stringify({ type: "unsubscribe", id }));
+      pending.socket.send(JSON.stringify({ type: "cancel", id }));
     };
   }
 

@@ -22,7 +22,7 @@ const RUNTIME_PLUGIN: &str = "tokamak";
 ///
 /// The shell answers each with [`crate::Runtime::reply`]: once for a call,
 /// and once per value for a subscription until a result is `done` or the
-/// runtime unsubscribes. The runtime calls these methods on its own threads,
+/// runtime cancels. The runtime calls these methods on its own threads,
 /// and they must return promptly.
 pub trait PluginHandler: Send + Sync {
     /// Calls `method` of `plugin` with the JSON `arguments`.
@@ -31,8 +31,8 @@ pub trait PluginHandler: Send + Sync {
     /// Subscribes to `method` of `plugin` with the JSON `arguments`.
     fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &str);
 
-    /// Ends the subscription `id`.
-    fn unsubscribe(&self, id: u64);
+    /// Cancels the pending call or subscription `id`, releasing its resources.
+    fn cancel(&self, id: u64);
 }
 
 impl std::fmt::Debug for dyn PluginHandler {
@@ -65,7 +65,7 @@ struct Done {
 
 /// A subscription's results, which it ends when dropped.
 pub(crate) struct Subscription {
-    // Drops before `results`, so the shell is unsubscribed while it still has
+    // Drops before `results`, so the shell is cancelled while it still has
     // a reader.
     _shell: Option<Registration>,
     results: mpsc::UnboundedReceiver<String>,
@@ -247,8 +247,8 @@ impl Subscription {
 impl Drop for Registration {
     fn drop(&mut self) {
         let removed = self.calls.waiting().remove(&self.id);
-        if let (Some(Waiting::Subscription(_)), Some(handler)) = (removed, &self.calls.handler) {
-            handler.unsubscribe(self.id);
+        if let (Some(_), Some(handler)) = (removed, &self.calls.handler) {
+            handler.cancel(self.id);
         }
     }
 }

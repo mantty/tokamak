@@ -65,6 +65,36 @@ test("calls a plugin on the device and resolves with its value", async () => {
   ]);
 });
 
+test("cancels an abandoned native call while allowing another call to complete", { timeout: 5000 }, async () => {
+  const { port } = await devSocket();
+  let started, cancelled;
+  const called = new Promise((resolve) => (started = resolve));
+  const stopped = new Promise((resolve) => (cancelled = resolve));
+  await connectDevice(port, (message, send) => {
+    if (message.type === "cancel") {
+      cancelled(message.id);
+      send({ type: "result", id: message.id, result: { value: "late", done: true } });
+    } else if (message.method === "hold") {
+      started(message.id);
+    } else {
+      send({ type: "result", id: message.id, result: { value: "retained", done: true } });
+    }
+  });
+  const controller = new AbortController();
+  const response = fetch(`http://127.0.0.1:${port}/call`, {
+    method: "POST",
+    headers: { [SESSION_HEADER]: TOKEN },
+    body: JSON.stringify({ plugin: "test", method: "hold", arguments: null }),
+    signal: controller.signal,
+  });
+  const failure = assert.rejects(response, { name: "AbortError" });
+  const id = await called;
+  controller.abort();
+  await failure;
+  assert.equal(await stopped, id);
+  assert.equal(await globalThis.__tokamakNativeCall("test", "read", null), "retained");
+});
+
 test("rejects with the DOMException the plugin names", async () => {
   const { port } = await devSocket();
   await connectDevice(port, (message, send) =>
@@ -92,11 +122,11 @@ test("waits for the device to connect", async () => {
 test("streams subscription results to a listener until it is removed", async () => {
   const { port, waited } = await devSocket();
   const messages = [];
-  let unsubscribed;
-  const removed = new Promise((resolve) => (unsubscribed = resolve));
+  let cancelled;
+  const removed = new Promise((resolve) => (cancelled = resolve));
   await connectDevice(port, (message, send) => {
     messages.push(message.type);
-    if (message.type === "unsubscribe") unsubscribed(message.id);
+    if (message.type === "cancel") cancelled(message.id);
     if (message.type !== "subscribe") return;
     send({ type: "result", id: message.id, result: { value: 1, done: false } });
     send({ type: "result", id: message.id, result: { error: { name: "NotReadableError", message: "No fix" }, done: false } });
@@ -111,7 +141,7 @@ test("streams subscription results to a listener until it is removed", async () 
   await Promise.all(waited);
 
   assert.deepEqual(listener.received, [1, "NotReadableError: No fix", 2]);
-  assert.deepEqual(messages, ["subscribe", "unsubscribe"]);
+  assert.deepEqual(messages, ["subscribe", "cancel"]);
   assert.equal(waited.length, 1);
 });
 
@@ -136,10 +166,11 @@ test("fails calls and listeners with NetworkError when the device disconnects", 
   const listener = collector(1);
 
   const call = globalThis.__tokamakNativeCall("location", "getCurrentPosition", null);
+  const failure = assert.rejects(call, (error) => error instanceof DOMException && error.name === "NetworkError");
   globalThis.__tokamakNativeListen("location", "watchPosition", null, listener.next, listener.error);
   await Promise.all(waited);
 
-  await assert.rejects(call, (error) => error instanceof DOMException && error.name === "NetworkError");
+  await failure;
   assert.deepEqual(listener.received, ["NetworkError: The device disconnected"]);
 });
 
@@ -156,18 +187,18 @@ test("refuses plugin calls without the session token", async () => {
   );
 });
 
-test("unsubscribes on the dev WebSocket that carried the subscription", async () => {
+test("cancels on the dev WebSocket that carried the subscription", async () => {
   const { port } = await devSocket();
   const first = [];
   const second = [];
   let subscribed;
   const subscription = new Promise((resolve) => (subscribed = resolve));
-  let unsubscribed;
-  const removed = new Promise((resolve) => (unsubscribed = resolve));
+  let cancelled;
+  const removed = new Promise((resolve) => (cancelled = resolve));
   await connectDevice(port, (message) => {
     first.push(message.type);
     if (message.type === "subscribe") subscribed();
-    if (message.type === "unsubscribe") unsubscribed();
+    if (message.type === "cancel") cancelled();
   });
 
   const stop = globalThis.__tokamakNativeListen("location", "watchPosition", null, () => undefined, () => undefined);
@@ -176,6 +207,6 @@ test("unsubscribes on the dev WebSocket that carried the subscription", async ()
   stop();
   await removed;
 
-  assert.deepEqual(first, ["subscribe", "unsubscribe"]);
+  assert.deepEqual(first, ["subscribe", "cancel"]);
   assert.deepEqual(second, []);
 });

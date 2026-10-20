@@ -32,16 +32,18 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     method: String,
     arguments: Any,
     reply: @escaping TokamakPluginReply
-  ) {
+  ) -> (() -> Void)? {
     let arguments = arguments as? [String: Any] ?? [:]
     let prompting =
       isUnlocked ? Result { () throws(TokamakPluginError) in try host.requireUI() } : nil
+    let authentication = LAContext()
     queue.async {
       reply(
         Result { () throws(TokamakPluginError) in
-          try self.perform(method, arguments, prompting: prompting)
+          try self.perform(method, arguments, prompting: prompting, authentication: authentication)
         })
     }
+    return { authentication.invalidate() }
   }
 
   /// Whether the device's protected data is available, which it is not while
@@ -60,7 +62,8 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
   private func perform(
     _ method: String,
     _ arguments: [String: Any],
-    prompting: Result<Void, TokamakPluginError>?
+    prompting: Result<Void, TokamakPluginError>?,
+    authentication: LAContext
   ) throws(TokamakPluginError) -> Any? {
     #if os(macOS)
       // Unentitled reads report errSecItemNotFound rather than a missing entitlement.
@@ -80,7 +83,8 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
           group: group,
           stored(arguments),
           prompt: optionalString(arguments, "prompt"),
-          prompting: prompting
+          prompting: prompting,
+          authentication: authentication
         ))
       return nil
     case "set":
@@ -91,7 +95,8 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
         group: group,
         stored,
         prompt: optionalString(arguments, "prompt"),
-        prompting: prompting
+        prompting: prompting,
+        authentication: authentication
       )
       try check(status == errSecItemNotFound ? add(name, group: group, stored) : status)
       return nil
@@ -100,7 +105,8 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
         requiredString(arguments, "name"),
         group: group,
         prompt: optionalString(arguments, "prompt"),
-        prompting: prompting
+        prompting: prompting,
+        authentication: authentication
       )
     case "delete":
       let name = try requiredString(arguments, "name")
@@ -141,14 +147,15 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     group: String?,
     _ stored: [CFString: Any],
     prompt: String?,
-    prompting: Result<Void, TokamakPluginError>?
+    prompting: Result<Void, TokamakPluginError>?,
+    authentication: LAContext
   ) throws(TokamakPluginError) -> OSStatus {
     var item = query(name, group: group)
     item[kSecUseAuthenticationContext] = Self.contextWithoutUI()
     let status = SecItemUpdate(item as CFDictionary, stored as CFDictionary)
     guard status == errSecInteractionNotAllowed, let prompting else { return status }
     try prompting.get()
-    item[kSecUseAuthenticationContext] = Self.context(prompt: prompt)
+    item[kSecUseAuthenticationContext] = Self.context(authentication, prompt: prompt)
     return SecItemUpdate(item as CFDictionary, stored as CFDictionary)
   }
 
@@ -158,7 +165,8 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     _ name: String,
     group: String?,
     prompt: String?,
-    prompting: Result<Void, TokamakPluginError>?
+    prompting: Result<Void, TokamakPluginError>?,
+    authentication: LAContext
   ) throws(TokamakPluginError) -> String {
     var item = query(name, group: group)
     item[kSecReturnData] = true
@@ -167,7 +175,7 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     var status = SecItemCopyMatching(item as CFDictionary, &data)
     if status == errSecInteractionNotAllowed, let prompting {
       try prompting.get()
-      item[kSecUseAuthenticationContext] = Self.context(prompt: prompt)
+      item[kSecUseAuthenticationContext] = Self.context(authentication, prompt: prompt)
       status = SecItemCopyMatching(item as CFDictionary, &data)
       // The first read found the value, so it exists but the system can no longer decrypt it.
       if status == errSecItemNotFound {
@@ -192,11 +200,9 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     return context
   }
 
-  /// A context whose system prompt shows `prompt`, or nil for the default prompt.
-  private static func context(prompt: String?) -> LAContext? {
-    guard let prompt, !prompt.isEmpty else { return nil }
-    let context = LAContext()
-    context.localizedReason = prompt
+  /// The invocation's authentication context, with the requested prompt.
+  private static func context(_ context: LAContext, prompt: String?) -> LAContext {
+    if let prompt, !prompt.isEmpty { context.localizedReason = prompt }
     return context
   }
 
