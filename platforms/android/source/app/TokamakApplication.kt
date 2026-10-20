@@ -111,8 +111,8 @@ class TokamakApplication : Application(), TokamakPlugins {
                 callback: (Map<String, Boolean>) -> Unit,
             ) = permissionRequests.request(permissions, callback)
 
-            override fun emit(name: String, event: String, timeoutMillis: Long): String =
-                emitEvent("$id.$name", event, timeoutMillis)
+            override fun emitBytes(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray =
+                emitEvent("$id.$name", payload, timeoutMillis)
 
             override fun fetch(path: String, timeoutMillis: Long): ByteArray {
                 val deadline = SystemClock.elapsedRealtime() + timeoutMillis
@@ -133,13 +133,13 @@ class TokamakApplication : Application(), TokamakPlugins {
         get() = if (started.isInitialized()) runtime.isForeground else activity != null
 
     /**
-     * Delivers the event [name] with the JSON [event] to the Worker's listeners and returns their
-     * reply as JSON. Starts the runtime when it is not running. Blocks.
+     * Delivers the event [name] with its encoded [payload] to the Worker's listeners and returns
+     * their encoded reply. Starts the runtime when it is not running. Blocks.
      */
-    private fun emitEvent(name: String, event: String, timeoutMillis: Long): String {
+    private fun emitEvent(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray {
         val deadline = SystemClock.elapsedRealtime() + timeoutMillis
         val started = runtime
-        return started.emit(name, event, deadline - SystemClock.elapsedRealtime())
+        return started.emit(name, payload, deadline - SystemClock.elapsedRealtime())
     }
 
     /** Records the app moving into or out of the foreground, once the runtime has started. */
@@ -152,7 +152,7 @@ class TokamakApplication : Application(), TokamakPlugins {
         if (!runtime.setForeground(foreground)) return
         val name = if (foreground) "resume" else "suspend"
         lifecycle.execute {
-            runCatching { runtime.emit(name, "{}", LIFECYCLE_DEADLINE_MILLIS) }
+            runCatching { runtime.emit(name, "{}".toByteArray(), LIFECYCLE_DEADLINE_MILLIS) }
                 .onFailure { Log.w("tokamak", "tokamak $name failed", it) }
         }
     }

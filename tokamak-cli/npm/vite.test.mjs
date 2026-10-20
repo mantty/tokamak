@@ -341,7 +341,12 @@ test("builds a native worker whose event entrypoint runs the listeners", async (
           modules: true,
           compatibilityDate: "2026-09-01",
           serviceBindings: { APP: { name: "app", entrypoint: "TokamakEvents" } },
-          script: `export default { fetch: async (_request, env) => Response.json(await env.APP.dispatch("start", { foreground: true })) };`,
+          script: `export default {
+            async fetch(_request, env) {
+              const { reply, listened } = await env.APP.dispatch("start", new TextEncoder().encode('{"foreground":true}'));
+              return Response.json({ reply: JSON.parse(new TextDecoder().decode(reply)), listened });
+            },
+          };`,
         },
         {
           name: "app",
@@ -436,14 +441,14 @@ test("passes the development Worker's plugin calls to the device and back", asyn
 test("keeps a development Worker's listener after its event until it is removed", async () => {
   const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
   const app = project({
-    "src/tokamak.ts": `const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for("tokamak.native")].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
-const nativeListen = (plugin, method, value, next, error) => globalThis[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
+    "src/tokamak.ts": `const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for("tokamak.native")].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
 ${NATIVE_WORKER}\nimport { onStart } from ${JSON.stringify(events)};
 onStart((_event, _env, ctx) => {
-  const stop = nativeListen("location", "watchPosition", null, (position) => {
-    if (position !== "stop") return void nativeCall("test", "received", position);
+  const stop = nativeListen(ctx, "location", "watchPosition", null, (position) => {
+    if (position !== "stop") return void nativeCall(ctx, "test", "received", position);
     stop();
-    ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 500)).then(() => nativeCall("test", "stopped", null)));
+    ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 500)).then(() => nativeCall(ctx, "test", "stopped", null)));
   }, () => undefined);
 });
 `,

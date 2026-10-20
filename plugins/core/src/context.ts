@@ -30,10 +30,13 @@ const disconnected: NativeConnection = {
   listen: unavailable,
 };
 
-/** Attaches the host's connection to the receiving execution context. */
+/**
+ * The receiving execution context with its native connection: `connection`, or the one the host
+ * attached to `ctx`. Without either, native calls reject with `NotSupportedError`.
+ */
 export function createNativeContext(
-  ctx: Pick<TokamakContext, "waitUntil">,
-  connection = Reflect.get(globalThis, nativeConnection) as NativeConnection | undefined,
+  ctx: Pick<TokamakContext, "waitUntil"> & { readonly [nativeConnection]?: NativeConnection },
+  connection = ctx[nativeConnection],
 ): TokamakContext {
   const native = connection ?? disconnected;
   return Object.assign(ctx, { [nativeConnection]: native, webview: webview(native) });

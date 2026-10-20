@@ -63,7 +63,7 @@ export default class extends WorkerEntrypoint {
   }
 }
 export class TokamakEvents extends WorkerEntrypoint {
-  dispatch() { return { reply: null, listened: [] }; }
+  dispatch() { return { reply: new Uint8Array(), listened: [] }; }
 }
 ",
         &json!({}),
@@ -205,7 +205,8 @@ export class Device extends WorkerEntrypoint {
 }
 export class TokamakEvents extends WorkerEntrypoint {
   async dispatch(name) {
-    return { reply: { name, receiver: this.env.NAME, main: await this.env.MAIN.name() }, listened: ['echo'] };
+    const reply = { name, receiver: this.env.NAME, main: await this.env.MAIN.name() };
+    return { reply: new TextEncoder().encode(JSON.stringify(reply)), listened: ['echo'] };
   }
 }
 export default { fetch: () => new Response('device') };
@@ -222,7 +223,7 @@ export default { fetch: () => new Response('device') };
             "native": "undefined", "file": true,
         })
     );
-    let event: Value = serde_json::from_str(&runtime.emit("echo", "{}", TIMEOUT)?)?;
+    let event: Value = serde_json::from_slice(&runtime.emit("echo", b"{}", TIMEOUT)?)?;
     assert_eq!(
         event,
         json!({ "name": "echo", "receiver": "device", "main": "main" })
@@ -237,6 +238,7 @@ fn invalid_packaged_service_targets_and_binding_collisions_fail_at_startup() -> 
         json!({ "vars": { "DEVICE": 1 }, "services": { "DEVICE": { "service": "main", "entrypoint": "default" } } }),
         json!({ "storage": [{ "type": "kv", "name": "DEVICE", "id": "device" }], "services": { "DEVICE": { "service": "main", "entrypoint": "default" } } }),
         json!({ "services": { "DEVICE": { "service": "main", "entrypoint": "" } } }),
+        json!({ "services": { "DEVICE": { "service": "main", "entrypoint": "TokamakEvents" } } }),
     ] {
         let directory = tempfile::tempdir()?;
         let app = PackageLayout::new(directory.path().join("app"));
@@ -289,7 +291,7 @@ export default class extends WorkerEntrypoint {
   async read() { return { second: await this.env.SECOND.get('value'), shared: await this.env.ALIAS.get('value'), firstBinding: typeof this.env.FIRST }; }
 }
 export class TokamakEvents extends WorkerEntrypoint {
-  dispatch() { return { reply: null, listened: [] }; }
+  dispatch() { return { reply: new Uint8Array(), listened: [] }; }
 }
 ",
         &json!({ "storage": [

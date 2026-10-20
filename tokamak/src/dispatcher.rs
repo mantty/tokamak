@@ -82,13 +82,22 @@ impl Handler for Dispatcher {
         execute_request(&self.worker, &self.config, job, stopped).map_err(Into::into)
     }
 
+    /// Delivers `event` to the Tokamak worker. Without one, nothing listens.
     fn deliver(&self, event: EventJob, stopped: &CancellationToken) {
-        if let Some(receiver) = &self.native {
-            receiver.deliver(event, stopped);
+        let Some(native) = &self.native else {
+            let _ = event.delivered.send(Ok(Delivery {
+                reply: Vec::new(),
+                listened: Some(std::collections::BTreeSet::new()),
+            }));
             return;
-        }
+        };
         match tokio::runtime::Handle::try_current() {
-            Ok(tokio) => tokio.block_on(execute_event(&self.worker, &self.config, event, stopped)),
+            Ok(tokio) => tokio.block_on(execute_event(
+                &native.worker,
+                &native.config,
+                event,
+                stopped,
+            )),
             Err(error) => {
                 let _ = event.delivered.send(Err(error.into()));
             }

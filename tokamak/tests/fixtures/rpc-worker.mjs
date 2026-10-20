@@ -18,7 +18,7 @@ class Native extends WorkerEntrypoint {
 }
 
 export class TokamakEvents extends WorkerEntrypoint {
-  dispatch() { return { reply: null, listened: [] }; }
+  dispatch() { return { reply: new Uint8Array(), listened: [] }; }
 }
 
 export default {

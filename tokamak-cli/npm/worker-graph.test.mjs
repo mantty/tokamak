@@ -70,7 +70,8 @@ test("infers calls through MAIN on a clean build and keeps native bindings separ
       }`,
     "tokamak.ts": `import { TokamakEntrypoint } from ${sdk};
       import { defineEvent } from ${events};
-      defineEvent<string>("example")((_event, env, ctx) => {
+      declare global { namespace Tokamak { interface Events { example: string } } }
+      defineEvent("example")((_event, env, ctx) => {
         const title: Promise<{ title: string }> = env.MAIN.recipe(1);
         ctx.waitUntil(title);
         // @ts-expect-error the native worker has its own binding set

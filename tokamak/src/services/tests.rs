@@ -332,14 +332,14 @@ export default class extends WorkerEntrypoint {
         directory.path(),
     )?;
     let mut device = service(
-        r"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+        r"const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 export default class extends WorkerEntrypoint {
   start() {
     this.ctx.waitUntil((async () => {
-      await nativeCall('gate', 'wait');
-      await nativeCall('gate', 'complete');
+      await nativeCall(this.ctx, 'gate', 'wait');
+      await nativeCall(this.ctx, 'gate', 'complete');
     })());
     return 'accepted';
   }
@@ -432,16 +432,16 @@ export default class extends WorkerEntrypoint { run() { while (true) {} } }
 fn caller_cancellation_preserves_registered_wait_until_work() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut worker = service(
-        r"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+        r"const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 export default class extends WorkerEntrypoint {
   async run() {
     this.ctx.waitUntil((async () => {
-      await nativeCall('gate', 'retained');
-      await nativeCall('gate', 'complete');
+      await nativeCall(this.ctx, 'gate', 'retained');
+      await nativeCall(this.ctx, 'gate', 'complete');
     })());
-    await nativeCall('gate', 'handler');
+    await nativeCall(this.ctx, 'gate', 'handler');
   }
 }
 ",
@@ -509,19 +509,19 @@ fn host_deadline_ends_blocked_rpc_stream_cleanup() -> TestResult {
 fn check_rpc_stream_cleanup(expire: bool, drop_stream: bool) -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut worker = service(
-        r"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+        r"const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 export default class extends WorkerEntrypoint {
   run() {
     return new ReadableStream({
       type: 'bytes',
-      async cancel() {
+      cancel: async () => {
         let sum = 0;
         for (let i = 0; i < 50000; i++) sum += i;
         if (sum !== 1249975000) throw new Error('cleanup calculation failed');
-        await nativeCall('gate', 'cleanup');
-        await nativeCall('gate', 'complete');
+        await nativeCall(this.ctx, 'gate', 'cleanup');
+        await nativeCall(this.ctx, 'gate', 'complete');
       },
     });
   }
@@ -594,12 +594,12 @@ export default class extends WorkerEntrypoint {
 fn an_inherited_deadline_finishes_wait_until_blocked_on_native_io() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut worker = service(
-        r"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+        r"const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
 export default class extends WorkerEntrypoint {
   run() {
-    this.ctx.waitUntil(nativeCall('gate', 'retained'));
+    this.ctx.waitUntil(nativeCall(this.ctx, 'gate', 'retained'));
     return new ReadableStream({ pull() { return new Promise(() => {}); } });
   }
 }

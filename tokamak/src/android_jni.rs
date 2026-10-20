@@ -377,7 +377,7 @@ fn emit(
         .convert_byte_array(event)
         .map_err(|error| error.to_string())?;
     runtime
-        .emit_bytes(&name, &event, timeout)
+        .emit(&name, &event, timeout)
         .map_err(|error| error.to_string())
 }
 

@@ -137,11 +137,16 @@ interface TokamakHost {
 
     /**
      * Delivers the plugin's event [name], which the Worker's listeners receive as
-     * `<plugin>.<name>`, with the JSON [event], and returns their reply as JSON, `null` when none
-     * replies. Starts the runtime when it is not running. Blocks, so call it off the main thread;
-     * throws unless the listeners return within [timeoutMillis], which includes runtime startup.
+     * `<plugin>.<name>`, with its encoded [payload], and returns their encoded reply, which is
+     * empty when none replied. Starts the runtime when it is not running. Blocks, so call it off
+     * the main thread; throws unless the listeners return within [timeoutMillis], which includes
+     * runtime startup.
      */
-    fun emit(name: String, event: String, timeoutMillis: Long): String
+    fun emitBytes(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray
+
+    /** [emitBytes] with the JSON [event], returning their reply as JSON, `null` when none replied. */
+    fun emit(name: String, event: String, timeoutMillis: Long): String =
+        emitBytes(name, event.toByteArray(Charsets.UTF_8), timeoutMillis).toString(Charsets.UTF_8).ifEmpty { "null" }
 
     /**
      * What the app serves at [path], as its WebView would load it: a file the app ships or the

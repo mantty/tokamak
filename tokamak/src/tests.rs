@@ -83,11 +83,11 @@ export default {
 "#;
 
 /// Registers an invocation-owned listener and responds.
-const LISTENING_WORKER: &[u8] = br#"const nativeListen = (plugin, method, value, next, error) => globalThis[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
+const LISTENING_WORKER: &[u8] = br#"const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
 
 export default {
-  fetch() {
-    const stop = nativeListen("location", "watchPosition", null, () => stop(), () => {});
+  fetch(request, env, ctx) {
+    const stop = nativeListen(ctx, "location", "watchPosition", null, () => stop(), () => {});
     return new Response("listening");
   },
 };
@@ -219,15 +219,15 @@ fn http_wait_until_survives_caller_cancellation_but_ends_at_the_host_deadline()
     }
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::of_source(
-        br"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+        br"const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
 
 export default {
   async fetch(request, env, ctx) {
     ctx.waitUntil((async () => {
       await new Promise(resolve => setTimeout(resolve, 100));
-      await nativeCall('gate', 'retained');
+      await nativeCall(ctx, 'gate', 'retained');
     })());
-    await nativeCall('gate', 'handler');
+    await nativeCall(ctx, 'gate', 'handler');
     return new Response('finished');
   }
 };",
@@ -293,19 +293,19 @@ fn check_http_body_cleanup(retained: bool) -> Result<(), Box<dyn std::error::Err
     }
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::of_source(
-        br"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+        br"const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
 
-const gate = name => nativeCall('gate', name);
+const gate = (ctx, name) => nativeCall(ctx, 'gate', name);
 export default {
   fetch(request, env, ctx) {
-    if (env.RETAIN) ctx.waitUntil(gate('retained').then(() => gate('followup')));
+    if (env.RETAIN) ctx.waitUntil(gate(ctx, 'retained').then(() => gate(ctx, 'followup')));
     return new Response(new ReadableStream({
-      pull() { return gate('pull'); },
+      pull() { return gate(ctx, 'pull'); },
       cancel() {
         let sum = 0;
         for (let i = 0; i < 50000; i++) sum += i;
         if (sum !== 1249975000) throw new Error('cleanup calculation failed');
-        return gate('cancelled');
+        return gate(ctx, 'cancelled');
       },
     }));
   }

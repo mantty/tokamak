@@ -24,11 +24,12 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
     fun restoreGateway(): Int = nativeRestoreGateway(handle)
 
     /**
-     * Delivers the event [name] with the JSON [event] to the Worker's listeners, blocking until
-     * they return or [timeoutMillis] passes, and returns their reply as JSON.
+     * Delivers the event [name] with its encoded [payload] to the Worker's listeners, blocking
+     * until they return or [timeoutMillis] passes, and returns their encoded reply, which is empty
+     * when none replied.
      */
-    fun emit(name: String, event: String, timeoutMillis: Long): String =
-        String(nativeEmit(handle, name, event.toByteArray(Charsets.UTF_8), timeoutMillis), Charsets.UTF_8)
+    fun emit(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray =
+        nativeEmit(handle, name, payload, timeoutMillis)
 
     /** What the app serves at [path], blocking until it arrives or [timeoutMillis] passes. */
     fun fetch(path: String, timeoutMillis: Long): ByteArray = nativeFetch(handle, path, timeoutMillis)

@@ -107,21 +107,21 @@ final class TokamakApp {
     if let current { completion(current) }
   }
 
-  /// Delivers the event `name` with `event`, JSON-serialisable, to the
+  /// Delivers the event `name`, whose encoded data is `payload`, to the
   /// Worker's listeners on `queue`, and calls `completion` on the main thread
-  /// with their reply, parsed from JSON, or nil. Fails unless they return
-  /// within `timeout`, which includes runtime startup. Call it on the main
-  /// thread.
+  /// with their encoded reply, which is empty when none replied. Fails unless
+  /// they return within `timeout`, which includes runtime startup. Call it on
+  /// the main thread.
   func emit(
     _ name: String,
-    event: Any,
+    payload: Data,
     timeout: TimeInterval,
     on queue: DispatchQueue = .global(qos: .userInitiated),
-    completion: @escaping (Result<Any?, Error>) -> Void
+    completion: @escaping (Result<Data, Error>) -> Void
   ) {
     let deadline = Date() + timeout
     withRuntime(on: queue, completion: completion) { runtime in
-      try runtime.emit(name, event: event, timeout: deadline.timeIntervalSinceNow)
+      try runtime.emit(name, payload: payload, timeout: deadline.timeIntervalSinceNow)
     }
   }
 
@@ -187,7 +187,7 @@ final class TokamakApp {
         finish()
         return
       }
-      self.emit(name, event: [String: Any](), timeout: timeout, on: self.lifecycle) { result in
+      self.emit(name, payload: Data("{}".utf8), timeout: timeout, on: self.lifecycle) { result in
         if case .failure(let error) = result {
           print("tokamak \(name) failed: \(error)")
         }
@@ -410,24 +410,20 @@ final class RuntimeHandle {
     return port
   }
 
-  /// Delivers the event `name` with `event`, JSON-serialisable, to the
+  /// Delivers the event `name`, whose encoded data is `payload`, to the
   /// Worker's listeners, blocking until they return or `timeout` passes, and
-  /// returns their reply, parsed from JSON, or nil.
-  func emit(_ name: String, event: Any, timeout: TimeInterval) throws -> Any? {
-    guard JSONSerialization.isValidJSONObject([event]) else {
-      throw RuntimeError.runtime("the \(name) event is not JSON")
-    }
-    let event = try JSONSerialization.data(withJSONObject: event, options: .fragmentsAllowed)
+  /// returns their encoded reply, which is empty when none replied.
+  func emit(_ name: String, payload: Data, timeout: TimeInterval) throws -> Data {
     var reply = TokamakBytes()
     var error = [CChar](repeating: 0, count: 1024)
     let succeeded = name.withCString { name in
-      event.withUnsafeBytes { event in
+      payload.withUnsafeBytes { payload in
         error.withUnsafeMutableBufferPointer { error in
           tokamak_runtime_emit(
             handle,
             name,
-            event.bindMemory(to: UInt8.self).baseAddress,
-            event.count,
+            payload.bindMemory(to: UInt8.self).baseAddress,
+            payload.count,
             UInt64(max(timeout, 0) * 1000),
             &reply,
             error.baseAddress,
@@ -437,11 +433,10 @@ final class RuntimeHandle {
       }
     }
     defer { tokamak_bytes_free(reply) }
-    guard succeeded, let json = reply.contents else {
+    guard succeeded else {
       throw RuntimeError.runtime(String(cString: error))
     }
-    let value = try JSONSerialization.jsonObject(with: json, options: .fragmentsAllowed)
-    return value is NSNull ? nil : value
+    return reply.contents ?? Data()
   }
 
   /// What the app serves at `path`, blocking until it arrives or `timeout`

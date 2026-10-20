@@ -2,7 +2,6 @@ import { X509Certificate } from "node:crypto";
 import fs from "node:fs";
 import type { ServerOptions as HttpsServerOptions } from "node:https";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { normalizePath, type Plugin, type ViteDevServer } from "vite";
 
@@ -18,7 +17,6 @@ export type TokamakOptions = Config & {
 
 const MIDDLEWARE_MODE_ERROR =
   "Vite is running in middleware mode, so tokamak cannot find the development server's address; tok dev needs Vite's own dev server";
-const NATIVE_CALLS = normalizePath(fileURLToPath(new URL("./native.mjs", import.meta.url)));
 
 /** The native worker and its development relay. */
 export function createNativeWorker(
@@ -29,7 +27,6 @@ export function createNativeWorker(
   const { module, ...config } = options;
   const token = process.env.TOKAMAK_SESSION_TOKEN;
   let graph: WorkerGraph;
-  let devSocket: DevSocket | undefined;
   const plugin: Plugin = {
     name: "tokamak",
     enforce: "pre",
@@ -60,16 +57,9 @@ export function createNativeWorker(
     configureServer: {
       order: "pre",
       async handler(server) {
-        devSocket = await serveNativeWorker(server, graph.names(), output, token);
+        const devSocket = await serveNativeWorker(server, graph.names(), output, token);
+        if (devSocket && token) graph.relay(devSocket.port, token);
       },
-    },
-    transform(code, id) {
-      if (this.environment.name !== "tokamak" || this.environment.mode !== "dev" ||
-        id !== graph.generated || !devSocket || !token) return;
-      return {
-        code: `${code}\n${nativeCalls(devSocket.port, token)}`,
-        map: null,
-      };
     },
   };
   return { plugin, graph: () => graph };
@@ -100,13 +90,6 @@ async function serveNativeWorker(
     });
   });
   return socket;
-}
-
-function nativeCalls(port: number, token: string): string {
-  return `import { waitUntil as __tokamakWaitUntil } from "cloudflare:workers";
-import { defineNativeCalls as __tokamakDefineNativeCalls } from ${JSON.stringify(NATIVE_CALLS)};
-__tokamakDefineNativeCalls(${String(port)}, ${JSON.stringify(token)}, __tokamakWaitUntil);
-`;
 }
 
 function endEntityCertificates(https: HttpsServerOptions | undefined): string | undefined {

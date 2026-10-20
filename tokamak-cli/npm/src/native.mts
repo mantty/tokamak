@@ -1,7 +1,10 @@
 import { decodeMessage, encodeMessage, messages, type NativeMessage } from "@tokamakdev/plugin/native-protocol";
 
-/** Connects the development worker's native byte endpoints to the device relay. */
-export function defineNativeCalls(port: number, token: string, waitUntil: (promise: Promise<unknown>) => void): void {
+/**
+ * The development invocation `ctx`'s native connection, which reaches the device's byte
+ * endpoints through the relay on `port`. Its subscriptions are `ctx`'s `waitUntil` work.
+ */
+export function connectDevice(port: number, token: string, ctx: { waitUntil(promise: Promise<unknown>): void }) {
   const decoder = new TextDecoder();
   const decoded = (payload: Uint8Array): unknown => JSON.parse(decoder.decode(payload));
   const post = async (path: string, plugin: string, method: string, payload: Uint8Array, signal?: AbortSignal) => {
@@ -21,7 +24,7 @@ export function defineNativeCalls(port: number, token: string, waitUntil: (promi
     }
     return payload;
   };
-  const connection = {
+  return {
     async call(plugin: string, method: string, payload: Uint8Array) {
       let message: NativeMessage;
       try {
@@ -44,15 +47,14 @@ export function defineNativeCalls(port: number, token: string, waitUntil: (promi
         const response = await post("/subscribe", plugin, method, payload, listening.signal);
         for await (const message of messages(response.body)) deliver(message);
       };
-      waitUntil(listen().catch((failure: unknown) => {
+      ctx.waitUntil(listen().catch((failure: unknown) => {
         if (!listening.signal.aborted) {
           try { error(networkError(failure), true); } catch (thrown) { reportError(thrown); }
         }
       }));
-      return () => listening.abort();
+      return () => { listening.abort(); };
     },
   };
-  Reflect.set(globalThis, Symbol.for("tokamak.native"), connection);
 }
 
 function networkError(error: unknown): DOMException {

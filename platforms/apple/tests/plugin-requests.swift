@@ -254,8 +254,8 @@ final class TokamakApp {
   let resources = TokamakResources()
   var isInForeground = true
   func emit(
-    _ name: String, event: Any, timeout: TimeInterval,
-    completion: @escaping (Result<Any?, Error>) -> Void
+    _ name: String, payload: Data, timeout: TimeInterval,
+    completion: @escaping (Result<Data, Error>) -> Void
   ) { preconditionFailure("Unexpected event") }
   func fetch(
     _ path: String, timeout: TimeInterval,

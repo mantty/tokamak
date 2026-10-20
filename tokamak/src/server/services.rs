@@ -9,6 +9,9 @@ use crate::plugin_calls::PluginCalls;
 use crate::quickjs::{Error, WorkerBundle};
 use crate::services::{Registry, Service, Target};
 
+/// The generated entrypoint through which the host delivers native events.
+const EVENT_ENTRYPOINT: &str = "TokamakEvents";
+
 struct Package {
     worker: WorkerBundle,
     environment: WorkerEnvironment,
@@ -98,6 +101,12 @@ fn validate_bindings(packages: &BTreeMap<&str, Package>) -> Result<()> {
             if collision {
                 return Err(Error::Startup(format!(
                     "Service binding {binding} conflicts with another binding in {name}"
+                ))
+                .into());
+            }
+            if target.entrypoint == EVENT_ENTRYPOINT {
+                return Err(Error::Startup(format!(
+                    "Service binding {binding} targets {EVENT_ENTRYPOINT}, which only native events reach"
                 ))
                 .into());
             }

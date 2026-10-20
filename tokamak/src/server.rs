@@ -161,31 +161,22 @@ impl Runtime {
         Ok(self.gateway.restore_gateway()?)
     }
 
-    /// Deliver the event `name`, whose JSON is `event`, to the Worker's
-    /// listeners and return the reply as JSON: the first value a listener
-    /// returns other than `undefined`, or `null`.
+    /// Deliver the event `name`, whose encoded data is `event`, to the Tokamak
+    /// worker's listeners and return the encoded reply: the first value a
+    /// listener returns other than `undefined`, or nothing.
     ///
     /// Blocks until the listeners and their `waitUntil` promises settle, or
     /// `timeout` passes. Events wait for `start`. `resume` and `suspend` are
     /// delivered one at a time, so a shell emits them from one thread to keep
     /// their order, each after [`Runtime::set_foreground`] reports a change.
-    /// A packaged app runs no Worker for an event without listeners.
+    /// No Worker runs for an event without listeners, or in an app without a
+    /// Tokamak worker.
     ///
     /// # Errors
     ///
     /// Returns an error when `name` is `start`, the Worker cannot run, or
     /// `timeout` passes before every listener returns.
-    pub fn emit(&self, name: &str, event: &str, timeout: Duration) -> Result<String> {
-        String::from_utf8(self.emit_bytes(name, event.as_bytes(), timeout)?)
-            .map_err(|error| crate::Error::Event(error.to_string()))
-    }
-
-    /// Deliver an encoded event and return its encoded reply.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when delivery fails or exceeds `timeout`.
-    pub fn emit_bytes(&self, name: &str, event: &[u8], timeout: Duration) -> Result<Vec<u8>> {
+    pub fn emit(&self, name: &str, event: &[u8], timeout: Duration) -> Result<Vec<u8>> {
         self.events
             .emit(name, event, timeout)
             .map_err(crate::Error::Event)

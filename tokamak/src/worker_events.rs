@@ -11,9 +11,6 @@ use crate::lifecycle_events::Event;
 /// How long the Worker has for `start`.
 const START_DEADLINE: Duration = Duration::from_secs(10);
 
-/// The reply of an event no listener answered.
-const NO_REPLY: &[u8] = b"null";
-
 /// Delivers events to the Worker: `start` first, then other events, with
 /// lifecycle events one at a time. A packaged Worker reports the events it
 /// listens for, and no Worker runs for any other.
@@ -54,8 +51,9 @@ impl WorkerEvents {
         events
     }
 
-    /// Delivers the event `name`, whose JSON is `event`, once `start` has
-    /// been, and returns the reply as JSON.
+    /// Delivers the event `name`, whose encoded data is `event`, once `start`
+    /// has been, and returns the encoded reply, which is empty when no
+    /// listener replied.
     pub(crate) fn emit(
         &self,
         name: &str,
@@ -70,7 +68,7 @@ impl WorkerEvents {
         let lifecycle = matches!(name, "resume" | "suspend");
         let _turn = lifecycle.then(|| lock(&self.lifecycle));
         if !self.listens(name) {
-            return Ok(NO_REPLY.to_owned());
+            return Ok(Vec::new());
         }
         self.deliver(name, event, deadline)
     }

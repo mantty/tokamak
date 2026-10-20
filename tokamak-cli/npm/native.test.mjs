@@ -1,5 +1,6 @@
-const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for("tokamak.native")].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
-const nativeListen = (plugin, method, value, next, error) => globalThis[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
+let connection;
+const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await connection.call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+const nativeListen = (plugin, method, value, next, error) => connection.listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
 import { decodeDevice, encodeDevice } from "./fixtures/native-device.mjs";
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
@@ -7,7 +8,7 @@ import { afterEach, test } from "node:test";
 import WebSocket from "ws";
 
 import { SESSION_HEADER, openDevSocket } from "./dist/dev-socket.mjs";
-import { defineNativeCalls } from "./dist/native.mjs";
+import { connectDevice as relayConnection } from "./dist/native.mjs";
 
 const TOKEN = "token";
 let opened;
@@ -18,13 +19,13 @@ afterEach(async () => {
 });
 
 /**
- * A dev socket, with the development Worker's native calls defined on it, and the promises
- * `waitUntil` received.
+ * A dev socket, with a development invocation's native connection through it, and the promises
+ * its `waitUntil` received.
  */
 async function devSocket() {
   opened = await openDevSocket("app", TOKEN);
   const waited = [];
-  defineNativeCalls(opened.port, TOKEN, (promise) => waited.push(promise));
+  connection = relayConnection(opened.port, TOKEN, { waitUntil: (promise) => waited.push(promise) });
   return { port: opened.port, waited };
 }
 
@@ -181,7 +182,7 @@ test("refuses plugin calls without the session token", async () => {
   const { port } = await devSocket();
 
   const response = await fetch(`http://127.0.0.1:${port}/call`, { method: "POST", body: "{}" });
-  defineNativeCalls(port, "wrong", () => undefined);
+  connection = relayConnection(port, "wrong", { waitUntil: () => undefined });
 
   assert.equal(response.status, 401);
   await assert.rejects(
@@ -225,7 +226,7 @@ test("byte endpoints preserve binary calls and streams including subarray offset
     received.push(Array.from(payload));
     device.send(encodeMessage({ type: "result", id: header.id, done: true }, payload));
   });
-  const native = globalThis[Symbol.for("tokamak.native")];
+  const native = connection;
   const input = new Uint8Array([99, 0, 255, 192, 175, 88]).subarray(1, 5);
   const expected = new Uint8Array(input);
   const pending = native.call("bytes", "echo", input);
@@ -246,7 +247,7 @@ test("listener exceptions are reported without becoming native failures", async 
   const failure = new Error("consumer failed");
   globalThis.reportError = error => reported.push(error);
   try {
-    globalThis[Symbol.for("tokamak.native")].listen("test", "watch", new Uint8Array(), () => { throw failure; }, assert.fail);
+    connection.listen("test", "watch", new Uint8Array(), () => { throw failure; }, assert.fail);
     await Promise.all(waited);
     assert.deepEqual(reported, [failure]);
   } finally { globalThis.reportError = previous; }
@@ -270,7 +271,7 @@ test("error replies retain recoverable and terminal completion status", async ()
     for (const done of [false, true]) send({ type: "result", id: message.id, result: { error: { name: "NotReadableError", message: "No fix" }, done } });
   });
   const failures = [];
-  globalThis[Symbol.for("tokamak.native")].listen("location", "watch", new Uint8Array(), assert.fail, (error, done) => failures.push([error.name, done]));
+  connection.listen("location", "watch", new Uint8Array(), assert.fail, (error, done) => failures.push([error.name, done]));
   await Promise.all(waited);
   assert.deepEqual(failures, [["NotReadableError", false], ["NotReadableError", true]]);
 });

@@ -18,7 +18,7 @@ export function decodeDevice(bytes) {
   const { header, payload } = decodeMessage(new Uint8Array(bytes));
   const text = decoder.decode(payload);
   if (header.type === "call" || header.type === "subscribe") header.arguments = text ? JSON.parse(text) : null;
-  if (header.type === "reply") header.reply = JSON.parse(text);
+  if (header.type === "reply") header.reply = text ? JSON.parse(text) : null;
   if (header.type === "error") header.message = text;
   return header;
 }

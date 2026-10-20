@@ -194,7 +194,7 @@ fn deliver_lifecycle_events(runtime: Arc<Runtime>) -> Result<(Sender<bool>, Join
         .spawn(move || {
             for foreground in receiver {
                 let name = if foreground { "resume" } else { "suspend" };
-                if let Err(error) = runtime.emit(name, "{}", LIFECYCLE_DEADLINE) {
+                if let Err(error) = runtime.emit(name, b"{}", LIFECYCLE_DEADLINE) {
                     eprintln!("tokamak {name} failed: {error}");
                 }
             }

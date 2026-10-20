@@ -221,7 +221,7 @@ fn preserves_opaque_event_payloads_and_replies() -> TestResult {
         Ok(())
     });
     assert_eq!(
-        runtime.emit_bytes("example.binary", &bytes, Duration::from_secs(5))?,
+        runtime.emit("example.binary", &bytes, Duration::from_secs(5))?,
         bytes
     );
     host_server.join().map_err(|_| "host server panicked")??;
@@ -237,10 +237,10 @@ fn delivers_events_through_the_dev_socket() -> TestResult {
         Ok((headers, events.to_vec()))
     });
 
-    let reply = runtime.emit("example.ping", r#"{"id":"1"}"#, Duration::from_secs(5))?;
+    let reply = runtime.emit("example.ping", br#"{"id":"1"}"#, Duration::from_secs(5))?;
 
     let (headers, events) = host_server.join().map_err(|_| "host server panicked")??;
-    assert_eq!(reply, r#"{"echo":"example.ping"}"#);
+    assert_eq!(reply, br#"{"echo":"example.ping"}"#);
     assert_eq!(
         header_value(&headers, "x-tokamak-session"),
         Some("test-session")
@@ -367,13 +367,13 @@ fn reopens_the_dev_socket_after_it_closes() -> TestResult {
     });
     reopening.recv_timeout(Duration::from_secs(10))?;
 
-    let reply = runtime.emit("suspend", "{}", Duration::from_secs(5));
+    let reply = runtime.emit("suspend", b"{}", Duration::from_secs(5));
 
     assert_eq!(
         host_server.join().map_err(|_| "host server panicked")??,
         r#"{"type":"event","id":1,"name":"suspend","event":{}}"#
     );
-    assert_eq!(reply?, "null");
+    assert_eq!(reply?, b"null");
     Ok(())
 }
 
@@ -392,10 +392,10 @@ fn assembles_a_reply_sent_in_fragments() -> TestResult {
         write_frame(&mut socket, 0x0, last, false)
     });
 
-    let reply = runtime.emit("example.ping", "{}", Duration::from_secs(5))?;
+    let reply = runtime.emit("example.ping", b"{}", Duration::from_secs(5))?;
 
     host_server.join().map_err(|_| "host server panicked")??;
-    assert_eq!(reply, r#""joined""#);
+    assert_eq!(reply, br#""joined""#);
     Ok(())
 }
 
@@ -420,8 +420,8 @@ fn fails_an_event_the_plugin_answers_with_an_error_or_too_late() -> TestResult {
         Ok(())
     });
 
-    let failed = runtime.emit("example.ping", "{}", Duration::from_secs(5));
-    let late = runtime.emit("example.ping", "{}", Duration::from_millis(200));
+    let failed = runtime.emit("example.ping", b"{}", Duration::from_secs(5));
+    let late = runtime.emit("example.ping", b"{}", Duration::from_millis(200));
 
     host_server.join().map_err(|_| "host server panicked")??;
     assert_eq!(
@@ -440,7 +440,7 @@ fn fails_an_event_no_dev_socket_answers_before_its_deadline() -> TestResult {
     let (listener, runtime, _temporary) = start_test_runtime()?;
     drop(listener);
 
-    let Err(error) = runtime.emit("example.ping", "{}", Duration::from_millis(200)) else {
+    let Err(error) = runtime.emit("example.ping", b"{}", Duration::from_millis(200)) else {
         return Err("the event was delivered".into());
     };
 

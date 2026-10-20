@@ -1,14 +1,10 @@
 import type { TokamakContext } from "./context.js";
+import type { TokamakEvent } from "./events.js";
 import { dispatch } from "./registry.js";
 
 export { createNativeContext, nativeConnection } from "./context.js";
 export type { TokamakContext } from "./context.js";
-
-/** One lifecycle or plugin event delivered by the native host. */
-export interface TokamakEvent<T = unknown> {
-  readonly type: string;
-  readonly data: T;
-}
+export type { EventReply, EventType, TokamakEvent } from "./events.js";
 
 /** The application's native worker entrypoint. */
 export class TokamakEntrypoint<Env = Tokamak.Env> {
@@ -17,7 +13,7 @@ export class TokamakEntrypoint<Env = Tokamak.Env> {
     protected readonly env: Env,
   ) {}
 
-  /** Runs the listeners registered for this event. */
+  /** Runs the listeners registered for this event and resolves to their reply. */
   event(event: TokamakEvent): unknown {
     return dispatch(event.type, event.data, this.env, this.ctx).then(({ reply }) => reply);
   }

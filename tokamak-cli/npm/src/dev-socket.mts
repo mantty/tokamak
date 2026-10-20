@@ -149,18 +149,17 @@ function serve(websocket: WebSocket, worker: DevWorker, device: Device): void {
       return;
     }
     if (header.type !== "event" || header.id === undefined || !header.name) return;
-    const send = (type: string, value: string) => {
-      if (websocket.readyState === websocket.OPEN) websocket.send(encodeMessage({ type, id: header.id }, encoder.encode(value)));
+    const send = (type: string, value: Uint8Array) => {
+      if (websocket.readyState === websocket.OPEN) websocket.send(encodeMessage({ type, id: header.id }, value));
     };
-    Promise.resolve().then(() => worker.dispatch(header.name!, JSON.parse(decoder.decode(payload)))).then(
-      (reply) => send("reply", JSON.stringify(reply) ?? "null"),
-      (error: unknown) => send("error", String(error)),
+    worker.dispatch(header.name, payload).then(
+      (reply) => send("reply", reply),
+      (error: unknown) => send("error", encoder.encode(String(error))),
     );
   });
 }
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8", { fatal: true });
 
 /** Relays opaque endpoint payloads; closing the response cancels the native request. */
 async function forward(device: Device, request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {

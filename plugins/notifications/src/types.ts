@@ -475,3 +475,17 @@ export interface OpenSettingsEvent {
 export type Listener<T> = (value: T) => void;
 export type ErrorListener = (error: DOMException) => void;
 
+
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace -- events are declared by merging into Tokamak.Events.
+  namespace Tokamak {
+    interface Events {
+      "notifications.push": Message;
+      "notifications.opened": OpenedNotification;
+      "notifications.dismissed": DismissedNotification;
+    }
+    interface EventReplies {
+      "notifications.push": NotificationContent;
+    }
+  }
+}

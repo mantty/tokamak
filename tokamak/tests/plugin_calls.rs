@@ -17,32 +17,35 @@ use tokamak::{
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Runs the method of `TokamakEvents` each event names.
-const WORKER: &[u8] = br#"const nativeCall = async (plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await globalThis[Symbol.for("tokamak.native")].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
-const nativeListen = (plugin, method, value, next, error) => globalThis[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
+const WORKER: &[u8] = br#"const call = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for("tokamak.native")].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), payload => next(JSON.parse(new TextDecoder().decode(payload))), error);
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-const call = (plugin, method, args) => nativeCall(plugin, method, args);
 const failure = (error) => ({ name: error.name, message: error.message, domException: error instanceof DOMException });
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 export class TokamakEvents extends WorkerEntrypoint {
-  async dispatch(name, event) {
+  async dispatch(name, payload) {
+    const event = JSON.parse(new TextDecoder().decode(payload));
     const reply = name === "start" || name === "suspend" ? undefined : await this[name](event);
-    return { reply, listened: ["start", "resume", "suspend", "call", "stage", "watch", "forget", "raw"] };
+    return {
+      reply: reply === undefined ? new Uint8Array() : new TextEncoder().encode(JSON.stringify(reply)),
+      listened: ["start", "resume", "suspend", "call", "stage", "watch", "forget", "raw"],
+    };
   }
 
   async resume(event) {
-    void call("test", "resuming");
+    void call(this.ctx, "test", "resuming");
     await sleep(event.wait);
   }
 
   call(event) {
-    return call(event.plugin, event.method, event.arguments).catch(failure);
+    return call(this.ctx, event.plugin, event.method, event.arguments).catch(failure);
   }
 
   stage() {
-    return call("tokamak", "lifecycleStage");
+    return call(this.ctx, "tokamak", "lifecycleStage");
   }
 
   async raw(event) {
@@ -54,22 +57,22 @@ export class TokamakEvents extends WorkerEntrypoint {
   // Reports each position with `test.received`, discarding the function that
   // removes the listener.
   forget() {
-    nativeListen("location", "watchPosition", null, (position) => {
-      void call("test", "received", position);
+    nativeListen(this.ctx, "location", "watchPosition", null, (position) => {
+      void call(this.ctx, "test", "received", position);
     }, () => undefined);
-    this.ctx.waitUntil(call("test", "retained"));
+    this.ctx.waitUntil(call(this.ctx, "test", "retained"));
   }
 
   watch() {
     this.ctx.waitUntil(new Promise(resolve => {
-      const stop = nativeListen("location", "watchPosition", null, (position) => {
-        if (position !== "stop") return void call("test", "received", position);
+      const stop = nativeListen(this.ctx, "location", "watchPosition", null, (position) => {
+        if (position !== "stop") return void call(this.ctx, "test", "received", position);
         stop();
-        this.ctx.waitUntil(call("test", "stopped"));
+        this.ctx.waitUntil(call(this.ctx, "test", "stopped"));
         resolve();
-        setTimeout(() => void call("test", "alive"), 500);
+        setTimeout(() => void call(this.ctx, "test", "alive"), 500);
       }, (error) => {
-        void call("test", "failed", failure(error));
+        void call(this.ctx, "test", "failed", failure(error));
         if (error.name === "NotSupportedError") resolve();
       });
     }));
@@ -79,8 +82,8 @@ export class TokamakEvents extends WorkerEntrypoint {
 
 export default {
   fetch(request, env, ctx) {
-    nativeListen("location", "watchPosition", null, () => {}, () => {});
-    ctx.waitUntil(call("test", "retained"));
+    nativeListen(ctx, "location", "watchPosition", null, () => {}, () => {});
+    ctx.waitUntil(call(ctx, "test", "retained"));
     return new Response(null, { status: 204 });
   }
 };
@@ -196,15 +199,17 @@ impl Started {
         })
     }
 
-    /// Delivers the event `name` on another thread, returning its reply as
-    /// JSON once it completes within `timeout`.
+    /// Delivers the event `name` on another thread, returning its JSON reply,
+    /// or null without one, once it completes within `timeout`.
     fn emit(&self, name: &str, event: &Value, timeout: Duration) -> JoinHandle<TestResult<Value>> {
         let runtime = Arc::clone(&self.runtime);
         let (name, event) = (name.to_owned(), event.to_string());
         thread::spawn(move || {
-            Ok(serde_json::from_str(
-                &runtime.emit(&name, &event, timeout)?,
-            )?)
+            let reply = runtime.emit(&name, event.as_bytes(), timeout)?;
+            if reply.is_empty() {
+                return Ok(Value::Null);
+            }
+            Ok(serde_json::from_slice(&reply)?)
         })
     }
 

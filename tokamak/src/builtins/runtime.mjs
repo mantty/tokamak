@@ -51,19 +51,18 @@ export function installPlugins(call, subscribe) {
       });
     },
   };
-  globalThis[Symbol.for("tokamak.native")] = connection;
-  globalThis.__tokamak_context[Symbol.for("tokamak.native")] = globalThis[Symbol.for("tokamak.native")];
+  globalThis.__tokamak_context[Symbol.for("tokamak.native")] = connection;
 }
 
-// Delivers the event `name`, whose JSON is `event`, to the `TokamakEvents` the
-// Worker's entry module `exports`, returning the reply as JSON and the names of
-// the events that have listeners.
+// Delivers the event `name`, whose encoded data is `event`, to the
+// `TokamakEvents` the Worker's entry module `exports`, returning the encoded
+// reply and the names of the events that have listeners.
 export async function dispatchEvent(exports, name, event) {
   const { TokamakEvents } = exports;
   if (typeof TokamakEvents !== "function") throw new TypeError("The Worker does not export TokamakEvents");
   const events = new TokamakEvents(globalThis.__tokamak_context, globalThis.__tokamak_env);
-  const { reply, listened } = await events.dispatch(name, JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(event)));
-  return { reply: new TextEncoder().encode(JSON.stringify(reply) ?? "null").buffer, listened };
+  const { reply, listened } = await events.dispatch(name, new Uint8Array(event));
+  return { reply: reply.slice().buffer, listened };
 }
 
 // The storage part attaches the app's storage bindings when it has any.

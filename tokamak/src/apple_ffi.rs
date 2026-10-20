@@ -521,7 +521,7 @@ unsafe fn emit(
         unsafe { std::slice::from_raw_parts(event, event_len) }
     };
     runtime
-        .emit_bytes(name, event, timeout)
+        .emit(name, event, timeout)
         .map_err(|error| error.to_string())
 }
 

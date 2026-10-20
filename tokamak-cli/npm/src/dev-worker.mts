@@ -27,10 +27,10 @@ interface MiniflareModule {
 const CALLER = `export default {
   async fetch(request, env) {
     if (new URL(request.url).pathname.startsWith("/_tokamak/")) return env.TOKAMAK.fetch(request);
-    const { name, event } = await request.json();
+    const name = request.headers.get("x-tokamak-event");
     try {
-      const { reply } = await env.EVENTS.dispatch(name, event);
-      return Response.json({ reply: reply ?? null });
+      const { reply } = await env.EVENTS.dispatch(name, new Uint8Array(await request.arrayBuffer()));
+      return new Response(reply);
     } catch (error) {
       return new Response(error?.stack ?? String(error), { status: 500 });
     }
@@ -43,13 +43,14 @@ export class DevWorker {
 
   constructor(private readonly name: string | undefined) {}
 
-  async dispatch(name: string, event: unknown): Promise<unknown> {
+  /** Delivers the event `name` with its encoded data, resolving to the encoded reply. */
+  async dispatch(name: string, event: Uint8Array): Promise<Uint8Array> {
     const { runtime } = await this.#connect();
     const response = await runtime.dispatchFetch("http://tokamak/", {
-      method: "POST", body: JSON.stringify({ name, event }),
+      method: "POST", headers: { "x-tokamak-event": name }, body: event,
     });
     if (!response.ok) throw new Error(await response.text());
-    return ((await response.json()) as { reply: unknown }).reply;
+    return new Uint8Array(await response.arrayBuffer());
   }
 
   async fetch(request: IncomingMessage, signal: AbortSignal): Promise<WorkerResponse> {

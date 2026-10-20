@@ -14,6 +14,8 @@ type Auxiliary = NonNullable<PluginConfig["auxiliaryWorkers"]>[number];
 type AuxiliaryCustomizer = Extract<Extract<Auxiliary, { config: unknown }>["config"], (...args: never[]) => unknown>;
 export interface WorkerGraph {
   generated: string;
+  /** Connects development invocations to the device through the relay on `port`. */
+  relay(port: number, token: string): void;
   configure(config: ServiceConfiguration): void;
   services(name: string): NonNullable<ServiceConfiguration["services"]>;
   native: AuxiliaryCustomizer;
@@ -31,6 +33,9 @@ export interface WorkerGraph {
   };
 }
 
+const NATIVE_CONTEXT = "virtual:tokamak/native-context";
+const NATIVE_CALLS = normalizePath(fileURLToPath(new URL("./native.mjs", import.meta.url)));
+
 /** Configure the two bundles through Cloudflare's public auxiliary-worker API. */
 export function createWorkerGraph(root: string, entry: string | undefined, output: string): WorkerGraph {
   const generated = path.join(output, "worker.mjs");
@@ -46,6 +51,7 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
   let mainServices: ServiceConfiguration["services"];
   const signatures = new Map<string, string>();
   const development = normalizePath(fileURLToPath(new URL("./rpc/binding.mjs", import.meta.resolve("@tokamakdev/plugin/events"))));
+  let relay: { port: number; token: string } | undefined;
   const serviceModule = (role: string) => `virtual:tokamak/service/${role}`;
   const bindingsModule = (role: string) => `\0tokamak:bindings:${role}`;
   const nativeContracts = () => Object.fromEntries([
@@ -78,7 +84,7 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
   function refresh(): void {
     const source = serviceEntrypoint(entry, contracts.native.methods, contracts.plugins);
     writeChanged(generated, `${source}import { eventEntrypoint } from ${JSON.stringify(events)};
-export const TokamakEvents = eventEntrypoint(Worker);\n`);
+export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
     writeChanged(path.join(output, "methods.json"), `${JSON.stringify(contracts.native.methods)}\n`);
   }
   const configure = (config: ServiceConfiguration): void => {
@@ -120,6 +126,7 @@ export const TokamakEvents = eventEntrypoint(Worker);\n`);
   refresh();
   return {
     generated: normalizePath(generated),
+    relay(port, token) { relay = { port, token }; },
     configure,
     services,
     native,
@@ -164,12 +171,14 @@ export const TokamakEvents = eventEntrypoint(Worker);\n`);
         return [];
       },
       resolveId(id) {
+        if (id === NATIVE_CONTEXT) return `\0${NATIVE_CONTEXT}`;
         if (id.startsWith("\0tokamak:") || id.startsWith("\0virtual:tokamak/")) return id;
         const role = id === serviceModule("native") ? "native" : id === serviceModule("main") ? "main" : undefined;
         if (!role) return;
         return `\0${serviceModule(role)}`;
       },
       async load(id) {
+        if (id === `\0${NATIVE_CONTEXT}`) return nativeContextModule(dev ? relay : undefined);
         const role = id.endsWith(":main") || id.endsWith("/main") ? "main" : "native";
         if (id !== bindingsModule(role) && id !== `\0${serviceModule(role)}`) return;
         await contracts.resolve(source => this.resolve(source, undefined, { skipSelf: true }));
@@ -206,13 +215,26 @@ export function workerName(main: string): string {
   return `${main.slice(0, 46)}-${createHash("sha256").update(main).digest("hex").slice(0, 8)}-tokamak`;
 }
 
+/**
+ * The module that gives each invocation its native context: from the device relay during
+ * development, otherwise from the connection the host attaches to the execution context.
+ */
+function nativeContextModule(relay: { port: number; token: string } | undefined): string {
+  const sdk = JSON.stringify(normalizePath(fileURLToPath(import.meta.resolve("@tokamakdev/plugin/worker"))));
+  if (!relay) return `import { createNativeContext } from ${sdk};
+export const nativeContext = ctx => createNativeContext(ctx);`;
+  return `import { createNativeContext } from ${sdk};
+import { connectDevice } from ${JSON.stringify(NATIVE_CALLS)};
+export const nativeContext = ctx => createNativeContext(ctx, connectDevice(${String(relay.port)}, ${JSON.stringify(relay.token)}, ctx));`;
+}
+
 function serviceEntrypoint(entry: string | undefined, methods: string[], plugins: PluginContract[]): string {
   const sdk = normalizePath(fileURLToPath(import.meta.resolve("@tokamakdev/plugin/worker")));
   const rpc = normalizePath(fileURLToPath(new URL("./rpc/endpoint.mjs", import.meta.resolve("@tokamakdev/plugin/events"))));
   const base = `import { WorkerEntrypoint } from "cloudflare:workers";
 import { rpcResponse } from ${JSON.stringify(rpc)};
-import { createNativeContext${entry ? "" : ", TokamakEntrypoint as Worker"} } from ${JSON.stringify(sdk)};
-${entry ? `import Worker from ${JSON.stringify(normalizePath(entry))};` : ""}
+import { nativeContext } from ${JSON.stringify(NATIVE_CONTEXT)};
+${entry ? `import Worker from ${JSON.stringify(normalizePath(entry))};` : `import { TokamakEntrypoint as Worker } from ${JSON.stringify(sdk)};`}
 ${plugins.map((plugin, index) => `import { ${JSON.stringify(plugin.definition.api.export)} as plugin${index} } from ${JSON.stringify(plugin.definition.api.module)};`).join("\n")}
 `;
   const operations = methods.map((method) =>
@@ -220,13 +242,13 @@ ${plugins.map((plugin, index) => `import { ${JSON.stringify(plugin.definition.ap
   return `${base}
 export default class extends WorkerEntrypoint {
   #worker;
-  get #instance() { return this.#worker ??= new Worker(createNativeContext(this.ctx), this.env); }
+  get #instance() { return this.#worker ??= new Worker(nativeContext(this.ctx), this.env); }
   fetch(request) {
     if (new URL(request.url).pathname === "/_tokamak/app") {
-      return rpcResponse(request, ctx => new Worker(createNativeContext(ctx), this.env), ${JSON.stringify(methods)}, this.ctx);
+      return rpcResponse(request, ctx => new Worker(nativeContext(ctx), this.env), ${JSON.stringify(methods)}, this.ctx);
     }
     ${plugins.map((plugin, index) => `if (new URL(request.url).pathname === ${JSON.stringify(`/_tokamak/plugin/${plugin.definition.id}`)}) {
-      return rpcResponse(request, ctx => plugin${index}(createNativeContext(ctx)), ${JSON.stringify(plugin.methods)}, this.ctx);
+      return rpcResponse(request, ctx => plugin${index}(nativeContext(ctx)), ${JSON.stringify(plugin.methods)}, this.ctx);
     }`).join("\n    ")}
     if (typeof this.#instance.fetch !== "function") throw new TypeError("The Tokamak worker has no fetch handler");
     return this.#instance.fetch(request);
@@ -236,9 +258,9 @@ export default class extends WorkerEntrypoint {
 ${plugins.map((plugin, index) => `
 export class ${plugin.definition.binding} extends WorkerEntrypoint {
   #api;
-  get #instance() { return this.#api ??= plugin${index}(createNativeContext(this.ctx)); }
+  get #instance() { return this.#api ??= plugin${index}(nativeContext(this.ctx)); }
   fetch(request) {
-    return rpcResponse(request, ctx => plugin${index}(createNativeContext(ctx)), ${JSON.stringify(plugin.methods)}, this.ctx);
+    return rpcResponse(request, ctx => plugin${index}(nativeContext(ctx)), ${JSON.stringify(plugin.methods)}, this.ctx);
   }
   ${plugin.methods.map(method => `async [${JSON.stringify(method)}](...args) { return this.#instance[${JSON.stringify(method)}](...args); }`).join("\n  ")}
 }

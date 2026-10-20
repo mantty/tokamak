@@ -41,13 +41,14 @@ struct TokamakPluginResult {
 /// `value` as a payload: `Data` as it is, and any other value as JSON.
 private func encodePluginValue(_ value: Any?) -> Result<Data, TokamakPluginError> {
   if let data = value as? Data { return .success(data) }
-  do {
-    return .success(
-      try JSONSerialization.data(
-        withJSONObject: value ?? NSNull(), options: .fragmentsAllowed))
-  } catch {
-    return .failure(.init(name: "DataCloneError", message: error.localizedDescription))
+  let value = value ?? NSNull()
+  // JSONSerialization raises, rather than throws, for values it cannot encode.
+  guard JSONSerialization.isValidJSONObject([value]),
+    let json = try? JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed)
+  else {
+    return .failure(.init(name: "DataCloneError", message: "The value cannot be encoded as JSON"))
   }
+  return .success(json)
 }
 
 private func decodePluginValue(_ payload: Data) throws(TokamakPluginError) -> Any {
@@ -82,17 +83,41 @@ final class TokamakHost {
   }
 
   /// Delivers the plugin's event `name`, which the Worker's listeners
-  /// receive as `<plugin>.<name>`, with `event`, JSON-serialisable, and calls
-  /// `completion` on the main thread with their reply, parsed from JSON, or
-  /// nil. Fails unless they return within `timeout`, which includes runtime
-  /// startup. Call it on the main thread.
+  /// receive as `<plugin>.<name>`, with its encoded `payload`, and calls
+  /// `completion` on the main thread with their encoded reply, which is empty
+  /// when none replied. Fails unless they return within `timeout`, which
+  /// includes runtime startup. Call it on the main thread.
+  func emitBytes(
+    _ name: String,
+    payload: Data,
+    timeout: TimeInterval,
+    completion: @escaping (Result<Data, Error>) -> Void
+  ) {
+    app.emit("\(plugin).\(name)", payload: payload, timeout: timeout, completion: completion)
+  }
+
+  /// `emitBytes` with `event` encoded as JSON, calling `completion` with the
+  /// reply parsed from JSON, or nil when none replied.
   func emit(
     _ name: String,
     event: Any,
     timeout: TimeInterval,
     completion: @escaping (Result<Any?, Error>) -> Void
   ) {
-    app.emit("\(plugin).\(name)", event: event, timeout: timeout, completion: completion)
+    let payload: Data
+    switch encodePluginValue(event) {
+    case .success(let encoded): payload = encoded
+    case .failure(let error): return completion(.failure(error))
+    }
+    emitBytes(name, payload: payload, timeout: timeout) { result in
+      completion(
+        result.flatMap { reply in
+          Result { () throws(TokamakPluginError) -> Any? in
+            let value = reply.isEmpty ? NSNull() : try decodePluginValue(reply)
+            return value is NSNull ? nil : value
+          }.mapError { $0 }
+        })
+    }
   }
 
   /// Fetches what the app serves at `path`, as its WebView would load it: a

@@ -106,19 +106,29 @@ other packaging metadata through the existing platform build hooks.
 
 ## Events and browser implementations
 
-Export typed registration functions from `/events`:
+Declare each event's data, and any reply, in your types module, then export
+typed registration functions from `/events`:
 
 ```ts
-import { defineEvent } from "@tokamakdev/plugin/events";
-export const onReading = defineEvent<{ value: number }, { accepted: boolean }>(
-  "sensor.reading",
-);
+declare global {
+  namespace Tokamak {
+    interface Events { "sensor.reading": { value: number } }
+    interface EventReplies { "sensor.reading": { accepted: boolean } }
+  }
+}
+
+export const onReading = defineEvent("sensor.reading");
 ```
+
+The declarations also type the app's `event(event)` handler, whose
+`TokamakEvent` is a union of every declared event. Event data and replies travel
+as JSON; pass `defineEvent` a codec to carry them as other bytes.
 
 Import and register listeners from `src/tokamak.ts` or its imports. A listener
 receives `(event, env, ctx)`, may call another plugin with `ctx`, and may return
-a typed response. Native code emits the corresponding event and applies the
-result using the platform callback's deadline. Synchronous OS callbacks use
+a typed response. Native code emits the event with `host.emit` (JSON) or
+`host.emitBytes` (bytes) and applies the reply using the platform callback's
+deadline; an empty reply means no listener replied. Synchronous OS callbacks use
 native configuration; they cannot wait for JavaScript.
 
 A browser implementation is optional. Put it in a separate module and reference
