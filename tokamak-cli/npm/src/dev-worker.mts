@@ -40,6 +40,7 @@ const CALLER = `export default {
 /** The native Vite worker, reached through Miniflare's development registry. */
 export class DevWorker {
   #session: Promise<{ runtime: Miniflare; module: MiniflareModule }> | undefined;
+  #disposed = false;
 
   constructor(private readonly name: string | undefined) {}
 
@@ -75,11 +76,14 @@ export class DevWorker {
     await module.coupleWebSocket(socket, pair);
   }
 
+  /** Disposes the runtime; later deliveries reject rather than start another. */
   async dispose(): Promise<void> {
+    this.#disposed = true;
     await (await this.#session?.catch(() => undefined))?.runtime.dispose();
   }
 
   #connect(): Promise<{ runtime: Miniflare; module: MiniflareModule }> {
+    if (this.#disposed) return Promise.reject(new Error("the development server has closed"));
     return this.#session ??= this.#start().catch((error: unknown) => {
       this.#session = undefined;
       throw error;
