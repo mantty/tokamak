@@ -11,7 +11,11 @@ import { experimental_readRawConfig, unstable_readConfig, type Unstable_RawConfi
 
 import { createNativeWorker, type TokamakOptions } from "./native-worker.mjs";
 import { createClientPlugin } from "./client.mjs";
+import { writeChanged } from "./worker-graph.mjs";
 import type { BindingConfiguration } from "./worker-types.mjs";
+
+/** The Worker entry Astro's Cloudflare adapter builds when the configuration names none. */
+const ASTRO_SERVER = "@astrojs/cloudflare/entrypoints/server";
 
 /** Astro's Cloudflare adapter, with Tokamak's native worker and development relay. */
 export function tokamak(options: TokamakOptions = {}, cloudflareOptions: CloudflareOptions = {}): AstroIntegration {
@@ -30,16 +34,11 @@ export function tokamak(options: TokamakOptions = {}, cloudflareOptions: Cloudfl
             config(vite) {
               const root = path.resolve(vite.root ?? process.cwd());
               const source = configuration(root, cloudflareOptions.configPath, false);
-              const raw = source ? experimental_readRawConfig({ config: source }, { useRedirectIfAvailable: false }).rawConfig : {};
-              const environment = process.env.CLOUDFLARE_ENV;
-              const selected: BindingConfiguration = source ? unstable_readConfig({ config: source, env: environment }, { hideWarnings: true }) : {};
-              const main = (environment ? raw.env?.[environment]?.main : undefined)
-                ?? raw.main ?? "@astrojs/cloudflare/entrypoints/server";
+              const selected: BindingConfiguration = source ? readWorker(source).selected : { main: ASTRO_SERVER };
               client.configure({
                 ...selected,
                 // Type inspection needs the server source, not a client-optimized module.
-                main: main === "@astrojs/cloudflare/entrypoints/server"
-                  ? fileURLToPath(import.meta.resolve(main)) : main,
+                main: selected.main === ASTRO_SERVER ? fileURLToPath(import.meta.resolve(ASTRO_SERVER)) : selected.main,
                 kv_namespaces: [...selected.kv_namespaces ?? [], ...sessionBinding ? [{ binding: sessionBinding }] : []],
               });
             },
@@ -86,42 +85,25 @@ export function tokamak(options: TokamakOptions = {}, cloudflareOptions: Cloudfl
   const native = createNativeWorker(options, output, (root, graph) => {
     const source = configuration(root, cloudflareOptions.configPath);
     generatedPath = path.resolve(root, generated);
-    const rawConfig: Unstable_RawConfig = experimental_readRawConfig(
-      { config: source }, { useRedirectIfAvailable: false },
-    ).rawConfig;
-    const environment = process.env.CLOUDFLARE_ENV;
-    const selected = unstable_readConfig({ config: source, env: environment }, { hideWarnings: true });
-    selected.main = (environment ? rawConfig.env?.[environment]?.main : undefined)
-      ?? rawConfig.main ?? "@astrojs/cloudflare/entrypoints/server";
-    const main = selected.main;
+    const { raw, selected } = readWorker(source);
+    const appMain = selected.main;
     graph.configure(selected);
-    const environments = [[undefined, rawConfig], ...Object.entries(rawConfig.env ?? {})] as const;
-    for (const [env, config] of environments) {
+    // In development the graph serves main through its own module, which every environment uses.
+    const servedMain = selected.main === appMain ? undefined : selected.main;
+    for (const [env, config] of [[undefined, raw], ...Object.entries(raw.env ?? {})] as const) {
       const resolved = unstable_readConfig({ config: source, env }, { hideWarnings: true });
-      if (!resolved.name) throw new Error("Tokamak requires a name in the main Worker's configuration.");
-      const services = graph.services(resolved.name);
-      const reserved = config.services?.find(binding => services.some(service => service.binding === binding.binding));
-      if (reserved) {
-        throw new Error(`${reserved.binding} is reserved for a generated native worker binding.`);
-      }
-      config.services = [...config.services ?? [], ...services];
-      if (selected.main !== main) config.main = selected.main;
+      config.services = [...config.services ?? [], ...graph.serviceBindings(resolved)];
+      if (servedMain) config.main = servedMain;
     }
     // Keeping the generated configuration beside its source preserves relative paths and .dev.vars.
-    const content = `${JSON.stringify(rawConfig, null, 2)}\n`;
-    if (!fs.existsSync(generatedPath) || fs.readFileSync(generatedPath, "utf8") !== content) {
-      fs.writeFileSync(generatedPath, content);
-    }
+    writeChanged(generatedPath, `${JSON.stringify(raw, null, 2)}\n`);
     process.off("exit", cleanup);
     process.once("exit", cleanup);
   });
   const adapter = cloudflare({
     ...cloudflareOptions,
     configPath: generated,
-    auxiliaryWorkers: [{
-      viteEnvironment: { name: "tokamak" },
-      config: (worker, context) => native.graph().native(worker, context),
-    }],
+    auxiliaryWorkers: [native.auxiliaryWorker],
   });
   return {
     ...adapter,
@@ -148,6 +130,15 @@ export function tokamak(options: TokamakOptions = {}, cloudflareOptions: Cloudfl
       },
     },
   };
+}
+
+/** The Wrangler configuration at `source`: as written, and resolved for `CLOUDFLARE_ENV` with Astro's server as its default main. */
+function readWorker(source: string): { raw: Unstable_RawConfig; selected: ReturnType<typeof unstable_readConfig> } {
+  const raw = experimental_readRawConfig({ config: source }, { useRedirectIfAvailable: false }).rawConfig;
+  const env = process.env.CLOUDFLARE_ENV;
+  const selected = unstable_readConfig({ config: source, env }, { hideWarnings: true });
+  selected.main = (env ? raw.env?.[env]?.main : undefined) ?? raw.main ?? ASTRO_SERVER;
+  return { raw, selected };
 }
 
 function configuration(root: string, configured: string | undefined): string;

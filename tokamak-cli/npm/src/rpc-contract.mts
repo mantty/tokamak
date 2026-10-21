@@ -62,7 +62,12 @@ function nodeReadableStream(checker: ts.TypeChecker, symbol: ts.Symbol): boolean
   return checker.getAmbientModules().filter((module) => ["\"stream/web\"", "\"node:stream/web\""].includes(module.name))
     .some((module) => checker.getExportsOfModule(module).some((member) =>
       member.name === "ReadableStream" &&
-      (member.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(member) : member) === symbol));
+      aliased(checker, member) === symbol));
+}
+
+/** The symbol that `symbol` names: itself, or the declaration an import or re-export refers to. */
+export function aliased(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {
+  return symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
 }
 
 function argumentsOf(checker: ts.TypeChecker, type: ts.Type): readonly ts.Type[] {

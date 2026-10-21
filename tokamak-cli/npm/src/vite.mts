@@ -23,16 +23,14 @@ export function tokamak(options: TokamakOptions = {}, cloudflareOptions: PluginC
         ...worker, ...custom,
         services: [...custom?.services ?? [], ...worker.services ?? []],
       };
-      client.configure(configured);
-      if (!native) return custom;
-      const graph = native.graph();
-      graph.configure(configured);
+      if (!native) {
+        client.configure(configured);
+        return custom;
+      }
+      const generated = native.graph().configure(configured);
       // Cloudflare merges returned service entries with those already in the config.
-      return { ...custom, main: configured.main, services: [...custom?.services ?? [], ...graph.services(graph.names().main)] };
+      return { ...custom, main: configured.main, services: [...custom?.services ?? [], ...generated] };
     },
-    auxiliaryWorkers: native ? [{
-      viteEnvironment: { name: "tokamak" },
-      config: (worker, context) => native.graph().native(worker, context),
-    }] : cloudflareOptions.auxiliaryWorkers,
+    auxiliaryWorkers: native ? [native.auxiliaryWorker] : cloudflareOptions.auxiliaryWorkers,
   })];
 }

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PluginConfig } from "@cloudflare/vite-plugin";
 
-import { readWorkerContracts, type PluginContract, type WorkerContract } from "./worker-contract.mjs";
+import { emptyContract, readWorkerContracts, type PluginContract, type WorkerContract } from "./worker-contract.mjs";
 import { serviceTypes, writeEnvironmentTypes } from "./service-types.mjs";
 import { discoverPlugins, type PluginDefinition } from "./plugin-manifest.mjs";
 
@@ -24,7 +24,7 @@ export interface NativeService {
 
 /** Shared contracts for the two entrypoints and their generated callers. */
 export class WorkerTypes {
-  native: WorkerContract = { methods: [], files: [], declarations: serviceTypes("{}", []) };
+  native: WorkerContract = emptyContract();
   /** The Tokamak worker's named entrypoints. */
   named: Record<string, WorkerContract> = {};
   main: Record<string, WorkerContract> = {};

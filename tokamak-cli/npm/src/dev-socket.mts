@@ -36,8 +36,9 @@ export interface DevSocket {
 export async function openDevSocket(workerName: string | undefined, token: string | undefined): Promise<DevSocket> {
   const worker = new DevWorker(workerName);
   const device = new Device();
+  const authorized = (request: http.IncomingMessage) => token !== undefined && request.headers[SESSION_HEADER] === token;
   const server = http.createServer((request, response) => {
-    if (!token || request.headers[SESSION_HEADER] !== token) {
+    if (!authorized(request)) {
       response.writeHead(401).end();
       return;
     }
@@ -53,7 +54,7 @@ export async function openDevSocket(workerName: string | undefined, token: strin
   });
   const sockets = new WebSocketServer({ noServer: true });
   server.on("upgrade", (request, socket, head) => {
-    if (!token || request.headers[SESSION_HEADER] !== token) {
+    if (!authorized(request)) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       return;
     }
@@ -145,7 +146,7 @@ function serve(websocket: WebSocket, worker: DevWorker, device: Device): void {
     }
     const { header, payload } = message;
     if (header.type === "result" && header.id !== undefined) {
-      device.receive(header.id, { payload, failed: header.failed === true, done: header.done === true });
+      device.receive(header.id, pluginResult(message));
       return;
     }
     if (header.type === "pull" && header.id !== undefined) {
@@ -192,14 +193,14 @@ async function forward(device: Device, request: http.IncomingMessage, response: 
     else response.end(frame);
   }, async () => {
     const next = await frames.next().catch(() => ({ done: true as const, value: undefined }));
-    return next.done ? failure("DataCloneError", "The call's body ended early") : chunkResult(next.value);
+    return next.done ? failure("DataCloneError", "The call's body ended early") : pluginResult(next.value);
   });
   response.once("close", () => {
     if (!response.writableEnded) cancel();
   });
 }
 
-function chunkResult({ header, payload }: NativeMessage): PluginResult {
+function pluginResult({ header, payload }: NativeMessage): PluginResult {
   return { payload, failed: header.failed === true, done: header.done === true };
 }
 

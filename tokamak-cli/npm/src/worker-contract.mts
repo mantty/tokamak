@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
-import { checkRpcMethod, WorkerOnlyMethod } from "./rpc-contract.mjs";
+import { aliased, checkRpcMethod, WorkerOnlyMethod } from "./rpc-contract.mjs";
 import { serviceTypes, type ServiceMethod } from "./service-types.mjs";
 import type { NativePlatform, PluginDefinition } from "./plugin-manifest.mjs";
 
@@ -19,6 +19,14 @@ export interface PluginContract extends WorkerContract {
   webMethods: string[];
   /** Every operation of the native SDK, including those only the Tokamak worker can call. */
   operations: string[];
+}
+
+/** Worker handler names, which are not RPC methods. */
+const HANDLERS = ["fetch", "event", "queue", "scheduled", "email", "tail", "trace", "tailStream", "test"];
+
+/** The contract of a Tokamak worker without a module. */
+export function emptyContract(): WorkerContract {
+  return { methods: [], files: [], declarations: serviceTypes("{}", []) };
 }
 
 export function findModule(root: string, name: string | undefined): string | undefined {
@@ -51,8 +59,7 @@ export function readWorkerContracts(entry: string | undefined, main: string | un
   const project = entries.length ? workerProgram(entries, root) : undefined;
   const native = entry && project ? workerModule(entry, project) : undefined;
   return {
-    native: native ? classContract(native, "default", true, validate)
-      : { methods: [], files: [], declarations: serviceTypes("{}", []) },
+    native: native ? classContract(native, "default", true, validate) : emptyContract(),
     named: native ? namedContracts(native, validate) : {},
     main: main && project ? serviceContracts(workerModule(main, project), validate) : {},
     plugins: project ? plugins.map(plugin => pluginContract(workerModule(plugin.api.module, project), plugin, validate)) : [],
@@ -119,8 +126,7 @@ function workerModule(entry: string, project: ReturnType<typeof workerProgram>) 
   if (!source) throw new Error(`Cannot read Tokamak entrypoint ${entry}.`);
   const module = checker.getSymbolAtLocation(source);
   const exports = new Map((module ? checker.getExportsOfModule(module) : []).map(exported => {
-    const symbol = exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported;
-    return [exported.name, checker.getTypeOfSymbolAtLocation(symbol, source)];
+    return [exported.name, checker.getTypeOfSymbolAtLocation(aliased(checker, exported), source)];
   }));
   return { ...project, entry, source, exports };
 }
@@ -149,7 +155,7 @@ function pluginContract(module: ReturnType<typeof workerModule>, definition: Plu
     if (privateProperty(property)) continue;
     if (property.name === "capabilities") continue;
     assertMethodName(property.name);
-    if (["fetch", "event", "queue", "scheduled", "email", "tail", "trace", "tailStream", "test"].includes(property.name)) {
+    if (HANDLERS.includes(property.name)) {
       throw new Error(`Plugin method ${property.name} is reserved for a Worker handler.`);
     }
     const method = checker.getTypeOfSymbolAtLocation(property, source);
@@ -166,7 +172,7 @@ function pluginContract(module: ReturnType<typeof workerModule>, definition: Plu
     }
     methods.push(methodDeclaration(checker, property, method));
   }
-  methods.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+  methods.sort(byName);
   const unknown = Object.keys(definition.operations).find(name => !operations.includes(name));
   if (unknown) throw new Error(`${definition.manifest}: operations.${unknown} names no method of ${definition.api.export}.`);
   const webMethods = browserMethods(module, definition, methods, validate);
@@ -264,7 +270,7 @@ function classContract(module: ReturnType<typeof workerModule>, name: string, na
     if (validate) checkRpcMethod(checker, type, property.name);
     methods.push(methodDeclaration(checker, property, type));
   }
-  methods.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+  methods.sort(byName);
   return {
     methods: methods.map((method) => method.name),
     declarations: serviceTypes(
@@ -274,6 +280,10 @@ function classContract(module: ReturnType<typeof workerModule>, name: string, na
     ),
     files: module.files,
   };
+}
+
+function byName(left: ServiceMethod, right: ServiceMethod): number {
+  return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
 }
 
 function methodDeclaration(checker: ts.TypeChecker, property: ts.Symbol, type: ts.Type): ServiceMethod {
@@ -290,7 +300,7 @@ function methodDeclaration(checker: ts.TypeChecker, property: ts.Symbol, type: t
 function applicationPrototypes(program: ts.Program, checker: ts.TypeChecker, instance: ts.Type, entry: string, allowNative = false): Set<ts.Node> | undefined {
   const module = checker.getAmbientModules().find((symbol) => symbol.name === '"cloudflare:workers"');
   const exported = module && checker.getExportsOfModule(module).find((symbol) => symbol.name === "WorkerEntrypoint");
-  const base = exported && (exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported);
+  const base = exported && aliased(checker, exported);
   const native = allowNative ? nativeSdkExport(program, checker, entry, "TokamakEntrypoint") : undefined;
   const prototypes = new Set<ts.Node>();
   let current: ts.Type | undefined = instance;
@@ -313,7 +323,7 @@ function nativeSdkExport(program: ts.Program, checker: ts.TypeChecker, entry: st
   const source = resolved && program.getSourceFile(resolved.resolvedFileName);
   const module = source && checker.getSymbolAtLocation(source);
   const exported = module && checker.getExportsOfModule(module).find(symbol => symbol.name === name);
-  return exported && (exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported);
+  return exported && aliased(checker, exported);
 }
 
 function exposedMethod(property: ts.Symbol): boolean {
@@ -325,7 +335,7 @@ function exposedMethod(property: ts.Symbol): boolean {
     throw new Error(`Method ${property.name} is on the public JavaScript prototype; use a #private method for a local helper.`);
   }
   assertMethodName(property.name);
-  return !["fetch", "event", "queue", "scheduled", "email", "tail", "trace", "tailStream", "test"].includes(property.name);
+  return !HANDLERS.includes(property.name);
 }
 
 function assertMethodName(name: string): void {
