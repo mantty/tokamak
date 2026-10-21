@@ -50,7 +50,7 @@ export function project(t, api = `
   const graph = createWorkerGraph(root, undefined, path.join(root, ".tokamak"));
   const config = {
     root, configFile: false, logLevel: "silent",
-    server: { port: 0, watch: { usePolling: true } },
+    server: { host: "127.0.0.1", port: 0, watch: { usePolling: true } },
     plugins: [graph.plugin, cloudflare({
       ...graph.cloudflare, inspectorPort: false, remoteBindings: false, persistState: false,
     })],

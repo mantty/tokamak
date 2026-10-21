@@ -126,7 +126,7 @@ test("development routes device calls and reloaded events through the native wor
     if (previous === undefined) delete process.env.MINIFLARE_REGISTRY_PATH;
     else process.env.MINIFLARE_REGISTRY_PATH = previous;
   });
-  const server = await createServer({ ...config, server: { port: 0, watch: { usePolling: true } } });
+  const server = await createServer({ ...config, server: { host: "127.0.0.1", port: 0, watch: { usePolling: true } } });
   t.after(() => server.close());
   await server.listen();
   const report = JSON.parse(fs.readFileSync(path.join(output, "server.json"), "utf8"));

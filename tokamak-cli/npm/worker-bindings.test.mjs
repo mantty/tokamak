@@ -41,7 +41,7 @@ test("generated bindings enforce the RPC contract in both directions, including 
   worker.compatibility_date = "2025-01-01";
   worker.services = [{ binding: "RECIPES", service: "graph-app", entrypoint: "Recipes" }];
   fs.writeFileSync(file, JSON.stringify(worker));
-  const server = await createServer({ ...config, server: { port: 0, watch: { usePolling: true } } });
+  const server = await createServer({ ...config, server: { host: "127.0.0.1", port: 0, watch: { usePolling: true } } });
   t.after(() => server.close());
   await server.listen();
   const get = async method => (await fetch(server.resolvedUrls.local[0] + method)).json();

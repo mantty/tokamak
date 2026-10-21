@@ -180,7 +180,7 @@ test("builds two separate bundles with generated service bindings and project al
 
 test("serves bidirectional RPC and reloads imported native code through Vite", async (t) => {
   const { root, config } = project(t);
-  const server = await createServer({ ...config, server: { port: 0, watch: { usePolling: true } } });
+  const server = await createServer({ ...config, server: { host: "127.0.0.1", port: 0, watch: { usePolling: true } } });
   t.after(() => server.close());
   await server.listen();
   const response = await fetch(server.resolvedUrls.local[0]);
@@ -231,7 +231,7 @@ test("service bindings expose validated methods and fetch while keeping events a
     }
   };`,
   });
-  const server = await createServer({ ...config, server: { port: 0, watch: { usePolling: true } } });
+  const server = await createServer({ ...config, server: { host: "127.0.0.1", port: 0, watch: { usePolling: true } } });
   t.after(() => server.close());
   await server.listen();
   const get = (method) => fetch(server.resolvedUrls.local[0] + method);

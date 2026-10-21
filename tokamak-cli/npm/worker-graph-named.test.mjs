@@ -38,7 +38,7 @@ test("named Tokamak entrypoints get generated bindings, clients and routes", asy
     { binding: "TOKAMAK", service: "graph-app-tokamak" },
     { binding: "TOKAMAK_DATA_SYNC", service: "graph-app-tokamak", entrypoint: "DataSync" },
   ]);
-  const server = await createServer({ ...config, server: { port: 0, watch: { usePolling: true } } });
+  const server = await createServer({ ...config, server: { host: "127.0.0.1", port: 0, watch: { usePolling: true } } });
   t.after(() => server.close());
   await server.listen();
   const response = await fetch(server.resolvedUrls.local[0]);
