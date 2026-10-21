@@ -79,19 +79,25 @@ Keep low-level native objects inside the Tokamak worker.
 ## Bind platform APIs
 
 A plugin's `/apple` and `/android` exports are its platforms' own APIs,
-generated from the SDKs' API descriptions. List the modules to bind:
+generated from the SDKs' API descriptions. List the modules to bind, and the
+SDK each family binds:
 
 ```json
 "bindings": {
-  "apple": ["CoreLocation", "_LocationEssentials"],
-  "android": ["android.location", "android.content.Context"]
+  "apple": { "sdk": "26.2", "modules": ["CoreLocation", "_LocationEssentials"] },
+  "android": { "sdk": 35, "modules": ["android.location", "android.content.Context"] }
 }
 ```
 
-An Apple entry names a Swift module, including one a framework re-exports
-through its headers, such as `_LocationEssentials` for `CLLocation`. An Android
-entry names a package or a class. Run `tok bindings` in the package, with Xcode
-and the Android SDK (`ANDROID_HOME`) installed. It writes `apple/bindings.ts`,
+An Apple module is a Swift module, including one a framework re-exports through
+its headers, such as `_LocationEssentials` for `CLLocation`. An Android module
+is a package or a class. The `sdk` is the oldest SDK apps build the package
+with: the iOS and macOS SDK version, which Apple numbers alike, and the Android
+API level, which must not exceed the Android pack's `compileSdk`. The bindings
+include only what that SDK declares, so they compile with it and every newer
+one; an Xcode with newer SDKs works for generating, and Android needs that API
+level's platform installed. Run `tok bindings` in the package, with Xcode and
+the Android SDK (`ANDROID_HOME`) installed. It writes `apple/bindings.ts`,
 `apple/Bindings.swift`, `android/bindings.ts` and `android/Bindings.kt`, and
 lists each symbol it leaves out with the reason. Commit them and export the
 modules as `"./apple": "./apple/bindings.ts"` and `"./android":

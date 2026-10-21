@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use quick_xml::events::{BytesStart, Event};
 
+use super::Family;
 use super::java::{self, Class, ClassKind, JavaMember, JavaType, MemberKind as JavaKind};
 use super::model::{
     Availability, Callback, Callbacks, Case, Collection, Constant, Effects, Kind, Member,
@@ -21,19 +22,17 @@ pub(super) struct Level {
     deprecated: Option<u32>,
 }
 
-/// The installed Android platform the module binds against.
-struct Sdk {
-    level: u32,
-    directory: PathBuf,
-}
-
-/// Reads the `entries`, packages or classes, from the newest installed Android
-/// platform for the plugin `id`.
-pub(crate) fn read(id: &str, entries: &[String]) -> Result<Module> {
-    let sdk = sdk()?;
-    let files = stub_files(&sdk.directory.join("android-stubs-src.jar"), entries)?;
-    let versions = BufReader::new(File::open(sdk.directory.join("data/api-versions.xml"))?);
-    let source = format!("the Android {} SDK: {}", sdk.level, entries.join(", "));
+/// Reads the `bindings`' packages and classes from the Android platform of
+/// their API level for the plugin `id`.
+pub(crate) fn read(id: &str, bindings: &Family<u32>) -> Result<Module> {
+    let platform = platform(bindings.sdk)?;
+    let files = stub_files(&platform.join("android-stubs-src.jar"), &bindings.modules)?;
+    let versions = BufReader::new(File::open(platform.join("data/api-versions.xml"))?);
+    let source = format!(
+        "the Android {} SDK: {}",
+        bindings.sdk,
+        bindings.modules.join(", ")
+    );
     module(id, source, files, &levels(versions)?)
 }
 
@@ -65,32 +64,19 @@ pub(super) fn module(
     Ok(module)
 }
 
-fn sdk() -> Result<Sdk> {
+/// The installed Android platform of API `level`, with its stub sources.
+fn platform(level: u32) -> Result<PathBuf> {
     let home = std::env::var_os("ANDROID_HOME")
         .or_else(|| std::env::var_os("ANDROID_SDK_ROOT"))
         .context("set ANDROID_HOME to the Android SDK for Android bindings")?;
-    let platforms = Path::new(&home).join("platforms");
-    let mut newest: Option<Sdk> = None;
-    for entry in
-        std::fs::read_dir(&platforms).with_context(|| format!("read {}", platforms.display()))?
-    {
-        let directory = entry?.path();
-        let level = directory
-            .file_name()
-            .and_then(|name| name.to_str()?.strip_prefix("android-")?.parse::<u32>().ok());
-        if let Some(level) = level
-            && directory.join("android-stubs-src.jar").is_file()
-            && newest.as_ref().is_none_or(|newest| level > newest.level)
-        {
-            newest = Some(Sdk { level, directory });
-        }
+    let platform = Path::new(&home).join(format!("platforms/android-{level}"));
+    if !platform.join("android-stubs-src.jar").is_file() {
+        bail!(
+            "the Android {level} SDK is not installed in {}: install it with sdkmanager \"platforms;android-{level}\"",
+            Path::new(&home).display()
+        );
     }
-    newest.with_context(|| {
-        format!(
-            "no platform in {} has android-stubs-src.jar",
-            platforms.display()
-        )
-    })
+    Ok(platform)
 }
 
 /// The stub sources of each entry: one class's file, or every file directly in a package.

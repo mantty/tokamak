@@ -78,6 +78,12 @@ jobs:
           curl -fsSL -o "$RUNNER_TEMP/json.jar" https://repo1.maven.org/maven2/org/json/json/20250517/json-20250517.jar
           java -cp "$RUNNER_TEMP/plugin-requests.jar:$RUNNER_TEMP/json.jar:$android_jar" com.tokamak.runtime.Plugin_requestsKt
 
+      - name: Compile generated Android bindings
+        # Against the compileSdk of the Android pack, which the bindings' manifests declare.
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/annotation.jar" https://dl.google.com/android/maven2/androidx/annotation/annotation-jvm/1.9.1/annotation-jvm-1.9.1.jar
+          kotlinc -classpath "$ANDROID_HOME/platforms/android-35/android.jar:$RUNNER_TEMP/annotation.jar" platforms/android/source/plugin/*.kt plugins/*/android/Bindings.kt -d "$RUNNER_TEMP/bindings"
+
       - name: Install plugin dependencies
         working-directory: plugins
         run: pnpm install --frozen-lockfile
@@ -169,6 +175,14 @@ jobs:
 
       - name: Test the CLI
         run: cargo test -p tokamak-cli
+
+      - name: Select the newest Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)"
+          xcodebuild -version
+
+      - name: Typecheck plugins and their generated bindings
+        run: bash platforms/apple/tests/plugins.sh
 
   windows:
     name: Test Windows

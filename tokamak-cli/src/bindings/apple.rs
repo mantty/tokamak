@@ -7,6 +7,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use super::Family;
 use super::model::{
     Availability, Callback, Callbacks, Case, Effects, Field, Kind, Member, MemberKind, Module,
     Named, NamedKind, Param, Skipped, Ty, Type,
@@ -109,10 +110,46 @@ struct Available {
 }
 
 #[derive(Deserialize, Clone)]
-struct Version {
+pub(super) struct Version {
     major: u32,
     minor: Option<u32>,
     patch: Option<u32>,
+}
+
+impl Version {
+    fn parts(&self) -> [u32; 3] {
+        [self.major, self.minor.unwrap_or(0), self.patch.unwrap_or(0)]
+    }
+}
+
+impl PartialEq for Version {
+    fn eq(&self, other: &Self) -> bool {
+        self.parts() == other.parts()
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.parts().cmp(&other.parts()))
+    }
+}
+
+impl std::str::FromStr for Version {
+    type Err = anyhow::Error;
+
+    fn from_str(text: &str) -> Result<Self> {
+        let mut parts = text.split('.').map(str::parse::<u32>);
+        let mut next = || parts.next().transpose();
+        let version = Self {
+            major: next()?.with_context(|| format!("'{text}' is not a version"))?,
+            minor: next()?,
+            patch: next()?,
+        };
+        if parts.next().is_some() {
+            bail!("'{text}' is not a version");
+        }
+        Ok(version)
+    }
 }
 
 #[derive(Deserialize, Clone)]
@@ -161,22 +198,30 @@ const ASYNC_ITERATOR: &str = "s:ScI";
 const OPTION_SET: &str = "s:s9OptionSetP";
 const ROOT_PROTOCOLS: [&str; 3] = ["c:objc(pl)NSObject", "s:s8SendableP", "s:s9AnyObjecta"];
 
-/// Reads `modules` from the installed iOS and macOS SDKs for the plugin `id`.
-pub(crate) fn read(id: &str, modules: &[String]) -> Result<Module> {
+/// Reads the `bindings`' modules, as the iOS and macOS SDKs of their version
+/// declare them, from the installed SDKs for the plugin `id`.
+pub(crate) fn read(id: &str, bindings: &Family<String>) -> Result<Module> {
+    let declared: Version = bindings.sdk.parse()?;
     let mut graphs = Vec::new();
-    let mut versions = Vec::new();
     for sdk in &SDKS {
-        versions.push(format!("{} {}", sdk.platform, sdk_version(sdk)?));
-        for module in modules {
+        let installed = sdk_version(sdk)?;
+        if installed.parse::<Version>()? < declared {
+            bail!(
+                "the {} {installed} SDK is older than the declared {}: use a newer Xcode",
+                sdk.platform,
+                bindings.sdk
+            );
+        }
+        for module in &bindings.modules {
             graphs.push((sdk.platform, module.clone(), extract(sdk, module)?));
         }
     }
     let source = format!(
-        "the {} SDKs: {}",
-        versions.join(" and "),
-        modules.join(", ")
+        "the iOS and macOS {} SDKs: {}",
+        bindings.sdk,
+        bindings.modules.join(", ")
     );
-    let mut module = module(id, modules, source, graphs);
+    let mut module = module(id, &bindings.modules, &declared, source, graphs);
     for sdk in &SDKS {
         probe_initializers(sdk, &mut module)?;
     }
@@ -255,14 +300,16 @@ fn unavailable_init(module: &mut Module, position: usize, platform: &str) {
     }
 }
 
-/// The module that `graphs`, by platform and module name, describe.
+/// The module that `graphs`, by platform and module name, describe as the
+/// SDKs of version `sdk` declare it.
 pub(super) fn module(
     id: &str,
     modules: &[String],
+    sdk: &Version,
     source: String,
     graphs: Vec<(&'static str, String, Graph)>,
 ) -> Module {
-    let index = Index::new(graphs);
+    let index = Index::new(graphs, sdk);
     let mut module = Module {
         plugin: format!("{id}/apple"),
         source,
@@ -321,7 +368,9 @@ fn extract(sdk: &Sdk, module: &str) -> Result<Graph> {
 }
 
 impl Index {
-    fn new(graphs: Vec<(&'static str, String, Graph)>) -> Self {
+    /// Indexes the symbols of `graphs` that the SDKs of version `sdk` declare:
+    /// newer SDKs add symbols introduced after it.
+    fn new(graphs: Vec<(&'static str, String, Graph)>, sdk: &Version) -> Self {
         let mut index = Self {
             entries: Vec::new(),
             by_symbol: HashMap::new(),
@@ -336,7 +385,9 @@ impl Index {
                     .cmp(&(&b.path_components, &b.identifier.precise))
             });
             for symbol in graph.symbols {
-                index.add(platform, &module, symbol);
+                if !introduced_after(&symbol, platform, sdk) {
+                    index.add(platform, &module, symbol);
+                }
             }
         }
         index
@@ -706,6 +757,17 @@ fn is_generic(symbol: &Symbol) -> bool {
         .swift_generics
         .as_ref()
         .is_some_and(|generics| !generics.parameters.is_empty())
+}
+
+/// Whether `symbol` was introduced on `platform` after the SDK version `sdk`.
+fn introduced_after(symbol: &Symbol, platform: &str, sdk: &Version) -> bool {
+    symbol.availability.iter().any(|available| {
+        available.domain.as_deref() == Some(platform)
+            && available
+                .introduced
+                .as_ref()
+                .is_some_and(|introduced| introduced > sdk)
+    })
 }
 
 /// Where `entry` is available, within its type's `parent` availability; none

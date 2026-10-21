@@ -28,13 +28,20 @@ struct Manifest {
     bindings: Families,
 }
 
-/// The modules each platform family binds.
+/// What each platform family binds: Apple SDKs by version, Android's by API
+/// level.
 #[derive(Debug, Deserialize, Default)]
 pub(crate) struct Families {
-    #[serde(default)]
-    pub(crate) apple: Vec<String>,
-    #[serde(default)]
-    pub(crate) android: Vec<String>,
+    pub(crate) apple: Option<Family<String>>,
+    pub(crate) android: Option<Family<u32>>,
+}
+
+/// The modules a family binds, as the SDK `sdk` declares them: app builds
+/// compile the generated source with that SDK or a newer one.
+#[derive(Debug, Deserialize)]
+pub(crate) struct Family<Sdk> {
+    pub(crate) sdk: Sdk,
+    pub(crate) modules: Vec<String>,
 }
 
 /// The generated files of each family, relative to the package.
@@ -50,18 +57,19 @@ pub(crate) fn generate(package: &Path) -> Result<()> {
         &fs::read(&manifest).with_context(|| format!("read {}", manifest.display()))?,
     )
     .with_context(|| format!("invalid {}", manifest.display()))?;
-    if manifest.bindings.apple.is_empty() && manifest.bindings.android.is_empty() {
+    let Families { apple, android } = &manifest.bindings;
+    if apple.is_none() && android.is_none() {
         bail!("tokamak-plugin.json lists no bindings");
     }
-    if !manifest.bindings.apple.is_empty() {
-        let mut module = apple::read(&manifest.id, &manifest.bindings.apple)?;
+    if let Some(apple) = apple {
+        let mut module = apple::read(&manifest.id, apple)?;
         prune(&mut module);
         write(package, APPLE_MODULE, &typescript::emit(&module))?;
         write(package, APPLE_SOURCE, &swift::emit(&module, &manifest.id))?;
         report("Apple", APPLE_MODULE, &module);
     }
-    if !manifest.bindings.android.is_empty() {
-        let mut module = android::read(&manifest.id, &manifest.bindings.android)?;
+    if let Some(android) = android {
+        let mut module = android::read(&manifest.id, android)?;
         prune(&mut module);
         write(package, ANDROID_MODULE, &typescript::emit(&module))?;
         write(

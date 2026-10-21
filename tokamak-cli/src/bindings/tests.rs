@@ -12,11 +12,12 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const KIT: &str = include_str!("fixtures/Kit.symbols.json");
 
 fn kit_module() -> TestResult<Module> {
-    kit_module_with(|_| {})
+    kit_module_with("26.2", |_| {})
 }
 
-/// Kit's module from its graphs after `edit` changes their symbols.
-fn kit_module_with(edit: impl Fn(&mut Vec<Value>)) -> TestResult<Module> {
+/// Kit's module, as the SDKs of version `sdk` declare it, from its graphs
+/// after `edit` changes their symbols.
+fn kit_module_with(sdk: &str, edit: impl Fn(&mut Vec<Value>)) -> TestResult<Module> {
     let mut ios: Value = serde_json::from_str(KIT)?;
     let mut macos = ios.clone();
     if let Some(symbols) = macos["symbols"].as_array_mut() {
@@ -34,6 +35,7 @@ fn kit_module_with(edit: impl Fn(&mut Vec<Value>)) -> TestResult<Module> {
     let mut module = apple::module(
         "kit",
         &["Kit".to_owned()],
+        &sdk.parse()?,
         "the test SDKs: Kit".to_owned(),
         graphs,
     );
@@ -99,9 +101,32 @@ fn apple_native_plugin_calls_guards_and_implements() -> TestResult {
 #[test]
 fn apple_bindings_do_not_depend_on_the_order_of_extracted_symbols() -> TestResult {
     let forward = kit_module()?;
-    let reversed = kit_module_with(|symbols| symbols.reverse())?;
+    let reversed = kit_module_with("26.2", |symbols| symbols.reverse())?;
     assert_eq!(swift::emit(&forward, "kit"), swift::emit(&reversed, "kit"));
     assert_eq!(typescript::emit(&forward), typescript::emit(&reversed));
+    Ok(())
+}
+
+#[test]
+fn apple_bindings_leave_out_symbols_introduced_after_the_declared_sdk() -> TestResult {
+    let introduce_check_in_27 = |symbols: &mut Vec<Value>| {
+        let check = json!(["KTWidget", "check(_:error:)"]);
+        for symbol in symbols
+            .iter_mut()
+            .filter(|symbol| symbol["pathComponents"] == check)
+        {
+            for available in symbol["availability"].as_array_mut().into_iter().flatten() {
+                available["introduced"] = json!({ "major": 27, "minor": 0 });
+            }
+        }
+    };
+    let older = kit_module_with("26.2", introduce_check_in_27)?;
+    let newer = kit_module_with("27.0", introduce_check_in_27)?;
+
+    assert!(!typescript::emit(&older).contains("checkError("));
+    assert!(!swift::emit(&older, "kit").contains("KTWidget.check(_:error:)"));
+    assert!(typescript::emit(&newer).contains("checkError("));
+    assert!(swift::emit(&newer, "kit").contains("KTWidget.check(_:error:)"));
     Ok(())
 }
 

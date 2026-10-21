@@ -2,18 +2,24 @@
   "schemaVersion": 2,
   "id": "location",
   "bindings": {
-    "apple": [
-      "CoreLocation",
-      "_LocationEssentials"
-    ],
-    "android": [
-      "android.location",
-      "android.content.Context",
-      "android.os.CancellationSignal",
-      "android.os.SystemClock",
-      "java.util.concurrent.Executor",
-      "java.util.function.Consumer"
-    ]
+    "apple": {
+      "sdk": "26.2",
+      "modules": [
+        "CoreLocation",
+        "_LocationEssentials"
+      ]
+    },
+    "android": {
+      "sdk": 35,
+      "modules": [
+        "android.location",
+        "android.content.Context",
+        "android.os.CancellationSignal",
+        "android.os.SystemClock",
+        "java.util.concurrent.Executor",
+        "java.util.function.Consumer"
+      ]
+    }
   },
   "settings": {
     "background": {
