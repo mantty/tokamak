@@ -13,8 +13,7 @@ use serde_json::{Map, Value, json};
 use tokamak_cli::{Platform, PlatformPackManifest, PluginKeyKind, copy_file, is_valid_key};
 
 use super::bindings::{ANDROID_SOURCE, APPLE_SOURCE, Families};
-use super::packs::command_path;
-use super::paths::reset_path;
+use super::paths::{command_path, reset_path};
 use super::plugin_settings::{Setting, option_name, option_namespaces};
 
 const MANIFEST: &str = "tokamak-plugin.json";

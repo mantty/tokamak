@@ -3,7 +3,7 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -64,9 +64,12 @@ pub(crate) struct ServerReport {
 }
 
 impl VitePlugin {
-    /// The plugin writing to `output`.
-    pub(crate) const fn new(output: PathBuf) -> Self {
-        Self { output }
+    /// The plugin writing to `output`, which the project's commands read in
+    /// Node's form.
+    pub(crate) fn new(output: &Path) -> Self {
+        Self {
+            output: paths::command_path(output),
+        }
     }
 
     /// Remove what an earlier run reported.

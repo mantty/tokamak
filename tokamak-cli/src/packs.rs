@@ -11,6 +11,8 @@ use tokamak_cli::{
     MANIFEST_FILE, Platform, PlatformPackManifest, Target, load_manifest, script_command,
 };
 
+use super::paths::command_path;
+
 const PLATFORM_PACK_PATH_ENV: &str = "TOKAMAK_PLATFORM_PACK_PATH";
 
 /// A platform pack: its root directory and its manifest.
@@ -80,21 +82,6 @@ impl PlatformPack {
             bail!("platform-pack build entrypoint failed with status {status}")
         }
     }
-}
-
-/// `path` as Bash, PowerShell and Node accept it: without the verbatim prefix
-/// of a canonical Windows drive path.
-pub(crate) fn command_path(path: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let value = path.to_string_lossy();
-        if let Some(value) = value.strip_prefix(r"\\?\")
-            && value.as_bytes().get(1) == Some(&b':')
-        {
-            return value.into();
-        }
-    }
-    path.into()
 }
 
 fn resolve_manifest(platform: Platform, explicit_dir: Option<&Path>) -> Result<PathBuf> {

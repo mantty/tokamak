@@ -6,6 +6,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+use super::paths::command_path;
 use super::wrangler_config::WranglerConfig;
 
 /// Run the project's build `command`, or its `package.json` build script, with
@@ -21,7 +22,7 @@ pub(crate) fn build<'a>(
     };
     let status = build
         .envs(environment)
-        .current_dir(project)
+        .current_dir(command_path(project))
         .status()
         .with_context(|| format!("failed to run {}", build.get_program().to_string_lossy()))?;
     if status.success() {

@@ -102,7 +102,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         .map(|platform| PlatformPack::load(*platform, request.platform_pack_dir.as_deref()))
         .collect::<Result<Vec<_>>>()?;
     let current_dir = env::current_dir()?;
-    let plugin = VitePlugin::new(build_dir.join(".tokamak").join("vite"));
+    let plugin = VitePlugin::new(&build_dir.join(".tokamak").join("vite"));
     let plugins = &request.plugins;
     for (platform, pack) in request.platforms.iter().zip(&packs) {
         check_settings(
