@@ -25,6 +25,7 @@ use super::devices::{
     install_and_launch_ios_simulator,
 };
 use super::packs::PlatformPack;
+use super::paths::command_path;
 use super::vite::{ConfigReport, PLUGIN_HINT, ServerReport, VitePlugin};
 use super::{devices, pinned_tls, pipeline, plugins, settings};
 
@@ -73,7 +74,7 @@ pub(crate) fn run(request: &Request) -> Result<()> {
         println!("Using detected host address {relay_host} for physical iOS development");
     }
     let plugin = VitePlugin::new(
-        project
+        &project
             .join("build")
             .join(".tokamak")
             .join("dev")
@@ -248,7 +249,7 @@ fn spawn_framework(
     let mut process = ProcessCommand::new(program);
     process
         .args(&command[1..])
-        .current_dir(project)
+        .current_dir(command_path(project))
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -1004,7 +1005,7 @@ mod tests {
             )?;
             let reported = Self {
                 _server: server,
-                plugin: VitePlugin::new(directory.path().to_owned()),
+                plugin: VitePlugin::new(directory.path()),
                 directory,
                 relay,
             };
@@ -1095,7 +1096,7 @@ mod tests {
     #[test]
     fn stops_waiting_when_the_plugin_reports_an_error() -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
-        let plugin = VitePlugin::new(directory.path().to_owned());
+        let plugin = VitePlugin::new(directory.path());
         let error = "Vite is running in middleware mode";
         fs::write(
             directory.path().join("server.json"),
