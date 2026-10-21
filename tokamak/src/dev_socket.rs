@@ -57,13 +57,15 @@ impl DevSocket {
     ) -> Result<Vec<u8>, HandlerError> {
         let deadline = tokio::time::Instant::from_std(deadline);
         let late = || format!("{name} did not complete before its deadline");
+        let unreachable =
+            || format!("{name} could not reach the development server before its deadline");
         let closed = || format!("the dev socket closed before {name} completed");
         let mut connections = self.connection.subscribe();
         let connection = tokio::time::timeout_at(deadline, connections.wait_for(Option::is_some))
             .await
-            .map_err(|_| late())??
+            .map_err(|_| unreachable())??
             .clone()
-            .ok_or_else(late)?;
+            .ok_or_else(unreachable)?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let message = (
             Header {
@@ -317,5 +319,26 @@ async fn relay(
                 count => buffer.extend_from_slice(&bytes[..count]),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::DevSocket;
+    use crate::plugin_calls::PluginCalls;
+
+    #[tokio::test]
+    async fn fails_an_event_while_the_development_server_is_unreachable() {
+        let socket = DevSocket::new(PluginCalls::new(None, true));
+        let deadline = Instant::now() + Duration::from_millis(50);
+
+        let error = socket.deliver("example.ping", b"{}", deadline).await.err();
+
+        assert_eq!(
+            error.map(|error| error.to_string()).as_deref(),
+            Some("example.ping could not reach the development server before its deadline")
+        );
     }
 }
