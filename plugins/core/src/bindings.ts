@@ -195,7 +195,7 @@ function contextOf(target: TokamakContext | NativeObject): TokamakContext {
 async function request(ctx: TokamakContext, target: TokamakContext | NativeObject, args: readonly unknown[]): Promise<Uint8Array> {
   return encodeJson({
     scope: await scopeOf(ctx),
-    target: target instanceof NativeObject ? referenceOf(target).idFor(ctx) : undefined,
+    target: target instanceof NativeObject ? toWire(target, ctx) : undefined,
     arguments: args.map((arg) => toWire(arg, ctx)),
   });
 }

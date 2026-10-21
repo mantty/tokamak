@@ -53,7 +53,7 @@ void test("calls run in the invocation's one scope and wrap objects in their mos
 
   const title = fancy.title();
   await setImmediate();
-  assert.deepEqual(native.lastRequest(), { type: "call", plugin: "kit/apple", method: "KTWidget.title", arguments: { scope: "scope-1", target: "w1", arguments: [] } });
+  assert.deepEqual(native.lastRequest(), { type: "call", plugin: "kit/apple", method: "KTWidget.title", arguments: { scope: "scope-1", target: { "#": "object", id: "w1" }, arguments: [] } });
   native.respond({ value: "Dial" });
   assert.equal(await title, "Dial");
   assert.equal(native.sent.filter((request) => request.type === "subscribe").length, 1);
@@ -122,7 +122,7 @@ void test("a stream decodes elements as they arrive and ends with the sequence",
   const reader = dial.readings().getReader();
   const first = reader.read();
   await setImmediate();
-  assert.deepEqual(native.lastRequest(), { type: "subscribe", plugin: "kit/apple", method: "KTWidget.readings", arguments: { scope: "scope-1", target: "w1", arguments: [] } });
+  assert.deepEqual(native.lastRequest(), { type: "subscribe", plugin: "kit/apple", method: "KTWidget.readings", arguments: { scope: "scope-1", target: { "#": "object", id: "w1" }, arguments: [] } });
   native.respond({ value: { x: 1, y: 1 } }, false);
   assert.deepEqual(await first, { value: { x: 1, y: 1 }, done: false });
   native.respondBytes(new Uint8Array(), true);
