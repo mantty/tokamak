@@ -14,10 +14,10 @@ uses its generated `env.TOKAMAK_LOCATION` service binding when present.
 
 ```ts
 import location from "@tokamakdev/plugin-location/client";
-
-const position = await location.getCurrentPosition();
 import { decodeValues } from "@tokamakdev/plugin/streams";
 import type { Position } from "@tokamakdev/plugin-location";
+
+const position = await location.getCurrentPosition();
 for await (const next of decodeValues<Position>(location.watchPosition())) {
   console.log(next.coords);
   break; // Cancels the watch.
@@ -152,9 +152,9 @@ cancelling a stream removes its native subscription.
 `setup(config)` keeps the app aware of where the device is over days, with
 little power and no indicator. Call it from `onStart` in `src/tokamak.ts`, so
 it applies at every launch; the plugin also keeps it and applies it again
-itself. The configuration replaces the previous one, and an invalid one
-rejects with `TypeError` and changes nothing. Apple platforms reject with
-`NotSupportedError` where the device cannot monitor significant changes.
+itself. The configuration replaces the previous one; a field it leaves out is
+off. Apple platforms reject with `NotSupportedError` where the device cannot
+monitor significant changes.
 
 - `significantChanges` delivers moves of 500 metres or more, at most every 5
   minutes, to `onLocationUpdate`, located from cellular and Wi-Fi rather than
@@ -245,10 +245,18 @@ The web uses `navigator.geolocation`. `permission()` reports `inUse` from the
 Permissions API, and the other additions reject with `NotSupportedError`,
 including the event-stream methods. Native support is provided on Apple and Android.
 
+## Platform bindings
+
+`@tokamakdev/plugin-location/apple` is Core Location, and
+`@tokamakdev/plugin-location/android` is `android.location` with the
+`Context`, `CancellationSignal`, `SystemClock`, `Executor` and `Consumer`
+types it uses, for Worker code that needs what this API does not offer.
+`getCurrentPosition` and `watchPosition` are built on them.
+
 ## Errors
 
 Rejections and `onLocationError` events are `DOMException` names:
 `NotAllowedError` (no permission, or none for the background),
 `NotReadableError` (location unavailable, or services off), `NeedsUIError` (a
 prompt or a start off screen), `NotSupportedError`, `QuotaExceededError`,
-`TimeoutError` and `TypeError`.
+`TimeoutError`, and `TypeError` for an argument the native code cannot read.

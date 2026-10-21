@@ -6,7 +6,7 @@ export function logTo(id: string): (line: string) => void {
   return (line) => {
     const entry = document.createElement("div");
     entry.textContent = `[${new Date().toISOString().slice(11, 19)}] ${line}`;
-    element.append(entry);
+    element.appendChild(entry);
     element.scrollTop = element.scrollHeight;
   };
 }

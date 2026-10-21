@@ -359,14 +359,17 @@ const base: Config = { identifier: "com.example.myapp", version: "1.0.0" };
 tokamak({ ...base, name: process.env.APP_NAME ?? "My App" });
 ```
 
-In tokamak builds and development, `module` names the separate native worker
-entrypoint relative to the Vite root. It owns device calls and
-[event](#events) listeners, and defaults to `src/tokamak.ts`, then
-`src/tokamak.js`, when one exists; a `module` that does not exist fails the
-build. Default-export a `WorkerEntrypoint` subclass from this module and run
+In tokamak builds and development, `module` names the entrypoint of the
+[Tokamak worker](#native-plugins), relative to the Vite root: the second
+Worker, beside the app's, that alone reaches native code and receives
+[events](#events). It defaults to `src/tokamak.ts`, then `src/tokamak.js`, when
+one exists; a `module` that does not exist fails the build. Default-export a
+`TokamakEntrypoint` subclass, from `@tokamakdev/tok`, from this module and run
 `wrangler types` to generate the project's Workers declarations. Keep its
 top-level code cheap and safe: build tooling evaluates Worker exports too.
-Builds for Cloudflare and the web do not include it.
+Builds for Cloudflare and the web do not include it. tokamak builds and serves
+these two Workers only: `auxiliaryWorkers` in Cloudflare's plugin options fail
+`tok build` and `tok dev`, and Cloudflare builds keep them.
 
 Every value is optional. Names retain their spelling and capitalization for
 display. Tokamak derives a lower-case ASCII slug for bundle filenames,
@@ -623,11 +626,11 @@ level of `src/tokamak.ts` or the modules it imports:
 
 ```ts
 // src/tokamak.ts
-import { WorkerEntrypoint } from "cloudflare:workers";
+import { TokamakEntrypoint } from "@tokamakdev/tok";
 import { onResume, onStart, onSuspend } from "@tokamakdev/tok/events";
 import { onPush } from "@tokamakdev/plugin-notifications/events";
 
-export default class Native extends WorkerEntrypoint<Cloudflare.Env> {}
+export default class Native extends TokamakEntrypoint {}
 
 onStart((event, env, ctx) => {
   ctx.waitUntil(env.DB.prepare("INSERT INTO launches (foreground) VALUES (?)").bind(event.foreground).run());
@@ -638,8 +641,9 @@ onPush(async (message, env) => ({ id: message.id, title: "New item", body: await
 
 A listener receives `(event, env, ctx)`, as Cloudflare's `scheduled` and
 `queue` handlers do. `event` is plain data, `env` is the Worker's environment,
-typed as `Cloudflare.Env`, which `wrangler types` declares, and
-`ctx.waitUntil` keeps the event running until a promise settles.
+typed as `Tokamak.Env`, `ctx.waitUntil` keeps the event running until a
+promise settles, and `ctx` is the invocation's `TokamakContext`, which
+[plugins](#calling-plugins) take.
 `@tokamakdev/tok/events` exports the app's events, and each plugin exports its
 own from its `/events` entry.
 
@@ -672,9 +676,7 @@ no event.
   others still run. Events are not retried.
 - **State:** each event runs in a fresh Worker invocation, as each request
   does, so module state does not carry from one event to the next. Keep state
-  in a KV, D1 or R2 binding. An invocation with
-  [plugin listeners](#plugins-in-the-worker) runs on after its event until they
-  are removed.
+  in a KV, D1 or R2 binding.
 - **Cost:** a packaged app runs no Worker for an event without listeners,
   apart from `onStart`.
 
@@ -700,11 +702,11 @@ npm install @tokamakdev/plugin-location
 ```
 
 `tok build` and `tok dev` include the native code of every plugin listed in
-`dependencies`, `devDependencies`, or `peerDependencies`. tokamak finds each
-package as Node does, in the nearest `node_modules` of the project or a parent
-directory, so plugins installed at a workspace root are included. Call plugins
-from the page or [the Worker](#plugins-in-the-worker). Each plugin's README
-describes its API.
+`dependencies`, `devDependencies`, or `peerDependencies`, and of the plugins
+those plugins depend on. tokamak finds each package as Node does, in the
+nearest `node_modules` of the project or a parent directory, so plugins
+installed at a workspace root are included. Each plugin's README describes its
+API, and [the plugin guidelines](plugins/GUIDELINES.md) describe writing one.
 
 A plugin can also run Worker code through [events](#events), such as
 `onPush` from `@tokamakdev/plugin-notifications/events` for a data-only push
@@ -723,62 +725,85 @@ call to an API newer than the app's minimum SDK fails the build, naming the
 file, line and required API level, unless a `Build.VERSION.SDK_INT` check
 guards it.
 
-### Plugins in the Worker
+### Calling plugins
 
-Worker code calls plugins as page code does, with the same packages, methods,
-values and errors, at any time:
+Native code runs in the Tokamak worker, `src/tokamak.ts`. A plugin takes the
+receiving invocation's `ctx`, which only the Tokamak worker's invocations have:
 
 ```ts
 // src/tokamak.ts
-import { getLifecycleStage, onStart } from "@tokamakdev/tok/events";
+import { TokamakEntrypoint } from "@tokamakdev/tok";
 import { location } from "@tokamakdev/plugin-location";
-import { notifications } from "@tokamakdev/plugin-notifications";
 
-onStart(async (event, env) => {
-  const subscription = await notifications.subscribe();
-  await fetch("https://api.example.com/push-tokens", { method: "POST", body: JSON.stringify(subscription) });
-
-  if ((await getLifecycleStage()) === "foreground") {
-    location.watchPosition(
-      (position) => env.TRACK.put(String(position.timestamp), JSON.stringify(position.coords)),
-      (error) => console.error(error),
-    );
+export default class Native extends TokamakEntrypoint {
+  async whereAmI(): Promise<string> {
+    const { coords } = await location(this.ctx).getCurrentPosition({ timeout: 10_000 });
+    return `${coords.latitude}, ${coords.longitude}`;
   }
-});
+}
 ```
 
-- **Listeners**, such as `watchPosition` and `onMessage`, keep the Worker
-  invocation that registered them running, as an accepted WebSocket does,
-  until the last is removed or the runtime stops. The invocation then ends
-  once its `waitUntil` promises settle. The event or request that registered
-  them completes as usual: its deadline ends the event, not the invocation.
-  The OS ends listeners with the app, and `onStart` runs at every runtime
-  start, so register those the app needs throughout there.
-- **`getLifecycleStage()`**, from `@tokamakdev/tok/events`, resolves to
+The Tokamak worker's public methods are RPC methods, as a `WorkerEntrypoint`'s
+are. The app's Worker calls them through `env.TOKAMAK`, and pages through the
+generated client `virtual:tokamak/client`:
+
+```ts
+// page code
+import tokamak from "virtual:tokamak/client";
+const here = await tokamak.whereAmI();
+```
+
+Each other exported entrypoint class is a service of its own: a class
+`DataSync` is `env.TOKAMAK_DATA_SYNC` and
+`virtual:tokamak/client/DataSync`. Each plugin's API is one too: pages import
+`@tokamakdev/plugin-location/client`, and the app's Worker calls
+`env.TOKAMAK_LOCATION`. The Tokamak worker reaches the app's Worker through
+`env.MAIN`.
+
+- **Values:** calls are asynchronous at the caller. Arguments and results are
+  structured data; streams are byte `ReadableStream`s, which
+  `decodeValues` from `@tokamakdev/plugin/streams` reads as values. Functions
+  and class instances do not cross. Failures reject with the plugin's
+  `DOMException`.
+- **Capabilities:** each client and plugin reports whether each operation is
+  implemented where the app runs, such as
+  `location.capabilities.getCurrentPosition`, without calling it. It does not
+  report permission. `ctx.platform` names the native platform.
+- **The page:** `ctx.webview` reads the page's URL, null without a page,
+  navigates the WebView to an app URL, and posts the page a message.
+- **`getLifecycleStage(ctx)`**, from `@tokamakdev/tok/events`, resolves to
   `"foreground"` or `"background"`: the app's stage now. Events report what
   happened, in order, and the stage what is true now, so the two can differ:
   an `onSuspend` listener that runs late reads `"foreground"` once the user has
-  returned. In page code it rejects with `NotSupportedError`.
+  returned.
 - **`NeedsUIError`:** a call that would show UI while the app cannot present it
-  rejects at once with a `DOMException` named `NeedsUIError`, whether the page
-  or the Worker makes it. iOS and Android present UI only in the foreground; a
-  hidden or minimised macOS app still shows system prompts. Only a call that
-  would show UI rejects: a permission request that would prompt, a biometric
-  prompt, or a secure storage read of a value saved with `authentication`. A
-  decided permission answers without UI, so `getCurrentPosition()` with
-  permission granted works in the background. Unlike `NotAllowedError`, which
-  means the user refused or cancelled, it means the app can ask again, for
-  example from `onResume`. A prompt already on screen when the app leaves it
-  stays up.
-- **Under `tok dev`,** the development Worker's calls reach the device's
-  plugins through the dev WebSocket. A call waits up to 10 seconds for the
-  device to connect, and calls pending when it disconnects reject with
+  rejects at once with a `DOMException` named `NeedsUIError`. iOS and Android
+  present UI only in the foreground; a hidden or minimised macOS app still
+  shows system prompts. Only a call that would show UI rejects: a permission
+  request that would prompt, a biometric prompt, or a secure storage read of a
+  value saved with `authentication`. A decided permission answers without UI,
+  so `getCurrentPosition()` with permission granted works in the background.
+  Unlike `NotAllowedError`, which means the user refused or cancelled, it means
+  the app can ask again, for example from `onResume`. A prompt already on
+  screen when the app leaves it stays up.
+- **Under `tok dev`,** the development Tokamak worker's calls reach the
+  device's plugins through the dev WebSocket. A call waits up to 10 seconds for
+  the device to connect, and calls pending when it disconnects reject with
   `NetworkError`.
-- **On Cloudflare,** plugins use their web implementations, as a page without
-  tokamak does, which reject with `NotSupportedError` where the web API is
-  missing. `getLifecycleStage()` rejects with `NotSupportedError`.
-- **On Windows,** which has no native plugins, the Worker's plugin calls reject
-  with `NotSupportedError`.
+- **On Cloudflare and the web,** there is no Tokamak worker: `env.TOKAMAK` is
+  undefined, and clients run each plugin's browser implementation, which
+  rejects with `NotSupportedError` where the web API is missing.
+- **On Windows,** which has no native plugins, plugin calls reject with
+  `NotSupportedError`.
+
+### Platform bindings
+
+Plugins export their platforms' own APIs as `/apple` and `/android`, generated
+from the SDKs by `tok bindings`: Core Location's `CLLocationManager` or
+Android's `LocationManager`, with their names, types, objects and delegates.
+They are the escape hatch when a plugin's API is not enough, and a plugin can
+be written in TypeScript on them alone. [The plugin
+guidelines](plugins/GUIDELINES.md#bind-platform-apis) describe them.
 
 ### Camera and microphone
 
@@ -798,7 +823,7 @@ refused request rejects with `NotAllowedError`.
 
 [The Astro example](examples/astro) exercises server rendering, static assets,
 navigation, WebSockets, lifecycle events recorded in KV, and every first-party
-plugin, from the page and from the Worker's listeners. It installs
+plugin, from the page and from the Tokamak worker's listeners. It installs
 `@tokamakdev/tok` from this repository; its README lists the setup.
 
 ```sh

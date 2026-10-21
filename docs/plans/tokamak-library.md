@@ -3,7 +3,7 @@
 Status: implemented for macOS, iOS, Android, and Windows. Linux remains a
 future platform.
 
-First of three: this, then `tokamak-api-testing.md`, then `tokamak-plugins.md`.
+First of two: this, then `tokamak-api-testing.md`.
 
 ## Purpose
 

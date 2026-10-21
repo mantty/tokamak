@@ -23,8 +23,8 @@ function record(env: Tokamak.Env, entry: string): Promise<void> {
   return env.EVENTS.put(`${new Date().toISOString()} ${entry}`, "");
 }
 
-// Started on screen, records where location first places the device. The
-// listener keeps this Worker invocation running until it removes itself.
+// Records each start, sets up notifications and location awareness, and, on
+// screen, where location first places the device.
 onStart(async (event, env, ctx) => {
   ctx.waitUntil(record(env, event.foreground ? "start in the foreground" : "start in the background"));
   ctx.waitUntil(setUpNotifications(env, ctx));
