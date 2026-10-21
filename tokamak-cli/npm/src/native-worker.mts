@@ -3,6 +3,7 @@ import fs from "node:fs";
 import type { ServerOptions as HttpsServerOptions } from "node:https";
 import path from "node:path";
 
+import type { PluginConfig } from "@cloudflare/vite-plugin";
 import { normalizePath, type Plugin, type ViteDevServer } from "vite";
 
 import { capabilitiesFor, type NativePlatform } from "@tokamakdev/plugin/capabilities";
@@ -20,12 +21,14 @@ const CAPABILITIES = "/_tokamak/capabilities.js";
 const MIDDLEWARE_MODE_ERROR =
   "Vite is running in middleware mode, so tokamak cannot find the development server's address; tok dev needs Vite's own dev server";
 
+type AuxiliaryWorker = NonNullable<PluginConfig["auxiliaryWorkers"]>[number];
+
 /** The native worker and its development relay. */
 export function createNativeWorker(
   options: TokamakOptions,
   output: string,
   prepare?: (root: string, graph: WorkerGraph) => void | Promise<void>,
-): { plugin: Plugin; graph(): WorkerGraph } {
+): { plugin: Plugin; graph(): WorkerGraph; auxiliaryWorker: AuxiliaryWorker } {
   const { module, ...config } = options;
   const token = process.env.TOKAMAK_SESSION_TOKEN;
   const platform = process.env.TOKAMAK_PLATFORM as NativePlatform | undefined;
@@ -62,7 +65,7 @@ export function createNativeWorker(
       order: "pre",
       async handler(server) {
         const devSocket = await serveNativeWorker(server, graph.names(), output, token);
-        if (devSocket && token) graph.relay(devSocket.port, token, platform);
+        if (devSocket && token) graph.relay({ port: devSocket.port, token, platform });
         // A page loaded from this server, not the device, still gets the device's capabilities.
         server.middlewares.use(CAPABILITIES, (_request, response) => {
           const capabilities = capabilitiesFor(graph.availability(), platform);
@@ -72,7 +75,12 @@ export function createNativeWorker(
       },
     },
   };
-  return { plugin, graph: () => graph };
+  return {
+    plugin,
+    graph: () => graph,
+    // The graph exists once Vite's config is known, after Cloudflare's plugin is created.
+    auxiliaryWorker: { viteEnvironment: { name: "tokamak" }, config: (worker, context) => graph.native(worker, context) },
+  };
 }
 
 async function serveNativeWorker(

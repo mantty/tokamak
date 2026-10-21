@@ -34,7 +34,7 @@ test("named Tokamak entrypoints get generated bindings, clients and routes", asy
     // @ts-expect-error the default entrypoint's methods stay on TOKAMAK
     sync.describe();
   `);
-  assert.deepEqual(graph.services("graph-app"), [
+  assert.deepEqual(graph.serviceBindings({ name: "graph-app" }), [
     { binding: "TOKAMAK", service: "graph-app-tokamak" },
     { binding: "TOKAMAK_DATA_SYNC", service: "graph-app-tokamak", entrypoint: "DataSync" },
   ]);

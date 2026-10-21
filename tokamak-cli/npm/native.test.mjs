@@ -25,7 +25,7 @@ afterEach(async () => {
 async function devSocket() {
   opened = await openDevSocket("app", TOKEN);
   const waited = [];
-  connection = relayConnection(opened.port, TOKEN, { waitUntil: (promise) => waited.push(promise) });
+  connection = relayConnection({ port: opened.port, token: TOKEN }, { waitUntil: (promise) => waited.push(promise) });
   return { port: opened.port, waited };
 }
 
@@ -182,7 +182,7 @@ test("refuses plugin calls without the session token", async () => {
   const { port } = await devSocket();
 
   const response = await fetch(`http://127.0.0.1:${port}/call`, { method: "POST", body: "{}" });
-  connection = relayConnection(port, "wrong", { waitUntil: () => undefined });
+  connection = relayConnection({ port, token: "wrong" }, { waitUntil: () => undefined });
 
   assert.equal(response.status, 401);
   await assert.rejects(

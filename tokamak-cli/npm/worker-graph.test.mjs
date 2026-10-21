@@ -169,7 +169,7 @@ test("builds two separate bundles with generated service bindings and project al
   assert.deepEqual(native.vars, { LABEL: "configured" });
   const migrations = path.resolve(path.dirname(pointer), deploy.auxiliaryWorkers[0].configPath, "..", native.d1_databases[0].migrations_dir);
   assert.equal(fs.readFileSync(path.join(migrations, "001.sql"), "utf8"), "CREATE TABLE entries (value TEXT);");
-  assert.deepEqual(graph.contract().methods, ["describe"]);
+  assert.deepEqual(graph.types.native.methods, ["describe"]);
   const mainSource = fs.readFileSync(path.resolve(path.dirname(pointer), deploy.configPath, "..", main.main), "utf8");
   const nativeSource = fs.readFileSync(path.resolve(path.dirname(pointer), deploy.auxiliaryWorkers[0].configPath, "..", native.main), "utf8");
   assert.match(mainSource, /main-only/);

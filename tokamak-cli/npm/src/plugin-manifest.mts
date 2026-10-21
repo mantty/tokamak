@@ -2,13 +2,14 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
+import type { NativePlatform } from "@tokamakdev/plugin/capabilities";
+
+export type { NativePlatform };
+
 export interface ModuleExport {
   module: string;
   export: string;
 }
-
-/** A native platform a plugin builds for. */
-export type NativePlatform = "ios" | "macos" | "android" | "windows" | "linux";
 
 /** Where an operation runs, and what it needs there. */
 export interface Operation {

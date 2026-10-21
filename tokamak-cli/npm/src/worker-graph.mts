@@ -6,24 +6,26 @@ import { fileURLToPath } from "node:url";
 import type { PluginConfig } from "@cloudflare/vite-plugin";
 import { normalizePath, type EnvironmentOptions, type Plugin } from "vite";
 
-import type { Availability, NativePlatform } from "@tokamakdev/plugin/capabilities";
+import type { Availability } from "@tokamakdev/plugin/capabilities";
+import type { DeviceRelay } from "./native.mjs";
 import type { PluginContract, WorkerContract } from "./worker-contract.mjs";
 import { WorkerTypes, type NativeService, type WorkerConfiguration } from "./worker-types.mjs";
 
 type ServiceConfiguration = Pick<WorkerConfiguration, "name" | "topLevelName" | "services" | "main" | "configPath" | "vars" | "kv_namespaces" | "d1_databases" | "r2_buckets">;
+type ServiceBindings = NonNullable<ServiceConfiguration["services"]>;
 type Auxiliary = NonNullable<PluginConfig["auxiliaryWorkers"]>[number];
 type AuxiliaryCustomizer = Extract<Extract<Auxiliary, { config: unknown }>["config"], (...args: never[]) => unknown>;
 export interface WorkerGraph {
-  generated: string;
-  /** Connects development invocations to a device on `platform` through the relay on `port`. */
-  relay(port: number, token: string, platform: NativePlatform | undefined): void;
+  /** Connects development invocations to a device through `relay`. */
+  relay(relay: DeviceRelay): void;
   /** Each plugin operation's native platforms, by plugin ID. */
   availability(): Availability;
-  configure(config: ServiceConfiguration): void;
-  services(name: string): NonNullable<ServiceConfiguration["services"]>;
+  /** Configures the main Worker `config`, returning the generated service bindings it adds. */
+  configure(config: ServiceConfiguration): ServiceBindings;
+  /** The generated service bindings of the main Worker configuration `config`, once it binds none of their names. */
+  serviceBindings(config: ServiceConfiguration): ServiceBindings;
   native: AuxiliaryCustomizer;
   names(): { main: string; native: string; app: string };
-  contract(): WorkerContract;
   types: WorkerTypes;
   cloudflare: PluginConfig;
   plugin: Plugin & {
@@ -41,6 +43,8 @@ export interface WorkerGraph {
 
 const NATIVE_CONNECTION = "virtual:tokamak/native-connection";
 const NATIVE_CALLS = normalizePath(fileURLToPath(new URL("./native.mjs", import.meta.url)));
+/** The two Workers' roles: the app's main Worker and the Tokamak worker. */
+const ROLES = ["main", "native"] as const;
 
 /** Configure the two bundles through Cloudflare's public auxiliary-worker API. */
 export function createWorkerGraph(root: string, entry: string | undefined, output: string): WorkerGraph {
@@ -60,7 +64,7 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
   const entrypoints = () => Object.keys(contracts.named).join();
   const signatures = new Map<string, string>();
   const development = normalizePath(fileURLToPath(new URL("./rpc/binding.mjs", import.meta.resolve("@tokamakdev/plugin/events"))));
-  let relay: Relay | undefined;
+  let relay: DeviceRelay | undefined;
   const serviceModule = (role: string) => `virtual:tokamak/service/${role}`;
   const bindingsModule = (role: string) => `\0tokamak:bindings:${role}`;
   const nativeContracts = (): Record<string, WorkerContract> =>
@@ -92,21 +96,27 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
 export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
     writeChanged(path.join(output, "methods.json"), `${JSON.stringify(contracts.native.methods)}\n`);
   }
-  const configure = (config: ServiceConfiguration): void => {
+  /** The name of the main Worker configuration `config`, which binds none of the generated names. */
+  const checkedName = (config: ServiceConfiguration): string => {
     if (!config.name) throw new Error("Tokamak requires a name in the main Worker's configuration.");
     const reserved = new Set(["MAIN", "TOKAMAK_RUNTIME", ...services(config.name).map(service => service.binding)]);
     const collision = bindingNames(config).find(name => reserved.has(name));
     if (collision) {
       throw new Error(`${collision} is reserved for a generated native worker binding.`);
     }
-    mainName = config.name;
+    return config.name;
+  };
+  const configure = (config: ServiceConfiguration): ServiceBindings => {
+    mainName = checkedName(config);
     nativeName = workerName(mainName);
     appName = config.topLevelName ?? mainName;
     contracts.configure(config);
     if (dev) config.main = serviceModule("main");
-    config.services = [...config.services ?? [], ...services(mainName)];
+    const generated = services(mainName);
+    config.services = [...config.services ?? [], ...generated];
     mainServices = config.services;
     configuredEntrypoints = entrypoints();
+    return generated;
   };
   const native: AuxiliaryCustomizer = (_config, { entryWorkerConfig }) => {
     if (!mainName) throw new Error("The main Worker must be configured before the Tokamak worker.");
@@ -128,17 +138,15 @@ export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
   };
   refresh();
   return {
-    generated: normalizePath(generated),
-    relay(port, token, platform) { relay = { port, token, platform }; },
+    relay(configured) { relay = configured; },
     availability: () => availability(contracts.plugins),
     configure,
-    services,
+    serviceBindings: config => services(checkedName(config)),
     native,
     names: () => ({ main: mainName, native: nativeName, app: appName }),
-    contract: () => contracts.native,
     types: contracts,
     cloudflare: {
-      config: configure,
+      config: config => { configure(config); },
       auxiliaryWorkers: [{
         viteEnvironment: { name: "tokamak" },
         config: native,
@@ -195,16 +203,13 @@ export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
         return [];
       },
       resolveId(id) {
-        if (id === NATIVE_CONNECTION) return `\0${NATIVE_CONNECTION}`;
+        if ([NATIVE_CONNECTION, serviceModule("main"), serviceModule("native")].includes(id)) return `\0${id}`;
         if (id.startsWith("\0tokamak:") || id.startsWith("\0virtual:tokamak/")) return id;
-        const role = id === serviceModule("native") ? "native" : id === serviceModule("main") ? "main" : undefined;
-        if (!role) return;
-        return `\0${serviceModule(role)}`;
       },
       async load(id) {
         if (id === `\0${NATIVE_CONNECTION}`) return nativeConnectionModule(dev ? relay : undefined);
-        const role = id.endsWith(":main") || id.endsWith("/main") ? "main" : "native";
-        if (id !== bindingsModule(role) && id !== `\0${serviceModule(role)}`) return;
+        const role = ROLES.find(role => id === bindingsModule(role) || id === `\0${serviceModule(role)}`);
+        if (!role) return;
         await contracts.resolve(source => this.resolve(source, undefined, { skipSelf: true }));
         refresh();
         if (role === "main") mainEnvironment = this.environment.name;
@@ -262,21 +267,14 @@ export function workerName(main: string): string {
   return `${main.slice(0, 46)}-${createHash("sha256").update(main).digest("hex").slice(0, 8)}-tokamak`;
 }
 
-/** The device relay a development Worker reaches native code through. */
-interface Relay {
-  port: number;
-  token: string;
-  platform: NativePlatform | undefined;
-}
-
 /**
  * The module whose `connect(ctx)` gives an invocation its native connection: the device relay
  * during development, otherwise none, so the context uses the connection the host attached.
  */
-function nativeConnectionModule(relay: Relay | undefined): string {
+function nativeConnectionModule(relay: DeviceRelay | undefined): string {
   if (!relay) return "export const connect = () => undefined;";
   return `import { connectDevice } from ${JSON.stringify(NATIVE_CALLS)};
-export const connect = ctx => connectDevice(${String(relay.port)}, ${JSON.stringify(relay.token)}, ctx, ${JSON.stringify(relay.platform ?? null)} ?? undefined);`;
+export const connect = ctx => connectDevice(${JSON.stringify(relay)}, ctx);`;
 }
 
 /** Each plugin operation's native platforms: those its manifest names, or every one the plugin builds for. */
@@ -351,7 +349,8 @@ ${named.join("")}
 `;
 }
 
-function writeChanged(file: string, source: string): void {
+/** Writes `source` to `file` unless it already holds it, so watchers see only changes. */
+export function writeChanged(file: string, source: string): void {
   if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === source) return;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, source);

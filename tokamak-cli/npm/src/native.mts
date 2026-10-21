@@ -4,11 +4,18 @@ import type { NativePlatform } from "@tokamakdev/plugin/capabilities";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+/** The device relay a development Worker reaches native code through. */
+export interface DeviceRelay {
+  port: number;
+  token: string;
+  platform?: NativePlatform;
+}
+
 /**
- * The development invocation `ctx`'s native connection, which reaches the byte endpoints of a
- * device on `platform` through the relay on `port`. Its subscriptions are `ctx`'s `waitUntil` work.
+ * The development invocation `ctx`'s native connection, which reaches the byte endpoints of the
+ * `relay`'s device. Its subscriptions are `ctx`'s `waitUntil` work.
  */
-export function connectDevice(port: number, token: string, ctx: { waitUntil(promise: Promise<unknown>): void }, platform?: NativePlatform) {
+export function connectDevice({ port, token, platform }: DeviceRelay, ctx: { waitUntil(promise: Promise<unknown>): void }) {
   const post = async (path: string, request: Uint8Array | ReadableStream<Uint8Array>, signal?: AbortSignal) => {
     const response = await fetch(`http://127.0.0.1:${String(port)}${path}`, {
       method: "POST",

@@ -83,12 +83,9 @@ export default Object.assign(client, { capabilities: Object.freeze(Object.fromEn
       }
       if (!files.includes(file)) return;
       contracts.refresh({ file, timestamp });
-      for (const id of clients) {
-        const client = this.environment.moduleGraph.getModuleById(id);
-        if (!client) continue;
-        this.environment.moduleGraph.invalidateModule(client);
-        this.environment.hot.send({ type: "full-reload" });
-      }
+      const loaded = [...clients].map(id => this.environment.moduleGraph.getModuleById(id)).filter(client => client !== undefined);
+      for (const client of loaded) this.environment.moduleGraph.invalidateModule(client);
+      if (loaded.length) this.environment.hot.send({ type: "full-reload" });
     },
   };
 }
