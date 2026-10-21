@@ -1,23 +1,51 @@
 package com.tokamak.runtime
 
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
-/** Native objects that plugins share by ID, each kept while the subscription that retained it is open. */
+/** Native objects that plugins share by ID. Each belongs to a scope and is kept until it is released or its scope ends. */
 class TokamakResources {
-    private val objects = ConcurrentHashMap<String, Any>()
+    private val objects = HashMap<String, Pair<Any, String>>()
+    private val scopes = HashMap<String, MutableSet<String>>()
 
-    /** Keeps [value], replies with its ID, and returns the release to return from `subscribe`. */
-    fun retain(value: Any, reply: TokamakPluginReply): () -> Unit {
+    /** Starts a scope and returns its ID. */
+    fun open(): String {
+        val scope = UUID.randomUUID().toString()
+        synchronized(this) { scopes[scope] = HashSet() }
+        return scope
+    }
+
+    /** Keeps [value] in [scope] and returns its ID. An ended scope keeps nothing, so the ID finds no object. */
+    fun retain(value: Any, scope: String): String {
         val id = UUID.randomUUID().toString()
-        objects[id] = value
-        reply(Result.success(id))
-        return { objects.remove(id) }
+        synchronized(this) {
+            if (scopes[scope]?.add(id) == true) objects[id] = value to scope
+        }
+        return id
+    }
+
+    /** Keeps [value] in a scope of its own, replies with its ID, and returns the release to return from `subscribe`. */
+    fun retain(value: Any, reply: TokamakPluginReply): () -> Unit {
+        val scope = open()
+        reply(Result.success(retain(value, scope)))
+        return { end(scope) }
+    }
+
+    /** Releases the object retained as [id], if it is still kept. */
+    fun release(id: Any?) {
+        synchronized(this) {
+            val (_, scope) = objects.remove(id as? String) ?: return
+            scopes[scope]?.remove(id)
+        }
+    }
+
+    /** Releases every object [scope] keeps, and keeps nothing in it later. */
+    fun end(scope: String) {
+        synchronized(this) { scopes.remove(scope)?.forEach { objects.remove(it) } }
     }
 
     /** The object retained as [id]. */
     fun <T : Any> get(id: Any?, type: Class<T>): T {
-        val value = (id as? String)?.let(objects::get)
+        val value = synchronized(this) { objects[id as? String]?.first }
             ?: throw TokamakPluginError("InvalidStateError", "The native reference is closed")
         if (!type.isInstance(value)) throw TokamakPluginError.typeError("The native reference is not ${type.simpleName}")
         return type.cast(value)!!

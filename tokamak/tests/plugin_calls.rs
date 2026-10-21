@@ -22,7 +22,7 @@ const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-const failure = (error) => ({ name: error.name, message: error.message, domException: error instanceof DOMException });
+const failure = (error) => ({ name: error.name, message: error.message, cause: error.cause, domException: error instanceof DOMException });
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 export class TokamakEvents extends WorkerEntrypoint {
@@ -304,7 +304,7 @@ fn rejects_a_plugin_call_with_the_exception_the_shell_names() -> TestResult {
     started.runtime.reply(
         request.id,
         tokamak::PluginReply {
-            payload: br#"{"name":"NeedsUIError","message":"The app is in the background"}"#
+            payload: br#"{"name":"NeedsUIError","message":"The app is in the background","cause":{"domain":"Kit","code":7}}"#
                 .to_vec(),
             failed: true,
             done: true,
@@ -313,7 +313,7 @@ fn rejects_a_plugin_call_with_the_exception_the_shell_names() -> TestResult {
 
     assert_eq!(
         join(reply)?,
-        json!({ "name": "NeedsUIError", "message": "The app is in the background", "domException": true })
+        json!({ "name": "NeedsUIError", "message": "The app is in the background", "cause": { "domain": "Kit", "code": 7 }, "domException": true })
     );
     Ok(())
 }

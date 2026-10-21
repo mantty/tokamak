@@ -17,6 +17,8 @@ import org.json.JSONTokener
 class TokamakPluginError(
     val errorName: String,
     message: String,
+    /** JSON details the Worker receives as the error's `cause`. */
+    val errorCause: Any? = null,
 ) : Exception(message) {
     companion object {
         fun notSupported(message: String) = TokamakPluginError("NotSupportedError", message)
@@ -36,14 +38,22 @@ data class TokamakPluginResult(val payload: ByteArray, val failed: Boolean, val 
         fun encoded(result: Result<ByteArray>, done: Boolean): TokamakPluginResult {
             val error = result.exceptionOrNull()
                 ?: return TokamakPluginResult(result.getOrThrow(), false, done)
-            val name = (error as? TokamakPluginError)?.errorName ?: "OperationError"
-            val payload = JSONObject().put("name", name).put("message", error.message ?: error.javaClass.name)
-            return TokamakPluginResult(payload.toString().toByteArray(Charsets.UTF_8), true, done)
+            return TokamakPluginResult(failure(error).toString().toByteArray(Charsets.UTF_8), true, done)
         }
     }
 }
 
-private fun decodePluginValue(payload: ByteArray): Any? = JSONTokener(payload.toString(Charsets.UTF_8)).nextValue()
+/** [error] for the Worker: its name, message and cause, or an `OperationError` caused by the exception's class. */
+internal fun failure(error: Throwable): JSONObject {
+    val failure = JSONObject().put("message", error.message ?: error.javaClass.name)
+    return if (error is TokamakPluginError) {
+        failure.put("name", error.errorName).putOpt("cause", JSONObject.wrap(error.errorCause))
+    } else {
+        failure.put("name", "OperationError").put("cause", JSONObject().put("exception", error.javaClass.name))
+    }
+}
+
+internal fun decodePluginValue(payload: ByteArray): Any? = JSONTokener(payload.toString(Charsets.UTF_8)).nextValue()
 
 /**
  * The bytes the Worker streams to a call, which the plugin reads one chunk at a time on the call's
@@ -82,7 +92,7 @@ class TokamakPluginBody internal constructor(private val executor: Executor, pri
 }
 
 /** [value] as a payload: a [ByteArray] as it is, and any other value as JSON. */
-private fun encodePluginValue(value: Any?): ByteArray {
+internal fun encodePluginValue(value: Any?): ByteArray {
     if (value is ByteArray) return value
     val wrapped = JSONObject.wrap(value)
     if (value != null && wrapped == null) throw TokamakPluginError("DataCloneError", "The plugin value cannot be encoded as JSON")

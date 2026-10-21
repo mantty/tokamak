@@ -1,4 +1,9 @@
-import { Plugin, type JsonStream, type TokamakContext } from "@tokamakdev/plugin";
+import { Plugin, lifecycleStage, type JsonStream, type TokamakContext } from "@tokamakdev/plugin";
+import { valueStream } from "@tokamakdev/plugin/streams";
+
+import * as android from "./android.js";
+import * as apple from "./apple.js";
+import { backgroundDenied, permissionDenied, unavailable } from "./errors.js";
 import type {
   LocationErrorEvent,
   LocationPermission,
@@ -17,8 +22,11 @@ import type {
 export type * from "./types.js";
 
 class Location extends Plugin {
+  readonly #ctx: TokamakContext;
+
   constructor(ctx: TokamakContext) {
     super(ctx, "location");
+    this.#ctx = ctx;
   }
 
   /**
@@ -30,13 +38,57 @@ class Location extends Plugin {
     return this.call("setup", config);
   }
 
-  getCurrentPosition(options: PositionOptions = {}): Promise<Position> {
-    return this.call("getCurrentPosition", options);
+  /**
+   * The device's position, asking for in-use permission where the user has not answered. Rejects
+   * with `NotAllowedError` without it, `TimeoutError` after `timeout`, and `NotReadableError`
+   * when location is unavailable.
+   */
+  async getCurrentPosition(options: PositionOptions = {}): Promise<Position> {
+    await this.#authorize();
+    const position = await this.#platform().currentPosition(this.#ctx, options);
+    if (position) return position;
+    // Android finds no position in the background without background permission.
+    const background = await lifecycleStage(this.#ctx) === "background";
+    throw background && (await this.permission()).background !== "granted" ? backgroundDenied() : unavailable("Location is unavailable");
   }
 
-  /** Positions as the device moves. A slow reader receives the newest. */
+  /** Positions as the device moves, after `getCurrentPosition`'s permission checks. A slow reader receives the newest. */
   watchPosition(): JsonStream<Position> {
-    return this.stream("watchPosition", null, "dropOldest");
+    return valueStream<Position>((next, error) => {
+      let stop: (() => void) | undefined;
+      let stopped = false;
+      this.#authorize()
+        .then(() => this.#platform().watchPositions(this.#ctx, next, error))
+        .then((started) => {
+          if (stopped) started();
+          else stop = started;
+        }, error);
+      return () => {
+        stopped = true;
+        stop?.();
+      };
+    }, "dropOldest");
+  }
+
+  /** Requires location services and in-use permission, asking for it where the user has not answered. */
+  async #authorize(): Promise<void> {
+    if (!await this.servicesEnabled()) throw unavailable("Location services are disabled");
+    let { inUse } = await this.permission();
+    if (inUse === "prompt") ({ inUse } = await this.requestPermission());
+    if (inUse !== "granted") throw permissionDenied();
+  }
+
+  /** The platform's composition of its location SDK. */
+  #platform(): typeof apple | typeof android {
+    switch (this.#ctx.platform) {
+      case "ios":
+      case "macos":
+        return apple;
+      case "android":
+        return android;
+      default:
+        throw new DOMException("Location is not supported on this platform", "NotSupportedError");
+    }
   }
 
   /** The app's in-use and background permission, and the precision it gets. Never asks. */

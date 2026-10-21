@@ -76,6 +76,68 @@ calls return promises at the caller. Functions, arbitrary class instances and
 remote objects cannot cross this boundary; invalid signatures fail generation.
 Keep low-level native objects inside the Tokamak worker.
 
+## Bind platform APIs
+
+A plugin's `/apple` and `/android` exports are its platforms' own APIs,
+generated from the SDKs' API descriptions. List the modules to bind:
+
+```json
+"bindings": {
+  "apple": ["CoreLocation", "_LocationEssentials"],
+  "android": ["android.location", "android.content.Context"]
+}
+```
+
+An Apple entry names a Swift module, including one a framework re-exports
+through its headers, such as `_LocationEssentials` for `CLLocation`. An Android
+entry names a package or a class. Run `tok bindings` in the package, with Xcode
+and the Android SDK (`ANDROID_HOME`) installed. It writes `apple/bindings.ts`,
+`apple/Bindings.swift`, `android/bindings.ts` and `android/Bindings.kt`, and
+lists each symbol it leaves out with the reason. Commit them and export the
+modules as `"./apple": "./apple/bindings.ts"` and `"./android":
+"./android/bindings.ts"`. App builds compile and register the generated native
+source. A plugin needs no native code of its own to bind, and one that imports
+another package's bindings depends on that package, which the app then
+includes.
+
+The bindings keep the platform's names, types and objects:
+
+- Classes are classes. Every member returns a promise; static members and
+  initializers take the invocation's `ctx` first. A property `x` is `x()` and
+  `setX(value)`. Nested types join their names with `$`, as the JVM does:
+  `Notification$Builder`.
+- Apple members take their Objective-C selector's name:
+  `locationManager:didUpdateLocations:` is `locationManagerDidUpdateLocations`.
+  Swift-only members and `async` variants take their Swift name and labels.
+- Structs are plain objects, enums their case names, option sets arrays of
+  names, `Date` a `Date`, and `Data` or `byte[]` a `Uint8Array`.
+- Android overloads are TypeScript overloads, chosen by the arguments' types.
+  Compile-time constants are `static readonly` fields.
+- An Apple `async` function returns a promise, and takes an optional last
+  `{ signal }` whose abort cancels its task. One returning an `AsyncSequence`
+  returns a `ReadableStream`.
+- `Protocol.implement(ctx, handlers)` creates a native delegate, listener or
+  abstract-class callback that calls `handlers`. A method without a handler
+  keeps its platform default.
+- Platform errors reject with `OperationError`, whose `cause` is
+  `{ domain, code }` from Apple and `{ exception }` from Android. A member the
+  running OS lacks rejects with `NotSupportedError`; editor docs list each
+  symbol's platforms and versions.
+
+Calls run on the main thread. Objects belong to the invocation that received
+them: `release(object)` lets go of one early.
+`new Class(referenceOf(object))` views an object as another class, and
+`referenceOf(object)` passes it to a plugin's native endpoint.
+`release`, `referenceOf`, `applicationContext(ctx)`, `foregroundActivity(ctx)`
+and `presenter(ctx)`, which give the app's own objects, come from
+`@tokamakdev/plugin/bindings`.
+
+Compose a cross-platform API from the bindings where they suffice, as the
+location plugin's `getCurrentPosition` composes `CLLocationManager` and
+`LocationManager`. What the descriptions cannot express needs native code:
+closures other than `async` completions, C pointers, callbacks that return a
+value, and registrations that outlive an invocation.
+
 ## Native code and codecs
 
 Extend `Plugin` for native endpoints. Its protected `call` encodes ordinary

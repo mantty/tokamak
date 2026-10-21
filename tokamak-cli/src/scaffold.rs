@@ -62,26 +62,7 @@ pub(crate) fn create(directory: &Path, native: Option<Native>) -> Result<()> {
             template(include_str!("../templates/plugin/events.ts")),
         )?;
     }
-    let platforms = match native {
-        None => json!({}),
-        Some(Native::Apple) => {
-            fs::create_dir(directory.join("apple"))?;
-            fs::write(
-                directory.join("apple/Plugin.swift"),
-                template(include_str!("../templates/plugin/Plugin.swift")),
-            )?;
-            let platform = json!({ "class": class, "sources": ["apple/Plugin.swift"] });
-            json!({ "ios": platform, "macos": platform })
-        }
-        Some(Native::Android) => {
-            fs::create_dir(directory.join("android"))?;
-            fs::write(
-                directory.join("android/Plugin.kt"),
-                template(include_str!("../templates/plugin/Plugin.kt")),
-            )?;
-            json!({ "android": { "class": format!("tokamak.plugins.{class}"), "sources": ["android/Plugin.kt"] } })
-        }
-    };
+    let platforms = write_native(directory, native, &class, &template)?;
     write_json(
         directory,
         "tokamak-plugin.json",
@@ -100,6 +81,36 @@ pub(crate) fn create(directory: &Path, native: Option<Native>) -> Result<()> {
         directory.display()
     );
     Ok(())
+}
+
+/// Writes the native endpoint of `native`, returning the manifest's platform
+/// sections that name it.
+fn write_native(
+    directory: &Path,
+    native: Option<Native>,
+    class: &str,
+    template: &dyn Fn(&str) -> String,
+) -> Result<Value> {
+    Ok(match native {
+        None => json!({}),
+        Some(Native::Apple) => {
+            fs::create_dir(directory.join("apple"))?;
+            fs::write(
+                directory.join("apple/Plugin.swift"),
+                template(include_str!("../templates/plugin/Plugin.swift")),
+            )?;
+            let platform = json!({ "class": class, "sources": ["apple/Plugin.swift"] });
+            json!({ "ios": platform, "macos": platform })
+        }
+        Some(Native::Android) => {
+            fs::create_dir(directory.join("android"))?;
+            fs::write(
+                directory.join("android/Plugin.kt"),
+                template(include_str!("../templates/plugin/Plugin.kt")),
+            )?;
+            json!({ "android": { "class": format!("tokamak.plugins.{class}"), "sources": ["android/Plugin.kt"] } })
+        }
+    })
 }
 
 fn plugin_id(directory: &Path) -> Result<&str> {

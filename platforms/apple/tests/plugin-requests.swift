@@ -131,9 +131,74 @@ enum PluginRequestsTests {
     precondition(queued.calls == 0)
     testResources(app)
     testBodies(app)
+    testBindings(app)
     print(
-      "Passed native bytes, codecs, completion, cancellation, isolation, late-reply, resource and body tests"
+      "Passed native bytes, codecs, completion, cancellation, isolation, late-reply, resource, body and binding tests"
     )
+  }
+
+  /// Bindings keep returned objects in the invocation's scope, convert
+  /// values both ways, report platform errors with their domain and code,
+  /// stream sequences, and implement protocols for the handlers that exist.
+  private static func testBindings(_ app: TokamakApp) {
+    let lock = NSLock()
+    var results: [Int: [TokamakPluginResult]] = [:]
+    let requests = TokamakPluginRequests<Int>(plugins: [
+      "kit/apple": KitBindings(host: TokamakHost(app: app, plugin: "kit")),
+      "tokamak": TokamakCorePlugin(host: TokamakHost(app: app, plugin: "tokamak")),
+    ]) { key, result in lock.withLock { results[key, default: []].append(result) } }
+    func replies(_ key: Int, _ count: Int) -> [String] {
+      let deadline = Date().addingTimeInterval(2)
+      while lock.withLock({ results[key]?.count ?? 0 }) < count && Date() < deadline { drain() }
+      return lock.withLock { results[key] ?? [] }.map {
+        String(decoding: $0.payload, as: UTF8.self)
+      }
+    }
+    func run(
+      _ key: Int, _ method: String, _ payload: String, plugin: String = "kit/apple",
+      subscribe: Bool = false
+    ) -> String {
+      requests.run(
+        key, subscribe ? .subscribe : .call, plugin: plugin, method: method,
+        payload: Data(payload.utf8))
+      return replies(key, 1)[0]
+    }
+    let scope = run(1, "resource.scope", "null", plugin: "tokamak", subscribe: true)
+    let array = run(2, "NSMutableArray.init()", "{\"scope\":\(scope),\"arguments\":[]}")
+    precondition(array.contains("\"#\":\"object\"") && array.contains("\"NSMutableArray\""), array)
+    let id = try! JSONSerialization.jsonObject(with: Data(array.utf8)) as! [String: Any]
+    let target = "\"target\":{\"#\":\"object\",\"id\":\"\(id["id"]!)\"}"
+    _ = run(
+      3, "NSMutableArray.add(_:)", "{\(target),\"arguments\":[{\"#\":\"date\",\"value\":5000}]}")
+    precondition(run(4, "NSMutableArray.count", "{\(target)}") == "1")
+    let failure = run(5, "fail", "{}")
+    precondition(
+      failure.contains("OperationError") && failure.contains("KitDomain") && failure.contains("7"),
+      failure)
+    func json(_ text: String) -> NSObject {
+      try! JSONSerialization.jsonObject(with: Data(text.utf8), options: .fragmentsAllowed)
+        as! NSObject
+    }
+    let values = run(6, "values", "{}")
+    precondition(
+      json(values)
+        == json(
+          "[{\"#\":\"number\",\"value\":\"NaN\"},{\"#\":\"record\",\"value\":{\"#\":1}},{\"#\":\"bytes\",\"value\":\"AQI=\"}]"
+        ), values)
+    requests.run(7, .subscribe, plugin: "kit/apple", method: "numbers", payload: Data("{}".utf8))
+    precondition(replies(7, 3) == ["1", "2", ""] && lock.withLock { results[7]![2].done })
+    let observer = run(
+      8, "Observer", "{\"scope\":\(scope),\"methods\":[\"observed\"]}", subscribe: true)
+    let implementation = try! app.resources.get(json(observer), as: KitObserver.self)
+    precondition(implementation.responds(to: #selector(KitObserving.observed(_:))))
+    precondition(!implementation.responds(to: #selector(KitObserving.ignored)))
+    implementation.ignored()
+    implementation.observed(5)
+    precondition(json(replies(8, 2)[1]) == json("{\"method\":\"observed\",\"arguments\":[5]}"))
+    _ = run(9, "resource.release", "\"\(id["id"]!)\"", plugin: "tokamak")
+    precondition(run(10, "NSMutableArray.count", "{\(target)}").contains("InvalidStateError"))
+    requests.cancel(1)
+    drain()
   }
 
   /// A call reads its body one chunk per pull, on its executor, until the
@@ -354,6 +419,77 @@ private final class Consumer: TokamakPlugin {
       })
     return nil
   }
+}
+
+/// A plugin shaped like generated bindings, over Foundation.
+private final class KitBindings: TokamakPlugin {
+  let id = "kit/apple"
+  private let host: TokamakHost
+  init(host: TokamakHost) { self.host = host }
+
+  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (
+    () -> Void
+  )? {
+    let b = TokamakBinding(payload, resources: host.resources, reply: reply)
+    switch method {
+    case "NSMutableArray.init()":
+      return b.run { b.encode(object: NSMutableArray()) }
+    case "NSMutableArray.add(_:)":
+      return b.run {
+        try b.target(NSMutableArray.self).add(b.decode(b[0], as: Date.self))
+        return nil
+      }
+    case "NSMutableArray.count":
+      return b.run { b.encode(try b.target(NSMutableArray.self).count) }
+    case "fail":
+      return b.run { throw NSError(domain: "KitDomain", code: 7) }
+    case "values":
+      return b.run {
+        [
+          b.encode(Double.nan), b.encode(record: ["#": 1]) { b.encode($0) },
+          b.encode(Data([1, 2])),
+        ]
+      }
+    default:
+      return b.unsupported(method)
+    }
+  }
+
+  func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
+    throws(TokamakPluginError) -> () -> Void
+  {
+    let b = TokamakBinding(payload, resources: host.resources, reply: reply)
+    switch method {
+    case "numbers":
+      return b.stream(
+        {
+          AsyncStream {
+            $0.yield(1)
+            $0.yield(2)
+            $0.finish()
+          }
+        }, encode: { b.encode($0) })
+    case "Observer":
+      return b.implement(KitObserver.self)
+    default:
+      throw .notSupported(method)
+    }
+  }
+}
+
+@objc private protocol KitObserving: NSObjectProtocol {
+  @objc optional func observed(_ value: Int)
+  @objc optional func ignored()
+}
+
+private final class KitObserver: TokamakBindingImplementation, KitObserving {
+  override class var selectors: [Selector: String] {
+    [#selector(KitObserving.observed(_:)): "observed", #selector(KitObserving.ignored): "ignored"]
+  }
+
+  func observed(_ value: Int) { call("observed") { b in [b.encode(value)] } }
+
+  func ignored() { call("ignored") { _ in [] } }
 }
 
 private final class BodyReader: TokamakPlugin {

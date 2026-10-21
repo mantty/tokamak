@@ -11,6 +11,17 @@ export type { JsonValue } from "./codec.js";
 export { decodeJson, encodeJson } from "./codec.js";
 export { NativeReference } from "./resources.js";
 
+/** Whether the app is on screen. */
+export type LifecycleStage = "foreground" | "background";
+
+/**
+ * The app's stage now, which can differ from the last lifecycle event delivered. Rejects with
+ * `NotSupportedError` without a native host.
+ */
+export async function lifecycleStage(ctx: TokamakContext): Promise<LifecycleStage> {
+  return decodeJson<LifecycleStage>(await ctx[nativeConnection].call("tokamak", "lifecycleStage", encodeJson(null)));
+}
+
 /** Native endpoint calls owned by the receiving invocation. */
 export abstract class Plugin {
   private readonly connection: NativeConnection;

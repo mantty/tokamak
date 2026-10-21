@@ -10,6 +10,8 @@ import WebKit
 struct TokamakPluginError: Error {
   let name: String
   let message: String
+  /// JSON details the Worker receives as the error's `cause`.
+  var cause: Any? = nil
 
   static func notSupported(_ message: String) -> Self {
     Self(name: "NotSupportedError", message: message)
@@ -46,15 +48,16 @@ struct TokamakPluginResult {
       self.payload = payload
       failed = false
     case .failure(let error):
-      payload = try! JSONSerialization.data(
-        withJSONObject: ["name": error.name, "message": error.message])
+      var failure: [String: Any] = ["name": error.name, "message": error.message]
+      failure["cause"] = error.cause
+      payload = try! JSONSerialization.data(withJSONObject: failure)
       failed = true
     }
   }
 }
 
 /// `value` as a payload: `Data` as it is, and any other value as JSON.
-private func encodePluginValue(_ value: Any?) -> Result<Data, TokamakPluginError> {
+func encodePluginValue(_ value: Any?) -> Result<Data, TokamakPluginError> {
   if let data = value as? Data { return .success(data) }
   let value = value ?? NSNull()
   // JSONSerialization raises, rather than throws, for values it cannot encode.
@@ -82,7 +85,7 @@ private func callJSON(
   }
 }
 
-private func decodePluginValue(_ payload: Data) throws(TokamakPluginError) -> Any {
+func decodePluginValue(_ payload: Data) throws(TokamakPluginError) -> Any {
   do { return try JSONSerialization.jsonObject(with: payload, options: .fragmentsAllowed) } catch {
     throw .init(name: "DataCloneError", message: error.localizedDescription)
   }

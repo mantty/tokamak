@@ -12,6 +12,7 @@ use serde_json::{Map, Value, json};
 
 use tokamak_cli::{Platform, PlatformPackManifest, PluginKeyKind, copy_file, is_valid_key};
 
+use super::bindings::{ANDROID_SOURCE, APPLE_SOURCE, Families};
 use super::packs::command_path;
 use super::paths::reset_path;
 use super::plugin_settings::{Setting, option_name, option_namespaces};
@@ -57,6 +58,10 @@ pub(crate) struct Plugin {
     /// Each platform namespace's section, which that platform's pack reads.
     #[serde(default)]
     platforms: BTreeMap<String, Map<String, Value>>,
+    /// The platform modules the plugin binds, whose generated sources its
+    /// platforms' sections stage as `bindings`.
+    #[serde(default)]
+    bindings: Families,
     #[serde(skip)]
     root: PathBuf,
 }
@@ -65,17 +70,24 @@ pub(crate) struct Plugin {
 /// by plugin ID.
 pub(crate) type Generated = BTreeMap<String, Map<String, Value>>;
 
+/// The plugin packages the app at `project` depends on, and those they
+/// depend on: a plugin may build on another plugin's native code.
 pub(crate) fn discover(project: &Path) -> Result<Vec<Plugin>> {
     let project = fs::canonicalize(project)?;
     let mut plugins = Vec::new();
     let mut ids = BTreeSet::new();
-
-    for dependency in dependencies(&project)? {
-        let Some(root) = package_root(&project, &dependency) else {
+    let mut roots = BTreeSet::new();
+    let mut pending: Vec<(PathBuf, String)> = dependencies(&project, &APP_DEPENDENCIES)?
+        .into_iter()
+        .map(|dependency| (project.clone(), dependency))
+        .collect();
+    while let Some((from, dependency)) = pending.pop() {
+        let Some(root) = package_root(&from, &dependency) else {
             continue;
         };
+        let root = fs::canonicalize(root)?;
         let manifest = root.join(MANIFEST);
-        if !manifest.is_file() {
+        if !manifest.is_file() || !roots.insert(root.clone()) {
             continue;
         }
         let plugin = load(&root, &manifest)
@@ -83,6 +95,11 @@ pub(crate) fn discover(project: &Path) -> Result<Vec<Plugin>> {
         if !ids.insert(plugin.id.clone()) {
             bail!("duplicate tokamak plugin id '{}'", plugin.id);
         }
+        pending.extend(
+            dependencies(&root, &PLUGIN_DEPENDENCIES)?
+                .into_iter()
+                .map(|dependency| (root.clone(), dependency)),
+        );
         plugins.push(plugin);
     }
 
@@ -90,6 +107,10 @@ pub(crate) fn discover(project: &Path) -> Result<Vec<Plugin>> {
     reject_shared_option_names(&plugins)?;
     Ok(plugins)
 }
+
+/// The fields that list an app's dependencies, and a plugin's installed ones.
+const APP_DEPENDENCIES: [&str; 3] = ["dependencies", "devDependencies", "peerDependencies"];
+const PLUGIN_DEPENDENCIES: [&str; 2] = ["dependencies", "peerDependencies"];
 
 /// Fails when a plugin's setting has an option name, and so an environment
 /// variable name, that starts with another plugin's longer ID: `secure`'s
@@ -239,6 +260,41 @@ pub(crate) fn check(
     Ok(())
 }
 
+/// Adds each bound family's generated native source to its platforms'
+/// sections as `bindings`, which the packs compile and register.
+fn stage_bindings(plugin: &mut Plugin) -> Result<()> {
+    let families = [
+        (
+            &plugin.bindings.apple,
+            ["ios", "macos"].as_slice(),
+            APPLE_SOURCE,
+        ),
+        (
+            &plugin.bindings.android,
+            ["android"].as_slice(),
+            ANDROID_SOURCE,
+        ),
+    ];
+    for (modules, namespaces, source) in families {
+        if modules.is_empty() {
+            continue;
+        }
+        for namespace in namespaces {
+            let section = plugin.platforms.entry((*namespace).to_owned()).or_default();
+            if section
+                .insert("bindings".to_owned(), json!([source]))
+                .is_some()
+            {
+                bail!(
+                    "plugin '{}' sets {namespace} bindings, which tok sets from its bindings",
+                    plugin.id
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Stage each plugin's section for the pack's platform, with the keys its
 /// build script `generated`, under `destination/<id>`.
 pub(crate) fn stage(
@@ -350,15 +406,15 @@ fn staged_file(
     })
 }
 
-fn dependencies(project: &Path) -> Result<BTreeSet<String>> {
-    let path = project.join("package.json");
+fn dependencies(package: &Path, fields: &[&str]) -> Result<BTreeSet<String>> {
+    let path = package.join("package.json");
     if !path.is_file() {
         return Ok(BTreeSet::new());
     }
     let package: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
-    Ok(["dependencies", "devDependencies", "peerDependencies"]
-        .into_iter()
-        .filter_map(|field| package.get(field)?.as_object())
+    Ok(fields
+        .iter()
+        .filter_map(|field| package.get(*field)?.as_object())
         .flat_map(|dependencies| dependencies.keys().cloned())
         .collect())
 }
@@ -426,6 +482,7 @@ fn load(root: &Path, path: &Path) -> Result<Plugin> {
             plugin.id
         );
     }
+    stage_bindings(&mut plugin)?;
     plugin.root = root.to_path_buf();
     Ok(plugin)
 }
@@ -521,6 +578,63 @@ mod tests {
             "LocationPlugin"
         );
         assert!(staged.join("location/sources/0-plugin.swift").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn discovers_the_plugins_a_plugin_depends_on() -> TestResult {
+        let root = tempfile::tempdir()?;
+        fs::write(
+            root.path().join("package.json"),
+            r#"{"dependencies":{"geofence":"1.0.0"}}"#,
+        )?;
+        let geofence = root.path().join("node_modules/geofence");
+        fs::create_dir_all(&geofence)?;
+        fs::write(
+            geofence.join("package.json"),
+            r#"{"peerDependencies":{"location":"1.0.0"}}"#,
+        )?;
+        fs::write(
+            geofence.join("tokamak-plugin.json"),
+            r#"{"schemaVersion":2,"id":"geofence"}"#,
+        )?;
+        write_plugin(&root.path().join("node_modules/location"), "location")?;
+
+        assert_eq!(discovered_ids(root.path())?, ["geofence", "location"]);
+        Ok(())
+    }
+
+    #[test]
+    fn stages_generated_bindings_for_each_platform_of_a_bound_family() -> TestResult {
+        let root = tempfile::tempdir()?;
+        fs::write(
+            root.path().join("package.json"),
+            r#"{"dependencies":{"motion":"1.0.0"}}"#,
+        )?;
+        let plugin = root.path().join("node_modules/motion");
+        fs::create_dir_all(plugin.join("apple"))?;
+        fs::write(plugin.join("apple/Bindings.swift"), "")?;
+        fs::write(
+            plugin.join("tokamak-plugin.json"),
+            r#"{"schemaVersion":2,"id":"motion","bindings":{"apple":["CoreMotion"]}}"#,
+        )?;
+        let mut pack = pack(Target::MacosArm64);
+        pack.plugin_keys
+            .insert("bindings".to_owned(), PluginKeyKind::Paths);
+
+        let plugins = discover(root.path())?;
+        let staged = root.path().join("staged");
+        stage(&plugins, &pack, &Generated::new(), &staged)?;
+
+        assert!(staged.join("motion/bindings/0-Bindings.swift").is_file());
+        assert!(!staged.join("motion/class").exists());
+        stage(
+            &plugins,
+            &self::pack(Target::AndroidArm64),
+            &Generated::new(),
+            &root.path().join("android"),
+        )?;
+        assert!(!root.path().join("android/motion").exists());
         Ok(())
     }
 

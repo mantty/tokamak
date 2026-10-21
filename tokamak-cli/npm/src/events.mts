@@ -1,4 +1,4 @@
-import { Plugin, type TokamakContext } from "@tokamakdev/plugin";
+import { lifecycleStage, type LifecycleStage, type TokamakContext } from "@tokamakdev/plugin";
 import { defineEvent } from "@tokamakdev/plugin/events";
 
 /** Runs once per runtime start, including when the system starts the app in the background. */
@@ -10,19 +10,7 @@ export const onResume = defineEvent("resume");
 /** Runs each time the app moves out of the foreground. */
 export const onSuspend = defineEvent("suspend");
 
-/** Whether the app is on screen. */
-export type LifecycleStage = "foreground" | "background";
-
-/** The functions the runtime answers itself, as the reserved plugin `tokamak`. */
-class Runtime extends Plugin {
-  constructor(ctx: TokamakContext) {
-    super(ctx, "tokamak");
-  }
-
-  lifecycleStage(): Promise<LifecycleStage> {
-    return this.call("lifecycleStage");
-  }
-}
+export type { LifecycleStage } from "@tokamakdev/plugin";
 
 /**
  * The app's stage now, which can differ from the last event delivered: an `onSuspend` listener
@@ -30,5 +18,5 @@ class Runtime extends Plugin {
  * `NotSupportedError` outside a tokamak Worker.
  */
 export function getLifecycleStage(ctx: TokamakContext): Promise<LifecycleStage> {
-  return new Runtime(ctx).lifecycleStage();
+  return lifecycleStage(ctx);
 }

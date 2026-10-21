@@ -68,3 +68,10 @@ export async function* messages(body) {
   }
   if (used) throw new TypeError("Incomplete native message");
 }
+
+/** The error a failed endpoint payload describes, with its details as the `cause`. */
+export function nativeError({ name, message, cause }) {
+  const error = new DOMException(message, name);
+  if (cause !== undefined) Object.defineProperty(error, "cause", { value: cause, writable: true, configurable: true });
+  return error;
+}

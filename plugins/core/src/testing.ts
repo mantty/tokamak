@@ -1,6 +1,7 @@
 import { dispatch as dispatchEvent, type Dispatched } from "./registry.js";
 import { createNativeContext, type Availability, type NativeConnection, type NativePlatform, type Overflow, type TokamakContext } from "./context.js";
 import { encodeJson, decodeJson } from "./codec.js";
+import { nativeError, type NativeFailure } from "./native-protocol.mjs";
 
 type Reply = (payload: Uint8Array, error: DOMException | undefined, done: boolean) => void;
 
@@ -17,11 +18,28 @@ export interface SentRequest {
   overflow?: Overflow;
 }
 
+/** A reply to a request: its value or failure, and whether it is the last. */
+export interface Answer {
+  value?: unknown;
+  error?: NativeFailure;
+  done?: boolean;
+}
+
+/** A request as `answer` sees it, with its decoded payload. */
+export interface Received {
+  id: number;
+  type: string;
+  plugin?: string;
+  method?: string;
+  arguments: unknown;
+}
+
 /** An invocation with an inspectable native endpoint. */
 export class FakeNativeTransport {
   readonly sent: SentRequest[] = [];
   private nextId = 1;
   private readonly pending = new Map<number, Reply>();
+  private answering: ((request: Received) => Answer | undefined) | undefined;
   readonly ctx: TokamakContext;
 
   /** An invocation on `platform`, whose plugins' operations have `availability`. */
@@ -57,7 +75,30 @@ export class FakeNativeTransport {
     const id = this.nextId++;
     this.sent.push({ ...request, id, payload: request.payload?.slice() });
     this.pending.set(id, reply);
+    const { answering } = this;
+    if (answering) {
+      queueMicrotask(() => {
+        const { type, plugin, method, payload } = request;
+        const answer = answering({ id, type, plugin, method, arguments: payload?.byteLength ? decodeJson(payload) : undefined });
+        if (answer) this.deliver(id, answer);
+      });
+    }
     return id;
+  }
+
+  /**
+   * Answers each later request, as it arrives, with what `answer` returns for it. Undefined leaves
+   * the request pending, for `respond` or `deliver`.
+   */
+  answer(answer: (request: Received) => Answer | undefined): void {
+    this.answering = answer;
+  }
+
+  /** Replies to the pending request `id`. A reply is the last unless `done` is false. */
+  deliver(id: number, { value, error, done = true }: Answer): void {
+    const reply = this.pending.get(id);
+    if (done) this.pending.delete(id);
+    reply?.(encodeJson(value), error && nativeError(error), done);
   }
 
   private cancel(id: number): void {
@@ -69,8 +110,8 @@ export class FakeNativeTransport {
     return { type, plugin, method, arguments: payload ? decodeJson(payload) : undefined };
   }
 
-  respond(reply: { value?: unknown; error?: { name: string; message: string } }, done = true): void {
-    this.respondBytes(encodeJson(reply.value), done, reply.error && new DOMException(reply.error.message, reply.error.name));
+  respond(reply: { value?: unknown; error?: NativeFailure }, done = true): void {
+    this.respondBytes(encodeJson(reply.value), done, reply.error && nativeError(reply.error));
   }
 
   respondBytes(payload: Uint8Array, done = true, error?: DOMException): void {

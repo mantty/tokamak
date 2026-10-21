@@ -2,5 +2,6 @@
   "class": "string",
   "sources": "paths",
   "plist": "path",
-  "resources": "paths"
+  "resources": "paths",
+  "bindings": "paths"
 }

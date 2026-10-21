@@ -15,3 +15,10 @@ export interface NativeMessage {
 export function encodeMessage(header: MessageHeader, payload?: Uint8Array): Uint8Array<ArrayBuffer>;
 export function decodeMessage(bytes: Uint8Array): NativeMessage;
 export function messages(body: AsyncIterable<Uint8Array> | Iterable<Uint8Array> | null): AsyncGenerator<NativeMessage>;
+/** A failed endpoint payload. */
+export interface NativeFailure {
+  name: string;
+  message: string;
+  cause?: unknown;
+}
+export function nativeError(failure: NativeFailure): DOMException;

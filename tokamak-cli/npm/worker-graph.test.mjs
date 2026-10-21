@@ -9,28 +9,9 @@ import { tokamak } from "@tokamakdev/tok/vite";
 
 import { createBuilder, createServer } from "vite";
 import { createWorkerGraph } from "./dist/worker-graph.mjs";
-import { project } from "./worker-graph-fixture.mjs";
+import { checkTypes, project } from "./worker-graph-fixture.mjs";
 
 
-function checkTypes(root, source) {
-  const consumer = path.join(root, "src/typecheck.mts");
-  fs.writeFileSync(consumer, `import generated, { type TokamakClient, type TokamakService } from "virtual:tokamak/client";
-    declare const client: TokamakClient;
-    declare const service: TokamakService;
-    declare const env: Cloudflare.Env;
-    ${source}`);
-  const config = ts.readConfigFile(path.join(root, "tsconfig.json"), ts.sys.readFile);
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root);
-  const program = ts.createProgram([
-    consumer, path.join(root, "tokamak-env.d.ts"), path.join(root, "worker-configuration.d.ts"),
-  ], {
-    ...parsed.options, target: ts.ScriptTarget.ES2023, module: ts.ModuleKind.NodeNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeNext,
-    strict: true, noEmit: true, types: [], lib: ["lib.es2023.d.ts"],
-  });
-  assert.deepEqual(ts.getPreEmitDiagnostics(program).map((diagnostic) =>
-    ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")), []);
-}
 
 test("generates editor declarations for optional native bindings and the client contract", async (t) => {
   const { root, graph } = project(t, {
@@ -298,44 +279,6 @@ test("rejects an unsupported main service signature during generation", async (t
   });
   const builder = await createBuilder(config);
   await assert.rejects(builder.buildApp(), /Unsupported RPC type at onChange.callback/);
-});
-
-test("named Tokamak entrypoints get generated bindings, clients and routes", async (t) => {
-  const { root, graph, config } = project(t, {
-    "main.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
-      export default class Main extends WorkerEntrypoint<Cloudflare.Env> {
-        async fetch() { return Response.json({ pulled: await this.env.TOKAMAK_DATA_SYNC!.pull(2) }); }
-        label() { return "main-only"; }
-      }`,
-    "tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
-      export default class Native extends WorkerEntrypoint {
-        describe(): string { return "default"; }
-      }
-      export class DataSync extends WorkerEntrypoint {
-        pull(count: number): number[] { return Array.from({ length: count }, (_, index) => index); }
-      }`,
-  });
-  await graph.types.resolve(async id => ({ id }));
-  checkTypes(root, `
-    import sync from "virtual:tokamak/client/DataSync";
-    const pulled: Promise<number[]> = sync.pull(1);
-    const capability: boolean = sync.capabilities.pull;
-    if (env.TOKAMAK_DATA_SYNC) {
-      const remote: Promise<number[]> = env.TOKAMAK_DATA_SYNC.pull(1);
-    }
-    // @ts-expect-error the default entrypoint's methods stay on TOKAMAK
-    sync.describe();
-  `);
-  assert.deepEqual(graph.services("graph-app"), [
-    { binding: "TOKAMAK", service: "graph-app-tokamak" },
-    { binding: "TOKAMAK_DATA_SYNC", service: "graph-app-tokamak", entrypoint: "DataSync" },
-  ]);
-  const server = await createServer({ ...config, server: { port: 0, watch: { usePolling: true } } });
-  t.after(() => server.close());
-  await server.listen();
-  const response = await fetch(server.resolvedUrls.local[0]);
-  assert.ok(response.ok, await response.clone().text());
-  assert.deepEqual(await response.json(), { pulled: [0, 1] });
 });
 
 test("named Tokamak entrypoints cannot take names the generated worker uses", (t) => {

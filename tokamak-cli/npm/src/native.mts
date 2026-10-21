@@ -1,4 +1,4 @@
-import { decodeMessage, encodeMessage, messages, type MessageHeader, type NativeMessage } from "@tokamakdev/plugin/native-protocol";
+import { decodeMessage, encodeMessage, messages, nativeError, type MessageHeader, type NativeFailure, type NativeMessage } from "@tokamakdev/plugin/native-protocol";
 import type { NativePlatform } from "@tokamakdev/plugin/capabilities";
 
 const encoder = new TextEncoder();
@@ -21,10 +21,7 @@ export function connectDevice(port: number, token: string, ctx: { waitUntil(prom
     return response;
   };
   const result = ({ header, payload }: NativeMessage) => {
-    if (header.failed) {
-      const error = JSON.parse(decoder.decode(payload)) as { name: string; message: string };
-      throw new DOMException(error.message, error.name);
-    }
+    if (header.failed) throw nativeError(JSON.parse(decoder.decode(payload)) as NativeFailure);
     return payload;
   };
   return {

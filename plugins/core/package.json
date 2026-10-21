@@ -10,6 +10,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./streams": "./src/streams.ts",
+    "./bindings": "./src/bindings.ts",
     "./events": "./src/events.ts",
     "./worker": "./src/worker.ts",
     "./testing": "./src/testing.ts",

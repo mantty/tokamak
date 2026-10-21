@@ -182,13 +182,21 @@ raw_names=" "
 for plugin in "$input/plugins"/*/; do
   plugin_id=$(basename "$plugin")
   class=$(cat "$plugin/class" 2>/dev/null || true)
-  if [[ ! "$class" =~ $kotlin_class ]]; then
-    echo "plugin '$plugin_id' has invalid android class '$class'" >&2
-    exit 1
+  # A plugin whose native code is its generated bindings alone has no class.
+  if [[ -n "$class" || ! -d "$plugin/bindings" ]]; then
+    if [[ ! "$class" =~ $kotlin_class ]]; then
+      echo "plugin '$plugin_id' has invalid android class '$class'" >&2
+      exit 1
+    fi
+    printf '        %s(app.host("%s")),\n' "$class" "$plugin_id" >> "$registry"
   fi
-  printf '        %s(app.host("%s")),\n' "$class" "$plugin_id" >> "$registry"
   module=$plugin_modules/$plugin_id
   mkdir -p "$module/src/main/kotlin"
+  # `tok bindings` names the generated class com.tokamak.bindings.<id>.Bindings, with - as _.
+  for source in "$plugin/bindings"/*.kt; do
+    printf '        com.tokamak.bindings.%s.Bindings(app.host("%s")),\n' "${plugin_id//-/_}" "$plugin_id" >> "$registry"
+    cp "$source" "$module/src/main/kotlin/TokamakBindings.kt"
+  done
   for source in "$plugin/sources"/*; do
     case "$source" in
       *.kt)

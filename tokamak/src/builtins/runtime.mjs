@@ -30,10 +30,7 @@ export function installPlugins(call, subscribe, platform) {
   const buffer = value => value.byteOffset === 0 && value.byteLength === value.buffer.byteLength
     ? value.buffer : value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
   const result = ({ payload, failed }) => {
-    if (failed) {
-      const error = decoded(payload);
-      throw new DOMException(error.message, error.name);
-    }
+    if (failed) throw nativeError(decoded(payload));
     return new Uint8Array(payload);
   };
   // The next chunk of a call's body, with a failure encoded as an endpoint error.
@@ -79,6 +76,13 @@ export function installPlugins(call, subscribe, platform) {
     },
   };
   globalThis.__tokamak_context[Symbol.for("tokamak.native")] = connection;
+}
+
+// The error a native failure describes, with its details as the `cause`.
+function nativeError({ name, message, cause }) {
+  const error = new DOMException(message, name);
+  if (cause !== undefined) Object.defineProperty(error, "cause", { value: cause, writable: true, configurable: true });
+  return error;
 }
 
 // Delivers the event `name`, whose encoded data is `event`, to the

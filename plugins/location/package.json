@@ -9,7 +9,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./events": "./events/index.ts"
+    "./events": "./events/index.ts",
+    "./apple": "./apple/bindings.ts",
+    "./android": "./android/bindings.ts"
   },
   "peerDependencies": {
     "@tokamakdev/plugin": "^0.1.0"

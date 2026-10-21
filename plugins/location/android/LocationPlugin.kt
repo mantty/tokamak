@@ -7,14 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
-import android.location.LocationListener
 import android.location.LocationManager
 import android.net.Uri
-import android.os.Bundle
-import android.os.CancellationSignal
-import android.os.Handler
-import android.os.Looper
-import android.os.SystemClock
 import android.provider.Settings
 import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
@@ -34,7 +28,6 @@ class TokamakLocationPlugin(
     private val context = host.context
     private val manager =
         context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    private val handler = Handler(Looper.getMainLooper())
 
     /** The permissions the app's manifest requests. */
     private val declared: Set<String> by lazy {
@@ -74,7 +67,6 @@ class TokamakLocationPlugin(
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
         when (method) {
             "setup" -> setup(requireObject(arguments), reply)
-            "getCurrentPosition" -> return requestPosition(arguments as? JSONObject, reply)
             "permission" -> reply(Result.success(permission()))
             "requestPermission" -> requestPermission(requireObject(arguments), reply)
             "servicesEnabled" -> reply(Result.success(manager.isLocationEnabled))
@@ -96,49 +88,16 @@ class TokamakLocationPlugin(
         return null
     }
 
-    private fun requestPosition(options: JSONObject?, reply: TokamakPluginReply): () -> Unit {
-        var cancelled = false
-        var stop = {}
-        withPermission { granted ->
-            if (cancelled) return@withPermission
-            if (granted) stop = currentPosition(options, reply) else reply(Result.failure(permissionDenied()))
-        }
-        return {
-            cancelled = true
-            stop()
-        }
-    }
-
     override fun subscribe(
         method: String,
         arguments: Any?,
         reply: TokamakPluginReply,
-    ): () -> Unit {
-        events.listen(method, reply)?.let { return it }
-        if (method != "watchPosition") return super.subscribe(method, arguments, reply)
-        var cancelled = false
-        var stop = {}
-        withPermission { granted ->
-            if (!granted) {
-                reply(Result.failure(permissionDenied()))
-            } else if (!cancelled) {
-                stop = watchPosition(reply)
-            }
-        }
-        return {
-            cancelled = true
-            stop()
-        }
-    }
+    ): () -> Unit = events.listen(method, reply) ?: super.subscribe(method, arguments, reply)
 
     /**
      * Passes [action] whether the app may read fine or coarse location, asking when it may not.
      * Throws `NeedsUIError` when asking would show UI while the app is in the background.
      */
-    private fun withPermission(action: (Boolean) -> Unit) {
-        if (hasForegroundPermission()) action(true) else askForeground(foreground, action)
-    }
-
     /**
      * Asks for the foreground [permissions], then passes [action] whether the app has one, first
      * starting what waited for permission.
@@ -302,86 +261,6 @@ class TokamakLocationPlugin(
         reply(Result.success(null))
     }
 
-    /**
-     * Replies with a fix no older than the `maximumAge` option, taking a new one when there is
-     * none, or fails after the `timeout` option.
-     */
-    private fun currentPosition(options: JSONObject?, reply: TokamakPluginReply): () -> Unit {
-        val provider = availableProvider(reply) ?: return {}
-        val maximumAge = options?.optLong("maximumAge", 0) ?: 0
-        val recent = runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
-        if (recent != null && ageMillis(recent) <= maximumAge) {
-            reply(Result.success(position(recent)))
-            return {}
-        }
-        val cancellation = CancellationSignal()
-        val timeout = Runnable {
-            cancellation.cancel()
-            reply(Result.failure(TokamakPluginError("TimeoutError", "Location was not found in time")))
-        }
-        handler.postDelayed(timeout, options?.optLong("timeout", UNLIMITED) ?: UNLIMITED)
-        runCatching {
-            manager.getCurrentLocation(
-                provider,
-                cancellation,
-                context.mainExecutor,
-            ) { location ->
-                handler.removeCallbacks(timeout)
-                reply(if (location == null) missingFix() else Result.success(position(location)))
-            }
-        }.onFailure {
-            handler.removeCallbacks(timeout)
-            reply(locationFailure(it))
-        }
-        return {
-            handler.removeCallbacks(timeout)
-            cancellation.cancel()
-        }
-    }
-
-    private fun ageMillis(location: Location): Long =
-        (SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos) / 1_000_000
-
-    private fun watchPosition(reply: TokamakPluginReply): () -> Unit {
-        val provider = availableProvider(reply) ?: return {}
-        val listener = object : LocationListener {
-            override fun onLocationChanged(location: Location) {
-                reply(Result.success(position(location)))
-            }
-
-            override fun onProviderDisabled(provider: String) {
-                reply(unavailable("Location provider is unavailable"))
-            }
-
-            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
-        }
-        runCatching {
-            manager.requestLocationUpdates(provider, 1000, 0F, listener, Looper.getMainLooper())
-        }.onFailure {
-            reply(locationFailure(it))
-            return {}
-        }
-        return { manager.removeUpdates(listener) }
-    }
-
-    /** The provider to use, or null once [reply] has the reason there is none. */
-    private fun availableProvider(reply: TokamakPluginReply): String? {
-        val provider = runCatching(::provider).getOrElse {
-            reply(locationFailure(it))
-            return null
-        }
-        if (provider == null) reply(unavailable("No location provider is available"))
-        return provider
-    }
-
-    private fun provider(): String? =
-        listOf(
-            LocationManager.GPS_PROVIDER,
-            LocationManager.NETWORK_PROVIDER,
-            LocationManager.FUSED_PROVIDER,
-        ).firstOrNull(manager::isProviderEnabled)
-            ?: manager.getProviders(true).firstOrNull()
-
     private fun position(location: Location): JSONObject =
         JSONObject()
             .put(
@@ -404,19 +283,6 @@ class TokamakLocationPlugin(
 
     private fun permissionDenied() = TokamakPluginError("NotAllowedError", "Location permission was denied")
 
-    /** Why no fix came: Android gives none in the background without background location permission. */
-    private fun missingFix(): Result<Any?> =
-        if (host.isInForeground || granted(BACKGROUND)) {
-            unavailable("Location is unavailable")
-        } else {
-            Result.failure(TokamakPluginError("NotAllowedError", "Location permission does not cover the background"))
-        }
-
-    private fun unavailable(message: String): Result<Any?> =
-        Result.failure(TokamakPluginError("NotReadableError", message))
-
-    private fun locationFailure(error: Throwable): Result<Any?> = Result.failure(locationError(error))
-
     private fun locationError(error: Throwable): TokamakPluginError =
         when (error) {
             is SecurityException -> permissionDenied()
@@ -426,8 +292,6 @@ class TokamakLocationPlugin(
         }
 
     private companion object {
-        /** The `timeout` that never expires, as the page sends it. */
-        const val UNLIMITED = 0xffffffffL
         const val FINE = Manifest.permission.ACCESS_FINE_LOCATION
         const val COARSE = Manifest.permission.ACCESS_COARSE_LOCATION
         const val BACKGROUND = Manifest.permission.ACCESS_BACKGROUND_LOCATION

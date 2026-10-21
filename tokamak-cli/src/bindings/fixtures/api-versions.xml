@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<api version="3">
+	<class name="android/kit/Widget" since="21">
+		<method name="&lt;init>()V"/>
+		<method name="start(I)V" since="24"/>
+		<field name="MODE_FAST" since="26"/>
+	</class>
+	<class name="android/kit/Widget$Builder" since="21"/>
+	<class name="android/kit/Widget$Listener" since="21"/>
+</api>

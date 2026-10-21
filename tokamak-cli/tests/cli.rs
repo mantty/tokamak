@@ -46,7 +46,10 @@ fn scaffolds_publishable_plugins_without_overwriting_existing_projects() -> Test
         assert_eq!(package["type"], "module");
         assert_eq!(manifest["schemaVersion"], 2);
         for module in [&manifest["api"]["module"], &manifest["web"]["module"]] {
-            assert!(path.join(module.as_str().ok_or("missing module")?).is_file());
+            assert!(
+                path.join(module.as_str().ok_or("missing module")?)
+                    .is_file()
+            );
         }
         assert_eq!(
             package["exports"].get("./events").is_some(),

@@ -3,5 +3,6 @@
   "sources": "paths",
   "manifest": "path",
   "dependencies": "strings",
-  "raw": "paths"
+  "raw": "paths",
+  "bindings": "paths"
 }

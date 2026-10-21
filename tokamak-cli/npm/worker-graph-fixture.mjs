@@ -1,8 +1,10 @@
+import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { cloudflare } from "@cloudflare/vite-plugin";
+import ts from "typescript";
 import { createWorkerGraph } from "./dist/worker-graph.mjs";
 import { workerTypes } from "./worker-fixtures.mjs";
 
@@ -40,4 +42,25 @@ export function project(t, sources = {}) {
     resolve: { alias: { "@app": path.join(root, "src") } },
     plugins: [graph.plugin, cloudflare({ ...graph.cloudflare, inspectorPort: false, remoteBindings: false, persistState: false })]
   } };
+}
+
+/** Typechecks `source` against the generated client, service and environment types of the project at `root`. */
+export function checkTypes(root, source) {
+  const consumer = path.join(root, "src/typecheck.mts");
+  fs.writeFileSync(consumer, `import generated, { type TokamakClient, type TokamakService } from "virtual:tokamak/client";
+    declare const client: TokamakClient;
+    declare const service: TokamakService;
+    declare const env: Cloudflare.Env;
+    ${source}`);
+  const config = ts.readConfigFile(path.join(root, "tsconfig.json"), ts.sys.readFile);
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root);
+  const program = ts.createProgram([
+    consumer, path.join(root, "tokamak-env.d.ts"), path.join(root, "worker-configuration.d.ts"),
+  ], {
+    ...parsed.options, target: ts.ScriptTarget.ES2023, module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    strict: true, noEmit: true, types: [], lib: ["lib.es2023.d.ts"],
+  });
+  assert.deepEqual(ts.getPreEmitDiagnostics(program).map((diagnostic) =>
+    ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")), []);
 }

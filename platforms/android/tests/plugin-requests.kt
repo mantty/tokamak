@@ -68,7 +68,8 @@ fun main() {
     }
     testResources()
     testBodies()
-    println("Passed off-main calls, replies, terminal streams, cancellation before hook installation, resources and bodies")
+    testBindings()
+    println("Passed off-main calls, replies, terminal streams, cancellation before hook installation, resources, bodies and bindings")
 }
 
 /** A retained object is shared as itself until its release. */
@@ -81,6 +82,62 @@ fun testResources() {
     check(failure { resources.get(id, String::class.java) } == "TypeError")
     release()
     check(failure { resources.get(id, ByteArray::class.java) } == "InvalidStateError")
+}
+
+/**
+ * Bindings keep returned objects in the invocation's scope, convert values both ways, report
+ * exceptions by class, and implement interfaces for the handlers that exist.
+ */
+fun testBindings() {
+    val resources = TokamakResources()
+    val replies = LinkedBlockingQueue<TokamakPluginResult>()
+    fun binding(payload: String) = TokamakBinding(payload.toByteArray(), resources) { replies.put(it) }
+    fun reply(): TokamakPluginResult = replies.poll(2, TimeUnit.SECONDS)!!
+    fun json(result: TokamakPluginResult) = org.json.JSONTokener(String(result.payload)).nextValue()
+    fun plain(value: Any?): Any? = when (value) {
+        is org.json.JSONObject -> value.keys().asSequence().associateWith { plain(value.get(it)) }
+        is org.json.JSONArray -> (0 until value.length()).map { plain(value.get(it)) }
+        else -> value
+    }
+    val scope = resources.open()
+
+    val created = binding("""{"scope":"$scope","arguments":[]}""")
+    created.run { created.encode(java.util.concurrent.atomic.AtomicInteger(1)) }
+    val reference = json(reply()) as org.json.JSONObject
+    check(reference.getString("#") == "object" && reference.getJSONArray("types").getString(0) == "java.util.concurrent.atomic.AtomicInteger")
+    val target = """{"#":"object","id":"${reference.getString("id")}"}"""
+
+    val appended = binding("""{"target":$target,"arguments":[3,"cd",{"#":"bytes","value":"AQI="},null,{"#":"number","value":"Infinity"}]}""")
+    appended.run {
+        check(appended.int(appended[0]) == 3 && appended.bytes(appended[2]).contentEquals(byteArrayOf(1, 2)))
+        check(appended.optional(appended[3]) { appended.int(it) } == null && appended.double(appended[4]).isInfinite())
+        check(appended.string(appended[1]) == "cd")
+        appended.target(java.util.concurrent.atomic.AtomicInteger::class.java).addAndGet(appended.int(appended[0]))
+    }
+    check(json(reply()) == 4)
+
+    val values = binding("{}")
+    values.run { values.encode(listOf(Double.NaN, mapOf("#" to 1), byteArrayOf(1, 2))) }
+    check(plain(json(reply())) == listOf(mapOf("#" to "number", "value" to "NaN"), mapOf("#" to "record", "value" to mapOf("#" to 1)), mapOf("#" to "bytes", "value" to "AQI=")))
+
+    val failing = binding("{}")
+    failing.run { throw SecurityException("Denied") }
+    val failure = reply()
+    check(failure.failed && String(failure.payload).contains("java.lang.SecurityException"))
+
+    val observed = binding("""{"scope":"$scope","methods":["run"]}""")
+    observed.implement { binding -> Runnable { binding.call("run") { listOf() } } }
+    val runnable = resources.get(json(reply()), Runnable::class.java)
+    runnable.run()
+    check(plain(json(reply())) == mapOf("method" to "run", "arguments" to listOf<Any?>()))
+    val ignored = binding("""{"scope":"$scope","methods":[]}""")
+    check(!ignored.call("run") { listOf() } && replies.isEmpty())
+
+    resources.release(reference.getString("id"))
+    check(failure { resources.get(reference.getString("id"), Any::class.java) } == "InvalidStateError")
+    val kept = (created.encode(Any()) as org.json.JSONObject).getString("id")
+    resources.end(scope)
+    check(failure { resources.get(kept, Any::class.java) } == "InvalidStateError")
 }
 
 fun failure(operation: () -> Unit): String? =

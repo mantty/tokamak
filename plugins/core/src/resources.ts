@@ -3,6 +3,9 @@ import { decodeJson, encodeJson } from "./codec.js";
 
 const collected = new FinalizationRegistry<() => void>((release) => { release(); });
 
+/** The invocation that owns `reference`. */
+export let ownerOf: (reference: NativeReference) => TokamakContext;
+
 /**
  * A native object that stays in native memory. The receiving invocation owns it until `close`,
  * the invocation's end, or garbage collection.
@@ -12,6 +15,10 @@ export class NativeReference {
   readonly #id: string;
   #release: (() => void) | undefined;
 
+  static {
+    ownerOf = (reference) => reference.#ctx;
+  }
+
   private constructor(ctx: TokamakContext, id: string, release: () => void) {
     this.#ctx = ctx;
     this.#id = id;
@@ -19,21 +26,33 @@ export class NativeReference {
     collected.register(this, release, this);
   }
 
-  /** Retains the object that the native subscription `method` of `plugin` holds open. */
-  static async acquire(ctx: TokamakContext, plugin: string, method: string, payload: Uint8Array): Promise<NativeReference> {
+  /**
+   * Retains the object that the native subscription `method` of `plugin` holds open: its first
+   * value is the object's ID, and later values go to `next`.
+   */
+  static async acquire(
+    ctx: TokamakContext,
+    plugin: string,
+    method: string,
+    payload: Uint8Array,
+    next: (value: Uint8Array) => void = () => {},
+  ): Promise<NativeReference> {
     let release = () => {};
     try {
       // The subscription's listeners never hold the reference, so garbage collection can release it.
       const id = await new Promise<Uint8Array>((resolve, reject) => {
         let settled = false;
-        // Later replies are ignored: a released object fails where it is used.
         release = ctx[nativeConnection].listen(plugin, method, payload, {
           next(value, done) {
-            if (settled) return;
+            if (settled) {
+              if (!done) next(value);
+              return;
+            }
             settled = true;
             if (done) reject(new DOMException("The native object was not retained", "InvalidStateError"));
             else resolve(value);
           },
+          // A later failure ends the subscription: the released object fails where it is used.
           error(error) {
             if (settled) return;
             settled = true;
@@ -46,6 +65,14 @@ export class NativeReference {
       release();
       throw error;
     }
+  }
+
+  /** The object retained as `id` in the scope of the invocation `ctx`, which ends with it. */
+  static scoped(ctx: TokamakContext, id: string): NativeReference {
+    return new NativeReference(ctx, id, () => {
+      // A failed release changes nothing: the invocation's end has released the object.
+      ctx[nativeConnection].call("tokamak", "resource.release", encodeJson(id)).catch(() => undefined);
+    });
   }
 
   /** Copies the current contents of a native byte buffer. Other native objects reject with `TypeError`. */
