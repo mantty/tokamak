@@ -15,57 +15,15 @@ final class TokamakBindings_local_authentication: TokamakPlugin {
   func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (() -> Void)? {
     let b = TokamakBinding(payload, resources: host.resources, reply: reply)
     switch method {
-    case "LAEnvironment.State.biometry":
-      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAEnvironment.State.self).biometry; return b.encode(optional: value) { b.encode(object: $0) } }
-    case "LAEnvironment.State.userPassword":
-      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAEnvironment.State.self).userPassword; return b.encode(optional: value) { b.encode(object: $0) } }
-    case "LAEnvironment.State.companions":
-      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAEnvironment.State.self).companions; return b.encode(array: value) { b.encode(object: $0) } }
-    case "LAEnvironment.State.allMechanisms":
-      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAEnvironment.State.self).allMechanisms; return b.encode(array: value) { b.encode(object: $0) } }
-    case "LAEnvironment.MechanismUserPassword.isSet":
-      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAEnvironment.MechanismUserPassword.self).isSet; return b.encode(value) }
-    case "LAPrivateKey.publicKey":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAPrivateKey.self).publicKey; return b.encode(object: value) }
-    case "LAEnvironment.MechanismCompanion.type":
-      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAEnvironment.MechanismCompanion.self).type; return TokamakBindings_local_authentication.encode(value, b) }
-    case "LAEnvironment.MechanismCompanion.stateHash":
-      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAEnvironment.MechanismCompanion.self).stateHash; return b.encode(optional: value) { b.encode($0) } }
-    case "LAPersistedRight.key":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAPersistedRight.self).key; return b.encode(object: value) }
-    case "LAPersistedRight.secret":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAPersistedRight.self).secret; return b.encode(object: value) }
-    case "LAEnvironment.addObserver(_:)":
-      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(LAEnvironment.self).addObserver(b.object(b[0], as: (any LAEnvironment.Observer).self)); return nil }
-    case "LAEnvironment.removeObserver(_:)":
-      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(LAEnvironment.self).removeObserver(b.object(b[0], as: (any LAEnvironment.Observer).self)); return nil }
-    case "LAEnvironment.currentUser":
-      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = LAEnvironment.currentUser; return b.encode(object: value) }
-    case "LAEnvironment.state":
-      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAEnvironment.self).state; return b.encode(object: value) }
-    case "LAAuthenticationRequirement.default":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = LAAuthenticationRequirement.default; return b.encode(object: value) }
     case "LAAuthenticationRequirement.biometry":
       guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = LAAuthenticationRequirement.biometry; return b.encode(object: value) }
     case "LAAuthenticationRequirement.biometryCurrentSet":
       guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = LAAuthenticationRequirement.biometryCurrentSet; return b.encode(object: value) }
+    case "LAAuthenticationRequirement.default":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = LAAuthenticationRequirement.default; return b.encode(object: value) }
     case "LAAuthenticationRequirement.init()":
       guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = LAAuthenticationRequirement(); return b.encode(object: value) }
@@ -78,18 +36,69 @@ final class TokamakBindings_local_authentication: TokamakPlugin {
     case "LABiometryFallbackRequirement.init()":
       guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = LABiometryFallbackRequirement(); return b.encode(object: value) }
-    case "LARightStore.shared":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = LARightStore.shared; return b.encode(object: value) }
-    case "LAEnvironment.Mechanism.isUsable":
+    case "LAContext.biometryType":
+      guard #available(iOS 11.0, macOS 10.13.2, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAContext.self).biometryType; return TokamakBindings_local_authentication.encode(value, b) }
+    case "LAContext.canEvaluatePolicy(_:error:)":
+      guard #available(iOS 8.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { var error: NSError?; let value = try b.target(LAContext.self).canEvaluatePolicy(TokamakBindings_local_authentication.decode(b[0], b, as: LAPolicy.self), error: &error); if let error { throw error }; return b.encode(value) }
+    case "LAContext.domainState":
       guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAEnvironment.Mechanism.self).isUsable; return b.encode(value) }
-    case "LAEnvironment.Mechanism.localizedName":
-      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAEnvironment.Mechanism.self).localizedName; return b.encode(value) }
-    case "LAEnvironment.Mechanism.iconSystemName":
-      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAEnvironment.Mechanism.self).iconSystemName; return b.encode(value) }
+      return b.run { let value = try b.target(LAContext.self).domainState; return b.encode(object: value) }
+    case "LAContext.evaluatePolicy(_:localizedReason:)":
+      guard #available(iOS 8.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await b.target(LAContext.self).evaluatePolicy(TokamakBindings_local_authentication.decode(b[0], b, as: LAPolicy.self), localizedReason: b.decode(b[1], as: String.self)); return b.encode(value) }
+    case "LAContext.evaluatedPolicyDomainState":
+      guard #available(iOS 9.0, macOS 10.11, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAContext.self).evaluatedPolicyDomainState; return b.encode(optional: value) { b.encode($0) } }
+    case "LAContext.interactionNotAllowed":
+      guard #available(iOS 11.0, macOS 10.13, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAContext.self).interactionNotAllowed; return b.encode(value) }
+    case "LAContext.interactionNotAllowed=":
+      guard #available(iOS 11.0, macOS 10.13, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(LAContext.self).interactionNotAllowed = b.decode(b[0], as: Bool.self); return nil }
+    case "LAContext.invalidate()":
+      guard #available(iOS 9.0, macOS 10.11, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(LAContext.self).invalidate(); return nil }
+    case "LAContext.isCredentialSet(_:)":
+      guard #available(iOS 9.0, macOS 10.11, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAContext.self).isCredentialSet(TokamakBindings_local_authentication.decode(b[0], b, as: LACredentialType.self)); return b.encode(value) }
+    case "LAContext.localizedCancelTitle":
+      guard #available(iOS 10.0, macOS 10.12, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAContext.self).localizedCancelTitle; return b.encode(optional: value) { b.encode($0) } }
+    case "LAContext.localizedCancelTitle=":
+      guard #available(iOS 10.0, macOS 10.12, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(LAContext.self).localizedCancelTitle = b.optional(b[0]) { try b.decode($0, as: String.self) }; return nil }
+    case "LAContext.localizedFallbackTitle":
+      guard #available(iOS 8.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAContext.self).localizedFallbackTitle; return b.encode(optional: value) { b.encode($0) } }
+    case "LAContext.localizedFallbackTitle=":
+      guard #available(iOS 8.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(LAContext.self).localizedFallbackTitle = b.optional(b[0]) { try b.decode($0, as: String.self) }; return nil }
+    case "LAContext.localizedReason":
+      guard #available(iOS 11.0, macOS 10.13, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAContext.self).localizedReason; return b.encode(value) }
+    case "LAContext.localizedReason=":
+      guard #available(iOS 11.0, macOS 10.13, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(LAContext.self).localizedReason = b.decode(b[0], as: String.self); return nil }
+    case "LAContext.maxBiometryFailures":
+      guard #available(iOS 8.3, macOS 10.10.3, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAContext.self).maxBiometryFailures; return b.encode(optional: value) { b.encode($0) } }
+    case "LAContext.maxBiometryFailures=":
+      guard #available(iOS 8.3, macOS 10.10.3, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(LAContext.self).maxBiometryFailures = b.optional(b[0]) { try b.decode($0, as: NSNumber.self) }; return nil }
+    case "LAContext.setCredential(_:type:)":
+      guard #available(iOS 9.0, macOS 10.11, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAContext.self).setCredential(b.optional(b[0]) { try b.decode($0, as: Data.self) }, type: TokamakBindings_local_authentication.decode(b[1], b, as: LACredentialType.self)); return b.encode(value) }
+    case "LAContext.touchIDAuthenticationAllowableReuseDuration":
+      guard #available(iOS 9.0, macOS 10.12, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAContext.self).touchIDAuthenticationAllowableReuseDuration; return b.encode(value) }
+    case "LAContext.touchIDAuthenticationAllowableReuseDuration=":
+      guard #available(iOS 9.0, macOS 10.12, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(LAContext.self).touchIDAuthenticationAllowableReuseDuration = b.decode(b[0], as: TimeInterval.self); return nil }
+    case "LAContext.init()":
+      guard #available(iOS 8.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = LAContext(); return b.encode(object: value) }
     case "LADomainState.biometry":
       guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(LADomainState.self).biometry; return b.encode(object: value) }
@@ -114,84 +123,33 @@ final class TokamakBindings_local_authentication: TokamakPlugin {
     case "LADomainStateCompanion.stateHash(for:)":
       guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(LADomainStateCompanion.self).stateHash(for: TokamakBindings_local_authentication.decode(b[0], b, as: LACompanionType.self)); return b.encode(optional: value) { b.encode($0) } }
-    case "LARight.state":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LARight.self).state; return TokamakBindings_local_authentication.encode(value, b) }
-    case "LARight.tag":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LARight.self).tag; return b.encode(value) }
-    case "LARight.tag=":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(LARight.self).tag = b.decode(b[0], as: Int.self); return nil }
-    case "LARight.init()":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = LARight(); return b.encode(object: value) }
-    case "LARight.init(requirement:)":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try LARight(requirement: b.object(b[0], as: LAAuthenticationRequirement.self)); return b.encode(object: value) }
-    case "LAContext.canEvaluatePolicy(_:error:)":
-      guard #available(iOS 8.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { var error: NSError?; let value = try b.target(LAContext.self).canEvaluatePolicy(TokamakBindings_local_authentication.decode(b[0], b, as: LAPolicy.self), error: &error); if let error { throw error }; return b.encode(value) }
-    case "LAContext.invalidate()":
-      guard #available(iOS 9.0, macOS 10.11, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(LAContext.self).invalidate(); return nil }
-    case "LAContext.setCredential(_:type:)":
-      guard #available(iOS 9.0, macOS 10.11, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAContext.self).setCredential(b.optional(b[0]) { try b.decode($0, as: Data.self) }, type: TokamakBindings_local_authentication.decode(b[1], b, as: LACredentialType.self)); return b.encode(value) }
-    case "LAContext.isCredentialSet(_:)":
-      guard #available(iOS 9.0, macOS 10.11, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAContext.self).isCredentialSet(TokamakBindings_local_authentication.decode(b[0], b, as: LACredentialType.self)); return b.encode(value) }
-    case "LAContext.localizedFallbackTitle":
-      guard #available(iOS 8.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAContext.self).localizedFallbackTitle; return b.encode(optional: value) { b.encode($0) } }
-    case "LAContext.localizedFallbackTitle=":
-      guard #available(iOS 8.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(LAContext.self).localizedFallbackTitle = b.optional(b[0]) { try b.decode($0, as: String.self) }; return nil }
-    case "LAContext.maxBiometryFailures":
-      guard #available(iOS 8.3, macOS 10.10.3, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAContext.self).maxBiometryFailures; return b.encode(optional: value) { b.encode($0) } }
-    case "LAContext.maxBiometryFailures=":
-      guard #available(iOS 8.3, macOS 10.10.3, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(LAContext.self).maxBiometryFailures = b.optional(b[0]) { try b.decode($0, as: NSNumber.self) }; return nil }
-    case "LAContext.localizedCancelTitle":
-      guard #available(iOS 10.0, macOS 10.12, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAContext.self).localizedCancelTitle; return b.encode(optional: value) { b.encode($0) } }
-    case "LAContext.localizedCancelTitle=":
-      guard #available(iOS 10.0, macOS 10.12, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(LAContext.self).localizedCancelTitle = b.optional(b[0]) { try b.decode($0, as: String.self) }; return nil }
-    case "LAContext.touchIDAuthenticationAllowableReuseDuration":
-      guard #available(iOS 9.0, macOS 10.12, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAContext.self).touchIDAuthenticationAllowableReuseDuration; return b.encode(value) }
-    case "LAContext.touchIDAuthenticationAllowableReuseDuration=":
-      guard #available(iOS 9.0, macOS 10.12, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(LAContext.self).touchIDAuthenticationAllowableReuseDuration = b.decode(b[0], as: TimeInterval.self); return nil }
-    case "LAContext.localizedReason":
-      guard #available(iOS 11.0, macOS 10.13, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAContext.self).localizedReason; return b.encode(value) }
-    case "LAContext.localizedReason=":
-      guard #available(iOS 11.0, macOS 10.13, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(LAContext.self).localizedReason = b.decode(b[0], as: String.self); return nil }
-    case "LAContext.interactionNotAllowed":
-      guard #available(iOS 11.0, macOS 10.13, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAContext.self).interactionNotAllowed; return b.encode(value) }
-    case "LAContext.interactionNotAllowed=":
-      guard #available(iOS 11.0, macOS 10.13, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(LAContext.self).interactionNotAllowed = b.decode(b[0], as: Bool.self); return nil }
-    case "LAContext.biometryType":
-      guard #available(iOS 11.0, macOS 10.13.2, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAContext.self).biometryType; return TokamakBindings_local_authentication.encode(value, b) }
-    case "LAContext.evaluatedPolicyDomainState":
-      guard #available(iOS 9.0, macOS 10.11, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAContext.self).evaluatedPolicyDomainState; return b.encode(optional: value) { b.encode($0) } }
-    case "LAContext.domainState":
+    case "LAEnvironment.addObserver(_:)":
       guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAContext.self).domainState; return b.encode(object: value) }
-    case "LAContext.init()":
-      guard #available(iOS 8.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = LAContext(); return b.encode(object: value) }
+      return b.run { try b.target(LAEnvironment.self).addObserver(b.object(b[0], as: (any LAEnvironment.Observer).self)); return nil }
+    case "LAEnvironment.currentUser":
+      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = LAEnvironment.currentUser; return b.encode(object: value) }
+    case "LAEnvironment.removeObserver(_:)":
+      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(LAEnvironment.self).removeObserver(b.object(b[0], as: (any LAEnvironment.Observer).self)); return nil }
+    case "LAEnvironment.state":
+      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAEnvironment.self).state; return b.encode(object: value) }
+    case "LAEnvironment.Mechanism.iconSystemName":
+      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAEnvironment.Mechanism.self).iconSystemName; return b.encode(value) }
+    case "LAEnvironment.Mechanism.isUsable":
+      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAEnvironment.Mechanism.self).isUsable; return b.encode(value) }
+    case "LAEnvironment.Mechanism.localizedName":
+      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAEnvironment.Mechanism.self).localizedName; return b.encode(value) }
     case "LAEnvironment.MechanismBiometry.biometryType":
       guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(LAEnvironment.MechanismBiometry.self).biometryType; return TokamakBindings_local_authentication.encode(value, b) }
+    case "LAEnvironment.MechanismBiometry.builtInSensorInaccessible":
+      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAEnvironment.MechanismBiometry.self).builtInSensorInaccessible; return b.encode(value) }
     case "LAEnvironment.MechanismBiometry.isEnrolled":
       guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(LAEnvironment.MechanismBiometry.self).isEnrolled; return b.encode(value) }
@@ -201,9 +159,93 @@ final class TokamakBindings_local_authentication: TokamakPlugin {
     case "LAEnvironment.MechanismBiometry.stateHash":
       guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(LAEnvironment.MechanismBiometry.self).stateHash; return b.encode(value) }
-    case "LAEnvironment.MechanismBiometry.builtInSensorInaccessible":
+    case "LAEnvironment.MechanismCompanion.stateHash":
       guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(LAEnvironment.MechanismBiometry.self).builtInSensorInaccessible; return b.encode(value) }
+      return b.run { let value = try b.target(LAEnvironment.MechanismCompanion.self).stateHash; return b.encode(optional: value) { b.encode($0) } }
+    case "LAEnvironment.MechanismCompanion.type":
+      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAEnvironment.MechanismCompanion.self).type; return TokamakBindings_local_authentication.encode(value, b) }
+    case "LAEnvironment.MechanismUserPassword.isSet":
+      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAEnvironment.MechanismUserPassword.self).isSet; return b.encode(value) }
+    case "LAEnvironment.State.allMechanisms":
+      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAEnvironment.State.self).allMechanisms; return b.encode(array: value) { b.encode(object: $0) } }
+    case "LAEnvironment.State.biometry":
+      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAEnvironment.State.self).biometry; return b.encode(optional: value) { b.encode(object: $0) } }
+    case "LAEnvironment.State.companions":
+      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAEnvironment.State.self).companions; return b.encode(array: value) { b.encode(object: $0) } }
+    case "LAEnvironment.State.userPassword":
+      guard #available(iOS 18.0, macOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAEnvironment.State.self).userPassword; return b.encode(optional: value) { b.encode(object: $0) } }
+    case "LAPersistedRight.key":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAPersistedRight.self).key; return b.encode(object: value) }
+    case "LAPersistedRight.secret":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAPersistedRight.self).secret; return b.encode(object: value) }
+    case "LAPrivateKey.publicKey":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LAPrivateKey.self).publicKey; return b.encode(object: value) }
+    case "LAPublicKey.bytes":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await b.target(LAPublicKey.self).bytes; return b.encode(value) }
+    case "LARight.authorize(localizedReason:)":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { try await b.target(LARight.self).authorize(localizedReason: b.decode(b[0], as: String.self)); return nil }
+    case "LARight.checkCanAuthorize()":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { try await b.target(LARight.self).checkCanAuthorize(); return nil }
+    case "LARight.deauthorize()":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { try await b.target(LARight.self).deauthorize(); return nil }
+    case "LARight.init()":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = LARight(); return b.encode(object: value) }
+    case "LARight.init(requirement:)":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try LARight(requirement: b.object(b[0], as: LAAuthenticationRequirement.self)); return b.encode(object: value) }
+    case "LARight.state":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LARight.self).state; return TokamakBindings_local_authentication.encode(value, b) }
+    case "LARight.tag":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(LARight.self).tag; return b.encode(value) }
+    case "LARight.tag=":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(LARight.self).tag = b.decode(b[0], as: Int.self); return nil }
+    case "LARightStore.removeAllRights()":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { try await b.target(LARightStore.self).removeAllRights(); return nil }
+    case "LARightStore.removeRight(_:)":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { try await b.target(LARightStore.self).removeRight(b.object(b[0], as: LAPersistedRight.self)); return nil }
+    case "LARightStore.removeRight(forIdentifier:)":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { try await b.target(LARightStore.self).removeRight(forIdentifier: b.decode(b[0], as: String.self)); return nil }
+    case "LARightStore.right(forIdentifier:)":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await b.target(LARightStore.self).right(forIdentifier: b.decode(b[0], as: String.self)); return b.encode(object: value) }
+    case "LARightStore.saveRight(_:identifier:)":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await b.target(LARightStore.self).saveRight(b.object(b[0], as: LARight.self), identifier: b.decode(b[1], as: String.self)); return b.encode(object: value) }
+    case "LARightStore.saveRight(_:identifier:secret:)":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await b.target(LARightStore.self).saveRight(b.object(b[0], as: LARight.self), identifier: b.decode(b[1], as: String.self), secret: b.decode(b[2], as: Data.self)); return b.encode(object: value) }
+    case "LARightStore.shared":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = LARightStore.shared; return b.encode(object: value) }
+    case "LASecret.rawData":
+      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await b.target(LASecret.self).rawData; return b.encode(value) }
+    case "LAErrorDomain":
+      guard #available(iOS 8.3, macOS 10.11, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = LAErrorDomain; return b.encode(value) }
+    case "LATouchIDAuthenticationMaximumAllowableReuseDuration":
+      guard #available(iOS 9.0, macOS 10.12, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = LATouchIDAuthenticationMaximumAllowableReuseDuration; return b.encode(value) }
     case "kLAAccessControlOperationCreateItem":
       return b.run { let value = kLAAccessControlOperationCreateItem; return b.encode(value) }
     case "kLAAccessControlOperationCreateKey":
@@ -290,12 +332,6 @@ final class TokamakBindings_local_authentication: TokamakPlugin {
       return b.run { let value = kLAPolicyDeviceOwnerAuthenticationWithWatch; return b.encode(value) }
     case "kLAPolicyDeviceOwnerAuthenticationWithWristDetection":
       return b.run { let value = kLAPolicyDeviceOwnerAuthenticationWithWristDetection; return b.encode(value) }
-    case "LAErrorDomain":
-      guard #available(iOS 8.3, macOS 10.11, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = LAErrorDomain; return b.encode(value) }
-    case "LATouchIDAuthenticationMaximumAllowableReuseDuration":
-      guard #available(iOS 9.0, macOS 10.12, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = LATouchIDAuthenticationMaximumAllowableReuseDuration; return b.encode(value) }
     default:
       return b.unsupported(method)
     }
@@ -311,6 +347,65 @@ final class TokamakBindings_local_authentication: TokamakPlugin {
       return b.implement(LAEnvironment_ObserverImplementation.self)
     default:
       throw .notSupported("\(method) is not supported")
+    }
+  }
+
+  @available(iOS 9.0, macOS 10.11, *)
+  private static func encode(_ value: LAAccessControlOperation, _ b: TokamakBinding) -> Any {
+    if value == .createItem { return "createItem" }
+    if value == .createKey { return "createKey" }
+    if value == .useItem { return "useItem" }
+    if #available(iOS 10.0, macOS 10.12, *), value == .useKeyDecrypt { return "useKeyDecrypt" }
+    if #available(iOS 10.0, macOS 10.12, *), value == .useKeyKeyExchange { return "useKeyKeyExchange" }
+    if value == .useKeySign { return "useKeySign" }
+    return "\(value)"
+  }
+
+  @available(iOS 9.0, macOS 10.11, *)
+  private static func decode(_ value: Any, _ b: TokamakBinding, as type: LAAccessControlOperation.Type) throws -> LAAccessControlOperation {
+    switch try b.decode(value, as: String.self) {
+    case "createItem":
+      return .createItem
+    case "createKey":
+      return .createKey
+    case "useItem":
+      return .useItem
+    case "useKeyDecrypt":
+      guard #available(iOS 10.0, macOS 10.12, *) else { throw TokamakBinding.unavailable }
+      return .useKeyDecrypt
+    case "useKeyKeyExchange":
+      guard #available(iOS 10.0, macOS 10.12, *) else { throw TokamakBinding.unavailable }
+      return .useKeyKeyExchange
+    case "useKeySign":
+      return .useKeySign
+    default: throw b.mismatch(value, type)
+    }
+  }
+
+  @available(iOS 11.0, macOS 10.13.2, *)
+  private static func encode(_ value: LABiometryType, _ b: TokamakBinding) -> Any {
+    if #available(macOS 10.15, *), value == .faceID { return "faceID" }
+    if #available(iOS 11.2, *), value == .none { return "none" }
+    if #available(iOS 17.0, macOS 14.0, *), value == .opticID { return "opticID" }
+    if value == .touchID { return "touchID" }
+    return "\(value)"
+  }
+
+  @available(iOS 11.0, macOS 10.13.2, *)
+  private static func decode(_ value: Any, _ b: TokamakBinding, as type: LABiometryType.Type) throws -> LABiometryType {
+    switch try b.decode(value, as: String.self) {
+    case "faceID":
+      guard #available(macOS 10.15, *) else { throw TokamakBinding.unavailable }
+      return .faceID
+    case "none":
+      guard #available(iOS 11.2, *) else { throw TokamakBinding.unavailable }
+      return .none
+    case "opticID":
+      guard #available(iOS 17.0, macOS 14.0, *) else { throw TokamakBinding.unavailable }
+      return .opticID
+    case "touchID":
+      return .touchID
+    default: throw b.mismatch(value, type)
     }
   }
 
@@ -348,103 +443,6 @@ final class TokamakBindings_local_authentication: TokamakPlugin {
     }
   }
 
-  @available(iOS 11.0, macOS 10.13.2, *)
-  private static func encode(_ value: LABiometryType, _ b: TokamakBinding) -> Any {
-    if #available(iOS 11.2, *), value == .none { return "none" }
-    if value == .touchID { return "touchID" }
-    if #available(macOS 10.15, *), value == .faceID { return "faceID" }
-    if #available(iOS 17.0, macOS 14.0, *), value == .opticID { return "opticID" }
-    return "\(value)"
-  }
-
-  @available(iOS 11.0, macOS 10.13.2, *)
-  private static func decode(_ value: Any, _ b: TokamakBinding, as type: LABiometryType.Type) throws -> LABiometryType {
-    switch try b.decode(value, as: String.self) {
-    case "none":
-      guard #available(iOS 11.2, *) else { throw TokamakBinding.unavailable }
-      return .none
-    case "touchID":
-      return .touchID
-    case "faceID":
-      guard #available(macOS 10.15, *) else { throw TokamakBinding.unavailable }
-      return .faceID
-    case "opticID":
-      guard #available(iOS 17.0, macOS 14.0, *) else { throw TokamakBinding.unavailable }
-      return .opticID
-    default: throw b.mismatch(value, type)
-    }
-  }
-
-  @available(iOS 18.0, macOS 15.0, *)
-  private final class LAEnvironment_ObserverImplementation: TokamakBindingImplementation, LAEnvironment.Observer {
-    override class var selectors: [Selector: String] {
-      [
-        NSSelectorFromString("environment:stateDidChangeFromOldState:"): "environmentStateDidChangeFromOldState",
-      ]
-    }
-
-    @available(iOS 18.0, macOS 15.0, *)
-    func environment(_ environment: LAEnvironment, stateDidChangeFromOldState oldState: LAEnvironment.State) {
-      call("environmentStateDidChangeFromOldState") { b in [b.encode(object: environment), b.encode(object: oldState)] }
-    }
-  }
-
-  @available(iOS 16.0, macOS 13.0, *)
-  private static func encode(_ value: LARight.State, _ b: TokamakBinding) -> Any {
-    if value == .unknown { return "unknown" }
-    if value == .authorizing { return "authorizing" }
-    if value == .authorized { return "authorized" }
-    if value == .notAuthorized { return "notAuthorized" }
-    return "\(value)"
-  }
-
-  @available(iOS 16.0, macOS 13.0, *)
-  private static func decode(_ value: Any, _ b: TokamakBinding, as type: LARight.State.Type) throws -> LARight.State {
-    switch try b.decode(value, as: String.self) {
-    case "unknown":
-      return .unknown
-    case "authorizing":
-      return .authorizing
-    case "authorized":
-      return .authorized
-    case "notAuthorized":
-      return .notAuthorized
-    default: throw b.mismatch(value, type)
-    }
-  }
-
-  @available(iOS 9.0, macOS 10.11, *)
-  private static func encode(_ value: LAAccessControlOperation, _ b: TokamakBinding) -> Any {
-    if value == .createItem { return "createItem" }
-    if value == .useItem { return "useItem" }
-    if value == .createKey { return "createKey" }
-    if value == .useKeySign { return "useKeySign" }
-    if #available(iOS 10.0, macOS 10.12, *), value == .useKeyDecrypt { return "useKeyDecrypt" }
-    if #available(iOS 10.0, macOS 10.12, *), value == .useKeyKeyExchange { return "useKeyKeyExchange" }
-    return "\(value)"
-  }
-
-  @available(iOS 9.0, macOS 10.11, *)
-  private static func decode(_ value: Any, _ b: TokamakBinding, as type: LAAccessControlOperation.Type) throws -> LAAccessControlOperation {
-    switch try b.decode(value, as: String.self) {
-    case "createItem":
-      return .createItem
-    case "useItem":
-      return .useItem
-    case "createKey":
-      return .createKey
-    case "useKeySign":
-      return .useKeySign
-    case "useKeyDecrypt":
-      guard #available(iOS 10.0, macOS 10.12, *) else { throw TokamakBinding.unavailable }
-      return .useKeyDecrypt
-    case "useKeyKeyExchange":
-      guard #available(iOS 10.0, macOS 10.12, *) else { throw TokamakBinding.unavailable }
-      return .useKeyKeyExchange
-    default: throw b.mismatch(value, type)
-    }
-  }
-
   @available(iOS 9.0, macOS 10.11, *)
   private static func encode(_ value: LACredentialType, _ b: TokamakBinding) -> Any {
     if value == .applicationPassword { return "applicationPassword" }
@@ -464,30 +462,68 @@ final class TokamakBindings_local_authentication: TokamakPlugin {
     }
   }
 
+  @available(iOS 18.0, macOS 15.0, *)
+  private final class LAEnvironment_ObserverImplementation: TokamakBindingImplementation, LAEnvironment.Observer {
+    override class var selectors: [Selector: String] {
+      [
+        NSSelectorFromString("environment:stateDidChangeFromOldState:"): "environmentStateDidChangeFromOldState",
+      ]
+    }
+
+    @available(iOS 18.0, macOS 15.0, *)
+    func environment(_ environment: LAEnvironment, stateDidChangeFromOldState oldState: LAEnvironment.State) {
+      call("environmentStateDidChangeFromOldState") { b in [b.encode(object: environment), b.encode(object: oldState)] }
+    }
+  }
+
   @available(iOS 8.0, macOS 10.10, *)
   private static func encode(_ value: LAPolicy, _ b: TokamakBinding) -> Any {
-    if #available(macOS 10.12.2, *), value == .deviceOwnerAuthenticationWithBiometrics { return "deviceOwnerAuthenticationWithBiometrics" }
     if #available(iOS 9.0, macOS 10.11, *), value == .deviceOwnerAuthentication { return "deviceOwnerAuthentication" }
-    if #available(iOS 18.0, macOS 15.0, *), value == .deviceOwnerAuthenticationWithCompanion { return "deviceOwnerAuthenticationWithCompanion" }
+    if #available(macOS 10.12.2, *), value == .deviceOwnerAuthenticationWithBiometrics { return "deviceOwnerAuthenticationWithBiometrics" }
     if #available(iOS 18.0, macOS 15.0, *), value == .deviceOwnerAuthenticationWithBiometricsOrCompanion { return "deviceOwnerAuthenticationWithBiometricsOrCompanion" }
+    if #available(iOS 18.0, macOS 15.0, *), value == .deviceOwnerAuthenticationWithCompanion { return "deviceOwnerAuthenticationWithCompanion" }
     return "\(value)"
   }
 
   @available(iOS 8.0, macOS 10.10, *)
   private static func decode(_ value: Any, _ b: TokamakBinding, as type: LAPolicy.Type) throws -> LAPolicy {
     switch try b.decode(value, as: String.self) {
-    case "deviceOwnerAuthenticationWithBiometrics":
-      guard #available(macOS 10.12.2, *) else { throw TokamakBinding.unavailable }
-      return .deviceOwnerAuthenticationWithBiometrics
     case "deviceOwnerAuthentication":
       guard #available(iOS 9.0, macOS 10.11, *) else { throw TokamakBinding.unavailable }
       return .deviceOwnerAuthentication
-    case "deviceOwnerAuthenticationWithCompanion":
-      guard #available(iOS 18.0, macOS 15.0, *) else { throw TokamakBinding.unavailable }
-      return .deviceOwnerAuthenticationWithCompanion
+    case "deviceOwnerAuthenticationWithBiometrics":
+      guard #available(macOS 10.12.2, *) else { throw TokamakBinding.unavailable }
+      return .deviceOwnerAuthenticationWithBiometrics
     case "deviceOwnerAuthenticationWithBiometricsOrCompanion":
       guard #available(iOS 18.0, macOS 15.0, *) else { throw TokamakBinding.unavailable }
       return .deviceOwnerAuthenticationWithBiometricsOrCompanion
+    case "deviceOwnerAuthenticationWithCompanion":
+      guard #available(iOS 18.0, macOS 15.0, *) else { throw TokamakBinding.unavailable }
+      return .deviceOwnerAuthenticationWithCompanion
+    default: throw b.mismatch(value, type)
+    }
+  }
+
+  @available(iOS 16.0, macOS 13.0, *)
+  private static func encode(_ value: LARight.State, _ b: TokamakBinding) -> Any {
+    if value == .authorized { return "authorized" }
+    if value == .authorizing { return "authorizing" }
+    if value == .notAuthorized { return "notAuthorized" }
+    if value == .unknown { return "unknown" }
+    return "\(value)"
+  }
+
+  @available(iOS 16.0, macOS 13.0, *)
+  private static func decode(_ value: Any, _ b: TokamakBinding, as type: LARight.State.Type) throws -> LARight.State {
+    switch try b.decode(value, as: String.self) {
+    case "authorized":
+      return .authorized
+    case "authorizing":
+      return .authorizing
+    case "notAuthorized":
+      return .notAuthorized
+    case "unknown":
+      return .unknown
     default: throw b.mismatch(value, type)
     }
   }

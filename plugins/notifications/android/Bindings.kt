@@ -624,6 +624,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             else -> b.unsupported(method)
         }
 
+    @androidx.annotation.RequiresApi(16)
     private class Notification_StyleImplementation(private val binding: TokamakBinding) : android.app.Notification.Style() {
         override fun internalSetBigContentTitle(title: CharSequence?) {
             if (!binding.call("internalSetBigContentTitle") { b -> listOf(b.encode(title)) }) super.internalSetBigContentTitle(title)

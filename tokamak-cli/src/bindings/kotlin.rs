@@ -5,7 +5,9 @@
 use std::fmt::Write as _;
 
 use super::android::kotlin_name;
-use super::model::{Callbacks, Collection, Kind, Member, MemberKind, Module, NamedKind, Ty, Type};
+use super::model::{
+    Availability, Callbacks, Collection, Kind, Member, MemberKind, Module, NamedKind, Ty, Type,
+};
 
 /// The Kotlin package of the plugin `id`'s bindings, whose `Bindings` class
 /// the Android pack registers.
@@ -101,12 +103,7 @@ fn subscriptions(out: &mut String, module: &Module) {
         "\n    override fun subscribeBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply): () -> Unit {\n        val b = TokamakBinding(payload, host.resources, reply)\n        return when (method) {\n",
     );
     for ty in module.types.iter().filter(|ty| callbacks(ty).is_some()) {
-        let guard = level_guard(
-            ty.availability
-                .platforms
-                .first()
-                .and_then(|(_, level)| level.as_deref()),
-        );
+        let guard = guard(&ty.availability, "\n                ");
         let _ = writeln!(
             out,
             "            {} -> {{\n                {guard}b.implement {{ {}Implementation(it) }}\n            }}",
@@ -117,14 +114,21 @@ fn subscriptions(out: &mut String, module: &Module) {
     out.push_str("            else -> throw TokamakPluginError.notSupported(\"$method is not supported\")\n        }\n    }\n");
 }
 
-/// The check that rejects a call on API levels before `level`.
-fn level_guard(level: Option<&str>) -> String {
-    match level {
-        Some(level) if level != "1" => format!(
-            "if (Build.VERSION.SDK_INT < {level}) throw TokamakBinding.unavailable\n                "
-        ),
-        _ => String::new(),
-    }
+/// The API level that introduced a symbol, when later than the first.
+fn introduced(availability: &Availability) -> Option<&str> {
+    availability
+        .platforms
+        .first()
+        .and_then(|(_, level)| level.as_deref())
+        .filter(|level| *level != "1")
+}
+
+/// The check, followed by `separator`, that rejects a call on API levels
+/// before the symbol's.
+fn guard(availability: &Availability, separator: &str) -> String {
+    introduced(availability).map_or_else(String::new, |level| {
+        format!("if (Build.VERSION.SDK_INT < {level}) throw TokamakBinding.unavailable{separator}")
+    })
 }
 
 fn type_calls(out: &mut String, ty: &Type) {
@@ -134,17 +138,7 @@ fn type_calls(out: &mut String, ty: &Type) {
         function(ty)
     );
     for member in &ty.members {
-        let level = member
-            .availability
-            .platforms
-            .first()
-            .and_then(|(_, level)| level.as_deref());
-        let guard = match level {
-            Some(level) if level != "1" => {
-                format!("if (Build.VERSION.SDK_INT < {level}) throw TokamakBinding.unavailable; ")
-            }
-            _ => String::new(),
-        };
+        let guard = guard(&member.availability, "; ");
         let _ = writeln!(
             out,
             "            {} -> b.run {{ {guard}{} }}",
@@ -254,9 +248,13 @@ fn implementation(out: &mut String, ty: &Type, callbacks: &Callbacks) {
     } else {
         ""
     };
+    // Lint then checks that each construction is guarded.
+    let requires = introduced(&ty.availability).map_or_else(String::new, |level| {
+        format!("\n    @androidx.annotation.RequiresApi({level})")
+    });
     let _ = writeln!(
         out,
-        "\n    private class {}Implementation(private val binding: TokamakBinding) : {}{constructor} {{",
+        "{requires}\n    private class {}Implementation(private val binding: TokamakBinding) : {}{constructor} {{",
         ty.path.join("_"),
         ty.native
     );

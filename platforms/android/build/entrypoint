@@ -156,6 +156,11 @@ plugins {
 android {
   namespace 'com.tokamak.runtime.plugin'
 }
+
+// Plugins mark code that needs a later API level with RequiresApi, which lint checks.
+dependencies {
+  api 'androidx.annotation:annotation:1.9.1'
+}
 EOF
 
 has_icon=false

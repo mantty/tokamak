@@ -239,6 +239,243 @@
     "identifier": "swift.method"
    },
    "identifier": {
+    "precise": "c:objc(cs)KTWidget(im)configureWithOptions:completion:"
+   },
+   "pathComponents": [
+    "KTWidget",
+    "configure(options:)"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "func"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "configure"
+    },
+    {
+     "kind": "text",
+     "spelling": "("
+    },
+    {
+     "kind": "externalParam",
+     "spelling": "options"
+    },
+    {
+     "kind": "text",
+     "spelling": ": "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "KTMode",
+     "preciseIdentifier": "c:@E@KTMode"
+    },
+    {
+     "kind": "text",
+     "spelling": ") "
+    },
+    {
+     "kind": "keyword",
+     "spelling": "async"
+    }
+   ],
+   "functionSignature": {
+    "parameters": [
+     {
+      "name": "options",
+      "declarationFragments": [
+       {
+        "kind": "identifier",
+        "spelling": "options"
+       },
+       {
+        "kind": "text",
+        "spelling": ": "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "KTMode",
+        "preciseIdentifier": "c:@E@KTMode"
+       }
+      ]
+     }
+    ],
+    "returns": []
+   }
+  },
+  {
+   "kind": {
+    "identifier": "swift.method"
+   },
+   "identifier": {
+    "precise": "c:objc(cs)KTWidget(im)measureWithCompletion:"
+   },
+   "pathComponents": [
+    "KTWidget",
+    "measure(completion:)"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "func"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "measure"
+    },
+    {
+     "kind": "text",
+     "spelling": "("
+    },
+    {
+     "kind": "externalParam",
+     "spelling": "completion"
+    },
+    {
+     "kind": "text",
+     "spelling": ": "
+    },
+    {
+     "kind": "attribute",
+     "spelling": "@escaping"
+    },
+    {
+     "kind": "text",
+     "spelling": " ("
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "KTDistance",
+     "preciseIdentifier": "c:@T@KTDistance"
+    },
+    {
+     "kind": "text",
+     "spelling": ", (any "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Error",
+     "preciseIdentifier": "s:s5ErrorP"
+    },
+    {
+     "kind": "text",
+     "spelling": ")?) -> "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Void",
+     "preciseIdentifier": "s:s4Voida"
+    },
+    {
+     "kind": "text",
+     "spelling": ")"
+    }
+   ],
+   "functionSignature": {
+    "parameters": [
+     {
+      "name": "completion",
+      "declarationFragments": [
+       {
+        "kind": "identifier",
+        "spelling": "completion"
+       },
+       {
+        "kind": "text",
+        "spelling": ": "
+       },
+       {
+        "kind": "attribute",
+        "spelling": "@escaping"
+       },
+       {
+        "kind": "text",
+        "spelling": " ("
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "KTDistance",
+        "preciseIdentifier": "c:@T@KTDistance"
+       },
+       {
+        "kind": "text",
+        "spelling": ", (any "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "Error",
+        "preciseIdentifier": "s:s5ErrorP"
+       },
+       {
+        "kind": "text",
+        "spelling": ")?) -> "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "Void",
+        "preciseIdentifier": "s:s4Voida"
+       },
+       {
+        "kind": "text",
+        "spelling": ")"
+       }
+      ]
+     }
+    ],
+    "returns": [
+     {
+      "kind": "text",
+      "spelling": "()"
+     }
+    ]
+   }
+  },
+  {
+   "kind": {
+    "identifier": "swift.method"
+   },
+   "identifier": {
     "precise": "c:objc(cs)KTWidget(im)measureWithCompletion:"
    },
    "pathComponents": [

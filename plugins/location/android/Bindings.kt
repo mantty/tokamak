@@ -883,6 +883,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             else -> b.unsupported(method)
         }
 
+    @androidx.annotation.RequiresApi(33)
     private class Geocoder_GeocodeListenerImplementation(private val binding: TokamakBinding) : android.location.Geocoder.GeocodeListener {
         override fun onGeocode(addresses: MutableList<android.location.Address?>) {
             binding.call("onGeocode") { b -> listOf(b.encode(addresses)) }
@@ -893,12 +894,14 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
         }
     }
 
+    @androidx.annotation.RequiresApi(30)
     private class GnssAntennaInfo_ListenerImplementation(private val binding: TokamakBinding) : android.location.GnssAntennaInfo.Listener {
         override fun onGnssAntennaInfoReceived(gnssAntennaInfos: MutableList<android.location.GnssAntennaInfo?>) {
             binding.call("onGnssAntennaInfoReceived") { b -> listOf(b.encode(gnssAntennaInfos)) }
         }
     }
 
+    @androidx.annotation.RequiresApi(24)
     private class GnssMeasurementsEvent_CallbackImplementation(private val binding: TokamakBinding) : android.location.GnssMeasurementsEvent.Callback() {
         override fun onGnssMeasurementsReceived(eventArgs: android.location.GnssMeasurementsEvent?) {
             if (!binding.call("onGnssMeasurementsReceived") { b -> listOf(b.encode(eventArgs)) }) super.onGnssMeasurementsReceived(eventArgs)
@@ -909,6 +912,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
         }
     }
 
+    @androidx.annotation.RequiresApi(24)
     private class GnssNavigationMessage_CallbackImplementation(private val binding: TokamakBinding) : android.location.GnssNavigationMessage.Callback() {
         override fun onGnssNavigationMessageReceived(event: android.location.GnssNavigationMessage?) {
             if (!binding.call("onGnssNavigationMessageReceived") { b -> listOf(b.encode(event)) }) super.onGnssNavigationMessageReceived(event)
@@ -919,6 +923,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
         }
     }
 
+    @androidx.annotation.RequiresApi(24)
     private class GnssStatus_CallbackImplementation(private val binding: TokamakBinding) : android.location.GnssStatus.Callback() {
         override fun onStarted() {
             if (!binding.call("onStarted") { b -> listOf() }) super.onStarted()
@@ -937,12 +942,14 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
         }
     }
 
+    @androidx.annotation.RequiresApi(3)
     private class GpsStatus_ListenerImplementation(private val binding: TokamakBinding) : android.location.GpsStatus.Listener {
         override fun onGpsStatusChanged(event: Int) {
             binding.call("onGpsStatusChanged") { b -> listOf(b.encode(event)) }
         }
     }
 
+    @androidx.annotation.RequiresApi(5)
     private class GpsStatus_NmeaListenerImplementation(private val binding: TokamakBinding) : android.location.GpsStatus.NmeaListener {
         override fun onNmeaReceived(timestamp: Long, nmea: String?) {
             binding.call("onNmeaReceived") { b -> listOf(b.encode(timestamp), b.encode(nmea)) }
@@ -967,18 +974,21 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
         }
     }
 
+    @androidx.annotation.RequiresApi(24)
     private class OnNmeaMessageListenerImplementation(private val binding: TokamakBinding) : android.location.OnNmeaMessageListener {
         override fun onNmeaMessage(message: String?, timestamp: Long) {
             binding.call("onNmeaMessage") { b -> listOf(b.encode(message), b.encode(timestamp)) }
         }
     }
 
+    @androidx.annotation.RequiresApi(16)
     private class CancellationSignal_OnCancelListenerImplementation(private val binding: TokamakBinding) : android.os.CancellationSignal.OnCancelListener {
         override fun onCancel() {
             binding.call("onCancel") { b -> listOf() }
         }
     }
 
+    @androidx.annotation.RequiresApi(24)
     private class ConsumerImplementation(private val binding: TokamakBinding) : java.util.function.Consumer<Any?> {
         override fun accept(t: Any?) {
             binding.call("accept") { b -> listOf(b.encode(t)) }

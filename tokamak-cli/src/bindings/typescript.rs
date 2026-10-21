@@ -423,10 +423,14 @@ fn params(params: &[Param]) -> String {
         .join(", ")
 }
 
-/// `name` as a JavaScript parameter: reserved words get a trailing `_`.
+/// The parameters a generated member adds to the native ones.
+const GENERATED_PARAMETERS: [&str; 2] = ["ctx", "options"];
+
+/// `name` as a JavaScript parameter: reserved words, and the names of the
+/// generated parameters, get a trailing `_`.
 fn safe(name: &str) -> String {
     let name = name.trim_matches('`');
-    if RESERVED_WORDS.contains(&name) {
+    if RESERVED_WORDS.contains(&name) || GENERATED_PARAMETERS.contains(&name) {
         format!("{name}_")
     } else {
         name.to_owned()

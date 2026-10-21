@@ -16,33 +16,6 @@ final class TokamakBindings_location: TokamakPlugin {
   func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (() -> Void)? {
     let b = TokamakBinding(payload, resources: host.resources, reply: reply)
     switch method {
-    case "CLMonitor.identifiers":
-      guard #available(iOS 17.0, macOS 14.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.task { let value = try await b.target(CLMonitor.self).identifiers; return b.encode(array: value) { b.encode($0) } }
-    case "CLMonitor.add(_:identifier:)":
-      guard #available(iOS 17.0, macOS 14.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.task { try await b.target(CLMonitor.self).add(b.object(b[0], as: (any CLCondition).self), identifier: b.decode(b[1], as: String.self)); return nil }
-    case "CLMonitor.remove(_:)":
-      guard #available(iOS 17.0, macOS 14.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.task { try await b.target(CLMonitor.self).remove(b.decode(b[0], as: String.self)); return nil }
-    case "CLMonitor.init(_:)":
-      guard #available(iOS 17.0, macOS 14.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.task { let value = try await CLMonitor(b.decode(b[0], as: String.self)); return b.encode(object: value) }
-    #if os(iOS)
-    case "CLServiceSession.init(authorization:)":
-      guard #available(iOS 18.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLServiceSession(authorization: TokamakBindings_location.decode(b[0], b, as: CLServiceSession.AuthorizationRequirement.self)); return b.encode(object: value) }
-    #endif
-    #if os(iOS)
-    case "CLServiceSession.init(authorization:fullAccuracyPurposeKey:)":
-      guard #available(iOS 18.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLServiceSession(authorization: TokamakBindings_location.decode(b[0], b, as: CLServiceSession.AuthorizationRequirement.self), fullAccuracyPurposeKey: b.decode(b[1], as: String.self)); return b.encode(object: value) }
-    #endif
-    #if os(iOS)
-    case "CLServiceSession.invalidate()":
-      guard #available(iOS 18.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLServiceSession.self).invalidate(); return nil }
-    #endif
     #if os(iOS)
     case "CLBackgroundActivitySession.init()":
       guard #available(iOS 17.0, *) else { return b.run { throw TokamakBinding.unavailable } }
@@ -53,36 +26,9 @@ final class TokamakBindings_location: TokamakPlugin {
       guard #available(iOS 17.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { try b.target(CLBackgroundActivitySession.self).invalidate(); return nil }
     #endif
-    case "CLHeading.magneticHeading":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).magneticHeading; return b.encode(value) }
-    case "CLHeading.trueHeading":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).trueHeading; return b.encode(value) }
-    case "CLHeading.headingAccuracy":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).headingAccuracy; return b.encode(value) }
-    case "CLHeading.x":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).x; return b.encode(value) }
-    case "CLHeading.y":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).y; return b.encode(value) }
-    case "CLHeading.z":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).z; return b.encode(value) }
-    case "CLHeading.timestamp":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).timestamp; return b.encode(value) }
-    case "CLBeacon.timestamp":
-      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLBeacon.self).timestamp; return b.encode(value) }
-    case "CLBeacon.uuid":
-      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLBeacon.self).uuid; return b.encode(value) }
-    case "CLBeacon.proximityUUID":
+    case "CLBeacon.accuracy":
       guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLBeacon.self).proximityUUID; return b.encode(value) }
+      return b.run { let value = try b.target(CLBeacon.self).accuracy; return b.encode(value) }
     case "CLBeacon.major":
       guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLBeacon.self).major; return b.encode(value) }
@@ -92,42 +38,48 @@ final class TokamakBindings_location: TokamakPlugin {
     case "CLBeacon.proximity":
       guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLBeacon.self).proximity; return TokamakBindings_location.encode(value, b) }
-    case "CLBeacon.accuracy":
+    case "CLBeacon.proximityUUID":
       guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLBeacon.self).accuracy; return b.encode(value) }
+      return b.run { let value = try b.target(CLBeacon.self).proximityUUID; return b.encode(value) }
     case "CLBeacon.rssi":
       guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLBeacon.self).rssi; return b.encode(value) }
-    case "CLBeaconRegion.init(uuid:identifier:)":
+    case "CLBeacon.timestamp":
       guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLBeaconRegion(uuid: b.decode(b[0], as: UUID.self), identifier: b.decode(b[1], as: String.self)); return b.encode(object: value) }
-    case "CLBeaconRegion.init(proximityUUID:identifier:)":
-      guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLBeaconRegion(proximityUUID: b.decode(b[0], as: UUID.self), identifier: b.decode(b[1], as: String.self)); return b.encode(object: value) }
-    case "CLBeaconRegion.init(uuid:major:identifier:)":
+      return b.run { let value = try b.target(CLBeacon.self).timestamp; return b.encode(value) }
+    case "CLBeacon.uuid":
       guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLBeaconRegion(uuid: b.decode(b[0], as: UUID.self), major: b.decode(b[1], as: CLBeaconMajorValue.self), identifier: b.decode(b[2], as: String.self)); return b.encode(object: value) }
-    case "CLBeaconRegion.init(proximityUUID:major:identifier:)":
-      guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLBeaconRegion(proximityUUID: b.decode(b[0], as: UUID.self), major: b.decode(b[1], as: CLBeaconMajorValue.self), identifier: b.decode(b[2], as: String.self)); return b.encode(object: value) }
-    case "CLBeaconRegion.init(uuid:major:minor:identifier:)":
+      return b.run { let value = try b.target(CLBeacon.self).uuid; return b.encode(value) }
+    case "CLBeaconIdentityConstraint.major":
       guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLBeaconRegion(uuid: b.decode(b[0], as: UUID.self), major: b.decode(b[1], as: CLBeaconMajorValue.self), minor: b.decode(b[2], as: CLBeaconMinorValue.self), identifier: b.decode(b[3], as: String.self)); return b.encode(object: value) }
-    case "CLBeaconRegion.init(proximityUUID:major:minor:identifier:)":
-      guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLBeaconRegion(proximityUUID: b.decode(b[0], as: UUID.self), major: b.decode(b[1], as: CLBeaconMajorValue.self), minor: b.decode(b[2], as: CLBeaconMinorValue.self), identifier: b.decode(b[3], as: String.self)); return b.encode(object: value) }
-    case "CLBeaconRegion.init(beaconIdentityConstraint:identifier:)":
+      return b.run { let value = try b.target(CLBeaconIdentityConstraint.self).major; return b.encode(optional: value) { b.encode($0) } }
+    case "CLBeaconIdentityConstraint.minor":
       guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLBeaconRegion(beaconIdentityConstraint: b.object(b[0], as: CLBeaconIdentityConstraint.self), identifier: b.decode(b[1], as: String.self)); return b.encode(object: value) }
+      return b.run { let value = try b.target(CLBeaconIdentityConstraint.self).minor; return b.encode(optional: value) { b.encode($0) } }
     case "CLBeaconRegion.beaconIdentityConstraint":
       guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLBeaconRegion.self).beaconIdentityConstraint; return b.encode(object: value) }
-    case "CLBeaconRegion.uuid":
+    case "CLBeaconRegion.init(beaconIdentityConstraint:identifier:)":
       guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLBeaconRegion.self).uuid; return b.encode(value) }
-    case "CLBeaconRegion.proximityUUID":
+      return b.run { let value = try CLBeaconRegion(beaconIdentityConstraint: b.object(b[0], as: CLBeaconIdentityConstraint.self), identifier: b.decode(b[1], as: String.self)); return b.encode(object: value) }
+    case "CLBeaconRegion.init(proximityUUID:identifier:)":
       guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLBeaconRegion.self).proximityUUID; return b.encode(value) }
+      return b.run { let value = try CLBeaconRegion(proximityUUID: b.decode(b[0], as: UUID.self), identifier: b.decode(b[1], as: String.self)); return b.encode(object: value) }
+    case "CLBeaconRegion.init(proximityUUID:major:identifier:)":
+      guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLBeaconRegion(proximityUUID: b.decode(b[0], as: UUID.self), major: b.decode(b[1], as: CLBeaconMajorValue.self), identifier: b.decode(b[2], as: String.self)); return b.encode(object: value) }
+    case "CLBeaconRegion.init(proximityUUID:major:minor:identifier:)":
+      guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLBeaconRegion(proximityUUID: b.decode(b[0], as: UUID.self), major: b.decode(b[1], as: CLBeaconMajorValue.self), minor: b.decode(b[2], as: CLBeaconMinorValue.self), identifier: b.decode(b[3], as: String.self)); return b.encode(object: value) }
+    case "CLBeaconRegion.init(uuid:identifier:)":
+      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLBeaconRegion(uuid: b.decode(b[0], as: UUID.self), identifier: b.decode(b[1], as: String.self)); return b.encode(object: value) }
+    case "CLBeaconRegion.init(uuid:major:identifier:)":
+      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLBeaconRegion(uuid: b.decode(b[0], as: UUID.self), major: b.decode(b[1], as: CLBeaconMajorValue.self), identifier: b.decode(b[2], as: String.self)); return b.encode(object: value) }
+    case "CLBeaconRegion.init(uuid:major:minor:identifier:)":
+      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLBeaconRegion(uuid: b.decode(b[0], as: UUID.self), major: b.decode(b[1], as: CLBeaconMajorValue.self), minor: b.decode(b[2], as: CLBeaconMinorValue.self), identifier: b.decode(b[3], as: String.self)); return b.encode(object: value) }
     case "CLBeaconRegion.major":
       guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLBeaconRegion.self).major; return b.encode(optional: value) { b.encode($0) } }
@@ -140,79 +92,132 @@ final class TokamakBindings_location: TokamakPlugin {
     case "CLBeaconRegion.notifyEntryStateOnDisplay=":
       guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { try b.target(CLBeaconRegion.self).notifyEntryStateOnDisplay = b.decode(b[0], as: Bool.self); return nil }
-    case "CLLocationManager.locationServicesEnabled()":
-      guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = CLLocationManager.locationServicesEnabled(); return b.encode(value) }
-    case "CLLocationManager.headingAvailable()":
-      guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = CLLocationManager.headingAvailable(); return b.encode(value) }
-    case "CLLocationManager.significantLocationChangeMonitoringAvailable()":
-      guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = CLLocationManager.significantLocationChangeMonitoringAvailable(); return b.encode(value) }
-    case "CLLocationManager.isRangingAvailable()":
+    case "CLBeaconRegion.proximityUUID":
       guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = CLLocationManager.isRangingAvailable(); return b.encode(value) }
-    case "CLLocationManager.authorizationStatus":
-      guard #available(iOS 14.0, macOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocationManager.self).authorizationStatus; return TokamakBindings_location.encode(value, b) }
-    case "CLLocationManager.authorizationStatus()":
-      guard #available(iOS 4.2, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = CLLocationManager.authorizationStatus(); return TokamakBindings_location.encode(value, b) }
+      return b.run { let value = try b.target(CLBeaconRegion.self).proximityUUID; return b.encode(value) }
+    case "CLBeaconRegion.uuid":
+      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLBeaconRegion.self).uuid; return b.encode(value) }
+    case "CLCircularRegion.center":
+      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLCircularRegion.self).center; return TokamakBindings_location.encode(value, b) }
+    case "CLCircularRegion.contains(_:)":
+      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLCircularRegion.self).contains(TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self)); return b.encode(value) }
+    case "CLCircularRegion.init(center:radius:identifier:)":
+      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLCircularRegion(center: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), radius: b.decode(b[1], as: CLLocationDistance.self), identifier: b.decode(b[2], as: String.self)); return b.encode(object: value) }
+    case "CLCircularRegion.radius":
+      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLCircularRegion.self).radius; return b.encode(value) }
+    case "CLGeocoder.cancelGeocode()":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLGeocoder.self).cancelGeocode(); return nil }
+    case "CLGeocoder.geocodeAddressString(_:)":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await b.target(CLGeocoder.self).geocodeAddressString(b.decode(b[0], as: String.self)); return b.encode(array: value) { b.encode(object: $0) } }
+    case "CLGeocoder.geocodeAddressString(_:in:)":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await b.target(CLGeocoder.self).geocodeAddressString(b.decode(b[0], as: String.self), in: b.optional(b[1]) { try b.object($0, as: CLRegion.self) }); return b.encode(array: value) { b.encode(object: $0) } }
+    case "CLGeocoder.geocodeAddressString(_:in:preferredLocale:)":
+      guard #available(iOS 11.0, macOS 10.13, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await b.target(CLGeocoder.self).geocodeAddressString(b.decode(b[0], as: String.self), in: b.optional(b[1]) { try b.object($0, as: CLRegion.self) }, preferredLocale: b.optional(b[2]) { try b.decode($0, as: Locale.self) }); return b.encode(array: value) { b.encode(object: $0) } }
+    case "CLGeocoder.isGeocoding":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLGeocoder.self).isGeocoding; return b.encode(value) }
+    case "CLGeocoder.reverseGeocodeLocation(_:)":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await b.target(CLGeocoder.self).reverseGeocodeLocation(b.object(b[0], as: CLLocation.self)); return b.encode(array: value) { b.encode(object: $0) } }
+    case "CLGeocoder.reverseGeocodeLocation(_:preferredLocale:)":
+      guard #available(iOS 11.0, macOS 10.13, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await b.target(CLGeocoder.self).reverseGeocodeLocation(b.object(b[0], as: CLLocation.self), preferredLocale: b.optional(b[1]) { try b.decode($0, as: Locale.self) }); return b.encode(array: value) { b.encode(object: $0) } }
+    case "CLGeocoder.init()":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = CLGeocoder(); return b.encode(object: value) }
+    case "CLHeading.headingAccuracy":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).headingAccuracy; return b.encode(value) }
+    case "CLHeading.magneticHeading":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).magneticHeading; return b.encode(value) }
+    case "CLHeading.timestamp":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).timestamp; return b.encode(value) }
+    case "CLHeading.trueHeading":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).trueHeading; return b.encode(value) }
+    case "CLHeading.x":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).x; return b.encode(value) }
+    case "CLHeading.y":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).y; return b.encode(value) }
+    case "CLHeading.z":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).z; return b.encode(value) }
     case "CLLocationManager.accuracyAuthorization":
       guard #available(iOS 14.0, macOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocationManager.self).accuracyAuthorization; return TokamakBindings_location.encode(value, b) }
-    case "CLLocationManager.isAuthorizedForWidgetUpdates":
-      guard #available(iOS 14.0, macOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocationManager.self).isAuthorizedForWidgetUpdates; return b.encode(value) }
-    case "CLLocationManager.delegate":
-      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocationManager.self).delegate; return b.encode(optional: value) { b.encode(object: $0) } }
-    case "CLLocationManager.delegate=":
-      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).delegate = b.optional(b[0]) { try b.object($0, as: (any CLLocationManagerDelegate).self) }; return nil }
     case "CLLocationManager.activityType":
       guard #available(iOS 6.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocationManager.self).activityType; return TokamakBindings_location.encode(value, b) }
     case "CLLocationManager.activityType=":
       guard #available(iOS 6.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { try b.target(CLLocationManager.self).activityType = TokamakBindings_location.decode(b[0], b, as: CLActivityType.self); return nil }
-    case "CLLocationManager.distanceFilter":
-      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocationManager.self).distanceFilter; return b.encode(value) }
-    case "CLLocationManager.distanceFilter=":
-      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).distanceFilter = b.decode(b[0], as: CLLocationDistance.self); return nil }
-    case "CLLocationManager.desiredAccuracy":
-      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocationManager.self).desiredAccuracy; return b.encode(value) }
-    case "CLLocationManager.desiredAccuracy=":
-      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).desiredAccuracy = b.decode(b[0], as: CLLocationAccuracy.self); return nil }
-    case "CLLocationManager.pausesLocationUpdatesAutomatically":
+    case "CLLocationManager.allowDeferredLocationUpdates(untilTraveled:timeout:)":
       guard #available(iOS 6.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocationManager.self).pausesLocationUpdatesAutomatically; return b.encode(value) }
-    case "CLLocationManager.pausesLocationUpdatesAutomatically=":
-      guard #available(iOS 6.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).pausesLocationUpdatesAutomatically = b.decode(b[0], as: Bool.self); return nil }
+      return b.run { try b.target(CLLocationManager.self).allowDeferredLocationUpdates(untilTraveled: b.decode(b[0], as: CLLocationDistance.self), timeout: b.decode(b[1], as: TimeInterval.self)); return nil }
     case "CLLocationManager.allowsBackgroundLocationUpdates":
       guard #available(iOS 9.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocationManager.self).allowsBackgroundLocationUpdates; return b.encode(value) }
     case "CLLocationManager.allowsBackgroundLocationUpdates=":
       guard #available(iOS 9.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { try b.target(CLLocationManager.self).allowsBackgroundLocationUpdates = b.decode(b[0], as: Bool.self); return nil }
-    #if os(iOS)
-    case "CLLocationManager.showsBackgroundLocationIndicator":
-      guard #available(iOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocationManager.self).showsBackgroundLocationIndicator; return b.encode(value) }
-    #endif
-    #if os(iOS)
-    case "CLLocationManager.showsBackgroundLocationIndicator=":
-      guard #available(iOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).showsBackgroundLocationIndicator = b.decode(b[0], as: Bool.self); return nil }
-    #endif
-    case "CLLocationManager.location":
+    case "CLLocationManager.authorizationStatus":
+      guard #available(iOS 14.0, macOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocationManager.self).authorizationStatus; return TokamakBindings_location.encode(value, b) }
+    case "CLLocationManager.authorizationStatus()":
+      guard #available(iOS 4.2, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = CLLocationManager.authorizationStatus(); return TokamakBindings_location.encode(value, b) }
+    case "CLLocationManager.deferredLocationUpdatesAvailable()":
+      guard #available(iOS 6.0, macOS 10.9, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = CLLocationManager.deferredLocationUpdatesAvailable(); return b.encode(value) }
+    case "CLLocationManager.delegate":
       guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocationManager.self).location; return b.encode(optional: value) { b.encode(object: $0) } }
+      return b.run { let value = try b.target(CLLocationManager.self).delegate; return b.encode(optional: value) { b.encode(object: $0) } }
+    case "CLLocationManager.delegate=":
+      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).delegate = b.optional(b[0]) { try b.object($0, as: (any CLLocationManagerDelegate).self) }; return nil }
+    case "CLLocationManager.desiredAccuracy":
+      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocationManager.self).desiredAccuracy; return b.encode(value) }
+    case "CLLocationManager.desiredAccuracy=":
+      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).desiredAccuracy = b.decode(b[0], as: CLLocationAccuracy.self); return nil }
+    case "CLLocationManager.disallowDeferredLocationUpdates()":
+      guard #available(iOS 6.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).disallowDeferredLocationUpdates(); return nil }
+    case "CLLocationManager.dismissHeadingCalibrationDisplay()":
+      guard #available(iOS 3.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).dismissHeadingCalibrationDisplay(); return nil }
+    case "CLLocationManager.distanceFilter":
+      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocationManager.self).distanceFilter; return b.encode(value) }
+    case "CLLocationManager.distanceFilter=":
+      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).distanceFilter = b.decode(b[0], as: CLLocationDistance.self); return nil }
+    case "CLLocationManager.heading":
+      guard #available(iOS 4.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocationManager.self).heading; return b.encode(optional: value) { b.encode(object: $0) } }
+    case "CLLocationManager.headingAvailable()":
+      guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = CLLocationManager.headingAvailable(); return b.encode(value) }
+    case "CLLocationManager.headingBody":
+      guard #available(iOS 27.0, macOS 27.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocationManager.self).headingBody; return b.encode(optional: value) { b.encode(object: $0) } }
+    case "CLLocationManager.headingBody=":
+      guard #available(iOS 27.0, macOS 27.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).headingBody = b.optional(b[0]) { try b.object($0, as: (any CLBodyIdentifiable).self) }; return nil }
     case "CLLocationManager.headingFilter":
       guard #available(iOS 3.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocationManager.self).headingFilter; return b.encode(value) }
@@ -225,112 +230,122 @@ final class TokamakBindings_location: TokamakPlugin {
     case "CLLocationManager.headingOrientation=":
       guard #available(iOS 4.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { try b.target(CLLocationManager.self).headingOrientation = TokamakBindings_location.decode(b[0], b, as: CLDeviceOrientation.self); return nil }
-    case "CLLocationManager.headingBody":
-      guard #available(iOS 27.0, macOS 27.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocationManager.self).headingBody; return b.encode(optional: value) { b.encode(object: $0) } }
-    case "CLLocationManager.headingBody=":
-      guard #available(iOS 27.0, macOS 27.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).headingBody = b.optional(b[0]) { try b.object($0, as: (any CLBodyIdentifiable).self) }; return nil }
-    case "CLLocationManager.heading":
-      guard #available(iOS 4.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocationManager.self).heading; return b.encode(optional: value) { b.encode(object: $0) } }
+    case "CLLocationManager.isAuthorizedForWidgetUpdates":
+      guard #available(iOS 14.0, macOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocationManager.self).isAuthorizedForWidgetUpdates; return b.encode(value) }
+    case "CLLocationManager.isRangingAvailable()":
+      guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = CLLocationManager.isRangingAvailable(); return b.encode(value) }
+    case "CLLocationManager.location":
+      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocationManager.self).location; return b.encode(optional: value) { b.encode(object: $0) } }
+    case "CLLocationManager.locationServicesEnabled()":
+      guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = CLLocationManager.locationServicesEnabled(); return b.encode(value) }
     case "CLLocationManager.maximumRegionMonitoringDistance":
       guard #available(iOS 4.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocationManager.self).maximumRegionMonitoringDistance; return b.encode(value) }
     case "CLLocationManager.monitoredRegions":
       guard #available(iOS 4.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocationManager.self).monitoredRegions; return b.encode(array: value) { b.encode(object: $0) } }
-    case "CLLocationManager.rangedRegions":
-      guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocationManager.self).rangedRegions; return b.encode(array: value) { b.encode(object: $0) } }
+    case "CLLocationManager.pausesLocationUpdatesAutomatically":
+      guard #available(iOS 6.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocationManager.self).pausesLocationUpdatesAutomatically; return b.encode(value) }
+    case "CLLocationManager.pausesLocationUpdatesAutomatically=":
+      guard #available(iOS 6.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).pausesLocationUpdatesAutomatically = b.decode(b[0], as: Bool.self); return nil }
     case "CLLocationManager.rangedBeaconConstraints":
       guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocationManager.self).rangedBeaconConstraints; return b.encode(array: value) { b.encode(object: $0) } }
-    case "CLLocationManager.requestWhenInUseAuthorization()":
-      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).requestWhenInUseAuthorization(); return nil }
+    case "CLLocationManager.rangedRegions":
+      guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocationManager.self).rangedRegions; return b.encode(array: value) { b.encode(object: $0) } }
     case "CLLocationManager.requestAlwaysAuthorization()":
       guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { try b.target(CLLocationManager.self).requestAlwaysAuthorization(); return nil }
-    case "CLLocationManager.requestTemporaryFullAccuracyAuthorization(withPurposeKey:)":
-      guard #available(iOS 14.0, macOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).requestTemporaryFullAccuracyAuthorization(withPurposeKey: b.decode(b[0], as: String.self)); return nil }
-    case "CLLocationManager.startUpdatingLocation()":
-      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).startUpdatingLocation(); return nil }
-    case "CLLocationManager.stopUpdatingLocation()":
-      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).stopUpdatingLocation(); return nil }
     case "CLLocationManager.requestLocation()":
       guard #available(iOS 9.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { try b.target(CLLocationManager.self).requestLocation(); return nil }
-    case "CLLocationManager.startUpdatingHeading()":
-      guard #available(iOS 3.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).startUpdatingHeading(); return nil }
+    case "CLLocationManager.requestState(for:)":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).requestState(for: b.object(b[0], as: CLRegion.self)); return nil }
+    case "CLLocationManager.requestTemporaryFullAccuracyAuthorization(withPurposeKey:)":
+      guard #available(iOS 14.0, macOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { try await b.target(CLLocationManager.self).requestTemporaryFullAccuracyAuthorization(withPurposeKey: b.decode(b[0], as: String.self)); return nil }
+    case "CLLocationManager.requestWhenInUseAuthorization()":
+      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).requestWhenInUseAuthorization(); return nil }
     #if os(iOS)
-    case "CLLocationManager.stopUpdatingHeading()":
-      guard #available(iOS 3.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).stopUpdatingHeading(); return nil }
+    case "CLLocationManager.showsBackgroundLocationIndicator":
+      guard #available(iOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocationManager.self).showsBackgroundLocationIndicator; return b.encode(value) }
     #endif
-    case "CLLocationManager.dismissHeadingCalibrationDisplay()":
-      guard #available(iOS 3.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).dismissHeadingCalibrationDisplay(); return nil }
+    #if os(iOS)
+    case "CLLocationManager.showsBackgroundLocationIndicator=":
+      guard #available(iOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).showsBackgroundLocationIndicator = b.decode(b[0], as: Bool.self); return nil }
+    #endif
+    case "CLLocationManager.significantLocationChangeMonitoringAvailable()":
+      guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = CLLocationManager.significantLocationChangeMonitoringAvailable(); return b.encode(value) }
+    case "CLLocationManager.startMonitoring(for:)":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).startMonitoring(for: b.object(b[0], as: CLRegion.self)); return nil }
+    #if os(iOS)
+    case "CLLocationManager.startMonitoringLocationPushes()":
+      guard #available(iOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await b.target(CLLocationManager.self).startMonitoringLocationPushes(); return b.encode(value) }
+    #endif
     case "CLLocationManager.startMonitoringSignificantLocationChanges()":
       guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { try b.target(CLLocationManager.self).startMonitoringSignificantLocationChanges(); return nil }
-    case "CLLocationManager.stopMonitoringSignificantLocationChanges()":
-      guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).stopMonitoringSignificantLocationChanges(); return nil }
+    case "CLLocationManager.startMonitoringVisits()":
+      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).startMonitoringVisits(); return nil }
+    case "CLLocationManager.startRangingBeacons(in:)":
+      guard #available(iOS 7.0, macOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).startRangingBeacons(in: b.object(b[0], as: CLBeaconRegion.self)); return nil }
+    case "CLLocationManager.startRangingBeacons(satisfying:)":
+      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).startRangingBeacons(satisfying: b.object(b[0], as: CLBeaconIdentityConstraint.self)); return nil }
+    case "CLLocationManager.startUpdatingHeading()":
+      guard #available(iOS 3.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).startUpdatingHeading(); return nil }
+    case "CLLocationManager.startUpdatingLocation()":
+      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).startUpdatingLocation(); return nil }
+    case "CLLocationManager.stopMonitoring(for:)":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).stopMonitoring(for: b.object(b[0], as: CLRegion.self)); return nil }
     #if os(iOS)
     case "CLLocationManager.stopMonitoringLocationPushes()":
       guard #available(iOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { try b.target(CLLocationManager.self).stopMonitoringLocationPushes(); return nil }
     #endif
-    case "CLLocationManager.stopMonitoring(for:)":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).stopMonitoring(for: b.object(b[0], as: CLRegion.self)); return nil }
-    case "CLLocationManager.startMonitoring(for:)":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).startMonitoring(for: b.object(b[0], as: CLRegion.self)); return nil }
-    case "CLLocationManager.requestState(for:)":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).requestState(for: b.object(b[0], as: CLRegion.self)); return nil }
-    case "CLLocationManager.startRangingBeacons(in:)":
-      guard #available(iOS 7.0, macOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).startRangingBeacons(in: b.object(b[0], as: CLBeaconRegion.self)); return nil }
-    case "CLLocationManager.stopRangingBeacons(in:)":
-      guard #available(iOS 7.0, macOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).stopRangingBeacons(in: b.object(b[0], as: CLBeaconRegion.self)); return nil }
-    case "CLLocationManager.startRangingBeacons(satisfying:)":
-      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).startRangingBeacons(satisfying: b.object(b[0], as: CLBeaconIdentityConstraint.self)); return nil }
-    case "CLLocationManager.stopRangingBeacons(satisfying:)":
-      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).stopRangingBeacons(satisfying: b.object(b[0], as: CLBeaconIdentityConstraint.self)); return nil }
-    case "CLLocationManager.allowDeferredLocationUpdates(untilTraveled:timeout:)":
-      guard #available(iOS 6.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).allowDeferredLocationUpdates(untilTraveled: b.decode(b[0], as: CLLocationDistance.self), timeout: b.decode(b[1], as: TimeInterval.self)); return nil }
-    case "CLLocationManager.disallowDeferredLocationUpdates()":
-      guard #available(iOS 6.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).disallowDeferredLocationUpdates(); return nil }
-    case "CLLocationManager.deferredLocationUpdatesAvailable()":
-      guard #available(iOS 6.0, macOS 10.9, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = CLLocationManager.deferredLocationUpdatesAvailable(); return b.encode(value) }
-    case "CLLocationManager.startMonitoringVisits()":
-      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).startMonitoringVisits(); return nil }
+    case "CLLocationManager.stopMonitoringSignificantLocationChanges()":
+      guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).stopMonitoringSignificantLocationChanges(); return nil }
     case "CLLocationManager.stopMonitoringVisits()":
       guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { try b.target(CLLocationManager.self).stopMonitoringVisits(); return nil }
-    #if os(macOS)
-    case "CLLocationManager.regionMonitoringAvailable()":
-      guard #available(macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = CLLocationManager.regionMonitoringAvailable(); return b.encode(value) }
+    case "CLLocationManager.stopRangingBeacons(in:)":
+      guard #available(iOS 7.0, macOS 11.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).stopRangingBeacons(in: b.object(b[0], as: CLBeaconRegion.self)); return nil }
+    case "CLLocationManager.stopRangingBeacons(satisfying:)":
+      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).stopRangingBeacons(satisfying: b.object(b[0], as: CLBeaconIdentityConstraint.self)); return nil }
+    #if os(iOS)
+    case "CLLocationManager.stopUpdatingHeading()":
+      guard #available(iOS 3.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).stopUpdatingHeading(); return nil }
     #endif
+    case "CLLocationManager.stopUpdatingLocation()":
+      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).stopUpdatingLocation(); return nil }
     #if os(macOS)
-    case "CLLocationManager.regionMonitoringEnabled()":
-      guard #available(macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = CLLocationManager.regionMonitoringEnabled(); return b.encode(value) }
+    case "CLLocationManager.headingAvailable":
+      guard #available(macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocationManager.self).headingAvailable; return b.encode(value) }
     #endif
     #if os(macOS)
     case "CLLocationManager.locationServicesEnabled":
@@ -348,9 +363,14 @@ final class TokamakBindings_location: TokamakPlugin {
       return b.run { try b.target(CLLocationManager.self).purpose = b.optional(b[0]) { try b.decode($0, as: String.self) }; return nil }
     #endif
     #if os(macOS)
-    case "CLLocationManager.headingAvailable":
-      guard #available(macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocationManager.self).headingAvailable; return b.encode(value) }
+    case "CLLocationManager.regionMonitoringAvailable()":
+      guard #available(macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = CLLocationManager.regionMonitoringAvailable(); return b.encode(value) }
+    #endif
+    #if os(macOS)
+    case "CLLocationManager.regionMonitoringEnabled()":
+      guard #available(macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = CLLocationManager.regionMonitoringEnabled(); return b.encode(value) }
     #endif
     #if os(macOS)
     case "CLLocationManager.startMonitoring(for:desiredAccuracy:)":
@@ -360,45 +380,69 @@ final class TokamakBindings_location: TokamakPlugin {
     case "CLLocationManager.init()":
       guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = CLLocationManager(); return b.encode(object: value) }
-    case "CLGeocoder.isGeocoding":
+    case "CLMonitor.add(_:identifier:)":
+      guard #available(iOS 17.0, macOS 14.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { try await b.target(CLMonitor.self).add(b.object(b[0], as: (any CLCondition).self), identifier: b.decode(b[1], as: String.self)); return nil }
+    case "CLMonitor.identifiers":
+      guard #available(iOS 17.0, macOS 14.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await b.target(CLMonitor.self).identifiers; return b.encode(array: value) { b.encode($0) } }
+    case "CLMonitor.init(_:)":
+      guard #available(iOS 17.0, macOS 14.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { let value = try await CLMonitor(b.decode(b[0], as: String.self)); return b.encode(object: value) }
+    case "CLMonitor.remove(_:)":
+      guard #available(iOS 17.0, macOS 14.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.task { try await b.target(CLMonitor.self).remove(b.decode(b[0], as: String.self)); return nil }
+    case "CLPlacemark.administrativeArea":
       guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLGeocoder.self).isGeocoding; return b.encode(value) }
-    case "CLGeocoder.cancelGeocode()":
+      return b.run { let value = try b.target(CLPlacemark.self).administrativeArea; return b.encode(optional: value) { b.encode($0) } }
+    case "CLPlacemark.areasOfInterest":
       guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLGeocoder.self).cancelGeocode(); return nil }
-    case "CLGeocoder.init()":
+      return b.run { let value = try b.target(CLPlacemark.self).areasOfInterest; return b.encode(optional: value) { b.encode(array: $0) { b.encode($0) } } }
+    case "CLPlacemark.country":
       guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = CLGeocoder(); return b.encode(object: value) }
-    case "CLBeaconIdentityConstraint.major":
-      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLBeaconIdentityConstraint.self).major; return b.encode(optional: value) { b.encode($0) } }
-    case "CLBeaconIdentityConstraint.minor":
-      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLBeaconIdentityConstraint.self).minor; return b.encode(optional: value) { b.encode($0) } }
-    case "CLVisit.arrivalDate":
-      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLVisit.self).arrivalDate; return b.encode(value) }
-    case "CLVisit.departureDate":
-      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLVisit.self).departureDate; return b.encode(value) }
-    case "CLVisit.coordinate":
-      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLVisit.self).coordinate; return TokamakBindings_location.encode(value, b) }
-    case "CLVisit.horizontalAccuracy":
-      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLVisit.self).horizontalAccuracy; return b.encode(value) }
-    case "CLCircularRegion.init(center:radius:identifier:)":
-      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLCircularRegion(center: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), radius: b.decode(b[1], as: CLLocationDistance.self), identifier: b.decode(b[2], as: String.self)); return b.encode(object: value) }
-    case "CLCircularRegion.center":
-      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLCircularRegion.self).center; return TokamakBindings_location.encode(value, b) }
-    case "CLCircularRegion.radius":
-      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLCircularRegion.self).radius; return b.encode(value) }
-    case "CLCircularRegion.contains(_:)":
-      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLCircularRegion.self).contains(TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self)); return b.encode(value) }
+      return b.run { let value = try b.target(CLPlacemark.self).country; return b.encode(optional: value) { b.encode($0) } }
+    case "CLPlacemark.init(placemark:)":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLPlacemark(placemark: b.object(b[0], as: CLPlacemark.self)); return b.encode(object: value) }
+    case "CLPlacemark.inlandWater":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLPlacemark.self).inlandWater; return b.encode(optional: value) { b.encode($0) } }
+    case "CLPlacemark.isoCountryCode":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLPlacemark.self).isoCountryCode; return b.encode(optional: value) { b.encode($0) } }
+    case "CLPlacemark.locality":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLPlacemark.self).locality; return b.encode(optional: value) { b.encode($0) } }
+    case "CLPlacemark.location":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLPlacemark.self).location; return b.encode(optional: value) { b.encode(object: $0) } }
+    case "CLPlacemark.name":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLPlacemark.self).name; return b.encode(optional: value) { b.encode($0) } }
+    case "CLPlacemark.ocean":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLPlacemark.self).ocean; return b.encode(optional: value) { b.encode($0) } }
+    case "CLPlacemark.postalCode":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLPlacemark.self).postalCode; return b.encode(optional: value) { b.encode($0) } }
+    case "CLPlacemark.region":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLPlacemark.self).region; return b.encode(optional: value) { b.encode(object: $0) } }
+    case "CLPlacemark.subAdministrativeArea":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLPlacemark.self).subAdministrativeArea; return b.encode(optional: value) { b.encode($0) } }
+    case "CLPlacemark.subLocality":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLPlacemark.self).subLocality; return b.encode(optional: value) { b.encode($0) } }
+    case "CLPlacemark.subThoroughfare":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLPlacemark.self).subThoroughfare; return b.encode(optional: value) { b.encode($0) } }
+    case "CLPlacemark.thoroughfare":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLPlacemark.self).thoroughfare; return b.encode(optional: value) { b.encode($0) } }
+    case "CLPlacemark.timeZone":
+      guard #available(iOS 9.0, macOS 10.11, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLPlacemark.self).timeZone; return b.encode(optional: value) { b.encode($0) } }
     case "CLRegion.identifier":
       guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLRegion.self).identifier; return b.encode(value) }
@@ -415,115 +459,97 @@ final class TokamakBindings_location: TokamakPlugin {
       guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { try b.target(CLRegion.self).notifyOnExit = b.decode(b[0], as: Bool.self); return nil }
     #if os(macOS)
-    case "CLRegion.init(circularRegionWithCenter:radius:identifier:)":
-      guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLRegion(circularRegionWithCenter: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), radius: b.decode(b[1], as: CLLocationDistance.self), identifier: b.decode(b[2], as: String.self)); return b.encode(object: value) }
-    #endif
-    #if os(macOS)
     case "CLRegion.center":
       guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLRegion.self).center; return TokamakBindings_location.encode(value, b) }
-    #endif
-    #if os(macOS)
-    case "CLRegion.radius":
-      guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLRegion.self).radius; return b.encode(value) }
     #endif
     #if os(macOS)
     case "CLRegion.contains(_:)":
       guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLRegion.self).contains(TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self)); return b.encode(value) }
     #endif
-    case "CLPlacemark.init(placemark:)":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLPlacemark(placemark: b.object(b[0], as: CLPlacemark.self)); return b.encode(object: value) }
-    case "CLPlacemark.location":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).location; return b.encode(optional: value) { b.encode(object: $0) } }
-    case "CLPlacemark.region":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).region; return b.encode(optional: value) { b.encode(object: $0) } }
-    case "CLPlacemark.timeZone":
-      guard #available(iOS 9.0, macOS 10.11, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).timeZone; return b.encode(optional: value) { b.encode($0) } }
-    case "CLPlacemark.name":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).name; return b.encode(optional: value) { b.encode($0) } }
-    case "CLPlacemark.thoroughfare":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).thoroughfare; return b.encode(optional: value) { b.encode($0) } }
-    case "CLPlacemark.subThoroughfare":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).subThoroughfare; return b.encode(optional: value) { b.encode($0) } }
-    case "CLPlacemark.locality":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).locality; return b.encode(optional: value) { b.encode($0) } }
-    case "CLPlacemark.subLocality":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).subLocality; return b.encode(optional: value) { b.encode($0) } }
-    case "CLPlacemark.administrativeArea":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).administrativeArea; return b.encode(optional: value) { b.encode($0) } }
-    case "CLPlacemark.subAdministrativeArea":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).subAdministrativeArea; return b.encode(optional: value) { b.encode($0) } }
-    case "CLPlacemark.postalCode":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).postalCode; return b.encode(optional: value) { b.encode($0) } }
-    case "CLPlacemark.isoCountryCode":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).isoCountryCode; return b.encode(optional: value) { b.encode($0) } }
-    case "CLPlacemark.country":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).country; return b.encode(optional: value) { b.encode($0) } }
-    case "CLPlacemark.inlandWater":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).inlandWater; return b.encode(optional: value) { b.encode($0) } }
-    case "CLPlacemark.ocean":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).ocean; return b.encode(optional: value) { b.encode($0) } }
-    case "CLPlacemark.areasOfInterest":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLPlacemark.self).areasOfInterest; return b.encode(optional: value) { b.encode(array: $0) { b.encode($0) } } }
+    #if os(macOS)
+    case "CLRegion.init(circularRegionWithCenter:radius:identifier:)":
+      guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLRegion(circularRegionWithCenter: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), radius: b.decode(b[1], as: CLLocationDistance.self), identifier: b.decode(b[2], as: String.self)); return b.encode(object: value) }
+    #endif
+    #if os(macOS)
+    case "CLRegion.radius":
+      guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLRegion.self).radius; return b.encode(value) }
+    #endif
+    #if os(iOS)
+    case "CLServiceSession.init(authorization:)":
+      guard #available(iOS 18.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLServiceSession(authorization: TokamakBindings_location.decode(b[0], b, as: CLServiceSession.AuthorizationRequirement.self)); return b.encode(object: value) }
+    #endif
+    #if os(iOS)
+    case "CLServiceSession.init(authorization:fullAccuracyPurposeKey:)":
+      guard #available(iOS 18.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLServiceSession(authorization: TokamakBindings_location.decode(b[0], b, as: CLServiceSession.AuthorizationRequirement.self), fullAccuracyPurposeKey: b.decode(b[1], as: String.self)); return b.encode(object: value) }
+    #endif
+    #if os(iOS)
+    case "CLServiceSession.invalidate()":
+      guard #available(iOS 18.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLServiceSession.self).invalidate(); return nil }
+    #endif
+    case "CLVisit.arrivalDate":
+      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLVisit.self).arrivalDate; return b.encode(value) }
+    case "CLVisit.coordinate":
+      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLVisit.self).coordinate; return TokamakBindings_location.encode(value, b) }
+    case "CLVisit.departureDate":
+      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLVisit.self).departureDate; return b.encode(value) }
+    case "CLVisit.horizontalAccuracy":
+      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLVisit.self).horizontalAccuracy; return b.encode(value) }
     case "CLFloor.level":
       guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLFloor.self).level; return b.encode(value) }
-    case "CLLocation.init(latitude:longitude:)":
-      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLLocation(latitude: b.decode(b[0], as: CLLocationDegrees.self), longitude: b.decode(b[1], as: CLLocationDegrees.self)); return b.encode(object: value) }
-    case "CLLocation.init(coordinate:altitude:horizontalAccuracy:verticalAccuracy:timestamp:)":
-      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLLocation(coordinate: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), altitude: b.decode(b[1], as: CLLocationDistance.self), horizontalAccuracy: b.decode(b[2], as: CLLocationAccuracy.self), verticalAccuracy: b.decode(b[3], as: CLLocationAccuracy.self), timestamp: b.decode(b[4], as: Date.self)); return b.encode(object: value) }
-    case "CLLocation.init(coordinate:altitude:horizontalAccuracy:verticalAccuracy:course:speed:timestamp:)":
-      guard #available(iOS 4.2, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLLocation(coordinate: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), altitude: b.decode(b[1], as: CLLocationDistance.self), horizontalAccuracy: b.decode(b[2], as: CLLocationAccuracy.self), verticalAccuracy: b.decode(b[3], as: CLLocationAccuracy.self), course: b.decode(b[4], as: CLLocationDirection.self), speed: b.decode(b[5], as: CLLocationSpeed.self), timestamp: b.decode(b[6], as: Date.self)); return b.encode(object: value) }
-    case "CLLocation.init(coordinate:altitude:horizontalAccuracy:verticalAccuracy:course:courseAccuracy:speed:speedAccuracy:timestamp:)":
-      guard #available(iOS 13.4, macOS 10.15.4, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLLocation(coordinate: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), altitude: b.decode(b[1], as: CLLocationDistance.self), horizontalAccuracy: b.decode(b[2], as: CLLocationAccuracy.self), verticalAccuracy: b.decode(b[3], as: CLLocationAccuracy.self), course: b.decode(b[4], as: CLLocationDirection.self), courseAccuracy: b.decode(b[5], as: CLLocationDirectionAccuracy.self), speed: b.decode(b[6], as: CLLocationSpeed.self), speedAccuracy: b.decode(b[7], as: CLLocationSpeedAccuracy.self), timestamp: b.decode(b[8], as: Date.self)); return b.encode(object: value) }
-    case "CLLocation.init(coordinate:altitude:horizontalAccuracy:verticalAccuracy:course:courseAccuracy:speed:speedAccuracy:timestamp:sourceInfo:)":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLLocation(coordinate: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), altitude: b.decode(b[1], as: CLLocationDistance.self), horizontalAccuracy: b.decode(b[2], as: CLLocationAccuracy.self), verticalAccuracy: b.decode(b[3], as: CLLocationAccuracy.self), course: b.decode(b[4], as: CLLocationDirection.self), courseAccuracy: b.decode(b[5], as: CLLocationDirectionAccuracy.self), speed: b.decode(b[6], as: CLLocationSpeed.self), speedAccuracy: b.decode(b[7], as: CLLocationSpeedAccuracy.self), timestamp: b.decode(b[8], as: Date.self), sourceInfo: b.object(b[9], as: CLLocationSourceInformation.self)); return b.encode(object: value) }
-    case "CLLocation.coordinate":
-      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocation.self).coordinate; return TokamakBindings_location.encode(value, b) }
     case "CLLocation.altitude":
       guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocation.self).altitude; return b.encode(value) }
-    case "CLLocation.ellipsoidalAltitude":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocation.self).ellipsoidalAltitude; return b.encode(value) }
-    case "CLLocation.horizontalAccuracy":
+    case "CLLocation.coordinate":
       guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocation.self).horizontalAccuracy; return b.encode(value) }
-    case "CLLocation.verticalAccuracy":
-      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocation.self).verticalAccuracy; return b.encode(value) }
+      return b.run { let value = try b.target(CLLocation.self).coordinate; return TokamakBindings_location.encode(value, b) }
     case "CLLocation.course":
       guard #available(iOS 2.2, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocation.self).course; return b.encode(value) }
     case "CLLocation.courseAccuracy":
       guard #available(iOS 13.4, macOS 10.15.4, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocation.self).courseAccuracy; return b.encode(value) }
+    case "CLLocation.distance(from:)":
+      guard #available(iOS 3.2, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocation.self).distance(from: b.object(b[0], as: CLLocation.self)); return b.encode(value) }
+    case "CLLocation.ellipsoidalAltitude":
+      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocation.self).ellipsoidalAltitude; return b.encode(value) }
+    case "CLLocation.floor":
+      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocation.self).floor; return b.encode(optional: value) { b.encode(object: $0) } }
+    case "CLLocation.horizontalAccuracy":
+      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocation.self).horizontalAccuracy; return b.encode(value) }
+    case "CLLocation.init(coordinate:altitude:horizontalAccuracy:verticalAccuracy:course:courseAccuracy:speed:speedAccuracy:timestamp:)":
+      guard #available(iOS 13.4, macOS 10.15.4, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLLocation(coordinate: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), altitude: b.decode(b[1], as: CLLocationDistance.self), horizontalAccuracy: b.decode(b[2], as: CLLocationAccuracy.self), verticalAccuracy: b.decode(b[3], as: CLLocationAccuracy.self), course: b.decode(b[4], as: CLLocationDirection.self), courseAccuracy: b.decode(b[5], as: CLLocationDirectionAccuracy.self), speed: b.decode(b[6], as: CLLocationSpeed.self), speedAccuracy: b.decode(b[7], as: CLLocationSpeedAccuracy.self), timestamp: b.decode(b[8], as: Date.self)); return b.encode(object: value) }
+    case "CLLocation.init(coordinate:altitude:horizontalAccuracy:verticalAccuracy:course:courseAccuracy:speed:speedAccuracy:timestamp:sourceInfo:)":
+      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLLocation(coordinate: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), altitude: b.decode(b[1], as: CLLocationDistance.self), horizontalAccuracy: b.decode(b[2], as: CLLocationAccuracy.self), verticalAccuracy: b.decode(b[3], as: CLLocationAccuracy.self), course: b.decode(b[4], as: CLLocationDirection.self), courseAccuracy: b.decode(b[5], as: CLLocationDirectionAccuracy.self), speed: b.decode(b[6], as: CLLocationSpeed.self), speedAccuracy: b.decode(b[7], as: CLLocationSpeedAccuracy.self), timestamp: b.decode(b[8], as: Date.self), sourceInfo: b.object(b[9], as: CLLocationSourceInformation.self)); return b.encode(object: value) }
+    case "CLLocation.init(coordinate:altitude:horizontalAccuracy:verticalAccuracy:course:speed:timestamp:)":
+      guard #available(iOS 4.2, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLLocation(coordinate: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), altitude: b.decode(b[1], as: CLLocationDistance.self), horizontalAccuracy: b.decode(b[2], as: CLLocationAccuracy.self), verticalAccuracy: b.decode(b[3], as: CLLocationAccuracy.self), course: b.decode(b[4], as: CLLocationDirection.self), speed: b.decode(b[5], as: CLLocationSpeed.self), timestamp: b.decode(b[6], as: Date.self)); return b.encode(object: value) }
+    case "CLLocation.init(coordinate:altitude:horizontalAccuracy:verticalAccuracy:timestamp:)":
+      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLLocation(coordinate: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), altitude: b.decode(b[1], as: CLLocationDistance.self), horizontalAccuracy: b.decode(b[2], as: CLLocationAccuracy.self), verticalAccuracy: b.decode(b[3], as: CLLocationAccuracy.self), timestamp: b.decode(b[4], as: Date.self)); return b.encode(object: value) }
+    case "CLLocation.init(latitude:longitude:)":
+      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLLocation(latitude: b.decode(b[0], as: CLLocationDegrees.self), longitude: b.decode(b[1], as: CLLocationDegrees.self)); return b.encode(object: value) }
+    case "CLLocation.sourceInformation":
+      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocation.self).sourceInformation; return b.encode(optional: value) { b.encode(object: $0) } }
     case "CLLocation.speed":
       guard #available(iOS 2.2, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocation.self).speed; return b.encode(value) }
@@ -533,15 +559,9 @@ final class TokamakBindings_location: TokamakPlugin {
     case "CLLocation.timestamp":
       guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocation.self).timestamp; return b.encode(value) }
-    case "CLLocation.floor":
-      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocation.self).floor; return b.encode(optional: value) { b.encode(object: $0) } }
-    case "CLLocation.sourceInformation":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocation.self).sourceInformation; return b.encode(optional: value) { b.encode(object: $0) } }
-    case "CLLocation.distance(from:)":
-      guard #available(iOS 3.2, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocation.self).distance(from: b.object(b[0], as: CLLocation.self)); return b.encode(value) }
+    case "CLLocation.verticalAccuracy":
+      guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocation.self).verticalAccuracy; return b.encode(value) }
     #if os(macOS)
     case "CLLocation.getDistanceFrom(_:)":
       guard #available(macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
@@ -550,26 +570,26 @@ final class TokamakBindings_location: TokamakPlugin {
     case "CLLocationSourceInformation.init(softwareSimulationState:andExternalAccessoryState:)":
       guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try CLLocationSourceInformation(softwareSimulationState: b.decode(b[0], as: Bool.self), andExternalAccessoryState: b.decode(b[1], as: Bool.self)); return b.encode(object: value) }
-    case "CLLocationSourceInformation.isSimulatedBySoftware":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLLocationSourceInformation.self).isSimulatedBySoftware; return b.encode(value) }
     case "CLLocationSourceInformation.isProducedByAccessory":
       guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocationSourceInformation.self).isProducedByAccessory; return b.encode(value) }
-    case "kCLHeadingFilterNone":
-      return b.run { let value = kCLHeadingFilterNone; return b.encode(value) }
-    case "kCLErrorUserInfoAlternateRegionKey":
-      guard #available(iOS 5.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = kCLErrorUserInfoAlternateRegionKey; return b.encode(value) }
-    case "CL_TARGET_SUPPORTS_CONDITIONS":
-      return b.run { let value = CL_TARGET_SUPPORTS_CONDITIONS; return b.encode(value) }
-    case "kCLErrorDomain":
-      return b.run { let value = kCLErrorDomain; return b.encode(value) }
+    case "CLLocationSourceInformation.isSimulatedBySoftware":
+      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLLocationSourceInformation.self).isSimulatedBySoftware; return b.encode(value) }
     #if os(iOS)
     case "CLLocationPushServiceErrorDomain":
       guard #available(iOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = CLLocationPushServiceErrorDomain; return b.encode(value) }
     #endif
+    case "CL_TARGET_SUPPORTS_CONDITIONS":
+      return b.run { let value = CL_TARGET_SUPPORTS_CONDITIONS; return b.encode(value) }
+    case "kCLErrorDomain":
+      return b.run { let value = kCLErrorDomain; return b.encode(value) }
+    case "kCLErrorUserInfoAlternateRegionKey":
+      guard #available(iOS 5.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = kCLErrorUserInfoAlternateRegionKey; return b.encode(value) }
+    case "kCLHeadingFilterNone":
+      return b.run { let value = kCLHeadingFilterNone; return b.encode(value) }
     case "CLLocationCoordinate2DIsValid(_:)":
       guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try CLLocationCoordinate2DIsValid(TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self)); return b.encode(value) }
@@ -616,148 +636,22 @@ final class TokamakBindings_location: TokamakPlugin {
     case "CLLocationManagerDelegate":
       return b.implement(CLLocationManagerDelegateImplementation.self)
     #if os(iOS)
-    case "CLServiceSession.diagnostics":
+    case "CLBackgroundActivitySession.diagnostics":
       guard #available(iOS 18.0, *) else { throw TokamakBinding.unavailable }
-      return b.stream({ try b.target(CLServiceSession.self).diagnostics }, encode: { TokamakBindings_location.encode($0, b) })
+      return b.stream({ try b.target(CLBackgroundActivitySession.self).diagnostics }, encode: { TokamakBindings_location.encode($0, b) })
     #endif
     case "CLLocationUpdate.liveUpdates(_:)":
       guard #available(iOS 17.0, macOS 14.0, *) else { throw TokamakBinding.unavailable }
       return b.stream({ try CLLocationUpdate.liveUpdates(TokamakBindings_location.decode(b[0], b, as: CLLocationUpdate.LiveConfiguration.self)) }, encode: { TokamakBindings_location.encode($0, b) })
     #if os(iOS)
-    case "CLBackgroundActivitySession.diagnostics":
+    case "CLServiceSession.diagnostics":
       guard #available(iOS 18.0, *) else { throw TokamakBinding.unavailable }
-      return b.stream({ try b.target(CLBackgroundActivitySession.self).diagnostics }, encode: { TokamakBindings_location.encode($0, b) })
+      return b.stream({ try b.target(CLServiceSession.self).diagnostics }, encode: { TokamakBindings_location.encode($0, b) })
     #endif
     default:
       throw .notSupported("\(method) is not supported")
     }
   }
-
-  @available(iOS 17.0, macOS 14.0, *)
-  private static func encode(_ value: CLMonitor.CircularGeographicCondition, _ b: TokamakBinding) -> Any {
-    var fields: [String: Any] = [:]
-    fields["center"] = TokamakBindings_location.encode(value.center, b)
-    fields["radius"] = b.encode(value.radius)
-    return fields
-  }
-
-  @available(iOS 17.0, macOS 14.0, *)
-  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLMonitor.CircularGeographicCondition.Type) throws -> CLMonitor.CircularGeographicCondition {
-    try CLMonitor.CircularGeographicCondition(
-      center: TokamakBindings_location.decode(b.field(value, "center"), b, as: CLLocationCoordinate2D.self),
-      radius: b.decode(b.field(value, "radius"), as: CLLocationDistance.self)
-    )
-  }
-
-  @available(iOS 17.0, macOS 14.0, *)
-  private static func encode(_ value: CLMonitor.BeaconIdentityCondition, _ b: TokamakBinding) -> Any {
-    var fields: [String: Any] = [:]
-    fields["uuid"] = b.encode(value.uuid)
-    fields["major"] = b.encode(optional: value.major) { b.encode($0) }
-    fields["minor"] = b.encode(optional: value.minor) { b.encode($0) }
-    return fields
-  }
-  #if os(iOS)
-
-  @available(iOS 18.0, *)
-  private static func encode(_ value: CLServiceSession.Diagnostic, _ b: TokamakBinding) -> Any {
-    var fields: [String: Any] = [:]
-    fields["authorizationDenied"] = b.encode(value.authorizationDenied)
-    fields["authorizationDeniedGlobally"] = b.encode(value.authorizationDeniedGlobally)
-    fields["authorizationRestricted"] = b.encode(value.authorizationRestricted)
-    fields["insufficientlyInUse"] = b.encode(value.insufficientlyInUse)
-    fields["fullAccuracyDenied"] = b.encode(value.fullAccuracyDenied)
-    fields["alwaysAuthorizationDenied"] = b.encode(value.alwaysAuthorizationDenied)
-    fields["serviceSessionRequired"] = b.encode(value.serviceSessionRequired)
-    fields["authorizationRequestInProgress"] = b.encode(value.authorizationRequestInProgress)
-    return fields
-  }
-  #endif
-  #if os(iOS)
-
-  @available(iOS 18.0, *)
-  private static func encode(_ value: CLServiceSession.AuthorizationRequirement, _ b: TokamakBinding) -> Any {
-    if value == .none { return "none" }
-    if value == .whenInUse { return "whenInUse" }
-    if value == .always { return "always" }
-    return "\(value)"
-  }
-
-  @available(iOS 18.0, *)
-  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLServiceSession.AuthorizationRequirement.Type) throws -> CLServiceSession.AuthorizationRequirement {
-    switch try b.decode(value, as: String.self) {
-    case "none":
-      return .none
-    case "whenInUse":
-      return .whenInUse
-    case "always":
-      return .always
-    default: throw b.mismatch(value, type)
-    }
-  }
-  #endif
-
-  @available(iOS 17.0, macOS 14.0, *)
-  private static func encode(_ value: CLLocationUpdate, _ b: TokamakBinding) -> Any {
-    var fields: [String: Any] = [:]
-    fields["location"] = b.encode(optional: value.location) { b.encode(object: $0) }
-    fields["isStationary"] = b.encode(value.isStationary)
-    if #available(iOS 18.0, macOS 15.0, *) { fields["stationary"] = b.encode(value.stationary) }
-    if #available(iOS 18.0, macOS 15.0, *) { fields["authorizationDenied"] = b.encode(value.authorizationDenied) }
-    if #available(iOS 18.0, macOS 15.0, *) { fields["authorizationDeniedGlobally"] = b.encode(value.authorizationDeniedGlobally) }
-    if #available(iOS 18.0, macOS 15.0, *) { fields["authorizationRestricted"] = b.encode(value.authorizationRestricted) }
-    if #available(iOS 18.0, macOS 15.0, *) { fields["insufficientlyInUse"] = b.encode(value.insufficientlyInUse) }
-    if #available(iOS 18.0, macOS 15.0, *) { fields["locationUnavailable"] = b.encode(value.locationUnavailable) }
-    if #available(iOS 18.0, macOS 15.0, *) { fields["accuracyLimited"] = b.encode(value.accuracyLimited) }
-    if #available(iOS 18.0, macOS 15.0, *) { fields["serviceSessionRequired"] = b.encode(value.serviceSessionRequired) }
-    if #available(iOS 18.0, macOS 15.0, *) { fields["authorizationRequestInProgress"] = b.encode(value.authorizationRequestInProgress) }
-    return fields
-  }
-
-  @available(iOS 17.0, macOS 14.0, *)
-  private static func encode(_ value: CLLocationUpdate.LiveConfiguration, _ b: TokamakBinding) -> Any {
-    if value == .default { return "default" }
-    if value == .automotiveNavigation { return "automotiveNavigation" }
-    if value == .otherNavigation { return "otherNavigation" }
-    if value == .fitness { return "fitness" }
-    if value == .airborne { return "airborne" }
-    if #available(iOS 27.0, macOS 27.0, *), value == .maritime { return "maritime" }
-    return "\(value)"
-  }
-
-  @available(iOS 17.0, macOS 14.0, *)
-  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLLocationUpdate.LiveConfiguration.Type) throws -> CLLocationUpdate.LiveConfiguration {
-    switch try b.decode(value, as: String.self) {
-    case "default":
-      return .default
-    case "automotiveNavigation":
-      return .automotiveNavigation
-    case "otherNavigation":
-      return .otherNavigation
-    case "fitness":
-      return .fitness
-    case "airborne":
-      return .airborne
-    case "maritime":
-      guard #available(iOS 27.0, macOS 27.0, *) else { throw TokamakBinding.unavailable }
-      return .maritime
-    default: throw b.mismatch(value, type)
-    }
-  }
-  #if os(iOS)
-
-  @available(iOS 18.0, *)
-  private static func encode(_ value: CLBackgroundActivitySession.Diagnostic, _ b: TokamakBinding) -> Any {
-    var fields: [String: Any] = [:]
-    fields["authorizationDenied"] = b.encode(value.authorizationDenied)
-    fields["authorizationDeniedGlobally"] = b.encode(value.authorizationDeniedGlobally)
-    fields["authorizationRestricted"] = b.encode(value.authorizationRestricted)
-    fields["insufficientlyInUse"] = b.encode(value.insufficientlyInUse)
-    fields["serviceSessionRequired"] = b.encode(value.serviceSessionRequired)
-    fields["authorizationRequestInProgress"] = b.encode(value.authorizationRequestInProgress)
-    return fields
-  }
-  #endif
 
   private static func encode(_ value: CLAccuracyAuthorization, _ b: TokamakBinding) -> Any {
     if value == .fullAccuracy { return "fullAccuracy" }
@@ -776,54 +670,48 @@ final class TokamakBindings_location: TokamakPlugin {
   }
 
   private static func encode(_ value: CLActivityType, _ b: TokamakBinding) -> Any {
-    if value == .other { return "other" }
+    if #available(iOS 12.0, macOS 10.14, *), value == .airborne { return "airborne" }
     if value == .automotiveNavigation { return "automotiveNavigation" }
     if value == .fitness { return "fitness" }
-    if value == .otherNavigation { return "otherNavigation" }
-    if #available(iOS 12.0, macOS 10.14, *), value == .airborne { return "airborne" }
     if #available(iOS 27.0, macOS 27.0, *), value == .maritime { return "maritime" }
+    if value == .other { return "other" }
+    if value == .otherNavigation { return "otherNavigation" }
     return "\(value)"
   }
 
   private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLActivityType.Type) throws -> CLActivityType {
     switch try b.decode(value, as: String.self) {
-    case "other":
-      return .other
+    case "airborne":
+      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
+      return .airborne
     case "automotiveNavigation":
       return .automotiveNavigation
     case "fitness":
       return .fitness
-    case "otherNavigation":
-      return .otherNavigation
-    case "airborne":
-      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
-      return .airborne
     case "maritime":
       guard #available(iOS 27.0, macOS 27.0, *) else { throw TokamakBinding.unavailable }
       return .maritime
+    case "other":
+      return .other
+    case "otherNavigation":
+      return .otherNavigation
     default: throw b.mismatch(value, type)
     }
   }
 
   private static func encode(_ value: CLAuthorizationStatus, _ b: TokamakBinding) -> Any {
-    if value == .notDetermined { return "notDetermined" }
-    if value == .restricted { return "restricted" }
-    if value == .denied { return "denied" }
     if #available(iOS 8.0, macOS 10.12, *), value == .authorizedAlways { return "authorizedAlways" }
     #if os(iOS)
     if #available(iOS 8.0, *), value == .authorizedWhenInUse { return "authorizedWhenInUse" }
     #endif
+    if value == .denied { return "denied" }
+    if value == .notDetermined { return "notDetermined" }
+    if value == .restricted { return "restricted" }
     return "\(value)"
   }
 
   private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLAuthorizationStatus.Type) throws -> CLAuthorizationStatus {
     switch try b.decode(value, as: String.self) {
-    case "notDetermined":
-      return .notDetermined
-    case "restricted":
-      return .restricted
-    case "denied":
-      return .denied
     case "authorizedAlways":
       guard #available(iOS 8.0, macOS 10.12, *) else { throw TokamakBinding.unavailable }
       return .authorizedAlways
@@ -832,37 +720,57 @@ final class TokamakBindings_location: TokamakPlugin {
       guard #available(iOS 8.0, *) else { throw TokamakBinding.unavailable }
       return .authorizedWhenInUse
     #endif
+    case "denied":
+      return .denied
+    case "notDetermined":
+      return .notDetermined
+    case "restricted":
+      return .restricted
     default: throw b.mismatch(value, type)
     }
   }
+  #if os(iOS)
+
+  @available(iOS 18.0, *)
+  private static func encode(_ value: CLBackgroundActivitySession.Diagnostic, _ b: TokamakBinding) -> Any {
+    var fields: [String: Any] = [:]
+    fields["authorizationDenied"] = b.encode(value.authorizationDenied)
+    fields["authorizationDeniedGlobally"] = b.encode(value.authorizationDeniedGlobally)
+    fields["authorizationRequestInProgress"] = b.encode(value.authorizationRequestInProgress)
+    fields["authorizationRestricted"] = b.encode(value.authorizationRestricted)
+    fields["insufficientlyInUse"] = b.encode(value.insufficientlyInUse)
+    fields["serviceSessionRequired"] = b.encode(value.serviceSessionRequired)
+    return fields
+  }
+  #endif
 
   private static func encode(_ value: CLDeviceOrientation, _ b: TokamakBinding) -> Any {
-    if value == .unknown { return "unknown" }
-    if value == .portrait { return "portrait" }
-    if value == .portraitUpsideDown { return "portraitUpsideDown" }
+    if value == .faceDown { return "faceDown" }
+    if value == .faceUp { return "faceUp" }
     if value == .landscapeLeft { return "landscapeLeft" }
     if value == .landscapeRight { return "landscapeRight" }
-    if value == .faceUp { return "faceUp" }
-    if value == .faceDown { return "faceDown" }
+    if value == .portrait { return "portrait" }
+    if value == .portraitUpsideDown { return "portraitUpsideDown" }
+    if value == .unknown { return "unknown" }
     return "\(value)"
   }
 
   private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLDeviceOrientation.Type) throws -> CLDeviceOrientation {
     switch try b.decode(value, as: String.self) {
-    case "unknown":
-      return .unknown
-    case "portrait":
-      return .portrait
-    case "portraitUpsideDown":
-      return .portraitUpsideDown
+    case "faceDown":
+      return .faceDown
+    case "faceUp":
+      return .faceUp
     case "landscapeLeft":
       return .landscapeLeft
     case "landscapeRight":
       return .landscapeRight
-    case "faceUp":
-      return .faceUp
-    case "faceDown":
-      return .faceDown
+    case "portrait":
+      return .portrait
+    case "portraitUpsideDown":
+      return .portraitUpsideDown
+    case "unknown":
+      return .unknown
     default: throw b.mismatch(value, type)
     }
   }
@@ -870,61 +778,36 @@ final class TokamakBindings_location: TokamakPlugin {
   private final class CLLocationManagerDelegateImplementation: TokamakBindingImplementation, CLLocationManagerDelegate {
     override class var selectors: [Selector: String] {
       [
-        NSSelectorFromString("locationManager:didUpdateLocations:"): "locationManagerDidUpdateLocations",
-        NSSelectorFromString("locationManager:didUpdateHeading:"): "locationManagerDidUpdateHeading",
+        NSSelectorFromString("locationManager:didChangeAuthorizationStatus:"): "locationManagerDidChangeAuthorizationStatus",
         NSSelectorFromString("locationManager:didDetermineState:forRegion:"): "locationManagerDidDetermineStateForRegion",
-        NSSelectorFromString("locationManager:didRangeBeacons:inRegion:"): "locationManagerDidRangeBeaconsInRegion",
-        NSSelectorFromString("locationManager:rangingBeaconsDidFailForRegion:withError:"): "locationManagerRangingBeaconsDidFailForRegionWithError",
-        NSSelectorFromString("locationManager:didRangeBeacons:satisfyingConstraint:"): "locationManagerDidRangeBeaconsSatisfyingConstraint",
-        NSSelectorFromString("locationManager:didFailRangingBeaconsForConstraint:error:"): "locationManagerDidFailRangingBeaconsForConstraintError",
         NSSelectorFromString("locationManager:didEnterRegion:"): "locationManagerDidEnterRegion",
         NSSelectorFromString("locationManager:didExitRegion:"): "locationManagerDidExitRegion",
+        NSSelectorFromString("locationManager:didFailRangingBeaconsForConstraint:error:"): "locationManagerDidFailRangingBeaconsForConstraintError",
         NSSelectorFromString("locationManager:didFailWithError:"): "locationManagerDidFailWithError",
-        NSSelectorFromString("locationManager:monitoringDidFailForRegion:withError:"): "locationManagerMonitoringDidFailForRegionWithError",
-        NSSelectorFromString("locationManager:didChangeAuthorizationStatus:"): "locationManagerDidChangeAuthorizationStatus",
-        NSSelectorFromString("locationManagerDidChangeAuthorization:"): "locationManagerDidChangeAuthorization",
+        NSSelectorFromString("locationManager:didFinishDeferredUpdatesWithError:"): "locationManagerDidFinishDeferredUpdatesWithError",
+        NSSelectorFromString("locationManager:didRangeBeacons:satisfyingConstraint:"): "locationManagerDidRangeBeaconsSatisfyingConstraint",
+        NSSelectorFromString("locationManager:didRangeBeacons:inRegion:"): "locationManagerDidRangeBeaconsInRegion",
         NSSelectorFromString("locationManager:didStartMonitoringForRegion:"): "locationManagerDidStartMonitoringForRegion",
+        NSSelectorFromString("locationManager:didUpdateHeading:"): "locationManagerDidUpdateHeading",
+        NSSelectorFromString("locationManager:didUpdateLocations:"): "locationManagerDidUpdateLocations",
+        NSSelectorFromString("locationManager:didVisit:"): "locationManagerDidVisit",
+        NSSelectorFromString("locationManager:monitoringDidFailForRegion:withError:"): "locationManagerMonitoringDidFailForRegionWithError",
+        NSSelectorFromString("locationManager:rangingBeaconsDidFailForRegion:withError:"): "locationManagerRangingBeaconsDidFailForRegionWithError",
+        NSSelectorFromString("locationManagerDidChangeAuthorization:"): "locationManagerDidChangeAuthorization",
         NSSelectorFromString("locationManagerDidPauseLocationUpdates:"): "locationManagerDidPauseLocationUpdates",
         NSSelectorFromString("locationManagerDidResumeLocationUpdates:"): "locationManagerDidResumeLocationUpdates",
-        NSSelectorFromString("locationManager:didFinishDeferredUpdatesWithError:"): "locationManagerDidFinishDeferredUpdatesWithError",
-        NSSelectorFromString("locationManager:didVisit:"): "locationManagerDidVisit",
         NSSelectorFromString("locationManager:didUpdateToLocation:fromLocation:"): "locationManagerDidUpdateToLocationFromLocation",
       ]
     }
 
-    @available(iOS 6.0, macOS 10.9, *)
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-      call("locationManagerDidUpdateLocations") { b in [b.encode(object: manager), b.encode(array: locations) { b.encode(object: $0) }] }
-    }
-
-    @available(iOS 3.0, macOS 10.15, *)
-    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
-      call("locationManagerDidUpdateHeading") { b in [b.encode(object: manager), b.encode(object: newHeading)] }
+    @available(iOS 4.2, macOS 10.7, *)
+    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
+      call("locationManagerDidChangeAuthorizationStatus") { b in [b.encode(object: manager), TokamakBindings_location.encode(status, b)] }
     }
 
     @available(iOS 7.0, macOS 10.10, *)
     func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
       call("locationManagerDidDetermineStateForRegion") { b in [b.encode(object: manager), TokamakBindings_location.encode(state, b), b.encode(object: region)] }
-    }
-
-    @available(iOS 7.0, macOS 10.15, *)
-    func locationManager(_ manager: CLLocationManager, didRangeBeacons beacons: [CLBeacon], in region: CLBeaconRegion) {
-      call("locationManagerDidRangeBeaconsInRegion") { b in [b.encode(object: manager), b.encode(array: beacons) { b.encode(object: $0) }, b.encode(object: region)] }
-    }
-
-    @available(iOS 7.0, macOS 10.15, *)
-    func locationManager(_ manager: CLLocationManager, rangingBeaconsDidFailFor region: CLBeaconRegion, withError error: any Error) {
-      call("locationManagerRangingBeaconsDidFailForRegionWithError") { b in [b.encode(object: manager), b.encode(object: region), b.encode(error)] }
-    }
-
-    @available(iOS 13.0, macOS 10.15, *)
-    func locationManager(_ manager: CLLocationManager, didRange beacons: [CLBeacon], satisfying beaconConstraint: CLBeaconIdentityConstraint) {
-      call("locationManagerDidRangeBeaconsSatisfyingConstraint") { b in [b.encode(object: manager), b.encode(array: beacons) { b.encode(object: $0) }, b.encode(object: beaconConstraint)] }
-    }
-
-    @available(iOS 13.0, macOS 10.15, *)
-    func locationManager(_ manager: CLLocationManager, didFailRangingFor beaconConstraint: CLBeaconIdentityConstraint, error: any Error) {
-      call("locationManagerDidFailRangingBeaconsForConstraintError") { b in [b.encode(object: manager), b.encode(object: beaconConstraint), b.encode(error)] }
     }
 
     @available(iOS 4.0, macOS 10.8, *)
@@ -937,9 +820,49 @@ final class TokamakBindings_location: TokamakPlugin {
       call("locationManagerDidExitRegion") { b in [b.encode(object: manager), b.encode(object: region)] }
     }
 
+    @available(iOS 13.0, macOS 10.15, *)
+    func locationManager(_ manager: CLLocationManager, didFailRangingFor beaconConstraint: CLBeaconIdentityConstraint, error: any Error) {
+      call("locationManagerDidFailRangingBeaconsForConstraintError") { b in [b.encode(object: manager), b.encode(object: beaconConstraint), b.encode(error)] }
+    }
+
     @available(iOS 2.0, macOS 10.6, *)
     func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) {
       call("locationManagerDidFailWithError") { b in [b.encode(object: manager), b.encode(error)] }
+    }
+
+    @available(iOS 6.0, macOS 10.9, *)
+    func locationManager(_ manager: CLLocationManager, didFinishDeferredUpdatesWithError error: (any Error)?) {
+      call("locationManagerDidFinishDeferredUpdatesWithError") { b in [b.encode(object: manager), b.encode(optional: error) { b.encode($0) }] }
+    }
+
+    @available(iOS 13.0, macOS 10.15, *)
+    func locationManager(_ manager: CLLocationManager, didRange beacons: [CLBeacon], satisfying beaconConstraint: CLBeaconIdentityConstraint) {
+      call("locationManagerDidRangeBeaconsSatisfyingConstraint") { b in [b.encode(object: manager), b.encode(array: beacons) { b.encode(object: $0) }, b.encode(object: beaconConstraint)] }
+    }
+
+    @available(iOS 7.0, macOS 10.15, *)
+    func locationManager(_ manager: CLLocationManager, didRangeBeacons beacons: [CLBeacon], in region: CLBeaconRegion) {
+      call("locationManagerDidRangeBeaconsInRegion") { b in [b.encode(object: manager), b.encode(array: beacons) { b.encode(object: $0) }, b.encode(object: region)] }
+    }
+
+    @available(iOS 5.0, macOS 10.8, *)
+    func locationManager(_ manager: CLLocationManager, didStartMonitoringFor region: CLRegion) {
+      call("locationManagerDidStartMonitoringForRegion") { b in [b.encode(object: manager), b.encode(object: region)] }
+    }
+
+    @available(iOS 3.0, macOS 10.15, *)
+    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+      call("locationManagerDidUpdateHeading") { b in [b.encode(object: manager), b.encode(object: newHeading)] }
+    }
+
+    @available(iOS 6.0, macOS 10.9, *)
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+      call("locationManagerDidUpdateLocations") { b in [b.encode(object: manager), b.encode(array: locations) { b.encode(object: $0) }] }
+    }
+
+    @available(iOS 8.0, macOS 10.15, *)
+    func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
+      call("locationManagerDidVisit") { b in [b.encode(object: manager), b.encode(object: visit)] }
     }
 
     @available(iOS 4.0, macOS 10.8, *)
@@ -947,19 +870,14 @@ final class TokamakBindings_location: TokamakPlugin {
       call("locationManagerMonitoringDidFailForRegionWithError") { b in [b.encode(object: manager), b.encode(optional: region) { b.encode(object: $0) }, b.encode(error)] }
     }
 
-    @available(iOS 4.2, macOS 10.7, *)
-    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
-      call("locationManagerDidChangeAuthorizationStatus") { b in [b.encode(object: manager), TokamakBindings_location.encode(status, b)] }
+    @available(iOS 7.0, macOS 10.15, *)
+    func locationManager(_ manager: CLLocationManager, rangingBeaconsDidFailFor region: CLBeaconRegion, withError error: any Error) {
+      call("locationManagerRangingBeaconsDidFailForRegionWithError") { b in [b.encode(object: manager), b.encode(object: region), b.encode(error)] }
     }
 
     @available(iOS 14.0, macOS 11.0, *)
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
       call("locationManagerDidChangeAuthorization") { b in [b.encode(object: manager)] }
-    }
-
-    @available(iOS 5.0, macOS 10.8, *)
-    func locationManager(_ manager: CLLocationManager, didStartMonitoringFor region: CLRegion) {
-      call("locationManagerDidStartMonitoringForRegion") { b in [b.encode(object: manager), b.encode(object: region)] }
     }
 
     @available(iOS 6.0, macOS 10.15, *)
@@ -971,16 +889,6 @@ final class TokamakBindings_location: TokamakPlugin {
     func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
       call("locationManagerDidResumeLocationUpdates") { b in [b.encode(object: manager)] }
     }
-
-    @available(iOS 6.0, macOS 10.9, *)
-    func locationManager(_ manager: CLLocationManager, didFinishDeferredUpdatesWithError error: (any Error)?) {
-      call("locationManagerDidFinishDeferredUpdatesWithError") { b in [b.encode(object: manager), b.encode(optional: error) { b.encode($0) }] }
-    }
-
-    @available(iOS 8.0, macOS 10.15, *)
-    func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
-      call("locationManagerDidVisit") { b in [b.encode(object: manager), b.encode(object: visit)] }
-    }
     #if os(macOS)
 
     @available(macOS 10.6, *)
@@ -990,50 +898,162 @@ final class TokamakBindings_location: TokamakPlugin {
     #endif
   }
 
+  @available(iOS 17.0, macOS 14.0, *)
+  private static func encode(_ value: CLLocationUpdate, _ b: TokamakBinding) -> Any {
+    var fields: [String: Any] = [:]
+    if #available(iOS 18.0, macOS 15.0, *) { fields["accuracyLimited"] = b.encode(value.accuracyLimited) }
+    if #available(iOS 18.0, macOS 15.0, *) { fields["authorizationDenied"] = b.encode(value.authorizationDenied) }
+    if #available(iOS 18.0, macOS 15.0, *) { fields["authorizationDeniedGlobally"] = b.encode(value.authorizationDeniedGlobally) }
+    if #available(iOS 18.0, macOS 15.0, *) { fields["authorizationRequestInProgress"] = b.encode(value.authorizationRequestInProgress) }
+    if #available(iOS 18.0, macOS 15.0, *) { fields["authorizationRestricted"] = b.encode(value.authorizationRestricted) }
+    if #available(iOS 18.0, macOS 15.0, *) { fields["insufficientlyInUse"] = b.encode(value.insufficientlyInUse) }
+    fields["isStationary"] = b.encode(value.isStationary)
+    fields["location"] = b.encode(optional: value.location) { b.encode(object: $0) }
+    if #available(iOS 18.0, macOS 15.0, *) { fields["locationUnavailable"] = b.encode(value.locationUnavailable) }
+    if #available(iOS 18.0, macOS 15.0, *) { fields["serviceSessionRequired"] = b.encode(value.serviceSessionRequired) }
+    if #available(iOS 18.0, macOS 15.0, *) { fields["stationary"] = b.encode(value.stationary) }
+    return fields
+  }
+
+  @available(iOS 17.0, macOS 14.0, *)
+  private static func encode(_ value: CLLocationUpdate.LiveConfiguration, _ b: TokamakBinding) -> Any {
+    if value == .airborne { return "airborne" }
+    if value == .automotiveNavigation { return "automotiveNavigation" }
+    if value == .default { return "default" }
+    if value == .fitness { return "fitness" }
+    if #available(iOS 27.0, macOS 27.0, *), value == .maritime { return "maritime" }
+    if value == .otherNavigation { return "otherNavigation" }
+    return "\(value)"
+  }
+
+  @available(iOS 17.0, macOS 14.0, *)
+  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLLocationUpdate.LiveConfiguration.Type) throws -> CLLocationUpdate.LiveConfiguration {
+    switch try b.decode(value, as: String.self) {
+    case "airborne":
+      return .airborne
+    case "automotiveNavigation":
+      return .automotiveNavigation
+    case "default":
+      return .default
+    case "fitness":
+      return .fitness
+    case "maritime":
+      guard #available(iOS 27.0, macOS 27.0, *) else { throw TokamakBinding.unavailable }
+      return .maritime
+    case "otherNavigation":
+      return .otherNavigation
+    default: throw b.mismatch(value, type)
+    }
+  }
+
+  @available(iOS 17.0, macOS 14.0, *)
+  private static func encode(_ value: CLMonitor.BeaconIdentityCondition, _ b: TokamakBinding) -> Any {
+    var fields: [String: Any] = [:]
+    fields["major"] = b.encode(optional: value.major) { b.encode($0) }
+    fields["minor"] = b.encode(optional: value.minor) { b.encode($0) }
+    fields["uuid"] = b.encode(value.uuid)
+    return fields
+  }
+
+  @available(iOS 17.0, macOS 14.0, *)
+  private static func encode(_ value: CLMonitor.CircularGeographicCondition, _ b: TokamakBinding) -> Any {
+    var fields: [String: Any] = [:]
+    fields["center"] = TokamakBindings_location.encode(value.center, b)
+    fields["radius"] = b.encode(value.radius)
+    return fields
+  }
+
+  @available(iOS 17.0, macOS 14.0, *)
+  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLMonitor.CircularGeographicCondition.Type) throws -> CLMonitor.CircularGeographicCondition {
+    try CLMonitor.CircularGeographicCondition(
+      center: TokamakBindings_location.decode(b.field(value, "center"), b, as: CLLocationCoordinate2D.self),
+      radius: b.decode(b.field(value, "radius"), as: CLLocationDistance.self)
+    )
+  }
+
   @available(iOS 7.0, macOS 10.15, *)
   private static func encode(_ value: CLProximity, _ b: TokamakBinding) -> Any {
-    if value == .unknown { return "unknown" }
+    if value == .far { return "far" }
     if value == .immediate { return "immediate" }
     if value == .near { return "near" }
-    if value == .far { return "far" }
+    if value == .unknown { return "unknown" }
     return "\(value)"
   }
 
   @available(iOS 7.0, macOS 10.15, *)
   private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLProximity.Type) throws -> CLProximity {
     switch try b.decode(value, as: String.self) {
-    case "unknown":
-      return .unknown
+    case "far":
+      return .far
     case "immediate":
       return .immediate
     case "near":
       return .near
-    case "far":
-      return .far
+    case "unknown":
+      return .unknown
     default: throw b.mismatch(value, type)
     }
   }
 
   @available(iOS 7.0, macOS 10.10, *)
   private static func encode(_ value: CLRegionState, _ b: TokamakBinding) -> Any {
-    if value == .unknown { return "unknown" }
     if value == .inside { return "inside" }
     if value == .outside { return "outside" }
+    if value == .unknown { return "unknown" }
     return "\(value)"
   }
 
   @available(iOS 7.0, macOS 10.10, *)
   private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLRegionState.Type) throws -> CLRegionState {
     switch try b.decode(value, as: String.self) {
-    case "unknown":
-      return .unknown
     case "inside":
       return .inside
     case "outside":
       return .outside
+    case "unknown":
+      return .unknown
     default: throw b.mismatch(value, type)
     }
   }
+  #if os(iOS)
+
+  @available(iOS 18.0, *)
+  private static func encode(_ value: CLServiceSession.AuthorizationRequirement, _ b: TokamakBinding) -> Any {
+    if value == .always { return "always" }
+    if value == .none { return "none" }
+    if value == .whenInUse { return "whenInUse" }
+    return "\(value)"
+  }
+
+  @available(iOS 18.0, *)
+  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLServiceSession.AuthorizationRequirement.Type) throws -> CLServiceSession.AuthorizationRequirement {
+    switch try b.decode(value, as: String.self) {
+    case "always":
+      return .always
+    case "none":
+      return .none
+    case "whenInUse":
+      return .whenInUse
+    default: throw b.mismatch(value, type)
+    }
+  }
+  #endif
+  #if os(iOS)
+
+  @available(iOS 18.0, *)
+  private static func encode(_ value: CLServiceSession.Diagnostic, _ b: TokamakBinding) -> Any {
+    var fields: [String: Any] = [:]
+    fields["alwaysAuthorizationDenied"] = b.encode(value.alwaysAuthorizationDenied)
+    fields["authorizationDenied"] = b.encode(value.authorizationDenied)
+    fields["authorizationDeniedGlobally"] = b.encode(value.authorizationDeniedGlobally)
+    fields["authorizationRequestInProgress"] = b.encode(value.authorizationRequestInProgress)
+    fields["authorizationRestricted"] = b.encode(value.authorizationRestricted)
+    fields["fullAccuracyDenied"] = b.encode(value.fullAccuracyDenied)
+    fields["insufficientlyInUse"] = b.encode(value.insufficientlyInUse)
+    fields["serviceSessionRequired"] = b.encode(value.serviceSessionRequired)
+    return fields
+  }
+  #endif
 
   private static func encode(_ value: CLLocationCoordinate2D, _ b: TokamakBinding) -> Any {
     var fields: [String: Any] = [:]

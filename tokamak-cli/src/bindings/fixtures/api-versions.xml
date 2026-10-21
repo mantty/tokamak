@@ -6,5 +6,5 @@
 		<field name="MODE_FAST" since="26"/>
 	</class>
 	<class name="android/kit/Widget$Builder" since="21"/>
-	<class name="android/kit/Widget$Listener" since="21"/>
+	<class name="android/kit/Widget$Listener" since="29"/>
 </api>

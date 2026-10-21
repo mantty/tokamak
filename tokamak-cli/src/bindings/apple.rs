@@ -1,6 +1,6 @@
 //! Reads the iOS and macOS SDKs' symbol graphs into a binding module.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::process::Command;
 
@@ -121,7 +121,7 @@ struct Generics {
     parameters: Vec<serde_json::Value>,
 }
 
-#[derive(Deserialize, Clone, PartialEq, Eq, Hash)]
+#[derive(Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Relationship {
     kind: String,
     source: String,
@@ -136,12 +136,17 @@ struct Entry {
     platforms: Vec<(&'static str, Vec<Available>)>,
 }
 
-/// The symbols of the bound modules and their relationships.
+/// The symbols of the bound modules and their relationships. Each graph's
+/// symbols are sorted by path, as extraction orders them differently each run.
 pub(super) struct Index {
     entries: Vec<Entry>,
+    /// Each entry by its USR and path: an Objective-C method and its `async`
+    /// Swift import share a USR.
+    by_symbol: HashMap<(String, Vec<String>), usize>,
+    /// The first entry with each USR.
     by_usr: HashMap<String, usize>,
     by_path: HashMap<Vec<String>, usize>,
-    relationships: HashSet<Relationship>,
+    relationships: BTreeSet<Relationship>,
 }
 
 const TYPE_KINDS: [&str; 5] = [
@@ -319,12 +324,17 @@ impl Index {
     fn new(graphs: Vec<(&'static str, String, Graph)>) -> Self {
         let mut index = Self {
             entries: Vec::new(),
+            by_symbol: HashMap::new(),
             by_usr: HashMap::new(),
             by_path: HashMap::new(),
-            relationships: HashSet::new(),
+            relationships: BTreeSet::new(),
         };
-        for (platform, module, graph) in graphs {
+        for (platform, module, mut graph) in graphs {
             index.relationships.extend(graph.relationships);
+            graph.symbols.sort_by(|a, b| {
+                (&a.path_components, &a.identifier.precise)
+                    .cmp(&(&b.path_components, &b.identifier.precise))
+            });
             for symbol in graph.symbols {
                 index.add(platform, &module, symbol);
             }
@@ -333,8 +343,11 @@ impl Index {
     }
 
     fn add(&mut self, platform: &'static str, module: &str, symbol: Symbol) {
-        let usr = symbol.identifier.precise.clone();
-        if let Some(&existing) = self.by_usr.get(&usr) {
+        let key = (
+            symbol.identifier.precise.clone(),
+            symbol.path_components.clone(),
+        );
+        if let Some(&existing) = self.by_symbol.get(&key) {
             self.entries[existing]
                 .platforms
                 .push((platform, symbol.availability));
@@ -345,7 +358,8 @@ impl Index {
             self.by_path
                 .insert(symbol.path_components.clone(), position);
         }
-        self.by_usr.insert(usr, position);
+        self.by_usr.entry(key.0.clone()).or_insert(position);
+        self.by_symbol.insert(key, position);
         let availability = symbol.availability.clone();
         self.entries.push(Entry {
             symbol,
@@ -416,7 +430,7 @@ impl Index {
         requirements
     }
 
-    /// The members of the type at `path`, in declaration order.
+    /// The members of the type at `path`, in the index's order.
     fn members<'a>(&'a self, path: &'a [String]) -> impl Iterator<Item = &'a Entry> {
         self.entries.iter().filter(move |entry| {
             let components = &entry.symbol.path_components;

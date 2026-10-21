@@ -7,17 +7,28 @@ use super::{android, apple, kotlin, prune, swift, typescript};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-/// Kit's iOS symbol graph: the macOS SDK lacks `KTWidget.measure()`.
+/// Kit's iOS symbol graph: the macOS SDK lacks `KTWidget.measure()`, the
+/// `async` import of `measure(completion:)`.
 const KIT: &str = include_str!("fixtures/Kit.symbols.json");
 
 fn kit_module() -> TestResult<Module> {
-    let ios = serde_json::from_str(KIT)?;
-    let mut macos: Value = serde_json::from_str(KIT)?;
+    kit_module_with(|_| {})
+}
+
+/// Kit's module from its graphs after `edit` changes their symbols.
+fn kit_module_with(edit: impl Fn(&mut Vec<Value>)) -> TestResult<Module> {
+    let mut ios: Value = serde_json::from_str(KIT)?;
+    let mut macos = ios.clone();
     if let Some(symbols) = macos["symbols"].as_array_mut() {
         symbols.retain(|symbol| symbol["pathComponents"] != json!(["KTWidget", "measure()"]));
     }
+    for graph in [&mut ios, &mut macos] {
+        if let Some(symbols) = graph["symbols"].as_array_mut() {
+            edit(symbols);
+        }
+    }
     let graphs = vec![
-        ("iOS", "Kit".to_owned(), ios),
+        ("iOS", "Kit".to_owned(), serde_json::from_value(ios)?),
         ("macOS", "Kit".to_owned(), serde_json::from_value(macos)?),
     ];
     let mut module = apple::module(
@@ -37,7 +48,7 @@ fn apple_bindings_mirror_classes_values_protocols_and_streams() -> TestResult {
     for expected in [
         "const bindings = new Bindings(\"kit/apple\", () => classes);",
         "export type KTDistance = number;",
-        "export type KTMode = \"slow\" | \"fast\";",
+        "export type KTMode = \"fast\" | \"slow\";",
         "  checkError(value: number): Promise<boolean> {\n    return bindings.call(this, \"KTWidget.check(_:error:)\", [value]);",
         "export interface KTPoint {\n  x: number;\n  y: number;\n}",
         "export class KTWidget extends NativeObject {",
@@ -45,6 +56,7 @@ fn apple_bindings_mirror_classes_values_protocols_and_streams() -> TestResult {
         "  setTitle(value: string): Promise<void> {\n    return bindings.call(this, \"KTWidget.title=\", [value]);",
         "  startWithMode(mode: KTMode): Promise<void> {",
         "  /** iOS 13.0+ */\n  measure(options?: { signal?: AbortSignal }): Promise<KTDistance> {\n    return bindings.call(this, \"KTWidget.measure()\", [], options?.signal);",
+        "  configureOptions(options_: KTMode, options?: { signal?: AbortSignal }): Promise<void> {\n    return bindings.call(this, \"KTWidget.configure(options:)\", [options_], options?.signal);",
         "  readings(): ReadableStream<KTPoint> {\n    return bindings.stream(this, \"KTWidget.readings\", []);",
         "  widgetDidMove?(widget: KTWidget, point: KTPoint): void | Promise<void>;",
         "return bindings.implement(ctx, KTWidgetDelegate, \"KTWidgetDelegate\", [\"widgetDidMove\"], handlers);",
@@ -80,6 +92,15 @@ fn apple_native_plugin_calls_guards_and_implements() -> TestResult {
     ] {
         assert!(swift.contains(expected), "missing {expected:?} in\n{swift}");
     }
+    Ok(())
+}
+
+#[test]
+fn apple_bindings_do_not_depend_on_the_order_of_extracted_symbols() -> TestResult {
+    let forward = kit_module()?;
+    let reversed = kit_module_with(|symbols| symbols.reverse())?;
+    assert_eq!(swift::emit(&forward, "kit"), swift::emit(&reversed, "kit"));
+    assert_eq!(typescript::emit(&forward), typescript::emit(&reversed));
     Ok(())
 }
 
@@ -149,7 +170,8 @@ fn android_native_plugin_dispatches_by_type_and_implements_listeners() -> TestRe
         "            \"Widget#start(I)V\" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.target(android.kit.Widget::class.java).start(b.int(b[0])); null }",
         "            \"Widget#apply(Landroid/kit/Widget\\$Builder;)V\" -> b.run {",
         "            \"Widget#<init>()V\" -> b.run { if (Build.VERSION.SDK_INT < 21) throw TokamakBinding.unavailable; b.encode(android.kit.Widget()) }",
-        "    private class Widget_ListenerImplementation(private val binding: TokamakBinding) : android.kit.Widget.Listener {",
+        "            \"Widget.Listener\" -> {\n                if (Build.VERSION.SDK_INT < 29) throw TokamakBinding.unavailable\n                b.implement { Widget_ListenerImplementation(it) }",
+        "    @androidx.annotation.RequiresApi(29)\n    private class Widget_ListenerImplementation(private val binding: TokamakBinding) : android.kit.Widget.Listener {",
         "        override fun onMoved(x: Int) {\n            binding.call(\"onMoved\") { b -> listOf(b.encode(x)) }",
         "        override fun onStopped() {\n            if (!binding.call(\"onStopped\") { b -> listOf() }) super.onStopped()",
     ] {

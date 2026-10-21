@@ -3,95 +3,11 @@ import { Bindings, NativeObject, type Classes, type TokamakContext } from "@toka
 
 const bindings = new Bindings("local-authentication/apple", () => classes);
 
-/** iOS 18.0+, macOS 15.0+ */
-export type LACompanionType = "mac" | "vision" | "watch";
-
-/** iOS 18.0+, macOS 15.0+ */
-export class LAEnvironment$State extends NativeObject {
-  /** iOS 18.0+, macOS 15.0+ */
-  biometry(): Promise<LAEnvironment$MechanismBiometry | null> {
-    return bindings.call(this, "LAEnvironment.State.biometry", []);
-  }
-
-  /** iOS 18.0+, macOS 15.0+ */
-  userPassword(): Promise<LAEnvironment$MechanismUserPassword | null> {
-    return bindings.call(this, "LAEnvironment.State.userPassword", []);
-  }
-
-  /** iOS 18.0+, macOS 15.0+ */
-  companions(): Promise<LAEnvironment$MechanismCompanion[]> {
-    return bindings.call(this, "LAEnvironment.State.companions", []);
-  }
-
-  /** iOS 18.0+, macOS 15.0+ */
-  allMechanisms(): Promise<LAEnvironment$Mechanism[]> {
-    return bindings.call(this, "LAEnvironment.State.allMechanisms", []);
-  }
-}
-
-/** iOS 11.0+, macOS 10.13.2+ */
-export type LABiometryType = "none" | "touchID" | "faceID" | "opticID";
-
-/** iOS 16.0+, macOS 13.0+ */
-export class LAPrivateKey extends NativeObject {
-  /** iOS 16.0+, macOS 13.0+ */
-  publicKey(): Promise<LAPublicKey> {
-    return bindings.call(this, "LAPrivateKey.publicKey", []);
-  }
-}
-
-/** iOS 16.0+, macOS 13.0+ */
-export class LASecret extends NativeObject {
-}
-
-/** iOS 16.0+, macOS 13.0+ */
-export class LAPublicKey extends NativeObject {
-}
-
-/** iOS 18.0+, macOS 15.0+ */
-export class LAEnvironment extends NativeObject {
-  /** iOS 18.0+, macOS 15.0+ */
-  addObserver(observer: LAEnvironment$Observer): Promise<void> {
-    return bindings.call(this, "LAEnvironment.addObserver(_:)", [observer]);
-  }
-
-  /** iOS 18.0+, macOS 15.0+ */
-  removeObserver(observer: LAEnvironment$Observer): Promise<void> {
-    return bindings.call(this, "LAEnvironment.removeObserver(_:)", [observer]);
-  }
-
-  /** iOS 18.0+, macOS 15.0+ */
-  static currentUser(ctx: TokamakContext): Promise<LAEnvironment> {
-    return bindings.call(ctx, "LAEnvironment.currentUser", []);
-  }
-
-  /** iOS 18.0+, macOS 15.0+ */
-  state(): Promise<LAEnvironment$State> {
-    return bindings.call(this, "LAEnvironment.state", []);
-  }
-}
-
-/** iOS 18.0+, macOS 15.0+ */
-export interface LAEnvironment$ObserverMethods {
-  /** iOS 18.0+, macOS 15.0+ */
-  environmentStateDidChangeFromOldState?(environment: LAEnvironment, oldState: LAEnvironment$State): void | Promise<void>;
-}
-
-/** iOS 18.0+, macOS 15.0+ */
-export class LAEnvironment$Observer extends NativeObject {
-  /** A native object whose methods call `handlers`. */
-  static implement(ctx: TokamakContext, handlers: LAEnvironment$ObserverMethods): Promise<LAEnvironment$Observer> {
-    return bindings.implement(ctx, LAEnvironment$Observer, "LAEnvironment.Observer", ["environmentStateDidChangeFromOldState"], handlers);
-  }
-}
+/** iOS 9.0+, macOS 10.11+ */
+export type LAAccessControlOperation = "createItem" | "createKey" | "useItem" | "useKeyDecrypt" | "useKeyKeyExchange" | "useKeySign";
 
 /** iOS 16.0+, macOS 13.0+ */
 export class LAAuthenticationRequirement extends NativeObject {
-  /** iOS 16.0+, macOS 13.0+ */
-  static default(ctx: TokamakContext): Promise<LAAuthenticationRequirement> {
-    return bindings.call(ctx, "LAAuthenticationRequirement.default", []);
-  }
-
   /** iOS 16.0+, macOS 13.0+ */
   static biometry(ctx: TokamakContext): Promise<LAAuthenticationRequirement> {
     return bindings.call(ctx, "LAAuthenticationRequirement.biometry", []);
@@ -100,6 +16,11 @@ export class LAAuthenticationRequirement extends NativeObject {
   /** iOS 16.0+, macOS 13.0+ */
   static biometryCurrentSet(ctx: TokamakContext): Promise<LAAuthenticationRequirement> {
     return bindings.call(ctx, "LAAuthenticationRequirement.biometryCurrentSet", []);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  static default(ctx: TokamakContext): Promise<LAAuthenticationRequirement> {
+    return bindings.call(ctx, "LAAuthenticationRequirement.default", []);
   }
 
   /** iOS 16.0+, macOS 13.0+ */
@@ -126,31 +47,131 @@ export class LABiometryFallbackRequirement extends NativeObject {
   }
 }
 
-/** iOS 16.0+, macOS 13.0+ */
-export class LARightStore extends NativeObject {
-  /** iOS 16.0+, macOS 13.0+ */
-  static shared(ctx: TokamakContext): Promise<LARightStore> {
-    return bindings.call(ctx, "LARightStore.shared", []);
-  }
-}
+/** iOS 11.0+, macOS 10.13.2+ */
+export type LABiometryType = "faceID" | "none" | "opticID" | "touchID";
 
 /** iOS 18.0+, macOS 15.0+ */
-export class LAEnvironment$Mechanism extends NativeObject {
-  /** iOS 18.0+, macOS 15.0+ */
-  isUsable(): Promise<boolean> {
-    return bindings.call(this, "LAEnvironment.Mechanism.isUsable", []);
+export type LACompanionType = "mac" | "vision" | "watch";
+
+/** iOS 8.0+, macOS 10.10+ */
+export class LAContext extends NativeObject {
+  /** iOS 11.0+, macOS 10.13.2+ */
+  biometryType(): Promise<LABiometryType> {
+    return bindings.call(this, "LAContext.biometryType", []);
+  }
+
+  /** iOS 8.0+, macOS 10.10+ */
+  canEvaluatePolicyError(policy: LAPolicy): Promise<boolean> {
+    return bindings.call(this, "LAContext.canEvaluatePolicy(_:error:)", [policy]);
   }
 
   /** iOS 18.0+, macOS 15.0+ */
-  localizedName(): Promise<string> {
-    return bindings.call(this, "LAEnvironment.Mechanism.localizedName", []);
+  domainState(): Promise<LADomainState> {
+    return bindings.call(this, "LAContext.domainState", []);
   }
 
-  /** iOS 18.0+, macOS 15.0+ */
-  iconSystemName(): Promise<string> {
-    return bindings.call(this, "LAEnvironment.Mechanism.iconSystemName", []);
+  /** iOS 8.0+, macOS 10.10+ */
+  evaluatePolicyLocalizedReason(policy: LAPolicy, localizedReason: string, options?: { signal?: AbortSignal }): Promise<boolean> {
+    return bindings.call(this, "LAContext.evaluatePolicy(_:localizedReason:)", [policy, localizedReason], options?.signal);
+  }
+
+  /**
+   * iOS 9.0+, macOS 10.11+
+   * @deprecated
+   */
+  evaluatedPolicyDomainState(): Promise<Uint8Array | null> {
+    return bindings.call(this, "LAContext.evaluatedPolicyDomainState", []);
+  }
+
+  /** iOS 11.0+, macOS 10.13+ */
+  interactionNotAllowed(): Promise<boolean> {
+    return bindings.call(this, "LAContext.interactionNotAllowed", []);
+  }
+
+  /** iOS 11.0+, macOS 10.13+ */
+  setInteractionNotAllowed(value: boolean): Promise<void> {
+    return bindings.call(this, "LAContext.interactionNotAllowed=", [value]);
+  }
+
+  /** iOS 9.0+, macOS 10.11+ */
+  invalidate(): Promise<void> {
+    return bindings.call(this, "LAContext.invalidate()", []);
+  }
+
+  /** iOS 9.0+, macOS 10.11+ */
+  isCredentialSet(type: LACredentialType): Promise<boolean> {
+    return bindings.call(this, "LAContext.isCredentialSet(_:)", [type]);
+  }
+
+  /** iOS 10.0+, macOS 10.12+ */
+  localizedCancelTitle(): Promise<string | null> {
+    return bindings.call(this, "LAContext.localizedCancelTitle", []);
+  }
+
+  /** iOS 10.0+, macOS 10.12+ */
+  setLocalizedCancelTitle(value: string | null): Promise<void> {
+    return bindings.call(this, "LAContext.localizedCancelTitle=", [value]);
+  }
+
+  /** iOS 8.0+, macOS 10.10+ */
+  localizedFallbackTitle(): Promise<string | null> {
+    return bindings.call(this, "LAContext.localizedFallbackTitle", []);
+  }
+
+  /** iOS 8.0+, macOS 10.10+ */
+  setLocalizedFallbackTitle(value: string | null): Promise<void> {
+    return bindings.call(this, "LAContext.localizedFallbackTitle=", [value]);
+  }
+
+  /** iOS 11.0+, macOS 10.13+ */
+  localizedReason(): Promise<string> {
+    return bindings.call(this, "LAContext.localizedReason", []);
+  }
+
+  /** iOS 11.0+, macOS 10.13+ */
+  setLocalizedReason(value: string): Promise<void> {
+    return bindings.call(this, "LAContext.localizedReason=", [value]);
+  }
+
+  /**
+   * iOS 8.3+, macOS 10.10.3+
+   * @deprecated No longer supported
+   */
+  maxBiometryFailures(): Promise<number | null> {
+    return bindings.call(this, "LAContext.maxBiometryFailures", []);
+  }
+
+  /**
+   * iOS 8.3+, macOS 10.10.3+
+   * @deprecated No longer supported
+   */
+  setMaxBiometryFailures(value: number | null): Promise<void> {
+    return bindings.call(this, "LAContext.maxBiometryFailures=", [value]);
+  }
+
+  /** iOS 9.0+, macOS 10.11+ */
+  setCredentialType(credential: Uint8Array | null, type: LACredentialType): Promise<boolean> {
+    return bindings.call(this, "LAContext.setCredential(_:type:)", [credential, type]);
+  }
+
+  /** iOS 9.0+, macOS 10.12+ */
+  touchIDAuthenticationAllowableReuseDuration(): Promise<number> {
+    return bindings.call(this, "LAContext.touchIDAuthenticationAllowableReuseDuration", []);
+  }
+
+  /** iOS 9.0+, macOS 10.12+ */
+  setTouchIDAuthenticationAllowableReuseDuration(value: number): Promise<void> {
+    return bindings.call(this, "LAContext.touchIDAuthenticationAllowableReuseDuration=", [value]);
+  }
+
+  /** iOS 8.0+, macOS 10.10+ */
+  static init(ctx: TokamakContext): Promise<LAContext> {
+    return bindings.call(ctx, "LAContext.init()", []);
   }
 }
+
+/** iOS 9.0+, macOS 10.11+ */
+export type LACredentialType = "applicationPassword" | "smartCardPIN";
 
 /** iOS 18.0+, macOS 15.0+ */
 export class LADomainState extends NativeObject {
@@ -201,163 +222,57 @@ export class LADomainStateCompanion extends NativeObject {
   }
 }
 
-/** iOS 16.0+, macOS 13.0+ */
-export class LARight extends NativeObject {
-  /** iOS 16.0+, macOS 13.0+ */
-  state(): Promise<LARight$State> {
-    return bindings.call(this, "LARight.state", []);
-  }
-
-  /** iOS 16.0+, macOS 13.0+ */
-  tag(): Promise<number> {
-    return bindings.call(this, "LARight.tag", []);
-  }
-
-  /** iOS 16.0+, macOS 13.0+ */
-  setTag(value: number): Promise<void> {
-    return bindings.call(this, "LARight.tag=", [value]);
-  }
-
-  /** iOS 16.0+, macOS 13.0+ */
-  static init(ctx: TokamakContext): Promise<LARight> {
-    return bindings.call(ctx, "LARight.init()", []);
-  }
-
-  /** iOS 16.0+, macOS 13.0+ */
-  static initWithRequirement(ctx: TokamakContext, requirement: LAAuthenticationRequirement): Promise<LARight> {
-    return bindings.call(ctx, "LARight.init(requirement:)", [requirement]);
-  }
-}
-
-/** iOS 16.0+, macOS 13.0+ */
-export type LARight$State = "unknown" | "authorizing" | "authorized" | "notAuthorized";
-
-/** iOS 9.0+, macOS 10.11+ */
-export type LAAccessControlOperation = "createItem" | "useItem" | "createKey" | "useKeySign" | "useKeyDecrypt" | "useKeyKeyExchange";
-
-/** iOS 8.0+, macOS 10.10+ */
-export class LAContext extends NativeObject {
-  /** iOS 8.0+, macOS 10.10+ */
-  canEvaluatePolicyError(policy: LAPolicy): Promise<boolean> {
-    return bindings.call(this, "LAContext.canEvaluatePolicy(_:error:)", [policy]);
-  }
-
-  /** iOS 9.0+, macOS 10.11+ */
-  invalidate(): Promise<void> {
-    return bindings.call(this, "LAContext.invalidate()", []);
-  }
-
-  /** iOS 9.0+, macOS 10.11+ */
-  setCredentialType(credential: Uint8Array | null, type: LACredentialType): Promise<boolean> {
-    return bindings.call(this, "LAContext.setCredential(_:type:)", [credential, type]);
-  }
-
-  /** iOS 9.0+, macOS 10.11+ */
-  isCredentialSet(type: LACredentialType): Promise<boolean> {
-    return bindings.call(this, "LAContext.isCredentialSet(_:)", [type]);
-  }
-
-  /** iOS 8.0+, macOS 10.10+ */
-  localizedFallbackTitle(): Promise<string | null> {
-    return bindings.call(this, "LAContext.localizedFallbackTitle", []);
-  }
-
-  /** iOS 8.0+, macOS 10.10+ */
-  setLocalizedFallbackTitle(value: string | null): Promise<void> {
-    return bindings.call(this, "LAContext.localizedFallbackTitle=", [value]);
-  }
-
-  /**
-   * iOS 8.3+, macOS 10.10.3+
-   * @deprecated No longer supported
-   */
-  maxBiometryFailures(): Promise<number | null> {
-    return bindings.call(this, "LAContext.maxBiometryFailures", []);
-  }
-
-  /**
-   * iOS 8.3+, macOS 10.10.3+
-   * @deprecated No longer supported
-   */
-  setMaxBiometryFailures(value: number | null): Promise<void> {
-    return bindings.call(this, "LAContext.maxBiometryFailures=", [value]);
-  }
-
-  /** iOS 10.0+, macOS 10.12+ */
-  localizedCancelTitle(): Promise<string | null> {
-    return bindings.call(this, "LAContext.localizedCancelTitle", []);
-  }
-
-  /** iOS 10.0+, macOS 10.12+ */
-  setLocalizedCancelTitle(value: string | null): Promise<void> {
-    return bindings.call(this, "LAContext.localizedCancelTitle=", [value]);
-  }
-
-  /** iOS 9.0+, macOS 10.12+ */
-  touchIDAuthenticationAllowableReuseDuration(): Promise<number> {
-    return bindings.call(this, "LAContext.touchIDAuthenticationAllowableReuseDuration", []);
-  }
-
-  /** iOS 9.0+, macOS 10.12+ */
-  setTouchIDAuthenticationAllowableReuseDuration(value: number): Promise<void> {
-    return bindings.call(this, "LAContext.touchIDAuthenticationAllowableReuseDuration=", [value]);
-  }
-
-  /** iOS 11.0+, macOS 10.13+ */
-  localizedReason(): Promise<string> {
-    return bindings.call(this, "LAContext.localizedReason", []);
-  }
-
-  /** iOS 11.0+, macOS 10.13+ */
-  setLocalizedReason(value: string): Promise<void> {
-    return bindings.call(this, "LAContext.localizedReason=", [value]);
-  }
-
-  /** iOS 11.0+, macOS 10.13+ */
-  interactionNotAllowed(): Promise<boolean> {
-    return bindings.call(this, "LAContext.interactionNotAllowed", []);
-  }
-
-  /** iOS 11.0+, macOS 10.13+ */
-  setInteractionNotAllowed(value: boolean): Promise<void> {
-    return bindings.call(this, "LAContext.interactionNotAllowed=", [value]);
-  }
-
-  /** iOS 11.0+, macOS 10.13.2+ */
-  biometryType(): Promise<LABiometryType> {
-    return bindings.call(this, "LAContext.biometryType", []);
-  }
-
-  /**
-   * iOS 9.0+, macOS 10.11+
-   * @deprecated
-   */
-  evaluatedPolicyDomainState(): Promise<Uint8Array | null> {
-    return bindings.call(this, "LAContext.evaluatedPolicyDomainState", []);
+/** iOS 18.0+, macOS 15.0+ */
+export class LAEnvironment extends NativeObject {
+  /** iOS 18.0+, macOS 15.0+ */
+  addObserver(observer: LAEnvironment$Observer): Promise<void> {
+    return bindings.call(this, "LAEnvironment.addObserver(_:)", [observer]);
   }
 
   /** iOS 18.0+, macOS 15.0+ */
-  domainState(): Promise<LADomainState> {
-    return bindings.call(this, "LAContext.domainState", []);
+  static currentUser(ctx: TokamakContext): Promise<LAEnvironment> {
+    return bindings.call(ctx, "LAEnvironment.currentUser", []);
   }
 
-  /** iOS 8.0+, macOS 10.10+ */
-  static init(ctx: TokamakContext): Promise<LAContext> {
-    return bindings.call(ctx, "LAContext.init()", []);
+  /** iOS 18.0+, macOS 15.0+ */
+  removeObserver(observer: LAEnvironment$Observer): Promise<void> {
+    return bindings.call(this, "LAEnvironment.removeObserver(_:)", [observer]);
+  }
+
+  /** iOS 18.0+, macOS 15.0+ */
+  state(): Promise<LAEnvironment$State> {
+    return bindings.call(this, "LAEnvironment.state", []);
   }
 }
 
-/** iOS 9.0+, macOS 10.11+ */
-export type LACredentialType = "applicationPassword" | "smartCardPIN";
+/** iOS 18.0+, macOS 15.0+ */
+export class LAEnvironment$Mechanism extends NativeObject {
+  /** iOS 18.0+, macOS 15.0+ */
+  iconSystemName(): Promise<string> {
+    return bindings.call(this, "LAEnvironment.Mechanism.iconSystemName", []);
+  }
 
-/** iOS 8.0+, macOS 10.10+ */
-export type LAPolicy = "deviceOwnerAuthenticationWithBiometrics" | "deviceOwnerAuthentication" | "deviceOwnerAuthenticationWithCompanion" | "deviceOwnerAuthenticationWithBiometricsOrCompanion";
+  /** iOS 18.0+, macOS 15.0+ */
+  isUsable(): Promise<boolean> {
+    return bindings.call(this, "LAEnvironment.Mechanism.isUsable", []);
+  }
+
+  /** iOS 18.0+, macOS 15.0+ */
+  localizedName(): Promise<string> {
+    return bindings.call(this, "LAEnvironment.Mechanism.localizedName", []);
+  }
+}
 
 /** iOS 18.0+, macOS 15.0+ */
 export class LAEnvironment$MechanismBiometry extends LAEnvironment$Mechanism {
   /** iOS 18.0+, macOS 15.0+ */
   biometryType(): Promise<LABiometryType> {
     return bindings.call(this, "LAEnvironment.MechanismBiometry.biometryType", []);
+  }
+
+  /** iOS 18.0+, macOS 15.0+ */
+  builtInSensorInaccessible(): Promise<boolean> {
+    return bindings.call(this, "LAEnvironment.MechanismBiometry.builtInSensorInaccessible", []);
   }
 
   /** iOS 18.0+, macOS 15.0+ */
@@ -374,10 +289,18 @@ export class LAEnvironment$MechanismBiometry extends LAEnvironment$Mechanism {
   stateHash(): Promise<Uint8Array> {
     return bindings.call(this, "LAEnvironment.MechanismBiometry.stateHash", []);
   }
+}
+
+/** iOS 18.0+, macOS 15.0+ */
+export class LAEnvironment$MechanismCompanion extends LAEnvironment$Mechanism {
+  /** iOS 18.0+, macOS 15.0+ */
+  stateHash(): Promise<Uint8Array | null> {
+    return bindings.call(this, "LAEnvironment.MechanismCompanion.stateHash", []);
+  }
 
   /** iOS 18.0+, macOS 15.0+ */
-  builtInSensorInaccessible(): Promise<boolean> {
-    return bindings.call(this, "LAEnvironment.MechanismBiometry.builtInSensorInaccessible", []);
+  type(): Promise<LACompanionType> {
+    return bindings.call(this, "LAEnvironment.MechanismCompanion.type", []);
   }
 }
 
@@ -390,15 +313,150 @@ export class LAEnvironment$MechanismUserPassword extends LAEnvironment$Mechanism
 }
 
 /** iOS 18.0+, macOS 15.0+ */
-export class LAEnvironment$MechanismCompanion extends LAEnvironment$Mechanism {
+export interface LAEnvironment$ObserverMethods {
   /** iOS 18.0+, macOS 15.0+ */
-  type(): Promise<LACompanionType> {
-    return bindings.call(this, "LAEnvironment.MechanismCompanion.type", []);
+  environmentStateDidChangeFromOldState?(environment: LAEnvironment, oldState: LAEnvironment$State): void | Promise<void>;
+}
+
+/** iOS 18.0+, macOS 15.0+ */
+export class LAEnvironment$Observer extends NativeObject {
+  /** A native object whose methods call `handlers`. */
+  static implement(ctx: TokamakContext, handlers: LAEnvironment$ObserverMethods): Promise<LAEnvironment$Observer> {
+    return bindings.implement(ctx, LAEnvironment$Observer, "LAEnvironment.Observer", ["environmentStateDidChangeFromOldState"], handlers);
+  }
+}
+
+/** iOS 18.0+, macOS 15.0+ */
+export class LAEnvironment$State extends NativeObject {
+  /** iOS 18.0+, macOS 15.0+ */
+  allMechanisms(): Promise<LAEnvironment$Mechanism[]> {
+    return bindings.call(this, "LAEnvironment.State.allMechanisms", []);
   }
 
   /** iOS 18.0+, macOS 15.0+ */
-  stateHash(): Promise<Uint8Array | null> {
-    return bindings.call(this, "LAEnvironment.MechanismCompanion.stateHash", []);
+  biometry(): Promise<LAEnvironment$MechanismBiometry | null> {
+    return bindings.call(this, "LAEnvironment.State.biometry", []);
+  }
+
+  /** iOS 18.0+, macOS 15.0+ */
+  companions(): Promise<LAEnvironment$MechanismCompanion[]> {
+    return bindings.call(this, "LAEnvironment.State.companions", []);
+  }
+
+  /** iOS 18.0+, macOS 15.0+ */
+  userPassword(): Promise<LAEnvironment$MechanismUserPassword | null> {
+    return bindings.call(this, "LAEnvironment.State.userPassword", []);
+  }
+}
+
+/** iOS 8.0+, macOS 10.10+ */
+export type LAPolicy = "deviceOwnerAuthentication" | "deviceOwnerAuthenticationWithBiometrics" | "deviceOwnerAuthenticationWithBiometricsOrCompanion" | "deviceOwnerAuthenticationWithCompanion";
+
+/** iOS 16.0+, macOS 13.0+ */
+export class LAPrivateKey extends NativeObject {
+  /** iOS 16.0+, macOS 13.0+ */
+  publicKey(): Promise<LAPublicKey> {
+    return bindings.call(this, "LAPrivateKey.publicKey", []);
+  }
+}
+
+/** iOS 16.0+, macOS 13.0+ */
+export class LAPublicKey extends NativeObject {
+  /** iOS 16.0+, macOS 13.0+ */
+  bytes(options?: { signal?: AbortSignal }): Promise<Uint8Array> {
+    return bindings.call(this, "LAPublicKey.bytes", [], options?.signal);
+  }
+}
+
+/** iOS 16.0+, macOS 13.0+ */
+export class LARight extends NativeObject {
+  /** iOS 16.0+, macOS 13.0+ */
+  authorizeLocalizedReason(localizedReason: string, options?: { signal?: AbortSignal }): Promise<void> {
+    return bindings.call(this, "LARight.authorize(localizedReason:)", [localizedReason], options?.signal);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  checkCanAuthorize(options?: { signal?: AbortSignal }): Promise<void> {
+    return bindings.call(this, "LARight.checkCanAuthorize()", [], options?.signal);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  deauthorize(options?: { signal?: AbortSignal }): Promise<void> {
+    return bindings.call(this, "LARight.deauthorize()", [], options?.signal);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  static init(ctx: TokamakContext): Promise<LARight> {
+    return bindings.call(ctx, "LARight.init()", []);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  static initWithRequirement(ctx: TokamakContext, requirement: LAAuthenticationRequirement): Promise<LARight> {
+    return bindings.call(ctx, "LARight.init(requirement:)", [requirement]);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  state(): Promise<LARight$State> {
+    return bindings.call(this, "LARight.state", []);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  tag(): Promise<number> {
+    return bindings.call(this, "LARight.tag", []);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  setTag(value: number): Promise<void> {
+    return bindings.call(this, "LARight.tag=", [value]);
+  }
+}
+
+/** iOS 16.0+, macOS 13.0+ */
+export type LARight$State = "authorized" | "authorizing" | "notAuthorized" | "unknown";
+
+/** iOS 16.0+, macOS 13.0+ */
+export class LARightStore extends NativeObject {
+  /** iOS 16.0+, macOS 13.0+ */
+  removeAllRights(options?: { signal?: AbortSignal }): Promise<void> {
+    return bindings.call(this, "LARightStore.removeAllRights()", [], options?.signal);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  removeRight(right: LAPersistedRight, options?: { signal?: AbortSignal }): Promise<void> {
+    return bindings.call(this, "LARightStore.removeRight(_:)", [right], options?.signal);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  removeRightForIdentifier(identifier: string, options?: { signal?: AbortSignal }): Promise<void> {
+    return bindings.call(this, "LARightStore.removeRight(forIdentifier:)", [identifier], options?.signal);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  rightForIdentifier(identifier: string, options?: { signal?: AbortSignal }): Promise<LAPersistedRight> {
+    return bindings.call(this, "LARightStore.right(forIdentifier:)", [identifier], options?.signal);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  saveRightIdentifier(right: LARight, identifier: string, options?: { signal?: AbortSignal }): Promise<LAPersistedRight> {
+    return bindings.call(this, "LARightStore.saveRight(_:identifier:)", [right, identifier], options?.signal);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  saveRightIdentifierSecret(right: LARight, identifier: string, secret: Uint8Array, options?: { signal?: AbortSignal }): Promise<LAPersistedRight> {
+    return bindings.call(this, "LARightStore.saveRight(_:identifier:secret:)", [right, identifier, secret], options?.signal);
+  }
+
+  /** iOS 16.0+, macOS 13.0+ */
+  static shared(ctx: TokamakContext): Promise<LARightStore> {
+    return bindings.call(ctx, "LARightStore.shared", []);
+  }
+}
+
+/** iOS 16.0+, macOS 13.0+ */
+export class LASecret extends NativeObject {
+  /** iOS 16.0+, macOS 13.0+ */
+  rawData(options?: { signal?: AbortSignal }): Promise<Uint8Array> {
+    return bindings.call(this, "LASecret.rawData", [], options?.signal);
   }
 }
 
@@ -413,6 +471,16 @@ export class LAPersistedRight extends LARight {
   secret(): Promise<LASecret> {
     return bindings.call(this, "LAPersistedRight.secret", []);
   }
+}
+
+/** iOS 8.3+, macOS 10.11+ */
+export function LAErrorDomain(ctx: TokamakContext): Promise<string> {
+  return bindings.call(ctx, "LAErrorDomain", []);
+}
+
+/** iOS 9.0+, macOS 10.12+ */
+export function LATouchIDAuthenticationMaximumAllowableReuseDuration(ctx: TokamakContext): Promise<number> {
+  return bindings.call(ctx, "LATouchIDAuthenticationMaximumAllowableReuseDuration", []);
 }
 
 /** iOS, macOS */
@@ -630,34 +698,24 @@ export function kLAPolicyDeviceOwnerAuthenticationWithWristDetection(ctx: Tokama
   return bindings.call(ctx, "kLAPolicyDeviceOwnerAuthenticationWithWristDetection", []);
 }
 
-/** iOS 8.3+, macOS 10.11+ */
-export function LAErrorDomain(ctx: TokamakContext): Promise<string> {
-  return bindings.call(ctx, "LAErrorDomain", []);
-}
-
-/** iOS 9.0+, macOS 10.12+ */
-export function LATouchIDAuthenticationMaximumAllowableReuseDuration(ctx: TokamakContext): Promise<number> {
-  return bindings.call(ctx, "LATouchIDAuthenticationMaximumAllowableReuseDuration", []);
-}
-
 const classes: Classes = {
-  "LAEnvironmentState": LAEnvironment$State,
-  "LAEnvironmentMechanismUserPassword": LAEnvironment$MechanismUserPassword,
-  "LAPrivateKey": LAPrivateKey,
-  "LASecret": LASecret,
-  "LAEnvironmentMechanismCompanion": LAEnvironment$MechanismCompanion,
-  "LAPublicKey": LAPublicKey,
-  "LAPersistedRight": LAPersistedRight,
-  "LAEnvironment": LAEnvironment,
-  "LocalAuthentication.LAEnvironment.Observer": LAEnvironment$Observer,
   "LAAuthenticationRequirement": LAAuthenticationRequirement,
   "LABiometryFallbackRequirement": LABiometryFallbackRequirement,
-  "LARightStore": LARightStore,
-  "LAEnvironmentMechanism": LAEnvironment$Mechanism,
+  "LAContext": LAContext,
   "LADomainState": LADomainState,
   "LADomainStateBiometry": LADomainStateBiometry,
   "LADomainStateCompanion": LADomainStateCompanion,
-  "LARight": LARight,
-  "LAContext": LAContext,
+  "LAEnvironment": LAEnvironment,
+  "LAEnvironmentMechanism": LAEnvironment$Mechanism,
   "LAEnvironmentMechanismBiometry": LAEnvironment$MechanismBiometry,
+  "LAEnvironmentMechanismCompanion": LAEnvironment$MechanismCompanion,
+  "LAEnvironmentMechanismUserPassword": LAEnvironment$MechanismUserPassword,
+  "LocalAuthentication.LAEnvironment.Observer": LAEnvironment$Observer,
+  "LAEnvironmentState": LAEnvironment$State,
+  "LAPersistedRight": LAPersistedRight,
+  "LAPrivateKey": LAPrivateKey,
+  "LAPublicKey": LAPublicKey,
+  "LARight": LARight,
+  "LARightStore": LARightStore,
+  "LASecret": LASecret,
 };

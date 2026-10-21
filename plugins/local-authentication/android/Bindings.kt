@@ -243,6 +243,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             else -> b.unsupported(method)
         }
 
+    @androidx.annotation.RequiresApi(28)
     private class BiometricPrompt_AuthenticationCallbackImplementation(private val binding: TokamakBinding) : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
         override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
             if (!binding.call("onAuthenticationError") { b -> listOf(b.encode(errorCode), b.encode(errString)) }) super.onAuthenticationError(errorCode, errString)
@@ -261,6 +262,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
         }
     }
 
+    @androidx.annotation.RequiresApi(16)
     private class CancellationSignal_OnCancelListenerImplementation(private val binding: TokamakBinding) : android.os.CancellationSignal.OnCancelListener {
         override fun onCancel() {
             binding.call("onCancel") { b -> listOf() }
