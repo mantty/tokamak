@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { tokamak } from "@tokamakdev/tok/vite";
 
-import { createBuilder, createServer } from "vite";
+import { createBuilder, createLogger, createServer } from "vite";
 import { createWorkerGraph } from "./dist/worker-graph.mjs";
 import { checkTypes, project } from "./worker-graph-fixture.mjs";
 
@@ -194,6 +194,35 @@ test("serves bidirectional RPC and reloads imported native code through Vite", a
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   assert.deepEqual(result, { label: "configured", main: "main-only", shared: "updated-source" });
+});
+
+test("scans the Tokamak worker's dependencies at startup instead of reloading when it first imports them", async (t) => {
+  const { root, config } = project(t, {
+    "tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
+    import { greeting } from "scanned-dependency";
+    export default class Native extends WorkerEntrypoint {
+      async describe(): Promise<{ label: string; main: string; shared: string }> { return { label: greeting, main: await this.env.MAIN.label(), shared: "" }; }
+    }`,
+  });
+  const dependency = path.join(root, "node_modules/scanned-dependency");
+  fs.mkdirSync(dependency, { recursive: true });
+  fs.writeFileSync(path.join(dependency, "package.json"), JSON.stringify({
+    name: "scanned-dependency", type: "module", exports: { types: "./index.d.ts", default: "./index.js" },
+  }));
+  fs.writeFileSync(path.join(dependency, "index.js"), 'export const greeting = "scanned";');
+  fs.writeFileSync(path.join(dependency, "index.d.ts"), "export declare const greeting: string;");
+  const logger = createLogger("info");
+  const messages = [];
+  logger.info = (message) => messages.push(message);
+  const server = await createServer({
+    ...config, logLevel: "info", customLogger: logger,
+    server: { host: "127.0.0.1", port: 0, watch: { usePolling: true } },
+  });
+  t.after(() => server.close());
+  await server.listen();
+  const response = await fetch(server.resolvedUrls.local[0]);
+  assert.deepEqual(await response.json(), { label: "scanned", main: "main-only", shared: "" });
+  assert.deepEqual(messages.filter((message) => message.includes("new dependencies optimized")), []);
 });
 
 test("rejects an unsupported public signature before building a bundle", async (t) => {

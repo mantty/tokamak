@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { PluginConfig } from "@cloudflare/vite-plugin";
-import { normalizePath, type Plugin } from "vite";
+import { normalizePath, type EnvironmentOptions, type Plugin } from "vite";
 
 import type { Availability, NativePlatform } from "@tokamakdev/plugin/capabilities";
 import type { PluginContract, WorkerContract } from "./worker-contract.mjs";
@@ -28,7 +28,10 @@ export interface WorkerGraph {
   cloudflare: PluginConfig;
   plugin: Plugin & {
     config: Extract<Plugin["config"], (...args: never[]) => unknown>;
-    configEnvironment(): { optimizeDeps: { exclude: string[] } };
+    configEnvironment: {
+      order: "post";
+      handler(name: string, config: EnvironmentOptions): EnvironmentOptions;
+    };
     buildStart: Extract<Plugin["buildStart"], (...args: never[]) => unknown>;
     hotUpdate: Extract<Plugin["hotUpdate"], (...args: never[]) => unknown>;
     resolveId: Extract<Plugin["resolveId"], (...args: never[]) => unknown>;
@@ -147,8 +150,25 @@ export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
         dev = environment.command === "serve";
         contracts.discover();
       },
-      configEnvironment() {
-        return { optimizeDeps: { exclude: contracts.mainEntry ? [contracts.mainEntry] : [] } };
+      // After Cloudflare's plugin, which points each Worker's dependency scan
+      // at its main. The scan cannot read a development service module, so it
+      // reads the app's module behind it, and finds that module's dependencies
+      // at startup rather than reloading the Worker when they are first
+      // imported.
+      configEnvironment: {
+        order: "post",
+        handler(name, config) {
+          const scanned = [config.optimizeDeps?.entries ?? []].flat();
+          const served = [
+            scanned.includes(serviceModule("main")) && contracts.mainEntry,
+            scanned.includes(serviceModule("native")) && entry,
+          ].filter(module => typeof module === "string").map(normalizePath);
+          // The main Worker's entry is the app, not a dependency, and the
+          // plugin SDK keeps state that a dependency bundle would copy.
+          const exclude = [contracts.mainEntry, name === "tokamak" && "@tokamakdev/plugin"]
+            .filter(module => typeof module === "string");
+          return { optimizeDeps: { entries: served, exclude } };
+        },
       },
       async buildStart() {
         if (this.environment.name !== "tokamak") return;

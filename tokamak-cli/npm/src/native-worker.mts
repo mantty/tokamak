@@ -40,10 +40,11 @@ export function createNativeWorker(
       await prepare?.(root, graph);
       writeJson(output, "config.json", { root, config });
     },
-    configEnvironment(name) {
-      const configured = graph.plugin.configEnvironment();
-      if (name === "tokamak") configured.optimizeDeps.exclude.push("@tokamakdev/plugin");
-      return configured;
+    configEnvironment: {
+      order: "post",
+      handler(name, config) {
+        return graph.plugin.configEnvironment.handler(name, config);
+      },
     },
     buildStart(options) {
       return graph.plugin.buildStart.call(this, options);
