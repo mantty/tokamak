@@ -158,16 +158,16 @@ export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
       configEnvironment: {
         order: "post",
         handler(name, config) {
-          const scanned = [config.optimizeDeps?.entries ?? []].flat();
-          const served = [
-            scanned.includes(serviceModule("main")) && contracts.mainEntry,
-            scanned.includes(serviceModule("native")) && entry,
-          ].filter(module => typeof module === "string").map(normalizePath);
+          const served = new Map([[serviceModule("main"), contracts.mainEntry], [serviceModule("native"), entry]]);
+          const entries = [config.optimizeDeps?.entries ?? []].flat()
+            .map(scanned => served.get(scanned))
+            .filter(module => module !== undefined)
+            .map(normalizePath);
           // The main Worker's entry is the app, not a dependency, and the
           // plugin SDK keeps state that a dependency bundle would copy.
-          const exclude = [contracts.mainEntry, name === "tokamak" && "@tokamakdev/plugin"]
-            .filter(module => typeof module === "string");
-          return { optimizeDeps: { entries: served, exclude } };
+          const exclude = contracts.mainEntry ? [contracts.mainEntry] : [];
+          if (name === "tokamak") exclude.push("@tokamakdev/plugin");
+          return { optimizeDeps: { entries, exclude } };
         },
       },
       async buildStart() {
