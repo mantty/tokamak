@@ -20,6 +20,12 @@ pub(super) enum ShellEvent {
 pub(super) struct Controls(pub(super) EventLoopProxy<ShellEvent>);
 
 impl PluginHandler for Controls {
+    /// The `WebView`'s operations, the shell's only plugin methods, which run on
+    /// the event loop. The runtime rejects calls to others at once.
+    fn implements(&self, plugin: &str, method: &str) -> bool {
+        plugin == "tokamak" && method.starts_with("webview.")
+    }
+
     fn call(&self, id: u64, plugin: &str, method: &str, payload: &[u8]) {
         let _ = self.0.send_event(ShellEvent::Call {
             id,
@@ -79,12 +85,6 @@ fn perform(
     method: &str,
     payload: &[u8],
 ) -> Result<Option<Value>, (&'static str, String)> {
-    if plugin != "tokamak" || !method.starts_with("webview.") {
-        return Err((
-            "NotSupportedError",
-            format!("{plugin}.{method} is not supported"),
-        ));
-    }
     let origin = Url::parse(&format!("https://{}/", runtime.host()))
         .map_err(|error| ("OperationError", error.to_string()))?;
     let page = view

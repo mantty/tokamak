@@ -1,5 +1,6 @@
 //! Plugin calls from the Worker. The shell's plugins answer them, apart from
-//! calls to the reserved plugin `tokamak`, which the runtime answers itself.
+//! `tokamak.lifecycleStage`, which the runtime answers itself, and methods the
+//! shell does not implement, which it rejects.
 //!
 //! Payloads are opaque bytes; reply metadata controls completion.
 
@@ -22,6 +23,13 @@ const SUBSCRIPTION_CAPACITY: usize = 64;
 /// runtime cancels. The runtime calls these methods on its own threads,
 /// and they must return promptly.
 pub trait PluginHandler: Send + Sync {
+    /// Whether the shell implements `method` of `plugin`. The runtime rejects
+    /// calls and subscriptions to the methods it does not implement with
+    /// `NotSupportedError`, without passing them to the shell.
+    fn implements(&self, _plugin: &str, _method: &str) -> bool {
+        true
+    }
+
     /// Calls `method` of `plugin` with its encoded arguments.
     fn call(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]);
 
@@ -264,12 +272,15 @@ impl PluginCalls {
         self.foreground.load(Ordering::Acquire)
     }
 
-    /// The shell's handler, unless the runtime answers calls to `plugin`.
+    /// The shell's handler, unless the runtime answers calls to `method` of
+    /// `plugin`.
     fn shell(&self, plugin: &str, method: &str) -> Option<&Arc<dyn PluginHandler>> {
         if plugin == RUNTIME_PLUGIN && method == "lifecycleStage" {
             None
         } else {
-            self.handler.as_ref()
+            self.handler
+                .as_ref()
+                .filter(|handler| handler.implements(plugin, method))
         }
     }
 
