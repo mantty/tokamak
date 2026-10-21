@@ -133,6 +133,7 @@ test_builds_shrunk_lint_checked_release_apps() {
   contains "$script" "checkOnly 'NewApi'"
   contains "$script" "abortOnError true"
   contains "$script" "checkDependencies true"
+  contains "$gradle/build.gradle" "freeCompilerArgs.add('-Xjvm-default=all')"
   contains "$script" "minifyEnabled true"
   contains "$script" "signingConfig signingConfigs.debug"
   lacks "$script" "signingConfigs {"

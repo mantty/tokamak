@@ -300,6 +300,12 @@ subprojects {
   plugins.withId('org.jetbrains.kotlin.android') {
     kotlin {
       jvmToolchain(17)
+      // Interface default methods compile into the interface, not into each
+      // implementing class, which incremental builds do not recompile when a
+      // Tokamak interface in another module gains or changes one.
+      compilerOptions {
+        freeCompilerArgs.add('-Xjvm-default=all')
+      }
     }
   }
 }
