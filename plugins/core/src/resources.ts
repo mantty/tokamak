@@ -1,14 +1,17 @@
 import { nativeConnection, type TokamakContext } from "./context.js";
 import { decodeJson, encodeJson } from "./codec.js";
 
-const collected = new FinalizationRegistry<() => void>((release) => { release(); });
+// Workers have FinalizationRegistry from compatibility date 2025-05-05 unless `disable_weak_ref` is set.
+const collected = typeof FinalizationRegistry === "function"
+  ? new FinalizationRegistry<() => void>((release) => { release(); })
+  : undefined;
 
 /** The invocation that owns `reference`. */
 export let ownerOf: (reference: NativeReference) => TokamakContext;
 
 /**
  * A native object that stays in native memory. The receiving invocation owns it until `close`,
- * the invocation's end, or garbage collection.
+ * the invocation's end, or garbage collection where the runtime has `FinalizationRegistry`.
  */
 export class NativeReference {
   readonly #ctx: TokamakContext;
@@ -23,7 +26,7 @@ export class NativeReference {
     this.#ctx = ctx;
     this.#id = id;
     this.#release = release;
-    collected.register(this, release, this);
+    collected?.register(this, release, this);
   }
 
   /**
@@ -85,7 +88,7 @@ export class NativeReference {
     const release = this.#release;
     if (!release) return;
     this.#release = undefined;
-    collected.unregister(this);
+    collected?.unregister(this);
     release();
   }
 

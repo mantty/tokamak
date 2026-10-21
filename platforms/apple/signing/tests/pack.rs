@@ -310,6 +310,26 @@ fn ios_minimum() -> Result<String> {
     )
 }
 
+/// Stages a generated bindings class for the plugin `id` in `input`, under
+/// the name `tok` stages every plugin's.
+fn stage_bindings(input: &Path, id: &str) -> Result<()> {
+    let bindings = input.join("plugins").join(id).join("bindings");
+    fs::create_dir_all(&bindings)?;
+    let class = format!("TokamakBindings_{}", id.replace('-', "_"));
+    fs::write(
+        bindings.join("0-Bindings.swift"),
+        format!(
+            r#"final class {class}: TokamakPlugin {{
+  let id = "{id}/apple"
+  init(host: TokamakHost) {{}}
+  func call(method: String, arguments: Any, reply: @escaping TokamakPluginReply) -> (() -> Void)? {{ nil }}
+}}
+"#
+        ),
+    )?;
+    Ok(())
+}
+
 #[test]
 fn packages_the_app_and_its_plugins_into_the_macos_bundle() -> Result<()> {
     let fixture = Fixture::new("macos-arm64")?;
@@ -338,6 +358,10 @@ fn packages_the_app_and_its_plugins_into_the_macos_bundle() -> Result<()> {
     .enumerate()
     {
         fs::write(plugin.join(format!("sources/{index}-{name}")), source)?;
+    }
+    // Generated bindings share a file name; a plugin may have no other native code.
+    for id in ["location", "local-authentication"] {
+        stage_bindings(&fixture.input(), id)?;
     }
     fs::write(
         plugin.join("plist"),

@@ -3,13 +3,13 @@ package com.tokamak.runtime
 import java.util.concurrent.Executor
 
 /** What the Worker asked a plugin for. */
-internal enum class TokamakPluginRequest { CALL, CALL_WITH_BODY, SUBSCRIBE }
+enum class TokamakPluginRequest { CALL, CALL_WITH_BODY, SUBSCRIBE }
 
 /**
  * Runs the Worker's requests on the executor each plugin chooses, and passes replies straight to the
  * runtime with [send]; [pull] asks the Worker for the next chunk of a call's body.
  */
-internal class TokamakPluginRequests<K>(
+class TokamakPluginRequests<K>(
     private val plugins: Map<String, TokamakPlugin>,
     private val pull: (K) -> Unit = {},
     private val send: (K, TokamakPluginResult) -> Unit,

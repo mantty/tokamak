@@ -71,6 +71,7 @@ pub(crate) fn package(
     services: BTreeMap<String, ServiceBinding>,
 ) -> Result<()> {
     let layout = PackageLayout::new(app_dir);
+    fs::create_dir_all(app_dir)?;
     write_worker_environment(
         &layout,
         &WorkerEnvironment {
@@ -247,6 +248,22 @@ mod tests {
                 "{error:?}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn packages_into_a_new_subpackage() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        write(root, &["index.js"])?;
+        let wrangler = worker(root, "[]")?;
+        let compiled = compile(&root.join("cache"), &wrangler)?;
+        let app = PackageLayout::new(root.join("app")).tokamak_worker();
+
+        package(app.root(), &compiled, &wrangler, BTreeMap::new())?;
+
+        assert!(app.worker_manifest().is_file());
+        assert!(app.worker_environment().is_file());
         Ok(())
     }
 

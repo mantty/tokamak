@@ -73,7 +73,7 @@ jobs:
       - name: Test native plugin requests
         run: |
           android_jar="$(ls "$ANDROID_HOME"/platforms/android-*/android.jar | sort -V | tail -1)"
-          kotlinc -classpath "$android_jar" platforms/android/source/plugin/TokamakPlugin.kt platforms/android/source/plugin/TokamakResources.kt platforms/android/source/plugin/TokamakBindings.kt platforms/android/source/app/TokamakPluginRequests.kt platforms/android/tests/plugin-requests.kt -include-runtime -d "$RUNNER_TEMP/plugin-requests.jar"
+          kotlinc -classpath "$android_jar" platforms/android/source/plugin/TokamakPlugin.kt platforms/android/source/plugin/TokamakResources.kt platforms/android/source/plugin/TokamakBindings.kt platforms/android/source/plugin/TokamakPluginRequests.kt platforms/android/tests/plugin-requests.kt -include-runtime -d "$RUNNER_TEMP/plugin-requests.jar"
           # android.jar's org.json is stubs; the JVM runs the reference implementation.
           curl -fsSL -o "$RUNNER_TEMP/json.jar" https://repo1.maven.org/maven2/org/json/json/20250517/json-20250517.jar
           java -cp "$RUNNER_TEMP/plugin-requests.jar:$RUNNER_TEMP/json.jar:$android_jar" com.tokamak.runtime.Plugin_requestsKt

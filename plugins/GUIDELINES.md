@@ -169,9 +169,11 @@ TypeScript acquires it with the protected `resource(method)`, which resolves to
 a `NativeReference` owned by the invocation. Pass it to another plugin with
 `reference(value)` inside the call's arguments; that plugin's native code finds
 the same object with `host.resources.get(id, as:)` on Apple or
-`host.resources.get(id, Type::class.java)` on Android. `close()`, the end of the
-invocation, or garbage collection releases it. `bytes()` copies the current
-contents of a retained `Data` or `ByteArray` into JavaScript.
+`host.resources.get(id, Type::class.java)` on Android. `close()` or the end of
+the invocation releases it, and so does garbage collection where the Worker
+has `FinalizationRegistry` (Workers from compatibility date 2025-05-05).
+`bytes()` copies the current contents of a retained `Data` or `ByteArray` into
+JavaScript.
 
 ```ts
 class Camera extends Plugin {
