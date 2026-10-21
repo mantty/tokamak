@@ -20,7 +20,6 @@ import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakPluginReply
 import org.json.JSONArray
 import org.json.JSONObject
-import org.json.JSONTokener
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
@@ -177,7 +176,7 @@ class TokamakNotificationsPlugin(
     private fun deliver(method: String, event: String, value: JSONObject, finish: () -> Unit) {
         notify(method, value)
         Thread {
-            runCatching { host.emit(event, value.toString(), RESPONSE_DEADLINE_MILLIS) }
+            runCatching { host.emit(event, value, RESPONSE_DEADLINE_MILLIS) }
                 .onFailure { Log.w("tokamak", "$event notification failed: ${it.message}") }
             finish()
         }.start()
@@ -202,17 +201,16 @@ class TokamakNotificationsPlugin(
             presentBeforeReturning(notification, "push", deadline)
             return
         }
-        runCatching { host.emit("push", message.toString(), PUSH_DEADLINE_MILLIS) }
+        runCatching { host.emit("push", message, PUSH_DEADLINE_MILLIS) }
             .onSuccess { showReply(it, deadline) }
             .onFailure { Log.w("tokamak", "push notification failed: ${it.message}") }
     }
 
     /** Shows the notification `onPush` listeners reply with, if any, with the images that load by [deadline]. */
-    private fun showReply(reply: String, deadline: Long) {
+    private fun showReply(reply: Any?, deadline: Long) {
+        if (reply == null) return
         runCatching {
-            val notification = JSONTokener(reply).nextValue()
-            if (notification == JSONObject.NULL) return
-            presentBeforeReturning(Content.parse(notification as JSONObject, scheduled = false), "local", deadline)
+            presentBeforeReturning(Content.parse(reply as JSONObject, scheduled = false), "local", deadline)
         }.onFailure { Log.w("tokamak", "the push reply is not a notification", it) }
     }
 

@@ -80,7 +80,7 @@ internal class LocationEvents(private val host: TokamakHost) {
     private fun send(method: String, name: String, event: JSONObject, finish: () -> Unit) {
         listeners[method].orEmpty().values.toList().forEach { it(Result.success(event)) }
         Thread {
-            runCatching { host.emit(name, event.toString(), EVENT_DEADLINE_MILLIS) }
+            runCatching { host.emit(name, event, EVENT_DEADLINE_MILLIS) }
                 .onFailure { Log.w("tokamak", "location $name failed: ${it.message}") }
             host.context.mainExecutor.execute(finish)
         }.start()

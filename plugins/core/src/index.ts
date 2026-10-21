@@ -1,5 +1,5 @@
-import { capabilitiesOf, nativeConnection, type CallOptions, type NativeConnection, type Overflow, type TokamakContext } from "./context.js";
-import { byteStream, type JsonStream } from "./streams.js";
+import { capabilitiesOf, nativeConnection, type CallOptions, type Overflow, type TokamakContext } from "./context.js";
+import { byteStream, jsonLine, type JsonStream } from "./streams.js";
 import { decodeJson, encodeJson } from "./codec.js";
 import { NativeReference } from "./resources.js";
 
@@ -24,12 +24,8 @@ export async function lifecycleStage(ctx: TokamakContext): Promise<LifecycleStag
 
 /** Native endpoint calls owned by the receiving invocation. */
 export abstract class Plugin {
-  private readonly connection: NativeConnection;
-
-  protected constructor(private readonly ctx: TokamakContext, private readonly pluginId: string) {
-    const connection = Reflect.get(ctx, nativeConnection) as NativeConnection | undefined;
-    if (!connection) throw new TypeError("A Tokamak invocation context is required");
-    this.connection = connection;
+  protected constructor(protected readonly ctx: TokamakContext, private readonly pluginId: string) {
+    if (!Reflect.has(ctx, nativeConnection)) throw new TypeError("A Tokamak invocation context is required");
   }
 
   protected async call<T>(method: string, value: unknown = null, options?: CallOptions): Promise<T> {
@@ -45,7 +41,7 @@ export abstract class Plugin {
   }
 
   protected callBytes(method: string, payload: Uint8Array, options?: CallOptions): Promise<Uint8Array> {
-    return this.connection.call(this.pluginId, method, payload, options);
+    return this.ctx[nativeConnection].call(this.pluginId, method, payload, options);
   }
 
   /** Retains the native object that the subscription `method` holds open, without copying it. */
@@ -63,12 +59,9 @@ export abstract class Plugin {
    * happens to values a slow reader has not taken: ending the stream, or dropping the oldest.
    */
   protected stream<T>(method: string, value: unknown = null, overflow: Overflow = "error"): JsonStream<T> {
-    return byteStream((next, error, close) => this.connection.listen(this.pluginId, method, encodeJson(value), {
+    return byteStream((next, error, close) => this.ctx[nativeConnection].listen(this.pluginId, method, encodeJson(value), {
       next(payload, done) {
-        const line = new Uint8Array(payload.byteLength + 1);
-        line.set(payload);
-        line[payload.byteLength] = 10;
-        next(line);
+        next(jsonLine(payload));
         if (done) close();
       },
       error,

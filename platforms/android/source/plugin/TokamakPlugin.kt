@@ -206,9 +206,11 @@ interface TokamakHost {
      */
     fun emitBytes(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray
 
-    /** [emitBytes] with the JSON [event], returning their reply as JSON, `null` when none replied. */
-    fun emit(name: String, event: String, timeoutMillis: Long): String =
-        emitBytes(name, event.toByteArray(Charsets.UTF_8), timeoutMillis).toString(Charsets.UTF_8).ifEmpty { "null" }
+    /** [emitBytes] with [event] encoded as JSON, returning their reply decoded from JSON, or null when none replied. */
+    fun emit(name: String, event: Any?, timeoutMillis: Long): Any? {
+        val reply = emitBytes(name, encodePluginValue(event), timeoutMillis)
+        return if (reply.isEmpty()) null else decodePluginValue(reply).takeUnless { it == JSONObject.NULL }
+    }
 
     /**
      * What the app serves at [path], as its WebView would load it: a file the app ships or the

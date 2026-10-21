@@ -53,6 +53,9 @@ fn members(module: &Module) -> impl Iterator<Item = (Option<&Type>, &Member)> {
         .chain(module.globals.iter().map(|member| (None, member)))
 }
 
+/// The end of a request switch: the rejection of a member the plugin does not bind.
+const UNBOUND: &str = "    default:\n      throw .notSupported(\"\\(method) is not supported\")\n    }\n  }\n";
+
 struct Emitter<'a> {
     class: &'a str,
 }
@@ -60,7 +63,7 @@ struct Emitter<'a> {
 impl Emitter<'_> {
     fn calls(&self, out: &mut String, module: &Module) {
         out.push_str(
-            "\n  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (() -> Void)? {\n    let b = TokamakBinding(payload, resources: host.resources, reply: reply)\n    switch method {\n",
+            "\n  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)\n    throws(TokamakPluginError) -> (() -> Void)?\n  {\n    let b = try TokamakBinding(payload, resources: host.resources, reply: reply)\n    switch method {\n",
         );
         for (owner, member) in members(module).filter(|(_, member)| !member.stream) {
             within_os(
@@ -72,7 +75,7 @@ impl Emitter<'_> {
                     if let Some(versions) = versions(&member.availability) {
                         let _ = writeln!(
                             out,
-                            "      guard #available({versions}, *) else {{ return b.run {{ throw TokamakBinding.unavailable }} }}"
+                            "      guard #available({versions}, *) else {{ throw TokamakBinding.unavailable }}"
                         );
                     }
                     let run = if member.effects.asynchronous {
@@ -88,12 +91,12 @@ impl Emitter<'_> {
                 },
             );
         }
-        out.push_str("    default:\n      return b.unsupported(method)\n    }\n  }\n");
+        out.push_str(UNBOUND);
     }
 
     fn subscriptions(&self, out: &mut String, module: &Module) {
         out.push_str(
-            "\n  func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)\n    throws(TokamakPluginError) -> () -> Void\n  {\n    let b = TokamakBinding(payload, resources: host.resources, reply: reply)\n    switch method {\n",
+            "\n  func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)\n    throws(TokamakPluginError) -> () -> Void\n  {\n    let b = try TokamakBinding(payload, resources: host.resources, reply: reply)\n    switch method {\n",
         );
         for ty in &module.types {
             if ty.callbacks().is_some() {
@@ -113,7 +116,7 @@ impl Emitter<'_> {
             );
             subscription_case(out, &member.key, &member.availability, &body);
         }
-        out.push_str("    default:\n      throw .notSupported(\"\\(method) is not supported\")\n    }\n  }\n");
+        out.push_str(UNBOUND);
     }
 
     /// The statements that perform `member` and return its encoded result.

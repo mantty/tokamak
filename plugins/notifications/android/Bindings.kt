@@ -48,7 +48,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "NotificationChannelGroup" -> callNotificationChannelGroup(method, b)
             "Context" -> callContext(method, b)
             "Context.BindServiceFlags" -> callContext_BindServiceFlags(method, b)
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
     }
 
@@ -103,7 +103,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "NotificationManager#canUseFullScreenIntent()Z" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.app.NotificationManager::class.java).canUseFullScreenIntent()) }
             "NotificationManager#areAutomaticZenRulesUserManaged()Z" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.app.NotificationManager::class.java).areAutomaticZenRulesUserManaged()) }
             "NotificationManager#getAutomaticZenRuleState(Ljava/lang/String;)I" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.app.NotificationManager::class.java).getAutomaticZenRuleState(b.string(b[0]))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotificationManager_Policy(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -123,7 +123,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "NotificationManager.Policy#suppressedVisualEffects" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.encode(b.target(android.app.NotificationManager.Policy::class.java).suppressedVisualEffects) }
             "NotificationManager.Policy#<init>(IIIII)V" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(android.app.NotificationManager.Policy(b.int(b[0]), b.int(b[1]), b.int(b[2]), b.int(b[3]), b.int(b[4]))) }
             "NotificationManager.Policy#priorityConversationSenders" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.app.NotificationManager.Policy::class.java).priorityConversationSenders) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -181,7 +181,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification#getAllowSystemGeneratedContextualActions()Z" -> b.run { if (Build.VERSION.SDK_INT < 29) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification::class.java).getAllowSystemGeneratedContextualActions()) }
             "Notification#getContextualActions()Ljava/util/List;" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification::class.java).getContextualActions()) }
             "Notification#hasImage()Z" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification::class.java).hasImage()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_Action(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -196,7 +196,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.Action#getSemanticAction()I" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Action::class.java).getSemanticAction()) }
             "Notification.Action#isContextual()Z" -> b.run { if (Build.VERSION.SDK_INT < 29) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Action::class.java).isContextual()) }
             "Notification.Action#isAuthenticationRequired()Z" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Action::class.java).isAuthenticationRequired()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_Action_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -208,13 +208,13 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.Action.Builder#setSemanticAction(I)Landroid/app/Notification\$Action\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Action.Builder::class.java).setSemanticAction(b.int(b[0]))) }
             "Notification.Action.Builder#setContextual(Z)Landroid/app/Notification\$Action\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 29) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Action.Builder::class.java).setContextual(b.boolean(b[0]))) }
             "Notification.Action.Builder#setAuthenticationRequired(Z)Landroid/app/Notification\$Action\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Action.Builder::class.java).setAuthenticationRequired(b.boolean(b[0]))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_Action_Extender(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "Notification.Action.Extender#extend(Landroid/app/Notification\$Action\$Builder;)Landroid/app/Notification\$Action\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 20) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Action.Extender::class.java).extend(b.optional(b[0]) { x1 -> b.obj(x1, android.app.Notification.Action.Builder::class.java) })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_Action_WearableExtender(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -235,7 +235,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.Action.WearableExtender#getHintLaunchesActivity()Z" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Action.WearableExtender::class.java).getHintLaunchesActivity()) }
             "Notification.Action.WearableExtender#setHintDisplayActionInline(Z)Landroid/app/Notification\$Action\$WearableExtender;" -> b.run { if (Build.VERSION.SDK_INT < 25) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Action.WearableExtender::class.java).setHintDisplayActionInline(b.boolean(b[0]))) }
             "Notification.Action.WearableExtender#getHintDisplayActionInline()Z" -> b.run { if (Build.VERSION.SDK_INT < 25) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Action.WearableExtender::class.java).getHintDisplayActionInline()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_BigPictureStyle(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -246,7 +246,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.BigPictureStyle#setSummaryText(Ljava/lang/CharSequence;)Landroid/app/Notification\$BigPictureStyle;" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.BigPictureStyle::class.java).setSummaryText(b.optional(b[0]) { x1 -> b.string(x1) })) }
             "Notification.BigPictureStyle#setContentDescription(Ljava/lang/CharSequence;)Landroid/app/Notification\$BigPictureStyle;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.BigPictureStyle::class.java).setContentDescription(b.optional(b[0]) { x1 -> b.string(x1) })) }
             "Notification.BigPictureStyle#showBigPictureWhenCollapsed(Z)Landroid/app/Notification\$BigPictureStyle;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.BigPictureStyle::class.java).showBigPictureWhenCollapsed(b.boolean(b[0]))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_BigTextStyle(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -256,7 +256,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.BigTextStyle#setBigContentTitle(Ljava/lang/CharSequence;)Landroid/app/Notification\$BigTextStyle;" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.BigTextStyle::class.java).setBigContentTitle(b.optional(b[0]) { x1 -> b.string(x1) })) }
             "Notification.BigTextStyle#setSummaryText(Ljava/lang/CharSequence;)Landroid/app/Notification\$BigTextStyle;" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.BigTextStyle::class.java).setSummaryText(b.optional(b[0]) { x1 -> b.string(x1) })) }
             "Notification.BigTextStyle#bigText(Ljava/lang/CharSequence;)Landroid/app/Notification\$BigTextStyle;" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.BigTextStyle::class.java).bigText(b.optional(b[0]) { x1 -> b.string(x1) })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_BubbleMetadata(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -269,7 +269,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.BubbleMetadata#getShortcutId()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.BubbleMetadata::class.java).getShortcutId()) }
             "Notification.BubbleMetadata#isBubbleSuppressable()Z" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.BubbleMetadata::class.java).isBubbleSuppressable()) }
             "Notification.BubbleMetadata#isBubbleSuppressed()Z" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.BubbleMetadata::class.java).isBubbleSuppressed()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_BubbleMetadata_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -282,7 +282,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.BubbleMetadata.Builder#build()Landroid/app/Notification\$BubbleMetadata;" -> b.run { if (Build.VERSION.SDK_INT < 29) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.BubbleMetadata.Builder::class.java).build()) }
             "Notification.BubbleMetadata.Builder#<init>(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(android.app.Notification.BubbleMetadata.Builder(b.string(b[0]))) }
             "Notification.BubbleMetadata.Builder#setSuppressableBubble(Z)Landroid/app/Notification\$BubbleMetadata\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.BubbleMetadata.Builder::class.java).setSuppressableBubble(b.boolean(b[0]))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -338,7 +338,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.Builder#setAllowSystemGeneratedContextualActions(Z)Landroid/app/Notification\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 29) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Builder::class.java).setAllowSystemGeneratedContextualActions(b.boolean(b[0]))) }
             "Notification.Builder#setFlag(IZ)Landroid/app/Notification\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Builder::class.java).setFlag(b.int(b[0]), b.boolean(b[1]))) }
             "Notification.Builder#setForegroundServiceBehavior(I)Landroid/app/Notification\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Builder::class.java).setForegroundServiceBehavior(b.int(b[0]))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_CallStyle(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -347,7 +347,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.CallStyle#setVerificationText(Ljava/lang/CharSequence;)Landroid/app/Notification\$CallStyle;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.CallStyle::class.java).setVerificationText(b.optional(b[0]) { x1 -> b.string(x1) })) }
             "Notification.CallStyle#setAnswerButtonColorHint(I)Landroid/app/Notification\$CallStyle;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.CallStyle::class.java).setAnswerButtonColorHint(b.int(b[0]))) }
             "Notification.CallStyle#setDeclineButtonColorHint(I)Landroid/app/Notification\$CallStyle;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.CallStyle::class.java).setDeclineButtonColorHint(b.int(b[0]))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_CarExtender(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -359,7 +359,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.CarExtender#getColor()I" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.CarExtender::class.java).getColor()) }
             "Notification.CarExtender#setUnreadConversation(Landroid/app/Notification\$CarExtender\$UnreadConversation;)Landroid/app/Notification\$CarExtender;" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.CarExtender::class.java).setUnreadConversation(b.optional(b[0]) { x1 -> b.obj(x1, android.app.Notification.CarExtender.UnreadConversation::class.java) })) }
             "Notification.CarExtender#getUnreadConversation()Landroid/app/Notification\$CarExtender\$UnreadConversation;" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.CarExtender::class.java).getUnreadConversation()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_CarExtender_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -368,7 +368,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.CarExtender.Builder#addMessage(Ljava/lang/String;)Landroid/app/Notification\$CarExtender\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.CarExtender.Builder::class.java).addMessage(b.optional(b[0]) { x1 -> b.string(x1) })) }
             "Notification.CarExtender.Builder#setLatestTimestamp(J)Landroid/app/Notification\$CarExtender\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.CarExtender.Builder::class.java).setLatestTimestamp(b.long(b[0]))) }
             "Notification.CarExtender.Builder#build()Landroid/app/Notification\$CarExtender\$UnreadConversation;" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.CarExtender.Builder::class.java).build()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_CarExtender_UnreadConversation(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -377,25 +377,25 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.CarExtender.UnreadConversation#getParticipants()[Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.CarExtender.UnreadConversation::class.java).getParticipants()) }
             "Notification.CarExtender.UnreadConversation#getParticipant()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.CarExtender.UnreadConversation::class.java).getParticipant()) }
             "Notification.CarExtender.UnreadConversation#getLatestTimestamp()J" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.CarExtender.UnreadConversation::class.java).getLatestTimestamp()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_DecoratedCustomViewStyle(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "Notification.DecoratedCustomViewStyle#<init>()V" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.encode(android.app.Notification.DecoratedCustomViewStyle()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_DecoratedMediaCustomViewStyle(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "Notification.DecoratedMediaCustomViewStyle#<init>()V" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.encode(android.app.Notification.DecoratedMediaCustomViewStyle()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_Extender(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "Notification.Extender#extend(Landroid/app/Notification\$Builder;)Landroid/app/Notification\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 20) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Extender::class.java).extend(b.optional(b[0]) { x1 -> b.obj(x1, android.app.Notification.Builder::class.java) })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_InboxStyle(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -405,7 +405,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.InboxStyle#setBigContentTitle(Ljava/lang/CharSequence;)Landroid/app/Notification\$InboxStyle;" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.InboxStyle::class.java).setBigContentTitle(b.optional(b[0]) { x1 -> b.string(x1) })) }
             "Notification.InboxStyle#setSummaryText(Ljava/lang/CharSequence;)Landroid/app/Notification\$InboxStyle;" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.InboxStyle::class.java).setSummaryText(b.optional(b[0]) { x1 -> b.string(x1) })) }
             "Notification.InboxStyle#addLine(Ljava/lang/CharSequence;)Landroid/app/Notification\$InboxStyle;" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.InboxStyle::class.java).addLine(b.optional(b[0]) { x1 -> b.string(x1) })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_MediaStyle(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -413,7 +413,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.MediaStyle#<init>()V" -> b.run { if (Build.VERSION.SDK_INT < 21) throw TokamakBinding.unavailable; b.encode(android.app.Notification.MediaStyle()) }
             "Notification.MediaStyle#<init>(Landroid/app/Notification\$Builder;)V" -> b.run { if (Build.VERSION.SDK_INT < 21) throw TokamakBinding.unavailable; b.encode(android.app.Notification.MediaStyle(b.optional(b[0]) { x1 -> b.obj(x1, android.app.Notification.Builder::class.java) })) }
             "Notification.MediaStyle#setShowActionsInCompactView([I)Landroid/app/Notification\$MediaStyle;" -> b.run { if (Build.VERSION.SDK_INT < 21) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.MediaStyle::class.java).setShowActionsInCompactView(*b.list(b[0]) { x1 -> b.int(x1) }.toIntArray())) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_MessagingStyle(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -429,7 +429,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.MessagingStyle#getHistoricMessages()Ljava/util/List;" -> b.run { if (Build.VERSION.SDK_INT < 26) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.MessagingStyle::class.java).getHistoricMessages()) }
             "Notification.MessagingStyle#setGroupConversation(Z)Landroid/app/Notification\$MessagingStyle;" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.MessagingStyle::class.java).setGroupConversation(b.boolean(b[0]))) }
             "Notification.MessagingStyle#isGroupConversation()Z" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.MessagingStyle::class.java).isGroupConversation()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_MessagingStyle_Message(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -439,14 +439,14 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.MessagingStyle.Message#getTimestamp()J" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.MessagingStyle.Message::class.java).getTimestamp()) }
             "Notification.MessagingStyle.Message#getSender()Ljava/lang/CharSequence;" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.MessagingStyle.Message::class.java).getSender()) }
             "Notification.MessagingStyle.Message#getDataMimeType()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.MessagingStyle.Message::class.java).getDataMimeType()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_Style(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "Notification.Style#setBuilder(Landroid/app/Notification\$Builder;)V" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.target(android.app.Notification.Style::class.java).setBuilder(b.optional(b[0]) { x1 -> b.obj(x1, android.app.Notification.Builder::class.java) }); null }
             "Notification.Style#build()Landroid/app/Notification;" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.Style::class.java).build()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_TvExtender(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -459,7 +459,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.TvExtender#getChannelId()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.TvExtender::class.java).getChannelId()) }
             "Notification.TvExtender#setSuppressShowOverApps(Z)Landroid/app/Notification\$TvExtender;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.TvExtender::class.java).setSuppressShowOverApps(b.boolean(b[0]))) }
             "Notification.TvExtender#isSuppressShowOverApps()Z" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.TvExtender::class.java).isSuppressShowOverApps()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotification_WearableExtender(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -508,7 +508,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Notification.WearableExtender#getDismissalId()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.WearableExtender::class.java).getDismissalId()) }
             "Notification.WearableExtender#setBridgeTag(Ljava/lang/String;)Landroid/app/Notification\$WearableExtender;" -> b.run { if (Build.VERSION.SDK_INT < 26) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.WearableExtender::class.java).setBridgeTag(b.optional(b[0]) { x1 -> b.string(x1) })) }
             "Notification.WearableExtender#getBridgeTag()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 26) throw TokamakBinding.unavailable; b.encode(b.target(android.app.Notification.WearableExtender::class.java).getBridgeTag()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotificationChannel(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -553,7 +553,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "NotificationChannel#isDemoted()Z" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.app.NotificationChannel::class.java).isDemoted()) }
             "NotificationChannel#setBlockable(Z)V" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.target(android.app.NotificationChannel::class.java).setBlockable(b.boolean(b[0])); null }
             "NotificationChannel#isBlockable()Z" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.encode(b.target(android.app.NotificationChannel::class.java).isBlockable()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callNotificationChannelGroup(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -570,7 +570,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "NotificationChannelGroup#getDescription()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(b.target(android.app.NotificationChannelGroup::class.java).getDescription()) }
             "NotificationChannelGroup#isBlocked()Z" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(b.target(android.app.NotificationChannelGroup::class.java).isBlocked()) }
             "NotificationChannelGroup#setDescription(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.target(android.app.NotificationChannelGroup::class.java).setDescription(b.optional(b[0]) { x1 -> b.string(x1) }); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callContext(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -615,13 +615,13 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Context#revokeSelfPermissionsOnKill(Ljava/util/Collection;)V" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.target(android.content.Context::class.java).revokeSelfPermissionsOnKill(b.list(b[0]) { x1 -> b.optional(x1) { x2 -> b.string(x2) } }); null }
             "Context#createDeviceContext(I)Landroid/content/Context;" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.content.Context::class.java).createDeviceContext(b.int(b[0]))) }
             "Context#getDeviceId()I" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.content.Context::class.java).getDeviceId()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callContext_BindServiceFlags(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "Context.BindServiceFlags#of(J)Landroid/content/Context\$BindServiceFlags;" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(android.content.Context.BindServiceFlags.of(b.long(b[0]))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     @androidx.annotation.RequiresApi(16)

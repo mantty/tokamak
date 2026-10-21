@@ -12,411 +12,413 @@ final class TokamakBindings_notifications: TokamakPlugin {
 
   init(host: TokamakHost) { self.host = host }
 
-  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (() -> Void)? {
-    let b = TokamakBinding(payload, resources: host.resources, reply: reply)
+  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
+    throws(TokamakPluginError) -> (() -> Void)?
+  {
+    let b = try TokamakBinding(payload, resources: host.resources, reply: reply)
     switch method {
     case "UNCalendarNotificationTrigger.nextTriggerDate()":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNCalendarNotificationTrigger.self).nextTriggerDate(); return b.encode(optional: value) { b.encode($0) } }
     case "UNMutableNotificationContent.attachments":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).attachments; return b.encode(array: value) { b.encode(object: $0) } }
     case "UNMutableNotificationContent.attachments=":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).attachments = b.array(b[0]) { try b.object($0, as: UNNotificationAttachment.self) }; return nil }
     case "UNMutableNotificationContent.badge":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).badge; return b.encode(optional: value) { b.encode($0) } }
     case "UNMutableNotificationContent.badge=":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).badge = b.optional(b[0]) { try b.decode($0, as: NSNumber.self) }; return nil }
     case "UNMutableNotificationContent.body":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).body; return b.encode(value) }
     case "UNMutableNotificationContent.body=":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).body = b.decode(b[0], as: String.self); return nil }
     case "UNMutableNotificationContent.categoryIdentifier":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).categoryIdentifier; return b.encode(value) }
     case "UNMutableNotificationContent.categoryIdentifier=":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).categoryIdentifier = b.decode(b[0], as: String.self); return nil }
     case "UNMutableNotificationContent.filterCriteria":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 16.0, macOS 13.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).filterCriteria; return b.encode(optional: value) { b.encode($0) } }
     case "UNMutableNotificationContent.filterCriteria=":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 16.0, macOS 13.0, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).filterCriteria = b.optional(b[0]) { try b.decode($0, as: String.self) }; return nil }
     case "UNMutableNotificationContent.interruptionLevel":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).interruptionLevel; return TokamakBindings_notifications.encode(value, b) }
     case "UNMutableNotificationContent.interruptionLevel=":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).interruptionLevel = TokamakBindings_notifications.decode(b[0], b, as: UNNotificationInterruptionLevel.self); return nil }
     #if os(iOS)
     case "UNMutableNotificationContent.launchImageName":
-      guard #available(iOS 10.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).launchImageName; return b.encode(value) }
     #endif
     #if os(iOS)
     case "UNMutableNotificationContent.launchImageName=":
-      guard #available(iOS 10.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).launchImageName = b.decode(b[0], as: String.self); return nil }
     #endif
     case "UNMutableNotificationContent.relevanceScore":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).relevanceScore; return b.encode(value) }
     case "UNMutableNotificationContent.relevanceScore=":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).relevanceScore = b.decode(b[0], as: Double.self); return nil }
     case "UNMutableNotificationContent.sound":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).sound; return b.encode(optional: value) { b.encode(object: $0) } }
     case "UNMutableNotificationContent.sound=":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).sound = b.optional(b[0]) { try b.object($0, as: UNNotificationSound.self) }; return nil }
     case "UNMutableNotificationContent.subtitle":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).subtitle; return b.encode(value) }
     case "UNMutableNotificationContent.subtitle=":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).subtitle = b.decode(b[0], as: String.self); return nil }
     case "UNMutableNotificationContent.summaryArgument":
-      guard #available(iOS 12.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).summaryArgument; return b.encode(value) }
     case "UNMutableNotificationContent.summaryArgument=":
-      guard #available(iOS 12.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).summaryArgument = b.decode(b[0], as: String.self); return nil }
     case "UNMutableNotificationContent.summaryArgumentCount":
-      guard #available(iOS 12.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).summaryArgumentCount; return b.encode(value) }
     case "UNMutableNotificationContent.summaryArgumentCount=":
-      guard #available(iOS 12.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).summaryArgumentCount = b.decode(b[0], as: Int.self); return nil }
     case "UNMutableNotificationContent.targetContentIdentifier":
-      guard #available(iOS 13.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 13.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).targetContentIdentifier; return b.encode(optional: value) { b.encode($0) } }
     case "UNMutableNotificationContent.targetContentIdentifier=":
-      guard #available(iOS 13.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 13.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).targetContentIdentifier = b.optional(b[0]) { try b.decode($0, as: String.self) }; return nil }
     case "UNMutableNotificationContent.threadIdentifier":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).threadIdentifier; return b.encode(value) }
     case "UNMutableNotificationContent.threadIdentifier=":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).threadIdentifier = b.decode(b[0], as: String.self); return nil }
     case "UNMutableNotificationContent.title":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNMutableNotificationContent.self).title; return b.encode(value) }
     case "UNMutableNotificationContent.title=":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNMutableNotificationContent.self).title = b.decode(b[0], as: String.self); return nil }
     case "UNNotification.date":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotification.self).date; return b.encode(value) }
     case "UNNotification.request":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotification.self).request; return b.encode(object: value) }
     case "UNNotificationAction.icon":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationAction.self).icon; return b.encode(optional: value) { b.encode(object: $0) } }
     case "UNNotificationAction.identifier":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationAction.self).identifier; return b.encode(value) }
     case "UNNotificationAction.init(identifier:title:options:)":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try UNNotificationAction(identifier: b.decode(b[0], as: String.self), title: b.decode(b[1], as: String.self), options: TokamakBindings_notifications.decode(b[2], b, as: UNNotificationActionOptions.self)); return b.encode(object: value) }
     case "UNNotificationAction.init(identifier:title:options:icon:)":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try UNNotificationAction(identifier: b.decode(b[0], as: String.self), title: b.decode(b[1], as: String.self), options: TokamakBindings_notifications.decode(b[2], b, as: UNNotificationActionOptions.self), icon: b.optional(b[3]) { try b.object($0, as: UNNotificationActionIcon.self) }); return b.encode(object: value) }
     case "UNNotificationAction.options":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationAction.self).options; return TokamakBindings_notifications.encode(value, b) }
     case "UNNotificationAction.title":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationAction.self).title; return b.encode(value) }
     case "UNNotificationActionIcon.init(systemImageName:)":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try UNNotificationActionIcon(systemImageName: b.decode(b[0], as: String.self)); return b.encode(object: value) }
     case "UNNotificationActionIcon.init(templateImageName:)":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try UNNotificationActionIcon(templateImageName: b.decode(b[0], as: String.self)); return b.encode(object: value) }
     case "UNNotificationAttachment.identifier":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationAttachment.self).identifier; return b.encode(value) }
     case "UNNotificationAttachment.type":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationAttachment.self).type; return b.encode(value) }
     case "UNNotificationAttachment.url":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationAttachment.self).url; return b.encode(value) }
     case "UNNotificationCategory.actions":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationCategory.self).actions; return b.encode(array: value) { b.encode(object: $0) } }
     case "UNNotificationCategory.categorySummaryFormat":
-      guard #available(iOS 12.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationCategory.self).categorySummaryFormat; return b.encode(value) }
     case "UNNotificationCategory.hiddenPreviewsBodyPlaceholder":
-      guard #available(iOS 11.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 11.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationCategory.self).hiddenPreviewsBodyPlaceholder; return b.encode(value) }
     case "UNNotificationCategory.identifier":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationCategory.self).identifier; return b.encode(value) }
     case "UNNotificationCategory.init(identifier:actions:intentIdentifiers:hiddenPreviewsBodyPlaceholder:categorySummaryFormat:options:)":
-      guard #available(iOS 12.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try UNNotificationCategory(identifier: b.decode(b[0], as: String.self), actions: b.array(b[1]) { try b.object($0, as: UNNotificationAction.self) }, intentIdentifiers: b.array(b[2]) { try b.decode($0, as: String.self) }, hiddenPreviewsBodyPlaceholder: b.optional(b[3]) { try b.decode($0, as: String.self) }, categorySummaryFormat: b.optional(b[4]) { try b.decode($0, as: String.self) }, options: TokamakBindings_notifications.decode(b[5], b, as: UNNotificationCategoryOptions.self)); return b.encode(object: value) }
     case "UNNotificationCategory.init(identifier:actions:intentIdentifiers:hiddenPreviewsBodyPlaceholder:options:)":
-      guard #available(iOS 11.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 11.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try UNNotificationCategory(identifier: b.decode(b[0], as: String.self), actions: b.array(b[1]) { try b.object($0, as: UNNotificationAction.self) }, intentIdentifiers: b.array(b[2]) { try b.decode($0, as: String.self) }, hiddenPreviewsBodyPlaceholder: b.decode(b[3], as: String.self), options: TokamakBindings_notifications.decode(b[4], b, as: UNNotificationCategoryOptions.self)); return b.encode(object: value) }
     case "UNNotificationCategory.init(identifier:actions:intentIdentifiers:options:)":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try UNNotificationCategory(identifier: b.decode(b[0], as: String.self), actions: b.array(b[1]) { try b.object($0, as: UNNotificationAction.self) }, intentIdentifiers: b.array(b[2]) { try b.decode($0, as: String.self) }, options: TokamakBindings_notifications.decode(b[3], b, as: UNNotificationCategoryOptions.self)); return b.encode(object: value) }
     case "UNNotificationCategory.intentIdentifiers":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationCategory.self).intentIdentifiers; return b.encode(array: value) { b.encode($0) } }
     case "UNNotificationCategory.options":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationCategory.self).options; return TokamakBindings_notifications.encode(value, b) }
     case "UNNotificationContent.attachments":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).attachments; return b.encode(array: value) { b.encode(object: $0) } }
     case "UNNotificationContent.badge":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).badge; return b.encode(optional: value) { b.encode($0) } }
     case "UNNotificationContent.body":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).body; return b.encode(value) }
     case "UNNotificationContent.categoryIdentifier":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).categoryIdentifier; return b.encode(value) }
     case "UNNotificationContent.filterCriteria":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 16.0, macOS 13.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).filterCriteria; return b.encode(optional: value) { b.encode($0) } }
     case "UNNotificationContent.interruptionLevel":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).interruptionLevel; return TokamakBindings_notifications.encode(value, b) }
     #if os(iOS)
     case "UNNotificationContent.launchImageName":
-      guard #available(iOS 10.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).launchImageName; return b.encode(value) }
     #endif
     case "UNNotificationContent.relevanceScore":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).relevanceScore; return b.encode(value) }
     case "UNNotificationContent.sound":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).sound; return b.encode(optional: value) { b.encode(object: $0) } }
     case "UNNotificationContent.subtitle":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).subtitle; return b.encode(value) }
     case "UNNotificationContent.summaryArgument":
-      guard #available(iOS 12.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).summaryArgument; return b.encode(value) }
     case "UNNotificationContent.summaryArgumentCount":
-      guard #available(iOS 12.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).summaryArgumentCount; return b.encode(value) }
     case "UNNotificationContent.targetContentIdentifier":
-      guard #available(iOS 13.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 13.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).targetContentIdentifier; return b.encode(optional: value) { b.encode($0) } }
     case "UNNotificationContent.threadIdentifier":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).threadIdentifier; return b.encode(value) }
     case "UNNotificationContent.title":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).title; return b.encode(value) }
     case "UNNotificationContent.updating(from:)":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationContent.self).updating(from: b.object(b[0], as: (any UNNotificationContentProviding).self)); return b.encode(object: value) }
     case "UNNotificationRequest.content":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationRequest.self).content; return b.encode(object: value) }
     case "UNNotificationRequest.identifier":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationRequest.self).identifier; return b.encode(value) }
     case "UNNotificationRequest.init(identifier:content:trigger:)":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try UNNotificationRequest(identifier: b.decode(b[0], as: String.self), content: b.object(b[1], as: UNNotificationContent.self), trigger: b.optional(b[2]) { try b.object($0, as: UNNotificationTrigger.self) }); return b.encode(object: value) }
     case "UNNotificationRequest.trigger":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationRequest.self).trigger; return b.encode(optional: value) { b.encode(object: $0) } }
     case "UNNotificationResponse.actionIdentifier":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationResponse.self).actionIdentifier; return b.encode(value) }
     case "UNNotificationResponse.notification":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationResponse.self).notification; return b.encode(object: value) }
     case "UNNotificationServiceExtension.serviceExtensionTimeWillExpire()":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNNotificationServiceExtension.self).serviceExtensionTimeWillExpire(); return nil }
     case "UNNotificationServiceExtension.init()":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = UNNotificationServiceExtension(); return b.encode(object: value) }
     case "UNNotificationSettings.alertSetting":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).alertSetting; return TokamakBindings_notifications.encode(value, b) }
     case "UNNotificationSettings.alertStyle":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).alertStyle; return TokamakBindings_notifications.encode(value, b) }
     #if os(iOS)
     case "UNNotificationSettings.announcementSetting":
-      guard #available(iOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 13.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).announcementSetting; return TokamakBindings_notifications.encode(value, b) }
     #endif
     case "UNNotificationSettings.authorizationStatus":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).authorizationStatus; return TokamakBindings_notifications.encode(value, b) }
     case "UNNotificationSettings.badgeSetting":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).badgeSetting; return TokamakBindings_notifications.encode(value, b) }
     #if os(iOS)
     case "UNNotificationSettings.carPlaySetting":
-      guard #available(iOS 10.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).carPlaySetting; return TokamakBindings_notifications.encode(value, b) }
     #endif
     case "UNNotificationSettings.criticalAlertSetting":
-      guard #available(iOS 12.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).criticalAlertSetting; return TokamakBindings_notifications.encode(value, b) }
     case "UNNotificationSettings.directMessagesSetting":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).directMessagesSetting; return TokamakBindings_notifications.encode(value, b) }
     case "UNNotificationSettings.lockScreenSetting":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).lockScreenSetting; return TokamakBindings_notifications.encode(value, b) }
     case "UNNotificationSettings.notificationCenterSetting":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).notificationCenterSetting; return TokamakBindings_notifications.encode(value, b) }
     case "UNNotificationSettings.providesAppNotificationSettings":
-      guard #available(iOS 12.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).providesAppNotificationSettings; return b.encode(value) }
     case "UNNotificationSettings.scheduledDeliverySetting":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).scheduledDeliverySetting; return TokamakBindings_notifications.encode(value, b) }
     case "UNNotificationSettings.showPreviewsSetting":
-      guard #available(iOS 11.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 11.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).showPreviewsSetting; return TokamakBindings_notifications.encode(value, b) }
     case "UNNotificationSettings.soundSetting":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).soundSetting; return TokamakBindings_notifications.encode(value, b) }
     case "UNNotificationSettings.timeSensitiveSetting":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationSettings.self).timeSensitiveSetting; return TokamakBindings_notifications.encode(value, b) }
     case "UNNotificationSound.default":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = UNNotificationSound.default; return b.encode(object: value) }
     case "UNNotificationSound.defaultCritical":
-      guard #available(iOS 12.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = UNNotificationSound.defaultCritical; return b.encode(object: value) }
     #if os(iOS)
     case "UNNotificationSound.defaultRingtone":
-      guard #available(iOS 15.2, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.2, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = UNNotificationSound.defaultRingtone; return b.encode(object: value) }
     #endif
     case "UNNotificationTrigger.repeats":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNNotificationTrigger.self).repeats; return b.encode(value) }
     case "UNTextInputNotificationAction.init(identifier:title:options:icon:textInputButtonTitle:textInputPlaceholder:)":
-      guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 15.0, macOS 12.0, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try UNTextInputNotificationAction(identifier: b.decode(b[0], as: String.self), title: b.decode(b[1], as: String.self), options: TokamakBindings_notifications.decode(b[2], b, as: UNNotificationActionOptions.self), icon: b.optional(b[3]) { try b.object($0, as: UNNotificationActionIcon.self) }, textInputButtonTitle: b.decode(b[4], as: String.self), textInputPlaceholder: b.decode(b[5], as: String.self)); return b.encode(object: value) }
     case "UNTextInputNotificationAction.init(identifier:title:options:textInputButtonTitle:textInputPlaceholder:)":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try UNTextInputNotificationAction(identifier: b.decode(b[0], as: String.self), title: b.decode(b[1], as: String.self), options: TokamakBindings_notifications.decode(b[2], b, as: UNNotificationActionOptions.self), textInputButtonTitle: b.decode(b[3], as: String.self), textInputPlaceholder: b.decode(b[4], as: String.self)); return b.encode(object: value) }
     case "UNTextInputNotificationAction.textInputButtonTitle":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNTextInputNotificationAction.self).textInputButtonTitle; return b.encode(value) }
     case "UNTextInputNotificationAction.textInputPlaceholder":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNTextInputNotificationAction.self).textInputPlaceholder; return b.encode(value) }
     case "UNTextInputNotificationResponse.userText":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNTextInputNotificationResponse.self).userText; return b.encode(value) }
     case "UNTimeIntervalNotificationTrigger.init(timeInterval:repeats:)":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try UNTimeIntervalNotificationTrigger(timeInterval: b.decode(b[0], as: TimeInterval.self), repeats: b.decode(b[1], as: Bool.self)); return b.encode(object: value) }
     case "UNTimeIntervalNotificationTrigger.nextTriggerDate()":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNTimeIntervalNotificationTrigger.self).nextTriggerDate(); return b.encode(optional: value) { b.encode($0) } }
     case "UNTimeIntervalNotificationTrigger.timeInterval":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNTimeIntervalNotificationTrigger.self).timeInterval; return b.encode(value) }
     case "UNUserNotificationCenter.add(_:)":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.task { try await b.target(UNUserNotificationCenter.self).add(b.object(b[0], as: UNNotificationRequest.self)); return nil }
     case "UNUserNotificationCenter.current()":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = UNUserNotificationCenter.current(); return b.encode(object: value) }
     case "UNUserNotificationCenter.delegate":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNUserNotificationCenter.self).delegate; return b.encode(optional: value) { b.encode(object: $0) } }
     case "UNUserNotificationCenter.delegate=":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNUserNotificationCenter.self).delegate = b.optional(b[0]) { try b.object($0, as: (any UNUserNotificationCenterDelegate).self) }; return nil }
     case "UNUserNotificationCenter.deliveredNotifications()":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.task { let value = try await b.target(UNUserNotificationCenter.self).deliveredNotifications(); return b.encode(array: value) { b.encode(object: $0) } }
     case "UNUserNotificationCenter.notificationCategories()":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.task { let value = try await b.target(UNUserNotificationCenter.self).notificationCategories(); return b.encode(array: value) { b.encode(object: $0) } }
     case "UNUserNotificationCenter.notificationSettings()":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.task { let value = try await b.target(UNUserNotificationCenter.self).notificationSettings(); return b.encode(object: value) }
     case "UNUserNotificationCenter.pendingNotificationRequests()":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.task { let value = try await b.target(UNUserNotificationCenter.self).pendingNotificationRequests(); return b.encode(array: value) { b.encode(object: $0) } }
     case "UNUserNotificationCenter.removeAllDeliveredNotifications()":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNUserNotificationCenter.self).removeAllDeliveredNotifications(); return nil }
     case "UNUserNotificationCenter.removeAllPendingNotificationRequests()":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNUserNotificationCenter.self).removeAllPendingNotificationRequests(); return nil }
     case "UNUserNotificationCenter.removeDeliveredNotifications(withIdentifiers:)":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNUserNotificationCenter.self).removeDeliveredNotifications(withIdentifiers: b.array(b[0]) { try b.decode($0, as: String.self) }); return nil }
     case "UNUserNotificationCenter.removePendingNotificationRequests(withIdentifiers:)":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNUserNotificationCenter.self).removePendingNotificationRequests(withIdentifiers: b.array(b[0]) { try b.decode($0, as: String.self) }); return nil }
     case "UNUserNotificationCenter.requestAuthorization(options:)":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.task { let value = try await b.target(UNUserNotificationCenter.self).requestAuthorization(options: TokamakBindings_notifications.decode(b[0], b, as: UNAuthorizationOptions.self)); return b.encode(value) }
     case "UNUserNotificationCenter.setBadgeCount(_:)":
-      guard #available(iOS 16.0, macOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 16.0, macOS 13.0, *) else { throw TokamakBinding.unavailable }
       return b.task { try await b.target(UNUserNotificationCenter.self).setBadgeCount(b.decode(b[0], as: Int.self)); return nil }
     case "UNUserNotificationCenter.setNotificationCategories(_:)":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { try b.target(UNUserNotificationCenter.self).setNotificationCategories(Set(b.array(b[0]) { try b.object($0, as: UNNotificationCategory.self) })); return nil }
     case "UNUserNotificationCenter.supportsContentExtensions":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = try b.target(UNUserNotificationCenter.self).supportsContentExtensions; return b.encode(value) }
     case "UNErrorDomain":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = UNErrorDomain; return b.encode(value) }
     case "UNNotificationAttachmentOptionsThumbnailClippingRectKey":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = UNNotificationAttachmentOptionsThumbnailClippingRectKey; return b.encode(value) }
     case "UNNotificationAttachmentOptionsThumbnailHiddenKey":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = UNNotificationAttachmentOptionsThumbnailHiddenKey; return b.encode(value) }
     case "UNNotificationAttachmentOptionsThumbnailTimeKey":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = UNNotificationAttachmentOptionsThumbnailTimeKey; return b.encode(value) }
     case "UNNotificationAttachmentOptionsTypeHintKey":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = UNNotificationAttachmentOptionsTypeHintKey; return b.encode(value) }
     case "UNNotificationDefaultActionIdentifier":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = UNNotificationDefaultActionIdentifier; return b.encode(value) }
     case "UNNotificationDismissActionIdentifier":
-      guard #available(iOS 10.0, macOS 10.14, *) else { return b.run { throw TokamakBinding.unavailable } }
+      guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
       return b.run { let value = UNNotificationDismissActionIdentifier; return b.encode(value) }
     default:
-      return b.unsupported(method)
+      throw .notSupported("\(method) is not supported")
     }
   }
 
   func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
     throws(TokamakPluginError) -> () -> Void
   {
-    let b = TokamakBinding(payload, resources: host.resources, reply: reply)
+    let b = try TokamakBinding(payload, resources: host.resources, reply: reply)
     switch method {
     case "UNUserNotificationCenterDelegate":
       guard #available(iOS 10.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }

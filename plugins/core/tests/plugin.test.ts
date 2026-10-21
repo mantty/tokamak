@@ -21,6 +21,10 @@ void test("a plugin uses the receiving invocation's connection and standard valu
   assert.equal(await result, "ran");
 });
 
+void test("a plugin requires a Tokamak invocation context", () => {
+  assert.throws(() => new Example({} as TokamakContext), { name: "TypeError" });
+});
+
 void test("raw binary calls preserve arbitrary bytes and view bounds", async () => {
   const native = connectNative();
   const bytes = new Uint8Array([0, 255, 128, 0]);

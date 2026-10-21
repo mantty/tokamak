@@ -96,9 +96,7 @@ export class FakeNativeTransport {
 
   /** Replies to the pending request `id`. A reply is the last unless `done` is false. */
   deliver(id: number, { value, error, done = true }: Answer): void {
-    const reply = this.pending.get(id);
-    if (done) this.pending.delete(id);
-    reply?.(encodeJson(value), error && nativeError(error), done);
+    this.reply(id, encodeJson(value), error && nativeError(error), done);
   }
 
   private cancel(id: number): void {
@@ -111,15 +109,24 @@ export class FakeNativeTransport {
   }
 
   respond(reply: { value?: unknown; error?: NativeFailure }, done = true): void {
-    this.respondBytes(encodeJson(reply.value), done, reply.error && nativeError(reply.error));
+    this.deliver(this.last(), { ...reply, done });
   }
 
   respondBytes(payload: Uint8Array, done = true, error?: DOMException): void {
+    this.reply(this.last(), payload.slice(), error, done);
+  }
+
+  /** The ID of the last request sent. */
+  private last(): number {
     const id = this.sent.at(-1)?.id;
     if (id === undefined) throw new Error("No native request is pending");
+    return id;
+  }
+
+  private reply(id: number, payload: Uint8Array, error: DOMException | undefined, done: boolean): void {
     const reply = this.pending.get(id);
     if (done) this.pending.delete(id);
-    reply?.(payload.slice(), error, done);
+    reply?.(payload, error, done);
   }
 }
 

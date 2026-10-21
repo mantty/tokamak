@@ -27,6 +27,28 @@ struct TokamakPluginError: Error {
   )
 }
 
+extension TokamakPluginError {
+  /// `error` for the Worker: itself, or an `OperationError` whose cause has
+  /// the platform error's domain and code.
+  init(_ error: any Error) {
+    if let error = error as? Self {
+      self = error
+      return
+    }
+    let error = error as NSError
+    self.init(
+      name: "OperationError", message: error.localizedDescription,
+      cause: ["domain": error.domain, "code": error.code])
+  }
+
+  /// The error as JSON: its name, message and cause.
+  var json: [String: Any] {
+    var json: [String: Any] = ["name": name, "message": message]
+    json["cause"] = cause
+    return json
+  }
+}
+
 typealias TokamakPluginReply = (Result<Any?, TokamakPluginError>) -> Void
 typealias TokamakPluginBytesReply = (TokamakPluginResult) -> Void
 
@@ -48,9 +70,7 @@ struct TokamakPluginResult {
       self.payload = payload
       failed = false
     case .failure(let error):
-      var failure: [String: Any] = ["name": error.name, "message": error.message]
-      failure["cause"] = error.cause
-      payload = try! JSONSerialization.data(withJSONObject: failure)
+      payload = try! JSONSerialization.data(withJSONObject: error.json)
       failed = true
     }
   }
@@ -67,22 +87,6 @@ func encodePluginValue(_ value: Any?) -> Result<Data, TokamakPluginError> {
     return .failure(.init(name: "DataCloneError", message: "The value cannot be encoded as JSON"))
   }
   return .success(json)
-}
-
-/// Decodes `payload` as JSON for `call`, and encodes its reply.
-private func callJSON(
-  _ payload: Data,
-  _ reply: @escaping TokamakPluginBytesReply,
-  _ call: (Any, @escaping TokamakPluginReply) -> (() -> Void)?
-) -> (() -> Void)? {
-  do {
-    return call(try decodePluginValue(payload)) {
-      reply(TokamakPluginResult($0.flatMap(encodePluginValue), done: true))
-    }
-  } catch {
-    reply(TokamakPluginResult(.failure(error), done: true))
-    return nil
-  }
 }
 
 func decodePluginValue(_ payload: Data) throws(TokamakPluginError) -> Any {
@@ -195,13 +199,13 @@ protocol TokamakPlugin: AnyObject {
   /// Serial executor for this operation and its cancellation.
   func executor(for method: String) -> DispatchQueue
 
-  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (
-    () -> Void
-  )?
+  /// Throws when the call cannot start, which ends it.
+  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
+    throws(TokamakPluginError) -> (() -> Void)?
   func callBytes(
     method: String, payload: Data, body: TokamakPluginBody,
     reply: @escaping TokamakPluginBytesReply
-  ) -> (() -> Void)?
+  ) throws(TokamakPluginError) -> (() -> Void)?
   func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
     throws(TokamakPluginError) -> (() -> Void)
 
@@ -244,17 +248,21 @@ protocol TokamakPlugin: AnyObject {
 extension TokamakPlugin {
   func executor(for method: String) -> DispatchQueue { .main }
 
-  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (
-    () -> Void
-  )? {
-    callJSON(payload, reply) { call(method: method, arguments: $0, reply: $1) }
+  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
+    throws(TokamakPluginError) -> (() -> Void)?
+  {
+    try call(method: method, arguments: decodePluginValue(payload)) {
+      reply(TokamakPluginResult($0.flatMap(encodePluginValue), done: true))
+    }
   }
 
   func callBytes(
     method: String, payload: Data, body: TokamakPluginBody,
     reply: @escaping TokamakPluginBytesReply
-  ) -> (() -> Void)? {
-    callJSON(payload, reply) { call(method: method, arguments: $0, body: body, reply: $1) }
+  ) throws(TokamakPluginError) -> (() -> Void)? {
+    try call(method: method, arguments: decodePluginValue(payload), body: body) {
+      reply(TokamakPluginResult($0.flatMap(encodePluginValue), done: true))
+    }
   }
 
   func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
@@ -408,10 +416,11 @@ final class TokamakPluginRequests<Key: Hashable> {
           request.cancellation = try target.subscribeBytes(
             method: method, payload: payload, reply: reply)
         } else if let body = request.body {
-          request.cancellation = target.callBytes(
+          request.cancellation = try target.callBytes(
             method: method, payload: payload, body: body, reply: reply)
         } else {
-          request.cancellation = target.callBytes(method: method, payload: payload, reply: reply)
+          request.cancellation = try target.callBytes(
+            method: method, payload: payload, reply: reply)
         }
       } catch {
         if remove(key, request) { send(key, TokamakPluginResult(.failure(error), done: true)) }

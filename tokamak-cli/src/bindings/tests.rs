@@ -83,7 +83,7 @@ fn apple_native_plugin_calls_guards_and_implements() -> TestResult {
         "      return b.run { let value = KTWidget(); return b.encode(object: value) }",
         "      return b.run { try b.target(KTWidget.self).title = b.decode(b[0], as: String.self); return nil }",
         "      return b.run { try b.target(KTWidget.self).start(with: TokamakBindings_kit.decode(b[0], b, as: KTMode.self)); return nil }",
-        "    #if os(iOS)\n    case \"KTWidget.measure()\":\n      guard #available(iOS 13.0, *) else { return b.run { throw TokamakBinding.unavailable } }\n      return b.task { let value = try await b.target(KTWidget.self).measure(); return b.encode(value) }\n    #endif",
+        "    #if os(iOS)\n    case \"KTWidget.measure()\":\n      guard #available(iOS 13.0, *) else { throw TokamakBinding.unavailable }\n      return b.task { let value = try await b.target(KTWidget.self).measure(); return b.encode(value) }\n    #endif",
         "      return b.stream({ try b.target(KTWidget.self).readings }, encode: { TokamakBindings_kit.encode($0, b) })",
         "      return b.implement(KTWidgetDelegateImplementation.self)",
         "    if #available(macOS 12.0, *), value == .fast { return \"fast\" }",

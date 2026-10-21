@@ -88,7 +88,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
             name: "TypeError", message: "count must be a whole number of at least 0")
         }
         center.setBadgeCount(count) { error in
-          reply(error.map { .failure(Self.operationError($0)) } ?? .success(nil))
+          reply(error.map { .failure(TokamakPluginError($0)) } ?? .success(nil))
         }
       case "openSettings":
         try host.requireUI()
@@ -466,7 +466,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       center.add(try request.request(attachments: attachments)) { error in
         if let error {
           Self.removeFiles(of: attachments)
-          reply(.failure(Self.operationError(error)))
+          reply(.failure(TokamakPluginError(error)))
         } else {
           reply(.success(nil))
         }
@@ -602,10 +602,6 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     if error.domain == NSCocoaErrorDomain && error.code == 3000 {
       return TokamakPluginError(name: "InvalidStateError", message: error.localizedDescription)
     }
-    return operationError(error)
-  }
-
-  private static func operationError(_ error: Error) -> TokamakPluginError {
-    TokamakPluginError(name: "OperationError", message: error.localizedDescription)
+    return TokamakPluginError(error)
   }
 }
