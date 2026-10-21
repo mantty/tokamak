@@ -1,6 +1,17 @@
 {
   "schemaVersion": 2,
   "id": "local-authentication",
+  "bindings": {
+    "apple": [
+      "LocalAuthentication"
+    ],
+    "android": [
+      "android.hardware.biometrics",
+      "android.content.Context",
+      "android.os.CancellationSignal",
+      "java.util.concurrent.Executor"
+    ]
+  },
   "platforms": {
     "macos": {
       "class": "TokamakLocalAuthenticationPlugin",

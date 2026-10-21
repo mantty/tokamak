@@ -371,6 +371,7 @@ fn builtin(path: &[String], arguments: Vec<Ty>) -> Result<Ty, String> {
         "Date" => Ty::Date,
         "Data" => Ty::Bytes,
         "Error" => Ty::Error,
+        "NSErrorPointer" => Ty::OutError,
         "Void" => Ty::Void,
         "Optional" => arguments
             .next()

@@ -53,41 +53,27 @@ final class TokamakBindings_location: TokamakPlugin {
       guard #available(iOS 17.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { try b.target(CLBackgroundActivitySession.self).invalidate(); return nil }
     #endif
-    case "CLRegion.identifier":
-      guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLRegion.self).identifier; return b.encode(value) }
-    case "CLRegion.notifyOnEntry":
-      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLRegion.self).notifyOnEntry; return b.encode(value) }
-    case "CLRegion.notifyOnEntry=":
-      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLRegion.self).notifyOnEntry = b.decode(b[0], as: Bool.self); return nil }
-    case "CLRegion.notifyOnExit":
-      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLRegion.self).notifyOnExit; return b.encode(value) }
-    case "CLRegion.notifyOnExit=":
-      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLRegion.self).notifyOnExit = b.decode(b[0], as: Bool.self); return nil }
-    #if os(macOS)
-    case "CLRegion.init(circularRegionWithCenter:radius:identifier:)":
-      guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try CLRegion(circularRegionWithCenter: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), radius: b.decode(b[1], as: CLLocationDistance.self), identifier: b.decode(b[2], as: String.self)); return b.encode(object: value) }
-    #endif
-    #if os(macOS)
-    case "CLRegion.center":
-      guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLRegion.self).center; return TokamakBindings_location.encode(value, b) }
-    #endif
-    #if os(macOS)
-    case "CLRegion.radius":
-      guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLRegion.self).radius; return b.encode(value) }
-    #endif
-    #if os(macOS)
-    case "CLRegion.contains(_:)":
-      guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLRegion.self).contains(TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self)); return b.encode(value) }
-    #endif
+    case "CLHeading.magneticHeading":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).magneticHeading; return b.encode(value) }
+    case "CLHeading.trueHeading":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).trueHeading; return b.encode(value) }
+    case "CLHeading.headingAccuracy":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).headingAccuracy; return b.encode(value) }
+    case "CLHeading.x":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).x; return b.encode(value) }
+    case "CLHeading.y":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).y; return b.encode(value) }
+    case "CLHeading.z":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).z; return b.encode(value) }
+    case "CLHeading.timestamp":
+      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLHeading.self).timestamp; return b.encode(value) }
     case "CLBeacon.timestamp":
       guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLBeacon.self).timestamp; return b.encode(value) }
@@ -154,39 +140,6 @@ final class TokamakBindings_location: TokamakPlugin {
     case "CLBeaconRegion.notifyEntryStateOnDisplay=":
       guard #available(iOS 7.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { try b.target(CLBeaconRegion.self).notifyEntryStateOnDisplay = b.decode(b[0], as: Bool.self); return nil }
-    case "CLBeaconIdentityConstraint.major":
-      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLBeaconIdentityConstraint.self).major; return b.encode(optional: value) { b.encode($0) } }
-    case "CLBeaconIdentityConstraint.minor":
-      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLBeaconIdentityConstraint.self).minor; return b.encode(optional: value) { b.encode($0) } }
-    case "CLGeocoder.isGeocoding":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLGeocoder.self).isGeocoding; return b.encode(value) }
-    case "CLGeocoder.cancelGeocode()":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLGeocoder.self).cancelGeocode(); return nil }
-    case "CLGeocoder.init()":
-      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = CLGeocoder(); return b.encode(object: value) }
-    case "CLVisit.arrivalDate":
-      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLVisit.self).arrivalDate; return b.encode(value) }
-    case "CLVisit.departureDate":
-      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLVisit.self).departureDate; return b.encode(value) }
-    case "CLVisit.coordinate":
-      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLVisit.self).coordinate; return TokamakBindings_location.encode(value, b) }
-    case "CLVisit.horizontalAccuracy":
-      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLVisit.self).horizontalAccuracy; return b.encode(value) }
-    case "CLLocationManager.startMonitoringVisits()":
-      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).startMonitoringVisits(); return nil }
-    case "CLLocationManager.stopMonitoringVisits()":
-      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { try b.target(CLLocationManager.self).stopMonitoringVisits(); return nil }
     case "CLLocationManager.locationServicesEnabled()":
       guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = CLLocationManager.locationServicesEnabled(); return b.encode(value) }
@@ -363,6 +316,12 @@ final class TokamakBindings_location: TokamakPlugin {
     case "CLLocationManager.deferredLocationUpdatesAvailable()":
       guard #available(iOS 6.0, macOS 10.9, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = CLLocationManager.deferredLocationUpdatesAvailable(); return b.encode(value) }
+    case "CLLocationManager.startMonitoringVisits()":
+      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).startMonitoringVisits(); return nil }
+    case "CLLocationManager.stopMonitoringVisits()":
+      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLLocationManager.self).stopMonitoringVisits(); return nil }
     #if os(macOS)
     case "CLLocationManager.regionMonitoringAvailable()":
       guard #available(macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
@@ -401,6 +360,33 @@ final class TokamakBindings_location: TokamakPlugin {
     case "CLLocationManager.init()":
       guard #available(iOS 2.0, macOS 10.6, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = CLLocationManager(); return b.encode(object: value) }
+    case "CLGeocoder.isGeocoding":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLGeocoder.self).isGeocoding; return b.encode(value) }
+    case "CLGeocoder.cancelGeocode()":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLGeocoder.self).cancelGeocode(); return nil }
+    case "CLGeocoder.init()":
+      guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = CLGeocoder(); return b.encode(object: value) }
+    case "CLBeaconIdentityConstraint.major":
+      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLBeaconIdentityConstraint.self).major; return b.encode(optional: value) { b.encode($0) } }
+    case "CLBeaconIdentityConstraint.minor":
+      guard #available(iOS 13.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLBeaconIdentityConstraint.self).minor; return b.encode(optional: value) { b.encode($0) } }
+    case "CLVisit.arrivalDate":
+      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLVisit.self).arrivalDate; return b.encode(value) }
+    case "CLVisit.departureDate":
+      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLVisit.self).departureDate; return b.encode(value) }
+    case "CLVisit.coordinate":
+      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLVisit.self).coordinate; return TokamakBindings_location.encode(value, b) }
+    case "CLVisit.horizontalAccuracy":
+      guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLVisit.self).horizontalAccuracy; return b.encode(value) }
     case "CLCircularRegion.init(center:radius:identifier:)":
       guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try CLCircularRegion(center: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), radius: b.decode(b[1], as: CLLocationDistance.self), identifier: b.decode(b[2], as: String.self)); return b.encode(object: value) }
@@ -413,6 +399,41 @@ final class TokamakBindings_location: TokamakPlugin {
     case "CLCircularRegion.contains(_:)":
       guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLCircularRegion.self).contains(TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self)); return b.encode(value) }
+    case "CLRegion.identifier":
+      guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLRegion.self).identifier; return b.encode(value) }
+    case "CLRegion.notifyOnEntry":
+      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLRegion.self).notifyOnEntry; return b.encode(value) }
+    case "CLRegion.notifyOnEntry=":
+      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLRegion.self).notifyOnEntry = b.decode(b[0], as: Bool.self); return nil }
+    case "CLRegion.notifyOnExit":
+      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLRegion.self).notifyOnExit; return b.encode(value) }
+    case "CLRegion.notifyOnExit=":
+      guard #available(iOS 7.0, macOS 10.10, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { try b.target(CLRegion.self).notifyOnExit = b.decode(b[0], as: Bool.self); return nil }
+    #if os(macOS)
+    case "CLRegion.init(circularRegionWithCenter:radius:identifier:)":
+      guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try CLRegion(circularRegionWithCenter: TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self), radius: b.decode(b[1], as: CLLocationDistance.self), identifier: b.decode(b[2], as: String.self)); return b.encode(object: value) }
+    #endif
+    #if os(macOS)
+    case "CLRegion.center":
+      guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLRegion.self).center; return TokamakBindings_location.encode(value, b) }
+    #endif
+    #if os(macOS)
+    case "CLRegion.radius":
+      guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLRegion.self).radius; return b.encode(value) }
+    #endif
+    #if os(macOS)
+    case "CLRegion.contains(_:)":
+      guard #available(macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = try b.target(CLRegion.self).contains(TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self)); return b.encode(value) }
+    #endif
     case "CLPlacemark.init(placemark:)":
       guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try CLPlacemark(placemark: b.object(b[0], as: CLPlacemark.self)); return b.encode(object: value) }
@@ -464,27 +485,6 @@ final class TokamakBindings_location: TokamakPlugin {
     case "CLPlacemark.areasOfInterest":
       guard #available(iOS 5.0, macOS 10.8, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLPlacemark.self).areasOfInterest; return b.encode(optional: value) { b.encode(array: $0) { b.encode($0) } } }
-    case "CLHeading.magneticHeading":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).magneticHeading; return b.encode(value) }
-    case "CLHeading.trueHeading":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).trueHeading; return b.encode(value) }
-    case "CLHeading.headingAccuracy":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).headingAccuracy; return b.encode(value) }
-    case "CLHeading.x":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).x; return b.encode(value) }
-    case "CLHeading.y":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).y; return b.encode(value) }
-    case "CLHeading.z":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).z; return b.encode(value) }
-    case "CLHeading.timestamp":
-      guard #available(iOS 3.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = try b.target(CLHeading.self).timestamp; return b.encode(value) }
     case "CLFloor.level":
       guard #available(iOS 8.0, macOS 10.15, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLFloor.self).level; return b.encode(value) }
@@ -556,20 +556,20 @@ final class TokamakBindings_location: TokamakPlugin {
     case "CLLocationSourceInformation.isProducedByAccessory":
       guard #available(iOS 15.0, macOS 12.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try b.target(CLLocationSourceInformation.self).isProducedByAccessory; return b.encode(value) }
-    case "kCLErrorDomain":
-      return b.run { let value = kCLErrorDomain; return b.encode(value) }
+    case "kCLHeadingFilterNone":
+      return b.run { let value = kCLHeadingFilterNone; return b.encode(value) }
+    case "kCLErrorUserInfoAlternateRegionKey":
+      guard #available(iOS 5.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
+      return b.run { let value = kCLErrorUserInfoAlternateRegionKey; return b.encode(value) }
     case "CL_TARGET_SUPPORTS_CONDITIONS":
       return b.run { let value = CL_TARGET_SUPPORTS_CONDITIONS; return b.encode(value) }
+    case "kCLErrorDomain":
+      return b.run { let value = kCLErrorDomain; return b.encode(value) }
     #if os(iOS)
     case "CLLocationPushServiceErrorDomain":
       guard #available(iOS 15.0, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = CLLocationPushServiceErrorDomain; return b.encode(value) }
     #endif
-    case "kCLErrorUserInfoAlternateRegionKey":
-      guard #available(iOS 5.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
-      return b.run { let value = kCLErrorUserInfoAlternateRegionKey; return b.encode(value) }
-    case "kCLHeadingFilterNone":
-      return b.run { let value = kCLHeadingFilterNone; return b.encode(value) }
     case "CLLocationCoordinate2DIsValid(_:)":
       guard #available(iOS 4.0, macOS 10.7, *) else { return b.run { throw TokamakBinding.unavailable } }
       return b.run { let value = try CLLocationCoordinate2DIsValid(TokamakBindings_location.decode(b[0], b, as: CLLocationCoordinate2D.self)); return b.encode(value) }
@@ -759,47 +759,110 @@ final class TokamakBindings_location: TokamakPlugin {
   }
   #endif
 
-  @available(iOS 7.0, macOS 10.15, *)
-  private static func encode(_ value: CLProximity, _ b: TokamakBinding) -> Any {
-    if value == .unknown { return "unknown" }
-    if value == .immediate { return "immediate" }
-    if value == .near { return "near" }
-    if value == .far { return "far" }
+  private static func encode(_ value: CLAccuracyAuthorization, _ b: TokamakBinding) -> Any {
+    if value == .fullAccuracy { return "fullAccuracy" }
+    if value == .reducedAccuracy { return "reducedAccuracy" }
     return "\(value)"
   }
 
-  @available(iOS 7.0, macOS 10.15, *)
-  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLProximity.Type) throws -> CLProximity {
+  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLAccuracyAuthorization.Type) throws -> CLAccuracyAuthorization {
     switch try b.decode(value, as: String.self) {
-    case "unknown":
-      return .unknown
-    case "immediate":
-      return .immediate
-    case "near":
-      return .near
-    case "far":
-      return .far
+    case "fullAccuracy":
+      return .fullAccuracy
+    case "reducedAccuracy":
+      return .reducedAccuracy
     default: throw b.mismatch(value, type)
     }
   }
 
-  @available(iOS 7.0, macOS 10.10, *)
-  private static func encode(_ value: CLRegionState, _ b: TokamakBinding) -> Any {
-    if value == .unknown { return "unknown" }
-    if value == .inside { return "inside" }
-    if value == .outside { return "outside" }
+  private static func encode(_ value: CLActivityType, _ b: TokamakBinding) -> Any {
+    if value == .other { return "other" }
+    if value == .automotiveNavigation { return "automotiveNavigation" }
+    if value == .fitness { return "fitness" }
+    if value == .otherNavigation { return "otherNavigation" }
+    if #available(iOS 12.0, macOS 10.14, *), value == .airborne { return "airborne" }
+    if #available(iOS 27.0, macOS 27.0, *), value == .maritime { return "maritime" }
     return "\(value)"
   }
 
-  @available(iOS 7.0, macOS 10.10, *)
-  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLRegionState.Type) throws -> CLRegionState {
+  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLActivityType.Type) throws -> CLActivityType {
+    switch try b.decode(value, as: String.self) {
+    case "other":
+      return .other
+    case "automotiveNavigation":
+      return .automotiveNavigation
+    case "fitness":
+      return .fitness
+    case "otherNavigation":
+      return .otherNavigation
+    case "airborne":
+      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
+      return .airborne
+    case "maritime":
+      guard #available(iOS 27.0, macOS 27.0, *) else { throw TokamakBinding.unavailable }
+      return .maritime
+    default: throw b.mismatch(value, type)
+    }
+  }
+
+  private static func encode(_ value: CLAuthorizationStatus, _ b: TokamakBinding) -> Any {
+    if value == .notDetermined { return "notDetermined" }
+    if value == .restricted { return "restricted" }
+    if value == .denied { return "denied" }
+    if #available(iOS 8.0, macOS 10.12, *), value == .authorizedAlways { return "authorizedAlways" }
+    #if os(iOS)
+    if #available(iOS 8.0, *), value == .authorizedWhenInUse { return "authorizedWhenInUse" }
+    #endif
+    return "\(value)"
+  }
+
+  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLAuthorizationStatus.Type) throws -> CLAuthorizationStatus {
+    switch try b.decode(value, as: String.self) {
+    case "notDetermined":
+      return .notDetermined
+    case "restricted":
+      return .restricted
+    case "denied":
+      return .denied
+    case "authorizedAlways":
+      guard #available(iOS 8.0, macOS 10.12, *) else { throw TokamakBinding.unavailable }
+      return .authorizedAlways
+    #if os(iOS)
+    case "authorizedWhenInUse":
+      guard #available(iOS 8.0, *) else { throw TokamakBinding.unavailable }
+      return .authorizedWhenInUse
+    #endif
+    default: throw b.mismatch(value, type)
+    }
+  }
+
+  private static func encode(_ value: CLDeviceOrientation, _ b: TokamakBinding) -> Any {
+    if value == .unknown { return "unknown" }
+    if value == .portrait { return "portrait" }
+    if value == .portraitUpsideDown { return "portraitUpsideDown" }
+    if value == .landscapeLeft { return "landscapeLeft" }
+    if value == .landscapeRight { return "landscapeRight" }
+    if value == .faceUp { return "faceUp" }
+    if value == .faceDown { return "faceDown" }
+    return "\(value)"
+  }
+
+  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLDeviceOrientation.Type) throws -> CLDeviceOrientation {
     switch try b.decode(value, as: String.self) {
     case "unknown":
       return .unknown
-    case "inside":
-      return .inside
-    case "outside":
-      return .outside
+    case "portrait":
+      return .portrait
+    case "portraitUpsideDown":
+      return .portraitUpsideDown
+    case "landscapeLeft":
+      return .landscapeLeft
+    case "landscapeRight":
+      return .landscapeRight
+    case "faceUp":
+      return .faceUp
+    case "faceDown":
+      return .faceDown
     default: throw b.mismatch(value, type)
     }
   }
@@ -927,110 +990,47 @@ final class TokamakBindings_location: TokamakPlugin {
     #endif
   }
 
-  private static func encode(_ value: CLAccuracyAuthorization, _ b: TokamakBinding) -> Any {
-    if value == .fullAccuracy { return "fullAccuracy" }
-    if value == .reducedAccuracy { return "reducedAccuracy" }
-    return "\(value)"
-  }
-
-  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLAccuracyAuthorization.Type) throws -> CLAccuracyAuthorization {
-    switch try b.decode(value, as: String.self) {
-    case "fullAccuracy":
-      return .fullAccuracy
-    case "reducedAccuracy":
-      return .reducedAccuracy
-    default: throw b.mismatch(value, type)
-    }
-  }
-
-  private static func encode(_ value: CLActivityType, _ b: TokamakBinding) -> Any {
-    if value == .other { return "other" }
-    if value == .automotiveNavigation { return "automotiveNavigation" }
-    if value == .fitness { return "fitness" }
-    if value == .otherNavigation { return "otherNavigation" }
-    if #available(iOS 12.0, macOS 10.14, *), value == .airborne { return "airborne" }
-    if #available(iOS 27.0, macOS 27.0, *), value == .maritime { return "maritime" }
-    return "\(value)"
-  }
-
-  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLActivityType.Type) throws -> CLActivityType {
-    switch try b.decode(value, as: String.self) {
-    case "other":
-      return .other
-    case "automotiveNavigation":
-      return .automotiveNavigation
-    case "fitness":
-      return .fitness
-    case "otherNavigation":
-      return .otherNavigation
-    case "airborne":
-      guard #available(iOS 12.0, macOS 10.14, *) else { throw TokamakBinding.unavailable }
-      return .airborne
-    case "maritime":
-      guard #available(iOS 27.0, macOS 27.0, *) else { throw TokamakBinding.unavailable }
-      return .maritime
-    default: throw b.mismatch(value, type)
-    }
-  }
-
-  private static func encode(_ value: CLAuthorizationStatus, _ b: TokamakBinding) -> Any {
-    if value == .notDetermined { return "notDetermined" }
-    if value == .restricted { return "restricted" }
-    if value == .denied { return "denied" }
-    if #available(iOS 8.0, macOS 10.12, *), value == .authorizedAlways { return "authorizedAlways" }
-    #if os(iOS)
-    if #available(iOS 8.0, *), value == .authorizedWhenInUse { return "authorizedWhenInUse" }
-    #endif
-    return "\(value)"
-  }
-
-  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLAuthorizationStatus.Type) throws -> CLAuthorizationStatus {
-    switch try b.decode(value, as: String.self) {
-    case "notDetermined":
-      return .notDetermined
-    case "restricted":
-      return .restricted
-    case "denied":
-      return .denied
-    case "authorizedAlways":
-      guard #available(iOS 8.0, macOS 10.12, *) else { throw TokamakBinding.unavailable }
-      return .authorizedAlways
-    #if os(iOS)
-    case "authorizedWhenInUse":
-      guard #available(iOS 8.0, *) else { throw TokamakBinding.unavailable }
-      return .authorizedWhenInUse
-    #endif
-    default: throw b.mismatch(value, type)
-    }
-  }
-
-  private static func encode(_ value: CLDeviceOrientation, _ b: TokamakBinding) -> Any {
+  @available(iOS 7.0, macOS 10.15, *)
+  private static func encode(_ value: CLProximity, _ b: TokamakBinding) -> Any {
     if value == .unknown { return "unknown" }
-    if value == .portrait { return "portrait" }
-    if value == .portraitUpsideDown { return "portraitUpsideDown" }
-    if value == .landscapeLeft { return "landscapeLeft" }
-    if value == .landscapeRight { return "landscapeRight" }
-    if value == .faceUp { return "faceUp" }
-    if value == .faceDown { return "faceDown" }
+    if value == .immediate { return "immediate" }
+    if value == .near { return "near" }
+    if value == .far { return "far" }
     return "\(value)"
   }
 
-  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLDeviceOrientation.Type) throws -> CLDeviceOrientation {
+  @available(iOS 7.0, macOS 10.15, *)
+  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLProximity.Type) throws -> CLProximity {
     switch try b.decode(value, as: String.self) {
     case "unknown":
       return .unknown
-    case "portrait":
-      return .portrait
-    case "portraitUpsideDown":
-      return .portraitUpsideDown
-    case "landscapeLeft":
-      return .landscapeLeft
-    case "landscapeRight":
-      return .landscapeRight
-    case "faceUp":
-      return .faceUp
-    case "faceDown":
-      return .faceDown
+    case "immediate":
+      return .immediate
+    case "near":
+      return .near
+    case "far":
+      return .far
+    default: throw b.mismatch(value, type)
+    }
+  }
+
+  @available(iOS 7.0, macOS 10.10, *)
+  private static func encode(_ value: CLRegionState, _ b: TokamakBinding) -> Any {
+    if value == .unknown { return "unknown" }
+    if value == .inside { return "inside" }
+    if value == .outside { return "outside" }
+    return "\(value)"
+  }
+
+  @available(iOS 7.0, macOS 10.10, *)
+  private static func decode(_ value: Any, _ b: TokamakBinding, as type: CLRegionState.Type) throws -> CLRegionState {
+    switch try b.decode(value, as: String.self) {
+    case "unknown":
+      return .unknown
+    case "inside":
+      return .inside
+    case "outside":
+      return .outside
     default: throw b.mismatch(value, type)
     }
   }

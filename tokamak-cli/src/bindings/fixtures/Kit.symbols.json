@@ -580,7 +580,7 @@
     {
      "domain": "iOS",
      "introduced": {
-      "major": 15,
+      "major": 13,
       "minor": 0
      }
     },
@@ -1055,6 +1055,122 @@
      }
     ],
     "returns": []
+   }
+  },
+  {
+   "kind": {
+    "identifier": "swift.method"
+   },
+   "identifier": {
+    "precise": "c:objc(cs)KTWidget(im)check:error:"
+   },
+   "pathComponents": [
+    "KTWidget",
+    "check(_:error:)"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "func"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "check"
+    },
+    {
+     "kind": "text",
+     "spelling": "(_ value: "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Int",
+     "preciseIdentifier": "s:Si"
+    },
+    {
+     "kind": "text",
+     "spelling": ", error: "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "NSErrorPointer",
+     "preciseIdentifier": "c:@T@NSErrorPointer"
+    },
+    {
+     "kind": "text",
+     "spelling": ") -> "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Bool",
+     "preciseIdentifier": "s:Sb"
+    }
+   ],
+   "functionSignature": {
+    "parameters": [
+     {
+      "name": "value",
+      "declarationFragments": [
+       {
+        "kind": "identifier",
+        "spelling": "value"
+       },
+       {
+        "kind": "text",
+        "spelling": ": "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "Int",
+        "preciseIdentifier": "s:Si"
+       }
+      ]
+     },
+     {
+      "name": "error",
+      "declarationFragments": [
+       {
+        "kind": "identifier",
+        "spelling": "error"
+       },
+       {
+        "kind": "text",
+        "spelling": ": "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "NSErrorPointer",
+        "preciseIdentifier": "c:@T@NSErrorPointer"
+       }
+      ]
+     }
+    ],
+    "returns": [
+     {
+      "kind": "typeIdentifier",
+      "spelling": "Bool",
+      "preciseIdentifier": "s:Sb"
+     }
+    ]
    }
   }
  ],

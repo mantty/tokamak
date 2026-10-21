@@ -122,11 +122,17 @@ impl Emitter<'_> {
     /// The statements that perform `member` and return its encoded result.
     fn body(&self, owner: Option<&Type>, member: &Member) -> String {
         let call = self.call(owner, member);
+        // An out-error the call sets rejects it.
+        let (declare, check) = if member.params.iter().any(|param| param.ty == Ty::OutError) {
+            ("var error: NSError?; ", "; if let error { throw error }")
+        } else {
+            ("", "")
+        };
         if member.result == Ty::Void {
-            return format!("{call}; return nil");
+            return format!("{declare}{call}{check}; return nil");
         }
         format!(
-            "let value = {call}; return {}",
+            "{declare}let value = {call}{check}; return {}",
             self.encode(&member.result, "value")
         )
     }
@@ -139,13 +145,18 @@ impl Emitter<'_> {
             Some(owner) => format!("b.target({}.self).", native_type(owner)),
         };
         let arguments = || {
+            let mut index = 0;
             member
                 .params
                 .iter()
-                .enumerate()
                 .zip(member.labels.iter().chain(std::iter::repeat(&None)))
-                .map(|((index, param), label)| {
-                    let value = self.decode(&param.ty, &format!("b[{index}]"));
+                .map(|(param, label)| {
+                    let value = if param.ty == Ty::OutError {
+                        "&error".to_owned()
+                    } else {
+                        index += 1;
+                        self.decode(&param.ty, &format!("b[{}]", index - 1))
+                    };
                     label
                         .as_ref()
                         .map_or(value.clone(), |label| format!("{label}: {value}"))
@@ -533,6 +544,20 @@ fn newer_guard(out: &mut String, availability: &Availability, parent: &Availabil
 
 /// The `#available` versions of a symbol introduced after its `parent`.
 fn newer(availability: &Availability, parent: &Availability) -> Option<String> {
-    let versions = versions(availability)?;
-    (Some(&versions) != self::versions(parent).as_ref()).then_some(versions)
+    let inherited = |platform: &str| {
+        parent
+            .platforms
+            .iter()
+            .find(|(name, _)| name == platform)
+            .and_then(|(_, version)| version.as_ref())
+    };
+    let versions: Vec<String> = availability
+        .platforms
+        .iter()
+        .filter_map(|(platform, version)| {
+            let version = version.as_ref()?;
+            (Some(version) != inherited(platform)).then(|| format!("{platform} {version}"))
+        })
+        .collect();
+    (!versions.is_empty()).then(|| versions.join(", "))
 }

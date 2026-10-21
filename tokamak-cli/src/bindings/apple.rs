@@ -171,7 +171,83 @@ pub(crate) fn read(id: &str, modules: &[String]) -> Result<Module> {
         versions.join(" and "),
         modules.join(", ")
     );
-    Ok(module(id, modules, source, graphs))
+    let mut module = module(id, modules, source, graphs);
+    for sdk in &SDKS {
+        probe_initializers(sdk, &mut module)?;
+    }
+    Ok(module)
+}
+
+/// Keeps a class's `init()` on `sdk`'s platform only where Swift can call
+/// it. Symbol graphs leave out the `init` that a header makes unavailable, so
+/// the compiler decides.
+fn probe_initializers(sdk: &Sdk, module: &mut Module) -> Result<()> {
+    let mut probes = Vec::new();
+    let mut lines: Vec<String> = std::iter::once("Foundation")
+        .chain(module.imports.iter().map(String::as_str))
+        .map(|import| format!("import {import}"))
+        .collect();
+    for (position, ty) in module.types.iter().enumerate() {
+        let Some(member) = ty
+            .members
+            .iter()
+            .find(|member| member.key == format!("{}.init()", ty.native))
+        else {
+            continue;
+        };
+        let Some((_, version)) = member
+            .availability
+            .platforms
+            .iter()
+            .find(|(name, _)| name == sdk.platform)
+        else {
+            continue;
+        };
+        let available = version
+            .as_ref()
+            .map(|version| format!("@available({} {version}, *) ", sdk.platform))
+            .unwrap_or_default();
+        lines.push(format!(
+            "{available}func probe{position}() {{ _ = {}() }}",
+            ty.native
+        ));
+        probes.push((lines.len(), position));
+    }
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("probe.swift");
+    fs::write(&file, lines.join("\n"))?;
+    let path = xcrun(&["--sdk", sdk.name, "--show-sdk-path"])?;
+    let output = Command::new("xcrun")
+        .args(["swiftc", "-typecheck", "-sdk", &path, "-target", sdk.target])
+        .arg(&file)
+        .output()
+        .context("typecheck the initializers")?;
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    for (line, position) in probes {
+        if diagnostics.contains(&format!("probe.swift:{line}:")) {
+            unavailable_init(module, position, sdk.platform);
+        }
+    }
+    Ok(())
+}
+
+/// Removes `platform` from the `init()` of the type at `position`, and the
+/// member once it is on no platform.
+fn unavailable_init(module: &mut Module, position: usize, platform: &str) {
+    let ty = &mut module.types[position];
+    let key = format!("{}.init()", ty.native);
+    let Some(index) = ty.members.iter().position(|member| member.key == key) else {
+        return;
+    };
+    let platforms = &mut ty.members[index].availability.platforms;
+    platforms.retain(|(name, _)| name != platform);
+    if platforms.is_empty() {
+        ty.members.remove(index);
+        module.skipped.push(Skipped {
+            symbol: key,
+            reason: "init() is unavailable".to_owned(),
+        });
+    }
 }
 
 /// The module that `graphs`, by platform and module name, describe.

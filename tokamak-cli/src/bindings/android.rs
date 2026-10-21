@@ -819,12 +819,16 @@ impl Types<'_> {
             name if self.variables.iter().any(|variable| variable == name) => {
                 return "Any?".to_owned();
             }
-            "java.lang.Object" => "Any".to_owned(),
-            "java.lang.String" => "String".to_owned(),
-            "java.util.List" => "MutableList".to_owned(),
-            "java.util.Set" => "MutableSet".to_owned(),
-            "java.util.Map" => "MutableMap".to_owned(),
-            name => name.to_owned(),
+            "java.lang.Boolean" => return "Boolean?".to_owned(),
+            "java.lang.Byte" | "java.lang.Short" | "java.lang.Long" | "java.lang.Float"
+            | "java.lang.Double" => return format!("{}?", &ty.name["java.lang.".len()..]),
+            "java.lang.Integer" => return "Int?".to_owned(),
+            "java.lang.Character" => return "Char?".to_owned(),
+            name => KOTLIN_TYPES
+                .iter()
+                .find(|(java, _)| *java == name)
+                .map_or(name, |(_, kotlin)| kotlin)
+                .to_owned(),
         };
         if ty.arguments.is_empty() {
             return format!("{name}{question}");
@@ -921,6 +925,23 @@ fn boxed(name: &str) -> String {
         name => name.trim_start_matches("java.lang.").to_lowercase(),
     }
 }
+
+/// The Java types Kotlin source names by its own types.
+const KOTLIN_TYPES: [(&str, &str); 13] = [
+    ("java.lang.Object", "Any"),
+    ("java.lang.String", "String"),
+    ("java.lang.CharSequence", "CharSequence"),
+    ("java.lang.Number", "Number"),
+    ("java.lang.Throwable", "Throwable"),
+    ("java.lang.Comparable", "Comparable"),
+    ("java.lang.Enum", "Enum"),
+    ("java.lang.Iterable", "MutableIterable"),
+    ("java.util.Iterator", "MutableIterator"),
+    ("java.util.Collection", "MutableCollection"),
+    ("java.util.List", "MutableList"),
+    ("java.util.Set", "MutableSet"),
+    ("java.util.Map", "MutableMap"),
+];
 
 const KOTLIN_KEYWORDS: [&str; 10] = [
     "as",

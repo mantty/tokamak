@@ -1,6 +1,14 @@
 {
   "schemaVersion": 2,
   "id": "secure-storage",
+  "bindings": {
+    "android": [
+      "android.security.keystore",
+      "java.security.KeyStore",
+      "javax.crypto.Cipher",
+      "javax.crypto.KeyGenerator"
+    ]
+  },
   "platforms": {
     "macos": {
       "class": "TokamakSecureStoragePlugin",

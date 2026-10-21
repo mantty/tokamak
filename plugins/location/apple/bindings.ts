@@ -135,77 +135,46 @@ export interface CLBackgroundActivitySession$Diagnostic {
   authorizationRequestInProgress: boolean;
 }
 
-/** iOS, macOS */
-export type CLBeaconMajorValue = number;
-
-/** iOS, macOS */
-export type CLBeaconMinorValue = number;
-
-/** iOS 7.0+, macOS 10.15+ */
-export type CLProximity = "unknown" | "immediate" | "near" | "far";
-
-/** iOS 4.0+, macOS 10.7+ */
-export class CLRegion extends NativeObject {
-  /** iOS 4.0+, macOS 10.7+ */
-  identifier(): Promise<string> {
-    return bindings.call(this, "CLRegion.identifier", []);
+/** iOS 3.0+, macOS 10.7+ */
+export class CLHeading extends NativeObject {
+  /** iOS 3.0+, macOS 10.7+ */
+  magneticHeading(): Promise<CLLocationDirection> {
+    return bindings.call(this, "CLHeading.magneticHeading", []);
   }
 
-  /** iOS 7.0+, macOS 10.10+ */
-  notifyOnEntry(): Promise<boolean> {
-    return bindings.call(this, "CLRegion.notifyOnEntry", []);
+  /** iOS 3.0+, macOS 10.7+ */
+  trueHeading(): Promise<CLLocationDirection> {
+    return bindings.call(this, "CLHeading.trueHeading", []);
   }
 
-  /** iOS 7.0+, macOS 10.10+ */
-  setNotifyOnEntry(value: boolean): Promise<void> {
-    return bindings.call(this, "CLRegion.notifyOnEntry=", [value]);
+  /** iOS 3.0+, macOS 10.7+ */
+  headingAccuracy(): Promise<CLLocationDirection> {
+    return bindings.call(this, "CLHeading.headingAccuracy", []);
   }
 
-  /** iOS 7.0+, macOS 10.10+ */
-  notifyOnExit(): Promise<boolean> {
-    return bindings.call(this, "CLRegion.notifyOnExit", []);
+  /** iOS 3.0+, macOS 10.7+ */
+  x(): Promise<CLHeadingComponentValue> {
+    return bindings.call(this, "CLHeading.x", []);
   }
 
-  /** iOS 7.0+, macOS 10.10+ */
-  setNotifyOnExit(value: boolean): Promise<void> {
-    return bindings.call(this, "CLRegion.notifyOnExit=", [value]);
+  /** iOS 3.0+, macOS 10.7+ */
+  y(): Promise<CLHeadingComponentValue> {
+    return bindings.call(this, "CLHeading.y", []);
   }
 
-  /**
-   * macOS 10.7+
-   * @deprecated Please see CLCircularRegion
-   */
-  static initCircularRegionWithCenterRadiusIdentifier(ctx: TokamakContext, center: CLLocationCoordinate2D, radius: CLLocationDistance, identifier: string): Promise<CLRegion> {
-    return bindings.call(ctx, "CLRegion.init(circularRegionWithCenter:radius:identifier:)", [center, radius, identifier]);
+  /** iOS 3.0+, macOS 10.7+ */
+  z(): Promise<CLHeadingComponentValue> {
+    return bindings.call(this, "CLHeading.z", []);
   }
 
-  /**
-   * macOS 10.7+
-   * @deprecated Please see CLCircularRegion
-   */
-  center(): Promise<CLLocationCoordinate2D> {
-    return bindings.call(this, "CLRegion.center", []);
-  }
-
-  /**
-   * macOS 10.7+
-   * @deprecated Please see CLCircularRegion
-   */
-  radius(): Promise<CLLocationDistance> {
-    return bindings.call(this, "CLRegion.radius", []);
-  }
-
-  /**
-   * macOS 10.7+
-   * @deprecated Please see CLCircularRegion
-   */
-  containsCoordinate(coordinate: CLLocationCoordinate2D): Promise<boolean> {
-    return bindings.call(this, "CLRegion.contains(_:)", [coordinate]);
+  /** iOS 3.0+, macOS 10.7+ */
+  timestamp(): Promise<Date> {
+    return bindings.call(this, "CLHeading.timestamp", []);
   }
 }
 
-/** iOS 7.0+, macOS 10.10+ */
-export type CLRegionState = "unknown" | "inside" | "outside";
+/** iOS, macOS */
+export type CLHeadingComponentValue = number;
 
 /** iOS 7.0+, macOS 10.15+ */
 export class CLBeacon extends NativeObject {
@@ -253,224 +222,6 @@ export class CLBeacon extends NativeObject {
   }
 }
 
-/** iOS 7.0+, macOS 10.15+ */
-export class CLBeaconRegion extends CLRegion {
-  /** iOS 13.0+, macOS 10.15+ */
-  static initWithUUIDIdentifier(ctx: TokamakContext, uuid: string, identifier: string): Promise<CLBeaconRegion> {
-    return bindings.call(ctx, "CLBeaconRegion.init(uuid:identifier:)", [uuid, identifier]);
-  }
-
-  /**
-   * iOS 7.0+, macOS 10.15+
-   * @deprecated
-   */
-  static initWithProximityUUIDIdentifier(ctx: TokamakContext, proximityUUID: string, identifier: string): Promise<CLBeaconRegion> {
-    return bindings.call(ctx, "CLBeaconRegion.init(proximityUUID:identifier:)", [proximityUUID, identifier]);
-  }
-
-  /** iOS 13.0+, macOS 10.15+ */
-  static initWithUUIDMajorIdentifier(ctx: TokamakContext, uuid: string, major: CLBeaconMajorValue, identifier: string): Promise<CLBeaconRegion> {
-    return bindings.call(ctx, "CLBeaconRegion.init(uuid:major:identifier:)", [uuid, major, identifier]);
-  }
-
-  /**
-   * iOS 7.0+, macOS 10.15+
-   * @deprecated
-   */
-  static initWithProximityUUIDMajorIdentifier(ctx: TokamakContext, proximityUUID: string, major: CLBeaconMajorValue, identifier: string): Promise<CLBeaconRegion> {
-    return bindings.call(ctx, "CLBeaconRegion.init(proximityUUID:major:identifier:)", [proximityUUID, major, identifier]);
-  }
-
-  /** iOS 13.0+, macOS 10.15+ */
-  static initWithUUIDMajorMinorIdentifier(ctx: TokamakContext, uuid: string, major: CLBeaconMajorValue, minor: CLBeaconMinorValue, identifier: string): Promise<CLBeaconRegion> {
-    return bindings.call(ctx, "CLBeaconRegion.init(uuid:major:minor:identifier:)", [uuid, major, minor, identifier]);
-  }
-
-  /**
-   * iOS 7.0+, macOS 10.15+
-   * @deprecated
-   */
-  static initWithProximityUUIDMajorMinorIdentifier(ctx: TokamakContext, proximityUUID: string, major: CLBeaconMajorValue, minor: CLBeaconMinorValue, identifier: string): Promise<CLBeaconRegion> {
-    return bindings.call(ctx, "CLBeaconRegion.init(proximityUUID:major:minor:identifier:)", [proximityUUID, major, minor, identifier]);
-  }
-
-  /** iOS 13.0+, macOS 10.15+ */
-  static initWithBeaconIdentityConstraintIdentifier(ctx: TokamakContext, beaconIdentityConstraint: CLBeaconIdentityConstraint, identifier: string): Promise<CLBeaconRegion> {
-    return bindings.call(ctx, "CLBeaconRegion.init(beaconIdentityConstraint:identifier:)", [beaconIdentityConstraint, identifier]);
-  }
-
-  /** iOS 13.0+, macOS 10.15+ */
-  beaconIdentityConstraint(): Promise<CLBeaconIdentityConstraint> {
-    return bindings.call(this, "CLBeaconRegion.beaconIdentityConstraint", []);
-  }
-
-  /** iOS 13.0+, macOS 10.15+ */
-  uuid(): Promise<string> {
-    return bindings.call(this, "CLBeaconRegion.uuid", []);
-  }
-
-  /**
-   * iOS 7.0+, macOS 10.15+
-   * @deprecated
-   */
-  proximityUUID(): Promise<string> {
-    return bindings.call(this, "CLBeaconRegion.proximityUUID", []);
-  }
-
-  /** iOS 7.0+, macOS 10.15+ */
-  major(): Promise<number | null> {
-    return bindings.call(this, "CLBeaconRegion.major", []);
-  }
-
-  /** iOS 7.0+, macOS 10.15+ */
-  minor(): Promise<number | null> {
-    return bindings.call(this, "CLBeaconRegion.minor", []);
-  }
-
-  /** iOS 7.0+, macOS 10.15+ */
-  notifyEntryStateOnDisplay(): Promise<boolean> {
-    return bindings.call(this, "CLBeaconRegion.notifyEntryStateOnDisplay", []);
-  }
-
-  /** iOS 7.0+, macOS 10.15+ */
-  setNotifyEntryStateOnDisplay(value: boolean): Promise<void> {
-    return bindings.call(this, "CLBeaconRegion.notifyEntryStateOnDisplay=", [value]);
-  }
-}
-
-/** iOS, macOS */
-export interface CLLocationManagerDelegateMethods {
-  /** iOS 6.0+, macOS 10.9+ */
-  locationManagerDidUpdateLocations?(manager: CLLocationManager, locations: CLLocation[]): void | Promise<void>;
-  /** iOS 3.0+, macOS 10.15+ */
-  locationManagerDidUpdateHeading?(manager: CLLocationManager, newHeading: CLHeading): void | Promise<void>;
-  /** iOS 7.0+, macOS 10.10+ */
-  locationManagerDidDetermineStateForRegion?(manager: CLLocationManager, state: CLRegionState, region: CLRegion): void | Promise<void>;
-  /**
-   * iOS 7.0+, macOS 10.15+
-   * @deprecated
-   */
-  locationManagerDidRangeBeaconsInRegion?(manager: CLLocationManager, beacons: CLBeacon[], region: CLBeaconRegion): void | Promise<void>;
-  /**
-   * iOS 7.0+, macOS 10.15+
-   * @deprecated
-   */
-  locationManagerRangingBeaconsDidFailForRegionWithError?(manager: CLLocationManager, region: CLBeaconRegion, error: DOMException): void | Promise<void>;
-  /** iOS 13.0+, macOS 10.15+ */
-  locationManagerDidRangeBeaconsSatisfyingConstraint?(manager: CLLocationManager, beacons: CLBeacon[], beaconConstraint: CLBeaconIdentityConstraint): void | Promise<void>;
-  /** iOS 13.0+, macOS 10.15+ */
-  locationManagerDidFailRangingBeaconsForConstraintError?(manager: CLLocationManager, beaconConstraint: CLBeaconIdentityConstraint, error: DOMException): void | Promise<void>;
-  /** iOS 4.0+, macOS 10.8+ */
-  locationManagerDidEnterRegion?(manager: CLLocationManager, region: CLRegion): void | Promise<void>;
-  /** iOS 4.0+, macOS 10.8+ */
-  locationManagerDidExitRegion?(manager: CLLocationManager, region: CLRegion): void | Promise<void>;
-  /** iOS 2.0+, macOS 10.6+ */
-  locationManagerDidFailWithError?(manager: CLLocationManager, error: DOMException): void | Promise<void>;
-  /** iOS 4.0+, macOS 10.8+ */
-  locationManagerMonitoringDidFailForRegionWithError?(manager: CLLocationManager, region: CLRegion | null, error: DOMException): void | Promise<void>;
-  /**
-   * iOS 4.2+, macOS 10.7+
-   * @deprecated
-   */
-  locationManagerDidChangeAuthorizationStatus?(manager: CLLocationManager, status: CLAuthorizationStatus): void | Promise<void>;
-  /** iOS 14.0+, macOS 11.0+ */
-  locationManagerDidChangeAuthorization?(manager: CLLocationManager): void | Promise<void>;
-  /** iOS 5.0+, macOS 10.8+ */
-  locationManagerDidStartMonitoringForRegion?(manager: CLLocationManager, region: CLRegion): void | Promise<void>;
-  /** iOS 6.0+, macOS 10.15+ */
-  locationManagerDidPauseLocationUpdates?(manager: CLLocationManager): void | Promise<void>;
-  /** iOS 6.0+, macOS 10.15+ */
-  locationManagerDidResumeLocationUpdates?(manager: CLLocationManager): void | Promise<void>;
-  /** iOS 6.0+, macOS 10.9+ */
-  locationManagerDidFinishDeferredUpdatesWithError?(manager: CLLocationManager, error: DOMException | null): void | Promise<void>;
-  /** iOS 8.0+, macOS 10.15+ */
-  locationManagerDidVisit?(manager: CLLocationManager, visit: CLVisit): void | Promise<void>;
-  /** macOS 10.6+ */
-  locationManagerDidUpdateToLocationFromLocation?(manager: CLLocationManager, newLocation: CLLocation, oldLocation: CLLocation): void | Promise<void>;
-}
-
-/** iOS, macOS */
-export class CLLocationManagerDelegate extends NativeObject {
-  /** A native object whose methods call `handlers`. */
-  static implement(ctx: TokamakContext, handlers: CLLocationManagerDelegateMethods): Promise<CLLocationManagerDelegate> {
-    return bindings.implement(ctx, CLLocationManagerDelegate, "CLLocationManagerDelegate", ["locationManagerDidUpdateLocations", "locationManagerDidUpdateHeading", "locationManagerDidDetermineStateForRegion", "locationManagerDidRangeBeaconsInRegion", "locationManagerRangingBeaconsDidFailForRegionWithError", "locationManagerDidRangeBeaconsSatisfyingConstraint", "locationManagerDidFailRangingBeaconsForConstraintError", "locationManagerDidEnterRegion", "locationManagerDidExitRegion", "locationManagerDidFailWithError", "locationManagerMonitoringDidFailForRegionWithError", "locationManagerDidChangeAuthorizationStatus", "locationManagerDidChangeAuthorization", "locationManagerDidStartMonitoringForRegion", "locationManagerDidPauseLocationUpdates", "locationManagerDidResumeLocationUpdates", "locationManagerDidFinishDeferredUpdatesWithError", "locationManagerDidVisit", "locationManagerDidUpdateToLocationFromLocation"], handlers);
-  }
-}
-
-/** iOS 13.0+, macOS 10.15+ */
-export class CLBeaconIdentityConstraint extends NativeObject {
-  /** iOS 13.0+, macOS 10.15+ */
-  major(): Promise<number | null> {
-    return bindings.call(this, "CLBeaconIdentityConstraint.major", []);
-  }
-
-  /** iOS 13.0+, macOS 10.15+ */
-  minor(): Promise<number | null> {
-    return bindings.call(this, "CLBeaconIdentityConstraint.minor", []);
-  }
-}
-
-/**
- * iOS 5.0+, macOS 10.8+
- * @deprecated Use MapKit
- */
-export class CLGeocoder extends NativeObject {
-  /**
-   * iOS 5.0+, macOS 10.8+
-   * @deprecated Use MapKit
-   */
-  isGeocoding(): Promise<boolean> {
-    return bindings.call(this, "CLGeocoder.isGeocoding", []);
-  }
-
-  /**
-   * iOS 5.0+, macOS 10.8+
-   * @deprecated Use MKGeocodingRequest
-   */
-  cancelGeocode(): Promise<void> {
-    return bindings.call(this, "CLGeocoder.cancelGeocode()", []);
-  }
-
-  /**
-   * iOS 5.0+, macOS 10.8+
-   * @deprecated Use MapKit
-   */
-  static init(ctx: TokamakContext): Promise<CLGeocoder> {
-    return bindings.call(ctx, "CLGeocoder.init()", []);
-  }
-}
-
-/** iOS 27.0+, macOS 27.0+ */
-export class CLBodyIdentifiable extends NativeObject {
-}
-
-/** iOS 15.0+ */
-export class CLLocationPushServiceExtension extends NativeObject {
-}
-
-/** iOS 8.0+, macOS 10.15+ */
-export class CLVisit extends NativeObject {
-  /** iOS 8.0+, macOS 10.15+ */
-  arrivalDate(): Promise<Date> {
-    return bindings.call(this, "CLVisit.arrivalDate", []);
-  }
-
-  /** iOS 8.0+, macOS 10.15+ */
-  departureDate(): Promise<Date> {
-    return bindings.call(this, "CLVisit.departureDate", []);
-  }
-
-  /** iOS 8.0+, macOS 10.15+ */
-  coordinate(): Promise<CLLocationCoordinate2D> {
-    return bindings.call(this, "CLVisit.coordinate", []);
-  }
-
-  /** iOS 8.0+, macOS 10.15+ */
-  horizontalAccuracy(): Promise<CLLocationAccuracy> {
-    return bindings.call(this, "CLVisit.horizontalAccuracy", []);
-  }
-}
-
 /** iOS, macOS */
 export type CLAccuracyAuthorization = "fullAccuracy" | "reducedAccuracy";
 
@@ -485,16 +236,6 @@ export type CLDeviceOrientation = "unknown" | "portrait" | "portraitUpsideDown" 
 
 /** iOS 2.0+, macOS 10.6+ */
 export class CLLocationManager extends NativeObject {
-  /** iOS 8.0+, macOS 10.15+ */
-  startMonitoringVisits(): Promise<void> {
-    return bindings.call(this, "CLLocationManager.startMonitoringVisits()", []);
-  }
-
-  /** iOS 8.0+, macOS 10.15+ */
-  stopMonitoringVisits(): Promise<void> {
-    return bindings.call(this, "CLLocationManager.stopMonitoringVisits()", []);
-  }
-
   /** iOS 4.0+, macOS 10.7+ */
   static locationServicesEnabled(ctx: TokamakContext): Promise<boolean> {
     return bindings.call(ctx, "CLLocationManager.locationServicesEnabled()", []);
@@ -802,6 +543,16 @@ export class CLLocationManager extends NativeObject {
     return bindings.call(ctx, "CLLocationManager.deferredLocationUpdatesAvailable()", []);
   }
 
+  /** iOS 8.0+, macOS 10.15+ */
+  startMonitoringVisits(): Promise<void> {
+    return bindings.call(this, "CLLocationManager.startMonitoringVisits()", []);
+  }
+
+  /** iOS 8.0+, macOS 10.15+ */
+  stopMonitoringVisits(): Promise<void> {
+    return bindings.call(this, "CLLocationManager.stopMonitoringVisits()", []);
+  }
+
   /**
    * macOS 10.8+
    * @deprecated
@@ -864,28 +615,210 @@ export class CLLocationManager extends NativeObject {
   }
 }
 
-/** iOS 7.0+, macOS 10.10+ */
-export class CLCircularRegion extends CLRegion {
+/** iOS, macOS */
+export interface CLLocationManagerDelegateMethods {
+  /** iOS 6.0+, macOS 10.9+ */
+  locationManagerDidUpdateLocations?(manager: CLLocationManager, locations: CLLocation[]): void | Promise<void>;
+  /** iOS 3.0+, macOS 10.15+ */
+  locationManagerDidUpdateHeading?(manager: CLLocationManager, newHeading: CLHeading): void | Promise<void>;
   /** iOS 7.0+, macOS 10.10+ */
-  static initWithCenterRadiusIdentifier(ctx: TokamakContext, center: CLLocationCoordinate2D, radius: CLLocationDistance, identifier: string): Promise<CLCircularRegion> {
-    return bindings.call(ctx, "CLCircularRegion.init(center:radius:identifier:)", [center, radius, identifier]);
-  }
+  locationManagerDidDetermineStateForRegion?(manager: CLLocationManager, state: CLRegionState, region: CLRegion): void | Promise<void>;
+  /**
+   * iOS 7.0+, macOS 10.15+
+   * @deprecated
+   */
+  locationManagerDidRangeBeaconsInRegion?(manager: CLLocationManager, beacons: CLBeacon[], region: CLBeaconRegion): void | Promise<void>;
+  /**
+   * iOS 7.0+, macOS 10.15+
+   * @deprecated
+   */
+  locationManagerRangingBeaconsDidFailForRegionWithError?(manager: CLLocationManager, region: CLBeaconRegion, error: DOMException): void | Promise<void>;
+  /** iOS 13.0+, macOS 10.15+ */
+  locationManagerDidRangeBeaconsSatisfyingConstraint?(manager: CLLocationManager, beacons: CLBeacon[], beaconConstraint: CLBeaconIdentityConstraint): void | Promise<void>;
+  /** iOS 13.0+, macOS 10.15+ */
+  locationManagerDidFailRangingBeaconsForConstraintError?(manager: CLLocationManager, beaconConstraint: CLBeaconIdentityConstraint, error: DOMException): void | Promise<void>;
+  /** iOS 4.0+, macOS 10.8+ */
+  locationManagerDidEnterRegion?(manager: CLLocationManager, region: CLRegion): void | Promise<void>;
+  /** iOS 4.0+, macOS 10.8+ */
+  locationManagerDidExitRegion?(manager: CLLocationManager, region: CLRegion): void | Promise<void>;
+  /** iOS 2.0+, macOS 10.6+ */
+  locationManagerDidFailWithError?(manager: CLLocationManager, error: DOMException): void | Promise<void>;
+  /** iOS 4.0+, macOS 10.8+ */
+  locationManagerMonitoringDidFailForRegionWithError?(manager: CLLocationManager, region: CLRegion | null, error: DOMException): void | Promise<void>;
+  /**
+   * iOS 4.2+, macOS 10.7+
+   * @deprecated
+   */
+  locationManagerDidChangeAuthorizationStatus?(manager: CLLocationManager, status: CLAuthorizationStatus): void | Promise<void>;
+  /** iOS 14.0+, macOS 11.0+ */
+  locationManagerDidChangeAuthorization?(manager: CLLocationManager): void | Promise<void>;
+  /** iOS 5.0+, macOS 10.8+ */
+  locationManagerDidStartMonitoringForRegion?(manager: CLLocationManager, region: CLRegion): void | Promise<void>;
+  /** iOS 6.0+, macOS 10.15+ */
+  locationManagerDidPauseLocationUpdates?(manager: CLLocationManager): void | Promise<void>;
+  /** iOS 6.0+, macOS 10.15+ */
+  locationManagerDidResumeLocationUpdates?(manager: CLLocationManager): void | Promise<void>;
+  /** iOS 6.0+, macOS 10.9+ */
+  locationManagerDidFinishDeferredUpdatesWithError?(manager: CLLocationManager, error: DOMException | null): void | Promise<void>;
+  /** iOS 8.0+, macOS 10.15+ */
+  locationManagerDidVisit?(manager: CLLocationManager, visit: CLVisit): void | Promise<void>;
+  /** macOS 10.6+ */
+  locationManagerDidUpdateToLocationFromLocation?(manager: CLLocationManager, newLocation: CLLocation, oldLocation: CLLocation): void | Promise<void>;
+}
 
-  /** iOS 7.0+, macOS 10.10+ */
-  center(): Promise<CLLocationCoordinate2D> {
-    return bindings.call(this, "CLCircularRegion.center", []);
-  }
-
-  /** iOS 7.0+, macOS 10.10+ */
-  radius(): Promise<CLLocationDistance> {
-    return bindings.call(this, "CLCircularRegion.radius", []);
-  }
-
-  /** iOS 7.0+, macOS 10.10+ */
-  containsCoordinate(coordinate: CLLocationCoordinate2D): Promise<boolean> {
-    return bindings.call(this, "CLCircularRegion.contains(_:)", [coordinate]);
+/** iOS, macOS */
+export class CLLocationManagerDelegate extends NativeObject {
+  /** A native object whose methods call `handlers`. */
+  static implement(ctx: TokamakContext, handlers: CLLocationManagerDelegateMethods): Promise<CLLocationManagerDelegate> {
+    return bindings.implement(ctx, CLLocationManagerDelegate, "CLLocationManagerDelegate", ["locationManagerDidUpdateLocations", "locationManagerDidUpdateHeading", "locationManagerDidDetermineStateForRegion", "locationManagerDidRangeBeaconsInRegion", "locationManagerRangingBeaconsDidFailForRegionWithError", "locationManagerDidRangeBeaconsSatisfyingConstraint", "locationManagerDidFailRangingBeaconsForConstraintError", "locationManagerDidEnterRegion", "locationManagerDidExitRegion", "locationManagerDidFailWithError", "locationManagerMonitoringDidFailForRegionWithError", "locationManagerDidChangeAuthorizationStatus", "locationManagerDidChangeAuthorization", "locationManagerDidStartMonitoringForRegion", "locationManagerDidPauseLocationUpdates", "locationManagerDidResumeLocationUpdates", "locationManagerDidFinishDeferredUpdatesWithError", "locationManagerDidVisit", "locationManagerDidUpdateToLocationFromLocation"], handlers);
   }
 }
+
+/**
+ * iOS 5.0+, macOS 10.8+
+ * @deprecated Use MapKit
+ */
+export class CLGeocoder extends NativeObject {
+  /**
+   * iOS 5.0+, macOS 10.8+
+   * @deprecated Use MapKit
+   */
+  isGeocoding(): Promise<boolean> {
+    return bindings.call(this, "CLGeocoder.isGeocoding", []);
+  }
+
+  /**
+   * iOS 5.0+, macOS 10.8+
+   * @deprecated Use MKGeocodingRequest
+   */
+  cancelGeocode(): Promise<void> {
+    return bindings.call(this, "CLGeocoder.cancelGeocode()", []);
+  }
+
+  /**
+   * iOS 5.0+, macOS 10.8+
+   * @deprecated Use MapKit
+   */
+  static init(ctx: TokamakContext): Promise<CLGeocoder> {
+    return bindings.call(ctx, "CLGeocoder.init()", []);
+  }
+}
+
+/** iOS 13.0+, macOS 10.15+ */
+export class CLBeaconIdentityConstraint extends NativeObject {
+  /** iOS 13.0+, macOS 10.15+ */
+  major(): Promise<number | null> {
+    return bindings.call(this, "CLBeaconIdentityConstraint.major", []);
+  }
+
+  /** iOS 13.0+, macOS 10.15+ */
+  minor(): Promise<number | null> {
+    return bindings.call(this, "CLBeaconIdentityConstraint.minor", []);
+  }
+}
+
+/** iOS 27.0+, macOS 27.0+ */
+export class CLBodyIdentifiable extends NativeObject {
+}
+
+/** iOS 15.0+ */
+export class CLLocationPushServiceExtension extends NativeObject {
+}
+
+/** iOS 8.0+, macOS 10.15+ */
+export class CLVisit extends NativeObject {
+  /** iOS 8.0+, macOS 10.15+ */
+  arrivalDate(): Promise<Date> {
+    return bindings.call(this, "CLVisit.arrivalDate", []);
+  }
+
+  /** iOS 8.0+, macOS 10.15+ */
+  departureDate(): Promise<Date> {
+    return bindings.call(this, "CLVisit.departureDate", []);
+  }
+
+  /** iOS 8.0+, macOS 10.15+ */
+  coordinate(): Promise<CLLocationCoordinate2D> {
+    return bindings.call(this, "CLVisit.coordinate", []);
+  }
+
+  /** iOS 8.0+, macOS 10.15+ */
+  horizontalAccuracy(): Promise<CLLocationAccuracy> {
+    return bindings.call(this, "CLVisit.horizontalAccuracy", []);
+  }
+}
+
+/** iOS 7.0+, macOS 10.15+ */
+export type CLProximity = "unknown" | "immediate" | "near" | "far";
+
+/** iOS 4.0+, macOS 10.7+ */
+export class CLRegion extends NativeObject {
+  /** iOS 4.0+, macOS 10.7+ */
+  identifier(): Promise<string> {
+    return bindings.call(this, "CLRegion.identifier", []);
+  }
+
+  /** iOS 7.0+, macOS 10.10+ */
+  notifyOnEntry(): Promise<boolean> {
+    return bindings.call(this, "CLRegion.notifyOnEntry", []);
+  }
+
+  /** iOS 7.0+, macOS 10.10+ */
+  setNotifyOnEntry(value: boolean): Promise<void> {
+    return bindings.call(this, "CLRegion.notifyOnEntry=", [value]);
+  }
+
+  /** iOS 7.0+, macOS 10.10+ */
+  notifyOnExit(): Promise<boolean> {
+    return bindings.call(this, "CLRegion.notifyOnExit", []);
+  }
+
+  /** iOS 7.0+, macOS 10.10+ */
+  setNotifyOnExit(value: boolean): Promise<void> {
+    return bindings.call(this, "CLRegion.notifyOnExit=", [value]);
+  }
+
+  /**
+   * macOS 10.7+
+   * @deprecated Please see CLCircularRegion
+   */
+  static initCircularRegionWithCenterRadiusIdentifier(ctx: TokamakContext, center: CLLocationCoordinate2D, radius: CLLocationDistance, identifier: string): Promise<CLRegion> {
+    return bindings.call(ctx, "CLRegion.init(circularRegionWithCenter:radius:identifier:)", [center, radius, identifier]);
+  }
+
+  /**
+   * macOS 10.7+
+   * @deprecated Please see CLCircularRegion
+   */
+  center(): Promise<CLLocationCoordinate2D> {
+    return bindings.call(this, "CLRegion.center", []);
+  }
+
+  /**
+   * macOS 10.7+
+   * @deprecated Please see CLCircularRegion
+   */
+  radius(): Promise<CLLocationDistance> {
+    return bindings.call(this, "CLRegion.radius", []);
+  }
+
+  /**
+   * macOS 10.7+
+   * @deprecated Please see CLCircularRegion
+   */
+  containsCoordinate(coordinate: CLLocationCoordinate2D): Promise<boolean> {
+    return bindings.call(this, "CLRegion.contains(_:)", [coordinate]);
+  }
+}
+
+/** iOS 7.0+, macOS 10.10+ */
+export type CLRegionState = "unknown" | "inside" | "outside";
+
+/** iOS, macOS */
+export type CLBeaconMajorValue = number;
+
+/** iOS, macOS */
+export type CLBeaconMinorValue = number;
 
 /** iOS 5.0+, macOS 10.8+ */
 export class CLPlacemark extends NativeObject {
@@ -974,47 +907,6 @@ export class CLPlacemark extends NativeObject {
     return bindings.call(this, "CLPlacemark.areasOfInterest", []);
   }
 }
-
-/** iOS 3.0+, macOS 10.7+ */
-export class CLHeading extends NativeObject {
-  /** iOS 3.0+, macOS 10.7+ */
-  magneticHeading(): Promise<CLLocationDirection> {
-    return bindings.call(this, "CLHeading.magneticHeading", []);
-  }
-
-  /** iOS 3.0+, macOS 10.7+ */
-  trueHeading(): Promise<CLLocationDirection> {
-    return bindings.call(this, "CLHeading.trueHeading", []);
-  }
-
-  /** iOS 3.0+, macOS 10.7+ */
-  headingAccuracy(): Promise<CLLocationDirection> {
-    return bindings.call(this, "CLHeading.headingAccuracy", []);
-  }
-
-  /** iOS 3.0+, macOS 10.7+ */
-  x(): Promise<CLHeadingComponentValue> {
-    return bindings.call(this, "CLHeading.x", []);
-  }
-
-  /** iOS 3.0+, macOS 10.7+ */
-  y(): Promise<CLHeadingComponentValue> {
-    return bindings.call(this, "CLHeading.y", []);
-  }
-
-  /** iOS 3.0+, macOS 10.7+ */
-  z(): Promise<CLHeadingComponentValue> {
-    return bindings.call(this, "CLHeading.z", []);
-  }
-
-  /** iOS 3.0+, macOS 10.7+ */
-  timestamp(): Promise<Date> {
-    return bindings.call(this, "CLHeading.timestamp", []);
-  }
-}
-
-/** iOS, macOS */
-export type CLHeadingComponentValue = number;
 
 /** iOS 8.0+, macOS 10.15+ */
 export class CLFloor extends NativeObject {
@@ -1170,19 +1062,117 @@ export type CLLocationSpeed = number;
 /** iOS, macOS */
 export type CLLocationSpeedAccuracy = number;
 
-/** iOS, macOS */
-export function kCLErrorDomain(ctx: TokamakContext): Promise<string> {
-  return bindings.call(ctx, "kCLErrorDomain", []);
+/** iOS 7.0+, macOS 10.15+ */
+export class CLBeaconRegion extends CLRegion {
+  /** iOS 13.0+, macOS 10.15+ */
+  static initWithUUIDIdentifier(ctx: TokamakContext, uuid: string, identifier: string): Promise<CLBeaconRegion> {
+    return bindings.call(ctx, "CLBeaconRegion.init(uuid:identifier:)", [uuid, identifier]);
+  }
+
+  /**
+   * iOS 7.0+, macOS 10.15+
+   * @deprecated
+   */
+  static initWithProximityUUIDIdentifier(ctx: TokamakContext, proximityUUID: string, identifier: string): Promise<CLBeaconRegion> {
+    return bindings.call(ctx, "CLBeaconRegion.init(proximityUUID:identifier:)", [proximityUUID, identifier]);
+  }
+
+  /** iOS 13.0+, macOS 10.15+ */
+  static initWithUUIDMajorIdentifier(ctx: TokamakContext, uuid: string, major: CLBeaconMajorValue, identifier: string): Promise<CLBeaconRegion> {
+    return bindings.call(ctx, "CLBeaconRegion.init(uuid:major:identifier:)", [uuid, major, identifier]);
+  }
+
+  /**
+   * iOS 7.0+, macOS 10.15+
+   * @deprecated
+   */
+  static initWithProximityUUIDMajorIdentifier(ctx: TokamakContext, proximityUUID: string, major: CLBeaconMajorValue, identifier: string): Promise<CLBeaconRegion> {
+    return bindings.call(ctx, "CLBeaconRegion.init(proximityUUID:major:identifier:)", [proximityUUID, major, identifier]);
+  }
+
+  /** iOS 13.0+, macOS 10.15+ */
+  static initWithUUIDMajorMinorIdentifier(ctx: TokamakContext, uuid: string, major: CLBeaconMajorValue, minor: CLBeaconMinorValue, identifier: string): Promise<CLBeaconRegion> {
+    return bindings.call(ctx, "CLBeaconRegion.init(uuid:major:minor:identifier:)", [uuid, major, minor, identifier]);
+  }
+
+  /**
+   * iOS 7.0+, macOS 10.15+
+   * @deprecated
+   */
+  static initWithProximityUUIDMajorMinorIdentifier(ctx: TokamakContext, proximityUUID: string, major: CLBeaconMajorValue, minor: CLBeaconMinorValue, identifier: string): Promise<CLBeaconRegion> {
+    return bindings.call(ctx, "CLBeaconRegion.init(proximityUUID:major:minor:identifier:)", [proximityUUID, major, minor, identifier]);
+  }
+
+  /** iOS 13.0+, macOS 10.15+ */
+  static initWithBeaconIdentityConstraintIdentifier(ctx: TokamakContext, beaconIdentityConstraint: CLBeaconIdentityConstraint, identifier: string): Promise<CLBeaconRegion> {
+    return bindings.call(ctx, "CLBeaconRegion.init(beaconIdentityConstraint:identifier:)", [beaconIdentityConstraint, identifier]);
+  }
+
+  /** iOS 13.0+, macOS 10.15+ */
+  beaconIdentityConstraint(): Promise<CLBeaconIdentityConstraint> {
+    return bindings.call(this, "CLBeaconRegion.beaconIdentityConstraint", []);
+  }
+
+  /** iOS 13.0+, macOS 10.15+ */
+  uuid(): Promise<string> {
+    return bindings.call(this, "CLBeaconRegion.uuid", []);
+  }
+
+  /**
+   * iOS 7.0+, macOS 10.15+
+   * @deprecated
+   */
+  proximityUUID(): Promise<string> {
+    return bindings.call(this, "CLBeaconRegion.proximityUUID", []);
+  }
+
+  /** iOS 7.0+, macOS 10.15+ */
+  major(): Promise<number | null> {
+    return bindings.call(this, "CLBeaconRegion.major", []);
+  }
+
+  /** iOS 7.0+, macOS 10.15+ */
+  minor(): Promise<number | null> {
+    return bindings.call(this, "CLBeaconRegion.minor", []);
+  }
+
+  /** iOS 7.0+, macOS 10.15+ */
+  notifyEntryStateOnDisplay(): Promise<boolean> {
+    return bindings.call(this, "CLBeaconRegion.notifyEntryStateOnDisplay", []);
+  }
+
+  /** iOS 7.0+, macOS 10.15+ */
+  setNotifyEntryStateOnDisplay(value: boolean): Promise<void> {
+    return bindings.call(this, "CLBeaconRegion.notifyEntryStateOnDisplay=", [value]);
+  }
+}
+
+/** iOS 7.0+, macOS 10.10+ */
+export class CLCircularRegion extends CLRegion {
+  /** iOS 7.0+, macOS 10.10+ */
+  static initWithCenterRadiusIdentifier(ctx: TokamakContext, center: CLLocationCoordinate2D, radius: CLLocationDistance, identifier: string): Promise<CLCircularRegion> {
+    return bindings.call(ctx, "CLCircularRegion.init(center:radius:identifier:)", [center, radius, identifier]);
+  }
+
+  /** iOS 7.0+, macOS 10.10+ */
+  center(): Promise<CLLocationCoordinate2D> {
+    return bindings.call(this, "CLCircularRegion.center", []);
+  }
+
+  /** iOS 7.0+, macOS 10.10+ */
+  radius(): Promise<CLLocationDistance> {
+    return bindings.call(this, "CLCircularRegion.radius", []);
+  }
+
+  /** iOS 7.0+, macOS 10.10+ */
+  containsCoordinate(coordinate: CLLocationCoordinate2D): Promise<boolean> {
+    return bindings.call(this, "CLCircularRegion.contains(_:)", [coordinate]);
+  }
 }
 
 /** iOS, macOS */
-export function CL_TARGET_SUPPORTS_CONDITIONS(ctx: TokamakContext): Promise<number> {
-  return bindings.call(ctx, "CL_TARGET_SUPPORTS_CONDITIONS", []);
-}
-
-/** iOS 15.0+ */
-export function CLLocationPushServiceErrorDomain(ctx: TokamakContext): Promise<string> {
-  return bindings.call(ctx, "CLLocationPushServiceErrorDomain", []);
+export function kCLHeadingFilterNone(ctx: TokamakContext): Promise<CLLocationDegrees> {
+  return bindings.call(ctx, "kCLHeadingFilterNone", []);
 }
 
 /** iOS 5.0+, macOS 10.7+ */
@@ -1191,8 +1181,18 @@ export function kCLErrorUserInfoAlternateRegionKey(ctx: TokamakContext): Promise
 }
 
 /** iOS, macOS */
-export function kCLHeadingFilterNone(ctx: TokamakContext): Promise<CLLocationDegrees> {
-  return bindings.call(ctx, "kCLHeadingFilterNone", []);
+export function CL_TARGET_SUPPORTS_CONDITIONS(ctx: TokamakContext): Promise<number> {
+  return bindings.call(ctx, "CL_TARGET_SUPPORTS_CONDITIONS", []);
+}
+
+/** iOS, macOS */
+export function kCLErrorDomain(ctx: TokamakContext): Promise<string> {
+  return bindings.call(ctx, "kCLErrorDomain", []);
+}
+
+/** iOS 15.0+ */
+export function CLLocationPushServiceErrorDomain(ctx: TokamakContext): Promise<string> {
+  return bindings.call(ctx, "CLLocationPushServiceErrorDomain", []);
 }
 
 /** iOS 4.0+, macOS 10.7+ */
@@ -1265,19 +1265,19 @@ const classes: Classes = {
   "CoreLocation.CLMonitor": CLMonitor,
   "CoreLocation.CLServiceSession": CLServiceSession,
   "CoreLocation.CLBackgroundActivitySession": CLBackgroundActivitySession,
-  "CLRegion": CLRegion,
+  "CLHeading": CLHeading,
   "CLBeacon": CLBeacon,
   "CLBeaconRegion": CLBeaconRegion,
+  "CLLocationManager": CLLocationManager,
   "CoreLocation.CLLocationManagerDelegate": CLLocationManagerDelegate,
-  "CLBeaconIdentityConstraint": CLBeaconIdentityConstraint,
   "CLGeocoder": CLGeocoder,
+  "CLBeaconIdentityConstraint": CLBeaconIdentityConstraint,
   "CoreLocation.CLBodyIdentifiable": CLBodyIdentifiable,
   "CoreLocation.CLLocationPushServiceExtension": CLLocationPushServiceExtension,
   "CLVisit": CLVisit,
-  "CLLocationManager": CLLocationManager,
   "CLCircularRegion": CLCircularRegion,
+  "CLRegion": CLRegion,
   "CLPlacemark": CLPlacemark,
-  "CLHeading": CLHeading,
   "CLFloor": CLFloor,
   "CLLocation": CLLocation,
   "CLLocationSourceInformation": CLLocationSourceInformation,

@@ -315,7 +315,7 @@ fn kinds(ty: &Ty) -> Vec<String> {
         Ty::Date => "date",
         Ty::List(..) => "array",
         Ty::Record(_) => "object",
-        Ty::Any | Ty::Void | Ty::Error => "any",
+        Ty::Any | Ty::Void | Ty::Error | Ty::OutError => "any",
     };
     vec![format!("{kind:?}")]
 }
@@ -376,8 +376,9 @@ fn emit_member(out: &mut String, member: &Member, place: Place) {
     if member.is_static {
         parameters.push("ctx: TokamakContext".to_owned());
     }
-    if !member.params.is_empty() {
-        parameters.push(params(&member.params));
+    let declared = params(&member.params);
+    if !declared.is_empty() {
+        parameters.push(declared);
     }
     // An asynchronous member's task stops when its signal aborts.
     let cancellable = member.effects.asynchronous && !member.stream;
@@ -394,6 +395,7 @@ fn emit_member(out: &mut String, member: &Member, place: Place) {
     let arguments: Vec<String> = member
         .params
         .iter()
+        .filter(|param| param.ty != Ty::OutError)
         .map(|param| safe(&param.name))
         .collect();
     let signal = if cancellable { ", options?.signal" } else { "" };
@@ -415,6 +417,7 @@ fn emit_member(out: &mut String, member: &Member, place: Place) {
 fn params(params: &[Param]) -> String {
     params
         .iter()
+        .filter(|param| param.ty != Ty::OutError)
         .map(|param| format!("{}: {}", safe(&param.name), ts(&param.ty)))
         .collect::<Vec<_>>()
         .join(", ")
@@ -438,7 +441,7 @@ pub(crate) fn ts(ty: &Ty) -> String {
         Ty::Char | Ty::String(_) => "string".to_owned(),
         Ty::Date => "Date".to_owned(),
         Ty::Bytes => "Uint8Array".to_owned(),
-        Ty::Error => "DOMException".to_owned(),
+        Ty::Error | Ty::OutError => "DOMException".to_owned(),
         Ty::Any => "unknown".to_owned(),
         Ty::Optional(inner) => format!("{} | null", ts(inner)),
         Ty::List(element, _) => {

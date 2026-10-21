@@ -183,6 +183,9 @@ pub(crate) enum Ty {
     Date,
     Bytes,
     Error,
+    /// An Objective-C `NSError **` out-parameter, which JavaScript does not
+    /// pass: the call rejects with the error it sets.
+    OutError,
     /// An Android `Object` or type variable: any value.
     Any,
     Optional(Box<Ty>),
