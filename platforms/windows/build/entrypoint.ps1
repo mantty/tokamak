@@ -42,14 +42,15 @@ function Use-MicrosoftLinker {
 }
 
 # Link the shell and runtime into the app's executable, exporting the entry
-# points of the runtime parts the app links.
+# points of the runtime parts the app links. The executable links libraries
+# alone, which LNK4001 reports, so the linker needs its machine named.
 function Invoke-RuntimeLink([string] $Executable) {
   Use-MicrosoftLinker
   $runtime = Join-Path $pack "lib/TokamakRuntime"
   $libraries = [System.IO.File]::ReadAllText((Join-Path $runtime "link-libraries")).Trim() -split '\s+'
   $exports = @([System.IO.File]::ReadAllLines((Join-Path $InputDirectory "metadata/exported-symbols")) | ForEach-Object { "/EXPORT:$_" })
   $importLibrary = Join-Path $InputDirectory "runtime.lib"
-  & link.exe /NOLOGO "/OUT:$Executable" /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup /OPT:REF /OPT:ICF /INCREMENTAL:NO /NXCOMPAT /DYNAMICBASE /HIGHENTROPYVA "/IMPLIB:$importLibrary" (Join-Path $runtime "tokamak.lib") @libraries @exports
+  & link.exe /NOLOGO /MACHINE:X64 /IGNORE:4001 "/OUT:$Executable" /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup /OPT:REF /OPT:ICF /INCREMENTAL:NO /NXCOMPAT /DYNAMICBASE /HIGHENTROPYVA "/IMPLIB:$importLibrary" (Join-Path $runtime "tokamak.lib") @libraries @exports
   if ($LASTEXITCODE -ne 0) {
     throw "linking the tokamak runtime failed with status $LASTEXITCODE"
   }

@@ -1221,7 +1221,7 @@ fn builds_windows_app_with_its_runtime_files() -> TestResult {
     build_command("windows", &project, &manifest)?
         .assert()
         .success()
-        .stdout(contains("Built Windows bundle"));
+        .stdout(contains("Built Windows bundle").and(contains(r"\\?\").not()));
 
     let bundle = project.join("build/windows/demo-app");
     assert!(bundle.join("demo-app.exe").is_file());
@@ -1273,7 +1273,9 @@ fn links_only_the_runtime_parts_the_windows_app_declares() -> TestResult {
     let build = || -> TestResult {
         build_command("windows", &project, &platform_pack)?
             .assert()
-            .success();
+            .success()
+            .stdout(contains("warning LNK").not())
+            .stderr(contains("warning LNK").not());
         println!(
             "{}: {} bytes",
             executable.display(),

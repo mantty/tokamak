@@ -163,7 +163,7 @@ fn run() -> Result<()> {
                 println!(
                     "Built {} bundle: {}",
                     summary.platform.display_name(),
-                    summary.bundle_dir.display()
+                    paths::command_path(&summary.bundle_dir).display()
                 );
             }
             Ok(())
