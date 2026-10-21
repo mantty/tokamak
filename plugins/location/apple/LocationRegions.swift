@@ -60,7 +60,8 @@ final class TokamakLocationRegions {
 
   /// Monitors the region `region` describes, replacing one with the same id.
   /// It starts outside, so a device already inside reports an entry, as on
-  /// Android.
+  /// Android. `CLMonitor` keeps the state of a condition added again under its
+  /// identifier, so the old condition is removed first.
   func add(_ region: [String: Any]) async throws(TokamakPluginError) {
     guard let id = region["id"] as? String, let radius = region["radius"] as? Double,
       let latitude = region["latitude"] as? Double, let longitude = region["longitude"] as? Double
@@ -79,6 +80,7 @@ final class TokamakLocationRegions {
     let condition = CLMonitor.CircularGeographicCondition(center: center, radius: radius)
     regions[id] = region
     inside.remove(id)
+    await monitor.remove(id)
     await monitor.add(condition, identifier: id, assuming: .unsatisfied)
   }
 
