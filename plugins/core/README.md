@@ -115,8 +115,8 @@ host.emit("ring", event: ["id": alarm.id], timeout: 10) { result in
 
 ```kotlin
 // Blocks, so call it off the main thread.
-val reply = host.emit("ring", JSONObject().put("id", alarm.id).toString(), 10_000)
-// `reply` is the reply's JSON, "null" when no listener replies.
+val reply = host.emit("ring", JSONObject().put("id", alarm.id), 10_000)
+// `reply` is the reply, parsed from JSON, or null when no listener replies.
 ```
 
 `timeout` includes starting the runtime when the app is not running. `emit`

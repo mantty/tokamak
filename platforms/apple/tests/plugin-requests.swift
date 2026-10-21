@@ -429,10 +429,10 @@ private final class KitBindings: TokamakPlugin {
   private let host: TokamakHost
   init(host: TokamakHost) { self.host = host }
 
-  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (
-    () -> Void
-  )? {
-    let b = TokamakBinding(payload, resources: host.resources, reply: reply)
+  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
+    throws(TokamakPluginError) -> (() -> Void)?
+  {
+    let b = try TokamakBinding(payload, resources: host.resources, reply: reply)
     switch method {
     case "NSMutableArray.init()":
       return b.run { b.encode(object: NSMutableArray()) }
@@ -453,14 +453,14 @@ private final class KitBindings: TokamakPlugin {
         ]
       }
     default:
-      return b.unsupported(method)
+      throw .notSupported("\(method) is not supported")
     }
   }
 
   func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
     throws(TokamakPluginError) -> () -> Void
   {
-    let b = TokamakBinding(payload, resources: host.resources, reply: reply)
+    let b = try TokamakBinding(payload, resources: host.resources, reply: reply)
     switch method {
     case "numbers":
       return b.stream(

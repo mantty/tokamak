@@ -35,7 +35,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Context.BindServiceFlags" -> callContext_BindServiceFlags(method, b)
             "CancellationSignal" -> callCancellationSignal(method, b)
             "CancellationSignal.OnCancelListener" -> callCancellationSignal_OnCancelListener(method, b)
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
     }
 
@@ -60,7 +60,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "BiometricManager#canAuthenticate(I)I" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricManager::class.java).canAuthenticate(b.int(b[0]))) }
             "BiometricManager#getStrings(I)Landroid/hardware/biometrics/BiometricManager\$Strings;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricManager::class.java).getStrings(b.int(b[0]))) }
             "BiometricManager#getLastAuthenticationTime(I)J" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricManager::class.java).getLastAuthenticationTime(b.int(b[0]))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callBiometricManager_Strings(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -68,7 +68,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "BiometricManager.Strings#getButtonLabel()Ljava/lang/CharSequence;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricManager.Strings::class.java).getButtonLabel()) }
             "BiometricManager.Strings#getPromptMessage()Ljava/lang/CharSequence;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricManager.Strings::class.java).getPromptMessage()) }
             "BiometricManager.Strings#getSettingName()Ljava/lang/CharSequence;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricManager.Strings::class.java).getSettingName()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callBiometricPrompt(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -84,7 +84,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "BiometricPrompt#getLogoRes()I" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricPrompt::class.java).getLogoRes()) }
             "BiometricPrompt#getLogoDescription()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricPrompt::class.java).getLogoDescription()) }
             "BiometricPrompt#getContentView()Landroid/hardware/biometrics/PromptContentView;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricPrompt::class.java).getContentView()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callBiometricPrompt_AuthenticationCallback(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -93,14 +93,14 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "BiometricPrompt.AuthenticationCallback#onAuthenticationHelp(ILjava/lang/CharSequence;)V" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.target(android.hardware.biometrics.BiometricPrompt.AuthenticationCallback::class.java).onAuthenticationHelp(b.int(b[0]), b.optional(b[1]) { x1 -> b.string(x1) }); null }
             "BiometricPrompt.AuthenticationCallback#onAuthenticationSucceeded(Landroid/hardware/biometrics/BiometricPrompt\$AuthenticationResult;)V" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.target(android.hardware.biometrics.BiometricPrompt.AuthenticationCallback::class.java).onAuthenticationSucceeded(b.optional(b[0]) { x1 -> b.obj(x1, android.hardware.biometrics.BiometricPrompt.AuthenticationResult::class.java) }); null }
             "BiometricPrompt.AuthenticationCallback#onAuthenticationFailed()V" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.target(android.hardware.biometrics.BiometricPrompt.AuthenticationCallback::class.java).onAuthenticationFailed(); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callBiometricPrompt_AuthenticationResult(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "BiometricPrompt.AuthenticationResult#getCryptoObject()Landroid/hardware/biometrics/BiometricPrompt\$CryptoObject;" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricPrompt.AuthenticationResult::class.java).getCryptoObject()) }
             "BiometricPrompt.AuthenticationResult#getAuthenticationType()I" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricPrompt.AuthenticationResult::class.java).getAuthenticationType()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callBiometricPrompt_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -116,35 +116,35 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "BiometricPrompt.Builder#setLogoRes(I)Landroid/hardware/biometrics/BiometricPrompt\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricPrompt.Builder::class.java).setLogoRes(b.int(b[0]))) }
             "BiometricPrompt.Builder#setLogoDescription(Ljava/lang/String;)Landroid/hardware/biometrics/BiometricPrompt\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricPrompt.Builder::class.java).setLogoDescription(b.string(b[0]))) }
             "BiometricPrompt.Builder#setContentView(Landroid/hardware/biometrics/PromptContentView;)Landroid/hardware/biometrics/BiometricPrompt\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricPrompt.Builder::class.java).setContentView(b.obj(b[0], android.hardware.biometrics.PromptContentView::class.java))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callBiometricPrompt_CryptoObject(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "BiometricPrompt.CryptoObject#<init>(J)V" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(android.hardware.biometrics.BiometricPrompt.CryptoObject(b.long(b[0]))) }
             "BiometricPrompt.CryptoObject#getOperationHandle()J" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.BiometricPrompt.CryptoObject::class.java).getOperationHandle()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callPromptContentItemBulletedText(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "PromptContentItemBulletedText#<init>(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(android.hardware.biometrics.PromptContentItemBulletedText(b.string(b[0]))) }
             "PromptContentItemBulletedText#describeContents()I" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.PromptContentItemBulletedText::class.java).describeContents()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callPromptContentItemPlainText(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "PromptContentItemPlainText#<init>(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(android.hardware.biometrics.PromptContentItemPlainText(b.string(b[0]))) }
             "PromptContentItemPlainText#describeContents()I" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.PromptContentItemPlainText::class.java).describeContents()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callPromptContentViewWithMoreOptionsButton(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "PromptContentViewWithMoreOptionsButton#getDescription()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.PromptContentViewWithMoreOptionsButton::class.java).getDescription()) }
             "PromptContentViewWithMoreOptionsButton#describeContents()I" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.PromptContentViewWithMoreOptionsButton::class.java).describeContents()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callPromptContentViewWithMoreOptionsButton_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -152,7 +152,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "PromptContentViewWithMoreOptionsButton.Builder#<init>()V" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(android.hardware.biometrics.PromptContentViewWithMoreOptionsButton.Builder()) }
             "PromptContentViewWithMoreOptionsButton.Builder#setDescription(Ljava/lang/String;)Landroid/hardware/biometrics/PromptContentViewWithMoreOptionsButton\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.PromptContentViewWithMoreOptionsButton.Builder::class.java).setDescription(b.string(b[0]))) }
             "PromptContentViewWithMoreOptionsButton.Builder#build()Landroid/hardware/biometrics/PromptContentViewWithMoreOptionsButton;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.PromptContentViewWithMoreOptionsButton.Builder::class.java).build()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callPromptVerticalListContentView(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -162,7 +162,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "PromptVerticalListContentView#getDescription()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.PromptVerticalListContentView::class.java).getDescription()) }
             "PromptVerticalListContentView#getListItems()Ljava/util/List;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.PromptVerticalListContentView::class.java).getListItems()) }
             "PromptVerticalListContentView#describeContents()I" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.PromptVerticalListContentView::class.java).describeContents()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callPromptVerticalListContentView_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -172,7 +172,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "PromptVerticalListContentView.Builder#addListItem(Landroid/hardware/biometrics/PromptContentItem;)Landroid/hardware/biometrics/PromptVerticalListContentView\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.PromptVerticalListContentView.Builder::class.java).addListItem(b.obj(b[0], android.hardware.biometrics.PromptContentItem::class.java))) }
             "PromptVerticalListContentView.Builder#addListItem(Landroid/hardware/biometrics/PromptContentItem;I)Landroid/hardware/biometrics/PromptVerticalListContentView\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.PromptVerticalListContentView.Builder::class.java).addListItem(b.obj(b[0], android.hardware.biometrics.PromptContentItem::class.java), b.int(b[1]))) }
             "PromptVerticalListContentView.Builder#build()Landroid/hardware/biometrics/PromptVerticalListContentView;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.hardware.biometrics.PromptVerticalListContentView.Builder::class.java).build()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callContext(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -218,13 +218,13 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Context#revokeSelfPermissionsOnKill(Ljava/util/Collection;)V" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.target(android.content.Context::class.java).revokeSelfPermissionsOnKill(b.list(b[0]) { x1 -> b.optional(x1) { x2 -> b.string(x2) } }); null }
             "Context#createDeviceContext(I)Landroid/content/Context;" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.content.Context::class.java).createDeviceContext(b.int(b[0]))) }
             "Context#getDeviceId()I" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.content.Context::class.java).getDeviceId()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callContext_BindServiceFlags(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "Context.BindServiceFlags#of(J)Landroid/content/Context\$BindServiceFlags;" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(android.content.Context.BindServiceFlags.of(b.long(b[0]))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callCancellationSignal(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -234,13 +234,13 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "CancellationSignal#throwIfCanceled()V" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.target(android.os.CancellationSignal::class.java).throwIfCanceled(); null }
             "CancellationSignal#cancel()V" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.target(android.os.CancellationSignal::class.java).cancel(); null }
             "CancellationSignal#setOnCancelListener(Landroid/os/CancellationSignal\$OnCancelListener;)V" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.target(android.os.CancellationSignal::class.java).setOnCancelListener(b.optional(b[0]) { x1 -> b.obj(x1, android.os.CancellationSignal.OnCancelListener::class.java) }); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callCancellationSignal_OnCancelListener(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "CancellationSignal.OnCancelListener#onCancel()V" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.target(android.os.CancellationSignal.OnCancelListener::class.java).onCancel(); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     @androidx.annotation.RequiresApi(28)

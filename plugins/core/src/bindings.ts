@@ -74,21 +74,11 @@ export class Bindings {
   /** The elements of the native sequence `member` of `target` returns. Cancelling the stream ends it. */
   stream<T>(target: TokamakContext | NativeObject, member: string, args: readonly unknown[]): ReadableStream<T> {
     const ctx = contextOf(target);
-    const elements = byteStream((next, error, close) => {
-      let stop: (() => void) | undefined;
-      let stopped = false;
-      request(ctx, target, args).then((payload) => {
-        if (stopped) return;
-        stop = ctx[nativeConnection].listen(this.#plugin, member, payload, {
-          next: (value, done) => { if (done) close(); else next(value); },
-          error,
-        });
-      }, error);
-      return () => {
-        stopped = true;
-        stop?.();
-      };
-    });
+    const elements = byteStream(async (next, error, close) =>
+      ctx[nativeConnection].listen(this.#plugin, member, await request(ctx, target, args), {
+        next: (value, done) => { if (done) close(); else next(value); },
+        error,
+      }));
     return elements.pipeThrough(new TransformStream<Uint8Array, T>({
       transform: (element, controller) => { controller.enqueue(this.#decode(ctx, element) as T); },
     }));
@@ -110,14 +100,10 @@ export class Bindings {
     const reference = await NativeReference.acquire(ctx, this.#plugin, protocol, payload, (value) => {
       const { method, arguments: args } = decodeJson<{ method: string; arguments: Wire[] }>(value);
       const classes = this.#classes();
-      try {
-        const handler = Reflect.get(handlers, method) as (...values: unknown[]) => unknown;
-        Promise.resolve(handler.apply(handlers, args.map((arg) => fromWire(arg, ctx, classes)))).catch((error: unknown) => {
-          reportError(error);
-        });
-      } catch (error) {
-        reportError(error);
-      }
+      const handler = Reflect.get(handlers, method) as (...values: unknown[]) => unknown;
+      // The constructor runs the handler now, and rejects with what it throws.
+      new Promise((resolve) => { resolve(handler.apply(handlers, args.map((arg) => fromWire(arg, ctx, classes)))); })
+        .catch((error: unknown) => { reportError(error); });
     });
     return new Protocol(reference);
   }

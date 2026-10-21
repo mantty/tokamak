@@ -43,7 +43,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "KeyStore.TrustedCertificateEntry" -> callKeyStore_TrustedCertificateEntry(method, b)
             "Cipher" -> callCipher(method, b)
             "KeyGenerator" -> callKeyGenerator(method, b)
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
     }
 
@@ -59,14 +59,14 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "BackendBusyException#<init>(J)V" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(android.security.keystore.BackendBusyException(b.long(b[0]))) }
             "BackendBusyException#<init>(JLjava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(android.security.keystore.BackendBusyException(b.long(b[0]), b.string(b[1]))) }
             "BackendBusyException#getBackOffHintMillis()J" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.BackendBusyException::class.java).getBackOffHintMillis()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyExpiredException(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "KeyExpiredException#<init>()V" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(android.security.keystore.KeyExpiredException()) }
             "KeyExpiredException#<init>(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(android.security.keystore.KeyExpiredException(b.optional(b[0]) { x1 -> b.string(x1) })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyGenParameterSpec(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -95,7 +95,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "KeyGenParameterSpec#getAttestKeyAlias()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyGenParameterSpec::class.java).getAttestKeyAlias()) }
             "KeyGenParameterSpec#getMgf1Digests()Ljava/util/Set;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyGenParameterSpec::class.java).getMgf1Digests()) }
             "KeyGenParameterSpec#isMgf1DigestsSpecified()Z" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyGenParameterSpec::class.java).isMgf1DigestsSpecified()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyGenParameterSpec_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -122,7 +122,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "KeyGenParameterSpec.Builder#setMaxUsageCount(I)Landroid/security/keystore/KeyGenParameterSpec\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyGenParameterSpec.Builder::class.java).setMaxUsageCount(b.int(b[0]))) }
             "KeyGenParameterSpec.Builder#setAttestKeyAlias(Ljava/lang/String;)Landroid/security/keystore/KeyGenParameterSpec\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyGenParameterSpec.Builder::class.java).setAttestKeyAlias(b.optional(b[0]) { x1 -> b.string(x1) })) }
             "KeyGenParameterSpec.Builder#setMgf1Digests([Ljava/lang/String;)Landroid/security/keystore/KeyGenParameterSpec\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyGenParameterSpec.Builder::class.java).setMgf1Digests(*b.list(b[0]) { x1 -> b.string(x1) }.toTypedArray())) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyInfo(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -146,21 +146,21 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "KeyInfo#getUserAuthenticationType()I" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyInfo::class.java).getUserAuthenticationType()) }
             "KeyInfo#getSecurityLevel()I" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyInfo::class.java).getSecurityLevel()) }
             "KeyInfo#getRemainingUsageCount()I" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyInfo::class.java).getRemainingUsageCount()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyNotYetValidException(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "KeyNotYetValidException#<init>()V" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(android.security.keystore.KeyNotYetValidException()) }
             "KeyNotYetValidException#<init>(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(android.security.keystore.KeyNotYetValidException(b.optional(b[0]) { x1 -> b.string(x1) })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyPermanentlyInvalidatedException(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "KeyPermanentlyInvalidatedException#<init>()V" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(android.security.keystore.KeyPermanentlyInvalidatedException()) }
             "KeyPermanentlyInvalidatedException#<init>(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(android.security.keystore.KeyPermanentlyInvalidatedException(b.optional(b[0]) { x1 -> b.string(x1) })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyProtection(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -183,7 +183,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "KeyProtection#getMaxUsageCount()I" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyProtection::class.java).getMaxUsageCount()) }
             "KeyProtection#getMgf1Digests()Ljava/util/Set;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyProtection::class.java).getMgf1Digests()) }
             "KeyProtection#isMgf1DigestsSpecified()Z" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyProtection::class.java).isMgf1DigestsSpecified()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyProtection_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -206,35 +206,35 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "KeyProtection.Builder#setIsStrongBoxBacked(Z)Landroid/security/keystore/KeyProtection\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyProtection.Builder::class.java).setIsStrongBoxBacked(b.boolean(b[0]))) }
             "KeyProtection.Builder#setMaxUsageCount(I)Landroid/security/keystore/KeyProtection\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyProtection.Builder::class.java).setMaxUsageCount(b.int(b[0]))) }
             "KeyProtection.Builder#setMgf1Digests([Ljava/lang/String;)Landroid/security/keystore/KeyProtection\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.KeyProtection.Builder::class.java).setMgf1Digests(*b.list(b[0]) { x1 -> b.optional(x1) { x2 -> b.string(x2) } }.toTypedArray())) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callSecureKeyImportUnavailableException(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "SecureKeyImportUnavailableException#<init>()V" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(android.security.keystore.SecureKeyImportUnavailableException()) }
             "SecureKeyImportUnavailableException#<init>(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(android.security.keystore.SecureKeyImportUnavailableException(b.optional(b[0]) { x1 -> b.string(x1) })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callStrongBoxUnavailableException(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "StrongBoxUnavailableException#<init>()V" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(android.security.keystore.StrongBoxUnavailableException()) }
             "StrongBoxUnavailableException#<init>(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(android.security.keystore.StrongBoxUnavailableException(b.optional(b[0]) { x1 -> b.string(x1) })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callUserNotAuthenticatedException(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "UserNotAuthenticatedException#<init>()V" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(android.security.keystore.UserNotAuthenticatedException()) }
             "UserNotAuthenticatedException#<init>(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 23) throw TokamakBinding.unavailable; b.encode(android.security.keystore.UserNotAuthenticatedException(b.optional(b[0]) { x1 -> b.string(x1) })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callUserPresenceUnavailableException(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "UserPresenceUnavailableException#<init>()V" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(android.security.keystore.UserPresenceUnavailableException()) }
             "UserPresenceUnavailableException#<init>(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(android.security.keystore.UserPresenceUnavailableException(b.optional(b[0]) { x1 -> b.string(x1) })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callWrappedKeyEntry(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -242,7 +242,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "WrappedKeyEntry#getWrappedKeyBytes()[B" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.WrappedKeyEntry::class.java).getWrappedKeyBytes()) }
             "WrappedKeyEntry#getWrappingKeyAlias()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.WrappedKeyEntry::class.java).getWrappingKeyAlias()) }
             "WrappedKeyEntry#getTransformation()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 28) throw TokamakBinding.unavailable; b.encode(b.target(android.security.keystore.WrappedKeyEntry::class.java).getTransformation()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyStore(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -260,7 +260,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "KeyStore#load(Ljava/security/KeyStore\$LoadStoreParameter;)V" -> b.run { b.target(java.security.KeyStore::class.java).load(b.optional(b[0]) { x1 -> b.obj(x1, java.security.KeyStore.LoadStoreParameter::class.java) }); null }
             "KeyStore#getEntry(Ljava/lang/String;Ljava/security/KeyStore\$ProtectionParameter;)Ljava/security/KeyStore\$Entry;" -> b.run { b.encode(b.target(java.security.KeyStore::class.java).getEntry(b.optional(b[0]) { x1 -> b.string(x1) }, b.optional(b[1]) { x1 -> b.obj(x1, java.security.KeyStore.ProtectionParameter::class.java) })) }
             "KeyStore#setEntry(Ljava/lang/String;Ljava/security/KeyStore\$Entry;Ljava/security/KeyStore\$ProtectionParameter;)V" -> b.run { b.target(java.security.KeyStore::class.java).setEntry(b.optional(b[0]) { x1 -> b.string(x1) }, b.optional(b[1]) { x1 -> b.obj(x1, java.security.KeyStore.Entry::class.java) }, b.optional(b[2]) { x1 -> b.obj(x1, java.security.KeyStore.ProtectionParameter::class.java) }); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyStore_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -268,26 +268,26 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "KeyStore.Builder#getKeyStore()Ljava/security/KeyStore;" -> b.run { b.encode(b.target(java.security.KeyStore.Builder::class.java).getKeyStore()) }
             "KeyStore.Builder#getProtectionParameter(Ljava/lang/String;)Ljava/security/KeyStore\$ProtectionParameter;" -> b.run { b.encode(b.target(java.security.KeyStore.Builder::class.java).getProtectionParameter(b.optional(b[0]) { x1 -> b.string(x1) })) }
             "KeyStore.Builder#newInstance(Ljava/security/KeyStore;Ljava/security/KeyStore\$ProtectionParameter;)Ljava/security/KeyStore\$Builder;" -> b.run { b.encode(java.security.KeyStore.Builder.newInstance(b.optional(b[0]) { x1 -> b.obj(x1, java.security.KeyStore::class.java) }, b.optional(b[1]) { x1 -> b.obj(x1, java.security.KeyStore.ProtectionParameter::class.java) })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyStore_Entry(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "KeyStore.Entry#getAttributes()Ljava/util/Set;" -> b.run { if (Build.VERSION.SDK_INT < 26) throw TokamakBinding.unavailable; b.encode(b.target(java.security.KeyStore.Entry::class.java).getAttributes()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyStore_Entry_Attribute(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "KeyStore.Entry.Attribute#getName()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 26) throw TokamakBinding.unavailable; b.encode(b.target(java.security.KeyStore.Entry.Attribute::class.java).getName()) }
             "KeyStore.Entry.Attribute#getValue()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 26) throw TokamakBinding.unavailable; b.encode(b.target(java.security.KeyStore.Entry.Attribute::class.java).getValue()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyStore_LoadStoreParameter(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "KeyStore.LoadStoreParameter#getProtectionParameter()Ljava/security/KeyStore\$ProtectionParameter;" -> b.run { b.encode(b.target(java.security.KeyStore.LoadStoreParameter::class.java).getProtectionParameter()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyStore_PasswordProtection(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -297,28 +297,28 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "KeyStore.PasswordProtection#destroy()V" -> b.run { b.target(java.security.KeyStore.PasswordProtection::class.java).destroy(); null }
             "KeyStore.PasswordProtection#isDestroyed()Z" -> b.run { b.encode(b.target(java.security.KeyStore.PasswordProtection::class.java).isDestroyed()) }
             "KeyStore.PasswordProtection#getProtectionAlgorithm()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 26) throw TokamakBinding.unavailable; b.encode(b.target(java.security.KeyStore.PasswordProtection::class.java).getProtectionAlgorithm()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyStore_PrivateKeyEntry(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "KeyStore.PrivateKeyEntry#getAttributes()Ljava/util/Set;" -> b.run { b.encode(b.target(java.security.KeyStore.PrivateKeyEntry::class.java).getAttributes()) }
             "KeyStore.PrivateKeyEntry#toString()Ljava/lang/String;" -> b.run { b.encode(b.target(java.security.KeyStore.PrivateKeyEntry::class.java).toString()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyStore_SecretKeyEntry(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "KeyStore.SecretKeyEntry#getAttributes()Ljava/util/Set;" -> b.run { b.encode(b.target(java.security.KeyStore.SecretKeyEntry::class.java).getAttributes()) }
             "KeyStore.SecretKeyEntry#toString()Ljava/lang/String;" -> b.run { b.encode(b.target(java.security.KeyStore.SecretKeyEntry::class.java).toString()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyStore_TrustedCertificateEntry(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "KeyStore.TrustedCertificateEntry#getAttributes()Ljava/util/Set;" -> b.run { b.encode(b.target(java.security.KeyStore.TrustedCertificateEntry::class.java).getAttributes()) }
             "KeyStore.TrustedCertificateEntry#toString()Ljava/lang/String;" -> b.run { b.encode(b.target(java.security.KeyStore.TrustedCertificateEntry::class.java).toString()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callCipher(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -342,7 +342,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Cipher#getMaxAllowedKeyLength(Ljava/lang/String;)I" -> b.run { b.encode(javax.crypto.Cipher.getMaxAllowedKeyLength(b.optional(b[0]) { x1 -> b.string(x1) })) }
             "Cipher#updateAAD([B)V" -> b.run { if (Build.VERSION.SDK_INT < 19) throw TokamakBinding.unavailable; b.target(javax.crypto.Cipher::class.java).updateAAD(b.optional(b[0]) { x1 -> b.bytes(x1) }); null }
             "Cipher#updateAAD([BII)V" -> b.run { if (Build.VERSION.SDK_INT < 19) throw TokamakBinding.unavailable; b.target(javax.crypto.Cipher::class.java).updateAAD(b.optional(b[0]) { x1 -> b.bytes(x1) }, b.int(b[1]), b.int(b[2])); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callKeyGenerator(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -351,6 +351,6 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "KeyGenerator#getInstance(Ljava/lang/String;)Ljavax/crypto/KeyGenerator;" -> b.run { b.encode(javax.crypto.KeyGenerator.getInstance(b.optional(b[0]) { x1 -> b.string(x1) })) }
             "KeyGenerator#getInstance(Ljava/lang/String;Ljava/lang/String;)Ljavax/crypto/KeyGenerator;" -> b.run { b.encode(javax.crypto.KeyGenerator.getInstance(b.optional(b[0]) { x1 -> b.string(x1) }, b.optional(b[1]) { x1 -> b.string(x1) })) }
             "KeyGenerator#init(I)V" -> b.run { b.target(javax.crypto.KeyGenerator::class.java).init(b.int(b[0])); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 }

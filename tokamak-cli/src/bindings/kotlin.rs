@@ -76,6 +76,10 @@ fn raw(native: &str) -> &str {
     native.split('<').next().unwrap_or(native)
 }
 
+/// The last branch of a request `when`: the rejection of a member the plugin does not bind.
+const UNBOUND: &str =
+    "            else -> throw TokamakPluginError.notSupported(\"$method is not supported\")";
+
 fn calls(out: &mut String, module: &Module) {
     out.push_str(
         "\n    override fun callBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply): (() -> Unit)? {\n        val b = TokamakBinding(payload, host.resources, reply)\n        return when (method.substringBefore('#')) {\n",
@@ -88,7 +92,7 @@ fn calls(out: &mut String, module: &Module) {
             function(ty)
         );
     }
-    out.push_str("            else -> b.unsupported(method)\n        }\n    }\n");
+    let _ = writeln!(out, "{UNBOUND}\n        }}\n    }}");
 }
 
 fn subscriptions(out: &mut String, module: &Module) {
@@ -104,7 +108,7 @@ fn subscriptions(out: &mut String, module: &Module) {
             ty.path.join("_")
         );
     }
-    out.push_str("            else -> throw TokamakPluginError.notSupported(\"$method is not supported\")\n        }\n    }\n");
+    let _ = writeln!(out, "{UNBOUND}\n        }}\n    }}");
 }
 
 /// The API level that introduced a symbol, when later than the first.
@@ -139,7 +143,7 @@ fn type_calls(out: &mut String, ty: &Type) {
             body(ty, member)
         );
     }
-    out.push_str("            else -> b.unsupported(method)\n        }\n");
+    let _ = writeln!(out, "{UNBOUND}\n        }}");
 }
 
 /// The statements that perform `member` and return its encoded result.

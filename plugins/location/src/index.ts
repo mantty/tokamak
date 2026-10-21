@@ -22,11 +22,8 @@ import type {
 export type * from "./types.js";
 
 class Location extends Plugin {
-  readonly #ctx: TokamakContext;
-
   constructor(ctx: TokamakContext) {
     super(ctx, "location");
-    this.#ctx = ctx;
   }
 
   /**
@@ -45,28 +42,18 @@ class Location extends Plugin {
    */
   async getCurrentPosition(options: PositionOptions = {}): Promise<Position> {
     await this.#authorize();
-    const position = await this.#platform().currentPosition(this.#ctx, options);
+    const position = await this.#platform().currentPosition(this.ctx, options);
     if (position) return position;
     // Android finds no position in the background without background permission.
-    const background = await lifecycleStage(this.#ctx) === "background";
+    const background = await lifecycleStage(this.ctx) === "background";
     throw background && (await this.permission()).background !== "granted" ? backgroundDenied() : unavailable("Location is unavailable");
   }
 
   /** Positions as the device moves, after `getCurrentPosition`'s permission checks. A slow reader receives the newest. */
   watchPosition(): JsonStream<Position> {
-    return valueStream<Position>((next, error) => {
-      let stop: (() => void) | undefined;
-      let stopped = false;
-      this.#authorize()
-        .then(() => this.#platform().watchPositions(this.#ctx, next, error))
-        .then((started) => {
-          if (stopped) started();
-          else stop = started;
-        }, error);
-      return () => {
-        stopped = true;
-        stop?.();
-      };
+    return valueStream<Position>(async (next, error) => {
+      await this.#authorize();
+      return this.#platform().watchPositions(this.ctx, next, error);
     }, "dropOldest");
   }
 
@@ -80,7 +67,7 @@ class Location extends Plugin {
 
   /** The platform's composition of its location SDK. */
   #platform(): typeof apple | typeof android {
-    switch (this.#ctx.platform) {
+    switch (this.ctx.platform) {
       case "ios":
       case "macos":
         return apple;

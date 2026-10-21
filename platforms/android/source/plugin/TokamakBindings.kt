@@ -18,25 +18,22 @@ class TokamakBinding(payload: ByteArray, private val resources: TokamakResources
         val unavailable get() = TokamakPluginError.notSupported("The API is unavailable on this API level")
     }
 
-    private val request = runCatching {
-        decodePluginValue(payload) as? JSONObject ?: throw TokamakPluginError.typeError("A binding request is an object")
-    }
+    private val request = decodePluginValue(payload) as? JSONObject
+        ?: throw TokamakPluginError.typeError("A binding request is an object")
 
     /** Argument [index] as JSON. */
-    operator fun get(index: Int): Any? = request.getOrThrow().optJSONArray("arguments")?.opt(index) ?: JSONObject.NULL
+    operator fun get(index: Int): Any? = request.optJSONArray("arguments")?.opt(index) ?: JSONObject.NULL
 
     /** The object the call is made on. */
-    fun <T : Any> target(type: Class<T>): T = obj(request.getOrThrow().opt("target"), type)
+    fun <T : Any> target(type: Class<T>): T = obj(request.opt("target"), type)
 
     /** The handlers an implementation calls. */
-    val methods: Set<String>
-        get() {
-            val methods = request.getOrNull()?.optJSONArray("methods") ?: return emptySet()
-            return (0 until methods.length()).map(methods::getString).toSet()
-        }
+    val methods: Set<String> by lazy {
+        val methods = request.optJSONArray("methods") ?: return@lazy emptySet()
+        (0 until methods.length()).map(methods::getString).toSet()
+    }
 
-    private val scope: String
-        get() = request.getOrNull()?.optString("scope").orEmpty()
+    private val scope: String get() = request.optString("scope")
 
     fun boolean(value: Any?): Boolean = value as? Boolean ?: throw mismatch(value, "boolean")
 
@@ -141,12 +138,6 @@ class TokamakBinding(payload: ByteArray, private val resources: TokamakResources
         if (method !in methods) return false
         send(JSONObject().put("method", method).put("arguments", JSONArray(arguments(this))))
         return true
-    }
-
-    /** Rejects the member the plugin does not bind. */
-    fun unsupported(member: String): (() -> Unit)? {
-        reply(TokamakPluginResult.encoded(Result.failure(TokamakPluginError.notSupported("$member is not supported")), true))
-        return null
     }
 
     private fun send(value: Any?) {

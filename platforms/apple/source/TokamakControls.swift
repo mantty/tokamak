@@ -85,10 +85,7 @@ final class TokamakCorePlugin: TokamakPlugin {
       "window.dispatchEvent(new MessageEvent('message', {data, origin: location.origin})); return true;",
       arguments: ["data": data], in: nil, in: .page
     ) { result in
-      reply(
-        result.map { _ in nil }.mapError {
-          TokamakPluginError(name: "OperationError", message: $0.localizedDescription)
-        })
+      reply(result.map { _ in nil }.mapError { TokamakPluginError($0) })
     }
   }
 

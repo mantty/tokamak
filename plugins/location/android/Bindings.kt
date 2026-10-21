@@ -62,7 +62,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "CancellationSignal.OnCancelListener" -> callCancellationSignal_OnCancelListener(method, b)
             "SystemClock" -> callSystemClock(method, b)
             "Consumer" -> callConsumer(method, b)
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
     }
 
@@ -188,7 +188,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Location#setMslAltitudeAccuracyMeters(F)V" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.target(android.location.Location::class.java).setMslAltitudeAccuracyMeters(b.float(b[0])); null }
             "Location#hasMslAltitudeAccuracy()Z" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.Location::class.java).hasMslAltitudeAccuracy()) }
             "Location#removeMslAltitudeAccuracy()V" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.target(android.location.Location::class.java).removeMslAltitudeAccuracy(); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callAddress(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -232,7 +232,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Address#setSubThoroughfare(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 4) throw TokamakBinding.unavailable; b.target(android.location.Address::class.java).setSubThoroughfare(b.optional(b[0]) { x1 -> b.string(x1) }); null }
             "Address#getPremises()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 4) throw TokamakBinding.unavailable; b.encode(b.target(android.location.Address::class.java).getPremises()) }
             "Address#setPremises(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 4) throw TokamakBinding.unavailable; b.target(android.location.Address::class.java).setPremises(b.optional(b[0]) { x1 -> b.string(x1) }); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callCriteria(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -261,7 +261,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Criteria#getSpeedAccuracy()I" -> b.run { if (Build.VERSION.SDK_INT < 9) throw TokamakBinding.unavailable; b.encode(b.target(android.location.Criteria::class.java).getSpeedAccuracy()) }
             "Criteria#setBearingAccuracy(I)V" -> b.run { if (Build.VERSION.SDK_INT < 9) throw TokamakBinding.unavailable; b.target(android.location.Criteria::class.java).setBearingAccuracy(b.int(b[0])); null }
             "Criteria#getBearingAccuracy()I" -> b.run { if (Build.VERSION.SDK_INT < 9) throw TokamakBinding.unavailable; b.encode(b.target(android.location.Criteria::class.java).getBearingAccuracy()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGeocoder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -274,14 +274,14 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Geocoder#getFromLocation(DDILandroid/location/Geocoder\$GeocodeListener;)V" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.target(android.location.Geocoder::class.java).getFromLocation(b.double(b[0]), b.double(b[1]), b.int(b[2]), b.obj(b[3], android.location.Geocoder.GeocodeListener::class.java)); null }
             "Geocoder#getFromLocationName(Ljava/lang/String;ILandroid/location/Geocoder\$GeocodeListener;)V" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.target(android.location.Geocoder::class.java).getFromLocationName(b.string(b[0]), b.int(b[1]), b.obj(b[2], android.location.Geocoder.GeocodeListener::class.java)); null }
             "Geocoder#getFromLocationName(Ljava/lang/String;IDDDDLandroid/location/Geocoder\$GeocodeListener;)V" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.target(android.location.Geocoder::class.java).getFromLocationName(b.string(b[0]), b.int(b[1]), b.double(b[2]), b.double(b[3]), b.double(b[4]), b.double(b[5]), b.obj(b[6], android.location.Geocoder.GeocodeListener::class.java)); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGeocoder_GeocodeListener(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "Geocoder.GeocodeListener#onGeocode(Ljava/util/List;)V" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.target(android.location.Geocoder.GeocodeListener::class.java).onGeocode(b.list(b[0]) { x1 -> b.optional(x1) { x2 -> b.obj(x2, android.location.Address::class.java) } }); null }
             "Geocoder.GeocodeListener#onError(Ljava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.target(android.location.Geocoder.GeocodeListener::class.java).onError(b.optional(b[0]) { x1 -> b.string(x1) }); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssAntennaInfo(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -294,7 +294,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssAntennaInfo#toString()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAntennaInfo::class.java).toString()) }
             "GnssAntennaInfo#equals(Ljava/lang/Object;)Z" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAntennaInfo::class.java).equals(b.optional(b[0]) { x1 -> b.any(x1) })) }
             "GnssAntennaInfo#hashCode()I" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAntennaInfo::class.java).hashCode()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssAntennaInfo_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -307,13 +307,13 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssAntennaInfo.Builder#build()Landroid/location/GnssAntennaInfo;" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAntennaInfo.Builder::class.java).build()) }
             "GnssAntennaInfo.Builder#<init>(DLandroid/location/GnssAntennaInfo\$PhaseCenterOffset;)V" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(android.location.GnssAntennaInfo.Builder(b.double(b[0]), b.obj(b[1], android.location.GnssAntennaInfo.PhaseCenterOffset::class.java))) }
             "GnssAntennaInfo.Builder#<init>(Landroid/location/GnssAntennaInfo;)V" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(android.location.GnssAntennaInfo.Builder(b.obj(b[0], android.location.GnssAntennaInfo::class.java))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssAntennaInfo_Listener(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "GnssAntennaInfo.Listener#onGnssAntennaInfoReceived(Ljava/util/List;)V" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.target(android.location.GnssAntennaInfo.Listener::class.java).onGnssAntennaInfoReceived(b.list(b[0]) { x1 -> b.optional(x1) { x2 -> b.obj(x2, android.location.GnssAntennaInfo::class.java) } }); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssAntennaInfo_PhaseCenterOffset(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -329,7 +329,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssAntennaInfo.PhaseCenterOffset#toString()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAntennaInfo.PhaseCenterOffset::class.java).toString()) }
             "GnssAntennaInfo.PhaseCenterOffset#equals(Ljava/lang/Object;)Z" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAntennaInfo.PhaseCenterOffset::class.java).equals(b.optional(b[0]) { x1 -> b.any(x1) })) }
             "GnssAntennaInfo.PhaseCenterOffset#hashCode()I" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAntennaInfo.PhaseCenterOffset::class.java).hashCode()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssAntennaInfo_SphericalCorrections(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -343,7 +343,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssAntennaInfo.SphericalCorrections#toString()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAntennaInfo.SphericalCorrections::class.java).toString()) }
             "GnssAntennaInfo.SphericalCorrections#equals(Ljava/lang/Object;)Z" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAntennaInfo.SphericalCorrections::class.java).equals(b.optional(b[0]) { x1 -> b.any(x1) })) }
             "GnssAntennaInfo.SphericalCorrections#hashCode()I" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAntennaInfo.SphericalCorrections::class.java).hashCode()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssAutomaticGainControl(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -355,7 +355,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssAutomaticGainControl#toString()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAutomaticGainControl::class.java).toString()) }
             "GnssAutomaticGainControl#equals(Ljava/lang/Object;)Z" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAutomaticGainControl::class.java).equals(b.optional(b[0]) { x1 -> b.any(x1) })) }
             "GnssAutomaticGainControl#hashCode()I" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAutomaticGainControl::class.java).hashCode()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssAutomaticGainControl_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -366,7 +366,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssAutomaticGainControl.Builder#setConstellationType(I)Landroid/location/GnssAutomaticGainControl\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAutomaticGainControl.Builder::class.java).setConstellationType(b.int(b[0]))) }
             "GnssAutomaticGainControl.Builder#setCarrierFrequencyHz(J)Landroid/location/GnssAutomaticGainControl\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAutomaticGainControl.Builder::class.java).setCarrierFrequencyHz(b.long(b[0]))) }
             "GnssAutomaticGainControl.Builder#build()Landroid/location/GnssAutomaticGainControl;" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssAutomaticGainControl.Builder::class.java).build()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssCapabilities(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -402,7 +402,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssCapabilities#hasPowerMultibandAcquisition()Z" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssCapabilities::class.java).hasPowerMultibandAcquisition()) }
             "GnssCapabilities#hasPowerOtherModes()Z" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssCapabilities::class.java).hasPowerOtherModes()) }
             "GnssCapabilities#getGnssSignalTypes()Ljava/util/List;" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssCapabilities::class.java).getGnssSignalTypes()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssCapabilities_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -436,7 +436,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssCapabilities.Builder#setHasPowerMultibandAcquisition(Z)Landroid/location/GnssCapabilities\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssCapabilities.Builder::class.java).setHasPowerMultibandAcquisition(b.boolean(b[0]))) }
             "GnssCapabilities.Builder#setHasPowerOtherModes(Z)Landroid/location/GnssCapabilities\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssCapabilities.Builder::class.java).setHasPowerOtherModes(b.boolean(b[0]))) }
             "GnssCapabilities.Builder#setGnssSignalTypes(Ljava/util/List;)Landroid/location/GnssCapabilities\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssCapabilities.Builder::class.java).setGnssSignalTypes(b.list(b[0]) { x1 -> b.optional(x1) { x2 -> b.obj(x2, android.location.GnssSignalType::class.java) } })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssClock(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -469,7 +469,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssClock#getReferenceCarrierFrequencyHzForIsb()D" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssClock::class.java).getReferenceCarrierFrequencyHzForIsb()) }
             "GnssClock#hasReferenceCodeTypeForIsb()Z" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssClock::class.java).hasReferenceCodeTypeForIsb()) }
             "GnssClock#getReferenceCodeTypeForIsb()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssClock::class.java).getReferenceCodeTypeForIsb()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssMeasurement(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -513,7 +513,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssMeasurement#getSatelliteInterSignalBiasNanos()D" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurement::class.java).getSatelliteInterSignalBiasNanos()) }
             "GnssMeasurement#hasSatelliteInterSignalBiasUncertaintyNanos()Z" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurement::class.java).hasSatelliteInterSignalBiasUncertaintyNanos()) }
             "GnssMeasurement#getSatelliteInterSignalBiasUncertaintyNanos()D" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurement::class.java).getSatelliteInterSignalBiasUncertaintyNanos()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssMeasurementRequest(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -524,7 +524,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssMeasurementRequest#hashCode()I" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurementRequest::class.java).hashCode()) }
             "GnssMeasurementRequest#describeContents()I" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurementRequest::class.java).describeContents()) }
             "GnssMeasurementRequest#getIntervalMillis()I" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurementRequest::class.java).getIntervalMillis()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssMeasurementRequest_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -534,7 +534,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssMeasurementRequest.Builder#setFullTracking(Z)Landroid/location/GnssMeasurementRequest\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurementRequest.Builder::class.java).setFullTracking(b.boolean(b[0]))) }
             "GnssMeasurementRequest.Builder#build()Landroid/location/GnssMeasurementRequest;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurementRequest.Builder::class.java).build()) }
             "GnssMeasurementRequest.Builder#setIntervalMillis(I)Landroid/location/GnssMeasurementRequest\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurementRequest.Builder::class.java).setIntervalMillis(b.int(b[0]))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssMeasurementsEvent(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -546,7 +546,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssMeasurementsEvent#getGnssAutomaticGainControls()Ljava/util/Collection;" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurementsEvent::class.java).getGnssAutomaticGainControls()) }
             "GnssMeasurementsEvent#isFullTracking()Z" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurementsEvent::class.java).isFullTracking()) }
             "GnssMeasurementsEvent#hasIsFullTracking()Z" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurementsEvent::class.java).hasIsFullTracking()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssMeasurementsEvent_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -559,14 +559,14 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssMeasurementsEvent.Builder#build()Landroid/location/GnssMeasurementsEvent;" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurementsEvent.Builder::class.java).build()) }
             "GnssMeasurementsEvent.Builder#setIsFullTracking(Z)Landroid/location/GnssMeasurementsEvent\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurementsEvent.Builder::class.java).setIsFullTracking(b.boolean(b[0]))) }
             "GnssMeasurementsEvent.Builder#clearIsFullTracking()Landroid/location/GnssMeasurementsEvent\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssMeasurementsEvent.Builder::class.java).clearIsFullTracking()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssMeasurementsEvent_Callback(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "GnssMeasurementsEvent.Callback#onGnssMeasurementsReceived(Landroid/location/GnssMeasurementsEvent;)V" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.target(android.location.GnssMeasurementsEvent.Callback::class.java).onGnssMeasurementsReceived(b.optional(b[0]) { x1 -> b.obj(x1, android.location.GnssMeasurementsEvent::class.java) }); null }
             "GnssMeasurementsEvent.Callback#onStatusChanged(I)V" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.target(android.location.GnssMeasurementsEvent.Callback::class.java).onStatusChanged(b.int(b[0])); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssNavigationMessage(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -579,14 +579,14 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssNavigationMessage#getStatus()I" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssNavigationMessage::class.java).getStatus()) }
             "GnssNavigationMessage#describeContents()I" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssNavigationMessage::class.java).describeContents()) }
             "GnssNavigationMessage#toString()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssNavigationMessage::class.java).toString()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssNavigationMessage_Callback(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "GnssNavigationMessage.Callback#onGnssNavigationMessageReceived(Landroid/location/GnssNavigationMessage;)V" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.target(android.location.GnssNavigationMessage.Callback::class.java).onGnssNavigationMessageReceived(b.optional(b[0]) { x1 -> b.obj(x1, android.location.GnssNavigationMessage::class.java) }); null }
             "GnssNavigationMessage.Callback#onStatusChanged(I)V" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.target(android.location.GnssNavigationMessage.Callback::class.java).onStatusChanged(b.int(b[0])); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssSignalType(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -599,7 +599,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssSignalType#equals(Ljava/lang/Object;)Z" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssSignalType::class.java).equals(b.optional(b[0]) { x1 -> b.any(x1) })) }
             "GnssSignalType#hashCode()I" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssSignalType::class.java).hashCode()) }
             "GnssSignalType#describeContents()I" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssSignalType::class.java).describeContents()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssStatus(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -620,7 +620,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssStatus#getCarrierFrequencyHz(I)F" -> b.run { if (Build.VERSION.SDK_INT < 26) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssStatus::class.java).getCarrierFrequencyHz(b.int(b[0]))) }
             "GnssStatus#hasBasebandCn0DbHz(I)Z" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssStatus::class.java).hasBasebandCn0DbHz(b.int(b[0]))) }
             "GnssStatus#getBasebandCn0DbHz(I)F" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssStatus::class.java).getBasebandCn0DbHz(b.int(b[0]))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssStatus_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -629,7 +629,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssStatus.Builder#addSatellite(IIFFFZZZZFZF)Landroid/location/GnssStatus\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssStatus.Builder::class.java).addSatellite(b.int(b[0]), b.int(b[1]), b.float(b[2]), b.float(b[3]), b.float(b[4]), b.boolean(b[5]), b.boolean(b[6]), b.boolean(b[7]), b.boolean(b[8]), b.float(b[9]), b.boolean(b[10]), b.float(b[11]))) }
             "GnssStatus.Builder#clearSatellites()Landroid/location/GnssStatus\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssStatus.Builder::class.java).clearSatellites()) }
             "GnssStatus.Builder#build()Landroid/location/GnssStatus;" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GnssStatus.Builder::class.java).build()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGnssStatus_Callback(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -638,7 +638,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GnssStatus.Callback#onStopped()V" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.target(android.location.GnssStatus.Callback::class.java).onStopped(); null }
             "GnssStatus.Callback#onFirstFix(I)V" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.target(android.location.GnssStatus.Callback::class.java).onFirstFix(b.int(b[0])); null }
             "GnssStatus.Callback#onSatelliteStatusChanged(Landroid/location/GnssStatus;)V" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.target(android.location.GnssStatus.Callback::class.java).onSatelliteStatusChanged(b.obj(b[0], android.location.GnssStatus::class.java)); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGpsSatellite(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -650,7 +650,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GpsSatellite#hasEphemeris()Z" -> b.run { if (Build.VERSION.SDK_INT < 3) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GpsSatellite::class.java).hasEphemeris()) }
             "GpsSatellite#hasAlmanac()Z" -> b.run { if (Build.VERSION.SDK_INT < 3) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GpsSatellite::class.java).hasAlmanac()) }
             "GpsSatellite#usedInFix()Z" -> b.run { if (Build.VERSION.SDK_INT < 3) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GpsSatellite::class.java).usedInFix()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGpsStatus(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -658,19 +658,19 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "GpsStatus#getTimeToFirstFix()I" -> b.run { if (Build.VERSION.SDK_INT < 3) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GpsStatus::class.java).getTimeToFirstFix()) }
             "GpsStatus#getMaxSatellites()I" -> b.run { if (Build.VERSION.SDK_INT < 3) throw TokamakBinding.unavailable; b.encode(b.target(android.location.GpsStatus::class.java).getMaxSatellites()) }
             "GpsStatus#create(Landroid/location/GnssStatus;I)Landroid/location/GpsStatus;" -> b.run { if (Build.VERSION.SDK_INT < 30) throw TokamakBinding.unavailable; b.encode(android.location.GpsStatus.create(b.obj(b[0], android.location.GnssStatus::class.java), b.int(b[1]))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGpsStatus_Listener(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "GpsStatus.Listener#onGpsStatusChanged(I)V" -> b.run { if (Build.VERSION.SDK_INT < 3) throw TokamakBinding.unavailable; b.target(android.location.GpsStatus.Listener::class.java).onGpsStatusChanged(b.int(b[0])); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callGpsStatus_NmeaListener(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "GpsStatus.NmeaListener#onNmeaReceived(JLjava/lang/String;)V" -> b.run { if (Build.VERSION.SDK_INT < 5) throw TokamakBinding.unavailable; b.target(android.location.GpsStatus.NmeaListener::class.java).onNmeaReceived(b.long(b[0]), b.optional(b[1]) { x1 -> b.string(x1) }); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callLocationListener(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -680,7 +680,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "LocationListener#onProviderDisabled(Ljava/lang/String;)V" -> b.run { b.target(android.location.LocationListener::class.java).onProviderDisabled(b.string(b[0])); null }
             "LocationListener#onLocationChanged(Ljava/util/List;)V" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.target(android.location.LocationListener::class.java).onLocationChanged(b.list(b[0]) { x1 -> b.optional(x1) { x2 -> b.obj(x2, android.location.Location::class.java) } }); null }
             "LocationListener#onFlushComplete(I)V" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.target(android.location.LocationListener::class.java).onFlushComplete(b.int(b[0])); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callLocationManager(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -733,7 +733,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "LocationManager#hasProvider(Ljava/lang/String;)Z" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.location.LocationManager::class.java).hasProvider(b.string(b[0]))) }
             "LocationManager#getGnssAntennaInfos()Ljava/util/List;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.location.LocationManager::class.java).getGnssAntennaInfos()) }
             "LocationManager#registerGnssMeasurementsCallback(Landroid/location/GnssMeasurementRequest;Ljava/util/concurrent/Executor;Landroid/location/GnssMeasurementsEvent\$Callback;)Z" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.location.LocationManager::class.java).registerGnssMeasurementsCallback(b.obj(b[0], android.location.GnssMeasurementRequest::class.java), b.obj(b[1], java.util.concurrent.Executor::class.java), b.obj(b[2], android.location.GnssMeasurementsEvent.Callback::class.java))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callLocationProvider(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -749,7 +749,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "LocationProvider#supportsBearing()Z" -> b.run { b.encode(b.target(android.location.LocationProvider::class.java).supportsBearing()) }
             "LocationProvider#getPowerRequirement()I" -> b.run { b.encode(b.target(android.location.LocationProvider::class.java).getPowerRequirement()) }
             "LocationProvider#getAccuracy()I" -> b.run { b.encode(b.target(android.location.LocationProvider::class.java).getAccuracy()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callLocationRequest(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -765,7 +765,7 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "LocationRequest#equals(Ljava/lang/Object;)Z" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.location.LocationRequest::class.java).equals(b.optional(b[0]) { x1 -> b.any(x1) })) }
             "LocationRequest#hashCode()I" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.location.LocationRequest::class.java).hashCode()) }
             "LocationRequest#toString()Ljava/lang/String;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.location.LocationRequest::class.java).toString()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callLocationRequest_Builder(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -781,19 +781,19 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "LocationRequest.Builder#setMinUpdateDistanceMeters(F)Landroid/location/LocationRequest\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.location.LocationRequest.Builder::class.java).setMinUpdateDistanceMeters(b.float(b[0]))) }
             "LocationRequest.Builder#setMaxUpdateDelayMillis(J)Landroid/location/LocationRequest\$Builder;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.location.LocationRequest.Builder::class.java).setMaxUpdateDelayMillis(b.long(b[0]))) }
             "LocationRequest.Builder#build()Landroid/location/LocationRequest;" -> b.run { if (Build.VERSION.SDK_INT < 31) throw TokamakBinding.unavailable; b.encode(b.target(android.location.LocationRequest.Builder::class.java).build()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callOnNmeaMessageListener(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "OnNmeaMessageListener#onNmeaMessage(Ljava/lang/String;J)V" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.target(android.location.OnNmeaMessageListener::class.java).onNmeaMessage(b.optional(b[0]) { x1 -> b.string(x1) }, b.long(b[1])); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callSettingInjectorService(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "SettingInjectorService#refreshSettings(Landroid/content/Context;)V" -> b.run { if (Build.VERSION.SDK_INT < 29) throw TokamakBinding.unavailable; android.location.SettingInjectorService.refreshSettings(b.obj(b[0], android.content.Context::class.java)); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callContext(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -839,13 +839,13 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "Context#revokeSelfPermissionsOnKill(Ljava/util/Collection;)V" -> b.run { if (Build.VERSION.SDK_INT < 33) throw TokamakBinding.unavailable; b.target(android.content.Context::class.java).revokeSelfPermissionsOnKill(b.list(b[0]) { x1 -> b.optional(x1) { x2 -> b.string(x2) } }); null }
             "Context#createDeviceContext(I)Landroid/content/Context;" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.content.Context::class.java).createDeviceContext(b.int(b[0]))) }
             "Context#getDeviceId()I" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(b.target(android.content.Context::class.java).getDeviceId()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callContext_BindServiceFlags(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "Context.BindServiceFlags#of(J)Landroid/content/Context\$BindServiceFlags;" -> b.run { if (Build.VERSION.SDK_INT < 34) throw TokamakBinding.unavailable; b.encode(android.content.Context.BindServiceFlags.of(b.long(b[0]))) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callCancellationSignal(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -855,13 +855,13 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "CancellationSignal#throwIfCanceled()V" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.target(android.os.CancellationSignal::class.java).throwIfCanceled(); null }
             "CancellationSignal#cancel()V" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.target(android.os.CancellationSignal::class.java).cancel(); null }
             "CancellationSignal#setOnCancelListener(Landroid/os/CancellationSignal\$OnCancelListener;)V" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.target(android.os.CancellationSignal::class.java).setOnCancelListener(b.optional(b[0]) { x1 -> b.obj(x1, android.os.CancellationSignal.OnCancelListener::class.java) }); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callCancellationSignal_OnCancelListener(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "CancellationSignal.OnCancelListener#onCancel()V" -> b.run { if (Build.VERSION.SDK_INT < 16) throw TokamakBinding.unavailable; b.target(android.os.CancellationSignal.OnCancelListener::class.java).onCancel(); null }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callSystemClock(method: String, b: TokamakBinding): (() -> Unit)? =
@@ -873,14 +873,14 @@ class Bindings(private val host: TokamakHost) : TokamakPlugin {
             "SystemClock#currentThreadTimeMillis()J" -> b.run { b.encode(android.os.SystemClock.currentThreadTimeMillis()) }
             "SystemClock#elapsedRealtimeNanos()J" -> b.run { if (Build.VERSION.SDK_INT < 17) throw TokamakBinding.unavailable; b.encode(android.os.SystemClock.elapsedRealtimeNanos()) }
             "SystemClock#uptimeNanos()J" -> b.run { if (Build.VERSION.SDK_INT < 35) throw TokamakBinding.unavailable; b.encode(android.os.SystemClock.uptimeNanos()) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     private fun callConsumer(method: String, b: TokamakBinding): (() -> Unit)? =
         when (method) {
             "Consumer#accept(Ljava/lang/Object;)V" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; (b.target(java.util.function.Consumer::class.java) as java.util.function.Consumer<Any?>).accept(b.optional(b[0]) { x1 -> b.any(x1) }); null }
             "Consumer#andThen(Ljava/util/function/Consumer;)Ljava/util/function/Consumer;" -> b.run { if (Build.VERSION.SDK_INT < 24) throw TokamakBinding.unavailable; b.encode((b.target(java.util.function.Consumer::class.java) as java.util.function.Consumer<Any?>).andThen(b.optional(b[0]) { x1 -> (b.obj(x1, java.util.function.Consumer::class.java) as java.util.function.Consumer<Any?>) })) }
-            else -> b.unsupported(method)
+            else -> throw TokamakPluginError.notSupported("$method is not supported")
         }
 
     @androidx.annotation.RequiresApi(33)

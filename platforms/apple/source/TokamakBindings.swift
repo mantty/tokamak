@@ -8,20 +8,18 @@ import Foundation
 /// bytes, errors, non-finite numbers, and records whose keys include `#`.
 struct TokamakBinding {
   private let resources: TokamakResources
-  private let request: Result<[String: Any], TokamakPluginError>
+  private let request: [String: Any]
   private let reply: TokamakPluginBytesReply
 
   init(
     _ payload: Data, resources: TokamakResources, reply: @escaping TokamakPluginBytesReply
-  ) {
-    self.resources = resources
-    self.reply = reply
-    request = Result { () throws(TokamakPluginError) in
-      guard let request = try decodePluginValue(payload) as? [String: Any] else {
-        throw typeError("A binding request is an object")
-      }
-      return request
+  ) throws(TokamakPluginError) {
+    guard let request = try decodePluginValue(payload) as? [String: Any] else {
+      throw typeError("A binding request is an object")
     }
+    self.resources = resources
+    self.request = request
+    self.reply = reply
   }
 
   /// The rejection of a member the running OS version lacks.
@@ -30,24 +28,22 @@ struct TokamakBinding {
 
   /// Argument `index` as JSON.
   subscript(index: Int) -> Any {
-    get throws {
-      let arguments = try request.get()["arguments"] as? [Any] ?? []
-      return arguments.indices.contains(index) ? arguments[index] : NSNull()
-    }
+    let arguments = request["arguments"] as? [Any] ?? []
+    return arguments.indices.contains(index) ? arguments[index] : NSNull()
   }
 
   /// The object the call is made on.
   func target<T>(_ type: T.Type) throws -> T {
-    try object(request.get()["target"] as Any, as: type)
+    try object(request["target"] as Any, as: type)
   }
 
   /// The handlers an implementation calls.
   var methods: Set<String> {
-    Set((try? request.get()["methods"] as? [String]) ?? [])
+    Set(request["methods"] as? [String] ?? [])
   }
 
   private var scope: String {
-    (try? request.get()["scope"] as? String) ?? ""
+    request["scope"] as? String ?? ""
   }
 
   // MARK: Decoding
@@ -175,10 +171,7 @@ struct TokamakBinding {
   func encode(_ value: UUID) -> Any { value.uuidString }
 
   func encode(_ value: any Error) -> Any {
-    let error = Self.failure(value)
-    var encoded: [String: Any] = ["#": "error", "name": error.name, "message": error.message]
-    encoded["cause"] = error.cause
-    return encoded
+    TokamakPluginError(value).json.merging(["#": "error"]) { $1 }
   }
 
   /// Keeps `value` in the invocation's scope and refers to it, with the
@@ -240,28 +233,12 @@ struct TokamakBinding {
     return { [resources] in resources.end(scope) }
   }
 
-  /// Rejects the member the plugin does not bind.
-  func unsupported(_ member: String) -> (() -> Void)? {
-    fail(TokamakPluginError.notSupported("\(member) is not supported"))
-    return nil
-  }
-
   func send(_ value: Any?, done: Bool) {
     reply(TokamakPluginResult(encodePluginValue(value), done: done))
   }
 
   private func fail(_ error: any Error) {
-    reply(TokamakPluginResult(.failure(Self.failure(error)), done: true))
-  }
-
-  /// `error` for the Worker: an `OperationError` whose cause has the
-  /// platform error's domain and code.
-  static func failure(_ error: any Error) -> TokamakPluginError {
-    if let error = error as? TokamakPluginError { return error }
-    let error = error as NSError
-    return TokamakPluginError(
-      name: "OperationError", message: error.localizedDescription,
-      cause: ["domain": error.domain, "code": error.code])
+    reply(TokamakPluginResult(.failure(TokamakPluginError(error)), done: true))
   }
 
   /// The field `key` of `value` tagged `tag`.

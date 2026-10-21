@@ -1,7 +1,8 @@
 import { encodeJson } from "./codec.js";
 import type { Overflow } from "./context.js";
 
-type Source<T> = (next: (value: T) => void, error: (error: unknown) => void, close: () => void) => () => void;
+/** Starts a push source, returning or resolving to the function that stops it. */
+type Source<T> = (next: (value: T) => void, error: (error: unknown) => void, close: () => void) => (() => void) | Promise<() => void>;
 
 /** A byte stream of newline-delimited JSON values of type `T`, which `decodeValues` reads. */
 export type JsonStream<T> = ReadableStream<Uint8Array> & {
@@ -43,9 +44,9 @@ export function byteStream(subscribe: Source<Uint8Array>, overflow: Overflow = "
     wake();
   };
   return new ReadableStream<Uint8Array>({
-    start() {
+    async start() {
       try {
-        stop = subscribe(push, finish, () => { finish(); });
+        stop = await subscribe(push, finish, () => { finish(); });
         if (end) stop();
       } catch (error) { finish(error); }
     },
@@ -66,13 +67,17 @@ export function byteStream(subscribe: Source<Uint8Array>, overflow: Overflow = "
 export function valueStream<T>(subscribe: Source<T>, overflow: Overflow = "error"): JsonStream<T> {
   return byteStream((next, error, close) => subscribe((value) => {
     try {
-      const payload = encodeJson(value);
-      const line = new Uint8Array(payload.byteLength + 1);
-      line.set(payload);
-      line[payload.byteLength] = 10;
-      next(line);
+      next(jsonLine(encodeJson(value)));
     } catch (failure) { error(failure); }
   }, error, close), overflow);
+}
+
+/** `payload`, one encoded JSON value, as a line of a newline-delimited stream. */
+export function jsonLine(payload: Uint8Array): Uint8Array {
+  const line = new Uint8Array(payload.byteLength + 1);
+  line.set(payload);
+  line[payload.byteLength] = 10;
+  return line;
 }
 
 /** Decodes JSON values; ending iteration cancels the source. */
