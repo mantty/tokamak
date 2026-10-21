@@ -61,9 +61,6 @@
     "astro": {
       "optional": true
     },
-    "@cloudflare/vite-plugin": {
-      "optional": true
-    },
     "wrangler": {
       "optional": true
     }
