@@ -70,7 +70,7 @@ export async function build(app, vite) {
  * with Vite's `server` options, once it is reported.
  */
 export async function serve(app, use, options = {}) {
-  const server = await createServer(viteConfig(app, { server: { port: 0, watch: { usePolling: true }, ...options } }));
+  const server = await createServer(viteConfig(app, { server: { host: "127.0.0.1", port: 0, watch: { usePolling: true }, ...options } }));
   try {
     await server.listen();
     await reported(app, "server.json");

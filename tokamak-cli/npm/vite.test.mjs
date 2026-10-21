@@ -131,9 +131,9 @@ test("evaluates the module in the development Worker", async () => {
 test("reports the development server's port when the configured one is taken", async () => {
   const app = project();
   const taken = net.createServer();
-  await new Promise((resolve) => taken.listen(0, "localhost", resolve));
+  await new Promise((resolve) => taken.listen(0, "127.0.0.1", resolve));
   const port = taken.address().port;
-  const server = await createServer(viteConfig(app, { server: { port } }));
+  const server = await createServer(viteConfig(app, { server: { host: "127.0.0.1", port } }));
   try {
     await server.listen();
     const { url } = await reported(app, "server.json");

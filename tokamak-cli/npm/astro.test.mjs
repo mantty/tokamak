@@ -54,7 +54,7 @@ test("Astro development reloads native code and local bindings without exposing 
   const vars = path.join(root, "config/.dev.vars.staging");
   fs.writeFileSync(vars, 'LABEL="local"');
   await environment(root, async () => {
-    const server = await dev({ root: pathToFileURL(`${root}/`), logLevel: "silent", server: { port: 0 } });
+    const server = await dev({ root: pathToFileURL(`${root}/`), logLevel: "silent", server: { port: 0, host: "127.0.0.1" } });
     try {
       const report = JSON.parse(fs.readFileSync(path.join(root, ".tokamak/vite/server.json"), "utf8"));
       assert.equal(report.workerName, "astro-app");
