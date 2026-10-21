@@ -265,18 +265,18 @@ pub(crate) fn check(
 fn stage_bindings(plugin: &mut Plugin) -> Result<()> {
     let families = [
         (
-            &plugin.bindings.apple,
+            plugin.bindings.apple.is_some(),
             ["ios", "macos"].as_slice(),
             APPLE_SOURCE,
         ),
         (
-            &plugin.bindings.android,
+            plugin.bindings.android.is_some(),
             ["android"].as_slice(),
             ANDROID_SOURCE,
         ),
     ];
-    for (modules, namespaces, source) in families {
-        if modules.is_empty() {
+    for (bound, namespaces, source) in families {
+        if !bound {
             continue;
         }
         for namespace in namespaces {
@@ -616,7 +616,7 @@ mod tests {
         fs::write(plugin.join("apple/Bindings.swift"), "")?;
         fs::write(
             plugin.join("tokamak-plugin.json"),
-            r#"{"schemaVersion":2,"id":"motion","bindings":{"apple":["CoreMotion"]}}"#,
+            r#"{"schemaVersion":2,"id":"motion","bindings":{"apple":{"sdk":"26.2","modules":["CoreMotion"]}}}"#,
         )?;
         let mut pack = pack(Target::MacosArm64);
         pack.plugin_keys
