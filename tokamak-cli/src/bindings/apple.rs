@@ -138,17 +138,22 @@ impl std::str::FromStr for Version {
     type Err = anyhow::Error;
 
     fn from_str(text: &str) -> Result<Self> {
-        let mut parts = text.split('.').map(str::parse::<u32>);
-        let mut next = || parts.next().transpose();
-        let version = Self {
-            major: next()?.with_context(|| format!("'{text}' is not a version"))?,
-            minor: next()?,
-            patch: next()?,
+        let parts = text
+            .split('.')
+            .map(str::parse)
+            .collect::<Result<Vec<u32>, _>>()
+            .with_context(|| format!("'{text}' is not a version"))?;
+        let (minor, patch) = match parts[..] {
+            [_] => (None, None),
+            [_, minor] => (Some(minor), None),
+            [_, minor, patch] => (Some(minor), Some(patch)),
+            _ => bail!("'{text}' is not a version"),
         };
-        if parts.next().is_some() {
-            bail!("'{text}' is not a version");
-        }
-        Ok(version)
+        Ok(Self {
+            major: parts[0],
+            minor,
+            patch,
+        })
     }
 }
 

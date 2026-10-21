@@ -108,6 +108,18 @@ fn apple_bindings_do_not_depend_on_the_order_of_extracted_symbols() -> TestResul
 }
 
 #[test]
+fn reads_declared_apple_sdk_versions() -> TestResult {
+    let version = |text: &str| text.parse::<apple::Version>();
+    assert!(version("26")? < version("26.2")?);
+    assert!(version("26.2")? == version("26.2.0")?);
+    assert!(version("26.2")? < version("27.0")?);
+    for invalid in ["", "26.x", "26.2.1.4"] {
+        assert!(version(invalid).is_err(), "{invalid} parsed");
+    }
+    Ok(())
+}
+
+#[test]
 fn apple_bindings_leave_out_symbols_introduced_after_the_declared_sdk() -> TestResult {
     let introduce_check_in_27 = |symbols: &mut Vec<Value>| {
         let check = json!(["KTWidget", "check(_:error:)"]);
