@@ -7,6 +7,8 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 #[derive(Default)]
 struct Shell {
     requests: Mutex<Vec<(u64, String, Vec<u8>)>>,
+    /// The one plugin the shell implements, when it does not implement all.
+    only: Option<&'static str>,
 }
 impl Shell {
     fn record(&self, id: u64, method: String, payload: &[u8]) {
@@ -23,6 +25,9 @@ impl Shell {
     }
 }
 impl PluginHandler for Shell {
+    fn implements(&self, plugin: &str, _method: &str) -> bool {
+        self.only.is_none_or(|only| only == plugin)
+    }
     fn call(&self, id: u64, plugin: &str, method: &str, payload: &[u8]) {
         self.record(id, format!("{plugin}.{method}"), payload);
     }
@@ -188,6 +193,35 @@ async fn missing_native_handler_fails_calls_and_subscriptions() -> TestResult {
     let mut stream = calls.subscribe("location", "watch", &[], Overflow::Error);
     assert!(stream.next().await.ok_or("missing error")?.failed);
     assert!(stream.next().await.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejects_what_the_shell_does_not_implement_without_passing_it_on() -> TestResult {
+    let shell = Arc::new(Shell {
+        only: Some("binary"),
+        ..Shell::default()
+    });
+    let calls = PluginCalls::new(Some(Arc::clone(&shell) as Arc<dyn PluginHandler>), true);
+    let result = calls.call("location", "getCurrentPosition", &[]).await;
+    assert!(result.failed && result.done);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&result.payload)?["message"],
+        "location.getCurrentPosition is not supported"
+    );
+    let mut stream = calls.subscribe("location", "watch", &[], Overflow::Error);
+    assert!(stream.next().await.ok_or("missing error")?.failed);
+    assert!(stream.next().await.is_none());
+    let (result, body) = calls.call_with_body("files", "write", &[]);
+    assert!(body.is_none());
+    assert!(result.await.failed);
+    let echoed = calls.call("binary", "echo", b"implemented");
+    calls.reply(1, value(b"implemented", true));
+    assert_eq!(echoed.await.payload, b"implemented");
+    assert_eq!(
+        shell.requests(),
+        [(1, "binary.echo".into(), b"implemented".to_vec())]
+    );
     Ok(())
 }
 
