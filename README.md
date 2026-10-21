@@ -758,7 +758,8 @@ Each other exported entrypoint class is a service of its own: a class
 `virtual:tokamak/client/DataSync`. Each plugin's API is one too: pages import
 `@tokamakdev/plugin-location/client`, and the app's Worker calls
 `env.TOKAMAK_LOCATION`. The Tokamak worker reaches the app's Worker through
-`env.MAIN`.
+`env.MAIN`. Restart `tok dev` after adding, removing or renaming an entrypoint
+class or a plugin: the development server sets up the services when it starts.
 
 - **Values:** calls are asynchronous at the caller. Arguments and results are
   structured data; streams are byte `ReadableStream`s, which

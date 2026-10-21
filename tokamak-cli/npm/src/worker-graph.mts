@@ -52,6 +52,9 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
   let mainEnvironment: string;
   let dev = false;
   let mainServices: ServiceConfiguration["services"];
+  /** The named entrypoints the main Worker's bindings were configured with. */
+  let configuredEntrypoints: string;
+  const entrypoints = () => Object.keys(contracts.named).join();
   const signatures = new Map<string, string>();
   const development = normalizePath(fileURLToPath(new URL("./rpc/binding.mjs", import.meta.resolve("@tokamakdev/plugin/events"))));
   let relay: Relay | undefined;
@@ -100,6 +103,7 @@ export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
     if (dev) config.main = serviceModule("main");
     config.services = [...config.services ?? [], ...services(mainName)];
     mainServices = config.services;
+    configuredEntrypoints = entrypoints();
   };
   const native: AuxiliaryCustomizer = (_config, { entryWorkerConfig }) => {
     if (!mainName) throw new Error("The main Worker must be configured before the Tokamak worker.");
@@ -162,6 +166,9 @@ export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
         if (!sources().includes(file) && (this.environment.name !== "tokamak" || !modules.length)) return;
         contracts.refresh({ file, timestamp });
         refresh();
+        if (entrypoints() !== configuredEntrypoints) {
+          this.environment.logger.warnOnce("Restart tok dev after adding, removing, or renaming a Tokamak entrypoint.");
+        }
         if (!modules.length && signatures.get(role) === signature(role)) return;
         this.environment.moduleGraph.invalidateAll();
         this.environment.hot.send({ type: "full-reload" });

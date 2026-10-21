@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { test } from "node:test";
 
 import { createServer } from "vite";
@@ -42,4 +44,18 @@ test("named Tokamak entrypoints get generated bindings, clients and routes", asy
   const response = await fetch(server.resolvedUrls.local[0]);
   assert.ok(response.ok, await response.clone().text());
   assert.deepEqual(await response.json(), { pulled: [0, 1] });
+
+  // The main Worker's bindings are set when the server starts.
+  const warnings = [];
+  server.config.logger.warnOnce = message => warnings.push(message);
+  const entry = path.join(root, "src/tokamak.ts");
+  fs.appendFileSync(entry, `
+      export class Archive extends WorkerEntrypoint {
+        count(): number { return 0; }
+      }`);
+  for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
+    if (warnings.some(message => message.includes("Restart tok dev"))) break;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.match(warnings.join("\n"), /Restart tok dev after adding, removing, or renaming a Tokamak entrypoint/);
 });
