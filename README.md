@@ -536,7 +536,11 @@ tok build ios --ios-team-id YOUR_TEAM_ID
 Tokamak selects the signing identity and provisioning profile for that team,
 asking Xcode to provision the app when needed. No manual signing settings
 are required. If a certificate has no team name, the list identifies its
-signing identity instead and marks the team name as unavailable.
+signing identity instead and marks the team name as unavailable. Provisioning
+needs the Mac unlocked: while its screen is locked, Xcode cannot read its
+accounts and removes them, so Tokamak stops with an error instead. `tok dev`
+installs the app on a locked device and launches it once the device is
+unlocked.
 
 For **manual signing**, provide both the identity and its matching profile.
 List locally installed iOS signing assets on macOS with:
