@@ -710,7 +710,7 @@ const classes: Classes = {
   "LAEnvironmentMechanismBiometry": LAEnvironment$MechanismBiometry,
   "LAEnvironmentMechanismCompanion": LAEnvironment$MechanismCompanion,
   "LAEnvironmentMechanismUserPassword": LAEnvironment$MechanismUserPassword,
-  "LocalAuthentication.LAEnvironment.Observer": LAEnvironment$Observer,
+  "LAEnvironmentObserver": LAEnvironment$Observer,
   "LAEnvironmentState": LAEnvironment$State,
   "LAPersistedRight": LAPersistedRight,
   "LAPrivateKey": LAPrivateKey,

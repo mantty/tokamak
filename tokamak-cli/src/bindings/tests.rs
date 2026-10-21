@@ -61,6 +61,7 @@ fn apple_bindings_mirror_classes_values_protocols_and_streams() -> TestResult {
         "  widgetDidMove?(widget: KTWidget, point: KTPoint): void | Promise<void>;",
         "return bindings.implement(ctx, KTWidgetDelegate, \"KTWidgetDelegate\", [\"widgetDidMove\"], handlers);",
         "  \"KTWidget\": KTWidget,",
+        "  \"KTWidgetDelegate\": KTWidgetDelegate,",
     ] {
         assert!(ts.contains(expected), "missing {expected:?} in\n{ts}");
     }

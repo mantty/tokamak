@@ -166,6 +166,8 @@ enum PluginRequestsTests {
     let scope = run(1, "resource.scope", "null", plugin: "tokamak", subscribe: true)
     let array = run(2, "NSMutableArray.init()", "{\"scope\":\(scope),\"arguments\":[]}")
     precondition(array.contains("\"#\":\"object\"") && array.contains("\"NSMutableArray\""), array)
+    // The protocols the classes adopt follow them.
+    precondition(array.contains("\"NSCopying\""), array)
     let id = try! JSONSerialization.jsonObject(with: Data(array.utf8)) as! [String: Any]
     let target = "\"target\":{\"#\":\"object\",\"id\":\"\(id["id"]!)\"}"
     _ = run(

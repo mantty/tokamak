@@ -785,7 +785,7 @@ const classes: Classes = {
   "UNNotificationAttributedMessageContext": UNNotificationAttributedMessageContext,
   "UNNotificationCategory": UNNotificationCategory,
   "UNNotificationContent": UNNotificationContent,
-  "UserNotifications.UNNotificationContentProviding": UNNotificationContentProviding,
+  "UNNotificationContentProviding": UNNotificationContentProviding,
   "UNNotificationRequest": UNNotificationRequest,
   "UNNotificationResponse": UNNotificationResponse,
   "UNNotificationServiceExtension": UNNotificationServiceExtension,
@@ -797,5 +797,5 @@ const classes: Classes = {
   "UNTextInputNotificationResponse": UNTextInputNotificationResponse,
   "UNTimeIntervalNotificationTrigger": UNTimeIntervalNotificationTrigger,
   "UNUserNotificationCenter": UNUserNotificationCenter,
-  "UserNotifications.UNUserNotificationCenterDelegate": UNUserNotificationCenterDelegate,
+  "UNUserNotificationCenterDelegate": UNUserNotificationCenterDelegate,
 };

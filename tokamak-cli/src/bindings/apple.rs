@@ -684,11 +684,14 @@ fn add_member(members: &mut Vec<Member>, member: Member, skipped: &mut Vec<Skipp
     }
 }
 
-/// The name native code reports for objects of the class: an Objective-C
-/// class's own, or a Swift class's module-qualified name.
+/// The name native code reports for objects of the type: an Objective-C
+/// class's or protocol's own, or a Swift type's module-qualified name.
 fn runtime_name(entry: &Entry) -> String {
     let usr = &entry.symbol.identifier.precise;
-    match usr.strip_prefix("c:objc(cs)") {
+    match usr
+        .strip_prefix("c:objc(cs)")
+        .or_else(|| usr.strip_prefix("c:objc(pl)"))
+    {
         Some(name) => name.to_owned(),
         None => format!(
             "{}.{}",

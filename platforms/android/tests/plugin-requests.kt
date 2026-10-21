@@ -104,7 +104,8 @@ fun testBindings() {
     val created = binding("""{"scope":"$scope","arguments":[]}""")
     created.run { created.encode(java.util.concurrent.atomic.AtomicInteger(1)) }
     val reference = json(reply()) as org.json.JSONObject
-    check(reference.getString("#") == "object" && reference.getJSONArray("types").getString(0) == "java.util.concurrent.atomic.AtomicInteger")
+    check(reference.getString("#") == "object" && reference.getJSONArray("types").join(",") ==
+        "\"java.util.concurrent.atomic.AtomicInteger\",\"java.lang.Number\",\"java.lang.Object\",\"java.io.Serializable\"")
     val target = """{"#":"object","id":"${reference.getString("id")}"}"""
 
     val appended = binding("""{"target":$target,"arguments":[3,"cd",{"#":"bytes","value":"AQI="},null,{"#":"number","value":"Infinity"}]}""")

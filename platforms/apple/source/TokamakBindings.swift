@@ -277,21 +277,41 @@ struct TokamakBinding {
     typeError("\(Swift.type(of: value)) is not \(type)")
   }
 
-  /// The names of `value`'s class and superclasses, or of its type:
-  /// Objective-C names, and module-qualified Swift names.
+  /// The names of `value`'s class and superclasses, then of the Objective-C
+  /// protocols they adopt, or of its type: Objective-C names, and
+  /// module-qualified Swift names.
   private func types(of value: Any) -> [String] {
     let name = { (type: Any.Type) in
       let name = String(reflecting: type)
       return name.hasPrefix("__C.") ? String(name.dropFirst(4)) : name
     }
-    var names = [name(Swift.type(of: value))]
-    guard var type = Swift.type(of: value) as? AnyClass else { return names }
-    while let superclass = class_getSuperclass(type) {
-      names.append(name(superclass))
-      type = superclass
+    guard let type = Swift.type(of: value) as? AnyClass else {
+      return [name(Swift.type(of: value))]
     }
-    return names
+    let classes = Array(sequence(first: type, next: class_getSuperclass))
+    let protocols = classes.flatMap(adopted).map(NSStringFromProtocol)
+    var seen = Set<String>()
+    return (classes.map(name) + protocols).filter { seen.insert($0).inserted }
   }
+}
+
+/// The Objective-C protocols `type` adopts, each followed by those it inherits.
+private func adopted(by type: AnyClass) -> [Protocol] {
+  protocols { class_copyProtocolList(type, $0) }.flatMap { [$0] + inherited(by: $0) }
+}
+
+private func inherited(by parent: Protocol) -> [Protocol] {
+  protocols { protocol_copyProtocolList(parent, $0) }.flatMap { [$0] + inherited(by: $0) }
+}
+
+/// The protocols a runtime `copy` function lists.
+private func protocols(
+  _ copy: (UnsafeMutablePointer<UInt32>) -> AutoreleasingUnsafeMutablePointer<Protocol>?
+) -> [Protocol] {
+  var count: UInt32 = 0
+  guard let list = copy(&count) else { return [] }
+  defer { free(UnsafeMutableRawPointer(list)) }
+  return (0..<Int(count)).map { list[$0] }
 }
 
 /// A native object that implements a protocol by calling the JavaScript

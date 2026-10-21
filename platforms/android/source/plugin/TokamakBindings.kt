@@ -170,5 +170,12 @@ class TokamakBinding(payload: ByteArray, private val resources: TokamakResources
 
     private fun mismatch(value: Any?, type: String) = TokamakPluginError.typeError("${value?.javaClass?.simpleName} is not $type")
 
-    private fun types(value: Any): List<String> = generateSequence<Class<*>>(value.javaClass) { it.superclass }.map { it.name }.toList()
+    /** The names of [value]'s class and superclasses, then of the interfaces they implement. */
+    private fun types(value: Any): List<String> {
+        val classes = generateSequence<Class<*>>(value.javaClass) { it.superclass }.toList()
+        return (classes + classes.flatMap(::interfaces)).distinct().map { it.name }
+    }
+
+    /** The interfaces [type] implements, each followed by those it extends. */
+    private fun interfaces(type: Class<*>): List<Class<*>> = type.interfaces.flatMap { listOf(it) + interfaces(it) }
 }
