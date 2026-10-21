@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::fmt::Write as _;
 
-use super::model::{Availability, Callbacks, Kind, Member, Module, NamedKind, Param, Ty, Type};
+use super::model::{Availability, Callback, Kind, Member, Module, NamedKind, Param, Ty, Type};
 
 /// Names a class's own members cannot take in JavaScript, which get a trailing `_`.
 const RESERVED_MEMBERS: [&str; 1] = ["constructor"];
@@ -178,9 +178,9 @@ fn emit_type(out: &mut String, ty: &Type) {
             let parent = superclass
                 .as_deref()
                 .map_or_else(|| "NativeObject".to_owned(), self::name);
-            emit_class(out, ty, &parent, callbacks.as_ref());
+            emit_class(out, ty, &parent, callbacks.as_deref());
         }
-        Kind::Protocol { callbacks } => emit_class(out, ty, "NativeObject", callbacks.as_ref()),
+        Kind::Protocol { callbacks } => emit_class(out, ty, "NativeObject", callbacks.as_deref()),
     }
 }
 
@@ -206,7 +206,7 @@ fn union<'a>(names: impl Iterator<Item = &'a String>) -> String {
     }
 }
 
-fn emit_class(out: &mut String, ty: &Type, parent: &str, callbacks: Option<&Callbacks>) {
+fn emit_class(out: &mut String, ty: &Type, parent: &str, callbacks: Option<&[Callback]>) {
     let name = name(&ty.path);
     if let Some(callbacks) = callbacks {
         emit_handlers(out, &name, callbacks);
@@ -320,9 +320,9 @@ fn kinds(ty: &Ty) -> Vec<String> {
     vec![format!("{kind:?}")]
 }
 
-fn emit_handlers(out: &mut String, name: &str, callbacks: &Callbacks) {
+fn emit_handlers(out: &mut String, name: &str, callbacks: &[Callback]) {
     let _ = writeln!(out, "export interface {name}Methods {{");
-    for method in &callbacks.methods {
+    for method in callbacks {
         doc(out, "  ", &method.availability);
         let _ = writeln!(
             out,
@@ -334,9 +334,8 @@ fn emit_handlers(out: &mut String, name: &str, callbacks: &Callbacks) {
     out.push_str("}\n\n");
 }
 
-fn emit_implement(out: &mut String, ty: &Type, name: &str, callbacks: &Callbacks) {
+fn emit_implement(out: &mut String, ty: &Type, name: &str, callbacks: &[Callback]) {
     let methods: Vec<String> = callbacks
-        .methods
         .iter()
         .map(|method| format!("{:?}", method.name))
         .collect();

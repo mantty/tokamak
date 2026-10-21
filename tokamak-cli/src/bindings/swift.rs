@@ -5,8 +5,8 @@
 use std::fmt::Write as _;
 
 use super::model::{
-    Availability, Callback, Callbacks, Case, Collection, Field, Kind, Member, MemberKind, Module,
-    NamedKind, Ty, Type,
+    Availability, Callback, Case, Collection, Field, Kind, Member, MemberKind, Module, NamedKind,
+    Ty, Type,
 };
 
 /// The Swift class of the plugin `id`'s bindings, which the Apple pack registers.
@@ -36,19 +36,12 @@ pub(crate) fn emit(module: &Module, id: &str) -> String {
     emitter.subscriptions(&mut out, module);
     for ty in &module.types {
         emitter.conversions(&mut out, ty);
-        if let Some(callbacks) = callbacks(ty) {
+        if let Some(callbacks) = ty.callbacks() {
             emitter.implementation(&mut out, ty, callbacks);
         }
     }
     out.push_str("}\n");
     out
-}
-
-fn callbacks(ty: &Type) -> Option<&Callbacks> {
-    match &ty.kind {
-        Kind::Class { callbacks, .. } | Kind::Protocol { callbacks } => callbacks.as_ref(),
-        _ => None,
-    }
 }
 
 /// The members the module calls, with the type each belongs to.
@@ -70,26 +63,30 @@ impl Emitter<'_> {
             "\n  func callBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply) -> (() -> Void)? {\n    let b = TokamakBinding(payload, resources: host.resources, reply: reply)\n    switch method {\n",
         );
         for (owner, member) in members(module).filter(|(_, member)| !member.stream) {
-            let os = os_condition(&member.availability);
-            open_os(out, os.as_deref(), "    ");
-            let _ = writeln!(out, "    case {:?}:", member.key);
-            if let Some(versions) = versions(&member.availability) {
-                let _ = writeln!(
-                    out,
-                    "      guard #available({versions}, *) else {{ return b.run {{ throw TokamakBinding.unavailable }} }}"
-                );
-            }
-            let run = if member.effects.asynchronous {
-                "task"
-            } else {
-                "run"
-            };
-            let _ = writeln!(
+            within_os(
                 out,
-                "      return b.{run} {{ {} }}",
-                self.body(owner, member)
+                os_condition(&member.availability).as_deref(),
+                "    ",
+                |out| {
+                    let _ = writeln!(out, "    case {:?}:", member.key);
+                    if let Some(versions) = versions(&member.availability) {
+                        let _ = writeln!(
+                            out,
+                            "      guard #available({versions}, *) else {{ return b.run {{ throw TokamakBinding.unavailable }} }}"
+                        );
+                    }
+                    let run = if member.effects.asynchronous {
+                        "task"
+                    } else {
+                        "run"
+                    };
+                    let _ = writeln!(
+                        out,
+                        "      return b.{run} {{ {} }}",
+                        self.body(owner, member)
+                    );
+                },
             );
-            close_os(out, os.as_deref(), "    ");
         }
         out.push_str("    default:\n      return b.unsupported(method)\n    }\n  }\n");
     }
@@ -99,7 +96,7 @@ impl Emitter<'_> {
             "\n  func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)\n    throws(TokamakPluginError) -> () -> Void\n  {\n    let b = TokamakBinding(payload, resources: host.resources, reply: reply)\n    switch method {\n",
         );
         for ty in &module.types {
-            if callbacks(ty).is_some() {
+            if ty.callbacks().is_some() {
                 subscription_case(
                     out,
                     &ty.name(),
@@ -261,23 +258,27 @@ impl Emitter<'_> {
             ),
             _ => return,
         };
-        let os = os_condition(&ty.availability);
-        open_os(out, os.as_deref(), "  ");
-        let available = versions(&ty.availability)
-            .map(|versions| format!("  @available({versions}, *)\n"))
-            .unwrap_or_default();
-        let native = &ty.native;
-        let _ = write!(
+        within_os(
             out,
-            "\n{available}  private static func encode(_ value: {native}, _ b: TokamakBinding) -> Any {{\n{encode}  }}\n"
+            os_condition(&ty.availability).as_deref(),
+            "  ",
+            |out| {
+                let available = versions(&ty.availability)
+                    .map(|versions| format!("  @available({versions}, *)\n"))
+                    .unwrap_or_default();
+                let native = &ty.native;
+                let _ = write!(
+                    out,
+                    "\n{available}  private static func encode(_ value: {native}, _ b: TokamakBinding) -> Any {{\n{encode}  }}\n"
+                );
+                if !decode.is_empty() {
+                    let _ = write!(
+                        out,
+                        "\n{available}  private static func decode(_ value: Any, _ b: TokamakBinding, as type: {native}.Type) throws -> {native} {{\n{decode}  }}\n"
+                    );
+                }
+            },
         );
-        if !decode.is_empty() {
-            let _ = write!(
-                out,
-                "\n{available}  private static func decode(_ value: Any, _ b: TokamakBinding, as type: {native}.Type) throws -> {native} {{\n{decode}  }}\n"
-            );
-        }
-        close_os(out, os.as_deref(), "  ");
     }
 
     fn encode_struct(&self, ty: &Type, fields: &[Field]) -> String {
@@ -318,40 +319,42 @@ impl Emitter<'_> {
     }
 
     /// The class that implements a protocol, or subclasses a class, for JavaScript handlers.
-    fn implementation(&self, out: &mut String, ty: &Type, callbacks: &Callbacks) {
-        let os = os_condition(&ty.availability);
-        open_os(out, os.as_deref(), "  ");
-        let available = versions(&ty.availability)
-            .map(|versions| format!("  @available({versions}, *)\n"))
-            .unwrap_or_default();
-        let _ = writeln!(
+    fn implementation(&self, out: &mut String, ty: &Type, callbacks: &[Callback]) {
+        within_os(
             out,
-            "\n{available}  private final class {}Implementation: TokamakBindingImplementation, {} {{",
-            flat(ty),
-            ty.native
-        );
-        if callbacks
-            .methods
-            .iter()
-            .any(|method| method.selector.is_some())
-        {
-            out.push_str("    override class var selectors: [Selector: String] {\n      [\n");
-            for method in &callbacks.methods {
-                if let Some(selector) = &method.selector {
-                    let _ = writeln!(
-                        out,
-                        "        NSSelectorFromString({selector:?}): {:?},",
-                        method.name
+            os_condition(&ty.availability).as_deref(),
+            "  ",
+            |out| {
+                let available = versions(&ty.availability)
+                    .map(|versions| format!("  @available({versions}, *)\n"))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    out,
+                    "\n{available}  private final class {}Implementation: TokamakBindingImplementation, {} {{",
+                    flat(ty),
+                    ty.native
+                );
+                if callbacks.iter().any(|method| method.selector.is_some()) {
+                    out.push_str(
+                        "    override class var selectors: [Selector: String] {\n      [\n",
                     );
+                    for method in callbacks {
+                        if let Some(selector) = &method.selector {
+                            let _ = writeln!(
+                                out,
+                                "        NSSelectorFromString({selector:?}): {:?},",
+                                method.name
+                            );
+                        }
+                    }
+                    out.push_str("      ]\n    }\n");
                 }
-            }
-            out.push_str("      ]\n    }\n");
-        }
-        for method in &callbacks.methods {
-            self.callback(out, ty, method);
-        }
-        out.push_str("  }\n");
-        close_os(out, os.as_deref(), "  ");
+                for method in callbacks {
+                    self.callback(out, ty, method);
+                }
+                out.push_str("  }\n");
+            },
+        );
     }
 
     fn callback(&self, out: &mut String, ty: &Type, method: &Callback) {
@@ -378,17 +381,16 @@ impl Emitter<'_> {
 }
 
 fn subscription_case(out: &mut String, key: &str, availability: &Availability, body: &str) {
-    let os = os_condition(availability);
-    open_os(out, os.as_deref(), "    ");
-    let _ = writeln!(out, "    case {key:?}:");
-    if let Some(versions) = versions(availability) {
-        let _ = writeln!(
-            out,
-            "      guard #available({versions}, *) else {{ throw TokamakBinding.unavailable }}"
-        );
-    }
-    let _ = writeln!(out, "      return {body}");
-    close_os(out, os.as_deref(), "    ");
+    within_os(out, os_condition(availability).as_deref(), "    ", |out| {
+        let _ = writeln!(out, "    case {key:?}:");
+        if let Some(versions) = versions(availability) {
+            let _ = writeln!(
+                out,
+                "      guard #available({versions}, *) else {{ throw TokamakBinding.unavailable }}"
+            );
+        }
+        let _ = writeln!(out, "      return {body}");
+    });
 }
 
 fn encode_enum(ty: &Type, cases: &[Case]) -> String {
@@ -504,13 +506,17 @@ fn versions(availability: &Availability) -> Option<String> {
     (!versions.is_empty()).then(|| versions.join(", "))
 }
 
-fn open_os(out: &mut String, condition: Option<&str>, indent: &str) {
+/// Writes `write`'s output, within `#if condition` when there is one.
+fn within_os(
+    out: &mut String,
+    condition: Option<&str>,
+    indent: &str,
+    write: impl FnOnce(&mut String),
+) {
     if let Some(condition) = condition {
         let _ = writeln!(out, "{indent}#if {condition}");
     }
-}
-
-fn close_os(out: &mut String, condition: Option<&str>, indent: &str) {
+    write(out);
     if condition.is_some() {
         let _ = writeln!(out, "{indent}#endif");
     }
@@ -527,9 +533,7 @@ fn with_os(
     let condition = (availability.platforms.len() < parent.platforms.len())
         .then(|| os_condition(availability))
         .flatten();
-    open_os(out, condition.as_deref(), "    ");
-    write(out);
-    close_os(out, condition.as_deref(), "    ");
+    within_os(out, condition.as_deref(), "    ", write);
 }
 
 /// Rejects a value introduced after its type on the running OS version.
