@@ -446,7 +446,7 @@ jobs:
       - package-cli-npm
       - prerelease
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -500,12 +500,31 @@ jobs:
           PACKAGE_VERSION: ${{ needs.package-cli-npm.outputs.version }}
         run: |
           set -euo pipefail
-          # Optional dependencies publish before the tok package that depends on them.
-          read -ra packages <<< "$(node -p "Object.keys(require('./tokamak-cli/npm/package.json').optionalDependencies).map((name) => name.replace('@tokamakdev/', '')).join(' ')")"
-          for package in "${packages[@]}" tok; do
-            if npm view "@tokamakdev/$package@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
-              echo "@tokamakdev/$package@$PACKAGE_VERSION is already published"
+          released() {
+            npm view "@tokamakdev/$1@$PACKAGE_VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1
+          }
+          publish() {
+            if released "$1"; then
+              echo "@tokamakdev/$1@$PACKAGE_VERSION is already published"
             else
-              npm publish "./artifacts/tokamakdev-$package-$PACKAGE_VERSION.tgz" --access public --tag latest
+              npm publish "./artifacts/tokamakdev-$1-$PACKAGE_VERSION.tgz" --access public --tag latest
+            fi
+          }
+          read -ra packages <<< "$(node -p "Object.keys(require('./tokamak-cli/npm/package.json').optionalDependencies).map((name) => name.replace('@tokamakdev/', '')).join(' ')")"
+          for package in "${packages[@]}"; do
+            publish "$package"
+          done
+          # npm releases a version some minutes after accepting it, and installs
+          # skip optional dependencies they cannot find, so tok publishes once
+          # every package it depends on is released.
+          for package in "${packages[@]}"; do
+            for _ in $(seq 60); do
+              released "$package" && break
+              sleep 10
+            done
+            if ! released "$package"; then
+              echo "::error::npm accepted @tokamakdev/$package@$PACKAGE_VERSION but has not released it after 10 minutes"
+              exit 1
             fi
           done
+          publish tok
