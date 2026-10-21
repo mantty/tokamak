@@ -339,6 +339,7 @@ struct Profile {
     name: String,
     team_id: String,
     application_identifier: String,
+    created: SystemTime,
     expiration: SystemTime,
     expiration_label: String,
     devices: Vec<String>,
@@ -719,6 +720,11 @@ fn automatic_selection(request: &SigningRequest<'_>) -> Result<Selection> {
 /// return the path of the profile Xcode embeds in it.
 #[cfg(target_os = "macos")]
 fn provision_signing_probe(request: &SigningRequest<'_>, root: &Path) -> Result<PathBuf> {
+    if screen_locked()? {
+        bail!(
+            "unlock this Mac and build again: while the screen is locked, Xcode cannot read its accounts and removes them"
+        );
+    }
     let platform = request.platform;
     let project_path =
         write_signing_probe(platform, root, request.bundle_id, request.entitlements)?;
@@ -1071,6 +1077,38 @@ fn mac_provisioning_udid() -> Result<String> {
     provisioning_udid(&output.stdout)
 }
 
+/// Whether this Mac's console session is locked, when Xcode cannot read the
+/// account credentials it keeps in the keychain.
+#[cfg(target_os = "macos")]
+fn screen_locked() -> Result<bool> {
+    let output = Command::new("ioreg")
+        .args(["-n", "Root", "-d1", "-a"])
+        .output()
+        .context("run ioreg to read the screen lock")?;
+    if !output.status.success() {
+        bail!("ioreg failed: {}", command_output_detail(&output));
+    }
+    console_locked(&output.stdout)
+}
+
+/// Whether the console session in an `ioreg -n Root -d1 -a` report is locked.
+#[cfg(any(target_os = "macos", test))]
+fn console_locked(registry: &[u8]) -> Result<bool> {
+    let root = PlistValue::from_reader(Cursor::new(registry)).context("parse the ioreg report")?;
+    let flag = |session: &Dictionary, key| session.get(key).and_then(PlistValue::as_boolean);
+    Ok(root
+        .as_dictionary()
+        .and_then(|root| root.get("IOConsoleUsers"))
+        .and_then(PlistValue::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(PlistValue::as_dictionary)
+        .any(|session| {
+            flag(session, "kCGSSessionOnConsoleKey") == Some(true)
+                && flag(session, "CGSSessionScreenIsLocked") == Some(true)
+        }))
+}
+
 /// The provisioning UDID in a `system_profiler -json SPHardwareDataType` report.
 #[cfg(any(target_os = "macos", test))]
 fn provisioning_udid(hardware_report: &[u8]) -> Result<String> {
@@ -1123,12 +1161,26 @@ fn discover_identities() -> Result<Vec<Identity>> {
     Ok(identities)
 }
 
-#[cfg(target_os = "macos")]
+/// The profiles that list devices, without those Xcode has replaced: Xcode
+/// keeps one profile of each name in a team, and tokamak's copy of a replaced
+/// one remains.
+#[cfg(any(target_os = "macos", test))]
 fn development_profiles(profiles: Vec<Result<Profile>>) -> Vec<Profile> {
-    profiles
+    let profiles = profiles
         .into_iter()
         .filter_map(Result::ok)
         .filter(|profile| !profile.devices.is_empty())
+        .collect::<Vec<_>>();
+    profiles
+        .iter()
+        .filter(|profile| {
+            !profiles.iter().any(|newer| {
+                newer.team_id == profile.team_id
+                    && newer.name == profile.name
+                    && newer.created > profile.created
+            })
+        })
+        .cloned()
         .collect()
 }
 
@@ -1206,6 +1258,11 @@ fn parse_profile(platform: Platform, path: &Path, bytes: &[u8]) -> Result<Profil
         .next()
         .or_else(|| application_identifier.split('.').next().map(str::to_owned))
         .context("provisioning profile team identifier is missing")?;
+    let created = root
+        .get("CreationDate")
+        .and_then(PlistValue::as_date)
+        .context("provisioning profile creation date is missing")?
+        .into();
     let expiration_date = root
         .get("ExpirationDate")
         .and_then(PlistValue::as_date)
@@ -1230,6 +1287,7 @@ fn parse_profile(platform: Platform, path: &Path, bytes: &[u8]) -> Result<Profil
         name,
         team_id,
         application_identifier,
+        created,
         expiration,
         expiration_label,
         devices,
@@ -1439,8 +1497,8 @@ mod tests {
     use plist::{Dictionary, Value};
 
     use super::{
-        Identity, Platform, app_identifier_matches, configured_team_id, fingerprint, parse_profile,
-        provisioning_udid, sha1_fingerprint,
+        Identity, Platform, app_identifier_matches, configured_team_id, console_locked,
+        development_profiles, fingerprint, parse_profile, provisioning_udid, sha1_fingerprint,
     };
 
     #[test]
@@ -1463,6 +1521,25 @@ mod tests {
             .err()
             .context("expected an empty-team error")?;
         assert_eq!(error.to_string(), "TOKAMAK_MACOS_TEAM_ID must not be empty");
+        Ok(())
+    }
+
+    #[test]
+    fn reads_whether_the_console_session_is_locked() -> anyhow::Result<()> {
+        let registry = |session: &str| {
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>IOConsoleUsers</key><array>
+<dict><key>kCGSSessionOnConsoleKey</key><false/><key>CGSSessionScreenIsLocked</key><true/></dict>
+<dict><key>kCGSSessionOnConsoleKey</key><true/>{session}</dict>
+</array></dict></plist>"#
+            )
+        };
+        assert!(console_locked(
+            registry("<key>CGSSessionScreenIsLocked</key><true/>").as_bytes()
+        )?);
+        assert!(!console_locked(registry("").as_bytes())?);
+        assert!(console_locked(b"not a plist").is_err());
         Ok(())
     }
 
@@ -1738,6 +1815,10 @@ mod tests {
             Value::Array(vec![Value::String("TEAM".to_owned())]),
         );
         root.insert(
+            "CreationDate".to_owned(),
+            Value::Date((SystemTime::now() - Duration::from_hours(1)).into()),
+        );
+        root.insert(
             "ExpirationDate".to_owned(),
             Value::Date((SystemTime::now() + Duration::from_hours(1)).into()),
         );
@@ -1833,6 +1914,31 @@ mod tests {
         assert!(!profile.matches("com.example.app", None, &identity));
         assert!(!profile.matches("com.example.app", Some("DEVICE"), &identity));
         Ok(())
+    }
+
+    #[test]
+    fn excludes_profiles_xcode_has_replaced() {
+        let profile = |id: &str, name: &str, created: SystemTime| -> anyhow::Result<_> {
+            let mut value = profile_value("TEAM.com.example.app", "DEVICE");
+            let root = value.as_dictionary_mut().context("profile dictionary")?;
+            root.insert("UUID".to_owned(), Value::String(id.to_owned()));
+            root.insert("Name".to_owned(), Value::String(name.to_owned()));
+            root.insert("CreationDate".to_owned(), Value::Date(created.into()));
+            let mut bytes = Vec::new();
+            value.to_writer_xml(&mut bytes)?;
+            parse_profile(Platform::Ios, Path::new(id), &bytes)
+        };
+        let earlier = SystemTime::now() - Duration::from_hours(1);
+        let managed = "iOS Team Provisioning Profile: com.example.app";
+
+        let profiles = development_profiles(vec![
+            profile("replaced", managed, earlier),
+            profile("current", managed, SystemTime::now()),
+            profile("manual", "Manual", earlier),
+        ]);
+
+        let ids = profiles.iter().map(|profile| profile.id.as_str());
+        assert!(ids.eq(["current", "manual"]));
     }
 
     #[test]
@@ -2023,6 +2129,7 @@ mod tests {
                 name: "Personal".to_owned(),
                 team_id: "PERSONAL".to_owned(),
                 application_identifier: "PERSONAL.com.tokamak.old-app".to_owned(),
+                created: SystemTime::now() - Duration::from_hours(1),
                 expiration: SystemTime::now() - Duration::from_secs(1),
                 expiration_label: String::new(),
                 devices: vec!["DEVICE".to_owned()],
@@ -2035,6 +2142,7 @@ mod tests {
                 name: "Company".to_owned(),
                 team_id: "COMPANY".to_owned(),
                 application_identifier: "COMPANY.com.example.other".to_owned(),
+                created: SystemTime::now() - Duration::from_hours(1),
                 expiration: SystemTime::now() - Duration::from_secs(1),
                 expiration_label: String::new(),
                 devices: vec!["DEVICE".to_owned()],
