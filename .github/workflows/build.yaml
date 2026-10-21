@@ -446,7 +446,7 @@ jobs:
       - package-cli-npm
       - prerelease
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 75
     permissions:
       contents: read
       id-token: write
@@ -514,17 +514,17 @@ jobs:
           for package in "${packages[@]}"; do
             publish "$package"
           done
-          # npm releases a version some minutes after accepting it, and installs
-          # skip optional dependencies they cannot find, so tok publishes once
-          # every package it depends on is released.
+          # npm releases a version some minutes after accepting it (as many as 40
+          # in October 2026), and installs skip optional dependencies they cannot
+          # find, so tok publishes once every package it depends on is released.
+          deadline=$((SECONDS + 3600))
           for package in "${packages[@]}"; do
-            for _ in $(seq 60); do
-              released "$package" && break
+            until released "$package"; do
+              if ((SECONDS > deadline)); then
+                echo "::error::npm accepted @tokamakdev/$package@$PACKAGE_VERSION but has not released it within an hour"
+                exit 1
+              fi
               sleep 10
             done
-            if ! released "$package"; then
-              echo "::error::npm accepted @tokamakdev/$package@$PACKAGE_VERSION but has not released it after 10 minutes"
-              exit 1
-            fi
           done
           publish tok
