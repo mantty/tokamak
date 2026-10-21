@@ -9,8 +9,8 @@ use serde::Deserialize;
 
 use super::Family;
 use super::model::{
-    Availability, Callback, Callbacks, Case, Effects, Field, Kind, Member, MemberKind, Module,
-    Named, NamedKind, Param, Skipped, Ty, Type,
+    Availability, Callback, Case, Effects, Field, Kind, Member, MemberKind, Module, Named,
+    NamedKind, Param, Skipped, Ty, Type,
 };
 use super::swift_types;
 
@@ -298,10 +298,9 @@ fn unavailable_init(module: &mut Module, position: usize, platform: &str) {
     platforms.retain(|(name, _)| name != platform);
     if platforms.is_empty() {
         ty.members.remove(index);
-        module.skipped.push(Skipped {
-            symbol: key,
-            reason: "init() is unavailable".to_owned(),
-        });
+        module
+            .skipped
+            .push(Skipped::new(key, "init() is unavailable"));
     }
 }
 
@@ -515,10 +514,9 @@ impl Reader<'_> {
     }
 
     fn skip(&mut self, symbol: &Symbol, reason: impl Into<String>) {
-        self.module.skipped.push(Skipped {
-            symbol: symbol.path_components.join("."),
-            reason: reason.into(),
-        });
+        self.module
+            .skipped
+            .push(Skipped::new(symbol.path_components.join("."), reason));
     }
 
     fn read_global(&mut self, entry: &Entry) {
@@ -546,14 +544,14 @@ impl Reader<'_> {
                 "async sequences are bound as the streams members return",
             );
         }
-        let kind = match self.kind(entry) {
+        let kind = match self.kind(entry, &availability) {
             Ok(kind) => kind,
             Err(reason) => return self.skip(symbol, reason),
         };
         let mut members = self.members(entry, &availability);
         match &kind {
             Kind::Protocol { callbacks: Some(callbacks) } => {
-                members.retain(|member| !callbacks.methods.iter().any(|method| method.key == member.key));
+                members.retain(|member| !callbacks.iter().any(|method| method.key == member.key));
             }
             Kind::Class { .. } if self.inherits_init(entry) => members.push(inherited_init(symbol, &availability)),
             Kind::Class { .. } | Kind::Protocol { .. } => {}
@@ -576,7 +574,7 @@ impl Reader<'_> {
         });
     }
 
-    fn kind(&mut self, entry: &Entry) -> Result<Kind, String> {
+    fn kind(&mut self, entry: &Entry, availability: &Availability) -> Result<Kind, String> {
         let symbol = &entry.symbol;
         let usr = &symbol.identifier.precise;
         match symbol.kind.identifier.as_str() {
@@ -587,11 +585,13 @@ impl Reader<'_> {
             "swift.protocol" => Ok(Kind::Protocol {
                 callbacks: self.callbacks(entry),
             }),
-            "swift.enum" => cases(self.index, entry).map(|cases| Kind::Enum { cases }),
+            "swift.enum" => {
+                cases(self.index, entry, availability).map(|cases| Kind::Enum { cases })
+            }
             "swift.struct" if self.index.conforms(usr, OPTION_SET) => Ok(Kind::Options {
-                options: options(self.index, entry),
+                options: options(self.index, entry, availability),
             }),
-            "swift.struct" => fields(self.index, entry),
+            "swift.struct" => fields(self.index, entry, availability),
             _ => swift_types::alias_target(self.index, symbol).map(Kind::Alias),
         }
     }
@@ -657,7 +657,7 @@ impl Reader<'_> {
     }
 
     /// The protocol's callbacks, when JavaScript can implement all it requires.
-    fn callbacks(&mut self, entry: &Entry) -> Option<Callbacks> {
+    fn callbacks(&mut self, entry: &Entry) -> Option<Vec<Callback>> {
         let symbol = &entry.symbol;
         let usr = &symbol.identifier.precise;
         let inherited = self
@@ -682,7 +682,7 @@ impl Reader<'_> {
                 }
             }
         }
-        (!methods.is_empty()).then_some(Callbacks { methods })
+        (!methods.is_empty()).then_some(methods)
     }
 }
 
@@ -728,15 +728,15 @@ fn add_member(members: &mut Vec<Member>, member: Member, skipped: &mut Vec<Skipp
             if member.effects.asynchronous && !members[position].effects.asynchronous =>
         {
             let replaced = std::mem::replace(&mut members[position], member);
-            skipped.push(Skipped {
-                symbol: replaced.key,
-                reason: "an async declaration has its name".to_owned(),
-            });
+            skipped.push(Skipped::new(
+                replaced.key,
+                "an async declaration has its name",
+            ));
         }
-        Some(position) => skipped.push(Skipped {
-            symbol: member.key,
-            reason: format!("its name is taken by {}", members[position].key),
-        }),
+        Some(position) => skipped.push(Skipped::new(
+            member.key,
+            format!("its name is taken by {}", members[position].key),
+        )),
     }
 }
 
@@ -861,23 +861,7 @@ fn members_of(
     if !settable {
         return Ok(vec![member]);
     }
-    let setter = Member {
-        name: format!("set{}", swift_types::capitalize(&member.name)),
-        key: format!("{}=", member.key),
-        kind: MemberKind::Setter,
-        params: vec![Param {
-            name: "value".to_owned(),
-            ty: member.result.clone(),
-        }],
-        result: Ty::Void,
-        effects: Effects::default(),
-        availability: member.availability.clone(),
-        native: member.native.clone(),
-        labels: Vec::new(),
-        is_static: member.is_static,
-        stream: false,
-        variadic: false,
-    };
+    let setter = member.setter();
     Ok(vec![member, setter])
 }
 
@@ -945,20 +929,30 @@ fn name(symbol: &Symbol, asynchronous: bool) -> String {
 fn signature(index: &Index, symbol: &Symbol, member: &mut Member) -> Result<(), String> {
     let signature = symbol.function_signature.as_ref().ok_or("no signature")?;
     member.labels = swift_types::labels(symbol.path_components.last().map_or("", String::as_str));
-    for parameter in &signature.parameters {
-        let ty = swift_types::parameter_type(index, &parameter.declaration_fragments)?;
-        let name = parameter
-            .internal_name
-            .clone()
-            .unwrap_or_else(|| parameter.name.clone());
-        member.params.push(Param { name, ty });
-    }
+    member.params = params(index, signature)?;
     member.result = if member.kind == MemberKind::Initializer {
         initializer_result(index, symbol)?
     } else {
         swift_types::parse(index, &signature.returns)?
     };
     Ok(())
+}
+
+/// The parameters `signature` declares, each with the name its body uses.
+fn params(index: &Index, signature: &Signature) -> Result<Vec<Param>, String> {
+    signature
+        .parameters
+        .iter()
+        .map(|parameter| {
+            Ok(Param {
+                name: parameter
+                    .internal_name
+                    .clone()
+                    .unwrap_or_else(|| parameter.name.clone()),
+                ty: swift_types::parameter_type(index, &parameter.declaration_fragments)?,
+            })
+        })
+        .collect()
 }
 
 fn initializer_result(index: &Index, symbol: &Symbol) -> Result<Ty, String> {
@@ -995,8 +989,7 @@ fn stream_result(index: &Index, member: &mut Member) {
     }
 }
 
-fn cases(index: &Index, entry: &Entry) -> Result<Vec<Case>, String> {
-    let parent = availability(entry, None).unwrap_or_default();
+fn cases(index: &Index, entry: &Entry, parent: &Availability) -> Result<Vec<Case>, String> {
     let mut cases = Vec::new();
     for case in index.members(&entry.symbol.path_components) {
         if case.symbol.kind.identifier != "swift.enum.case" {
@@ -1006,7 +999,7 @@ fn cases(index: &Index, entry: &Entry) -> Result<Vec<Case>, String> {
         if declaration.contains('(') {
             return Err("enum cases with associated values are not bound".to_owned());
         }
-        let Some(availability) = availability(case, Some(&parent)) else {
+        let Some(availability) = availability(case, Some(parent)) else {
             continue;
         };
         let name = case
@@ -1025,8 +1018,7 @@ fn cases(index: &Index, entry: &Entry) -> Result<Vec<Case>, String> {
 }
 
 /// An option set's options: its static properties of its own type.
-fn options(index: &Index, entry: &Entry) -> Vec<Case> {
-    let parent = availability(entry, None).unwrap_or_default();
+fn options(index: &Index, entry: &Entry, parent: &Availability) -> Vec<Case> {
     let own = entry
         .symbol
         .path_components
@@ -1042,7 +1034,7 @@ fn options(index: &Index, entry: &Entry) -> Vec<Case> {
                 || declaration.contains(&format!(": {own} {{"))
         })
         .filter_map(|option| {
-            let availability = availability(option, Some(&parent))?;
+            let availability = availability(option, Some(parent))?;
             let name = option.symbol.path_components.last().cloned()?;
             Some(Case {
                 native: name.clone(),
@@ -1055,8 +1047,7 @@ fn options(index: &Index, entry: &Entry) -> Vec<Case> {
 
 /// A struct's fields: its instance properties, and whether an initializer
 /// takes exactly them.
-fn fields(index: &Index, entry: &Entry) -> Result<Kind, String> {
-    let parent = availability(entry, None).unwrap_or_default();
+fn fields(index: &Index, entry: &Entry, parent: &Availability) -> Result<Kind, String> {
     let mut fields = Vec::new();
     let mut initializers = Vec::new();
     for member in index.members(&entry.symbol.path_components) {
@@ -1064,7 +1055,7 @@ fn fields(index: &Index, entry: &Entry) -> Result<Kind, String> {
         let name = symbol.path_components.last().cloned().unwrap_or_default();
         match symbol.kind.identifier.as_str() {
             "swift.property" => {
-                let Some(availability) = availability(member, Some(&parent)) else {
+                let Some(availability) = availability(member, Some(parent)) else {
                     continue;
                 };
                 let ty = swift_types::property_type(index, &symbol.declaration_fragments)?;
@@ -1120,15 +1111,7 @@ fn callback(index: &Index, entry: &Entry, optional: bool) -> Result<Option<Callb
     let Some(availability) = availability(entry, None) else {
         return Ok(None);
     };
-    let mut params = Vec::new();
-    for parameter in &signature.parameters {
-        let ty = swift_types::parameter_type(index, &parameter.declaration_fragments)?;
-        let name = parameter
-            .internal_name
-            .clone()
-            .unwrap_or_else(|| parameter.name.clone());
-        params.push(Param { name, ty });
-    }
+    let params = params(index, signature)?;
     let selector = optional
         .then(|| {
             symbol

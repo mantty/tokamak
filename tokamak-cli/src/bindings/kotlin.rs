@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use super::android::kotlin_name;
 use super::model::{
-    Availability, Callbacks, Collection, Kind, Member, MemberKind, Module, NamedKind, Ty, Type,
+    Availability, Callback, Collection, Kind, Member, MemberKind, Module, NamedKind, Ty, Type,
 };
 
 /// The Kotlin package of the plugin `id`'s bindings, whose `Bindings` class
@@ -48,19 +48,12 @@ pub(crate) fn emit(module: &Module, id: &str) -> String {
         type_calls(&mut out, ty);
     }
     for ty in &module.types {
-        if let Some(callbacks) = callbacks(ty) {
+        if let Some(callbacks) = ty.callbacks() {
             implementation(&mut out, ty, callbacks);
         }
     }
     out.push_str("}\n");
     out
-}
-
-fn callbacks(ty: &Type) -> Option<&Callbacks> {
-    match &ty.kind {
-        Kind::Class { callbacks, .. } | Kind::Protocol { callbacks } => callbacks.as_ref(),
-        _ => None,
-    }
 }
 
 /// The name of the function that performs a type's calls.
@@ -102,7 +95,7 @@ fn subscriptions(out: &mut String, module: &Module) {
     out.push_str(
         "\n    override fun subscribeBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply): () -> Unit {\n        val b = TokamakBinding(payload, host.resources, reply)\n        return when (method) {\n",
     );
-    for ty in module.types.iter().filter(|ty| callbacks(ty).is_some()) {
+    for ty in module.types.iter().filter(|ty| ty.callbacks().is_some()) {
         let guard = guard(&ty.availability, "\n                ");
         let _ = writeln!(
             out,
@@ -242,7 +235,7 @@ fn to_array(element: &Ty) -> &'static str {
 }
 
 /// The class that implements an interface, or extends an abstract class, for JavaScript handlers.
-fn implementation(out: &mut String, ty: &Type, callbacks: &Callbacks) {
+fn implementation(out: &mut String, ty: &Type, callbacks: &[Callback]) {
     let constructor = if matches!(ty.kind, Kind::Class { .. }) {
         "()"
     } else {
@@ -258,7 +251,7 @@ fn implementation(out: &mut String, ty: &Type, callbacks: &Callbacks) {
         ty.path.join("_"),
         ty.native
     );
-    for (position, method) in callbacks.methods.iter().enumerate() {
+    for (position, method) in callbacks.iter().enumerate() {
         if position > 0 {
             out.push('\n');
         }

@@ -1,7 +1,7 @@
 //! Swift names and types from symbol graph declaration fragments.
 
 use super::apple::{Fragment, Index, Symbol};
-use super::model::{Collection, Effects, Named, NamedKind, Ty};
+use super::model::{Collection, Effects, Named, NamedKind, Ty, capitalize};
 
 /// The effects a declaration has outside its parameter list.
 pub(super) fn effects(fragments: &[Fragment]) -> Effects {
@@ -58,14 +58,6 @@ pub(super) fn labels(component: &str) -> Vec<Option<String>> {
         .filter(|label| !label.is_empty())
         .map(|label| (label != "_").then(|| label.to_owned()))
         .collect()
-}
-
-pub(super) fn capitalize(text: &str) -> String {
-    let mut characters = text.chars();
-    characters
-        .next()
-        .map(|first| first.to_uppercase().chain(characters).collect())
-        .unwrap_or_default()
 }
 
 /// The declaration's source text.

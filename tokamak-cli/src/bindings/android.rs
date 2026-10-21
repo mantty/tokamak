@@ -11,8 +11,8 @@ use quick_xml::events::{BytesStart, Event};
 use super::Family;
 use super::java::{self, Class, ClassKind, JavaMember, JavaType, MemberKind as JavaKind};
 use super::model::{
-    Availability, Callback, Callbacks, Case, Collection, Constant, Effects, Kind, Member,
-    MemberKind, Module, Named, NamedKind, Param, Skipped, Ty, Type,
+    Availability, Callback, Case, Collection, Constant, Effects, Kind, Member, MemberKind, Module,
+    Named, NamedKind, Param, Skipped, Ty, Type, capitalize,
 };
 
 /// The API level that introduced a symbol, and any that deprecated it.
@@ -231,10 +231,7 @@ impl Reader<'_> {
     }
 
     fn skip(&mut self, symbol: String, reason: impl Into<String>) {
-        self.module.skipped.push(Skipped {
-            symbol,
-            reason: reason.into(),
-        });
+        self.module.skipped.push(Skipped::new(symbol, reason));
     }
 
     fn availability(&self, key: &str, parent: Option<&Availability>) -> Availability {
@@ -305,9 +302,8 @@ impl Reader<'_> {
             if !member.modifiers.iter().any(|modifier| modifier == "public") {
                 continue;
             }
-            let key = key(declared, member, types);
-            let availability =
-                self.availability(&format!("{}#{}", declared.binary(), key.1), Some(parent));
+            let keys = keys(declared, member, types);
+            let availability = self.availability(&keys.level, Some(parent));
             if member.kind == JavaKind::Field
                 && let Some(value) = constant(member)
             {
@@ -318,7 +314,7 @@ impl Reader<'_> {
                 });
                 continue;
             }
-            match self::member(declared, member, types, key.0, availability) {
+            match self::member(declared, member, types, keys.call, availability) {
                 Ok(found) => members.extend(found),
                 Err(reason) => self.skip(format!("{}.{}", declared.source(), member.name), reason),
             }
@@ -335,7 +331,7 @@ impl Reader<'_> {
         declared: &Declared,
         types: &Types<'_>,
         parent: &Availability,
-    ) -> Option<Callbacks> {
+    ) -> Option<Vec<Callback>> {
         let mut methods: Vec<Callback> = Vec::new();
         for member in &declared.class.members {
             let overridable = member.kind == JavaKind::Method
@@ -348,10 +344,9 @@ impl Reader<'_> {
             if !overridable {
                 continue;
             }
-            let (_, descriptor) = key(declared, member, types);
-            let availability =
-                self.availability(&format!("{}#{descriptor}", declared.binary()), Some(parent));
-            match callback(declared, member, types, availability) {
+            let keys = keys(declared, member, types);
+            let availability = self.availability(&keys.level, Some(parent));
+            match callback(declared, member, types, keys.call, availability) {
                 Ok(callback) => add_callback(&mut methods, callback, &mut self.module.skipped),
                 Err(reason) if !is_required(&declared.class, member) => {
                     self.skip(format!("{}.{}", declared.source(), member.name), reason);
@@ -365,7 +360,7 @@ impl Reader<'_> {
                 }
             }
         }
-        (!methods.is_empty()).then_some(Callbacks { methods })
+        (!methods.is_empty()).then_some(methods)
     }
 }
 
@@ -381,7 +376,7 @@ fn member(
     let types = types.with(&member.parameters);
     let mut params = Vec::new();
     for param in &member.params {
-        let ty = types.ty(&param.ty, nullable(&param.annotations, true))?;
+        let ty = types.ty(&param.ty, nullable(&param.annotations))?;
         let ty = if param.varargs {
             Ty::List(Box::new(ty), Collection::JavaArray)
         } else {
@@ -400,10 +395,7 @@ fn member(
         is_static,
         params,
         result: Ty::Void,
-        effects: Effects {
-            throws: true,
-            asynchronous: false,
-        },
+        effects: Effects::default(),
         stream: false,
         availability,
         native: member.name.clone(),
@@ -425,7 +417,7 @@ fn member(
             }])
         }
         JavaKind::Method => {
-            let result = types.ty(&member.ty, nullable(&member.annotations, true))?;
+            let result = types.ty(&member.ty, nullable(&member.annotations))?;
             Ok(vec![Member { result, ..base }])
         }
         JavaKind::Field => field(member, &types, base),
@@ -447,23 +439,23 @@ fn add_callback(methods: &mut Vec<Callback>, callback: Callback, skipped: &mut V
     } else {
         callback
     };
-    skipped.push(Skipped {
-        symbol: replaced.key,
-        reason: "another overload of its name is implemented; it keeps its platform default"
-            .to_owned(),
-    });
+    skipped.push(Skipped::new(
+        replaced.key,
+        "another overload of its name is implemented; it keeps its platform default",
+    ));
 }
 
 fn callback(
     declared: &Declared,
     member: &JavaMember,
     types: &Types<'_>,
+    key: String,
     availability: Availability,
 ) -> Result<Callback, String> {
     let mut params = Vec::new();
     let mut declarations = Vec::new();
     for param in &member.params {
-        let nullable = nullable(&param.annotations, true);
+        let nullable = nullable(&param.annotations);
         let ty = types.ty(&param.ty, nullable)?;
         declarations.push(format!(
             "{}: {}",
@@ -477,7 +469,7 @@ fn callback(
     }
     let default = !is_required(&declared.class, member);
     Ok(Callback {
-        key: key(declared, member, types).0,
+        key,
         name: member.name.clone(),
         params,
         declaration: format!(
@@ -520,12 +512,9 @@ fn has(annotations: &[String], name: &str) -> bool {
 }
 
 /// Whether a value annotated with `annotations` may be null; `default` when unannotated.
-fn nullable(annotations: &[String], default: bool) -> bool {
-    if has(annotations, "NonNull") {
-        false
-    } else {
-        has(annotations, "Nullable") || default
-    }
+/// Whether a Java reference may be null: unless it is annotated `@NonNull`.
+fn nullable(annotations: &[String]) -> bool {
+    !has(annotations, "NonNull")
 }
 
 fn cases(class: &Class, availability: &Availability) -> Vec<Case> {
@@ -542,7 +531,7 @@ fn cases(class: &Class, availability: &Availability) -> Vec<Case> {
 
 /// A field as a getter, and as a setter unless it is final.
 fn field(member: &JavaMember, types: &Types<'_>, base: Member) -> Result<Vec<Member>, String> {
-    let ty = types.ty(&member.ty, nullable(&member.annotations, true))?;
+    let ty = types.ty(&member.ty, nullable(&member.annotations))?;
     let getter = Member {
         result: ty.clone(),
         kind: MemberKind::Getter,
@@ -551,17 +540,7 @@ fn field(member: &JavaMember, types: &Types<'_>, base: Member) -> Result<Vec<Mem
     if member.modifiers.iter().any(|modifier| modifier == "final") {
         return Ok(vec![getter]);
     }
-    let setter = Member {
-        name: format!("set{}", super::swift_types::capitalize(&getter.name)),
-        key: format!("{}=", getter.key),
-        kind: MemberKind::Setter,
-        params: vec![Param {
-            name: "value".to_owned(),
-            ty,
-        }],
-        result: Ty::Void,
-        ..getter.clone()
-    };
+    let setter = getter.setter();
     Ok(vec![getter, setter])
 }
 
@@ -592,7 +571,13 @@ fn constant(member: &JavaMember) -> Option<String> {
 
 /// The member's key, `Outer.Inner.name(descriptor)`, and its JVM name and
 /// descriptor as `api-versions.xml` lists them.
-fn key(declared: &Declared, member: &JavaMember, types: &Types<'_>) -> (String, String) {
+/// A member's keys: the one its call travels under, and the one `api-versions.xml` lists it under.
+struct Keys {
+    call: String,
+    level: String,
+}
+
+fn keys(declared: &Declared, member: &JavaMember, types: &Types<'_>) -> Keys {
     let types = types.with(&member.parameters);
     let erase = |name: &str| types.binary(name);
     let jvm = match member.kind {
@@ -615,7 +600,10 @@ fn key(declared: &Declared, member: &JavaMember, types: &Types<'_>) -> (String, 
             format!("{name}({params}){}", member.ty.descriptor(&erase))
         }
     };
-    (format!("{}#{jvm}", declared.class.path.join(".")), jvm)
+    Keys {
+        call: format!("{}#{jvm}", declared.class.path.join(".")),
+        level: format!("{}#{jvm}", declared.binary()),
+    }
 }
 
 /// Keeps, among the members that share a name, those TypeScript can tell
@@ -642,10 +630,10 @@ fn overloads(members: &mut Vec<Member>, types: &Types<'_>) -> Vec<Skipped> {
                     .all(|(left, right)| types.overlap(&left.ty, &right.ty))
         });
         match overlapping {
-            Some(other) => skipped.push(Skipped {
-                symbol: member.key,
-                reason: format!("TypeScript cannot tell its arguments from {}'s", other.key),
-            }),
+            Some(other) => skipped.push(Skipped::new(
+                member.key,
+                format!("TypeScript cannot tell its arguments from {}'s", other.key),
+            )),
             None => kept.push(member),
         }
     }
@@ -695,10 +683,6 @@ impl Types<'_> {
     }
 
     fn ty(&self, ty: &JavaType, nullable: bool) -> Result<Ty, String> {
-        let element = JavaType {
-            dimensions: 0,
-            ..ty.clone()
-        };
         if ty.dimensions > 0 {
             if ty.dimensions == 1 && ty.name == "byte" {
                 return Ok(optional(Ty::Bytes, nullable));
@@ -715,18 +699,14 @@ impl Types<'_> {
                 nullable,
             ));
         }
-        let primitive = match element.name.as_str() {
-            "void" => Some(Ty::Void),
-            "boolean" => Some(Ty::Bool),
-            "byte" | "short" | "int" | "long" => Some(Ty::Int(element.name.clone())),
-            "float" | "double" => Some(Ty::Float(element.name.clone())),
-            "char" => Some(Ty::Char),
-            _ => None,
-        };
-        if let Some(primitive) = primitive {
-            return Ok(primitive);
-        }
-        Ok(optional(self.object(&element)?, nullable))
+        Ok(match ty.name.as_str() {
+            "void" => Ty::Void,
+            "boolean" => Ty::Bool,
+            "byte" | "short" | "int" | "long" => Ty::Int(ty.name.clone()),
+            "float" | "double" => Ty::Float(ty.name.clone()),
+            "char" => Ty::Char,
+            _ => optional(self.object(ty)?, nullable),
+        })
     }
 
     fn object(&self, ty: &JavaType) -> Result<Ty, String> {
@@ -791,7 +771,7 @@ impl Types<'_> {
                     primitive @ ("boolean" | "byte" | "char" | "short" | "int" | "long" | "float"
                     | "double"),
                 ) => {
-                    format!("{}Array", super::swift_types::capitalize(primitive))
+                    format!("{}Array", capitalize(primitive))
                 }
                 _ => format!("Array<{}>", self.kotlin(&element, true)),
             };
@@ -800,7 +780,7 @@ impl Types<'_> {
         let name = match ty.name.as_str() {
             "boolean" => return "Boolean".to_owned(),
             primitive @ ("byte" | "char" | "short" | "int" | "long" | "float" | "double") => {
-                return super::swift_types::capitalize(primitive);
+                return capitalize(primitive);
             }
             name if self.variables.iter().any(|variable| variable == name) => {
                 return "Any?".to_owned();

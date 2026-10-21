@@ -23,6 +23,15 @@ pub(crate) struct Skipped {
     pub(crate) reason: String,
 }
 
+impl Skipped {
+    pub(crate) fn new(symbol: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            symbol: symbol.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
 /// A native type.
 #[derive(Debug)]
 pub(crate) struct Type {
@@ -48,9 +57,35 @@ pub(crate) struct Constant {
     pub(crate) availability: Availability,
 }
 
+impl Member {
+    /// The setter of a getter's value.
+    pub(crate) fn setter(&self) -> Self {
+        Self {
+            name: format!("set{}", capitalize(&self.name)),
+            key: format!("{}=", self.key),
+            kind: MemberKind::Setter,
+            params: vec![Param {
+                name: "value".to_owned(),
+                ty: self.result.clone(),
+            }],
+            result: Ty::Void,
+            effects: Effects::default(),
+            ..self.clone()
+        }
+    }
+}
+
 impl Type {
     pub(crate) fn name(&self) -> String {
         self.path.join(".")
+    }
+
+    /// The methods JavaScript implements for a class or protocol that has them.
+    pub(crate) fn callbacks(&self) -> Option<&[Callback]> {
+        match &self.kind {
+            Kind::Class { callbacks, .. } | Kind::Protocol { callbacks } => callbacks.as_deref(),
+            _ => None,
+        }
     }
 }
 
@@ -60,11 +95,11 @@ pub(crate) enum Kind {
     /// may subclass, such as an Android abstract callback, has callbacks.
     Class {
         superclass: Option<Vec<String>>,
-        callbacks: Option<Callbacks>,
+        callbacks: Option<Vec<Callback>>,
     },
     /// An Apple protocol or Android interface: JavaScript implements its
     /// callbacks, and its instances are native objects.
-    Protocol { callbacks: Option<Callbacks> },
+    Protocol { callbacks: Option<Vec<Callback>> },
     /// A value with named fields, which native code can construct from them
     /// when it is constructible.
     Struct {
@@ -79,12 +114,7 @@ pub(crate) enum Kind {
     Alias(Ty),
 }
 
-/// The methods JavaScript handlers implement.
-#[derive(Debug)]
-pub(crate) struct Callbacks {
-    pub(crate) methods: Vec<Callback>,
-}
-
+/// A method JavaScript handlers implement.
 #[derive(Debug)]
 pub(crate) struct Callback {
     /// The key of the native method it implements.
@@ -239,4 +269,12 @@ pub(crate) struct Availability {
     pub(crate) platforms: Vec<(String, Option<String>)>,
     /// The deprecation message, when deprecated.
     pub(crate) deprecated: Option<String>,
+}
+
+pub(crate) fn capitalize(text: &str) -> String {
+    let mut characters = text.chars();
+    characters
+        .next()
+        .map(|first| first.to_uppercase().chain(characters).collect())
+        .unwrap_or_default()
 }
