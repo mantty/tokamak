@@ -8,6 +8,8 @@ import {
   Location,
   LocationListener,
   LocationManager,
+  LocationRequest,
+  LocationRequest$Builder,
   SystemClock,
   type Executor,
 } from "../android/bindings.js";
@@ -15,15 +17,15 @@ import { permissionDenied, unavailable, within } from "./errors.js";
 import type { Position, PositionOptions } from "./types.js";
 
 /**
- * The device's position: the provider's last known when no older than `maximumAge`, or a new fix
- * within `timeout`. Null when Android finds none.
+ * The device's position: the provider's last known when no older than `maximumAge`, or a new
+ * high-accuracy fix within `timeout`. Null when Android finds none.
  */
 export async function currentPosition(ctx: TokamakContext, { maximumAge = 0, timeout }: PositionOptions): Promise<Position | null> {
   const { context, manager } = await locationManager(ctx);
   const name = await provider(manager);
   const recent = await manager.getLastKnownLocation(name);
   if (recent && await age(ctx, recent) <= maximumAge) return await position(recent);
-  const [signal, executor] = await Promise.all([CancellationSignal.new(ctx), mainExecutor(context)]);
+  const [request, signal, executor] = await Promise.all([highAccuracy(ctx, 0), CancellationSignal.new(ctx), mainExecutor(context)]);
   let consumer: Consumer | undefined;
   let finished = false;
   const found = new Promise<Position | null>((resolve, reject) => {
@@ -35,7 +37,7 @@ export async function currentPosition(ctx: TokamakContext, { maximumAge = 0, tim
         release(created);
         return;
       }
-      await manager.getCurrentLocation(name, signal, executor, created);
+      await manager.getCurrentLocation(name, request, signal, executor, created);
     }).catch((failure: unknown) => { reject(locationError(failure as Error)); });
   });
   return within(found, timeout, () => {
@@ -52,7 +54,7 @@ export async function watchPositions(
   error: (error: unknown) => void,
 ): Promise<() => void> {
   const { context, manager } = await locationManager(ctx);
-  const [name, executor] = await Promise.all([provider(manager), mainExecutor(context)]);
+  const [name, executor, request] = await Promise.all([provider(manager), mainExecutor(context), highAccuracy(ctx, 1000)]);
   const listener = await LocationListener.implement(ctx, {
     async onLocationChanged(location) {
       next(await position(location));
@@ -61,7 +63,7 @@ export async function watchPositions(
     onProviderDisabled() { error(unavailable("Location provider is unavailable")); },
   });
   try {
-    await manager.requestLocationUpdates(name, 1000, 0, executor, listener);
+    await manager.requestLocationUpdates(name, request, executor, listener);
   } catch (failure) {
     release(listener);
     throw locationError(failure as Error);
@@ -84,14 +86,24 @@ async function mainExecutor(context: Context): Promise<Executor> {
   return executor;
 }
 
-/** The first enabled of the GPS, network and fused providers, or any other enabled provider. */
+/**
+ * The first enabled of the fused provider, which combines GPS with Wi-Fi and cell signals, GPS and
+ * the network, or any other enabled provider.
+ */
 async function provider(manager: LocationManager): Promise<string> {
-  for (const name of [LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.FUSED_PROVIDER]) {
+  for (const name of [LocationManager.FUSED_PROVIDER, LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER]) {
     if (await manager.isProviderEnabled(name)) return name;
   }
   const [other] = await manager.getProviders(true);
   if (!other) throw unavailable("No location provider is available");
   return other;
+}
+
+/** A request for the most accurate fixes the provider can give, every `interval` milliseconds. */
+async function highAccuracy(ctx: TokamakContext, interval: number): Promise<LocationRequest> {
+  const builder = await LocationRequest$Builder.new(ctx, interval);
+  await builder.setQuality(LocationRequest.QUALITY_HIGH_ACCURACY);
+  return builder.build();
 }
 
 /** The milliseconds since Android took `location`. */
