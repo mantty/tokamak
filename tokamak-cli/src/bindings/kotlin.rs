@@ -77,7 +77,8 @@ fn raw(native: &str) -> &str {
 }
 
 /// The last branch of a request `when`: the rejection of a member the plugin does not bind.
-const UNBOUND: &str = "            else -> throw TokamakPluginError.notSupported(\"$method is not supported\")";
+const UNBOUND: &str =
+    "            else -> throw TokamakPluginError.notSupported(\"$method is not supported\")";
 
 fn calls(out: &mut String, module: &Module) {
     out.push_str(

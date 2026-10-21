@@ -54,7 +54,8 @@ fn members(module: &Module) -> impl Iterator<Item = (Option<&Type>, &Member)> {
 }
 
 /// The end of a request switch: the rejection of a member the plugin does not bind.
-const UNBOUND: &str = "    default:\n      throw .notSupported(\"\\(method) is not supported\")\n    }\n  }\n";
+const UNBOUND: &str =
+    "    default:\n      throw .notSupported(\"\\(method) is not supported\")\n    }\n  }\n";
 
 struct Emitter<'a> {
     class: &'a str,
