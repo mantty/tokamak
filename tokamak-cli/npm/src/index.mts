@@ -1,3 +1,6 @@
+export { TokamakEntrypoint } from "@tokamakdev/plugin/worker";
+export type { TokamakContext, TokamakEvent, WebView } from "@tokamakdev/plugin/worker";
+
 /** A setting value. */
 export type Value = string | number | boolean;
 

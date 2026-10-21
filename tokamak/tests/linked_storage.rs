@@ -14,16 +14,12 @@ use tokamak::{
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 const WORKER: &[u8] = br#"
-import { WorkerEntrypoint } from "cloudflare:workers";
-
-export class TokamakEvents extends WorkerEntrypoint {
-  async dispatch(name) {
-    if (name === "put") await this.env.SESSION.put("visits", "1");
-    return { reply: await this.env.SESSION.get("visits"), listened: ["put", "get"] };
-  }
-}
-
-export default { fetch: () => new Response(null, { status: 404 }) };
+export default {
+  async fetch(request, env) {
+    if (new URL(request.url).pathname === "/put") await env.SESSION.put("visits", "1");
+    return new Response(await env.SESSION.get("visits"));
+  },
+};
 "#;
 
 #[test]
@@ -34,6 +30,7 @@ fn serves_storage_bindings_through_the_exported_entry_point() -> TestResult {
     write_worker_environment(
         &app,
         &WorkerEnvironment {
+            services: BTreeMap::new(),
             vars: BTreeMap::new(),
             storage: vec![StorageBinding::Kv {
                 name: "SESSION".to_owned(),
@@ -62,8 +59,8 @@ fn serves_storage_bindings_through_the_exported_entry_point() -> TestResult {
         |_| {},
     )?;
 
-    runtime.emit("put", "{}", Duration::from_secs(5))?;
+    runtime.fetch("/put", Duration::from_secs(5))?;
 
-    assert_eq!(runtime.emit("get", "{}", Duration::from_secs(5))?, r#""1""#);
+    assert_eq!(runtime.fetch("/get", Duration::from_secs(5))?, b"1");
     Ok(())
 }

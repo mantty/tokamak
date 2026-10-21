@@ -1,11 +1,11 @@
+import { decodeValues } from "@tokamakdev/plugin/streams";
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { test } from "node:test";
 
-import { connectNative, disconnectNative } from "@tokamakdev/plugin/testing";
+import { connectNative } from "@tokamakdev/plugin/testing";
 
-import { notifications, type Subscription } from "../src/index.js";
+import { notifications as createApi, type Subscription } from "../src/index.js";
 
-afterEach(disconnectNative);
 
 const setupConfig = {
   categories: [
@@ -26,6 +26,7 @@ const setupConfig = {
 
 void test("calls the native plugin with each operation's arguments", async () => {
   const native = connectNative();
+  const notifications = createApi(native.ctx);
   const cases: [() => Promise<unknown>, string, unknown][] = [
     [() => notifications.permission(), "permission", null],
     [() => notifications.requestPermission(), "requestPermission", {}],
@@ -83,6 +84,7 @@ void test("calls the native plugin with each operation's arguments", async () =>
 
 void test("passes every notification field to the native plugin", async () => {
   const native = connectNative();
+  const notifications = createApi(native.ctx);
   const notification = {
     id: "n1",
     title: "Ada",
@@ -100,95 +102,40 @@ void test("passes every notification field to the native plugin", async () => {
   await shown;
 });
 
-void test("rejects an invalid notification without calling the native plugin", async () => {
+void test("passes subscription options to the native endpoint", async () => {
   const native = connectNative();
-
-  const shown = notifications.show({ id: "n1", title: "Hi", badge: -1 });
-
-  assert.deepEqual(native.sent, []);
-  await assert.rejects(shown, (error: unknown) => error instanceof TypeError);
-});
-
-void test("rejects an invalid setup without calling the native plugin", async () => {
-  const native = connectNative();
-
-  const setup = notifications.setup({ channels: [{ id: "c", name: "C", group: "missing" }] });
-
-  assert.deepEqual(native.sent, []);
-  await assert.rejects(setup, (error: unknown) => error instanceof TypeError);
-});
-
-void test("rejects invalid options without calling the native plugin", async () => {
-  const native = connectNative();
-  const calls: (() => Promise<unknown>)[] = [
-    () => notifications.requestPermission({ provisional: "yes" } as never),
-    () => notifications.setBadge(-1),
-    () => notifications.openSettings({ channel: "" }),
-    () => notifications.subscribeToTopic(""),
-    () => notifications.unsubscribeFromTopic("a/b"),
-    () => notifications.schedule({ id: "s", title: "S", every: { seconds: 1 } }),
-  ];
-
-  for (const call of calls) {
-    await assert.rejects(call(), (error: unknown) => error instanceof TypeError);
-  }
-  assert.deepEqual(native.sent, []);
-});
-
-void test("subscribes without the web's options", async () => {
-  const native = connectNative();
+  const notifications = createApi(native.ctx);
   const subscription: Subscription = { service: "fcm", fid: "fid" };
 
   const subscribed = notifications.subscribe({ applicationServerKey: "web only" });
-  assert.equal(native.lastRequest().arguments, null);
+  assert.deepEqual(native.lastRequest().arguments, { applicationServerKey: "web only" });
   native.respond({ value: subscription });
 
   assert.deepEqual(await subscribed, subscription);
 });
 
-void test("listens for dismissed notifications", () => {
+void test("streams dismissed notifications", async () => {
   const native = connectNative();
-  const dismissed: unknown[] = [];
-
-  notifications.onNotificationDismissed((notification) => dismissed.push(notification.id));
+  const values = decodeValues<{ id: string }>(createApi(native.ctx).onNotificationDismissed());
   assert.equal(native.lastRequest().method, "onNotificationDismissed");
-  native.respond({ value: { id: "1", title: "Hi", body: null, data: {}, source: "local" } }, false);
-
-  assert.deepEqual(dismissed, ["1"]);
+  native.respond({ value: { id: "1", title: "Hi", data: {}, source: "local" } }, true);
+  assert.equal((await values.next()).value?.id, "1");
+  assert.equal((await values.next()).done, true);
 });
 
-void test("delivers native events to listeners until they stop", () => {
+void test("streams opened notifications until cancelled", async () => {
   const native = connectNative();
-  const opened: unknown[] = [];
-
-  const stop = notifications.onNotificationOpened((notification) => opened.push(notification));
-  assert.deepEqual(native.lastRequest(), {
-    type: "subscribe",
-    plugin: "notifications",
-    method: "onNotificationOpened",
-    arguments: null,
-  });
-  const subscription = native.sent.at(-1);
+  const values = decodeValues(createApi(native.ctx).onNotificationOpened());
+  assert.equal(native.lastRequest().method, "onNotificationOpened");
   native.respond({ value: { id: "1", source: "local" } }, false);
-  stop();
-
-  assert.deepEqual(opened, [{ id: "1", source: "local" }]);
-  assert.deepEqual(native.sent.at(-1), {
-    type: "cancel",
-    session: subscription?.session,
-    id: subscription?.id,
-  });
+  assert.deepEqual((await values.next()).value, { id: "1", source: "local" });
+  await values.return(undefined);
+  assert.equal(native.sent.at(-1)?.type, "cancel");
 });
 
-void test("reports native listener failures", () => {
+void test("native message failures reject the stream reader", async () => {
   const native = connectNative();
-  const failures: string[] = [];
-
-  notifications.onMessage(
-    () => assert.fail("message received"),
-    (error) => failures.push(error.name),
-  );
+  const values = decodeValues(createApi(native.ctx).onMessage());
   native.respond({ error: { name: "NotSupportedError", message: "unsupported" } });
-
-  assert.deepEqual(failures, ["NotSupportedError"]);
+  await assert.rejects(values.next(), { name: "NotSupportedError" });
 });

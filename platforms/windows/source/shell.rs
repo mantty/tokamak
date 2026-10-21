@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crate::controls::{self, Controls, ShellEvent};
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use p12_keystore::{Certificate, KeyStore, KeyStoreEntry, PrivateKey, PrivateKeyChain};
@@ -67,7 +68,7 @@ struct ShellConfig {
 }
 
 pub(crate) fn run() -> Result<()> {
-    let mut event_loop = EventLoopBuilder::<Event>::with_user_event().build();
+    let mut event_loop = EventLoopBuilder::<ShellEvent>::with_user_event().build();
     let events = event_loop.create_proxy();
     let root = executable_dir()?;
     let config = read_config(&root)?;
@@ -100,10 +101,26 @@ pub(crate) fn run() -> Result<()> {
     let (lifecycle, deliveries) = deliver_lifecycle_events(Arc::clone(&runtime))?;
     let set_foreground = |foreground| runtime.set_foreground(foreground);
     let window = &window;
+    let view = &webview;
+    let controls_runtime = Arc::clone(&runtime);
     event_loop.run_return(move |event, _, flow| {
         *flow = ControlFlow::Wait;
         match event {
-            TaoEvent::UserEvent(Event::CertificatesRenewed) => {
+            TaoEvent::UserEvent(ShellEvent::Call {
+                id,
+                plugin,
+                method,
+                payload,
+            }) => controls::call(view, &controls_runtime, id, &plugin, &method, &payload),
+            TaoEvent::UserEvent(ShellEvent::Unsupported(id)) => controls::respond(
+                &controls_runtime,
+                id,
+                Err((
+                    "NotSupportedError",
+                    "Subscriptions are not supported".into(),
+                )),
+            ),
+            TaoEvent::UserEvent(ShellEvent::Runtime(Event::CertificatesRenewed)) => {
                 if let Err(error) = identity.replace(&certificates, &host, &client_certificate) {
                     eprintln!("tokamak client certificate renewal failed: {error:#}");
                 }
@@ -177,7 +194,7 @@ fn deliver_lifecycle_events(runtime: Arc<Runtime>) -> Result<(Sender<bool>, Join
         .spawn(move || {
             for foreground in receiver {
                 let name = if foreground { "resume" } else { "suspend" };
-                if let Err(error) = runtime.emit(name, "{}", LIFECYCLE_DEADLINE) {
+                if let Err(error) = runtime.emit(name, b"{}", LIFECYCLE_DEADLINE) {
                     eprintln!("tokamak {name} failed: {error}");
                 }
             }
@@ -190,11 +207,12 @@ fn start_runtime(
     config: &ShellConfig,
     root: &Path,
     state: &Path,
-    events: EventLoopProxy<Event>,
+    events: EventLoopProxy<ShellEvent>,
 ) -> Result<Runtime> {
+    let plugins: Arc<dyn tokamak::PluginHandler> = Arc::new(Controls(events.clone()));
     let listener = move |event: Event| {
         report(&event);
-        let _ = events.send_event(event);
+        let _ = events.send_event(ShellEvent::Runtime(event));
     };
     match (
         config.dev_endpoint.as_deref(),
@@ -209,7 +227,7 @@ fn start_runtime(
                     session_token: session_token.to_owned(),
                 },
                 foreground: true,
-                plugins: None,
+                plugins: Some(plugins),
             },
             listener,
         )?),
@@ -220,7 +238,7 @@ fn start_runtime(
                 storage_dir: state.join("storage"),
                 host: config.host.clone(),
                 foreground: true,
-                plugins: None,
+                plugins: Some(plugins),
             },
             listener,
         )?),

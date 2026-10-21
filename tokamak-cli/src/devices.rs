@@ -557,7 +557,7 @@ pub(super) fn install_and_launch_ios_simulator(
 }
 
 /// Install the app `bundle` on the iOS device `device_id` and launch the app
-/// `identifier`.
+/// `identifier` once the device is unlocked.
 pub(super) fn install_and_launch_ios_device(
     device_id: &str,
     bundle: &Path,
@@ -568,12 +568,22 @@ pub(super) fn install_and_launch_ios_device(
         &["device", "install", "app", "--device", device_id, &bundle],
         "install the app on the iOS device",
     )?;
-    run_devicectl(
-        &[
-            "device", "process", "launch", "--device", device_id, identifier,
-        ],
-        "launch the app on the iOS device",
-    )
+    let launch = [
+        "device", "process", "launch", "--device", device_id, identifier,
+    ];
+    let mut waiting = false;
+    loop {
+        match run_devicectl(&launch, "launch the app on the iOS device") {
+            Err(error) if is_locked_device_error(&error.to_string()) => {
+                if !waiting {
+                    eprintln!("Unlock the iOS device to launch the app");
+                    waiting = true;
+                }
+                std::thread::sleep(CORE_DEVICE_RETRY_DELAY);
+            }
+            launched => return launched,
+        }
+    }
 }
 
 /// Forward `relay_port` to the Android device `device_id`, install the app
@@ -642,6 +652,11 @@ fn run_devicectl(arguments: &[&str], action: &str) -> Result<()> {
         );
         std::thread::sleep(CORE_DEVICE_RETRY_DELAY);
     }
+}
+
+/// Whether devicectl could not launch an app because the device is locked.
+fn is_locked_device_error(detail: &str) -> bool {
+    detail.contains("BSErrorCodeDescription = Locked")
 }
 
 fn is_transient_devicectl_error(detail: &str) -> bool {
@@ -1367,8 +1382,8 @@ mod tests {
 
     use super::{
         Device, DeviceGroup, DeviceStatus, IosSimulatorUi, default_ios_device_type,
-        ios_simulator_ui_for_developer_dir, is_transient_devicectl_error, latest_ios_runtime,
-        order_devices, parse_android_adb_devices, parse_android_system_images,
+        ios_simulator_ui_for_developer_dir, is_locked_device_error, is_transient_devicectl_error,
+        latest_ios_runtime, order_devices, parse_android_adb_devices, parse_android_system_images,
         parse_ios_simulator_devices, parse_ios_simulator_targets, parse_xctrace_devices,
         prepared_device, render_devices, select_android_system_image,
     };
@@ -1610,6 +1625,18 @@ mod tests {
         ));
         assert!(!is_transient_devicectl_error(
             "The executable contains an invalid signature"
+        ));
+    }
+
+    #[test]
+    fn recognizes_a_launch_refused_while_the_device_is_locked() {
+        assert!(is_locked_device_error(
+            "launch the app on the iOS device failed: ERROR: The application failed to launch.\n\
+             BSErrorCodeDescription = Locked\n\
+             NSLocalizedFailureReason = Unable to launch com.example.app because the device was not, or could not be, unlocked."
+        ));
+        assert!(!is_locked_device_error(
+            "launch the app on the iOS device failed: BSErrorCodeDescription = Security"
         ));
     }
 }

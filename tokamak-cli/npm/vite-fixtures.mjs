@@ -4,15 +4,19 @@ import os from "node:os";
 import path from "node:path";
 import { after } from "node:test";
 
-import { cloudflare } from "@cloudflare/vite-plugin";
 import { tokamak } from "@tokamakdev/tok/vite";
 import { createBuilder, createServer } from "vite";
+import { workerTypes } from "./worker-fixtures.mjs";
 
 export const WORKER = `export default {
   fetch() {
     return new Response("worker");
   },
 };
+`;
+
+export const NATIVE_WORKER = `import { WorkerEntrypoint } from "cloudflare:workers";
+export default class Native extends WorkerEntrypoint {}
 `;
 
 const roots = [];
@@ -31,6 +35,7 @@ export function project(files = {}, options) {
   const all = {
     "wrangler.jsonc": JSON.stringify({ name: "app", main: "src/index.ts", compatibility_date: "2026-09-01" }),
     "src/index.ts": WORKER,
+    "worker-configuration.d.ts": workerTypes,
     ...files,
   };
   for (const [name, contents] of Object.entries(all)) {
@@ -44,7 +49,7 @@ export function project(files = {}, options) {
 export function activeTokamak(app) {
   process.env.TOKAMAK_VITE_OUTPUT = app.output;
   try {
-    return tokamak(app.options);
+    return tokamak(app.options, { inspectorPort: false, remoteBindings: false, persistState: false });
   } finally {
     delete process.env.TOKAMAK_VITE_OUTPUT;
   }
@@ -52,7 +57,7 @@ export function activeTokamak(app) {
 
 /** Vite options for `app` with Cloudflare's plugin and the active tokamak plugin. */
 export function viteConfig(app, vite = {}) {
-  return { root: app.root, configFile: false, logLevel: "silent", plugins: [cloudflare(), activeTokamak(app)], ...vite };
+  return { root: app.root, configFile: false, logLevel: "silent", plugins: activeTokamak(app), ...vite };
 }
 
 export async function build(app, vite) {
@@ -65,7 +70,7 @@ export async function build(app, vite) {
  * with Vite's `server` options, once it is reported.
  */
 export async function serve(app, use, options = {}) {
-  const server = await createServer(viteConfig(app, { server: { port: 0, ...options } }));
+  const server = await createServer(viteConfig(app, { server: { port: 0, watch: { usePolling: true }, ...options } }));
   try {
     await server.listen();
     await reported(app, "server.json");
@@ -102,8 +107,10 @@ export async function reported(app, name) {
 }
 
 /** The source of the Worker the build of `app` generated. */
-export function builtWorker(app) {
-  const generated = path.join(app.root, "dist/app");
-  const { main } = JSON.parse(fs.readFileSync(path.join(generated, "wrangler.json"), "utf8"));
-  return fs.readFileSync(path.join(generated, main), "utf8");
+export function builtWorker(app, native = false) {
+  const pointer = path.join(app.root, ".wrangler/deploy/config.json");
+  const deploy = JSON.parse(fs.readFileSync(pointer, "utf8"));
+  const config = path.resolve(path.dirname(pointer), native ? deploy.auxiliaryWorkers[0].configPath : deploy.configPath);
+  const { main } = JSON.parse(fs.readFileSync(config, "utf8"));
+  return fs.readFileSync(path.resolve(path.dirname(config), main), "utf8");
 }

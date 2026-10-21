@@ -2,6 +2,7 @@
 //! static library, which an app build links into the app's executable.
 #![cfg(windows)]
 
+mod controls;
 mod shell;
 
 /// The app executable's entry point, which the C runtime's startup for

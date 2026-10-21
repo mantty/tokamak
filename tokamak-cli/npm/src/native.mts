@@ -1,71 +1,103 @@
-// Defines the development Worker's native calls, which reach the device through the tokamak Vite
-// plugin. The plugin's entry Worker transform imports this module in development only.
+import { decodeMessage, encodeMessage, messages, nativeError, type MessageHeader, type NativeFailure, type NativeMessage } from "@tokamakdev/plugin/native-protocol";
+import type { NativePlatform } from "@tokamakdev/plugin/capabilities";
 
-import type { PluginResult } from "./dev-socket.mjs";
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 /**
- * Defines `__tokamakNativeCall` and `__tokamakNativeListen`, which post to the plugin's loopback
- * `port` with the session `token`. `waitUntil` keeps each listener's invocation running, as
- * `waitUntil` from `cloudflare:workers` does.
+ * The development invocation `ctx`'s native connection, which reaches the byte endpoints of a
+ * device on `platform` through the relay on `port`. Its subscriptions are `ctx`'s `waitUntil` work.
  */
-export function defineNativeCalls(port: number, token: string, waitUntil: (promise: Promise<unknown>) => void): void {
-  const post = async (path: string, plugin: string, method: string, arguments_: unknown, signal?: AbortSignal) => {
+export function connectDevice(port: number, token: string, ctx: { waitUntil(promise: Promise<unknown>): void }, platform?: NativePlatform) {
+  const post = async (path: string, request: Uint8Array | ReadableStream<Uint8Array>, signal?: AbortSignal) => {
     const response = await fetch(`http://127.0.0.1:${String(port)}${path}`, {
       method: "POST",
       headers: { "x-tokamak-session": token },
-      body: JSON.stringify({ plugin, method, arguments: arguments_ }),
+      body: request,
       signal,
-    });
+      duplex: "half",
+    } as RequestInit);
     if (!response.ok) throw new Error(`the tokamak Vite plugin answered HTTP ${String(response.status)}`);
     return response;
   };
-
-  globalThis.__tokamakNativeCall = async (plugin, method, arguments_ = null) => {
-    let result: PluginResult;
-    try {
-      result = (await (await post("/call", plugin, method, arguments_)).json()) as PluginResult;
-    } catch (error) {
-      throw networkError(error);
-    }
-    if (result.error) throw new DOMException(result.error.message, result.error.name);
-    return result.value;
+  const result = ({ header, payload }: NativeMessage) => {
+    if (header.failed) throw nativeError(JSON.parse(decoder.decode(payload)) as NativeFailure);
+    return payload;
   };
-
-  globalThis.__tokamakNativeListen = (plugin, method, arguments_, next, error) => {
-    const listening = new AbortController();
-    const deliver = (result: PluginResult) => {
+  return {
+    platform,
+    async call(plugin: string, method: string, payload: Uint8Array, { body, signal }: { body?: ReadableStream<Uint8Array>; signal?: AbortSignal } = {}) {
+      signal?.throwIfAborted();
+      const header = { type: body ? "callWithBody" : "call", plugin, method };
+      let message: NativeMessage;
       try {
-        if (result.error) error(new DOMException(result.error.message, result.error.name));
-        else next(result.value);
-      } catch (thrown) {
-        reportError(thrown);
+        const request = body ? framed(encodeMessage(header, payload), body) : encodeMessage(header, payload);
+        message = decodeMessage(new Uint8Array(await (await post("/call", request, signal)).arrayBuffer()));
+      } catch (error) {
+        if (signal?.aborted) throw signal.reason;
+        throw networkError(error);
       }
-    };
-    const listen = async () => {
-      const response = await post("/subscribe", plugin, method, arguments_ ?? null, listening.signal);
-      for await (const result of lines(response)) deliver(result);
-    };
-    waitUntil(
-      listen().catch((failure: unknown) => {
-        if (!listening.signal.aborted) deliver({ error: networkError(failure), done: true });
-      }),
-    );
-    return () => {
-      listening.abort();
-    };
+      return result(message);
+    },
+    listen(plugin: string, method: string, payload: Uint8Array, { next, error, overflow = "error" }: {
+      next(value: Uint8Array, done: boolean): void;
+      error(error: DOMException, done: boolean): void;
+      overflow?: string;
+    }) {
+      const listening = new AbortController();
+      const deliver = (message: NativeMessage) => {
+        let value: Uint8Array;
+        try { value = result(message); }
+        catch (failure) {
+          try { error(failure as DOMException, message.header.done === true); } catch (thrown) { reportError(thrown); }
+          return;
+        }
+        try { next(value, message.header.done === true); } catch (thrown) { reportError(thrown); }
+      };
+      const listen = async () => {
+        const request = encodeMessage({ type: "subscribe", plugin, method, overflow }, payload);
+        const response = await post("/subscribe", request, listening.signal);
+        for await (const message of messages(response.body)) deliver(message);
+      };
+      ctx.waitUntil(listen().catch((failure: unknown) => {
+        if (!listening.signal.aborted) {
+          try { error(networkError(failure), true); } catch (thrown) { reportError(thrown); }
+        }
+      }));
+      return () => { listening.abort(); };
+    },
   };
 }
 
-/** Each line of `response`'s body, parsed as a result. */
-async function* lines(response: Response): AsyncGenerator<PluginResult> {
-  const decoder = new TextDecoder();
-  let text = "";
-  for await (const chunk of response.body ?? []) {
-    text += decoder.decode(chunk, { stream: true });
-    const complete = text.split("\n");
-    text = complete.pop() ?? "";
-    for (const line of complete) yield JSON.parse(line) as PluginResult;
-  }
+/** The call message `first`, then a `chunk` message per chunk of `body` as the relay reads them. */
+function framed(first: Uint8Array, body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let started = false;
+  const chunk = (header: Omit<MessageHeader, "type">, payload: Uint8Array) => encodeMessage({ type: "chunk", ...header }, payload);
+  return new ReadableStream({
+    async pull(controller) {
+      if (!started) {
+        started = true;
+        controller.enqueue(first);
+        return;
+      }
+      try {
+        const { value, done } = await reader.read();
+        if (done) {
+          controller.enqueue(chunk({ done: true }, new Uint8Array()));
+          controller.close();
+          return;
+        }
+        if (!(value instanceof Uint8Array)) throw new TypeError("A native call's body must contain Uint8Array chunks");
+        controller.enqueue(chunk({}, value));
+      } catch (error) {
+        const failure = { name: (error as Error | undefined)?.name ?? "Error", message: String((error as Error | undefined)?.message ?? error) };
+        controller.enqueue(chunk({ failed: true, done: true }, encoder.encode(JSON.stringify(failure))));
+        controller.close();
+      }
+    },
+    cancel(reason) { return reader.cancel(reason); },
+  });
 }
 
 function networkError(error: unknown): DOMException {

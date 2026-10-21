@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "lint:ts": "eslint \"**/*.ts\" --max-warnings 0 && tsc --project tsconfig.json",
-    "test:ts": "node --import tsx --test \"**/*.test.ts\""
+    "test:ts": "node --import tsx --test \"**/*.test.ts\" \"**/*.test.mjs\""
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",

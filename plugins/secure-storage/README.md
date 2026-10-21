@@ -8,8 +8,12 @@ Add it to your project's dependencies:
 npm install @tokamakdev/plugin-secure-storage
 ```
 
+Pages import the generated `/client` SDK. In `src/tokamak.ts`, import the
+package root and call its factory with the handler's `ctx`. The main worker
+uses its generated `env.TOKAMAK_SECURE_STORAGE` service binding when present.
+
 ```ts
-import { secureStorage } from "@tokamakdev/plugin-secure-storage";
+import secureStorage from "@tokamakdev/plugin-secure-storage/client";
 
 const options = {
   // Required: "whenUnlocked" or "afterFirstUnlock".
@@ -68,6 +72,14 @@ leaves the previous value. On Apple platforms the system asks for the
 authentication an existing value was saved with before replacing it, as it does
 for a read: `replace` and `set` then show their `prompt` and need the app on
 screen. Android replaces values without asking.
+
+## Platform bindings
+
+`@tokamakdev/plugin-secure-storage/android` is Android's
+`android.security.keystore` package with `KeyStore`, `Cipher` and
+`KeyGenerator`, for Worker code that needs what this API does not offer. The
+Keychain's calls take dictionaries and pointers that bindings cannot express,
+so Apple platforms have no bindings here.
 
 ## Errors
 

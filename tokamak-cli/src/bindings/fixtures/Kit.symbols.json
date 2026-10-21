@@ -1,0 +1,1426 @@
+{
+ "symbols": [
+  {
+   "kind": {
+    "identifier": "swift.class"
+   },
+   "identifier": {
+    "precise": "c:objc(cs)KTWidget"
+   },
+   "pathComponents": [
+    "KTWidget"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "class"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "KTWidget"
+    }
+   ],
+   "functionSignature": null
+  },
+  {
+   "kind": {
+    "identifier": "swift.init"
+   },
+   "identifier": {
+    "precise": "c:objc(cs)KTWidget(im)init"
+   },
+   "pathComponents": [
+    "KTWidget",
+    "init()"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "init"
+    },
+    {
+     "kind": "text",
+     "spelling": "()"
+    }
+   ],
+   "functionSignature": {
+    "parameters": [],
+    "returns": []
+   }
+  },
+  {
+   "kind": {
+    "identifier": "swift.property"
+   },
+   "identifier": {
+    "precise": "c:objc(cs)KTWidget(py)title"
+   },
+   "pathComponents": [
+    "KTWidget",
+    "title"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "var"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "title"
+    },
+    {
+     "kind": "text",
+     "spelling": ": "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "String",
+     "preciseIdentifier": "s:SS"
+    },
+    {
+     "kind": "text",
+     "spelling": " { "
+    },
+    {
+     "kind": "keyword",
+     "spelling": "get"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "keyword",
+     "spelling": "set"
+    },
+    {
+     "kind": "text",
+     "spelling": " }"
+    }
+   ],
+   "functionSignature": null
+  },
+  {
+   "kind": {
+    "identifier": "swift.method"
+   },
+   "identifier": {
+    "precise": "c:objc(cs)KTWidget(im)startWithMode:"
+   },
+   "pathComponents": [
+    "KTWidget",
+    "start(with:)"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "func"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "start"
+    },
+    {
+     "kind": "text",
+     "spelling": "(with mode: "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "KTMode",
+     "preciseIdentifier": "c:@E@KTMode"
+    },
+    {
+     "kind": "text",
+     "spelling": ")"
+    }
+   ],
+   "functionSignature": {
+    "parameters": [
+     {
+      "name": "mode",
+      "declarationFragments": [
+       {
+        "kind": "identifier",
+        "spelling": "mode"
+       },
+       {
+        "kind": "text",
+        "spelling": ": "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "KTMode",
+        "preciseIdentifier": "c:@E@KTMode"
+       }
+      ]
+     }
+    ],
+    "returns": []
+   }
+  },
+  {
+   "kind": {
+    "identifier": "swift.method"
+   },
+   "identifier": {
+    "precise": "c:objc(cs)KTWidget(im)configureWithOptions:completion:"
+   },
+   "pathComponents": [
+    "KTWidget",
+    "configure(options:)"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "func"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "configure"
+    },
+    {
+     "kind": "text",
+     "spelling": "("
+    },
+    {
+     "kind": "externalParam",
+     "spelling": "options"
+    },
+    {
+     "kind": "text",
+     "spelling": ": "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "KTMode",
+     "preciseIdentifier": "c:@E@KTMode"
+    },
+    {
+     "kind": "text",
+     "spelling": ") "
+    },
+    {
+     "kind": "keyword",
+     "spelling": "async"
+    }
+   ],
+   "functionSignature": {
+    "parameters": [
+     {
+      "name": "options",
+      "declarationFragments": [
+       {
+        "kind": "identifier",
+        "spelling": "options"
+       },
+       {
+        "kind": "text",
+        "spelling": ": "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "KTMode",
+        "preciseIdentifier": "c:@E@KTMode"
+       }
+      ]
+     }
+    ],
+    "returns": []
+   }
+  },
+  {
+   "kind": {
+    "identifier": "swift.method"
+   },
+   "identifier": {
+    "precise": "c:objc(cs)KTWidget(im)measureWithCompletion:"
+   },
+   "pathComponents": [
+    "KTWidget",
+    "measure(completion:)"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "func"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "measure"
+    },
+    {
+     "kind": "text",
+     "spelling": "("
+    },
+    {
+     "kind": "externalParam",
+     "spelling": "completion"
+    },
+    {
+     "kind": "text",
+     "spelling": ": "
+    },
+    {
+     "kind": "attribute",
+     "spelling": "@escaping"
+    },
+    {
+     "kind": "text",
+     "spelling": " ("
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "KTDistance",
+     "preciseIdentifier": "c:@T@KTDistance"
+    },
+    {
+     "kind": "text",
+     "spelling": ", (any "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Error",
+     "preciseIdentifier": "s:s5ErrorP"
+    },
+    {
+     "kind": "text",
+     "spelling": ")?) -> "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Void",
+     "preciseIdentifier": "s:s4Voida"
+    },
+    {
+     "kind": "text",
+     "spelling": ")"
+    }
+   ],
+   "functionSignature": {
+    "parameters": [
+     {
+      "name": "completion",
+      "declarationFragments": [
+       {
+        "kind": "identifier",
+        "spelling": "completion"
+       },
+       {
+        "kind": "text",
+        "spelling": ": "
+       },
+       {
+        "kind": "attribute",
+        "spelling": "@escaping"
+       },
+       {
+        "kind": "text",
+        "spelling": " ("
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "KTDistance",
+        "preciseIdentifier": "c:@T@KTDistance"
+       },
+       {
+        "kind": "text",
+        "spelling": ", (any "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "Error",
+        "preciseIdentifier": "s:s5ErrorP"
+       },
+       {
+        "kind": "text",
+        "spelling": ")?) -> "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "Void",
+        "preciseIdentifier": "s:s4Voida"
+       },
+       {
+        "kind": "text",
+        "spelling": ")"
+       }
+      ]
+     }
+    ],
+    "returns": [
+     {
+      "kind": "text",
+      "spelling": "()"
+     }
+    ]
+   }
+  },
+  {
+   "kind": {
+    "identifier": "swift.method"
+   },
+   "identifier": {
+    "precise": "c:objc(cs)KTWidget(im)measureWithCompletion:"
+   },
+   "pathComponents": [
+    "KTWidget",
+    "measure()"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "func"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "measure"
+    },
+    {
+     "kind": "text",
+     "spelling": "() "
+    },
+    {
+     "kind": "keyword",
+     "spelling": "async"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "keyword",
+     "spelling": "throws"
+    },
+    {
+     "kind": "text",
+     "spelling": " -> "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "KTDistance",
+     "preciseIdentifier": "c:@T@KTDistance"
+    }
+   ],
+   "functionSignature": {
+    "parameters": [],
+    "returns": [
+     {
+      "kind": "typeIdentifier",
+      "spelling": "KTDistance",
+      "preciseIdentifier": "c:@T@KTDistance"
+     }
+    ]
+   }
+  },
+  {
+   "kind": {
+    "identifier": "swift.property"
+   },
+   "identifier": {
+    "precise": "s:3Kit8KTWidgetC8readingsAC8ReadingsVvp"
+   },
+   "pathComponents": [
+    "KTWidget",
+    "readings"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "var"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "readings"
+    },
+    {
+     "kind": "text",
+     "spelling": ": "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "KTWidget",
+     "preciseIdentifier": "c:objc(cs)KTWidget"
+    },
+    {
+     "kind": "text",
+     "spelling": "."
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Readings",
+     "preciseIdentifier": "s:3Kit8KTWidgetC8ReadingsV"
+    },
+    {
+     "kind": "text",
+     "spelling": " { "
+    },
+    {
+     "kind": "keyword",
+     "spelling": "get"
+    },
+    {
+     "kind": "text",
+     "spelling": " }"
+    }
+   ],
+   "functionSignature": null
+  },
+  {
+   "kind": {
+    "identifier": "swift.struct"
+   },
+   "identifier": {
+    "precise": "s:3Kit8KTWidgetC8ReadingsV"
+   },
+   "pathComponents": [
+    "KTWidget",
+    "Readings"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "struct"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "Readings"
+    }
+   ],
+   "functionSignature": null
+  },
+  {
+   "kind": {
+    "identifier": "swift.typealias"
+   },
+   "identifier": {
+    "precise": "s:3Kit8KTWidgetC8ReadingsV7Elementa"
+   },
+   "pathComponents": [
+    "KTWidget",
+    "Readings",
+    "Element"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "typealias"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "Element"
+    },
+    {
+     "kind": "text",
+     "spelling": " = "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "KTPoint",
+     "preciseIdentifier": "c:@S@KTPoint"
+    }
+   ],
+   "functionSignature": null
+  },
+  {
+   "kind": {
+    "identifier": "swift.enum"
+   },
+   "identifier": {
+    "precise": "c:@E@KTMode"
+   },
+   "pathComponents": [
+    "KTMode"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "enum"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "KTMode"
+    }
+   ],
+   "functionSignature": null
+  },
+  {
+   "kind": {
+    "identifier": "swift.enum.case"
+   },
+   "identifier": {
+    "precise": "c:@E@KTMode@KTModeSlow"
+   },
+   "pathComponents": [
+    "KTMode",
+    "slow"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "case"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "slow"
+    }
+   ],
+   "functionSignature": null
+  },
+  {
+   "kind": {
+    "identifier": "swift.enum.case"
+   },
+   "identifier": {
+    "precise": "c:@E@KTMode@KTModeFast"
+   },
+   "pathComponents": [
+    "KTMode",
+    "fast"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 12,
+      "minor": 0
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "case"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "fast"
+    }
+   ],
+   "functionSignature": null
+  },
+  {
+   "kind": {
+    "identifier": "swift.struct"
+   },
+   "identifier": {
+    "precise": "c:@S@KTPoint"
+   },
+   "pathComponents": [
+    "KTPoint"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "struct"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "KTPoint"
+    }
+   ],
+   "functionSignature": null
+  },
+  {
+   "kind": {
+    "identifier": "swift.property"
+   },
+   "identifier": {
+    "precise": "c:@S@KTPoint@FI@x"
+   },
+   "pathComponents": [
+    "KTPoint",
+    "x"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "var"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "x"
+    },
+    {
+     "kind": "text",
+     "spelling": ": "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Double",
+     "preciseIdentifier": "s:Sd"
+    }
+   ],
+   "functionSignature": null
+  },
+  {
+   "kind": {
+    "identifier": "swift.property"
+   },
+   "identifier": {
+    "precise": "c:@S@KTPoint@FI@y"
+   },
+   "pathComponents": [
+    "KTPoint",
+    "y"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "var"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "y"
+    },
+    {
+     "kind": "text",
+     "spelling": ": "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Double",
+     "preciseIdentifier": "s:Sd"
+    }
+   ],
+   "functionSignature": null
+  },
+  {
+   "kind": {
+    "identifier": "swift.init"
+   },
+   "identifier": {
+    "precise": "s:So7KTPointV1x1yABSd_Sdtcfc"
+   },
+   "pathComponents": [
+    "KTPoint",
+    "init(x:y:)"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "init"
+    },
+    {
+     "kind": "text",
+     "spelling": "(x: "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Double",
+     "preciseIdentifier": "s:Sd"
+    },
+    {
+     "kind": "text",
+     "spelling": ", y: "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Double",
+     "preciseIdentifier": "s:Sd"
+    },
+    {
+     "kind": "text",
+     "spelling": ")"
+    }
+   ],
+   "functionSignature": {
+    "parameters": [
+     {
+      "name": "x",
+      "declarationFragments": [
+       {
+        "kind": "identifier",
+        "spelling": "x"
+       },
+       {
+        "kind": "text",
+        "spelling": ": "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "Double",
+        "preciseIdentifier": "s:Sd"
+       }
+      ]
+     },
+     {
+      "name": "y",
+      "declarationFragments": [
+       {
+        "kind": "identifier",
+        "spelling": "y"
+       },
+       {
+        "kind": "text",
+        "spelling": ": "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "Double",
+        "preciseIdentifier": "s:Sd"
+       }
+      ]
+     }
+    ],
+    "returns": []
+   }
+  },
+  {
+   "kind": {
+    "identifier": "swift.typealias"
+   },
+   "identifier": {
+    "precise": "c:@T@KTDistance"
+   },
+   "pathComponents": [
+    "KTDistance"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "typealias"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "KTDistance"
+    },
+    {
+     "kind": "text",
+     "spelling": " = "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Double",
+     "preciseIdentifier": "s:Sd"
+    }
+   ],
+   "functionSignature": null
+  },
+  {
+   "kind": {
+    "identifier": "swift.protocol"
+   },
+   "identifier": {
+    "precise": "c:objc(pl)KTWidgetDelegate"
+   },
+   "pathComponents": [
+    "KTWidgetDelegate"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "protocol"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "KTWidgetDelegate"
+    }
+   ],
+   "functionSignature": null
+  },
+  {
+   "kind": {
+    "identifier": "swift.method"
+   },
+   "identifier": {
+    "precise": "c:objc(pl)KTWidgetDelegate(im)widget:didMove:"
+   },
+   "pathComponents": [
+    "KTWidgetDelegate",
+    "widget(_:didMove:)"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "optional"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "keyword",
+     "spelling": "func"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "widget"
+    },
+    {
+     "kind": "text",
+     "spelling": "(_ widget: "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "KTWidget",
+     "preciseIdentifier": "c:objc(cs)KTWidget"
+    },
+    {
+     "kind": "text",
+     "spelling": ", didMove point: "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "KTPoint",
+     "preciseIdentifier": "c:@S@KTPoint"
+    },
+    {
+     "kind": "text",
+     "spelling": ")"
+    }
+   ],
+   "functionSignature": {
+    "parameters": [
+     {
+      "name": "widget",
+      "declarationFragments": [
+       {
+        "kind": "identifier",
+        "spelling": "widget"
+       },
+       {
+        "kind": "text",
+        "spelling": ": "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "KTWidget",
+        "preciseIdentifier": "c:objc(cs)KTWidget"
+       }
+      ]
+     },
+     {
+      "name": "point",
+      "declarationFragments": [
+       {
+        "kind": "identifier",
+        "spelling": "point"
+       },
+       {
+        "kind": "text",
+        "spelling": ": "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "KTPoint",
+        "preciseIdentifier": "c:@S@KTPoint"
+       }
+      ]
+     }
+    ],
+    "returns": []
+   }
+  },
+  {
+   "kind": {
+    "identifier": "swift.method"
+   },
+   "identifier": {
+    "precise": "c:objc(cs)KTWidget(im)check:error:"
+   },
+   "pathComponents": [
+    "KTWidget",
+    "check(_:error:)"
+   ],
+   "availability": [
+    {
+     "domain": "iOS",
+     "introduced": {
+      "major": 13,
+      "minor": 0
+     }
+    },
+    {
+     "domain": "macOS",
+     "introduced": {
+      "major": 10,
+      "minor": 15
+     }
+    }
+   ],
+   "declarationFragments": [
+    {
+     "kind": "keyword",
+     "spelling": "func"
+    },
+    {
+     "kind": "text",
+     "spelling": " "
+    },
+    {
+     "kind": "identifier",
+     "spelling": "check"
+    },
+    {
+     "kind": "text",
+     "spelling": "(_ value: "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Int",
+     "preciseIdentifier": "s:Si"
+    },
+    {
+     "kind": "text",
+     "spelling": ", error: "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "NSErrorPointer",
+     "preciseIdentifier": "c:@T@NSErrorPointer"
+    },
+    {
+     "kind": "text",
+     "spelling": ") -> "
+    },
+    {
+     "kind": "typeIdentifier",
+     "spelling": "Bool",
+     "preciseIdentifier": "s:Sb"
+    }
+   ],
+   "functionSignature": {
+    "parameters": [
+     {
+      "name": "value",
+      "declarationFragments": [
+       {
+        "kind": "identifier",
+        "spelling": "value"
+       },
+       {
+        "kind": "text",
+        "spelling": ": "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "Int",
+        "preciseIdentifier": "s:Si"
+       }
+      ]
+     },
+     {
+      "name": "error",
+      "declarationFragments": [
+       {
+        "kind": "identifier",
+        "spelling": "error"
+       },
+       {
+        "kind": "text",
+        "spelling": ": "
+       },
+       {
+        "kind": "typeIdentifier",
+        "spelling": "NSErrorPointer",
+        "preciseIdentifier": "c:@T@NSErrorPointer"
+       }
+      ]
+     }
+    ],
+    "returns": [
+     {
+      "kind": "typeIdentifier",
+      "spelling": "Bool",
+      "preciseIdentifier": "s:Sb"
+     }
+    ]
+   }
+  }
+ ],
+ "relationships": [
+  {
+   "kind": "optionalRequirementOf",
+   "source": "c:objc(pl)KTWidgetDelegate(im)widget:didMove:",
+   "target": "c:objc(pl)KTWidgetDelegate"
+  },
+  {
+   "kind": "conformsTo",
+   "source": "s:3Kit8KTWidgetC8ReadingsV",
+   "target": "s:Sci"
+  }
+ ]
+}

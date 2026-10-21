@@ -212,6 +212,9 @@ impl DevProxy {
         headers.try_insert("x-forwarded-host", host)?;
         headers.try_insert("x-forwarded-proto", HeaderValue::from_static("https"))?;
         headers.try_insert("x-tokamak-session", self.session_token.clone())?;
+        if request.target.starts_with(crate::NATIVE_ROUTE_PREFIX) {
+            headers.try_insert(crate::DEV_SOCKET_HEADER, HeaderValue::from_static("1"))?;
+        }
         Ok(headers)
     }
 
@@ -221,10 +224,12 @@ impl DevProxy {
         response: &Sender<JobResponse>,
         websocket: &WebSocketJob,
         stopped: &CancellationToken,
+        cancelled: &CancellationToken,
     ) -> Result<(), HandlerError> {
         let upstream = tokio::select! {
             upstream = self.open_websocket(request) => upstream?,
             () = stopped.cancelled() => return Ok(()),
+            () = cancelled.cancelled() => return Ok(()),
         };
         response
             .send(JobResponse::WebSocket)
@@ -324,6 +329,8 @@ impl HostBody {
 impl Handler for DevProxy {
     fn handle(&self, job: Job, stopped: &CancellationToken) -> Result<(), HandlerError> {
         let Job {
+            cancelled,
+            deadline: _,
             request,
             response,
             websocket,
@@ -334,10 +341,12 @@ impl Handler for DevProxy {
                 tokio::select! {
                     result = self.forward_http(&request, &response) => result,
                     () = stopped.cancelled() => Ok(()),
+                    () = cancelled.cancelled() => Ok(()),
                 }
             });
         };
-        tokio.block_on(self.forward_websocket(&request, &response, &websocket, stopped))
+        // The incoming channel carries the client's close frame before disconnection.
+        tokio.block_on(self.forward_websocket(&request, &response, &websocket, stopped, &cancelled))
     }
 
     fn deliver(&self, event: EventJob, stopped: &CancellationToken) {

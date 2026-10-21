@@ -16,6 +16,17 @@ use crate::tests::{certificates, runtime_config};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+#[test]
+fn rejects_malformed_utf8_at_the_json_event_endpoint() -> TestResult {
+    let started = Started::new(EVENT_WORKER, true, 0)?;
+    let result = started
+        .events
+        .emit("echo", &[b'"', 255, b'"'], Duration::from_secs(5));
+    assert!(result.is_err(), "invalid UTF-8 was accepted: {result:?}");
+    assert_eq!(started.logged(), [r#"start {"foreground":true}"#]);
+    Ok(())
+}
+
 /// Logs each event to `env.LOG` as it begins; waits `event.wait`, or
 /// `env.START_DELAY` for `start`, then logs that it is done; and lingers in
 /// `waitUntil` for `event.linger`.
@@ -23,9 +34,12 @@ const EVENT_WORKER: &[u8] = br#"
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const decode = (payload) => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
+const encode = (value) => new TextEncoder().encode(JSON.stringify(value));
 
 export class TokamakEvents extends WorkerEntrypoint {
-  async dispatch(name, event) {
+  async dispatch(name, payload) {
+    const event = decode(payload);
     const log = (entry) => fetch(`${this.env.LOG}/?entry=${encodeURIComponent(entry)}`);
     await log(`${name} ${JSON.stringify(event)}`);
     if (name === "broken") throw new Error("listener exploded");
@@ -35,14 +49,17 @@ export class TokamakEvents extends WorkerEntrypoint {
       await log(`${name} done`);
     }
     if (event.linger) this.ctx.waitUntil(sleep(event.linger).then(() => log(`${name} lingered`)));
-    return { reply: { name, event }, listened: ["start", "resume", "suspend", "echo", "broken"] };
+    return { reply: encode({ name, event }), listened: ["start", "resume", "suspend", "echo", "broken"] };
   }
 }
 
 export default { fetch: () => new Response(null, { status: 204 }) };
 "#;
 
-/// Events delivered to a Worker, and what it logged.
+/// The main Worker, which receives no events.
+const MAIN_WORKER: &[u8] = b"export default { fetch: () => new Response('main') };";
+
+/// Events delivered to a Tokamak worker, and what it logged.
 struct Started {
     events: Arc<WorkerEvents>,
     log: flume::Receiver<String>,
@@ -52,11 +69,14 @@ struct Started {
 }
 
 impl Started {
-    /// `source`'s events, with `start` delivered with `foreground` and taking
-    /// `start_delay` milliseconds.
+    /// The events of the Tokamak worker `source`, with `start` delivered with
+    /// `foreground` and taking `start_delay` milliseconds.
     fn new(source: &[u8], foreground: bool, start_delay: u64) -> TestResult<Self> {
         let (url, log) = log_server()?;
         let directory = tempfile::tempdir()?;
+        let main_directory = directory.path().join("main");
+        std::fs::create_dir(&main_directory)?;
+        let main = WorkerBundle::of_source(MAIN_WORKER, &main_directory)?;
         let worker = WorkerBundle::of_source(source, directory.path())?;
         let mut config = runtime_config();
         config.environment = BTreeMap::from([
@@ -65,7 +85,7 @@ impl Started {
         ]);
         let (sink, failures) = flume::unbounded();
         let gateway = gateway::Runtime::start(
-            Dispatcher::new(worker, config),
+            Dispatcher::with_native(main, runtime_config(), Dispatcher::new(worker, config)),
             certificates(directory.path())?,
             "example.test".to_owned(),
             Events::new(move |event| {
@@ -85,7 +105,10 @@ impl Started {
     }
 
     fn emit(&self, name: &str, event: &str) -> Result<String, String> {
-        self.events.emit(name, event, Duration::from_secs(5))
+        let reply = self
+            .events
+            .emit(name, event.as_bytes(), Duration::from_secs(5))?;
+        String::from_utf8(reply).map_err(|error| error.to_string())
     }
 
     /// Everything logged so far.
@@ -140,7 +163,7 @@ fn delivers_start_first_and_queues_events_behind_it() -> TestResult {
 fn starts_no_worker_for_an_event_without_listeners() -> TestResult {
     let started = Started::new(EVENT_WORKER, true, 0)?;
 
-    assert_eq!(started.emit("unlistened", "{}")?, "null");
+    assert_eq!(started.emit("unlistened", "{}")?, "");
     started.emit("echo", "{}")?;
 
     assert_eq!(
@@ -203,7 +226,8 @@ fn replies_at_the_deadline_while_wait_until_promises_are_pending() -> TestResult
 
     let reply = started
         .events
-        .emit("echo", r#"{"linger":60000}"#, Duration::from_secs(2))?;
+        .emit("echo", br#"{"linger":60000}"#, Duration::from_secs(2))?;
+    let reply = String::from_utf8(reply)?;
 
     assert!(reply.contains(r#""linger":60000"#), "{reply}");
     assert!(begun.elapsed() < Duration::from_secs(10));
@@ -218,7 +242,7 @@ fn fails_an_event_whose_listeners_outlast_the_deadline() -> TestResult {
 
     let error = started
         .events
-        .emit("echo", r#"{"wait":3000}"#, Duration::from_millis(300))
+        .emit("echo", br#"{"wait":3000}"#, Duration::from_millis(300))
         .err()
         .ok_or("the event completed")?;
 
@@ -250,6 +274,30 @@ fn refuses_to_emit_start() -> TestResult {
 }
 
 #[test]
+fn custom_event_handlers_receive_events_without_a_registered_listener_list() -> TestResult {
+    let started = Started::new(
+        br"
+import { WorkerEntrypoint } from 'cloudflare:workers';
+export class TokamakEvents extends WorkerEntrypoint {
+  dispatch(name, payload) {
+    const data = JSON.parse(new TextDecoder().decode(payload));
+    return { reply: new TextEncoder().encode(JSON.stringify({ name, data })) };
+  }
+}
+export default { fetch: () => new Response(null) };
+",
+        false,
+        0,
+    )?;
+    for name in ["location.update", "push.received"] {
+        let reply: serde_json::Value =
+            serde_json::from_str(&started.emit(name, r#"{"value":1}"#)?)?;
+        assert_eq!(reply, json!({ "name": name, "data": { "value": 1 } }));
+    }
+    Ok(())
+}
+
+#[test]
 fn reports_a_failed_start_and_still_delivers_events() -> TestResult {
     let started = Started::new(
         b"export default { fetch: () => new Response(null) };",
@@ -268,5 +316,27 @@ fn reports_a_failed_start_and_still_delivers_events() -> TestResult {
         matches!(&failure, Event::Failed { message } if message.starts_with("start failed: ")),
         "{failure:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn an_app_without_a_tokamak_worker_runs_nothing_for_events() -> TestResult {
+    let (url, log) = log_server()?;
+    let directory = tempfile::tempdir()?;
+    let worker = WorkerBundle::of_source(EVENT_WORKER, directory.path())?;
+    let mut config = runtime_config();
+    config.environment = BTreeMap::from([("LOG".to_owned(), json!(url))]);
+    let gateway = gateway::Runtime::start(
+        Dispatcher::new(worker, config),
+        certificates(directory.path())?,
+        "example.test".to_owned(),
+        Events::new(|_| {}),
+    )?;
+    let events = WorkerEvents::start(Arc::clone(gateway.shared()), true);
+
+    let reply = events.emit("echo", b"{}", Duration::from_secs(5))?;
+
+    assert!(reply.is_empty());
+    assert!(log.recv_timeout(Duration::from_millis(200)).is_err());
     Ok(())
 }

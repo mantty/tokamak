@@ -21,8 +21,8 @@ private const val UNSUPPORTED =
 class TokamakActivity : Activity() {
     private val tokamak: TokamakApplication
         get() = application as TokamakApplication
-    private lateinit var webView: WebView
-    private lateinit var pluginBridge: TokamakPluginBridge
+    internal lateinit var webView: WebView
+        private set
     private var runtime: TokamakRuntime? = null
     private var proxyPort: Int? = null
     private var restoreGeneration = 0L
@@ -37,10 +37,6 @@ class TokamakActivity : Activity() {
             settings.setSupportMultipleWindows(false)
         }
         webView.webChromeClient = TokamakWebChromeClient(tokamak, tokamak.appHost)
-        pluginBridge = TokamakPluginBridge(this, tokamak.appHost, tokamak.plugins)
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-            pluginBridge.install(webView)
-        }
         setContentView(webViewContainer())
         // A recreated activity or one reopened from Recents carries an intent plugins have had.
         val launchedFromHistory = intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
@@ -71,7 +67,6 @@ class TokamakActivity : Activity() {
         if (tokamak.activity === this) tokamak.activity = null
         if (isFinishing) tokamak.permissionRequests.cancel()
         TokamakProxy.release(this)
-        pluginBridge.close()
         webView.stopLoading()
         webView.destroy()
         super.onDestroy()
@@ -134,14 +129,13 @@ class TokamakActivity : Activity() {
         if (destroyed) return
         val runtime = runtime ?: return
         webView.webViewClient =
-            TokamakWebViewClient(this, tokamak.appHost, runtime, pluginBridge)
+            TokamakWebViewClient(this, tokamak.appHost, runtime)
         webView.loadUrl("https://${tokamak.appHost}/")
     }
 
     private fun proxyIsSupported(): Boolean =
         WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE) &&
-            WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE_REVERSE_BYPASS) &&
-            WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)
+            WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE_REVERSE_BYPASS)
 
     private fun show(html: String) = webView.loadData(html, "text/html", "utf-8")
 

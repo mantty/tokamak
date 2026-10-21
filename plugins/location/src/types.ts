@@ -174,3 +174,15 @@ export interface LocationErrorEvent {
 
 export type Listener<T> = (event: T) => void;
 export type ErrorListener = (error: DOMException) => void;
+
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace -- events are declared by merging into Tokamak.Events.
+  namespace Tokamak {
+    interface Events {
+      "location.update": LocationUpdate;
+      "location.region": RegionTransition;
+      "location.visit": Visit;
+      "location.error": LocationErrorEvent;
+    }
+  }
+}

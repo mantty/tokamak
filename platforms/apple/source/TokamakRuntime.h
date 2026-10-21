@@ -23,13 +23,16 @@ typedef struct {
 
 typedef void (*TokamakPluginRequest)(void *context, uint64_t id,
                                      const char *plugin, const char *method,
-                                     const char *arguments);
+                                     const uint8_t *payload, size_t payload_len);
 
 typedef struct {
   void *context;
   TokamakPluginRequest call;
+  TokamakPluginRequest call_with_body;
+  void (*chunk)(void *context, uint64_t id, const uint8_t *payload,
+                size_t payload_len, bool failed, bool done);
   TokamakPluginRequest subscribe;
-  void (*unsubscribe)(void *context, uint64_t id);
+  void (*cancel)(void *context, uint64_t id);
 } TokamakPluginHandler;
 
 void *tokamak_runtime_start(const char *packaged_dir, const char *state_dir,
@@ -47,14 +50,17 @@ uint16_t tokamak_runtime_restore_gateway(const void *runtime, char *error,
                                       size_t error_len);
 void tokamak_runtime_stop(void *runtime);
 bool tokamak_runtime_emit(const void *runtime, const char *name,
-                          const char *event, uint64_t timeout_ms,
+                          const uint8_t *event, size_t event_len, uint64_t timeout_ms,
                           TokamakBytes *reply, char *error, size_t error_len);
 bool tokamak_runtime_fetch(const void *runtime, const char *path,
                            uint64_t timeout_ms, TokamakBytes *body, char *error,
                            size_t error_len);
 bool tokamak_runtime_set_foreground(const void *runtime, bool foreground);
 bool tokamak_runtime_is_foreground(const void *runtime);
-void tokamak_runtime_reply(const void *runtime, uint64_t id, const char *result);
+void tokamak_runtime_reply(const void *runtime, uint64_t id,
+                          const uint8_t *payload, size_t payload_len,
+                          bool failed, bool done);
+void tokamak_runtime_pull(const void *runtime, uint64_t id);
 
 int32_t tokamak_runtime_server_authority(const void *runtime, const char *host,
                                       TokamakBytes *authority);

@@ -11,9 +11,6 @@ use crate::lifecycle_events::Event;
 /// How long the Worker has for `start`.
 const START_DEADLINE: Duration = Duration::from_secs(10);
 
-/// The reply of an event no listener answered.
-const NO_REPLY: &str = "null";
-
 /// Delivers events to the Worker: `start` first, then other events, with
 /// lifecycle events one at a time. A packaged Worker reports the events it
 /// listens for, and no Worker runs for any other.
@@ -54,14 +51,15 @@ impl WorkerEvents {
         events
     }
 
-    /// Delivers the event `name`, whose JSON is `event`, once `start` has
-    /// been, and returns the reply as JSON.
+    /// Delivers the event `name`, whose encoded data is `event`, once `start`
+    /// has been, and returns the encoded reply, which is empty when no
+    /// listener replied.
     pub(crate) fn emit(
         &self,
         name: &str,
-        event: &str,
+        event: &[u8],
         timeout: Duration,
-    ) -> Result<String, String> {
+    ) -> Result<Vec<u8>, String> {
         let deadline = Instant::now() + timeout;
         if name.is_empty() || name == "start" {
             return Err(format!("{name:?} cannot be emitted"));
@@ -70,14 +68,14 @@ impl WorkerEvents {
         let lifecycle = matches!(name, "resume" | "suspend");
         let _turn = lifecycle.then(|| lock(&self.lifecycle));
         if !self.listens(name) {
-            return Ok(NO_REPLY.to_owned());
+            return Ok(Vec::new());
         }
         self.deliver(name, event, deadline)
     }
 
     fn deliver_start(&self, foreground: bool) {
         let event = format!(r#"{{"foreground":{foreground}}}"#);
-        let delivered = self.deliver("start", &event, Instant::now() + START_DEADLINE);
+        let delivered = self.deliver("start", event.as_bytes(), Instant::now() + START_DEADLINE);
         self.finish_start(
             delivered
                 .err()
@@ -121,7 +119,7 @@ impl WorkerEvents {
             .is_none_or(|listened| listened.contains(name))
     }
 
-    fn deliver(&self, name: &str, event: &str, deadline: Instant) -> Result<String, String> {
+    fn deliver(&self, name: &str, event: &[u8], deadline: Instant) -> Result<Vec<u8>, String> {
         let delivery = gateway::deliver(&self.shared, name, event, deadline)?;
         if let Some(listened) = delivery.listened {
             lock(&self.state).listened = Some(listened);

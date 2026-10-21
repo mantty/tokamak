@@ -9,10 +9,17 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./streams": "./src/streams.ts",
+    "./bindings": "./src/bindings.ts",
     "./events": "./src/events.ts",
-    "./testing": "./src/testing.ts"
+    "./worker": "./src/worker.ts",
+    "./testing": "./src/testing.ts",
+    "./native-protocol": "./src/native-protocol.mjs",
+    "./capabilities": "./src/capabilities.mjs"
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "publishConfig": {
     "access": "public"
   }

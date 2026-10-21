@@ -12,7 +12,6 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import java.io.File
 import java.util.concurrent.Executors
-import org.json.JSONTokener
 
 private const val HOST_METADATA = "tokamak.host"
 private const val DEV_ENDPOINT_METADATA = "tokamak.dev.endpoint"
@@ -33,6 +32,7 @@ class TokamakApplication : Application(), TokamakPlugins {
     /** Every plugin, by ID. */
     val plugins: Map<String, TokamakPlugin> by lazy {
         buildMap {
+            put("tokamak", TokamakCorePlugin(this@TokamakApplication))
             tokamakPlugins(this@TokamakApplication).forEach { plugin ->
                 check(put(plugin.id, plugin) == null) { "Duplicate plugin ID" }
             }
@@ -41,28 +41,32 @@ class TokamakApplication : Application(), TokamakPlugins {
 
     internal val permissionRequests = TokamakPermissions(this)
 
+    internal val resources = TokamakResources()
+
     private val started = lazy(::startRuntime)
 
     /** The running runtime, started on first use. Blocks while it starts. */
     internal val runtime: TokamakRuntime by started
 
-    /** The Worker's calls and subscriptions on the plugins. Main thread only. */
-    private val workerRequests by lazy {
-        TokamakPluginRequests<Long>(plugins) { id, result -> runtime.reply(id, result.toString()) }
-    }
+    private lateinit var workerRequests: TokamakPluginRequests<Long>
 
     /** The plugins as the runtime calls them, on its own threads. */
     private val workerPlugins =
         object : TokamakRuntime.Plugins {
-            override fun call(id: Long, plugin: String, method: String, arguments: String) =
-                mainExecutor.execute { workerRequests.run(id, false, plugin, method, parse(arguments)) }
+            override fun call(id: Long, plugin: String, method: String, payload: ByteArray) =
+                workerRequests.run(id, TokamakPluginRequest.CALL, plugin, method, payload)
 
-            override fun subscribe(id: Long, plugin: String, method: String, arguments: String) =
-                mainExecutor.execute { workerRequests.run(id, true, plugin, method, parse(arguments)) }
+            override fun callWithBody(id: Long, plugin: String, method: String, payload: ByteArray) =
+                workerRequests.run(id, TokamakPluginRequest.CALL_WITH_BODY, plugin, method, payload)
 
-            override fun unsubscribe(id: Long) = mainExecutor.execute { workerRequests.cancel(id) }
+            override fun chunk(id: Long, payload: ByteArray, failed: Boolean, done: Boolean) =
+                workerRequests.chunk(id, TokamakPluginResult(payload, failed, done))
 
-            private fun parse(arguments: String): Any? = JSONTokener(arguments).nextValue()
+            override fun subscribe(id: Long, plugin: String, method: String, payload: ByteArray) =
+                workerRequests.run(id, TokamakPluginRequest.SUBSCRIBE, plugin, method, payload)
+
+            override fun cancel(id: Long) = workerRequests.cancel(id)
+
         }
 
     /** The host of the app origin, `https://<appHost>`. */
@@ -75,6 +79,7 @@ class TokamakApplication : Application(), TokamakPlugins {
 
     override fun onCreate() {
         super.onCreate()
+        workerRequests = TokamakPluginRequests(plugins, pull = { id -> runtime.pull(id) }) { id, result -> runtime.reply(id, result) }
         ProcessLifecycleOwner.get().lifecycle.addObserver(
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) = moved(foreground = true)
@@ -98,6 +103,9 @@ class TokamakApplication : Application(), TokamakPlugins {
             override val isInForeground: Boolean
                 get() = this@TokamakApplication.isInForeground
 
+            override val resources: TokamakResources
+                get() = this@TokamakApplication.resources
+
             override fun requireForegroundActivity(): Activity =
                 this@TokamakApplication.requireForegroundActivity()
 
@@ -109,8 +117,8 @@ class TokamakApplication : Application(), TokamakPlugins {
                 callback: (Map<String, Boolean>) -> Unit,
             ) = permissionRequests.request(permissions, callback)
 
-            override fun emit(name: String, event: String, timeoutMillis: Long): String =
-                emitEvent("$id.$name", event, timeoutMillis)
+            override fun emitBytes(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray =
+                emitEvent("$id.$name", payload, timeoutMillis)
 
             override fun fetch(path: String, timeoutMillis: Long): ByteArray {
                 val deadline = SystemClock.elapsedRealtime() + timeoutMillis
@@ -131,13 +139,13 @@ class TokamakApplication : Application(), TokamakPlugins {
         get() = if (started.isInitialized()) runtime.isForeground else activity != null
 
     /**
-     * Delivers the event [name] with the JSON [event] to the Worker's listeners and returns their
-     * reply as JSON. Starts the runtime when it is not running. Blocks.
+     * Delivers the event [name] with its encoded [payload] to the Worker's listeners and returns
+     * their encoded reply. Starts the runtime when it is not running. Blocks.
      */
-    private fun emitEvent(name: String, event: String, timeoutMillis: Long): String {
+    private fun emitEvent(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray {
         val deadline = SystemClock.elapsedRealtime() + timeoutMillis
         val started = runtime
-        return started.emit(name, event, deadline - SystemClock.elapsedRealtime())
+        return started.emit(name, payload, deadline - SystemClock.elapsedRealtime())
     }
 
     /** Records the app moving into or out of the foreground, once the runtime has started. */
@@ -150,7 +158,7 @@ class TokamakApplication : Application(), TokamakPlugins {
         if (!runtime.setForeground(foreground)) return
         val name = if (foreground) "resume" else "suspend"
         lifecycle.execute {
-            runCatching { runtime.emit(name, "{}", LIFECYCLE_DEADLINE_MILLIS) }
+            runCatching { runtime.emit(name, "{}".toByteArray(), LIFECYCLE_DEADLINE_MILLIS) }
                 .onFailure { Log.w("tokamak", "tokamak $name failed", it) }
         }
     }

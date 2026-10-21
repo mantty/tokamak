@@ -31,7 +31,7 @@ final class TokamakHost {
 protocol TokamakPlugin: AnyObject {
   var id: String { get }
   init(host: TokamakHost)
-  func call(method: String, arguments: Any, reply: @escaping TokamakPluginReply)
+  func call(method: String, arguments: Any, reply: @escaping TokamakPluginReply) -> (() -> Void)?
   func subscribe(
     method: String,
     arguments: Any,

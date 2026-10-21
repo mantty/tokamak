@@ -3,6 +3,7 @@
 
 //! `tokamak` command line entry point.
 
+mod bindings;
 mod cache;
 mod certs;
 mod dev;
@@ -14,11 +15,13 @@ mod pipeline;
 mod plugin_settings;
 mod plugins;
 mod project;
+mod scaffold;
 mod settings;
 mod storage;
 mod tokamak_config;
 mod vite;
 mod worker;
+mod worker_graph;
 mod wrangler_config;
 
 use std::env;
@@ -45,6 +48,20 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Create a publishable plugin package.
+    Plugin {
+        /// New directory, named with lowercase words joined by hyphens.
+        directory: PathBuf,
+        /// Include an Apple or Android native implementation; otherwise compose APIs in TypeScript.
+        #[arg(long, value_enum)]
+        native: Option<scaffold::Native>,
+    },
+    /// Generate a plugin package's platform bindings from the SDKs installed here.
+    Bindings {
+        /// Plugin package directory.
+        #[arg(default_value = ".")]
+        package: PathBuf,
+    },
     /// Build native app bundles for one or more platforms.
     #[command(after_help = BUILD_PLATFORM_HELP)]
     Build {
@@ -119,6 +136,8 @@ fn run() -> Result<()> {
     };
 
     match cli.command {
+        Command::Plugin { directory, native } => scaffold::create(&directory, native),
+        Command::Bindings { package } => bindings::generate(&package),
         Command::Build {
             platforms,
             project,

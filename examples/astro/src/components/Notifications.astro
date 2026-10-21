@@ -39,12 +39,13 @@ import PluginCard from "./PluginCard.astro";
 </PluginCard>
 
 <script>
-  import { location } from "@tokamakdev/plugin-location";
-  import { notifications } from "@tokamakdev/plugin-notifications";
-  import { describe, logTo, onClick } from "../scripts/plugin-log";
+  import location from "@tokamakdev/plugin-location/client";
+  import notifications from "@tokamakdev/plugin-notifications/client";
+  import type { Message, OpenedNotification, DismissedNotification, OpenSettingsEvent, Subscription } from "@tokamakdev/plugin-notifications";
+  import { describe, logTo, onClick, listen } from "../scripts/plugin-log";
 
   const log = logTo("notifications-log");
-  const reportError = (error: DOMException) => log(describe(error));
+  const reportError = (error: unknown) => log(describe(error));
 
   onClick(log, "notifications-permission", () => notifications.permission());
   // Apple platforms then link from their settings to the app's, which onOpenSettings receives.
@@ -200,14 +201,14 @@ import PluginCard from "./PluginCard.astro";
   onClick(log, "notifications-unsubscribe", () => notifications.unsubscribe());
   onClick(log, "notifications-topic", () => notifications.subscribeToTopic("news"));
 
-  notifications.onMessage((message) => log(`Message: ${JSON.stringify(message)}`), reportError);
-  notifications.onNotificationOpened((opened) => log(`Opened: ${JSON.stringify(opened)}`), reportError);
-  notifications.onNotificationDismissed(
+  listen<Message>(notifications.onMessage(), (message) => log(`Message: ${JSON.stringify(message)}`), reportError);
+  listen<OpenedNotification>(notifications.onNotificationOpened(), (opened) => log(`Opened: ${JSON.stringify(opened)}`), reportError);
+  listen<DismissedNotification>(notifications.onNotificationDismissed(),
     (dismissed) => log(`Dismissed: ${JSON.stringify(dismissed)}`),
     reportError,
   );
-  notifications.onOpenSettings((request) => log(`Open settings: ${JSON.stringify(request)}`), reportError);
-  notifications.onSubscriptionChange(
+  listen<OpenSettingsEvent>(notifications.onOpenSettings(), (request) => log(`Open settings: ${JSON.stringify(request)}`), reportError);
+  listen<Subscription>(notifications.onSubscriptionChange(),
     (subscription) => log(`Subscription changed: ${JSON.stringify(subscription)}`),
     reportError,
   );

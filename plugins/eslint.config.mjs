@@ -2,6 +2,8 @@ import eslint from "@eslint/js";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
+  // `tok bindings` generates these from the platform SDKs.
+  { ignores: ["**/apple/bindings.ts", "**/android/bindings.ts"] },
   eslint.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   {

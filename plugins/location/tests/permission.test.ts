@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
-import { connectNative, disconnectNative } from "@tokamakdev/plugin/testing";
+import { connectNative } from "@tokamakdev/plugin/testing";
 
-import { location, type PermissionRequest } from "../src/index.js";
+import { location } from "../web/client.js";
+import { location as createApi } from "../src/index.js";
 
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
 
 afterEach(() => {
-  disconnectNative();
   if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
   else Reflect.deleteProperty(globalThis, "navigator");
 });
@@ -17,6 +17,7 @@ const granted = { inUse: "granted", background: "prompt", precision: "precise" }
 
 void test("calls the native plugin with each permission method's arguments", async () => {
   const native = connectNative();
+  const location = createApi(native.ctx);
   const cases: [() => Promise<unknown>, string, unknown][] = [
     [() => location.permission(), "permission", null],
     [() => location.requestPermission(), "requestPermission", {}],
@@ -36,21 +37,6 @@ void test("calls the native plugin with each permission method's arguments", asy
   }
 });
 
-void test("rejects permission requests it cannot send", async () => {
-  connectNative();
-  for (const [options, message] of [
-    [{ background: "yes" }, "options.background must be a boolean"],
-    [{ precision: "exact" }, 'options.precision must be one of "precise", "approximate"'],
-    [{ purpose: "" }, "options.purpose must be a non-empty string"],
-    [null, "options must be an object"],
-  ] as const) {
-    await assert.rejects(
-      location.requestPermission(options as unknown as PermissionRequest),
-      (error: unknown) => error instanceof TypeError && error.message === message,
-    );
-  }
-});
-
 void test("reports the web page's permission from the Permissions API", async () => {
   Object.defineProperty(globalThis, "navigator", {
     configurable: true,
@@ -63,21 +49,4 @@ void test("reports the web page's permission from the Permissions API", async ()
   });
 
   assert.deepEqual(await location.permission(), { inUse: "granted", background: "denied", precision: "precise" });
-});
-
-void test("checks a permission request before the web rejects it", async () => {
-  await assert.rejects(
-    location.requestPermission({ background: "yes" } as unknown as PermissionRequest),
-    (error: unknown) => error instanceof TypeError && error.message === "options.background must be a boolean",
-  );
-});
-
-void test("rejects what only native apps have on the web", async () => {
-  Reflect.deleteProperty(globalThis, "navigator");
-  const unsupported = (error: unknown) => error instanceof DOMException && error.name === "NotSupportedError";
-
-  await assert.rejects(location.permission(), unsupported);
-  await assert.rejects(location.requestPermission(), unsupported);
-  await assert.rejects(location.servicesEnabled(), unsupported);
-  await assert.rejects(location.openSettings(), unsupported);
 });

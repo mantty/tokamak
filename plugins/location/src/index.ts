@@ -1,18 +1,16 @@
-import { Plugin } from "@tokamakdev/plugin";
-import * as web from "../web/index.js";
-import { nonEmptyText } from "./checks.js";
-import { monitoredRegion, validatePermissionRequest, validateSetup, validateUpdateOptions } from "./options.js";
+import { Plugin, lifecycleStage, type JsonStream, type TokamakContext } from "@tokamakdev/plugin";
+import { valueStream } from "@tokamakdev/plugin/streams";
+
+import * as android from "./android.js";
+import * as apple from "./apple.js";
+import { backgroundDenied, permissionDenied, unavailable } from "./errors.js";
 import type {
-  ErrorListener,
-  Listener,
   LocationErrorEvent,
   LocationPermission,
   LocationUpdate,
   MonitoredRegion,
   PermissionRequest,
   Position,
-  PositionCallback,
-  PositionErrorCallback,
   PositionOptions,
   Region,
   RegionTransition,
@@ -24,37 +22,78 @@ import type {
 export type * from "./types.js";
 
 class Location extends Plugin {
-  constructor() {
-    super("location");
+  readonly #ctx: TokamakContext;
+
+  constructor(ctx: TokamakContext) {
+    super(ctx, "location");
+    this.#ctx = ctx;
   }
 
   /**
    * Applies long-term location awareness, replacing the previous configuration, which the plugin keeps
-   * and applies again at each start. Rejects with `TypeError`, changing nothing, when a value is
-   * invalid, and on Apple platforms with `NotSupportedError` where the device cannot monitor
-   * significant changes.
+   * and applies again at each start. Rejects on Apple platforms with `NotSupportedError` where the
+   * device cannot monitor significant changes.
    */
-  async setup(config: SetupConfig): Promise<void> {
-    validateSetup(config, "config");
-    return this.hasNativeTransport ? this.call("setup", config) : web.unsupported();
+  setup(config: SetupConfig): Promise<void> {
+    return this.call("setup", config);
   }
 
-  getCurrentPosition(options: PositionOptions = {}): Promise<Position> {
-    if (!this.hasNativeTransport) return web.getCurrentPosition(options);
-    return this.call("getCurrentPosition", {
-      maximumAge: milliseconds(options.maximumAge ?? 0),
-      timeout: milliseconds(options.timeout ?? unlimited),
-    });
+  /**
+   * The device's position, asking for in-use permission where the user has not answered. Rejects
+   * with `NotAllowedError` without it, `TimeoutError` after `timeout`, and `NotReadableError`
+   * when location is unavailable.
+   */
+  async getCurrentPosition(options: PositionOptions = {}): Promise<Position> {
+    await this.#authorize();
+    const position = await this.#platform().currentPosition(this.#ctx, options);
+    if (position) return position;
+    // Android finds no position in the background without background permission.
+    const background = await lifecycleStage(this.#ctx) === "background";
+    throw background && (await this.permission()).background !== "granted" ? backgroundDenied() : unavailable("Location is unavailable");
   }
 
-  watchPosition(next: PositionCallback, error: PositionErrorCallback): () => void {
-    if (!this.hasNativeTransport) return web.watchPosition(next, error);
-    return this.listen("watchPosition", next, error);
+  /** Positions as the device moves, after `getCurrentPosition`'s permission checks. A slow reader receives the newest. */
+  watchPosition(): JsonStream<Position> {
+    return valueStream<Position>((next, error) => {
+      let stop: (() => void) | undefined;
+      let stopped = false;
+      this.#authorize()
+        .then(() => this.#platform().watchPositions(this.#ctx, next, error))
+        .then((started) => {
+          if (stopped) started();
+          else stop = started;
+        }, error);
+      return () => {
+        stopped = true;
+        stop?.();
+      };
+    }, "dropOldest");
+  }
+
+  /** Requires location services and in-use permission, asking for it where the user has not answered. */
+  async #authorize(): Promise<void> {
+    if (!await this.servicesEnabled()) throw unavailable("Location services are disabled");
+    let { inUse } = await this.permission();
+    if (inUse === "prompt") ({ inUse } = await this.requestPermission());
+    if (inUse !== "granted") throw permissionDenied();
+  }
+
+  /** The platform's composition of its location SDK. */
+  #platform(): typeof apple | typeof android {
+    switch (this.#ctx.platform) {
+      case "ios":
+      case "macos":
+        return apple;
+      case "android":
+        return android;
+      default:
+        throw new DOMException("Location is not supported on this platform", "NotSupportedError");
+    }
   }
 
   /** The app's in-use and background permission, and the precision it gets. Never asks. */
   permission(): Promise<LocationPermission> {
-    return this.hasNativeTransport ? this.call("permission") : web.permission();
+    return this.call("permission");
   }
 
   /**
@@ -62,19 +101,18 @@ class Location extends Plugin {
    * Android asks for background permission once in-use permission is granted. Rejects with
    * `NeedsUIError` when a prompt would show off screen.
    */
-  async requestPermission(options: PermissionRequest = {}): Promise<LocationPermission> {
-    validatePermissionRequest(options, "options");
-    return this.hasNativeTransport ? this.call("requestPermission", options) : web.unsupported();
+  requestPermission(options: PermissionRequest = {}): Promise<LocationPermission> {
+    return this.call("requestPermission", options);
   }
 
   /** Whether location services are on for the device. While they are off, nothing locates. */
   servicesEnabled(): Promise<boolean> {
-    return this.hasNativeTransport ? this.call("servicesEnabled") : web.unsupported();
+    return this.call("servicesEnabled");
   }
 
   /** Opens the app's page in the system settings, where the user changes its location permission. */
   openSettings(): Promise<void> {
-    return this.hasNativeTransport ? this.call("openSettings") : web.unsupported();
+    return this.call("openSettings");
   }
 
   /**
@@ -85,18 +123,17 @@ class Location extends Plugin {
    * without the `background-updates` build setting, and with `NeedsUIError` when Android does not
    * allow the service to start off screen.
    */
-  async startUpdates(options: UpdateOptions = {}): Promise<void> {
-    validateUpdateOptions(options, "options");
-    return this.hasNativeTransport ? this.call("startUpdates", options) : web.unsupported();
+  startUpdates(options: UpdateOptions = {}): Promise<void> {
+    return this.call("startUpdates", options);
   }
 
   stopUpdates(): Promise<void> {
-    return this.hasNativeTransport ? this.call("stopUpdates") : web.unsupported();
+    return this.call("stopUpdates");
   }
 
   /** The options of the running updates, or null when none are running. */
   getUpdates(): Promise<UpdateOptions | null> {
-    return this.hasNativeTransport ? this.call("getUpdates") : web.unsupported();
+    return this.call("getUpdates");
   }
 
   /**
@@ -105,51 +142,39 @@ class Location extends Plugin {
    * region starts outside, so a device already inside reports an entry. Rejects with
    * `NotAllowedError` without precise location, and with `QuotaExceededError` beyond Apple's 20.
    */
-  async addRegion(region: Region): Promise<void> {
-    const monitored = monitoredRegion(region);
-    return this.hasNativeTransport ? this.call("addRegion", monitored) : web.unsupported();
+  addRegion(region: Region): Promise<void> {
+    return this.call("addRegion", region);
   }
 
   /** The monitored regions. */
   getRegions(): Promise<MonitoredRegion[]> {
-    return this.hasNativeTransport ? this.call("getRegions") : web.unsupported();
+    return this.call("getRegions");
   }
 
-  async removeRegion(id: string): Promise<void> {
-    nonEmptyText(id, "id");
-    return this.hasNativeTransport ? this.call("removeRegion", { id }) : web.unsupported();
+  removeRegion(id: string): Promise<void> {
+    return this.call("removeRegion", { id });
   }
 
   /** Receives the updates the Worker's `onLocationUpdate` receives, while the listening page or Worker runs. */
-  onLocationUpdate(listener: Listener<LocationUpdate>, error: ErrorListener = report): () => void {
-    return this.hasNativeTransport ? this.listen("onLocationUpdate", listener, error) : () => undefined;
+  onLocationUpdate(): JsonStream<LocationUpdate> {
+    return this.stream("onLocationUpdate", null, "dropOldest");
   }
 
   /** Receives the transitions the Worker's `onRegionTransition` receives, while the listening page or Worker runs. */
-  onRegionTransition(listener: Listener<RegionTransition>, error: ErrorListener = report): () => void {
-    return this.hasNativeTransport ? this.listen("onRegionTransition", listener, error) : () => undefined;
+  onRegionTransition(): JsonStream<RegionTransition> {
+    return this.stream("onRegionTransition");
   }
 
   /** Apple only: receives the visits the Worker's `onVisit` receives, while the listening page or Worker runs. */
-  onVisit(listener: Listener<Visit>, error: ErrorListener = report): () => void {
-    return this.hasNativeTransport ? this.listen("onVisit", listener, error) : () => undefined;
+  onVisit(): JsonStream<Visit> {
+    return this.stream("onVisit");
   }
 
   /** Receives the failures the Worker's `onLocationError` receives, while the listening page or Worker runs. */
-  onLocationError(listener: Listener<LocationErrorEvent>, error: ErrorListener = report): () => void {
-    return this.hasNativeTransport ? this.listen("onLocationError", listener, error) : () => undefined;
+  onLocationError(): JsonStream<LocationErrorEvent> {
+    return this.stream("onLocationError");
   }
 }
 
-function report(error: DOMException): void {
-  console.error(error);
-}
 
-const unlimited = 0xffffffff;
-
-/** `value` clamped to whole milliseconds, as the Geolocation API reads its options. */
-function milliseconds(value: number): number {
-  return Number.isNaN(value) ? 0 : Math.min(Math.max(Math.round(value), 0), unlimited);
-}
-
-export const location = new Location();
+export function location(ctx: TokamakContext): Location { return new Location(ctx); }

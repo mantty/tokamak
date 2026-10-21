@@ -1,123 +1,98 @@
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
-
-import { Plugin } from "../src/index.js";
-import { connectNative, disconnectNative } from "../src/testing.js";
+import { test } from "node:test";
+import { Plugin, type TokamakContext } from "../src/index.js";
+import { decodeValues } from "../src/streams.js";
+import { connectNative } from "../src/testing.js";
 
 class Example extends Plugin {
-  constructor() {
-    super("example");
-  }
-
-  get native(): boolean {
-    return this.hasNativeTransport;
-  }
-
-  run(arguments_?: unknown): Promise<unknown> {
-    return this.call("run", arguments_);
-  }
-
-  watch(next: (value: number) => void, error: (error: DOMException) => void): () => void {
-    return this.listen("watch", next, error, { every: 1 });
-  }
+  constructor(ctx: TokamakContext) { super(ctx, "example"); }
+  run(value: unknown = null): Promise<unknown> { return this.call("run", value); }
+  bytes(value: Uint8Array): Promise<Uint8Array> { return this.callBytes("bytes", value); }
+  watch(): ReadableStream<Uint8Array> { return this.stream("watch", { every: 1 }); }
 }
 
-const example = new Example();
-
-afterEach(() => {
-  disconnectNative();
-  Reflect.deleteProperty(globalThis, "__tokamakNativeCall");
-  Reflect.deleteProperty(globalThis, "__tokamakNativeListen");
+void test("a plugin uses the receiving invocation's connection and standard value codec", async () => {
+  const first = connectNative();
+  const second = connectNative();
+  const result = new Example(first.ctx).run({ fast: true });
+  assert.deepEqual(first.lastRequest(), { type: "call", plugin: "example", method: "run", arguments: { fast: true } });
+  assert.deepEqual(second.sent, []);
+  first.respond({ value: "ran" });
+  assert.equal(await result, "ran");
 });
 
-void test("calls through the Worker's native calls without a page transport", async () => {
-  const calls: unknown[][] = [];
-  globalThis.__tokamakNativeCall = (...arguments_) => {
-    calls.push(arguments_);
-    return Promise.resolve("ran");
-  };
-
-  assert.equal(example.native, true);
-  assert.equal(await example.run({ fast: true }), "ran");
-  assert.equal(await example.run(), "ran");
-  assert.deepEqual(calls, [
-    ["example", "run", { fast: true }],
-    ["example", "run", null],
-  ]);
-});
-
-void test("passes on the Worker's native call failures", async () => {
-  const failure = new DOMException("Prompt needs UI", "NeedsUIError");
-  globalThis.__tokamakNativeCall = () => Promise.reject(failure);
-
-  await assert.rejects(example.run(), failure);
-});
-
-void test("listens through the Worker's native listeners without a page transport", () => {
-  const values: number[] = [];
-  const errors: string[] = [];
-  let unsubscribed = 0;
-  globalThis.__tokamakNativeListen = (plugin, method, arguments_, next, error) => {
-    assert.deepEqual([plugin, method, arguments_], ["example", "watch", { every: 1 }]);
-    next(1);
-    error(new DOMException("No fix", "NotReadableError"));
-    next(2);
-    return () => unsubscribed++;
-  };
-
-  const stop = example.watch((value) => values.push(value), (error) => errors.push(error.name));
-  stop();
-
-  assert.deepEqual(values, [1, 2]);
-  assert.deepEqual(errors, ["NotReadableError"]);
-  assert.equal(unsubscribed, 1);
-});
-
-void test("uses the page transport where the page has one", async () => {
+void test("raw binary calls preserve arbitrary bytes and view bounds", async () => {
   const native = connectNative();
-  globalThis.__tokamakNativeCall = () => Promise.reject(new Error("the Worker's calls were used"));
-
-  const result = example.run();
-  native.respond({ value: "page" });
-
-  assert.equal(await result, "page");
+  const bytes = new Uint8Array([0, 255, 128, 0]);
+  const result = new Example(native.ctx).bytes(bytes.subarray(1, 3));
+  assert.deepEqual(native.sent[0]?.payload, new Uint8Array([255, 128]));
+  native.respondBytes(bytes);
+  assert.deepEqual(await result, bytes);
 });
 
-void test("is unsupported without a native transport", async () => {
-  assert.equal(example.native, false);
-  await assert.rejects(
-    example.run(),
-    (error: unknown) => error instanceof DOMException && error.name === "NotSupportedError",
-  );
-  assert.throws(
-    () => example.watch(() => undefined, () => undefined),
-    (error: unknown) => error instanceof DOMException && error.name === "NotSupportedError",
-  );
+void test("native call failures retain their name and message", async () => {
+  const native = connectNative();
+  const result = new Example(native.ctx).run();
+  native.respond({ error: { name: "NeedsUIError", message: "Prompt needs UI" } });
+  await assert.rejects(result, { name: "NeedsUIError", message: "Prompt needs UI" });
 });
 
-void test("listens for pagehide only once a page transport connects", async () => {
-  const listened: string[] = [];
-  Reflect.set(globalThis, "addEventListener", (type: string) => listened.push(type));
-  try {
-    // A fresh copy of the module, imported without a page transport, as the Worker imports it.
-    const fresh = (await import(new URL("../src/index.ts?fresh", import.meta.url).href)) as typeof import("../src/index.js");
-    class Fresh extends fresh.Plugin {
-      constructor() {
-        super("fresh");
-      }
+void test("value streams deliver values, finish and cancel their native subscription", async () => {
+  const native = connectNative();
+  const stream = new Example(native.ctx).watch();
+  const reader = decodeValues<number>(stream);
+  native.respond({ value: 1 }, false);
+  assert.deepEqual(await reader.next(), { value: 1, done: false });
+  await reader.return(undefined);
+  assert.equal(native.sent.at(-1)?.type, "cancel");
+});
 
-      run(): Promise<unknown> {
-        return this.call("run");
-      }
-    }
-    const plugin = new Fresh();
-    await assert.rejects(plugin.run());
-    assert.deepEqual(listened, []);
+void test("terminal stream failures reject the reader and release native work", async () => {
+  const native = connectNative();
+  const values = decodeValues(new Example(native.ctx).watch());
+  native.respond({ error: { name: "NotAllowedError", message: "Denied" } });
+  await assert.rejects(values.next(), { name: "NotAllowedError" });
+});
 
-    connectNative();
-    void plugin.run();
-    assert.deepEqual(listened, ["pagehide"]);
-  } finally {
-    Reflect.deleteProperty(globalThis, "addEventListener");
-  }
+void test("ordinary execution contexts do not grant native access", () => {
+  // @ts-expect-error -- the native connection is required.
+  assert.throws(() => new Example({ waitUntil() {} }), TypeError);
+});
+
+class Transfers extends Plugin {
+  constructor(ctx: TokamakContext) { super(ctx, "transfers"); }
+  upload(body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<number> { return this.call("upload", { name: "a" }, { body, signal }); }
+  samples(): ReadableStream<Uint8Array> { return this.stream("samples", null, "dropOldest"); }
+}
+
+void test("a call carries its body to the native endpoint", async () => {
+  const native = connectNative();
+  const body = new ReadableStream<Uint8Array>();
+  const uploaded = new Transfers(native.ctx).upload(body);
+  assert.equal(native.sent[0]?.body, body);
+  native.respond({ value: 3 });
+  assert.equal(await uploaded, 3);
+});
+
+void test("aborting a call cancels the native work and rejects with the reason", async () => {
+  const native = connectNative();
+  const controller = new AbortController();
+  const uploaded = new Transfers(native.ctx).upload(new ReadableStream(), controller.signal);
+  controller.abort(new DOMException("stopped", "AbortError"));
+  await assert.rejects(uploaded, { name: "AbortError", message: "stopped" });
+  assert.deepEqual(native.sent.at(-1), { type: "cancel", id: 1 });
+  await assert.rejects(new Transfers(native.ctx).upload(new ReadableStream(), controller.signal), { message: "stopped" });
+});
+
+void test("a stream passes its overflow policy to the native subscription", () => {
+  const native = connectNative();
+  void new Transfers(native.ctx).samples().getReader().read();
+  assert.equal(native.sent[0]?.overflow, "dropOldest");
+});
+
+void test("capabilities report the operations implemented on the context's platform", () => {
+  const availability = { transfers: { upload: ["ios", "android"], samples: ["ios"] } } as const;
+  assert.deepEqual(new Transfers(connectNative("android", availability).ctx).capabilities, { upload: true, samples: false });
+  assert.deepEqual(new Transfers(connectNative("ios", availability).ctx).capabilities, { upload: true, samples: true });
+  assert.equal(connectNative("macos").ctx.platform, "macos");
 });

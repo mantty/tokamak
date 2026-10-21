@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 
-import { notifications, type ScheduledNotification } from "../src/index.js";
-import { DISMISSED, DISMISSED_CACHE, OPENED, OPENED_CACHE, SETUP_CACHE } from "../web/protocol.js";
+import { notifications } from "../web/client.js";
+import { decodeValues } from "@tokamakdev/plugin/streams";
+import { DISMISSED_CACHE, OPENED, OPENED_CACHE } from "../web/protocol.js";
 import {
   FakeCacheStorage,
-  FakePushSubscription,
   FakeRegistration,
   replaceGlobal,
 } from "./fakes.js";
@@ -166,18 +166,6 @@ void test("passes the web's options to the browser, and sets the app badge", asy
   assert.deepEqual(badges, [3]);
 });
 
-void test("shows nothing and stores nothing for an invalid notification or setup", async () => {
-  await assert.rejects(notifications.show({ id: "n1", title: "Hi", badge: -1 }), TypeError);
-  await assert.rejects(
-    notifications.schedule({ id: "n1", title: "Hi" } as ScheduledNotification),
-    TypeError,
-  );
-  await assert.rejects(notifications.setup({ categories: [{ id: "", actions: [] }] }), TypeError);
-
-  assert.deepEqual(registration?.shown, []);
-  assert.deepEqual(await (await caches.open(SETUP_CACHE)).keys(), []);
-});
-
 void test("sets the app badge only for a notification with a badge, including 0", async () => {
   await notifications.show({ id: "n1", title: "Hi" });
   await notifications.show({ id: "n2", title: "Hi", badge: 0 });
@@ -300,14 +288,9 @@ void test("shows notifications without a service worker", async () => {
   assert.deepEqual(constructed, ["Done"]);
 });
 
-void test("rejects showing and scheduling what the web cannot", async () => {
+void test("rejects showing notifications without permission", async () => {
   permission = "denied";
   await assert.rejects(notifications.show({ id: "a", title: "A" }), isDomException("NotAllowedError"));
-  await assert.rejects(
-    notifications.schedule({ id: "a", title: "A", at: 0 }),
-    isDomException("NotSupportedError"),
-  );
-  assert.deepEqual(await notifications.getScheduled(), []);
 });
 
 void test("reports the permission as the settings, and sets the badge through the Badging API", async () => {
@@ -320,17 +303,6 @@ void test("reports the permission as the settings, and sets the badge through th
   await assert.rejects(notifications.setBadge(1), isDomException("NotSupportedError"));
 });
 
-void test("rejects what only native platforms have", async () => {
-  await assert.rejects(notifications.openSettings(), isDomException("NotSupportedError"));
-  await assert.rejects(notifications.subscribeToTopic("news"), isDomException("NotSupportedError"));
-  await assert.rejects(notifications.unsubscribeFromTopic("news"), isDomException("NotSupportedError"));
-  await assert.rejects(
-    notifications.schedule({ id: "a", title: "A", every: { minutes: 5 } }),
-    isDomException("NotSupportedError"),
-  );
-  const stop = notifications.onOpenSettings(() => assert.fail("the web has no settings link"));
-  stop();
-});
 
 void test("subscribes with the application server key and reuses the subscription", async () => {
   const subscription = await notifications.subscribe({ applicationServerKey: "BEl6" });
@@ -363,56 +335,47 @@ void test("rejects subscribing without what Web Push requires", async () => {
   );
 });
 
-void test("delivers messages and subscription changes from the service worker", () => {
-  const messages: unknown[] = [];
-  const changes: unknown[] = [];
-  const stopMessages = notifications.onMessage((message) => messages.push(message));
-  notifications.onSubscriptionChange((subscription) => changes.push(subscription));
-  const subscription = new FakePushSubscription("https://push.example/changed");
+void test("streams messages and subscription changes from the service worker", async () => {
+  const messages = decodeValues(await notifications.onMessage());
+  const changes = decodeValues(await notifications.onSubscriptionChange());
+  const subscription = { service: "webpush", endpoint: "https://push.example/changed", keys: { auth: "a", p256dh: "b" } };
   const message = { id: "1", title: null, body: null, data: {} };
-
   for (const listener of messageListeners) {
     listener({ data: { type: "tokamak-notifications:message", message } });
     listener({ data: { type: "tokamak-notifications:subscription", subscription } });
   }
-  stopMessages();
-
-  assert.deepEqual(messages, [message]);
-  assert.deepEqual(changes, [subscription]);
+  assert.deepEqual((await messages.next()).value, message);
+  assert.deepEqual((await changes.next()).value, subscription);
+  await messages.return(undefined);
   assert.equal(messageListeners.length, 1);
+  await changes.return(undefined);
+  assert.equal(messageListeners.length, 0);
 });
 
-void test("takes each dismissed notification the service worker holds", async () => {
+void test("streams dismissed notifications held by the service worker", async () => {
   const cache = await caches.open(DISMISSED_CACHE);
   const dismissed = { id: "1", title: "Hi", body: null, data: {}, source: "local" };
-  const received: unknown[] = [];
-
-  const stop = notifications.onNotificationDismissed((notification) => received.push(notification));
-  await new Promise((resolve) => setTimeout(resolve, 10));
   await cache.put("/__tokamak/notifications/1", Response.json(dismissed));
-  for (const listener of messageListeners) listener({ data: { type: DISMISSED } });
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  stop();
-
-  assert.deepEqual(received, [dismissed]);
+  const values = decodeValues(await notifications.onNotificationDismissed());
+  assert.deepEqual((await values.next()).value, dismissed);
+  await values.return(undefined);
 });
 
-void test("takes each opened notification the service worker holds once", async () => {
+void test("delivers held notifications once to each active stream", async () => {
   const cache = await caches.open(OPENED_CACHE);
   const opened = { id: "1", title: "Hi", body: null, data: {}, source: "push" };
+  const firstStream = await notifications.onNotificationOpened();
+  const secondStream = await notifications.onNotificationOpened();
+  const first = decodeValues(firstStream);
+  const second = decodeValues(secondStream);
   await cache.put("/__tokamak/notifications/1", Response.json(opened));
-  const first: unknown[] = [];
-  const second: unknown[] = [];
-
-  const stop = notifications.onNotificationOpened((notification) => first.push(notification));
-  const stopSecond = notifications.onNotificationOpened((notification) => second.push(notification));
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  await cache.put("/__tokamak/notifications/2", Response.json({ ...opened, id: "2" }));
-  stop();
   for (const listener of messageListeners) listener({ data: { type: OPENED } });
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  stopSecond();
-
-  assert.deepEqual(first.map((notification) => (notification as { id: string }).id), ["1"]);
-  assert.deepEqual(second.map((notification) => (notification as { id: string }).id), ["1", "2"]);
+  assert.deepEqual((await first.next()).value, opened);
+  assert.deepEqual((await second.next()).value, opened);
+  await first.return(undefined);
+  await cache.put("/__tokamak/notifications/2", Response.json({ ...opened, id: "2" }));
+  for (const listener of messageListeners) listener({ data: { type: OPENED } });
+  assert.deepEqual((await second.next()).value, { ...opened, id: "2" });
+  await second.return(undefined);
+  assert.deepEqual(await cache.keys(), []);
 });

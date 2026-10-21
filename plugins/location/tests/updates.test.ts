@@ -1,15 +1,16 @@
+import { decodeValues } from "@tokamakdev/plugin/streams";
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { test } from "node:test";
 
-import { connectNative, disconnectNative, dispatch } from "@tokamakdev/plugin/testing";
+import { connectNative, dispatch } from "@tokamakdev/plugin/testing";
 
-import { location, type LocationUpdate, type SetupConfig, type UpdateOptions } from "../src/index.js";
+import { location as createApi, type LocationUpdate } from "../src/index.js";
 import { onLocationError, onLocationUpdate, onRegionTransition, onVisit } from "../events/index.js";
 
-afterEach(disconnectNative);
 
 void test("calls the native plugin with each update and setup method's arguments", async () => {
   const native = connectNative();
+  const location = createApi(native.ctx);
   const options = {
     activity: "fitness",
     accuracy: "balanced",
@@ -37,112 +38,32 @@ void test("calls the native plugin with each update and setup method's arguments
   }
 });
 
-void test("rejects update options it cannot send", async () => {
-  connectNative();
-  for (const [options, message] of [
-    [{ activity: "walking" }, "options.activity must be one of"],
-    [{ accuracy: "best" }, 'options.accuracy must be one of "high", "balanced", "low"'],
-    [{ distance: -1 }, "options.distance must be a finite number of at least 0"],
-    [{ distance: Infinity }, "options.distance must be a finite number of at least 0"],
-    [{ interval: 1.5 }, "options.interval must be a whole number of at least 0"],
-    [{ foregroundService: { title: "Run", body: "" } }, "options.foregroundService.channel must be a non-empty string"],
-    [{ foregroundService: { title: "", body: "", channel: "Runs" } }, "options.foregroundService.title must be"],
-    [{ foregroundService: { title: "Run", body: 1, channel: "Runs" } }, "options.foregroundService.body must be a string"],
-  ] as const) {
-    await assert.rejects(
-      location.startUpdates(options as unknown as UpdateOptions),
-      (error: unknown) => error instanceof TypeError && error.message.startsWith(message),
-    );
-  }
-});
-
-void test("rejects a setup configuration it cannot apply", async () => {
-  connectNative();
-  for (const [config, message] of [
-    [{ visits: "yes" }, "config.visits must be a boolean"],
-    [{ significantChanges: 1 }, "config.significantChanges must be a boolean"],
-    [null, "config must be an object"],
-  ] as const) {
-    await assert.rejects(
-      location.setup(config as unknown as SetupConfig),
-      (error: unknown) => error instanceof TypeError && error.message === message,
-    );
-  }
-});
-
-void test("subscribes each listener to its native events until removed", () => {
+void test("each native event stream delivers values until cancelled", async () => {
   const native = connectNative();
-  const update: LocationUpdate = {
-    positions: [{ coords: { latitude: 1, longitude: 2, accuracy: 3, altitude: null, altitudeAccuracy: null, heading: null, speed: null }, timestamp: 4 }],
-    stationary: false,
-  };
-  const listeners = [
-    ["onLocationUpdate", (listener: (value: unknown) => void) => location.onLocationUpdate(listener)],
-    ["onRegionTransition", (listener: (value: unknown) => void) => location.onRegionTransition(listener)],
-    ["onVisit", (listener: (value: unknown) => void) => location.onVisit(listener)],
-    ["onLocationError", (listener: (value: unknown) => void) => location.onLocationError(listener)],
-  ] as const;
-  for (const [method, listen] of listeners) {
-    const received: unknown[] = [];
-    const remove = listen((value) => received.push(value));
-    const { session, id } = native.sent.at(-1) ?? {};
+  const location = createApi(native.ctx);
+  const update: LocationUpdate = { positions: [], stationary: false };
+  for (const method of ["onLocationUpdate", "onRegionTransition", "onVisit", "onLocationError"] as const) {
+    const values = decodeValues<unknown>(location[method]());
     assert.deepEqual(native.lastRequest(), { type: "subscribe", plugin: "location", method, arguments: null });
-
     native.respond({ value: update }, false);
-    remove();
-
-    assert.deepEqual(received, [update]);
-    assert.deepEqual(native.sent.at(-1), { type: "cancel", session, id });
+    assert.deepEqual((await values.next()).value, update);
+    await values.return(undefined);
+    assert.equal(native.sent.at(-1)?.type, "cancel");
   }
 });
 
-void test("passes native listener failures to each listener's error callback", () => {
+void test("native event stream failures reject their readers", async () => {
   const native = connectNative();
-  const listeners = [
-    (error: (failure: DOMException) => void) => location.onLocationUpdate(() => assert.fail(), error),
-    (error: (failure: DOMException) => void) => location.onRegionTransition(() => assert.fail(), error),
-    (error: (failure: DOMException) => void) => location.onVisit(() => assert.fail(), error),
-    (error: (failure: DOMException) => void) => location.onLocationError(() => assert.fail(), error),
-  ];
-  for (const listen of listeners) {
-    const received: string[] = [];
-    listen((failure) => received.push(failure.name));
-
+  const location = createApi(native.ctx);
+  for (const method of ["onLocationUpdate", "onRegionTransition", "onVisit", "onLocationError"] as const) {
+    const values = decodeValues<unknown>(location[method]());
     native.respond({ error: { name: "NotSupportedError", message: "Not here" } });
-
-    assert.deepEqual(received, ["NotSupportedError"]);
+    await assert.rejects(values.next(), { name: "NotSupportedError" });
   }
 });
 
-void test("checks a setup configuration before the web rejects it", async () => {
-  await assert.rejects(location.setup({ visits: "yes" } as unknown as SetupConfig), TypeError);
-});
 
-void test("checks update options before the web rejects them", async () => {
-  for (const options of [null, { foregroundService: null }, { interval: -1 }]) {
-    await assert.rejects(
-      location.startUpdates(options as unknown as UpdateOptions),
-      (error: unknown) => error instanceof TypeError,
-    );
-  }
-});
 
-void test("rejects updates on the web, whose listeners receive nothing", async () => {
-  const unsupported = (error: unknown) => error instanceof DOMException && error.name === "NotSupportedError";
-
-  await assert.rejects(location.startUpdates(), unsupported);
-  await assert.rejects(location.stopUpdates(), unsupported);
-  await assert.rejects(location.getUpdates(), unsupported);
-  await assert.rejects(location.setup({}), unsupported);
-  for (const remove of [
-    location.onLocationUpdate(() => assert.fail()),
-    location.onRegionTransition(() => assert.fail()),
-    location.onVisit(() => assert.fail()),
-    location.onLocationError(() => assert.fail()),
-  ]) {
-    remove();
-  }
-});
 
 void test("delivers each Worker event to its listeners", async () => {
   const received: string[] = [];

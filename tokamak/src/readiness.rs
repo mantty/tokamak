@@ -51,12 +51,29 @@ impl Readiness {
     /// Switches `socket` to non-blocking mode and watches it for readability.
     pub(crate) fn watch(&mut self, socket: &TcpStream) -> io::Result<()> {
         socket.set_nonblocking(true)?;
+        self.observe(socket)
+    }
+
+    /// Watches socket readiness without changing its blocking mode.
+    pub(crate) fn observe(&mut self, socket: &TcpStream) -> io::Result<()> {
         let mut watched = mio::net::TcpStream::from_std(socket.try_clone()?);
         self.poll
             .registry()
             .register(&mut watched, TOKEN, Interest::READABLE)?;
         self.watched = Some(watched);
         Ok(())
+    }
+
+    /// Detects connection failure even when unread bytes remain in the socket.
+    pub(crate) fn closed(&mut self) -> io::Result<bool> {
+        match self.wait(Some(Instant::now())) {
+            Ok(()) => Ok(self
+                .events
+                .iter()
+                .any(|event| event.is_write_closed() || event.is_error())),
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     /// Blocks until the socket is readable or the waker fires, failing with

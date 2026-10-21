@@ -23,19 +23,6 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     name: "NotAllowedError",
     message: "Location permission was denied"
   )
-  private static let timedOut = TokamakPluginError(
-    name: "TimeoutError",
-    message: "Location was not found in time"
-  )
-
-  /// A current position request, timed from when locating starts.
-  private struct Request {
-    let reply: TokamakPluginReply
-    let maximumAge: TimeInterval
-    let timeout: TimeInterval
-    var timer: DispatchWorkItem?
-  }
-
   /// A `requestPermission` waiting for the user to answer a prompt.
   private struct Prompt {
     /// The purpose key of the temporary precise location to ask for next.
@@ -45,14 +32,10 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
 
   private let host: TokamakHost
   private let defaults = UserDefaults.standard
-  /// Locates for watchers, and asks for permission.
-  private let watching = CLLocationManager()
-  /// Takes single fixes for current position requests, apart from watching.
-  private let fixes = CLLocationManager()
+  /// Reports the app's authorization, and asks for permission.
+  private let authorization = CLLocationManager()
   /// Delivers the significant changes and visits `setup` names.
   private let monitoring = CLLocationManager()
-  private var current: [UUID: Request] = [:]
-  private var watchers: [UUID: TokamakPluginReply] = [:]
   private var prompts: [UUID: Prompt] = [:]
   /// The prompts waiting when the app resigned active, as a prompt showing
   /// makes it.
@@ -73,10 +56,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     updates = TokamakLocationUpdates(events: events)
     regions = TokamakLocationRegions(events: events)
     super.init()
-    for manager in [watching, fixes] {
-      manager.delegate = self
-      manager.desiredAccuracy = kCLLocationAccuracyBest
-    }
+    authorization.delegate = self
     monitoring.delegate = self
     if let stored = defaults.data(forKey: setupKey),
       let config = try? JSONSerialization.jsonObject(with: stored) as? [String: Any]
@@ -98,7 +78,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     method: String,
     arguments: Any,
     reply: @escaping TokamakPluginReply
-  ) {
+  ) -> (() -> Void)? {
     let options = arguments as? [String: Any] ?? [:]
     do throws(TokamakPluginError) {
       switch method {
@@ -111,13 +91,6 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
         apply(options)
         defaults.set(try? JSONSerialization.data(withJSONObject: options), forKey: setupKey)
         reply(.success(nil))
-      case "getCurrentPosition":
-        current[UUID()] = Request(
-          reply: reply,
-          maximumAge: (options["maximumAge"] as? Double ?? 0) / 1000,
-          timeout: (options["timeout"] as? Double ?? Double(UInt32.max)) / 1000
-        )
-        start()
       case "permission":
         reply(.success(permission()))
       case "requestPermission":
@@ -142,7 +115,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
         reply(.success(updates.options))
       case "addRegion":
         try requirePermission()
-        guard watching.accuracyAuthorization == .fullAccuracy else {
+        guard authorization.accuracyAuthorization == .fullAccuracy else {
           throw TokamakPluginError(
             name: "NotAllowedError", message: "Regions need precise location")
         }
@@ -170,6 +143,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     } catch {
       reply(.failure(error))
     }
+    return nil
   }
 
   func subscribe(
@@ -177,66 +151,41 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     arguments: Any,
     reply: @escaping TokamakPluginReply
   ) throws(TokamakPluginError) -> (() -> Void) {
-    if let remove = events.listen(method, reply) {
-      return remove
-    }
-    guard method == "watchPosition" else {
+    guard let remove = events.listen(method, reply) else {
       throw .notSupported("\(id).\(method) is not supported")
     }
-    let subscription = UUID()
-    watchers[subscription] = reply
-    start()
-    return { [weak self] in
-      self?.watchers.removeValue(forKey: subscription)
-      if self?.watchers.isEmpty == true {
-        self?.watching.stopUpdatingLocation()
-      }
-    }
+    return remove
   }
 
-  /// Also called when each manager is created, before anything asks for a
-  /// position. Every manager reports the app's one authorization, which
-  /// `watching`'s calls handle.
+  /// Also called when each manager is created. Every manager reports the
+  /// app's one authorization, which `authorization`'s calls handle.
   func locationManagerDidChangeAuthorization(
     _ manager: CLLocationManager
   ) {
-    guard manager === watching else { return }
+    guard manager === authorization else { return }
     holdAlwaysSession()
     guard manager.authorizationStatus != .notDetermined else { return }
     answer(Array(prompts.keys))
-    if !current.isEmpty || !watchers.isEmpty {
-      serve(manager.authorizationStatus)
-    }
   }
 
   func locationManager(
     _ manager: CLLocationManager,
     didUpdateLocations locations: [CLLocation]
   ) {
-    if manager === monitoring {
-      for location in locations {
-        events.update(location)
-      }
-      return
+    guard manager === monitoring else { return }
+    for location in locations {
+      events.update(location)
     }
-    guard let location = locations.last else { return }
-    deliver(.success(TokamakLocationEvents.position(location)), from: manager)
   }
 
-  /// A fix that is not yet available is taken again; updates continue.
+  /// Monitoring continues while the position is not yet known.
   func locationManager(
     _ manager: CLLocationManager,
     didFailWithError error: Error
   ) {
-    if (error as NSError).code == CLError.Code.locationUnknown.rawValue {
-      if manager === fixes && !current.isEmpty {
-        fixes.requestLocation()
-      }
-    } else if manager === monitoring {
-      events.fail(locationError(error))
-    } else {
-      deliver(.failure(locationError(error)), from: manager)
-    }
+    guard manager === monitoring, (error as NSError).code != CLError.Code.locationUnknown.rawValue
+    else { return }
+    events.fail(locationError(error))
   }
 
   /// Core Location delivers each visit to every manager's delegate.
@@ -262,102 +211,14 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     }
   }
 
-  /// Checks location services off the main thread, which the check can block.
-  private func start() {
-    DispatchQueue.global(qos: .userInitiated).async {
-      let enabled = CLLocationManager.locationServicesEnabled()
-      DispatchQueue.main.async { self.start(servicesEnabled: enabled) }
-    }
-  }
-
-  private func start(servicesEnabled: Bool) {
-    guard servicesEnabled else {
-      fail(.locationUnavailable("Location services are disabled"))
-      return
-    }
-    let status = watching.authorizationStatus
-    guard status == .notDetermined else {
-      serve(status)
-      return
-    }
-    do throws(TokamakPluginError) {
-      try host.requireUI()
-      watching.requestWhenInUseAuthorization()
-    } catch {
-      fail(error)
-    }
-  }
-
-  /// Locates for the waiting requests and watchers when `status` allows it,
-  /// and fails them when it forbids it.
-  private func serve(_ status: CLAuthorizationStatus) {
-    switch status {
-    case .authorizedAlways, .authorizedWhenInUse:
-      if !watchers.isEmpty {
-        watching.startUpdatingLocation()
-      }
-      locate()
-    case .denied, .restricted:
-      fail(Self.permissionDenied)
-    case .notDetermined:
-      break
-    @unknown default:
-      fail(.notSupported("Location authorization is not supported"))
-    }
-  }
-
-  /// Answers each new request with a fix no older than its `maximumAge`, and
-  /// takes a fix for the rest, each failing after its `timeout`.
-  private func locate() {
-    for (key, request) in current where request.timer == nil {
-      if let fix = fixes.location, -fix.timestamp.timeIntervalSinceNow <= request.maximumAge {
-        finish(key, .success(TokamakLocationEvents.position(fix)))
-        continue
-      }
-      let timer = DispatchWorkItem { [weak self] in self?.finish(key, .failure(Self.timedOut)) }
-      current[key]?.timer = timer
-      DispatchQueue.main.asyncAfter(deadline: .now() + request.timeout, execute: timer)
-    }
-    if !current.isEmpty {
-      fixes.requestLocation()
-    }
-  }
-
-  /// Answers the waiting requests with a fix, or the watchers with an update.
-  private func deliver(_ result: Result<Any?, TokamakPluginError>, from manager: CLLocationManager)
-  {
-    guard manager === fixes else {
-      for reply in watchers.values {
-        reply(result)
-      }
-      return
-    }
-    for key in current.keys {
-      finish(key, result)
-    }
-  }
-
-  private func fail(_ error: TokamakPluginError) {
-    deliver(.failure(error), from: fixes)
-    deliver(.failure(error), from: watching)
-  }
-
-  private func finish(_ key: UUID, _ result: Result<Any?, TokamakPluginError>) {
-    guard let request = current.removeValue(forKey: key) else { return }
-    request.timer?.cancel()
-    request.reply(result)
-    if current.isEmpty {
-      fixes.stopUpdatingLocation()
-    }
-  }
-
   /// The app's in-use and background permission, and the precision it gets.
   private func permission() -> [String: Any] {
-    let status = watching.authorizationStatus
+    let status = authorization.authorizationStatus
     return [
       "inUse": Self.state(status),
       "background": backgroundPermission(status),
-      "precision": watching.accuracyAuthorization == .reducedAccuracy ? "approximate" : "precise",
+      "precision": authorization.accuracyAuthorization == .reducedAccuracy
+        ? "approximate" : "precise",
     ]
   }
 
@@ -377,7 +238,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   }
 
   private var hasPermission: Bool {
-    ![.notDetermined, .denied, .restricted].contains(watching.authorizationStatus)
+    ![.notDetermined, .denied, .restricted].contains(authorization.authorizationStatus)
   }
 
   /// Throws `NotAllowedError` unless the app has location permission.
@@ -391,7 +252,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private func holdAlwaysSession() {
     #if os(iOS)
       guard #available(iOS 18, *) else { return }
-      let always = watching.authorizationStatus == .authorizedAlways
+      let always = authorization.authorizationStatus == .authorizedAlways
       if always && alwaysSession == nil {
         alwaysSession = CLServiceSession(authorization: .always)
       } else if !always {
@@ -430,7 +291,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
         "Background location needs the location plugin's background build setting")
     }
     let prompt = Prompt(purpose: try Self.purpose(options), reply: reply)
-    let status = watching.authorizationStatus
+    let status = authorization.authorizationStatus
     let upgrades = always && canUpgradeToAlways(status)
     guard status == .notDetermined || upgrades else {
       respond(to: prompt)
@@ -440,9 +301,9 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     prompts[UUID()] = prompt
     if always {
       defaults.set(true, forKey: askedForAlwaysKey)
-      watching.requestAlwaysAuthorization()
+      authorization.requestAlwaysAuthorization()
     } else {
-      watching.requestWhenInUseAuthorization()
+      authorization.requestWhenInUseAuthorization()
     }
   }
 
@@ -490,7 +351,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   /// precise location for its purpose when the app has approximate location.
   private func respond(to prompt: Prompt) {
     guard let purpose = prompt.purpose, hasPermission,
-      watching.accuracyAuthorization == .reducedAccuracy
+      authorization.accuracyAuthorization == .reducedAccuracy
     else {
       prompt.reply(.success(permission()))
       return
@@ -501,7 +362,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
       prompt.reply(.failure(error))
       return
     }
-    watching.requestTemporaryFullAccuracyAuthorization(withPurposeKey: purpose) { _ in
+    authorization.requestTemporaryFullAccuracyAuthorization(withPurposeKey: purpose) { _ in
       DispatchQueue.main.async { prompt.reply(.success(self.permission())) }
     }
   }

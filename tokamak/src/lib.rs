@@ -45,6 +45,8 @@ mod lifecycle_events;
 #[cfg(feature = "native")]
 mod linked;
 #[cfg(feature = "native")]
+mod native_protocol;
+#[cfg(feature = "native")]
 mod network;
 mod packaging;
 #[cfg(feature = "native")]
@@ -56,6 +58,8 @@ mod runtime_contract_tests;
 mod runtime_modules;
 #[cfg(feature = "native")]
 mod server;
+#[cfg(feature = "native")]
+mod services;
 #[cfg(feature = "native")]
 mod storage;
 #[cfg(all(test, feature = "native"))]
@@ -79,7 +83,7 @@ use thiserror::Error as Fail;
 #[cfg(feature = "native")]
 pub use certificates::{Certificates, Challenge, Decision};
 pub use env_vars::{
-    Error as WorkerEnvironmentError, StorageBinding, WorkerEnvironment,
+    Error as WorkerEnvironmentError, ServiceBinding, StorageBinding, WorkerEnvironment,
     load as load_worker_environment, store_id_problem, write as write_worker_environment,
 };
 #[cfg(feature = "native")]
@@ -90,7 +94,7 @@ pub use packaging::{
     write_asset_manifest, write_worker,
 };
 #[cfg(feature = "native")]
-pub use plugin_calls::PluginHandler;
+pub use plugin_calls::{PluginHandler, PluginReply};
 pub use quickjs::Error as QuickJsError;
 pub use quickjs::compile_module;
 
@@ -107,6 +111,8 @@ pub const DEVELOPMENT_ENTRY_POINT: &str = "tokamak_development";
 /// The header that marks the development app's dev WebSocket, which carries
 /// its events, so `tok dev`'s relay forwards it to the tokamak Vite plugin.
 pub const DEV_SOCKET_HEADER: &str = "x-tokamak-dev-socket";
+#[cfg(feature = "native")]
+pub(crate) const NATIVE_ROUTE_PREFIX: &str = "/_tokamak/";
 
 /// Runtime result type.
 pub type Result<T> = std::result::Result<T, Error>;

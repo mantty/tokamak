@@ -16,7 +16,7 @@ import PluginCard from "./PluginCard.astro";
 </PluginCard>
 
 <script>
-  import { localAuthentication } from "@tokamakdev/plugin-local-authentication";
+  import localAuthentication from "@tokamakdev/plugin-local-authentication/client";
   import { logTo, onClick } from "../scripts/plugin-log";
 
   const log = logTo("local-authentication-log");

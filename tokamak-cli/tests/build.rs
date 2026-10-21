@@ -755,6 +755,142 @@ fn packages_worker_vars_as_a_normalized_manifest() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
+fn configure_worker_graph(project: &Path) -> TestResult {
+    write_worker_config(
+        project,
+        r#"{
+        "name": "demo-app-production", "topLevelName": "demo-app",
+        "vars": { "ROLE": "main" },
+        "services": [
+            { "binding": "TOKAMAK", "service": "device-production" },
+            { "binding": "LOCATION", "service": "device-production", "entrypoint": "Location" }
+        ]
+    }"#,
+    )?;
+    let native = project.join("dist/device");
+    fs::create_dir_all(native.join("migrations"))?;
+    fs::write(
+        native.join("index.js"),
+        "export default {}; export class Location {};",
+    )?;
+    fs::write(
+        native.join("migrations/001.sql"),
+        "CREATE TABLE locations (latitude REAL);",
+    )?;
+    fs::write(
+        native.join("wrangler.json"),
+        r#"{
+        "name": "device-production", "topLevelName": "device", "main": "index.js",
+        "vars": { "ROLE": "native" },
+        "services": [{ "binding": "MAIN", "service": "demo-app-production" }],
+        "d1_databases": [{ "binding": "DB", "database_id": "locations" }]
+    }"#,
+    )?;
+    fs::write(
+        project.join(".wrangler/deploy/config.json"),
+        r#"{
+        "configPath": "../../dist/app/wrangler.json",
+        "auxiliaryWorkers": [{ "configPath": "../../dist/device/wrangler.json" }]
+    }"#,
+    )?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn packages_both_workers_with_their_own_bindings_and_migrations() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
+    configure_worker_graph(&project)?;
+    build_command("macos", &project, &platform_pack)?
+        .assert()
+        .success();
+
+    let output = project.join("build/macos/demo-app.app");
+    let main = PackageLayout::new(output.join("app"));
+    let native = main.tokamak_worker();
+    assert_eq!(read_worker_manifest(&native)?.entry, "index.js");
+    let environment = |layout: &PackageLayout| -> TestResult<serde_json::Value> {
+        Ok(serde_json::from_slice(&fs::read(
+            layout.worker_environment(),
+        )?)?)
+    };
+    assert_eq!(
+        environment(&main)?["vars"],
+        serde_json::json!({ "ROLE": "main" })
+    );
+    assert_eq!(
+        environment(&main)?["services"],
+        serde_json::json!({
+            "TOKAMAK": { "service": "tokamak", "entrypoint": "default" },
+            "LOCATION": { "service": "tokamak", "entrypoint": "Location" }
+        })
+    );
+    assert_eq!(
+        environment(&native)?["vars"],
+        serde_json::json!({ "ROLE": "native" })
+    );
+    assert_eq!(
+        environment(&native)?["services"],
+        serde_json::json!({
+            "MAIN": { "service": "main", "entrypoint": "default" }
+        })
+    );
+    assert_eq!(
+        fs::read_to_string(native.d1_migrations("DB").join("001.sql"))?,
+        "CREATE TABLE locations (latitude REAL);"
+    );
+    assert_eq!(
+        fs::read_to_string(output.join("metadata/exported-symbols"))?,
+        "tokamak_storage\n"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn caches_worker_bundles_independently_and_refreshes_native_environment() -> TestResult {
+    let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
+    configure_worker_graph(&project)?;
+    let build = || -> TestResult {
+        build_command("macos", &project, &platform_pack)?
+            .assert()
+            .success();
+        Ok(())
+    };
+    let compiled_at = |name: &str| -> TestResult<_> {
+        let layout =
+            PackageLayout::new(project.join(format!("build/.tokamak/worker/{name}/compiled")));
+        Ok(fs::metadata(layout.worker_manifest())?.modified()?)
+    };
+    build()?;
+    let main_time = compiled_at("main")?;
+    let native_time = compiled_at("tokamak")?;
+    let config_path = project.join("dist/device/wrangler.json");
+    let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&config_path)?)?;
+    config["vars"]["ROLE"] = "updated".into();
+    fs::write(&config_path, serde_json::to_vec(&config)?)?;
+    build()?;
+    assert_eq!(compiled_at("main")?, main_time);
+    assert_eq!(compiled_at("tokamak")?, native_time);
+    let app = PackageLayout::new(project.join("build/macos/demo-app.app/app"));
+    let env: serde_json::Value =
+        serde_json::from_slice(&fs::read(app.tokamak_worker().worker_environment())?)?;
+    assert_eq!(env["vars"]["ROLE"], "updated");
+
+    let source = "export default { value: 2 }; export class Location {};";
+    fs::write(project.join("dist/device/index.js"), source)?;
+    build()?;
+    assert_eq!(compiled_at("main")?, main_time);
+    assert_ne!(compiled_at("tokamak")?, native_time);
+    assert_eq!(
+        read_worker_module(&app.tokamak_worker(), "index.js")?,
+        compile_module("index.js", source.as_bytes())?
+    );
+    Ok(())
+}
+
 #[test]
 fn packages_each_generated_configuration_without_recompiling_unchanged_modules() -> TestResult {
     let (_temporary, project, pack) = create_windows_inputs()?;
@@ -795,7 +931,7 @@ fn packages_each_generated_configuration_without_recompiling_unchanged_modules()
 
 /// When the Worker of the build in `build_dir` was last compiled.
 fn worker_compiled_at(build_dir: &Path) -> TestResult<std::time::SystemTime> {
-    let compiled = PackageLayout::new(build_dir.join(".tokamak/worker/compiled"));
+    let compiled = PackageLayout::new(build_dir.join(".tokamak/worker/main/compiled"));
     Ok(fs::metadata(compiled.worker_manifest())?.modified()?)
 }
 

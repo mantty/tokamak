@@ -130,7 +130,8 @@ export default {
       const body = new ReadableStream({
         async pull(controller) {
           await new Promise(resolve => setTimeout(resolve, 1));
-          if (count++ === 100) { ended = true; controller.close(); }
+          if (cancelled) return;
+          if (endpoint !== "disconnect" && count++ === 100) { ended = true; controller.close(); }
           else controller.enqueue(new Uint8Array(1024));
         },
         cancel() { cancelled++; cancellation.resolve(); },

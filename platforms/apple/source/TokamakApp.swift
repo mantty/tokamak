@@ -1,5 +1,6 @@
 import Foundation
 import TokamakRuntime
+import WebKit
 
 #if os(iOS)
   import UIKit
@@ -17,19 +18,15 @@ private let lifecycleDeadline: TimeInterval = 10
 /// WebView, so plugins receive app events before a page loads and a Worker
 /// event can run while no page is loaded.
 final class TokamakApp {
+  weak var webView: WKWebView?
+  let resources = TokamakResources()
   /// Every plugin, by ID.
   private(set) var plugins: [String: any TokamakPlugin] = [:]
+  private let runtimeLock = NSLock()
   private var runtime: Result<RuntimeHandle, Error>?
   private var waiting: [(Result<RuntimeHandle, Error>) -> Void] = []
   /// The Worker's calls and subscriptions on the plugins.
-  private lazy var workerRequests = TokamakPluginRequests<UInt64>(plugins: plugins) {
-    [unowned self] id, result in
-    whenStarted { started in
-      if case .success(let runtime) = started {
-        runtime.reply(id, result: result)
-      }
-    }
-  }
+  private var workerRequests: TokamakPluginRequests<UInt64>!
   /// Delivers `resume` and `suspend` one at a time, in order.
   private let lifecycle = DispatchQueue(label: "tokamak.lifecycle")
   #if os(iOS)
@@ -39,9 +36,22 @@ final class TokamakApp {
 
   /// Creates the plugins. Call it before launch finishes.
   init() {
+    plugins["tokamak"] = TokamakCorePlugin(host: TokamakHost(app: self, plugin: "tokamak"))
     for plugin in tokamakPlugins(app: self) {
       precondition(plugins.updateValue(plugin, forKey: plugin.id) == nil, "Duplicate plugin ID")
     }
+    workerRequests = TokamakPluginRequests(
+      plugins: plugins,
+      send: { [unowned self] id, result in
+        ready { started in
+          if case .success(let runtime) = started { runtime.reply(id, result: result) }
+        }
+      },
+      pull: { [unowned self] id in
+        ready { started in
+          if case .success(let runtime) = started { runtime.pull(id) }
+        }
+      })
   }
 
   /// Starts the runtime in the background, which delivers `start` with
@@ -60,15 +70,24 @@ final class TokamakApp {
   private var workerPlugins: TokamakPluginHandler {
     TokamakPluginHandler(
       context: Unmanaged.passUnretained(self).toOpaque(),
-      call: { context, id, plugin, method, arguments in
-        TokamakApp.receive(context, id, subscribe: false, plugin, method, arguments)
+      call: { context, id, plugin, method, payload, count in
+        TokamakApp.receive(context, id, .call, plugin, method, payload, count)
       },
-      subscribe: { context, id, plugin, method, arguments in
-        TokamakApp.receive(context, id, subscribe: true, plugin, method, arguments)
+      call_with_body: { context, id, plugin, method, payload, count in
+        TokamakApp.receive(context, id, .callWithBody, plugin, method, payload, count)
       },
-      unsubscribe: { context, id in
+      chunk: { context, id, payload, count, failed, done in
         let app = Unmanaged<TokamakApp>.fromOpaque(context!).takeUnretainedValue()
-        DispatchQueue.main.async { app.workerRequests.cancel(id) }
+        let payload = count == 0 ? Data() : Data(bytes: payload!, count: count)
+        app.workerRequests.chunk(
+          id, TokamakPluginResult(payload: payload, failed: failed, done: done))
+      },
+      subscribe: { context, id, plugin, method, payload, count in
+        TokamakApp.receive(context, id, .subscribe, plugin, method, payload, count)
+      },
+      cancel: { context, id in
+        let app = Unmanaged<TokamakApp>.fromOpaque(context!).takeUnretainedValue()
+        app.workerRequests.cancel(id)
       }
     )
   }
@@ -77,48 +96,47 @@ final class TokamakApp {
   private static func receive(
     _ context: UnsafeMutableRawPointer?,
     _ id: UInt64,
-    subscribe: Bool,
+    _ kind: TokamakPluginRequest,
     _ plugin: UnsafePointer<CChar>?,
     _ method: UnsafePointer<CChar>?,
-    _ arguments: UnsafePointer<CChar>?
+    _ payload: UnsafePointer<UInt8>?,
+    _ count: Int
   ) {
     let app = Unmanaged<TokamakApp>.fromOpaque(context!).takeUnretainedValue()
     let (plugin, method) = (String(cString: plugin!), String(cString: method!))
-    let arguments =
-      (try? JSONSerialization.jsonObject(
-        with: Data(String(cString: arguments!).utf8), options: .fragmentsAllowed)) ?? NSNull()
-    DispatchQueue.main.async {
-      app.workerRequests.run(
-        id, subscribe: subscribe, plugin: plugin, method: method, arguments: arguments)
-    }
+    let payload = count == 0 ? Data() : Data(bytes: payload!, count: count)
+    app.workerRequests.run(id, kind, plugin: plugin, method: method, payload: payload)
   }
 
   /// Calls `completion` on the main thread once the runtime has started or
   /// failed to start.
   func whenStarted(_ completion: @escaping (Result<RuntimeHandle, Error>) -> Void) {
-    dispatchPrecondition(condition: .onQueue(.main))
-    if let runtime {
-      completion(runtime)
-    } else {
-      waiting.append(completion)
-    }
+    ready { result in DispatchQueue.main.async { completion(result) } }
   }
 
-  /// Delivers the event `name` with `event`, JSON-serialisable, to the
+  private func ready(_ completion: @escaping (Result<RuntimeHandle, Error>) -> Void) {
+    let current = runtimeLock.withLock {
+      if runtime == nil { waiting.append(completion) }
+      return runtime
+    }
+    if let current { completion(current) }
+  }
+
+  /// Delivers the event `name`, whose encoded data is `payload`, to the
   /// Worker's listeners on `queue`, and calls `completion` on the main thread
-  /// with their reply, parsed from JSON, or nil. Fails unless they return
-  /// within `timeout`, which includes runtime startup. Call it on the main
-  /// thread.
+  /// with their encoded reply, which is empty when none replied. Fails unless
+  /// they return within `timeout`, which includes runtime startup. Call it on
+  /// the main thread.
   func emit(
     _ name: String,
-    event: Any,
+    payload: Data,
     timeout: TimeInterval,
     on queue: DispatchQueue = .global(qos: .userInitiated),
-    completion: @escaping (Result<Any?, Error>) -> Void
+    completion: @escaping (Result<Data, Error>) -> Void
   ) {
     let deadline = Date() + timeout
     withRuntime(on: queue, completion: completion) { runtime in
-      try runtime.emit(name, event: event, timeout: deadline.timeIntervalSinceNow)
+      try runtime.emit(name, payload: payload, timeout: deadline.timeIntervalSinceNow)
     }
   }
 
@@ -184,7 +202,7 @@ final class TokamakApp {
         finish()
         return
       }
-      self.emit(name, event: [String: Any](), timeout: timeout, on: self.lifecycle) { result in
+      self.emit(name, payload: Data("{}".utf8), timeout: timeout, on: self.lifecycle) { result in
         if case .failure(let error) = result {
           print("tokamak \(name) failed: \(error)")
         }
@@ -262,9 +280,12 @@ final class TokamakApp {
     if case .failure(let error) = result {
       RuntimeHandle.recordStartupFailure(error)
     }
-    runtime = result
-    let callbacks = waiting
-    waiting.removeAll()
+    let callbacks = runtimeLock.withLock {
+      runtime = result
+      let callbacks = waiting
+      waiting.removeAll()
+      return callbacks
+    }
     for callback in callbacks {
       callback(result)
     }
@@ -316,10 +337,7 @@ final class RuntimeHandle {
   /// Starts the runtime, which delivers `start` with `foreground`, and whose
   /// Worker calls `plugins`.
   init(foreground: Bool, plugins: TokamakPluginHandler) throws {
-    guard
-      let appHost = Bundle.main.object(forInfoDictionaryKey: "TokamakHost") as? String,
-      !appHost.isEmpty
-    else {
+    guard let appHost = Bundle.main.tokamakHost, !appHost.isEmpty else {
       throw RuntimeError.configuration("TokamakHost is required")
     }
     self.appHost = appHost
@@ -404,26 +422,20 @@ final class RuntimeHandle {
     return port
   }
 
-  /// Delivers the event `name` with `event`, JSON-serialisable, to the
+  /// Delivers the event `name`, whose encoded data is `payload`, to the
   /// Worker's listeners, blocking until they return or `timeout` passes, and
-  /// returns their reply, parsed from JSON, or nil.
-  func emit(_ name: String, event: Any, timeout: TimeInterval) throws -> Any? {
-    guard JSONSerialization.isValidJSONObject([event]) else {
-      throw RuntimeError.runtime("the \(name) event is not JSON")
-    }
-    let event = String(
-      decoding: try JSONSerialization.data(withJSONObject: event, options: .fragmentsAllowed),
-      as: UTF8.self
-    )
+  /// returns their encoded reply, which is empty when none replied.
+  func emit(_ name: String, payload: Data, timeout: TimeInterval) throws -> Data {
     var reply = TokamakBytes()
     var error = [CChar](repeating: 0, count: 1024)
     let succeeded = name.withCString { name in
-      event.withCString { event in
+      payload.withUnsafeBytes { payload in
         error.withUnsafeMutableBufferPointer { error in
           tokamak_runtime_emit(
             handle,
             name,
-            event,
+            payload.bindMemory(to: UInt8.self).baseAddress,
+            payload.count,
             UInt64(max(timeout, 0) * 1000),
             &reply,
             error.baseAddress,
@@ -433,11 +445,10 @@ final class RuntimeHandle {
       }
     }
     defer { tokamak_bytes_free(reply) }
-    guard succeeded, let json = reply.contents else {
+    guard succeeded else {
       throw RuntimeError.runtime(String(cString: error))
     }
-    let value = try JSONSerialization.jsonObject(with: json, options: .fragmentsAllowed)
-    return value is NSNull ? nil : value
+    return reply.contents ?? Data()
   }
 
   /// What the app serves at `path`, blocking until it arrives or `timeout`
@@ -476,11 +487,18 @@ final class RuntimeHandle {
     tokamak_runtime_is_foreground(handle)
   }
 
-  /// Passes a plugin's `result`, JSON-serialisable, to the Worker's call or
-  /// subscription `id`.
-  func reply(_ id: UInt64, result: [String: Any]) {
-    guard let json = try? JSONSerialization.data(withJSONObject: result) else { return }
-    String(decoding: json, as: UTF8.self).withCString { tokamak_runtime_reply(handle, id, $0) }
+  /// Asks the Worker for the next chunk of the body of the call `id`.
+  func pull(_ id: UInt64) {
+    tokamak_runtime_pull(handle, id)
+  }
+
+  /// Passes an encoded plugin result to its native invocation.
+  func reply(_ id: UInt64, result: TokamakPluginResult) {
+    result.payload.withUnsafeBytes {
+      tokamak_runtime_reply(
+        handle, id, $0.bindMemory(to: UInt8.self).baseAddress,
+        $0.count, result.failed, result.done)
+    }
   }
 
   func serverAuthority(host: String) -> AuthenticationMaterial<Data> {

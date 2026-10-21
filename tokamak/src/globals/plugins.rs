@@ -1,86 +1,126 @@
 //! The Worker's native calls on the shell's plugins.
 
+use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rquickjs::{Ctx, Function, Object, Promise};
-use tokio::sync::Notify;
+use rquickjs::convert::List;
+use rquickjs::function::Opt;
+use rquickjs::{ArrayBuffer, Ctx, Exception, Function, IntoJs, Object, Promise, TypedArray, Value};
 use tokio_util::sync::CancellationToken;
 
-use crate::plugin_calls::{PluginCalls, Subscription};
+use crate::plugin_calls::{Body, Overflow, PluginCalls, PluginReply, Subscription, error};
 
-/// The listeners a Worker invocation has registered, which keep it running.
-#[derive(Default)]
-pub(crate) struct Listeners {
-    count: AtomicUsize,
-    removed: Notify,
-}
-
-/// A registered listener, removed when dropped.
-struct Listener(Arc<Listeners>);
-
-impl Listeners {
-    pub(crate) fn any(&self) -> bool {
-        self.count.load(Ordering::Acquire) > 0
-    }
-
-    /// Waits until no listener is registered.
-    pub(crate) async fn until_none(&self) {
-        loop {
-            let removed = self.removed.notified();
-            if !self.any() {
-                return;
-            }
-            removed.await;
-        }
-    }
-
-    fn add(self: &Arc<Self>) -> Listener {
-        self.count.fetch_add(1, Ordering::AcqRel);
-        Listener(Arc::clone(self))
-    }
-}
-
-impl Drop for Listener {
-    fn drop(&mut self) {
-        if self.0.count.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.0.removed.notify_waiters();
-        }
-    }
-}
-
-/// Gives the Worker in `ctx` its native calls on `calls`, through the
-/// runtime bootstrap's `installPlugins`, counting its listeners in
-/// `listeners`.
+/// Gives the Worker its native calls and invocation-owned subscriptions.
 pub(crate) fn install<'js>(
     ctx: &Ctx<'js>,
     bootstrap: &Object<'js>,
     calls: &Arc<PluginCalls>,
-    listeners: &Arc<Listeners>,
 ) -> rquickjs::Result<()> {
     let calling = Arc::clone(calls);
     let call = Function::new(
         ctx.clone(),
-        move |ctx: Ctx<'js>, plugin: String, method: String, arguments: String| {
-            Promise::wrap_future(&ctx, calling.call(&plugin, &method, &arguments))
+        move |ctx: Ctx<'js>,
+              plugin: String,
+              method: String,
+              arguments: ArrayBuffer<'js>,
+              pull: Opt<Function<'js>>| {
+            let payload = arguments
+                .as_bytes()
+                .ok_or_else(|| Exception::throw_type(&ctx, "Detached plugin payload"))?;
+            let cancelled = CancellationToken::new();
+            let result = match pull.0 {
+                None => settle(&ctx, calling.call(&plugin, &method, payload), &cancelled)?,
+                Some(pull) => {
+                    let (result, body) = calling.call_with_body(&plugin, &method, payload);
+                    if let Some(body) = body {
+                        read_body(&ctx, body, pull);
+                    }
+                    settle(&ctx, result, &cancelled)?
+                }
+            };
+            let cancel = Function::new(ctx.clone(), move || cancelled.cancel())?;
+            Ok::<_, rquickjs::Error>(List((result, cancel)))
         },
     )?;
     let subscribing = Arc::clone(calls);
-    let listeners = Arc::clone(listeners);
     let subscribe = Function::new(
         ctx.clone(),
         move |ctx: Ctx<'js>,
               plugin: String,
               method: String,
-              arguments: String,
-              deliver: Function<'js>| {
-            let subscription = subscribing.subscribe(&plugin, &method, &arguments);
-            listen(&ctx, subscription, listeners.add(), deliver)
+              arguments: ArrayBuffer<'js>,
+              deliver: Function<'js>,
+              overflow: String| {
+            let payload = arguments
+                .as_bytes()
+                .ok_or_else(|| Exception::throw_type(&ctx, "Detached plugin payload"))?;
+            let overflow = Overflow::named(&overflow)
+                .ok_or_else(|| Exception::throw_type(&ctx, "Unknown overflow policy"))?;
+            let subscription = subscribing.subscribe(&plugin, &method, payload, overflow);
+            listen(&ctx, subscription, deliver)
         },
     )?;
     bootstrap
         .get::<_, Function>("installPlugins")?
-        .call((call, subscribe))
+        .call((call, subscribe, PLATFORM))
+}
+
+/// The native platform the runtime runs on, as the Worker names it.
+const PLATFORM: &str = if cfg!(target_os = "ios") {
+    "ios"
+} else if cfg!(target_os = "android") {
+    "android"
+} else if cfg!(target_os = "windows") {
+    "windows"
+} else if cfg!(target_os = "macos") {
+    "macos"
+} else {
+    "linux"
+};
+
+/// The promise of `result`, which rejects with `AbortError` once
+/// `cancelled`, cancelling the native work.
+fn settle<'js>(
+    ctx: &Ctx<'js>,
+    result: impl Future<Output = PluginReply> + 'static,
+    cancelled: &CancellationToken,
+) -> rquickjs::Result<Promise<'js>> {
+    let context = ctx.clone();
+    let cancelled = cancelled.clone();
+    Promise::wrap_future(ctx, async move {
+        let result = tokio::select! {
+            result = result => result,
+            () = cancelled.cancelled() => error("AbortError", "The native call was cancelled"),
+        };
+        reply(&context, result)
+    })
+}
+
+/// Answers each of the shell's pulls on `body` with the chunk `pull`
+/// resolves to, until the last or the end of the call.
+fn read_body<'js>(ctx: &Ctx<'js>, mut body: Body, pull: Function<'js>) {
+    ctx.spawn(async move {
+        while body.pulled().await {
+            let chunk = read_chunk(&pull)
+                .await
+                .unwrap_or_else(|_| error("DataCloneError", "The call's body could not be read"));
+            body.send(&chunk);
+            if chunk.done {
+                return;
+            }
+        }
+    });
+}
+
+async fn read_chunk(pull: &Function<'_>) -> rquickjs::Result<PluginReply> {
+    let promise: Promise = pull.call(())?;
+    let chunk: Object = promise.into_future().await?;
+    let payload: TypedArray<u8> = chunk.get("payload")?;
+    Ok(PluginReply {
+        payload: payload.as_bytes().unwrap_or_default().to_vec(),
+        failed: chunk.get("failed")?,
+        done: chunk.get("done")?,
+    })
 }
 
 /// Passes each of `subscription`'s results to `deliver` until the last, or
@@ -89,13 +129,11 @@ pub(crate) fn install<'js>(
 fn listen<'js>(
     ctx: &Ctx<'js>,
     mut subscription: Subscription,
-    listener: Listener,
     deliver: Function<'js>,
 ) -> rquickjs::Result<Function<'js>> {
     let removed = CancellationToken::new();
     let remove = removed.clone();
     ctx.spawn(async move {
-        let _listener = listener;
         loop {
             let result = tokio::select! {
                 biased;
@@ -107,4 +145,18 @@ fn listen<'js>(
         }
     });
     Function::new(ctx.clone(), move || remove.cancel())
+}
+
+impl<'js> IntoJs<'js> for PluginReply {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<Value<'js>> {
+        Ok(reply(ctx, self)?.into_value())
+    }
+}
+
+fn reply<'js>(ctx: &Ctx<'js>, result: PluginReply) -> rquickjs::Result<Object<'js>> {
+    let value = Object::new(ctx.clone())?;
+    value.set("payload", ArrayBuffer::new(ctx.clone(), result.payload)?)?;
+    value.set("failed", result.failed)?;
+    value.set("done", result.done)?;
+    Ok(value)
 }

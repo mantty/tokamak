@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokamak::{
-    AssetManifest, ModuleType, PackageLayout, WorkerEnvironment, WorkerManifest, write_worker,
-    write_worker_environment,
+    AssetManifest, ModuleType, PackageLayout, ServiceBinding, WorkerEnvironment, WorkerManifest,
+    write_worker, write_worker_environment,
 };
 use tokamak_cli::copy_dir_contents;
 use walkdir::WalkDir;
@@ -64,11 +64,18 @@ pub(crate) fn compile(cache_dir: &Path, wrangler: &WranglerConfig) -> Result<Pat
 
 /// Package the app in `app_dir`: the `compiled` Worker with its environment,
 /// storage and assets.
-pub(crate) fn package(app_dir: &Path, compiled: &Path, wrangler: &WranglerConfig) -> Result<()> {
+pub(crate) fn package(
+    app_dir: &Path,
+    compiled: &Path,
+    wrangler: &WranglerConfig,
+    services: BTreeMap<String, ServiceBinding>,
+) -> Result<()> {
     let layout = PackageLayout::new(app_dir);
+    fs::create_dir_all(app_dir)?;
     write_worker_environment(
         &layout,
         &WorkerEnvironment {
+            services,
             vars: wrangler.vars.clone(),
             storage: storage::package(wrangler, &layout)?,
         },
@@ -241,6 +248,22 @@ mod tests {
                 "{error:?}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn packages_into_a_new_subpackage() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        write(root, &["index.js"])?;
+        let wrangler = worker(root, "[]")?;
+        let compiled = compile(&root.join("cache"), &wrangler)?;
+        let app = PackageLayout::new(root.join("app")).tokamak_worker();
+
+        package(app.root(), &compiled, &wrangler, BTreeMap::new())?;
+
+        assert!(app.worker_manifest().is_file());
+        assert!(app.worker_environment().is_file());
         Ok(())
     }
 

@@ -1,6 +1,18 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "notifications",
+  "bindings": {
+    "apple": [
+      "UserNotifications"
+    ],
+    "android": [
+      "android.app.NotificationManager",
+      "android.app.Notification",
+      "android.app.NotificationChannel",
+      "android.app.NotificationChannelGroup",
+      "android.content.Context"
+    ]
+  },
   "settings": {
     "sounds": {
       "kind": "path",
@@ -44,6 +56,28 @@
       "manifest": "android/AndroidManifest.xml",
       "dependencies": [
         "com.google.firebase:firebase-messaging:25.1.3"
+      ]
+    }
+  },
+  "api": {
+    "module": "src/index.ts",
+    "export": "notifications"
+  },
+  "web": {
+    "module": "web/client.ts",
+    "export": "notifications"
+  },
+  "operations": {
+    "requestPermission": {
+      "foreground": [
+        "ios",
+        "android"
+      ]
+    },
+    "openSettings": {
+      "foreground": [
+        "ios",
+        "android"
       ]
     }
   }

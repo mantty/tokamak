@@ -10,11 +10,17 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
      * per value for a subscription.
      */
     interface Plugins {
-        fun call(id: Long, plugin: String, method: String, arguments: String)
+        fun call(id: Long, plugin: String, method: String, payload: ByteArray)
 
-        fun subscribe(id: Long, plugin: String, method: String, arguments: String)
+        /** A call with a body, whose chunks the shell asks for with [pull] and receives in [chunk]. */
+        fun callWithBody(id: Long, plugin: String, method: String, payload: ByteArray)
 
-        fun unsubscribe(id: Long)
+        /** The chunk of the call [id]'s body the shell pulled: bytes, or an encoded error when [failed]. */
+        fun chunk(id: Long, payload: ByteArray, failed: Boolean, done: Boolean)
+
+        fun subscribe(id: Long, plugin: String, method: String, payload: ByteArray)
+
+        fun cancel(id: Long)
     }
 
     /** The loopback port the gateway bound. */
@@ -24,11 +30,12 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
     fun restoreGateway(): Int = nativeRestoreGateway(handle)
 
     /**
-     * Delivers the event [name] with the JSON [event] to the Worker's listeners, blocking until
-     * they return or [timeoutMillis] passes, and returns their reply as JSON.
+     * Delivers the event [name] with its encoded [payload] to the Worker's listeners, blocking
+     * until they return or [timeoutMillis] passes, and returns their encoded reply, which is empty
+     * when none replied.
      */
-    fun emit(name: String, event: String, timeoutMillis: Long): String =
-        nativeEmit(handle, name, event, timeoutMillis)
+    fun emit(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray =
+        nativeEmit(handle, name, payload, timeoutMillis)
 
     /** What the app serves at [path], blocking until it arrives or [timeoutMillis] passes. */
     fun fetch(path: String, timeoutMillis: Long): ByteArray = nativeFetch(handle, path, timeoutMillis)
@@ -43,8 +50,12 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
     val isForeground: Boolean
         get() = nativeIsForeground(handle)
 
-    /** Passes a plugin's JSON [result] to the Worker's call or subscription [id]. */
-    fun reply(id: Long, result: String) = nativeReply(handle, id, result)
+    /** Asks the Worker for the next chunk of the body of the call [id]. */
+    fun pull(id: Long) = nativePull(handle, id)
+
+    /** Passes an encoded plugin result to its native invocation. */
+    fun reply(id: Long, result: TokamakPluginResult) =
+        nativeReply(handle, id, result.payload, result.failed, result.done)
 
     /**
      * The authority a server certificate for [host] must chain to, or null
@@ -123,7 +134,10 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
         private external fun nativeIsForeground(handle: Long): Boolean
 
         @JvmStatic
-        private external fun nativeReply(handle: Long, id: Long, result: String)
+        private external fun nativeReply(handle: Long, id: Long, payload: ByteArray, failed: Boolean, done: Boolean)
+
+        @JvmStatic
+        private external fun nativePull(handle: Long, id: Long)
 
         @JvmStatic
         private external fun nativePort(handle: Long): Int
@@ -135,9 +149,9 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
         private external fun nativeEmit(
             handle: Long,
             name: String,
-            event: String,
+            event: ByteArray,
             timeoutMillis: Long,
-        ): String
+        ): ByteArray
 
         @JvmStatic
         private external fun nativeFetch(handle: Long, path: String, timeoutMillis: Long): ByteArray

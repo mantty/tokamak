@@ -81,7 +81,13 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     );
     plugin.clear()?;
     let session_token = session_token()?;
-    let mut framework = spawn_framework(&request.command, &project, &plugin, &session_token)?;
+    let mut framework = spawn_framework(
+        &request.command,
+        &project,
+        &plugin,
+        &session_token,
+        device.platform,
+    )?;
 
     if shutdown.load(Ordering::Acquire) {
         stop_process(&mut framework)?;
@@ -234,6 +240,7 @@ fn spawn_framework(
     project: &Path,
     plugin: &VitePlugin,
     session_token: &str,
+    platform: Platform,
 ) -> Result<Child> {
     let Some(program) = command.first() else {
         bail!("a development command is required");
@@ -245,7 +252,7 @@ fn spawn_framework(
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .envs(plugin.development_environment(session_token));
+        .envs(plugin.development_environment(session_token, platform));
     configure_process_group(&mut process);
     process.spawn().with_context(|| {
         format!(

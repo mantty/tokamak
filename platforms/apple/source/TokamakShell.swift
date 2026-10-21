@@ -14,18 +14,9 @@ private let failurePage =
 
 private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDelegate {
   private let runtime: RuntimeHandle
-  private let pluginBridge: TokamakPluginBridge
 
-  init(runtime: RuntimeHandle, pluginBridge: TokamakPluginBridge) {
+  init(runtime: RuntimeHandle) {
     self.runtime = runtime
-    self.pluginBridge = pluginBridge
-  }
-
-  func webView(
-    _ webView: WKWebView,
-    didStartProvisionalNavigation navigation: WKNavigation?
-  ) {
-    pluginBridge.close()
   }
 
   func webView(
@@ -223,17 +214,12 @@ private final class TokamakController {
   private let app: TokamakApp
   private var runtime: RuntimeHandle?
   private var navigation: NavigationDelegate?
-  private var pluginBridge: TokamakPluginBridge?
   private weak var activeWebView: WKWebView?
   private var dataStore: WKWebsiteDataStore?
   private var proxyPort: UInt16?
 
   init(app: TokamakApp) {
     self.app = app
-  }
-
-  deinit {
-    pluginBridge?.close()
   }
 
   func start(frame: CGRect, completion: @escaping (WKWebView) -> Void) {
@@ -275,9 +261,7 @@ private final class TokamakController {
     #endif
     configuration.mediaTypesRequiringUserActionForPlayback = []
 
-    let pluginBridge = TokamakPluginBridge(host: runtime.appHost, plugins: app.plugins)
-    pluginBridge.install(in: configuration.userContentController)
-    let navigation = NavigationDelegate(runtime: runtime, pluginBridge: pluginBridge)
+    let navigation = NavigationDelegate(runtime: runtime)
     self.navigation = navigation
     let webView = WKWebView(frame: frame, configuration: configuration)
     #if os(iOS)
@@ -285,8 +269,7 @@ private final class TokamakController {
     #endif
     webView.allowsLinkPreview = false
     activeWebView = webView
-    pluginBridge.webView = webView
-    self.pluginBridge = pluginBridge
+    app.webView = webView
     webView.navigationDelegate = navigation
     webView.uiDelegate = navigation
     webView.load(URLRequest(url: URL(string: "https://\(runtime.appHost)/")!))

@@ -171,18 +171,38 @@ fi
 # A plugin's class is a Swift type name, which the registry creates, and its
 # sources are Swift.
 swift_type='^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$'
+# Swift requires unique file names in a module, so the source staged as
+# <plugin>/<key>/<name> compiles as <plugin>-<key>-<name>.
+plugin_sources=$temporary/plugin-sources
+mkdir "$plugin_sources"
+add_plugin_source() {
+  local plugin_id=$1 source=$2
+  local key=${source%/*}
+  local named=$plugin_sources/$plugin_id-${key##*/}-${source##*/}
+  cp "$source" "$named"
+  swift_sources+=("$named")
+}
 registry=$temporary/TokamakPluginRegistry.swift
 printf '%s\n\n%s\n%s\n' 'import Foundation' 'func tokamakPlugins(app: TokamakApp) -> [any TokamakPlugin] {' '  [' > "$registry"
 for plugin in "$input/plugins"/*/; do
+  plugin_id=$(basename "$plugin")
   class=$(cat "$plugin/class" 2>/dev/null || true)
-  if [[ ! "$class" =~ $swift_type ]]; then
-    echo "plugin '$(basename "$plugin")' has invalid $platform class '$class'" >&2
-    exit 1
+  # A plugin whose native code is its generated bindings alone has no class.
+  if [[ -n "$class" || ! -d "$plugin/bindings" ]]; then
+    if [[ ! "$class" =~ $swift_type ]]; then
+      echo "plugin '$plugin_id' has invalid $platform class '$class'" >&2
+      exit 1
+    fi
+    printf '    %s(host: TokamakHost(app: app, plugin: "%s")),\n' "$class" "$plugin_id" >> "$registry"
   fi
-  printf '    %s(host: TokamakHost(app: app, plugin: "%s")),\n' "$class" "$(basename "$plugin")" >> "$registry"
+  # `tok bindings` names the generated class TokamakBindings_<id>, with - as _.
+  for source in "$plugin/bindings"/*.swift; do
+    printf '    TokamakBindings_%s(host: TokamakHost(app: app, plugin: "%s")),\n' "${plugin_id//-/_}" "$plugin_id" >> "$registry"
+    add_plugin_source "$plugin_id" "$source"
+  done
   for source in "$plugin/sources"/*; do
     case "$source" in
-      *.swift) swift_sources+=("$source") ;;
+      *.swift) add_plugin_source "$plugin_id" "$source" ;;
       *)
         echo "Apple plugin source must be Swift: $source" >&2
         exit 1

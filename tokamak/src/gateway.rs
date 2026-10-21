@@ -16,9 +16,9 @@ use crate::lifecycle_events::{Event, Events};
 use crate::readiness::{Readiness, Waker};
 
 use crate::transport::{
-    HttpRequest, HttpResponse, ResponseOutcome, TlsStream, append_header, connection_ended,
-    is_connect, is_websocket, read_header_block, read_request, tls_accept, tls_close,
-    websocket_session, write_plain_response, write_response,
+    HttpRequest, HttpResponse, ResponseOutcome, TlsStream, append_header, client_disconnected,
+    connection_ended, is_connect, is_websocket, read_header_block, read_request, tls_accept,
+    tls_close, websocket_session, write_plain_response, write_response,
 };
 
 const MAX_WEBSOCKET_QUEUE: usize = 100;
@@ -59,9 +59,7 @@ pub(super) trait Handler: Send + Sync {
     /// Answers `job`, abandoning it once `stopped` is cancelled.
     fn handle(&self, job: Job, stopped: &CancellationToken) -> Result<(), HandlerError>;
 
-    /// Delivers `event` to the Worker's listeners, sending what they did to
-    /// `event.delivered` by its deadline. Their invocation may run on, for
-    /// listeners it registered on plugins, until `stopped` is cancelled.
+    /// Delivers `event`, completing its invocation by the event's deadline.
     fn deliver(&self, event: EventJob, stopped: &CancellationToken);
 
     /// Starts work that lasts until `stopped` is cancelled.
@@ -71,8 +69,8 @@ pub(super) trait Handler: Send + Sync {
 /// An event for the Worker's listeners.
 pub(crate) struct EventJob {
     pub(crate) name: String,
-    /// The event's JSON.
-    pub(crate) event: String,
+    /// The encoded event payload.
+    pub(crate) event: Vec<u8>,
     pub(crate) deadline: Instant,
     /// Receives what the Worker did with the event, or why it failed.
     pub(crate) delivered: Sender<Result<Delivery, HandlerError>>,
@@ -80,13 +78,15 @@ pub(crate) struct EventJob {
 
 /// What the Worker did with an event.
 pub(crate) struct Delivery {
-    /// The reply, as JSON.
-    pub(crate) reply: String,
+    /// The encoded reply payload.
+    pub(crate) reply: Vec<u8>,
     /// The events that have listeners, when the Worker reports them.
     pub(crate) listened: Option<BTreeSet<String>>,
 }
 
 pub(super) struct Job {
+    pub(super) cancelled: CancellationToken,
+    pub(super) deadline: Option<Instant>,
     pub(super) request: HttpRequest,
     pub(super) response: Sender<JobResponse>,
     pub(super) websocket: Option<WebSocketJob>,
@@ -206,7 +206,7 @@ impl Runtime {
 pub(crate) fn deliver(
     shared: &Arc<Shared>,
     name: &str,
-    event: &str,
+    event: &[u8],
     deadline: Instant,
 ) -> Result<Delivery, String> {
     let (delivered, result) = flume::bounded(1);
@@ -248,11 +248,14 @@ pub(crate) fn fetch(
         headers,
         body: None,
     };
-    let response = match spawn_job(shared, request, None).recv_deadline(deadline) {
-        Ok(JobResponse::Http(response)) => response,
-        Ok(JobResponse::WebSocket) => return Err(format!("GET {path} answered a WebSocket")),
-        Err(_) => return Err(format!("GET {path} timed out")),
-    };
+    let cancelled = shared.stopped.child_token();
+    let _request = cancelled.clone().drop_guard();
+    let response =
+        match spawn_job(shared, request, None, cancelled, Some(deadline)).recv_deadline(deadline) {
+            Ok(JobResponse::Http(response)) => response,
+            Ok(JobResponse::WebSocket) => return Err(format!("GET {path} answered a WebSocket")),
+            Err(_) => return Err(format!("GET {path} timed out")),
+        };
     if !(200..300).contains(&response.status) {
         return Err(format!(
             "GET {path} answered {} {}",
@@ -534,7 +537,9 @@ fn serve_requests(
             .map(|value| value.to_str().map(str::to_owned))
             .transpose()
             .map_err(io::Error::other)?;
-        let response = match dispatch(shared, request)? {
+        let cancelled = shared.stopped.child_token();
+        let _request = cancelled.clone().drop_guard();
+        let response = match dispatch(shared, request, cancelled, tls)? {
             (JobResponse::WebSocket, Some(bridge)) => {
                 return websocket_session(tls, websocket_key.as_deref(), bridge);
             }
@@ -559,16 +564,42 @@ fn serve_requests(
 fn dispatch(
     shared: &Arc<Shared>,
     request: HttpRequest,
+    cancelled: CancellationToken,
+    tls: &mut TlsStream,
 ) -> io::Result<(JobResponse, Option<WebSocketBridge>)> {
     let (websocket_job, websocket_bridge) = is_websocket(&request)
         .then(websocket_channels)
         .transpose()?
         .unzip();
-    let result = spawn_job(shared, request, websocket_job);
-    let response = result
-        .recv()
-        .map_err(|_| io::Error::other("the request ended without a response"))?;
+    let result = spawn_job(shared, request, websocket_job, cancelled, None);
+    let response = wait_for_response(&result, tls)?;
     Ok((response, websocket_bridge))
+}
+
+fn wait_for_response(
+    result: &Receiver<JobResponse>,
+    tls: &mut TlsStream,
+) -> io::Result<JobResponse> {
+    let (mut readiness, _wake) = Readiness::new()?;
+    readiness.observe(tls.get_ref())?;
+    let timeout = tls.get_ref().read_timeout()?;
+    tls.get_ref()
+        .set_read_timeout(Some(Duration::from_millis(1)))?;
+    loop {
+        match result.recv_timeout(Duration::from_millis(100)) {
+            Ok(response) => {
+                tls.get_ref().set_read_timeout(timeout)?;
+                return Ok(response);
+            }
+            Err(flume::RecvTimeoutError::Disconnected) => {
+                return Err(io::Error::other("the request ended without a response"));
+            }
+            Err(flume::RecvTimeoutError::Timeout) => {}
+        }
+        if client_disconnected(tls, &mut readiness)? {
+            return Err(io::ErrorKind::ConnectionAborted.into());
+        }
+    }
 }
 
 /// Runs `request` on a blocking Tokio thread and returns where its response arrives.
@@ -576,9 +607,13 @@ fn spawn_job(
     shared: &Arc<Shared>,
     request: HttpRequest,
     websocket: Option<WebSocketJob>,
+    cancelled: CancellationToken,
+    deadline: Option<Instant>,
 ) -> Receiver<JobResponse> {
     let (response, result) = flume::bounded(1);
     let job = Job {
+        cancelled,
+        deadline,
         request,
         response,
         websocket,

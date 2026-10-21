@@ -20,12 +20,13 @@ class TokamakLocalAuthenticationPlugin(
 
     private val biometrics = host.context.getSystemService(BiometricManager::class.java)
 
-    override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
+    override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
         when (method) {
             "status" -> reply(Result.success(status(requireObject(arguments))))
-            "authenticate" -> authenticate(requireObject(arguments), reply)
+            "authenticate" -> return authenticate(requireObject(arguments), reply)
             else -> super.call(method, arguments, reply)
         }
+        return null
     }
 
     private fun status(request: JSONObject): String =
@@ -35,12 +36,12 @@ class TokamakLocalAuthenticationPlugin(
             else -> "unavailable"
         }
 
-    private fun authenticate(request: JSONObject, reply: TokamakPluginReply) {
+    private fun authenticate(request: JSONObject, reply: TokamakPluginReply): () -> Unit {
         val authenticators = authenticators(request)
         val prompt = request.requireString("prompt")
         if (prompt.isEmpty()) throw TokamakPluginError.typeError("prompt must be a non-empty string")
         host.requireOwnerAuthentication(authenticators)
-        host.authenticateOwner(prompt, authenticators, null, reply) { reply(Result.success(null)) }
+        return host.authenticateOwner(prompt, authenticators, null, reply) { reply(Result.success(null)) }
     }
 
     private fun authenticators(request: JSONObject): Int {

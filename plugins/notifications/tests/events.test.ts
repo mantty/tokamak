@@ -10,7 +10,8 @@ void test("replies to a push message with the notification a listener returns", 
   const received: unknown[] = [];
   onPush((pushed) => {
     received.push(pushed);
-    return { id: `item-${String(pushed.data.itemId)}`, title: "New item" };
+    assert.equal(typeof pushed.data.itemId, "string");
+    return { id: `item-${pushed.data.itemId as string}`, title: "New item" };
   });
 
   const { reply } = await dispatch("notifications.push", message);

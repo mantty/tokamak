@@ -20,7 +20,7 @@ README lists them. Without them, subscribing rejects with `InvalidStateError`,
 or with `NotSupportedError` in a macOS build without a team, which secure
 storage on macOS also needs (`macos.team-id`).
 
-`astro.config.mjs` adds the tokamak Vite plugin with the app's tokamak
+`astro.config.mjs` uses the tokamak Astro adapter with the app's tokamak
 configuration. The example installs `@tokamakdev/tok` from the workspace, so
 build that package first. From this directory:
 
@@ -31,6 +31,7 @@ pnpm --dir ../../plugins install --frozen-lockfile
 pnpm install --frozen-lockfile
 ```
 
+The development and build commands generate Workers types with Wrangler.
 `pnpm run build` builds the web app. Build a platform pack from the tokamak
 workspace, then package the app, which also builds it:
 

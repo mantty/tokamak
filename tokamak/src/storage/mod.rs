@@ -21,7 +21,7 @@ use rquickjs::{Ctx, Module};
 use serde::Serialize;
 
 use crate::env_vars::{StorageBinding, store_id_problem};
-use crate::linked::{OpenedStorage, StorageEntry, StorageRuntime};
+use crate::linked::{OpenedStorage, StorageCatalog, StorageEntry, StorageRuntime};
 use crate::packaging::PackageLayout;
 use d1::{D1Database, Migrations};
 use kv::KvNamespace;
@@ -39,10 +39,9 @@ static ENTRY: StorageEntry = StorageEntry { open };
 fn open(
     directory: &Path,
     scratch: &Path,
-    app: &PackageLayout,
     bindings: &[StorageBinding],
-) -> OpenedStorage {
-    Ok(Arc::new(Storage::open(directory, scratch, app, bindings)?))
+) -> io::Result<Box<dyn StorageCatalog>> {
+    Ok(Box::new(Catalog::open(directory, scratch, bindings)?))
 }
 
 /// Directory of each kind of store.
@@ -107,16 +106,14 @@ struct Installed<'a> {
     kind: &'static str,
 }
 
-impl Storage {
-    /// The stores `bindings` name in `directory`, with their temporary files
-    /// in `scratch`, after deleting every store in either that no binding
-    /// names.
-    pub(crate) fn open(
-        directory: &Path,
-        scratch: &Path,
-        app: &PackageLayout,
-        bindings: &[StorageBinding],
-    ) -> io::Result<Self> {
+struct Catalog {
+    namespaces: Stores<KvNamespace>,
+    databases: Stores<D1Database>,
+    buckets: Stores<R2Bucket>,
+}
+
+impl Catalog {
+    fn open(directory: &Path, scratch: &Path, bindings: &[StorageBinding]) -> io::Result<Self> {
         for binding in bindings {
             if let Some(problem) = store_id_problem(binding.store()) {
                 return Err(io::Error::new(
@@ -129,21 +126,52 @@ impl Storage {
                 ));
             }
         }
-        let mut namespaces = Stores::open(directory, scratch, KV, bindings)?;
-        let mut databases = Stores::open(directory, scratch, D1, bindings)?;
-        let mut buckets = Stores::open(directory, scratch, R2, bindings)?;
+        Ok(Self {
+            namespaces: Stores::open(directory, scratch, KV, bindings)?,
+            databases: Stores::open(directory, scratch, D1, bindings)?,
+            buckets: Stores::open(directory, scratch, R2, bindings)?,
+        })
+    }
+}
+
+impl StorageCatalog for Catalog {
+    fn bind(&mut self, app: &PackageLayout, bindings: &[StorageBinding]) -> OpenedStorage {
+        Ok(Arc::new(Storage::bind(self, app, bindings)?))
+    }
+}
+
+impl Storage {
+    #[cfg(test)]
+    pub(crate) fn open(
+        directory: &Path,
+        scratch: &Path,
+        app: &PackageLayout,
+        bindings: &[StorageBinding],
+    ) -> io::Result<Self> {
+        Self::bind(
+            &mut Catalog::open(directory, scratch, bindings)?,
+            app,
+            bindings,
+        )
+    }
+
+    fn bind(
+        catalog: &mut Catalog,
+        app: &PackageLayout,
+        bindings: &[StorageBinding],
+    ) -> io::Result<Self> {
         let mut entries = BTreeMap::new();
         for binding in bindings {
             let entry = match binding {
-                StorageBinding::Kv { id, .. } => Binding::Kv(namespaces.get(id)),
-                StorageBinding::R2 { id, .. } => Binding::R2(buckets.get(id)),
+                StorageBinding::Kv { id, .. } => Binding::Kv(catalog.namespaces.get(id)),
+                StorageBinding::R2 { id, .. } => Binding::R2(catalog.buckets.get(id)),
                 StorageBinding::D1 {
                     name,
                     id,
                     migrations_table,
                     migrations,
                 } => Binding::D1 {
-                    database: databases.get(id),
+                    database: catalog.databases.get(id),
                     migrations: Migrations {
                         directory: app.d1_migrations(name),
                         names: migrations.clone(),

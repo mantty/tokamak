@@ -30,11 +30,13 @@ import PluginCard from "./PluginCard.astro";
 </PluginCard>
 
 <script>
-  import { location, type Position } from "@tokamakdev/plugin-location";
-  import { describe, logTo, onClick } from "../scripts/plugin-log";
+  import location from "@tokamakdev/plugin-location/client";
+  import { type Position } from "@tokamakdev/plugin-location";
+  import type { LocationUpdate, RegionTransition, Visit, LocationErrorEvent } from "@tokamakdev/plugin-location";
+  import { describe, logTo, onClick, listen } from "../scripts/plugin-log";
 
   const log = logTo("location-log");
-  const reportError = (error: DOMException) => log(describe(error));
+  const reportError = (error: unknown) => log(describe(error));
   const watch = document.getElementById("location-watch")!;
   let stopWatching: (() => void) | undefined;
 
@@ -59,7 +61,7 @@ import PluginCard from "./PluginCard.astro";
       log("Stopped watching");
       return;
     }
-    stopWatching = location.watchPosition(
+    stopWatching = listen<Position>(location.watchPosition(),
       (position) => log(`Position: ${format(position)}`),
       (error) => {
         stop();
@@ -102,17 +104,17 @@ import PluginCard from "./PluginCard.astro";
   onClick(log, "location-regions", () => location.getRegions());
   onClick(log, "location-remove-region", () => location.removeRegion("example"));
 
-  location.onLocationUpdate(({ positions, stationary }) => {
+  listen<LocationUpdate>(location.onLocationUpdate(), ({ positions, stationary }) => {
     log(`Update: ${positions.map(format).join("; ")}${stationary ? ", stationary" : ""}`);
   }, reportError);
-  location.onRegionTransition(({ id, transition }) => {
+  listen<RegionTransition>(location.onRegionTransition(), ({ id, transition }) => {
     log(`Region ${id}: ${transition}`);
   }, reportError);
-  location.onVisit(({ latitude, longitude, departure }) => {
+  listen<Visit>(location.onVisit(), ({ latitude, longitude, departure }) => {
     const departed = departure === null ? "" : ", departed";
     log(`Visit at ${latitude.toFixed(5)}, ${longitude.toFixed(5)}${departed}`);
   }, reportError);
-  location.onLocationError(({ name, message, id }) => {
+  listen<LocationErrorEvent>(location.onLocationError(), ({ name, message, id }) => {
     log(`Failure${id === undefined ? "" : ` of ${id}`}: ${name}: ${message}`);
   }, reportError);
 </script>

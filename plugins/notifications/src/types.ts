@@ -1,3 +1,4 @@
+import type { JsonValue } from "@tokamakdev/plugin";
 /** Whether the app may show notifications. */
 export type Permission = "granted" | "denied" | "prompt";
 
@@ -6,7 +7,7 @@ export interface NotificationContent {
   readonly id: string;
   readonly title: string;
   readonly body?: string;
-  readonly data?: Record<string, unknown>;
+  readonly data?: Record<string, JsonValue>;
   /** A `setup` category, whose actions the notification shows. */
   readonly category?: string;
   /** Android only: a `setup` channel. Notifications that name none use `defaultChannel`. */
@@ -242,7 +243,7 @@ export interface Region {
 export type ScheduledNotification = NotificationContent & Trigger;
 
 /** A received push message. A data-only message has no title or body. */
-export interface Message<Data extends object = Record<string, unknown>> {
+export interface Message<Data extends object = Record<string, JsonValue>> {
   readonly id: string;
   readonly title: string | null;
   readonly body: string | null;
@@ -474,3 +475,17 @@ export interface OpenSettingsEvent {
 export type Listener<T> = (value: T) => void;
 export type ErrorListener = (error: DOMException) => void;
 
+
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace -- events are declared by merging into Tokamak.Events.
+  namespace Tokamak {
+    interface Events {
+      "notifications.push": Message;
+      "notifications.opened": OpenedNotification;
+      "notifications.dismissed": DismissedNotification;
+    }
+    interface EventReplies {
+      "notifications.push": NotificationContent;
+    }
+  }
+}

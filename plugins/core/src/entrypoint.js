@@ -1,12 +1,25 @@
-// The tokamak Vite plugin exports this class from the entry Worker in tokamak builds and
-// development, where the runtime and `tok dev` call `dispatch` to deliver events.
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-import { dispatch } from "./registry.ts";
+import { dispatch, eventCodec, listenedEvents } from "./registry.ts";
+import { TokamakEntrypoint } from "./worker.ts";
 
-export class TokamakEvents extends WorkerEntrypoint {
-  /** Runs the listeners of the event `name` and returns `{ reply, listened }`. */
-  dispatch(name, event) {
-    return dispatch(name, event, this.env, this.ctx);
-  }
+/**
+ * The host's event adapter for the application's native entrypoint. Event data and replies are
+ * bytes until this endpoint decodes and encodes them with the event's codec.
+ */
+export function eventEntrypoint(Worker, nativeContext) {
+  return class extends WorkerEntrypoint {
+    async dispatch(type, payload) {
+      const ctx = nativeContext(this.ctx);
+      const worker = new Worker(ctx, this.env);
+      const codec = eventCodec(type);
+      const data = codec.decode(payload);
+      // Worker classes without an event handler use registered listeners.
+      const listening = typeof worker.event !== "function" || worker.event === TokamakEntrypoint.prototype.event;
+      const reply = typeof worker.event === "function"
+        ? await worker.event({ type, data })
+        : (await dispatch(type, data, this.env, ctx)).reply;
+      return { reply: codec.encode(reply), listened: listening ? listenedEvents() : undefined };
+    }
+  };
 }

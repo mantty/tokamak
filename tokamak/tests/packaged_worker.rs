@@ -31,6 +31,7 @@ fn starts_a_packaged_worker_with_its_declared_environment() -> TestResult {
         temporary.path(),
         worker_source(),
         &WorkerEnvironment {
+            services: BTreeMap::new(),
             vars: BTreeMap::from([
                 ("TEXT".to_owned(), json!("value")),
                 ("JSON".to_owned(), json!({ "enabled": true })),
@@ -93,6 +94,7 @@ fn keeps_the_connection_open_between_requests_until_the_client_closes_it() -> Te
         temporary.path(),
         worker_source(),
         &WorkerEnvironment {
+            services: BTreeMap::new(),
             vars: BTreeMap::from([
                 ("TEXT".to_owned(), json!("value")),
                 ("JSON".to_owned(), json!({ "enabled": true })),
@@ -391,6 +393,146 @@ fn ends_without_a_failure_when_the_client_leaves_mid_request() -> TestResult {
     Ok(())
 }
 
+struct CancellablePlugins(mpsc::Sender<u64>, mpsc::Sender<u64>);
+
+impl tokamak::PluginHandler for CancellablePlugins {
+    fn call(&self, id: u64, _: &str, _: &str, _: &[u8]) {
+        let _ = self.0.send(id);
+    }
+    fn call_with_body(&self, id: u64, _: &str, _: &str, _: &[u8]) {
+        let _ = self.0.send(id);
+    }
+    fn chunk(&self, _: u64, _: &tokamak::PluginReply) {}
+    fn subscribe(&self, id: u64, _: &str, _: &str, _: &[u8]) {
+        let _ = self.0.send(id);
+    }
+    fn cancel(&self, id: u64) {
+        let _ = self.1.send(id);
+    }
+}
+
+fn cancellable_package(temporary: &Path) -> TestResult<PackageLayout> {
+    let app = PackageLayout::new(temporary.join("app"));
+    package_worker(
+        temporary,
+        &app.tokamak_worker(),
+        br"const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for('tokamak.native')].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), { next: payload => next(JSON.parse(new TextDecoder().decode(payload))), error });
+
+import { WorkerEntrypoint } from 'cloudflare:workers';
+export default class extends WorkerEntrypoint {
+  async fetch(request) { return new Response(await this.env.SELF.hold(new URL(request.url).pathname)); }
+  async hold(path) {
+    const ctx = this.ctx;
+    nativeListen(ctx, 'gate', 'watch', null, () => {}, () => {});
+    if (path === '/stream') return new ReadableStream({ pull() { return nativeCall(ctx, 'gate', 'hold'); } });
+    return await nativeCall(ctx, 'gate', 'hold');
+  }
+}
+",
+        &WorkerEnvironment {
+            services: BTreeMap::from([(
+                "SELF".into(),
+                tokamak::ServiceBinding {
+                    service: "tokamak".into(),
+                    entrypoint: "default".into(),
+                },
+            )]),
+            ..WorkerEnvironment::default()
+        },
+    )?;
+    package_worker(
+        temporary,
+        &app,
+        b"export default { fetch: (request, env) => env.TOKAMAK.fetch(request) };",
+        &WorkerEnvironment {
+            services: BTreeMap::from([(
+                "TOKAMAK".into(),
+                tokamak::ServiceBinding {
+                    service: "tokamak".into(),
+                    entrypoint: "default".into(),
+                },
+            )]),
+            ..WorkerEnvironment::default()
+        },
+    )?;
+    Ok(app)
+}
+
+#[test]
+fn cancels_service_calls_and_streams_when_the_http_client_disconnects() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let app = cancellable_package(temporary.path())?;
+    let (subscribed, subscriptions) = mpsc::channel();
+    let (removed, removals) = mpsc::channel();
+    let (failed, failures) = mpsc::channel();
+    let state = temporary.path().join("state");
+    let runtime = Runtime::start(
+        Config {
+            app,
+            state_dir: state.clone(),
+            storage_dir: temporary.path().join("storage"),
+            host: HOST.into(),
+            foreground: true,
+            plugins: Some(Arc::new(CancellablePlugins(subscribed, removed))),
+        },
+        move |event| {
+            if let Event::RequestFailed { message } = event {
+                let _ = failed.send(message);
+            }
+        },
+    )?;
+
+    for path in ["/", "/stream", "/pipelined"] {
+        let mut tls = connect_gateway(&runtime, &state)?;
+        tls.write_all(format!("GET {path} HTTP/1.1\r\nHost: {HOST}\r\n\r\n").as_bytes())?;
+        tls.flush()?;
+        let mut ids = [
+            subscriptions.recv_timeout(TIMEOUT)?,
+            subscriptions.recv_timeout(TIMEOUT)?,
+        ];
+        ids.sort_unstable();
+        if path == "/stream" {
+            assert!(String::from_utf8(read_header_block(&mut tls)?)?.starts_with("HTTP/1.1 200"));
+        }
+        if path == "/pipelined" {
+            tls.write_all(format!("GET /next HTTP/1.1\r\nHost: {HOST}\r\n\r\n").as_bytes())?;
+            tls.flush()?;
+        }
+        reset_connection(&tls.sock)?;
+        drop(tls);
+        let mut cancelled = [
+            removals.recv_timeout(TIMEOUT)?,
+            removals.recv_timeout(TIMEOUT)?,
+        ];
+        cancelled.sort_unstable();
+        assert_eq!(cancelled, ids);
+        assert_no_failures(&failures);
+    }
+    Ok(())
+}
+
+#[test]
+fn preserves_pipelined_requests_while_waiting_for_the_worker() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let (runtime, state) = start_packaged_runtime(directory.path(), br"
+export default {
+  async fetch(request) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    return new Response(null, { status: 204, headers: { 'x-path': new URL(request.url).pathname } });
+  }
+};", &WorkerEnvironment::default())?;
+    let mut tls = connect_gateway(&runtime, &state)?;
+    tls.write_all(format!("GET /first HTTP/1.1\r\nHost: {HOST}\r\n\r\nGET /second HTTP/1.1\r\nHost: {HOST}\r\n\r\n").as_bytes())?;
+    tls.flush()?;
+    for path in ["/first", "/second"] {
+        let response = String::from_utf8(read_header_block(&mut tls)?)?;
+        assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+        assert!(response.contains(&format!("x-path: {path}")), "{response}");
+    }
+    Ok(())
+}
+
 #[test]
 fn ends_without_a_failure_when_the_client_rejects_the_certificate() -> TestResult {
     let temporary = tempfile::tempdir()?;
@@ -420,7 +562,8 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 export class TokamakEvents extends WorkerEntrypoint {
   dispatch() {
-    return { reply: [this.env.TOKAMAK_RUNTIME, process.env.TOKAMAK_RUNTIME], listened: ["check"] };
+    const reply = JSON.stringify([this.env.TOKAMAK_RUNTIME, process.env.TOKAMAK_RUNTIME]);
+    return { reply: new TextEncoder().encode(reply), listened: ["check"] };
   }
 }
 
@@ -429,9 +572,9 @@ export default { fetch: () => new Response(null, { status: 404 }) };
         &WorkerEnvironment::default(),
     )?;
 
-    let reply = runtime.emit("check", "{}", Duration::from_secs(5))?;
+    let reply = emit(&runtime, "check", "{}", Duration::from_secs(5))?;
 
-    assert_eq!(reply, r#"["true","true"]"#);
+    assert_eq!(reply, json!(["true", "true"]));
     Ok(())
 }
 
@@ -440,14 +583,17 @@ fn keeps_d1_data_across_runtime_restarts() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let environment = d1_environment(&[]);
     let (runtime, _) = start_packaged_runtime(temporary.path(), d1_worker_source(), &environment)?;
-    runtime.emit("setup", "{}", Duration::from_secs(5))?;
-    runtime.emit("hit", "{}", Duration::from_secs(5))?;
+    emit(&runtime, "setup", "{}", Duration::from_secs(5))?;
+    emit(&runtime, "hit", "{}", Duration::from_secs(5))?;
     drop(runtime);
 
     let (restarted, _) =
         start_packaged_runtime(temporary.path(), d1_worker_source(), &environment)?;
 
-    assert_eq!(restarted.emit("count", "{}", Duration::from_secs(5))?, "1");
+    assert_eq!(
+        emit(&restarted, "count", "{}", Duration::from_secs(5))?,
+        json!(1)
+    );
     Ok(())
 }
 
@@ -456,11 +602,11 @@ fn serves_concurrent_d1_writes() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let (runtime, _) =
         start_packaged_runtime(temporary.path(), d1_worker_source(), &d1_environment(&[]))?;
-    runtime.emit("setup", "{}", Duration::from_secs(5))?;
+    emit(&runtime, "setup", "{}", Duration::from_secs(5))?;
 
     let writes: Vec<_> = std::thread::scope(|scope| {
         let writers: Vec<_> = (0..16)
-            .map(|_| scope.spawn(|| runtime.emit("hit", "{}", Duration::from_secs(30)).is_ok()))
+            .map(|_| scope.spawn(|| emit(&runtime, "hit", "{}", Duration::from_secs(30)).is_ok()))
             .collect();
         writers
             .into_iter()
@@ -470,7 +616,10 @@ fn serves_concurrent_d1_writes() -> TestResult {
 
     assert!(writes.iter().all(|written| *written), "{writes:?}");
 
-    assert_eq!(runtime.emit("count", "{}", Duration::from_secs(5))?, "16");
+    assert_eq!(
+        emit(&runtime, "count", "{}", Duration::from_secs(5))?,
+        json!(16)
+    );
     Ok(())
 }
 
@@ -478,18 +627,23 @@ fn serves_concurrent_d1_writes() -> TestResult {
 fn applies_packaged_migrations_before_the_first_query() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let app = PackageLayout::new(temporary.path().join("app"));
-    fs::create_dir_all(app.d1_migrations("DB"))?;
-    fs::write(
-        app.d1_migrations("DB").join("0001_hits.sql"),
-        "CREATE TABLE hits (n INTEGER);\nINSERT INTO hits VALUES (1);",
-    )?;
+    for package in [&app, &app.tokamak_worker()] {
+        fs::create_dir_all(package.d1_migrations("DB"))?;
+        fs::write(
+            package.d1_migrations("DB").join("0001_hits.sql"),
+            "CREATE TABLE hits (n INTEGER);\nINSERT INTO hits VALUES (1);",
+        )?;
+    }
     let (runtime, _) = start_packaged_runtime(
         temporary.path(),
         d1_worker_source(),
         &d1_environment(&["0001_hits.sql"]),
     )?;
 
-    assert_eq!(runtime.emit("count", "{}", Duration::from_secs(5))?, "1");
+    assert_eq!(
+        emit(&runtime, "count", "{}", Duration::from_secs(5))?,
+        json!(1)
+    );
     Ok(())
 }
 
@@ -499,7 +653,8 @@ fn keeps_r2_objects_across_restarts_and_removes_unrecorded_bodies() -> TestResul
     let environment = r2_environment();
     let (runtime, state) =
         start_packaged_runtime(temporary.path(), r2_worker_source(), &environment)?;
-    runtime.emit(
+    emit(
+        &runtime,
         "put",
         r#"{"key":"kept","value":"hello"}"#,
         Duration::from_secs(5),
@@ -514,8 +669,13 @@ fn keeps_r2_objects_across_restarts_and_removes_unrecorded_bodies() -> TestResul
         start_packaged_runtime(temporary.path(), r2_worker_source(), &environment)?;
 
     assert_eq!(
-        restarted.emit("get", r#"{"key":"kept"}"#, Duration::from_secs(5))?,
-        r#""hello""#
+        emit(
+            &restarted,
+            "get",
+            r#"{"key":"kept"}"#,
+            Duration::from_secs(5)
+        )?,
+        json!("hello")
     );
     assert!(!objects.join("unrecorded").exists());
     assert!(!parts.join("unrecorded").exists());
@@ -536,7 +696,7 @@ fn replaces_r2_objects_whole_under_concurrent_writes() -> TestResult {
                 scope.spawn(move || {
                     let value = format!("{writer:02}").repeat(50_000);
                     let body = json!({ "key": "shared", "value": value }).to_string();
-                    runtime.emit("put", &body, Duration::from_secs(30)).is_ok()
+                    emit(runtime, "put", &body, Duration::from_secs(30)).is_ok()
                 })
             })
             .collect();
@@ -547,7 +707,8 @@ fn replaces_r2_objects_whole_under_concurrent_writes() -> TestResult {
     });
 
     assert!(writes.iter().all(|written| *written), "{writes:?}");
-    let value: String = serde_json::from_str(&runtime.emit(
+    let value: String = serde_json::from_value(emit(
+        &runtime,
         "get",
         r#"{"key":"shared"}"#,
         Duration::from_secs(5),
@@ -574,8 +735,13 @@ fn stores_request_bodies_in_r2() -> TestResult {
 
     assert_eq!(size, b"19");
     assert_eq!(
-        runtime.emit("get", r#"{"key":"upload"}"#, Duration::from_secs(5))?,
-        r#""{\"file\":\"contents\"}""#
+        emit(
+            &runtime,
+            "get",
+            r#"{"key":"upload"}"#,
+            Duration::from_secs(5)
+        )?,
+        json!(r#"{"file":"contents"}"#)
     );
     Ok(())
 }
@@ -586,10 +752,10 @@ fn follows_cloudflare_where_local_r2_differs() -> TestResult {
     let (runtime, _) =
         start_packaged_runtime(temporary.path(), r2_worker_source(), &r2_environment())?;
 
-    let reply = runtime.emit("cloudflare", "{}", Duration::from_secs(5))?;
+    let reply = emit(&runtime, "cloudflare", "{}", Duration::from_secs(5))?;
 
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&reply)?,
+        reply,
         json!({
             "storageClasses": ["InfrequentAccess", "Standard", "InfrequentAccess"],
             "listedMetadata": [null, null],
@@ -608,7 +774,7 @@ fn serves_the_astro_example_that_tok_packages() -> TestResult {
     let app = PackageLayout::new(std::env::var("TOKAMAK_TEST_ASTRO_APP")?);
     let (runtime, state) = start_runtime(temporary.path(), app, |_| {})?;
     // Events wait for `start`, so both are recorded once this returns.
-    runtime.emit("suspend", "{}", Duration::from_secs(30))?;
+    runtime.emit("suspend", b"{}", Duration::from_secs(30))?;
     for (path, text) in [
         ("/", "<html"),
         ("/about", "About - tokamak Example"),
@@ -680,25 +846,53 @@ fn start_packaged_runtime(
     start_runtime(temporary, package(temporary, worker, environment)?, |_| {})
 }
 
-/// `worker`, with `environment`, packaged in `temporary`.
+/// `worker`, with `environment`, packaged in `temporary` as both the main
+/// Worker and the Tokamak worker, which receives the events tests emit.
 fn package(
     temporary: &Path,
     worker: &[u8],
     environment: &WorkerEnvironment,
 ) -> TestResult<PackageLayout> {
     let app = PackageLayout::new(temporary.join("app"));
-    fs::create_dir_all(app.root())?;
-    write_worker_environment(&app, environment)?;
+    for package in [&app, &app.tokamak_worker()] {
+        package_worker(temporary, package, worker, environment)?;
+    }
+    Ok(app)
+}
+
+/// Writes `worker`, with `environment`, as the package `layout`.
+fn package_worker(
+    temporary: &Path,
+    layout: &PackageLayout,
+    worker: &[u8],
+    environment: &WorkerEnvironment,
+) -> TestResult {
+    fs::create_dir_all(layout.root())?;
+    write_worker_environment(layout, environment)?;
     fs::write(temporary.join("worker.mjs"), worker)?;
     write_worker(
-        &app,
+        layout,
         temporary,
         &WorkerManifest {
             entry: "worker.mjs".to_owned(),
             modules: BTreeMap::from([("worker.mjs".to_owned(), ModuleType::EsModule)]),
         },
     )?;
-    Ok(app)
+    Ok(())
+}
+
+/// The JSON reply to the event `name` with the JSON `event`, or null without one.
+fn emit(
+    runtime: &Runtime,
+    name: &str,
+    event: &str,
+    timeout: Duration,
+) -> TestResult<serde_json::Value> {
+    let reply = runtime.emit(name, event.as_bytes(), timeout)?;
+    if reply.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    Ok(serde_json::from_slice(&reply)?)
 }
 
 /// The runtime of the packaged `app`, with its state in `temporary`, which
@@ -727,6 +921,7 @@ fn start_runtime(
 /// request failures the runtime reports.
 fn start_close_runtime(temporary: &Path) -> TestResult<(Runtime, PathBuf, Receiver<String>)> {
     let environment = WorkerEnvironment {
+        services: BTreeMap::new(),
         vars: BTreeMap::new(),
         storage: vec![StorageBinding::Kv {
             name: "CLOSES".to_owned(),
@@ -756,7 +951,7 @@ fn start_reporting_runtime(
 fn recorded(runtime: &Runtime, name: &str) -> TestResult<serde_json::Value> {
     let deadline = Instant::now() + TIMEOUT;
     loop {
-        let record = serde_json::from_str(&runtime.emit(name, "{}", TIMEOUT)?)?;
+        let record = emit(runtime, name, "{}", TIMEOUT)?;
         if record != serde_json::Value::Null || Instant::now() >= deadline {
             return Ok(record);
         }
@@ -772,6 +967,7 @@ fn assert_no_failures(failures: &Receiver<String>) {
 
 fn d1_environment(migrations: &[&str]) -> WorkerEnvironment {
     WorkerEnvironment {
+        services: BTreeMap::new(),
         vars: BTreeMap::new(),
         storage: vec![StorageBinding::D1 {
             name: "DB".to_owned(),
@@ -784,6 +980,7 @@ fn d1_environment(migrations: &[&str]) -> WorkerEnvironment {
 
 fn r2_environment() -> WorkerEnvironment {
     WorkerEnvironment {
+        services: BTreeMap::new(),
         vars: BTreeMap::new(),
         storage: vec![StorageBinding::R2 {
             name: "FILES".to_owned(),
@@ -812,16 +1009,18 @@ async function cloudflare(files) {
 }
 
 export class TokamakEvents extends WorkerEntrypoint {
-  async dispatch(name, input) {
-    const files = this.env.FILES;
-    const listened = ["put", "get", "cloudflare"];
-    if (name === "cloudflare") return { reply: await cloudflare(files), listened };
-    if (name === "put") return { reply: (await files.put(input.key, input.value)).etag, listened };
-    if (name === "get") {
-      const object = await files.get(input.key);
-      return { reply: object === null ? "missing" : await new Response(object.body).text(), listened };
-    }
-    return { listened };
+  async dispatch(name, payload) {
+    const input = JSON.parse(new TextDecoder().decode(payload));
+    const reply = await this.reply(name, input, this.env.FILES);
+    return { reply: new TextEncoder().encode(JSON.stringify(reply) ?? ""), listened: ["put", "get", "cloudflare"] };
+  }
+
+  async reply(name, input, files) {
+    if (name === "cloudflare") return cloudflare(files);
+    if (name === "put") return (await files.put(input.key, input.value)).etag;
+    if (name !== "get") return undefined;
+    const object = await files.get(input.key);
+    return object === null ? "missing" : new Response(object.body).text();
   }
 }
 
@@ -843,8 +1042,9 @@ export class TokamakEvents extends WorkerEntrypoint {
     const listened = ["setup", "hit", "count"];
     if (name === "setup") await db.exec("CREATE TABLE IF NOT EXISTS hits (n INTEGER)");
     if (name === "hit") await db.prepare("INSERT INTO hits VALUES (?)").bind(1).run();
-    if (name !== "count") return { listened };
-    return { reply: await db.prepare("SELECT count(*) AS count FROM hits").first("count"), listened };
+    if (name !== "count") return { reply: new Uint8Array(), listened };
+    const count = await db.prepare("SELECT count(*) AS count FROM hits").first("count");
+    return { reply: new TextEncoder().encode(JSON.stringify(count)), listened };
   }
 }
 
@@ -875,7 +1075,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 export class TokamakEvents extends WorkerEntrypoint {
   async dispatch(name) {
-    return { reply: JSON.parse(await this.env.CLOSES.get(name) ?? "null"), listened: ["close", "late"] };
+    return { reply: new TextEncoder().encode(await this.env.CLOSES.get(name) ?? ""), listened: ["close", "late"] };
   }
 }
 
@@ -1102,4 +1302,60 @@ fn connect_tls(
         tls.conn.complete_io(&mut tls.sock)?;
     }
     Ok(tls)
+}
+
+fn reset_connection(stream: &TcpStream) -> TestResult {
+    use std::os::fd::AsRawFd;
+
+    let linger = libc::linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    let linger_size = libc::socklen_t::try_from(std::mem::size_of_val(&linger))?;
+    let result = unsafe {
+        libc::setsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_LINGER,
+            (&raw const linger).cast(),
+            linger_size,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().into())
+    }
+}
+
+#[test]
+fn sends_the_response_after_the_client_half_closes_its_sending_side() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let (runtime, state) = start_packaged_runtime(
+        directory.path(),
+        br"
+export default {
+  async fetch() {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    return new Response(null, { status: 204 });
+  }
+};",
+        &WorkerEnvironment::default(),
+    )?;
+    for tls_close in [false, true] {
+        let mut tls = connect_gateway(&runtime, &state)?;
+        tls.write_all(
+            format!("GET / HTTP/1.1\r\nHost: {HOST}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )?;
+        tls.flush()?;
+        if tls_close {
+            tls.conn.send_close_notify();
+            tls.flush()?;
+        } else {
+            tls.sock.shutdown(Shutdown::Write)?;
+        }
+        let response = String::from_utf8(read_header_block(&mut tls)?)?;
+        assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+    }
+    Ok(())
 }

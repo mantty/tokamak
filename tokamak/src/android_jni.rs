@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bridge::{self, Shell};
-use crate::{Challenge, Decision, Event, PluginHandler, Runtime};
+use crate::{Challenge, Decision, Event, PluginHandler, PluginReply, Runtime};
 use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue};
 use jni::sys::{JNI_TRUE, jboolean, jint, jlong};
 use jni::{JNIEnv, JavaVM};
@@ -17,8 +17,8 @@ const LOG_TAG: &str = "tokamak";
 const LOG_INFO: c_int = 4;
 const LOG_ERROR: c_int = 6;
 const FAILURE: &str = "java/lang/IllegalStateException";
-/// The signature of `TokamakRuntime.Plugins.call` and `subscribe`.
-const REQUEST_SIGNATURE: &str = "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V";
+/// The signature of `TokamakRuntime.Plugins.call`, `callWithBody` and `subscribe`.
+const REQUEST_SIGNATURE: &str = "(JLjava/lang/String;Ljava/lang/String;[B)V";
 
 unsafe extern "C" {
     fn __android_log_write(priority: c_int, tag: *const c_char, text: *const c_char) -> c_int;
@@ -31,18 +31,36 @@ struct KotlinPlugins {
 }
 
 impl PluginHandler for KotlinPlugins {
-    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
         self.request("call", id, plugin, method, arguments);
     }
 
-    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
+    fn call_with_body(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
+        self.request("callWithBody", id, plugin, method, arguments);
+    }
+
+    fn chunk(&self, id: u64, chunk: &PluginReply) {
+        self.invoke(|env| {
+            let payload = env.byte_array_from_slice(&chunk.payload)?;
+            let arguments = [
+                JValue::Long(id.cast_signed()),
+                (&payload).into(),
+                JValue::Bool(chunk.failed.into()),
+                JValue::Bool(chunk.done.into()),
+            ];
+            env.call_method(&self.plugins, "chunk", "(J[BZZ)V", &arguments)
+                .map(drop)
+        });
+    }
+
+    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
         self.request("subscribe", id, plugin, method, arguments);
     }
 
-    fn unsubscribe(&self, id: u64) {
+    fn cancel(&self, id: u64) {
         self.invoke(|env| {
             let id = JValue::Long(id.cast_signed());
-            env.call_method(&self.plugins, "unsubscribe", "(J)V", &[id])
+            env.call_method(&self.plugins, "cancel", "(J)V", &[id])
                 .map(drop)
         });
     }
@@ -58,13 +76,10 @@ impl KotlinPlugins {
     }
 
     /// Passes a call or subscription to the plugins' method `name`.
-    fn request(&self, name: &str, id: u64, plugin: &str, method: &str, arguments: &str) {
+    fn request(&self, name: &str, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
         self.invoke(|env| {
-            let [plugin, method, arguments] = [
-                env.new_string(plugin)?,
-                env.new_string(method)?,
-                env.new_string(arguments)?,
-            ];
+            let [plugin, method] = [env.new_string(plugin)?, env.new_string(method)?];
+            let arguments = env.byte_array_from_slice(arguments)?;
             let arguments = [
                 JValue::Long(id.cast_signed()),
                 (&plugin).into(),
@@ -169,20 +184,45 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeIsForegroun
     jboolean::from(runtime(handle).is_some_and(Runtime::is_foreground))
 }
 
-/// Pass a plugin's JSON `result` to the Worker's call or subscription `id`.
+/// Pass a plugin's encoded result to the Worker's call or subscription.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeReply(
     mut env: JNIEnv,
     _: JClass,
     handle: jlong,
     id: jlong,
-    result: JString,
+    payload: JByteArray,
+    failed: jboolean,
+    done: jboolean,
 ) {
     if let Some(runtime) = runtime(handle) {
-        runtime.reply(
-            id.cast_unsigned(),
-            &text(&mut env, &result).unwrap_or_default(),
-        );
+        match env.convert_byte_array(payload) {
+            Ok(payload) => runtime.reply(
+                id.cast_unsigned(),
+                PluginReply {
+                    payload,
+                    failed: failed == JNI_TRUE,
+                    done: done == JNI_TRUE,
+                },
+            ),
+            Err(error) => {
+                let _ = env.throw_new(FAILURE, error.to_string());
+            }
+        }
+    }
+}
+
+/// Ask the Worker for the next chunk of the body of the call `id`, which
+/// arrives through `TokamakRuntime.Plugins.chunk`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativePull(
+    _: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    id: jlong,
+) {
+    if let Some(runtime) = runtime(handle) {
+        runtime.pull(id.cast_unsigned());
     }
 }
 
@@ -225,15 +265,17 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeEmit<'local
     _: JClass,
     handle: jlong,
     name: JString,
-    event: JString,
+    event: JByteArray,
     timeout_millis: jlong,
-) -> JString<'local> {
+) -> JByteArray<'local> {
     let timeout = Duration::from_millis(u64::try_from(timeout_millis).unwrap_or(0));
-    let result = emit(&mut env, handle, &name, &event, timeout)
-        .and_then(|reply| env.new_string(reply).map_err(|error| error.to_string()));
+    let result = emit(&mut env, handle, &name, &event, timeout).and_then(|reply| {
+        env.byte_array_from_slice(&reply)
+            .map_err(|error| error.to_string())
+    });
     result.unwrap_or_else(|message| {
         let _ = env.throw_new(FAILURE, message);
-        JString::from(JObject::null())
+        JByteArray::from(JObject::null())
     })
 }
 
@@ -358,12 +400,14 @@ fn emit(
     env: &mut JNIEnv,
     handle: jlong,
     name: &JString,
-    event: &JString,
+    event: &JByteArray,
     timeout: Duration,
-) -> Result<String, String> {
+) -> Result<Vec<u8>, String> {
     let runtime = runtime(handle).ok_or("tokamak runtime is unavailable")?;
     let name = text(env, name)?;
-    let event = text(env, event)?;
+    let event = env
+        .convert_byte_array(event)
+        .map_err(|error| error.to_string())?;
     runtime
         .emit(&name, &event, timeout)
         .map_err(|error| error.to_string())

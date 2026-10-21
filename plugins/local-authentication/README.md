@@ -8,8 +8,12 @@ Add it to your project's dependencies:
 npm install @tokamakdev/plugin-local-authentication
 ```
 
+Pages import the generated `/client` SDK. In `src/tokamak.ts`, import the
+package root and call its factory with the handler's `ctx`. The main worker
+uses its generated `env.TOKAMAK_LOCAL_AUTHENTICATION` service binding when present.
+
 ```ts
-import { localAuthentication } from "@tokamakdev/plugin-local-authentication";
+import localAuthentication from "@tokamakdev/plugin-local-authentication/client";
 
 // "available" | "notEnrolled" | "unavailable"
 const status = await localAuthentication.status("biometricsOrPasscode");
@@ -34,6 +38,14 @@ where the system cannot show its prompt.
 `authenticate` checks the device owner when the app asks; it does not protect
 any data. To bind a stored value to authentication, use
 `@tokamakdev/plugin-secure-storage`.
+
+## Platform bindings
+
+`@tokamakdev/plugin-local-authentication/apple` is the Local Authentication
+framework, and `@tokamakdev/plugin-local-authentication/android` is
+`android.hardware.biometrics` with the `Context`, `CancellationSignal` and
+`Executor` types it uses, for Worker code that needs what this API does not
+offer.
 
 ## Platforms
 

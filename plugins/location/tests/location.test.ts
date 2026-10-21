@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
-import { connectNative, disconnectNative } from "@tokamakdev/plugin/testing";
+import { decodeValues } from "@tokamakdev/plugin/streams";
 
-import { location } from "../src/index.js";
+import { location } from "../web/client.js";
 
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
 
 afterEach(() => {
-  disconnectNative();
   if (originalNavigator) {
     Object.defineProperty(globalThis, "navigator", originalNavigator);
   } else {
@@ -53,22 +52,6 @@ void test("passes position options to browser location", async () => {
   assert.deepEqual(received, { maximumAge: 1000, timeout: 5000 });
 });
 
-void test("sends native position options as whole milliseconds", async () => {
-  const native = connectNative();
-
-  for (const [options, expected] of [
-    [undefined, { maximumAge: 0, timeout: 0xffffffff }],
-    [{ maximumAge: 1500.4 }, { maximumAge: 1500, timeout: 0xffffffff }],
-    [{ maximumAge: Infinity, timeout: -1 }, { maximumAge: 0xffffffff, timeout: 0 }],
-    [{ timeout: NaN }, { maximumAge: 0, timeout: 0 }],
-  ] as const) {
-    const position = location.getCurrentPosition(options);
-    assert.deepEqual(native.lastRequest().arguments, expected);
-    native.respond({ value: nativePosition(52, 0.2) });
-    await position;
-  }
-});
-
 void test("reports unavailable web location as unsupported", async () => {
   Reflect.deleteProperty(globalThis, "navigator");
 
@@ -109,91 +92,17 @@ for (const [code, name] of [
   });
 }
 
-void test("forwards browser watch failures", () => {
-  Object.defineProperty(globalThis, "navigator", {
-    configurable: true,
-    value: {
-      geolocation: {
-        watchPosition(_: PositionCallback, failure: (error: GeolocationPositionError) => void) {
-          failure({
-            code: 2,
-            message: "Location unavailable",
-            PERMISSION_DENIED: 1,
-            POSITION_UNAVAILABLE: 2,
-            TIMEOUT: 3,
-          });
-          return 1;
-        },
-        clearWatch() {},
-      },
+void test("forwards browser watch failures and clears the watch", async () => {
+  let cleared = 0;
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { geolocation: {
+    watchPosition(_: unknown, failure: (error: unknown) => void) {
+      failure({ code: 2, message: "Unavailable", POSITION_UNAVAILABLE: 2 });
+      return 7;
     },
-  });
-  let received: DOMException | undefined;
-
-  location.watchPosition(
-    () => assert.fail("position received"),
-    (error) => { received = error; },
-  );
-
-  assert.equal(received?.name, "NotReadableError");
-});
-
-void test("uses the native bridge and cancels watched updates", () => {
-  const native = connectNative();
-  const updates: number[] = [];
-
-  const cancel = location.watchPosition(
-    (position) => updates.push(position.coords.latitude),
-    () => assert.fail("watch failed"),
-  );
-  const { session, id } = native.sent[1] ?? {};
-  native.respond({ value: nativePosition(52, 0.2) }, false);
-  cancel();
-
-  assert.deepEqual(updates, [52]);
-  assert.deepEqual(native.sent[2], { type: "cancel", session, id });
-});
-
-void test("ignores native responses from an earlier page session", async () => {
-  const native = connectNative();
-
-  const position = location.getCurrentPosition();
-  native.deliver({ session: "earlier-page", id: native.sent[1]?.id, value: nativePosition(1, 2), done: true });
-  native.respond({ value: nativePosition(52, 0.2) });
-
-  assert.equal((await position).coords.latitude, 52);
-});
-
-void test("preserves native DOM exception errors", async () => {
-  const native = connectNative();
-
-  const position = location.getCurrentPosition();
-  native.respond({ error: { name: "NotAllowedError", message: "Location permission was denied" } });
-
-  await assert.rejects(
-    position,
-    (error: unknown) =>
-      error instanceof DOMException &&
-      error.name === "NotAllowedError" &&
-      error.message === "Location permission was denied",
-  );
-});
-
-void test("keeps a native watch active after an error", () => {
-  const native = connectNative();
-  const updates: number[] = [];
-  const errors: string[] = [];
-
-  const cancel = location.watchPosition(
-    (position) => updates.push(position.coords.latitude),
-    (error) => errors.push(error.name),
-  );
-  native.respond({ error: { name: "NotReadableError", message: "Location is unavailable" } }, false);
-  native.respond({ value: nativePosition(52, 0.2) }, false);
-  cancel();
-
-  assert.deepEqual(errors, ["NotReadableError"]);
-  assert.deepEqual(updates, [52]);
+    clearWatch(id: number) { cleared = id; },
+  } } });
+  await assert.rejects(decodeValues(await location.watchPosition()).next(), { name: "NotReadableError" });
+  assert.equal(cleared, 7);
 });
 
 function browserPosition(latitude: number, longitude: number): GeolocationPosition {

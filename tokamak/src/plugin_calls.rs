@@ -1,38 +1,78 @@
 //! Plugin calls from the Worker. The shell's plugins answer them, apart from
 //! calls to the reserved plugin `tokamak`, which the runtime answers itself.
 //!
-//! A result is the JSON object the page's native transport receives, without
-//! its session and ID: `{"value": …, "done": …}` or
-//! `{"error": {"name": …, "message": …}, "done": …}`. `done` ends a
-//! subscription.
+//! Payloads are opaque bytes; reply metadata controls completion.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 /// The plugin ID the runtime answers calls to itself.
 const RUNTIME_PLUGIN: &str = "tokamak";
+const SUBSCRIPTION_CAPACITY: usize = 64;
 
 /// The shell's plugins, which run the Worker's calls and subscriptions.
 ///
 /// The shell answers each with [`crate::Runtime::reply`]: once for a call,
 /// and once per value for a subscription until a result is `done` or the
-/// runtime unsubscribes. The runtime calls these methods on its own threads,
+/// runtime cancels. The runtime calls these methods on its own threads,
 /// and they must return promptly.
 pub trait PluginHandler: Send + Sync {
-    /// Calls `method` of `plugin` with the JSON `arguments`.
-    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &str);
+    /// Calls `method` of `plugin` with its encoded arguments.
+    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]);
 
-    /// Subscribes to `method` of `plugin` with the JSON `arguments`.
-    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &str);
+    /// Calls `method` of `plugin` with its encoded arguments and a body of
+    /// bytes, whose chunks the shell pulls one at a time with
+    /// [`crate::Runtime::pull`].
+    fn call_with_body(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]);
 
-    /// Ends the subscription `id`.
-    fn unsubscribe(&self, id: u64);
+    /// Passes the chunk of the call `id`'s body that the shell pulled.
+    fn chunk(&self, id: u64, chunk: &PluginReply);
+
+    /// Subscribes to `method` of `plugin` with its encoded arguments.
+    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]);
+
+    /// Cancels the pending call or subscription `id`, releasing its resources.
+    fn cancel(&self, id: u64);
+}
+
+/// Encoded bytes or an encoded error, and whether they are the last.
+///
+/// A native endpoint's results, and the chunks of a call's body, travel as
+/// these.
+#[derive(Clone, Debug)]
+pub struct PluginReply {
+    /// Endpoint-owned encoding, passed through the host without interpretation.
+    pub payload: Vec<u8>,
+    /// Whether the payload encodes an error.
+    pub failed: bool,
+    /// Whether the call, subscription or body has finished.
+    pub done: bool,
+}
+
+/// How a subscription treats a result that arrives while its queue is full.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Overflow {
+    /// Ends the subscription with `QuotaExceededError` and cancels its work.
+    #[default]
+    Error,
+    /// Discards the oldest queued result.
+    DropOldest,
+}
+
+impl Overflow {
+    /// The policy named `name` in the native protocol.
+    pub(crate) fn named(name: &str) -> Option<Self> {
+        match name {
+            "error" => Some(Self::Error),
+            "dropOldest" => Some(Self::DropOldest),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Debug for dyn PluginHandler {
@@ -52,23 +92,29 @@ pub(crate) struct PluginCalls {
 
 /// Where the results of a call or subscription go.
 enum Waiting {
-    Call(oneshot::Sender<String>),
-    Subscription(mpsc::UnboundedSender<String>),
-}
-
-/// The part of a result that ends a subscription.
-#[derive(Deserialize)]
-struct Done {
-    #[serde(default)]
-    done: bool,
+    Call {
+        result: oneshot::Sender<PluginReply>,
+        /// Requests for the next chunk of the call's body.
+        pulls: Option<mpsc::UnboundedSender<()>>,
+    },
+    Subscription {
+        results: Arc<Results>,
+        overflow: Overflow,
+    },
 }
 
 /// A subscription's results, which it ends when dropped.
 pub(crate) struct Subscription {
-    // Drops before `results`, so the shell is unsubscribed while it still has
-    // a reader.
+    // Drops first, so the shell is cancelled while it still has a reader.
     _shell: Option<Registration>,
-    results: mpsc::UnboundedReceiver<String>,
+    results: Arc<Results>,
+}
+
+/// The body of a call, whose chunks the shell pulls one at a time.
+pub(crate) struct Body {
+    calls: Arc<PluginCalls>,
+    id: u64,
+    pulls: mpsc::UnboundedReceiver<()>,
 }
 
 /// A call or subscription the shell runs, which stops waiting for results
@@ -76,6 +122,21 @@ pub(crate) struct Subscription {
 struct Registration {
     calls: Arc<PluginCalls>,
     id: u64,
+}
+
+/// Results a subscription's reader has not taken yet.
+#[derive(Default)]
+struct Results {
+    queue: Mutex<(VecDeque<PluginReply>, bool)>,
+    ready: Notify,
+}
+
+/// What queueing a subscription's result did to the subscription.
+#[derive(PartialEq, Eq)]
+enum Queued {
+    Continues,
+    Finished,
+    Overflowed,
 }
 
 impl PluginCalls {
@@ -88,69 +149,108 @@ impl PluginCalls {
         })
     }
 
-    /// Calls `method` of `plugin` with the JSON `arguments`, resolving to its
-    /// result.
+    /// Calls `method` of `plugin`, resolving to its encoded result.
     pub(crate) fn call(
         self: &Arc<Self>,
         plugin: &str,
         method: &str,
-        arguments: &str,
-    ) -> impl Future<Output = String> + Send + 'static {
+        arguments: &[u8],
+    ) -> impl Future<Output = PluginReply> + Send + 'static {
         let (sender, receiver) = oneshot::channel();
-        let registration = self.start(plugin, method, Waiting::Call(sender), |handler, id| {
+        let waiting = Waiting::Call {
+            result: sender,
+            pulls: None,
+        };
+        let registration = self.start(plugin, method, waiting, |handler, id| {
             handler.call(id, plugin, method, arguments);
         });
-        async move {
-            let _registration = registration;
-            receiver
-                .await
-                .unwrap_or_else(|_| error("AbortError", "the runtime stopped"))
-        }
+        settle(registration, receiver)
     }
 
-    /// Subscribes to `method` of `plugin` with the JSON `arguments`.
+    /// Calls `method` of `plugin` with a body, resolving to its encoded
+    /// result. The body is `None` when the runtime answers the call itself.
+    pub(crate) fn call_with_body(
+        self: &Arc<Self>,
+        plugin: &str,
+        method: &str,
+        arguments: &[u8],
+    ) -> (
+        impl Future<Output = PluginReply> + Send + 'static,
+        Option<Body>,
+    ) {
+        let (sender, receiver) = oneshot::channel();
+        let (pulls, pulled) = mpsc::unbounded_channel();
+        let waiting = Waiting::Call {
+            result: sender,
+            pulls: Some(pulls),
+        };
+        let registration = self.start(plugin, method, waiting, |handler, id| {
+            handler.call_with_body(id, plugin, method, arguments);
+        });
+        let body = registration.as_ref().map(|registration| Body {
+            calls: Arc::clone(self),
+            id: registration.id,
+            pulls: pulled,
+        });
+        (settle(registration, receiver), body)
+    }
+
+    /// Subscribes to `method` of `plugin`, treating a full queue as
+    /// `overflow` says.
     pub(crate) fn subscribe(
         self: &Arc<Self>,
         plugin: &str,
         method: &str,
-        arguments: &str,
+        arguments: &[u8],
+        overflow: Overflow,
     ) -> Subscription {
-        let (sender, results) = mpsc::unbounded_channel();
-        let shell = self.start(
-            plugin,
-            method,
-            Waiting::Subscription(sender),
-            |handler, id| {
-                handler.subscribe(id, plugin, method, arguments);
-            },
-        );
+        let results = Arc::new(Results::default());
+        let waiting = Waiting::Subscription {
+            results: Arc::clone(&results),
+            overflow,
+        };
+        let shell = self.start(plugin, method, waiting, |handler, id| {
+            handler.subscribe(id, plugin, method, arguments);
+        });
         Subscription {
             _shell: shell,
             results,
         }
     }
 
-    /// Passes the shell's `result` to the call or subscription `id`. A
-    /// result that is not a JSON object is replaced with an error.
-    pub(crate) fn reply(&self, id: u64, result: &str) {
-        let (result, done) = match serde_json::from_str::<Done>(result) {
-            Ok(Done { done }) => (result.to_owned(), done),
-            Err(_) => (not_json(), false),
-        };
+    /// Passes the shell's encoded result to the call or subscription.
+    pub(crate) fn reply(&self, id: u64, result: PluginReply) {
         let mut waiting = self.waiting();
-        let Some(destination) = waiting.remove(&id) else {
-            return;
-        };
-        match destination {
-            Waiting::Call(sender) => {
-                let _ = sender.send(result);
-            }
-            Waiting::Subscription(sender) => {
-                let _ = sender.send(result);
-                if !done {
-                    waiting.insert(id, Waiting::Subscription(sender));
+        let queued = match waiting.get(&id) {
+            Some(Waiting::Subscription { results, overflow }) => results.push(result, *overflow),
+            Some(Waiting::Call { .. }) => {
+                if let Some(Waiting::Call { result: sender, .. }) = waiting.remove(&id) {
+                    let _ = sender.send(result);
                 }
+                return;
             }
+            None => return,
+        };
+        if queued == Queued::Continues {
+            return;
+        }
+        waiting.remove(&id);
+        drop(waiting);
+        if queued == Queued::Overflowed
+            && let Some(handler) = &self.handler
+        {
+            handler.cancel(id);
+        }
+    }
+
+    /// Asks the Worker for the next chunk of the call `id`'s body, which
+    /// arrives through [`PluginHandler::chunk`].
+    pub(crate) fn pull(&self, id: u64) {
+        if let Some(Waiting::Call {
+            pulls: Some(pulls), ..
+        }) = self.waiting().get(&id)
+        {
+            let _ = pulls.send(());
         }
     }
 
@@ -165,8 +265,8 @@ impl PluginCalls {
     }
 
     /// The shell's handler, unless the runtime answers calls to `plugin`.
-    fn shell(&self, plugin: &str) -> Option<&Arc<dyn PluginHandler>> {
-        if plugin == RUNTIME_PLUGIN {
+    fn shell(&self, plugin: &str, method: &str) -> Option<&Arc<dyn PluginHandler>> {
+        if plugin == RUNTIME_PLUGIN && method == "lifecycleStage" {
             None
         } else {
             self.handler.as_ref()
@@ -174,7 +274,7 @@ impl PluginCalls {
     }
 
     /// The runtime's own result for `method` of `plugin`.
-    fn answer(&self, plugin: &str, method: &str) -> String {
+    fn answer(&self, plugin: &str, method: &str) -> PluginReply {
         match (plugin, method) {
             (RUNTIME_PLUGIN, "lifecycleStage") => {
                 let stage = if self.is_foreground() {
@@ -182,7 +282,11 @@ impl PluginCalls {
                 } else {
                     "background"
                 };
-                json!({ "value": stage, "done": true }).to_string()
+                PluginReply {
+                    payload: json!(stage).to_string().into_bytes(),
+                    failed: false,
+                    done: true,
+                }
             }
             _ => error(
                 "NotSupportedError",
@@ -200,7 +304,7 @@ impl PluginCalls {
         waiting: Waiting,
         request: impl FnOnce(&dyn PluginHandler, u64),
     ) -> Option<Registration> {
-        let Some(handler) = self.shell(plugin) else {
+        let Some(handler) = self.shell(plugin, method) else {
             waiting.send(self.answer(plugin, method));
             return None;
         };
@@ -214,7 +318,7 @@ impl PluginCalls {
     }
 
     fn waiting(&self) -> MutexGuard<'_, HashMap<u64, Waiting>> {
-        self.waiting.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.waiting)
     }
 }
 
@@ -228,44 +332,118 @@ impl std::fmt::Debug for PluginCalls {
     }
 }
 
+/// The result of the call `registration` runs, which stops waiting when
+/// dropped.
+async fn settle(
+    registration: Option<Registration>,
+    result: oneshot::Receiver<PluginReply>,
+) -> PluginReply {
+    let _registration = registration;
+    result
+        .await
+        .unwrap_or_else(|_| error("AbortError", "the runtime stopped"))
+}
+
 impl Waiting {
-    fn send(self, result: String) {
+    fn send(self, result: PluginReply) {
         match self {
-            Self::Call(sender) => drop(sender.send(result)),
-            Self::Subscription(sender) => drop(sender.send(result)),
+            Self::Call { result: sender, .. } => drop(sender.send(result)),
+            Self::Subscription { results, overflow } => drop(results.push(result, overflow)),
+        }
+    }
+}
+
+impl Results {
+    /// Queues `result`, or applies `overflow` when the queue is full.
+    fn push(&self, result: PluginReply, overflow: Overflow) -> Queued {
+        let mut queue = lock(&self.queue);
+        let (results, finished) = &mut *queue;
+        let queued = if result.done {
+            results.push_back(result);
+            Queued::Finished
+        } else if results.len() < SUBSCRIPTION_CAPACITY {
+            results.push_back(result);
+            Queued::Continues
+        } else if overflow == Overflow::DropOldest {
+            results.pop_front();
+            results.push_back(result);
+            Queued::Continues
+        } else {
+            results.push_back(error(
+                "QuotaExceededError",
+                "Native subscription consumer is too slow",
+            ));
+            Queued::Overflowed
+        };
+        *finished = queued != Queued::Continues;
+        drop(queue);
+        self.ready.notify_one();
+        queued
+    }
+
+    /// The next result, or `None` once the last has been taken.
+    async fn next(&self) -> Option<PluginReply> {
+        loop {
+            let ready = self.ready.notified();
+            {
+                let mut queue = lock(&self.queue);
+                if let Some(result) = queue.0.pop_front() {
+                    return Some(result);
+                }
+                if queue.1 {
+                    return None;
+                }
+            }
+            ready.await;
         }
     }
 }
 
 impl Subscription {
     /// The next result, or `None` once the last was `done`.
-    pub(crate) async fn next(&mut self) -> Option<String> {
-        self.results.recv().await
+    pub(crate) async fn next(&mut self) -> Option<PluginReply> {
+        self.results.next().await
+    }
+}
+
+impl Body {
+    /// Waits until the shell pulls the next chunk, returning false once the
+    /// call has ended.
+    pub(crate) async fn pulled(&mut self) -> bool {
+        self.pulls.recv().await.is_some()
+    }
+
+    /// Passes the chunk the shell pulled: bytes, or an encoded error when
+    /// `failed`, and `done` with the last.
+    pub(crate) fn send(&self, chunk: &PluginReply) {
+        if let Some(handler) = &self.calls.handler {
+            handler.chunk(self.id, chunk);
+        }
     }
 }
 
 impl Drop for Registration {
     fn drop(&mut self) {
         let removed = self.calls.waiting().remove(&self.id);
-        if let (Some(Waiting::Subscription(_)), Some(handler)) = (removed, &self.calls.handler) {
-            handler.unsubscribe(self.id);
+        if let (Some(_), Some(handler)) = (removed, &self.calls.handler) {
+            handler.cancel(self.id);
         }
     }
 }
 
-/// A failed result, which ends a subscription.
-pub(crate) fn error(name: &str, message: &str) -> String {
-    json!({ "error": { "name": name, "message": message }, "done": true }).to_string()
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The error that replaces a result that is not JSON, which leaves a
-/// subscription running.
-fn not_json() -> String {
-    json!({
-        "error": { "name": "OperationError", "message": "the plugin's result is not JSON" },
-        "done": false,
-    })
-    .to_string()
+/// A failed result, which ends a subscription.
+pub(crate) fn error(name: &str, message: &str) -> PluginReply {
+    PluginReply {
+        payload: json!({ "name": name, "message": message })
+            .to_string()
+            .into_bytes(),
+        failed: true,
+        done: true,
+    }
 }
 
 #[cfg(test)]

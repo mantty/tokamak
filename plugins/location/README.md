@@ -8,11 +8,20 @@ and continuous tracking, all of which reach the app's Worker off screen.
 npm install @tokamakdev/plugin-location
 ```
 
+Pages import the generated `/client` SDK. In `src/tokamak.ts`, import the
+package root and call its factory with the handler's `ctx`. The main worker
+uses its generated `env.TOKAMAK_LOCATION` service binding when present.
+
 ```ts
-import { location } from "@tokamakdev/plugin-location";
+import location from "@tokamakdev/plugin-location/client";
+import { decodeValues } from "@tokamakdev/plugin/streams";
+import type { Position } from "@tokamakdev/plugin-location";
 
 const position = await location.getCurrentPosition();
-const stop = location.watchPosition((next) => console.log(next.coords), console.error);
+for await (const next of decodeValues<Position>(location.watchPosition())) {
+  console.log(next.coords);
+  break; // Cancels the watch.
+}
 
 await location.requestPermission({ background: true });
 await location.addRegion({ id: "home", latitude: 51.5, longitude: -0.12, radius: 150 });
@@ -24,8 +33,8 @@ import { location } from "@tokamakdev/plugin-location";
 import { onLocationUpdate, onRegionTransition } from "@tokamakdev/plugin-location/events";
 import { onStart } from "@tokamakdev/tok/events";
 
-onStart(async () => {
-  await location.setup({ significantChanges: true, visits: true });
+onStart(async (_event, _env, ctx) => {
+  await location(ctx).setup({ significantChanges: true, visits: true });
 });
 onLocationUpdate(async ({ positions }) => {
   await fetch("https://example.com/whereabouts", { method: "POST", body: JSON.stringify(positions) });
@@ -41,8 +50,8 @@ milliseconds, 0 by default, or takes a new one, and rejects with
 `TimeoutError` when none arrives within `timeout` milliseconds, unlimited by
 default. The timeout starts once the user allows location.
 
-`watchPosition(next, error)` calls `next` with each new position until the
-function it returns is called.
+`watchPosition()` returns a byte stream of JSON positions. `decodeValues<Position>`
+decodes them. Cancelling the stream ends the native watch; errors terminate it.
 
 Both ask for in-use permission when the user has not answered. Off screen
 without background permission, the platforms stop locating the app, so
@@ -135,16 +144,17 @@ device is still.
 
 The plugin's `onLocationUpdate`, `onRegionTransition`, `onVisit` and
 `onLocationError` methods receive the same events while the listening page or
-Worker runs, and return the function that removes the listener.
+Tokamak worker runs. They return byte streams consumed with `decodeValues<T>`;
+cancelling a stream removes its native subscription.
 
 ## Long-term awareness
 
 `setup(config)` keeps the app aware of where the device is over days, with
 little power and no indicator. Call it from `onStart` in `src/tokamak.ts`, so
 it applies at every launch; the plugin also keeps it and applies it again
-itself. The configuration replaces the previous one, and an invalid one
-rejects with `TypeError` and changes nothing. Apple platforms reject with
-`NotSupportedError` where the device cannot monitor significant changes.
+itself. The configuration replaces the previous one; a field it leaves out is
+off. Apple platforms reject with `NotSupportedError` where the device cannot
+monitor significant changes.
 
 - `significantChanges` delivers moves of 500 metres or more, at most every 5
   minutes, to `onLocationUpdate`, located from cellular and Wi-Fi rather than
@@ -233,8 +243,15 @@ and background permission off screen.
 
 The web uses `navigator.geolocation`. `permission()` reports `inUse` from the
 Permissions API, and the other additions reject with `NotSupportedError`,
-while the listener methods receive nothing. Windows uses WebView2's location
-for `getCurrentPosition` and `watchPosition`.
+including the event-stream methods. Native support is provided on Apple and Android.
+
+## Platform bindings
+
+`@tokamakdev/plugin-location/apple` is Core Location, and
+`@tokamakdev/plugin-location/android` is `android.location` with the
+`Context`, `CancellationSignal`, `SystemClock`, `Executor` and `Consumer`
+types it uses, for Worker code that needs what this API does not offer.
+`getCurrentPosition` and `watchPosition` are built on them.
 
 ## Errors
 
@@ -242,4 +259,4 @@ Rejections and `onLocationError` events are `DOMException` names:
 `NotAllowedError` (no permission, or none for the background),
 `NotReadableError` (location unavailable, or services off), `NeedsUIError` (a
 prompt or a start off screen), `NotSupportedError`, `QuotaExceededError`,
-`TimeoutError` and `TypeError`.
+`TimeoutError`, and `TypeError` for an argument the native code cannot read.

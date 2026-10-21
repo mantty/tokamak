@@ -29,8 +29,10 @@ fun TokamakHost.authenticateOwner(
     authenticators: Int,
     crypto: BiometricPrompt.CryptoObject?,
     reply: TokamakPluginReply,
+    cancellation: CancellationSignal = CancellationSignal(),
     succeeded: () -> Unit,
-) {
+): () -> Unit {
+    cancellation.throwIfCanceled()
     val activity = requireForegroundActivity()
     val builder = BiometricPrompt.Builder(activity).setTitle(title).setAllowedAuthenticators(authenticators)
     if ((authenticators and Authenticators.DEVICE_CREDENTIAL) == 0) {
@@ -41,10 +43,11 @@ fun TokamakHost.authenticateOwner(
     val prompt = builder.build()
     val callback = PromptCallback(reply, succeeded)
     if (crypto == null) {
-        prompt.authenticate(CancellationSignal(), activity.mainExecutor, callback)
+        prompt.authenticate(cancellation, activity.mainExecutor, callback)
     } else {
-        prompt.authenticate(crypto, CancellationSignal(), activity.mainExecutor, callback)
+        prompt.authenticate(crypto, cancellation, activity.mainExecutor, callback)
     }
+    return { cancellation.cancel() }
 }
 
 private class PromptCallback(

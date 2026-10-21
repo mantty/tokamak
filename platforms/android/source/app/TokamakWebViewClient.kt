@@ -22,10 +22,8 @@ internal class TokamakWebViewClient(
     private val activity: Activity,
     private val host: String,
     private val runtime: TokamakRuntime,
-    private val pluginBridge: TokamakPluginBridge,
 ) : WebViewClient() {
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-        pluginBridge.close()
         val uri = Uri.parse(url)
         if (!uri.isAppOrigin(host)) {
             view.stopLoading()

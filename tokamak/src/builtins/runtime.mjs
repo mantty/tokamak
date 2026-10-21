@@ -5,6 +5,8 @@ import { DOMException } from "../globals/dom-exception.mjs";
 import { Request, Response } from "../network/fetch.mjs";
 import { URL } from "../network/url.mjs";
 
+export { installServices, invokeService } from "../services/bindings.mjs";
+
 export { hostRequest, hostResponse } from "../network/fetch.mjs";
 
 // Binds `binding` in the environment, unless taken, to the app's assets, which
@@ -20,50 +22,95 @@ export function installAssets(binding, fetchAsset) {
   };
 }
 
-// Defines the Worker's native calls on the shell's plugins, which
-// `call(plugin, method, arguments)` and `subscribe(plugin, method, arguments,
-// deliver)` make with JSON arguments and results.
-export function installPlugins(call, subscribe) {
-  Object.defineProperties(globalThis, {
-    __tokamakNativeCall: {
-      async value(plugin, method, args = null) {
-        const { value, error } = JSON.parse(await call(plugin, method, JSON.stringify(args)));
-        if (error) throw new DOMException(error.message, error.name);
-        return value;
-      },
+// Connects the Worker's byte endpoints to the native host on `platform`.
+export function installPlugins(call, subscribe, platform) {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const decoded = payload => JSON.parse(decoder.decode(payload));
+  const buffer = value => value.byteOffset === 0 && value.byteLength === value.buffer.byteLength
+    ? value.buffer : value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+  const result = ({ payload, failed }) => {
+    if (failed) throw nativeError(decoded(payload));
+    return new Uint8Array(payload);
+  };
+  // The next chunk of a call's body, with a failure encoded as an endpoint error.
+  const pull = reader => async () => {
+    try {
+      const { value, done } = await reader.read();
+      if (done) return { payload: new Uint8Array(), failed: false, done: true };
+      if (!(value instanceof Uint8Array)) throw new TypeError("A native call's body must contain Uint8Array chunks");
+      return { payload: value, failed: false, done: false };
+    } catch (error) {
+      const failure = { name: error?.name ?? "Error", message: String(error?.message ?? error) };
+      return { payload: encoder.encode(JSON.stringify(failure)), failed: true, done: true };
+    }
+  };
+  const connection = {
+    platform,
+    async call(plugin, method, payload, { body, signal } = {}) {
+      signal?.throwIfAborted();
+      const reader = body?.getReader();
+      const [reply, cancel] = reader
+        ? call(plugin, method, buffer(payload), pull(reader))
+        : call(plugin, method, buffer(payload));
+      signal?.addEventListener("abort", cancel, { once: true });
+      try {
+        return result(await reply);
+      } catch (error) {
+        throw signal?.aborted ? signal.reason : error;
+      } finally {
+        signal?.removeEventListener("abort", cancel);
+        reader?.cancel().catch(() => undefined);
+      }
     },
-    __tokamakNativeListen: {
-      value(plugin, method, args, next, error) {
-        return subscribe(plugin, method, JSON.stringify(args ?? null), (result) => {
-          const { value, error: failure } = JSON.parse(result);
-          try {
-            if (failure) error(new DOMException(failure.message, failure.name));
-            else next(value);
-          } catch (thrown) {
-            reportError(thrown);
-          }
-        });
-      },
+    listen(plugin, method, payload, { next, error, overflow = "error" }) {
+      return subscribe(plugin, method, buffer(payload), reply => {
+        let value;
+        try { value = result(reply); }
+        catch (failure) {
+          try { error(failure, reply.done); } catch (thrown) { reportError(thrown); }
+          return;
+        }
+        try { next(value, reply.done); } catch (thrown) { reportError(thrown); }
+      }, overflow);
     },
-  });
+  };
+  globalThis.__tokamak_context[Symbol.for("tokamak.native")] = connection;
 }
 
-// Delivers the event `name`, whose JSON is `event`, to the `TokamakEvents` the
-// Worker's entry module `exports`, returning the reply as JSON and the names of
-// the events that have listeners.
+// The error a native failure describes, with its details as the `cause`.
+function nativeError({ name, message, cause }) {
+  const error = new DOMException(message, name);
+  if (cause !== undefined) Object.defineProperty(error, "cause", { value: cause, writable: true, configurable: true });
+  return error;
+}
+
+// Delivers the event `name`, whose encoded data is `event`, to the
+// `TokamakEvents` the Worker's entry module `exports`, returning the encoded
+// reply and the names of the events that have listeners.
 export async function dispatchEvent(exports, name, event) {
   const { TokamakEvents } = exports;
   if (typeof TokamakEvents !== "function") throw new TypeError("The Worker does not export TokamakEvents");
   const events = new TokamakEvents(globalThis.__tokamak_context, globalThis.__tokamak_env);
-  const { reply, listened } = await events.dispatch(name, JSON.parse(event));
-  return { reply: JSON.stringify(reply) ?? "null", listened };
+  const { reply, listened } = await events.dispatch(name, new Uint8Array(event));
+  return { reply: reply.slice().buffer, listened };
 }
 
 // The storage part attaches the app's storage bindings when it has any.
 if (globalThis.__tokamak_storage) await (await import("../storage/bindings.mjs")).install(globalThis.__tokamak_env, globalThis.__tokamak_storage);
 const waitUntilValues = [];
+let observeWaitUntil;
+export function trackWaitUntil(observer) { observeWaitUntil = observer; }
 class ExecutionContext {
-  waitUntil(value) { waitUntilValues.push(Promise.resolve(value)); }
+  waitUntil(value) {
+    const task = Promise.resolve(value);
+    waitUntilValues.push(task);
+    if (observeWaitUntil) {
+      observeWaitUntil(true);
+      const settled = () => observeWaitUntil(false);
+      task.then(settled, settled);
+    }
+  }
   abort() { throw new Error("The Worker isolate was aborted"); }
   passThroughOnException() {}
 }
@@ -83,3 +130,5 @@ globalThis.__tokamak_context = Object.assign(Object.create(ExecutionContext.prot
   props: {},
   tracing: createTracing(),
 });
+
+export { openServiceStream, receiveServiceStream } from "../services/streams.mjs";

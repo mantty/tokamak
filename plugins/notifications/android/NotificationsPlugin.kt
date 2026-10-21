@@ -89,7 +89,7 @@ class TokamakNotificationsPlugin(
         schedule.armAll()
     }
 
-    override fun call(method: String, arguments: Any?, reply: TokamakPluginReply) {
+    override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
         when (method) {
             "setup" -> setup(arguments, reply)
             "permission" -> reply(Result.success(permission()))
@@ -109,6 +109,7 @@ class TokamakNotificationsPlugin(
             "unsubscribe" -> unsubscribe(reply)
             else -> super.call(method, arguments, reply)
         }
+        return null
     }
 
     override fun subscribe(

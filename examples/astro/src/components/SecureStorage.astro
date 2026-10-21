@@ -46,7 +46,8 @@ import PluginCard from "./PluginCard.astro";
 </PluginCard>
 
 <script>
-  import { secureStorage, type Authentication, type Readable } from "@tokamakdev/plugin-secure-storage";
+  import secureStorage from "@tokamakdev/plugin-secure-storage/client";
+  import { type Authentication, type Readable } from "@tokamakdev/plugin-secure-storage";
   import { logTo, onClick } from "../scripts/plugin-log";
 
   const log = logTo("secure-storage-log");

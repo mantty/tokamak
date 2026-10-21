@@ -18,15 +18,18 @@ getrandom.workspace = true
 hex.workspace = true
 mime_guess.workspace = true
 netdev.workspace = true
+quick-xml.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 tokio-util.workspace = true
 walkdir.workspace = true
+zip.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 win32job.workspace = true

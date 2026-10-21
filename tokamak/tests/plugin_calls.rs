@@ -10,61 +10,101 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokamak::{
-    Config, ModuleType, PackageLayout, PluginHandler, Runtime, WorkerEnvironment, WorkerManifest,
-    write_worker, write_worker_environment,
+    Config, ModuleType, PackageLayout, PluginHandler, PluginReply, Runtime, WorkerEnvironment,
+    WorkerManifest, write_worker, write_worker_environment,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Runs the method of `TokamakEvents` each event names.
-const WORKER: &[u8] = br#"
+const WORKER: &[u8] = br#"const call = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for("tokamak.native")].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), { next: payload => next(JSON.parse(new TextDecoder().decode(payload))), error });
+
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-const call = (plugin, method, args) => globalThis.__tokamakNativeCall(plugin, method, args);
-const failure = (error) => ({ name: error.name, message: error.message, domException: error instanceof DOMException });
+const failure = (error) => ({ name: error.name, message: error.message, cause: error.cause, domException: error instanceof DOMException });
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 export class TokamakEvents extends WorkerEntrypoint {
-  async dispatch(name, event) {
+  async dispatch(name, payload) {
+    const event = JSON.parse(new TextDecoder().decode(payload));
     const reply = name === "start" || name === "suspend" ? undefined : await this[name](event);
-    return { reply, listened: ["start", "resume", "suspend", "call", "stage", "watch", "forget"] };
+    return {
+      reply: reply === undefined ? new Uint8Array() : new TextEncoder().encode(JSON.stringify(reply)),
+      listened: ["start", "resume", "suspend", "call", "stage", "watch", "forget", "raw", "upload", "abort"],
+    };
   }
 
   async resume(event) {
-    void call("test", "resuming");
+    void call(this.ctx, "test", "resuming");
     await sleep(event.wait);
   }
 
   call(event) {
-    return call(event.plugin, event.method, event.arguments).catch(failure);
+    return call(this.ctx, event.plugin, event.method, event.arguments).catch(failure);
   }
 
   stage() {
-    return call("tokamak", "lifecycleStage");
+    return call(this.ctx, "tokamak", "lifecycleStage");
+  }
+
+  async raw(event) {
+    const input = Uint8Array.from(event.bytes);
+    const output = await this.ctx[Symbol.for("tokamak.native")].call("bytes", "echo", input.subarray(1, 5));
+    return Array.from(output);
+  }
+
+  async upload(event) {
+    const body = new ReadableStream({
+      start(controller) {
+        for (const chunk of event.chunks) controller.enqueue(new Uint8Array(chunk));
+        controller.close();
+      },
+    });
+    const reply = await this.ctx[Symbol.for("tokamak.native")].call("files", "write", new TextEncoder().encode("{}"), { body });
+    return new TextDecoder().decode(reply);
+  }
+
+  async abort() {
+    const controller = new AbortController();
+    const pending = this.ctx[Symbol.for("tokamak.native")].call("test", "hang", new Uint8Array(), { signal: controller.signal });
+    setTimeout(() => controller.abort(new DOMException("stopped", "AbortError")));
+    return pending.then(() => "resolved", error => error.message);
   }
 
   // Reports each position with `test.received`, discarding the function that
   // removes the listener.
   forget() {
-    globalThis.__tokamakNativeListen("location", "watchPosition", null, (position) => {
-      void call("test", "received", position);
+    nativeListen(this.ctx, "location", "watchPosition", null, (position) => {
+      void call(this.ctx, "test", "received", position);
     }, () => undefined);
+    this.ctx.waitUntil(call(this.ctx, "test", "retained"));
   }
 
-  // Reports each position with `test.received` until one is "stop", then
-  // with `test.stopped` in `waitUntil`, and with `test.alive` if the context
-  // still runs half a second later.
   watch() {
-    const stop = globalThis.__tokamakNativeListen("location", "watchPosition", null, (position) => {
-      if (position !== "stop") return void call("test", "received", position);
-      stop();
-      this.ctx.waitUntil(call("test", "stopped"));
-      setTimeout(() => void call("test", "alive"), 500);
-    }, (error) => void call("test", "failed", failure(error)));
+    this.ctx.waitUntil(new Promise(resolve => {
+      const stop = nativeListen(this.ctx, "location", "watchPosition", null, (position) => {
+        if (position !== "stop") return void call(this.ctx, "test", "received", position);
+        stop();
+        this.ctx.waitUntil(call(this.ctx, "test", "stopped"));
+        resolve();
+        setTimeout(() => void call(this.ctx, "test", "alive"), 500);
+      }, (error) => {
+        void call(this.ctx, "test", "failed", failure(error));
+        if (error.name === "NotSupportedError") resolve();
+      });
+    }));
   }
+
 }
 
-export default { fetch: () => new Response(null, { status: 204 }) };
+export default {
+  fetch(request, env, ctx) {
+    nativeListen(ctx, "location", "watchPosition", null, () => {}, () => {});
+    ctx.waitUntil(call(ctx, "test", "retained"));
+    return new Response(null, { status: 204 });
+  }
+};
 "#;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -73,30 +113,53 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug)]
 struct Request {
     id: u64,
-    /// The operation, plugin, method and arguments, or `unsubscribe`.
+    /// The operation, plugin, method and arguments, or `cancel`.
     text: String,
+    payload: Vec<u8>,
 }
 
 /// Shell plugins whose requests the test answers.
 struct Shell(Sender<Request>);
 
 impl Shell {
-    fn record(&self, id: u64, text: String) {
-        let _ = self.0.send(Request { id, text });
+    fn record(&self, id: u64, text: String, payload: &[u8]) {
+        let _ = self.0.send(Request {
+            id,
+            text,
+            payload: payload.to_vec(),
+        });
     }
 }
 
 impl PluginHandler for Shell {
-    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
-        self.record(id, format!("call {plugin}.{method} {arguments}"));
+    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
+        let text = String::from_utf8_lossy(arguments);
+        self.record(id, format!("call {plugin}.{method} {text}"), arguments);
     }
 
-    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
-        self.record(id, format!("subscribe {plugin}.{method} {arguments}"));
+    fn call_with_body(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
+        let text = String::from_utf8_lossy(arguments);
+        self.record(id, format!("body {plugin}.{method} {text}"), arguments);
     }
 
-    fn unsubscribe(&self, id: u64) {
-        self.record(id, "unsubscribe".to_owned());
+    fn chunk(&self, id: u64, chunk: &PluginReply) {
+        let state = if chunk.failed {
+            "failed"
+        } else if chunk.done {
+            "done"
+        } else {
+            "more"
+        };
+        self.record(id, format!("chunk {state}"), &chunk.payload);
+    }
+
+    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
+        let text = String::from_utf8_lossy(arguments);
+        self.record(id, format!("subscribe {plugin}.{method} {text}"), arguments);
+    }
+
+    fn cancel(&self, id: u64) {
+        self.record(id, "cancel".to_owned(), &[]);
     }
 }
 
@@ -114,15 +177,41 @@ impl Started {
     fn new(plugins: bool) -> TestResult<Self> {
         let directory = tempfile::tempdir()?;
         let app = PackageLayout::new(directory.path().join("app"));
-        fs::create_dir_all(app.root())?;
-        write_worker_environment(&app, &WorkerEnvironment::default())?;
+        let native = app.tokamak_worker();
+        fs::create_dir_all(native.root())?;
+        write_worker_environment(&native, &WorkerEnvironment::default())?;
         fs::write(directory.path().join("worker.mjs"), WORKER)?;
         write_worker(
-            &app,
+            &native,
             directory.path(),
             &WorkerManifest {
                 entry: "worker.mjs".to_owned(),
                 modules: BTreeMap::from([("worker.mjs".to_owned(), ModuleType::EsModule)]),
+            },
+        )?;
+        write_worker_environment(
+            &app,
+            &WorkerEnvironment {
+                services: BTreeMap::from([(
+                    "TOKAMAK".into(),
+                    tokamak::ServiceBinding {
+                        service: "tokamak".into(),
+                        entrypoint: "default".into(),
+                    },
+                )]),
+                ..WorkerEnvironment::default()
+            },
+        )?;
+        fs::write(
+            directory.path().join("worker.mjs"),
+            "export default { fetch: (request, env) => env.TOKAMAK.fetch(request) };",
+        )?;
+        write_worker(
+            &app,
+            directory.path(),
+            &WorkerManifest {
+                entry: "worker.mjs".into(),
+                modules: BTreeMap::from([("worker.mjs".into(), ModuleType::EsModule)]),
             },
         )?;
         let (sender, requests) = mpsc::channel();
@@ -144,15 +233,17 @@ impl Started {
         })
     }
 
-    /// Delivers the event `name` on another thread, returning its reply as
-    /// JSON once it completes within `timeout`.
+    /// Delivers the event `name` on another thread, returning its JSON reply,
+    /// or null without one, once it completes within `timeout`.
     fn emit(&self, name: &str, event: &Value, timeout: Duration) -> JoinHandle<TestResult<Value>> {
         let runtime = Arc::clone(&self.runtime);
         let (name, event) = (name.to_owned(), event.to_string());
         thread::spawn(move || {
-            Ok(serde_json::from_str(
-                &runtime.emit(&name, &event, timeout)?,
-            )?)
+            let reply = runtime.emit(&name, event.as_bytes(), timeout)?;
+            if reply.is_empty() {
+                return Ok(Value::Null);
+            }
+            Ok(serde_json::from_slice(&reply)?)
         })
     }
 
@@ -163,6 +254,10 @@ impl Started {
 
     fn next_request(&self) -> TestResult<Request> {
         Ok(self.requests.recv_timeout(TIMEOUT)?)
+    }
+
+    fn acknowledge(&self, request: &Request) {
+        self.runtime.reply(request.id, value(b"null", true));
     }
 }
 
@@ -186,7 +281,7 @@ fn resolves_a_plugin_call_with_the_shell_reply() -> TestResult {
     let request = started.next_request()?;
     started
         .runtime
-        .reply(request.id, r#"{"value":{"latitude":51.5},"done":true}"#);
+        .reply(request.id, value(br#"{"latitude":51.5}"#, true));
 
     assert_eq!(
         request.text,
@@ -208,12 +303,17 @@ fn rejects_a_plugin_call_with_the_exception_the_shell_names() -> TestResult {
     let request = started.next_request()?;
     started.runtime.reply(
         request.id,
-        r#"{"error":{"name":"NeedsUIError","message":"The app is in the background"},"done":true}"#,
+        tokamak::PluginReply {
+            payload: br#"{"name":"NeedsUIError","message":"The app is in the background","cause":{"domain":"Kit","code":7}}"#
+                .to_vec(),
+            failed: true,
+            done: true,
+        },
     );
 
     assert_eq!(
         join(reply)?,
-        json!({ "name": "NeedsUIError", "message": "The app is in the background", "domException": true })
+        json!({ "name": "NeedsUIError", "message": "The app is in the background", "cause": { "domain": "Kit", "code": 7 }, "domException": true })
     );
     Ok(())
 }
@@ -252,34 +352,60 @@ fn records_the_stage_while_a_lifecycle_event_runs() -> TestResult {
 }
 
 #[test]
-fn keeps_listening_past_the_deadline_until_the_last_listener_is_removed() -> TestResult {
+fn routes_core_device_operations_to_the_shell() -> TestResult {
     let started = Started::new(true)?;
-    join(started.emit("watch", &json!({}), Duration::from_millis(300)))?;
+    let event = started.emit(
+        "call",
+        &json!({
+            "plugin": "tokamak", "method": "webview.getCurrentPage", "arguments": null,
+        }),
+        TIMEOUT,
+    );
+    let request = started.next_request()?;
+    assert_eq!(request.text, "call tokamak.webview.getCurrentPage null");
+    started.runtime.reply(
+        request.id,
+        value(br#""https://app.tokamak.local/recipes""#, true),
+    );
+    assert_eq!(join(event)?, json!("https://app.tokamak.local/recipes"));
+    Ok(())
+}
+
+#[test]
+fn delivers_listener_values_and_errors_during_registered_work() -> TestResult {
+    let started = Started::new(true)?;
+    let event = started.emit("watch", &json!({}), TIMEOUT);
     let subscription = started.next_request()?;
     assert_eq!(subscription.text, "subscribe location.watchPosition null");
-    thread::sleep(Duration::from_millis(500));
 
-    let deliver = |result: &str| started.runtime.reply(subscription.id, result);
-    deliver(r#"{"value":1,"done":false}"#);
-    assert_eq!(started.next_request()?.text, "call test.received 1");
-    deliver(r#"{"error":{"name":"NotReadableError","message":"No fix"},"done":false}"#);
+    let deliver = |result: tokamak::PluginReply| started.runtime.reply(subscription.id, result);
+    deliver(value(b"1", false));
+    let received = started.next_request()?;
+    assert_eq!(received.text, "call test.received 1");
+    started.acknowledge(&received);
+    deliver(tokamak::PluginReply {
+        payload: br#"{"name":"NotReadableError","message":"No fix"}"#.to_vec(),
+        failed: true,
+        done: false,
+    });
+    let failed = started.next_request()?;
     assert_eq!(
-        started.next_request()?.text,
+        failed.text,
         r#"call test.failed {"name":"NotReadableError","message":"No fix","domException":true}"#
     );
-    deliver(r#"{"value":"stop","done":false}"#);
+    started.acknowledge(&failed);
+    deliver(value(br#""stop""#, false));
 
     let mut requests = [started.next_request()?, started.next_request()?];
     requests.sort_by_key(|request| request.text.clone());
-    let [stopped, unsubscribed] = requests;
+    let [stopped, cancelled] = requests;
     assert_eq!(stopped.text, "call test.stopped null");
     assert_eq!(
-        (unsubscribed.id, unsubscribed.text.as_str()),
-        (subscription.id, "unsubscribe")
+        (cancelled.id, cancelled.text.as_str()),
+        (subscription.id, "cancel")
     );
-    started
-        .runtime
-        .reply(stopped.id, r#"{"value":null,"done":true}"#);
+    started.runtime.reply(stopped.id, value(b"null", true));
+    assert_eq!(join(event)?, Value::Null);
     let alive = started.requests.recv_timeout(Duration::from_secs(1));
     assert!(alive.is_err(), "the context still ran: {alive:?}");
     Ok(())
@@ -288,55 +414,184 @@ fn keeps_listening_past_the_deadline_until_the_last_listener_is_removed() -> Tes
 #[test]
 fn keeps_a_listener_whose_remove_function_is_discarded() -> TestResult {
     let started = Started::new(true)?;
-    join(started.emit("forget", &json!({}), TIMEOUT))?;
+    let event = started.emit("forget", &json!({}), TIMEOUT);
     let subscription = started.next_request()?;
+    let retained = started.next_request()?;
+    assert_eq!(retained.text, "call test.retained null");
 
-    started
-        .runtime
-        .reply(subscription.id, r#"{"value":1,"done":false}"#);
+    started.runtime.reply(subscription.id, value(b"1", false));
 
-    assert_eq!(started.next_request()?.text, "call test.received 1");
+    let received = started.next_request()?;
+    assert_eq!(received.text, "call test.received 1");
+    started.acknowledge(&received);
+    started.runtime.reply(retained.id, value(b"null", true));
+    assert_eq!(join(event)?, Value::Null);
+    let removed = started.next_request()?;
+    assert_eq!(
+        (removed.id, removed.text.as_str()),
+        (subscription.id, "cancel")
+    );
     Ok(())
 }
 
 #[test]
 fn ends_a_listener_whose_result_is_done() -> TestResult {
     let started = Started::new(true)?;
-    join(started.emit("watch", &json!({}), TIMEOUT))?;
+    let event = started.emit("forget", &json!({}), TIMEOUT);
     let subscription = started.next_request()?;
+    let retained = started.next_request()?;
+    assert_eq!(retained.text, "call test.retained null");
 
-    started.runtime.reply(
-        subscription.id,
-        r#"{"error":{"name":"NotSupportedError","message":"Unsupported"},"done":true}"#,
-    );
-    assert_eq!(
-        started.next_request()?.text,
-        r#"call test.failed {"name":"NotSupportedError","message":"Unsupported","domException":true}"#
-    );
-    started
-        .runtime
-        .reply(subscription.id, r#"{"value":1,"done":false}"#);
+    started.runtime.reply(subscription.id, value(b"1", true));
+    let received = started.next_request()?;
+    assert_eq!(received.text, "call test.received 1");
+    started.acknowledge(&received);
+    started.runtime.reply(subscription.id, value(b"2", false));
 
     let after = started.requests.recv_timeout(Duration::from_secs(1));
     assert!(after.is_err(), "the listener still ran: {after:?}");
+    assert!(
+        !event.is_finished(),
+        "independent work must still be running"
+    );
+    started.runtime.reply(retained.id, value(b"null", true));
+    assert_eq!(join(event)?, Value::Null);
     Ok(())
 }
 
 #[test]
-fn unsubscribes_listeners_when_the_runtime_stops() -> TestResult {
+fn cancels_calls_and_listeners_when_the_runtime_stops() -> TestResult {
     let started = Started::new(true)?;
-    join(started.emit("watch", &json!({}), TIMEOUT))?;
+    started.runtime.fetch("/", TIMEOUT)?;
     let subscription = started.next_request()?;
+    let call = started.next_request()?;
+    assert_eq!(call.text, "call test.retained null");
 
     let Started {
         runtime, requests, ..
     } = started;
     drop(Arc::into_inner(runtime).ok_or("the runtime is still shared")?);
 
-    let unsubscribed = requests.recv_timeout(TIMEOUT)?;
+    let mut cancelled = [
+        requests.recv_timeout(TIMEOUT)?,
+        requests.recv_timeout(TIMEOUT)?,
+    ];
+    cancelled.sort_by_key(|request| request.id);
     assert_eq!(
-        (unsubscribed.id, unsubscribed.text.as_str()),
-        (subscription.id, "unsubscribe")
+        cancelled.map(|request| (request.id, request.text)),
+        [
+            (subscription.id, "cancel".to_owned()),
+            (call.id, "cancel".to_owned())
+        ]
     );
     Ok(())
+}
+
+#[test]
+fn event_deadlines_cancel_pending_native_calls() -> TestResult {
+    let started = Started::new(true)?;
+    let event = started.emit(
+        "call",
+        &call_event("location", "getCurrentPosition", &Value::Null),
+        Duration::from_millis(300),
+    );
+    let call = started.next_request()?;
+    assert_eq!(call.text, "call location.getCurrentPosition null");
+    assert!(join(event).is_err());
+    let cancelled = started.next_request()?;
+    assert_eq!((cancelled.id, cancelled.text.as_str()), (call.id, "cancel"));
+    started.runtime.reply(call.id, value(br#""late""#, true));
+    assert_eq!(started.reply_to("stage", &json!({}))?, "foreground");
+    Ok(())
+}
+
+#[test]
+fn event_deadlines_release_listeners_and_later_events_get_fresh_invocations() -> TestResult {
+    let started = Started::new(true)?;
+    let mut previous = None;
+    for _ in 0..2 {
+        let event = started.emit("watch", &json!({}), Duration::from_millis(300));
+        let subscription = started.next_request()?;
+        assert_eq!(subscription.text, "subscribe location.watchPosition null");
+        assert_ne!(Some(subscription.id), previous);
+        assert_eq!(join(event)?, Value::Null);
+        let removed = started.next_request()?;
+        assert_eq!(
+            (removed.id, removed.text.as_str()),
+            (subscription.id, "cancel")
+        );
+        previous = Some(subscription.id);
+    }
+    Ok(())
+}
+
+#[test]
+fn carries_binary_subarrays_between_quickjs_and_native_endpoints() -> TestResult {
+    let started = Started::new(true)?;
+    let event = started.emit(
+        "raw",
+        &json!({ "bytes": [99, 0, 255, 192, 175, 88] }),
+        TIMEOUT,
+    );
+    let request = started.next_request()?;
+    assert_eq!(request.payload, [0, 255, 192, 175]);
+    started.runtime.reply(
+        request.id,
+        tokamak::PluginReply {
+            payload: request.payload,
+            failed: false,
+            done: true,
+        },
+    );
+    assert_eq!(join(event)?, json!([0, 255, 192, 175]));
+    Ok(())
+}
+
+#[test]
+fn streams_a_call_body_as_the_shell_pulls_each_chunk() -> TestResult {
+    let started = Started::new(true)?;
+    let event = started.emit("upload", &json!({ "chunks": [[0, 255], [7]] }), TIMEOUT);
+    let call = started.next_request()?;
+    assert_eq!(call.text, "body files.write {}");
+
+    let mut chunks = Vec::new();
+    for _ in 0..3 {
+        started.runtime.pull(call.id);
+        let chunk = started.next_request()?;
+        assert_eq!(chunk.id, call.id);
+        chunks.push((chunk.text, chunk.payload));
+    }
+    started.runtime.reply(call.id, value(b"written", true));
+
+    assert_eq!(
+        chunks,
+        [
+            ("chunk more".to_owned(), vec![0, 255]),
+            ("chunk more".to_owned(), vec![7]),
+            ("chunk done".to_owned(), vec![]),
+        ]
+    );
+    assert_eq!(join(event)?, json!("written"));
+    Ok(())
+}
+
+#[test]
+fn an_aborted_call_cancels_the_shell_work_and_rejects_with_the_reason() -> TestResult {
+    let started = Started::new(true)?;
+    let event = started.emit("abort", &json!({}), TIMEOUT);
+    let call = started.next_request()?;
+    let cancel = started.next_request()?;
+
+    assert_eq!(call.text, "call test.hang ");
+    assert_eq!((cancel.id, cancel.text.as_str()), (call.id, "cancel"));
+    assert_eq!(join(event)?, json!("stopped"));
+    Ok(())
+}
+
+fn value(payload: &[u8], done: bool) -> tokamak::PluginReply {
+    tokamak::PluginReply {
+        payload: payload.to_vec(),
+        failed: false,
+        done,
+    }
 }

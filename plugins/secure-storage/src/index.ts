@@ -1,4 +1,4 @@
-import { Plugin } from "@tokamakdev/plugin";
+import { Plugin, type TokamakContext } from "@tokamakdev/plugin";
 
 /** When a stored value can be read. */
 export type Readable = "whenUnlocked" | "afterFirstUnlock";
@@ -45,8 +45,8 @@ export interface DeleteOptions {
 }
 
 class SecureStorage extends Plugin {
-  constructor() {
-    super("secure-storage");
+  constructor(ctx: TokamakContext) {
+    super(ctx, "secure-storage");
   }
 
   /** Stores a new value; rejects with `DuplicateItemError` when `name` has one. */
@@ -91,4 +91,4 @@ function stored(name: string, value: string, options: CreateOptions) {
   };
 }
 
-export const secureStorage = new SecureStorage();
+export function secureStorage(ctx: TokamakContext): SecureStorage { return new SecureStorage(ctx); }

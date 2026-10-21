@@ -2,11 +2,36 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { defineEvent, type EventContext } from "../src/events.js";
-import { dispatch } from "../src/registry.js";
+import { dispatch, eventCodec } from "../src/registry.js";
 import * as testing from "../src/testing.js";
+import { createNativeContext } from "../src/context.js";
+
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace -- test events merge into Tokamak.Events.
+  namespace Tokamak {
+    interface Events {
+      "test.run": { value: number };
+      "test.reply": null;
+      "test.quiet": null;
+      "test.fail": null;
+      "test.listed": null;
+      "test.also-listed": null;
+      "test.testing": null;
+      "test.typed": { count: number };
+      "test.void": null;
+      "test.binary": Uint8Array;
+    }
+    interface EventReplies {
+      "test.reply": string;
+      "test.fail": string;
+      "test.typed": { doubled: number };
+      "test.binary": Uint8Array;
+    }
+  }
+}
 
 const env = {};
-const ctx: EventContext = { waitUntil: () => undefined };
+const ctx: EventContext = createNativeContext({ waitUntil: () => undefined });
 let reported: unknown[] = [];
 
 beforeEach(() => {
@@ -19,7 +44,7 @@ afterEach(() => {
 });
 
 void test("runs every listener with the event, env and ctx", async () => {
-  const onRun = defineEvent<{ value: number }>("test.run");
+  const onRun = defineEvent("test.run");
   const received: unknown[][] = [];
   onRun((...arguments_) => void received.push(arguments_));
   onRun(async (...arguments_) => {
@@ -36,7 +61,7 @@ void test("runs every listener with the event, env and ctx", async () => {
 });
 
 void test("replies with the first value, in registration order, other than undefined", async () => {
-  const onReply = defineEvent<null, string>("test.reply");
+  const onReply = defineEvent("test.reply");
   onReply(() => undefined);
   onReply(async () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -48,7 +73,7 @@ void test("replies with the first value, in registration order, other than undef
 });
 
 void test("replies undefined when no listener returns a value", async () => {
-  const onQuiet = defineEvent<null>("test.quiet");
+  const onQuiet = defineEvent("test.quiet");
   onQuiet(() => undefined);
 
   assert.equal((await dispatch("test.quiet", null, env, ctx)).reply, undefined);
@@ -56,7 +81,7 @@ void test("replies undefined when no listener returns a value", async () => {
 });
 
 void test("reports a throwing listener and still runs the others", async () => {
-  const onFail = defineEvent<null, string>("test.fail");
+  const onFail = defineEvent("test.fail");
   const thrown = new Error("sync");
   const rejected = new Error("async");
   onFail(() => {
@@ -96,7 +121,7 @@ void test("collects reported errors in the testing dispatch", async () => {
 });
 
 void test("types listeners from defineEvent", () => {
-  const onTyped = defineEvent<{ count: number }, { doubled: number }>("test.typed");
+  const onTyped = defineEvent("test.typed");
 
   onTyped((event) => ({ doubled: event.count * 2 }));
   onTyped((event, _env, context) => {
@@ -108,5 +133,16 @@ void test("types listeners from defineEvent", () => {
   // @ts-expect-error -- the reply must be `{ doubled: number }`.
   onTyped(() => "wrong");
   // @ts-expect-error -- an event without a reply type takes no reply.
-  defineEvent<null>("test.void")(() => 1);
+  defineEvent("test.void")(() => 1);
+});
+
+void test("events travel as JSON unless their definition gives a codec", () => {
+  const json = eventCodec("test.quiet");
+  assert.deepEqual(json.decode(new TextEncoder().encode('{"a":1}')), { a: 1 });
+  assert.deepEqual(json.encode({ a: 1 }), new TextEncoder().encode('{"a":1}'));
+  assert.deepEqual(json.encode(undefined), new Uint8Array(), "no reply is an empty payload");
+
+  const bytes = { decode: (payload: Uint8Array) => payload, encode: (reply: Uint8Array) => reply };
+  defineEvent("test.binary", bytes);
+  assert.equal(eventCodec("test.binary"), bytes);
 });

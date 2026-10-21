@@ -10,6 +10,13 @@ extension URL {
   }
 }
 
+extension Bundle {
+  /// The host of the app origin, `https://<host>`, from the `TokamakHost` key.
+  var tokamakHost: String? {
+    object(forInfoDictionaryKey: "TokamakHost") as? String
+  }
+}
+
 extension WKSecurityOrigin {
   /// Whether this is the app origin, `https://<host>`.
   func isAppOrigin(_ host: String) -> Bool {

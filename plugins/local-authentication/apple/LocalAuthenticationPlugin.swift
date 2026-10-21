@@ -14,20 +14,21 @@ final class TokamakLocalAuthenticationPlugin: TokamakPlugin {
     method: String,
     arguments: Any,
     reply: @escaping TokamakPluginReply
-  ) {
+  ) -> (() -> Void)? {
     let arguments = arguments as? [String: Any] ?? [:]
     do throws(TokamakPluginError) {
       switch method {
       case "status":
         reply(.success(status(try policy(arguments))))
       case "authenticate":
-        try authenticate(policy(arguments), prompt: prompt(arguments), reply: reply)
+        return try authenticate(policy(arguments), prompt: prompt(arguments), reply: reply)
       default:
         throw .notSupported("\(id).\(method) is not supported")
       }
     } catch {
       reply(.failure(error))
     }
+    return nil
   }
 
   private func status(_ policy: LAPolicy) -> String {
@@ -49,7 +50,7 @@ final class TokamakLocalAuthenticationPlugin: TokamakPlugin {
     _ policy: LAPolicy,
     prompt: String,
     reply: @escaping TokamakPluginReply
-  ) throws(TokamakPluginError) {
+  ) throws(TokamakPluginError) -> (() -> Void) {
     let context = LAContext()
     var error: NSError?
     guard context.canEvaluatePolicy(policy, error: &error) else {
@@ -66,6 +67,7 @@ final class TokamakLocalAuthenticationPlugin: TokamakPlugin {
         reply(success ? .success(nil) : .failure(Self.failure(error)))
       }
     }
+    return { context.invalidate() }
   }
 
   private static func failure(_ error: Error?) -> TokamakPluginError {

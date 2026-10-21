@@ -1,9 +1,12 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { Readable, type Duplex } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream } from "node:stream/web";
 
 import { WebSocketServer, type WebSocket } from "ws";
+import { decodeMessage, encodeMessage, messages, type NativeMessage } from "@tokamakdev/plugin/native-protocol";
+import { DevWorker, type WorkerSocket } from "./dev-worker.mjs";
 
 /** The header that carries the device's session token, which `tok dev`'s relay forwards. */
 export const SESSION_HEADER = "x-tokamak-session";
@@ -11,49 +14,11 @@ export const SESSION_HEADER = "x-tokamak-session";
 /** How long a plugin call waits for the device to connect. */
 const CONNECT_TIMEOUT = 10_000;
 
-/** Calls `TokamakEvents` in the Worker its `TOKAMAK` service binding names, through the dev registry. */
-const CALLER = `export default {
-  async fetch(request, env) {
-    const { name, event } = await request.json();
-    try {
-      const { reply } = await env.TOKAMAK.dispatch(name, event);
-      return Response.json({ reply: reply ?? null });
-    } catch (error) {
-      return new Response(error?.stack ?? String(error), { status: 500 });
-    }
-  },
-};`;
-
-/** The parts of Miniflare the dev socket uses. */
-interface Miniflare {
-  readonly ready: Promise<unknown>;
-  dispatchFetch(url: string, init: { method: string; body: string }): Promise<Response>;
-  dispose(): Promise<void>;
-}
-
-interface MiniflareModule {
-  Miniflare: new (options: unknown) => Miniflare;
-  convertV4MiniflareOptions(options: unknown): unknown;
-  getDefaultDevRegistryPath(): string;
-}
-
-/** A message the device sends: an event, or a plugin's result for a call or subscription. */
-type DeviceMessage =
-  | { type: "event"; id: number; name: string; event: unknown }
-  | { type: "result"; id: number; result: PluginResult };
-
-/** A plugin's result, as the page's native transport receives it. */
+/** The native endpoint's opaque result and completion status. */
 export interface PluginResult {
-  value?: unknown;
-  error?: { name: string; message: string };
+  payload: Uint8Array;
+  failed: boolean;
   done: boolean;
-}
-
-/** A call or subscription the development Worker makes on a plugin. */
-interface PluginRequest {
-  plugin: string;
-  method: string;
-  arguments: unknown;
 }
 
 /** The loopback server the device's dev WebSocket reaches through `tok dev`'s relay. */
@@ -76,6 +41,10 @@ export async function openDevSocket(workerName: string | undefined, token: strin
       response.writeHead(401).end();
       return;
     }
+    if (request.url?.startsWith("/_tokamak/")) {
+      void forwardWorker(worker, request, response);
+      return;
+    }
     if (request.method === "POST" && (request.url === "/call" || request.url === "/subscribe")) {
       void forward(device, request, response);
       return;
@@ -86,6 +55,10 @@ export async function openDevSocket(workerName: string | undefined, token: strin
   server.on("upgrade", (request, socket, head) => {
     if (!token || request.headers[SESSION_HEADER] !== token) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      return;
+    }
+    if (request.url?.startsWith("/_tokamak/")) {
+      void upgradeWorker(worker, request, socket, head, sockets);
       return;
     }
     sockets.handleUpgrade(request, socket, head, (websocket) => serve(websocket, worker, device));
@@ -105,72 +78,180 @@ export async function openDevSocket(workerName: string | undefined, token: strin
   };
 }
 
+async function forwardWorker(worker: DevWorker, request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+  const abort = new AbortController();
+  response.once("close", () => abort.abort());
+  try {
+    const result = await worker.fetch(request, abort.signal);
+    response.writeHead(result.status, [...result.headers].flat());
+    if (result.body) await pipeline(Readable.fromWeb(result.body as ReadableStream<Uint8Array>), response);
+    else response.end();
+  } catch (error) {
+    if (response.headersSent) response.destroy(error instanceof Error ? error : new Error(String(error)));
+    else response.writeHead(502).end(String(error));
+  }
+}
+
+async function upgradeWorker(
+  worker: DevWorker, request: http.IncomingMessage, socket: Duplex, head: Buffer, sockets: WebSocketServer,
+): Promise<void> {
+  const abort = new AbortController();
+  let pending: WorkerSocket | undefined;
+  const release = () => {
+    const pair = pending;
+    pending = undefined;
+    if (!pair) return;
+    pair.accept();
+    pair.close(1000, "Caller disconnected");
+  };
+  socket.once("close", () => { abort.abort(); release(); });
+  socket.once("error", () => socket.destroy());
+  try {
+    const result = await worker.fetch(request, abort.signal);
+    const pair = result.webSocket;
+    if (!pair) {
+      socket.end(`HTTP/1.1 ${result.status} ${result.statusText}\r\nConnection: close\r\n\r\n`);
+      return;
+    }
+    pending = pair;
+    if (socket.destroyed) {
+      release();
+      return;
+    }
+    sockets.handleUpgrade(request, socket, head, websocket => {
+      void worker.couple(websocket, pair).then(
+        () => { pending = undefined; },
+        () => { release(); websocket.terminate(); },
+      );
+    });
+  } catch {
+    release();
+    socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+  }
+}
+
 function serve(websocket: WebSocket, worker: DevWorker, device: Device): void {
   device.connect(websocket);
   // The device opens another dev WebSocket after this one fails.
   websocket.on("error", () => websocket.terminate());
   websocket.on("message", (data) => {
-    const message = parseMessage(String(data));
-    if (message?.type === "result") {
-      device.receive(message.id, message.result);
+    let message: NativeMessage;
+    try {
+      const bytes = Array.isArray(data) ? Buffer.concat(data) : new Uint8Array(data as ArrayBuffer);
+      message = decodeMessage(bytes);
+    } catch {
+      websocket.close(1002, "Invalid native message");
       return;
     }
-    if (message?.type !== "event") return;
-    worker.dispatch(message.name, message.event).then(
-      (reply) => websocket.send(JSON.stringify({ type: "reply", id: message.id, reply })),
-      (error: unknown) => websocket.send(JSON.stringify({ type: "error", id: message.id, message: String(error) })),
+    const { header, payload } = message;
+    if (header.type === "result" && header.id !== undefined) {
+      device.receive(header.id, { payload, failed: header.failed === true, done: header.done === true });
+      return;
+    }
+    if (header.type === "pull" && header.id !== undefined) {
+      device.pull(header.id);
+      return;
+    }
+    if (header.type !== "event" || header.id === undefined || !header.name) return;
+    const send = (type: string, value: Uint8Array) => {
+      if (websocket.readyState === websocket.OPEN) websocket.send(encodeMessage({ type, id: header.id }, value));
+    };
+    worker.dispatch(header.name, payload).then(
+      (reply) => send("reply", reply),
+      (error: unknown) => send("error", encoder.encode(String(error))),
     );
   });
 }
 
+const encoder = new TextEncoder();
+
 /**
- * Passes the plugin call `request` carries to the device. A call's response is its result; a
- * subscription's streams each result as a line of JSON until one is done, and closing it ends the
- * subscription.
+ * Relays opaque endpoint payloads; closing the response cancels the native request. A call with a
+ * body sends its later messages to the device as the device pulls them.
  */
 async function forward(device: Device, request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
-  let call: PluginRequest;
+  const frames = messages(request);
+  let call: NativeMessage;
   try {
-    call = JSON.parse(await readBody(request)) as PluginRequest;
+    const first = await frames.next();
+    if (first.done) throw new TypeError("Missing native request");
+    call = first.value;
+    if (!call.header.plugin || !call.header.method) throw new TypeError("Missing native endpoint");
   } catch {
     response.writeHead(400).end();
     return;
   }
-  response.writeHead(200, { "content-type": "application/json" });
-  if (request.url === "/call") {
-    response.end(JSON.stringify(await new Promise<PluginResult>((resolve) => device.send("call", call, resolve))));
-    return;
-  }
-  response.flushHeaders();
-  const cancel = device.send("subscribe", call, (result) => {
-    response.write(`${JSON.stringify(result)}\n`);
-    if (result.done) response.end();
+  response.writeHead(200, { "content-type": "application/octet-stream" });
+  const subscribe = request.url === "/subscribe";
+  const type = subscribe ? "subscribe" : call.header.type === "callWithBody" ? "callWithBody" : "call";
+  if (subscribe) response.flushHeaders();
+  const write = subscribe ? subscriptionWriter(response, call.header.overflow, () => { cancel(); }) : undefined;
+  const cancel = device.send(type, call, ({ payload, failed, done }) => {
+    const frame = encodeMessage({ type: "result", failed, done }, payload);
+    if (write) write(frame, done);
+    else response.end(frame);
+  }, async () => {
+    const next = await frames.next().catch(() => ({ done: true as const, value: undefined }));
+    return next.done ? failure("DataCloneError", "The call's body ended early") : chunkResult(next.value);
   });
   response.once("close", () => {
     if (!response.writableEnded) cancel();
   });
 }
 
-function readBody(request: http.IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    request.on("data", (chunk: Buffer) => chunks.push(chunk));
-    request.once("end", () => resolve(Buffer.concat(chunks).toString()));
-    request.once("error", reject);
+function chunkResult({ header, payload }: NativeMessage): PluginResult {
+  return { payload, failed: header.failed === true, done: header.done === true };
+}
+
+/** The most a subscription's response holds while the Worker is not reading it. */
+const SUBSCRIPTION_BUFFER = 1024 * 1024;
+
+/**
+ * Writes a subscription's frames to `response`, holding those it cannot take yet. Past
+ * `SUBSCRIPTION_BUFFER`, `overflow` drops the oldest held frame or ends the subscription with
+ * `fail`.
+ */
+function subscriptionWriter(response: http.ServerResponse, overflow: string | undefined, fail: () => void) {
+  const held: { frame: Uint8Array; done: boolean }[] = [];
+  let bytes = 0;
+  let writable = true;
+  const flush = () => {
+    while (writable && held.length) {
+      const { frame, done } = held.shift()!;
+      bytes -= frame.byteLength;
+      if (done) response.end(frame);
+      else writable = response.write(frame);
+    }
+  };
+  response.on("drain", () => {
+    writable = true;
+    flush();
   });
+  return (frame: Uint8Array, done: boolean) => {
+    held.push({ frame, done });
+    bytes += frame.byteLength;
+    while (bytes > SUBSCRIPTION_BUFFER && held.length > 1) {
+      if (overflow !== "dropOldest") {
+        response.destroy(new Error("Native subscription consumer is too slow"));
+        fail();
+        return;
+      }
+      bytes -= held.shift()!.frame.byteLength;
+    }
+    flush();
+  };
 }
 
-function parseMessage(text: string): DeviceMessage | undefined {
-  try {
-    return JSON.parse(text) as DeviceMessage;
-  } catch {
-    return undefined;
-  }
-}
-
-/** A failed result, which ends a subscription. */
 function failure(name: string, message: string): PluginResult {
-  return { error: { name, message }, done: true };
+  return { payload: encoder.encode(JSON.stringify({ name, message })), failed: true, done: true };
+}
+
+/** A request the device runs: where its results go, and how its body's next chunk is read. */
+interface Pending {
+  type: string;
+  socket: WebSocket;
+  receive(result: PluginResult): void;
+  pull?(): Promise<PluginResult>;
 }
 
 /** The device, through its latest dev WebSocket, and the plugin calls waiting for its results. */
@@ -178,7 +259,7 @@ class Device {
   #socket: WebSocket | undefined;
   #connected: (() => void)[] = [];
   #nextId = 1;
-  #pending = new Map<number, { type: "call" | "subscribe"; socket: WebSocket; receive(result: PluginResult): void }>();
+  #pending = new Map<number, Pending>();
 
   connect(socket: WebSocket): void {
     this.#socket = socket;
@@ -196,15 +277,24 @@ class Device {
   receive(id: number, result: PluginResult): void {
     const pending = this.#pending.get(id);
     if (!pending) return;
-    if (result.done || pending.type === "call") this.#pending.delete(id);
+    if (result.done || pending.type !== "subscribe") this.#pending.delete(id);
     pending.receive(result);
+  }
+
+  /** Sends the device the next chunk of the body of the call `id`, which it pulled. */
+  pull(id: number): void {
+    const pending = this.#pending.get(id);
+    void pending?.pull?.().then(({ payload, failed, done }) => {
+      if (this.#pending.get(id) === pending) pending.socket.send(encodeMessage({ type: "chunk", id, failed, done }, payload));
+    });
   }
 
   /**
    * Sends a call or subscription once the device is connected, waiting up to 10 seconds for it,
-   * and passes each of its results to `receive`. Returns the function that unsubscribes.
+   * and passes each of its results to `receive`; `pull` reads the next chunk of a call's body.
+   * Returns the function that cancels the request.
    */
-  send(type: "call" | "subscribe", request: PluginRequest, receive: (result: PluginResult) => void): () => void {
+  send(type: string, request: NativeMessage, receive: (result: PluginResult) => void, pull?: () => Promise<PluginResult>): () => void {
     const id = this.#nextId++;
     let cancelled = false;
     void this.#connection().then((socket) => {
@@ -213,15 +303,15 @@ class Device {
         receive(failure("NetworkError", "The device is not connected"));
         return;
       }
-      this.#pending.set(id, { type, socket, receive });
-      socket.send(JSON.stringify({ type, id, ...request }));
+      this.#pending.set(id, { type, socket, receive, pull });
+      socket.send(encodeMessage({ ...request.header, type, id }, request.payload));
     });
     return () => {
       cancelled = true;
       const pending = this.#pending.get(id);
       if (!pending) return;
       this.#pending.delete(id);
-      pending.socket.send(JSON.stringify({ type: "unsubscribe", id }));
+      pending.socket.send(encodeMessage({ type: "cancel", id }));
     };
   }
 
@@ -239,48 +329,5 @@ class Device {
       }, CONNECT_TIMEOUT);
       this.#connected.push(connected);
     });
-  }
-}
-
-/** The development Worker's `TokamakEvents`, called through a Miniflare session started on first use. */
-class DevWorker {
-  #miniflare: Promise<Miniflare> | undefined;
-
-  constructor(private readonly name: string | undefined) {}
-
-  async dispatch(name: string, event: unknown): Promise<unknown> {
-    this.#miniflare ??= this.#start().catch((error: unknown) => {
-      this.#miniflare = undefined;
-      throw error;
-    });
-    const miniflare = await this.#miniflare;
-    const response = await miniflare.dispatchFetch("http://tokamak/", {
-      method: "POST",
-      body: JSON.stringify({ name, event }),
-    });
-    if (!response.ok) throw new Error(await response.text());
-    return ((await response.json()) as { reply: unknown }).reply;
-  }
-
-  async dispose(): Promise<void> {
-    await (await this.#miniflare?.catch(() => undefined))?.dispose();
-  }
-
-  /** A Miniflare session from the Miniflare that Cloudflare's plugin uses. */
-  async #start(): Promise<Miniflare> {
-    if (!this.name) throw new Error("the Wrangler configuration names no Worker to deliver events to");
-    const require = createRequire(import.meta.resolve("@cloudflare/vite-plugin"));
-    const module = (await import(pathToFileURL(require.resolve("miniflare")).href)) as MiniflareModule;
-    const miniflare = new module.Miniflare(
-      module.convertV4MiniflareOptions({
-        modules: true,
-        script: CALLER,
-        compatibilityDate: "2025-01-01",
-        serviceBindings: { TOKAMAK: { name: this.name, entrypoint: "TokamakEvents" } },
-        unsafeDevRegistryPath: module.getDefaultDevRegistryPath(),
-      }),
-    );
-    await miniflare.ready;
-    return miniflare;
   }
 }

@@ -1,201 +1,265 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use serde_json::{Value, json};
+use super::{Overflow, PluginCalls, PluginHandler, PluginReply, SUBSCRIPTION_CAPACITY};
 
-use super::{PluginCalls, PluginHandler};
+type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// A shell that records what the runtime asks of it.
 #[derive(Default)]
 struct Shell {
-    requests: Mutex<Vec<String>>,
+    requests: Mutex<Vec<(u64, String, Vec<u8>)>>,
 }
-
 impl Shell {
-    fn record(&self, request: String) {
+    fn record(&self, id: u64, method: String, payload: &[u8]) {
         self.requests
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(request);
+            .push((id, method, payload.to_vec()));
     }
-
-    fn requests(&self) -> Vec<String> {
+    fn requests(&self) -> Vec<(u64, String, Vec<u8>)> {
         self.requests
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
 }
-
 impl PluginHandler for Shell {
-    fn call(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
-        self.record(format!("call {id} {plugin}.{method} {arguments}"));
+    fn call(&self, id: u64, plugin: &str, method: &str, payload: &[u8]) {
+        self.record(id, format!("{plugin}.{method}"), payload);
     }
-
-    fn subscribe(&self, id: u64, plugin: &str, method: &str, arguments: &str) {
-        self.record(format!("subscribe {id} {plugin}.{method} {arguments}"));
+    fn call_with_body(&self, id: u64, plugin: &str, method: &str, payload: &[u8]) {
+        self.record(id, format!("{plugin}.{method} with body"), payload);
     }
-
-    fn unsubscribe(&self, id: u64) {
-        self.record(format!("unsubscribe {id}"));
+    fn chunk(&self, id: u64, chunk: &PluginReply) {
+        self.record(id, format!("chunk done={}", chunk.done), &chunk.payload);
+    }
+    fn subscribe(&self, id: u64, plugin: &str, method: &str, payload: &[u8]) {
+        self.record(id, format!("{plugin}.{method}"), payload);
+    }
+    fn cancel(&self, id: u64) {
+        self.record(id, "cancel".into(), &[]);
     }
 }
-
-type TestResult = Result<(), Box<dyn std::error::Error>>;
-
 fn with_shell() -> (Arc<Shell>, Arc<PluginCalls>) {
     let shell = Arc::new(Shell::default());
     let calls = PluginCalls::new(Some(Arc::clone(&shell) as Arc<dyn PluginHandler>), true);
     (shell, calls)
 }
-
-fn parse(result: &str) -> Result<Value, serde_json::Error> {
-    serde_json::from_str(result)
+fn value(payload: &[u8], done: bool) -> PluginReply {
+    PluginReply {
+        payload: payload.to_vec(),
+        failed: false,
+        done,
+    }
 }
 
 #[tokio::test]
-async fn resolves_a_call_with_the_shell_reply() -> TestResult {
+async fn carries_arbitrary_bytes_without_decoding_and_resolves_once() {
     let (shell, calls) = with_shell();
-
-    let result = calls.call("location", "getCurrentPosition", r#"{"timeout":5}"#);
-    calls.reply(1, r#"{"value":{"latitude":51.5},"done":true}"#);
-    calls.reply(1, r#"{"value":"again","done":true}"#);
-
-    assert_eq!(
-        parse(&result.await)?,
-        json!({ "value": { "latitude": 51.5 }, "done": true })
-    );
+    let payload = [0, 255, 0xc0, 0xaf];
+    let result = calls.call("binary", "echo", &payload);
+    calls.reply(1, value(&payload, true));
+    calls.reply(1, value(b"late", true));
+    let result = result.await;
+    assert_eq!(result.payload, payload);
+    assert!(!result.failed);
+    assert!(result.done);
     assert_eq!(
         shell.requests(),
-        [r#"call 1 location.getCurrentPosition {"timeout":5}"#]
+        [(1, "binary.echo".into(), payload.to_vec())]
     );
-    Ok(())
 }
 
 #[tokio::test]
-async fn delivers_each_subscription_result_until_one_is_done() -> TestResult {
+async fn delivers_values_and_errors_until_explicit_completion() -> TestResult {
     let (shell, calls) = with_shell();
-
-    let mut subscription = calls.subscribe("location", "watchPosition", "null");
-    calls.reply(1, r#"{"value":1,"done":false}"#);
+    let mut stream = calls.subscribe("binary", "watch", &[], Overflow::Error);
+    calls.reply(1, value(&[255], false));
     calls.reply(
         1,
-        r#"{"error":{"name":"NotReadableError","message":"no fix"},"done":false}"#,
+        PluginReply {
+            payload: b"endpoint error".to_vec(),
+            failed: true,
+            done: false,
+        },
     );
-    calls.reply(1, r#"{"value":2,"done":true}"#);
-    calls.reply(1, r#"{"value":3,"done":false}"#);
+    calls.reply(1, value(b"last", true));
+    calls.reply(1, value(b"late", false));
+    assert_eq!(stream.next().await.ok_or("no value")?.payload, [255]);
+    let error = stream.next().await.ok_or("no error")?;
+    assert!(error.failed);
+    assert!(!error.done);
+    assert_eq!(error.payload, b"endpoint error");
+    let last = stream.next().await.ok_or("no last value")?;
+    assert!(last.done);
+    assert_eq!(last.payload, b"last");
+    assert!(stream.next().await.is_none());
+    drop(stream);
+    assert_eq!(shell.requests().len(), 1);
+    Ok(())
+}
 
-    let mut results = Vec::new();
-    while let Some(result) = subscription.next().await {
-        results.push(parse(&result)?);
+#[tokio::test]
+async fn cancelled_requests_release_native_resources_without_affecting_other_calls() {
+    let (shell, calls) = with_shell();
+    drop(calls.call("a", "call", &[]));
+    drop(calls.subscribe("a", "stream", &[], Overflow::Error));
+    let retained = calls.call("b", "call", &[]);
+    calls.reply(1, value(b"late", true));
+    calls.reply(3, value(b"retained", true));
+    assert_eq!(retained.await.payload, b"retained");
+    assert_eq!(
+        shell
+            .requests()
+            .iter()
+            .filter(|(_, method, _)| method == "cancel")
+            .map(|(id, _, _)| *id)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+}
+
+#[tokio::test]
+async fn overflowing_a_subscription_reports_failure_and_cancels_native_work() -> TestResult {
+    let (shell, calls) = with_shell();
+    let mut stream = calls.subscribe("binary", "watch", &[], Overflow::Error);
+    for _ in 0..=SUBSCRIPTION_CAPACITY {
+        calls.reply(1, value(&[1], false));
     }
-    drop(subscription);
-
+    for _ in 0..SUBSCRIPTION_CAPACITY {
+        assert_eq!(
+            stream.next().await.ok_or("missing queued value")?.payload,
+            [1]
+        );
+    }
+    let error = stream.next().await.ok_or("missing overflow error")?;
+    assert!(error.failed && error.done);
     assert_eq!(
-        results,
-        [
-            json!({ "value": 1, "done": false }),
-            json!({ "error": { "name": "NotReadableError", "message": "no fix" }, "done": false }),
-            json!({ "value": 2, "done": true }),
-        ]
+        serde_json::from_slice::<serde_json::Value>(&error.payload)?["name"],
+        "QuotaExceededError"
     );
-    assert_eq!(
-        shell.requests(),
-        ["subscribe 1 location.watchPosition null"]
-    );
-    Ok(())
-}
-
-#[test]
-fn unsubscribes_at_the_shell_when_a_subscription_is_dropped() {
-    let (shell, calls) = with_shell();
-
-    drop(calls.subscribe("location", "watchPosition", "null"));
-    calls.reply(1, r#"{"value":1,"done":false}"#);
-
-    assert_eq!(
-        shell.requests(),
-        ["subscribe 1 location.watchPosition null", "unsubscribe 1"]
-    );
-}
-
-#[test]
-fn ignores_the_result_of_a_call_no_longer_waited_for() {
-    let (shell, calls) = with_shell();
-
-    drop(calls.call("location", "getCurrentPosition", "null"));
-    calls.reply(1, r#"{"value":1,"done":true}"#);
-    calls.reply(7, r#"{"value":1,"done":true}"#);
-
-    assert_eq!(
-        shell.requests(),
-        ["call 1 location.getCurrentPosition null"]
-    );
-}
-
-#[tokio::test]
-async fn replaces_a_result_that_is_not_json_with_an_error() -> TestResult {
-    let (shell, calls) = with_shell();
-
-    let result = calls.call("location", "getCurrentPosition", "null");
-    let mut subscription = calls.subscribe("location", "watchPosition", "null");
-    calls.reply(1, "not json");
-    calls.reply(2, "not json");
-    calls.reply(2, r#"{"value":1,"done":false}"#);
-
-    assert_eq!(parse(&result.await)?["error"]["name"], "OperationError");
-    let failure = parse(&subscription.next().await.ok_or("no result")?)?;
-    assert_eq!(failure["error"]["name"], "OperationError");
-    assert_eq!(
-        parse(&subscription.next().await.ok_or("no result")?)?["value"],
-        1
-    );
-    drop(subscription);
-    assert_eq!(
-        shell.requests().last().map(String::as_str),
-        Some("unsubscribe 2")
-    );
+    assert!(stream.next().await.is_none());
+    drop(stream);
+    assert_eq!(shell.requests().last(), Some(&(1, "cancel".into(), vec![])));
     Ok(())
 }
 
 #[tokio::test]
-async fn answers_the_lifecycle_stage_itself() -> TestResult {
+async fn runtime_endpoints_encode_their_own_values_and_errors() -> TestResult {
     let (shell, calls) = with_shell();
-
     assert_eq!(
-        parse(&calls.call("tokamak", "lifecycleStage", "null").await)?,
-        json!({ "value": "foreground", "done": true })
+        calls
+            .call("tokamak", "lifecycleStage", b"null")
+            .await
+            .payload,
+        br#""foreground""#
     );
     assert!(calls.set_foreground(false));
     assert!(!calls.set_foreground(false));
     assert_eq!(
-        parse(&calls.call("tokamak", "lifecycleStage", "null").await)?["value"],
-        "background"
-    );
-    assert_eq!(
-        parse(&calls.call("tokamak", "unknown", "null").await)?["error"]["name"],
-        "NotSupportedError"
+        calls
+            .call("tokamak", "lifecycleStage", b"null")
+            .await
+            .payload,
+        br#""background""#
     );
     assert!(shell.requests().is_empty());
+    let error = PluginCalls::new(None, false)
+        .call("tokamak", "unknown", &[])
+        .await;
+    assert!(error.failed && error.done);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&error.payload)?["name"],
+        "NotSupportedError"
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn fails_plugin_calls_without_a_shell_handler() -> TestResult {
+async fn missing_native_handler_fails_calls_and_subscriptions() -> TestResult {
     let calls = PluginCalls::new(None, false);
-
-    let result = parse(&calls.call("location", "getCurrentPosition", "null").await)?;
-    let mut subscription = calls.subscribe("location", "watchPosition", "null");
-
-    assert_eq!(result["error"]["name"], "NotSupportedError");
+    let result = calls.call("location", "getCurrentPosition", &[]).await;
+    assert!(result.failed && result.done);
+    let error = serde_json::from_slice::<serde_json::Value>(&result.payload)?;
+    assert_eq!(error["name"], "NotSupportedError");
     assert_eq!(
-        result["error"]["message"],
+        error["message"],
         "location.getCurrentPosition is not supported"
     );
-    let first = subscription.next().await.ok_or("no result")?;
-    assert_eq!(parse(&first)?["error"]["name"], "NotSupportedError");
+    let mut stream = calls.subscribe("location", "watch", &[], Overflow::Error);
+    assert!(stream.next().await.ok_or("missing error")?.failed);
+    assert!(stream.next().await.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_drop_oldest_subscription_keeps_the_newest_results() -> TestResult {
+    let (shell, calls) = with_shell();
+    let mut stream = calls.subscribe("sensor", "watch", &[], Overflow::DropOldest);
+    for value in 0..=SUBSCRIPTION_CAPACITY {
+        calls.reply(1, value_of(value));
+    }
+    for value in 1..=SUBSCRIPTION_CAPACITY {
+        assert_eq!(
+            stream.next().await.ok_or("missing value")?.payload,
+            value_of(value).payload
+        );
+    }
+    calls.reply(1, value(b"last", true));
     assert_eq!(
-        parse(&calls.call("tokamak", "lifecycleStage", "null").await)?["value"],
-        "background"
+        stream.next().await.ok_or("missing last value")?.payload,
+        b"last"
+    );
+    assert!(stream.next().await.is_none());
+    assert!(
+        shell
+            .requests()
+            .iter()
+            .all(|(_, method, _)| method != "cancel")
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn a_call_body_sends_each_chunk_the_shell_pulls_until_the_call_ends() -> TestResult {
+    let (shell, calls) = with_shell();
+    let (result, body) = calls.call_with_body("files", "write", b"args");
+    let mut body = body.ok_or("the shell runs the call")?;
+    calls.pull(1);
+    assert!(body.pulled().await);
+    body.send(&value(&[0, 255], false));
+    calls.pull(1);
+    assert!(body.pulled().await);
+    body.send(&value(&[], true));
+    calls.reply(1, value(b"written", true));
+    assert_eq!(result.await.payload, b"written");
+    calls.pull(1);
+    assert!(!body.pulled().await, "an ended call still pulled");
+    assert_eq!(
+        shell.requests(),
+        [
+            (1, "files.write with body".into(), b"args".to_vec()),
+            (1, "chunk done=false".into(), vec![0, 255]),
+            (1, "chunk done=true".into(), vec![]),
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelling_a_call_with_a_body_ends_its_body() -> TestResult {
+    let (shell, calls) = with_shell();
+    let (result, body) = calls.call_with_body("files", "write", &[]);
+    drop(result);
+    let mut body = body.ok_or("the shell runs the call")?;
+    assert!(!body.pulled().await);
+    assert_eq!(shell.requests().last(), Some(&(1, "cancel".into(), vec![])));
+    Ok(())
+}
+
+fn value_of(value: usize) -> PluginReply {
+    super::PluginReply {
+        payload: value.to_le_bytes().to_vec(),
+        failed: false,
+        done: false,
+    }
 }

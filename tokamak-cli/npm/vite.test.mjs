@@ -1,3 +1,4 @@
+import { decodeDevice, encodeDevice } from "./fixtures/native-device.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -6,14 +7,13 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { cloudflare } from "@cloudflare/vite-plugin";
 import { tokamak } from "@tokamakdev/tok/vite";
-import { createServer } from "vite";
+import { createBuilder, createServer } from "vite";
 import WebSocket from "ws";
 
 import {
   WORKER,
-  activeTokamak,
+  NATIVE_WORKER,
   build,
   builtWorker,
   project,
@@ -24,13 +24,21 @@ import {
   withEnvironment,
 } from "./vite-fixtures.mjs";
 
-test("adds no hooks without TOKAMAK_VITE_OUTPUT", () => {
-  assert.deepEqual(tokamak({ name: "App" }), []);
+test("builds the portable worker for a web deployment", async () => {
+  const app = project({ "src/tokamak.ts": "this native module is not valid JavaScript" });
+  const builder = await createBuilder({
+    root: app.root, configFile: false, logLevel: "silent",
+    plugins: tokamak({ name: "App" }, { inspectorPort: false, remoteBindings: false }),
+  });
+  await builder.buildApp();
+  const deploy = JSON.parse(fs.readFileSync(path.join(app.root, ".wrangler/deploy/config.json"), "utf8"));
+  assert.deepEqual(deploy.auxiliaryWorkers ?? [], []);
+  assert.match(builtWorker(app), /"worker"/);
 });
 
 test("reports its options, without module, and the Vite root", async () => {
   const app = project(
-    { "src/setup.ts": "" },
+    { "src/setup.ts": NATIVE_WORKER },
     {
       name: "My App",
       version: "1.2.0",
@@ -58,7 +66,7 @@ test("reports an empty configuration without options, and builds without a modul
   assert.deepEqual(readOutput(app, "config.json").config, {});
   const worker = builtWorker(app);
   assert.match(worker, /"worker"/);
-  assert.ok(exportsName(worker, "TokamakEvents"));
+  assert.ok(exportsName(builtWorker(app, true), "TokamakEvents"));
 });
 
 const ENTRY = `import { DurableObject } from "cloudflare:workers";
@@ -69,9 +77,9 @@ export const named = "named";
 ${WORKER}`;
 
 /** A module that marks the Worker as loaded by `name`. */
-const marking = (name) => `globalThis.tokamakLoaded = ${JSON.stringify(name)};\n`;
+const marking = (name) => `${NATIVE_WORKER}\nglobalThis.tokamakLoaded = ${JSON.stringify(name)};\n`;
 
-test("imports src/tokamak.ts into the entry Worker, keeping the entry's exports", async () => {
+test("uses src/tokamak.ts for the native worker and keeps the main worker's exports", async () => {
   const app = project({
     "src/index.ts": ENTRY,
     "src/tokamak.ts": marking("tokamak.ts"),
@@ -79,15 +87,15 @@ test("imports src/tokamak.ts into the entry Worker, keeping the entry's exports"
   });
   await build(app);
   const worker = builtWorker(app);
-  assert.match(worker, /globalThis\.tokamakLoaded = "tokamak\.ts"/);
-  assert.doesNotMatch(worker, /"tokamak\.js"/);
-  for (const name of ["Counter", "named", "as default", "TokamakEvents"]) assert.ok(exportsName(worker, name), name);
+  assert.match(builtWorker(app, true), /globalThis\.tokamakLoaded = "tokamak\.ts"/);
+  assert.doesNotMatch(builtWorker(app, true), /"tokamak\.js"/);
+  for (const name of ["Counter", "named", "as default"]) assert.ok(exportsName(worker, name), name);
 });
 
 test("imports src/tokamak.js without src/tokamak.ts", async () => {
   const app = project({ "src/tokamak.js": marking("tokamak.js") });
   await build(app);
-  assert.match(builtWorker(app), /globalThis\.tokamakLoaded = "tokamak\.js"/);
+  assert.match(builtWorker(app, true), /globalThis\.tokamakLoaded = "tokamak\.js"/);
 });
 
 test("imports the module the options name instead of the default", async () => {
@@ -96,7 +104,7 @@ test("imports the module the options name instead of the default", async () => {
     { module: "worker/setup.ts" },
   );
   await build(app);
-  const worker = builtWorker(app);
+  const worker = builtWorker(app, true);
   assert.match(worker, /globalThis\.tokamakLoaded = "setup\.ts"/);
   assert.doesNotMatch(worker, /"tokamak\.ts"/);
 });
@@ -110,8 +118,9 @@ test("fails when the module the options name is missing", async () => {
 // servers in the process, so development Workers export only `default`.
 test("evaluates the module in the development Worker", async () => {
   const app = project({
-    "src/index.ts": `export default { fetch: () => new Response(globalThis.tokamakLoaded) };`,
-    "src/tokamak.ts": marking("tokamak.ts"),
+    "src/index.ts": `export default { fetch: async (_request, env) => new Response(await env.TOKAMAK.loaded()) };`,
+    "src/tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";
+      export default class Native extends WorkerEntrypoint { loaded(): string { return "tokamak.ts"; } }`,
   });
   await serve(app, async () => {
     const response = await fetch(readOutput(app, "server.json").url);
@@ -149,6 +158,7 @@ test("reports again when the development server restarts", async () => {
     await server.restart();
     assert.deepEqual(readOutput(app, "config.json").config, { name: "App" });
     assert.equal((await reported(app, "server.json")).url, server.resolvedUrls.local[0]);
+    assert.equal(await (await fetch(server.resolvedUrls.local[0])).text(), "worker");
   });
 });
 
@@ -195,26 +205,19 @@ test("reports the certificate an HTTPS development server serves, in each form V
   }
 });
 
-test("fails a build in which no environment builds the entry Worker", async () => {
-  const app = project();
-  const withoutManifest = { name: "without-manifest", configEnvironment: () => ({ build: { manifest: false } }) };
-  await assert.rejects(
-    build(app, { plugins: [cloudflare(), activeTokamak(app), withoutManifest] }),
-    /no environment builds the entry Worker to export TokamakEvents from/,
-  );
-});
-
 /**
  * A Worker project whose `file`, which `src/tokamak.ts` is or imports, replies to `start` with
  * `reply`, an expression of the event and `env`.
  */
 function listeningProject(reply, file = "src/tokamak.ts") {
   const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
-  return project({
+  const app = project({
     "wrangler.jsonc": JSON.stringify({ name: "app", main: "src/index.ts", compatibility_date: "2026-09-01", vars: { GREETING: "hi" } }),
     "src/tokamak.ts": `import ${JSON.stringify(`./${path.basename(file)}`)};\n`,
     [file]: `import { onStart } from ${JSON.stringify(events)};\nonStart((event, env, ctx) => {\n  ctx.waitUntil(Promise.resolve());\n  return ${reply};\n});\n`,
   });
+  fs.appendFileSync(path.join(app.root, "src/tokamak.ts"), NATIVE_WORKER);
+  return app;
 }
 
 /** A dev WebSocket to `port`, open, sending `token` as the device does. */
@@ -233,17 +236,23 @@ let messages = 0;
 async function emit(socket, name, event) {
   const id = messages++;
   const answer = new Promise((resolve, reject) => {
-    const unanswered = setTimeout(() => reject(new Error(`${name} was not answered`)), 30_000);
-    socket.once("close", () => reject(new Error("the dev socket closed")));
-    socket.on("message", function receive(data) {
-      const message = JSON.parse(String(data));
-      if (message.id !== id) return;
-      socket.off("message", receive);
+    const cleanup = () => {
       clearTimeout(unanswered);
+      socket.off("message", receive);
+      socket.off("close", closed);
+    };
+    const closed = () => { cleanup(); reject(new Error("the dev socket closed")); };
+    const unanswered = setTimeout(() => { cleanup(); reject(new Error(`${name} was not answered`)); }, 30_000);
+    function receive(data) {
+      const message = decodeDevice(data);
+      if (message.id !== id) return;
+      cleanup();
       resolve(message);
-    });
+    }
+    socket.once("close", closed);
+    socket.on("message", receive);
   });
-  socket.send(JSON.stringify({ type: "event", id, name, event }));
+  socket.send(encodeDevice({ type: "event", id, name, event }));
   return answer;
 }
 
@@ -281,6 +290,26 @@ test("delivers dev socket events to the development Worker's listeners", async (
   );
 });
 
+test("host event handlers call the main worker through the checked binding", async () => {
+  const app = listeningProject('env.MAIN.echo(event.foreground ? "main reply" : (() => "callback")).catch(error => error.name)');
+  fs.writeFileSync(path.join(app.root, "src/index.ts"), `import { WorkerEntrypoint } from "cloudflare:workers";
+    export default class Main extends WorkerEntrypoint {
+      echo(value: string): string { return value; }
+      fetch() { return new Response("main"); }
+    }`);
+  await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
+    serve(app, async () => {
+      const socket = await openSocket(readOutput(app, "server.json").socketPort, "token");
+      try {
+        assert.equal((await emit(socket, "start", { foreground: true })).reply, "main reply");
+        assert.equal((await emit(socket, "start", { foreground: false })).reply, "DataCloneError");
+      } finally {
+        socket.close();
+      }
+    }),
+  );
+});
+
 // The first listener's reply wins, so a stale listener would still reply "first".
 for (const file of ["src/tokamak.ts", "src/listeners.ts"]) {
   test(`replaces the development Worker's listeners when ${file} changes`, async () => {
@@ -299,11 +328,9 @@ for (const file of ["src/tokamak.ts", "src/listeners.ts"]) {
   });
 }
 
-test("builds an entry Worker whose TokamakEvents runs the listeners", async () => {
+test("builds a native worker whose event entrypoint runs the listeners", async () => {
   const app = listeningProject("{ foreground: event.foreground, greeting: env.GREETING }");
   await build(app);
-  const generated = path.join(app.root, "dist/app");
-  const { main } = JSON.parse(fs.readFileSync(path.join(generated, "wrangler.json"), "utf8"));
   const require = createRequire(import.meta.resolve("@cloudflare/vite-plugin"));
   const { Miniflare, convertV4MiniflareOptions } = await import(pathToFileURL(require.resolve("miniflare")).href);
   const miniflare = new Miniflare(
@@ -314,13 +341,18 @@ test("builds an entry Worker whose TokamakEvents runs the listeners", async () =
           modules: true,
           compatibilityDate: "2026-09-01",
           serviceBindings: { APP: { name: "app", entrypoint: "TokamakEvents" } },
-          script: `export default { fetch: async (_request, env) => Response.json(await env.APP.dispatch("start", { foreground: true })) };`,
+          script: `export default {
+            async fetch(_request, env) {
+              const { reply, listened } = await env.APP.dispatch("start", new TextEncoder().encode('{"foreground":true}'));
+              return Response.json({ reply: JSON.parse(new TextDecoder().decode(reply)), listened });
+            },
+          };`,
         },
         {
           name: "app",
           modules: true,
           compatibilityDate: "2026-09-01",
-          script: fs.readFileSync(path.join(generated, main), "utf8"),
+          script: builtWorker(app, true),
           bindings: { GREETING: "hi" },
         },
       ],
@@ -338,7 +370,7 @@ test("shares the listener registry with pre-bundled dependencies", async () => {
   const app = project({
     "node_modules/events-package/package.json": JSON.stringify({ name: "events-package", type: "module", exports: "./index.js" }),
     "node_modules/events-package/index.js": `import { defineEvent } from "@tokamakdev/plugin/events";\nexport const onStart = defineEvent("start");\n`,
-    "src/tokamak.ts": `import { onStart } from "events-package";\nonStart(() => "pre-bundled");\n`,
+    "src/tokamak.ts": `${NATIVE_WORKER}\nimport { onStart } from "events-package";\nonStart(() => "pre-bundled");\n`,
   });
   const core = path.dirname(path.dirname(fileURLToPath(import.meta.resolve("@tokamakdev/plugin/events"))));
   fs.mkdirSync(path.join(app.root, "node_modules/@tokamakdev"));
@@ -369,10 +401,10 @@ test("refuses dev socket connections without the session token", async () => {
 
 /** Answers each plugin call and subscription the device receives on `socket` with `answer(message, send)`. */
 function answerPluginCalls(socket, answer) {
-  const send = (message) => socket.send(JSON.stringify(message));
+  const send = (message) => socket.send(encodeDevice(message));
   socket.on("message", (data) => {
-    const message = JSON.parse(String(data));
-    if (["call", "subscribe", "unsubscribe"].includes(message.type)) answer(message, send);
+    const message = decodeDevice(data);
+    if (["call", "subscribe", "cancel"].includes(message.type)) answer(message, send);
   });
 }
 
@@ -382,7 +414,10 @@ const result = (id, value, done = true) => ({ type: "result", id, result: { valu
 test("passes the development Worker's plugin calls to the device and back", async () => {
   const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
   const app = project({
-    "src/index.ts": `import { getLifecycleStage } from ${JSON.stringify(events)};\nexport default { fetch: async () => new Response(await getLifecycleStage()) };\n`,
+    "src/index.ts": `export default { fetch: async (_request, env) => new Response(await env.TOKAMAK.stage()) };`,
+    "src/tokamak.ts": `import { TokamakEntrypoint } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/tok")))};
+      import { getLifecycleStage } from ${JSON.stringify(events)};
+      export default class Native extends TokamakEntrypoint { stage(): Promise<string> { return getLifecycleStage(this.ctx); } }`,
   });
   await withEnvironment({ TOKAMAK_SESSION_TOKEN: "token" }, () =>
     serve(app, async () => {
@@ -406,12 +441,14 @@ test("passes the development Worker's plugin calls to the device and back", asyn
 test("keeps a development Worker's listener after its event until it is removed", async () => {
   const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
   const app = project({
-    "src/tokamak.ts": `import { onStart } from ${JSON.stringify(events)};
+    "src/tokamak.ts": `const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for("tokamak.native")].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
+const nativeListen = (ctx, plugin, method, value, next, error) => ctx[Symbol.for("tokamak.native")].listen(plugin, method, new TextEncoder().encode(JSON.stringify(value)), { next: payload => next(JSON.parse(new TextDecoder().decode(payload))), error });
+${NATIVE_WORKER}\nimport { onStart } from ${JSON.stringify(events)};
 onStart((_event, _env, ctx) => {
-  const stop = globalThis.__tokamakNativeListen("location", "watchPosition", null, (position) => {
-    if (position !== "stop") return void globalThis.__tokamakNativeCall("test", "received", position);
+  const stop = nativeListen(ctx, "location", "watchPosition", null, (position) => {
+    if (position !== "stop") return void nativeCall(ctx, "test", "received", position);
     stop();
-    ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 500)).then(() => globalThis.__tokamakNativeCall("test", "stopped", null)));
+    ctx.waitUntil(new Promise((resolve) => setTimeout(resolve, 500)).then(() => nativeCall(ctx, "test", "stopped", null)));
   }, () => undefined);
 });
 `,
@@ -436,13 +473,13 @@ onStart((_event, _env, ctx) => {
         await new Promise((resolve) => setTimeout(resolve, 1000));
 
         const call = next("call");
-        socket.send(JSON.stringify(result(id, { latitude: 51.5 }, false)));
+        socket.send(encodeDevice(result(id, { latitude: 51.5 }, false)));
         await call;
-        const unsubscribed = next("unsubscribe");
+        const cancelled = next("cancel");
         const stopped = next("call");
-        socket.send(JSON.stringify(result(id, "stop", false)));
+        socket.send(encodeDevice(result(id, "stop", false)));
 
-        assert.equal((await unsubscribed).id, id);
+        assert.equal((await cancelled).id, id);
         assert.equal((await stopped).method, "stopped");
         assert.deepEqual(received, [{ latitude: 51.5 }, null]);
       } finally {
