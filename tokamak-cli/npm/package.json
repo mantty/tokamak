@@ -37,7 +37,7 @@
   "scripts": {
     "build": "tsc",
     "prepack": "npm run build",
-    "test": "node --test --test-concurrency=1"
+    "test": "node --import ./test-leaks.mjs --test --test-concurrency=1"
   },
   "engines": {
     "node": ">=18"
