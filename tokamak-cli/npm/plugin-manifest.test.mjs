@@ -124,36 +124,47 @@ test("browser implementations must match the generated frontend API", async t =>
   }
 });
 
-test("manifest operations describe each operation's platforms and foreground needs", async t => {
+test("a @platforms tag names the platforms that implement a plugin method; others run on every platform the plugin builds for", async t => {
+  const sdk = JSON.stringify(fileURLToPath(import.meta.resolve("@tokamakdev/plugin")));
+  const api = names => `import { Plugin } from ${sdk};
+    class Widgets extends Plugin {
+      constructor(ctx: TokamakContext) { super(ctx, "widgets"); }
+      echo(value: string): Promise<string> { return this.call("echo", value); }
+      /**
+       * Whether the widget is connected.
+       * @platforms ${names}
+       */
+      connected(): Promise<boolean> { return this.call("connected"); }
+    }
+    export function widgets(ctx: TokamakContext): Widgets { return new Widgets(ctx); }`;
   const { root, dependency } = project(t);
   const manifest = path.join(dependency, "tokamak-plugin.json");
-  const write = operations => fs.writeFileSync(manifest, JSON.stringify({
+  const source = names => fs.writeFileSync(path.join(dependency, "src/index.ts"), `import type { TokamakContext } from ${sdk};\n${api(names)}`);
+  const write = fields => fs.writeFileSync(manifest, JSON.stringify({
     schemaVersion: 2, id: "widgets", api: { module: "./src/index.ts", export: "widgets" },
-    platforms: { ios: {}, android: {} }, operations,
+    platforms: { ios: {}, android: {} }, ...fields,
   }));
-  write({ connected: { platforms: { ios: "17.0", android: "26" }, foreground: ["ios"] } });
-  const [plugin] = discoverPlugins(root);
-  assert.deepEqual(plugin.platforms, ["ios", "android"]);
-  assert.deepEqual(plugin.operations, {
-    connected: { platforms: [{ name: "ios", minimum: "17.0" }, { name: "android", minimum: "26" }], foreground: ["ios"] },
-  });
-  const graph = createWorkerGraph(root, undefined, path.join(root, ".tokamak"));
-  await graph.types.resolve(async id => ({ id }));
-  assert.deepEqual(graph.availability(), { widgets: { connected: ["ios", "android"], echo: ["ios", "android"] } });
+  const graph = async () => {
+    const created = createWorkerGraph(root, undefined, path.join(root, ".tokamak"));
+    await created.types.resolve(async id => ({ id }));
+    return created;
+  };
+  write({});
+  source("ios");
+  assert.deepEqual((await graph()).availability(), { widgets: { connected: ["ios"], echo: ["ios", "android"] } });
   const types = fs.readFileSync(path.join(root, "tokamak-env.d.ts"), "utf8");
-  assert.match(types, /Native: iOS 17\.0\+, Android API 26\+\. Web: not supported\. May need the app in the foreground on iOS, to show UI\./);
+  assert.match(types, /Whether the widget is connected\.[\s*]*Native: iOS\. Web: not supported\./);
+  assert.doesNotMatch(types, /@platforms/);
   assert.match(types, /Native: iOS, Android\. Web: not supported\./);
   assert.match(types, /readonly capabilities: Readonly<Record<"connected" \| "echo", boolean>>/);
 
-  for (const [operations, message] of [
-    [{ connected: { platforms: { macos: "14.0" } } }, /names macos, which the plugin does not build for/],
-    [{ connected: { foreground: ["windows"] } }, /names windows, which the plugin does not build for/],
-    [{ connected: { visible: true } }, /unknown keys: visible/],
-    [{ connected: { platforms: { ios: 17 } } }, /must map platforms to a minimum OS version/],
+  for (const [names, message] of [
+    ["ios macos", /widgets\.connected: @platforms names macos, which the plugin does not build for \(ios, android\)/],
+    ["", /widgets\.connected: @platforms names no platform/],
   ]) {
-    write(operations);
-    assert.throws(() => discoverPlugins(root), message);
+    source(names);
+    await assert.rejects(graph, message);
   }
-  write({ missing: {} });
-  assert.throws(() => createWorkerGraph(root, undefined, path.join(root, ".tokamak")), /operations\.missing names no method of widgets/);
+  write({ operations: {} });
+  assert.throws(() => discoverPlugins(root), /operations is no longer read; tag a method that only some platforms implement with @platforms in its doc comment/);
 });

@@ -38,7 +38,8 @@ class Location extends Plugin {
   /**
    * The device's position, asking for in-use permission where the user has not answered. Rejects
    * with `NotAllowedError` without it, `TimeoutError` after `timeout`, and `NotReadableError`
-   * when location is unavailable.
+   * when location is unavailable. Asking off screen rejects with `NeedsUIError`, as
+   * `requestPermission` does.
    */
   async getCurrentPosition(options: PositionOptions = {}): Promise<Position> {
     await this.#authorize();
@@ -49,7 +50,10 @@ class Location extends Plugin {
     throw background && (await this.permission()).background !== "granted" ? backgroundDenied() : unavailable("Location is unavailable");
   }
 
-  /** Positions as the device moves, after `getCurrentPosition`'s permission checks. A slow reader receives the newest. */
+  /**
+   * Positions as the device moves, after `getCurrentPosition`'s permission checks, which can reject
+   * with `NeedsUIError` off screen. A slow reader receives the newest.
+   */
   watchPosition(): JsonStream<Position> {
     return valueStream<Position>(async (next, error) => {
       await this.#authorize();
@@ -97,7 +101,10 @@ class Location extends Plugin {
     return this.call("servicesEnabled");
   }
 
-  /** Opens the app's page in the system settings, where the user changes its location permission. */
+  /**
+   * Opens the app's page in the system settings, where the user changes its location permission.
+   * Rejects with `NeedsUIError` off screen on iOS and Android.
+   */
   openSettings(): Promise<void> {
     return this.call("openSettings");
   }
@@ -152,7 +159,10 @@ class Location extends Plugin {
     return this.stream("onRegionTransition");
   }
 
-  /** Apple only: receives the visits the Worker's `onVisit` receives, while the listening page or Worker runs. */
+  /**
+   * Receives the visits the Worker's `onVisit` receives, while the listening page or Worker runs.
+   * @platforms ios macos
+   */
   onVisit(): JsonStream<Visit> {
     return this.stream("onVisit");
   }

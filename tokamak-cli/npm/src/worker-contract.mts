@@ -17,8 +17,11 @@ export interface WorkerContract {
 export interface PluginContract extends WorkerContract {
   definition: PluginDefinition;
   webMethods: string[];
-  /** Every operation of the native SDK, including those only the Tokamak worker can call. */
-  operations: string[];
+  /**
+   * The native platforms that implement each operation of the native SDK, including those only the
+   * Tokamak worker can call.
+   */
+  operations: Record<string, NativePlatform[]>;
 }
 
 /** Worker handler names, which are not RPC methods. */
@@ -150,7 +153,7 @@ function pluginContract(module: ReturnType<typeof workerModule>, definition: Plu
   }
   const reference = nativeSdkExport(program, checker, module.entry, "NativeReference", "@tokamakdev/plugin");
   const methods: ServiceMethod[] = [];
-  const operations: string[] = [];
+  const operations: Record<string, NativePlatform[]> = {};
   for (const property of api.getProperties()) {
     if (privateProperty(property)) continue;
     if (property.name === "capabilities") continue;
@@ -162,7 +165,7 @@ function pluginContract(module: ReturnType<typeof workerModule>, definition: Plu
     if (!method.getCallSignatures().length || String(property.escapedName).startsWith("__@")) {
       throw new Error(`Plugin ${definition.id}.${property.name} must be a method.`);
     }
-    operations.push(property.name);
+    operations[property.name] = implementedOn(property, definition);
     try {
       checkRpcMethod(checker, method, `${definition.id}.${property.name}`, reference);
     } catch (error) {
@@ -170,19 +173,18 @@ function pluginContract(module: ReturnType<typeof workerModule>, definition: Plu
       if (error instanceof WorkerOnlyMethod) continue;
       if (validate) throw error;
     }
-    methods.push(methodDeclaration(checker, property, method));
+    // Its `@platforms` tag becomes the availability line the documentation ends with.
+    methods.push(methodDeclaration(checker, property, method, ["platforms"]));
   }
   methods.sort(byName);
-  const unknown = Object.keys(definition.operations).find(name => !operations.includes(name));
-  if (unknown) throw new Error(`${definition.manifest}: operations.${unknown} names no method of ${definition.api.export}.`);
   const webMethods = browserMethods(module, definition, methods, validate);
   for (const method of methods) {
-    method.documentation = [method.documentation, availability(definition, method.name, webMethods.includes(method.name))]
+    method.documentation = [method.documentation, availability(operations[method.name], webMethods.includes(method.name))]
       .filter(Boolean).join("\n\n");
   }
   return {
     definition, methods: methods.map(method => method.name), files: [...module.files, definition.manifest],
-    webMethods, operations: operations.sort(),
+    webMethods, operations: Object.fromEntries(Object.entries(operations).sort(([left], [right]) => left.localeCompare(right))),
     declarations: serviceTypes(`ReturnType<typeof import(${JSON.stringify(definition.api.module)}, { with: { "resolution-mode": "import" } })[${JSON.stringify(definition.api.export)}]>`, methods),
   };
 }
@@ -191,19 +193,25 @@ const platformNames: Record<NativePlatform, string> = {
   ios: "iOS", macos: "macOS", android: "Android", windows: "Windows", linux: "Linux",
 };
 
-/** Where the operation `name` is implemented, and what it needs there, for editor documentation. */
-function availability(definition: PluginDefinition, name: string, web: boolean): string {
-  const operation = definition.operations[name];
-  const platforms = operation?.platforms ?? definition.platforms.map(platform => ({ name: platform, minimum: undefined }));
-  const native = platforms.map(({ name, minimum }) => {
-    const version = name === "android" ? `API ${minimum ?? ""}` : minimum;
-    return minimum ? `${platformNames[name]} ${version}+` : platformNames[name];
-  });
-  const foreground = operation?.foreground.map(platform => platformNames[platform]) ?? [];
-  return [
-    `Native: ${native.join(", ") || "none"}. Web: ${web ? "browser implementation" : "not supported"}.`,
-    foreground.length ? `May need the app in the foreground on ${foreground.join(", ")}, to show UI.` : "",
-  ].filter(Boolean).join(" ");
+/** Where an operation is implemented, for editor documentation. */
+function availability(platforms: NativePlatform[], web: boolean): string {
+  const native = platforms.map(platform => platformNames[platform]).join(", ") || "none";
+  return `Native: ${native}. Web: ${web ? "browser implementation" : "not supported"}.`;
+}
+
+/**
+ * The native platforms that implement the plugin method `property`: those the `@platforms` tag of
+ * its doc comment names, or every one the plugin builds for.
+ */
+function implementedOn(property: ts.Symbol, definition: PluginDefinition): NativePlatform[] {
+  const tag = property.declarations?.flatMap(node => ts.getJSDocTags(node)).find(({ tagName }) => tagName.text === "platforms");
+  if (!tag) return definition.platforms;
+  const method = `Plugin ${definition.id}.${property.name}`;
+  const names = (ts.getTextOfJSDocComment(tag.comment) ?? "").split(/\s+/).filter(Boolean);
+  if (!names.length) throw new Error(`${method}: @platforms names no platform.`);
+  const unknown = names.find(name => !definition.platforms.includes(name as NativePlatform));
+  if (unknown) throw new Error(`${method}: @platforms names ${unknown}, which the plugin does not build for (${definition.platforms.join(", ")}).`);
+  return names as NativePlatform[];
 }
 
 function browserMethods(project: ReturnType<typeof workerModule>, definition: PluginDefinition, methods: ServiceMethod[], validate: boolean): string[] {
@@ -286,13 +294,15 @@ function byName(left: ServiceMethod, right: ServiceMethod): number {
   return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
 }
 
-function methodDeclaration(checker: ts.TypeChecker, property: ts.Symbol, type: ts.Type): ServiceMethod {
+/** `property`'s declaration in generated service types, with its documentation apart from `consumed` tags. */
+function methodDeclaration(checker: ts.TypeChecker, property: ts.Symbol, type: ts.Type, consumed: string[] = []): ServiceMethod {
   return {
     name: property.name,
     overloads: type.getCallSignatures().length,
     documentation: [
       ts.displayPartsToString(property.getDocumentationComment(checker)),
-      ...property.getJsDocTags(checker).map(tag => `@${tag.name} ${ts.displayPartsToString(tag.text)}`.trim()),
+      ...property.getJsDocTags(checker).filter(tag => !consumed.includes(tag.name))
+        .map(tag => `@${tag.name} ${ts.displayPartsToString(tag.text)}`.trim()),
     ].filter(Boolean).join("\n"),
   };
 }

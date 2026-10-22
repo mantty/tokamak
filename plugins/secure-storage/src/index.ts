@@ -54,17 +54,26 @@ class SecureStorage extends Plugin {
     return this.call("create", stored(name, value, options));
   }
 
-  /** Replaces the value in place; rejects with `ItemNotFoundError` when `name` has none. */
+  /**
+   * Replaces the value in place; rejects with `ItemNotFoundError` when `name` has none. Replacing a
+   * value saved with `authentication` rejects with `NeedsUIError` off screen on iOS.
+   */
   replace(name: string, value: string, options: SetOptions): Promise<void> {
     return this.call("replace", { ...stored(name, value, options), prompt: options.prompt ?? null });
   }
 
-  /** Replaces the value in place, or stores a new one when `name` has none. */
+  /**
+   * Replaces the value in place, or stores a new one when `name` has none. Replacing a value saved
+   * with `authentication` rejects with `NeedsUIError` off screen on iOS.
+   */
   set(name: string, value: string, options: SetOptions): Promise<void> {
     return this.call("set", { ...stored(name, value, options), prompt: options.prompt ?? null });
   }
 
-  /** Reads the value; rejects with `ItemNotFoundError` when `name` has none. */
+  /**
+   * Reads the value; rejects with `ItemNotFoundError` when `name` has none. Reading a value saved
+   * with `authentication` rejects with `NeedsUIError` off screen on iOS and Android.
+   */
   get(name: string, options: GetOptions = {}): Promise<string> {
     return this.call("get", { name, prompt: options.prompt ?? null, keychainGroup: options.keychainGroup ?? null });
   }
