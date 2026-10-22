@@ -39,7 +39,7 @@ async function until(condition: () => boolean): Promise<void> {
 
 const calls = (native: FakeNativeTransport, method: string) => native.sent.filter((request) => request.method === method);
 
-void test("a recent position no older than maximumAge answers before any timeout, without a new fix", async () => {
+void test("a recent native position answers without a new fix, even with a zero timeout", async () => {
   const asked: unknown[] = [];
   const native = device("ios", {
     recentPosition: (request) => {
@@ -54,9 +54,26 @@ void test("a recent position no older than maximumAge answers before any timeout
 });
 
 void test("without a recent position, the native endpoint takes a new fix", async () => {
-  const native = device("android", { recentPosition: { value: null }, currentPosition: { value: position } });
+  let asked: unknown;
+  const native = device("android", {
+    recentPosition: (request) => {
+      asked = request.arguments;
+      return { value: null };
+    },
+    currentPosition: { value: position },
+  });
   assert.deepEqual(await location(native.ctx).getCurrentPosition(), position);
-  assert.deepEqual(calls(native, "recentPosition").length, 1);
+  assert.deepEqual(asked, { maximumAge: 0 });
+});
+
+void test("the timeout starts once a new fix is needed, not while recent positions are checked", async () => {
+  const native = device("ios", { recentPosition: () => undefined, currentPosition: { value: position } });
+  const located = location(native.ctx).getCurrentPosition({ timeout: 20 });
+  await until(() => calls(native, "recentPosition").length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  const [recent] = calls(native, "recentPosition");
+  native.deliver(recent.id, { value: null });
+  assert.deepEqual(await located, position);
 });
 
 void test("location asks for in-use permission it lacks, and rejects without it", async () => {
@@ -97,7 +114,7 @@ void test("watching subscribes after the permission checks, keeps the newest for
   const first = values.next();
   await until(() => calls(native, "watchPosition").length === 1);
   const [subscription] = calls(native, "watchPosition");
-  assert.ok(calls(native, "permission").length > 0);
+  assert.ok(native.sent.findIndex(({ method }) => method === "permission") < native.sent.indexOf(subscription));
   assert.equal(subscription.overflow, "dropOldest");
   native.deliver(subscription.id, { value: position, done: false });
   assert.deepEqual((await first).value, position);
@@ -109,4 +126,21 @@ void test("watching without permission fails the stream without subscribing", as
   const native = device("android", { permission: { value: { inUse: "denied", background: "denied", precision: "precise" } } });
   await assert.rejects(decodeValues(location(native.ctx).watchPosition()).next(), { name: "NotAllowedError" });
   assert.equal(calls(native, "watchPosition").length, 0);
+});
+
+void test("watching asks for permission the user has not given, then subscribes", async () => {
+  const native = device("ios", {
+    permission: { value: { inUse: "prompt", background: "prompt", precision: "precise" } },
+    requestPermission: { value: { inUse: "granted", background: "prompt", precision: "precise" } },
+    watchPosition: () => undefined,
+  });
+  const values = decodeValues<Position>(location(native.ctx).watchPosition());
+  const first = values.next();
+  await until(() => calls(native, "watchPosition").length === 1);
+  const [asked] = calls(native, "requestPermission");
+  const [subscription] = calls(native, "watchPosition");
+  assert.ok(native.sent.indexOf(asked) < native.sent.indexOf(subscription));
+  native.deliver(subscription.id, { value: position, done: false });
+  assert.deepEqual((await first).value, position);
+  await values.return(undefined);
 });
