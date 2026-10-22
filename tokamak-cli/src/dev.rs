@@ -25,7 +25,7 @@ use super::devices::{
     install_and_launch_ios_simulator,
 };
 use super::packs::PlatformPack;
-use super::paths::command_path;
+use super::paths::{command_path, command_program};
 use super::vite::{ConfigReport, PLUGIN_HINT, ServerReport, VitePlugin};
 use super::{devices, pinned_tls, pipeline, plugins, settings};
 
@@ -246,7 +246,7 @@ fn spawn_framework(
     let Some(program) = command.first() else {
         bail!("a development command is required");
     };
-    let mut process = ProcessCommand::new(program);
+    let mut process = ProcessCommand::new(command_program(program));
     process
         .args(&command[1..])
         .current_dir(command_path(project))
