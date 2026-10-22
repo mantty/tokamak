@@ -1,9 +1,6 @@
 import { Plugin, lifecycleStage, type JsonStream, type TokamakContext } from "@tokamakdev/plugin";
-import { valueStream } from "@tokamakdev/plugin/streams";
 
-import * as android from "./android.js";
-import * as apple from "./apple.js";
-import { backgroundDenied, permissionDenied, unavailable } from "./errors.js";
+import { backgroundDenied, permissionDenied, timedOut, unavailable } from "./errors.js";
 import type {
   LocationErrorEvent,
   LocationPermission,
@@ -41,9 +38,12 @@ class Location extends Plugin {
    * when location is unavailable. Asking off screen rejects with `NeedsUIError`, as
    * `requestPermission` does.
    */
-  async getCurrentPosition(options: PositionOptions = {}): Promise<Position> {
+  async getCurrentPosition({ maximumAge = 0, timeout }: PositionOptions = {}): Promise<Position> {
     await this.#authorize();
-    const position = await this.#platform().currentPosition(this.ctx, options);
+    const located = new AbortController();
+    const timer = timeout === undefined ? undefined : setTimeout(() => { located.abort(timedOut()); }, timeout);
+    const position = await this.call<Position | null>("getCurrentPosition", { maximumAge }, { signal: located.signal })
+      .finally(() => { clearTimeout(timer); });
     if (position) return position;
     // Android finds no position in the background without background permission.
     const background = await lifecycleStage(this.ctx) === "background";
@@ -55,10 +55,7 @@ class Location extends Plugin {
    * with `NeedsUIError` off screen. A slow reader receives the newest.
    */
   watchPosition(): JsonStream<Position> {
-    return valueStream<Position>(async (next, error) => {
-      await this.#authorize();
-      return this.#platform().watchPositions(this.ctx, next, error);
-    }, "dropOldest");
+    return this.stream("watchPosition", this.#authorize().then(() => null), "dropOldest");
   }
 
   /** Requires location services and in-use permission, asking for it where the user has not answered. */
@@ -67,19 +64,6 @@ class Location extends Plugin {
     let { inUse } = await this.permission();
     if (inUse === "prompt") ({ inUse } = await this.requestPermission());
     if (inUse !== "granted") throw permissionDenied();
-  }
-
-  /** The platform's composition of its location SDK. */
-  #platform(): typeof apple | typeof android {
-    switch (this.ctx.platform) {
-      case "ios":
-      case "macos":
-        return apple;
-      case "android":
-        return android;
-      default:
-        throw new DOMException("Location is not supported on this platform", "NotSupportedError");
-    }
   }
 
   /** The app's in-use and background permission, and the precision it gets. Never asks. */

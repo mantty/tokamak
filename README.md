@@ -801,15 +801,6 @@ class or a plugin: the development server sets up the services when it starts.
 - **On Windows,** which has no native plugins, plugin calls reject with
   `NotSupportedError`.
 
-### Platform bindings
-
-Plugins export their platforms' own APIs as `/apple` and `/android`, generated
-from the SDKs by `tok bindings`: Core Location's `CLLocationManager` or
-Android's `LocationManager`, with their names, types, objects and delegates.
-They are the escape hatch when a plugin's API is not enough, and a plugin can
-be written in TypeScript on them alone. [The plugin
-guidelines](plugins/GUIDELINES.md#bind-platform-apis) describe them.
-
 ### Camera and microphone
 
 Pages use `getUserMedia`. The shells grant camera and microphone requests from

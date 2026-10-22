@@ -45,6 +45,7 @@ class TokamakLocationPlugin(
     private val significantChanges = LocationUpdates(context, LocationUpdates.SIGNIFICANT_CHANGES)
     private val regions = LocationRegions(context)
     private val events = LocationEvents(host)
+    private val positions = LocationPositions(context, manager)
 
     /** Whether the provider was on when last reported, as each request reports its changes. */
     private var providerEnabled = true
@@ -67,6 +68,7 @@ class TokamakLocationPlugin(
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
         when (method) {
             "setup" -> setup(requireObject(arguments), reply)
+            "getCurrentPosition" -> return currentPosition(requireObject(arguments), reply)
             "permission" -> reply(Result.success(permission()))
             "requestPermission" -> requestPermission(requireObject(arguments), reply)
             "servicesEnabled" -> reply(Result.success(manager.isLocationEnabled))
@@ -92,12 +94,23 @@ class TokamakLocationPlugin(
         method: String,
         arguments: Any?,
         reply: TokamakPluginReply,
-    ): () -> Unit = events.listen(method, reply) ?: super.subscribe(method, arguments, reply)
+    ): () -> Unit =
+        if (method == "watchPosition") watchPosition(reply) else events.listen(method, reply) ?: super.subscribe(method, arguments, reply)
 
-    /**
-     * Passes [action] whether the app may read fine or coarse location, asking when it may not.
-     * Throws `NeedsUIError` when asking would show UI while the app is in the background.
-     */
+    /** Replies with a position, or null when Android finds none, unless the returned cancellation runs first. */
+    private fun currentPosition(options: JSONObject, reply: TokamakPluginReply): () -> Unit =
+        runCatching {
+            positions.current(options.optDouble("maximumAge", 0.0)) { reply(Result.success(it?.let(::position))) }
+        }.getOrElse { throw locationError(it) }
+
+    /** Replies with each position as the device moves, until the provider turns off or the returned release. */
+    private fun watchPosition(reply: TokamakPluginReply): () -> Unit =
+        runCatching {
+            positions.watch({ reply(Result.success(position(it))) }) {
+                reply(Result.failure(TokamakPluginError("NotReadableError", "Location provider is unavailable")))
+            }
+        }.getOrElse { throw locationError(it) }
+
     /**
      * Asks for the foreground [permissions], then passes [action] whether the app has one, first
      * starting what waited for permission.

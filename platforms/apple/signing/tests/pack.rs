@@ -310,17 +310,17 @@ fn ios_minimum() -> Result<String> {
     )
 }
 
-/// Stages a generated bindings class for the plugin `id` in `input`, under
-/// the name `tok` stages every plugin's.
-fn stage_bindings(input: &Path, id: &str) -> Result<()> {
-    let bindings = input.join("plugins").join(id).join("bindings");
-    fs::create_dir_all(&bindings)?;
-    let class = format!("TokamakBindings_{}", id.replace('-', "_"));
+/// Stages the plugin `id` in `input`, whose one source, `0-Plugin.swift`,
+/// defines `class`.
+fn stage_plugin(input: &Path, id: &str, class: &str) -> Result<()> {
+    let plugin = input.join("plugins").join(id);
+    fs::create_dir_all(plugin.join("sources"))?;
+    fs::write(plugin.join("class"), class)?;
     fs::write(
-        bindings.join("0-Bindings.swift"),
+        plugin.join("sources/0-Plugin.swift"),
         format!(
             r#"final class {class}: TokamakPlugin {{
-  let id = "{id}/apple"
+  let id = "{id}"
   init(host: TokamakHost) {{}}
   func call(method: String, arguments: Any, reply: @escaping TokamakPluginReply) -> (() -> Void)? {{ nil }}
 }}
@@ -346,6 +346,10 @@ fn packages_the_app_and_its_plugins_into_the_macos_bundle() -> Result<()> {
             include_str!("../../../../plugins/location/apple/LocationPlugin.swift"),
         ),
         (
+            "LocationPositions.swift",
+            include_str!("../../../../plugins/location/apple/LocationPositions.swift"),
+        ),
+        (
             "LocationRegions.swift",
             include_str!("../../../../plugins/location/apple/LocationRegions.swift"),
         ),
@@ -359,9 +363,9 @@ fn packages_the_app_and_its_plugins_into_the_macos_bundle() -> Result<()> {
     {
         fs::write(plugin.join(format!("sources/{index}-{name}")), source)?;
     }
-    // Generated bindings share a file name; a plugin may have no other native code.
-    for id in ["location", "local-authentication"] {
-        stage_bindings(&fixture.input(), id)?;
+    // Plugins' sources may share a file name.
+    for (id, class) in [("echo", "TokamakEchoPlugin"), ("ping", "TokamakPingPlugin")] {
+        stage_plugin(&fixture.input(), id, class)?;
     }
     fs::write(
         plugin.join("plist"),

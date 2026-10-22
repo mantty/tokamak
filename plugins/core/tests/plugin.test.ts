@@ -9,6 +9,7 @@ class Example extends Plugin {
   run(value: unknown = null): Promise<unknown> { return this.call("run", value); }
   bytes(value: Uint8Array): Promise<Uint8Array> { return this.callBytes("bytes", value); }
   watch(): ReadableStream<Uint8Array> { return this.stream("watch", { every: 1 }); }
+  watchAfter(value: Promise<unknown>): ReadableStream<Uint8Array> { return this.stream("watch", value); }
 }
 
 void test("a plugin uses the receiving invocation's connection and standard value codec", async () => {
@@ -86,6 +87,23 @@ void test("aborting a call cancels the native work and rejects with the reason",
   await assert.rejects(uploaded, { name: "AbortError", message: "stopped" });
   assert.deepEqual(native.sent.at(-1), { type: "cancel", id: 1 });
   await assert.rejects(new Transfers(native.ctx).upload(new ReadableStream(), controller.signal), { message: "stopped" });
+});
+
+void test("a stream with a promised value subscribes once it resolves, and ends with its rejection", async () => {
+  const native = connectNative();
+  let resolve: (value: unknown) => void = () => undefined;
+  const values = decodeValues<number>(new Example(native.ctx).watchAfter(new Promise((settle) => { resolve = settle; })));
+  const first = values.next();
+  await Promise.resolve();
+  assert.deepEqual(native.sent, []);
+  resolve({ every: 2 });
+  await Promise.resolve();
+  assert.deepEqual(native.lastRequest(), { type: "subscribe", plugin: "example", method: "watch", arguments: { every: 2 } });
+  native.respond({ value: 1 }, false);
+  assert.deepEqual(await first, { value: 1, done: false });
+
+  const denied = decodeValues(new Example(native.ctx).watchAfter(Promise.reject(new DOMException("Denied", "NotAllowedError"))));
+  await assert.rejects(denied.next(), { name: "NotAllowedError" });
 });
 
 void test("a stream passes its overflow policy to the native subscription", () => {

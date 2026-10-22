@@ -3,7 +3,6 @@
 
 //! `tokamak` command line entry point.
 
-mod bindings;
 mod cache;
 mod certs;
 mod dev;
@@ -55,12 +54,6 @@ enum Command {
         /// Include an Apple or Android native implementation; otherwise compose APIs in TypeScript.
         #[arg(long, value_enum)]
         native: Option<scaffold::Native>,
-    },
-    /// Generate a plugin package's platform bindings from the SDKs installed here.
-    Bindings {
-        /// Plugin package directory.
-        #[arg(default_value = ".")]
-        package: PathBuf,
     },
     /// Build native app bundles for one or more platforms.
     #[command(after_help = BUILD_PLATFORM_HELP)]
@@ -137,7 +130,6 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Plugin { directory, native } => scaffold::create(&directory, native),
-        Command::Bindings { package } => bindings::generate(&package),
         Command::Build {
             platforms,
             project,

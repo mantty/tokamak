@@ -79,74 +79,6 @@ calls return promises at the caller. Functions, arbitrary class instances and
 remote objects cannot cross this boundary; invalid signatures fail generation.
 Keep low-level native objects inside the Tokamak worker.
 
-## Bind platform APIs
-
-A plugin's `/apple` and `/android` exports are its platforms' own APIs,
-generated from the SDKs' API descriptions. List the modules to bind, and the
-SDK each family binds:
-
-```json
-"bindings": {
-  "apple": { "sdk": "26.2", "modules": ["CoreLocation", "_LocationEssentials"] },
-  "android": { "sdk": 35, "modules": ["android.location", "android.content.Context"] }
-}
-```
-
-An Apple module is a Swift module, including one a framework re-exports through
-its headers, such as `_LocationEssentials` for `CLLocation`. An Android module
-is a package or a class. The `sdk` is the oldest SDK apps build the package
-with: the iOS and macOS SDK version, which Apple numbers alike, and the Android
-API level, which must not exceed the Android pack's `compileSdk`. The bindings
-include only what that SDK declares, so they compile with it and every newer
-one; an Xcode with newer SDKs works for generating, and Android needs that API
-level's platform installed. Run `tok bindings` in the package, with Xcode and
-the Android SDK (`ANDROID_HOME`) installed. It writes `apple/bindings.ts`,
-`apple/Bindings.swift`, `android/bindings.ts` and `android/Bindings.kt`, and
-lists each symbol it leaves out with the reason. Commit them and export the
-modules as `"./apple": "./apple/bindings.ts"` and `"./android":
-"./android/bindings.ts"`. App builds compile and register the generated native
-source. A plugin needs no native code of its own to bind, and one that imports
-another package's bindings depends on that package, which the app then
-includes.
-
-The bindings keep the platform's names, types and objects:
-
-- Classes are classes. Every member returns a promise; static members and
-  initializers take the invocation's `ctx` first. A property `x` is `x()` and
-  `setX(value)`. Nested types join their names with `$`, as the JVM does:
-  `Notification$Builder`.
-- Apple members take their Objective-C selector's name:
-  `locationManager:didUpdateLocations:` is `locationManagerDidUpdateLocations`.
-  Swift-only members and `async` variants take their Swift name and labels.
-- Structs are plain objects, enums their case names, option sets arrays of
-  names, `Date` a `Date`, and `Data` or `byte[]` a `Uint8Array`.
-- Android overloads are TypeScript overloads, chosen by the arguments' types.
-  Compile-time constants are `static readonly` fields.
-- An Apple `async` function returns a promise, and takes an optional last
-  `{ signal }` whose abort cancels its task. One returning an `AsyncSequence`
-  returns a `ReadableStream`.
-- `Protocol.implement(ctx, handlers)` creates a native delegate, listener or
-  abstract-class callback that calls `handlers`. A method without a handler
-  keeps its platform default.
-- Platform errors reject with `OperationError`, whose `cause` is
-  `{ domain, code }` from Apple and `{ exception }` from Android. A member the
-  running OS lacks rejects with `NotSupportedError`; editor docs list each
-  symbol's platforms and versions.
-
-Calls run on the main thread. Objects belong to the invocation that received
-them: `release(object)` lets go of one early.
-`new Class(referenceOf(object))` views an object as another class, and
-`referenceOf(object)` passes it to a plugin's native endpoint.
-`release`, `referenceOf`, `applicationContext(ctx)`, `foregroundActivity(ctx)`
-and `presenter(ctx)`, which give the app's own objects, come from
-`@tokamakdev/plugin/bindings`.
-
-Compose a cross-platform API from the bindings where they suffice, as the
-location plugin's `getCurrentPosition` composes `CLLocationManager` and
-`LocationManager`. What the descriptions cannot express needs native code:
-closures other than `async` completions, C pointers, callbacks that return a
-value, and registrations that outlive an invocation.
-
 ## Native code and codecs
 
 Extend `Plugin` for native endpoints. Its protected `call` encodes ordinary
@@ -163,7 +95,9 @@ native source the reader drives, such as a file, is a call per chunk from a
 
 `stream(method, value, overflow)` buffers up to 1 MiB for a slow reader. Pass
 `"dropOldest"` for samples where only recent values matter, such as sensor
-readings; the default `"error"` ends the stream with `QuotaExceededError`.
+readings; the default `"error"` ends the stream with `QuotaExceededError`. A
+promised `value` subscribes once it resolves, such as after a permission check,
+and its rejection ends the stream.
 
 Swift `TokamakPlugin.call` and Kotlin `TokamakPlugin.call` receive decoded JSON
 and return ordinary values through their reply callback. A reply of Swift `Data`
@@ -259,4 +193,4 @@ reject with `NotSupportedError` on the web. Native SDKs never import this module
 Inspect `npm pack --dry-run`, install the resulting tarball in an app, and check
 both `tok dev` and a packaged build. Then use normal `npm publish` tooling,
 changing the package name to your own npm scope if desired. Keep the plugin ID
-stable: native events, generated bindings and settings use it.
+stable: native events, the generated service binding and settings use it.

@@ -1,24 +1,6 @@
 {
   "schemaVersion": 2,
   "id": "notifications",
-  "bindings": {
-    "apple": {
-      "sdk": "26.2",
-      "modules": [
-        "UserNotifications"
-      ]
-    },
-    "android": {
-      "sdk": 35,
-      "modules": [
-        "android.app.NotificationManager",
-        "android.app.Notification",
-        "android.app.NotificationChannel",
-        "android.app.NotificationChannelGroup",
-        "android.content.Context"
-      ]
-    }
-  },
   "settings": {
     "sounds": {
       "kind": "path",
