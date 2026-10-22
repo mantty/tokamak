@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { createBuilder, createServer } from "vite";
+import { createBuilder, createServer, resolveConfig } from "vite";
 import WebSocket from "ws";
 
 import { tokamak } from "./dist/vite.mjs";
@@ -50,6 +50,7 @@ function project(t, cloudflareOptions = {}) {
     }`);
   const output = path.join(root, ".tokamak/vite");
   process.env.TOKAMAK_VITE_OUTPUT = output;
+  process.env.TOKAMAK_BUILD_DIR = path.join(root, "build");
   process.env.TOKAMAK_SESSION_TOKEN = "native-test";
   process.env.TOKAMAK_PLATFORM = "android";
   let plugins;
@@ -59,6 +60,7 @@ function project(t, cloudflareOptions = {}) {
     });
   } finally {
     delete process.env.TOKAMAK_VITE_OUTPUT;
+    delete process.env.TOKAMAK_BUILD_DIR;
     delete process.env.TOKAMAK_SESSION_TOKEN;
     delete process.env.TOKAMAK_PLATFORM;
   }
@@ -115,6 +117,19 @@ test("a user binding cannot replace the generated native worker binding", async 
     const { config } = project(t, { config: user });
     await assert.rejects(createBuilder(config), new RegExp(`${binding} is reserved`));
   }
+});
+
+test("the development server leaves tok's build directory unwatched, beside the project's own ignored paths", async t => {
+  const { root, config } = project(t);
+  const ignored = (await resolveConfig({ ...config, server: { watch: { ignored: ["**/fixtures/**"] } } }, "serve")).server.watch.ignored;
+  const ignores = file => ignored.some(matcher => typeof matcher === "function" && matcher(file));
+  assert.ok(ignored.includes("**/fixtures/**"));
+  assert.equal(ignores(path.join(root, "build")), true);
+  assert.equal(ignores(path.join(root, "build", "windows", "native-app", "native-app.exe")), true);
+  assert.equal(ignores(path.join(root, "src", "main.ts")), false);
+  assert.equal(ignores(path.join(root, "build-tools", "generate.ts")), false);
+
+  assert.equal((await resolveConfig({ ...project(t).config, server: { watch: null } }, "serve")).server.watch, null);
 });
 
 test("development routes device calls and reloaded events through the native worker", { timeout: 30_000 }, async t => {

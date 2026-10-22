@@ -32,6 +32,7 @@ export function createNativeWorker(
   const { module, ...config } = options;
   const token = process.env.TOKAMAK_SESSION_TOKEN;
   const platform = process.env.TOKAMAK_PLATFORM as NativePlatform | undefined;
+  const buildDir = process.env.TOKAMAK_BUILD_DIR;
   let graph: WorkerGraph;
   const plugin: Plugin = {
     name: "tokamak",
@@ -42,6 +43,9 @@ export function createNativeWorker(
       graph.plugin.config.call(this, vite, environment);
       await prepare?.(root, graph);
       writeJson(output, "config.json", { root, config });
+      // tok's build directory holds the apps it builds, which Windows does not let a watcher
+      // open while they run. An array keeps the project's own ignored paths.
+      if (buildDir && vite.server?.watch !== null) return { server: { watch: { ignored: [within(buildDir)] } } };
     },
     configEnvironment: {
       order: "post",
@@ -129,4 +133,12 @@ function writeJson(output: string, name: string, value: unknown): void {
   fs.mkdirSync(output, { recursive: true });
   fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(value, null, 2)}\n`);
   fs.renameSync(`${file}.tmp`, file);
+}
+
+/** Whether a file is `directory` or inside it. */
+function within(directory: string): (file: string) => boolean {
+  return (file) => {
+    const relative = path.relative(directory, file);
+    return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  };
 }
