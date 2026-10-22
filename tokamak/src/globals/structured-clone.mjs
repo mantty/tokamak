@@ -1,4 +1,4 @@
-import { cloneArrayBuffer, arrayBufferView, detachArrayBuffer, objectClass } from "tokamak:host";
+import { cloneSharedArrayBuffer, arrayBufferView, detachArrayBuffer, objectClass } from "tokamak:host";
 import { DOMException } from "./dom-exception.mjs";
 import { hostObjectKinds } from "./objects.mjs";
 
@@ -11,6 +11,9 @@ export const isNonTransferableBuffer = WeakSet.prototype.has.bind(nonTransferabl
 
 const errors = { Error, EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, AggregateError };
 const typedArrays = Object.fromEntries(["Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "Float16Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array"].map(name => [name, globalThis[name]]));
+const BufferConstructor = ArrayBuffer;
+const bufferGetters = Object.fromEntries(["byteLength", "maxByteLength", "resizable", "detached"].map(name => [name, Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, name).get]));
+const copyBytes = Uint8Array.prototype.set;
 const typedBuffer = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), "buffer").get;
 const dataBuffer = Object.getOwnPropertyDescriptor(DataView.prototype, "buffer").get;
 const regexpSource = Object.getOwnPropertyDescriptor(RegExp.prototype, "source").get;
@@ -55,7 +58,15 @@ function clone(value, seen) {
   else if (kind === "Date") copy = new Date(Date.prototype.getTime.call(value));
   else if (kind === "RegExp") copy = new RegExp(regexpSource.call(value), regexpFlags.filter(([get]) => get?.call(value)).map(([, flag]) => flag).join(""));
   else if (kind === "ArrayBuffer" || kind === "SharedArrayBuffer") {
-    try { copy = cloneArrayBuffer(value, kind === "SharedArrayBuffer"); }
+    try {
+      if (kind === "SharedArrayBuffer") copy = cloneSharedArrayBuffer(value);
+      else {
+        if (bufferGetters.detached.call(value)) throw uncloneable();
+        const options = bufferGetters.resizable.call(value) ? { maxByteLength: bufferGetters.maxByteLength.call(value) } : undefined;
+        copy = new BufferConstructor(bufferGetters.byteLength.call(value), options);
+        copyBytes.call(new typedArrays.Uint8Array(copy), new typedArrays.Uint8Array(value));
+      }
+    }
     catch { throw uncloneable(); }
   } else if (kind === "DataView" || Object.hasOwn(typedArrays, kind)) {
     let view;

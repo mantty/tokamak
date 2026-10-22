@@ -10,7 +10,7 @@ use super::checked;
 
 pub(super) fn export<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
     install(ctx);
-    exports.export("cloneArrayBuffer", Function::new(ctx.clone(), clone)?)?;
+    exports.export("cloneSharedArrayBuffer", Function::new(ctx.clone(), clone)?)?;
     exports.export("arrayBufferView", Function::new(ctx.clone(), view)?)?;
     Ok(())
 }
@@ -123,38 +123,14 @@ pub(super) fn install(ctx: &Ctx<'_>) {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-pub(super) fn clone<'js>(
-    ctx: Ctx<'js>,
-    value: Value<'js>,
-    shared: bool,
-) -> rquickjs::Result<Value<'js>> {
-    if shared {
-        // SAFETY: Source and destination belong to the same runtime. The engine
-        // validates the class and retains the shared backing store descriptor.
-        return checked(unsafe {
-            Value::from_raw(
-                ctx.clone(),
-                JS_CloneSharedArrayBuffer(ctx.as_raw().as_ptr(), value.as_raw()),
-            )
-        });
-    }
-    // SAFETY: No script executes in the codec. Only a live buffer is serialized,
-    // and bytecode reading is disabled. The serialized bytes are always freed.
-    let copied = unsafe {
-        let raw_ctx = ctx.as_raw().as_ptr();
-        let mut size = 0;
-        if qjs::JS_GetArrayBuffer(raw_ctx, &raw mut size, value.as_raw()).is_null() {
-            return Err(rquickjs::Error::Exception);
-        }
-        let bytes = qjs::JS_WriteObject(raw_ctx, &raw mut size, value.as_raw(), 0);
-        if bytes.is_null() {
-            return Err(rquickjs::Error::Exception);
-        }
-        let copied = qjs::JS_ReadObject(raw_ctx, bytes, size, 0);
-        qjs::js_free(raw_ctx, bytes.cast());
-        Value::from_raw(ctx, copied)
-    };
-    checked(copied)
+pub(super) fn clone<'js>(ctx: Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Value<'js>> {
+    // SAFETY: the engine validates the class and retains the shared backing store.
+    checked(unsafe {
+        Value::from_raw(
+            ctx.clone(),
+            JS_CloneSharedArrayBuffer(ctx.as_raw().as_ptr(), value.as_raw()),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -217,7 +193,7 @@ mod tests {
             ctx.eval::<(), _>(
                 r"
                 globalThis.source = new SharedArrayBuffer(4, { maxByteLength: 16 });
-                globalThis.copy = cloneBuffer(source, true);
+                globalThis.copy = cloneBuffer(source);
                 globalThis.originalView = new Uint8Array(source);
                 globalThis.copyView = new DataView(copy);
                 source.cycle = source;
@@ -253,7 +229,7 @@ mod tests {
                 r"
             for (let i = 0; i < 100; i++) {
                 const a = new SharedArrayBuffer(8, i % 2 ? { maxByteLength: 16 } : undefined);
-                const b = cloneBuffer(a, true), c = cloneBuffer(b, true);
+                const b = cloneBuffer(a), c = cloneBuffer(b);
                 a.other = b; b.other = c; c.other = a;
                 c.view = new Uint8Array(a);
             }

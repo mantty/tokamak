@@ -36,7 +36,28 @@ struct Buffer<'js> {
     pointer: *mut u8,
     length: usize,
     generation: u64,
-    value: ArrayBuffer<'js>,
+    value: Value<'js>,
+    shared: bool,
+    resizable: bool,
+    current: bool,
+    owner: Rc<BufferOwner>,
+}
+struct BufferOwner {
+    _runtime: Rc<engine::Runtime>,
+}
+unsafe extern "C" {
+    fn JS_GetExternalArrayBufferOpaque(value: qjs::JSValue) -> *mut c_void;
+    fn JS_SetExternalArrayBufferResizable(
+        ctx: *mut qjs::JSContext,
+        value: qjs::JSValue,
+        maximum: u64,
+    ) -> i32;
+    fn JS_UpdateExternalArrayBuffer(
+        ctx: *mut qjs::JSContext,
+        value: qjs::JSValue,
+        data: *mut u8,
+        length: usize,
+    ) -> i32;
 }
 impl<'js> Trace<'js> for Runtime<'js> {
     fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
@@ -44,7 +65,7 @@ impl<'js> Trace<'js> for Runtime<'js> {
             imports.trace(tracer);
         }
         for buffer in self.buffers.borrow().iter() {
-            buffer.value.as_value().trace(tracer);
+            buffer.value.trace(tracer);
         }
     }
 }
@@ -52,7 +73,7 @@ pub(super) struct HostModule;
 crate::globals::host_functions!(
     pub(super), "runtime" => runtime, "load" => load, "info" => info,
     "instantiate" => instantiate, "exportId" => export_id, "objectInfo" => object_info,
-    "call" => call, "memory" => memory, "grow" => grow,
+    "call" => call, "memory" => memory, "grow" => grow, "bufferMemory" => buffer_memory,
     "globalNew" => global_new, "globalGet" => global_get, "globalSet" => global_set,
     "tableNew" => table_new, "tableSize" => table_size, "tableGet" => table_get, "tableSet" => table_set, "tableGrow" => table_grow,
 );
@@ -407,69 +428,145 @@ fn refresh_buffers(runtime: &Runtime<'_>) {
                 &raw mut generation,
             )
         };
-        if pointer != buffer.pointer || length != buffer.length || generation != buffer.generation {
-            buffer.value.detach();
+        if buffer.resizable {
+            // SAFETY: native growth respects the engine's buffer-size limit and declared maximum.
+            let result = unsafe {
+                JS_UpdateExternalArrayBuffer(
+                    buffer.value.ctx().as_raw().as_ptr(),
+                    buffer.value.as_raw(),
+                    nonnull_buffer(pointer, &buffer.owner),
+                    length,
+                )
+            };
+            assert_eq!(result, 0, "valid Wasm buffer metadata");
+            buffer.pointer = pointer;
+            buffer.length = length;
+            buffer.generation = generation;
+        } else if pointer != buffer.pointer
+            || length != buffer.length
+            || (!buffer.shared && generation != buffer.generation)
+        {
+            // SAFETY: shared buffers keep their original length and stable allocation.
+            if !buffer.shared {
+                unsafe {
+                    qjs::JS_DetachArrayBuffer(
+                        buffer.value.ctx().as_raw().as_ptr(),
+                        buffer.value.as_raw(),
+                    );
+                }
+            }
+            buffer.current = false;
         }
     }
 }
+fn nonnull_buffer(pointer: *mut u8, owner: &Rc<BufferOwner>) -> *mut u8 {
+    if pointer.is_null() {
+        Rc::as_ptr(owner).cast_mut().cast()
+    } else {
+        pointer
+    }
+}
 unsafe extern "C" fn release_buffer(_: *mut qjs::JSRuntime, opaque: *mut c_void, _: *mut c_void) {
-    // SAFETY: each external buffer consumes exactly one retained store owner.
-    drop(unsafe { Rc::from_raw(opaque.cast::<engine::Runtime>()) });
+    // SAFETY: each external backing store consumes exactly one retained owner.
+    drop(unsafe { Rc::from_raw(opaque.cast::<BufferOwner>()) });
+}
+fn buffer_memory<'js>(runtime: Class<'js, Runtime<'js>>, value: Value<'js>) -> Option<u32> {
+    // SAFETY: this accessor returns null for non-external or detached buffers.
+    let owner = unsafe { JS_GetExternalArrayBufferOpaque(value.as_raw()) };
+    runtime
+        .borrow()
+        .buffers
+        .borrow()
+        .iter()
+        .find(|buffer| Rc::as_ptr(&buffer.owner).cast_mut().cast::<c_void>() == owner)
+        .map(|buffer| buffer.id)
 }
 fn memory<'js>(
     ctx: Ctx<'js>,
     runtime: Class<'js, Runtime<'js>>,
     id: u32,
-) -> rquickjs::Result<ArrayBuffer<'js>> {
+    resizable: Option<bool>,
+) -> rquickjs::Result<Value<'js>> {
     let runtime = runtime.borrow();
     require_object(&ctx, &runtime, id, "memory")?;
     refresh_buffers(&runtime);
     let (mut length, mut generation) = (0, 0);
-    // SAFETY: ids originate in the private JS wrapper's memory state.
-    let pointer = unsafe {
-        ffi::tk_wasm_memory(
-            runtime.native.0.as_ptr(),
-            id,
-            &raw mut length,
-            &raw mut generation,
+    // SAFETY: the registry confirms this is a memory object.
+    let (pointer, shared, maximum) = unsafe {
+        (
+            ffi::tk_wasm_memory(
+                runtime.native.0.as_ptr(),
+                id,
+                &raw mut length,
+                &raw mut generation,
+            ),
+            ffi::tk_wasm_memory_shared(runtime.native.0.as_ptr(), id),
+            ffi::tk_wasm_memory_maximum(runtime.native.0.as_ptr(), id),
         )
     };
-    let mut buffers = runtime.buffers.borrow_mut();
-    if let Some(buffer) = buffers
-        .iter()
-        .find(|buffer| buffer.id == id && buffer.generation == generation)
-    {
+    if resizable == Some(true) && maximum == u64::MAX {
+        return Err(Exception::throw_type(
+            &ctx,
+            "Resizable memory requires a maximum",
+        ));
+    }
+    if let Some(buffer) = runtime.buffers.borrow().iter().find(|buffer| {
+        buffer.id == id && buffer.current && resizable.is_none_or(|mode| mode == buffer.resizable)
+    }) {
         return Ok(buffer.value.clone());
     }
-    buffers.retain(|buffer| buffer.id != id);
-    let value = if length == 0 {
-        ArrayBuffer::new(ctx.clone(), Vec::<u8>::new())?
-    } else {
-        // SAFETY: the store owns this allocation; growth detaches all JS aliases before JS resumes.
-        unsafe {
-            let owner = Rc::into_raw(runtime.native.clone());
-            let raw = qjs::JS_NewArrayBuffer(
-                ctx.as_raw().as_ptr(),
-                pointer,
-                length as _,
-                Some(release_buffer),
-                owner.cast_mut().cast(),
-                false,
-            );
-            let value = Value::from_raw(ctx.clone(), raw);
-            if value.is_exception() {
-                drop(Rc::from_raw(owner));
-                return Err(rquickjs::Error::Exception);
-            }
-            ArrayBuffer::from_js(&ctx, value)?
+    let owner = Rc::new(BufferOwner {
+        _runtime: runtime.native.clone(),
+    });
+    let resizable = resizable.unwrap_or(false);
+    // SAFETY: the external buffer owns a retained registry; zero-length buffers use an unread sentinel.
+    let value = unsafe {
+        let retained = Rc::into_raw(owner.clone());
+        let raw = qjs::JS_NewArrayBuffer(
+            ctx.as_raw().as_ptr(),
+            nonnull_buffer(pointer, &owner),
+            length as _,
+            Some(release_buffer),
+            retained.cast_mut().cast(),
+            shared,
+        );
+        let value = Value::from_raw(ctx.clone(), raw);
+        if value.is_exception() {
+            drop(Rc::from_raw(retained));
+            return Err(rquickjs::Error::Exception);
         }
+        if resizable
+            && JS_SetExternalArrayBufferResizable(ctx.as_raw().as_ptr(), value.as_raw(), maximum)
+                < 0
+        {
+            return Err(rquickjs::Error::Exception);
+        }
+        value
     };
+    let mut buffers = runtime.buffers.borrow_mut();
+    for buffer in buffers
+        .iter_mut()
+        .filter(|buffer| buffer.id == id && buffer.current)
+    {
+        buffer.current = false;
+        if !shared {
+            // SAFETY: a successful mode conversion detaches the prior unshared buffer.
+            unsafe {
+                qjs::JS_DetachArrayBuffer(ctx.as_raw().as_ptr(), buffer.value.as_raw());
+            }
+        }
+    }
+    buffers.retain(|buffer| buffer.id != id || buffer.shared && buffer.resizable);
     buffers.push(Buffer {
         id,
         pointer,
         length,
         generation,
         value: value.clone(),
+        shared,
+        resizable,
+        current: true,
+        owner,
     });
     Ok(value)
 }
@@ -649,5 +746,69 @@ fn table_grow<'js>(
         ))
     } else {
         Ok(previous)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buffer_allocation_can_collect_the_runtime() -> rquickjs::Result<()> {
+        let js_runtime = rquickjs::Runtime::new()?;
+        js_runtime.set_gc_threshold(0);
+        let context = rquickjs::Context::full(&js_runtime)?;
+        let owner = context.with(|ctx| -> rquickjs::Result<_> {
+            let store = runtime(ctx.clone())?;
+            let owner = Rc::downgrade(&store.borrow().native);
+            ctx.globals().set("store", store.clone())?;
+            for shared in ["", "shared"] {
+                let bytes = wat::parse_str(format!(
+                    "(module (memory (export \"memory\") 0 1 {shared}))"
+                ))
+                .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
+                let module = load(
+                    ctx.clone(),
+                    store.clone(),
+                    ArrayBuffer::new(ctx.clone(), bytes)?,
+                )?;
+                let instance = instantiate(ctx.clone(), store.clone(), module, Vec::new())?;
+                let id = export_id(ctx.clone(), instance, 0)?;
+                for i in 0..100 {
+                    // SAFETY: this context holds the runtime lock throughout the allocation.
+                    unsafe { qjs::JS_SetGCThreshold(qjs::JS_GetRuntime(ctx.as_raw().as_ptr()), 0) };
+                    let buffer = memory(ctx.clone(), store.clone(), id, Some(i % 2 == 0))?;
+                    let cycle = Object::new(ctx.clone())?;
+                    cycle.set("self", cycle.clone())?;
+                    if shared == "shared" {
+                        unsafe extern "C" {
+                            fn JS_CloneSharedArrayBuffer(
+                                ctx: *mut qjs::JSContext,
+                                source: qjs::JSValue,
+                            ) -> qjs::JSValue;
+                        }
+                        // SAFETY: the live shared buffer and context belong to this runtime.
+                        let clone = unsafe {
+                            Value::from_raw(
+                                ctx.clone(),
+                                JS_CloneSharedArrayBuffer(ctx.as_raw().as_ptr(), buffer.as_raw()),
+                            )
+                        };
+                        assert!(!clone.is_exception());
+                        cycle.set("clone", clone)?;
+                    }
+                    cycle.set("buffer", buffer)?;
+                }
+            }
+            Ok(owner)
+        })?;
+        drop(context);
+        js_runtime.run_gc();
+        drop(js_runtime);
+        assert!(
+            owner.upgrade().is_none(),
+            "external buffers release the native store"
+        );
+        Ok(())
     }
 }

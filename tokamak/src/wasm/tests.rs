@@ -205,6 +205,68 @@ fn wasm_shared_imports_tables_references_and_simd_match_cloudflare() -> TestResu
 }
 
 #[test]
+fn wasm_shared_and_resizable_memory_matches_cloudflare() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let input = directory.path().join("input");
+    fs::create_dir(&input)?;
+    let fixtures = fixture_root().join("wasm");
+    fs::write(
+        input.join("shared.wasm"),
+        wat::parse_file(fixtures.join("shared.wat"))?,
+    )?;
+    fs::copy(
+        fixtures.join("memory-contracts.mjs"),
+        input.join("contracts.mjs"),
+    )?;
+    let reference = Command::new("node")
+        .arg(fixture_root().join("wasm-reference.mjs"))
+        .arg(&input)
+        .output()?;
+    assert!(
+        reference.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reference.stderr)
+    );
+    let expected: serde_json::Value = serde_json::from_slice(&reference.stdout)?;
+    assert_eq!(expected["resizableMemory"], true, "workerd: {expected}");
+    let worker = module_worker(&input, "contracts.mjs", &directory.path().join("app"))?;
+    let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "")?)?;
+    assert_eq!(actual, expected);
+    Ok(())
+}
+
+#[test]
+fn wasm_relaxed_simd_matches_cloudflare() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let input = directory.path().join("input");
+    fs::create_dir(&input)?;
+    let fixtures = fixture_root().join("wasm");
+    fs::write(
+        input.join("relaxed.wasm"),
+        wat::parse_file(fixtures.join("relaxed.wat"))?,
+    )?;
+    fs::copy(
+        fixtures.join("relaxed-contracts.mjs"),
+        input.join("contracts.mjs"),
+    )?;
+    let reference = Command::new("node")
+        .arg(fixture_root().join("wasm-reference.mjs"))
+        .arg(&input)
+        .output()?;
+    assert!(
+        reference.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reference.stderr)
+    );
+    let expected: serde_json::Value = serde_json::from_slice(&reference.stdout)?;
+    assert_eq!(expected["relaxedSimd"], true, "workerd: {expected}");
+    let worker = module_worker(&input, "contracts.mjs", &directory.path().join("app"))?;
+    let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "")?)?;
+    assert_eq!(actual, expected);
+    Ok(())
+}
+
+#[test]
 fn wasm_feature_compatibility_audit() -> TestResult {
     let cases = [
         (
@@ -264,23 +326,18 @@ fn wasm_feature_compatibility_audit() -> TestResult {
     let worker = module_worker(&input, "contracts.mjs", &directory.path().join("app"))?;
     let actual: serde_json::Value = serde_json::from_slice(&request(&worker, "")?)?;
     eprintln!("Wasm feature audit: workerd={expected}; tokamak={actual}");
-    for name in ["simd", "tailCalls", "extendedConstants"] {
-        assert_eq!(expected["binary"][name], true, "workerd {name}");
-        assert_eq!(actual["binary"][name], true, "tokamak {name}");
-    }
-    for name in [
+    let supported = [
+        "simd",
+        "tailCalls",
+        "extendedConstants",
         "sharedMemory",
-        "memory64",
-        "table64",
-        "multipleMemories",
-        "exceptions",
-        "gc",
-        "typedFunctions",
         "relaxedSimd",
-    ] {
-        assert_eq!(expected["binary"][name], true, "workerd {name}");
+    ];
+    for name in modules.keys() {
+        assert_eq!(expected["binary"][*name], true, "workerd {name}");
         assert_eq!(
-            actual["binary"][name], false,
+            actual["binary"][*name],
+            supported.contains(name),
             "update the documented gap for {name}"
         );
     }

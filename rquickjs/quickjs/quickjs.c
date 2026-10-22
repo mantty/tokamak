@@ -862,7 +862,7 @@ typedef struct JSProxyData {
 typedef struct JSArrayBuffer {
     int ref_count;
     int byte_length; /* 0 if detached */
-    int max_byte_length; /* -1 if not resizable; >= byte_length otherwise */
+    int64_t max_byte_length; /* -1 if not resizable; >= byte_length otherwise */
     uint8_t detached;
     uint8_t immutable;
     uint8_t shared; /* if shared, the array buffer cannot be detached */
@@ -38208,6 +38208,10 @@ static int JS_WriteArrayBuffer(BCWriterState *s, JSValueConst obj)
         JS_ThrowTypeErrorDetachedArrayBuffer(s->ctx);
         return -1;
     }
+    if (abuf->max_byte_length >= UINT32_MAX) {
+        JS_ThrowRangeError(s->ctx, "array buffer maximum exceeds serialization limit");
+        return -1;
+    }
     bc_put_u8(s, BC_TAG_ARRAY_BUFFER);
     bc_put_leb128(s, abuf->byte_length);
     bc_put_leb128(s, abuf->max_byte_length);
@@ -38220,6 +38224,10 @@ static int JS_WriteSharedArrayBuffer(BCWriterState *s, JSValueConst obj)
     JSObject *p = JS_VALUE_GET_OBJ(obj);
     JSArrayBuffer *abuf = p->u.array_buffer;
     assert(!abuf->detached); /* SharedArrayBuffer are never detached */
+    if (abuf->max_byte_length >= UINT32_MAX || (abuf->free_func && abuf->free_func != js_array_buffer_free)) {
+        JS_ThrowTypeError(s->ctx, "external shared buffer cannot be serialized");
+        return -1;
+    }
     bc_put_u8(s, BC_TAG_SHARED_ARRAY_BUFFER);
     bc_put_leb128(s, abuf->byte_length);
     bc_put_leb128(s, abuf->max_byte_length);
@@ -57777,7 +57785,8 @@ static JSValue js_array_buffer_constructor3(JSContext *ctx,
         JS_ThrowRangeError(ctx, "invalid array buffer length");
         goto fail;
     }
-    if (max_len && *max_len > INT32_MAX) {
+    if (max_len && (*max_len > MAX_SAFE_INTEGER ||
+                    (class_id == JS_CLASS_SHARED_ARRAY_BUFFER && *max_len > INT32_MAX))) {
         JS_ThrowRangeError(ctx, "invalid max array buffer length");
         goto fail;
     }
@@ -57813,7 +57822,7 @@ static JSValue js_array_buffer_constructor3(JSContext *ctx,
         }
     } else {
         if (class_id == JS_CLASS_SHARED_ARRAY_BUFFER &&
-            rt->sab_funcs.sab_dup) {
+            (!free_func || free_func == js_array_buffer_free) && rt->sab_funcs.sab_dup) {
             rt->sab_funcs.sab_dup(rt->sab_funcs.sab_opaque, buf);
         }
         if (buf) {
@@ -57979,7 +57988,7 @@ static void js_array_buffer_finalizer(JSRuntime *rt, JSValueConst val)
                 p1->u.array.u.ptr = NULL;
             }
         }
-        if (abuf->shared && rt->sab_funcs.sab_free) {
+        if (abuf->shared && (!abuf->free_func || abuf->free_func == js_array_buffer_free) && rt->sab_funcs.sab_free) {
             rt->sab_funcs.sab_free(rt->sab_funcs.sab_opaque, abuf->data);
         } else {
             if (abuf->free_func)
@@ -58063,7 +58072,7 @@ static JSValue js_array_buffer_get_maxByteLength(JSContext *ctx,
     if (!abuf)
         return JS_EXCEPTION;
     if (array_buffer_is_resizable(abuf))
-        return js_uint32(abuf->max_byte_length);
+        return JS_NewInt64(ctx, abuf->max_byte_length);
     return js_uint32(abuf->byte_length);
 }
 
@@ -58199,6 +58208,49 @@ static void js_array_buffer_update_typed_arrays(JSArrayBuffer *abuf)
     }
 }
 
+/* TOKAMAK: external backing-store metadata and view refresh. */
+void *JS_GetExternalArrayBufferOpaque(JSValueConst obj)
+{
+    JSArrayBuffer *abuf = JS_GetOpaque(obj, JS_CLASS_ARRAY_BUFFER);
+    if (!abuf)
+        abuf = JS_GetOpaque(obj, JS_CLASS_SHARED_ARRAY_BUFFER);
+    return abuf && !abuf->detached && abuf->free_func != js_array_buffer_free
+               ? abuf->opaque : NULL;
+}
+
+int JS_SetExternalArrayBufferResizable(JSContext *ctx, JSValueConst obj,
+                                      uint64_t maximum)
+{
+    JSArrayBuffer *abuf = js_get_array_buffer(ctx, obj);
+    if (!abuf)
+        return -1;
+    if (abuf->detached || abuf->free_func == js_array_buffer_free ||
+        maximum < abuf->byte_length || maximum > MAX_SAFE_INTEGER) {
+        JS_ThrowTypeError(ctx, "invalid external buffer maximum");
+        return -1;
+    }
+    abuf->max_byte_length = maximum;
+    return 0;
+}
+
+int JS_UpdateExternalArrayBuffer(JSContext *ctx, JSValueConst obj,
+                                uint8_t *data, size_t length)
+{
+    JSArrayBuffer *abuf = js_get_array_buffer(ctx, obj);
+    if (!abuf)
+        return -1;
+    if (abuf->detached || abuf->free_func == js_array_buffer_free ||
+        !array_buffer_is_resizable(abuf) || length > abuf->max_byte_length ||
+        length > INT32_MAX) {
+        JS_ThrowRangeError(ctx, "invalid external buffer length");
+        return -1;
+    }
+    abuf->data = data;
+    abuf->byte_length = length;
+    js_array_buffer_update_typed_arrays(abuf);
+    return 0;
+}
+
 enum {
     JS_ARRAY_BUFFER_TRANSFER,
     JS_ARRAY_BUFFER_TRANSFER_TO_IMMUTABLE,
@@ -58326,7 +58378,7 @@ static JSValue js_array_buffer_resize(JSContext *ctx, JSValueConst this_val,
     // TODO(bnoordhuis) support externally managed RABs
     if (abuf->free_func != js_array_buffer_free)
         return JS_ThrowTypeError(ctx, "external array buffer is not resizable");
-    if (len < 0 || len > abuf->max_byte_length) {
+    if (len < 0 || len > INT32_MAX || len > abuf->max_byte_length) {
     bad_length:
         return JS_ThrowRangeError(ctx, "invalid array buffer length");
     }

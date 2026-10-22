@@ -30,9 +30,7 @@ of the patch:
 
 ## The changes
 
-Total footprint: ~105 added and ~8 modified lines in `quickjs.c`, ~8 added lines
-in `quickjs.h`. Grep `TOKAMAK` in the source for the one inline marker (the
-class-name fix, which is otherwise invisible).
+Grep `TOKAMAK` in the source for the engine integration markers.
 
 ### 1. Async-context propagation across `await` (the reason this patch exists)
 
@@ -97,8 +95,8 @@ not propagate to the original. Verified against the source and the
 `shared_clones_keep_views_alive_and_release_once_after_cycles` unit test, which
 asserts shared growth. Sharing the `JSArrayBuffer` descriptor is the only correct
 model, and that requires reference-counting the shared descriptor. Bound in
-`tokamak/src/globals/buffers.rs`; the non-shared ArrayBuffer clone deliberately
-uses stock serialization instead and is **not** part of this patch.
+`tokamak/src/globals/buffers.rs`; non-shared ArrayBuffer cloning uses captured intrinsic getters and byte copying
+in `tokamak/src/globals/structured-clone.mjs`.
 
 ### 5. `JS_GetArrayBufferView` — view metadata without user-observable reads
 
@@ -114,12 +112,38 @@ shadowing-immune access to the backing buffer (a malicious view can shadow
 and regressed all three against the workerd differential. Bound in
 `tokamak/src/globals/buffers.rs`.
 
+### 6. External resizable Wasm buffers
+
+**Where:** `JS_GetExternalArrayBufferOpaque`,
+`JS_SetExternalArrayBufferResizable`, `JS_UpdateExternalArrayBuffer`; external
+SharedArrayBuffer ownership; 64-bit maximum-length metadata.
+
+**Why it cannot live outside the engine:** `JS_NewArrayBuffer` supplies fixed
+external storage. Shadowing `byteLength`, `resizable`, and `maxByteLength` leaves
+an existing typed array's native length unchanged; native `resize` still throws.
+A host probe with a four-byte external buffer advertised eight bytes while its
+view remained four bytes. No public API updates the backing pointer, resizable
+flag, or existing view metadata. The three accessors expose those operations;
+Wasm growth and resize policy remain in Tokamak's Rust/JS embedding.
+
+External shared storage uses its supplied finalizer instead of the runtime SAB
+allocator hooks. Clones retain the shared backing descriptor. Declared maxima
+use 64 bits; actual buffer lengths retain QuickJS's signed 32-bit limit. The
+serializer rejects maxima outside its 32-bit format and external shared storage;
+Tokamak's structured clone does not use that serializer.
+
+On upgrade, retain external finalizers through construction and destruction,
+reapply the three accessors after the typed-array refresh helper, widen maximum
+metadata and its getter, and preserve allocation/serialization bounds. Rust
+bindings live in `tokamak/src/wasm/host.rs`. Differential Wasm memory tests cover
+buffer modes, growth, cloning, detachment, and typed-array/DataView tracking.
+
 ## Upgrading the vendored crate
 
 1. Fetch the new pristine crate (e.g. `cargo download` or from
    `~/.cargo/registry/src/.../rquickjs-sys-<version>`) and copy it over this
    directory, preserving `PATCH.md`.
-2. Re-apply the five changes above. To see the exact current hunks, diff this tree
+2. Re-apply the six changes above. To see the exact current hunks, diff this tree
    against the pristine 0.12.2 crate:
    ```sh
    diff -u <pristine>/quickjs/quickjs.c rquickjs/quickjs/quickjs.c
@@ -146,9 +170,10 @@ no build needs `libclang`, the build is deterministic, and the crate's
 "using bundled bindings" notice never fires.
 
 These bindings are generated from the **pristine** header, so they exclude the
-four TOKAMAK declarations above and stay shape-compatible with the crate's own
+TOKAMAK declarations above and stay shape-compatible with the crate's own
 host bindings. Rust reaches the patched functions through hand-written `extern`
-blocks in `tokamak/src/globals/{async_context,buffers}.rs`, not these bindings.
+blocks in `tokamak/src/globals/{async_context,buffers}.rs` and
+`tokamak/src/wasm/host.rs`, not these bindings.
 
 To regenerate them (only needed when a version bump changes the pristine header):
 temporarily restore the pristine `quickjs/quickjs.h`, then for each target run

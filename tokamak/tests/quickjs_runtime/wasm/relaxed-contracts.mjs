@@ -1,0 +1,30 @@
+import module from './relaxed.wasm';
+function check(condition, label) { if (!condition) throw new Error(label); }
+export default { fetch() { try {
+  const e = new WebAssembly.Instance(module).exports;
+  check(e.swizzle() === 7, "swizzle");
+  check(e.trunc_f32x4_s() === 42, "trunc_f32x4_s");
+  check(e.trunc_f32x4_u() === 42, "trunc_f32x4_u");
+  check(e.f32x4_madd() === 42, "f32x4_madd");
+  check(e.f32x4_nmadd() === 18, "f32x4_nmadd");
+  check(e.f32x4_min() === 3, "f32x4_min");
+  check(e.f32x4_max() === 4, "f32x4_max");
+  check(e.trunc_f64x2_s() === 42, "trunc_f64x2_s");
+  check(e.trunc_f64x2_u() === 42, "trunc_f64x2_u");
+  check(e.f64x2_madd() === 42, "f64x2_madd");
+  check(e.f64x2_nmadd() === 18, "f64x2_nmadd");
+  check(e.f64x2_min() === 3, "f64x2_min");
+  check(e.f64x2_max() === 4, "f64x2_max");
+  check(e.i8x16_laneselect() === 42, "i8x16_laneselect");
+  check(e.i16x8_laneselect() === 42, "i16x8_laneselect");
+  check(e.i32x4_laneselect() === 42, "i32x4_laneselect");
+  check(e.i64x2_laneselect() === 42n, "i64x2_laneselect");
+  check(e.q15() === 8192, "q15");
+  check(e.dot() === 12, "dot");
+  check(e.dot_add() === 42, "dot_add");
+  check(e.negativeTrunc() === -42 && e.zeroUpper() === 0, "truncation and zero upper lanes");
+  check(e.highSwizzle() === 0, "high swizzle index");
+  check([32767, -32768].includes(e.q15Overflow()), "q15 permitted overflow");
+  check([-65536, 65534, 0].includes(e.dotOverflow()), "dot permitted overflow");
+  return Response.json({ relaxedSimd: true });
+} catch(e) { return Response.json({ error: e.name, message: e.message, stack: e.stack }); } }};

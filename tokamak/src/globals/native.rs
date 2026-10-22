@@ -65,7 +65,7 @@ pub(super) fn throw_dom_exception(ctx: &Ctx<'_>, name: &str, message: &str) -> r
 
 /// Exports that `evaluate` constructs itself.
 const CONSTRUCTED_EXPORTS: [&str; 4] = [
-    "cloneArrayBuffer",
+    "cloneSharedArrayBuffer",
     "arrayBufferView",
     "scheduleTimer",
     "httpFetch",

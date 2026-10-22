@@ -8,7 +8,14 @@ Cargo builds these sources without downloading build-time dependencies.
 
 The fast interpreter uses software bounds checks and SIMDe for fixed-width SIMD.
 It does not allocate executable memory. JIT, AOT, built-in WASI/libc imports,
-threads, and dynamic module discovery are disabled.
+thread creation and dynamic module discovery are disabled. Shared memory and
+atomic instructions are enabled; Worker agents reject blocking waits.
+
+The relaxed SIMD implementation comes from
+[WAMR PR 4950](https://github.com/wasm-micro-runtime/wasm-micro-runtime/pull/4950),
+pinned at `a169d8cd89663b0f647b4597285ea25e8f5dc74f`. The vendored changes cover
+opcode definitions, validation, and fast-interpreter execution. Tokamak's CMake
+configuration enables `WASM_ENABLE_RELAXED_SIMD`.
 
 ## Ownership and linking
 
@@ -27,8 +34,8 @@ same value storage. Tables have stable headers and separately growable element
 arrays. Function references identify their owning instance; cross-instance calls
 use that instance's invocation stack, including reentry through JavaScript.
 
-External memory buffers retain the registry. Growth detaches old buffers before
-JavaScript resumes, including callbacks and zero-page growth. Invocation state
+External memory buffers retain the registry. Growth detaches fixed unshared buffers before JavaScript resumes. Shared
+buffers retain their allocation; resizable buffers update existing views. Invocation state
 exists before element segments can expose functions from a failed instantiation.
 
 ## Upstream changes
@@ -51,10 +58,12 @@ exists before element segments can expose functions from a failed instantiation.
 - `interpreter/wasm_interp_fast.c` accesses shared resources and canonical
   references, invokes foreign functions on their own stacks, copies all callback
   results, and supports SIMD parameters and host returns in tail calls.
-- `common/wasm_memory.c` tracks successful memory growth, including zero growth.
+- `common/wasm_memory.c` tracks successful growth and enforces QuickJS buffer limits.
+- `common/wasm_shared_memory.c` rejects blocking waits for Worker agents.
 - `interpreter/wasm_interp_{fast,classic}.c` checks invocation cancellation every
   4096 instructions, including during start functions.
 
-These patches do not modify QuickJS. Reapply them when updating WAMR and run the
+QuickJS external-buffer hooks are documented in [its patch notes](../rquickjs/PATCH.md).
+Reapply the WAMR patches when updating it and run the
 Worker differential, feature audit, and cancellation tests. Unsupported features
 are listed in [the runtime documentation](../docs/wasm.md).

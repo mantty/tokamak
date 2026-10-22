@@ -503,6 +503,12 @@ prepare_objects(TkModule *module, const uint32_t *imports)
                           != 0;
             matches = size >= limits->min
                       && (!has_maximum || object->maximum <= limits->max);
+            if (matches && kind == WASM_EXTERN_MEMORY)
+                matches =
+                    object->of.memory->is_shared_memory
+                    == ((native->import_memories[index].u.memory.mem_type.flags
+                         & 2)
+                        != 0);
             if (matches && kind == WASM_EXTERN_TABLE)
                 matches = object->value_kind
                           == wasm_valtype_kind(wasm_tabletype_element(
@@ -786,6 +792,17 @@ tk_wasm_memory(TkRuntime *runtime, uint32_t id, size_t *length,
     *length = memory->memory_data_size;
     *generation = memory->growth_generation;
     return memory->memory_data;
+}
+uint64_t
+tk_wasm_memory_maximum(TkRuntime *runtime, uint32_t id)
+{
+    uint32_t maximum = runtime->objects[id]->maximum;
+    return maximum == NONE ? UINT64_MAX : (uint64_t)maximum * 65536;
+}
+bool
+tk_wasm_memory_shared(TkRuntime *runtime, uint32_t id)
+{
+    return runtime->objects[id]->of.memory->is_shared_memory;
 }
 int64_t
 tk_wasm_memory_grow(TkRuntime *runtime, uint32_t id, uint32_t delta)

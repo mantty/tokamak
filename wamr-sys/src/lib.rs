@@ -104,6 +104,8 @@ unsafe extern "C" {
         length: *mut usize,
         generation: *mut u64,
     ) -> *mut u8;
+    pub fn tk_wasm_memory_maximum(runtime: *mut Runtime, id: u32) -> u64;
+    pub fn tk_wasm_memory_shared(runtime: *mut Runtime, id: u32) -> bool;
     pub fn tk_wasm_memory_grow(runtime: *mut Runtime, id: u32, delta: u32) -> i64;
     pub fn tk_wasm_new_global(
         runtime: *mut Runtime,

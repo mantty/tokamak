@@ -164,12 +164,13 @@ class Memory {
   constructor(descriptor) {
     if (descriptor === null || (typeof descriptor !== "object" && typeof descriptor !== "function")) throw new TypeError("Expected a memory descriptor");
     if (descriptor.address !== undefined && descriptor.address !== "i32") throw new TypeError("Only 32-bit WebAssembly memory is supported");
-    if (descriptor.shared) throw new TypeError("Shared WebAssembly memory is not supported");
+    const shared = Boolean(descriptor.shared);
+    if (shared && descriptor.maximum === undefined) throw new TypeError("Shared memory requires a maximum");
     if (descriptor.initial === undefined) throw new TypeError("Memory initial size is required");
     const initial = index(descriptor.initial);
     const maximum = descriptor.maximum === undefined ? undefined : index(descriptor.maximum);
     if (initial > 65536 || (maximum !== undefined && (maximum > 65536 || maximum < initial))) throw new RangeError("Invalid memory limits");
-    const limits = maximum === undefined ? [0, ...leb(initial)] : [1, ...leb(initial), ...leb(maximum)];
+    const limits = maximum === undefined ? [0, ...leb(initial)] : [shared ? 3 : 1, ...leb(initial), ...leb(maximum)];
     const binary = new Uint8Array([0,97,115,109,1,0,0,0,5,...leb(1 + limits.length),1,...limits,7,10,1,6,109,101,109,111,114,121,2,0]);
     const memory = new Instance(compiledModule(binary.buffer)).exports.memory;
     const state = memories.get(memory);
@@ -178,11 +179,36 @@ class Memory {
   }
   get buffer() {
     const { id } = requireState(memories, this);
-    const buffer = host.memory(runtime, id);
+    const buffer = host.memory(runtime, id, undefined);
     markNonTransferableBuffer(buffer);
     return buffer;
   }
+  toResizableBuffer() { return memoryBuffer(this, true); }
+  toFixedLengthBuffer() { return memoryBuffer(this, false); }
   grow(delta) { if (!arguments.length) throw new TypeError("Memory.grow requires a size"); const state = requireState(memories, this); return host.grow(runtime, state.id, index(delta)); }
+}
+function memoryBuffer(memory, resizable) {
+  const buffer = host.memory(runtime, requireState(memories, memory).id, resizable);
+  markNonTransferableBuffer(buffer);
+  return buffer;
+}
+for (const [prototype, method, resizable] of [[ArrayBuffer.prototype, "resize", "resizable"], [SharedArrayBuffer.prototype, "grow", "growable"]]) {
+  const original = prototype[method];
+  const length = Object.getOwnPropertyDescriptor(prototype, "byteLength").get;
+  const maximum = Object.getOwnPropertyDescriptor(prototype, "maxByteLength").get;
+  const enabled = Object.getOwnPropertyDescriptor(prototype, resizable).get;
+  Object.defineProperty(prototype, method, { configurable: true, writable: true, value: function (size) {
+    const id = host.bufferMemory(runtime, this);
+    if (id === undefined) return Reflect.apply(original, this, [size]);
+    // The native getter checks the receiver before argument conversion.
+    Reflect.apply(length, this, []);
+    const requested = index(size);
+    if (host.bufferMemory(runtime, this) !== id) throw new TypeError("Detached memory buffer");
+    if (!Reflect.apply(enabled, this, [])) throw new TypeError("Memory buffer is not resizable");
+    const current = Reflect.apply(length, this, []);
+    if (requested < current || requested % 65536 || requested > Reflect.apply(maximum, this, [])) throw new RangeError("Invalid memory buffer length");
+    host.grow(runtime, id, (requested - current) / 65536);
+  }});
 }
 function valueKind(name) {
   const kind = { i32: 0, i64: 1, f32: 2, f64: 3, externref: 128, anyfunc: 129 }[String(name)];

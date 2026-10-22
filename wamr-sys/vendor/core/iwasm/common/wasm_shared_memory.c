@@ -288,6 +288,12 @@ wasm_runtime_atomic_wait(WASMModuleInstanceCommon *module, void *address,
     bh_assert(module->module_type == Wasm_Module_Bytecode
               || module->module_type == Wasm_Module_AoT);
 
+    /* TOKAMAK: Worker agents cannot block on atomic waits. */
+    if (module->module_type == Wasm_Module_Bytecode && module_inst->module->tokamak_context) {
+        wasm_runtime_set_exception(module, "Atomics.wait cannot be called in this context");
+        return -1;
+    }
+
     if (wasm_copy_exception(module_inst, NULL)) {
         return -1;
     }

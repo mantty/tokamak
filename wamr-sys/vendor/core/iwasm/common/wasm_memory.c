@@ -1559,6 +1559,12 @@ wasm_enlarge_memory_internal(WASMModuleInstanceCommon *module,
     full_size_mmaped = false;
 #endif
 
+    /* TOKAMAK: QuickJS buffer lengths fit a signed 32-bit integer. */
+    if (((uint64)memory->cur_page_count + inc_page_count) * memory->num_bytes_per_page > INT32_MAX) {
+        ret = false;
+        goto return_func;
+    }
+
     memory_data_old = memory->memory_data;
     total_size_old = memory->memory_data_size;
 

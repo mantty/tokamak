@@ -1051,6 +1051,12 @@ typedef void JSFreeArrayBufferDataFunc(JSRuntime *rt, void *opaque, void *ptr);
 JS_EXTERN JSValue JS_NewArrayBuffer(JSContext *ctx, uint8_t *buf, size_t len,
                                     JSFreeArrayBufferDataFunc *free_func, void *opaque,
                                     bool is_shared);
+/* TOKAMAK: external backing-store metadata and view refresh. */
+JS_EXTERN void *JS_GetExternalArrayBufferOpaque(JSValueConst obj);
+JS_EXTERN int JS_SetExternalArrayBufferResizable(JSContext *ctx, JSValueConst obj,
+                                                uint64_t maximum);
+JS_EXTERN int JS_UpdateExternalArrayBuffer(JSContext *ctx, JSValueConst obj,
+                                          uint8_t *data, size_t length);
 JS_EXTERN JSValue JS_NewArrayBufferCopy(JSContext *ctx, const uint8_t *buf, size_t len);
 /* Clones a SharedArrayBuffer wrapper within one runtime, retaining its backing store. */
 JS_EXTERN JSValue JS_CloneSharedArrayBuffer(JSContext *ctx, JSValueConst source);

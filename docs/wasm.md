@@ -31,15 +31,18 @@ interpreter. Local development uses workerd's WebAssembly implementation.
 - Numeric functions, `i64` as `BigInt`, multiple results, JavaScript callbacks,
   start functions, traps, and execution cancellation.
 - Imported and exported memories with shared contents and object identity.
-  Successful growth detaches old buffers, including zero-page growth and growth
-  before a callback into JavaScript.
+  Successful growth detaches fixed unshared buffers, including zero-page growth
+  and growth before a callback into JavaScript.
 - Imported and exported tables, `Table` construction, `get`, `set`, `grow`,
   and `length`; function references can cross instances.
 - Imported and exported globals, including mutable globals and reference values.
   JavaScript and Wasm observe each other's writes.
 - `externref` and `funcref` across calls, globals, and tables. JavaScript table
   and global descriptors use `anyfunc` for function references.
-- Fixed-width SIMD, bulk memory operations, tail calls, extended constant
+- Shared memories and atomic instructions. Blocking atomic waits trap, matching
+  Cloudflare Worker agents.
+- Fixed and resizable memory buffers, including tracking views and shared clones.
+- Fixed-width and relaxed SIMD, bulk memory operations, tail calls, extended constant
   expressions, sign extension, and non-trapping float-to-integer conversions.
 
 SIMD instructions execute inside Wasm. As in V8, JavaScript cannot pass or
@@ -57,14 +60,11 @@ The fixture's workerd runtime supports the following features; Tokamak does not:
 
 | Feature | Affected code |
 | --- | --- |
-| Shared memories and atomics | `shared: true`, Wasm thread instructions |
 | Memory64 and table64 | 64-bit addresses and `address: "i64"` descriptors |
 | Multiple memories | Modules declaring more than one memory |
 | Wasm GC and typed function references | Wasm-managed structs/arrays and typed reference instructions |
 | Exception handling | Wasm tags, throw/catch instructions, `Tag`, `JSTag`, and `Exception` |
-| Relaxed SIMD | Relaxed SIMD opcodes; ordinary fixed-width SIMD is supported |
 | JavaScript promise integration | `Suspending`, `promising`, and suspension APIs |
-| Resizable memory buffers | `Memory.toResizableBuffer()` and `toFixedLengthBuffer()` |
 
 This is not full V8/WebAssembly parity. The feature audit compares validation and
 API availability with the pinned Miniflare/workerd fixture. Differential execution
@@ -73,7 +73,8 @@ tests cover the supported imports, calls, resource sharing, and SIMD behavior.
 The embedding keeps instances, wrappers, and external references until their
 Worker JavaScript context ends. It does not collect individual Wasm instances or
 references within that context. Each instantiation reloads the module; there is
-no compiled-module cache. There is no built-in WASI host, JIT, or AOT execution.
+no compiled-module cache. Memory growth is limited to QuickJS's signed 32-bit
+buffer length; declared maxima can be larger. There is no built-in WASI host, JIT, or AOT execution.
 
 ## Linking
 
