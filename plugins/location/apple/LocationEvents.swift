@@ -152,4 +152,13 @@ extension TokamakPluginError {
   static func locationUnavailable(_ message: String) -> Self {
     Self(name: "NotReadableError", message: message)
   }
+
+  /// Core Location's `error`: `NotAllowedError` without permission, and
+  /// `NotReadableError` otherwise.
+  static func location(_ error: Error) -> Self {
+    if (error as NSError).code == CLError.Code.denied.rawValue {
+      return Self(name: "NotAllowedError", message: "Location permission was denied")
+    }
+    return .locationUnavailable(error.localizedDescription)
+  }
 }

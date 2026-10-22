@@ -10,9 +10,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./events": "./events/index.ts",
-    "./service-worker": "./service-worker/index.ts",
-    "./apple": "./apple/bindings.ts",
-    "./android": "./android/bindings.ts"
+    "./service-worker": "./service-worker/index.ts"
   },
   "peerDependencies": {
     "@tokamakdev/plugin": "^0.1.0"

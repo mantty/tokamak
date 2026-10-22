@@ -1,26 +1,6 @@
 {
   "schemaVersion": 2,
   "id": "location",
-  "bindings": {
-    "apple": {
-      "sdk": "26.2",
-      "modules": [
-        "CoreLocation",
-        "_LocationEssentials"
-      ]
-    },
-    "android": {
-      "sdk": 35,
-      "modules": [
-        "android.location",
-        "android.content.Context",
-        "android.os.CancellationSignal",
-        "android.os.SystemClock",
-        "java.util.concurrent.Executor",
-        "java.util.function.Consumer"
-      ]
-    }
-  },
   "settings": {
     "background": {
       "kind": "boolean",
@@ -62,6 +42,7 @@
       "sources": [
         "apple/LocationEvents.swift",
         "apple/LocationPlugin.swift",
+        "apple/LocationPositions.swift",
         "apple/LocationRegions.swift",
         "apple/LocationUpdates.swift"
       ]
@@ -71,6 +52,7 @@
       "sources": [
         "apple/LocationEvents.swift",
         "apple/LocationPlugin.swift",
+        "apple/LocationPositions.swift",
         "apple/LocationRegions.swift",
         "apple/LocationUpdates.swift"
       ]
@@ -80,6 +62,7 @@
       "sources": [
         "android/LocationEvents.kt",
         "android/LocationPlugin.kt",
+        "android/LocationPositions.kt",
         "android/LocationReceiver.kt",
         "android/LocationRegions.kt",
         "android/LocationService.kt",

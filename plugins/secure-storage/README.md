@@ -73,14 +73,6 @@ authentication an existing value was saved with before replacing it, as it does
 for a read: `replace` and `set` then show their `prompt` and need the app on
 screen. Android replaces values without asking.
 
-## Platform bindings
-
-`@tokamakdev/plugin-secure-storage/android` is Android's
-`android.security.keystore` package with `KeyStore`, `Cipher` and
-`KeyGenerator`, for Worker code that needs what this API does not offer. The
-Keychain's calls take dictionaries and pointers that bindings cannot express,
-so Apple platforms have no bindings here.
-
 ## Errors
 
 | Name | When |

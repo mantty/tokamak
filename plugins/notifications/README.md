@@ -615,14 +615,6 @@ Android shows notifications with a monochrome icon. Add one as
 with `android.icon`. Without it, the plugin uses the launcher icon, which
 Android draws as a solid shape.
 
-## Platform bindings
-
-`@tokamakdev/plugin-notifications/apple` is the User Notifications framework,
-and `@tokamakdev/plugin-notifications/android` is Android's
-`NotificationManager`, `Notification`, `NotificationChannel`,
-`NotificationChannelGroup` and `Context`, for Worker code that needs what this
-API does not offer.
-
 ## Errors
 
 - `NotAllowedError`: permission has not been granted, including the exact

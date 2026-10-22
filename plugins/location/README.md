@@ -254,14 +254,6 @@ The web uses `navigator.geolocation`. `permission()` reports `inUse` from the
 Permissions API, and the other additions reject with `NotSupportedError`,
 including the event-stream methods. Native support is provided on Apple and Android.
 
-## Platform bindings
-
-`@tokamakdev/plugin-location/apple` is Core Location, and
-`@tokamakdev/plugin-location/android` is `android.location` with the
-`Context`, `CancellationSignal`, `SystemClock`, `Executor` and `Consumer`
-types it uses, for Worker code that needs what this API does not offer.
-`getCurrentPosition` and `watchPosition` are built on them.
-
 ## Errors
 
 Rejections and `onLocationError` events are `DOMException` names:

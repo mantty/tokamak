@@ -7,7 +7,6 @@ ANDROID_JAR="$(ls "$ANDROID_HOME"/platforms/android-*/android.jar | sort -V | ta
 kotlinc -classpath "$ANDROID_JAR" \
   platforms/android/source/plugin/TokamakPlugin.kt \
   platforms/android/source/plugin/TokamakResources.kt \
-  platforms/android/source/plugin/TokamakBindings.kt \
   platforms/android/source/plugin/TokamakPluginRequests.kt \
   platforms/android/tests/plugin-requests.kt \
   -include-runtime -d /tmp/tokamak-plugin-requests.jar
@@ -16,6 +15,6 @@ curl -fsSL -o /tmp/json.jar https://repo1.maven.org/maven2/org/json/json/2025051
 java -cp "/tmp/tokamak-plugin-requests.jar:/tmp/json.jar:$ANDROID_JAR" com.tokamak.runtime.Plugin_requestsKt
 ```
 
-The JVM tests exercise byte endpoints, executor selection, replies, cancellation, the shared
-resource store and binding helpers.
+The JVM tests exercise byte endpoints, executor selection, replies, cancellation and the shared
+resource store.
 They do not instantiate Android UI objects.

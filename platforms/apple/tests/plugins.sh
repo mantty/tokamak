@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Typechecks each plugin's Swift, its generated bindings included, with the
-# Apple shell for macOS and iOS at the pack's deployment targets, against the
-# selected Xcode's SDKs.
+# Typechecks each plugin's Swift with the Apple shell for macOS and iOS at the
+# pack's deployment targets, against the selected Xcode's SDKs.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)

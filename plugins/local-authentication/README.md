@@ -39,14 +39,6 @@ where the system cannot show its prompt.
 any data. To bind a stored value to authentication, use
 `@tokamakdev/plugin-secure-storage`.
 
-## Platform bindings
-
-`@tokamakdev/plugin-local-authentication/apple` is the Local Authentication
-framework, and `@tokamakdev/plugin-local-authentication/android` is
-`android.hardware.biometrics` with the `Context`, `CancellationSignal` and
-`Executor` types it uses, for Worker code that needs what this API does not
-offer.
-
 ## Platforms
 
 - **iOS and macOS:** LocalAuthentication. On macOS, `biometricsOrPasscode`

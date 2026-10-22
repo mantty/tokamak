@@ -55,17 +55,21 @@ export abstract class Plugin {
   }
 
   /**
-   * A stream of newline-delimited JSON values, consumed with decodeValues. `overflow` says what
-   * happens to values a slow reader has not taken: ending the stream, or dropping the oldest.
+   * A stream of newline-delimited JSON values, consumed with decodeValues. A promised `value`
+   * subscribes once it resolves, and its rejection ends the stream. `overflow` says what happens
+   * to values a slow reader has not taken: ending the stream, or dropping the oldest.
    */
   protected stream<T>(method: string, value: unknown = null, overflow: Overflow = "error"): JsonStream<T> {
-    return byteStream((next, error, close) => this.ctx[nativeConnection].listen(this.pluginId, method, encodeJson(value), {
-      next(payload, done) {
-        next(jsonLine(payload));
-        if (done) close();
-      },
-      error,
-      overflow,
-    }), overflow);
+    return byteStream((next, error, close) => {
+      const listen = (argument: unknown) => this.ctx[nativeConnection].listen(this.pluginId, method, encodeJson(argument), {
+        next(payload, done) {
+          next(jsonLine(payload));
+          if (done) close();
+        },
+        error,
+        overflow,
+      });
+      return value instanceof Promise ? value.then(listen) : listen(value);
+    }, overflow);
   }
 }

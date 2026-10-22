@@ -19,10 +19,6 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
 {
   let id = "location"
 
-  private static let permissionDenied = TokamakPluginError(
-    name: "NotAllowedError",
-    message: "Location permission was denied"
-  )
   /// A `requestPermission` waiting for the user to answer a prompt.
   private struct Prompt {
     /// The purpose key of the temporary precise location to ask for next.
@@ -91,6 +87,13 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
         apply(options)
         defaults.set(try? JSONSerialization.data(withJSONObject: options), forKey: setupKey)
         reply(.success(nil))
+      case "recentPosition":
+        reply(.success(recentPosition(maximumAge: (options["maximumAge"] as? Double ?? 0) / 1000)))
+      case "currentPosition":
+        let fix = TokamakLocationPositions(reply: reply)
+        fix.locate()
+        // The cancellation owns the location manager until the call ends.
+        return fix.stop
       case "permission":
         reply(.success(permission()))
       case "requestPermission":
@@ -151,6 +154,12 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     arguments: Any,
     reply: @escaping TokamakPluginReply
   ) throws(TokamakPluginError) -> (() -> Void) {
+    if method == "watchPosition" {
+      let watch = TokamakLocationPositions(reply: reply)
+      watch.watch()
+      // The release owns the location manager until the subscription ends.
+      return watch.stop
+    }
     guard let remove = events.listen(method, reply) else {
       throw .notSupported("\(id).\(method) is not supported")
     }
@@ -185,7 +194,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   ) {
     guard manager === monitoring, (error as NSError).code != CLError.Code.locationUnknown.rawValue
     else { return }
-    events.fail(locationError(error))
+    events.fail(.location(error))
   }
 
   /// Core Location delivers each visit to every manager's delegate.
@@ -193,6 +202,14 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     if manager === monitoring {
       events.visit(visit)
     }
+  }
+
+  /// Core Location's latest position when it is no older than `maximumAge`
+  /// seconds, or nil.
+  private func recentPosition(maximumAge: TimeInterval) -> Any? {
+    guard let recent = authorization.location, -recent.timestamp.timeIntervalSinceNow <= maximumAge
+    else { return nil }
+    return TokamakLocationEvents.position(recent)
   }
 
   /// Starts the significant changes and visits `config` names, and stops the
@@ -380,12 +397,5 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
       let opened = URL(string: "x-apple.systempreferences:\(page)").map(NSWorkspace.shared.open)
       reply(opened == true ? .success(nil) : .failure(notOpened))
     #endif
-  }
-
-  private func locationError(_ error: Error) -> TokamakPluginError {
-    if (error as NSError).code == CLError.Code.denied.rawValue {
-      return Self.permissionDenied
-    }
-    return .locationUnavailable(error.localizedDescription)
   }
 }

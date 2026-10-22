@@ -24,8 +24,9 @@ export function alarms(ctx: TokamakContext) { return new Alarms(ctx); }
 ```
 
 `call` uses the standard JSON endpoint codec. `callBytes` sends and receives
-opaque bytes. `stream` exposes JSON values as a cancellable byte stream;
-`decodeValues<T>` consumes it. Errors terminate a stream. A slow consumer
+opaque bytes. `stream` exposes JSON values as a cancellable byte stream,
+subscribing once a promised argument resolves; `decodeValues<T>` consumes it.
+Errors, including that promise's rejection, terminate a stream. A slow consumer
 exceeding its bounded buffer receives `QuotaExceededError`.
 
 Declare the factory in `tokamak-plugin.json` alongside native build metadata:
