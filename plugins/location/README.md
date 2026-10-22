@@ -48,7 +48,9 @@ onRegionTransition(({ id, transition }) => console.log(id, transition));
 options. It resolves with a recent position no older than `maximumAge`
 milliseconds, 0 by default, or takes a new one, and rejects with
 `TimeoutError` when none arrives within `timeout` milliseconds, unlimited by
-default. The timeout starts once the user allows location.
+default. The timeout starts once the user allows location. Android takes
+positions from its fused provider at high accuracy, which combines GPS with
+Wi-Fi and cell signals.
 
 `watchPosition()` returns a byte stream of JSON positions. `decodeValues<Position>`
 decodes them. Cancelling the stream ends the native watch; errors terminate it.

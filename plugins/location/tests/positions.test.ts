@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
 
-import type { NativePlatform } from "@tokamakdev/plugin";
+import { decodeJson, type NativePlatform } from "@tokamakdev/plugin";
 import { decodeValues } from "@tokamakdev/plugin/streams";
 import { connectNative, type Answer, type FakeNativeTransport, type Received } from "@tokamakdev/plugin/testing";
 
@@ -134,9 +134,16 @@ function android(providers: Record<string, boolean>, answers: Answers): FakeNati
     "location/android.Context#getMainExecutor()Ljava/util/concurrent/Executor;": { value: object("executor", "java.util.concurrent.Executor") },
     "location/android.CancellationSignal#<init>()V": { value: object("signal", "android.os.CancellationSignal") },
     "location/android.CancellationSignal#cancel()V": { value: null },
+    "location/android.LocationRequest.Builder#<init>(J)V": { value: object("builder", "android.location.LocationRequest$Builder") },
+    "location/android.LocationRequest.Builder#setQuality(I)Landroid/location/LocationRequest$Builder;": { value: object("builder", "android.location.LocationRequest$Builder") },
+    "location/android.LocationRequest.Builder#build()Landroid/location/LocationRequest;": { value: object("request", "android.location.LocationRequest") },
     ...answers,
   });
 }
+
+/** The arguments of the plugin's calls of `member`. */
+const argumentsOf = (native: FakeNativeTransport, member: string) =>
+  calls(native, member).map((request) => decodeJson<{ arguments: unknown[] }>(request.payload ?? new Uint8Array()).arguments);
 
 const androidFix: Answers = Object.fromEntries(Object.entries({
   "getLatitude()D": 48, "getLongitude()D": 2, "getAccuracy()F": 3, "hasAltitude()Z": true, "getAltitude()D": 35,
@@ -144,7 +151,28 @@ const androidFix: Answers = Object.fromEntries(Object.entries({
   "hasSpeed()Z": true, "getSpeed()F": 1.5, "getTime()J": 1000,
 }).map(([member, value]) => [`location/android.Location#${member}`, { value }]));
 
-void test("Android takes a fix from the first enabled provider", async () => {
+void test("Android takes a high-accuracy fix from the fused provider before GPS", async () => {
+  let consumer = 0;
+  const native = android({ fused: true, gps: true }, {
+    ...androidFix,
+    "location/android.LocationManager#getLastKnownLocation(Ljava/lang/String;)Landroid/location/Location;": { value: null },
+    "location/android.Consumer": (request) => {
+      consumer = request.id;
+      return { value: "consumer", done: false };
+    },
+    "location/android.LocationManager#getCurrentLocation(Ljava/lang/String;Landroid/location/LocationRequest;Landroid/os/CancellationSignal;Ljava/util/concurrent/Executor;Ljava/util/function/Consumer;)V": () => {
+      queueMicrotask(() => { native.deliver(consumer, { value: { method: "accept", arguments: [object("fix", "android.location.Location")] }, done: false }); });
+      return { value: null };
+    },
+  });
+  assert.equal((await location(native.ctx).getCurrentPosition()).coords.latitude, 48);
+  const [[provider, request]] = argumentsOf(native, "LocationManager#getCurrentLocation(Ljava/lang/String;Landroid/location/LocationRequest;Landroid/os/CancellationSignal;Ljava/util/concurrent/Executor;Ljava/util/function/Consumer;)V");
+  assert.equal(provider, "fused");
+  assert.deepEqual(request, { "#": "object", id: "request" });
+  assert.deepEqual(argumentsOf(native, "LocationRequest.Builder#setQuality(I)Landroid/location/LocationRequest$Builder;"), [[100]]);
+});
+
+void test("Android without the fused provider takes a fix from the first enabled provider", async () => {
   let consumer = 0;
   const native = android({ network: true }, {
     ...androidFix,
@@ -153,7 +181,7 @@ void test("Android takes a fix from the first enabled provider", async () => {
       consumer = request.id;
       return { value: "consumer", done: false };
     },
-    "location/android.LocationManager#getCurrentLocation(Ljava/lang/String;Landroid/os/CancellationSignal;Ljava/util/concurrent/Executor;Ljava/util/function/Consumer;)V": (request) => {
+    "location/android.LocationManager#getCurrentLocation(Ljava/lang/String;Landroid/location/LocationRequest;Landroid/os/CancellationSignal;Ljava/util/concurrent/Executor;Ljava/util/function/Consumer;)V": (request) => {
       assert.equal((request.arguments as { arguments: unknown[] }).arguments[0], "network");
       queueMicrotask(() => { native.deliver(consumer, { value: { method: "accept", arguments: [object("fix", "android.location.Location")] }, done: false }); });
       return { value: null };
@@ -161,6 +189,29 @@ void test("Android takes a fix from the first enabled provider", async () => {
   });
   const position = await location(native.ctx).getCurrentPosition();
   assert.deepEqual(position, { coords: { latitude: 48, longitude: 2, accuracy: 3, altitude: 35, altitudeAccuracy: null, heading: null, speed: 1.5 }, timestamp: 1000 });
+});
+
+void test("Android watches the fused provider at high accuracy every second until the stream is cancelled", async () => {
+  let listener = 0;
+  const native = android({ fused: true, gps: true }, {
+    ...androidFix,
+    "location/android.LocationListener": (request) => {
+      listener = request.id;
+      return { value: "listener", done: false };
+    },
+    "location/android.LocationManager#requestLocationUpdates(Ljava/lang/String;Landroid/location/LocationRequest;Ljava/util/concurrent/Executor;Landroid/location/LocationListener;)V": { value: null },
+    "location/android.LocationManager#removeUpdates(Landroid/location/LocationListener;)V": { value: null },
+  });
+  const values = decodeValues<{ coords: { latitude: number } }>(location(native.ctx).watchPosition());
+  const first = values.next();
+  const requested = "LocationManager#requestLocationUpdates(Ljava/lang/String;Landroid/location/LocationRequest;Ljava/util/concurrent/Executor;Landroid/location/LocationListener;)V";
+  await until(() => calls(native, requested).length === 1);
+  native.deliver(listener, { value: { method: "onLocationChanged", arguments: [object("fix", "android.location.Location")] }, done: false });
+  assert.equal((await first).value?.coords.latitude, 48);
+  assert.deepEqual(argumentsOf(native, requested)[0]?.slice(0, 2), ["fused", { "#": "object", id: "request" }]);
+  assert.deepEqual(argumentsOf(native, "LocationRequest.Builder#<init>(J)V"), [[1000]]);
+  await values.return(undefined);
+  await until(() => calls(native, "LocationManager#removeUpdates(Landroid/location/LocationListener;)V").length === 1);
 });
 
 void test("Android without a fix in the background reports missing background permission", async () => {
@@ -172,7 +223,7 @@ void test("Android without a fix in the background reports missing background pe
       consumer = request.id;
       return { value: "consumer", done: false };
     },
-    "location/android.LocationManager#getCurrentLocation(Ljava/lang/String;Landroid/os/CancellationSignal;Ljava/util/concurrent/Executor;Ljava/util/function/Consumer;)V": () => {
+    "location/android.LocationManager#getCurrentLocation(Ljava/lang/String;Landroid/location/LocationRequest;Landroid/os/CancellationSignal;Ljava/util/concurrent/Executor;Ljava/util/function/Consumer;)V": () => {
       queueMicrotask(() => { native.deliver(consumer, { value: { method: "accept", arguments: [null] }, done: false }); });
       return { value: null };
     },
@@ -184,7 +235,7 @@ void test("Android rejects with TimeoutError when no fix comes in time, cancelli
   const native = android({ gps: true }, {
     "location/android.LocationManager#getLastKnownLocation(Ljava/lang/String;)Landroid/location/Location;": { value: null },
     "location/android.Consumer": { value: "consumer", done: false },
-    "location/android.LocationManager#getCurrentLocation(Ljava/lang/String;Landroid/os/CancellationSignal;Ljava/util/concurrent/Executor;Ljava/util/function/Consumer;)V": { value: null },
+    "location/android.LocationManager#getCurrentLocation(Ljava/lang/String;Landroid/location/LocationRequest;Landroid/os/CancellationSignal;Ljava/util/concurrent/Executor;Ljava/util/function/Consumer;)V": { value: null },
   });
   await assert.rejects(location(native.ctx).getCurrentPosition({ timeout: 10 }), { name: "TimeoutError" });
   await until(() => calls(native, "CancellationSignal#cancel()V").length === 1);
