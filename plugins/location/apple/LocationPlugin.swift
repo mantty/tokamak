@@ -37,8 +37,6 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   /// makes it.
   private var shown: [UUID] = []
   private let events: TokamakLocationEvents
-  /// The running `getCurrentPosition` and `watchPosition` operations.
-  private var positions: [UUID: TokamakLocationPositions] = [:]
   private let updates: TokamakLocationUpdates
   private let regions: TokamakLocationRegions
   #if os(iOS)
@@ -89,8 +87,13 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
         apply(options)
         defaults.set(try? JSONSerialization.data(withJSONObject: options), forKey: setupKey)
         reply(.success(nil))
-      case "getCurrentPosition":
-        return currentPosition(maximumAge: (options["maximumAge"] as? Double ?? 0) / 1000, reply)
+      case "recentPosition":
+        reply(.success(recentPosition(maximumAge: (options["maximumAge"] as? Double ?? 0) / 1000)))
+      case "currentPosition":
+        let fix = TokamakLocationPositions(reply: reply)
+        fix.locate()
+        // The cancellation owns the location manager until the call ends.
+        return fix.stop
       case "permission":
         reply(.success(permission()))
       case "requestPermission":
@@ -152,7 +155,10 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     reply: @escaping TokamakPluginReply
   ) throws(TokamakPluginError) -> (() -> Void) {
     if method == "watchPosition" {
-      return watchPosition(reply)
+      let watch = TokamakLocationPositions(reply: reply)
+      watch.watch()
+      // The release owns the location manager until the subscription ends.
+      return watch.stop
     }
     guard let remove = events.listen(method, reply) else {
       throw .notSupported("\(id).\(method) is not supported")
@@ -198,32 +204,12 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     }
   }
 
-  /// Replies with one position, unless the returned cancellation runs first.
-  private func currentPosition(
-    maximumAge: TimeInterval, _ reply: @escaping TokamakPluginReply
-  ) -> () -> Void {
-    let key = UUID()
-    let fix = TokamakLocationPositions(watching: false) { [weak self] result in
-      self?.end(key)
-      reply(result)
-    }
-    positions[key] = fix
-    fix.locate(maximumAge: maximumAge)
-    return { [weak self] in self?.end(key) }
-  }
-
-  /// Replies with each position as the device moves, until the returned
-  /// release.
-  private func watchPosition(_ reply: @escaping TokamakPluginReply) -> () -> Void {
-    let key = UUID()
-    let watch = TokamakLocationPositions(watching: true, reply: reply)
-    positions[key] = watch
-    watch.watch()
-    return { [weak self] in self?.end(key) }
-  }
-
-  private func end(_ key: UUID) {
-    positions.removeValue(forKey: key)?.stop()
+  /// Core Location's latest position when it is no older than `maximumAge`
+  /// seconds, or nil.
+  private func recentPosition(maximumAge: TimeInterval) -> Any? {
+    guard let recent = authorization.location, -recent.timestamp.timeIntervalSinceNow <= maximumAge
+    else { return nil }
+    return TokamakLocationEvents.position(recent)
   }
 
   /// Starts the significant changes and visits `config` names, and stops the

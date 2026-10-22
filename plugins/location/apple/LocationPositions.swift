@@ -5,30 +5,24 @@ import Foundation
 /// or `watchPosition`. Use it on the main thread.
 final class TokamakLocationPositions: NSObject, CLLocationManagerDelegate {
   private let manager = CLLocationManager()
-  private let watching: Bool
-  private let reply: (Result<Any?, TokamakPluginError>) -> Void
+  private let reply: TokamakPluginReply
+  private var watching = false
 
-  /// Passes `reply` one position, or each as the device moves when
-  /// `watching`, or a failure.
-  init(watching: Bool, reply: @escaping (Result<Any?, TokamakPluginError>) -> Void) {
-    self.watching = watching
+  /// Passes `reply` the new fix, or each position as the device moves, or a
+  /// failure.
+  init(reply: @escaping TokamakPluginReply) {
     self.reply = reply
     super.init()
     manager.delegate = self
     manager.desiredAccuracy = kCLLocationAccuracyBest
   }
 
-  /// Takes a fix, unless Core Location's latest position is no older than
-  /// `maximumAge` seconds.
-  func locate(maximumAge: TimeInterval) {
-    if let recent = manager.location, -recent.timestamp.timeIntervalSinceNow <= maximumAge {
-      reply(.success(TokamakLocationEvents.position(recent)))
-    } else {
-      manager.requestLocation()
-    }
+  func locate() {
+    manager.requestLocation()
   }
 
   func watch() {
+    watching = true
     manager.startUpdatingLocation()
   }
 

@@ -68,7 +68,8 @@ class TokamakLocationPlugin(
     override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
         when (method) {
             "setup" -> setup(requireObject(arguments), reply)
-            "getCurrentPosition" -> return currentPosition(requireObject(arguments), reply)
+            "recentPosition" -> reply(Result.success(recentPosition(requireObject(arguments))))
+            "currentPosition" -> return currentPosition(reply)
             "permission" -> reply(Result.success(permission()))
             "requestPermission" -> requestPermission(requireObject(arguments), reply)
             "servicesEnabled" -> reply(Result.success(manager.isLocationEnabled))
@@ -95,15 +96,22 @@ class TokamakLocationPlugin(
         arguments: Any?,
         reply: TokamakPluginReply,
     ): () -> Unit =
-        if (method == "watchPosition") watchPosition(reply) else events.listen(method, reply) ?: super.subscribe(method, arguments, reply)
+        when (method) {
+            "watchPosition" -> watchPosition(reply)
+            else -> events.listen(method, reply) ?: super.subscribe(method, arguments, reply)
+        }
 
-    /** Replies with a position, or null when Android finds none, unless the returned cancellation runs first. */
-    private fun currentPosition(options: JSONObject, reply: TokamakPluginReply): () -> Unit =
-        runCatching {
-            positions.current(options.optDouble("maximumAge", 0.0)) { reply(Result.success(it?.let(::position))) }
-        }.getOrElse { throw locationError(it) }
+    /** The provider's last known position when it is no older than the options' `maximumAge`, or null. */
+    private fun recentPosition(options: JSONObject): JSONObject? =
+        runCatching { positions.recent(options.optDouble("maximumAge", 0.0))?.let(::position) }
+            .getOrElse { throw locationError(it) }
 
-    /** Replies with each position as the device moves, until the provider turns off or the returned release. */
+    /** Replies with a new fix, or null when Android finds none, unless the returned cancellation runs first. */
+    private fun currentPosition(reply: TokamakPluginReply): () -> Unit =
+        runCatching { positions.current { reply(Result.success(it?.let(::position))) } }
+            .getOrElse { throw locationError(it) }
+
+    /** Replies with each position as the device moves, until the provider turns off or the returned release runs. */
     private fun watchPosition(reply: TokamakPluginReply): () -> Unit =
         runCatching {
             positions.watch({ reply(Result.success(position(it))) }) {

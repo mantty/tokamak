@@ -39,16 +39,24 @@ async function until(condition: () => boolean): Promise<void> {
 
 const calls = (native: FakeNativeTransport, method: string) => native.sent.filter((request) => request.method === method);
 
-void test("the position comes from the native endpoint, which may answer with one no older than maximumAge", async () => {
-  let asked: unknown;
+void test("a recent position no older than maximumAge answers before any timeout, without a new fix", async () => {
+  const asked: unknown[] = [];
   const native = device("ios", {
-    getCurrentPosition: (request) => {
-      asked = request.arguments;
+    recentPosition: (request) => {
+      asked.push(request.arguments);
       return { value: position };
     },
   });
-  assert.deepEqual(await location(native.ctx).getCurrentPosition({ maximumAge: 1000 }), position);
-  assert.deepEqual(asked, { maximumAge: 1000 });
+  assert.deepEqual(await location(native.ctx).getCurrentPosition({ maximumAge: 1000, timeout: 0 }), position);
+  assert.deepEqual(await location(native.ctx).getCurrentPosition({ maximumAge: Infinity }), position);
+  assert.deepEqual(asked, [{ maximumAge: 1000 }, { maximumAge: Number.MAX_VALUE }]);
+  assert.equal(calls(native, "currentPosition").length, 0);
+});
+
+void test("without a recent position, the native endpoint takes a new fix", async () => {
+  const native = device("android", { recentPosition: { value: null }, currentPosition: { value: position } });
+  assert.deepEqual(await location(native.ctx).getCurrentPosition(), position);
+  assert.deepEqual(calls(native, "recentPosition").length, 1);
 });
 
 void test("location asks for in-use permission it lacks, and rejects without it", async () => {
@@ -58,27 +66,28 @@ void test("location asks for in-use permission it lacks, and rejects without it"
   });
   await assert.rejects(location(native.ctx).getCurrentPosition(), { name: "NotAllowedError" });
   assert.equal(calls(native, "requestPermission").length, 1);
-  assert.equal(calls(native, "getCurrentPosition").length, 0);
+  assert.equal(calls(native, "recentPosition").length, 0);
 
   const off = device("android", { servicesEnabled: { value: false } });
   await assert.rejects(location(off.ctx).getCurrentPosition(), { name: "NotReadableError", message: "Location services are disabled" });
 });
 
 void test("no position in time rejects with TimeoutError and cancels the native request", async () => {
-  const native = device("android", { getCurrentPosition: () => undefined });
+  const native = device("android", { recentPosition: { value: null }, currentPosition: () => undefined });
   await assert.rejects(location(native.ctx).getCurrentPosition({ timeout: 10 }), { name: "TimeoutError" });
-  const [request] = calls(native, "getCurrentPosition");
+  const [request] = calls(native, "currentPosition");
   assert.ok(native.sent.some(({ type, id }) => type === "cancel" && id === request.id));
 });
 
 void test("no position in the background reports missing background permission", async () => {
   const native = device("android", {
-    getCurrentPosition: { value: null },
+    recentPosition: { value: null },
+    currentPosition: { value: null },
     lifecycleStage: { value: "background" },
   });
   await assert.rejects(location(native.ctx).getCurrentPosition(), { name: "NotAllowedError", message: /background/ });
 
-  const foreground = device("android", { getCurrentPosition: { value: null }, lifecycleStage: { value: "foreground" } });
+  const foreground = device("android", { recentPosition: { value: null }, currentPosition: { value: null }, lifecycleStage: { value: "foreground" } });
   await assert.rejects(location(foreground.ctx).getCurrentPosition(), { name: "NotReadableError" });
 });
 

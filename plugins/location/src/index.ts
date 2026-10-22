@@ -40,9 +40,12 @@ class Location extends Plugin {
    */
   async getCurrentPosition({ maximumAge = 0, timeout }: PositionOptions = {}): Promise<Position> {
     await this.#authorize();
+    // JSON has no Infinity, which accepts any recent position.
+    const recent = await this.call<Position | null>("recentPosition", { maximumAge: Math.min(maximumAge, Number.MAX_VALUE) });
+    if (recent) return recent;
     const located = new AbortController();
     const timer = timeout === undefined ? undefined : setTimeout(() => { located.abort(timedOut()); }, timeout);
-    const position = await this.call<Position | null>("getCurrentPosition", { maximumAge }, { signal: located.signal })
+    const position = await this.call<Position | null>("currentPosition", null, { signal: located.signal })
       .finally(() => { clearTimeout(timer); });
     if (position) return position;
     // Android finds no position in the background without background permission.

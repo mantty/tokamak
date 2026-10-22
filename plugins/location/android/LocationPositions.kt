@@ -15,23 +15,17 @@ import com.tokamak.runtime.TokamakPluginError
  * the network, or any other enabled provider. Each throws `SecurityException` without permission.
  */
 internal class LocationPositions(private val context: Context, private val manager: LocationManager) {
-    /**
-     * Passes [found] the provider's last known position when it is no older than [maximumAge]
-     * milliseconds, or a new fix, or null when Android finds none, and returns the cancellation.
-     */
-    fun current(maximumAge: Double, found: (Location?) -> Unit): () -> Unit {
-        val name = provider()
-        val recent = manager.getLastKnownLocation(name)
-        if (recent != null && age(recent) <= maximumAge) {
-            found(recent)
-            return {}
-        }
+    /** The provider's last known position when it is no older than [maximumAge] milliseconds. */
+    fun recent(maximumAge: Double): Location? = manager.getLastKnownLocation(provider())?.takeIf { age(it) <= maximumAge }
+
+    /** Passes [found] a new fix, or null when Android finds none, and returns the cancellation. */
+    fun current(found: (Location?) -> Unit): () -> Unit {
         val signal = CancellationSignal()
-        manager.getCurrentLocation(name, highAccuracy(0), signal, context.mainExecutor) { found(it) }
+        manager.getCurrentLocation(provider(), highAccuracy(0), signal, context.mainExecutor) { found(it) }
         return signal::cancel
     }
 
-    /** Passes [next] each position, and [disabled] the provider turning off, until the returned release. */
+    /** Passes [next] each position, and [disabled] the provider turning off, until the returned release runs. */
     fun watch(next: (Location) -> Unit, disabled: () -> Unit): () -> Unit {
         val listener = object : LocationListener {
             override fun onLocationChanged(location: Location) = next(location)

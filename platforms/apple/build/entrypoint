@@ -188,8 +188,9 @@ for plugin in "$input/plugins"/*/; do
   for source in "$plugin/sources"/*; do
     case "$source" in
       *.swift)
-        cp "$source" "$plugin_sources/$plugin_id-${source##*/}"
-        swift_sources+=("$plugin_sources/$plugin_id-${source##*/}")
+        named=$plugin_sources/$plugin_id-${source##*/}
+        cp "$source" "$named"
+        swift_sources+=("$named")
         ;;
       *)
         echo "Apple plugin source must be Swift: $source" >&2
