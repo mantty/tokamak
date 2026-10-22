@@ -73,12 +73,10 @@ pub(crate) fn run(request: &Request) -> Result<()> {
     if device.platform == Platform::Ios && request.host_address.is_none() {
         println!("Using detected host address {relay_host} for physical iOS development");
     }
+    let build_dir = project.join("build");
     let plugin = VitePlugin::new(
-        &project
-            .join("build")
-            .join(".tokamak")
-            .join("dev")
-            .join("vite"),
+        &build_dir,
+        &build_dir.join(".tokamak").join("dev").join("vite"),
     );
     plugin.clear()?;
     let session_token = session_token()?;
@@ -1005,7 +1003,7 @@ mod tests {
             )?;
             let reported = Self {
                 _server: server,
-                plugin: VitePlugin::new(directory.path()),
+                plugin: VitePlugin::new(directory.path(), directory.path()),
                 directory,
                 relay,
             };
@@ -1096,7 +1094,7 @@ mod tests {
     #[test]
     fn stops_waiting_when_the_plugin_reports_an_error() -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
-        let plugin = VitePlugin::new(directory.path());
+        let plugin = VitePlugin::new(directory.path(), directory.path());
         let error = "Vite is running in middleware mode";
         fs::write(
             directory.path().join("server.json"),

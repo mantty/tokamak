@@ -17,9 +17,10 @@ use tokamak_cli::Platform;
 pub(crate) const PLUGIN_HINT: &str =
     "the Vite config must include tokamak() from @tokamakdev/tok/vite next to cloudflare()";
 
-/// The plugin's output directory.
+/// The plugin's output directory, and tok's build directory, which holds it.
 pub(crate) struct VitePlugin {
     output: PathBuf,
+    build_dir: PathBuf,
 }
 
 /// The plugin's `config.json`: the Vite root and the plugin's options.
@@ -64,11 +65,12 @@ pub(crate) struct ServerReport {
 }
 
 impl VitePlugin {
-    /// The plugin writing to `output`, which the project's commands read in
-    /// Node's form.
-    pub(crate) fn new(output: &Path) -> Self {
+    /// The plugin writing to `output` in tok's `build_dir`, which the
+    /// project's commands read in Node's form.
+    pub(crate) fn new(build_dir: &Path, output: &Path) -> Self {
         Self {
             output: paths::command_path(output),
+            build_dir: paths::command_path(build_dir),
         }
     }
 
@@ -77,9 +79,13 @@ impl VitePlugin {
         paths::reset_path(&self.output)
     }
 
-    /// The environment variable that activates the plugin.
-    pub(crate) fn environment(&self) -> [(&'static str, &OsStr); 1] {
-        [("TOKAMAK_VITE_OUTPUT", self.output.as_os_str())]
+    /// The environment variables that activate the plugin: its output, and
+    /// tok's build directory, which the development server leaves unwatched.
+    pub(crate) fn environment(&self) -> [(&'static str, &OsStr); 2] {
+        [
+            ("TOKAMAK_VITE_OUTPUT", self.output.as_os_str()),
+            ("TOKAMAK_BUILD_DIR", self.build_dir.as_os_str()),
+        ]
     }
 
     /// The environment variables that activate the plugin in a development
@@ -89,10 +95,11 @@ impl VitePlugin {
         &'a self,
         session_token: &'a str,
         platform: Platform,
-    ) -> [(&'static str, &'a OsStr); 3] {
-        let [output] = self.environment();
+    ) -> [(&'static str, &'a OsStr); 4] {
+        let [output, build_dir] = self.environment();
         [
             output,
+            build_dir,
             ("TOKAMAK_SESSION_TOKEN", OsStr::new(session_token)),
             ("TOKAMAK_PLATFORM", OsStr::new(platform.namespace())),
         ]
