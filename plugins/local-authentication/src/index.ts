@@ -20,6 +20,10 @@ class LocalAuthentication extends Plugin {
     return this.call("status", { authentication });
   }
 
+  /**
+   * Asks the device owner to authenticate. Rejects with `NeedsUIError` off screen on iOS and
+   * Android, where the system cannot show its prompt.
+   */
   authenticate(authentication: Authentication, options: AuthenticateOptions): Promise<void> {
     return this.call("authenticate", { authentication, prompt: options.prompt });
   }

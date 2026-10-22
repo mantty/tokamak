@@ -277,15 +277,9 @@ function nativeConnectionModule(relay: DeviceRelay | undefined): string {
 export const connect = ctx => connectDevice(${JSON.stringify(relay)}, ctx);`;
 }
 
-/** Each plugin operation's native platforms: those its manifest names, or every one the plugin builds for. */
+/** The native platforms of each plugin operation. */
 function availability(plugins: PluginContract[]): Availability {
-  return Object.fromEntries(plugins.map(({ definition, operations }) => [
-    definition.id,
-    Object.fromEntries(operations.map(operation => [
-      operation,
-      definition.operations[operation]?.platforms.map(({ name }) => name) ?? definition.platforms,
-    ])),
-  ]));
+  return Object.fromEntries(plugins.map(({ definition, operations }) => [definition.id, operations]));
 }
 
 function serviceEntrypoint(entry: string | undefined, services: NativeService[]): string {

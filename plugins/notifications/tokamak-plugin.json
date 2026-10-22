@@ -72,19 +72,5 @@
   "web": {
     "module": "web/client.ts",
     "export": "notifications"
-  },
-  "operations": {
-    "requestPermission": {
-      "foreground": [
-        "ios",
-        "android"
-      ]
-    },
-    "openSettings": {
-      "foreground": [
-        "ios",
-        "android"
-      ]
-    }
   }
 }

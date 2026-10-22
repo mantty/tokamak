@@ -36,6 +36,7 @@ class Notifications extends Plugin {
    * Asks the user for permission to show notifications, when the system has not asked already.
    * Apple platforms ask for what `options` names: a provisional grant asks again without
    * `provisional`, and a grant gains `criticalAlert` or `providesAppNotificationSettings` when asked.
+   * Off screen on iOS and Android, a request that would show the prompt rejects with `NeedsUIError`.
    */
   requestPermission(options: PermissionOptions = {}): Promise<Permission> {
     return this.call("requestPermission", options);
@@ -46,12 +47,18 @@ class Notifications extends Plugin {
     return this.call("settings");
   }
 
-  /** Sets the app's badge count, or removes the badge with 0. Not supported on Android. */
+  /**
+   * Sets the app's badge count, or removes the badge with 0.
+   * @platforms ios macos
+   */
   setBadge(count: number): Promise<void> {
     return this.call("setBadge", { count });
   }
 
-  /** Opens the app's notification settings in the system's. Not supported on the web. */
+  /**
+   * Opens the app's notification settings in the system's. Rejects with `NeedsUIError` off screen on
+   * iOS and Android. Not supported on the web.
+   */
   openSettings(options: OpenSettingsOptions = {}): Promise<void> {
     return this.call("openSettings", options);
   }
@@ -99,12 +106,18 @@ class Notifications extends Plugin {
     return this.call("unsubscribe");
   }
 
-  /** FCM only: receives the push messages the app's server sends to `topic`. */
+  /**
+   * Receives the push messages the app's server sends to `topic` through FCM.
+   * @platforms android
+   */
   subscribeToTopic(topic: string): Promise<void> {
     return this.call("subscribeToTopic", { topic });
   }
 
-  /** FCM only: stops receiving the push messages sent to `topic`. */
+  /**
+   * Stops receiving the push messages sent to `topic` through FCM.
+   * @platforms android
+   */
   unsubscribeFromTopic(topic: string): Promise<void> {
     return this.call("unsubscribeFromTopic", { topic });
   }

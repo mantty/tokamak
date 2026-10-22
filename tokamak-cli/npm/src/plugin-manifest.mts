@@ -11,14 +11,6 @@ export interface ModuleExport {
   export: string;
 }
 
-/** Where an operation runs, and what it needs there. */
-export interface Operation {
-  /** The native platforms that implement it, with any minimum OS version. */
-  platforms: { name: NativePlatform; minimum?: string }[];
-  /** The native platforms where it needs the app in the foreground, to show UI. */
-  foreground: NativePlatform[];
-}
-
 export interface PluginDefinition {
   id: string;
   package: string;
@@ -29,8 +21,6 @@ export interface PluginDefinition {
   client: string;
   /** The native platforms the plugin builds for. */
   platforms: NativePlatform[];
-  /** Each operation the manifest describes; others run on every platform the plugin builds for. */
-  operations: Record<string, Operation>;
 }
 
 const nativePlatforms: readonly NativePlatform[] = ["ios", "macos", "android", "windows", "linux"];
@@ -63,6 +53,9 @@ export function discoverPlugins(root: string): PluginDefinition[] {
     }
     const reserved = reservedIds.find(word => data.id === word || data.id.startsWith(`${word}-`));
     if (reserved) throw new Error(`${manifest}: plugin id must not start with '${reserved}', which Tokamak's options use.`);
+    if (data.operations !== undefined) {
+      throw new Error(`${manifest}: operations is no longer read; tag a method that only some platforms implement with @platforms in its doc comment.`);
+    }
     const api = moduleExport(directory, data.api, "api");
     if (plugins.has(data.id)) throw new Error(`Duplicate Tokamak plugin id ${data.id}.`);
     const platforms = nativePlatforms.filter(platform => data.platforms?.[platform] !== undefined);
@@ -72,7 +65,6 @@ export function discoverPlugins(root: string): PluginDefinition[] {
       binding: `TOKAMAK_${data.id.toUpperCase().replaceAll("-", "_")}`,
       client: `${name}/client`,
       platforms,
-      operations: operations(manifest, data.operations ?? {}, platforms),
     });
   }
   return [...plugins.values()].sort((left, right) => left.id.localeCompare(right.id));
@@ -89,37 +81,4 @@ function moduleExport(root: string, reference: unknown, field: string): ModuleEx
     throw new Error(`${root}: ${field}.module must be a file inside the plugin package.`);
   }
   return { module: module.split(path.sep).join("/"), export: value.export };
-}
-
-/** The manifest's `operations`, each on platforms the plugin builds for. */
-function operations(manifest: string, value: unknown, built: NativePlatform[]): Record<string, Operation> {
-  const fail = (message: string): never => { throw new Error(`${manifest}: ${message}`); };
-  const platform = (name: string, field: string): NativePlatform =>
-    built.includes(name as NativePlatform) ? name as NativePlatform : fail(`${field} names ${name}, which the plugin does not build for.`);
-  if (!isRecord(value)) return fail("operations must be an object.");
-  const result: Record<string, Operation> = {};
-  for (const [name, entry] of Object.entries(value)) {
-    const field = `operations.${name}`;
-    if (!isRecord(entry)) return fail(`${field} must be an object.`);
-    const { platforms, foreground = false, ...unknown } = entry;
-    if (Object.keys(unknown).length) fail(`${field} has unknown keys: ${Object.keys(unknown).join(", ")}.`);
-    if (platforms !== undefined && (!isRecord(platforms) ||
-      !Object.values(platforms).every(version => typeof version === "string" || version === true))) {
-      fail(`${field}.platforms must map platforms to a minimum OS version, or true for the app's minimum.`);
-    }
-    if (typeof foreground !== "boolean" && !(Array.isArray(foreground) && foreground.every(name => typeof name === "string"))) {
-      fail(`${field}.foreground must be true or a list of platforms.`);
-    }
-    const implemented = platforms === undefined
-      ? built.map(name => ({ name }))
-      : Object.entries(platforms as Record<string, string | true>).map(([name, minimum]) =>
-        ({ name: platform(name, `${field}.platforms`), minimum: minimum === true ? undefined : minimum }));
-    const needs = foreground === true ? implemented.map(({ name }) => name) : foreground === false ? [] : foreground as string[];
-    result[name] = { platforms: implemented, foreground: needs.map(name => platform(name, `${field}.foreground`)) };
-  }
-  return result;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
