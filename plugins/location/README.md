@@ -137,6 +137,13 @@ event:
 | `onVisit` | Apple only: `{ latitude, longitude, accuracy, arrival, departure }`, times in milliseconds or null when unknown. |
 | `onLocationError` | `{ name, message, id? }` when a background service fails, with the region's `id` when it concerns one. |
 
+In Doze, the idle state of an unplugged Android device left still with its
+screen off, Android starts the app for updates and region transitions alike,
+but only an update's delivery lets the app use the network for a while. The
+listeners for a region transition, `onStart` among them when it launches the
+app, have no network until Doze ends: record the transition and send it from
+a later event.
+
 `positions` holds the positions that arrived while the Worker handled the
 previous update, oldest first, so a slow Worker never builds a queue. Each is
 newer than those delivered before it, so a position that both updates and
