@@ -215,16 +215,16 @@ class DispatchTest {
     @Test
     fun events() {
         val host = Host()
-        val dispatch = TokamakExamplePluginDispatch
+        val codec = TokamakExamplePluginDispatch
         val region = Region("home", 50.0, null, emptyList(), emptyMap(), null)
-        val entered = dispatch.eventPayload("entered", region).toString(Charsets.UTF_8)
+        val entered = codec.eventPayload("entered", region).toString(Charsets.UTF_8)
         check(entered.contains("\"id\":\"home\"") && !entered.contains("onEntry")) { entered }
         val mistakes = listOf(
             Triple("entered", "home", "event entered takes Region, not String"),
             Triple("left", region, "android/Exports.kt lists no event left"),
         )
         for ((name, event, message) in mistakes) {
-            val error = runCatching { dispatch.eventPayload(name, event) }.exceptionOrNull() as TokamakPluginError
+            val error = runCatching { codec.eventPayload(name, event) }.exceptionOrNull() as TokamakPluginError
             check(error.errorName == "TypeError" && error.message == message) { error.message.orEmpty() }
         }
 

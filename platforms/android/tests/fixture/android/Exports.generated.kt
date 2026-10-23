@@ -12,7 +12,7 @@ import kotlin.reflect.KClass
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Routes the Worker's requests to the methods [TokamakExamplePlugin] exports, and encodes the events it emits. */
+/** Routes the Worker's requests to the methods [TokamakExamplePlugin] exports. */
 class TokamakExamplePluginDispatch(host: TokamakHost) : TokamakDispatch<TokamakExamplePlugin>(TokamakExamplePlugin(host), host) {
     override fun callBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply): (() -> Unit)? {
         val arguments by lazy(LazyThreadSafetyMode.NONE) { TokamakValue.arguments(payload) }

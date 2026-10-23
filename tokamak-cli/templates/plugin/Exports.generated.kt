@@ -10,7 +10,7 @@ import com.tokamak.runtime.TokamakValue
 import kotlin.reflect.KClass
 import org.json.JSONObject
 
-/** Routes the Worker's requests to the methods [{{class}}] exports, and encodes the events it emits. */
+/** Routes the Worker's requests to the methods [{{class}}] exports. */
 class {{class}}Dispatch(host: TokamakHost) : TokamakDispatch<{{class}}>({{class}}(host), host) {
     override fun callBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply): (() -> Unit)? {
         val arguments by lazy(LazyThreadSafetyMode.NONE) { TokamakValue.arguments(payload) }
