@@ -299,6 +299,7 @@ final class TokamakApp {
   weak var webView: WKWebView?
   let resources = TokamakResources()
   var isInForeground = true
+  var plugins: [String: any TokamakPlugin] = [:]
   func emit(
     _ name: String, payload: Data, timeout: TimeInterval,
     completion: @escaping (Result<Data, Error>) -> Void

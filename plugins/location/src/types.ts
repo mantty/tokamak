@@ -1,11 +1,12 @@
+/** A position's coordinates, without those the device does not report. */
 export interface Coordinates {
   readonly latitude: number;
   readonly longitude: number;
   readonly accuracy: number;
-  readonly altitude: number | null;
-  readonly altitudeAccuracy: number | null;
-  readonly heading: number | null;
-  readonly speed: number | null;
+  readonly altitude?: number;
+  readonly altitudeAccuracy?: number;
+  readonly heading?: number;
+  readonly speed?: number;
 }
 
 export interface Position {
@@ -157,10 +158,10 @@ export interface Visit {
   readonly longitude: number;
   /** In metres. */
   readonly accuracy: number;
-  /** Milliseconds since the epoch, or null when unknown. */
-  readonly arrival: number | null;
-  /** Milliseconds since the epoch, or null before the user leaves. */
-  readonly departure: number | null;
+  /** Milliseconds since the epoch, absent when unknown. */
+  readonly arrival?: number;
+  /** Milliseconds since the epoch, absent before the user leaves. */
+  readonly departure?: number;
 }
 
 /** A failure of a background location service. */
@@ -174,15 +175,3 @@ export interface LocationErrorEvent {
 
 export type Listener<T> = (event: T) => void;
 export type ErrorListener = (error: DOMException) => void;
-
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace -- events are declared by merging into Tokamak.Events.
-  namespace Tokamak {
-    interface Events {
-      "location.update": LocationUpdate;
-      "location.region": RegionTransition;
-      "location.visit": Visit;
-      "location.error": LocationErrorEvent;
-    }
-  }
-}

@@ -310,14 +310,14 @@ fn ios_minimum() -> Result<String> {
     )
 }
 
-/// Stages the plugin `id` in `input`, whose one source, `0-Plugin.swift`,
+/// Stages the plugin `id` in `input`, whose one source, `Plugin.swift`,
 /// defines `class`.
 fn stage_plugin(input: &Path, id: &str, class: &str) -> Result<()> {
     let plugin = input.join("plugins").join(id);
-    fs::create_dir_all(plugin.join("sources"))?;
+    fs::create_dir_all(plugin.join("native"))?;
     fs::write(plugin.join("class"), class)?;
     fs::write(
-        plugin.join("sources/0-Plugin.swift"),
+        plugin.join("native/Plugin.swift"),
         format!(
             r#"final class {class}: TokamakPlugin {{
   let id = "{id}"
@@ -333,40 +333,21 @@ fn stage_plugin(input: &Path, id: &str, class: &str) -> Result<()> {
 #[test]
 fn packages_the_app_and_its_plugins_into_the_macos_bundle() -> Result<()> {
     let fixture = Fixture::new("macos-arm64")?;
-    let plugin = fixture.input().join("plugins/location");
-    fs::create_dir_all(plugin.join("sources"))?;
-    fs::write(plugin.join("class"), "TokamakLocationPlugin")?;
-    for (index, (name, source)) in [
-        (
-            "LocationEvents.swift",
-            include_str!("../../../../plugins/location/apple/LocationEvents.swift"),
-        ),
-        (
-            "LocationPlugin.swift",
-            include_str!("../../../../plugins/location/apple/LocationPlugin.swift"),
-        ),
-        (
-            "LocationPositions.swift",
-            include_str!("../../../../plugins/location/apple/LocationPositions.swift"),
-        ),
-        (
-            "LocationRegions.swift",
-            include_str!("../../../../plugins/location/apple/LocationRegions.swift"),
-        ),
-        (
-            "LocationUpdates.swift",
-            include_str!("../../../../plugins/location/apple/LocationUpdates.swift"),
-        ),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        fs::write(plugin.join(format!("sources/{index}-{name}")), source)?;
-    }
-    // Plugins' sources may share a file name.
-    for (id, class) in [("echo", "TokamakEchoPlugin"), ("ping", "TokamakPingPlugin")] {
+    for (id, class) in [
+        ("location", "TokamakLocationPlugin"),
+        ("echo", "TokamakEchoPlugin"),
+        ("ping", "TokamakPingPlugin"),
+    ] {
         stage_plugin(&fixture.input(), id, class)?;
     }
+    // Plugins' sources may share a file name, as may a plugin's own in its
+    // directories: the build compiles each, so the registry finds every class.
+    let plugin = fixture.input().join("plugins/location");
+    fs::create_dir_all(plugin.join("native/types"))?;
+    fs::write(
+        plugin.join("native/types/Plugin.swift"),
+        "struct LocationTypes {}\n",
+    )?;
     fs::write(
         plugin.join("plist"),
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -570,6 +551,16 @@ fn rejects_invalid_icons_plugin_classes_and_build_numbers() -> Result<()> {
     assert!(
         failure(&mut fixture.fake_build()?)?
             .contains("plugin 'location' has invalid macos class 'Location-Plugin'")
+    );
+
+    // Swift needs unique file names, which staged sources from different paths can share.
+    stage_plugin(&fixture.input(), "location", "TokamakLocationPlugin")?;
+    fs::create_dir_all(plugin.join("native/regions"))?;
+    fs::write(plugin.join("native/regions/Store.swift"), "")?;
+    fs::write(plugin.join("native/regions-Store.swift"), "")?;
+    assert!(
+        failure(&mut fixture.fake_build()?)?
+            .contains("stages as location-regions-Store.swift, as another source does")
     );
     Ok(())
 }

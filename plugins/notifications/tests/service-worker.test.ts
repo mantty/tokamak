@@ -154,9 +154,9 @@ void test("normalises a push payload with missing fields", async () => {
     handlePush({ ...event, data: { text: () => JSON.stringify({ title: 3, data: [1] }) } });
   });
 
-  const posted = page.posted[0] as { message: { id: string; title: null; body: null; data: object } };
+  const posted = page.posted[0] as { message: { id: string; data: object } };
   assert.equal(typeof posted.message.id, "string");
-  assert.deepEqual({ ...posted.message, id: "" }, { id: "", title: null, body: null, data: {} });
+  assert.deepEqual({ ...posted.message, id: "" }, { id: "", data: {} });
 });
 
 void test("shows a push payload that is not JSON as the body", async () => {
@@ -203,7 +203,7 @@ void test("holds an opened notification and focuses an open page", async () => {
   assert.deepEqual(page.posted, [{ type: "tokamak-notifications:opened" }]);
   const held = [...(cacheStorage.entries.get(OPENED_CACHE)?.values() ?? [])];
   assert.deepEqual(held.map((body) => JSON.parse(body) as unknown), [
-    { id: "n1", title: "Hi", body: null, data: { n: 1 }, source: "local", action: null, input: null },
+    { id: "n1", title: "Hi", data: { n: 1 }, source: "local" },
   ]);
 });
 
@@ -245,8 +245,8 @@ void test("reports an action and its typed text, opening the app only for a fore
   assert.deepEqual(
     held.map((body) => JSON.parse(body) as { action: string; input: string | null }),
     [
-      { id: "n1", title: "Hi", body: null, data: {}, source: "local", action: "reply", input: "On my way" },
-      { id: "n1", title: "Hi", body: null, data: {}, source: "local", action: "open", input: null },
+      { id: "n1", title: "Hi", data: {}, source: "local", action: "reply", input: "On my way" },
+      { id: "n1", title: "Hi", data: {}, source: "local", action: "open" },
     ],
   );
 });

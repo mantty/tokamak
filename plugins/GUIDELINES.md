@@ -7,16 +7,17 @@ The app uses the same project, dependencies and build commands.
 ## Start a package
 
 ```sh
-tok plugin page-tools
-# Or start with a small native implementation:
-tok plugin device-tools --native apple
-tok plugin device-tools --native android
+tok plugin new page-tools
+# Or start with a small native implementation on the platforms it runs on:
+tok plugin new device-tools --platforms ios,macos,android
 ```
 
-The default scaffold composes `ctx.webview` in TypeScript. Native scaffolds add
-one small Swift or Kotlin endpoint that emits an event, declared in `/events`.
-Each has a browser implementation in `web/`. None requires Rust, a custom
-protocol, or a separately maintained frontend router. The directory must be new.
+The default scaffold composes `ctx.webview` in TypeScript. A native scaffold
+adds one small method that emits an event, and the registration file that lists
+both: in Swift, in `apple/`, for iOS or macOS, and in Kotlin, in `android/`, for
+Android. Each scaffold has a browser implementation in `web/`. None requires
+Rust, a custom protocol, or a separately maintained frontend router.
+The directory must be new.
 
 Install dependencies in the package and run `npm run check`. Add it to your
 app with `npm install ../page-tools`, a pnpm workspace dependency, or Yarn's
@@ -60,7 +61,7 @@ only some of them implement with `@platforms` in its doc comment, naming them:
  * Receives the visits the Worker's `onVisit` receives.
  * @platforms ios macos
  */
-onVisit(): JsonStream<Visit> { return this.stream("onVisit"); }
+onVisit: (): JsonStream<Visit> => apple(ctx).onVisit(),
 ```
 
 The build reads the tag and fails when it names a platform the plugin does not
@@ -68,74 +69,191 @@ build for. Say in the doc comment when an operation can reject with
 `NeedsUIError`, as one that shows a prompt does.
 
 Generated editor documentation adds each operation's platforms and browser
-implementation to its doc comment. `capabilities` on the native SDK
-(a `Plugin` getter, or `capabilitiesOf(ctx, id)` for an object factory) and on
-the generated client reports whether each operation is implemented where the app
-runs: the native platform, or the browser implementation on the web. It does not
-report permission. `ctx.platform` names the native platform.
+implementation to its doc comment. `capabilitiesOf(ctx, id)` in the Tokamak
+worker, and `capabilities` on the generated client, report whether each
+operation is implemented where the app runs: the native platform, or the
+browser implementation on the web. They do not report permission.
+`ctx.platform` names the native platform, as does `platform` from
+`@tokamakdev/plugin` while modules load.
 
 Only expose data, errors and byte `ReadableStream`s in the callable API. Public
 calls return promises at the caller. Functions, arbitrary class instances and
 remote objects cannot cross this boundary; invalid signatures fail generation.
 Keep low-level native objects inside the Tokamak worker.
 
-## Native code and codecs
+## Native methods
 
-Extend `Plugin` for native endpoints. Its protected `call` encodes ordinary
-values; `callBytes` carries raw bytes; `stream` returns encoded values consumed
-with `decodeValues` from `@tokamakdev/plugin/streams`.
+A native plugin lists the methods the Worker calls, and the events native code
+emits, in a registration file, `apple/Exports.swift` or `android/Exports.kt`,
+one line each:
 
-Both calls take `{ signal, body }`. Aborting `signal` cancels the native work.
-A `body` is a `ReadableStream<Uint8Array>` that the native endpoint reads one
-chunk at a time, through Swift `call(method:arguments:body:reply:)` or Kotlin
-`call(method, arguments, body, reply)`: each `body.read` pulls the next chunk,
-nil after the last, so the Worker sends no faster than the plugin reads. A
-native source the reader drives, such as a file, is a call per chunk from a
-`ReadableStream`'s `pull`.
-
-`stream(method, value, overflow)` buffers up to 1 MiB for a slow reader. Pass
-`"dropOldest"` for samples where only recent values matter, such as sensor
-readings; the default `"error"` ends the stream with `QuotaExceededError`. A
-promised `value` subscribes once it resolves, such as after a permission check,
-and its rejection ends the stream.
-
-Swift `TokamakPlugin.call` and Kotlin `TokamakPlugin.call` receive decoded JSON
-and return ordinary values through their reply callback. A reply of Swift `Data`
-or Kotlin `ByteArray` is sent as raw bytes, which TypeScript reads with
-`callBytes`. Override `callBytes` or `subscribeBytes` when your capability needs
-its own binary argument format. Routing, failure and completion travel
-separately from payload bytes.
-
-Large native data stays native. A subscription retains an object with
-`host.resources.retain(object, reply:)` and returns the release it gives back.
-TypeScript acquires it with the protected `resource(method)`, which resolves to
-a `NativeReference` owned by the invocation. Pass it to another plugin with
-`reference(value)` inside the call's arguments; that plugin's native code finds
-the same object with `host.resources.get(id, as:)` on Apple or
-`host.resources.get(id, Type::class.java)` on Android. `close()` or the end of
-the invocation releases it, and so does garbage collection where the Worker
-has `FinalizationRegistry` (Workers from compatibility date 2025-05-05).
-`bytes()` copies the current contents of a retained `Data` or `ByteArray` into
-JavaScript.
-
-```ts
-class Camera extends Plugin {
-  capture(): Promise<NativeReference> { return this.resource("capture"); }
-}
-class Encoder extends Plugin {
-  encode(frame: NativeReference): Promise<number> {
-    return this.call("encode", { frame: this.reference(frame) });
+```swift
+// apple/Exports.swift
+extension TokamakAlarmsPlugin: TokamakExports {
+  static func exports(_ e: inout TokamakExporter<TokamakAlarmsPlugin>) {
+    e.call(set, doc: "Sets an alarm, replacing one with the same `id`.")
+    e.stream(rings, doc: "Alarms as they ring.")
+    e.event("rang", Alarm.self, doc: "Receives each alarm that rang, even in the background.")
   }
 }
 ```
 
+```kotlin
+// android/Exports.kt
+object AlarmsExports : TokamakExports<TokamakAlarmsPlugin> {
+    override fun exports(e: TokamakExporter<TokamakAlarmsPlugin>) {
+        e.call(TokamakAlarmsPlugin::set, doc = "Sets an alarm, replacing one with the same `id`.")
+        e.stream(TokamakAlarmsPlugin::rings, doc = "Alarms as they ring.")
+        e.event("rang", Alarm::class, doc = "Receives each alarm that rang, even in the background.")
+    }
+}
+```
+
+`call` registers a method that returns once; `stream` one that returns values
+until the Worker cancels, with `overflow` for a slow reader; `resource` one
+that returns a native object as a `NativeReference`; `event` an event, by name,
+with the type its listeners receive and, as `reply`, the type they may reply
+with. Write options as literal values: the Swift tooling reads the file without
+running it. Register an overloaded Swift method with its labels, such as
+`e.call(set(_:))`.
+
+`tok plugin generate apple` or `tok plugin generate android`, which the
+package's `generate:apple` and `generate:android` scripts run, compiles the
+plugin and writes two files from the registered methods' signatures and events'
+types:
+
+- `src/apple.generated.ts` or `src/android.generated.ts`: the family's
+  TypeScript API, a factory `apple(ctx, signal?)` or `android(ctx, signal?)`
+  whose methods reject with `NotSupportedError` off the family's platforms, and
+  a function per event that registers its listeners, such as `onRang`. Aborting
+  `signal` cancels the methods' calls.
+- `apple/Exports.generated.swift` or `android/Exports.generated.kt`: the native
+  dispatch, which decodes the Worker's arguments, calls the method, and encodes
+  its result, and which encodes the events native code emits.
+
+Commit both, and export the TypeScript as `./apple` and `./android` so app
+code can call it too. Generating needs the family's toolchain: Xcode for
+`apple`; a JDK, Gradle and the Android SDK for `android`. `tok plugin check`,
+which `npm run check` and `prepack` run, fails when a generated file differs
+from what this host generates, and skips a family the host cannot describe.
+
+Signatures and events use these types. A Kotlin event's data and reply are each
+one class, such as a data class or `JSONObject`.
+
+| Swift | Kotlin | TypeScript |
+| --- | --- | --- |
+| `String`, `Bool`, numeric types | `String`, `Boolean`, numeric types | `string`, `boolean`, `number` |
+| `T?` | `T?` | `T \| null`; a struct field is `?: T` |
+| `[T]`, `[String: T]` | `List<T>`, `Map<String, T>` | `T[]`, `Record<string, T>` |
+| `Codable` struct | data class | interface |
+| `String` raw-value enum | enum class | union of string literals |
+| `TokamakUnion` enum | sealed interface or class | union |
+| `TokamakJSON` | `Any?`, `JSONObject`, `JSONArray` | `JsonValue` |
+| `Data` | `ByteArray` | `Uint8Array` |
+| `TokamakPluginBody`, last | `TokamakPluginBody`, last | `ReadableStream<Uint8Array>` |
+| `TokamakReference<T>` | `TokamakReference<T>` | `NativeReference` |
+
+Every plugin's Swift compiles into the app's one module, where two plugins'
+top-level names collide. Declare a plugin's types in an extension of its plugin
+class, such as `extension TokamakAlarmsPlugin { struct Alarm: Codable { … } }`,
+which keeps the name `Alarm` in TypeScript, and keep extensions of system types
+`fileprivate`. Kotlin plugins have a package each.
+
+A union's values take one of several forms, such as a sound that is
+`"default"` or `{ name, volume }`. In Swift it is an enum conforming to
+`TokamakUnion`, each case with no associated value, which is the string of its
+name, or one unlabeled associated value, which is that value. In Kotlin it is a
+sealed interface or class, each form an object, which is the string of its
+class's name with a lowercase first letter, a value class, whose value is the
+form's, or a data class:
+
+```swift
+enum Sound: TokamakUnion {
+  case `default`
+  case named(NamedSound)
+}
+```
+
+```kotlin
+sealed interface Sound {
+    data object Default : Sound
+    data class NamedSound(val name: String, val volume: Double?) : Sound
+}
+```
+
+The forms are told apart by their JSON: its kind, a string's value, or, for
+objects, a required field only one form has. A union of objects can instead
+name a field that tags them, with `TokamakTaggedUnion` and `static let tag =
+"type"`, or `@TokamakTag("type")`: each form is then an object whose tag is its
+name. Generation fails when the forms cannot be told apart. Kotlin code
+converts the data classes and sealed types the registration uses to and from
+JSON, to store them, with `host.json(value)` and `host.fromJson(json,
+Type::class)`; Swift code uses `Codable`.
+
+A nil struct field is absent from the JSON, as Swift's `Codable` encodes it.
+A sole `Data` or `ByteArray` argument, and such a result, travel as raw bytes;
+JSON carries the rest. Kotlin numbers beyond 2^53 lose precision as JavaScript
+numbers. A type outside the table fails generation with an error naming it and
+the method.
+
+Swift methods are plain, `async`, or isolated to a global actor such as
+`@MainActor`; a stream returns an `AsyncSequence` such as `AsyncStream`. Kotlin
+methods are plain or `suspend` functions; a stream returns a `Flow`.
+`TokamakListeners` feeds each listener's stream from native callbacks, holding
+values until the first listener when it is created `holding`. A thrown
+`TokamakPluginError` rejects with a `DOMException` of its name and message, and
+cancelling the call cancels the `Task` or coroutine.
+
+The plugin's TypeScript API, the manifest's `api` factory, is written on top of
+the generated ones. `platformApi(ctx, { apple, android })` returns the API of
+the family the app runs on, so a method that every family has is one line, and
+one family's method calls its factory directly:
+
+```ts
+import { platformApi, type TokamakContext } from "@tokamakdev/plugin";
+import { android } from "./android.generated.js";
+import { apple } from "./apple.generated.js";
+
+export function alarms(ctx: TokamakContext) {
+  const native = platformApi(ctx, { apple, android });
+  return {
+    set: (alarm: Alarm): Promise<void> => native.set(alarm),
+    rings: (): JsonStream<Ring> => native.rings(),
+  };
+}
+```
+
+A `JsonValue` parameter takes type aliases, not interfaces: TypeScript gives
+interfaces no index signature to check against it.
+
+A `TokamakPluginBody` is a `ReadableStream<Uint8Array>` that the native method
+reads one chunk at a time: each `body.read` pulls the next chunk, nil after the
+last, so the Worker sends no faster than the plugin reads. A native source the
+reader drives, such as a file, is a call per chunk from a `ReadableStream`'s
+`pull`.
+
+A stream buffers up to 1 MiB for a slow reader. Register it with `dropOldest`
+for samples where only recent values matter, such as sensor readings; the
+default `error` ends the stream with `QuotaExceededError`.
+
+Large native data stays native. A `resource` method returns an object, which
+the runtime retains; TypeScript receives a `NativeReference` owned by the
+invocation. Another plugin's method takes it as a `TokamakReference<T>`
+parameter, whose value is the same object. `close()` or the end of the
+invocation releases it, and so does garbage collection where the Worker has
+`FinalizationRegistry` (Workers from compatibility date 2025-05-05). `bytes()`
+copies the current contents of a retained `Data` or `ByteArray` into
+JavaScript.
+
 Native plugins select a serial executor per operation with `executor(for:)`
 on Apple or `executor(method)` on Android. The default is the UI thread; use a
-plugin-owned queue for work that does not need it. Cancellation uses that same
-executor. Replies can arrive on any thread and go directly to the runtime.
+plugin-owned queue for work that does not need it. Plain methods and Kotlin
+coroutines start on that executor, and cancellation uses it too; Swift `async`
+methods run where their isolation puts them. Replies go directly to the
+runtime from any thread.
 
-Return cancellation for pending native work. Subscription cancellation releases
-its resources when the stream ends or the invocation is torn down. App-owned
+Cancelling a stream ends its `AsyncSequence` or `Flow` collection, which
+releases what the stream holds. App-owned
 background registrations need stable IDs and documented restoration rules;
 they must survive the short invocation that configured them.
 
@@ -152,36 +270,62 @@ The session belongs to the app, so a later invocation ends it by that ID. A
 session that belongs to one invocation is a `NativeReference` or a stream
 instead, which closing or the invocation's end releases.
 
-The manifest's `platforms` entries name the native class and source files.
-Support one platform if that is what the capability needs. Add permissions and
+The manifest's `platforms` entries name the native class. Every Swift file in
+`apple/` and every Kotlin file in `android/` compiles into the app. Support one
+platform if that is what the capability needs. Add permissions and
 other packaging metadata through the existing platform build hooks.
 
 ## Events and browser implementations
 
-Declare each event's data, and any reply, in your types module, then export
-typed registration functions from `/events`:
+Native code emits a registered event with a value of its type. The generated
+dispatch encodes it, and decodes the reply of an event registered with one, such
+as `e.event("due", Alarm.self, reply: Snooze.self)`:
 
-```ts
-declare global {
-  namespace Tokamak {
-    interface Events { "sensor.reading": { value: number } }
-    interface EventReplies { "sensor.reading": { accepted: boolean } }
-  }
-}
-
-export const onReading = defineEvent("sensor.reading");
+```swift
+host.emit("rang", event: alarm, timeout: 10) { result in … }
+host.emit("due", event: alarm, reply: Snooze.self, timeout: 10) { result in … }
 ```
 
-The declarations also type the app's `event(event)` handler, whose
-`TokamakEvent` is a union of every declared event. Event data and replies travel
-as JSON; pass `defineEvent` a codec to carry them as other bytes.
+```kotlin
+host.emit("rang", alarm, 10_000) // blocks until the listeners return
+val snooze = host.emit("due", alarm, Snooze::class, 10_000)
+```
 
-Import and register listeners from `src/tokamak.ts` or its imports. A listener
-receives `(event, env, ctx)`, may call another plugin with `ctx`, and may return
-a typed response. Native code emits the event with `host.emit` (JSON) or
-`host.emitBytes` (bytes) and applies the reply using the platform callback's
-deadline; an empty reply means no listener replied. Synchronous OS callbacks use
+Emitting an event the registration does not list, a value of another type, or
+asking for a reply of another type fails with a `TypeError`. The reply is nil or
+null when no listener replied, and the timeout includes starting the runtime.
+An event is on the platforms that declare its type. Synchronous OS callbacks use
 native configuration; they cannot wait for JavaScript.
+
+The Worker's listeners receive each family's event as its own,
+`<plugin>.<family>.<name>`, such as `alarms.apple.rang`, which the generated
+`onRang` of `src/apple.generated.ts` registers. The plugin's `/events` module
+curates them, as its API curates methods: a listener of the plugin's event
+registers on each family's, mapping data and replies where the families differ.
+
+```ts
+import type { Listener } from "@tokamakdev/plugin/events";
+import * as android from "./android.generated.js";
+import * as apple from "./apple.generated.js";
+
+/** Receives each alarm that rang, even in the background. */
+export function onAlarmRang(listener: Listener<Alarm>): void {
+  apple.onRang(listener);
+  android.onRang(listener);
+}
+```
+
+A generated listener registers only on the platforms that emit its event, so
+on iOS `android.onRang` registers nothing.
+
+Apps import and register listeners from `src/tokamak.ts` or its imports. A
+listener receives `(event, env, ctx)`, may call another plugin with `ctx`, and
+may return a typed reply. The generated declarations also type the app's
+`event(event)` handler, whose `TokamakEvent` is a union of every declared event.
+
+Events travel as JSON. For other bytes, emit with `host.emitBytes` and declare
+the event by hand with `defineEvent(name, { codec, platforms })`, as the
+generated code declares its events.
 
 A browser implementation is optional. Put it in a separate module and reference
 its exported object with `web: { module, export }` in the manifest. Each method

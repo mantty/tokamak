@@ -122,6 +122,9 @@ jobs:
           cargo test -p tokamak --features native
           cargo test --workspace --exclude windows-shell
 
+      - name: Test the Kotlin describer and generated plugin files
+        run: bash platforms/android/tests/describe.sh
+
   apple:
     name: Test Apple
     runs-on: macos-15
@@ -148,11 +151,11 @@ jobs:
           node-version: "22"
 
       - name: Check Swift formatting
-        run: xcrun swift-format lint --strict platforms/apple/source/*.swift platforms/apple/tests/*.swift plugins/*/apple/*.swift
+        run: xcrun swift-format lint --strict platforms/apple/source/*.swift platforms/apple/tests/*.swift platforms/apple/describer/Package.swift platforms/apple/describer/Sources/*/*.swift platforms/apple/describer/Tests/*/*.swift plugins/*/apple/*.swift
 
       - name: Test native plugin requests
         run: |
-          xcrun swiftc -parse-as-library platforms/apple/source/TokamakPlugins.swift platforms/apple/source/TokamakOrigin.swift platforms/apple/source/TokamakResources.swift platforms/apple/source/TokamakControls.swift platforms/apple/tests/plugin-requests.swift -o "$RUNNER_TEMP/plugin-requests"
+          xcrun swiftc -parse-as-library platforms/apple/source/TokamakPlugins.swift platforms/apple/source/TokamakOrigin.swift platforms/apple/source/TokamakResources.swift platforms/apple/source/TokamakControls.swift platforms/apple/source/TokamakExports.swift platforms/apple/tests/plugin-requests.swift -o "$RUNNER_TEMP/plugin-requests"
           "$RUNNER_TEMP/plugin-requests"
 
       - name: Lint Apple Rust
@@ -176,6 +179,11 @@ jobs:
 
       - name: Typecheck plugins
         run: bash platforms/apple/tests/plugins.sh
+
+      - name: Test the Swift describer and generated plugin files
+        run: |
+          swift test --package-path platforms/apple/describer
+          bash platforms/apple/tests/describe.sh
 
   windows:
     name: Test Windows

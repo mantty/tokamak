@@ -11,8 +11,71 @@ fi
 if [[ $# -eq 1 && $1 == certs ]]; then
   exec "$apple_tool" inventory
 fi
+
+# Describes the methods PLUGIN/apple/Exports.swift exports on each PLATFORM
+# into OUTPUT/description.json, with the dispatch that serves them,
+# OUTPUT/Exports.generated.swift. The compiler's symbol graph of the plugin,
+# built with the shell for each platform, gives the methods' types.
+describe() {
+  local plugin=$1 output=$2
+  shift 2
+  if ! xcrun --sdk iphonesimulator --show-sdk-path > /dev/null 2>&1; then
+    echo "Describing an Apple plugin needs Xcode" >&2
+    exit 69
+  fi
+  # Global, for the exit trap.
+  temporary=$(mktemp -d "${TMPDIR:-/tmp}/tokamak-describe.XXXXXX")
+  trap 'rm -rf "$temporary"' EXIT
+  printf '%s\n' 'func tokamakPlugins(app: TokamakApp) -> [any TokamakPlugin] { [] }' > "$temporary/registry.swift"
+  local sources=("$pack/native-shell"/*.swift "$temporary/registry.swift") source
+  while IFS= read -r -d '' source; do
+    [[ ${source##*/} == Exports.generated.swift ]] || sources+=("$source")
+  done < <(find "$plugin/apple" -name '*.swift' -print0 | sort -z)
+  local graphs=() compiles=() platform sdk triple
+  for platform in "$@"; do
+    case "$platform" in
+      ios)
+        sdk=iphonesimulator
+        triple=$(uname -m)-apple-ios$(<"$pack/build/ios-deployment-target")-simulator
+        ;;
+      macos)
+        sdk=macosx
+        triple=$(uname -m)-apple-macos$(<"$pack/build/macos-deployment-target")
+        ;;
+      *)
+        echo "Apple plugins run on ios and macos, not $platform" >&2
+        exit 2
+        ;;
+    esac
+    mkdir "$temporary/$platform"
+    # The platforms compile at once, each into its own log.
+    xcrun --sdk "$sdk" swiftc -emit-module -module-name TokamakDescribed -swift-version 5 \
+      -target "$triple" -F "$pack/frameworks" -module-cache-path "$temporary/cache" \
+      -emit-module-path "$temporary/$platform/TokamakDescribed.swiftmodule" \
+      -emit-symbol-graph -emit-symbol-graph-dir "$temporary/$platform" \
+      -symbol-graph-minimum-access-level private "${sources[@]}" > "$temporary/$platform.log" 2>&1 &
+    compiles+=("$!")
+    graphs+=("$platform=$temporary/$platform/TokamakDescribed.symbols.json")
+  done
+  # The platforms report the same diagnostics, so only the first failure's
+  # show, or else the first platform's warnings.
+  local platforms=("$@") index failed=
+  for index in "${!compiles[@]}"; do
+    if ! wait "${compiles[index]}" && [[ -z $failed ]]; then
+      failed=$index
+    fi
+  done
+  cat "$temporary/${platforms[${failed:-0}]}.log" >&2
+  [[ -z $failed ]] || exit 1
+  "$pack/tools/tokamak-swift-describe" "$plugin/apple/Exports.swift" "$output" "${graphs[@]}"
+}
+if [[ $# -ge 4 && $1 == describe ]]; then
+  describe "${@:2}"
+  exit
+fi
+
 if [[ $# -ne 3 || $1 != build ]]; then
-  echo "usage: entrypoint build INPUT OUTPUT | entrypoint certs" >&2
+  echo "usage: entrypoint build INPUT OUTPUT | entrypoint describe PLUGIN OUTPUT PLATFORM... | entrypoint certs" >&2
   exit 2
 fi
 
@@ -169,10 +232,10 @@ if [[ ! -f "$pack/native-shell/TokamakShell.swift" ]]; then
 fi
 
 # A plugin's class is a Swift type name, which the registry creates, and its
-# sources are Swift.
+# sources are the Swift files in its native directory.
 swift_type='^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$'
 # Swift requires unique file names in a module, so a plugin's source
-# <name> compiles as <plugin>-<name>.
+# <directory>/<name> compiles as <plugin>-<directory>-<name>.
 plugin_sources=$temporary/plugin-sources
 mkdir "$plugin_sources"
 registry=$temporary/TokamakPluginRegistry.swift
@@ -185,19 +248,17 @@ for plugin in "$input/plugins"/*/; do
     exit 1
   fi
   printf '    %s(host: TokamakHost(app: app, plugin: "%s")),\n' "$class" "$plugin_id" >> "$registry"
-  for source in "$plugin/sources"/*; do
-    case "$source" in
-      *.swift)
-        named=$plugin_sources/$plugin_id-${source##*/}
-        cp "$source" "$named"
-        swift_sources+=("$named")
-        ;;
-      *)
-        echo "Apple plugin source must be Swift: $source" >&2
-        exit 1
-        ;;
-    esac
-  done
+  [[ -d "$plugin/native" ]] || continue
+  while IFS= read -r -d '' source; do
+    relative=${source#"$plugin/native/"}
+    named=$plugin_sources/$plugin_id-${relative//\//-}
+    if [[ -e "$named" ]]; then
+      echo "plugin '$plugin_id' source $relative stages as ${named##*/}, as another source does; rename one" >&2
+      exit 1
+    fi
+    cp "$source" "$named"
+    swift_sources+=("$named")
+  done < <(find "$plugin/native" -name '*.swift' -print0 | sort -z)
 done
 printf '%s\n' '  ]' '}' >> "$registry"
 

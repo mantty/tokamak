@@ -12,6 +12,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import java.io.File
 import java.util.concurrent.Executors
+import kotlin.reflect.KClass
 
 private const val HOST_METADATA = "tokamak.host"
 private const val DEV_ENDPOINT_METADATA = "tokamak.dev.endpoint"
@@ -89,9 +90,9 @@ class TokamakApplication : Application(), TokamakPlugins {
         )
     }
 
-    override fun plugin(id: String): TokamakPlugin? = plugins[id]
+    override fun plugin(id: String): TokamakPlugin? = plugins[id].let { (it as? TokamakDispatch<*>)?.plugin ?: it }
 
-    /** The host the plugin [id] sees, whose events the Worker's listeners receive as `<id>.<name>`. */
+    /** The host the plugin [id] sees, whose events the Worker's listeners receive as `<id>.android.<name>`. */
     internal fun host(id: String): TokamakHost =
         object : TokamakHost {
             override val context: Context
@@ -118,7 +119,24 @@ class TokamakApplication : Application(), TokamakPlugins {
             ) = permissionRequests.request(permissions, callback)
 
             override fun emitBytes(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray =
-                emitEvent("$id.$name", payload, timeoutMillis)
+                emitEvent("$id.android.$name", payload, timeoutMillis)
+
+            override fun emit(name: String, event: Any, timeoutMillis: Long) {
+                dispatch { TokamakPluginError.unlistedEvent(name) }.emit(name, event, timeoutMillis)
+            }
+
+            override fun <R : Any> emit(name: String, event: Any, reply: KClass<R>, timeoutMillis: Long): R? =
+                dispatch { TokamakPluginError.unlistedEvent(name) }.emit(name, event, reply, timeoutMillis)
+
+            override fun json(value: Any): Any = dispatch(::unregistered).encodeValue(value)
+
+            override fun <T : Any> fromJson(json: Any?, type: KClass<T>): T = dispatch(::unregistered).fromJson(json, type)
+
+            /** The plugin's generated dispatch, or else the error [missing] gives. */
+            private fun dispatch(missing: () -> TokamakPluginError): TokamakDispatch<*> =
+                plugins[id] as? TokamakDispatch<*> ?: throw missing()
+
+            private fun unregistered() = TokamakPluginError.typeError("$id has no android/Exports.kt")
 
             override fun fetch(path: String, timeoutMillis: Long): ByteArray {
                 val deadline = SystemClock.elapsedRealtime() + timeoutMillis

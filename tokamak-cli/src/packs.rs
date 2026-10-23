@@ -5,6 +5,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 
 use anyhow::{Context, Result, bail};
 use tokamak_cli::{
@@ -45,6 +46,15 @@ impl PlatformPack {
         Ok(Self { root, manifest })
     }
 
+    /// The installed platform pack that builds `platform`, or why none is
+    /// installed. An installed pack that cannot load is an error.
+    pub(crate) fn installed(platform: Platform) -> Result<Result<Self, String>> {
+        match resolve_manifest(platform, None) {
+            Ok(_) => Self::load(platform, None).map(Ok),
+            Err(missing) => Ok(Err(format!("{missing:#}"))),
+        }
+    }
+
     /// Build the app in `input` into `output`.
     pub(crate) fn build(
         &self,
@@ -57,12 +67,53 @@ impl PlatformPack {
         self.run(&arguments, environment)
     }
 
+    /// Describe the methods the plugin package at `plugin` exports on the
+    /// pack's `platforms` into `output`: `description.json`, and the native
+    /// files the package's family directory holds. Returns false when the
+    /// host lacks the tools describing needs, which the entrypoint says.
+    pub(crate) fn describe(
+        &self,
+        plugin: &Path,
+        output: &Path,
+        platforms: &[&str],
+    ) -> Result<bool> {
+        let (plugin, output) = (command_path(plugin), command_path(output));
+        let mut arguments = vec![
+            OsStr::new("describe"),
+            plugin.as_os_str(),
+            output.as_os_str(),
+        ];
+        arguments.extend(platforms.iter().map(OsStr::new));
+        let status = self.status(&arguments, &BTreeMap::new())?;
+        // EX_UNAVAILABLE, from sysexits.h.
+        if status.code() == Some(69) {
+            return Ok(false);
+        }
+        if !status.success() {
+            bail!("platform-pack describe entrypoint failed with status {status}");
+        }
+        Ok(true)
+    }
+
     /// Run the entrypoint from the pack root with `arguments`.
     pub(crate) fn run(
         &self,
         arguments: &[&OsStr],
         environment: &BTreeMap<String, OsString>,
     ) -> Result<()> {
+        let status = self.status(arguments, environment)?;
+        if status.success() {
+            Ok(())
+        } else {
+            bail!("platform-pack build entrypoint failed with status {status}")
+        }
+    }
+
+    fn status(
+        &self,
+        arguments: &[&OsStr],
+        environment: &BTreeMap<String, OsString>,
+    ) -> Result<ExitStatus> {
         let entrypoint = self.root.join(self.manifest.target.build_entrypoint_path());
         if !entrypoint.is_file() {
             bail!(
@@ -70,17 +121,12 @@ impl PlatformPack {
                 entrypoint.display()
             );
         }
-        let status = script_command(&command_path(&entrypoint))
+        script_command(&command_path(&entrypoint))
             .args(arguments)
             .envs(environment)
             .current_dir(command_path(&self.root))
             .status()
-            .with_context(|| format!("failed to run {}", entrypoint.display()))?;
-        if status.success() {
-            Ok(())
-        } else {
-            bail!("platform-pack build entrypoint failed with status {status}")
-        }
+            .with_context(|| format!("failed to run {}", entrypoint.display()))
     }
 }
 

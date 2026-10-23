@@ -83,7 +83,7 @@ An app that already has permission can call `requestPermission` again to add
 - `onOpenSettings` receives the user's requests, from the system's
   notification settings, for the app's own: `{ channel, notification }`, the
   channel whose settings the user was in (Android) and the id of the
-  notification they came from, or null. On Apple platforms the system offers
+  notification they came from, each absent when there is none. On Apple platforms the system offers
   the link after `requestPermission({ providesAppNotificationSettings: true })`.
   Android shows it in the app's notification settings, and in a
   notification's long-press menu as its `settingsText`. The plugin holds the
@@ -227,8 +227,8 @@ channel with its `id` again.
 Showing or scheduling a notification with the `id` of another replaces it.
 `show` and `schedule` check every field first and reject with `TypeError`,
 showing nothing, when one is invalid. On Apple platforms and Android,
-`getScheduled` and `getDelivered` return every field a local notification was
-given.
+`getScheduled` and `getDelivered` return the fields of a local notification
+that the platform uses, without the other platforms' fields.
 
 ### Scheduling
 
@@ -546,12 +546,12 @@ message to show a notification.
 ## Opened and dismissed notifications
 
 `onNotificationOpened` receives each notification the user opens, local or
-push, and each action the user chooses. `action` is the action's `id`, or null
-for the notification itself, and `input` is the text typed into the action, or
-null. The plugin holds notifications opened before a page listens, including
+push, and each action the user chooses. `action` is the action's `id`, absent
+for the notification itself, and `input` is the text typed into the action,
+absent without one. The plugin holds the latest 64 notifications opened before a page listens, including
 the one that launched the app, and delivers them to the first listener.
 Android does not pass the title or body of an FCM notification the system
-showed, so those are null.
+showed, so those are absent.
 
 `onNotificationDismissed` receives each notification the user dismisses, held
 in the same way. Apple platforms report only notifications whose category has
@@ -569,7 +569,7 @@ whether or not the app is on screen:
 import { onNotificationOpened } from "@tokamakdev/plugin-notifications/events";
 
 onNotificationOpened((opened, env, ctx) => {
-  if (opened.action === "reply" && opened.input !== null) {
+  if (opened.action === "reply" && opened.input !== undefined) {
     ctx.waitUntil(env.REPLIES.put(opened.id, opened.input));
   }
 });

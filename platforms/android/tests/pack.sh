@@ -113,9 +113,12 @@ entrypoint() {
 # Stage the plugin `alerts`, whose Android section is test.alerts.Plugin.
 stage_plugin() {
   local plugin=$input/plugins/alerts
-  mkdir -p "$plugin/sources" "$plugin/dependencies"
+  mkdir -p "$plugin/native/rules" "$plugin/dependencies"
   printf %s "${1:-test.alerts.Plugin}" > "$plugin/class"
-  : > "$plugin/sources/0-Plugin.kt"
+  : > "$plugin/native/Plugin.kt"
+  : > "$plugin/native/rules/Rules.kt"
+  : > "$plugin/native/rules/Plugin.kt"
+  : > "$plugin/native/Info.plist"
   printf %s "${2:-com.example:messaging:1.2.3}" > "$plugin/dependencies/0"
   printf %s '<manifest><uses-permission android:name="android.permission.USE_BIOMETRIC" /></manifest>' > "$plugin/manifest"
 }
@@ -215,7 +218,12 @@ test_builds_each_plugin_as_a_library_module() {
   entrypoint
   local module=$gradle/plugins/alerts
   cmp -s "$input/plugins/alerts/manifest" "$module/src/main/AndroidManifest.xml" || fail "the plugin manifest was not staged"
-  [[ -f "$module/src/main/kotlin/0-Plugin.kt" ]] || fail "the plugin source was not staged"
+  local sources=$module/src/main/kotlin
+  [[ -f "$sources/Plugin.kt" && -f "$sources/rules/Rules.kt" && -f "$sources/rules/Plugin.kt" ]] || fail "the plugin sources were not staged by path"
+  [[ ! -e "$module/src/main/kotlin/Info.plist" ]] || fail "a file that is not Kotlin was staged as a source"
+  local coroutines
+  coroutines=$(sed -n 's/^coroutines_version=//p' "$build/entrypoint")
+  contains "$gradle/tokamak-plugin/build.gradle" "api 'org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutines'"
   contains "$module/build.gradle" "implementation project(':tokamak-plugin')"
   contains "$module/build.gradle" "implementation 'com.example:messaging:1.2.3'"
   contains "$gradle/settings.gradle" "include ':plugins:alerts'"
@@ -223,6 +231,14 @@ test_builds_each_plugin_as_a_library_module() {
   contains "$gradle/app/src/main/kotlin/com/tokamak/runtime/TokamakPluginRegistry.kt" 'test.alerts.Plugin(app.host("alerts")),'
   contains "$gradle/app/src/main/AndroidManifest.xml" '<uses-permission android:name="android.permission.INTERNET" />'
   lacks "$gradle/app/src/main/AndroidManifest.xml" USE_BIOMETRIC
+}
+
+test_creates_the_dispatch_of_plugins_that_export_methods() {
+  new_case exports
+  stage_plugin
+  : > "$input/plugins/alerts/native/Exports.kt"
+  entrypoint
+  contains "$gradle/app/src/main/kotlin/com/tokamak/runtime/TokamakPluginRegistry.kt" 'test.alerts.PluginDispatch(app.host("alerts")),'
 }
 
 test_rejects_invalid_plugin_classes_and_dependencies() {
@@ -284,6 +300,7 @@ else
     test_merges_the_app_manifest_while_it_is_set
     test_uses_the_icon_resources
     test_builds_each_plugin_as_a_library_module
+    test_creates_the_dispatch_of_plugins_that_export_methods
     test_rejects_invalid_plugin_classes_and_dependencies
   )
 fi

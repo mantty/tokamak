@@ -10,37 +10,14 @@
   "build": "build/index.mjs",
   "platforms": {
     "macos": {
-      "class": "TokamakNotificationsPlugin",
-      "sources": [
-        "apple/NotificationAttachments.swift",
-        "apple/NotificationContent.swift",
-        "apple/NotificationSetup.swift",
-        "apple/NotificationsPlugin.swift"
-      ]
+      "class": "TokamakNotificationsPlugin"
     },
     "ios": {
       "class": "TokamakNotificationsPlugin",
-      "sources": [
-        "apple/NotificationAttachments.swift",
-        "apple/NotificationContent.swift",
-        "apple/NotificationSetup.swift",
-        "apple/NotificationsPlugin.swift"
-      ],
       "plist": "apple/Info.plist"
     },
     "android": {
       "class": "com.tokamak.plugins.notifications.TokamakNotificationsPlugin",
-      "sources": [
-        "android/NotificationsPlugin.kt",
-        "android/Content.kt",
-        "android/Images.kt",
-        "android/Json.kt",
-        "android/Notifier.kt",
-        "android/Setup.kt",
-        "android/Schedule.kt",
-        "android/Push.kt",
-        "android/Trigger.kt"
-      ],
       "manifest": "android/AndroidManifest.xml",
       "dependencies": [
         "com.google.firebase:firebase-messaging:25.1.3"

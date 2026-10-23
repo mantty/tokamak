@@ -22,6 +22,8 @@ export default tseslint.config(
       ],
       "max-params": ["error", 5],
       "no-console": "off",
+      // Underscored parameters are part of a shared signature that this implementation ignores.
+      "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
     },
   },
 );

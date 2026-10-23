@@ -44,12 +44,10 @@ impl WorkspaceLayout {
     /// The directory of the platform's pack recipe, entrypoint, and the
     /// variables and plugin keys its packs declare.
     pub(crate) fn platform_build(&self, target: Target) -> PathBuf {
-        let pack = match target.platform() {
-            Platform::Android => "android",
-            Platform::Windows => "windows",
-            Platform::Ios | Platform::IosSimulator | Platform::Macos => "apple",
-        };
-        self.root.join("platforms").join(pack).join("build")
+        self.root
+            .join("platforms")
+            .join(target.platform().family())
+            .join("build")
     }
 
     pub(crate) fn manifest(&self, target: Target) -> PathBuf {

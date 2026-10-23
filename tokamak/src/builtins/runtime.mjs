@@ -22,8 +22,11 @@ export function installAssets(binding, fetchAsset) {
   };
 }
 
-// Connects the Worker's byte endpoints to the native host on `platform`.
+// Connects the Worker's byte endpoints to the native host on `platform`,
+// which `@tokamakdev/plugin` reads, as its `platformGlobal` names, while the
+// Worker's modules load.
 export function installPlugins(call, subscribe, platform) {
+  globalThis.__tokamak_platform = platform;
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const decoded = payload => JSON.parse(decoder.decode(payload));

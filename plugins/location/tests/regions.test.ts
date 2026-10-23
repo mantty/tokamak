@@ -12,9 +12,9 @@ void test("calls the native plugin with each region method's arguments", async (
   const native = connectNative();
   const location = createApi(native.ctx);
   const cases: [() => Promise<unknown>, string, unknown][] = [
-    [() => location.addRegion(home), "addRegion", home],
-    [() => location.addRegion({ ...home, onExit: false }), "addRegion", { ...home, onExit: false }],
-    [() => location.getRegions(), "getRegions", null],
+    [() => location.addRegion(home), "addRegion", { region: home }],
+    [() => location.addRegion({ ...home, onExit: false }), "addRegion", { region: { ...home, onExit: false } }],
+    [() => location.getRegions(), "getRegions", {}],
     [() => location.removeRegion("home"), "removeRegion", { id: "home" }],
   ];
   for (const [run, method, arguments_] of cases) {

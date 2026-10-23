@@ -82,8 +82,8 @@ export function handleNotificationClick(event: NotificationEvent): boolean {
   event.notification.close();
   const opened: OpenedNotification = {
     ...notification(event.notification, data),
-    action: event.action || null,
-    input: event.reply ?? null,
+    ...(event.action ? { action: event.action } : {}),
+    ...(event.reply == null ? {} : { input: event.reply }),
   };
   event.waitUntil(open(opened, data.category));
   return true;
@@ -108,7 +108,7 @@ export function handleSubscriptionChange(event: PushSubscriptionChangeEvent): vo
 async function showAndForward(pushed: Message, content: Partial<NotificationContent>): Promise<void> {
   await scope.registration.showNotification(pushed.title ?? "", {
     ...webOptions(content),
-    body: pushed.body ?? undefined,
+    body: pushed.body,
     tag: pushed.id,
     data: notificationData("push", pushed.data, content.category),
     actions: webActions(await storedCategory(content.category)),
@@ -121,7 +121,7 @@ function notification(shown: Notification, data: NotificationData["tokamak"]): D
   return {
     id: shown.tag,
     title: shown.title,
-    body: shown.body || null,
+    ...(shown.body ? { body: shown.body } : {}),
     data: data.data,
     source: data.source,
   };
@@ -129,7 +129,7 @@ function notification(shown: Notification, data: NotificationData["tokamak"]): D
 
 async function open(opened: OpenedNotification, categoryId: string | undefined): Promise<void> {
   await hold(OPENED_CACHE, opened);
-  if (opened.action === null || (await foreground(opened.action, categoryId))) {
+  if (opened.action === undefined || (await foreground(opened.action, categoryId))) {
     const client = (await windows()).at(0);
     if (client) {
       await client.focus();
@@ -187,12 +187,12 @@ function payload(text: string | undefined): unknown {
 
 /** The message in a push payload; every field is optional. */
 function message(payload: unknown): Message {
-  const fields = (payload ?? {}) as Partial<Record<keyof Message, unknown>>;
+  const { id, title, body, data } = (payload ?? {}) as Partial<Record<keyof Message, unknown>>;
   return {
-    id: typeof fields.id === "string" ? fields.id : crypto.randomUUID(),
-    title: typeof fields.title === "string" ? fields.title : null,
-    body: typeof fields.body === "string" ? fields.body : null,
-    data: isRecord(fields.data) ? fields.data : {},
+    id: typeof id === "string" ? id : crypto.randomUUID(),
+    ...(typeof title === "string" ? { title } : {}),
+    ...(typeof body === "string" ? { body } : {}),
+    data: isRecord(data) ? data : {},
   };
 }
 

@@ -1,0 +1,1 @@
+{"methods":[{"name":"echo","kind":"call","doc":"Returns a message through the native implementation.","parameters":[{"name":"message","type":"string"}],"returns":"string"}],"events":[{"name":"echoed","doc":"Receives each message the native implementation echoed.","type":{"named":"Echo"}}],"types":[{"name":"Echo","fields":[{"name":"message","type":"string"}]}]}

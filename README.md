@@ -712,6 +712,14 @@ nearest `node_modules` of the project or a parent directory, so plugins
 installed at a workspace root are included. Each plugin's README describes its
 API, and [the plugin guidelines](plugins/GUIDELINES.md) describe writing one.
 
+A plugin with native code also exports each platform family's API, generated
+from that code, as `/apple` and `/android`. Tokamak worker code that needs a
+platform's own method calls it there, such as `apple(ctx).onVisit()` from
+`@tokamakdev/plugin-location/apple`; off the family's platforms its methods
+reject with `NotSupportedError`. Each family's events are there too, as
+functions that register listeners of that family's events alone, which the
+plugin's `/events` entry combines.
+
 A plugin can also run Worker code through [events](#events), such as
 `onPush` from `@tokamakdev/plugin-notifications/events` for a data-only push
 notification, or `onLocationUpdate` and `onRegionTransition` from
@@ -773,7 +781,9 @@ class or a plugin: the development server sets up the services when it starts.
 - **Capabilities:** each client and plugin reports whether each operation is
   implemented where the app runs, such as
   `location.capabilities.getCurrentPosition`, without calling it. It does not
-  report permission. `ctx.platform` names the native platform.
+  report permission. `ctx.platform` names the native platform, as does
+  `platform` from `@tokamakdev/tok` while modules load. Both are undefined
+  without a native host, such as on Cloudflare.
 - **The page:** `ctx.webview` reads the page's URL, null without a page,
   navigates the WebView to an app URL, and posts the page a message.
 - **`getLifecycleStage(ctx)`**, from `@tokamakdev/tok/events`, resolves to
@@ -886,6 +896,12 @@ into `platform-pack.json`, and `tok` passes each setting to the entrypoint as
 `TOKAMAK_<PLATFORM>_ICON`, whose format the pack checks. `tok` runs the
 entrypoint from the pack root, where it reads the pack's runtime and shell.
 
+`tok plugin generate` and `tok plugin check` run the entrypoint as
+`describe PLUGIN OUTPUT PLATFORM...`. It compiles the plugin package at
+`PLUGIN` for each platform, and writes the registered methods'
+`description.json` and the native dispatch into `OUTPUT`. It exits with 69
+when the host lacks the tools to compile the plugin.
+
 Each pack declares its minimum OS versions once:
 `platforms/apple/build/ios-deployment-target` and `macos-deployment-target`, and
 `platforms/android/build/min-sdk`. A pack's tests live with it:
@@ -995,6 +1011,19 @@ pnpm --dir plugins test:ts
 
 Platform-specific lint and build-test commands are kept in
 [the Checks workflow](.github/workflows/test.yaml).
+
+A first-party plugin's TypeScript API, `src/apple.generated.ts` and
+`src/android.generated.ts`, and native dispatch are generated from its native
+code. After changing a registered method,
+[build the family's platform pack](#build-a-platform-pack) and regenerate them
+from the plugin's directory:
+
+```sh
+TOKAMAK_PLATFORM_PACK_PATH=$PWD/../../target/tokamak-platform-packs ../../target/debug/tok plugin generate apple
+```
+
+`platforms/apple/tests/describe.sh` and `platforms/android/tests/describe.sh`
+fail when a committed file differs from what the pack generates.
 
 ### Packaged Worker runtime
 

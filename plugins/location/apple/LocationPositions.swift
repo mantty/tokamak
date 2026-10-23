@@ -1,38 +1,48 @@
 import CoreLocation
 import Foundation
 
-/// Positions from a location manager of its own, for one `getCurrentPosition`
-/// or `watchPosition`. Use it on the main thread.
-final class TokamakLocationPositions: NSObject, CLLocationManagerDelegate {
+/// Positions from a location manager of its own, for one `currentPosition`
+/// or `watchPosition`. Use it on the main thread, where the end of its stream
+/// stops it.
+final class TokamakLocationPositions: NSObject, CLLocationManagerDelegate, @unchecked Sendable {
   private let manager = CLLocationManager()
-  private let reply: TokamakPluginReply
-  private var watching = false
+  private let continuation: AsyncThrowingStream<TokamakLocationPlugin.Position, Error>.Continuation
+  private let watching: Bool
 
-  /// Passes `reply` the new fix, or each position as the device moves, or a
-  /// failure.
-  init(reply: @escaping TokamakPluginReply) {
-    self.reply = reply
+  /// A new fix, or each position as the device moves when `watching`, until
+  /// the stream ends.
+  static func stream(watching: Bool) -> AsyncThrowingStream<TokamakLocationPlugin.Position, Error> {
+    AsyncThrowingStream { continuation in
+      let positions = TokamakLocationPositions(continuation, watching: watching)
+      // The stream owns the location manager until it ends.
+      continuation.onTermination = { _ in
+        DispatchQueue.main.async { positions.manager.stopUpdatingLocation() }
+      }
+      if watching {
+        positions.manager.startUpdatingLocation()
+      } else {
+        positions.manager.requestLocation()
+      }
+    }
+  }
+
+  private init(
+    _ continuation: AsyncThrowingStream<TokamakLocationPlugin.Position, Error>.Continuation,
+    watching: Bool
+  ) {
+    self.continuation = continuation
+    self.watching = watching
     super.init()
     manager.delegate = self
     manager.desiredAccuracy = kCLLocationAccuracyBest
   }
 
-  func locate() {
-    manager.requestLocation()
-  }
-
-  func watch() {
-    watching = true
-    manager.startUpdatingLocation()
-  }
-
-  func stop() {
-    manager.stopUpdatingLocation()
-  }
-
   func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
     for location in watching ? locations : locations.suffix(1) {
-      reply(.success(TokamakLocationEvents.position(location)))
+      continuation.yield(TokamakLocationPlugin.Position(location))
+    }
+    if !watching {
+      continuation.finish()
     }
   }
 
@@ -40,7 +50,7 @@ final class TokamakLocationPositions: NSObject, CLLocationManagerDelegate {
   /// position yet.
   func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
     guard (error as NSError).code == CLError.Code.locationUnknown.rawValue else {
-      return reply(.failure(.location(error)))
+      return continuation.finish(throwing: TokamakPluginError.location(error))
     }
     if !watching {
       manager.requestLocation()

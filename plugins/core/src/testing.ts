@@ -1,7 +1,7 @@
 import { dispatch as dispatchEvent, type Dispatched } from "./registry.js";
 import { createNativeContext, type Availability, type NativeConnection, type NativePlatform, type Overflow, type TokamakContext } from "./context.js";
 import { encodeJson, decodeJson } from "./codec.js";
-import { nativeError, type NativeFailure } from "./native-protocol.mjs";
+import { nativeError, platformGlobal, type NativeFailure } from "./native-protocol.mjs";
 
 type Reply = (payload: Uint8Array, error: DOMException | undefined, done: boolean) => void;
 
@@ -132,6 +132,14 @@ export class FakeNativeTransport {
 
 export function connectNative(platform?: NativePlatform, availability?: Availability): FakeNativeTransport {
   return new FakeNativeTransport(platform, availability);
+}
+
+/**
+ * Names `platform` as the native host does, so that listeners registered from now on register as
+ * they do there. Undefined is no native host. The `platform` export keeps the value it loaded with.
+ */
+export function setPlatform(platform: NativePlatform | undefined): void {
+  Reflect.set(globalThis, platformGlobal, platform);
 }
 
 /**

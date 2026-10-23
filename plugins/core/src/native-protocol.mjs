@@ -1,6 +1,9 @@
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
+/** The global through which the native host names its platform before the Worker's modules load. */
+export const platformGlobal = "__tokamak_platform";
+
 /** A length-delimited routing header followed by an opaque endpoint payload. */
 export function encodeMessage(header, payload = new Uint8Array()) {
   const metadata = encoder.encode(JSON.stringify(header));

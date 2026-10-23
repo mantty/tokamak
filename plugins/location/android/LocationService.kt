@@ -9,7 +9,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
-import org.json.JSONObject
 
 private const val CHANNEL = "tokamak.location"
 private const val NOTIFICATION_ID = 1
@@ -25,8 +24,8 @@ class TokamakLocationService : Service() {
     /** Shows the notification the start [intent] carries, or on a restart, the running updates'. */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val content =
-            intent?.getStringExtra(NOTIFICATION_EXTRA)?.let(::JSONObject)
-                ?: LocationUpdates(this, LocationUpdates.UPDATES).options?.optJSONObject("foregroundService")
+            intent?.getStringExtra(NOTIFICATION_EXTRA)?.let { UpdateOptions.from(it).foregroundService }
+                ?: LocationUpdates(this, LocationUpdates.UPDATES).options?.foregroundService
         if (content == null) {
             stopSelf()
             return START_NOT_STICKY
@@ -36,8 +35,8 @@ class TokamakLocationService : Service() {
     }
 
     /** The notification [content] describes, in the location channel it names, opening the app. */
-    private fun notification(content: JSONObject): Notification {
-        val channel = NotificationChannel(CHANNEL, content.getString("channel"), NotificationManager.IMPORTANCE_LOW)
+    private fun notification(content: ServiceNotification): Notification {
+        val channel = NotificationChannel(CHANNEL, content.channel, NotificationManager.IMPORTANCE_LOW)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         val open =
             packageManager.getLaunchIntentForPackage(packageName)?.let {
@@ -45,8 +44,8 @@ class TokamakLocationService : Service() {
             }
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(icon())
-            .setContentTitle(content.getString("title"))
-            .setContentText(content.getString("body"))
+            .setContentTitle(content.title)
+            .setContentText(content.body)
             .setContentIntent(open)
             .setOngoing(true)
             .build()
@@ -59,12 +58,12 @@ class TokamakLocationService : Service() {
             ?: android.R.drawable.sym_def_app_icon
 
     companion object {
-        /** The start intent's notification, as JSON. */
+        /** The start intent's updates' options, as JSON. */
         private const val NOTIFICATION_EXTRA = "com.tokamak.plugins.location.NOTIFICATION"
 
-        /** Starts the service showing [notification], or shows it in the running service. */
-        fun start(context: Context, notification: JSONObject) {
-            val start = Intent(context, TokamakLocationService::class.java).putExtra(NOTIFICATION_EXTRA, notification.toString())
+        /** Starts the service showing the notification of [options], or shows it in the running service. */
+        fun start(context: Context, options: UpdateOptions) {
+            val start = Intent(context, TokamakLocationService::class.java).putExtra(NOTIFICATION_EXTRA, options.json().toString())
             context.startForegroundService(start)
         }
 

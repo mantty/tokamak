@@ -85,6 +85,17 @@ impl Platform {
         }
     }
 
+    /// The platform's family, which names its platform pack's directory in
+    /// the source tree and its native code's directory in a plugin package.
+    #[must_use]
+    pub const fn family(self) -> &'static str {
+        match self {
+            Self::Android => "android",
+            Self::Ios | Self::IosSimulator | Self::Macos => "apple",
+            Self::Windows => "windows",
+        }
+    }
+
     /// User-facing platform name.
     #[must_use]
     pub const fn display_name(self) -> &'static str {

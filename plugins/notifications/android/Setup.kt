@@ -9,123 +9,94 @@ import android.graphics.Color
 import android.media.AudioAttributes
 import android.net.Uri
 import android.provider.Settings
+import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPluginError
-import org.json.JSONArray
 import org.json.JSONObject
 
 private const val PREFERENCES = "tokamak.notifications.setup"
 private const val CONFIG = "config"
 
-/** An action of a `setup` category; [inputLabel] labels its text field, if it has one. */
-internal class Action(
-    val id: String,
-    val title: String,
-    val inputLabel: String?,
-    val foreground: Boolean,
-    /** An image for wearables, from an `https` URL or a path the app serves. */
-    val icon: String?,
-)
-
-/** The configuration `setup` applied, parsed in full before anything applies it. */
-internal class Setup private constructor(val json: JSONObject) {
-    val categories: Map<String, List<Action>> =
-        objects(json, "categories").associate { category ->
-            requireString(category, "id") to objects(category, "actions").map(::action)
-        }
+/** The configuration `setup` applied, checked in full before anything applies it. */
+internal class Setup(val config: SetupConfig) {
+    val categories: Map<String, List<NotificationAction>> =
+        config.categories.orEmpty().associate { it.id to it.actions }
 
     /** Whether notifications show while the app is on screen; an object means they do. */
-    val showInForeground: Boolean =
-        when (val shown = json.opt("showInForeground")) {
-            null, is JSONObject -> true
-            is Boolean -> shown
-            else -> throw TokamakPluginError.typeError("showInForeground must be a boolean or an object")
-        }
+    val showInForeground: Boolean = (config.showInForeground as? ShowInForeground.All)?.value ?: true
 
-    val defaultChannel: ChannelSpec? = json.optJSONObject("defaultChannel")?.let { ChannelSpec(CHANNEL, it) }
-    val channelGroups: List<NotificationChannelGroup> = objects(json, "channelGroups").map(::channelGroup)
-    val channels: List<ChannelSpec> = objects(json, "channels").map { ChannelSpec(requireString(it, "id"), it) }
+    val defaultChannel: ChannelSpec? = config.defaultChannel?.let { ChannelSpec(CHANNEL, it) }
+    val channelGroups: List<NotificationChannelGroup> =
+        config.channelGroups.orEmpty().map { group ->
+            NotificationChannelGroup(group.id, group.name).apply { description = group.description }
+        }
+    val channels: List<ChannelSpec> =
+        config.channels.orEmpty().mapIndexed { index, channel ->
+            ChannelSpec(channel.id ?: throw TokamakPluginError.typeError("channels[$index].id is missing"), channel)
+        }
 
     /** Throws `NotFoundError` unless the app bundles each channel's sound. */
     fun requireSounds(context: Context) {
         (listOfNotNull(defaultChannel) + channels).forEach { it.requireSound(context) }
     }
 
-    fun store(context: Context) {
-        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).edit().putString(CONFIG, json.toString()).apply()
+    fun store(host: TokamakHost) {
+        preferences(host).edit().putString(CONFIG, host.json(config).toString()).apply()
     }
 
     companion object {
-        /** Throws `TypeError` unless [arguments] is a valid configuration. */
-        fun parse(arguments: Any?): Setup =
-            Setup(arguments as? JSONObject ?: throw TokamakPluginError.typeError("setup takes a configuration object"))
-
         /** The configuration `setup` last applied, or null before any. */
-        fun stored(context: Context): Setup? =
-            context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+        fun stored(host: TokamakHost): Setup? =
+            preferences(host)
                 .getString(CONFIG, null)
-                ?.let { runCatching { Setup(JSONObject(it)) }.getOrNull() }
+                ?.let { runCatching { Setup(host.fromJson(JSONObject(it), SetupConfig::class)) }.getOrNull() }
 
-        private fun action(json: JSONObject): Action {
-            val title = requireString(json, "title")
-            return Action(
-                requireString(json, "id"),
-                title,
-                json.optJSONObject("input")?.let { optionalString(it, "placeholder") ?: title },
-                optionalBoolean(json, "foreground") ?: false,
-                optionalString(json, "icon"),
-            )
-        }
-
-        private fun channelGroup(json: JSONObject): NotificationChannelGroup =
-            NotificationChannelGroup(requireString(json, "id"), requireString(json, "name")).apply {
-                description = optionalString(json, "description")
-            }
+        private fun preferences(host: TokamakHost) = host.context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
     }
 }
 
 /** An Android notification channel `setup` describes. */
-internal class ChannelSpec(val id: String, json: JSONObject) {
-    private val name = requireString(json, "name")
-    private val description = optionalString(json, "description")
-    private val group = optionalString(json, "group")
+internal class ChannelSpec(val id: String, private val settings: ChannelSettings) {
     private val importance =
-        when (optionalString(json, "importance") ?: "default") {
-            "none" -> NotificationManager.IMPORTANCE_NONE
-            "min" -> NotificationManager.IMPORTANCE_MIN
-            "low" -> NotificationManager.IMPORTANCE_LOW
-            "default" -> NotificationManager.IMPORTANCE_DEFAULT
-            "high" -> NotificationManager.IMPORTANCE_HIGH
-            else -> throw TokamakPluginError.typeError("importance must be none, min, low, default or high")
+        when (settings.importance ?: Importance.default) {
+            Importance.none -> NotificationManager.IMPORTANCE_NONE
+            Importance.min -> NotificationManager.IMPORTANCE_MIN
+            Importance.low -> NotificationManager.IMPORTANCE_LOW
+            Importance.default -> NotificationManager.IMPORTANCE_DEFAULT
+            Importance.high -> NotificationManager.IMPORTANCE_HIGH
         }
 
-    /** `"default"`, `"none"`, or a file of the `sounds` build setting, which the app has as a raw resource. */
-    private val sound = optionalString(json, "sound")
     /** A non-empty pattern, which turns vibration on. */
-    private val vibrationPattern: LongArray? =
-        (json.opt("vibration") as? JSONArray)?.let { steps -> LongArray(steps.length()) { steps.getLong(it) } }
-    private val vibrate: Boolean? = if (vibrationPattern != null) true else optionalBoolean(json, "vibration")
+    private val vibrationPattern: LongArray? = (settings.vibration as? Vibration.Pattern)?.value?.toLongArray()
+    private val vibrate: Boolean? = if (vibrationPattern != null) true else (settings.vibration as? Vibration.Enabled)?.value
+
     /** The light's colour; null when the light is off or unspecified. */
-    private val lightColor: Int? = (json.opt("lights") as? String)?.let(Color::parseColor)
-    private val showLights: Boolean? = if (json.has("lights")) lightColor != null else null
-    private val showBadge = optionalBoolean(json, "showBadge")
-    private val bypassDnd = optionalBoolean(json, "bypassDnd")
+    private val lightColor: Int? = (settings.lights as? Lights.Colour)?.value?.let(Color::parseColor)
+    private val showLights: Boolean? =
+        when (val lights = settings.lights) {
+            null -> null
+            is Lights.Colour -> true
+            is Lights.Shown -> lights.value
+        }
 
     fun channel(context: Context): NotificationChannel =
-        NotificationChannel(id, name, importance).also { channel ->
-            channel.description = description
-            channel.group = group
-            sound?.let { channel.setSound(soundUri(context, it), AUDIO) }
+        NotificationChannel(id, settings.name, importance).also { channel ->
+            channel.description = settings.description
+            channel.group = settings.group
+            settings.sound?.let { channel.setSound(soundUri(context, it), AUDIO) }
             vibrate?.let(channel::enableVibration)
             vibrationPattern?.let { channel.vibrationPattern = it }
             showLights?.let(channel::enableLights)
             lightColor?.let { channel.lightColor = it }
-            showBadge?.let(channel::setShowBadge)
-            bypassDnd?.let(channel::setBypassDnd)
+            settings.showBadge?.let(channel::setShowBadge)
+            settings.bypassDnd?.let(channel::setBypassDnd)
         }
 
-    /** Throws `NotFoundError` unless the app bundles the channel's sound. */
+    /**
+     * Throws `NotFoundError` unless the app bundles the channel's sound: `"default"`, `"none"`, or a
+     * file of the `sounds` build setting, which the app has as a raw resource.
+     */
     fun requireSound(context: Context) {
-        val file = sound?.takeIf { it != "default" && it != "none" } ?: return
+        val file = settings.sound?.takeIf { it != "default" && it != "none" } ?: return
         if (context.resources.getIdentifier(resourceName(file), "raw", context.packageName) == 0) {
             throw TokamakPluginError("NotFoundError", "The app has no sound $file; add it to the notifications.sounds build setting")
         }
@@ -135,8 +106,8 @@ internal class ChannelSpec(val id: String, json: JSONObject) {
     fun unapplied(existing: NotificationChannel, context: Context): List<String> =
         buildList {
             if (existing.importance != importance) add("importance")
-            if (group != null && existing.group != group) add("group")
-            if (sound != null && existing.sound != soundUri(context, sound)) add("sound")
+            if (settings.group != null && existing.group != settings.group) add("group")
+            if (settings.sound != null && existing.sound != soundUri(context, settings.sound)) add("sound")
             if ((vibrate != null && existing.shouldVibrate() != vibrate) ||
                 (vibrationPattern != null && !existing.vibrationPattern.contentEquals(vibrationPattern))
             ) {
@@ -147,8 +118,8 @@ internal class ChannelSpec(val id: String, json: JSONObject) {
             ) {
                 add("lights")
             }
-            if (showBadge != null && existing.canShowBadge() != showBadge) add("showBadge")
-            if (bypassDnd != null && existing.canBypassDnd() != bypassDnd) add("bypassDnd")
+            if (settings.showBadge != null && existing.canShowBadge() != settings.showBadge) add("showBadge")
+            if (settings.bypassDnd != null && existing.canBypassDnd() != settings.bypassDnd) add("bypassDnd")
         }
 
     private fun soundUri(context: Context, sound: String): Uri? =

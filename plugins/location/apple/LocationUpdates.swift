@@ -1,7 +1,7 @@
 import CoreLocation
 import Foundation
 
-/// The JSON of the running updates' options, as `startUpdates` received them.
+/// The JSON of the running updates' options.
 private let updatesKey = "tokamak.location.updates"
 
 /// Continuous updates from `CLLocationUpdate.liveUpdates`. iOS launches an app
@@ -22,16 +22,16 @@ final class TokamakLocationUpdates {
   }
 
   /// The options of the running updates, or nil.
-  var options: [String: Any]? {
+  var options: TokamakLocationPlugin.UpdateOptions? {
     defaults.data(forKey: updatesKey)
-      .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+      .flatMap { try? JSONDecoder().decode(TokamakLocationPlugin.UpdateOptions.self, from: $0) }
   }
 
   /// Starts updates with `options`, replacing any running.
-  func start(_ options: [String: Any]) throws(TokamakPluginError) {
-    let configuration = try Self.configuration(options)
+  func start(_ options: TokamakLocationPlugin.UpdateOptions) throws(TokamakPluginError) {
+    let configuration = try Self.configuration(options.activity ?? .default)
     stop()
-    defaults.set(try? JSONSerialization.data(withJSONObject: options), forKey: updatesKey)
+    defaults.set(try? JSONEncoder().encode(options), forKey: updatesKey)
     run(configuration)
   }
 
@@ -39,7 +39,8 @@ final class TokamakLocationUpdates {
   /// their session for only a few seconds after it launches the app, so call
   /// it before launch finishes.
   func resume() {
-    guard let options, let configuration = try? Self.configuration(options) else { return }
+    guard let options, let configuration = try? Self.configuration(options.activity ?? .default)
+    else { return }
     run(configuration)
   }
 
@@ -60,16 +61,9 @@ final class TokamakLocationUpdates {
         session = CLBackgroundActivitySession()
       }
     #endif
-    task = Task { @MainActor [weak self] in
-      do {
-        for try await update in CLLocationUpdate.liveUpdates(configuration) {
-          self?.receive(update)
-        }
-      } catch {
-        if !Task.isCancelled {
-          self?.events.fail(
-            .locationUnavailable(error.localizedDescription))
-        }
+    task = events.task { [weak self] in
+      for try await update in CLLocationUpdate.liveUpdates(configuration) {
+        self?.receive(update)
       }
     }
   }
@@ -104,17 +98,17 @@ final class TokamakLocationUpdates {
     return flags.filter(\.0).map { TokamakPluginError(name: $0.1, message: $0.2) }
   }
 
-  /// The live update configuration `options` name as their `activity`.
+  /// The live update configuration of `activity`.
   private static func configuration(
-    _ options: [String: Any]
+    _ activity: TokamakLocationPlugin.Activity
   ) throws(TokamakPluginError) -> CLLocationUpdate.LiveConfiguration {
-    switch options["activity"] as? String ?? "default" {
-    case "default": return .default
-    case "automotiveNavigation": return .automotiveNavigation
-    case "otherNavigation": return .otherNavigation
-    case "fitness": return .fitness
-    case "airborne": return .airborne
-    case "maritime":
+    switch activity {
+    case .default: return .default
+    case .automotiveNavigation: return .automotiveNavigation
+    case .otherNavigation: return .otherNavigation
+    case .fitness: return .fitness
+    case .airborne: return .airborne
+    case .maritime:
       // The SDKs that have `maritime` ship with Swift 6.4.
       #if compiler(>=6.4)
         if #available(iOS 27, macOS 27, *) {
@@ -122,8 +116,6 @@ final class TokamakLocationUpdates {
         }
       #endif
       throw .notSupported("The maritime activity needs iOS 27 or macOS 27")
-    default:
-      throw TokamakPluginError(name: "TypeError", message: "activity is not a live configuration")
     }
   }
 

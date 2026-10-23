@@ -140,7 +140,7 @@ final class TokamakHost {
   #endif
 
   /// Delivers the plugin's event `name`, which the Worker's listeners
-  /// receive as `<plugin>.<name>`, with its encoded `payload`, and calls
+  /// receive as `<plugin>.apple.<name>`, with its encoded `payload`, and calls
   /// `completion` on the main thread with their encoded reply, which is empty
   /// when none replied. Fails unless they return within `timeout`, which
   /// includes runtime startup. Call it on the main thread.
@@ -150,31 +150,73 @@ final class TokamakHost {
     timeout: TimeInterval,
     completion: @escaping (Result<Data, Error>) -> Void
   ) {
-    app.emit("\(plugin).\(name)", payload: payload, timeout: timeout, completion: completion)
+    app.emit("\(plugin).apple.\(name)", payload: payload, timeout: timeout, completion: completion)
   }
 
-  /// `emitBytes` with `event` encoded as JSON, calling `completion` with the
-  /// reply parsed from JSON, or nil when none replied.
+  /// Delivers `event` to the Worker's listeners of the plugin's event `name`,
+  /// which `apple/Exports.swift` lists, then calls `completion` on the main
+  /// thread. Fails unless they return within `timeout`, which includes runtime
+  /// startup. Call it on the main thread.
   func emit(
     _ name: String,
-    event: Any,
+    event: some Encodable,
     timeout: TimeInterval,
-    completion: @escaping (Result<Any?, Error>) -> Void
+    completion: @escaping (Result<Void, Error>) -> Void
   ) {
-    let payload: Data
-    switch encodePluginValue(event) {
-    case .success(let encoded): payload = encoded
-    case .failure(let error): return completion(.failure(error))
-    }
-    emitBytes(name, payload: payload, timeout: timeout) { result in
+    send(name, event, timeout: timeout) { completion($0.map { _ in }) }
+  }
+
+  /// `emit` of an event whose listeners may reply, calling `completion` with
+  /// the reply as the plugin's generated dispatch decodes it, which is a
+  /// `Reply`, or nil when none replied.
+  func emit<Reply>(
+    _ name: String,
+    event: some Encodable,
+    reply: Reply.Type,
+    timeout: TimeInterval,
+    completion: @escaping (Result<Reply?, Error>) -> Void
+  ) {
+    send(name, event, timeout: timeout) { result in
       completion(
         result.flatMap { reply in
-          Result { () throws(TokamakPluginError) -> Any? in
-            let value = reply.isEmpty ? NSNull() : try decodePluginValue(reply)
-            return value is NSNull ? nil : value
-          }.mapError { $0 }
+          Result<Reply?, Error> { try self.decoded(reply, to: name, as: Reply.self) }
         })
     }
+  }
+
+  /// Delivers `event` as the plugin's generated dispatch encodes it.
+  private func send(
+    _ name: String, _ event: Any, timeout: TimeInterval,
+    completion: @escaping (Result<Data, Error>) -> Void
+  ) {
+    let payload: Data
+    do throws(TokamakPluginError) {
+      payload = try exports(name).eventPayload(name, event)
+    } catch {
+      return completion(.failure(error))
+    }
+    emitBytes(name, payload: payload, timeout: timeout, completion: completion)
+  }
+
+  /// The listeners' `reply` to the event `name` as a `Reply`, or nil when none replied.
+  private func decoded<Reply>(
+    _ reply: Data, to name: String, as type: Reply.Type
+  ) throws(TokamakPluginError) -> Reply? {
+    guard !reply.isEmpty, let value = try exports(name).eventReply(name, reply) else { return nil }
+    guard let reply = value as? Reply else {
+      throw TokamakPluginError(
+        name: "TypeError",
+        message: "event \(name) replies with \(Swift.type(of: value)), not \(Reply.self)")
+    }
+    return reply
+  }
+
+  /// The plugin, whose generated dispatch encodes the event `name`.
+  private func exports(_ name: String) throws(TokamakPluginError) -> any TokamakExports {
+    guard let exports = app.plugins[plugin] as? any TokamakExports else {
+      throw .unlistedEvent(name)
+    }
+    return exports
   }
 
   /// Fetches what the app serves at `path`, as its WebView would load it: a

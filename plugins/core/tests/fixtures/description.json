@@ -1,0 +1,403 @@
+{
+  "methods": [
+    {
+      "name": "addRegion",
+      "kind": "call",
+      "doc": "Monitors a circular region until `removeRegion`.",
+      "parameters": [
+        {
+          "name": "region",
+          "type": {
+            "named": "Region"
+          }
+        },
+        {
+          "name": "replace",
+          "type": {
+            "optional": "boolean"
+          }
+        }
+      ],
+      "returns": "void"
+    },
+    {
+      "name": "regions",
+      "kind": "call",
+      "returns": {
+        "array": {
+          "named": "Region"
+        }
+      }
+    },
+    {
+      "name": "permission",
+      "kind": "call",
+      "doc": "The app's permission.\n\nNever asks.",
+      "parameters": [
+        {
+          "name": "precision",
+          "type": {
+            "named": "Precision"
+          }
+        }
+      ],
+      "returns": {
+        "record": {
+          "optional": "string"
+        }
+      },
+      "platforms": [
+        "ios"
+      ]
+    },
+    {
+      "name": "watchPosition",
+      "kind": "stream",
+      "parameters": [
+        {
+          "name": "every",
+          "type": "number"
+        }
+      ],
+      "returns": {
+        "named": "Region"
+      },
+      "overflow": "dropOldest"
+    },
+    {
+      "name": "onVisit",
+      "kind": "stream",
+      "returns": "string"
+    },
+    {
+      "name": "capture",
+      "kind": "resource",
+      "parameters": [
+        {
+          "name": "quality",
+          "type": "number"
+        }
+      ]
+    },
+    {
+      "name": "encode",
+      "kind": "call",
+      "parameters": [
+        {
+          "name": "frame",
+          "type": "reference"
+        }
+      ],
+      "returns": "number"
+    },
+    {
+      "name": "upload",
+      "kind": "call",
+      "parameters": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "file",
+          "type": "body"
+        }
+      ],
+      "returns": "number"
+    },
+    {
+      "name": "digest",
+      "kind": "call",
+      "parameters": [
+        {
+          "name": "data",
+          "type": "bytes"
+        }
+      ],
+      "returns": "string"
+    },
+    {
+      "name": "read",
+      "kind": "call",
+      "parameters": [
+        {
+          "name": "path",
+          "type": "string"
+        }
+      ],
+      "returns": "bytes"
+    },
+    {
+      "name": "copy",
+      "kind": "call",
+      "parameters": [
+        {
+          "name": "data",
+          "type": "bytes"
+        }
+      ],
+      "returns": "bytes"
+    },
+    {
+      "name": "mirror",
+      "kind": "call",
+      "parameters": [
+        {
+          "name": "value",
+          "type": "json"
+        }
+      ],
+      "returns": "json"
+    },
+    {
+      "name": "alert",
+      "kind": "call",
+      "parameters": [
+        {
+          "name": "alert",
+          "type": {
+            "named": "Alert"
+          }
+        },
+        {
+          "name": "zone",
+          "type": {
+            "named": "Zone"
+          }
+        }
+      ],
+      "returns": {
+        "array": {
+          "named": "Alert"
+        }
+      }
+    },
+    {
+      "name": "zone",
+      "kind": "call",
+      "parameters": [
+        {
+          "name": "zone",
+          "type": {
+            "named": "Zone"
+          }
+        }
+      ],
+      "returns": {
+        "named": "Zone"
+      }
+    },
+    {
+      "name": "mark",
+      "kind": "call",
+      "parameters": [
+        {
+          "name": "mark",
+          "type": {
+            "named": "Mark"
+          }
+        }
+      ],
+      "returns": {
+        "named": "Mark"
+      }
+    }
+  ],
+  "events": [
+    {
+      "name": "entered",
+      "doc": "Each region the device enters.",
+      "type": {
+        "named": "Region"
+      }
+    },
+    {
+      "name": "asked",
+      "type": {
+        "named": "Region"
+      },
+      "reply": {
+        "named": "Precision"
+      }
+    },
+    {
+      "name": "visited",
+      "type": {
+        "named": "Visit"
+      },
+      "platforms": [
+        "ios"
+      ]
+    }
+  ],
+  "types": [
+    {
+      "name": "Alert",
+      "alternatives": [
+        {
+          "name": "enabled",
+          "type": "boolean"
+        },
+        {
+          "name": "flash",
+          "type": {
+            "named": "Flash"
+          }
+        },
+        {
+          "name": "muted"
+        },
+        {
+          "name": "pattern",
+          "type": {
+            "array": "number"
+          }
+        },
+        {
+          "name": "silent"
+        },
+        {
+          "name": "tone",
+          "type": {
+            "named": "Tone"
+          }
+        },
+        {
+          "name": "volume",
+          "type": "number"
+        }
+      ]
+    },
+    {
+      "name": "Circle",
+      "fields": [
+        {
+          "name": "radius",
+          "type": "number"
+        }
+      ]
+    },
+    {
+      "name": "Flash",
+      "fields": [
+        {
+          "name": "colour",
+          "type": "string"
+        },
+        {
+          "name": "volume",
+          "type": {
+            "optional": "number"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Mark",
+      "alternatives": [
+        {
+          "name": "labels",
+          "type": {
+            "record": "string"
+          }
+        },
+        {
+          "name": "none"
+        }
+      ]
+    },
+    {
+      "name": "Precision",
+      "values": [
+        "precise",
+        "approximate"
+      ]
+    },
+    {
+      "name": "Region",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "radius",
+          "type": "number"
+        },
+        {
+          "name": "onEntry",
+          "type": {
+            "optional": "boolean"
+          }
+        },
+        {
+          "name": "tags",
+          "type": {
+            "array": {
+              "optional": "string"
+            }
+          }
+        },
+        {
+          "name": "counts",
+          "type": {
+            "record": "number"
+          }
+        },
+        {
+          "name": "data",
+          "type": {
+            "optional": {
+              "record": "json"
+            }
+          }
+        },
+        {
+          "name": "kind",
+          "type": {
+            "optional": "string"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Tone",
+      "fields": [
+        {
+          "name": "frequency",
+          "type": "number"
+        },
+        {
+          "name": "volume",
+          "type": {
+            "optional": "number"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Visit",
+      "fields": [
+        {
+          "name": "place",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "Zone",
+      "tag": "kind",
+      "alternatives": [
+        {
+          "name": "circle",
+          "type": {
+            "named": "Circle"
+          }
+        },
+        {
+          "name": "everywhere"
+        }
+      ]
+    }
+  ]
+}

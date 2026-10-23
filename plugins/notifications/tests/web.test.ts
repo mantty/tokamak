@@ -339,7 +339,7 @@ void test("streams messages and subscription changes from the service worker", a
   const messages = decodeValues(await notifications.onMessage());
   const changes = decodeValues(await notifications.onSubscriptionChange());
   const subscription = { service: "webpush", endpoint: "https://push.example/changed", keys: { auth: "a", p256dh: "b" } };
-  const message = { id: "1", title: null, body: null, data: {} };
+  const message = { id: "1", data: {} };
   for (const listener of messageListeners) {
     listener({ data: { type: "tokamak-notifications:message", message } });
     listener({ data: { type: "tokamak-notifications:subscription", subscription } });
@@ -354,7 +354,7 @@ void test("streams messages and subscription changes from the service worker", a
 
 void test("streams dismissed notifications held by the service worker", async () => {
   const cache = await caches.open(DISMISSED_CACHE);
-  const dismissed = { id: "1", title: "Hi", body: null, data: {}, source: "local" };
+  const dismissed = { id: "1", title: "Hi", data: {}, source: "local" };
   await cache.put("/__tokamak/notifications/1", Response.json(dismissed));
   const values = decodeValues(await notifications.onNotificationDismissed());
   assert.deepEqual((await values.next()).value, dismissed);
@@ -363,7 +363,7 @@ void test("streams dismissed notifications held by the service worker", async ()
 
 void test("delivers held notifications once to each active stream", async () => {
   const cache = await caches.open(OPENED_CACHE);
-  const opened = { id: "1", title: "Hi", body: null, data: {}, source: "push" };
+  const opened = { id: "1", title: "Hi", data: {}, source: "push" };
   const firstStream = await notifications.onNotificationOpened();
   const secondStream = await notifications.onNotificationOpened();
   const first = decodeValues(firstStream);

@@ -5,7 +5,7 @@ import Foundation
   import UIKit
 #endif
 
-/// The JSON of each monitored region, as `addRegion` received it, by id.
+/// The JSON of each monitored region, by id.
 private let regionsKey = "tokamak.location.regions"
 /// The ids of the regions whose last transition was an entry.
 private let insideKey = "tokamak.location.inside"
@@ -30,26 +30,23 @@ final class TokamakLocationRegions {
       return await CLMonitor(monitorName)
     }
     self.monitor = monitor
-    Task { @MainActor [weak self] in
-      do {
-        for try await event in await monitor.value.events {
-          self?.receive(event)
-        }
-      } catch {
-        self?.events.fail(
-          .locationUnavailable(error.localizedDescription))
+    events.task { [weak self] in
+      for try await event in await monitor.value.events {
+        self?.receive(event)
       }
     }
   }
 
   /// The regions, by id.
-  private var regions: [String: [String: Any]] {
+  private var regions: [String: TokamakLocationPlugin.Region] {
     get {
       defaults.data(forKey: regionsKey)
-        .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: [String: Any]] } ?? [:]
+        .flatMap {
+          try? JSONDecoder().decode([String: TokamakLocationPlugin.Region].self, from: $0)
+        } ?? [:]
     }
     set {
-      defaults.set(try? JSONSerialization.data(withJSONObject: newValue), forKey: regionsKey)
+      defaults.set(try? JSONEncoder().encode(newValue), forKey: regionsKey)
     }
   }
 
@@ -58,17 +55,12 @@ final class TokamakLocationRegions {
     set { defaults.set(Array(newValue), forKey: insideKey) }
   }
 
-  /// Monitors the region `region` describes, replacing one with the same id.
-  /// It starts outside, so a device already inside reports an entry, as on
-  /// Android. `CLMonitor` keeps the state of a condition added again under its
-  /// identifier, so the old condition is removed first.
-  func add(_ region: [String: Any]) async throws(TokamakPluginError) {
-    guard let id = region["id"] as? String, let radius = region["radius"] as? Double,
-      let latitude = region["latitude"] as? Double, let longitude = region["longitude"] as? Double
-    else {
-      throw TokamakPluginError(
-        name: "TypeError", message: "region must have an id, latitude, longitude and radius")
-    }
+  /// Monitors `region`, replacing one with the same id. It starts outside, so
+  /// a device already inside reports an entry, as on Android. `CLMonitor`
+  /// keeps the state of a condition added again under its identifier, so the
+  /// old condition is removed first.
+  func add(_ region: TokamakLocationPlugin.Region) async throws(TokamakPluginError) {
+    let id = region.id
     let monitor = await monitor.value
     let monitored = await monitor.identifiers
     guard monitored.count < regionLimit || monitored.contains(id) else {
@@ -76,8 +68,8 @@ final class TokamakLocationRegions {
         name: "QuotaExceededError",
         message: "The app monitors \(regionLimit) regions, the most the system allows")
     }
-    let center = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
-    let condition = CLMonitor.CircularGeographicCondition(center: center, radius: radius)
+    let center = CLLocationCoordinate2D(latitude: region.latitude, longitude: region.longitude)
+    let condition = CLMonitor.CircularGeographicCondition(center: center, radius: region.radius)
     regions[id] = region
     inside.remove(id)
     await monitor.remove(id)
@@ -92,19 +84,22 @@ final class TokamakLocationRegions {
   }
 
   /// The monitored regions, each with whether the device is inside it.
-  func all() async -> [[String: Any]] {
+  func all() async -> [TokamakLocationPlugin.MonitoredRegion] {
     let monitor = await monitor.value
     let regions = regions
-    var all: [[String: Any]] = []
+    var all: [TokamakLocationPlugin.MonitoredRegion] = []
     for id in await monitor.identifiers {
-      guard var region = regions[id] else { continue }
-      region["state"] =
+      guard let region = regions[id] else { continue }
+      let state: TokamakLocationPlugin.RegionState =
         switch await monitor.record(for: id)?.lastEvent.state {
-        case .satisfied: "inside"
-        case .unsatisfied: "outside"
-        default: "unknown"
+        case .satisfied: .inside
+        case .unsatisfied: .outside
+        default: .unknown
         }
-      all.append(region)
+      all.append(
+        TokamakLocationPlugin.MonitoredRegion(
+          id: id, latitude: region.latitude, longitude: region.longitude, radius: region.radius,
+          onEntry: region.onEntry ?? true, onExit: region.onExit ?? true, state: state))
     }
     return all
   }
@@ -121,7 +116,7 @@ final class TokamakLocationRegions {
     let entered = event.state == .satisfied
     guard entered != inside.contains(id) else { return }
     inside = entered ? inside.union([id]) : inside.subtracting([id])
-    if region[entered ? "onEntry" : "onExit"] as? Bool != false {
+    if (entered ? region.onEntry : region.onExit) != false {
       events.transition(id, entered: entered, at: event.date)
     }
   }

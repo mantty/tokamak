@@ -1,12 +1,17 @@
-import { Plugin, type TokamakContext } from "@tokamakdev/plugin";
+import { capabilitiesOf, platformApi, type TokamakContext } from "@tokamakdev/plugin";
 
-class NativeApi extends Plugin {
-  constructor(ctx: TokamakContext) { super(ctx, "{{id}}"); }
+{{imports}}
 
-  /** Returns a message through the native implementation. */
-  echo(message: string): Promise<string> {
-    return this.call("echo", message);
-  }
+/** The {{id}} plugin's native operations. */
+export function {{factory}}(ctx: TokamakContext) {
+  const native = platformApi(ctx, { {{families}} });
+  return {
+    /** Whether each operation is implemented where the app runs, without calling it. Permission is not reported. */
+    get capabilities(): Readonly<Record<string, boolean>> {
+      return capabilitiesOf(ctx, "{{id}}");
+    },
+
+    /** Returns a message through the native implementation. */
+    echo: (message: string): Promise<string> => native.echo(message),
+  };
 }
-
-export function {{factory}}(ctx: TokamakContext) { return new NativeApi(ctx); }

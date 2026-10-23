@@ -7,7 +7,6 @@ import android.content.Context
 import android.content.Intent
 import android.location.LocationManager
 import android.location.LocationRequest
-import org.json.JSONObject
 
 /** The JSON of each kind of updates' options, by name. */
 private const val PREFERENCES = "tokamak.location"
@@ -15,9 +14,9 @@ private const val DEFAULT_INTERVAL_MILLIS = 10_000L
 
 private val QUALITIES =
     mapOf(
-        "high" to LocationRequest.QUALITY_HIGH_ACCURACY,
-        "balanced" to LocationRequest.QUALITY_BALANCED_POWER_ACCURACY,
-        "low" to LocationRequest.QUALITY_LOW_POWER,
+        Accuracy.high to LocationRequest.QUALITY_HIGH_ACCURACY,
+        Accuracy.balanced to LocationRequest.QUALITY_BALANCED_POWER_ACCURACY,
+        Accuracy.low to LocationRequest.QUALITY_LOW_POWER,
     )
 
 /**
@@ -31,20 +30,20 @@ internal class LocationUpdates(private val context: Context, private val name: S
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
     /** The options of the updates, or null. */
-    val options: JSONObject?
-        get() = preferences.getString(name, null)?.let(::JSONObject)
+    val options: UpdateOptions?
+        get() = preferences.getString(name, null)?.let(UpdateOptions::from)
 
     /** Keeps [options], which [restore] requests. */
-    fun keep(options: JSONObject) {
-        preferences.edit().putString(name, options.toString()).apply()
+    fun keep(options: UpdateOptions) {
+        preferences.edit().putString(name, options.json().toString()).apply()
     }
 
     /**
      * Keeps [options] and requests updates with them, replacing others; the same options running
      * change nothing. Throws `SecurityException` without permission.
      */
-    fun start(options: JSONObject) {
-        if (options.toString() == preferences.getString(name, null) && isRequested()) return
+    fun start(options: UpdateOptions) {
+        if (options == this.options && isRequested()) return
         keep(options)
         request(options)
     }
@@ -76,12 +75,12 @@ internal class LocationUpdates(private val context: Context, private val name: S
             .firstOrNull()
             ?.reason == ApplicationExitInfo.REASON_USER_REQUESTED
 
-    private fun request(options: JSONObject) {
-        val accuracy = options.optString("accuracy", "high")
+    private fun request(options: UpdateOptions) {
+        val accuracy = options.accuracy ?: Accuracy.high
         val request =
-            LocationRequest.Builder(options.optLong("interval", DEFAULT_INTERVAL_MILLIS))
-                .setQuality(QUALITIES[accuracy] ?: LocationRequest.QUALITY_HIGH_ACCURACY)
-                .setMinUpdateDistanceMeters(options.optDouble("distance", 0.0).toFloat())
+            LocationRequest.Builder(options.interval ?: DEFAULT_INTERVAL_MILLIS)
+                .setQuality(QUALITIES.getValue(accuracy))
+                .setMinUpdateDistanceMeters((options.distance ?: 0.0).toFloat())
                 .build()
         val updates = checkNotNull(pendingIntent(PendingIntent.FLAG_UPDATE_CURRENT))
         try {
@@ -94,10 +93,10 @@ internal class LocationUpdates(private val context: Context, private val name: S
     }
 
     /** The fused provider when the device has one, and otherwise GPS for high accuracy and the network for less. */
-    private fun provider(accuracy: String): String =
+    private fun provider(accuracy: Accuracy): String =
         when {
             manager.hasProvider(LocationManager.FUSED_PROVIDER) -> LocationManager.FUSED_PROVIDER
-            accuracy == "high" -> LocationManager.GPS_PROVIDER
+            accuracy == Accuracy.high -> LocationManager.GPS_PROVIDER
             else -> LocationManager.NETWORK_PROVIDER
         }
 

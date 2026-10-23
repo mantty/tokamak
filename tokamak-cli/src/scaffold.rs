@@ -4,17 +4,19 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use clap::ValueEnum;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
+use tokamak_cli::Platform;
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub(crate) enum Native {
-    Apple,
-    Android,
-}
+use super::plugin_api::{self, Family};
 
-pub(crate) fn create(directory: &Path, native: Option<Native>) -> Result<()> {
+/// The description the native template's registration file gives, which `tok plugin generate`
+/// writes the template's TypeScript API from.
+const NATIVE_DESCRIPTION: &str = include_str!("../templates/plugin/description.json");
+
+pub(crate) fn create(directory: &Path, platforms: &[Platform]) -> Result<()> {
     let id = plugin_id(directory)?;
+    let families = families(platforms)?;
+    let native = !families.is_empty();
     let class = id
         .split('-')
         .map(|word| {
@@ -24,14 +26,30 @@ pub(crate) fn create(directory: &Path, native: Option<Native>) -> Result<()> {
         .collect::<String>();
     let factory = format!("create{class}");
     let class = format!("Tokamak{class}Plugin");
+    let names = families
+        .iter()
+        .map(|(family, _)| family.name())
+        .collect::<Vec<_>>();
+    let imports = lines(&names, |name| {
+        format!("import {{ {name} }} from \"./{name}.generated.js\";")
+    });
+    let namespaces = lines(&names, |name| {
+        format!("import * as {name} from \"./{name}.generated.js\";")
+    });
+    let listeners = lines(&names, |name| format!("  {name}.onEchoed(listener);"));
     let template = |source: &str| {
         source
             .replace("{{id}}", id)
             .replace("{{factory}}", &factory)
             .replace("{{class}}", &class)
+            .replace("{{family}}", names.first().copied().unwrap_or_default())
+            .replace("{{families}}", &names.join(", "))
+            .replace("{{imports}}", &imports)
+            .replace("{{namespaces}}", &namespaces)
+            .replace("{{listeners}}", &listeners)
             .replace(
                 "{{operation}}",
-                if native.is_some() {
+                if native {
                     "echo(\"Hello\")"
                 } else {
                     "getCurrentPage()"
@@ -41,37 +59,29 @@ pub(crate) fn create(directory: &Path, native: Option<Native>) -> Result<()> {
     // Refuse to touch an existing directory, including an empty project.
     fs::create_dir(directory)
         .with_context(|| format!("Create new plugin directory {}", directory.display()))?;
-    fs::create_dir(directory.join("src"))?;
-    let source = if native.is_some() {
-        include_str!("../templates/plugin/native.ts")
-    } else {
-        include_str!("../templates/plugin/index.ts")
-    };
-    fs::write(directory.join("src/index.ts"), template(source))?;
-    fs::create_dir(directory.join("web"))?;
-    let web = if native.is_some() {
-        include_str!("../templates/plugin/native-web.ts")
-    } else {
-        include_str!("../templates/plugin/web.ts")
-    };
-    fs::write(directory.join("web/index.ts"), template(web))?;
-    if native.is_some() {
-        fs::create_dir(directory.join("events"))?;
-        fs::write(
-            directory.join("events/index.ts"),
-            template(include_str!("../templates/plugin/events.ts")),
-        )?;
+    write_typescript(directory, native, &template)?;
+    let mut sections = Map::new();
+    for (family, named) in &families {
+        sections.extend(write_native(
+            directory, *family, named, id, &class, &template,
+        )?);
     }
-    let platforms = write_native(directory, native, &class, &template)?;
     write_json(
         directory,
         "tokamak-plugin.json",
         &json!({
             "schemaVersion": 2, "id": id, "api": { "module": "src/index.ts", "export": factory },
-            "web": { "module": "web/index.ts", "export": "web" }, "platforms": platforms,
+            "web": { "module": "web/index.ts", "export": "web" }, "platforms": sections,
         }),
     )?;
-    write_package(directory, id, native.is_some())?;
+    write_package(directory, id, families.iter().map(|(family, _)| *family))?;
+    if native {
+        // `tok plugin check` compares generated files byte for byte, so checkouts keep their LF.
+        fs::write(
+            directory.join(".gitattributes"),
+            "*.generated.* text eol=lf\n",
+        )?;
+    }
     fs::write(
         directory.join("README.md"),
         template(include_str!("../templates/plugin/README.md")),
@@ -83,34 +93,131 @@ pub(crate) fn create(directory: &Path, native: Option<Native>) -> Result<()> {
     Ok(())
 }
 
-/// Writes the native endpoint of `native`, returning the manifest's platform
-/// sections that name it.
+/// Each family with native code on `platforms`, and the platforms it runs on.
+fn families(platforms: &[Platform]) -> Result<Vec<(Family, Vec<Platform>)>> {
+    if let Some(platform) = platforms.iter().find(|platform| {
+        !Family::ALL
+            .iter()
+            .any(|family| family.platforms().contains(platform))
+    }) {
+        bail!(
+            "Plugins' native code runs on ios, macos and android, not {}",
+            platform.directory_name()
+        );
+    }
+    let families = Family::ALL.into_iter().map(|family| {
+        let named = family
+            .platforms()
+            .iter()
+            .copied()
+            .filter(|platform| platforms.contains(platform))
+            .collect::<Vec<_>>();
+        (family, named)
+    });
+    Ok(families.filter(|(_, named)| !named.is_empty()).collect())
+}
+
+/// `line` for each of the family `names`, one per line.
+fn lines(names: &[&str], line: impl Fn(&str) -> String) -> String {
+    names
+        .iter()
+        .map(|name| line(name))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Writes the plugin's API, its `/events` entry when it has `native` code, and its browser
+/// implementation.
+fn write_typescript(
+    directory: &Path,
+    native: bool,
+    template: &dyn Fn(&str) -> String,
+) -> Result<()> {
+    fs::create_dir(directory.join("src"))?;
+    fs::create_dir(directory.join("web"))?;
+    let files = if native {
+        &[
+            (
+                "src/index.ts",
+                include_str!("../templates/plugin/native.ts"),
+            ),
+            (
+                "src/events.ts",
+                include_str!("../templates/plugin/events.ts"),
+            ),
+            (
+                "web/index.ts",
+                include_str!("../templates/plugin/native-web.ts"),
+            ),
+        ][..]
+    } else {
+        &[
+            ("src/index.ts", include_str!("../templates/plugin/index.ts")),
+            ("web/index.ts", include_str!("../templates/plugin/web.ts")),
+        ][..]
+    };
+    for (path, source) in files {
+        fs::write(directory.join(path), template(source))?;
+    }
+    Ok(())
+}
+
+/// Writes the native endpoint of `family`, with its registration file and the files generated
+/// from it, returning its class's manifest sections, by platform.
 fn write_native(
     directory: &Path,
-    native: Option<Native>,
+    family: Family,
+    platforms: &[Platform],
+    id: &str,
     class: &str,
     template: &dyn Fn(&str) -> String,
-) -> Result<Value> {
-    Ok(match native {
-        None => json!({}),
-        Some(Native::Apple) => {
-            fs::create_dir(directory.join("apple"))?;
-            fs::write(
-                directory.join("apple/Plugin.swift"),
-                template(include_str!("../templates/plugin/Plugin.swift")),
-            )?;
-            let platform = json!({ "class": class, "sources": ["apple/Plugin.swift"] });
-            json!({ "ios": platform, "macos": platform })
-        }
-        Some(Native::Android) => {
-            fs::create_dir(directory.join("android"))?;
-            fs::write(
-                directory.join("android/Plugin.kt"),
-                template(include_str!("../templates/plugin/Plugin.kt")),
-            )?;
-            json!({ "android": { "class": format!("tokamak.plugins.{class}"), "sources": ["android/Plugin.kt"] } })
-        }
-    })
+) -> Result<Map<String, Value>> {
+    let native = directory.join(family.name());
+    fs::create_dir(&native)?;
+    let files = match family {
+        Family::Apple => [
+            (
+                "Plugin.swift",
+                include_str!("../templates/plugin/Plugin.swift"),
+            ),
+            (
+                "Exports.swift",
+                include_str!("../templates/plugin/Exports.swift"),
+            ),
+            (
+                "Exports.generated.swift",
+                include_str!("../templates/plugin/Exports.generated.swift"),
+            ),
+        ],
+        Family::Android => [
+            ("Plugin.kt", include_str!("../templates/plugin/Plugin.kt")),
+            ("Exports.kt", include_str!("../templates/plugin/Exports.kt")),
+            (
+                "Exports.generated.kt",
+                include_str!("../templates/plugin/Exports.generated.kt"),
+            ),
+        ],
+    };
+    for (name, source) in files {
+        fs::write(native.join(name), template(source))?;
+    }
+    fs::write(
+        directory.join(family.api()),
+        plugin_api::typescript(
+            &serde_json::from_str(NATIVE_DESCRIPTION)?,
+            id,
+            family,
+            platforms,
+        ),
+    )?;
+    let class = match family {
+        Family::Apple => class.to_owned(),
+        Family::Android => format!("tokamak.plugins.{class}"),
+    };
+    Ok(platforms
+        .iter()
+        .map(|platform| (platform.namespace().to_owned(), json!({ "class": class })))
+        .collect())
 }
 
 fn plugin_id(directory: &Path) -> Result<&str> {
@@ -131,11 +238,25 @@ fn plugin_id(directory: &Path) -> Result<&str> {
     Ok(id)
 }
 
-/// The npm package, exporting `/events` when the plugin has native events.
-fn write_package(directory: &Path, id: &str, events: bool) -> Result<()> {
+/// The npm package, exporting `/events` and the platform API of each of the native `families`,
+/// whose scripts generate and check them.
+fn write_package(
+    directory: &Path,
+    id: &str,
+    families: impl ExactSizeIterator<Item = Family>,
+) -> Result<()> {
     let mut exports = json!({ ".": "./src/index.ts" });
-    if events {
-        exports["./events"] = json!("./events/index.ts");
+    let mut scripts = json!({ "check": "tsc --noEmit", "prepack": "npm run check" });
+    let mut dev_dependencies = json!({ "@tokamakdev/plugin": "^0.1.0", "typescript": "^5.9.3" });
+    if families.len() > 0 {
+        exports["./events"] = json!("./src/events.ts");
+        scripts["check"] = json!("tsc --noEmit && tok plugin check");
+        dev_dependencies["@tokamakdev/tok"] = json!(format!("^{}", env!("CARGO_PKG_VERSION")));
+    }
+    for family in families {
+        let name = family.name();
+        exports[format!("./{name}")] = json!(format!("./{}", family.api()));
+        scripts[format!("generate:{name}")] = json!(format!("tok plugin generate {name}"));
     }
     write_json(
         directory,
@@ -143,10 +264,10 @@ fn write_package(directory: &Path, id: &str, events: bool) -> Result<()> {
         &json!({
             "name": format!("tokamak-plugin-{id}"), "version": "0.1.0", "type": "module",
             "exports": exports,
-            "files": ["src", "web", "events", "apple", "android", "tokamak-plugin.json", "README.md"],
+            "files": ["src", "web", "apple", "android", "tokamak-plugin.json", "README.md"],
+            "scripts": scripts,
             "peerDependencies": { "@tokamakdev/plugin": "^0.1.0" },
-            "devDependencies": { "@tokamakdev/plugin": "^0.1.0", "typescript": "^5.9.3" },
-            "scripts": { "check": "tsc --noEmit" },
+            "devDependencies": dev_dependencies,
         }),
     )?;
     write_json(
@@ -154,7 +275,7 @@ fn write_package(directory: &Path, id: &str, events: bool) -> Result<()> {
         "tsconfig.json",
         &json!({
             "compilerOptions": { "target": "ES2022", "module": "NodeNext", "strict": true, "noEmit": true, "lib": ["ES2022", "DOM"] },
-            "include": ["src", "web", "events"],
+            "include": ["src", "web"],
         }),
     )?;
     Ok(())

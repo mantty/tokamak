@@ -59,19 +59,20 @@ function browserLocationApi(): Geolocation {
   throw new DOMException("Location is unavailable", "NotSupportedError");
 }
 
-function copyPosition(position: GeolocationPosition): Position {
-  const { coords } = position;
+/** `position` as native platforms give it: without the coordinates the device does not report. */
+function copyPosition({ coords, timestamp }: GeolocationPosition): Position {
+  const { latitude, longitude, accuracy, altitude, altitudeAccuracy, heading, speed } = coords;
   return {
     coords: {
-      latitude: coords.latitude,
-      longitude: coords.longitude,
-      accuracy: coords.accuracy,
-      altitude: coords.altitude,
-      altitudeAccuracy: coords.altitudeAccuracy,
-      heading: coords.heading,
-      speed: coords.speed,
+      latitude,
+      longitude,
+      accuracy,
+      ...(altitude === null ? {} : { altitude }),
+      ...(altitudeAccuracy === null ? {} : { altitudeAccuracy }),
+      ...(heading === null ? {} : { heading }),
+      ...(speed === null ? {} : { speed }),
     },
-    timestamp: position.timestamp,
+    timestamp,
   };
 }
 

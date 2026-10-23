@@ -75,4 +75,6 @@ fi
 cp "$library" "$runtime/libtokamak.a"
 cp "$libraries" "$runtime/link-libraries"
 cp -R "$workspace/platforms/android/source/." "$output/native-shell/"
+mkdir -p "$output/describer"
+cp "$workspace/platforms/android/describer/"*.kt "$output/describer/"
 cp "$build/entrypoint" "$build/min-sdk" "$output/build/"

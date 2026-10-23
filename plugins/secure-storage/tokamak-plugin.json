@@ -3,23 +3,14 @@
   "id": "secure-storage",
   "platforms": {
     "macos": {
-      "class": "TokamakSecureStoragePlugin",
-      "sources": [
-        "apple/SecureStoragePlugin.swift"
-      ]
+      "class": "TokamakSecureStoragePlugin"
     },
     "ios": {
       "class": "TokamakSecureStoragePlugin",
-      "sources": [
-        "apple/SecureStoragePlugin.swift"
-      ],
       "plist": "apple/Info.plist"
     },
     "android": {
       "class": "com.tokamak.plugins.securestorage.TokamakSecureStoragePlugin",
-      "sources": [
-        "android/SecureStoragePlugin.kt"
-      ],
       "manifest": "android/AndroidManifest.xml"
     }
   },

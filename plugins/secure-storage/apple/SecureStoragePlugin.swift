@@ -1,26 +1,65 @@
 import Foundation
-import LocalAuthentication
+@preconcurrency import LocalAuthentication
 import Security
 
 #if os(iOS)
   import UIKit
 #endif
 
+extension TokamakSecureStoragePlugin {
+  /// When a stored value can be read.
+  enum Readable: String, Codable {
+    case whenUnlocked
+    case afterFirstUnlock
+  }
+
+  /// The authentication a read requires.
+  enum Authentication: String, Codable {
+    case biometricsOrPasscode
+    case biometrics
+    case currentBiometrics
+  }
+
+  /// How a value is stored.
+  struct StoreOptions: Codable {
+    let readable: Readable
+    /// Reads need no authentication when nil.
+    let authentication: Authentication?
+    /// Whether backups restore the value only to this device.
+    let thisDeviceOnly: Bool
+    /// One of the app's `keychain-access-groups`: the first of them for a new value, and every one
+    /// for an update, when nil.
+    let keychainGroup: String?
+    /// The reason the system prompt shows when replacing a value saved with authentication.
+    let prompt: String?
+  }
+
+  struct ReadOptions: Codable {
+    /// The reason the system prompt shows.
+    let prompt: String?
+    /// The keychain access group to read from; every one of the app's when nil.
+    let keychainGroup: String?
+  }
+
+  struct GroupOptions: Codable {
+    /// The keychain access group; every one of the app's when nil.
+    let keychainGroup: String?
+  }
+}
+
 final class TokamakSecureStoragePlugin: TokamakPlugin {
   let id = "secure-storage"
+  let host: TokamakHost
 
   private let service = "tokamak.secure-storage"
   /// Keychain calls block while the system authentication prompt is shown.
   private let queue = DispatchQueue(label: "tokamak.secure-storage")
-  private let host: TokamakHost
 
   init(host: TokamakHost) {
     self.host = host
   }
 
-  func executor(for method: String) -> DispatchQueue {
-    ["get", "replace", "set"].contains(method) ? .main : queue
-  }
+  func executor(for method: String) -> DispatchQueue { queue }
 
   #if os(macOS)
     /// macOS grants the data protection keychain only to apps whose provisioning
@@ -32,27 +71,69 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     }()
   #endif
 
-  func call(
-    method: String,
-    arguments: Any,
-    reply: @escaping TokamakPluginReply
-  ) -> (() -> Void)? {
-    let arguments = arguments as? [String: Any] ?? [:]
-    let prompting =
-      ["get", "replace", "set"].contains(method) && isUnlocked
-      ? Result { () throws(TokamakPluginError) in try host.requireUI() } : nil
-    let authentication = LAContext()
-    queue.async {
-      reply(
-        Result { () throws(TokamakPluginError) in
-          try self.perform(method, arguments, prompting: prompting, authentication: authentication)
-        })
+  func create(_ name: String, _ value: String, _ options: StoreOptions) throws(TokamakPluginError) {
+    try requireKeychain()
+    try check(add(name, group: options.keychainGroup, stored(value, options)))
+  }
+
+  /// Replaces the value in place, asking for the authentication it was saved with.
+  @MainActor
+  func replace(_ name: String, _ value: String, _ options: StoreOptions) async throws {
+    let prompting = self.prompting
+    try await withAuthentication { authentication throws(TokamakPluginError) in
+      try self.check(
+        self.update(
+          name, group: options.keychainGroup, self.stored(value, options), prompt: options.prompt,
+          prompting: prompting, authentication: authentication))
     }
-    return { authentication.invalidate() }
+  }
+
+  @MainActor
+  func set(_ name: String, _ value: String, _ options: StoreOptions) async throws {
+    let prompting = self.prompting
+    try await withAuthentication { authentication throws(TokamakPluginError) in
+      let stored = try self.stored(value, options)
+      let status = try self.update(
+        name, group: options.keychainGroup, stored, prompt: options.prompt, prompting: prompting,
+        authentication: authentication)
+      try self.check(
+        status == errSecItemNotFound ? self.add(name, group: options.keychainGroup, stored) : status
+      )
+    }
+  }
+
+  /// Reads the value, asking for the authentication it was saved with.
+  @MainActor
+  func get(_ name: String, _ options: ReadOptions?) async throws -> String {
+    let prompting = self.prompting
+    return try await withAuthentication { authentication throws(TokamakPluginError) in
+      try self.read(
+        name, group: options?.keychainGroup, prompt: options?.prompt, prompting: prompting,
+        authentication: authentication)
+    }
+  }
+
+  func delete(_ name: String, _ options: GroupOptions?) throws(TokamakPluginError) {
+    try requireKeychain()
+    try check(SecItemDelete(query(name, group: options?.keychainGroup) as CFDictionary))
+  }
+
+  func clear(_ options: GroupOptions?) throws(TokamakPluginError) {
+    try requireKeychain()
+    try check(SecItemDelete(serviceQuery(group: options?.keychainGroup) as CFDictionary))
+  }
+
+  /// Whether a read or update that needs authentication may show the system
+  /// prompt, decided on the main thread as the call arrives: nil while the
+  /// device is locked, where either fails without UI anyway.
+  @MainActor
+  private var prompting: Result<Void, TokamakPluginError>? {
+    isUnlocked ? Result { () throws(TokamakPluginError) in try host.requireUI() } : nil
   }
 
   /// Whether the device's protected data is available, which it is not while
   /// an iPhone is locked. Read it on the main thread.
+  @MainActor
   private var isUnlocked: Bool {
     #if os(iOS)
       UIApplication.shared.isProtectedDataAvailable
@@ -61,81 +142,46 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     #endif
   }
 
-  /// `prompting` is whether a read or update that needs authentication may
-  /// show the system prompt, decided on the main thread as the call arrives:
-  /// nil while the device is locked, where either fails without UI anyway.
-  private func perform(
-    _ method: String,
-    _ arguments: [String: Any],
-    prompting: Result<Void, TokamakPluginError>?,
-    authentication: LAContext
-  ) throws(TokamakPluginError) -> Any? {
+  /// Runs `work` on the plugin's queue, where keychain calls block, with an
+  /// authentication context that cancelling the call invalidates.
+  private func withAuthentication<T>(
+    _ work: @escaping (LAContext) throws(TokamakPluginError) -> T
+  ) async throws -> T {
+    try requireKeychain()
+    let authentication = LAContext()
+    return try await withTaskCancellationHandler {
+      try await onQueue { () throws(TokamakPluginError) in try work(authentication) }
+    } onCancel: {
+      authentication.invalidate()
+    }
+  }
+
+  /// What `work` returns, run on the plugin's queue.
+  private func onQueue<T>(_ work: @escaping () throws(TokamakPluginError) -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+      queue.async { continuation.resume(with: Result(catching: work)) }
+    }
+  }
+
+  private func requireKeychain() throws(TokamakPluginError) {
     #if os(macOS)
       // Unentitled reads report errSecItemNotFound rather than a missing entitlement.
       guard Self.hasApplicationIdentifier else {
         throw .notSupported("Secure storage requires a team-signed build")
       }
     #endif
-    let group = try optionalString(arguments, "keychainGroup")
-    switch method {
-    case "create":
-      try check(add(requiredString(arguments, "name"), group: group, stored(arguments)))
-      return nil
-    case "replace":
-      try check(
-        update(
-          requiredString(arguments, "name"),
-          group: group,
-          stored(arguments),
-          prompt: optionalString(arguments, "prompt"),
-          prompting: prompting,
-          authentication: authentication
-        ))
-      return nil
-    case "set":
-      let name = try requiredString(arguments, "name")
-      let stored = try stored(arguments)
-      let status = try update(
-        name,
-        group: group,
-        stored,
-        prompt: optionalString(arguments, "prompt"),
-        prompting: prompting,
-        authentication: authentication
-      )
-      try check(status == errSecItemNotFound ? add(name, group: group, stored) : status)
-      return nil
-    case "get":
-      return try get(
-        requiredString(arguments, "name"),
-        group: group,
-        prompt: optionalString(arguments, "prompt"),
-        prompting: prompting,
-        authentication: authentication
-      )
-    case "delete":
-      let name = try requiredString(arguments, "name")
-      try check(SecItemDelete(query(name, group: group) as CFDictionary))
-      return nil
-    case "clear":
-      try check(SecItemDelete(serviceQuery(group: group) as CFDictionary))
-      return nil
-    default:
-      throw .notSupported("\(id).\(method) is not supported")
-    }
   }
 
   /// The value and its protection, as keychain attributes. Access control even
   /// without authentication, so an update removes any the existing value had.
-  private func stored(_ arguments: [String: Any]) throws(TokamakPluginError) -> [CFString: Any] {
-    let accessibility = try accessibility(
-      requiredString(arguments, "readable"),
-      thisDeviceOnly: requiredBool(arguments, "thisDeviceOnly")
-    )
+  private func stored(
+    _ value: String, _ options: StoreOptions
+  ) throws(TokamakPluginError) -> [CFString: Any] {
+    let accessibility = accessibility(
+      options.readable, thisDeviceOnly: options.thisDeviceOnly)
     return [
-      kSecValueData: Data(try requiredString(arguments, "value").utf8),
-      kSecAttrAccessControl: try accessControl(
-        accessibility, optionalString(arguments, "authentication")),
+      kSecValueData: Data(value.utf8),
+      kSecAttrAccessControl: try accessControl(accessibility, options.authentication),
     ]
   }
 
@@ -166,7 +212,7 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
 
   /// Reads without UI first, so only a value saved with authentication needs
   /// the app able to show the system prompt.
-  private func get(
+  private func read(
     _ name: String,
     group: String?,
     prompt: String?,
@@ -230,30 +276,25 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
   }
 
   /// `ThisDeviceOnly` items restore only to the device they were stored on.
-  private func accessibility(
-    _ readable: String,
-    thisDeviceOnly: Bool
-  ) throws(TokamakPluginError) -> CFString {
+  private func accessibility(_ readable: Readable, thisDeviceOnly: Bool) -> CFString {
     switch (readable, thisDeviceOnly) {
-    case ("whenUnlocked", true): kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-    case ("whenUnlocked", false): kSecAttrAccessibleWhenUnlocked
-    case ("afterFirstUnlock", true): kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-    case ("afterFirstUnlock", false): kSecAttrAccessibleAfterFirstUnlock
-    default: throw unsupportedArgument("readable", readable)
+    case (.whenUnlocked, true): kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+    case (.whenUnlocked, false): kSecAttrAccessibleWhenUnlocked
+    case (.afterFirstUnlock, true): kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    case (.afterFirstUnlock, false): kSecAttrAccessibleAfterFirstUnlock
     }
   }
 
   private func accessControl(
     _ accessibility: CFString,
-    _ authentication: String?
+    _ authentication: Authentication?
   ) throws(TokamakPluginError) -> SecAccessControl {
     let (flags, policy): (SecAccessControlCreateFlags, LAPolicy?) =
       switch authentication {
       case nil: ([], nil)
-      case "biometricsOrPasscode": (.userPresence, .deviceOwnerAuthentication)
-      case "biometrics": (.biometryAny, .deviceOwnerAuthenticationWithBiometrics)
-      case "currentBiometrics": (.biometryCurrentSet, .deviceOwnerAuthenticationWithBiometrics)
-      case let authentication?: throw unsupportedArgument("authentication", authentication)
+      case .biometricsOrPasscode: (.userPresence, .deviceOwnerAuthentication)
+      case .biometrics: (.biometryAny, .deviceOwnerAuthenticationWithBiometrics)
+      case .currentBiometrics: (.biometryCurrentSet, .deviceOwnerAuthenticationWithBiometrics)
       }
     if let policy {
       try requireSetUp(policy)
@@ -291,38 +332,5 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
     default:
       throw TokamakPluginError(name: "OperationError", message: message)
     }
-  }
-
-  private func requiredString(
-    _ arguments: [String: Any],
-    _ key: String
-  ) throws(TokamakPluginError) -> String {
-    guard let value = arguments[key] as? String else {
-      throw TokamakPluginError(name: "TypeError", message: "\(key) must be a string")
-    }
-    return value
-  }
-
-  private func requiredBool(
-    _ arguments: [String: Any],
-    _ key: String
-  ) throws(TokamakPluginError) -> Bool {
-    guard let value = arguments[key] as? Bool else {
-      throw TokamakPluginError(name: "TypeError", message: "\(key) must be a boolean")
-    }
-    return value
-  }
-
-  /// Missing and null arguments are nil; other non-string values are rejected.
-  private func optionalString(
-    _ arguments: [String: Any],
-    _ key: String
-  ) throws(TokamakPluginError) -> String? {
-    guard let value = arguments[key], !(value is NSNull) else { return nil }
-    return try requiredString(arguments, key)
-  }
-
-  private func unsupportedArgument(_ key: String, _ value: String) -> TokamakPluginError {
-    TokamakPluginError(name: "TypeError", message: "\(key) '\(value)' is not supported")
   }
 }

@@ -79,24 +79,23 @@ class TokamakPushService : FirebaseMessagingService() {
     }
 
     /** The page's view of an FCM message: its data is the message's data map. */
-    private fun message(message: RemoteMessage): JSONObject =
-        JSONObject()
-            .put("id", message.messageId ?: UUID.randomUUID().toString())
-            .put("title", message.notification?.title ?: JSONObject.NULL)
-            .put("body", message.notification?.body ?: JSONObject.NULL)
-            .put("data", JSONObject(message.data as Map<*, *>))
+    private fun message(message: RemoteMessage): Message =
+        Message(
+            message.messageId ?: UUID.randomUUID().toString(),
+            message.notification?.title,
+            message.notification?.body,
+            JSONObject(message.data as Map<*, *>),
+        )
 
     /** A notification message's notification, shown as FCM would show it. */
-    private fun notification(received: JSONObject, notification: RemoteMessage.Notification): Content =
-        Content.parse(
-            JSONObject()
-                .put("id", received.getString("id"))
-                .put("title", notification.title ?: "")
-                .put("data", received.getJSONObject("data"))
-                .put("body", notification.body)
-                .put("channel", notification.channelId)
-                .put("badge", notification.notificationCount)
-                .put("image", notification.imageUrl?.toString()),
-            scheduled = false,
+    private fun notification(received: Message, notification: RemoteMessage.Notification): NotificationContent =
+        NotificationContent(
+            id = received.id,
+            title = notification.title ?: "",
+            body = notification.body,
+            data = received.data,
+            channel = notification.channelId,
+            badge = notification.notificationCount,
+            image = notification.imageUrl?.toString(),
         )
 }

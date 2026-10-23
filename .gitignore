@@ -15,3 +15,6 @@ tokamak-env.d.ts
 tokamak-cli/npm/platforms/*/bin/
 tokamak-cli/npm/platform-packs/*/*/
 tokamak-cli/npm/dist/
+
+# Swift package builds
+/platforms/apple/describer/.build/

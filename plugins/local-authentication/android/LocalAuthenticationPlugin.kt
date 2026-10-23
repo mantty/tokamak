@@ -5,13 +5,19 @@ import android.hardware.biometrics.BiometricManager.Authenticators
 import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
-import com.tokamak.runtime.TokamakPluginReply
 import com.tokamak.runtime.authenticateOwner
-import com.tokamak.runtime.optionalString
-import com.tokamak.runtime.requireObject
 import com.tokamak.runtime.requireOwnerAuthentication
-import com.tokamak.runtime.requireString
-import org.json.JSONObject
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
+
+/** The authentication the device owner performs. */
+enum class Authentication(val authenticators: Int) {
+    biometricsOrPasscode(Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL),
+    biometrics(Authenticators.BIOMETRIC_STRONG),
+}
+
+/** Whether the device can perform an authentication now. */
+enum class Status { available, notEnrolled, unavailable }
 
 class TokamakLocalAuthenticationPlugin(
     private val host: TokamakHost,
@@ -20,41 +26,21 @@ class TokamakLocalAuthenticationPlugin(
 
     private val biometrics = host.context.getSystemService(BiometricManager::class.java)
 
-    override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
-        when (method) {
-            "status" -> reply(Result.success(status(requireObject(arguments))))
-            "authenticate" -> return authenticate(requireObject(arguments), reply)
-            else -> super.call(method, arguments, reply)
-        }
-        return null
-    }
-
-    private fun status(request: JSONObject): String =
-        when (biometrics.canAuthenticate(authenticators(request))) {
-            BiometricManager.BIOMETRIC_SUCCESS -> "available"
-            BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "notEnrolled"
-            else -> "unavailable"
+    fun status(authentication: Authentication): Status =
+        when (biometrics.canAuthenticate(authentication.authenticators)) {
+            BiometricManager.BIOMETRIC_SUCCESS -> Status.available
+            BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> Status.notEnrolled
+            else -> Status.unavailable
         }
 
-    private fun authenticate(request: JSONObject, reply: TokamakPluginReply): () -> Unit {
-        val authenticators = authenticators(request)
-        val prompt = request.requireString("prompt")
+    suspend fun authenticate(authentication: Authentication, prompt: String) {
         if (prompt.isEmpty()) throw TokamakPluginError.typeError("prompt must be a non-empty string")
-        host.requireOwnerAuthentication(authenticators)
-        return host.authenticateOwner(prompt, authenticators, null, reply) { reply(Result.success(null)) }
-    }
-
-    private fun authenticators(request: JSONObject): Int {
-        val wireName = request.optionalString("authentication")
-        return Authentication.entries.firstOrNull { it.wireName == wireName }?.authenticators
-            ?: throw TokamakPluginError.typeError("authentication must be \"biometricsOrPasscode\" or \"biometrics\"")
-    }
-
-    private enum class Authentication(val wireName: String, val authenticators: Int) {
-        BIOMETRICS_OR_PASSCODE(
-            "biometricsOrPasscode",
-            Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL,
-        ),
-        BIOMETRICS("biometrics", Authenticators.BIOMETRIC_STRONG),
+        host.requireOwnerAuthentication(authentication.authenticators)
+        suspendCancellableCoroutine { continuation ->
+            val cancel = host.authenticateOwner(prompt, authentication.authenticators, null, { failed ->
+                continuation.resumeWith(failed.map {})
+            }) { continuation.resume(Unit) }
+            continuation.invokeOnCancellation { cancel() }
+        }
     }
 }

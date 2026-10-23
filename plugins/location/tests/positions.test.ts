@@ -11,7 +11,7 @@ import { location, type Position } from "../src/index.js";
 type Answers = Record<string, Answer | ((request: Received) => Answer | undefined)>;
 
 const position: Position = {
-  coords: { latitude: 52, longitude: 0.2, accuracy: 5, altitude: null, altitudeAccuracy: null, heading: 90, speed: null },
+  coords: { latitude: 52, longitude: 0.2, accuracy: 5, heading: 90 },
   timestamp: 1000,
 };
 

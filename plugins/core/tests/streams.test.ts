@@ -91,17 +91,15 @@ void test("closing delivers buffered values while an error discards them", async
   await assert.rejects(failed.getReader().read(), { name: "NotAllowedError" });
 });
 
-void test("an asynchronous source stops once it starts after cancellation, and rejects as an error", async () => {
-  let start = () => {};
+void test("a source that ends while it subscribes is stopped, and one that throws rejects", async () => {
   let stopped = 0;
-  const stream = byteStream(() => new Promise<() => void>((resolve) => {
-    start = () => { resolve(() => { stopped++; }); };
-  }));
-  await stream.cancel();
-  start();
-  await new Promise((resolve) => setTimeout(resolve));
+  const ended = byteStream((_next, _error, close) => {
+    close();
+    return () => { stopped++; };
+  });
+  assert.equal((await ended.getReader().read()).done, true);
   assert.equal(stopped, 1);
 
-  const failed = byteStream(() => Promise.reject(new DOMException("Denied", "NotAllowedError")));
+  const failed = byteStream(() => { throw new DOMException("Denied", "NotAllowedError"); });
   await assert.rejects(failed.getReader().read(), { name: "NotAllowedError" });
 });

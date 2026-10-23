@@ -1,4 +1,7 @@
-import { Plugin, type TokamakContext } from "@tokamakdev/plugin";
+import { capabilitiesOf, platformApi, type TokamakContext } from "@tokamakdev/plugin";
+
+import { android } from "./android.generated.js";
+import { apple } from "./apple.generated.js";
 
 /** The authentication the device owner performs. */
 export type Authentication = "biometricsOrPasscode" | "biometrics";
@@ -11,22 +14,21 @@ export interface AuthenticateOptions {
   readonly prompt: string;
 }
 
-class LocalAuthentication extends Plugin {
-  constructor(ctx: TokamakContext) {
-    super(ctx, "local-authentication");
-  }
+export function localAuthentication(ctx: TokamakContext) {
+  const native = platformApi(ctx, { apple, android });
+  return {
+    /** Whether each operation is implemented where the app runs, without calling it. Permission is not reported. */
+    get capabilities(): Readonly<Record<string, boolean>> {
+      return capabilitiesOf(ctx, "local-authentication");
+    },
 
-  status(authentication: Authentication): Promise<Status> {
-    return this.call("status", { authentication });
-  }
+    status: (authentication: Authentication): Promise<Status> => native.status(authentication),
 
-  /**
-   * Asks the device owner to authenticate. Rejects with `NeedsUIError` off screen on iOS and
-   * Android, where the system cannot show its prompt.
-   */
-  authenticate(authentication: Authentication, options: AuthenticateOptions): Promise<void> {
-    return this.call("authenticate", { authentication, prompt: options.prompt });
-  }
+    /**
+     * Asks the device owner to authenticate. Rejects with `NeedsUIError` off screen on iOS and
+     * Android, where the system cannot show its prompt.
+     */
+    authenticate: (authentication: Authentication, options: AuthenticateOptions): Promise<void> =>
+      native.authenticate(authentication, options.prompt),
+  };
 }
-
-export function localAuthentication(ctx: TokamakContext): LocalAuthentication { return new LocalAuthentication(ctx); }

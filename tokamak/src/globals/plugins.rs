@@ -66,7 +66,7 @@ pub(crate) fn install<'js>(
 }
 
 /// The native platform the runtime runs on, as the Worker names it.
-const PLATFORM: &str = if cfg!(target_os = "ios") {
+pub(crate) const PLATFORM: &str = if cfg!(target_os = "ios") {
     "ios"
 } else if cfg!(target_os = "android") {
     "android"

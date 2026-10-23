@@ -13,13 +13,8 @@ import android.util.AtomicFile
 import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
-import com.tokamak.runtime.TokamakPluginReply
 import com.tokamak.runtime.authenticateOwner
-import com.tokamak.runtime.optionalString
-import com.tokamak.runtime.requireBoolean
-import com.tokamak.runtime.requireObject
 import com.tokamak.runtime.requireOwnerAuthentication
-import com.tokamak.runtime.requireString
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -34,7 +29,6 @@ import java.security.PublicKey
 import java.security.SecureRandom
 import java.security.spec.MGF1ParameterSpec
 import java.security.spec.X509EncodedKeySpec
-import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import javax.crypto.BadPaddingException
 import javax.crypto.Cipher
@@ -44,7 +38,47 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.OAEPParameterSpec
 import javax.crypto.spec.PSource
 import javax.crypto.spec.SecretKeySpec
-import org.json.JSONObject
+import kotlin.coroutines.resume
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+
+/** When a stored value can be read. */
+enum class Readable { whenUnlocked, afterFirstUnlock }
+
+/** The authentication a read requires. */
+enum class Authentication(val keyTypes: Int, val authenticators: Int, val invalidatedByEnrollment: Boolean) {
+    biometricsOrPasscode(
+        KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL,
+        Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL,
+        invalidatedByEnrollment = false,
+    ),
+    biometrics(KeyProperties.AUTH_BIOMETRIC_STRONG, Authenticators.BIOMETRIC_STRONG, invalidatedByEnrollment = false),
+    currentBiometrics(KeyProperties.AUTH_BIOMETRIC_STRONG, Authenticators.BIOMETRIC_STRONG, invalidatedByEnrollment = true),
+}
+
+/** How a value is stored. */
+data class StoreOptions(
+    val readable: Readable,
+    /** Reads need no authentication when null. */
+    val authentication: Authentication?,
+    /** Whether backups restore the value only to this device, which Android always does. */
+    val thisDeviceOnly: Boolean,
+    /** An Apple keychain feature, which Android rejects. */
+    val keychainGroup: String?,
+)
+
+data class ReadOptions(
+    /** The title of the system authentication prompt. */
+    val prompt: String?,
+    /** An Apple keychain feature, which Android rejects. */
+    val keychainGroup: String?,
+)
+
+data class GroupOptions(
+    /** An Apple keychain feature, which Android rejects. */
+    val keychainGroup: String?,
+)
 
 /**
  * Stores each value sealed with a random AES-GCM key, wrapped by an RSA key pair in the
@@ -65,64 +99,75 @@ class TokamakSecureStoragePlugin(
 
     override fun executor(method: String) = worker
 
-    override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
-        val cancellation = CancellationSignal()
-        when (method) {
-            "create" -> attempt(reply) {
-                store(request(arguments), Write.CREATE)
-                reply(Result.success(null))
+    fun create(name: String, value: String, options: StoreOptions) = translated { store(name, value, options, Write.CREATE) }
+
+    fun replace(name: String, value: String, options: StoreOptions) = translated { store(name, value, options, Write.REPLACE) }
+
+    fun set(name: String, value: String, options: StoreOptions) = translated { store(name, value, options, Write.SET) }
+
+    /** Reads the value, asking the device owner for the authentication it was stored with. */
+    suspend fun get(name: String, options: ReadOptions?): String {
+        requireNoGroup(options?.keychainGroup)
+        try {
+            val stored = read(file(name)) ?: throw itemNotFound()
+            val privateKey = keyStore.getKey(alias(stored.keyId), null) as? PrivateKey ?: throw notReadable()
+            val unwrap = Cipher.getInstance(WRAP).apply { init(Cipher.DECRYPT_MODE, privateKey, OAEP) }
+            val info = KeyFactory.getInstance(privateKey.algorithm, KEYSTORE).getKeySpec(privateKey, KeyInfo::class.java)
+            if (info.isUserAuthenticationRequired) {
+                val credential = (info.userAuthenticationType and KeyProperties.AUTH_DEVICE_CREDENTIAL) != 0
+                val authenticators =
+                    if (credential) Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL
+                    else Authenticators.BIOMETRIC_STRONG
+                val title = options?.prompt?.takeIf { it.isNotEmpty() } ?: context.applicationInfo.loadLabel(context.packageManager)
+                withContext(Dispatchers.Main) { authenticate(title, authenticators, unwrap) }
             }
-            "replace" -> attempt(reply) {
-                store(request(arguments), Write.REPLACE)
-                reply(Result.success(null))
-            }
-            "set" -> attempt(reply) {
-                store(request(arguments), Write.SET)
-                reply(Result.success(null))
-            }
-            "get" -> attempt(reply) { get(request(arguments), reply, cancellation) }
-            "delete" -> attempt(reply) {
-                delete(request(arguments).requireString("name"))
-                reply(Result.success(null))
-            }
-            "clear" -> attempt(reply) {
-                request(arguments) // Rejects keychainGroup.
-                clear()
-                reply(Result.success(null))
-            }
-            else -> return super.call(method, arguments, reply)
+            return open(stored, unwrap)
+        } catch (error: Exception) {
+            throw pluginError(error)
         }
-        return { cancellation.cancel() }
     }
 
-    /** The call's arguments, rejecting the Apple-only `keychainGroup`. */
-    private fun request(arguments: Any?): JSONObject {
-        val request = requireObject(arguments)
-        if (request.optionalString("keychainGroup") != null) {
-            throw TokamakPluginError.notSupported("keychainGroup is an Apple keychain feature")
+    fun delete(name: String, options: GroupOptions?) =
+        translated {
+            requireNoGroup(options?.keychainGroup)
+            val file = file(name)
+            val stored = read(file) ?: throw itemNotFound()
+            AtomicFile(file).delete()
+            keyStore.deleteEntry(alias(stored.keyId))
         }
-        return request
-    }
 
-    /** Runs [operation], replying with what it throws. */
-    private fun attempt(reply: TokamakPluginReply, operation: () -> Unit) {
-        runCatching(operation).onFailure { reply(Result.failure(pluginError(it))) }
-    }
-
-    /** Runs [operation] on [executor] unless the call was cancelled first. */
-    private fun resume(executor: Executor, reply: TokamakPluginReply, cancellation: CancellationSignal, operation: () -> Unit) =
-        executor.execute { if (!cancellation.isCanceled) attempt(reply, operation) }
-
-    private fun store(request: JSONObject, mode: Write) {
-        val name = request.requireString("name")
-        val value = request.requireString("value")
-        val unlockedDeviceRequired =
-            when (request.requireString("readable")) {
-                "whenUnlocked" -> true
-                "afterFirstUnlock" -> false
-                else -> throw TokamakPluginError.typeError("readable must be \"whenUnlocked\" or \"afterFirstUnlock\"")
+    /** Deletes every value, and any key an interrupted write left behind. */
+    fun clear(options: GroupOptions?) =
+        translated {
+            requireNoGroup(options?.keychainGroup)
+            // An interrupted first write leaves only a `.new` file, which [read] ignores.
+            val hadValues = directory.list().orEmpty().any { !it.endsWith(".new") }
+            directory.deleteRecursively()
+            keyStore.aliases().toList()
+                .filter { it.startsWith(ALIAS_PREFIX) }
+                .forEach(keyStore::deleteEntry)
+            if (!hadValues) {
+                throw TokamakPluginError("ItemNotFoundError", "No values are stored")
             }
-        if (!request.requireBoolean("thisDeviceOnly")) {
+        }
+
+    /** Authorises [unwrap] with the device owner's authentication, in a prompt titled [title]. */
+    private suspend fun authenticate(title: CharSequence, authenticators: Int, unwrap: Cipher) =
+        suspendCancellableCoroutine { continuation ->
+            val cancellation = CancellationSignal()
+            continuation.invokeOnCancellation { cancellation.cancel() }
+            host.authenticateOwner(title, authenticators, BiometricPrompt.CryptoObject(unwrap), { failed ->
+                continuation.resumeWith(failed.map {})
+            }, cancellation) { continuation.resume(Unit) }
+        }
+
+    private fun requireNoGroup(keychainGroup: String?) {
+        if (keychainGroup != null) throw TokamakPluginError.notSupported("keychainGroup is an Apple keychain feature")
+    }
+
+    private fun store(name: String, value: String, options: StoreOptions, mode: Write) {
+        requireNoGroup(options.keychainGroup)
+        if (!options.thisDeviceOnly) {
             throw TokamakPluginError.notSupported("Android keeps secure storage values on this device")
         }
         val keyId = ByteArray(KEY_ID_SIZE).also(random::nextBytes)
@@ -131,8 +176,8 @@ class TokamakSecureStoragePlugin(
                 .setKeySize(KEY_SIZE)
                 .setDigests(KeyProperties.DIGEST_SHA256)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_OAEP)
-                .setUnlockedDeviceRequired(unlockedDeviceRequired)
-        request.optionalString("authentication")?.let { requireAuthentication(spec, it) }
+                .setUnlockedDeviceRequired(options.readable == Readable.whenUnlocked)
+        options.authentication?.let { requireAuthentication(spec, it) }
         val file = file(name)
         val previous = read(file)
         if (previous != null && mode == Write.CREATE) {
@@ -152,9 +197,7 @@ class TokamakSecureStoragePlugin(
         previousAlias?.let(keyStore::deleteEntry)
     }
 
-    private fun requireAuthentication(spec: KeyGenParameterSpec.Builder, wireName: String) {
-        val authentication =
-            Authentication.entries.firstOrNull { it.wireName == wireName } ?: throw unknownAuthentication()
+    private fun requireAuthentication(spec: KeyGenParameterSpec.Builder, authentication: Authentication) {
         host.requireOwnerAuthentication(authentication.authenticators)
         spec.setUserAuthenticationRequired(true)
             .setUserAuthenticationParameters(0, authentication.keyTypes)
@@ -190,71 +233,12 @@ class TokamakSecureStoragePlugin(
         return StoredValue(keyId, wrapped, iv, sealed)
     }
 
-    private fun get(request: JSONObject, reply: TokamakPluginReply, cancellation: CancellationSignal) {
-        val name = request.requireString("name")
-        val prompt = request.optionalString("prompt")
-        val stored = read(file(name)) ?: throw itemNotFound()
-        val privateKey =
-            keyStore.getKey(alias(stored.keyId), null) as? PrivateKey
-                ?: throw notReadable()
-        val unwrap = Cipher.getInstance(WRAP).apply { init(Cipher.DECRYPT_MODE, privateKey, OAEP) }
-        val info =
-            KeyFactory.getInstance(privateKey.algorithm, KEYSTORE)
-                .getKeySpec(privateKey, KeyInfo::class.java)
-        if (!info.isUserAuthenticationRequired) {
-            reply(Result.success(open(stored, unwrap)))
-            return
-        }
-        val credential = (info.userAuthenticationType and KeyProperties.AUTH_DEVICE_CREDENTIAL) != 0
-        val authenticators =
-            if (credential) Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL
-            else Authenticators.BIOMETRIC_STRONG
-        authenticate(authenticators, prompt, unwrap, stored, reply, cancellation)
-    }
-
-    /** Authorises [unwrap] with the device owner's authentication, then replies with the opened value. */
-    private fun authenticate(
-        authenticators: Int,
-        prompt: String?,
-        unwrap: Cipher,
-        stored: StoredValue,
-        reply: TokamakPluginReply,
-        cancellation: CancellationSignal,
-    ) {
-        val title = prompt?.takeIf { it.isNotEmpty() } ?: context.applicationInfo.loadLabel(context.packageManager)
-        resume(context.mainExecutor, reply, cancellation) {
-            host.authenticateOwner(title, authenticators, BiometricPrompt.CryptoObject(unwrap), reply, cancellation) {
-                resume(worker, reply, cancellation) { reply(Result.success(open(stored, unwrap))) }
-            }
-        }
-    }
-
     private fun open(stored: StoredValue, unwrap: Cipher): String {
         val dataKey = SecretKeySpec(unwrap.doFinal(stored.wrappedKey), "AES")
         return Cipher.getInstance(SEAL)
             .apply { init(Cipher.DECRYPT_MODE, dataKey, GCMParameterSpec(TAG_SIZE, stored.iv)) }
             .doFinal(stored.sealed)
             .decodeToString()
-    }
-
-    private fun delete(name: String) {
-        val file = file(name)
-        val stored = read(file) ?: throw itemNotFound()
-        AtomicFile(file).delete()
-        keyStore.deleteEntry(alias(stored.keyId))
-    }
-
-    /** Deletes every value, and any key an interrupted write left behind. */
-    private fun clear() {
-        // An interrupted first write leaves only a `.new` file, which [read] ignores.
-        val hadValues = directory.list().orEmpty().any { !it.endsWith(".new") }
-        directory.deleteRecursively()
-        keyStore.aliases().toList()
-            .filter { it.startsWith(ALIAS_PREFIX) }
-            .forEach(keyStore::deleteEntry)
-        if (!hadValues) {
-            throw TokamakPluginError("ItemNotFoundError", "No values are stored")
-        }
     }
 
     private fun read(file: File): StoredValue? =
@@ -287,31 +271,13 @@ class TokamakSecureStoragePlugin(
     /** Whether a write requires the name to have no value, a value, or either. */
     private enum class Write { CREATE, REPLACE, SET }
 
-    private enum class Authentication(
-        val wireName: String,
-        val keyTypes: Int,
-        val authenticators: Int,
-        val invalidatedByEnrollment: Boolean,
-    ) {
-        BIOMETRICS_OR_PASSCODE(
-            "biometricsOrPasscode",
-            KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL,
-            Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL,
-            invalidatedByEnrollment = false,
-        ),
-        BIOMETRICS(
-            "biometrics",
-            KeyProperties.AUTH_BIOMETRIC_STRONG,
-            Authenticators.BIOMETRIC_STRONG,
-            invalidatedByEnrollment = false,
-        ),
-        CURRENT_BIOMETRICS(
-            "currentBiometrics",
-            KeyProperties.AUTH_BIOMETRIC_STRONG,
-            Authenticators.BIOMETRIC_STRONG,
-            invalidatedByEnrollment = true,
-        ),
-    }
+    /** Runs [operation], translating Keystore failures into the errors the Worker receives. */
+    private fun <T> translated(operation: () -> T): T =
+        try {
+            operation()
+        } catch (error: Exception) {
+            throw pluginError(error)
+        }
 
     private companion object {
         const val KEYSTORE = "AndroidKeyStore"
@@ -324,9 +290,6 @@ class TokamakSecureStoragePlugin(
         // Keystore RSA keys default to SHA-1 for the OAEP MGF1 digest.
         val OAEP = OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA1, PSource.PSpecified.DEFAULT)
 
-        fun unknownAuthentication() =
-            TokamakPluginError.typeError("authentication must be \"biometricsOrPasscode\", \"biometrics\" or \"currentBiometrics\"")
-
         fun locked() = TokamakPluginError("NotAllowedError", "The device must be unlocked to read this value")
 
         fun notReadable() =
@@ -334,7 +297,7 @@ class TokamakSecureStoragePlugin(
 
         fun itemNotFound() = TokamakPluginError("ItemNotFoundError", "No value is stored under this name")
 
-        fun pluginError(error: Throwable): Throwable =
+        fun pluginError(error: Exception): Exception =
             when (error) {
                 is KeyPermanentlyInvalidatedException,
                 is BadPaddingException,

@@ -1,4 +1,4 @@
-export { TokamakEntrypoint } from "@tokamakdev/plugin/worker";
+export { TokamakEntrypoint, platform } from "@tokamakdev/plugin/worker";
 export type { TokamakContext, TokamakEvent, WebView } from "@tokamakdev/plugin/worker";
 
 /** A setting value. */

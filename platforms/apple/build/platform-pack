@@ -56,6 +56,11 @@ lipo -create \
   "$target_dir/x86_64-apple-darwin/release/tokamak-apple-signing" \
   -output "$output/tools/tokamak-apple-signing"
 
+describer=(swift build --package-path "$workspace/platforms/apple/describer"
+  --scratch-path "$target_dir/tokamak-swift-describe" --configuration release --arch arm64 --arch x86_64)
+"${describer[@]}"
+cp "$("${describer[@]}" --show-bin-path)/tokamak-swift-describe" "$output/tools/"
+
 cargo rustc \
   --package tokamak \
   --release \
