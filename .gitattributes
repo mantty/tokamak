@@ -1,0 +1,3 @@
+# Generated files keep LF on every platform: `tok plugin check`, and the generator's tests,
+# compare them with what the tools write byte for byte.
+*.generated.* text eol=lf

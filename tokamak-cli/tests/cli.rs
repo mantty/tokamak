@@ -59,6 +59,9 @@ fn scaffolds_publishable_plugins_without_overwriting_existing_projects() -> Test
             "{package}"
         );
         assert_eq!(path.join("src/events.ts").is_file(), native);
+        // Generated files keep LF, as `tok plugin check` compares them byte for byte.
+        let attributes = std::fs::read_to_string(path.join(".gitattributes")).unwrap_or_default();
+        assert_eq!(attributes.contains("*.generated.* text eol=lf"), native);
         assert_eq!(
             declared_platforms(&manifest)?,
             platforms.unwrap_or_default()

@@ -75,6 +75,13 @@ pub(crate) fn create(directory: &Path, platforms: &[Platform]) -> Result<()> {
         }),
     )?;
     write_package(directory, id, families.iter().map(|(family, _)| *family))?;
+    if native {
+        // `tok plugin check` compares generated files byte for byte, so checkouts keep their LF.
+        fs::write(
+            directory.join(".gitattributes"),
+            "*.generated.* text eol=lf\n",
+        )?;
+    }
     fs::write(
         directory.join("README.md"),
         template(include_str!("../templates/plugin/README.md")),
