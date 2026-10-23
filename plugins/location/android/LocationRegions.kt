@@ -4,9 +4,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.location.LocationManager
-import org.json.JSONObject
 
-/** The JSON of each monitored region, as `addRegion` received it, by id. */
+/** The JSON of each monitored region, by id. */
 private const val PREFERENCES = "tokamak.location.regions"
 
 /**
@@ -19,26 +18,19 @@ internal class LocationRegions(private val context: Context) {
     private val manager = context.getSystemService(LocationManager::class.java)
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
-    fun all(): List<JSONObject> = preferences.all.values.map { JSONObject(it as String) }
+    fun all(): List<Region> = preferences.all.values.map { Region.from(it as String) }
 
-    fun get(id: String): JSONObject? = preferences.getString(id, null)?.let(::JSONObject)
+    fun get(id: String): Region? = preferences.getString(id, null)?.let(Region::from)
 
     /**
      * Monitors [region], replacing one with the same id. It starts in an unknown state, so a device
      * already inside reports an entry. Throws `SecurityException` without precise location.
      */
-    fun add(region: JSONObject) {
-        val id = region.getString("id")
-        val alert = checkNotNull(pendingIntent(id, PendingIntent.FLAG_UPDATE_CURRENT))
+    fun add(region: Region) {
+        val alert = checkNotNull(pendingIntent(region.id, PendingIntent.FLAG_UPDATE_CURRENT))
         manager.removeProximityAlert(alert)
-        manager.addProximityAlert(
-            region.getDouble("latitude"),
-            region.getDouble("longitude"),
-            region.getDouble("radius").toFloat(),
-            -1,
-            alert,
-        )
-        preferences.edit().putString(id, region.toString()).apply()
+        manager.addProximityAlert(region.latitude, region.longitude, region.radius.toFloat(), -1, alert)
+        preferences.edit().putString(region.id, region.json().toString()).apply()
     }
 
     fun remove(id: String) {
@@ -55,7 +47,7 @@ internal class LocationRegions(private val context: Context) {
      * location.
      */
     fun restore() {
-        all().filter { pendingIntent(it.getString("id"), PendingIntent.FLAG_NO_CREATE) == null }.forEach(::add)
+        all().filter { pendingIntent(it.id, PendingIntent.FLAG_NO_CREATE) == null }.forEach(::add)
     }
 
     /** The region [id]'s `PendingIntent`, mutable so `LocationManager` adds whether the device entered. */

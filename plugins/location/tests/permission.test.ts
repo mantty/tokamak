@@ -19,15 +19,15 @@ void test("calls the native plugin with each permission method's arguments", asy
   const native = connectNative();
   const location = createApi(native.ctx);
   const cases: [() => Promise<unknown>, string, unknown][] = [
-    [() => location.permission(), "permission", null],
+    [() => location.permission(), "permission", {}],
     [() => location.requestPermission(), "requestPermission", {}],
     [
       () => location.requestPermission({ background: true, precision: "precise", purpose: "RunTracking" }),
       "requestPermission",
-      { background: true, precision: "precise", purpose: "RunTracking" },
+      { request: { background: true, precision: "precise", purpose: "RunTracking" } },
     ],
-    [() => location.servicesEnabled(), "servicesEnabled", null],
-    [() => location.openSettings(), "openSettings", null],
+    [() => location.servicesEnabled(), "servicesEnabled", {}],
+    [() => location.openSettings(), "openSettings", {}],
   ];
   for (const [run, method, arguments_] of cases) {
     const result = run();

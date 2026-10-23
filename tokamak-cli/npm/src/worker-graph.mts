@@ -7,6 +7,7 @@ import type { PluginConfig } from "@cloudflare/vite-plugin";
 import { normalizePath, type EnvironmentOptions, type Plugin } from "vite";
 
 import type { Availability } from "@tokamakdev/plugin/capabilities";
+import { platformGlobal } from "@tokamakdev/plugin/native-protocol";
 import type { DeviceRelay } from "./native.mjs";
 import type { PluginContract, WorkerContract } from "./worker-contract.mjs";
 import { WorkerTypes, type NativeService, type WorkerConfiguration } from "./worker-types.mjs";
@@ -42,6 +43,7 @@ export interface WorkerGraph {
 }
 
 const NATIVE_CONNECTION = "virtual:tokamak/native-connection";
+const PLATFORM = "virtual:tokamak/platform";
 const NATIVE_CALLS = normalizePath(fileURLToPath(new URL("./native.mjs", import.meta.url)));
 /** The two Workers' roles: the app's main Worker and the Tokamak worker. */
 const ROLES = ["main", "native"] as const;
@@ -203,11 +205,12 @@ export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
         return [];
       },
       resolveId(id) {
-        if ([NATIVE_CONNECTION, serviceModule("main"), serviceModule("native")].includes(id)) return `\0${id}`;
+        if ([NATIVE_CONNECTION, PLATFORM, serviceModule("main"), serviceModule("native")].includes(id)) return `\0${id}`;
         if (id.startsWith("\0tokamak:") || id.startsWith("\0virtual:tokamak/")) return id;
       },
       async load(id) {
         if (id === `\0${NATIVE_CONNECTION}`) return nativeConnectionModule(dev ? relay : undefined);
+        if (id === `\0${PLATFORM}`) return platformModule(relay);
         const role = ROLES.find(role => id === bindingsModule(role) || id === `\0${serviceModule(role)}`);
         if (!role) return;
         await contracts.resolve(source => this.resolve(source, undefined, { skipSelf: true }));
@@ -227,7 +230,8 @@ export { Service${index} as ${JSON.stringify(name)} };`);
         const hostEvents = role === "native"
           ? `export const TokamakEvents = developmentEvents(module.TokamakEvents, ${JSON.stringify(bindings(role))});`
           : "";
-        return `import ${JSON.stringify(bindingsModule(role))};
+        return `import ${JSON.stringify(PLATFORM)};
+import ${JSON.stringify(bindingsModule(role))};
 import * as module from ${source};
 export * from ${source};
 import { developmentEntrypoint, developmentEvents } from ${JSON.stringify(development)};
@@ -275,6 +279,15 @@ function nativeConnectionModule(relay: DeviceRelay | undefined): string {
   if (!relay) return "export const connect = () => undefined;";
   return `import { connectDevice } from ${JSON.stringify(NATIVE_CALLS)};
 export const connect = ctx => connectDevice(${JSON.stringify(relay)}, ctx);`;
+}
+
+/**
+ * The module that names the `relay`'s device platform for `@tokamakdev/plugin`, as the native
+ * runtime does, before the development Workers' modules run.
+ */
+function platformModule(relay: DeviceRelay | undefined): string {
+  if (!relay?.platform) return "";
+  return `globalThis.${platformGlobal} = ${JSON.stringify(relay.platform)};`;
 }
 
 /** The native platforms of each plugin operation. */

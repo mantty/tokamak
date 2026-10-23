@@ -1,13 +1,130 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The CLI runs the entrypoint from the pack root.
+pack=$PWD
+
+# The build tools of apps and of describing plugins. Coroutines are the version
+# androidx.lifecycle brings, so plugins' coroutines add no code.
+agp_version=8.7.3
+kotlin_version=2.1.0
+coroutines_version=1.9.0
+
+# Describes the methods PLUGIN/android/Exports.kt exports into
+# OUTPUT/description.json, with the dispatch that serves them,
+# OUTPUT/Exports.generated.kt. A JVM unit test of the plugin, compiled with
+# the plugin API and its dependencies, runs the registration and reflects on
+# the methods it lists.
+describe() {
+  local plugin=$1 output=$2
+  if [[ $# -ne 3 || $3 != android ]]; then
+    echo "Android plugins run on android, not ${*:3}" >&2
+    exit 2
+  fi
+  local sdk=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}
+  if ! command -v gradle > /dev/null || ! command -v java > /dev/null || [[ ! -d "$sdk/platforms" ]]; then
+    echo "Describing an Android plugin needs Gradle, Java and the Android SDK" >&2
+    exit 69
+  fi
+  # Global, for the exit trap.
+  temporary=$(mktemp -d "${TMPDIR:-/tmp}/tokamak-describe.XXXXXX")
+  trap 'rm -rf "$temporary"' EXIT
+  local module=$temporary/plugin
+  mkdir -p "$module"
+  cat > "$temporary/settings.gradle" <<'EOF'
+pluginManagement {
+  repositories {
+    google()
+    mavenCentral()
+    gradlePluginPortal()
+  }
+}
+dependencyResolutionManagement {
+  repositories {
+    google()
+    mavenCentral()
+  }
+}
+rootProject.name = 'tokamak-describe'
+include ':plugin'
+EOF
+  cat > "$temporary/build.gradle" <<EOF
+plugins {
+  id 'com.android.library' version '$agp_version' apply false
+  id 'org.jetbrains.kotlin.android' version '$kotlin_version' apply false
+}
+EOF
+  printf '%s\n' 'android.useAndroidX=true' > "$temporary/gradle.properties"
+  cat > "$module/build.gradle" <<EOF
+plugins {
+  id 'com.android.library'
+  id 'org.jetbrains.kotlin.android'
+}
+
+android {
+  namespace 'tokamak.describe'
+  compileSdk 35
+  // The plugin's own files, so compiler errors name them.
+  sourceSets {
+    main.kotlin.srcDirs = ['$pack/native-shell/plugin', '$plugin/android']
+    test.kotlin.srcDirs = ['$pack/describer']
+  }
+  defaultConfig {
+    minSdk $(<"$pack/build/min-sdk")
+  }
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+  testOptions {
+    unitTests.returnDefaultValues = true
+    unitTests.all {
+      systemProperty 'tokamak.output', '$output'
+      systemProperty 'tokamak.classes', layout.buildDirectory.dir('tmp/kotlin-classes/debug').get().asFile.path
+      outputs.upToDateWhen { false }
+    }
+  }
+}
+
+kotlin {
+  jvmToolchain(17)
+  compilerOptions {
+    freeCompilerArgs.add('-Xjvm-default=all')
+  }
+}
+
+// The dispatch describing regenerates.
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+  exclude '**/Exports.generated.kt'
+}
+
+def manifest = new groovy.json.JsonSlurper().parse(file('$plugin/tokamak-plugin.json'))
+dependencies {
+  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutines_version'
+  (manifest.platforms?.android?.dependencies ?: []).each { implementation it }
+  testImplementation 'junit:junit:4.13.2'
+  testImplementation 'org.jetbrains.kotlin:kotlin-reflect:$kotlin_version'
+  // android.jar's org.json is stubs; the describer writes JSON with the reference implementation.
+  testImplementation 'org.json:json:20250517'
+}
+EOF
+  gradle --quiet --project-dir "$temporary" :plugin:testDebugUnitTest
+  if [[ -f "$output/error" ]]; then
+    cat "$output/error" >&2
+    rm "$output/error"
+    exit 1
+  fi
+}
+if [[ $# -ge 1 && $1 == describe ]]; then
+  describe "${@:2}"
+  exit
+fi
+
 if [[ $# -ne 3 || $1 != build ]]; then
-  echo "usage: entrypoint build INPUT OUTPUT" >&2
+  echo "usage: entrypoint build INPUT OUTPUT | entrypoint describe PLUGIN OUTPUT android" >&2
   exit 2
 fi
 
-# The CLI runs the entrypoint from the pack root.
-pack=$PWD
 input=$2
 output=$3
 metadata=$input/metadata
@@ -147,7 +264,7 @@ cp -R "$input/app/." "$assets/"
 link_runtime
 cp -R "$pack/native-shell/app/." "$kotlin/"
 cp -R "$pack/native-shell/plugin/." "$plugin_api/src/main/kotlin/"
-cat > "$plugin_api/build.gradle" <<'EOF'
+cat > "$plugin_api/build.gradle" <<EOF
 plugins {
   id 'com.android.library'
   id 'org.jetbrains.kotlin.android'
@@ -155,6 +272,10 @@ plugins {
 
 android {
   namespace 'com.tokamak.runtime.plugin'
+}
+
+dependencies {
+  api 'org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutines_version'
 }
 EOF
 
@@ -186,20 +307,20 @@ for plugin in "$input/plugins"/*/; do
     echo "plugin '$plugin_id' has invalid android class '$class'" >&2
     exit 1
   fi
+  # A plugin that exports methods runs behind the dispatch generated for it.
+  if [[ -f "$plugin/native/Exports.kt" ]]; then
+    class=${class}Dispatch
+  fi
   printf '        %s(app.host("%s")),\n' "$class" "$plugin_id" >> "$registry"
   module=$plugin_modules/$plugin_id
   mkdir -p "$module/src/main/kotlin"
-  for source in "$plugin/sources"/*; do
-    case "$source" in
-      *.kt)
-        cp "$source" "$module/src/main/kotlin/$(basename "$source")"
-        ;;
-      *)
-        echo "Android plugin source must be Kotlin: $source" >&2
-        exit 1
-        ;;
-    esac
-  done
+  if [[ -d "$plugin/native" ]]; then
+    while IFS= read -r -d '' source; do
+      relative=${source#"$plugin/native/"}
+      mkdir -p "$module/src/main/kotlin/$(dirname "$relative")"
+      cp "$source" "$module/src/main/kotlin/$relative"
+    done < <(find "$plugin/native" -name '*.kt' -print0)
+  fi
   if [[ -f "$plugin/manifest" ]]; then
     cp "$plugin/manifest" "$module/src/main/AndroidManifest.xml"
   fi
@@ -261,9 +382,9 @@ done
 
 cat > "$project/build.gradle" <<EOF
 plugins {
-  id 'com.android.application' version '8.7.3' apply false
-  id 'com.android.library' version '8.7.3' apply false
-  id 'org.jetbrains.kotlin.android' version '2.1.0' apply false
+  id 'com.android.application' version '$agp_version' apply false
+  id 'com.android.library' version '$agp_version' apply false
+  id 'org.jetbrains.kotlin.android' version '$kotlin_version' apply false
 }
 
 subprojects {

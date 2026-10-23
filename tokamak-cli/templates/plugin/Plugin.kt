@@ -2,21 +2,18 @@ package tokamak.plugins
 
 import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
-import com.tokamak.runtime.TokamakPluginReply
-import java.util.concurrent.Executors
 import kotlin.concurrent.thread
-import org.json.JSONObject
 
 class {{class}}(private val host: TokamakHost) : TokamakPlugin {
-    override val id = "{{id}}"
-    private val executor = Executors.newSingleThreadExecutor()
-    override fun executor(method: String) = executor
+    /** A message the native implementation echoed. */
+    data class Echo(val message: String)
 
-    override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
-        if (method != "echo") return super.call(method, arguments, reply)
-        reply(Result.success(arguments))
+    override val id = "{{id}}"
+
+    /** Returns [message], which the Worker's `onEchoed` listeners also receive. */
+    fun echo(message: String): String {
         // emit blocks until the Worker's listeners return.
-        thread { runCatching { host.emit("echoed", JSONObject().put("message", arguments).toString(), 10_000) } }
-        return null
+        thread { runCatching { host.emit("echoed", Echo(message), 10_000) } }
+        return message
     }
 }

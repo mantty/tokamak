@@ -171,7 +171,7 @@ mod tests {
         let workspace = WorkspaceLayout::from_source().context("source workspace")?;
 
         assert_eq!(
-            plugin_keys(&workspace, Target::IosSimulatorArm64)?.get("sources"),
+            plugin_keys(&workspace, Target::IosSimulatorArm64)?.get("resources"),
             Some(&PluginKeyKind::Paths)
         );
         assert!(plugin_keys(&workspace, Target::AndroidArm64)?.contains_key("dependencies"));

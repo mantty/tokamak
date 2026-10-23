@@ -3,6 +3,8 @@ import UserNotifications
 
 /// The parts of the configuration `setup` applied that Apple platforms use.
 struct TokamakNotificationSetup {
+  typealias Plugin = TokamakNotificationsPlugin
+
   let categories: Set<UNNotificationCategory>
   /// How notifications show while the app is on screen.
   let presentation: UNNotificationPresentationOptions
@@ -17,115 +19,65 @@ struct TokamakNotificationSetup {
     self.presentation = presentation
   }
 
-  /// Parses the whole configuration, throwing `TypeError` before anything applies it.
-  init(_ arguments: Any) throws(TokamakPluginError) {
-    guard let config = arguments as? [String: Any] else {
-      throw typeError("setup takes a configuration object")
-    }
-    categories = Set(try list(config["categories"]).map(Self.category))
-    presentation = try Self.presentation(config["showInForeground"])
+  init(_ config: Plugin.SetupConfig) {
+    categories = Set((config.categories ?? []).map(Self.category))
+    presentation = Self.presentation(config.showInForeground)
   }
 
-  private static func category(_ value: Any) throws(TokamakPluginError) -> UNNotificationCategory {
-    let category = try record(value)
+  private static func category(_ category: Plugin.Category) -> UNNotificationCategory {
     var options: UNNotificationCategoryOptions = []
-    if try flag(category["customDismissAction"]) { options.insert(.customDismissAction) }
-    if try flag(category["hiddenPreviewsShowTitle"]) { options.insert(.hiddenPreviewsShowTitle) }
-    if try flag(category["hiddenPreviewsShowSubtitle"]) {
-      options.insert(.hiddenPreviewsShowSubtitle)
-    }
+    if category.customDismissAction == true { options.insert(.customDismissAction) }
+    if category.hiddenPreviewsShowTitle == true { options.insert(.hiddenPreviewsShowTitle) }
+    if category.hiddenPreviewsShowSubtitle == true { options.insert(.hiddenPreviewsShowSubtitle) }
     #if os(iOS)
-      if try flag(category["allowInCarPlay"]) { options.insert(.allowInCarPlay) }
+      if category.allowInCarPlay == true { options.insert(.allowInCarPlay) }
     #endif
     return UNNotificationCategory(
-      identifier: try text(category["id"]),
-      actions: try list(category["actions"]).map(Self.action),
+      identifier: category.id,
+      actions: category.actions.map(Self.action),
       intentIdentifiers: [],
-      hiddenPreviewsBodyPlaceholder: try optionalText(category["hiddenPreviewsBodyPlaceholder"]),
-      categorySummaryFormat: try optionalText(category["summaryFormat"]),
+      hiddenPreviewsBodyPlaceholder: category.hiddenPreviewsBodyPlaceholder,
+      categorySummaryFormat: category.summaryFormat,
       options: options
     )
   }
 
-  private static func action(_ value: Any) throws(TokamakPluginError) -> UNNotificationAction {
-    let action = try record(value)
-    let id = try text(action["id"])
-    let title = try text(action["title"])
+  private static func action(_ action: Plugin.NotificationAction) -> UNNotificationAction {
     var options: UNNotificationActionOptions = []
-    if try flag(action["foreground"]) { options.insert(.foreground) }
-    if try flag(action["destructive"]) { options.insert(.destructive) }
-    if try flag(action["authenticationRequired"]) { options.insert(.authenticationRequired) }
-    let icon = try optionalText(action["systemImage"]).map {
-      UNNotificationActionIcon(systemImageName: $0)
+    if action.foreground == true { options.insert(.foreground) }
+    if action.destructive == true { options.insert(.destructive) }
+    if action.authenticationRequired == true { options.insert(.authenticationRequired) }
+    let icon = action.systemImage.map { UNNotificationActionIcon(systemImageName: $0) }
+    guard let input = action.input else {
+      return UNNotificationAction(
+        identifier: action.id, title: action.title, options: options, icon: icon)
     }
-    guard let input = action["input"] else {
-      return UNNotificationAction(identifier: id, title: title, options: options, icon: icon)
-    }
-    let field = try record(input)
     return UNTextInputNotificationAction(
-      identifier: id,
-      title: title,
+      identifier: action.id,
+      title: action.title,
       options: options,
       icon: icon,
-      textInputButtonTitle: try optionalText(field["button"]) ?? title,
-      textInputPlaceholder: try optionalText(field["placeholder"]) ?? ""
+      textInputButtonTitle: input.button ?? action.title,
+      textInputPlaceholder: input.placeholder ?? ""
     )
   }
 
   /// True shows every part, false none, and an object the parts it names.
-  private static func presentation(_ value: Any?) throws(TokamakPluginError)
+  private static func presentation(_ shown: Plugin.ShowInForeground?)
     -> UNNotificationPresentationOptions
   {
-    switch value {
-    case nil:
+    switch shown {
+    case nil, .all(true):
       return initial.presentation
-    case let shown as Bool:
-      return shown ? initial.presentation : []
-    case let parts as [String: Any]:
+    case .all(false):
+      return []
+    case .parts(let parts):
       var presentation: UNNotificationPresentationOptions = []
-      if try flag(parts["banner"]) { presentation.insert(.banner) }
-      if try flag(parts["list"]) { presentation.insert(.list) }
-      if try flag(parts["sound"]) { presentation.insert(.sound) }
-      if try flag(parts["badge"]) { presentation.insert(.badge) }
+      if parts.banner == true { presentation.insert(.banner) }
+      if parts.list == true { presentation.insert(.list) }
+      if parts.sound == true { presentation.insert(.sound) }
+      if parts.badge == true { presentation.insert(.badge) }
       return presentation
-    default:
-      throw typeError("showInForeground must be a boolean or an object")
     }
   }
-}
-
-// The plugin's TypeScript validates the configuration first and names the
-// invalid value; these checks stop any other caller's from applying in part.
-
-private func list(_ value: Any?) throws(TokamakPluginError) -> [Any] {
-  guard let value else { return [] }
-  guard let list = value as? [Any] else { throw typeError("a setup list must be an array") }
-  return list
-}
-
-private func record(_ value: Any) throws(TokamakPluginError) -> [String: Any] {
-  guard let record = value as? [String: Any] else {
-    throw typeError("a setup entry must be an object")
-  }
-  return record
-}
-
-private func text(_ value: Any?) throws(TokamakPluginError) -> String {
-  guard let text = value as? String else { throw typeError("a setup value must be a string") }
-  return text
-}
-
-private func optionalText(_ value: Any?) throws(TokamakPluginError) -> String? {
-  guard let value else { return nil }
-  return try text(value)
-}
-
-private func flag(_ value: Any?) throws(TokamakPluginError) -> Bool {
-  guard let value else { return false }
-  guard let flag = value as? Bool else { throw typeError("a setup flag must be a boolean") }
-  return flag
-}
-
-private func typeError(_ message: String) -> TokamakPluginError {
-  TokamakPluginError(name: "TypeError", message: message)
 }

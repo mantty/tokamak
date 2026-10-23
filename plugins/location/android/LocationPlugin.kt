@@ -13,12 +13,12 @@ import android.provider.Settings
 import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
-import com.tokamak.runtime.TokamakPluginReply
-import com.tokamak.runtime.optionalString
-import com.tokamak.runtime.requireObject
-import com.tokamak.runtime.requireString
-import org.json.JSONArray
-import org.json.JSONObject
+import kotlin.coroutines.cancellation.CancellationException
+import kotlin.coroutines.resume
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 class TokamakLocationPlugin(
     private val host: TokamakHost,
@@ -65,154 +65,119 @@ class TokamakLocationPlugin(
         if (host.isInForeground) startService()
     }
 
-    override fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
-        when (method) {
-            "setup" -> setup(requireObject(arguments), reply)
-            "recentPosition" -> reply(Result.success(recentPosition(requireObject(arguments))))
-            "currentPosition" -> return currentPosition(reply)
-            "permission" -> reply(Result.success(permission()))
-            "requestPermission" -> requestPermission(requireObject(arguments), reply)
-            "servicesEnabled" -> reply(Result.success(manager.isLocationEnabled))
-            "openSettings" -> openSettings(reply)
-            "startUpdates" -> startUpdates(requireObject(arguments), reply)
-            "stopUpdates" -> {
-                stopUpdates()
-                reply(Result.success(null))
+    /**
+     * Starts significant changes when [config] names them, and stops them otherwise. Without
+     * permission they start once the app has it.
+     */
+    fun setup(config: SetupConfig) =
+        located {
+            when {
+                config.significantChanges != true -> significantChanges.stop()
+                hasForegroundPermission() -> significantChanges.start(SIGNIFICANT_CHANGES)
+                else -> significantChanges.keep(SIGNIFICANT_CHANGES)
             }
-            "getUpdates" -> reply(Result.success(updates.options))
-            "addRegion" -> addRegion(requireObject(arguments), reply)
-            "getRegions" -> reply(Result.success(JSONArray(regions.all())))
-            "removeRegion" -> {
-                regions.remove(requireObject(arguments).requireString("id"))
-                reply(Result.success(null))
-            }
-            else -> super.call(method, arguments, reply)
         }
-        return null
+
+    /** The provider's last known position when it is no older than [maximumAge] milliseconds, or null. */
+    fun recentPosition(maximumAge: Double): Position? = located { positions.recent(maximumAge)?.let(::Position) }
+
+    /** A new fix, or null when Android finds none. */
+    suspend fun currentPosition(): Position? = located { positions.current()?.let(::Position) }
+
+    /** Each position as the device moves, until the provider turns off. */
+    fun watchPosition(): Flow<Position> = positions.watch().map(::Position).catch { throw locationError(it) }
+
+    /** The app's in-use and background permission, and the precision it gets, or would get once allowed. */
+    fun permission(): LocationPermission {
+        val inUse = if (hasForegroundPermission()) Permission.granted else state(COARSE)
+        val background = if (BACKGROUND in declared) state(BACKGROUND) else Permission.denied
+        val precise = granted(FINE) || (!granted(COARSE) && FINE in declared)
+        return LocationPermission(inUse, background, if (precise) Precision.precise else Precision.approximate)
     }
-
-    override fun subscribe(
-        method: String,
-        arguments: Any?,
-        reply: TokamakPluginReply,
-    ): () -> Unit =
-        when (method) {
-            "watchPosition" -> watchPosition(reply)
-            else -> events.listen(method, reply) ?: super.subscribe(method, arguments, reply)
-        }
-
-    /** The provider's last known position when it is no older than the options' `maximumAge`, or null. */
-    private fun recentPosition(options: JSONObject): JSONObject? =
-        runCatching { positions.recent(options.optDouble("maximumAge", 0.0))?.let(::position) }
-            .getOrElse { throw locationError(it) }
-
-    /** Replies with a new fix, or null when Android finds none, unless the returned cancellation runs first. */
-    private fun currentPosition(reply: TokamakPluginReply): () -> Unit =
-        runCatching { positions.current { reply(Result.success(it?.let(::position))) } }
-            .getOrElse { throw locationError(it) }
-
-    /** Replies with each position as the device moves, until the provider turns off or the returned release runs. */
-    private fun watchPosition(reply: TokamakPluginReply): () -> Unit =
-        runCatching {
-            positions.watch({ reply(Result.success(position(it))) }) {
-                reply(Result.failure(TokamakPluginError("NotReadableError", "Location provider is unavailable")))
-            }
-        }.getOrElse { throw locationError(it) }
 
     /**
-     * Asks for the foreground [permissions], then passes [action] whether the app has one, first
-     * starting what waited for permission.
+     * Asks for foreground permission, then for background permission when [request] asks for it, as
+     * Android grants background permission only to an app with foreground permission.
      */
-    private fun askForeground(permissions: Set<String>, action: (Boolean) -> Unit) {
-        host.requestPermissions(permissions) { granted ->
-            val allowed = granted.containsValue(true)
-            if (allowed) restore(updatesRemoved = false)
-            action(allowed)
+    suspend fun requestPermission(request: PermissionRequest?): LocationPermission {
+        val background = request?.background == true
+        if (background && BACKGROUND !in declared) {
+            throw TokamakPluginError.notSupported("Background location needs the location plugin's background build setting")
+        }
+        val asked = if (request?.precision == Precision.approximate) setOf(COARSE) else foreground
+        val allowed = ask(asked).containsValue(true)
+        if (allowed) restore(updatesRemoved = false)
+        if (background && allowed) ask(setOf(BACKGROUND))
+        return permission()
+    }
+
+    fun servicesEnabled(): Boolean = manager.isLocationEnabled
+
+    fun openSettings() {
+        val app = Uri.fromParts("package", context.packageName, null)
+        host.requireForegroundActivity().startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, app))
+    }
+
+    /** Starts updates in the foreground service when [options] name one, which stops otherwise. On failure, none run. */
+    fun startUpdates(options: UpdateOptions?) {
+        val running = options ?: UpdateOptions(null, null, null, null)
+        requirePermission()
+        if (running.foregroundService != null) requireService()
+        try {
+            if (running.foregroundService == null) TokamakLocationService.stop(context) else TokamakLocationService.start(context, running)
+            updates.start(running)
+        } catch (error: Exception) {
+            stopUpdates()
+            throw locationError(error)
         }
     }
+
+    fun stopUpdates() {
+        updates.stop()
+        TokamakLocationService.stop(context)
+    }
+
+    fun getUpdates(): UpdateOptions? = updates.options
+
+    /** Monitors a region, which needs precise location. */
+    fun addRegion(region: Region) {
+        if (!granted(FINE)) throw TokamakPluginError("NotAllowedError", "Regions need precise location")
+        located { regions.add(region) }
+    }
+
+    fun getRegions(): List<MonitoredRegion> =
+        regions.all().map { MonitoredRegion(it.id, it.latitude, it.longitude, it.radius, it.onEntry ?: true, it.onExit ?: true) }
+
+    fun removeRegion(id: String) = regions.remove(id)
+
+    fun onLocationUpdate(): Flow<LocationUpdate> = events.updates.stream()
+
+    fun onRegionTransition(): Flow<RegionTransition> = events.transitions.stream()
+
+    fun onLocationError(): Flow<LocationErrorEvent> = events.errors.stream()
+
+    /** Asks the user for [permissions], returning whether each is granted. */
+    private suspend fun ask(permissions: Set<String>): Map<String, Boolean> =
+        suspendCancellableCoroutine { continuation -> host.requestPermissions(permissions) { continuation.resume(it) } }
 
     private fun granted(permission: String): Boolean =
         context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
     private fun hasForegroundPermission(): Boolean = granted(FINE) || granted(COARSE)
 
-    /** The app's in-use and background permission, and the precision it gets, or would get once allowed. */
-    private fun permission(): JSONObject {
-        val inUse = if (hasForegroundPermission()) "granted" else state(COARSE)
-        val background = if (BACKGROUND in declared) state(BACKGROUND) else "denied"
-        val precise = granted(FINE) || (!granted(COARSE) && FINE in declared)
-        return JSONObject()
-            .put("inUse", inUse)
-            .put("background", background)
-            .put("precision", if (precise) "precise" else "approximate")
-    }
-
-    private fun state(permission: String): String =
+    private fun state(permission: String): Permission =
         when {
-            granted(permission) -> "granted"
-            host.wouldPrompt(permission) -> "prompt"
-            else -> "denied"
+            granted(permission) -> Permission.granted
+            host.wouldPrompt(permission) -> Permission.prompt
+            else -> Permission.denied
         }
-
-    /**
-     * Asks for foreground permission, then for background permission when [options] ask for it, as
-     * Android grants background permission only to an app with foreground permission.
-     */
-    private fun requestPermission(options: JSONObject, reply: TokamakPluginReply) {
-        val background = options.optBoolean("background")
-        if (background && BACKGROUND !in declared) {
-            throw TokamakPluginError.notSupported("Background location needs the location plugin's background build setting")
-        }
-        val asked = if (options.optionalString("precision") == "approximate") setOf(COARSE) else foreground
-        askForeground(asked) { allowed ->
-            if (!background || !allowed) return@askForeground reply(Result.success(permission()))
-            runCatching { host.requestPermissions(setOf(BACKGROUND)) { reply(Result.success(permission())) } }
-                .onFailure { reply(Result.failure(it)) }
-        }
-    }
 
     private fun requirePermission() {
         if (!hasForegroundPermission()) throw TokamakPluginError("NotAllowedError", "Location permission has not been granted")
     }
 
-    /** Starts updates in the foreground service when [options] name one, which stops otherwise. On failure, none run. */
-    private fun startUpdates(options: JSONObject, reply: TokamakPluginReply) {
-        requirePermission()
-        val notification = options.optJSONObject("foregroundService")
-        if (notification != null) requireService()
-        runCatching {
-            if (notification == null) TokamakLocationService.stop(context) else TokamakLocationService.start(context, notification)
-            updates.start(options)
-        }.onSuccess { reply(Result.success(null)) }
-            .onFailure {
-                stopUpdates()
-                reply(Result.failure(locationError(it)))
-            }
-    }
-
-    private fun stopUpdates() {
-        updates.stop()
-        TokamakLocationService.stop(context)
-    }
-
     private fun startService() {
-        updates.options?.optJSONObject("foregroundService")?.let { TokamakLocationService.start(context, it) }
-    }
-
-    /**
-     * Starts significant changes when [config] names them, and stops them otherwise. Without
-     * permission they start once the app has it.
-     */
-    private fun setup(config: JSONObject, reply: TokamakPluginReply) {
-        val options = JSONObject(SIGNIFICANT_CHANGE_OPTIONS)
-        runCatching {
-            when {
-                !config.optBoolean("significantChanges") -> significantChanges.stop()
-                hasForegroundPermission() -> significantChanges.start(options)
-                else -> significantChanges.keep(options)
-            }
-        }.onSuccess { reply(Result.success(null)) }
-            .onFailure { reply(Result.failure(locationError(it))) }
+        updates.options?.takeIf { it.foregroundService != null }?.let { TokamakLocationService.start(context, it) }
     }
 
     /**
@@ -224,14 +189,6 @@ class TokamakLocationPlugin(
             throw TokamakPluginError.notSupported("The foreground service needs the location plugin's background-updates build setting")
         }
         if (!host.isInForeground && !granted(BACKGROUND)) throw TokamakPluginError.needsUI()
-    }
-
-    /** Monitors a region, which needs precise location. */
-    private fun addRegion(region: JSONObject, reply: TokamakPluginReply) {
-        if (!granted(FINE)) throw TokamakPluginError("NotAllowedError", "Regions need precise location")
-        runCatching { regions.add(region) }
-            .onSuccess { reply(Result.success(null)) }
-            .onFailure { reply(Result.failure(locationError(it))) }
     }
 
     /**
@@ -259,7 +216,7 @@ class TokamakLocationPlugin(
             if (!turnedOff) return finish()
             return events.fail(TokamakPluginError("NotReadableError", "The location provider was turned off"), finish)
         }
-        events.update(locations(intent).map(::position), finish)
+        events.update(locations(intent).map(::Position), finish)
     }
 
     /** Delivers a region's entry or exit, when the region reports it. */
@@ -267,7 +224,7 @@ class TokamakLocationPlugin(
         val id = intent.identifier ?: return finish()
         val entered = intent.getBooleanExtra(LocationManager.KEY_PROXIMITY_ENTERING, false)
         val region = regions.get(id) ?: return finish()
-        if (!region.optBoolean(if (entered) "onEntry" else "onExit", true)) return finish()
+        if ((if (entered) region.onEntry else region.onExit) == false) return finish()
         events.transition(id, entered, finish)
     }
 
@@ -276,36 +233,21 @@ class TokamakLocationPlugin(
         intent.getParcelableArrayExtra(LocationManager.KEY_LOCATIONS)?.filterIsInstance<Location>()
             ?: listOfNotNull(intent.getParcelableExtra(LocationManager.KEY_LOCATION_CHANGED))
 
-    private fun openSettings(reply: TokamakPluginReply) {
-        val app = Uri.fromParts("package", context.packageName, null)
-        host.requireForegroundActivity().startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, app))
-        reply(Result.success(null))
-    }
-
-    private fun position(location: Location): JSONObject =
-        JSONObject()
-            .put(
-                "coords",
-                JSONObject()
-                    .put("latitude", location.latitude)
-                    .put("longitude", location.longitude)
-                    .put("accuracy", location.accuracy.toDouble())
-                    .put("altitude", nullable(location.hasAltitude(), location.altitude))
-                    .put(
-                        "altitudeAccuracy",
-                        nullable(location.hasVerticalAccuracy(), location.verticalAccuracyMeters.toDouble()),
-                    )
-                    .put("heading", nullable(location.hasBearing(), location.bearing.toDouble()))
-                    .put("speed", nullable(location.hasSpeed(), location.speed.toDouble())),
-            )
-            .put("timestamp", location.time)
-
-    private fun nullable(available: Boolean, value: Double): Any = if (available) value else JSONObject.NULL
+    /** Runs [operation], translating its failure into the error the Worker receives. */
+    private inline fun <T> located(operation: () -> T): T =
+        try {
+            operation()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            throw locationError(error)
+        }
 
     private fun permissionDenied() = TokamakPluginError("NotAllowedError", "Location permission was denied")
 
     private fun locationError(error: Throwable): TokamakPluginError =
         when (error) {
+            is TokamakPluginError -> error
             is SecurityException -> permissionDenied()
             // Off screen, Android starts a foreground service only in response to some events.
             is ForegroundServiceStartNotAllowedException -> TokamakPluginError.needsUI()
@@ -318,6 +260,6 @@ class TokamakLocationPlugin(
         const val BACKGROUND = Manifest.permission.ACCESS_BACKGROUND_LOCATION
 
         /** Apple's significant-change service's thresholds: 500 metres or more, at most every 5 minutes, without GPS. */
-        const val SIGNIFICANT_CHANGE_OPTIONS = """{"accuracy":"low","interval":300000,"distance":500}"""
+        val SIGNIFICANT_CHANGES = UpdateOptions(Accuracy.low, distance = 500.0, interval = 300_000, foregroundService = null)
     }
 }

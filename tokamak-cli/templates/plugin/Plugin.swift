@@ -1,22 +1,21 @@
 import Foundation
 
 final class {{class}}: TokamakPlugin {
-  let id = "{{id}}"
-  private let host: TokamakHost
-  private let queue = DispatchQueue(label: "tokamak.{{id}}")
-  init(host: TokamakHost) { self.host = host }
-  func executor(for method: String) -> DispatchQueue { queue }
+  /// A message the native implementation echoed.
+  struct Echo: Codable {
+    let message: String
+  }
 
-  func call(method: String, arguments: Any, reply: @escaping TokamakPluginReply) -> (() -> Void)? {
-    switch method {
-    case "echo":
-      reply(.success(arguments))
-      DispatchQueue.main.async { [host] in
-        host.emit("echoed", event: ["message": arguments], timeout: 10) { _ in }
-      }
-    default:
-      reply(.failure(.notSupported("\(id).\(method) is not supported")))
-    }
-    return nil
+  let id = "{{id}}"
+  let host: TokamakHost
+
+  init(host: TokamakHost) {
+    self.host = host
+  }
+
+  /// Returns `message`, which the Worker's `onEchoed` listeners also receive.
+  func echo(_ message: String) -> String {
+    host.emit("echoed", event: Echo(message: message), timeout: 10) { _ in }
+    return message
   }
 }

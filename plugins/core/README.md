@@ -4,30 +4,35 @@ Native plugin APIs, endpoint codecs, event contracts and test fixtures.
 
 | Entry | Contents |
 | --- | --- |
-| `@tokamakdev/plugin` | `Plugin`, `TokamakContext`, JSON codec and value types |
+| `@tokamakdev/plugin` | `platformApi`, `NativeEndpoint`, `TokamakContext`, `platform`, JSON codec and value types |
 | `@tokamakdev/plugin/streams` | Bounded push streams and typed JSON stream decoding |
 | `@tokamakdev/plugin/events` | `defineEvent` |
-| `@tokamakdev/plugin/testing` | Invocation fixture and event dispatch |
+| `@tokamakdev/plugin/testing` | Invocation fixture, event dispatch and `setPlatform` |
 
 Plugin packages declare this package as a peer dependency. Native APIs require
-the receiving Tokamak worker invocation's context:
+the receiving Tokamak worker invocation's context. `tok plugin generate` writes
+each platform family's API from the plugin's native code, and the plugin's own
+API calls the one for the platform the app runs on:
 
 ```ts
-import { Plugin, type TokamakContext } from "@tokamakdev/plugin";
+import { platformApi, type JsonStream, type TokamakContext } from "@tokamakdev/plugin";
+import { android } from "./android.generated.js";
+import { apple } from "./apple.generated.js";
 
-class Alarms extends Plugin {
-  constructor(ctx: TokamakContext) { super(ctx, "alarms"); }
-  set(at: number): Promise<void> { return this.call("set", { at }); }
-  rings(): ReadableStream<Uint8Array> { return this.stream("rings"); }
+export function alarms(ctx: TokamakContext) {
+  const native = platformApi(ctx, { apple, android });
+  return {
+    set: (at: number): Promise<void> => native.set(at),
+    rings: (): JsonStream<Ring> => native.rings(),
+  };
 }
-export function alarms(ctx: TokamakContext) { return new Alarms(ctx); }
 ```
 
-`call` uses the standard JSON endpoint codec. `callBytes` sends and receives
-opaque bytes. `stream` exposes JSON values as a cancellable byte stream,
-subscribing once a promised argument resolves; `decodeValues<T>` consumes it.
-Errors, including that promise's rejection, terminate a stream. A slow consumer
-exceeding its bounded buffer receives `QuotaExceededError`.
+The generated APIs call native methods through a `NativeEndpoint`. `call` uses
+the standard JSON endpoint codec. `callBytes` sends and receives opaque bytes.
+`stream` exposes JSON values as a cancellable byte stream; `decodeValues<T>`
+consumes it. Errors terminate a stream. A slow consumer exceeding its bounded
+buffer receives `QuotaExceededError`.
 
 Declare the factory in `tokamak-plugin.json` alongside native build metadata:
 
@@ -88,53 +93,57 @@ A plugin's native code delivers events to the app's Tokamak worker, whose listen
 register in `src/tokamak.ts` and run even when no page is loaded, such as when
 the system starts the app in the background.
 
-The plugin defines each event in its own `/events` entry, which apps import:
+A native plugin registers each event in its registration file, with the type of
+its data and of any reply, and `tok plugin generate` writes the function that
+registers its listeners into the family's platform API. The plugin's `/events`
+entry, which apps import, curates the families' functions into its own (see
+[GUIDELINES.md](../GUIDELINES.md)).
 
-```ts
-// events/index.ts, exported as "./events" in package.json
-import { defineEvent } from "@tokamakdev/plugin/events";
-
-/** Receives each alarm as it rings. A returned number snoozes it for that many minutes. */
-export const onRing = defineEvent<{ id: string }, number>("alarms.ring");
-```
-
-`defineEvent<T, Reply>(name)` returns the function that registers listeners,
-typed with the event's data `T` and the `Reply` its listeners may return. The
-name is the plugin's ID, a `.`, and the event's name. The event's reply is the
-first value, in registration order, that a listener returns other than
-`undefined`.
-
-The native side emits the event through the host the plugin is created with,
-which prefixes the plugin's ID, so listeners of `alarms.ring` receive
-`host.emit("ring", …)`. Events are JSON:
+Native code emits the event's data through the host the plugin is created with.
+The generated dispatch encodes it, and decodes the reply:
 
 ```swift
-host.emit("ring", event: ["id": alarm.id], timeout: 10) { result in
-  // `result` is the reply, parsed from JSON, or nil when no listener replies.
+host.emit("ring", event: alarm, reply: Int.self, timeout: 10) { result in
+  // `result` is the reply, or nil when no listener replies.
 }
 ```
 
 ```kotlin
 // Blocks, so call it off the main thread.
-val reply = host.emit("ring", JSONObject().put("id", alarm.id), 10_000)
-// `reply` is the reply, parsed from JSON, or null when no listener replies.
+val reply = host.emit("ring", alarm, Int::class, 10_000)
+// `reply` is the reply, or null when no listener replies.
 ```
+
+Listeners receive each family's event under the plugin's ID, the family and the
+event's name, joined by `.`, such as `alarms.apple.ring`. The reply is the first
+value, in registration order, that a listener returns other than `undefined`.
+
+`defineEvent(name, { codec, platforms })` returns the function that registers
+listeners of the event `name`, typed with the data and reply that
+`Tokamak.Events` and `Tokamak.EventReplies` declare for it. Off `platforms`,
+and without a native host, that function registers nothing. The generated API
+uses it with its family's platforms. A plugin uses it directly, with a codec,
+for an event that carries other bytes than JSON, which native code emits with
+`host.emitBytes`.
 
 `timeout` includes starting the runtime when the app is not running. `emit`
 fails when the Worker cannot run, or when a listener has not returned by the
 timeout; it is not retried. The runtime starts no Worker for an event without
-listeners, so emit each event the plugin defines whether or not the app
+listeners, so emit each event the plugin registers whether or not the app
 listens. Plugin IDs contain no `.`.
 
 Test listeners with `dispatch` from `@tokamakdev/plugin/testing`, which runs
-them as the runtime does and returns what they threw:
+them as the runtime does and returns what they threw. `setPlatform` names the
+platform under test, on which listeners then register:
 
 ```ts
-import { dispatch } from "@tokamakdev/plugin/testing";
+import { dispatch, setPlatform } from "@tokamakdev/plugin/testing";
 
+setPlatform("ios");
 onRing(() => 5);
-const { reply, reported } = await dispatch("alarms.ring", { id: "a1" }, env);
+const { reply, reported } = await dispatch("alarms.apple.ring", { id: "a1" }, env);
 ```
+
 ## WebView controls
 
 Inside the Tokamak worker, use `this.ctx.webview.navigate("/recipes")`,

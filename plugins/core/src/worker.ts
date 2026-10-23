@@ -4,7 +4,7 @@ import type { TokamakEvent } from "./events.js";
 import { dispatch } from "./registry.js";
 
 export { capabilitiesFor } from "./capabilities.mjs";
-export { createNativeContext, nativeAvailability, nativeConnection } from "./context.js";
+export { createNativeContext, nativeAvailability, nativeConnection, platform } from "./context.js";
 export type { Availability, NativePlatform } from "./capabilities.mjs";
 export type { TokamakContext } from "./context.js";
 export type { WebView } from "./webview.js";

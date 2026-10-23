@@ -560,6 +560,19 @@ fn initializes_web_globals_before_worker_module_evaluation()
 }
 
 #[test]
+fn names_the_platform_before_worker_module_evaluation() -> Result<(), Box<dyn std::error::Error>> {
+    let source = b"const platform = globalThis.__tokamak_platform;
+export default { fetch: () => new Response(platform) };";
+    let JobResponse::Http(response) = run_worker(source, request("GET", "/"))? else {
+        return Err("Worker returned a non-HTTP response".into());
+    };
+    assert!(
+        matches!(&response.body, HttpBody::Buffered(body) if body == crate::globals::plugins::PLATFORM.as_bytes())
+    );
+    Ok(())
+}
+
+#[test]
 fn rejects_a_handler_result_that_is_not_a_response() -> Result<(), Box<dyn std::error::Error>> {
     let source = b"export default { fetch: () => ({ status: 200, headers: [] }) };";
     let error = run_worker(source, request("GET", "/"))

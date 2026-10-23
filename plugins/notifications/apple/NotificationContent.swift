@@ -5,88 +5,75 @@ import UserNotifications
   import CoreLocation
 #endif
 
-/// Keys the plugin stores in a local notification's `userInfo`: every field of the notification,
-/// which `getScheduled` and `getDelivered` return.
+/// The key under which the plugin stores a local notification's content in its `userInfo`, with
+/// a scheduled notification's trigger in the same object, which `getScheduled` and
+/// `getDelivered` return.
 private let contentKey = "tokamak.content"
 /// The data of a notification scheduled without its content stored.
 private let dataKey = "tokamak.data"
 
-/// Fields of a scheduled notification's trigger, which shown ones leave out.
-private let triggerKeys = ["at", "every", "on", "region", "repeats", "exact"]
-
 /// A notification the page asked to show or schedule.
 struct TokamakNotificationRequest {
-  let id: String
-  let title: String
-  let body: String?
-  /// A `setup` category, whose actions the notification shows.
-  let category: String?
+  typealias Plugin = TokamakNotificationsPlugin
+
+  let content: Plugin.NotificationContent
   /// When the notification shows; nil to show now.
   let trigger: UNNotificationTrigger?
-  /// Every field of the notification, from the page or a Worker's `onPush` reply.
-  let fields: [String: Any]
+  /// The content and trigger as `userInfo` stores them.
+  private let stored: String
 
-  init(_ arguments: Any, scheduled: Bool) throws(TokamakPluginError) {
-    let arguments = arguments as? [String: Any] ?? [:]
-    fields = arguments
-    guard let id = arguments["id"] as? String, !id.isEmpty else {
-      throw typeError("id must be a non-empty string")
+  init(_ content: Plugin.NotificationContent, trigger: Plugin.Trigger? = nil)
+    throws(TokamakPluginError)
+  {
+    guard !content.id.isEmpty else { throw typeError("id must be a non-empty string") }
+    self.content = content
+    if let trigger {
+      self.trigger = try Self.trigger(trigger, id: content.id)
+    } else {
+      self.trigger = nil
     }
-    guard let title = arguments["title"] as? String else {
-      throw typeError("title must be a string")
-    }
-    self.id = id
-    self.title = title
-    body = arguments["body"] as? String
-    category = arguments["category"] as? String
-    guard category != nil || arguments["category"] == nil else {
-      throw typeError("category must be a string")
-    }
-    trigger = scheduled ? try Self.trigger(arguments, id: id) : nil
+    stored = try json(content, trigger)
   }
 
-  /// The trigger `arguments` give: `at` a time, nil once it has passed; `every` interval; `on`
-  /// the dates that match; or, on iOS, a `region`.
-  private static func trigger(_ arguments: [String: Any], id: String) throws(TokamakPluginError)
+  /// The system trigger of `trigger`: a time, nil once it has passed; an interval; the dates that
+  /// match; or, on iOS, a region.
+  private static func trigger(_ trigger: Plugin.Trigger, id: String) throws(TokamakPluginError)
     -> UNNotificationTrigger?
   {
-    let repeats = arguments["repeats"] as? Bool ?? false
-    if let at = (arguments["at"] as? NSNumber)?.doubleValue {
-      guard at.isFinite else {
-        throw typeError("at must be a number of milliseconds since the epoch")
-      }
-      guard at > Date().timeIntervalSince1970 * 1000 else { return nil }
-      return UNCalendarNotificationTrigger(dateMatching: utcComponents(at), repeats: false)
-    }
-    if let every = arguments["every"] as? [String: Any] {
-      let seconds = ["seconds": 1.0, "minutes": 60, "hours": 3600, "days": 86400].reduce(0.0) {
-        total, unit in total + ((every[unit.key] as? NSNumber)?.doubleValue ?? 0) * unit.value
-      }
+    switch trigger {
+    case .at(let at):
+      guard at.at > Date().timeIntervalSince1970 * 1000 else { return nil }
+      return UNCalendarNotificationTrigger(dateMatching: utcComponents(at.at), repeats: false)
+    case .every(let every):
+      let interval = every.every
+      let seconds = [
+        interval.seconds, interval.minutes.map { $0 * 60 }, interval.hours.map { $0 * 3600 },
+        interval.days.map { $0 * 86400 },
+      ].reduce(0) { $0 + ($1 ?? 0) }
       guard seconds >= 60 else { throw typeError("every must be at least 60 seconds") }
       return UNTimeIntervalNotificationTrigger(timeInterval: seconds, repeats: true)
-    }
-    if let on = arguments["on"] as? [String: Any] {
+    case .on(let on):
       // Android and the page number years and months as the Gregorian calendar does.
+      let match = on.on
       var components = DateComponents(calendar: Calendar(identifier: .gregorian))
-      components.year = on["year"] as? Int
-      components.month = on["month"] as? Int
-      components.day = on["day"] as? Int
-      components.weekday = on["weekday"] as? Int
-      components.hour = on["hour"] as? Int
-      components.minute = on["minute"] as? Int
-      components.second = on["second"] as? Int
-      let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: repeats)
+      components.year = match.year
+      components.month = match.month
+      components.day = match.day
+      components.weekday = match.weekday
+      components.hour = match.hour
+      components.minute = match.minute
+      components.second = match.second
+      let trigger = UNCalendarNotificationTrigger(
+        dateMatching: components, repeats: on.repeats ?? false)
       guard trigger.nextTriggerDate() != nil else { throw typeError("on matches no time from now") }
       return trigger
+    case .region(let region):
+      return try regionTrigger(region.region, id: id, repeats: region.repeats ?? false)
     }
-    if let region = arguments["region"] as? [String: Any] {
-      return try regionTrigger(region, id: id, repeats: repeats)
-    }
-    throw typeError("a scheduled notification must have one of at, every, on or region")
   }
 
   #if os(iOS)
-    private static func regionTrigger(_ region: [String: Any], id: String, repeats: Bool)
+    private static func regionTrigger(_ region: Plugin.Region, id: String, repeats: Bool)
       throws(TokamakPluginError) -> UNNotificationTrigger
     {
       let status = CLLocationManager().authorizationStatus
@@ -94,84 +81,80 @@ struct TokamakNotificationRequest {
         throw TokamakPluginError(
           name: "NotAllowedError", message: "A region trigger needs location permission")
       }
-      guard let latitude = region["latitude"] as? Double,
-        let longitude = region["longitude"] as? Double,
-        let radius = region["radius"] as? Double
-      else {
-        throw typeError("region must have a latitude, longitude and radius")
-      }
       let circle = CLCircularRegion(
-        center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude), radius: radius,
-        identifier: id)
-      circle.notifyOnEntry = region["onEntry"] as? Bool ?? true
-      circle.notifyOnExit = region["onExit"] as? Bool ?? false
+        center: CLLocationCoordinate2D(latitude: region.latitude, longitude: region.longitude),
+        radius: region.radius, identifier: id)
+      circle.notifyOnEntry = region.onEntry ?? true
+      circle.notifyOnExit = region.onExit ?? false
       return UNLocationNotificationTrigger(region: circle, repeats: repeats)
     }
   #else
-    private static func regionTrigger(_ region: [String: Any], id: String, repeats: Bool)
+    private static func regionTrigger(_ region: Plugin.Region, id: String, repeats: Bool)
       throws(TokamakPluginError) -> UNNotificationTrigger
     {
       throw .notSupported("Region triggers are iOS only")
     }
   #endif
 
-  /// The system request, due now when `at` is absent or has passed.
+  /// The system request, due now without a trigger or once its time has passed.
   func request(attachments: [UNNotificationAttachment]) throws(TokamakPluginError)
     -> UNNotificationRequest
   {
-    let content = UNMutableNotificationContent()
-    content.title = title
-    content.attachments = attachments
-    content.body = body ?? ""
-    content.subtitle = fields["subtitle"] as? String ?? ""
-    content.threadIdentifier = fields["group"] as? String ?? ""
-    content.badge = fields["badge"] as? NSNumber
-    content.sound = fields["silent"] as? Bool == true ? nil : try Self.sound(fields["sound"])
-    content.categoryIdentifier = category ?? ""
+    let notification = UNMutableNotificationContent()
+    notification.title = content.title
+    notification.attachments = attachments
+    notification.body = content.body ?? ""
+    notification.subtitle = content.subtitle ?? ""
+    notification.threadIdentifier = content.group ?? ""
+    notification.badge = content.badge.map { $0 as NSNumber }
+    notification.sound = content.silent == true ? nil : try Self.sound(content.sound)
+    notification.categoryIdentifier = content.category ?? ""
     if #available(iOS 15, macOS 12, *) {
-      if let level = (fields["interruptionLevel"] as? String).flatMap({
-        Self.interruptionLevels[$0]
-      }) {
-        content.interruptionLevel = level
+      if let level = content.interruptionLevel {
+        notification.interruptionLevel = Self.interruptionLevel(level)
       }
-      if let score = fields["relevanceScore"] as? Double {
-        content.relevanceScore = score
+      if let score = content.relevanceScore {
+        notification.relevanceScore = score
       }
     }
-    content.userInfo = [contentKey: try json(fields)]
-    return UNNotificationRequest(identifier: id, content: content, trigger: trigger)
+    notification.userInfo = [contentKey: stored]
+    return UNNotificationRequest(identifier: content.id, content: notification, trigger: trigger)
   }
 
-  /// The sound `value` names: the default, the default critical sound, or a file the app bundles
-  /// from the `sounds` build setting.
-  private static func sound(_ value: Any?) throws(TokamakPluginError) -> UNNotificationSound {
-    switch value {
-    case nil, "default" as String:
+  /// The system sound of `sound`: the default, the default critical sound, or a file the app
+  /// bundles from the `sounds` build setting.
+  private static func sound(_ sound: Plugin.Sound?) throws(TokamakPluginError)
+    -> UNNotificationSound
+  {
+    switch sound {
+    case nil, .default:
       return .default
-    case "defaultCritical" as String:
+    case .defaultCritical:
       return .defaultCritical
-    case let sound as [String: Any]:
-      guard let name = sound["name"] as? String else {
-        throw typeError("sound.name must be a string")
-      }
-      guard Bundle.main.url(forResource: name, withExtension: nil) != nil else {
+    case .named(let sound):
+      guard Bundle.main.url(forResource: sound.name, withExtension: nil) != nil else {
         throw TokamakPluginError(
           name: "NotFoundError",
-          message: "The app has no sound \(name); add it to the notifications.sounds build setting")
+          message:
+            "The app has no sound \(sound.name); add it to the notifications.sounds build setting")
       }
-      let named = UNNotificationSoundName(name)
-      guard sound["critical"] as? Bool == true else { return UNNotificationSound(named: named) }
-      let volume = (sound["volume"] as? NSNumber)?.floatValue ?? 1
-      return .criticalSoundNamed(named, withAudioVolume: volume)
-    default:
-      throw typeError("sound must be \"default\", \"defaultCritical\" or an object")
+      let named = UNNotificationSoundName(sound.name)
+      guard sound.critical == true else { return UNNotificationSound(named: named) }
+      return .criticalSoundNamed(named, withAudioVolume: Float(sound.volume ?? 1))
     }
   }
 
   @available(iOS 15, macOS 12, *)
-  private static let interruptionLevels: [String: UNNotificationInterruptionLevel] = [
-    "passive": .passive, "active": .active, "timeSensitive": .timeSensitive, "critical": .critical,
-  ]
+  private static func interruptionLevel(_ level: Plugin.InterruptionLevel)
+    -> UNNotificationInterruptionLevel
+  {
+    switch level {
+    case .passive: .passive
+    case .active: .active
+    case .timeSensitive: .timeSensitive
+    case .critical: .critical
+    }
+  }
 
   private static func utcComponents(_ at: Double) -> DateComponents {
     var calendar = Calendar(identifier: .gregorian)
@@ -189,20 +172,20 @@ struct TokamakNotificationFields {
   let id: String
   let title: String?
   let body: String?
-  let data: [String: Any]
+  let data: [String: TokamakJSON]
   let category: String?
   let isPush: Bool
-  /// Every field of a local notification, if it has them stored.
-  let stored: [String: Any]?
+  /// The content of a local notification, if it has it stored.
+  let stored: TokamakNotificationsPlugin.NotificationContent?
 
-  init(_ notification: UNNotification) {
-    let content = notification.request.content
-    id = notification.request.identifier
+  init(_ request: UNNotificationRequest) {
+    let content = request.content
+    id = request.identifier
     title = content.title.isEmpty ? nil : content.title
     body = content.body.isEmpty ? nil : content.body
     category = content.categoryIdentifier.isEmpty ? nil : content.categoryIdentifier
     (data, isPush) = Self.data(content.userInfo)
-    stored = isPush ? nil : storedContent(content.userInfo)
+    stored = isPush ? nil : storedContent(content.userInfo)?.content
   }
 
   /// A push message delivered to the app without a notification.
@@ -218,83 +201,101 @@ struct TokamakNotificationFields {
 
   /// A push message's data is every top-level key but `aps`; a local
   /// notification's is the data the page gave it.
-  static func data(_ userInfo: [AnyHashable: Any]) -> ([String: Any], isPush: Bool) {
+  private static func data(_ userInfo: [AnyHashable: Any]) -> (
+    [String: TokamakJSON], isPush: Bool
+  ) {
     if userInfo["aps"] != nil {
-      var data: [String: Any] = [:]
+      var data: [String: TokamakJSON] = [:]
       for case (let key as String, let value) in userInfo where key != "aps" {
-        data[key] = value
+        data[key] = TokamakJSON(value)
       }
       return (data, true)
     }
     if let stored = storedContent(userInfo) {
-      return (stored["data"] as? [String: Any] ?? [:], false)
+      return (stored.content.data ?? [:], false)
     }
     let json = (userInfo[dataKey] as? String)?.data(using: .utf8) ?? Data()
-    return ((try? JSONSerialization.jsonObject(with: json)) as? [String: Any] ?? [:], false)
+    return ((try? JSONDecoder().decode([String: TokamakJSON].self, from: json)) ?? [:], false)
   }
 
-  var message: [String: Any] {
-    ["id": id, "title": title ?? NSNull(), "body": body ?? NSNull(), "data": data]
+  var message: TokamakNotificationsPlugin.Message {
+    TokamakNotificationsPlugin.Message(id: id, title: title, body: body, data: data)
   }
 
-  var dismissed: [String: Any] {
-    message.merging(["source": isPush ? "push" : "local"]) { current, _ in current }
+  var dismissed: TokamakNotificationsPlugin.DismissedNotification {
+    TokamakNotificationsPlugin.DismissedNotification(
+      id: id, title: title, body: body, data: data, source: isPush ? .push : .local)
   }
 
-  func opened(action: String?, input: String?) -> [String: Any] {
-    dismissed.merging(["action": action ?? NSNull(), "input": input ?? NSNull()]) {
-      current, _ in current
-    }
+  func opened(action: String?, input: String?) -> TokamakNotificationsPlugin.OpenedNotification {
+    TokamakNotificationsPlugin.OpenedNotification(
+      id: id, title: title, body: body, data: data, source: isPush ? .push : .local,
+      action: action, input: input)
   }
 
-  var content: [String: Any] {
-    if var stored {
-      for key in triggerKeys { stored.removeValue(forKey: key) }
-      return stored
-    }
-    var content: [String: Any] = ["id": id, "title": title ?? "", "data": data]
-    content["body"] = body
-    content["category"] = category
-    return content
+  var content: TokamakNotificationsPlugin.NotificationContent {
+    stored
+      ?? TokamakNotificationsPlugin.NotificationContent(
+        id: id, title: title ?? "", body: body, data: data, category: category)
   }
 }
 
 extension UNNotificationRequest {
-  /// The page's view of a pending request: its fields, which name its trigger.
-  var scheduled: [String: Any] {
-    if let stored = storedContent(content.userInfo) {
-      return stored
+  /// The page's view of a pending request: its content and trigger, or the time it shows.
+  var scheduled: TokamakNotificationsPlugin.ScheduledNotification {
+    if let stored = storedContent(content.userInfo), let trigger = stored.trigger {
+      return TokamakNotificationsPlugin.ScheduledNotification(
+        content: stored.content, trigger: trigger)
     }
     let at =
       (trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate().map {
         $0.timeIntervalSince1970 * 1000
       } ?? 0
-    var scheduled: [String: Any] = [
-      "id": identifier,
-      "title": content.title,
-      "data": TokamakNotificationFields.data(content.userInfo).0,
-      "at": at,
-    ]
-    scheduled["body"] = content.body.isEmpty ? nil : content.body
-    scheduled["category"] = content.categoryIdentifier.isEmpty ? nil : content.categoryIdentifier
-    return scheduled
+    return TokamakNotificationsPlugin.ScheduledNotification(
+      content: TokamakNotificationFields(self).content,
+      trigger: .at(TokamakNotificationsPlugin.AtTrigger(at: at)))
   }
 }
 
-/// Every field of a local notification, if it has them stored.
-private func storedContent(_ userInfo: [AnyHashable: Any]) -> [String: Any]? {
-  guard let json = (userInfo[contentKey] as? String)?.data(using: .utf8) else { return nil }
-  return (try? JSONSerialization.jsonObject(with: json)) as? [String: Any]
+extension TokamakNotificationsPlugin.NotificationContent {
+  /// A notification with only the fields every notification has.
+  init(id: String, title: String, body: String?, data: [String: TokamakJSON], category: String?) {
+    self.init(
+      id: id, title: title, body: body, data: data, category: category, group: nil, image: nil,
+      attachments: nil, badge: nil, silent: nil, sound: nil, subtitle: nil, interruptionLevel: nil,
+      relevanceScore: nil)
+  }
 }
 
-private func json(_ value: [String: Any]) throws(TokamakPluginError) -> String {
-  guard
-    JSONSerialization.isValidJSONObject(value),
-    let data = try? JSONSerialization.data(withJSONObject: value)
-  else {
+/// The content of a local notification, and a scheduled one's trigger, if it has them stored.
+private func storedContent(_ userInfo: [AnyHashable: Any]) -> (
+  content: TokamakNotificationsPlugin.NotificationContent,
+  trigger: TokamakNotificationsPlugin.Trigger?
+)? {
+  guard let json = (userInfo[contentKey] as? String)?.data(using: .utf8),
+    let content = try? JSONDecoder().decode(
+      TokamakNotificationsPlugin.NotificationContent.self, from: json)
+  else { return nil }
+  return (content, try? JSONDecoder().decode(TokamakNotificationsPlugin.Trigger.self, from: json))
+}
+
+/// `content` and `trigger`'s fields as one JSON object, as the page gives a scheduled
+/// notification.
+private func json(
+  _ content: TokamakNotificationsPlugin.NotificationContent,
+  _ trigger: TokamakNotificationsPlugin.Trigger?
+) throws(TokamakPluginError) -> String {
+  do {
+    var fields = try object(content)
+    if let trigger { fields.merge(try object(trigger)) { _, field in field } }
+    return String(decoding: try JSONSerialization.data(withJSONObject: fields), as: UTF8.self)
+  } catch {
     throw typeError("a notification's fields must be JSON")
   }
-  return String(decoding: data, as: UTF8.self)
+}
+
+private func object(_ value: some Encodable) throws -> [String: Any] {
+  try JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as? [String: Any] ?? [:]
 }
 
 private func typeError(_ message: String) -> TokamakPluginError {

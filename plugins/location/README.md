@@ -52,7 +52,7 @@ default. The timeout starts once the user allows location. Android takes
 positions from its fused provider at high accuracy, which combines GPS with
 Wi-Fi and cell signals.
 
-`watchPosition()` returns a byte stream of JSON positions. `decodeValues<Position>`
+`watchPosition()` resolves to a byte stream of JSON positions. `decodeValues<Position>`
 decodes them. Cancelling the stream ends the native watch; errors terminate it.
 
 Both ask for in-use permission when the user has not answered. Off screen
@@ -134,7 +134,7 @@ event:
 |---|---|
 | `onLocationUpdate` | `{ positions, stationary? }` from updates and significant changes. |
 | `onRegionTransition` | `{ id, transition, timestamp }`, where `transition` is `"enter"` or `"exit"`. |
-| `onVisit` | Apple only: `{ latitude, longitude, accuracy, arrival, departure }`, times in milliseconds or null when unknown. |
+| `onVisit` | Apple only: `{ latitude, longitude, accuracy, arrival, departure }`, times in milliseconds, absent when unknown. |
 | `onLocationError` | `{ name, message, id? }` when a background service fails, with the region's `id` when it concerns one. |
 
 In Doze, the idle state of an unplugged Android device left still with its

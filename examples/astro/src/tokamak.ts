@@ -12,10 +12,17 @@ import {
   onNotificationOpened,
   onPush,
 } from "@tokamakdev/plugin-notifications/events";
-import { getLifecycleStage, onResume, onStart, onSuspend } from "@tokamakdev/tok/events";
+import {
+  getLifecycleStage,
+  onResume,
+  onStart,
+  onSuspend,
+} from "@tokamakdev/tok/events";
 
 export default class Native extends TokamakEntrypoint {
-  lifecycleStage() { return getLifecycleStage(this.ctx); }
+  lifecycleStage() {
+    return getLifecycleStage(this.ctx);
+  }
 }
 
 /** Records an event in the EVENTS store, which the Events page lists. */
@@ -26,18 +33,31 @@ function record(env: Tokamak.Env, entry: string): Promise<void> {
 // Records each start, sets up notifications and location awareness, and, on
 // screen, where location first places the device.
 onStart(async (event, env, ctx) => {
-  ctx.waitUntil(record(env, event.foreground ? "start in the foreground" : "start in the background"));
+  ctx.waitUntil(
+    record(
+      env,
+      event.foreground ? "start in the foreground" : "start in the background",
+    ),
+  );
   ctx.waitUntil(setUpNotifications(env, ctx));
   // Long-term awareness: significant changes everywhere, and visits on Apple platforms.
   ctx.waitUntil(
-    location(ctx).setup({ significantChanges: true, visits: true }).catch((error: DOMException) =>
-      record(env, `location setup failed: ${error.name}`),
-    ),
+    location(ctx)
+      .setup({ significantChanges: true, visits: true })
+      .catch((error: DOMException) =>
+        record(env, `location setup failed: ${error.name}`),
+      ),
   );
+
   if ((await getLifecycleStage(ctx)) !== "foreground") return;
   try {
-    const { coords } = await location(ctx).getCurrentPosition({ timeout: 10_000 });
-    await record(env, `located at ${coords.latitude.toFixed(3)}, ${coords.longitude.toFixed(3)}`);
+    const { coords } = await location(ctx).getCurrentPosition({
+      timeout: 10_000,
+    });
+    await record(
+      env,
+      `located at ${coords.latitude.toFixed(3)}, ${coords.longitude.toFixed(3)}`,
+    );
   } catch (error) {
     await record(env, `location failed: ${String(error)}`);
   }
@@ -53,44 +73,79 @@ onSuspend((_event, env, ctx) => {
 // those the system launches the app for.
 onLocationUpdate(({ positions, stationary }, env) => {
   const last = positions.at(-1)?.coords;
-  const at = last ? ` at ${last.latitude.toFixed(3)}, ${last.longitude.toFixed(3)}` : "";
-  return record(env, `location update of ${String(positions.length)}${at}${stationary ? ", stationary" : ""}`);
+  const at = last
+    ? ` at ${last.latitude.toFixed(3)}, ${last.longitude.toFixed(3)}`
+    : "";
+  return record(
+    env,
+    `location update of ${String(positions.length)}${at}${stationary ? ", stationary" : ""}`,
+  );
 });
-onRegionTransition(({ id, transition }, env) => record(env, `region ${id}: ${transition}`));
+onRegionTransition(({ id, transition }, env) =>
+  record(env, `region ${id}: ${transition}`),
+);
 onVisit(({ latitude, longitude, departure }, env) =>
-  record(env, `visit at ${latitude.toFixed(3)}, ${longitude.toFixed(3)}${departure === null ? "" : ", departed"}`),
+  record(
+    env,
+    `visit at ${latitude.toFixed(3)}, ${longitude.toFixed(3)}${departure === null ? "" : ", departed"}`,
+  ),
 );
 onLocationError(({ name, message, id }, env) =>
-  record(env, `location failure${id === undefined ? "" : ` of ${id}`}: ${name}: ${message}`),
+  record(
+    env,
+    `location failure${id === undefined ? "" : ` of ${id}`}: ${name}: ${message}`,
+  ),
 );
 
 // Records each data-only push message, and shows a notification of its data.
 onPush(async (message, env) => {
   await record(env, `push message ${message.id}`);
-  return { id: `push-${message.id}`, title: "Push message", body: JSON.stringify(message.data) };
+  return {
+    id: `push-${message.id}`,
+    title: "Push message",
+    body: JSON.stringify(message.data),
+  };
 });
 onNotificationOpened((opened, env, ctx) => {
   const action = opened.action === null ? "" : ` with ${opened.action}`;
   const input = opened.input === null ? "" : `: ${opened.input}`;
-  ctx.waitUntil(record(env, `opened ${opened.source} notification ${opened.id}${action}${input}`));
+  ctx.waitUntil(
+    record(
+      env,
+      `opened ${opened.source} notification ${opened.id}${action}${input}`,
+    ),
+  );
 });
 onNotificationDismissed((dismissed, env, ctx) => {
-  ctx.waitUntil(record(env, `dismissed ${dismissed.source} notification ${dismissed.id}`));
+  ctx.waitUntil(
+    record(env, `dismissed ${dismissed.source} notification ${dismissed.id}`),
+  );
 });
 
 /**
  * Configures notifications on every platform at each start, recording channel settings Android
  * kept. Pass text in the user's language: the system shows these names and titles.
  */
-async function setUpNotifications(env: Tokamak.Env, ctx: TokamakContext): Promise<void> {
+async function setUpNotifications(
+  env: Tokamak.Env,
+  ctx: TokamakContext,
+): Promise<void> {
   const { unapplied } = await notifications(ctx).setup({
     categories: [
       {
         id: "message",
         actions: [
-          { id: "reply", title: "Reply", input: { button: "Send", placeholder: "Message" } },
+          {
+            id: "reply",
+            title: "Reply",
+            input: { button: "Send", placeholder: "Message" },
+          },
           // Wearables and the web show the icon.
-          { id: "read", title: "Mark as read", icon: "/notifications/icon.png" },
+          {
+            id: "read",
+            title: "Mark as read",
+            icon: "/notifications/icon.png",
+          },
           { id: "open", title: "Open", foreground: true },
         ],
         hiddenPreviewsBodyPlaceholder: "New message",
@@ -98,7 +153,10 @@ async function setUpNotifications(env: Tokamak.Env, ctx: TokamakContext): Promis
       },
     ],
     showInForeground: true,
-    defaultChannel: { name: "General", description: "Notifications from the example" },
+    defaultChannel: {
+      name: "General",
+      description: "Notifications from the example",
+    },
     channelGroups: [{ id: "chats", name: "Chats" }],
     channels: [
       {
@@ -108,7 +166,13 @@ async function setUpNotifications(env: Tokamak.Env, ctx: TokamakContext): Promis
         group: "chats",
         importance: "high",
       },
-      { id: "chimes", name: "Chimes", description: "Notifications with a chime", importance: "high", sound: "chime.wav" },
+      {
+        id: "chimes",
+        name: "Chimes",
+        description: "Notifications with a chime",
+        importance: "high",
+        sound: "chime.wav",
+      },
     ],
   });
   for (const { channel, fields } of unapplied) {

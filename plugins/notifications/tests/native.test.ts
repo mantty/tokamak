@@ -24,62 +24,108 @@ const setupConfig = {
   channels: [{ id: "messages", name: "Messages", group: "chats", importance: "high" as const }],
 };
 
+/** An operation, and the method and arguments of the request it sends. */
+type Call = [() => Promise<unknown>, string, unknown];
+
+/** Runs each operation, checking the request it sends and that it resolves to the native reply. */
+async function assertCalls(native: ReturnType<typeof connectNative>, cases: readonly Call[]): Promise<void> {
+  for (const [operation, method, arguments_] of cases) {
+    const result = operation();
+    assert.deepEqual(native.lastRequest(), { type: "call", plugin: "notifications", method, arguments: arguments_ });
+    native.respond({ value: "native result" });
+    assert.equal(await result, "native result");
+  }
+}
+
 void test("calls the native plugin with each operation's arguments", async () => {
   const native = connectNative();
   const notifications = createApi(native.ctx);
-  const cases: [() => Promise<unknown>, string, unknown][] = [
-    [() => notifications.permission(), "permission", null],
+  const hourly = { id: "hourly", title: "Stretch", every: { hours: 1 } };
+  const monday = { id: "monday", title: "Plan", on: { weekday: 2, hour: 9 }, repeats: true };
+  const download = { id: "download", title: "Done", data: { file: "a.pdf" } };
+  const reminder = { id: "reminder", title: "Check in", at: 1_800_000_000_000 };
+  const cases: Call[] = [
+    [() => notifications.permission(), "permission", {}],
     [() => notifications.requestPermission(), "requestPermission", {}],
     [
       () => notifications.requestPermission({ provisional: true, criticalAlert: true }),
       "requestPermission",
-      { provisional: true, criticalAlert: true },
+      { options: { provisional: true, criticalAlert: true } },
     ],
-    [() => notifications.settings(), "settings", null],
+    [() => notifications.settings(), "settings", {}],
     [() => notifications.setBadge(3), "setBadge", { count: 3 }],
     [() => notifications.openSettings(), "openSettings", {}],
-    [() => notifications.openSettings({ channel: "messages" }), "openSettings", { channel: "messages" }],
-    [() => notifications.subscribeToTopic("news"), "subscribeToTopic", { topic: "news" }],
-    [() => notifications.unsubscribeFromTopic("news"), "unsubscribeFromTopic", { topic: "news" }],
+    // A scheduled notification's trigger travels apart from its content.
     [
-      () => notifications.schedule({ id: "hourly", title: "Stretch", every: { hours: 1 } }),
+      () => notifications.schedule(hourly),
       "schedule",
-      { id: "hourly", title: "Stretch", every: { hours: 1 } },
+      { notification: { id: "hourly", title: "Stretch" }, trigger: { every: { hours: 1 } } },
     ],
     [
-      () => notifications.schedule({ id: "monday", title: "Plan", on: { weekday: 2, hour: 9 }, repeats: true }),
+      () => notifications.schedule(monday),
       "schedule",
-      { id: "monday", title: "Plan", on: { weekday: 2, hour: 9 }, repeats: true },
+      { notification: { id: "monday", title: "Plan" }, trigger: { on: { weekday: 2, hour: 9 }, repeats: true } },
     ],
+    [() => notifications.show(download), "show", { notification: download }],
     [
-      () => notifications.show({ id: "download", title: "Done", data: { file: "a.pdf" } }),
-      "show",
-      { id: "download", title: "Done", data: { file: "a.pdf" } },
-    ],
-    [
-      () => notifications.schedule({ id: "reminder", title: "Check in", at: 1_800_000_000_000 }),
+      () => notifications.schedule(reminder),
       "schedule",
-      { id: "reminder", title: "Check in", at: 1_800_000_000_000 },
+      { notification: { id: "reminder", title: "Check in" }, trigger: { at: 1_800_000_000_000 } },
     ],
-    [() => notifications.getScheduled(), "getScheduled", null],
-    [() => notifications.getDelivered(), "getDelivered", null],
+    [() => notifications.getDelivered(), "getDelivered", {}],
     [() => notifications.remove("reminder"), "remove", { id: "reminder" }],
-    [() => notifications.getSubscription(), "getSubscription", null],
-    [() => notifications.unsubscribe(), "unsubscribe", null],
-    [() => notifications.setup(setupConfig), "setup", setupConfig],
+    [() => notifications.subscribe(), "subscribeToPush", {}],
+    [() => notifications.getSubscription(), "getSubscription", {}],
+    [() => notifications.unsubscribe(), "unsubscribe", {}],
+    [() => notifications.setup(setupConfig), "setup", { config: setupConfig }],
   ];
 
-  for (const [operation, method, arguments_] of cases) {
-    const result = operation();
-    assert.deepEqual(native.lastRequest(), {
-      type: "call",
-      plugin: "notifications",
-      method,
-      arguments: arguments_,
-    });
-    native.respond({ value: "native result" });
-    assert.equal(await result, "native result");
-  }
+  await assertCalls(native, cases);
+});
+
+void test("returns each scheduled notification with its trigger's fields", async () => {
+  const native = connectNative();
+  const scheduled = createApi(native.ctx).getScheduled();
+  assert.equal(native.lastRequest().method, "getScheduled");
+  native.respond({ value: [{ content: { id: "reminder", title: "Check in" }, trigger: { at: 1 } }] });
+  assert.deepEqual(await scheduled, [{ id: "reminder", title: "Check in", at: 1 }]);
+});
+
+void test("schedules region triggers on Apple platforms only", async () => {
+  const region = { latitude: 51.5, longitude: -0.1, radius: 100 };
+  const home = { id: "home", title: "Home", region, repeats: true };
+  const native = connectNative("ios");
+  const scheduled = createApi(native.ctx).schedule(home);
+  assert.deepEqual(native.lastRequest().arguments, {
+    notification: { id: "home", title: "Home" },
+    trigger: { region, repeats: true },
+  });
+  native.respond({ value: null });
+  await scheduled;
+  await assert.rejects(createApi(connectNative("android").ctx).schedule(home), { name: "NotSupportedError" });
+});
+
+void test("calls Android's own methods on Android", async () => {
+  const native = connectNative("android");
+  const notifications = createApi(native.ctx);
+  const cases: Call[] = [
+    [() => notifications.openSettings({ channel: "messages" }), "openSettings", { options: { channel: "messages" } }],
+    [() => notifications.subscribeToTopic("news"), "subscribeToTopic", { topic: "news" }],
+    [() => notifications.unsubscribeFromTopic("news"), "unsubscribeFromTopic", { topic: "news" }],
+  ];
+  await assertCalls(native, cases);
+  await assert.rejects(notifications.setBadge(1), { name: "NotSupportedError" });
+});
+
+void test("reports which operations the platform implements", () => {
+  const availability = { notifications: { setBadge: ["ios", "macos"], subscribeToTopic: ["android"] } } as const;
+  const { capabilities } = createApi(connectNative("android", availability).ctx);
+  assert.deepEqual(capabilities, { setBadge: false, subscribeToTopic: true });
+});
+
+void test("rejects Android's topics on Apple platforms", async () => {
+  const notifications = createApi(connectNative("ios").ctx);
+  await assert.rejects(notifications.subscribeToTopic("news"), { name: "NotSupportedError" });
 });
 
 void test("passes every notification field to the native plugin", async () => {
@@ -97,18 +143,18 @@ void test("passes every notification field to the native plugin", async () => {
   } as const;
 
   const shown = notifications.show(notification);
-  assert.deepEqual(native.lastRequest().arguments, notification);
+  assert.deepEqual(native.lastRequest().arguments, { notification });
   native.respond({ value: null });
   await shown;
 });
 
-void test("passes subscription options to the native endpoint", async () => {
-  const native = connectNative();
+void test("subscribes to push without the Web Push options", async () => {
+  const native = connectNative("android");
   const notifications = createApi(native.ctx);
   const subscription: Subscription = { service: "fcm", fid: "fid" };
 
   const subscribed = notifications.subscribe({ applicationServerKey: "web only" });
-  assert.deepEqual(native.lastRequest().arguments, { applicationServerKey: "web only" });
+  assert.deepEqual(native.lastRequest(), { type: "call", plugin: "notifications", method: "subscribeToPush", arguments: {} });
   native.respond({ value: subscription });
 
   assert.deepEqual(await subscribed, subscription);

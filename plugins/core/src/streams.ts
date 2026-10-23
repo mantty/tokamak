@@ -1,8 +1,8 @@
 import { encodeJson } from "./codec.js";
 import type { Overflow } from "./context.js";
 
-/** Starts a push source, returning or resolving to the function that stops it. */
-type Source<T> = (next: (value: T) => void, error: (error: unknown) => void, close: () => void) => (() => void) | Promise<() => void>;
+/** Starts a push source, returning the function that stops it. */
+type Source<T> = (next: (value: T) => void, error: (error: unknown) => void, close: () => void) => () => void;
 
 /** A byte stream of newline-delimited JSON values of type `T`, which `decodeValues` reads. */
 export type JsonStream<T> = ReadableStream<Uint8Array> & {
@@ -44,9 +44,10 @@ export function byteStream(subscribe: Source<Uint8Array>, overflow: Overflow = "
     wake();
   };
   return new ReadableStream<Uint8Array>({
-    async start() {
+    start() {
       try {
-        stop = await subscribe(push, finish, () => { finish(); });
+        stop = subscribe(push, finish, () => { finish(); });
+        // A source that ended while it subscribed stops now.
         if (end) stop();
       } catch (error) { finish(error); }
     },

@@ -1,13 +1,8 @@
-import { defineEvent } from "@tokamakdev/plugin/events";
+import type { Listener } from "@tokamakdev/plugin/events";
 
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace -- events are declared by merging into Tokamak.Events.
-  namespace Tokamak {
-    interface Events {
-      "{{id}}.echoed": { readonly message: string };
-    }
-  }
+{{namespaces}}
+
+/** Receives each message the native implementation echoed, from each family's event. */
+export function onEchoed(listener: Listener<{{family}}.Echo>): void {
+{{listeners}}
 }
-
-/** Receives each message the native implementation echoed. */
-export const onEchoed = defineEvent("{{id}}.echoed");

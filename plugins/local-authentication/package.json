@@ -8,7 +8,9 @@
   },
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./apple": "./src/apple.generated.ts",
+    "./android": "./src/android.generated.ts"
   },
   "peerDependencies": {
     "@tokamakdev/plugin": "^0.1.0"

@@ -1,8 +1,12 @@
 import type { JsonValue } from "@tokamakdev/plugin";
+
+// Notification content and configuration reach native code as JSON documents. They are type
+// aliases, not interfaces, so that TypeScript checks them against `JsonValue`.
+
 /** Whether the app may show notifications. */
 export type Permission = "granted" | "denied" | "prompt";
 
-export interface NotificationContent {
+export type NotificationContent = {
   /** Showing or scheduling another notification with the same id replaces this one. */
   readonly id: string;
   readonly title: string;
@@ -51,10 +55,10 @@ export interface NotificationContent {
   readonly color?: string;
   /** Android only. */
   readonly style?: AndroidStyle;
-  /** Android only: a progress bar, which `indeterminate` animates without a value. */
+  /** Android only: a progress bar, which an `indeterminate` of true animates without a value. */
   readonly progress?:
     | { readonly current: number; readonly max: number }
-    | { readonly indeterminate: true };
+    | { readonly indeterminate: boolean };
   /** Android only: keeps the notification from being dismissed; from Android 14 the user can still swipe it away on an unlocked device. */
   readonly ongoing?: boolean;
   /** Android only: whether opening the notification removes it; true by default. */
@@ -90,7 +94,7 @@ export interface NotificationContent {
   readonly lang?: string;
   /** Web only: the URL of a small monochrome image that represents the app. */
   readonly badgeImage?: string;
-}
+};
 
 /** An Apple notification sound. */
 export type Sound =
@@ -105,7 +109,7 @@ export type Sound =
     };
 
 /** A file Apple platforms show with a notification. */
-export interface Attachment {
+export type Attachment = {
   /**
    * An `https` URL or a path the app serves: an image up to 10 MB, audio up to 5 MB or a movie up
    * to 50 MB.
@@ -121,7 +125,7 @@ export interface Attachment {
   };
   /** The time, in seconds, of the frame of a movie or animated image the thumbnail shows. */
   readonly thumbnailTime?: number;
-}
+};
 
 /** An Android notification style; Android shows the collapsed notification without it. */
 export type AndroidStyle =
@@ -208,15 +212,15 @@ export type Trigger =
     };
 
 /** A repeating interval of at least 60 seconds, the sum of its parts. */
-export interface Interval {
+export type Interval = {
   readonly seconds?: number;
   readonly minutes?: number;
   readonly hours?: number;
   readonly days?: number;
-}
+};
 
 /** Parts of a local date and time; the parts left out match any value. */
-export interface DateMatch {
+export type DateMatch = {
   readonly year?: number;
   /** 1 for January to 12. */
   readonly month?: number;
@@ -226,10 +230,10 @@ export interface DateMatch {
   readonly hour?: number;
   readonly minute?: number;
   readonly second?: number;
-}
+};
 
 /** A circle on the Earth's surface. */
-export interface Region {
+export type Region = {
   readonly latitude: number;
   readonly longitude: number;
   /** In metres. */
@@ -238,15 +242,15 @@ export interface Region {
   readonly onEntry?: boolean;
   /** Whether leaving the region shows the notification; false by default. */
   readonly onExit?: boolean;
-}
+};
 
 export type ScheduledNotification = NotificationContent & Trigger;
 
 /** A received push message. A data-only message has no title or body. */
 export interface Message<Data extends object = Record<string, JsonValue>> {
   readonly id: string;
-  readonly title: string | null;
-  readonly body: string | null;
+  readonly title?: string;
+  readonly body?: string;
   readonly data: Data;
 }
 
@@ -255,14 +259,14 @@ export interface DismissedNotification extends Message {
 }
 
 export interface OpenedNotification extends DismissedNotification {
-  /** The action the user chose, or null for the notification itself. */
-  readonly action: string | null;
-  /** The text the user typed into the action, or null. */
-  readonly input: string | null;
+  /** The action the user chose; none for the notification itself. */
+  readonly action?: string;
+  /** The text the user typed into the action. */
+  readonly input?: string;
 }
 
 /** An action shown with each notification of a category. */
-export interface NotificationAction {
+export type NotificationAction = {
   readonly id: string;
   readonly title: string;
   /**
@@ -287,10 +291,10 @@ export interface NotificationAction {
    * shows it on wearables only.
    */
   readonly icon?: string;
-}
+};
 
 /** The actions of the notifications that name the category, with Apple's options for them. */
-export interface Category {
+export type Category = {
   readonly id: string;
   readonly actions: readonly NotificationAction[];
   /** Apple only: replaces the body while previews are hidden. */
@@ -305,21 +309,21 @@ export interface Category {
   readonly customDismissAction?: boolean;
   /** iOS only: shows the category's notifications in CarPlay. */
   readonly allowInCarPlay?: boolean;
-}
+};
 
 /** The parts of a notification Apple platforms show while the app is on screen. */
-export interface ForegroundPresentation {
+export type ForegroundPresentation = {
   readonly banner?: boolean;
   readonly list?: boolean;
   readonly sound?: boolean;
   readonly badge?: boolean;
-}
+};
 
 /** An Android notification channel's importance. */
 export type Importance = "none" | "min" | "low" | "default" | "high";
 
 /** An Android notification channel's settings. */
-export interface ChannelSettings {
+export type ChannelSettings = {
   readonly name: string;
   readonly description?: string;
   /** A `channelGroups` id. */
@@ -335,23 +339,23 @@ export interface ChannelSettings {
   readonly showBadge?: boolean;
   /** Takes effect only for apps the user gave Do Not Disturb access. */
   readonly bypassDnd?: boolean;
-}
+};
 
-export interface Channel extends ChannelSettings {
+export type Channel = ChannelSettings & {
   readonly id: string;
-}
+};
 
-export interface ChannelGroup {
+export type ChannelGroup = {
   readonly id: string;
   readonly name: string;
   readonly description?: string;
-}
+};
 
 /**
  * The notification configuration of every platform; each ignores the keys of others. `setup`
  * applies the whole of it, removing what an earlier configuration had and this one leaves out.
  */
-export interface SetupConfig {
+export type SetupConfig = {
   readonly categories?: readonly Category[];
   /**
    * Whether notifications show while the app is on screen, true by default. Apple platforms show
@@ -364,7 +368,7 @@ export interface SetupConfig {
   readonly channelGroups?: readonly ChannelGroup[];
   /** Android only. */
   readonly channels?: readonly Channel[];
-}
+};
 
 /**
  * Settings of an existing Android channel `setup` could not change: Android keeps most of them
@@ -466,26 +470,11 @@ export interface OpenSettingsOptions {
 
 /** The user asked for the app's notification settings from the system's. */
 export interface OpenSettingsEvent {
-  /** Android only: the channel whose settings the user was in, or null. */
-  readonly channel: string | null;
-  /** The id of the notification the user came from, or null. */
-  readonly notification: string | null;
+  /** Android only: the channel whose settings the user was in. */
+  readonly channel?: string;
+  /** The id of the notification the user came from. */
+  readonly notification?: string;
 }
 
 export type Listener<T> = (value: T) => void;
 export type ErrorListener = (error: DOMException) => void;
-
-
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace -- events are declared by merging into Tokamak.Events.
-  namespace Tokamak {
-    interface Events {
-      "notifications.push": Message;
-      "notifications.opened": OpenedNotification;
-      "notifications.dismissed": DismissedNotification;
-    }
-    interface EventReplies {
-      "notifications.push": NotificationContent;
-    }
-  }
-}

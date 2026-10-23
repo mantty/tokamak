@@ -150,7 +150,7 @@ fn install_android_plugin(root: &Path) -> TestResult<PathBuf> {
         "schemaVersion": 1,
         "id": "alerts",
         "platforms": {
-            "android": { "class": "test.alerts.Plugin", "sources": ["android/Plugin.kt"] },
+            "android": { "class": "test.alerts.Plugin" },
         },
     });
     fs::write(plugin.join("tokamak-plugin.json"), manifest.to_string())?;
@@ -1016,7 +1016,7 @@ fn stages_the_plugins_installed_above_a_relative_project_directory() -> TestResu
     assert!(
         fs::read_to_string(plugin.join("plist"))?.contains("<key>NSLocationUsageDescription</key>")
     );
-    assert!(plugin.join("sources/1-LocationPlugin.swift").is_file());
+    assert!(plugin.join("native/LocationPlugin.swift").is_file());
     Ok(())
 }
 
@@ -1087,8 +1087,8 @@ fn stages_the_location_plugin_s_generated_android_manifest() -> TestResult {
     Ok(())
 }
 
-/// Install the `alerts` plugin, whose build script adds the Swift files in its
-/// `sounds` setting's directory to its macOS sources.
+/// Install the `alerts` plugin, whose build script adds the files in its
+/// `sounds` setting's directory to its macOS resources.
 #[cfg(unix)]
 fn install_plugin_with_settings(root: &Path) -> TestResult {
     fs::write(
@@ -1113,11 +1113,11 @@ fn install_plugin_with_settings(root: &Path) -> TestResult {
         r#"
         import { readdirSync, readFileSync, writeFileSync } from "node:fs";
         const { settings, output } = JSON.parse(readFileSync(0, "utf8"));
-        const sources = readdirSync(settings.sounds).map((name) => `${settings.sounds}/${name}`);
-        writeFileSync(`${output}/Generated.swift`, "// generated");
-        sources.push(`${output}/Generated.swift`);
-        console.error(`staged ${sources.length} sources`);
-        console.log(JSON.stringify({ sources }));
+        const resources = readdirSync(settings.sounds).map((name) => `${settings.sounds}/${name}`);
+        writeFileSync(`${output}/Generated.caf`, "generated");
+        resources.push(`${output}/Generated.caf`);
+        console.error(`staged ${resources.length} resources`);
+        console.log(JSON.stringify({ resources }));
         "#,
     )?;
     Ok(())
@@ -1129,23 +1129,23 @@ fn stages_what_a_plugin_s_build_script_generates_and_prints_its_notices() -> Tes
     let (_temporary, project, platform_pack) = create_inputs("macos-arm64")?;
     install_plugin_with_settings(&project)?;
     fs::create_dir_all(project.join("sounds"))?;
-    fs::write(project.join("sounds/Chime.swift"), "// chime")?;
+    fs::write(project.join("sounds/Chime.caf"), "chime")?;
 
     build_command("macos", &project, &platform_pack)?
         .arg("--alerts-macos-sounds")
         .arg(project.join("sounds"))
         .assert()
         .success()
-        .stderr(contains("warning: plugin 'alerts': staged 2 sources\n"));
+        .stderr(contains("warning: plugin 'alerts': staged 2 resources\n"));
 
     let plugin = project.join("build/macos/demo-app.app/plugins/alerts");
     assert_eq!(
-        fs::read_to_string(plugin.join("sources/0-Chime.swift"))?,
-        "// chime"
+        fs::read_to_string(plugin.join("resources/0-Chime.caf"))?,
+        "chime"
     );
     assert_eq!(
-        fs::read_to_string(plugin.join("sources/1-Generated.swift"))?,
-        "// generated"
+        fs::read_to_string(plugin.join("resources/1-Generated.caf"))?,
+        "generated"
     );
     Ok(())
 }

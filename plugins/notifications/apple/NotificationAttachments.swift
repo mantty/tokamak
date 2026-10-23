@@ -5,18 +5,22 @@ import UserNotifications
 
 /// Loads a notification's attachments from `https` URLs or paths the app serves.
 struct TokamakNotificationAttachments {
+  typealias Attachment = TokamakNotificationsPlugin.Attachment
+
   let host: TokamakHost
 
   /// Loads the attachments of a notification's `image` and `attachments` in parallel, then calls
   /// `completion` on the main thread with them in order, leaving out those that do not load within
   /// `timeout` or that Apple rejects. Call it on the main thread.
   func load(
-    _ fields: [String: Any], timeout: TimeInterval,
+    _ content: TokamakNotificationsPlugin.NotificationContent, timeout: TimeInterval,
     completion: @escaping ([UNNotificationAttachment]) -> Void
   ) {
-    var specs = fields["attachments"] as? [[String: Any]] ?? []
-    if let image = fields["image"] as? String {
-      specs.insert(["url": image], at: 0)
+    var specs = content.attachments ?? []
+    if let image = content.image {
+      specs.insert(
+        Attachment(url: image, hideThumbnail: nil, thumbnailClippingRect: nil, thumbnailTime: nil),
+        at: 0)
     }
     var loaded = [UNNotificationAttachment?](repeating: nil, count: specs.count)
     let group = DispatchGroup()
@@ -35,10 +39,10 @@ struct TokamakNotificationAttachments {
   /// Calls `completion` off the main thread with the attachment `spec` describes, or nil when it
   /// does not load within `timeout` or Apple rejects it.
   private func attachment(
-    _ spec: [String: Any], timeout: TimeInterval,
+    _ spec: Attachment, timeout: TimeInterval,
     completion: @escaping (UNNotificationAttachment?) -> Void
   ) {
-    let source = spec["url"] as? String ?? ""
+    let source = spec.url
     data(source, timeout: timeout) { result in
       do {
         let (data, fileExtension) = try result.get()
@@ -54,7 +58,7 @@ struct TokamakNotificationAttachments {
   /// adds the notification. Apple reads the type from the file's extension: `fileExtension`, or
   /// for an image that names no type, its own.
   private static func attachment(
-    _ data: Data, fileExtension: String?, spec: [String: Any]
+    _ data: Data, fileExtension: String?, spec: Attachment
   ) throws -> UNNotificationAttachment {
     let name = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let file =
@@ -120,19 +124,17 @@ struct TokamakNotificationAttachments {
     url.map(\.pathExtension).flatMap { $0.isEmpty ? nil : $0 }
   }
 
-  private static func options(_ spec: [String: Any]) -> [AnyHashable: Any] {
+  private static func options(_ spec: Attachment) -> [AnyHashable: Any] {
     var options: [AnyHashable: Any] = [:]
-    if let hidden = spec["hideThumbnail"] as? Bool {
+    if let hidden = spec.hideThumbnail {
       options[UNNotificationAttachmentOptionsThumbnailHiddenKey] = hidden
     }
-    if let rect = spec["thumbnailClippingRect"] as? [String: Double] {
+    if let rect = spec.thumbnailClippingRect {
       options[UNNotificationAttachmentOptionsThumbnailClippingRectKey] =
-        CGRect(
-          x: rect["x"] ?? 0, y: rect["y"] ?? 0, width: rect["width"] ?? 1,
-          height: rect["height"] ?? 1
-        ).dictionaryRepresentation
+        CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height)
+        .dictionaryRepresentation
     }
-    if let time = spec["thumbnailTime"] as? Double {
+    if let time = spec.thumbnailTime {
       options[UNNotificationAttachmentOptionsThumbnailTimeKey] = time
     }
     return options

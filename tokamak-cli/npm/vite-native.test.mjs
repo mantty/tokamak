@@ -24,7 +24,7 @@ function project(t, cloudflareOptions = {}) {
   fs.writeFileSync(path.join(root, "src/main.ts"), `export default {
     async fetch(request, env) {
       if (new URL(request.url).pathname === "/isolation") {
-        return Response.json({ bridge: typeof globalThis[Symbol.for("tokamak.native")], loaded: globalThis.nativeLoaded ?? false });
+        return Response.json({ bridge: typeof globalThis[Symbol.for("tokamak.native")], loaded: globalThis.nativeLoaded ?? false, platform: globalThis.__tokamak_platform });
       }
       return Response.json(await env.TOKAMAK.describe());
     }
@@ -38,14 +38,14 @@ function project(t, cloudflareOptions = {}) {
       label: env.LABEL, foreground: event.foreground, revision: "first",
       stage: JSON.parse(new TextDecoder().decode(await ctx[nativeConnection].call("tokamak", "lifecycleStage", new Uint8Array()))),
     }));`);
-  fs.writeFileSync(path.join(root, "src/tokamak.ts"), `import { TokamakEntrypoint, type TokamakEvent } from ${JSON.stringify(sdk)};
+  fs.writeFileSync(path.join(root, "src/tokamak.ts"), `import { TokamakEntrypoint, platform as loadedOn, type TokamakEvent } from ${JSON.stringify(sdk)};
     import { nativeConnection } from ${JSON.stringify(context)};
     import "./listeners";
     globalThis.nativeLoaded = true;
     export default class Native extends TokamakEntrypoint {
-      async describe(): Promise<{ label: string; stage: string; platform: string | undefined }> {
+      async describe(): Promise<{ label: string; stage: string; platform: string | undefined; loadedOn: string | undefined }> {
         const stage = JSON.parse(new TextDecoder().decode(await this.ctx[nativeConnection].call("tokamak", "lifecycleStage", new Uint8Array())));
-        return { label: this.env.LABEL, stage: stage as string, platform: this.ctx.platform };
+        return { label: this.env.LABEL, stage: stage as string, platform: this.ctx.platform, loadedOn };
       }
     }`);
   const output = path.join(root, ".tokamak/vite");
@@ -168,8 +168,8 @@ test("development routes device calls and reloaded events through the native wor
     socket.send(encodeDevice({ type: "event", id: 100, name, event: { foreground: false } }));
     return result;
   };
-  assert.deepEqual(await (await fetch(report.url + "isolation")).json(), { bridge: "undefined", loaded: false });
-  assert.deepEqual(await (await fetch(report.url)).json(), { label: "configured", stage: "background", platform: "android" });
+  assert.deepEqual(await (await fetch(report.url + "isolation")).json(), { bridge: "undefined", loaded: false, platform: "android" });
+  assert.deepEqual(await (await fetch(report.url)).json(), { label: "configured", stage: "background", platform: "android", loadedOn: "android" });
   for (const capabilities of [
     await fetch(report.url + "_tokamak/capabilities.js"),
     await fetch(`http://127.0.0.1:${report.socketPort}/_tokamak/capabilities.js`, { headers: { "x-tokamak-session": "native-test" } }),

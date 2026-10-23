@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 2,
+  "id": "example",
+  "platforms": {
+    "android": {
+      "class": "com.tokamak.plugins.example.TokamakExamplePlugin"
+    }
+  }
+}

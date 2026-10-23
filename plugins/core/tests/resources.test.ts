@@ -3,20 +3,19 @@ import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
 import v8 from "node:v8";
 import vm from "node:vm";
-import { Plugin, type NativeReference, type TokamakContext } from "../src/index.js";
+import { NativeEndpoint, type NativeReference, type TokamakContext } from "../src/index.js";
 import { connectNative, type FakeNativeTransport } from "../src/testing.js";
 
-class Producer extends Plugin {
-  constructor(ctx: TokamakContext) { super(ctx, "producer"); }
-  frame(): Promise<NativeReference> { return this.resource("frame"); }
-}
-class Consumer extends Plugin {
-  constructor(ctx: TokamakContext) { super(ctx, "consumer"); }
-  encode(frame: NativeReference): Promise<number> { return this.call("encode", { frame: this.reference(frame) }); }
-}
+const producer = (ctx: TokamakContext) => ({
+  frame: (): Promise<NativeReference> => new NativeEndpoint(ctx, "producer", ["ios"]).resource("frame"),
+});
+const consumer = (ctx: TokamakContext) => {
+  const endpoint = new NativeEndpoint(ctx, "consumer", ["ios"]);
+  return { encode: (frame: NativeReference): Promise<number> => endpoint.call("encode", { frame: endpoint.reference(frame) }) };
+};
 
 async function acquire(native: FakeNativeTransport, id = "frame-1"): Promise<NativeReference> {
-  const pending = new Producer(native.ctx).frame();
+  const pending = producer(native.ctx).frame();
   native.respond({ value: id }, false);
   return pending;
 }
@@ -26,8 +25,8 @@ const cancellations = (native: FakeNativeTransport) => native.sent.filter((messa
 void test("a native reference passes its ID between plugins and reads bytes only on request", async () => {
   const native = connectNative();
   const frame = await acquire(native);
-  assert.deepEqual(native.lastRequest(), { type: "subscribe", plugin: "producer", method: "frame", arguments: null });
-  const encoded = new Consumer(native.ctx).encode(frame);
+  assert.deepEqual(native.lastRequest(), { type: "subscribe", plugin: "producer", method: "frame", arguments: {} });
+  const encoded = consumer(native.ctx).encode(frame);
   assert.deepEqual(native.lastRequest(), { type: "call", plugin: "consumer", method: "encode", arguments: { frame: "frame-1" } });
   native.respond({ value: 512 });
   assert.equal(await encoded, 512);
@@ -43,29 +42,29 @@ void test("closing releases the native object once and later use fails", async (
   frame.close();
   frame.close();
   assert.equal(cancellations(native), 1);
-  assert.throws(() => new Consumer(native.ctx).encode(frame), { name: "InvalidStateError" });
+  assert.throws(() => consumer(native.ctx).encode(frame), { name: "InvalidStateError" });
   await assert.rejects(frame.bytes(), { name: "InvalidStateError" });
 });
 
 void test("a native reference cannot be used by another invocation", async () => {
   const frame = await acquire(connectNative());
-  assert.throws(() => new Consumer(connectNative().ctx).encode(frame), { name: "InvalidStateError", message: /another invocation/ });
+  assert.throws(() => consumer(connectNative().ctx).encode(frame), { name: "InvalidStateError", message: /another invocation/ });
 });
 
 void test("acquisition failures reject and release the subscription", async () => {
   const failed = connectNative();
-  const denied = new Producer(failed.ctx).frame();
+  const denied = producer(failed.ctx).frame();
   failed.respond({ error: { name: "NotAllowedError", message: "Permission denied" } }, false);
   await assert.rejects(denied, { name: "NotAllowedError" });
   assert.equal(cancellations(failed), 1);
 
   const ended = connectNative();
-  const released = new Producer(ended.ctx).frame();
+  const released = producer(ended.ctx).frame();
   ended.respond({ value: "frame-1" }, true);
   await assert.rejects(released, { name: "InvalidStateError", message: /not retained/ });
 
   const malformed = connectNative();
-  const unreadable = new Producer(malformed.ctx).frame();
+  const unreadable = producer(malformed.ctx).frame();
   malformed.respondBytes(new Uint8Array([255]), false);
   await assert.rejects(unreadable, TypeError);
   assert.equal(cancellations(malformed), 1);

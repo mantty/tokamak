@@ -1,4 +1,5 @@
 import { capabilitiesFor, type Availability, type NativePlatform } from "./capabilities.mjs";
+import { platformGlobal } from "./native-protocol.mjs";
 import { webview, type WebView } from "./webview.js";
 
 /** The native connection supplied by the host. */
@@ -45,6 +46,17 @@ export interface TokamakContext {
   readonly [nativeConnection]: NativeConnection;
   readonly [nativeAvailability]: Availability;
 }
+
+/** The platform the native host names now. */
+export function runningPlatform(): NativePlatform | undefined {
+  return Reflect.get(globalThis, platformGlobal) as NativePlatform | undefined;
+}
+
+/**
+ * The native platform the app runs on, or undefined without a native host, such as on Cloudflare.
+ * Unlike `ctx.platform`, it is known while modules load.
+ */
+export const platform = runningPlatform();
 
 function unavailable(): never {
   throw new DOMException("The native device is not connected.", "NotSupportedError");

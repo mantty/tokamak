@@ -1219,8 +1219,6 @@ packages:
     peerDependenciesMeta:
       '@astrojs/cloudflare':
         optional: true
-      '@cloudflare/vite-plugin':
-        optional: true
       astro:
         optional: true
       wrangler:
@@ -3101,13 +3099,13 @@ snapshots:
 
   '@tokamakdev/tok@file:../../tokamak-cli/npm(@astrojs/cloudflare@13.1.8(astro@6.1.5(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.63.0)(typescript@5.9.3))(jiti@2.7.0)(lightningcss@1.32.0)(wrangler@4.126.0))(@cloudflare/vite-plugin@1.54.0(vite@7.3.6(jiti@2.7.0)(lightningcss@1.32.0))(wrangler@4.126.0))(astro@6.1.5(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.63.0)(typescript@5.9.3))(vite@7.3.6(jiti@2.7.0)(lightningcss@1.32.0))(wrangler@4.126.0)':
     dependencies:
+      '@cloudflare/vite-plugin': 1.54.0(vite@7.3.6(jiti@2.7.0)(lightningcss@1.32.0))(wrangler@4.126.0)
       '@tokamakdev/plugin': link:../../plugins/core
       typescript: 5.9.3
       vite: 7.3.6(jiti@2.7.0)(lightningcss@1.32.0)
       ws: 8.22.0
     optionalDependencies:
       '@astrojs/cloudflare': 13.1.8(astro@6.1.5(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.63.0)(typescript@5.9.3))(jiti@2.7.0)(lightningcss@1.32.0)(wrangler@4.126.0)
-      '@cloudflare/vite-plugin': 1.54.0(vite@7.3.6(jiti@2.7.0)(lightningcss@1.32.0))(wrangler@4.126.0)
       astro: 6.1.5(jiti@2.7.0)(lightningcss@1.32.0)(rollup@4.63.0)(typescript@5.9.3)
       wrangler: 4.126.0
     transitivePeerDependencies:

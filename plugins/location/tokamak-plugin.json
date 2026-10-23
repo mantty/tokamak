@@ -38,36 +38,13 @@
   "build": "build/index.mjs",
   "platforms": {
     "macos": {
-      "class": "TokamakLocationPlugin",
-      "sources": [
-        "apple/LocationEvents.swift",
-        "apple/LocationPlugin.swift",
-        "apple/LocationPositions.swift",
-        "apple/LocationRegions.swift",
-        "apple/LocationUpdates.swift"
-      ]
+      "class": "TokamakLocationPlugin"
     },
     "ios": {
-      "class": "TokamakLocationPlugin",
-      "sources": [
-        "apple/LocationEvents.swift",
-        "apple/LocationPlugin.swift",
-        "apple/LocationPositions.swift",
-        "apple/LocationRegions.swift",
-        "apple/LocationUpdates.swift"
-      ]
+      "class": "TokamakLocationPlugin"
     },
     "android": {
-      "class": "com.tokamak.plugins.location.TokamakLocationPlugin",
-      "sources": [
-        "android/LocationEvents.kt",
-        "android/LocationPlugin.kt",
-        "android/LocationPositions.kt",
-        "android/LocationReceiver.kt",
-        "android/LocationRegions.kt",
-        "android/LocationService.kt",
-        "android/LocationUpdates.kt"
-      ]
+      "class": "com.tokamak.plugins.location.TokamakLocationPlugin"
     }
   },
   "api": {

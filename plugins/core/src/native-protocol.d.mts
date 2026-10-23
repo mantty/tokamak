@@ -1,3 +1,5 @@
+/** The global through which the native host names its platform before the Worker's modules load. */
+export const platformGlobal: "__tokamak_platform";
 export interface MessageHeader {
   type: string;
   id?: number;

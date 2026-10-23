@@ -13,9 +13,9 @@ import android.graphics.Bitmap
 import android.graphics.drawable.Icon
 import android.os.Bundle
 import android.service.notification.StatusBarNotification
+import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.tokamakPlugin
-import org.json.JSONArray
 import org.json.JSONObject
 
 internal const val CHANNEL = "tokamak.notifications"
@@ -34,11 +34,9 @@ private const val SUMMARY_ID = 1
 /** The group of silent notifications that name none. */
 private const val SILENT_GROUP = "tokamak.silent"
 
-/** A scheduled notification's trigger fields, which shown notifications leave out. */
-private val TRIGGER_KEYS = listOf("at", "every", "on", "region", "repeats", "exact")
-
 /** Posts, lists and removes the app's notifications, and keeps its channels as `setup` describes. */
-internal class Notifier(private val context: Context) {
+internal class Notifier(private val host: TokamakHost) {
+    private val context = host.context
     private val manager = context.getSystemService(NotificationManager::class.java)
 
     val enabled: Boolean
@@ -53,24 +51,22 @@ internal class Notifier(private val context: Context) {
      * Makes the channel groups and channels [setup] describes, removing those of [previous] it
      * leaves out, and returns the settings of existing channels Android kept.
      */
-    fun configure(setup: Setup, previous: Setup?): JSONArray {
+    fun configure(setup: Setup, previous: Setup?): List<Unapplied> {
         val groups = setup.channelGroups.map { it.id }.toSet()
         previous?.channelGroups?.map { it.id }?.filterNot(groups::contains)?.forEach(manager::deleteNotificationChannelGroup)
         manager.createNotificationChannelGroups(setup.channelGroups)
         val channels = setup.channels.map { it.id }.toSet()
         previous?.channels?.map { it.id }?.filterNot(channels::contains)?.forEach(manager::deleteNotificationChannel)
         if (setup.defaultChannel == null) manager.createNotificationChannel(appChannel())
-        val unapplied = JSONArray()
-        for (spec in listOfNotNull(setup.defaultChannel) + setup.channels) {
+        return (listOfNotNull(setup.defaultChannel) + setup.channels).mapNotNull { spec ->
             manager.createNotificationChannel(spec.channel(context))
             val kept = spec.unapplied(manager.getNotificationChannel(spec.id), context)
-            if (kept.isNotEmpty()) unapplied.put(JSONObject().put("channel", spec.id).put("fields", JSONArray(kept)))
+            if (kept.isEmpty()) null else Unapplied(spec.id, kept)
         }
-        return unapplied
     }
 
     /** Throws `TypeError` unless [content] names a channel that exists. */
-    fun requireChannel(content: Content) {
+    fun requireChannel(content: NotificationContent) {
         content.channel?.let(::requireChannel)
     }
 
@@ -85,15 +81,15 @@ internal class Notifier(private val context: Context) {
      * notification with the same ID. Opening it launches the app. A channel `setup` has since
      * removed falls back to the default.
      */
-    fun post(content: Content, source: String, images: Map<String, Bitmap>) {
+    fun post(content: NotificationContent, source: Source, images: Map<String, Bitmap>) {
         ensureDefaultChannel()
         val channel = content.channel?.takeIf { manager.getNotificationChannel(it) != null } ?: CHANNEL
         val described = described(content, source)
-        val opened = Intent().putExtra(OPENED_EXTRA, JSONObject(described.toString()).put("action", JSONObject.NULL).toString())
-        val dismissed = Intent().putExtra(DISMISSED_EXTRA, described.toString())
+        val opened = Intent().putExtra(OPENED_EXTRA, described)
+        val dismissed = Intent().putExtra(DISMISSED_EXTRA, described)
         content.group?.let {
             // Opening one removes it only with `autoCancel`.
-            if (content.autoCancel) opened.putExtra(GROUP_EXTRA, it)
+            if (content.autoCancel != false) opened.putExtra(GROUP_EXTRA, it)
             dismissed.putExtra(GROUP_EXTRA, it)
         }
         val builder =
@@ -103,7 +99,7 @@ internal class Notifier(private val context: Context) {
                 .setContentText(content.body)
                 .setContentIntent(launch("opened\n${content.id}", opened, mutable = false))
                 .setDeleteIntent(respond("dismissed\n${content.id}", dismissed))
-                .addExtras(Bundle().apply { putString(CONTENT_EXTRA, content.json.toString()) })
+                .addExtras(Bundle().apply { putString(CONTENT_EXTRA, host.json(content).toString()) })
                 .setFields(content, channel, images)
         for (action in actions(content)) builder.addAction(action(content, source, action, images[action.icon]))
         val previousGroup = shown(content.id)?.notification?.group
@@ -113,34 +109,42 @@ internal class Notifier(private val context: Context) {
     }
 
     /** The images [content] and its category's actions show: its `image` only with the big picture style. */
-    fun imageSources(content: Content): List<String> {
+    fun imageSources(content: NotificationContent): List<String> {
         val image = content.image.takeIf { content.style == null || content.style is Style.BigPicture }
         return (listOfNotNull(image, content.icon) + actions(content).mapNotNull { it.icon }).distinct()
     }
 
-    private fun actions(content: Content): List<Action> =
-        content.category?.let { Setup.stored(context)?.categories?.get(it) }.orEmpty()
+    private fun actions(content: NotificationContent): List<NotificationAction> =
+        content.category?.let { Setup.stored(host)?.categories?.get(it) }.orEmpty()
 
     /** Sets what [content] says beyond its text, actions and intents. */
     private fun Notification.Builder.setFields(
-        content: Content,
+        content: NotificationContent,
         channel: String,
         images: Map<String, Bitmap>,
     ): Notification.Builder {
-        setAutoCancel(content.autoCancel)
-        setOngoing(content.ongoing)
-        setOnlyAlertOnce(content.onlyAlertOnce)
+        setAutoCancel(content.autoCancel != false)
+        setOngoing(content.ongoing == true)
+        setOnlyAlertOnce(content.onlyAlertOnce == true)
         content.subText?.let(::setSubText)
-        content.color?.let(::setColor)
+        content.accentColour?.let(::setColor)
         content.badge?.let(::setNumber)
         content.timestamp?.let { setWhen(it).setShowWhen(true) }
-        if (content.chronometer) setUsesChronometer(true).setChronometerCountDown(content.chronometerCountsDown)
+        when (val chronometer = content.chronometer) {
+            is Chronometer.Shown -> setUsesChronometer(chronometer.value)
+            is Chronometer.Countdown -> setUsesChronometer(true).setChronometerCountDown(chronometer.countDown)
+            null -> {}
+        }
         content.timeoutAfter?.let(::setTimeoutAfter)
         content.sortKey?.let(::setSortKey)
         content.settingsText?.let(::setSettingsText)
-        content.visibility?.let(::setVisibility)
-        content.androidCategory?.let(::setCategory)
-        content.progress?.let { setProgress(it.max, it.current, it.indeterminate) }
+        content.lockScreenVisibility?.let(::setVisibility)
+        content.systemCategory?.let(::setCategory)
+        when (val progress = content.progress) {
+            is Progress.ProgressValue -> setProgress(progress.max, progress.current, false)
+            is Progress.IndeterminateProgress -> setProgress(0, 0, progress.indeterminate)
+            null -> {}
+        }
         content.publicVersion?.let { (title, body) ->
             setPublicVersion(Notification.Builder(context, channel).setSmallIcon(icon()).setContentTitle(title).setContentText(body).build())
         }
@@ -148,7 +152,7 @@ internal class Notifier(private val context: Context) {
         style(content.style, content.image?.let(images::get))?.let(::setStyle)
         // Silent as AndroidX's setSilent makes a notification: one that leaves alerting to its
         // group's summary does not alert, and the plugin's summaries never alert.
-        if (content.silent) {
+        if (content.silent == true) {
             setGroup(content.group ?: SILENT_GROUP).setGroupAlertBehavior(Notification.GROUP_ALERT_SUMMARY)
         } else {
             content.group?.let(::setGroup)
@@ -189,7 +193,7 @@ internal class Notifier(private val context: Context) {
                     Notification.BigPictureStyle()
                         .bigPicture(it)
                         .setBigContentTitle(style.title)
-                        .showBigPictureWhenCollapsed(style.showWhenCollapsed)
+                        .showBigPictureWhenCollapsed(style.showWhenCollapsed == true)
                         // Even a null summary replaces the expanded notification's text.
                         .apply { style.summary?.let(::setSummaryText) }
                 }
@@ -215,18 +219,19 @@ internal class Notifier(private val context: Context) {
     private fun person(name: String): Person = Person.Builder().setName(name).build()
 
     /** The app's shown notifications, identified by tag, as the page sees them. */
-    fun delivered(): List<JSONObject> =
+    fun delivered(): List<NotificationContent> =
         manager.activeNotifications.mapNotNull { shown ->
             val id = shown.tag?.takeIf { shown.id == NOTIFICATION_ID } ?: return@mapNotNull null
             val extras = shown.notification.extras
             // FCM posts notification messages itself, without the content the plugin keeps.
-            extras.getString(CONTENT_EXTRA)?.let { content -> JSONObject(content).apply { TRIGGER_KEYS.forEach(::remove) } }
-                ?: JSONObject()
-                    .put("id", id)
-                    .put("title", extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: "")
-                    .put("body", extras.getCharSequence(Notification.EXTRA_TEXT)?.toString())
-                    .put("data", JSONObject())
-                    .put("channel", shown.notification.channelId.takeIf { it != CHANNEL })
+            extras.getString(CONTENT_EXTRA)?.let { runCatching { host.fromJson(JSONObject(it), NotificationContent::class) }.getOrNull() }
+                ?: NotificationContent(
+                    id = id,
+                    title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: "",
+                    body = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
+                    data = JSONObject(),
+                    channel = shown.notification.channelId.takeIf { it != CHANNEL },
+                )
         }
 
     fun remove(id: String) {
@@ -243,13 +248,15 @@ internal class Notifier(private val context: Context) {
      * without opening it. An action with a text field passes the text it receives; wearables show
      * [icon].
      */
-    private fun action(content: Content, source: String, action: Action, icon: Bitmap?): Notification.Action {
-        val opened = Intent().putExtra(OPENED_EXTRA, described(content, source).put("action", action.id).toString())
+    private fun action(content: NotificationContent, source: Source, action: NotificationAction, icon: Bitmap?): Notification.Action {
+        val opened = Intent().putExtra(OPENED_EXTRA, described(content, source, action.id))
         val identifier = "action\n${content.id}\n${action.id}"
-        val mutable = action.inputLabel != null
-        val intent = if (action.foreground) launch(identifier, opened, mutable) else respond(identifier, opened, mutable)
+        // The text field's label is its placeholder, or the action's title.
+        val label = action.input?.let { it.placeholder ?: action.title }
+        val mutable = label != null
+        val intent = if (action.foreground == true) launch(identifier, opened, mutable) else respond(identifier, opened, mutable)
         val builder = Notification.Action.Builder(icon?.let(Icon::createWithBitmap), action.title, intent)
-        action.inputLabel?.let { builder.addRemoteInput(RemoteInput.Builder(INPUT_KEY).setLabel(it).build()) }
+        label?.let { builder.addRemoteInput(RemoteInput.Builder(INPUT_KEY).setLabel(it).build()) }
         return builder.build()
     }
 
@@ -291,14 +298,9 @@ internal class Notifier(private val context: Context) {
             NotificationManager.IMPORTANCE_DEFAULT,
         )
 
-    /** [content] as listeners receive it, before the plugin adds the chosen action and typed text. */
-    private fun described(content: Content, source: String): JSONObject =
-        JSONObject()
-            .put("id", content.id)
-            .put("title", content.title)
-            .put("body", content.body ?: JSONObject.NULL)
-            .put("data", content.data)
-            .put("source", source)
+    /** [content] as listeners receive it, opened with [action], before the plugin adds the typed text. */
+    private fun described(content: NotificationContent, source: Source, action: String? = null): String =
+        host.json(OpenedNotification(content.id, content.title, content.body, content.data ?: JSONObject(), source, action)).toString()
 
     companion object {
         /** The text typed into the action that sent [intent], if any. */

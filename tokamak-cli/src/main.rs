@@ -11,6 +11,7 @@ mod packs;
 mod paths;
 mod pinned_tls;
 mod pipeline;
+mod plugin_api;
 mod plugin_settings;
 mod plugins;
 mod project;
@@ -47,13 +48,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Create a publishable plugin package.
+    /// Create, generate and check plugin packages.
     Plugin {
-        /// New directory, named with lowercase words joined by hyphens.
-        directory: PathBuf,
-        /// Include an Apple or Android native implementation; otherwise compose APIs in TypeScript.
-        #[arg(long, value_enum)]
-        native: Option<scaffold::Native>,
+        #[command(subcommand)]
+        command: PluginCommand,
     },
     /// Build native app bundles for one or more platforms.
     #[command(after_help = BUILD_PLATFORM_HELP)]
@@ -109,6 +107,29 @@ enum Command {
     Version,
 }
 
+#[derive(Debug, Subcommand)]
+enum PluginCommand {
+    /// Create a publishable plugin package.
+    New {
+        /// New directory, named with lowercase words joined by hyphens.
+        directory: PathBuf,
+        /// Comma-separated platforms a native implementation runs on: ios, macos or android.
+        /// Without them, the plugin composes APIs in TypeScript.
+        #[arg(long, value_delimiter = ',')]
+        platforms: Vec<Platform>,
+    },
+    /// Write a platform family's TypeScript API and native dispatch, in the plugin package in
+    /// the current directory, from the family's registration file.
+    Generate {
+        /// The platform family: apple (iOS and macOS) or android.
+        #[arg(value_enum)]
+        family: plugin_api::Family,
+    },
+    /// Fail when the generated files in the plugin package in the current directory differ from
+    /// what this host's toolchains generate.
+    Check,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -129,7 +150,16 @@ fn run() -> Result<()> {
     };
 
     match cli.command {
-        Command::Plugin { directory, native } => scaffold::create(&directory, native),
+        Command::Plugin { command } => match command {
+            PluginCommand::New {
+                directory,
+                platforms,
+            } => scaffold::create(&directory, &platforms),
+            PluginCommand::Generate { family } => {
+                plugin_api::generate(&env::current_dir()?, family)
+            }
+            PluginCommand::Check => plugin_api::check(&env::current_dir()?),
+        },
         Command::Build {
             platforms,
             project,

@@ -1,12 +1,12 @@
 import { register, setCodec, type EventCodec, type RegisteredListener } from "./registry.js";
-import type { TokamakContext } from "./context.js";
+import { runningPlatform, type NativePlatform, type TokamakContext } from "./context.js";
 
 export type { EventCodec } from "./registry.js";
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace -- plugins add their events by declaration merging.
   namespace Tokamak {
-    /** Each event's data, by event type. A plugin adds its events as `"<plugin>.<name>"`. */
+    /** Each event's data, by event type. A plugin adds its events as `"<plugin>.<family>.<name>"`. */
     interface Events {
       /** The runtime started, including when the system started the app in the background. */
       start: { readonly foreground: boolean };
@@ -41,17 +41,26 @@ export type Listener<T, Reply = void> = (
   ctx: EventContext,
 ) => Reply | undefined | Promise<Reply | undefined>;
 
+/** How an event travels, and where. */
+export interface EventOptions<T, Reply> {
+  /** Encodes the event's data and reply, which otherwise travel as JSON. */
+  readonly codec?: EventCodec<T, Reply>;
+  /** The platforms that emit the event, when not all of them do. */
+  readonly platforms?: readonly NativePlatform[];
+}
+
 /**
- * Defines the event `type`, whose data and reply travel as JSON unless `codec` encodes them, and
- * returns the function that registers its listeners. The event's reply is the first value, in
+ * Defines the event `type` and returns the function that registers its listeners. Off the event's
+ * `platforms`, that function registers nothing. The event's reply is the first value, in
  * registration order, that a listener returns other than `undefined`.
  */
 export function defineEvent<Type extends EventType>(
   type: Type,
-  codec?: EventCodec<Tokamak.Events[Type], EventReply<Type>>,
+  { codec, platforms }: EventOptions<Tokamak.Events[Type], EventReply<Type>> = {},
 ): (listener: Listener<Tokamak.Events[Type], EventReply<Type>>) => void {
   if (codec) setCodec(type, codec);
   return (listener) => {
+    if (platforms && !platforms.some((platform) => platform === runningPlatform())) return;
     register(type, listener as RegisteredListener);
   };
 }

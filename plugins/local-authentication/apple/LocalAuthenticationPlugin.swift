@@ -1,73 +1,73 @@
 import Foundation
 import LocalAuthentication
 
+extension TokamakLocalAuthenticationPlugin {
+  /// The authentication the device owner performs.
+  enum Authentication: String, Codable {
+    case biometricsOrPasscode
+    case biometrics
+
+    var policy: LAPolicy {
+      switch self {
+      case .biometricsOrPasscode: .deviceOwnerAuthentication
+      case .biometrics: .deviceOwnerAuthenticationWithBiometrics
+      }
+    }
+  }
+
+  /// Whether the device can perform an authentication now.
+  enum Status: String, Codable {
+    case available
+    case notEnrolled
+    case unavailable
+  }
+}
+
 final class TokamakLocalAuthenticationPlugin: TokamakPlugin {
   let id = "local-authentication"
-
-  private let host: TokamakHost
+  let host: TokamakHost
 
   init(host: TokamakHost) {
     self.host = host
   }
 
-  func call(
-    method: String,
-    arguments: Any,
-    reply: @escaping TokamakPluginReply
-  ) -> (() -> Void)? {
-    let arguments = arguments as? [String: Any] ?? [:]
-    do throws(TokamakPluginError) {
-      switch method {
-      case "status":
-        reply(.success(status(try policy(arguments))))
-      case "authenticate":
-        return try authenticate(policy(arguments), prompt: prompt(arguments), reply: reply)
-      default:
-        throw .notSupported("\(id).\(method) is not supported")
-      }
-    } catch {
-      reply(.failure(error))
-    }
-    return nil
-  }
-
-  private func status(_ policy: LAPolicy) -> String {
+  func status(_ authentication: Authentication) -> Status {
     var error: NSError?
-    if LAContext().canEvaluatePolicy(policy, error: &error) {
-      return "available"
+    if LAContext().canEvaluatePolicy(authentication.policy, error: &error) {
+      return .available
     }
     switch (error as? LAError)?.code {
-    case .biometryNotEnrolled, .passcodeNotSet:
-      return "notEnrolled"
-    default:
-      return "unavailable"
+    case .biometryNotEnrolled, .passcodeNotSet: return .notEnrolled
+    default: return .unavailable
     }
   }
 
   /// Shows the system prompt, which needs the app able to show UI, unless the
   /// authentication fails without one.
-  private func authenticate(
-    _ policy: LAPolicy,
-    prompt: String,
-    reply: @escaping TokamakPluginReply
-  ) throws(TokamakPluginError) -> (() -> Void) {
+  @MainActor
+  func authenticate(_ authentication: Authentication, prompt: String) async throws {
+    guard !prompt.isEmpty else {
+      throw TokamakPluginError(name: "TypeError", message: "prompt must be a non-empty string")
+    }
     let context = LAContext()
     var error: NSError?
-    guard context.canEvaluatePolicy(policy, error: &error) else {
+    guard context.canEvaluatePolicy(authentication.policy, error: &error) else {
       throw Self.failure(error)
     }
     try host.requireUI()
-    if policy == .deviceOwnerAuthenticationWithBiometrics {
+    if authentication == .biometrics {
       // Hides the passcode fallback button, which this policy cannot use.
       context.localizedFallbackTitle = ""
     }
-    context.evaluatePolicy(policy, localizedReason: prompt) { success, error in
-      // A deallocated context cancels its evaluation.
-      withExtendedLifetime(context) {
-        reply(success ? .success(nil) : .failure(Self.failure(error)))
+    do {
+      try await withTaskCancellationHandler {
+        _ = try await context.evaluatePolicy(authentication.policy, localizedReason: prompt)
+      } onCancel: {
+        context.invalidate()
       }
+    } catch {
+      throw Self.failure(error)
     }
-    return { context.invalidate() }
   }
 
   private static func failure(_ error: Error?) -> TokamakPluginError {
@@ -80,26 +80,5 @@ final class TokamakLocalAuthenticationPlugin: TokamakPlugin {
     default:
       return TokamakPluginError(name: "NotAllowedError", message: message)
     }
-  }
-
-  private func policy(_ arguments: [String: Any]) throws(TokamakPluginError) -> LAPolicy {
-    switch arguments["authentication"] as? String {
-    case "biometricsOrPasscode":
-      return .deviceOwnerAuthentication
-    case "biometrics":
-      return .deviceOwnerAuthenticationWithBiometrics
-    default:
-      throw TokamakPluginError(
-        name: "TypeError",
-        message: "authentication must be biometricsOrPasscode or biometrics"
-      )
-    }
-  }
-
-  private func prompt(_ arguments: [String: Any]) throws(TokamakPluginError) -> String {
-    guard let prompt = arguments["prompt"] as? String, !prompt.isEmpty else {
-      throw TokamakPluginError(name: "TypeError", message: "prompt must be a non-empty string")
-    }
-    return prompt
   }
 }

@@ -9,7 +9,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./events": "./events/index.ts",
+    "./apple": "./src/apple.generated.ts",
+    "./android": "./src/android.generated.ts",
+    "./events": "./src/events.ts",
     "./service-worker": "./service-worker/index.ts"
   },
   "peerDependencies": {
@@ -19,7 +21,6 @@
     "android",
     "apple",
     "build",
-    "events",
     "service-worker",
     "src",
     "web",

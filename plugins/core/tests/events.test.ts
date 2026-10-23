@@ -20,6 +20,8 @@ declare global {
       "test.typed": { count: number };
       "test.void": null;
       "test.binary": Uint8Array;
+      "test.mobile": null;
+      "test.anywhere": null;
     }
     interface EventReplies {
       "test.reply": string;
@@ -143,6 +145,23 @@ void test("events travel as JSON unless their definition gives a codec", () => {
   assert.deepEqual(json.encode(undefined), new Uint8Array(), "no reply is an empty payload");
 
   const bytes = { decode: (payload: Uint8Array) => payload, encode: (reply: Uint8Array) => reply };
-  defineEvent("test.binary", bytes);
+  defineEvent("test.binary", { codec: bytes });
   assert.equal(eventCodec("test.binary"), bytes);
+});
+
+void test("registers listeners only on the platforms that emit the event", async () => {
+  const onMobile = defineEvent("test.mobile", { platforms: ["ios", "android"] });
+  const onAnywhere = defineEvent("test.anywhere");
+  const received: string[] = [];
+  for (const platform of [undefined, "macos", "android"] as const) {
+    testing.setPlatform(platform);
+    onMobile(() => void received.push(`mobile ${platform ?? "no host"}`));
+    onAnywhere(() => void received.push(`anywhere ${platform ?? "no host"}`));
+  }
+  testing.setPlatform(undefined);
+
+  await dispatch("test.mobile", null, env, ctx);
+  await dispatch("test.anywhere", null, env, ctx);
+
+  assert.deepEqual(received, ["mobile android", "anywhere no host", "anywhere macos", "anywhere android"]);
 });

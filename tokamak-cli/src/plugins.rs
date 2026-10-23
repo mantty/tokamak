@@ -10,7 +10,9 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use tokamak_cli::{Platform, PlatformPackManifest, PluginKeyKind, copy_file, is_valid_key};
+use tokamak_cli::{
+    Platform, PlatformPackManifest, PluginKeyKind, copy_dir_contents, copy_file, is_valid_key,
+};
 
 use super::paths::{command_path, reset_path};
 use super::plugin_settings::{Setting, option_name, option_namespaces};
@@ -255,13 +257,15 @@ pub(crate) fn check(
 }
 
 /// Stage each plugin's section for the pack's platform, with the keys its
-/// build script `generated`, under `destination/<id>`.
+/// build script `generated`, under `destination/<id>`, and the package's
+/// directory of the platform's family, such as `apple`, as `native`.
 pub(crate) fn stage(
     plugins: &[Plugin],
     pack: &PlatformPackManifest,
     generated: &Generated,
     destination: &Path,
 ) -> Result<()> {
+    let family = pack.target.platform().family();
     for plugin in plugins {
         let Some(files) = staged_files(plugin, pack, generated.get(&plugin.id))? else {
             continue;
@@ -275,6 +279,10 @@ pub(crate) fn stage(
                 Staged::Value(value) => fs::write(path, value)?,
                 Staged::Copy(source) => copy_file(source, path)?,
             }
+        }
+        let native = plugin.root.join(family);
+        if native.is_dir() {
+            copy_dir_contents(&native, &root.join("native"))?;
         }
     }
     Ok(())
@@ -363,6 +371,20 @@ fn staged_file(
             (path.join(format!("{index}-{name}")), Staged::Copy(source))
         }
     })
+}
+
+/// The plugin package at `root`.
+pub(crate) fn package(root: &Path) -> Result<Plugin> {
+    let root = fs::canonicalize(root)?;
+    load(&root, &root.join(MANIFEST))
+        .with_context(|| format!("invalid plugin package {}", root.display()))
+}
+
+impl Plugin {
+    /// Whether the plugin has a section for the platform `namespace`.
+    pub(crate) fn builds_for(&self, namespace: &str) -> bool {
+        self.platforms.contains_key(namespace)
+    }
 }
 
 fn dependencies(package: &Path, fields: &[&str]) -> Result<BTreeSet<String>> {
@@ -460,7 +482,7 @@ mod tests {
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-    /// A pack for `target` that reads a plugin's class, sources, plist,
+    /// A pack for `target` that reads a plugin's class, resources, plist,
     /// manifest and dependencies.
     fn pack(target: Target) -> PlatformPackManifest {
         PlatformPackManifest {
@@ -469,7 +491,7 @@ mod tests {
             variables: BTreeMap::new(),
             plugin_keys: BTreeMap::from([
                 ("class".to_owned(), PluginKeyKind::String),
-                ("sources".to_owned(), PluginKeyKind::Paths),
+                ("resources".to_owned(), PluginKeyKind::Paths),
                 ("plist".to_owned(), PluginKeyKind::Path),
                 ("manifest".to_owned(), PluginKeyKind::Path),
                 ("dependencies".to_owned(), PluginKeyKind::Strings),
@@ -478,12 +500,12 @@ mod tests {
     }
 
     fn write_plugin(root: &Path, id: &str) -> TestResult {
-        fs::create_dir_all(root.join("ios"))?;
-        fs::write(root.join("ios/Plugin.swift"), "")?;
+        fs::create_dir_all(root.join("apple"))?;
+        fs::write(root.join("apple/Plugin.swift"), "")?;
         let manifest = serde_json::json!({
             "schemaVersion": 1,
             "id": id,
-            "platforms": { "ios": { "class": "Plugin", "sources": ["ios/Plugin.swift"] } },
+            "platforms": { "ios": { "class": "Plugin" } },
         });
         fs::write(root.join("tokamak-plugin.json"), manifest.to_string())?;
         Ok(())
@@ -504,8 +526,9 @@ mod tests {
             r#"{"dependencies":{"@tokamakdev/plugin-location":"1.0.0"}}"#,
         )?;
         let plugin = root.path().join("node_modules/@tokamakdev/plugin-location");
-        fs::create_dir_all(plugin.join("ios"))?;
-        fs::write(plugin.join("ios/plugin.swift"), "")?;
+        fs::create_dir_all(plugin.join("apple/regions"))?;
+        fs::write(plugin.join("apple/plugin.swift"), "")?;
+        fs::write(plugin.join("apple/regions/Regions.swift"), "")?;
         fs::write(
             plugin.join("tokamak-plugin.json"),
             r#"{
@@ -513,8 +536,7 @@ mod tests {
   "id": "location",
   "platforms": {
     "ios": {
-      "class": "LocationPlugin",
-      "sources": ["ios/plugin.swift"]
+      "class": "LocationPlugin"
     }
   }
 }"#,
@@ -535,7 +557,12 @@ mod tests {
             fs::read_to_string(staged.join("location/class"))?,
             "LocationPlugin"
         );
-        assert!(staged.join("location/sources/0-plugin.swift").is_file());
+        assert!(staged.join("location/native/plugin.swift").is_file());
+        assert!(
+            staged
+                .join("location/native/regions/Regions.swift")
+                .is_file()
+        );
         Ok(())
     }
 
@@ -624,7 +651,7 @@ mod tests {
         )?;
 
         assert_eq!(plugins.len(), 1);
-        assert!(staged.join("location/sources/0-Plugin.swift").is_file());
+        assert!(staged.join("location/native/Plugin.swift").is_file());
         Ok(())
     }
 
@@ -670,10 +697,13 @@ mod tests {
                 "schemaVersion": 2,
                 "id": "widgets",
                 "api": { "module": "./index.ts", "export": "widgets" },
-                "platforms": { "ios": { "class": "Widgets", "sources": ["Widgets.swift"] } },
+                "platforms": { "ios": { "class": "Widgets" }, "android": { "class": "a.Widgets" } },
             }),
         )?;
-        fs::write(plugin.join("Widgets.swift"), "native source")?;
+        fs::create_dir_all(plugin.join("apple"))?;
+        fs::create_dir_all(plugin.join("android"))?;
+        fs::write(plugin.join("apple/Widgets.swift"), "native source")?;
+        fs::write(plugin.join("android/Widgets.kt"), "other family")?;
         let plugins = discover(project.path())?;
         let staged = project.path().join("staged");
         stage(
@@ -683,9 +713,10 @@ mod tests {
             &staged,
         )?;
         assert_eq!(
-            fs::read_to_string(staged.join("widgets/sources/0-Widgets.swift"))?,
+            fs::read_to_string(staged.join("widgets/native/Widgets.swift"))?,
             "native source"
         );
+        assert!(!staged.join("widgets/native/Widgets.kt").exists());
         Ok(())
     }
 
@@ -756,8 +787,8 @@ mod tests {
                 "plugin 'alerts' has unknown ios key 'frameworks'",
             ),
             (
-                serde_json::json!({ "class": "Alerts", "sources": "Alerts.swift" }),
-                "plugin 'alerts' has an invalid sources",
+                serde_json::json!({ "class": "Alerts", "resources": "Alerts.swift" }),
+                "plugin 'alerts' has an invalid resources",
             ),
             (
                 serde_json::json!({ "class": ["Alerts"] }),
@@ -768,8 +799,8 @@ mod tests {
                 "plugin 'alerts' plist escapes its package",
             ),
             (
-                serde_json::json!({ "sources": ["Alerts.swift"] }),
-                "plugin 'alerts' sources is missing: Alerts.swift",
+                serde_json::json!({ "resources": ["Alerts.swift"] }),
+                "plugin 'alerts' resources is missing: Alerts.swift",
             ),
         ] {
             let project = tempfile::tempdir()?;
@@ -923,14 +954,14 @@ mod tests {
             }
             writeFileSync(output + "/Info.plist", "generated");
             console.log(JSON.stringify({
-              sources: [settings.sounds + "/chime.swift"],
+              resources: [settings.sounds + "/chime.caf"],
               plist: output + "/Info.plist",
             }));
             "#,
         )?;
         let sounds = project.path().join("sounds");
         fs::create_dir_all(&sounds)?;
-        fs::write(sounds.join("chime.swift"), "chime")?;
+        fs::write(sounds.join("chime.caf"), "chime")?;
         let plugins = discover(project.path())?;
         let settings = BTreeMap::from([(
             "alerts".to_owned(),
@@ -945,7 +976,7 @@ mod tests {
         stage(&plugins, &pack(Target::IosArm64), &generated, &staged)?;
 
         assert_eq!(
-            fs::read_to_string(staged.join("alerts/sources/0-chime.swift"))?,
+            fs::read_to_string(staged.join("alerts/resources/0-chime.caf"))?,
             "chime"
         );
         assert_eq!(
@@ -983,12 +1014,12 @@ mod tests {
                 "build script sets ios key 'class'",
             ),
             (
-                serde_json::json!({ "sources": ["chime.swift"] }),
-                "build script sources is not an absolute path to a file: chime.swift",
+                serde_json::json!({ "resources": ["chime.caf"] }),
+                "build script resources is not an absolute path to a file: chime.caf",
             ),
             (
-                serde_json::json!({ "sources": ["/no/such/chime.swift"] }),
-                "build script sources is not an absolute path to a file: /no/such/chime.swift",
+                serde_json::json!({ "resources": ["/no/such/chime.caf"] }),
+                "build script resources is not an absolute path to a file: /no/such/chime.caf",
             ),
             (
                 serde_json::json!({ "raw": ["/no/such/chime.wav"] }),
