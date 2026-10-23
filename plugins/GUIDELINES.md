@@ -188,7 +188,8 @@ name a field that tags them, with `TokamakTaggedUnion` and `static let tag =
 name. Generation fails when the forms cannot be told apart. Kotlin code
 converts the data classes and sealed types the registration uses to and from
 JSON, to store them, with `host.json(value)` and `host.fromJson(json,
-Type::class)`; Swift code uses `Codable`.
+Type::class)`, which work while the plugin is being created; Swift code uses
+`Codable`.
 
 A nil struct field is absent from the JSON, as Swift's `Codable` encodes it.
 A sole `Data` or `ByteArray` argument, and such a result, travel as raw bytes;

@@ -199,7 +199,6 @@ class DispatchTest {
     @Test
     fun values() {
         val host = Host()
-        host.dispatch = TokamakExamplePluginDispatch(host)
         val stored = host.json(Zone.Circle(2.0))
         check(stored is JSONObject && stored.similar(JSONObject("""{"kind":"circle","radius":2}"""))) { "$stored" }
         check(host.fromJson(stored, Zone::class) == Zone.Circle(2.0))
@@ -216,16 +215,16 @@ class DispatchTest {
     @Test
     fun events() {
         val host = Host()
-        val dispatch = TokamakExamplePluginDispatch(host).also { host.dispatch = it }
+        val codec = TokamakExamplePluginDispatch
         val region = Region("home", 50.0, null, emptyList(), emptyMap(), null)
-        val entered = dispatch.eventPayload("entered", region).toString(Charsets.UTF_8)
+        val entered = codec.eventPayload("entered", region).toString(Charsets.UTF_8)
         check(entered.contains("\"id\":\"home\"") && !entered.contains("onEntry")) { entered }
         val mistakes = listOf(
             Triple("entered", "home", "event entered takes Region, not String"),
             Triple("left", region, "android/Exports.kt lists no event left"),
         )
         for ((name, event, message) in mistakes) {
-            val error = runCatching { dispatch.eventPayload(name, event) }.exceptionOrNull() as TokamakPluginError
+            val error = runCatching { codec.eventPayload(name, event) }.exceptionOrNull() as TokamakPluginError
             check(error.errorName == "TypeError" && error.message == message) { error.message.orEmpty() }
         }
 
@@ -274,7 +273,6 @@ class DispatchTest {
         /** The events emitted, by name, which the Worker's listeners answer with [reply]. */
         val emitted = mutableListOf<String>()
         var reply = ByteArray(0)
-        lateinit var dispatch: TokamakDispatch<*>
 
         override fun emitBytes(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray {
             emitted += name
@@ -282,15 +280,17 @@ class DispatchTest {
         }
 
         override fun emit(name: String, event: Any, timeoutMillis: Long) {
-            dispatch.emit(name, event, timeoutMillis)
+            emitBytes(name, TokamakExamplePluginDispatch.eventPayload(name, event), timeoutMillis)
         }
 
-        override fun <R : Any> emit(name: String, event: Any, reply: KClass<R>, timeoutMillis: Long): R? =
-            dispatch.emit(name, event, reply, timeoutMillis)
+        override fun <R : Any> emit(name: String, event: Any, reply: KClass<R>, timeoutMillis: Long): R? {
+            val payload = emitBytes(name, TokamakExamplePluginDispatch.eventPayload(name, event), timeoutMillis)
+            return TokamakExamplePluginDispatch.reply(name, payload, reply)
+        }
 
-        override fun json(value: Any): Any = dispatch.encodeValue(value)
+        override fun json(value: Any): Any = TokamakExamplePluginDispatch.encodeValue(value)
 
-        override fun <T : Any> fromJson(json: Any?, type: KClass<T>): T = dispatch.fromJson(json, type)
+        override fun <T : Any> fromJson(json: Any?, type: KClass<T>): T = TokamakExamplePluginDispatch.fromJson(json, type)
 
         override fun fetch(path: String, timeoutMillis: Long): ByteArray = error("unused")
     }

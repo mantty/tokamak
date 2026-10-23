@@ -94,6 +94,50 @@ class TokamakListeners<T>(private val holding: Boolean = false) {
     }
 }
 
+/**
+ * Converts the values a plugin's `android/Exports.kt` uses to and from JSON: its data classes and
+ * sealed types, and its events and their replies. Each generated dispatch's companion object is
+ * one, which the plugin's host uses, even while the plugin is being created.
+ */
+interface TokamakCodec {
+    /** [value] as the JSON org.json writes. */
+    fun encodeValue(value: Any): Any = throw TokamakPluginError.typeError("android/Exports.kt uses no ${value.javaClass.simpleName}")
+
+    /** [json] as a [type]. */
+    fun decodeValue(json: TokamakValue, type: KClass<*>): Any = throw TokamakPluginError.typeError("android/Exports.kt uses no ${type.simpleName}")
+
+    /** The JSON [json], as org.json reads it, as a [type], which [decodeValue] decodes. */
+    fun <T : Any> fromJson(json: Any?, type: KClass<T>): T {
+        val value = decodeValue(TokamakValue(json, "json"), type)
+        return type.castOrNull(value) ?: throw TokamakPluginError.typeError("json is ${value.javaClass.simpleName}, not ${type.simpleName}")
+    }
+
+    /** [event] as the JSON payload of the event [name], which `android/Exports.kt` lists. */
+    fun eventPayload(name: String, event: Any): ByteArray = throw TokamakPluginError.unlistedEvent(name)
+
+    /** The listeners' [reply] to the event [name], which `android/Exports.kt` lists with a reply, as its type. */
+    fun eventReply(name: String, reply: TokamakValue): Any = throw TokamakPluginError.unlistedReply(name)
+
+    /** The listeners' encoded [payload] in reply to the event [name] as a [type], or null when none replied. */
+    fun <R : Any> reply(name: String, payload: ByteArray, type: KClass<R>): R? {
+        if (payload.isEmpty()) return null
+        val json = decodePluginValue(payload).takeUnless { it == JSONObject.NULL } ?: return null
+        val value = eventReply(name, TokamakValue(json, "reply"))
+        return type.castOrNull(value)
+            ?: throw TokamakPluginError.typeError("event $name replies with ${value.javaClass.simpleName}, not ${type.simpleName}")
+    }
+
+    /**
+     * [event] as the payload of the event [name], whose listeners receive a [type] as [encode]
+     * encodes it, for the generated [eventPayload].
+     */
+    fun <T : Any> encodeEvent(name: String, event: Any, type: KClass<T>, encode: (T) -> Any?): ByteArray {
+        val value = type.castOrNull(event)
+            ?: throw TokamakPluginError.typeError("event $name takes ${type.simpleName}, not ${event.javaClass.simpleName}")
+        return encodePluginValue(encode(value))
+    }
+}
+
 /** A native object another plugin retained, which the Worker passes as a `NativeReference`. */
 class TokamakReference<T : Any>(val value: T)
 
@@ -186,44 +230,6 @@ class TokamakValue(private val json: Any?, private val path: String) {
  * generated subclass in place of [plugin], which plugins find with `tokamakPlugin(id)`.
  */
 abstract class TokamakDispatch<P : TokamakPlugin>(val plugin: P, protected val host: TokamakHost) : TokamakPlugin by plugin {
-    /** [event] as the JSON payload of the event [name], which `android/Exports.kt` lists. */
-    open fun eventPayload(name: String, event: Any): ByteArray = throw TokamakPluginError.unlistedEvent(name)
-
-    /** The listeners' [reply] to the event [name], which `android/Exports.kt` lists with a reply, as its type. */
-    open fun eventReply(name: String, reply: TokamakValue): Any = throw TokamakPluginError.unlistedReply(name)
-
-    /** [value], of a data class or sealed type the plugin's methods and events use, as the JSON org.json writes. */
-    open fun encodeValue(value: Any): Any = throw TokamakPluginError.typeError("android/Exports.kt uses no ${value.javaClass.simpleName}")
-
-    /** [json] as a data class or sealed [type] the plugin's methods and events use. */
-    open fun decodeValue(json: TokamakValue, type: KClass<*>): Any = throw TokamakPluginError.typeError("android/Exports.kt uses no ${type.simpleName}")
-
-    /** The JSON [json], as org.json reads it, as a [type], which [decodeValue] decodes. */
-    fun <T : Any> fromJson(json: Any?, type: KClass<T>): T {
-        val value = decodeValue(TokamakValue(json, "json"), type)
-        return type.castOrNull(value) ?: throw TokamakPluginError.typeError("json is ${value.javaClass.simpleName}, not ${type.simpleName}")
-    }
-
-    /** Delivers [event] to the Worker's listeners of the event [name], returning their encoded reply. */
-    fun emit(name: String, event: Any, timeoutMillis: Long): ByteArray = host.emitBytes(name, eventPayload(name, event), timeoutMillis)
-
-    /** [emit] returning the listeners' reply as a [reply], or null when none replied. */
-    fun <R : Any> emit(name: String, event: Any, reply: KClass<R>, timeoutMillis: Long): R? {
-        val payload = emit(name, event, timeoutMillis)
-        if (payload.isEmpty()) return null
-        val json = decodePluginValue(payload).takeUnless { it == JSONObject.NULL } ?: return null
-        val value = eventReply(name, TokamakValue(json, "reply"))
-        return reply.castOrNull(value)
-            ?: throw TokamakPluginError.typeError("event $name replies with ${value.javaClass.simpleName}, not ${reply.simpleName}")
-    }
-
-    /** [event] as the payload of the event [name], whose listeners receive a [type] as [encode] encodes it. */
-    protected fun <T : Any> encodeEvent(name: String, event: Any, type: KClass<T>, encode: (T) -> Any?): ByteArray {
-        val value = type.castOrNull(event)
-            ?: throw TokamakPluginError.typeError("event $name takes ${type.simpleName}, not ${event.javaClass.simpleName}")
-        return encodePluginValue(encode(value))
-    }
-
     /** Replies with what [method] returns, on the call's executor, with nothing to cancel. */
     protected fun respond(reply: TokamakPluginBytesReply, method: () -> Any?): (() -> Unit)? {
         reply(TokamakPluginResult.encoded(runCatching { encodePluginValue(method().unlessUnit()) }, true))
