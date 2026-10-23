@@ -66,11 +66,11 @@
     }
   },
   "devDependencies": {
-    "@astrojs/cloudflare": "13.1.8",
+    "@astrojs/cloudflare": "14.4.2",
     "@cloudflare/vite-plugin": "1.62.5",
     "@types/node": "22.19.15",
     "@types/ws": "8.18.2",
-    "astro": "6.1.5",
+    "astro": "7.4.2",
     "vite": "7.3.7",
     "wrangler": "4.147.0"
   },
