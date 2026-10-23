@@ -238,7 +238,7 @@ test_creates_the_dispatch_of_plugins_that_export_methods() {
   stage_plugin
   : > "$input/plugins/alerts/native/Exports.kt"
   entrypoint
-  contains "$gradle/app/src/main/kotlin/com/tokamak/runtime/TokamakPluginRegistry.kt" 'test.alerts.PluginDispatch(app.host("alerts")),'
+  contains "$gradle/app/src/main/kotlin/com/tokamak/runtime/TokamakPluginRegistry.kt" 'test.alerts.PluginDispatch(app.host("alerts", test.alerts.PluginDispatch)),'
 }
 
 test_rejects_invalid_plugin_classes_and_dependencies() {

@@ -92,8 +92,11 @@ class TokamakApplication : Application(), TokamakPlugins {
 
     override fun plugin(id: String): TokamakPlugin? = plugins[id].let { (it as? TokamakDispatch<*>)?.plugin ?: it }
 
-    /** The host the plugin [id] sees, whose events the Worker's listeners receive as `<id>.android.<name>`. */
-    internal fun host(id: String): TokamakHost =
+    /**
+     * The host the plugin [id] sees, whose events the Worker's listeners receive as
+     * `<id>.android.<name>`, and which converts values to and from JSON with the plugin's [codec].
+     */
+    internal fun host(id: String, codec: TokamakCodec? = null): TokamakHost =
         object : TokamakHost {
             override val context: Context
                 get() = this@TokamakApplication
@@ -122,21 +125,22 @@ class TokamakApplication : Application(), TokamakPlugins {
                 emitEvent("$id.android.$name", payload, timeoutMillis)
 
             override fun emit(name: String, event: Any, timeoutMillis: Long) {
-                dispatch { TokamakPluginError.unlistedEvent(name) }.emit(name, event, timeoutMillis)
+                dispatch(name).emit(name, event, timeoutMillis)
             }
 
             override fun <R : Any> emit(name: String, event: Any, reply: KClass<R>, timeoutMillis: Long): R? =
-                dispatch { TokamakPluginError.unlistedEvent(name) }.emit(name, event, reply, timeoutMillis)
+                dispatch(name).emit(name, event, reply, timeoutMillis)
 
-            override fun json(value: Any): Any = dispatch(::unregistered).encodeValue(value)
+            override fun json(value: Any): Any = codec().encodeValue(value)
 
-            override fun <T : Any> fromJson(json: Any?, type: KClass<T>): T = dispatch(::unregistered).fromJson(json, type)
+            override fun <T : Any> fromJson(json: Any?, type: KClass<T>): T = codec().fromJson(json, type)
 
-            /** The plugin's generated dispatch, or else the error [missing] gives. */
-            private fun dispatch(missing: () -> TokamakPluginError): TokamakDispatch<*> =
-                plugins[id] as? TokamakDispatch<*> ?: throw missing()
+            /** The generated dispatch that encodes the event [name]. */
+            private fun dispatch(name: String): TokamakDispatch<*> =
+                plugins[id] as? TokamakDispatch<*> ?: throw TokamakPluginError.unlistedEvent(name)
 
-            private fun unregistered() = TokamakPluginError.typeError("$id has no android/Exports.kt")
+            // The codec, unlike the dispatch, exists while the plugin is being created.
+            private fun codec(): TokamakCodec = codec ?: throw TokamakPluginError.typeError("$id has no android/Exports.kt")
 
             override fun fetch(path: String, timeoutMillis: Long): ByteArray {
                 val deadline = SystemClock.elapsedRealtime() + timeoutMillis

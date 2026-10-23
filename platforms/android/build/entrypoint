@@ -307,11 +307,13 @@ for plugin in "$input/plugins"/*/; do
     echo "plugin '$plugin_id' has invalid android class '$class'" >&2
     exit 1
   fi
-  # A plugin that exports methods runs behind the dispatch generated for it.
+  # A plugin that exports methods runs behind the dispatch generated for it,
+  # whose companion object converts its values for its host.
   if [[ -f "$plugin/native/Exports.kt" ]]; then
-    class=${class}Dispatch
+    printf '        %sDispatch(app.host("%s", %sDispatch)),\n' "$class" "$plugin_id" "$class" >> "$registry"
+  else
+    printf '        %s(app.host("%s")),\n' "$class" "$plugin_id" >> "$registry"
   fi
-  printf '        %s(app.host("%s")),\n' "$class" "$plugin_id" >> "$registry"
   module=$plugin_modules/$plugin_id
   mkdir -p "$module/src/main/kotlin"
   if [[ -d "$plugin/native" ]]; then

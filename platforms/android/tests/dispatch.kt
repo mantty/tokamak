@@ -13,6 +13,7 @@ import com.tokamak.runtime.TokamakPluginRequests
 import com.tokamak.runtime.TokamakPluginResult
 import com.tokamak.runtime.TokamakResources
 import com.tokamak.runtime.TokamakValue
+import com.tokamak.runtime.fromJson
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
@@ -195,11 +196,13 @@ class DispatchTest {
         check(withTimeoutOrNull(50) { dropping.stream().take(1).toList() } == null)
     }
 
-    /** The plugin's code converts the types its methods use to and from JSON, as the Worker sends them. */
+    /**
+     * The plugin's code converts the types its methods use to and from JSON, as the Worker sends
+     * them, without the dispatch, as while the plugin is being created.
+     */
     @Test
     fun values() {
         val host = Host()
-        host.dispatch = TokamakExamplePluginDispatch(host)
         val stored = host.json(Zone.Circle(2.0))
         check(stored is JSONObject && stored.similar(JSONObject("""{"kind":"circle","radius":2}"""))) { "$stored" }
         check(host.fromJson(stored, Zone::class) == Zone.Circle(2.0))
@@ -288,9 +291,10 @@ class DispatchTest {
         override fun <R : Any> emit(name: String, event: Any, reply: KClass<R>, timeoutMillis: Long): R? =
             dispatch.emit(name, event, reply, timeoutMillis)
 
-        override fun json(value: Any): Any = dispatch.encodeValue(value)
+        // As the app's host does, from the dispatch's companion, which needs no plugin.
+        override fun json(value: Any): Any = TokamakExamplePluginDispatch.encodeValue(value)
 
-        override fun <T : Any> fromJson(json: Any?, type: KClass<T>): T = dispatch.fromJson(json, type)
+        override fun <T : Any> fromJson(json: Any?, type: KClass<T>): T = TokamakExamplePluginDispatch.fromJson(json, type)
 
         override fun fetch(path: String, timeoutMillis: Long): ByteArray = error("unused")
     }
