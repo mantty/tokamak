@@ -20,14 +20,14 @@ class {{class}}Dispatch(host: TokamakHost) : TokamakDispatch<{{class}}>({{class}
         }
     }
 
-    override fun eventPayload(name: String, event: Any): ByteArray =
-        when (name) {
-            "echoed" -> encodeEvent(name, event, {{class}}.Echo::class) { json(it) }
-            else -> super.eventPayload(name, event)
-        }
-
-    /** Converts the data classes and sealed types [{{class}}] uses to and from JSON. */
+    /** Converts the values and events of [{{class}}] to and from JSON. */
     companion object : TokamakCodec {
+        override fun eventPayload(name: String, event: Any): ByteArray =
+            when (name) {
+                "echoed" -> encodeEvent(name, event, {{class}}.Echo::class) { json(it) }
+                else -> super.eventPayload(name, event)
+            }
+
         override fun encodeValue(value: Any): Any =
             when (value) {
                 is {{class}}.Echo -> json(value)

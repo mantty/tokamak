@@ -57,7 +57,7 @@ class TokamakSecureStoragePluginDispatch(host: TokamakHost) : TokamakDispatch<To
         }
     }
 
-    /** Converts the data classes and sealed types [TokamakSecureStoragePlugin] uses to and from JSON. */
+    /** Converts the values and events of [TokamakSecureStoragePlugin] to and from JSON. */
     companion object : TokamakCodec {
         override fun encodeValue(value: Any): Any =
             when (value) {

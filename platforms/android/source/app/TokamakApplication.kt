@@ -125,22 +125,22 @@ class TokamakApplication : Application(), TokamakPlugins {
                 emitEvent("$id.android.$name", payload, timeoutMillis)
 
             override fun emit(name: String, event: Any, timeoutMillis: Long) {
-                dispatch(name).emit(name, event, timeoutMillis)
+                emitBytes(name, codec { TokamakPluginError.unlistedEvent(name) }.eventPayload(name, event), timeoutMillis)
             }
 
-            override fun <R : Any> emit(name: String, event: Any, reply: KClass<R>, timeoutMillis: Long): R? =
-                dispatch(name).emit(name, event, reply, timeoutMillis)
+            override fun <R : Any> emit(name: String, event: Any, reply: KClass<R>, timeoutMillis: Long): R? {
+                val codec = codec { TokamakPluginError.unlistedEvent(name) }
+                return codec.reply(name, emitBytes(name, codec.eventPayload(name, event), timeoutMillis), reply)
+            }
 
-            override fun json(value: Any): Any = codec().encodeValue(value)
+            override fun json(value: Any): Any = codec(::unregistered).encodeValue(value)
 
-            override fun <T : Any> fromJson(json: Any?, type: KClass<T>): T = codec().fromJson(json, type)
+            override fun <T : Any> fromJson(json: Any?, type: KClass<T>): T = codec(::unregistered).fromJson(json, type)
 
-            /** The generated dispatch that encodes the event [name]. */
-            private fun dispatch(name: String): TokamakDispatch<*> =
-                plugins[id] as? TokamakDispatch<*> ?: throw TokamakPluginError.unlistedEvent(name)
+            /** The plugin's codec, or else the error [missing] gives: a plugin without `android/Exports.kt` has none. */
+            private fun codec(missing: () -> TokamakPluginError): TokamakCodec = codec ?: throw missing()
 
-            // The codec, unlike the dispatch, exists while the plugin is being created.
-            private fun codec(): TokamakCodec = codec ?: throw TokamakPluginError.typeError("$id has no android/Exports.kt")
+            private fun unregistered() = TokamakPluginError.typeError("$id has no android/Exports.kt")
 
             override fun fetch(path: String, timeoutMillis: Long): ByteArray {
                 val deadline = SystemClock.elapsedRealtime() + timeoutMillis

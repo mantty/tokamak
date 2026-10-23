@@ -13,7 +13,6 @@ import com.tokamak.runtime.TokamakPluginRequests
 import com.tokamak.runtime.TokamakPluginResult
 import com.tokamak.runtime.TokamakResources
 import com.tokamak.runtime.TokamakValue
-import com.tokamak.runtime.fromJson
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
@@ -196,10 +195,7 @@ class DispatchTest {
         check(withTimeoutOrNull(50) { dropping.stream().take(1).toList() } == null)
     }
 
-    /**
-     * The plugin's code converts the types its methods use to and from JSON, as the Worker sends
-     * them, without the dispatch, as while the plugin is being created.
-     */
+    /** The plugin's code converts the types its methods use to and from JSON, as the Worker sends them. */
     @Test
     fun values() {
         val host = Host()
@@ -219,7 +215,7 @@ class DispatchTest {
     @Test
     fun events() {
         val host = Host()
-        val dispatch = TokamakExamplePluginDispatch(host).also { host.dispatch = it }
+        val dispatch = TokamakExamplePluginDispatch
         val region = Region("home", 50.0, null, emptyList(), emptyMap(), null)
         val entered = dispatch.eventPayload("entered", region).toString(Charsets.UTF_8)
         check(entered.contains("\"id\":\"home\"") && !entered.contains("onEntry")) { entered }
@@ -277,7 +273,6 @@ class DispatchTest {
         /** The events emitted, by name, which the Worker's listeners answer with [reply]. */
         val emitted = mutableListOf<String>()
         var reply = ByteArray(0)
-        lateinit var dispatch: TokamakDispatch<*>
 
         override fun emitBytes(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray {
             emitted += name
@@ -285,13 +280,14 @@ class DispatchTest {
         }
 
         override fun emit(name: String, event: Any, timeoutMillis: Long) {
-            dispatch.emit(name, event, timeoutMillis)
+            emitBytes(name, TokamakExamplePluginDispatch.eventPayload(name, event), timeoutMillis)
         }
 
-        override fun <R : Any> emit(name: String, event: Any, reply: KClass<R>, timeoutMillis: Long): R? =
-            dispatch.emit(name, event, reply, timeoutMillis)
+        override fun <R : Any> emit(name: String, event: Any, reply: KClass<R>, timeoutMillis: Long): R? {
+            val payload = emitBytes(name, TokamakExamplePluginDispatch.eventPayload(name, event), timeoutMillis)
+            return TokamakExamplePluginDispatch.reply(name, payload, reply)
+        }
 
-        // As the app's host does, from the dispatch's companion, which needs no plugin.
         override fun json(value: Any): Any = TokamakExamplePluginDispatch.encodeValue(value)
 
         override fun <T : Any> fromJson(json: Any?, type: KClass<T>): T = TokamakExamplePluginDispatch.fromJson(json, type)

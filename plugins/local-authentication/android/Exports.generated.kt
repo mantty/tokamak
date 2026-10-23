@@ -29,6 +29,6 @@ class TokamakLocalAuthenticationPluginDispatch(host: TokamakHost) : TokamakDispa
         }
     }
 
-    /** Converts the data classes and sealed types [TokamakLocalAuthenticationPlugin] uses to and from JSON. */
+    /** Converts the values and events of [TokamakLocalAuthenticationPlugin] to and from JSON. */
     companion object : TokamakCodec
 }

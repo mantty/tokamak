@@ -63,22 +63,22 @@ class TokamakNotificationsPluginDispatch(host: TokamakHost) : TokamakDispatch<To
         }
     }
 
-    override fun eventPayload(name: String, event: Any): ByteArray =
-        when (name) {
-            "push" -> encodeEvent(name, event, Message::class) { json(it) }
-            "opened" -> encodeEvent(name, event, OpenedNotification::class) { json(it) }
-            "dismissed" -> encodeEvent(name, event, DismissedNotification::class) { json(it) }
-            else -> super.eventPayload(name, event)
-        }
-
-    override fun eventReply(name: String, reply: TokamakValue): Any =
-        when (name) {
-            "push" -> reply.asNotificationContent()
-            else -> super.eventReply(name, reply)
-        }
-
-    /** Converts the data classes and sealed types [TokamakNotificationsPlugin] uses to and from JSON. */
+    /** Converts the values and events of [TokamakNotificationsPlugin] to and from JSON. */
     companion object : TokamakCodec {
+        override fun eventPayload(name: String, event: Any): ByteArray =
+            when (name) {
+                "push" -> encodeEvent(name, event, Message::class) { json(it) }
+                "opened" -> encodeEvent(name, event, OpenedNotification::class) { json(it) }
+                "dismissed" -> encodeEvent(name, event, DismissedNotification::class) { json(it) }
+                else -> super.eventPayload(name, event)
+            }
+
+        override fun eventReply(name: String, reply: TokamakValue): Any =
+            when (name) {
+                "push" -> reply.asNotificationContent()
+                else -> super.eventReply(name, reply)
+            }
+
         override fun encodeValue(value: Any): Any =
             when (value) {
                 is ActionInput -> json(value)

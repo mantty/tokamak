@@ -57,16 +57,16 @@ class TokamakLocationPluginDispatch(host: TokamakHost) : TokamakDispatch<Tokamak
         }
     }
 
-    override fun eventPayload(name: String, event: Any): ByteArray =
-        when (name) {
-            "update" -> encodeEvent(name, event, LocationUpdate::class) { json(it) }
-            "region" -> encodeEvent(name, event, RegionTransition::class) { json(it) }
-            "error" -> encodeEvent(name, event, LocationErrorEvent::class) { json(it) }
-            else -> super.eventPayload(name, event)
-        }
-
-    /** Converts the data classes and sealed types [TokamakLocationPlugin] uses to and from JSON. */
+    /** Converts the values and events of [TokamakLocationPlugin] to and from JSON. */
     companion object : TokamakCodec {
+        override fun eventPayload(name: String, event: Any): ByteArray =
+            when (name) {
+                "update" -> encodeEvent(name, event, LocationUpdate::class) { json(it) }
+                "region" -> encodeEvent(name, event, RegionTransition::class) { json(it) }
+                "error" -> encodeEvent(name, event, LocationErrorEvent::class) { json(it) }
+                else -> super.eventPayload(name, event)
+            }
+
         override fun encodeValue(value: Any): Any =
             when (value) {
                 is Coordinates -> json(value)

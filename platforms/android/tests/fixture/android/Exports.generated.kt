@@ -75,22 +75,22 @@ class TokamakExamplePluginDispatch(host: TokamakHost) : TokamakDispatch<TokamakE
         }
     }
 
-    override fun eventPayload(name: String, event: Any): ByteArray =
-        when (name) {
-            "entered" -> encodeEvent(name, event, Region::class) { json(it) }
-            "asked" -> encodeEvent(name, event, Region::class) { json(it) }
-            "visited" -> encodeEvent(name, event, Visit::class) { json(it) }
-            else -> super.eventPayload(name, event)
-        }
-
-    override fun eventReply(name: String, reply: TokamakValue): Any =
-        when (name) {
-            "asked" -> reply.enum(Precision.entries)
-            else -> super.eventReply(name, reply)
-        }
-
-    /** Converts the data classes and sealed types [TokamakExamplePlugin] uses to and from JSON. */
+    /** Converts the values and events of [TokamakExamplePlugin] to and from JSON. */
     companion object : TokamakCodec {
+        override fun eventPayload(name: String, event: Any): ByteArray =
+            when (name) {
+                "entered" -> encodeEvent(name, event, Region::class) { json(it) }
+                "asked" -> encodeEvent(name, event, Region::class) { json(it) }
+                "visited" -> encodeEvent(name, event, Visit::class) { json(it) }
+                else -> super.eventPayload(name, event)
+            }
+
+        override fun eventReply(name: String, reply: TokamakValue): Any =
+            when (name) {
+                "asked" -> reply.enum(Precision.entries)
+                else -> super.eventReply(name, reply)
+            }
+
         override fun encodeValue(value: Any): Any =
             when (value) {
                 is Alert -> json(value)
