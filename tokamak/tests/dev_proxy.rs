@@ -67,12 +67,16 @@ fn forwards_http_and_websocket_traffic_to_the_host_server() -> TestResult {
     )?;
     http.write_all(&[0, 0xff, 1])?;
     http.flush()?;
-    let response = read_http_response(&mut http)?;
-    assert!(response.starts_with("HTTP/1.1 201 Created Here\r\n"));
-    assert!(response.contains("set-cookie: first=1\r\n"));
-    assert!(response.contains("set-cookie: second=2\r\n"));
-    assert!(response.contains("x-text: 東京\r\n"));
-    assert!(response.ends_with("host response"));
+    assert_http_response(
+        &read_http_response(&mut http)?,
+        "HTTP/1.1 201 Created Here\r\n",
+        &[
+            "set-cookie: first=1\r\n",
+            "set-cookie: second=2\r\n",
+            "x-text: 東京\r\n",
+        ],
+        "host response",
+    );
 
     let mut websocket = connect_gateway(&runtime, &state)?;
     websocket.write_all(
@@ -81,13 +85,9 @@ fn forwards_http_and_websocket_traffic_to_the_host_server() -> TestResult {
     websocket.flush()?;
     let upgrade = read_header_block(&mut websocket)?;
     assert!(String::from_utf8(upgrade)?.starts_with("HTTP/1.1 101"));
-    let (opcode, payload) = read_frame(&mut websocket)?;
-    assert_eq!(opcode, 0x1);
-    assert_eq!(payload, b"update");
+    assert_eq!(read_frame(&mut websocket)?, (0x1, b"update".to_vec()));
     write_masked_frame(&mut websocket, 0x1, b"ping")?;
-    let (opcode, payload) = read_frame(&mut websocket)?;
-    assert_eq!(opcode, 0x1);
-    assert_eq!(payload, b"pong");
+    assert_eq!(read_frame(&mut websocket)?, (0x1, b"pong".to_vec()));
     write_masked_frame(&mut websocket, 0x8, &[3, 232])?;
 
     host_server.join().map_err(|_| "host server panicked")??;
@@ -972,6 +972,17 @@ fn read_http_response(stream: &mut StreamOwned<ClientConnection, TcpStream>) -> 
     let mut body = vec![0; length];
     stream.read_exact(&mut body)?;
     Ok(format!("{text}{}", String::from_utf8(body)?))
+}
+
+fn assert_http_response(response: &str, status_line: &str, headers: &[&str], body: &str) {
+    assert!(response.starts_with(status_line), "{response:?}");
+    for header in headers {
+        assert!(
+            response.contains(header),
+            "missing {header:?}: {response:?}"
+        );
+    }
+    assert!(response.ends_with(body), "{response:?}");
 }
 
 fn read_chunk(stream: &mut impl Read) -> TestResult<Vec<u8>> {
