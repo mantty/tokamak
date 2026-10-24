@@ -126,7 +126,8 @@ types:
   TypeScript API, a factory `apple(ctx, signal?)` or `android(ctx, signal?)`
   whose methods reject with `NotSupportedError` off the family's platforms, and
   a function per event that registers its listeners, such as `onRang`. Aborting
-  `signal` cancels the methods' calls.
+  `signal` cancels the methods' calls, streams and resource acquisitions, which
+  fail with its reason.
 - `apple/Exports.generated.swift` or `android/Exports.generated.kt`: the native
   dispatch, which decodes the Worker's arguments, calls the method, and encodes
   its result, and which encodes the events native code emits.
@@ -201,9 +202,10 @@ Swift methods are plain, `async`, or isolated to a global actor such as
 `@MainActor`; a stream returns an `AsyncSequence` such as `AsyncStream`. Kotlin
 methods are plain or `suspend` functions; a stream returns a `Flow`.
 `TokamakListeners` feeds each listener's stream from native callbacks, holding
-values until the first listener when it is created `holding`. A thrown
-`TokamakPluginError` rejects with a `DOMException` of its name and message, and
-cancelling the call cancels the `Task` or coroutine.
+values until the first listener when it is created `holding`. A stream keeps
+every value its reader has not taken, so the stream's registered `overflow`
+applies. A thrown `TokamakPluginError` rejects with a `DOMException` of its
+name and message, and cancelling the call cancels the `Task` or coroutine.
 
 The plugin's TypeScript API, the manifest's `api` factory, is written on top of
 the generated ones. `platformApi(ctx, { apple, android })` returns the API of

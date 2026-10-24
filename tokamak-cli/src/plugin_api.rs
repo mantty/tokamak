@@ -682,7 +682,7 @@ pub(crate) fn typescript(
         .collect::<Vec<_>>();
     let _ = write!(
         source,
-        "}}\n\n/**\n * The {id} plugin's native methods. Off {names} they reject with `NotSupportedError`.\n * Aborting `signal` cancels their calls.\n */\nexport function {}(ctx: TokamakContext, signal?: AbortSignal): {interface} {{\n  const endpoint = new NativeEndpoint(ctx, {id:?}, {namespaces:?}, signal);\n  return {{\n",
+        "}}\n\n/**\n * The {id} plugin's native methods. Off {names} they reject with `NotSupportedError`.\n * Aborting `signal` cancels their calls, streams and resource acquisitions.\n */\nexport function {}(ctx: TokamakContext, signal?: AbortSignal): {interface} {{\n  const endpoint = new NativeEndpoint(ctx, {id:?}, {namespaces:?}, signal);\n  return {{\n",
         family.name()
     );
     for method in &description.methods {

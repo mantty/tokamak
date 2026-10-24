@@ -99,6 +99,29 @@ void test("aborting an endpoint's signal cancels its calls and rejects with the 
   await assert.rejects(endpoint.call("upload"), { message: "stopped" });
 });
 
+void test("aborting an endpoint's signal ends its streams with the reason", async () => {
+  const native = connectNative();
+  const controller = new AbortController();
+  const endpoint = new NativeEndpoint(native.ctx, "example", ["ios"], controller.signal);
+  const values = decodeValues(endpoint.stream("watch"));
+  controller.abort(new DOMException("stopped", "AbortError"));
+  await assert.rejects(values.next(), { name: "AbortError", message: "stopped" });
+  assert.deepEqual(native.sent.at(-1), { type: "cancel", id: 1 });
+  await assert.rejects(decodeValues(endpoint.stream("watch")).next(), { message: "stopped" });
+  assert.equal(native.sent.length, 2);
+});
+
+void test("aborting an endpoint's signal after a stream ends keeps its unread values", async () => {
+  const native = connectNative();
+  const controller = new AbortController();
+  const values = decodeValues<number>(new NativeEndpoint(native.ctx, "example", ["ios"], controller.signal).stream("watch"));
+  native.respond({ value: 1 }, false);
+  native.respondBytes(new Uint8Array(), true);
+  controller.abort();
+  assert.deepEqual(await values.next(), { value: 1, done: false });
+  assert.equal((await values.next()).done, true);
+});
+
 void test("a stream passes its overflow policy to the native subscription", () => {
   const native = connectNative();
   void example(native.ctx).stream("samples", {}, "dropOldest").getReader().read();

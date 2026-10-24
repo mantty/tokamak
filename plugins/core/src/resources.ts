@@ -24,33 +24,33 @@ export class NativeReference {
 
   /**
    * Retains the object that the native subscription `method` of `plugin` holds open: its first
-   * value is the object's ID.
+   * value is the object's ID. Aborting `signal` before then releases the object, rejecting with
+   * the signal's reason.
    */
-  static async acquire(ctx: TokamakContext, plugin: string, method: string, payload: Uint8Array): Promise<NativeReference> {
+  static async acquire(ctx: TokamakContext, plugin: string, method: string, payload: Uint8Array, signal?: AbortSignal): Promise<NativeReference> {
+    signal?.throwIfAborted();
     let release = () => {};
+    let abort = () => {};
     try {
       // The subscription's listeners never hold the reference, so garbage collection can release it.
       const id = await new Promise<Uint8Array>((resolve, reject) => {
-        let settled = false;
+        abort = () => { reject(signal?.reason as Error); };
+        signal?.addEventListener("abort", abort, { once: true });
         release = ctx[nativeConnection].listen(plugin, method, payload, {
           next(value, done) {
-            if (settled) return;
-            settled = true;
             if (done) reject(new DOMException("The native object was not retained", "InvalidStateError"));
             else resolve(value);
           },
           // A later failure ends the subscription: the released object fails where it is used.
-          error(error) {
-            if (settled) return;
-            settled = true;
-            reject(error);
-          },
+          error: reject,
         });
       });
       return new NativeReference(ctx, decodeJson<string>(id), release);
     } catch (error) {
       release();
       throw error;
+    } finally {
+      signal?.removeEventListener("abort", abort);
     }
   }
 

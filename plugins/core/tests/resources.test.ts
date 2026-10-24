@@ -70,6 +70,29 @@ void test("acquisition failures reject and release the subscription", async () =
   assert.equal(cancellations(malformed), 1);
 });
 
+void test("aborting an endpoint's signal stops acquisition and releases the subscription", async () => {
+  const native = connectNative();
+  const controller = new AbortController();
+  const endpoint = new NativeEndpoint(native.ctx, "producer", ["ios"], controller.signal);
+  const frame = endpoint.resource("frame");
+  controller.abort(new DOMException("stopped", "AbortError"));
+  await assert.rejects(frame, { name: "AbortError", message: "stopped" });
+  assert.equal(cancellations(native), 1);
+  await assert.rejects(endpoint.resource("frame"), { message: "stopped" });
+  assert.equal(native.sent.length, 2);
+});
+
+void test("aborting an endpoint's signal after acquisition leaves the reference open", async () => {
+  const native = connectNative();
+  const controller = new AbortController();
+  const pending = new NativeEndpoint(native.ctx, "producer", ["ios"], controller.signal).resource("frame");
+  native.respond({ value: "frame-1" }, false);
+  const frame = await pending;
+  controller.abort();
+  assert.equal(cancellations(native), 0);
+  assert.equal(frame.idFor(native.ctx), "frame-1");
+});
+
 void test("garbage collection releases an unclosed native reference", async () => {
   v8.setFlagsFromString("--expose-gc");
   const gc = vm.runInNewContext("gc") as () => void;

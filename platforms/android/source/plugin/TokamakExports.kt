@@ -8,7 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.onSubscription
@@ -64,16 +64,17 @@ class TokamakExporter<P : TokamakPlugin> internal constructor() {
     }
 }
 
-/** How many values listeners keep: those a slow reader has not taken, or those held for the first. */
-private const val LISTENER_CAPACITY = 64
+/** How many values wait for the first listener. */
+private const val HELD_CAPACITY = 64
 
 /**
  * The flows of an event's listeners, such as a page's, each of which receives every value [send]
- * delivers while it collects, keeping the newest 64 that a slow one has not taken. When [holding],
- * the newest 64 values sent while none listen wait for the first listener.
+ * delivers while it collects. A flow keeps every value its collector has not taken, so a Worker's
+ * subscription applies its own overflow policy. When [holding], the newest 64 values sent while
+ * none listen wait for the first listener.
  */
 class TokamakListeners<T>(private val holding: Boolean = false) {
-    private val values = MutableSharedFlow<T>(extraBufferCapacity = LISTENER_CAPACITY, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private val values = MutableSharedFlow<T>(extraBufferCapacity = Channel.UNLIMITED)
     private val held = mutableListOf<T>()
 
     /** A new listener's flow. */
@@ -86,7 +87,7 @@ class TokamakListeners<T>(private val holding: Boolean = false) {
         synchronized(held) {
             if (holding && values.subscriptionCount.value == 0) {
                 held += value
-                if (held.size > LISTENER_CAPACITY) held.removeAt(0)
+                if (held.size > HELD_CAPACITY) held.removeAt(0)
                 return
             }
         }

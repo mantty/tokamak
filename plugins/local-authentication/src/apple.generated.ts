@@ -15,7 +15,7 @@ export interface Apple {
 
 /**
  * The local-authentication plugin's native methods. Off iOS and macOS they reject with `NotSupportedError`.
- * Aborting `signal` cancels their calls.
+ * Aborting `signal` cancels their calls, streams and resource acquisitions.
  */
 export function apple(ctx: TokamakContext, signal?: AbortSignal): Apple {
   const endpoint = new NativeEndpoint(ctx, "local-authentication", ["ios", "macos"], signal);
