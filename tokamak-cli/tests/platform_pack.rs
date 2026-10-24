@@ -33,10 +33,11 @@ fn parses_known_targets_and_rejects_unknown_targets() {
     assert_eq!(Target::MacosArm64.to_string(), "macos-arm64");
     assert_eq!(Target::MacosX64.to_string(), "macos-x64");
     assert_eq!(Target::WindowsX64.to_string(), "windows-x64");
-    assert!(matches!(
-        Target::from_str("ios-armv7"),
-        Err(PlatformPackError::UnknownTarget(target)) if target == "ios-armv7"
-    ));
+    let unknown = Target::from_str("ios-armv7");
+    let Err(PlatformPackError::UnknownTarget(target)) = &unknown else {
+        panic!("ios-armv7 is not an unknown target: {unknown:?}");
+    };
+    assert_eq!(target, "ios-armv7");
 }
 
 #[test]
