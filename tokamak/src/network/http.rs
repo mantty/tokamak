@@ -304,16 +304,13 @@ async fn send(
         let location = response.headers().get("location");
         let bodyless = request.method == Method::HEAD || matches!(status, 204 | 205 | 304);
         let follow = matches!(status, 301 | 302 | 303 | 307 | 308) && request.redirect != "manual";
-        let location = match location {
-            Some(location) if follow => location,
-            _ => {
-                return Ok(FetchResponse {
-                    response,
-                    url: request.url,
-                    redirected: count > 0,
-                    bodyless,
-                });
-            }
+        let Some(location) = location.filter(|_| follow) else {
+            return Ok(FetchResponse {
+                response,
+                url: request.url,
+                redirected: count > 0,
+                bodyless,
+            });
         };
         if count == 20 {
             return Err("Redirect limit exceeded".into());
@@ -321,23 +318,28 @@ async fn send(
         request.url = request.url.join(location.to_str()?)?;
         while response.body_mut().frame().await.transpose()?.is_some() {}
         upload.clone().await?;
-        if (matches!(status, 301 | 302) && request.method == Method::POST)
-            || (status == 303 && request.method != Method::GET && request.method != Method::HEAD)
-        {
-            request.method = Method::GET;
-            request.body = RequestBody::Bytes(Vec::new());
-            for name in [
-                "content-encoding",
-                "content-language",
-                "content-location",
-                "content-type",
-                "content-length",
-            ] {
-                request.headers.remove(name);
-            }
-        }
+        redirect_as_get(&mut request, status);
     }
     unreachable!("redirect limit is checked before following a redirect")
+}
+
+/// Makes `request` a bodyless GET where fetch requires it after a `status` redirect.
+fn redirect_as_get(request: &mut Request, status: u16) {
+    if (matches!(status, 301 | 302) && request.method == Method::POST)
+        || (status == 303 && request.method != Method::GET && request.method != Method::HEAD)
+    {
+        request.method = Method::GET;
+        request.body = RequestBody::Bytes(Vec::new());
+        for name in [
+            "content-encoding",
+            "content-language",
+            "content-location",
+            "content-type",
+            "content-length",
+        ] {
+            request.headers.remove(name);
+        }
+    }
 }
 
 fn response_object<'js>(
