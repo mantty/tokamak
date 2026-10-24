@@ -168,13 +168,13 @@ fn round_trips_manifest_json_without_losing_contract_fields() -> TestResult {
 
     write_manifest(&manifest_path, &manifest)?;
     let json = fs::read_to_string(&manifest_path)?;
-    assert!(json.contains("\"target\": \"ios-arm64\""));
-    assert!(json.contains("\"tokamakVersion\": \"0.1.0\""));
-    assert!(json.contains("\"kind\": \"path\""));
-    assert!(json.contains("\"sources\": \"paths\""));
-    assert!(!json.contains("requiredCliVersion"));
-    assert!(!json.contains("schemaVersion"));
-    assert!(!json.contains("sha256"));
+    assert!(json.contains("\"target\": \"ios-arm64\""), "{json}");
+    assert!(json.contains("\"tokamakVersion\": \"0.1.0\""), "{json}");
+    assert!(json.contains("\"kind\": \"path\""), "{json}");
+    assert!(json.contains("\"sources\": \"paths\""), "{json}");
+    assert!(!json.contains("requiredCliVersion"), "{json}");
+    assert!(!json.contains("schemaVersion"), "{json}");
+    assert!(!json.contains("sha256"), "{json}");
 
     let loaded = load_manifest(&manifest_path)?;
     assert_eq!(loaded, manifest);
