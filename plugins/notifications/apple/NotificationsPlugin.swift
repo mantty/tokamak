@@ -505,7 +505,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     #if targetEnvironment(simulator)
       return "development"
     #elseif os(iOS)
-      return profileEntitlement(pushEntitlement)
+      return profilePushEnvironment()
     #else
       return entitlement(pushEntitlement) as? String
     #endif
@@ -519,11 +519,14 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
   #endif
 
   #if os(iOS) && !targetEnvironment(simulator)
-    /// An entitlement in the embedded provisioning profile, which signing takes
-    /// the push environment from.
-    private static func profileEntitlement(_ key: String) -> String? {
+    /// The push environment in the embedded provisioning profile, which signing takes it
+    /// from. TestFlight and App Store builds carry no embedded profile and use production.
+    private static func profilePushEnvironment() -> String? {
+      guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision")
+      else {
+        return "production"
+      }
       guard
-        let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
         let profile = try? Data(contentsOf: url),
         let start = profile.range(of: Data("<?xml".utf8)),
         let end = profile.range(of: Data("</plist>".utf8), in: start.lowerBound..<profile.endIndex),
@@ -534,7 +537,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       else {
         return nil
       }
-      return (plist["Entitlements"] as? [String: Any])?[key] as? String
+      return (plist["Entitlements"] as? [String: Any])?[pushEntitlement] as? String
     }
   #endif
 

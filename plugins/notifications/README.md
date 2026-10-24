@@ -454,7 +454,7 @@ Local notifications need no declarations. Push needs these:
 
 | Platform | Declaration |
 |---|---|
-| iOS | `aps-environment` in the app's entitlements file, set with `ios.entitlements`. The value may be `development`: signing uses the provisioning profile's value. Push requires a paid Apple Developer Program team. |
+| iOS | `aps-environment` in the app's entitlements file, set with `ios.entitlements`. The value may be `development`: signing uses the provisioning profile's value, and TestFlight and App Store builds subscribe in `production`. Push requires a paid Apple Developer Program team. |
 | macOS | `com.apple.developer.aps-environment` in the `macos.entitlements` file, and a team-signed build (`macos.team-id`). |
 | Android | The app's Firebase project values as `<meta-data>` in its `android.manifest` file, from the Firebase console's project settings. |
 | Web | A service worker that uses the helper below, and the app's VAPID public key as `applicationServerKey`. |
