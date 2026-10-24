@@ -159,8 +159,6 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       guard Self.entitlement("com.apple.application-identifier") != nil else {
         throw TokamakPluginError.notSupported("Push requires a team-signed build")
       }
-    #endif
-    #if !targetEnvironment(simulator)
       guard Self.apsEnvironment != nil else {
         throw TokamakPluginError(
           name: "InvalidStateError",
@@ -212,7 +210,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     let subscription = Subscription(
       service: .apns,
       token: deviceToken.map { String(format: "%02x", $0) }.joined(),
-      environment: Self.apsEnvironment == "production" ? .production : .development
+      environment: Self.apsEnvironment ?? .development
     )
     defaults.set(
       [
@@ -500,14 +498,20 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
     #endif
   }
 
-  /// The APNs environment the app is signed for, or nil without the push entitlement.
-  private static let apsEnvironment: String? = {
+  /// The APNs environment the app is signed for, or nil without a readable push entitlement.
+  private static let apsEnvironment: PushEnvironment? = {
     #if targetEnvironment(simulator)
-      return "development"
+      return .development
     #elseif os(iOS)
-      return profileEntitlement(pushEntitlement)
+      // App Store and TestFlight builds have no embedded profile and use production.
+      guard
+        let profileURL = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision")
+      else {
+        return .production
+      }
+      return profileEntitlement(pushEntitlement, in: profileURL).flatMap(PushEnvironment.init)
     #else
-      return entitlement(pushEntitlement) as? String
+      return (entitlement(pushEntitlement) as? String).flatMap(PushEnvironment.init)
     #endif
   }()
 
@@ -519,11 +523,10 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
   #endif
 
   #if os(iOS) && !targetEnvironment(simulator)
-    /// An entitlement in the embedded provisioning profile, which signing takes
-    /// the push environment from.
-    private static func profileEntitlement(_ key: String) -> String? {
+    /// An entitlement in a provisioning profile, which signing takes the push
+    /// environment from.
+    private static func profileEntitlement(_ key: String, in url: URL) -> String? {
       guard
-        let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
         let profile = try? Data(contentsOf: url),
         let start = profile.range(of: Data("<?xml".utf8)),
         let end = profile.range(of: Data("</plist>".utf8), in: start.lowerBound..<profile.endIndex),
