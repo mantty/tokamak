@@ -171,9 +171,10 @@ fn writes_only_when_the_conditions_hold() -> TestResult {
         "k",
         &request(&json!({ "onlyIf": { "etagDoesNotMatch": [{ "type": "wildcard" }] } }))?,
     )?;
-    assert!(
-        matches!(unmet, Some(Read::Unmet(object)) if object.range.map(|range| range.length) == Some(3))
-    );
+    let Some(Read::Unmet(object)) = unmet else {
+        return Err("the read's conditions held".into());
+    };
+    assert_eq!(object.range.map(|range| range.length), Some(3));
     Ok(())
 }
 

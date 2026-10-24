@@ -454,23 +454,21 @@ export default class App extends WorkerEntrypoint {
         directory.path(),
     )?;
     let response: serde_json::Value = serde_json::from_slice(&request(&worker, "enabled")?)?;
-    assert_eq!(response["instance"], true);
-    assert_eq!(response["env"], "enabled");
-    assert_eq!(response["importedEnv"], "enabled");
-    assert_eq!(
-        response["contextExports"],
-        serde_json::json!(["default", "named"])
-    );
-    assert_eq!(
-        response["importedExports"],
-        serde_json::json!(["default", "named"])
-    );
-    assert_eq!(response["named"], 42);
-    assert_eq!(
-        response["context"],
-        serde_json::json!(["access", "cache", "exports", "props", "tracing"])
-    );
-    assert_eq!(response["props"], serde_json::json!({}));
+    for (field, expected) in [
+        ("instance", serde_json::json!(true)),
+        ("env", serde_json::json!("enabled")),
+        ("importedEnv", serde_json::json!("enabled")),
+        ("contextExports", serde_json::json!(["default", "named"])),
+        ("importedExports", serde_json::json!(["default", "named"])),
+        ("named", serde_json::json!(42)),
+        (
+            "context",
+            serde_json::json!(["access", "cache", "exports", "props", "tracing"]),
+        ),
+        ("props", serde_json::json!({})),
+    ] {
+        assert_eq!(response[field], expected, "{field}");
+    }
     Ok(())
 }
 

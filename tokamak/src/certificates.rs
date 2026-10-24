@@ -394,8 +394,8 @@ mod bundle_tests {
             );
             assert_eq!(lifetime(&generated), lifetime(&expected), "{name}");
             assert_eq!(
-                generated.signature_algorithm.algorithm,
-                expected.signature_algorithm.algorithm
+                generated.signature_algorithm.algorithm, expected.signature_algorithm.algorithm,
+                "{name}"
             );
             assert_eq!(
                 key_identifier(&generated),

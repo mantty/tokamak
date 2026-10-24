@@ -23,6 +23,21 @@ fn install_node_fs(ctx: &Ctx<'_>, root: &Path) -> rquickjs::Result<()> {
     Ok(())
 }
 
+fn assert_module_exports(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
+    let namespace: Object = Module::import(ctx, MODULE_NAME)?.finish()?;
+    let default: Object = namespace.get("default")?;
+    assert!(default.get::<_, rquickjs::Function>("readFileSync").is_ok());
+    assert!(namespace.get::<_, Object>("promises").is_ok());
+    let promises_namespace: Object = Module::import(ctx, PROMISES_MODULE_NAME)?.finish()?;
+    assert!(
+        promises_namespace
+            .get::<_, rquickjs::Function>("readFile")
+            .is_ok()
+    );
+    assert!(promises_namespace.get::<_, Object>("default").is_ok());
+    Ok(())
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>> {
@@ -36,16 +51,7 @@ fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>
     let context = Context::full(&runtime)?;
     context.with(|ctx| -> Result<(), Box<dyn std::error::Error>> {
             install_node_fs(&ctx, directory.path())?;
-            let namespace: Object = Module::import(&ctx, MODULE_NAME)?.finish()?;
-            let default: Object = namespace.get("default")?;
-            assert!(default.get::<_, rquickjs::Function>("readFileSync").is_ok());
-            assert!(namespace.get::<_, Object>("promises").is_ok());
-            let promises_namespace: Object =
-                Module::import(&ctx, PROMISES_MODULE_NAME)?.finish()?;
-            assert!(promises_namespace
-                .get::<_, rquickjs::Function>("readFile")
-                .is_ok());
-            assert!(promises_namespace.get::<_, Object>("default").is_ok());
+            assert_module_exports(&ctx)?;
             let result: String = ctx.eval(
                 r#"(() => {
                   const fs = process.getBuiltinModule("node:fs");

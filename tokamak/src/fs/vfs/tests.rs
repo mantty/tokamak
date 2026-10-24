@@ -176,7 +176,7 @@ fn supports_access_copy_links_temp_and_vectors() -> TestResult {
     assert_eq!(vfs.read_file("/tmp/tree-copy/nested.txt")?, b"nested");
 
     let temp = vfs.make_temp_dir("/tmp/prefix-")?;
-    assert!(temp.starts_with("/tmp/prefix-"));
+    assert!(temp.starts_with("/tmp/prefix-"), "{temp}");
     assert_eq!(vfs.stat(&temp)?.kind, NodeType::Directory);
 
     let descriptor = vfs.open(

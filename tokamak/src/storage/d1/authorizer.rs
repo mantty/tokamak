@@ -372,16 +372,24 @@ mod tests {
 
     #[test]
     fn permits_pragmas_with_their_argument_forms() {
-        assert!(allowed_pragma("page_size", None));
-        assert!(!allowed_pragma("page_size", Some("4096")));
-        assert!(allowed_pragma("foreign_keys", Some("OFF")));
-        assert!(allowed_pragma("foreign_keys", None));
-        assert!(!allowed_pragma("foreign_keys", Some("maybe")));
-        assert!(allowed_pragma("quick_check", Some("10")));
-        assert!(allowed_pragma("optimize", None));
-        assert!(allowed_pragma("optimize", Some("65538")));
-        assert!(!allowed_pragma("optimize", Some("all")));
-        assert!(!allowed_pragma("journal_mode", Some("delete")));
+        for (pragma, argument, allowed) in [
+            ("page_size", None, true),
+            ("page_size", Some("4096"), false),
+            ("foreign_keys", Some("OFF"), true),
+            ("foreign_keys", None, true),
+            ("foreign_keys", Some("maybe"), false),
+            ("quick_check", Some("10"), true),
+            ("optimize", None, true),
+            ("optimize", Some("65538"), true),
+            ("optimize", Some("all"), false),
+            ("journal_mode", Some("delete"), false),
+        ] {
+            assert_eq!(
+                allowed_pragma(pragma, argument),
+                allowed,
+                "{pragma} {argument:?}"
+            );
+        }
     }
 
     #[test]

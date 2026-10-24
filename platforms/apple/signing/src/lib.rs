@@ -274,21 +274,7 @@ fn signing_inventory(identities: &[Identity], profiles: &[Result<Profile>]) -> R
         .any(|prefix| identity.name.starts_with(prefix))
     }) {
         count += 1;
-        writeln!(output, "\n  {}", identity.name)?;
-        writeln!(output, "    SHA-1: {}", identity.selector)?;
-        if let Some(team_id) = certificate_team_id(&identity.certificate_der) {
-            writeln!(output, "    Team: {team_id}")?;
-        }
-        if let Ok((_, certificate)) = x509_parser::parse_x509_certificate(&identity.certificate_der)
-        {
-            let validity = certificate.validity();
-            let status = if validity.is_valid() {
-                ""
-            } else {
-                " (outside validity period)"
-            };
-            writeln!(output, "    Expires: {}{status}", validity.not_after)?;
-        }
+        write_signing_identity(&mut output, identity)?;
     }
     if count == 0 {
         writeln!(output, "  None found.")?;
@@ -299,36 +285,67 @@ fn signing_inventory(identities: &[Identity], profiles: &[Result<Profile>]) -> R
         writeln!(output, "  None found.")?;
     }
     for result in profiles {
-        let profile = match result {
-            Ok(profile) => profile,
-            Err(error) => {
-                writeln!(output, "\n  Could not read profile: {error:#}")?;
-                continue;
-            }
-        };
-        let status = if profile.expiration > SystemTime::now() {
-            ""
-        } else {
-            " (expired)"
-        };
-        writeln!(output, "\n  {} ({})", profile.name, profile.id)?;
-        writeln!(output, "    Path: {}", profile.path.display())?;
-        writeln!(output, "    Team: {}", profile.team_id)?;
-        writeln!(output, "    App ID: {}", profile.application_identifier)?;
-        writeln!(output, "    Expires: {}{status}", profile.expiration_label)?;
-        writeln!(output, "    Matching installed identities (SHA-1):")?;
-        let matching = identities
-            .iter()
-            .filter(|identity| profile.includes(identity))
-            .collect::<Vec<_>>();
-        if matching.is_empty() {
-            writeln!(output, "      None found.")?;
-        }
-        for identity in matching {
-            writeln!(output, "      {}  {}", identity.selector, identity.name)?;
-        }
+        write_profile_entry(&mut output, result, identities)?;
     }
     Ok(output)
+}
+
+#[cfg(target_os = "macos")]
+fn write_signing_identity(output: &mut String, identity: &Identity) -> Result<()> {
+    writeln!(output, "\n  {}", identity.name)?;
+    writeln!(output, "    SHA-1: {}", identity.selector)?;
+    if let Some(team_id) = certificate_team_id(&identity.certificate_der) {
+        writeln!(output, "    Team: {team_id}")?;
+    }
+    if let Ok((_, certificate)) = x509_parser::parse_x509_certificate(&identity.certificate_der) {
+        let validity = certificate.validity();
+        let status = if validity.is_valid() {
+            ""
+        } else {
+            " (outside validity period)"
+        };
+        writeln!(output, "    Expires: {}{status}", validity.not_after)?;
+    }
+    Ok(())
+}
+
+/// Writes the inventory entry of a profile, or why it could not be read, and
+/// the installed `identities` it lists.
+#[cfg(target_os = "macos")]
+fn write_profile_entry(
+    output: &mut String,
+    result: &Result<Profile>,
+    identities: &[Identity],
+) -> Result<()> {
+    let profile = match result {
+        Ok(profile) => profile,
+        Err(error) => {
+            writeln!(output, "\n  Could not read profile: {error:#}")?;
+            return Ok(());
+        }
+    };
+    let status = if profile.expiration > SystemTime::now() {
+        ""
+    } else {
+        " (expired)"
+    };
+    writeln!(output, "\n  {} ({})", profile.name, profile.id)?;
+    writeln!(output, "    Path: {}", profile.path.display())?;
+    writeln!(output, "    Team: {}", profile.team_id)?;
+    writeln!(output, "    App ID: {}", profile.application_identifier)?;
+    writeln!(output, "    Expires: {}{status}", profile.expiration_label)?;
+    writeln!(output, "    Matching installed identities (SHA-1):")?;
+    let matching = identities
+        .iter()
+        .filter(|identity| profile.includes(identity))
+        .collect::<Vec<_>>();
+    if matching.is_empty() {
+        writeln!(output, "      None found.")?;
+    }
+    for identity in matching {
+        writeln!(output, "      {}  {}", identity.selector, identity.name)?;
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -1623,24 +1640,43 @@ mod tests {
         let (identity_output, profile_output) = output
             .split_once("iOS provisioning profiles:")
             .context("profile heading")?;
-        for identity in &identities[..2] {
-            assert!(identity_output.contains(&format!("SHA-1: {}", identity.selector)));
-        }
-        assert!(!identity_output.contains("Unrelated TLS identity"));
-        assert!(identity_output.contains("Team: TEAM"));
-        assert!(identity_output.contains("Expires:"));
-        assert!(profile_output.contains("App Store (PROFILE-1)"));
-        assert!(profile_output.contains("Path: /profiles/app.mobileprovision"));
-        assert!(profile_output.contains("Team: TEAM"));
-        assert!(profile_output.contains("App ID: TEAM.com.example.app"));
-        assert!(profile_output.contains("Expires: 1970-01-01T00:00:00Z (expired)"));
-        assert!(profile_output.contains(&format!(
-            "{}  Apple Distribution: Example Company",
-            identities[1].selector
-        )));
-        assert!(!profile_output.contains(&identities[0].selector));
-        assert!(!profile_output.contains(&identities[2].selector));
+        assert_contains(
+            identity_output,
+            &[
+                &format!("SHA-1: {}", identities[0].selector),
+                &format!("SHA-1: {}", identities[1].selector),
+                "Team: TEAM",
+                "Expires:",
+            ],
+            &["Unrelated TLS identity"],
+        );
+        assert_contains(
+            profile_output,
+            &[
+                "App Store (PROFILE-1)",
+                "Path: /profiles/app.mobileprovision",
+                "Team: TEAM",
+                "App ID: TEAM.com.example.app",
+                "Expires: 1970-01-01T00:00:00Z (expired)",
+                &format!(
+                    "{}  Apple Distribution: Example Company",
+                    identities[1].selector
+                ),
+            ],
+            &[&identities[0].selector, &identities[2].selector],
+        );
         Ok(())
+    }
+
+    /// Asserts `text` contains each of `expected` and none of `unexpected`.
+    #[cfg(target_os = "macos")]
+    fn assert_contains(text: &str, expected: &[&str], unexpected: &[&str]) {
+        for part in expected {
+            assert!(text.contains(part), "{part:?} is missing from:\n{text}");
+        }
+        for part in unexpected {
+            assert!(!text.contains(part), "{part:?} is present in:\n{text}");
+        }
     }
 
     #[cfg(target_os = "macos")]

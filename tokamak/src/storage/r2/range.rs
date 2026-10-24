@@ -59,25 +59,43 @@ pub(super) fn header_range(header: &str, size: u64) -> Option<Range> {
     let rest = rest.trim_start_matches(' ').strip_prefix('=')?;
     let mut ranges = Vec::new();
     for spec in rest.split(',') {
-        let (start, end) = spec.split_once('-')?;
-        match (bound(start)?, bound(end)?) {
-            (Bound::At(start), Bound::At(end)) if start <= end && start < size => {
-                ranges.push((start, end.min(size - 1)));
-            }
-            (Bound::At(start), Bound::Absent) if start < size => ranges.push((start, size - 1)),
-            (Bound::Absent, Bound::At(0)) => {}
-            (Bound::Absent, Bound::At(suffix)) if suffix < size => {
-                ranges.push((size - suffix, size - 1));
-            }
-            _ => return None,
+        if let Selection::Bytes(first, last) = spec_range(spec, size)? {
+            ranges.push((first, last));
         }
     }
-    match ranges[..] {
-        [(start, end)] => Some(Range {
-            offset: start,
-            length: end - start + 1,
-        }),
-        _ => None,
+    let [(start, end)] = ranges[..] else {
+        return None;
+    };
+    Some(Range {
+        offset: start,
+        length: end - start + 1,
+    })
+}
+
+/// What one range of a `Range` header selects of an object.
+enum Selection {
+    /// The bytes from the first to the last, inclusive.
+    Bytes(u64, u64),
+    /// No bytes, for the empty suffix `-0`.
+    Nothing,
+}
+
+/// What one range of a `Range` header, `spec`, selects of a `size`-byte
+/// object, or none when `spec` is invalid or not satisfiable.
+fn spec_range(spec: &str, size: u64) -> Option<Selection> {
+    let (start, end) = spec.split_once('-')?;
+    match (bound(start)?, bound(end)?) {
+        (Bound::At(start), Bound::At(end)) => {
+            (start <= end && start < size).then(|| Selection::Bytes(start, end.min(size - 1)))
+        }
+        (Bound::At(start), Bound::Absent) => {
+            (start < size).then(|| Selection::Bytes(start, size - 1))
+        }
+        (Bound::Absent, Bound::At(0)) => Some(Selection::Nothing),
+        (Bound::Absent, Bound::At(suffix)) => {
+            (suffix < size).then(|| Selection::Bytes(size - suffix, size - 1))
+        }
+        (Bound::Absent, Bound::Absent) => None,
     }
 }
 

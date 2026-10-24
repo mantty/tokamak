@@ -33,42 +33,17 @@ fn scaffolds_publishable_plugins_without_overwriting_existing_projects() -> Test
     ] {
         // Avoid reserved CLI option prefixes in the plugin's ID.
         let path = root.path().join(format!("example-{name}"));
-        let mut command = Command::cargo_bin("tok")?;
-        command.args(["plugin", "new"]).arg(&path);
-        if let Some(platforms) = platforms {
-            command.args(["--platforms", platforms]);
-        }
-        command.assert().success();
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(path.join("tokamak-plugin.json"))?)?;
-        let package: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(path.join("package.json"))?)?;
-        assert_eq!(package["type"], "module");
-        assert_eq!(package["scripts"]["prepack"], "npm run check");
-        assert_eq!(manifest["schemaVersion"], 2);
-        for module in [&manifest["api"]["module"], &manifest["web"]["module"]] {
-            assert!(
-                path.join(module.as_str().ok_or("missing module")?)
-                    .is_file()
-            );
-        }
-        let native = !families.is_empty();
-        assert_eq!(
-            package["exports"]["./events"].as_str(),
-            native.then_some("./src/events.ts"),
-            "{package}"
-        );
-        assert_eq!(path.join("src/events.ts").is_file(), native);
-        // Generated files keep LF, as `tok plugin check` compares them byte for byte.
-        let attributes = std::fs::read_to_string(path.join(".gitattributes")).unwrap_or_default();
-        assert_eq!(attributes.contains("*.generated.* text eol=lf"), native);
-        assert_eq!(
-            declared_platforms(&manifest)?,
-            platforms.unwrap_or_default()
-        );
-        for family in families {
-            assert_native_package(&path, &package, family)?;
-        }
+        Command::cargo_bin("tok")?
+            .args(["plugin", "new"])
+            .arg(&path)
+            .args(
+                platforms
+                    .into_iter()
+                    .flat_map(|platforms| ["--platforms", platforms]),
+            )
+            .assert()
+            .success();
+        assert_publishable_plugin(&path, platforms, families)?;
         let readme = path.join("README.md");
         std::fs::write(&readme, "author's work")?;
         Command::cargo_bin("tok")?
@@ -77,6 +52,46 @@ fn scaffolds_publishable_plugins_without_overwriting_existing_projects() -> Test
             .assert()
             .failure();
         assert_eq!(std::fs::read_to_string(readme)?, "author's work");
+    }
+    Ok(())
+}
+
+/// Asserts that the plugin scaffolded at `path` is a publishable package declaring `platforms`,
+/// with the native packages of `families`.
+fn assert_publishable_plugin(
+    path: &std::path::Path,
+    platforms: Option<&str>,
+    families: &[&str],
+) -> TestResult {
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path.join("tokamak-plugin.json"))?)?;
+    let package: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path.join("package.json"))?)?;
+    assert_eq!(package["type"], "module");
+    assert_eq!(package["scripts"]["prepack"], "npm run check");
+    assert_eq!(manifest["schemaVersion"], 2);
+    for module in [&manifest["api"]["module"], &manifest["web"]["module"]] {
+        assert!(
+            path.join(module.as_str().ok_or("missing module")?)
+                .is_file()
+        );
+    }
+    let native = !families.is_empty();
+    assert_eq!(
+        package["exports"]["./events"].as_str(),
+        native.then_some("./src/events.ts"),
+        "{package}"
+    );
+    assert_eq!(path.join("src/events.ts").is_file(), native);
+    // Generated files keep LF, as `tok plugin check` compares them byte for byte.
+    let attributes = std::fs::read_to_string(path.join(".gitattributes")).unwrap_or_default();
+    assert_eq!(attributes.contains("*.generated.* text eol=lf"), native);
+    assert_eq!(
+        declared_platforms(&manifest)?,
+        platforms.unwrap_or_default()
+    );
+    for family in families {
+        assert_native_package(path, &package, family)?;
     }
     Ok(())
 }

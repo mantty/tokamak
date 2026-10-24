@@ -267,16 +267,7 @@ fn prepare_managed_ios() -> Result<PreparedDevice> {
         bail!("iOS Simulator requires macOS and Xcode");
     }
 
-    let runtimes = run_tool("xcrun", &["simctl", "list", "runtimes", "--json"]);
-    if !runtimes.available {
-        bail!("Xcode command-line tools are not installed");
-    }
-    if !runtimes.success {
-        bail!("Xcode Simulator services are unavailable");
-    }
-    let Some(runtime) = latest_ios_runtime(&runtimes.stdout) else {
-        bail!("no available iOS Simulator runtime is installed");
-    };
+    let runtime = latest_installed_ios_runtime()?;
 
     let simulators = run_tool("xcrun", &["simctl", "list", "devices", "--json"]);
     if !simulators.success {
@@ -302,6 +293,27 @@ fn prepare_managed_ios() -> Result<PreparedDevice> {
         );
     }
 
+    let target = create_managed_ios(&runtime)?;
+    boot_ios_simulator(&target)?;
+    Ok(target.prepared_device())
+}
+
+fn latest_installed_ios_runtime() -> Result<String> {
+    let runtimes = run_tool("xcrun", &["simctl", "list", "runtimes", "--json"]);
+    if !runtimes.available {
+        bail!("Xcode command-line tools are not installed");
+    }
+    if !runtimes.success {
+        bail!("Xcode Simulator services are unavailable");
+    }
+    let Some(runtime) = latest_ios_runtime(&runtimes.stdout) else {
+        bail!("no available iOS Simulator runtime is installed");
+    };
+    Ok(runtime)
+}
+
+/// Creates the managed simulator on `runtime`, leaving it shut down.
+fn create_managed_ios(runtime: &str) -> Result<IosSimulatorTarget> {
     let device_types = run_tool("xcrun", &["simctl", "list", "devicetypes", "--json"]);
     if !device_types.success {
         bail!("unable to read iOS Simulator device types");
@@ -311,7 +323,7 @@ fn prepare_managed_ios() -> Result<PreparedDevice> {
     };
     let created = run_tool(
         "xcrun",
-        &["simctl", "create", MANAGED_IOS_NAME, &device_type, &runtime],
+        &["simctl", "create", MANAGED_IOS_NAME, &device_type, runtime],
     );
     if !created.success {
         bail!(
@@ -323,16 +335,14 @@ fn prepare_managed_ios() -> Result<PreparedDevice> {
     if id.is_empty() {
         bail!("simctl create returned no simulator identifier");
     }
-    let target = IosSimulatorTarget {
+    Ok(IosSimulatorTarget {
         id: id.to_owned(),
         name: MANAGED_IOS_NAME.to_owned(),
         available: true,
         state: "Shutdown".to_owned(),
         has_been_booted: false,
         availability_error: None,
-    };
-    boot_ios_simulator(&target)?;
-    Ok(target.prepared_device())
+    })
 }
 
 fn boot_ios_simulator(target: &IosSimulatorTarget) -> Result<()> {

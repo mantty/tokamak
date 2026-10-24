@@ -967,26 +967,7 @@ fn write_response_inner<W: Write>(
     headers.remove("keep-alive");
     let connection = if persistent { "keep-alive" } else { "close" };
     insert_header(headers, "connection", HeaderValue::from_static(connection))?;
-    if !head {
-        headers.remove("transfer-encoding");
-        if (100..200).contains(&response.status) || matches!(response.status, 204 | 304) {
-            headers.remove("content-length");
-        } else if let HttpBody::Buffered(body) = &response.body {
-            insert_header(headers, "content-length", HeaderValue::from(body.len()))?;
-        } else {
-            headers.remove("content-length");
-            insert_header(
-                headers,
-                "transfer-encoding",
-                HeaderValue::from_static("chunked"),
-            )?;
-        }
-    } else if response.status == 205
-        && !headers.contains_key("content-length")
-        && !headers.contains_key("transfer-encoding")
-    {
-        insert_header(headers, "content-length", HeaderValue::from_static("0"))?;
-    }
+    insert_framing_headers(headers, response.status, &response.body, head)?;
     write_response_headers(
         &mut stream,
         response.status,
@@ -1004,6 +985,39 @@ fn write_response_inner<W: Write>(
         }
         HttpBody::Stream(body) => write_stream_body(stream, &body, cancelled, peer_closed),
     }
+}
+
+/// Sets the length headers of a `status` response with `body`, or of its head
+/// alone when `head`.
+fn insert_framing_headers(
+    headers: &mut HeaderMap,
+    status: u16,
+    body: &HttpBody,
+    head: bool,
+) -> io::Result<()> {
+    if head {
+        if status == 205
+            && !headers.contains_key("content-length")
+            && !headers.contains_key("transfer-encoding")
+        {
+            insert_header(headers, "content-length", HeaderValue::from_static("0"))?;
+        }
+        return Ok(());
+    }
+    headers.remove("transfer-encoding");
+    if (100..200).contains(&status) || matches!(status, 204 | 304) {
+        headers.remove("content-length");
+    } else if let HttpBody::Buffered(body) = body {
+        insert_header(headers, "content-length", HeaderValue::from(body.len()))?;
+    } else {
+        headers.remove("content-length");
+        insert_header(
+            headers,
+            "transfer-encoding",
+            HeaderValue::from_static("chunked"),
+        )?;
+    }
+    Ok(())
 }
 
 fn write_stream_body<W: Write>(
@@ -1092,6 +1106,7 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn counts_a_certificate_refusal_but_not_a_protocol_alert_as_the_client_leaving() {
@@ -1172,35 +1187,44 @@ mod tests {
         Ok(())
     }
 
+    /// A response with as many headers as a header map holds, including a
+    /// `connection` header unless `scenario` is 0, with a stream body when it is 2.
+    fn excess_headers_response(
+        scenario: u8,
+    ) -> Result<(HttpResponse, Option<CancellationToken>), Box<dyn std::error::Error>> {
+        let mut headers = HeaderMap::new();
+        if scenario != 0 {
+            headers.insert("connection", HeaderValue::from_static("close"));
+        }
+        for index in 0..30000 {
+            let name = HeaderName::from_bytes(format!("x-{index}").as_bytes())?;
+            if headers
+                .try_insert(name, HeaderValue::from_static("v"))
+                .is_err()
+            {
+                break;
+            }
+        }
+        let (body, cancelled) = if scenario == 2 {
+            let (_, cancelled, body) = response_stream();
+            (body, Some(cancelled))
+        } else {
+            (HttpBody::Buffered(Vec::new()), None)
+        };
+        let response = HttpResponse {
+            status: 200,
+            status_text: "OK".to_owned(),
+            headers,
+            body,
+        };
+        Ok((response, cancelled))
+    }
+
     #[test]
     fn rejects_excess_response_headers_without_panicking() -> Result<(), Box<dyn std::error::Error>>
     {
         for scenario in 0..3 {
-            let mut headers = HeaderMap::new();
-            if scenario != 0 {
-                headers.insert("connection", HeaderValue::from_static("close"));
-            }
-            for index in 0..30000 {
-                let name = HeaderName::from_bytes(format!("x-{index}").as_bytes())?;
-                if headers
-                    .try_insert(name, HeaderValue::from_static("v"))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            let (body, cancelled) = if scenario == 2 {
-                let (_, cancelled, body) = response_stream();
-                (body, Some(cancelled))
-            } else {
-                (HttpBody::Buffered(Vec::new()), None)
-            };
-            let response = HttpResponse {
-                status: 200,
-                status_text: "OK".to_owned(),
-                headers,
-                body,
-            };
+            let (response, cancelled) = excess_headers_response(scenario)?;
             let mut output = Vec::new();
             assert!(
                 write_response_inner(&mut output, response, None, None, |_| Ok(false), false)
@@ -1269,29 +1293,47 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn computes_response_framing_and_preserves_explicit_head_metadata()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let mut response = HttpResponse::text(200, "ok");
-        response
-            .headers
-            .insert("content-length", HeaderValue::from_static("99"));
-        response
-            .headers
-            .insert("transfer-encoding", HeaderValue::from_static("identity"));
+    /// Writes `response` with `headers` set, for a `method` request, and asserts
+    /// whether each probe appears in the output.
+    fn assert_framing(
+        mut response: HttpResponse,
+        method: &str,
+        headers: &[(&'static str, &'static str)],
+        probes: &[(&str, bool)],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for &(name, value) in headers {
+            response
+                .headers
+                .insert(name, HeaderValue::from_static(value));
+        }
         let mut output = Vec::new();
         write_response_inner(
             &mut output,
             response,
-            Some("GET"),
+            Some(method),
             None,
             |_| Ok(false),
             false,
         )?;
         let output = String::from_utf8(output)?;
-        assert!(output.contains("content-length: 2\r\n"));
-        assert!(!output.contains("transfer-encoding:"));
+        for &(probe, present) in probes {
+            assert_eq!(output.contains(probe), present, "{probe:?} in {output}");
+        }
+        Ok(())
+    }
 
+    #[test]
+    fn computes_response_framing_and_preserves_explicit_head_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_framing(
+            HttpResponse::text(200, "ok"),
+            "GET",
+            &[("content-length", "99"), ("transfer-encoding", "identity")],
+            &[
+                ("content-length: 2\r\n", true),
+                ("transfer-encoding:", false),
+            ],
+        )?;
         for explicit in [false, true] {
             let (_, cancelled, body) = response_stream();
             let mut response = HttpResponse::text(200, "");
@@ -1301,38 +1343,28 @@ mod tests {
                     .headers
                     .insert("content-length", HeaderValue::from_static("99"));
             }
-            let mut output = Vec::new();
-            write_response_inner(
-                &mut output,
+            assert_framing(
                 response,
-                Some("HEAD"),
-                None,
-                |_| Ok(false),
-                false,
+                "HEAD",
+                &[],
+                &[
+                    ("content-length: 99\r\n", explicit),
+                    ("transfer-encoding:", false),
+                ],
             )?;
-            let output = String::from_utf8(output)?;
-            assert_eq!(output.contains("content-length: 99\r\n"), explicit);
-            assert!(!output.contains("transfer-encoding:"));
             assert!(cancelled.is_cancelled());
         }
         for status in [204, 205, 304] {
-            let mut response = HttpResponse::text(status, "");
-            response
-                .headers
-                .insert("content-length", HeaderValue::from_static("99"));
-            let mut output = Vec::new();
-            write_response_inner(
-                &mut output,
-                response,
-                Some("GET"),
-                None,
-                |_| Ok(false),
-                false,
+            assert_framing(
+                HttpResponse::text(status, ""),
+                "GET",
+                &[("content-length", "99")],
+                &[
+                    ("content-length: 0\r\n", status == 205),
+                    ("content-length: 99", false),
+                    ("transfer-encoding:", false),
+                ],
             )?;
-            let output = String::from_utf8(output)?;
-            assert_eq!(output.contains("content-length: 0\r\n"), status == 205);
-            assert!(!output.contains("content-length: 99"));
-            assert!(!output.contains("transfer-encoding:"));
         }
         Ok(())
     }

@@ -140,25 +140,22 @@ async fn serve<'js>(
     streams: &Arc<Streams>,
 ) {
     loop {
-        let command = tokio::select! {
-            command = requests.recv_async() => command.ok(),
-            () = streams.closed.cancelled() => None,
+        let command = next_command(&requests, streams).await;
+        let Some(Command::Read(reply)) = command else {
+            return end_stream(&source, command, bootstrap, streams).await;
         };
-        match command {
-            Some(Command::Read(reply)) => {
-                if !read(&source, &requests, reply, bootstrap, streams).await {
-                    return;
-                }
-            }
-            Some(Command::Cancel(reason, reply)) => {
-                let _ = reply.send(cancel(&source, reason, bootstrap, streams).await);
-                return;
-            }
-            None => {
-                let _ = cancel(&source, Message::undefined(), bootstrap, streams).await;
-                return;
-            }
+        if !read(&source, &requests, reply, bootstrap, streams).await {
+            return;
         }
+    }
+}
+
+/// The port's next command, or `None` once the port is gone or the streams
+/// close.
+async fn next_command(requests: &flume::Receiver<Command>, streams: &Streams) -> Option<Command> {
+    tokio::select! {
+        command = requests.recv_async() => command.ok(),
+        () = streams.closed.cancelled() => None,
     }
 }
 
@@ -176,20 +173,12 @@ async fn read<'js>(
     let result = tokio::select! {
         result = result => result,
         command = requests.recv_async() => {
-            match command {
-                Ok(Command::Cancel(reason, reply)) => {
-                    let _ = reply.send(cancel(source, reason, bootstrap, streams).await);
-                }
-                Ok(Command::Read(reply)) => {
-                    let _ = reply.send(Err("Concurrent stream reads are not supported".into()));
-                }
-                Err(_) => { let _ = cancel(source, Message::undefined(), bootstrap, streams).await; }
-            }
+            end_stream(source, command.ok(), bootstrap, streams).await;
             let _ = reply.send(Err("Stream was cancelled".into()));
             return false;
         }
         () = streams.closed.cancelled() => {
-            let _ = cancel(source, Message::undefined(), bootstrap, streams).await;
+            end_stream(source, None, bootstrap, streams).await;
             let _ = reply.send(Err("Stream invocation ended".into()));
             return false;
         }
@@ -200,6 +189,28 @@ async fn read<'js>(
     let result = result.and_then(|result| Reply::from_js(&result, bootstrap, streams));
     let _ = reply.send(result.map_err(|error| error.to_string()));
     !done
+}
+
+/// Answers the command that ends the stream: a cancel with the source's
+/// cancel result and a read with an error. With no command, as once the port
+/// is gone or the streams close, the source is cancelled.
+async fn end_stream<'js>(
+    source: &Object<'js>,
+    command: Option<Command>,
+    bootstrap: &Object<'js>,
+    streams: &Arc<Streams>,
+) {
+    match command {
+        Some(Command::Cancel(reason, reply)) => {
+            let _ = reply.send(cancel(source, reason, bootstrap, streams).await);
+        }
+        Some(Command::Read(reply)) => {
+            let _ = reply.send(Err("Concurrent stream reads are not supported".into()));
+        }
+        None => {
+            let _ = cancel(source, Message::undefined(), bootstrap, streams).await;
+        }
+    }
 }
 
 async fn cancel<'js>(

@@ -33,10 +33,11 @@ fn parses_known_targets_and_rejects_unknown_targets() {
     assert_eq!(Target::MacosArm64.to_string(), "macos-arm64");
     assert_eq!(Target::MacosX64.to_string(), "macos-x64");
     assert_eq!(Target::WindowsX64.to_string(), "windows-x64");
-    assert!(matches!(
-        Target::from_str("ios-armv7"),
-        Err(PlatformPackError::UnknownTarget(target)) if target == "ios-armv7"
-    ));
+    let unknown = Target::from_str("ios-armv7");
+    let Err(PlatformPackError::UnknownTarget(target)) = &unknown else {
+        panic!("ios-armv7 is not an unknown target: {unknown:?}");
+    };
+    assert_eq!(target, "ios-armv7");
 }
 
 #[test]
@@ -167,13 +168,13 @@ fn round_trips_manifest_json_without_losing_contract_fields() -> TestResult {
 
     write_manifest(&manifest_path, &manifest)?;
     let json = fs::read_to_string(&manifest_path)?;
-    assert!(json.contains("\"target\": \"ios-arm64\""));
-    assert!(json.contains("\"tokamakVersion\": \"0.1.0\""));
-    assert!(json.contains("\"kind\": \"path\""));
-    assert!(json.contains("\"sources\": \"paths\""));
-    assert!(!json.contains("requiredCliVersion"));
-    assert!(!json.contains("schemaVersion"));
-    assert!(!json.contains("sha256"));
+    assert!(json.contains("\"target\": \"ios-arm64\""), "{json}");
+    assert!(json.contains("\"tokamakVersion\": \"0.1.0\""), "{json}");
+    assert!(json.contains("\"kind\": \"path\""), "{json}");
+    assert!(json.contains("\"sources\": \"paths\""), "{json}");
+    assert!(!json.contains("requiredCliVersion"), "{json}");
+    assert!(!json.contains("schemaVersion"), "{json}");
+    assert!(!json.contains("sha256"), "{json}");
 
     let loaded = load_manifest(&manifest_path)?;
     assert_eq!(loaded, manifest);

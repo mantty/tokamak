@@ -540,13 +540,11 @@ fn serve_requests(
         let cancelled = shared.stopped.child_token();
         let _request = cancelled.clone().drop_guard();
         let response = match dispatch(shared, request, cancelled, tls)? {
-            (JobResponse::WebSocket, Some(bridge)) => {
+            (JobResponse::WebSocket, bridge) => {
+                let bridge = bridge.ok_or_else(|| {
+                    io::Error::other("a plain request was answered as a WebSocket")
+                })?;
                 return websocket_session(tls, websocket_key.as_deref(), bridge);
-            }
-            (JobResponse::WebSocket, None) => {
-                return Err(io::Error::other(
-                    "a plain request was answered as a WebSocket",
-                ));
             }
             (JobResponse::Http(response), _) => response,
         };

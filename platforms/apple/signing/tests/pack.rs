@@ -589,14 +589,22 @@ fn reuses_the_bundle_while_only_the_environment_and_signing_settings_change() ->
         assert_eq!(fixture.logged(" actool ")?.len(), 1, "{target}");
         let signatures = fixture.logged("sign ")?;
         assert_eq!(signatures.len(), 2, "{target}");
-        assert!(signatures[1].ends_with(r#" {"API":"production"}"#));
+        assert!(
+            signatures[1].ends_with(r#" {"API":"production"}"#),
+            "{target}"
+        );
         assert_eq!(
             signatures[1].contains("OTHER"),
-            target != "ios-simulator-arm64"
+            target != "ios-simulator-arm64",
+            "{target}"
         );
         let plist = fixture.plist()?;
-        assert_eq!(string(&plist, "CFBundleVersion"), Some("2"));
-        assert_eq!(string(&plist, "CFBundleIconName"), Some("AppIcon"));
+        assert_eq!(string(&plist, "CFBundleVersion"), Some("2"), "{target}");
+        assert_eq!(
+            string(&plist, "CFBundleIconName"),
+            Some("AppIcon"),
+            "{target}"
+        );
 
         // A changed pack rebuilds the bundle.
         fs::write(fixture.pack().join("native-shell/Extra.swift"), "")?;
