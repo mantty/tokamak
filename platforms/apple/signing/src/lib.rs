@@ -274,21 +274,7 @@ fn signing_inventory(identities: &[Identity], profiles: &[Result<Profile>]) -> R
         .any(|prefix| identity.name.starts_with(prefix))
     }) {
         count += 1;
-        writeln!(output, "\n  {}", identity.name)?;
-        writeln!(output, "    SHA-1: {}", identity.selector)?;
-        if let Some(team_id) = certificate_team_id(&identity.certificate_der) {
-            writeln!(output, "    Team: {team_id}")?;
-        }
-        if let Ok((_, certificate)) = x509_parser::parse_x509_certificate(&identity.certificate_der)
-        {
-            let validity = certificate.validity();
-            let status = if validity.is_valid() {
-                ""
-            } else {
-                " (outside validity period)"
-            };
-            writeln!(output, "    Expires: {}{status}", validity.not_after)?;
-        }
+        write_signing_identity(&mut output, identity)?;
     }
     if count == 0 {
         writeln!(output, "  None found.")?;
@@ -299,36 +285,67 @@ fn signing_inventory(identities: &[Identity], profiles: &[Result<Profile>]) -> R
         writeln!(output, "  None found.")?;
     }
     for result in profiles {
-        let profile = match result {
-            Ok(profile) => profile,
-            Err(error) => {
-                writeln!(output, "\n  Could not read profile: {error:#}")?;
-                continue;
-            }
-        };
-        let status = if profile.expiration > SystemTime::now() {
-            ""
-        } else {
-            " (expired)"
-        };
-        writeln!(output, "\n  {} ({})", profile.name, profile.id)?;
-        writeln!(output, "    Path: {}", profile.path.display())?;
-        writeln!(output, "    Team: {}", profile.team_id)?;
-        writeln!(output, "    App ID: {}", profile.application_identifier)?;
-        writeln!(output, "    Expires: {}{status}", profile.expiration_label)?;
-        writeln!(output, "    Matching installed identities (SHA-1):")?;
-        let matching = identities
-            .iter()
-            .filter(|identity| profile.includes(identity))
-            .collect::<Vec<_>>();
-        if matching.is_empty() {
-            writeln!(output, "      None found.")?;
-        }
-        for identity in matching {
-            writeln!(output, "      {}  {}", identity.selector, identity.name)?;
-        }
+        write_profile_entry(&mut output, result, identities)?;
     }
     Ok(output)
+}
+
+#[cfg(target_os = "macos")]
+fn write_signing_identity(output: &mut String, identity: &Identity) -> Result<()> {
+    writeln!(output, "\n  {}", identity.name)?;
+    writeln!(output, "    SHA-1: {}", identity.selector)?;
+    if let Some(team_id) = certificate_team_id(&identity.certificate_der) {
+        writeln!(output, "    Team: {team_id}")?;
+    }
+    if let Ok((_, certificate)) = x509_parser::parse_x509_certificate(&identity.certificate_der) {
+        let validity = certificate.validity();
+        let status = if validity.is_valid() {
+            ""
+        } else {
+            " (outside validity period)"
+        };
+        writeln!(output, "    Expires: {}{status}", validity.not_after)?;
+    }
+    Ok(())
+}
+
+/// Writes the inventory entry of a profile, or why it could not be read, and
+/// the installed `identities` it lists.
+#[cfg(target_os = "macos")]
+fn write_profile_entry(
+    output: &mut String,
+    result: &Result<Profile>,
+    identities: &[Identity],
+) -> Result<()> {
+    let profile = match result {
+        Ok(profile) => profile,
+        Err(error) => {
+            writeln!(output, "\n  Could not read profile: {error:#}")?;
+            return Ok(());
+        }
+    };
+    let status = if profile.expiration > SystemTime::now() {
+        ""
+    } else {
+        " (expired)"
+    };
+    writeln!(output, "\n  {} ({})", profile.name, profile.id)?;
+    writeln!(output, "    Path: {}", profile.path.display())?;
+    writeln!(output, "    Team: {}", profile.team_id)?;
+    writeln!(output, "    App ID: {}", profile.application_identifier)?;
+    writeln!(output, "    Expires: {}{status}", profile.expiration_label)?;
+    writeln!(output, "    Matching installed identities (SHA-1):")?;
+    let matching = identities
+        .iter()
+        .filter(|identity| profile.includes(identity))
+        .collect::<Vec<_>>();
+    if matching.is_empty() {
+        writeln!(output, "      None found.")?;
+    }
+    for identity in matching {
+        writeln!(output, "      {}  {}", identity.selector, identity.name)?;
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "macos", test))]
