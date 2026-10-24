@@ -635,64 +635,70 @@ async fn websocket_loop<'js>(
     let disconnect: Function = property(native, "disconnect")?;
     let take_outbox: Function = property(native, "take")?;
     drain_pending_jobs(ctx);
-    drain_websocket_outbox(&take_outbox, &websocket.outgoing).await?;
-    websocket
-        .outgoing
-        .send_async(WebSocketOutbound::Ready)
-        .await;
-
-    loop {
-        if stopped.is_cancelled() {
-            return Ok(());
-        }
-        let event = tokio::select! {
-            event = websocket.incoming.recv_async() => event,
-            () = changed.notified() => {
-                drain_websocket_outbox(&take_outbox, &websocket.outgoing).await?;
-                continue;
-            },
-            () = stopped.cancelled() => return Ok(()),
-        };
-        let open = match event {
-            Ok(WebSocketInbound::Message { binary, payload }) => {
-                if binary {
-                    let data = ArrayBuffer::new_copy(ctx.clone(), payload)
-                        .map_err(|error| js_error("WebSocket message", error))?;
-                    receive
-                        .call::<_, ()>((data, true))
-                        .map_err(|error| js_exception(ctx, "WebSocket message", error))?;
-                } else {
-                    let data = String::from_utf8_lossy(&payload).into_owned();
-                    receive
-                        .call::<_, ()>((data, false))
-                        .map_err(|error| js_exception(ctx, "WebSocket message", error))?;
-                }
-                true
-            }
-            // The client's close frame ended the connection.
-            Ok(WebSocketInbound::Close { code, reason }) => {
-                close
-                    .call::<_, ()>((code, reason))
-                    .map_err(|error| js_exception(ctx, "WebSocket close", error))?;
-                false
-            }
-            // The connection ended without a close frame.
-            Err(_) => {
-                disconnect
-                    .call::<_, ()>(())
-                    .map_err(|error| js_exception(ctx, "WebSocket close", error))?;
-                false
-            }
-        };
-        drain_pending_jobs(ctx);
-        if !open {
-            return Ok(());
-        }
+    let mut open = true;
+    while open {
         drain_websocket_outbox(&take_outbox, &websocket.outgoing).await?;
         websocket
             .outgoing
             .send_async(WebSocketOutbound::Ready)
             .await;
+        let event = loop {
+            if stopped.is_cancelled() {
+                return Ok(());
+            }
+            tokio::select! {
+                event = websocket.incoming.recv_async() => break event,
+                () = changed.notified() => {
+                    drain_websocket_outbox(&take_outbox, &websocket.outgoing).await?;
+                },
+                () = stopped.cancelled() => return Ok(()),
+            }
+        };
+        open = deliver_websocket_event(ctx, &receive, &close, &disconnect, event)?;
+        drain_pending_jobs(ctx);
+    }
+    Ok(())
+}
+
+/// Delivers the host's WebSocket `event` to the runtime's `receive`, `close`
+/// or `disconnect`, returning whether the connection is still open.
+fn deliver_websocket_event<'js>(
+    ctx: &Ctx<'js>,
+    receive: &Function<'js>,
+    close: &Function<'js>,
+    disconnect: &Function<'js>,
+    event: Result<WebSocketInbound, flume::RecvError>,
+) -> Result<bool, Error> {
+    match event {
+        Ok(WebSocketInbound::Message { binary, payload }) => {
+            if binary {
+                let data = ArrayBuffer::new_copy(ctx.clone(), payload)
+                    .map_err(|error| js_error("WebSocket message", error))?;
+                receive
+                    .call::<_, ()>((data, true))
+                    .map_err(|error| js_exception(ctx, "WebSocket message", error))?;
+            } else {
+                let data = String::from_utf8_lossy(&payload).into_owned();
+                receive
+                    .call::<_, ()>((data, false))
+                    .map_err(|error| js_exception(ctx, "WebSocket message", error))?;
+            }
+            Ok(true)
+        }
+        // The client's close frame ended the connection.
+        Ok(WebSocketInbound::Close { code, reason }) => {
+            close
+                .call::<_, ()>((code, reason))
+                .map_err(|error| js_exception(ctx, "WebSocket close", error))?;
+            Ok(false)
+        }
+        // The connection ended without a close frame.
+        Err(_) => {
+            disconnect
+                .call::<_, ()>(())
+                .map_err(|error| js_exception(ctx, "WebSocket close", error))?;
+            Ok(false)
+        }
     }
 }
 
