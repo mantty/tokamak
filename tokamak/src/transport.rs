@@ -1269,29 +1269,47 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn computes_response_framing_and_preserves_explicit_head_metadata()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let mut response = HttpResponse::text(200, "ok");
-        response
-            .headers
-            .insert("content-length", HeaderValue::from_static("99"));
-        response
-            .headers
-            .insert("transfer-encoding", HeaderValue::from_static("identity"));
+    /// Writes `response` with `headers` set, for a `method` request, and asserts
+    /// whether each probe appears in the output.
+    fn assert_framing(
+        mut response: HttpResponse,
+        method: &str,
+        headers: &[(&'static str, &'static str)],
+        probes: &[(&str, bool)],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for &(name, value) in headers {
+            response
+                .headers
+                .insert(name, HeaderValue::from_static(value));
+        }
         let mut output = Vec::new();
         write_response_inner(
             &mut output,
             response,
-            Some("GET"),
+            Some(method),
             None,
             |_| Ok(false),
             false,
         )?;
         let output = String::from_utf8(output)?;
-        assert!(output.contains("content-length: 2\r\n"));
-        assert!(!output.contains("transfer-encoding:"));
+        for &(probe, present) in probes {
+            assert_eq!(output.contains(probe), present, "{probe:?} in {output}");
+        }
+        Ok(())
+    }
 
+    #[test]
+    fn computes_response_framing_and_preserves_explicit_head_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_framing(
+            HttpResponse::text(200, "ok"),
+            "GET",
+            &[("content-length", "99"), ("transfer-encoding", "identity")],
+            &[
+                ("content-length: 2\r\n", true),
+                ("transfer-encoding:", false),
+            ],
+        )?;
         for explicit in [false, true] {
             let (_, cancelled, body) = response_stream();
             let mut response = HttpResponse::text(200, "");
@@ -1301,38 +1319,28 @@ mod tests {
                     .headers
                     .insert("content-length", HeaderValue::from_static("99"));
             }
-            let mut output = Vec::new();
-            write_response_inner(
-                &mut output,
+            assert_framing(
                 response,
-                Some("HEAD"),
-                None,
-                |_| Ok(false),
-                false,
+                "HEAD",
+                &[],
+                &[
+                    ("content-length: 99\r\n", explicit),
+                    ("transfer-encoding:", false),
+                ],
             )?;
-            let output = String::from_utf8(output)?;
-            assert_eq!(output.contains("content-length: 99\r\n"), explicit);
-            assert!(!output.contains("transfer-encoding:"));
             assert!(cancelled.is_cancelled());
         }
         for status in [204, 205, 304] {
-            let mut response = HttpResponse::text(status, "");
-            response
-                .headers
-                .insert("content-length", HeaderValue::from_static("99"));
-            let mut output = Vec::new();
-            write_response_inner(
-                &mut output,
-                response,
-                Some("GET"),
-                None,
-                |_| Ok(false),
-                false,
+            assert_framing(
+                HttpResponse::text(status, ""),
+                "GET",
+                &[("content-length", "99")],
+                &[
+                    ("content-length: 0\r\n", status == 205),
+                    ("content-length: 99", false),
+                    ("transfer-encoding:", false),
+                ],
             )?;
-            let output = String::from_utf8(output)?;
-            assert_eq!(output.contains("content-length: 0\r\n"), status == 205);
-            assert!(!output.contains("content-length: 99"));
-            assert!(!output.contains("transfer-encoding:"));
         }
         Ok(())
     }
