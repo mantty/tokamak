@@ -26,9 +26,9 @@ internal val NotificationContent.lockScreenVisibility: Int?
     get() =
         when (visibility) {
             null -> null
-            Visibility.`public` -> Notification.VISIBILITY_PUBLIC
-            Visibility.`private` -> Notification.VISIBILITY_PRIVATE
-            Visibility.secret -> Notification.VISIBILITY_SECRET
+            Visibility.Public -> Notification.VISIBILITY_PUBLIC
+            Visibility.Private -> Notification.VISIBILITY_PRIVATE
+            Visibility.Secret -> Notification.VISIBILITY_SECRET
         }
 
 /** The `Notification.CATEGORY_*` of the notification's `androidCategory`. */
@@ -36,24 +36,24 @@ internal val NotificationContent.systemCategory: String?
     get() =
         when (androidCategory) {
             null -> null
-            AndroidCategory.alarm -> Notification.CATEGORY_ALARM
-            AndroidCategory.call -> Notification.CATEGORY_CALL
-            AndroidCategory.email -> Notification.CATEGORY_EMAIL
-            AndroidCategory.error -> Notification.CATEGORY_ERROR
-            AndroidCategory.event -> Notification.CATEGORY_EVENT
-            AndroidCategory.locationSharing -> Notification.CATEGORY_LOCATION_SHARING
-            AndroidCategory.message -> Notification.CATEGORY_MESSAGE
-            AndroidCategory.missedCall -> Notification.CATEGORY_MISSED_CALL
-            AndroidCategory.navigation -> Notification.CATEGORY_NAVIGATION
-            AndroidCategory.progress -> Notification.CATEGORY_PROGRESS
-            AndroidCategory.promo -> Notification.CATEGORY_PROMO
-            AndroidCategory.recommendation -> Notification.CATEGORY_RECOMMENDATION
-            AndroidCategory.reminder -> Notification.CATEGORY_REMINDER
-            AndroidCategory.service -> Notification.CATEGORY_SERVICE
-            AndroidCategory.social -> Notification.CATEGORY_SOCIAL
-            AndroidCategory.status -> Notification.CATEGORY_STATUS
-            AndroidCategory.stopwatch -> Notification.CATEGORY_STOPWATCH
-            AndroidCategory.system -> Notification.CATEGORY_SYSTEM
-            AndroidCategory.transport -> Notification.CATEGORY_TRANSPORT
-            AndroidCategory.workout -> Notification.CATEGORY_WORKOUT
+            AndroidCategory.Alarm -> Notification.CATEGORY_ALARM
+            AndroidCategory.Call -> Notification.CATEGORY_CALL
+            AndroidCategory.Email -> Notification.CATEGORY_EMAIL
+            AndroidCategory.Error -> Notification.CATEGORY_ERROR
+            AndroidCategory.Event -> Notification.CATEGORY_EVENT
+            AndroidCategory.LocationSharing -> Notification.CATEGORY_LOCATION_SHARING
+            AndroidCategory.Message -> Notification.CATEGORY_MESSAGE
+            AndroidCategory.MissedCall -> Notification.CATEGORY_MISSED_CALL
+            AndroidCategory.Navigation -> Notification.CATEGORY_NAVIGATION
+            AndroidCategory.Progress -> Notification.CATEGORY_PROGRESS
+            AndroidCategory.Promo -> Notification.CATEGORY_PROMO
+            AndroidCategory.Recommendation -> Notification.CATEGORY_RECOMMENDATION
+            AndroidCategory.Reminder -> Notification.CATEGORY_REMINDER
+            AndroidCategory.Service -> Notification.CATEGORY_SERVICE
+            AndroidCategory.Social -> Notification.CATEGORY_SOCIAL
+            AndroidCategory.Status -> Notification.CATEGORY_STATUS
+            AndroidCategory.Stopwatch -> Notification.CATEGORY_STOPWATCH
+            AndroidCategory.System -> Notification.CATEGORY_SYSTEM
+            AndroidCategory.Transport -> Notification.CATEGORY_TRANSPORT
+            AndroidCategory.Workout -> Notification.CATEGORY_WORKOUT
         }

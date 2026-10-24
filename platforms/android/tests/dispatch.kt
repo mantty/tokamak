@@ -80,9 +80,12 @@ class DispatchTest {
         check(invalid.failed && invalid.text().contains("region.id must be a string")) { invalid.text() }
         val fraction = reply(request("capture", """{"quality":1.5}""", TokamakPluginRequest.SUBSCRIBE))
         check(fraction.failed && fraction.text().contains("quality must be a whole number")) { fraction.text() }
-        val precision = reply(request("permission", """{"precision":"exact"}"""))
-        check(precision.failed && precision.text().contains("precise, approximate")) { precision.text() }
-        check(JSONObject(reply(request("permission", """{"precision":"precise"}""")).text()).getString("precision") == "precise")
+        // Enum constants are named in JSON with a lowercase first letter, and only so.
+        for (wrong in listOf("exact", "Precise")) {
+            val precision = reply(request("permission", """{"precision":"$wrong"}"""))
+            check(precision.failed && precision.text().contains("one of precise, approximate")) { precision.text() }
+        }
+        check(JSONObject(reply(request("permission", """{"precision":"precise"}""")).text()).getString("precision") == "Precise")
 
         check(reply(request("read", """{"path":"a.txt"}""")).payload.contentEquals(byteArrayOf(9)))
         check(reply(request("read", """{"path":"b.txt"}""")).text().contains("NotFoundError"))
@@ -106,6 +109,8 @@ class DispatchTest {
         }
         check(JSONObject(reply(request("zone", """{"zone":$circle}""")).text()).similar(JSONObject(circle)))
         check(reply(request("mark", """{"mark":"none"}""")).text() == "\"none\"")
+        check(reply(request("mark", """{"mark":"approximate"}""")).text() == "\"approximate\"")
+        check(reply(request("mark", """{"mark":"Approximate"}""")).failed)
         check(JSONObject(reply(request("mark", """{"mark":{"a":"b"}}""")).text()).similar(JSONObject("""{"a":"b"}""")))
         val forms = listOf(
             Triple("\"loud\"", circle, "alert must be one of Alert's forms"),
@@ -227,6 +232,8 @@ class DispatchTest {
         val region = Region("home", 50.0, null, emptyList(), emptyMap(), null)
         val entered = codec.eventPayload("entered", region).toString(Charsets.UTF_8)
         check(entered.contains("\"id\":\"home\"") && !entered.contains("onEntry")) { entered }
+        val chose = codec.eventPayload("chose", Precision.Approximate).toString(Charsets.UTF_8)
+        check(chose == "\"approximate\"") { chose }
         val mistakes = listOf(
             Triple("entered", "home", "event entered takes Region, not String"),
             Triple("left", region, "android/Exports.kt lists no event left"),
@@ -241,7 +248,7 @@ class DispatchTest {
             host.reply = reply.toByteArray()
             return runCatching { host.emit(name, region, type, 1_000).toString() }.getOrElse { it.message.orEmpty() }
         }
-        check(answer("\"precise\"", Precision::class) == "precise" && host.emitted.last() == "asked")
+        check(answer("\"precise\"", Precision::class) == "Precise" && host.emitted.last() == "asked")
         check(answer("", Precision::class) == "null" && answer("null", Precision::class) == "null")
         check(answer("\"vague\"", Precision::class).startsWith("reply "))
         answer("\"precise\"", String::class).let { check(it == "event asked replies with Precision, not String") { it } }

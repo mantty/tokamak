@@ -7,6 +7,7 @@ import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPluginBytesReply
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakValue
+import com.tokamak.runtime.jsonName
 
 /** Routes the Worker's requests to the methods [TokamakLocalAuthenticationPlugin] exports. */
 class TokamakLocalAuthenticationPluginDispatch(host: TokamakHost) : TokamakDispatch<TokamakLocalAuthenticationPlugin>(TokamakLocalAuthenticationPlugin(host), host) {
@@ -17,7 +18,7 @@ class TokamakLocalAuthenticationPluginDispatch(host: TokamakHost) : TokamakDispa
                 val result = plugin.status(
                     authentication = arguments["authentication"].enum(Authentication.entries),
                 )
-                result.name
+                jsonName(result.name)
             }
             "authenticate" -> launch(method, reply) {
                 plugin.authenticate(

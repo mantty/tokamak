@@ -68,7 +68,7 @@ enum DispatchTests {
     }
     let zone = text(reply(request("zone", #"{"zone":\#(circle)}"#)))
     precondition(json(zone) == json(circle), zone)
-    for mark in [#""none""#, #"{"a":"b"}"#] {
+    for mark in [#""none""#, #""approximate""#, #"{"a":"b"}"#] {
       let marked = text(reply(request("mark", #"{"mark":\#(mark)}"#)))
       precondition(json(marked) == json(mark), marked)
     }
@@ -212,6 +212,8 @@ enum DispatchTests {
     let region = Region(id: "home", radius: 50, onEntry: nil, tags: [], counts: [:], data: nil)
     let entered = String(decoding: try! plugin.eventPayload("entered", region), as: UTF8.self)
     precondition(entered.contains(#""id":"home""#) && !entered.contains("onEntry"), entered)
+    let chose = try! plugin.eventPayload("chose", Precision.approximate)
+    precondition(chose == Data(#""approximate""#.utf8), String(decoding: chose, as: UTF8.self))
     for (name, event, message) in [
       ("entered", "home" as Any, "event entered takes Region, not String"),
       ("left", region, "apple/Exports.swift lists no event left"),

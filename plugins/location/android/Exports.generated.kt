@@ -7,6 +7,7 @@ import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPluginBytesReply
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakValue
+import com.tokamak.runtime.jsonName
 import kotlin.reflect.KClass
 import org.json.JSONArray
 import org.json.JSONObject
@@ -142,9 +143,9 @@ class TokamakLocationPluginDispatch(host: TokamakHost) : TokamakDispatch<Tokamak
 
         private fun json(value: LocationPermission): JSONObject =
             JSONObject()
-                .put("inUse", value.inUse.name)
-                .put("background", value.background.name)
-                .put("precision", value.precision.name)
+                .put("inUse", jsonName(value.inUse.name))
+                .put("background", jsonName(value.background.name))
+                .put("precision", jsonName(value.precision.name))
 
         private fun TokamakValue.asLocationUpdate(): LocationUpdate =
             LocationUpdate(
@@ -183,7 +184,7 @@ class TokamakLocationPluginDispatch(host: TokamakHost) : TokamakDispatch<Tokamak
         private fun json(value: PermissionRequest): JSONObject =
             JSONObject()
                 .putOpt("background", value.background)
-                .putOpt("precision", value.precision?.name)
+                .putOpt("precision", value.precision?.let { jsonName(it.name) })
 
         private fun TokamakValue.asPosition(): Position =
             Position(
@@ -225,7 +226,7 @@ class TokamakLocationPluginDispatch(host: TokamakHost) : TokamakDispatch<Tokamak
         private fun json(value: RegionTransition): JSONObject =
             JSONObject()
                 .put("id", value.id)
-                .put("transition", value.transition.name)
+                .put("transition", jsonName(value.transition.name))
                 .put("timestamp", value.timestamp)
 
         private fun TokamakValue.asServiceNotification(): ServiceNotification =
@@ -260,7 +261,7 @@ class TokamakLocationPluginDispatch(host: TokamakHost) : TokamakDispatch<Tokamak
 
         private fun json(value: UpdateOptions): JSONObject =
             JSONObject()
-                .putOpt("accuracy", value.accuracy?.name)
+                .putOpt("accuracy", value.accuracy?.let { jsonName(it.name) })
                 .putOpt("distance", value.distance)
                 .putOpt("interval", value.interval)
                 .putOpt("foregroundService", value.foregroundService?.let { json(it) })

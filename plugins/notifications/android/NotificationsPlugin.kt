@@ -55,12 +55,12 @@ private const val FCM_MESSAGE_ID_EXTRA = "google.message_id"
 /** The names the page gives channel importances. */
 private val IMPORTANCES =
     mapOf(
-        NotificationManager.IMPORTANCE_NONE to Importance.none,
-        NotificationManager.IMPORTANCE_MIN to Importance.min,
-        NotificationManager.IMPORTANCE_LOW to Importance.low,
-        NotificationManager.IMPORTANCE_DEFAULT to Importance.default,
-        NotificationManager.IMPORTANCE_HIGH to Importance.high,
-        NotificationManager.IMPORTANCE_MAX to Importance.high,
+        NotificationManager.IMPORTANCE_NONE to Importance.None,
+        NotificationManager.IMPORTANCE_MIN to Importance.Min,
+        NotificationManager.IMPORTANCE_LOW to Importance.Low,
+        NotificationManager.IMPORTANCE_DEFAULT to Importance.Default,
+        NotificationManager.IMPORTANCE_HIGH to Importance.High,
+        NotificationManager.IMPORTANCE_MAX to Importance.High,
     )
 
 class TokamakNotificationsPlugin(
@@ -102,9 +102,9 @@ class TokamakNotificationsPlugin(
 
     fun permission(): Permission =
         when {
-            notifier.enabled -> Permission.granted
-            canPrompt() -> Permission.prompt
-            else -> Permission.denied
+            notifier.enabled -> Permission.Granted
+            canPrompt() -> Permission.Prompt
+            else -> Permission.Denied
         }
 
     /** Asks for permission when that shows the system prompt, which needs the app in the foreground. */
@@ -122,7 +122,7 @@ class TokamakNotificationsPlugin(
         val manager = context.getSystemService(NotificationManager::class.java)
         return NotificationSettings(
             permission = permission(),
-            channels = manager.notificationChannels.map { ChannelImportance(it.id, IMPORTANCES[it.importance] ?: Importance.default) },
+            channels = manager.notificationChannels.map { ChannelImportance(it.id, IMPORTANCES[it.importance] ?: Importance.Default) },
             blockedChannelGroups = manager.notificationChannelGroups.filter { it.isBlocked }.map { it.id },
             doNotDisturbAccess = manager.isNotificationPolicyAccessGranted,
             exactAlarms = schedule.canScheduleExact,
@@ -155,7 +155,7 @@ class TokamakNotificationsPlugin(
 
     suspend fun show(notification: NotificationContent) {
         notification.check()
-        show(notification, Source.local)
+        show(notification, Source.Local)
     }
 
     /** Shows a notification `at` a time now when the time has passed, as Apple platforms do. */
@@ -164,7 +164,7 @@ class TokamakNotificationsPlugin(
         val now = System.currentTimeMillis()
         // Finding the first time checks the trigger's fields.
         val next = trigger.next(now, now)
-        if (trigger is Trigger.AtTrigger && trigger.at <= now) return show(notification, Source.local)
+        if (trigger is Trigger.AtTrigger && trigger.at <= now) return show(notification, Source.Local)
         requireEnabled()
         notifier.requireChannel(notification)
         if (trigger.exact == true && !schedule.canScheduleExact) {
@@ -204,12 +204,12 @@ class TokamakNotificationsPlugin(
         val fid = installations.id.result()
         if (!preferences.getBoolean(SUBSCRIBED, false)) throw TokamakPluginError("AbortError", "unsubscribe was called")
         preferences.edit().putString(FID, fid).apply()
-        return Subscription(PushService.fcm, fid)
+        return Subscription(PushService.Fcm, fid)
     }
 
     fun getSubscription(): Subscription? {
         if (!preferences.getBoolean(SUBSCRIBED, false)) return null
-        return preferences.getString(FID, null)?.let { Subscription(PushService.fcm, it) }
+        return preferences.getString(FID, null)?.let { Subscription(PushService.Fcm, it) }
     }
 
     suspend fun unsubscribe() {
@@ -300,7 +300,7 @@ class TokamakNotificationsPlugin(
         val previous = preferences.getString(FID, null) ?: return
         if (!preferences.getBoolean(SUBSCRIBED, false) || fid == previous) return
         preferences.edit().putString(FID, fid).apply()
-        subscriptionChanges.send(Subscription(PushService.fcm, fid))
+        subscriptionChanges.send(Subscription(PushService.Fcm, fid))
     }
 
     /**
@@ -311,7 +311,7 @@ class TokamakNotificationsPlugin(
         val deadline = SystemClock.elapsedRealtime() + PUSH_DEADLINE_MILLIS
         messages.send(received)
         if (notification != null) {
-            presentBeforeReturning(notification, Source.push, deadline)
+            presentBeforeReturning(notification, Source.Push, deadline)
             return
         }
         runCatching { host.emit("push", received, NotificationContent::class, PUSH_DEADLINE_MILLIS) }
@@ -324,7 +324,7 @@ class TokamakNotificationsPlugin(
         if (reply == null) return
         runCatching {
             reply.check()
-            presentBeforeReturning(reply, Source.local, deadline)
+            presentBeforeReturning(reply, Source.Local, deadline)
         }.onFailure { Log.w("tokamak", "the push reply is not a notification", it) }
     }
 
@@ -352,7 +352,7 @@ class TokamakNotificationsPlugin(
     /** Shows the scheduled notification [id], whose alarm fired, then calls [done] on the main thread. */
     internal fun fire(id: String, done: () -> Unit) {
         val scheduled = schedule.fire(id) ?: return done()
-        present(scheduled.content, Source.local) { done() }
+        present(scheduled.content, Source.Local) { done() }
     }
 
     /**
@@ -401,7 +401,7 @@ class TokamakNotificationsPlugin(
         intent.extras?.keySet().orEmpty()
             .filterNot { it.startsWith("google.") || it.startsWith("gcm.") || it in FCM_KEYS }
             .forEach { key -> intent.getStringExtra(key)?.let { data.put(key, it) } }
-        return OpenedNotification(messageId, null, null, data, Source.push)
+        return OpenedNotification(messageId, null, null, data, Source.Push)
     }
 
     private fun requireEnabled() {

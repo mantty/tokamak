@@ -221,6 +221,12 @@
       }
     },
     {
+      "name": "chose",
+      "type": {
+        "named": "Precision"
+      }
+    },
+    {
       "name": "visited",
       "type": {
         "named": "Visit"
@@ -295,6 +301,12 @@
     {
       "name": "Mark",
       "alternatives": [
+        {
+          "name": "accuracy",
+          "type": {
+            "named": "Precision"
+          }
+        },
         {
           "name": "labels",
           "type": {

@@ -429,7 +429,13 @@ impl NamedType {
             (Shape::Values(values), None) if values.is_empty() => {
                 bail!("enum {} has no cases", self.name)
             }
-            (Shape::Values(_), None) => return Ok(()),
+            (Shape::Values(values), None) => {
+                let mut cases = BTreeSet::new();
+                if let Some(value) = values.iter().find(|value| !cases.insert(value.as_str())) {
+                    bail!("{} has two cases named {value}", self.name);
+                }
+                return Ok(());
+            }
         };
         let mut names = BTreeSet::new();
         for field in fields {
@@ -1146,6 +1152,10 @@ mod tests {
             (
                 r#"{"methods": [], "types": [{"name": "Kind", "values": []}]}"#,
                 "no cases",
+            ),
+            (
+                r#"{"methods": [], "types": [{"name": "Kind", "values": ["high", "high"]}]}"#,
+                "two cases named high",
             ),
         ];
         assert_rejected(&cases)

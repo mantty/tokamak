@@ -13,7 +13,7 @@ export interface Flash {
   readonly volume?: number;
 }
 
-export type Mark = Readonly<Record<string, string>> | "none";
+export type Mark = Precision | Readonly<Record<string, string>> | "none";
 
 export type Precision = "precise" | "approximate";
 
@@ -95,6 +95,7 @@ declare global {
     interface Events {
       "example.apple.entered": Region;
       "example.apple.asked": Region;
+      "example.apple.chose": Precision;
       "example.apple.visited": Visit;
     }
     interface EventReplies {
@@ -107,6 +108,8 @@ declare global {
 export const onEntered = defineEvent("example.apple.entered", { platforms: ["ios", "macos"] });
 
 export const onAsked = defineEvent("example.apple.asked", { platforms: ["ios", "macos"] });
+
+export const onChose = defineEvent("example.apple.chose", { platforms: ["ios", "macos"] });
 
 /** @platforms ios */
 export const onVisited = defineEvent("example.apple.visited", { platforms: ["ios"] });

@@ -36,7 +36,7 @@ internal class LocationEvents(private val host: TokamakHost) {
     }
 
     fun transition(id: String, entered: Boolean, finish: () -> Unit) {
-        val transition = RegionTransition(id, if (entered) Transition.enter else Transition.exit, System.currentTimeMillis())
+        val transition = RegionTransition(id, if (entered) Transition.Enter else Transition.Exit, System.currentTimeMillis())
         transitions.send(transition)
         send("region", transition, finish)
     }

@@ -7,6 +7,7 @@ import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPluginBytesReply
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakValue
+import com.tokamak.runtime.jsonName
 import kotlin.reflect.KClass
 import org.json.JSONObject
 
@@ -105,8 +106,8 @@ class TokamakSecureStoragePluginDispatch(host: TokamakHost) : TokamakDispatch<To
 
         private fun json(value: StoreOptions): JSONObject =
             JSONObject()
-                .put("readable", value.readable.name)
-                .putOpt("authentication", value.authentication?.name)
+                .put("readable", jsonName(value.readable.name))
+                .putOpt("authentication", value.authentication?.let { jsonName(it.name) })
                 .put("thisDeviceOnly", value.thisDeviceOnly)
                 .putOpt("keychainGroup", value.keychainGroup)
     }

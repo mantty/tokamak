@@ -57,12 +57,12 @@ internal class Setup(val config: SetupConfig) {
 /** An Android notification channel `setup` describes. */
 internal class ChannelSpec(val id: String, private val settings: ChannelSettings) {
     private val importance =
-        when (settings.importance ?: Importance.default) {
-            Importance.none -> NotificationManager.IMPORTANCE_NONE
-            Importance.min -> NotificationManager.IMPORTANCE_MIN
-            Importance.low -> NotificationManager.IMPORTANCE_LOW
-            Importance.default -> NotificationManager.IMPORTANCE_DEFAULT
-            Importance.high -> NotificationManager.IMPORTANCE_HIGH
+        when (settings.importance ?: Importance.Default) {
+            Importance.None -> NotificationManager.IMPORTANCE_NONE
+            Importance.Min -> NotificationManager.IMPORTANCE_MIN
+            Importance.Low -> NotificationManager.IMPORTANCE_LOW
+            Importance.Default -> NotificationManager.IMPORTANCE_DEFAULT
+            Importance.High -> NotificationManager.IMPORTANCE_HIGH
         }
 
     /** A non-empty pattern, which turns vibration on. */

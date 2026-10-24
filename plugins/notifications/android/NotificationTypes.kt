@@ -4,10 +4,10 @@ import com.tokamak.runtime.TokamakTag
 import org.json.JSONObject
 
 /** Whether the app may show notifications. */
-enum class Permission { granted, denied, prompt }
+enum class Permission { Granted, Denied, Prompt }
 
 /** A channel's importance. */
-enum class Importance { none, min, low, default, high }
+enum class Importance { None, Min, Low, Default, High }
 
 data class ChannelImportance(val id: String, val importance: Importance)
 
@@ -36,7 +36,7 @@ data class OpenSettingsOptions(
     val doNotDisturbAccess: Boolean?,
 )
 
-enum class PushService { fcm }
+enum class PushService { Fcm }
 
 /** Where the app's server sends push messages for this installation: its Firebase Installation ID. */
 data class Subscription(val service: PushService, val fid: String)
@@ -44,7 +44,7 @@ data class Subscription(val service: PushService, val fid: String)
 /** A received push message. A data-only message has no title or body. */
 data class Message(val id: String, val title: String?, val body: String?, val data: JSONObject)
 
-enum class Source { local, push }
+enum class Source { Local, Push }
 
 data class DismissedNotification(val id: String, val title: String?, val body: String?, val data: JSONObject, val source: Source)
 
@@ -153,14 +153,14 @@ sealed interface Chronometer {
     data class Countdown(val countDown: Boolean) : Chronometer
 }
 
-enum class Visibility { `public`, `private`, secret }
+enum class Visibility { Public, Private, Secret }
 
 data class PublicVersion(val title: String, val body: String?)
 
 /** The kinds of notification, as `Notification.CATEGORY_*` names them. */
 enum class AndroidCategory {
-    alarm, call, email, error, event, locationSharing, message, missedCall, navigation, progress,
-    promo, recommendation, reminder, service, social, status, stopwatch, system, transport, workout,
+    Alarm, Call, Email, Error, Event, LocationSharing, Message, MissedCall, Navigation, Progress,
+    Promo, Recommendation, Reminder, Service, Social, Status, Stopwatch, System, Transport, Workout,
 }
 
 /** When a scheduled notification shows; [exact] alarms need the exact alarm permission. */

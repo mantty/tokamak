@@ -7,6 +7,7 @@ import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPluginBytesReply
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakValue
+import com.tokamak.runtime.jsonName
 import kotlin.reflect.KClass
 import org.json.JSONArray
 import org.json.JSONObject
@@ -17,8 +18,8 @@ class TokamakNotificationsPluginDispatch(host: TokamakHost) : TokamakDispatch<To
         val arguments by lazy(LazyThreadSafetyMode.NONE) { TokamakValue.arguments(payload) }
         return when (method) {
             "setup" -> respond(reply) { json(plugin.setup(config = arguments["config"].asSetupConfig())) }
-            "permission" -> respond(reply) { plugin.permission().name }
-            "requestPermission" -> launch(method, reply) { plugin.requestPermission().name }
+            "permission" -> respond(reply) { jsonName(plugin.permission().name) }
+            "requestPermission" -> launch(method, reply) { jsonName(plugin.requestPermission().name) }
             "settings" -> respond(reply) { json(plugin.settings()) }
             "openSettings" -> respond(reply) {
                 plugin.openSettings(
@@ -237,7 +238,7 @@ class TokamakNotificationsPluginDispatch(host: TokamakHost) : TokamakDispatch<To
         private fun json(value: ChannelImportance): JSONObject =
             JSONObject()
                 .put("id", value.id)
-                .put("importance", value.importance.name)
+                .put("importance", jsonName(value.importance.name))
 
         private fun TokamakValue.asChannelSettings(): ChannelSettings =
             ChannelSettings(
@@ -259,7 +260,7 @@ class TokamakNotificationsPluginDispatch(host: TokamakHost) : TokamakDispatch<To
                 .put("name", value.name)
                 .putOpt("description", value.description)
                 .putOpt("group", value.group)
-                .putOpt("importance", value.importance?.name)
+                .putOpt("importance", value.importance?.let { jsonName(it.name) })
                 .putOpt("sound", value.sound)
                 .putOpt("vibration", value.vibration?.let { json(it) })
                 .putOpt("lights", value.lights?.let { json(it) })
@@ -339,7 +340,7 @@ class TokamakNotificationsPluginDispatch(host: TokamakHost) : TokamakDispatch<To
                 .putOpt("title", value.title)
                 .putOpt("body", value.body)
                 .put("data", value.data)
-                .put("source", value.source.name)
+                .put("source", jsonName(value.source.name))
 
         private fun TokamakValue.asEveryTrigger(): Trigger.EveryTrigger =
             Trigger.EveryTrigger(
@@ -517,10 +518,10 @@ class TokamakNotificationsPluginDispatch(host: TokamakHost) : TokamakDispatch<To
                 .putOpt("onlyAlertOnce", value.onlyAlertOnce)
                 .putOpt("timeoutAfter", value.timeoutAfter)
                 .putOpt("chronometer", value.chronometer?.let { json(it) })
-                .putOpt("visibility", value.visibility?.name)
+                .putOpt("visibility", value.visibility?.let { jsonName(it.name) })
                 .putOpt("publicVersion", value.publicVersion?.let { json(it) })
                 .putOpt("sortKey", value.sortKey)
-                .putOpt("androidCategory", value.androidCategory?.name)
+                .putOpt("androidCategory", value.androidCategory?.let { jsonName(it.name) })
                 .putOpt("settingsText", value.settingsText)
 
         private fun TokamakValue.asNotificationSettings(): NotificationSettings =
@@ -535,7 +536,7 @@ class TokamakNotificationsPluginDispatch(host: TokamakHost) : TokamakDispatch<To
 
         private fun json(value: NotificationSettings): JSONObject =
             JSONObject()
-                .put("permission", value.permission.name)
+                .put("permission", jsonName(value.permission.name))
                 .put("channels", JSONArray(value.channels.map { json(it) }))
                 .put("blockedChannelGroups", JSONArray(value.blockedChannelGroups))
                 .put("doNotDisturbAccess", value.doNotDisturbAccess)
@@ -585,7 +586,7 @@ class TokamakNotificationsPluginDispatch(host: TokamakHost) : TokamakDispatch<To
                 .putOpt("title", value.title)
                 .putOpt("body", value.body)
                 .put("data", value.data)
-                .put("source", value.source.name)
+                .put("source", jsonName(value.source.name))
                 .putOpt("action", value.action)
                 .putOpt("input", value.input)
 
@@ -716,7 +717,7 @@ class TokamakNotificationsPluginDispatch(host: TokamakHost) : TokamakDispatch<To
 
         private fun json(value: Subscription): JSONObject =
             JSONObject()
-                .put("service", value.service.name)
+                .put("service", jsonName(value.service.name))
                 .put("fid", value.fid)
 
         private fun TokamakValue.asTrigger(): Trigger {

@@ -160,6 +160,10 @@ class, such as `extension TokamakAlarmsPlugin { struct Alarm: Codable { … } }`
 which keeps the name `Alarm` in TypeScript, and keep extensions of system types
 `fileprivate`. Kotlin plugins have a package each.
 
+A Swift enum's values are its cases' raw values. A Kotlin enum's are its
+constants' names with a lowercase first letter, so `enum class Permission {
+Granted, Denied }` is `"granted" | "denied"`.
+
 A union's values take one of several forms, such as a sound that is
 `"default"` or `{ name, volume }`. In Swift it is an enum conforming to
 `TokamakUnion`, each case with no associated value, which is the string of its

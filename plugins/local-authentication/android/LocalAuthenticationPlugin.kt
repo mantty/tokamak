@@ -12,12 +12,12 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 
 /** The authentication the device owner performs. */
 enum class Authentication(val authenticators: Int) {
-    biometricsOrPasscode(Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL),
-    biometrics(Authenticators.BIOMETRIC_STRONG),
+    BiometricsOrPasscode(Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL),
+    Biometrics(Authenticators.BIOMETRIC_STRONG),
 }
 
 /** Whether the device can perform an authentication now. */
-enum class Status { available, notEnrolled, unavailable }
+enum class Status { Available, NotEnrolled, Unavailable }
 
 class TokamakLocalAuthenticationPlugin(
     private val host: TokamakHost,
@@ -28,9 +28,9 @@ class TokamakLocalAuthenticationPlugin(
 
     fun status(authentication: Authentication): Status =
         when (biometrics.canAuthenticate(authentication.authenticators)) {
-            BiometricManager.BIOMETRIC_SUCCESS -> Status.available
-            BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> Status.notEnrolled
-            else -> Status.unavailable
+            BiometricManager.BIOMETRIC_SUCCESS -> Status.Available
+            BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> Status.NotEnrolled
+            else -> Status.Unavailable
         }
 
     suspend fun authenticate(authentication: Authentication, prompt: String) {

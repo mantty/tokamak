@@ -8,6 +8,7 @@ import com.tokamak.runtime.TokamakPluginBody
 import com.tokamak.runtime.TokamakPluginBytesReply
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.TokamakValue
+import com.tokamak.runtime.jsonName
 import kotlin.reflect.KClass
 import org.json.JSONArray
 import org.json.JSONObject
@@ -81,6 +82,7 @@ class TokamakExamplePluginDispatch(host: TokamakHost) : TokamakDispatch<TokamakE
             when (name) {
                 "entered" -> encodeEvent(name, event, Region::class) { json(it) }
                 "asked" -> encodeEvent(name, event, Region::class) { json(it) }
+                "chose" -> encodeEvent(name, event, Precision::class) { jsonName(it.name) }
                 "visited" -> encodeEvent(name, event, Visit::class) { json(it) }
                 else -> super.eventPayload(name, event)
             }
@@ -162,6 +164,7 @@ class TokamakExamplePluginDispatch(host: TokamakHost) : TokamakDispatch<TokamakE
         private fun TokamakValue.asMark(): Mark {
             val json = json()
             return when {
+                json is String && json in setOf("precise", "approximate") -> Mark.Accuracy(this.enum(Precision.entries))
                 json is JSONObject -> Mark.Labels(this.map { it.string() })
                 json == "none" -> Mark.None
                 else -> throw mismatch("Mark")
@@ -170,6 +173,7 @@ class TokamakExamplePluginDispatch(host: TokamakHost) : TokamakDispatch<TokamakE
 
         private fun json(value: Mark): Any =
             when (value) {
+                is Mark.Accuracy -> jsonName(value.value.name)
                 is Mark.Labels -> JSONObject(value.value)
                 Mark.None -> "none"
             }
