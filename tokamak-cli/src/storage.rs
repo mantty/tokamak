@@ -150,6 +150,7 @@ fn leading_number(segment: &str) -> Option<i128> {
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::Ordering;
     use std::fs;
     use std::path::Path;
 
@@ -201,13 +202,17 @@ mod tests {
             names,
             ["0002_same.sql", "2_early.sql", "10_late.sql", "notes.sql"]
         );
-        assert!(compare_migrations("1/b.sql", "1/a.sql").is_gt());
-        assert!(compare_migrations("1", "1/a.sql").is_lt());
-        assert_eq!(leading_number(" 0042_x"), Some(42));
-        assert_eq!(leading_number("-3"), Some(-3));
-        assert_eq!(leading_number("+7x"), Some(7));
-        assert_eq!(leading_number("init"), None);
-        assert_eq!(leading_number("-"), None);
+        assert_eq!(
+            [
+                compare_migrations("1/b.sql", "1/a.sql"),
+                compare_migrations("1", "1/a.sql"),
+            ],
+            [Ordering::Greater, Ordering::Less]
+        );
+        assert_eq!(
+            [" 0042_x", "-3", "+7x", "init", "-"].map(leading_number),
+            [Some(42), Some(-3), Some(7), None, None]
+        );
         Ok(())
     }
 
