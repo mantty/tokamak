@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Typechecks each plugin's Swift with the Apple shell for macOS and iOS at the
-# pack's deployment targets, against the selected Xcode's SDKs: each plugin
-# alone, then all of them in one module, as an app with every plugin compiles
-# them.
+# Typechecks each plugin's Swift with the Apple shell for macOS, iOS devices
+# and the iOS Simulator at the pack's deployment targets, against the selected
+# Xcode's SDKs: each plugin alone, then all of them in one module, as an app
+# with every plugin compiles them.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
@@ -33,10 +33,12 @@ for plugin in "$root"/plugins/*/apple; do
   sources=("$plugin"/*.swift)
   echo "${plugin#"$root"/}"
   typecheck "arm64-apple-macos$macos" macosx "${sources[@]}"
+  typecheck "arm64-apple-ios$ios" iphoneos "${sources[@]}"
   typecheck "arm64-apple-ios$ios-simulator" iphonesimulator "${sources[@]}"
   id=$(basename "$(dirname "$plugin")")
   for source in "${sources[@]}"; do cp "$source" "$all/$id-${source##*/}"; done
 done
 echo "all plugins"
 typecheck "arm64-apple-macos$macos" macosx "$all"/*.swift
+typecheck "arm64-apple-ios$ios" iphoneos "$all"/*.swift
 typecheck "arm64-apple-ios$ios-simulator" iphonesimulator "$all"/*.swift
