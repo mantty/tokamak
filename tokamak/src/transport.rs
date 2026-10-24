@@ -967,26 +967,7 @@ fn write_response_inner<W: Write>(
     headers.remove("keep-alive");
     let connection = if persistent { "keep-alive" } else { "close" };
     insert_header(headers, "connection", HeaderValue::from_static(connection))?;
-    if !head {
-        headers.remove("transfer-encoding");
-        if (100..200).contains(&response.status) || matches!(response.status, 204 | 304) {
-            headers.remove("content-length");
-        } else if let HttpBody::Buffered(body) = &response.body {
-            insert_header(headers, "content-length", HeaderValue::from(body.len()))?;
-        } else {
-            headers.remove("content-length");
-            insert_header(
-                headers,
-                "transfer-encoding",
-                HeaderValue::from_static("chunked"),
-            )?;
-        }
-    } else if response.status == 205
-        && !headers.contains_key("content-length")
-        && !headers.contains_key("transfer-encoding")
-    {
-        insert_header(headers, "content-length", HeaderValue::from_static("0"))?;
-    }
+    insert_framing_headers(headers, response.status, &response.body, head)?;
     write_response_headers(
         &mut stream,
         response.status,
@@ -1004,6 +985,39 @@ fn write_response_inner<W: Write>(
         }
         HttpBody::Stream(body) => write_stream_body(stream, &body, cancelled, peer_closed),
     }
+}
+
+/// Sets the length headers of a `status` response with `body`, or of its head
+/// alone when `head`.
+fn insert_framing_headers(
+    headers: &mut HeaderMap,
+    status: u16,
+    body: &HttpBody,
+    head: bool,
+) -> io::Result<()> {
+    if head {
+        if status == 205
+            && !headers.contains_key("content-length")
+            && !headers.contains_key("transfer-encoding")
+        {
+            insert_header(headers, "content-length", HeaderValue::from_static("0"))?;
+        }
+        return Ok(());
+    }
+    headers.remove("transfer-encoding");
+    if (100..200).contains(&status) || matches!(status, 204 | 304) {
+        headers.remove("content-length");
+    } else if let HttpBody::Buffered(body) = body {
+        insert_header(headers, "content-length", HeaderValue::from(body.len()))?;
+    } else {
+        headers.remove("content-length");
+        insert_header(
+            headers,
+            "transfer-encoding",
+            HeaderValue::from_static("chunked"),
+        )?;
+    }
+    Ok(())
 }
 
 fn write_stream_body<W: Write>(
