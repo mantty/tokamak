@@ -140,25 +140,22 @@ async fn serve<'js>(
     streams: &Arc<Streams>,
 ) {
     loop {
-        let command = tokio::select! {
-            command = requests.recv_async() => command.ok(),
-            () = streams.closed.cancelled() => None,
+        let command = next_command(&requests, streams).await;
+        let Some(Command::Read(reply)) = command else {
+            return end_stream(&source, command, bootstrap, streams).await;
         };
-        match command {
-            Some(Command::Read(reply)) => {
-                if !read(&source, &requests, reply, bootstrap, streams).await {
-                    return;
-                }
-            }
-            Some(Command::Cancel(reason, reply)) => {
-                let _ = reply.send(cancel(&source, reason, bootstrap, streams).await);
-                return;
-            }
-            None => {
-                let _ = cancel(&source, Message::undefined(), bootstrap, streams).await;
-                return;
-            }
+        if !read(&source, &requests, reply, bootstrap, streams).await {
+            return;
         }
+    }
+}
+
+/// The port's next command, or `None` once the port is gone or the streams
+/// close.
+async fn next_command(requests: &flume::Receiver<Command>, streams: &Streams) -> Option<Command> {
+    tokio::select! {
+        command = requests.recv_async() => command.ok(),
+        () = streams.closed.cancelled() => None,
     }
 }
 
