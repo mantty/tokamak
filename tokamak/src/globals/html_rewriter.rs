@@ -346,10 +346,13 @@ mod tests {
         for boundary in ["input", "token", "output"] {
             let (finished, completion) = flume::bounded(1);
             let check = thread::spawn(move || -> Result<(), String> {
-                let handlers = if boundary == "token" {
-                    r#"[{"selector":"p","element":0}]"#
-                } else {
-                    "[]"
+                let (handlers, input) = match boundary {
+                    "input" => ("[]", None),
+                    "token" => (
+                        r#"[{"selector":"p","element":0}]"#,
+                        Some(b"<p>hello</p>".to_vec()),
+                    ),
+                    _ => ("[]", Some(vec![b'x'; 65536])),
                 };
                 let mut state = State {
                     handlers: Some(parser::handlers(handlers).map_err(|error| error.to_string())?),
@@ -365,12 +368,7 @@ mod tests {
                     .recv_timeout(Duration::from_secs(2))
                     .map_err(|error| error.to_string())?;
                 assert!(matches!(first, Event::Input(0)));
-                if boundary != "input" {
-                    let bytes = if boundary == "token" {
-                        b"<p>hello</p>".to_vec()
-                    } else {
-                        vec![b'x'; 65536]
-                    };
+                if let Some(bytes) = input {
                     let channels = state
                         .channels
                         .as_ref()
@@ -384,10 +382,13 @@ mod tests {
                     let event = events
                         .recv_timeout(Duration::from_secs(2))
                         .map_err(|error| error.to_string())?;
-                    assert!(matches!(
-                        (boundary, event),
-                        ("token", Event::Token { .. }) | ("output", Event::Output(_))
-                    ));
+                    assert!(
+                        matches!(
+                            (boundary, event),
+                            ("token", Event::Token { .. }) | ("output", Event::Output(_))
+                        ),
+                        "expected a {boundary} event"
+                    );
                 }
                 // Keep a receiver alive: merely dropping the output receiver must
                 // not be necessary to interrupt a blocked send or handler reply.
