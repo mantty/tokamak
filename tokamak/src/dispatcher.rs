@@ -849,45 +849,43 @@ async fn send_worker_response<'js>(
         body,
         ..
     } = response;
-    match body {
-        JsResponseBody::Buffered(body) if encoder.is_none() => {
-            let mut response = HttpResponse::buffered(status, headers, body);
-            response.status_text = status_text;
-            let _ = response_sender
-                .send_async(JobResponse::Http(response))
-                .await;
-            Ok(())
-        }
-        body => {
-            let (sender, cancelled, output) = response_stream();
-            let _ = response_sender
-                .send_async(JobResponse::Http(HttpResponse {
-                    status,
-                    status_text,
-                    headers,
-                    body: output,
-                }))
-                .await;
-            let result = match body {
-                JsResponseBody::Buffered(bytes) => {
-                    send_response_chunk(&bytes, true, &mut encoder, &sender).await
-                }
-                JsResponseBody::Stream(reader) => {
-                    let result =
-                        pump_response_stream(ctx, &reader, &mut encoder, &sender, &cancelled).await;
-                    if cancelled.is_cancelled() || result.is_err() {
-                        owner.background_deadline();
-                        cancel_response_stream(ctx, &property(&reader, "cancel")?)?;
-                    }
-                    result
-                }
-            };
-            if let Err(error) = result {
-                let _ = sender.send_async(Err(error.to_string())).await;
-            }
-            Ok(())
-        }
+    if encoder.is_none()
+        && let JsResponseBody::Buffered(body) = body
+    {
+        let mut response = HttpResponse::buffered(status, headers, body);
+        response.status_text = status_text;
+        let _ = response_sender
+            .send_async(JobResponse::Http(response))
+            .await;
+        return Ok(());
     }
+    let (sender, cancelled, output) = response_stream();
+    let _ = response_sender
+        .send_async(JobResponse::Http(HttpResponse {
+            status,
+            status_text,
+            headers,
+            body: output,
+        }))
+        .await;
+    let result = match body {
+        JsResponseBody::Buffered(bytes) => {
+            send_response_chunk(&bytes, true, &mut encoder, &sender).await
+        }
+        JsResponseBody::Stream(reader) => {
+            let result =
+                pump_response_stream(ctx, &reader, &mut encoder, &sender, &cancelled).await;
+            if cancelled.is_cancelled() || result.is_err() {
+                owner.background_deadline();
+                cancel_response_stream(ctx, &property(&reader, "cancel")?)?;
+            }
+            result
+        }
+    };
+    if let Err(error) = result {
+        let _ = sender.send_async(Err(error.to_string())).await;
+    }
+    Ok(())
 }
 
 async fn pump_response_stream<'js>(
