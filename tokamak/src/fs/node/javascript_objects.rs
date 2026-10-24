@@ -859,16 +859,13 @@ pub(super) fn stat_object<'js>(
 ) -> rquickjs::Result<Object<'js>> {
     let prototype: Option<Object> = ctx.globals().get("__tokamak_node_fs_stats_proto")?;
     let object = Object::new_proto(ctx.clone(), prototype.as_ref())?;
-    let is_file = stat.kind == NodeType::File && !stat.device;
-    let is_directory = stat.kind == NodeType::Directory;
-    let mode: u32 = if stat.device {
-        0o020_666
-    } else if is_file {
-        if stat.writable { 0o100_666 } else { 0o100_444 }
-    } else if is_directory {
-        if stat.writable { 0o40_777 } else { 0o40_555 }
-    } else {
-        0o120_777
+    let mode: u32 = match (stat.device, stat.kind, stat.writable) {
+        (true, _, _) => 0o020_666,
+        (false, NodeType::File, true) => 0o100_666,
+        (false, NodeType::File, false) => 0o100_444,
+        (false, NodeType::Directory, true) => 0o40_777,
+        (false, NodeType::Directory, false) => 0o40_555,
+        _ => 0o120_777,
     };
     object.set("type", node_type_name(stat.kind))?;
     for (name, value) in [
