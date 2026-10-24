@@ -150,15 +150,15 @@ enum DispatchTests {
 
   /// Held values reach the first listener only, after which values wait
   /// again until a listener starts; values without listeners are dropped
-  /// unless the listeners hold them.
+  /// unless the listeners hold them, and a slow reader misses none.
   static func testListeners() {
     let replies = Replies()
     var next = 0
-    func listen(_ listeners: TokamakListeners<Int>) -> (id: Int, stop: () -> Void) {
+    func listen(_ stream: AsyncStream<Int>) -> (id: Int, stop: () -> Void) {
       next += 1
       let id = next
       let reply: TokamakPluginBytesReply = { replies.receive(id, $0) }
-      return (id, try! tokamakStream(reply) { listeners.stream() })
+      return (id, try! tokamakStream(reply) { stream })
     }
     func values(_ id: Int, _ count: Int) -> [String] {
       replies.wait(for: id, count: count).map { String(decoding: $0.payload, as: UTF8.self) }
@@ -167,25 +167,31 @@ enum DispatchTests {
     let held = TokamakListeners<Int>(holding: true)
     held.send(1)
     held.send(2)
-    let first = listen(held)
-    let second = listen(held)
+    let first = listen(held.stream())
+    let second = listen(held.stream())
     held.send(3)
     precondition(values(first.id, 3) == ["1", "2", "3"] && values(second.id, 1) == ["3"])
     first.stop()
     second.stop()
     held.send(4)
-    precondition(values(listen(held).id, 1) == ["4"])
+    precondition(values(listen(held.stream()).id, 1) == ["4"])
 
     // Without listeners, the newest 64 values wait.
     let many = TokamakListeners<Int>(holding: true)
     for value in 0..<70 { many.send(value) }
-    precondition(values(listen(many).id, 64) == (6..<70).map(String.init))
+    precondition(values(listen(many.stream()).id, 64) == (6..<70).map(String.init))
 
     let dropping = TokamakListeners<Int>()
     dropping.send(1)
-    let listener = listen(dropping)
+    let listener = listen(dropping.stream())
     dropping.send(2)
     precondition(values(listener.id, 1) == ["2"])
+
+    // The Worker's subscription, not the stream, applies the overflow policy.
+    let burst = TokamakListeners<Int>()
+    let unread = burst.stream()
+    for value in 0..<70 { burst.send(value) }
+    precondition(values(listen(unread).id, 70) == (0..<70).map(String.init))
   }
 
   /// Values read as `JSONSerialization` gives them, which code written for it casts.

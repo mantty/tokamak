@@ -438,14 +438,14 @@ func tokamakResource(
   }
 }
 
-/// How many values listeners keep: those a slow reader has not taken, or those
-/// held for the first.
-private let listenerCapacity = 64
+/// How many values wait for the first listener.
+private let heldCapacity = 64
 
 /// The streams of an event's listeners, such as a page's, each of which
-/// receives every value `send` delivers until it ends, keeping the newest 64
-/// that a slow reader has not taken. When `holding`, the newest 64 values sent
-/// while none listen wait for the first listener.
+/// receives every value `send` delivers until it ends. A stream keeps every
+/// value its reader has not taken, so a Worker's subscription applies its own
+/// overflow policy. When `holding`, the newest 64 values sent while none
+/// listen wait for the first listener.
 final class TokamakListeners<Value>: @unchecked Sendable {
   private let lock = NSLock()
   private let holding: Bool
@@ -460,8 +460,7 @@ final class TokamakListeners<Value>: @unchecked Sendable {
   // Values are yielded under the lock, so one sent while a listener starts
   // follows the held ones. Yielding only buffers.
   func stream() -> AsyncStream<Value> {
-    let (stream, continuation) = AsyncStream.makeStream(
-      of: Value.self, bufferingPolicy: .bufferingNewest(listenerCapacity))
+    let (stream, continuation) = AsyncStream.makeStream(of: Value.self)
     let key = UUID()
     continuation.onTermination = { [weak self] _ in
       self?.lock.withLock { _ = self?.continuations.removeValue(forKey: key) }
@@ -480,7 +479,7 @@ final class TokamakListeners<Value>: @unchecked Sendable {
     lock.withLock {
       if holding && continuations.isEmpty {
         held.append(value)
-        if held.count > listenerCapacity { held.removeFirst() }
+        if held.count > heldCapacity { held.removeFirst() }
       }
       for continuation in continuations.values {
         continuation.yield(value)

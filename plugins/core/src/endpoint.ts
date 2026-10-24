@@ -5,7 +5,8 @@ import { NativeReference } from "./resources.js";
 
 /**
  * A plugin's native methods on `platforms`, which its generated platform APIs call. Off those
- * platforms, calls reject with `NotSupportedError`. Aborting `signal` cancels the calls.
+ * platforms, calls reject with `NotSupportedError`. Aborting `signal` cancels the calls, streams
+ * and resource acquisitions, which fail with its reason.
  */
 export class NativeEndpoint {
   readonly #ctx: TokamakContext;
@@ -36,21 +37,32 @@ export class NativeEndpoint {
    * happens to values a slow reader has not taken: ending the stream, or dropping the oldest.
    */
   stream<T>(method: string, args: object = {}, overflow: Overflow = "error"): JsonStream<T> {
-    return byteStream((next, error, close) => this.#connection(method).listen(this.#plugin, method, encodeJson(args), {
-      next(payload, done) {
-        // A subscription that ends after its last value sends no value with its end.
-        if (payload.byteLength) next(jsonLine(payload));
-        if (done) close();
-      },
-      error,
-      overflow,
-    }), overflow);
+    const signal = this.#signal;
+    return byteStream((next, error, close) => {
+      const connection = this.#connection(method);
+      signal?.throwIfAborted();
+      const stop = connection.listen(this.#plugin, method, encodeJson(args), {
+        next(payload, done) {
+          // A subscription that ends after its last value sends no value with its end.
+          if (payload.byteLength) next(jsonLine(payload));
+          if (done) close();
+        },
+        error,
+        overflow,
+      });
+      const abort = () => { error(signal?.reason); };
+      signal?.addEventListener("abort", abort, { once: true });
+      return () => {
+        signal?.removeEventListener("abort", abort);
+        stop();
+      };
+    }, overflow);
   }
 
   /** Retains the native object `method` returns, without copying it. */
   async resource(method: string, args: object = {}): Promise<NativeReference> {
     this.#connection(method);
-    return NativeReference.acquire(this.#ctx, this.#plugin, method, encodeJson(args));
+    return NativeReference.acquire(this.#ctx, this.#plugin, method, encodeJson(args), this.#signal);
   }
 
   /** The ID that passes `reference` to this plugin's native code, which finds the same object. */
@@ -86,7 +98,7 @@ const families: Partial<Record<NativePlatform, keyof PlatformApis>> = { ios: "ap
 /**
  * The API in `apis` for the platform `ctx` runs on: `apple` on iOS and macOS, `android` on Android.
  * Elsewhere it is the first, whose calls reject with `NotSupportedError`. Aborting `signal`
- * cancels its calls.
+ * cancels its calls, streams and resource acquisitions.
  */
 export function platformApi<Apis extends PlatformApis>(ctx: TokamakContext, apis: Apis, signal?: AbortSignal): PlatformApi<Apis> {
   const family = ctx.platform && families[ctx.platform];

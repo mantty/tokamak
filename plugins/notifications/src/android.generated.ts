@@ -304,7 +304,7 @@ export interface Android {
 
 /**
  * The notifications plugin's native methods. Off Android they reject with `NotSupportedError`.
- * Aborting `signal` cancels their calls.
+ * Aborting `signal` cancels their calls, streams and resource acquisitions.
  */
 export function android(ctx: TokamakContext, signal?: AbortSignal): Android {
   const endpoint = new NativeEndpoint(ctx, "notifications", ["android"], signal);

@@ -20,6 +20,7 @@ import kotlin.math.pow
 import kotlin.reflect.KClass
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
@@ -193,6 +194,13 @@ class DispatchTest {
         val dropping = TokamakListeners<Int>()
         dropping.send(1)
         check(withTimeoutOrNull(50) { dropping.stream().take(1).toList() } == null)
+
+        // The Worker's subscription, not the flow, applies the overflow policy.
+        val burst = TokamakListeners<Int>()
+        val slow = async(start = CoroutineStart.UNDISPATCHED) { burst.stream().take(70).toList() }
+        repeat(70) { burst.send(it) }
+        val received = withTimeoutOrNull(2_000) { slow.await() }
+        check(received == (0 until 70).toList()) { "$received" }
     }
 
     /** The plugin's code converts the types its methods use to and from JSON, as the Worker sends them. */
