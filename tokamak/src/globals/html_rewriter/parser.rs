@@ -268,46 +268,13 @@ pub(super) fn run(
         .with_encoding(encoding)
         .with_memory_settings(MemorySettings::new().with_max_allowed_memory_usage(3 * 1024 * 1024));
     for Handler { selector, spec } in handlers {
-        if let Some(selector) = selector {
-            let mut handlers = ElementContentHandlers::default();
-            if let Some(handler) = spec.element {
-                handlers = handlers.element(move |element: &mut Element<'_, '_>| {
-                    port.call(handler, element_properties(element), |operation| {
-                        apply_element(element, operation, port)?;
-                        Ok(element_properties(element))
-                    })
-                });
-            }
-            if let Some(handler) = spec.text {
-                handlers = handlers.text(text_handler(port, handler));
-            }
-            if let Some(handler) = spec.comments {
-                handlers = handlers.comments(comment_handler(port, handler));
-            }
-            settings = settings.append_element_content_handler((Cow::Owned(selector), handlers));
-        } else {
-            let mut handlers = DocumentContentHandlers::default();
-            if let Some(handler) = spec.doctype {
-                handlers = handlers.doctype(move |doctype: &mut Doctype<'_>| {
-                    port.call(handler, json!({"name": doctype.name(), "publicId": doctype.public_id(), "systemId": doctype.system_id()}), |_| Err(invalid("Doctype is read-only")))
-                });
-            }
-            if let Some(handler) = spec.text {
-                handlers = handlers.text(text_handler(port, handler));
-            }
-            if let Some(handler) = spec.comments {
-                handlers = handlers.comments(comment_handler(port, handler));
-            }
-            if let Some(handler) = spec.end {
-                handlers = handlers.end(move |end: &mut DocumentEnd<'_>| {
-                    port.call(handler, json!({}), |operation| {
-                        apply_end(end, &operation)?;
-                        Ok(json!({}))
-                    })
-                });
-            }
-            settings = settings.append_document_content_handler(handlers);
-        }
+        settings = match selector {
+            Some(selector) => settings.append_element_content_handler((
+                Cow::Owned(selector),
+                element_handlers(&spec, port),
+            )),
+            None => settings.append_document_content_handler(document_handlers(&spec, port)),
+        };
     }
     let mut rewriter = HtmlRewriter::new(settings, |bytes: &[u8]| {
         for bytes in bytes.chunks(16384) {
@@ -321,6 +288,49 @@ pub(super) fn run(
     }
     rewriter.end()?;
     Ok(())
+}
+
+fn element_handlers<'h>(spec: &Spec, port: &'h Port) -> ElementContentHandlers<'h> {
+    let mut handlers = ElementContentHandlers::default();
+    if let Some(handler) = spec.element {
+        handlers = handlers.element(move |element: &mut Element<'_, '_>| {
+            port.call(handler, element_properties(element), |operation| {
+                apply_element(element, operation, port)?;
+                Ok(element_properties(element))
+            })
+        });
+    }
+    if let Some(handler) = spec.text {
+        handlers = handlers.text(text_handler(port, handler));
+    }
+    if let Some(handler) = spec.comments {
+        handlers = handlers.comments(comment_handler(port, handler));
+    }
+    handlers
+}
+
+fn document_handlers<'h>(spec: &Spec, port: &'h Port) -> DocumentContentHandlers<'h> {
+    let mut handlers = DocumentContentHandlers::default();
+    if let Some(handler) = spec.doctype {
+        handlers = handlers.doctype(move |doctype: &mut Doctype<'_>| {
+            port.call(handler, json!({"name": doctype.name(), "publicId": doctype.public_id(), "systemId": doctype.system_id()}), |_| Err(invalid("Doctype is read-only")))
+        });
+    }
+    if let Some(handler) = spec.text {
+        handlers = handlers.text(text_handler(port, handler));
+    }
+    if let Some(handler) = spec.comments {
+        handlers = handlers.comments(comment_handler(port, handler));
+    }
+    if let Some(handler) = spec.end {
+        handlers = handlers.end(move |end: &mut DocumentEnd<'_>| {
+            port.call(handler, json!({}), |operation| {
+                apply_end(end, &operation)?;
+                Ok(json!({}))
+            })
+        });
+    }
+    handlers
 }
 
 fn text_handler(port: &Port, handler: usize) -> impl FnMut(&mut TextChunk<'_>) -> Result + '_ {
