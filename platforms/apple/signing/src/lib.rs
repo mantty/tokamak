@@ -1623,24 +1623,43 @@ mod tests {
         let (identity_output, profile_output) = output
             .split_once("iOS provisioning profiles:")
             .context("profile heading")?;
-        for identity in &identities[..2] {
-            assert!(identity_output.contains(&format!("SHA-1: {}", identity.selector)));
-        }
-        assert!(!identity_output.contains("Unrelated TLS identity"));
-        assert!(identity_output.contains("Team: TEAM"));
-        assert!(identity_output.contains("Expires:"));
-        assert!(profile_output.contains("App Store (PROFILE-1)"));
-        assert!(profile_output.contains("Path: /profiles/app.mobileprovision"));
-        assert!(profile_output.contains("Team: TEAM"));
-        assert!(profile_output.contains("App ID: TEAM.com.example.app"));
-        assert!(profile_output.contains("Expires: 1970-01-01T00:00:00Z (expired)"));
-        assert!(profile_output.contains(&format!(
-            "{}  Apple Distribution: Example Company",
-            identities[1].selector
-        )));
-        assert!(!profile_output.contains(&identities[0].selector));
-        assert!(!profile_output.contains(&identities[2].selector));
+        assert_contains(
+            identity_output,
+            &[
+                &format!("SHA-1: {}", identities[0].selector),
+                &format!("SHA-1: {}", identities[1].selector),
+                "Team: TEAM",
+                "Expires:",
+            ],
+            &["Unrelated TLS identity"],
+        );
+        assert_contains(
+            profile_output,
+            &[
+                "App Store (PROFILE-1)",
+                "Path: /profiles/app.mobileprovision",
+                "Team: TEAM",
+                "App ID: TEAM.com.example.app",
+                "Expires: 1970-01-01T00:00:00Z (expired)",
+                &format!(
+                    "{}  Apple Distribution: Example Company",
+                    identities[1].selector
+                ),
+            ],
+            &[&identities[0].selector, &identities[2].selector],
+        );
         Ok(())
+    }
+
+    /// Asserts `text` contains each of `expected` and none of `unexpected`.
+    #[cfg(target_os = "macos")]
+    fn assert_contains(text: &str, expected: &[&str], unexpected: &[&str]) {
+        for part in expected {
+            assert!(text.contains(part), "{part:?} is missing from:\n{text}");
+        }
+        for part in unexpected {
+            assert!(!text.contains(part), "{part:?} is present in:\n{text}");
+        }
     }
 
     #[cfg(target_os = "macos")]
