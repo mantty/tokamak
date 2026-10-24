@@ -42,9 +42,10 @@ struct Flash: Codable, Equatable {
   let volume: Double?
 }
 
-/// A region's mark: none, or labels, an object of any keys.
+/// A region's mark: none, a precision, or labels, an object of any keys.
 enum Mark: TokamakUnion, Equatable {
   case none
+  case accuracy(Precision)
   case labels([String: String])
 }
 

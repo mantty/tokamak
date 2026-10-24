@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.location.LocationManager
 import android.location.LocationRequest
+import com.tokamak.runtime.TokamakHost
+import org.json.JSONObject
 
 /** The JSON of each kind of updates' options, by name. */
 private const val PREFERENCES = "tokamak.location"
@@ -14,9 +16,9 @@ private const val DEFAULT_INTERVAL_MILLIS = 10_000L
 
 private val QUALITIES =
     mapOf(
-        Accuracy.high to LocationRequest.QUALITY_HIGH_ACCURACY,
-        Accuracy.balanced to LocationRequest.QUALITY_BALANCED_POWER_ACCURACY,
-        Accuracy.low to LocationRequest.QUALITY_LOW_POWER,
+        Accuracy.High to LocationRequest.QUALITY_HIGH_ACCURACY,
+        Accuracy.Balanced to LocationRequest.QUALITY_BALANCED_POWER_ACCURACY,
+        Accuracy.Low to LocationRequest.QUALITY_LOW_POWER,
     )
 
 /**
@@ -25,17 +27,18 @@ private val QUALITIES =
  * it has ended. Their options persist until [stop], and [restore] requests them where they are not
  * running. Use it on the main thread.
  */
-internal class LocationUpdates(private val context: Context, private val name: String) {
+internal class LocationUpdates(private val host: TokamakHost, private val name: String) {
+    private val context = host.context
     private val manager = context.getSystemService(LocationManager::class.java)
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
     /** The options of the updates, or null. */
     val options: UpdateOptions?
-        get() = preferences.getString(name, null)?.let(UpdateOptions::from)
+        get() = preferences.getString(name, null)?.let { host.fromJson(JSONObject(it), UpdateOptions::class) }
 
     /** Keeps [options], which [restore] requests. */
     fun keep(options: UpdateOptions) {
-        preferences.edit().putString(name, options.json().toString()).apply()
+        preferences.edit().putString(name, host.json(options).toString()).apply()
     }
 
     /**
@@ -76,7 +79,7 @@ internal class LocationUpdates(private val context: Context, private val name: S
             ?.reason == ApplicationExitInfo.REASON_USER_REQUESTED
 
     private fun request(options: UpdateOptions) {
-        val accuracy = options.accuracy ?: Accuracy.high
+        val accuracy = options.accuracy ?: Accuracy.High
         val request =
             LocationRequest.Builder(options.interval ?: DEFAULT_INTERVAL_MILLIS)
                 .setQuality(QUALITIES.getValue(accuracy))
@@ -96,7 +99,7 @@ internal class LocationUpdates(private val context: Context, private val name: S
     private fun provider(accuracy: Accuracy): String =
         when {
             manager.hasProvider(LocationManager.FUSED_PROVIDER) -> LocationManager.FUSED_PROVIDER
-            accuracy == Accuracy.high -> LocationManager.GPS_PROVIDER
+            accuracy == Accuracy.High -> LocationManager.GPS_PROVIDER
             else -> LocationManager.NETWORK_PROVIDER
         }
 

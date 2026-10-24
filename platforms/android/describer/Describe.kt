@@ -193,7 +193,7 @@ private class Types {
     }
 }
 
-/** A form of a sealed type: a subclass, named with a lowercase first letter. */
+/** A form of a sealed type: a subclass, named by [jsonName]. */
 internal class Form(val name: String, val type: KClass<*>) {
     /** Whether the form is an object, whose JSON is its name. */
     val isName = type.objectInstance != null
@@ -206,14 +206,15 @@ internal class Form(val name: String, val type: KClass<*>) {
 internal fun forms(type: KClass<*>): List<Form> =
     type.sealedSubclasses.map { subclass ->
         val name = subclass.simpleName ?: throw DescribeError("${type.simpleName} has a form without a name")
-        Form(name.replaceFirstChar { it.lowercase() }, subclass)
+        Form(jsonName(name), subclass)
     }.sortedBy { it.name }
 
 /** A data class's properties: its primary constructor's parameters. */
 internal fun fields(type: KClass<*>): List<KParameter> = type.primaryConstructor?.parameters.orEmpty()
 
-/** An enum class's constants, read without running its initializer. */
-private fun constants(type: KClass<*>): List<String> = type.java.declaredFields.filter { it.isEnumConstant }.map { it.name }
+/** An enum class's constants, by [jsonName], read without running its initializer. */
+internal fun constants(type: KClass<*>): List<String> =
+    type.java.declaredFields.filter { it.isEnumConstant }.map { jsonName(it.name) }
 
 private fun element(type: KType, context: String): KType {
     if (type.classifier != Flow::class) throw DescribeError("$context a stream returns a Flow")

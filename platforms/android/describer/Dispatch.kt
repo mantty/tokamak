@@ -213,7 +213,7 @@ private class Code(val packageName: String) {
         if (type.classifier in SCALARS) return value
         val classifier = type.classifier as KClass<*>
         if (type.isMarkedNullable) {
-            return if (classifier.java.isEnum) "$value?.name" else "$value?.let { ${encode(type.withNullability(false), "it")} }"
+            return "$value?.let { ${encode(type.withNullability(false), "it")} }"
         }
         return when {
             classifier == List::class -> {
@@ -226,7 +226,10 @@ private class Code(val packageName: String) {
                 val entry = encode(type.arguments[1].type!!, "it.value")
                 if (entry == "it.value") "JSONObject($value)" else "JSONObject($value.mapValues { $entry })"
             }
-            classifier.java.isEnum -> "$value.name"
+            classifier.java.isEnum -> {
+                imports += "com.tokamak.runtime.jsonName"
+                "jsonName($value.name)"
+            }
             else -> "json($value)"
         }
     }
@@ -296,7 +299,7 @@ private class Code(val packageName: String) {
             classifier == Boolean::class -> "json is Boolean"
             classifier in NUMBERS -> "json is Number"
             classifier.java.isEnum -> {
-                val values = classifier.java.enumConstants.joinToString { "\"${(it as Enum<*>).name}\"" }
+                val values = constants(classifier).joinToString { "\"$it\"" }
                 "json is String && json in setOf($values)"
             }
             classifier == List::class || classifier == JSONArray::class -> {

@@ -4,6 +4,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.location.LocationManager
+import com.tokamak.runtime.TokamakHost
+import org.json.JSONObject
 
 /** The JSON of each monitored region, by id. */
 private const val PREFERENCES = "tokamak.location.regions"
@@ -14,13 +16,14 @@ private const val PREFERENCES = "tokamak.location.regions"
  * persist until [remove], and [restore] adds them again where Android removed them. Use it on the
  * main thread.
  */
-internal class LocationRegions(private val context: Context) {
+internal class LocationRegions(private val host: TokamakHost) {
+    private val context = host.context
     private val manager = context.getSystemService(LocationManager::class.java)
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
-    fun all(): List<Region> = preferences.all.values.map { Region.from(it as String) }
+    fun all(): List<Region> = preferences.all.values.map { region(it as String) }
 
-    fun get(id: String): Region? = preferences.getString(id, null)?.let(Region::from)
+    fun get(id: String): Region? = preferences.getString(id, null)?.let(::region)
 
     /**
      * Monitors [region], replacing one with the same id. It starts in an unknown state, so a device
@@ -30,7 +33,7 @@ internal class LocationRegions(private val context: Context) {
         val alert = checkNotNull(pendingIntent(region.id, PendingIntent.FLAG_UPDATE_CURRENT))
         manager.removeProximityAlert(alert)
         manager.addProximityAlert(region.latitude, region.longitude, region.radius.toFloat(), -1, alert)
-        preferences.edit().putString(region.id, region.json().toString()).apply()
+        preferences.edit().putString(region.id, host.json(region).toString()).apply()
     }
 
     fun remove(id: String) {
@@ -49,6 +52,8 @@ internal class LocationRegions(private val context: Context) {
     fun restore() {
         all().filter { pendingIntent(it.id, PendingIntent.FLAG_NO_CREATE) == null }.forEach(::add)
     }
+
+    private fun region(json: String): Region = host.fromJson(JSONObject(json), Region::class)
 
     /** The region [id]'s `PendingIntent`, mutable so `LocationManager` adds whether the device entered. */
     private fun pendingIntent(id: String, flags: Int): PendingIntent? =

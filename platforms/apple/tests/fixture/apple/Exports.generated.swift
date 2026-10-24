@@ -145,6 +145,8 @@ extension TokamakExamplePlugin {
       return try tokamakEvent(name, event, as: Region.self)
     case "asked":
       return try tokamakEvent(name, event, as: Region.self)
+    case "chose":
+      return try tokamakEvent(name, event, as: Precision.self)
     #if os(iOS)
       case "visited":
         return try tokamakEvent(name, event, as: Visit.self)
@@ -212,6 +214,8 @@ extension Mark {
   init(from decoder: any Decoder) throws {
     let value = try TokamakUnionValue(decoder)
     switch value.kind {
+    case .string(let string) where ["precise", "approximate"].contains(string):
+      self = .accuracy(try value.decode(Precision.self))
     case .object:
       self = .labels(try value.decode([String: String].self))
     case .string("none"):
@@ -224,6 +228,8 @@ extension Mark {
   func encode(to encoder: any Encoder) throws {
     var container = encoder.singleValueContainer()
     switch self {
+    case .accuracy(let value):
+      try container.encode(value)
     case .labels(let value):
       try container.encode(value)
     case .none:

@@ -41,9 +41,9 @@ class TokamakLocationPlugin(
     /** Foreground location permissions, which the `precision` build setting declares. */
     private val foreground: Set<String> by lazy { setOf(COARSE, FINE).filter(declared::contains).toSet() }
 
-    private val updates = LocationUpdates(context, LocationUpdates.UPDATES)
-    private val significantChanges = LocationUpdates(context, LocationUpdates.SIGNIFICANT_CHANGES)
-    private val regions = LocationRegions(context)
+    private val updates = LocationUpdates(host, LocationUpdates.UPDATES)
+    private val significantChanges = LocationUpdates(host, LocationUpdates.SIGNIFICANT_CHANGES)
+    private val regions = LocationRegions(host)
     private val events = LocationEvents(host)
     private val positions = LocationPositions(context, manager)
 
@@ -89,10 +89,10 @@ class TokamakLocationPlugin(
 
     /** The app's in-use and background permission, and the precision it gets, or would get once allowed. */
     fun permission(): LocationPermission {
-        val inUse = if (hasForegroundPermission()) Permission.granted else state(COARSE)
-        val background = if (BACKGROUND in declared) state(BACKGROUND) else Permission.denied
+        val inUse = if (hasForegroundPermission()) Permission.Granted else state(COARSE)
+        val background = if (BACKGROUND in declared) state(BACKGROUND) else Permission.Denied
         val precise = granted(FINE) || (!granted(COARSE) && FINE in declared)
-        return LocationPermission(inUse, background, if (precise) Precision.precise else Precision.approximate)
+        return LocationPermission(inUse, background, if (precise) Precision.Precise else Precision.Approximate)
     }
 
     /**
@@ -104,7 +104,7 @@ class TokamakLocationPlugin(
         if (background && BACKGROUND !in declared) {
             throw TokamakPluginError.notSupported("Background location needs the location plugin's background build setting")
         }
-        val asked = if (request?.precision == Precision.approximate) setOf(COARSE) else foreground
+        val asked = if (request?.precision == Precision.Approximate) setOf(COARSE) else foreground
         val allowed = ask(asked).containsValue(true)
         if (allowed) restore(updatesRemoved = false)
         if (background && allowed) ask(setOf(BACKGROUND))
@@ -121,10 +121,11 @@ class TokamakLocationPlugin(
     /** Starts updates in the foreground service when [options] name one, which stops otherwise. On failure, none run. */
     fun startUpdates(options: UpdateOptions?) {
         val running = options ?: UpdateOptions(null, null, null, null)
+        val notification = running.foregroundService
         requirePermission()
-        if (running.foregroundService != null) requireService()
+        if (notification != null) requireService()
         try {
-            if (running.foregroundService == null) TokamakLocationService.stop(context) else TokamakLocationService.start(context, running)
+            if (notification == null) TokamakLocationService.stop(context) else TokamakLocationService.start(context, notification)
             updates.start(running)
         } catch (error: Exception) {
             stopUpdates()
@@ -167,9 +168,9 @@ class TokamakLocationPlugin(
 
     private fun state(permission: String): Permission =
         when {
-            granted(permission) -> Permission.granted
-            host.wouldPrompt(permission) -> Permission.prompt
-            else -> Permission.denied
+            granted(permission) -> Permission.Granted
+            host.wouldPrompt(permission) -> Permission.Prompt
+            else -> Permission.Denied
         }
 
     private fun requirePermission() {
@@ -177,7 +178,7 @@ class TokamakLocationPlugin(
     }
 
     private fun startService() {
-        updates.options?.takeIf { it.foregroundService != null }?.let { TokamakLocationService.start(context, it) }
+        updates.options?.foregroundService?.let { TokamakLocationService.start(context, it) }
     }
 
     /**
@@ -260,6 +261,6 @@ class TokamakLocationPlugin(
         const val BACKGROUND = Manifest.permission.ACCESS_BACKGROUND_LOCATION
 
         /** Apple's significant-change service's thresholds: 500 metres or more, at most every 5 minutes, without GPS. */
-        val SIGNIFICANT_CHANGES = UpdateOptions(Accuracy.low, distance = 500.0, interval = 300_000, foregroundService = null)
+        val SIGNIFICANT_CHANGES = UpdateOptions(Accuracy.Low, distance = 500.0, interval = 300_000, foregroundService = null)
     }
 }

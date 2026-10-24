@@ -64,6 +64,9 @@ class TokamakExporter<P : TokamakPlugin> internal constructor() {
     }
 }
 
+/** The JSON name of the enum constant or sealed type form [name], such as `"granted"` for `Granted`. */
+fun jsonName(name: String): String = name.replaceFirstChar { it.lowercase() }
+
 /** How many values wait for the first listener. */
 private const val HELD_CAPACITY = 64
 
@@ -207,7 +210,8 @@ class TokamakValue(private val json: Any?, private val path: String) {
 
     fun <E : Enum<E>> enum(entries: EnumEntries<E>): E {
         val name = string()
-        return entries.firstOrNull { it.name == name } ?: throw invalid("one of ${entries.joinToString()}")
+        return entries.firstOrNull { jsonName(it.name) == name }
+            ?: throw invalid("one of ${entries.joinToString { jsonName(it.name) }}")
     }
 
     /** The error of a value that is none of the forms of the sealed type [name]. */

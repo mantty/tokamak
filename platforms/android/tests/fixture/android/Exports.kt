@@ -23,6 +23,7 @@ object ExampleExports : TokamakExports<TokamakExamplePlugin> {
         e.call(TokamakExamplePlugin::mark)
         e.event("entered", Region::class, doc = "Each region the device enters.")
         e.event("asked", Region::class, reply = Precision::class)
+        e.event("chose", Precision::class)
         e.event("visited", Visit::class)
     }
 }

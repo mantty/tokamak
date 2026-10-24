@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONObject
 
-enum class Precision { precise, approximate }
+enum class Precision { Precise, Approximate }
 
 data class Region(
     val id: String,
@@ -47,9 +47,11 @@ sealed interface Alert {
     data class Flash(val colour: String, val volume: Double?) : Alert
 }
 
-/** A region's mark: none, or labels, an object of any keys. */
+/** A region's mark: none, a precision, or labels, an object of any keys. */
 sealed interface Mark {
     data object None : Mark
+
+    @JvmInline value class Accuracy(val value: Precision) : Mark
 
     @JvmInline value class Labels(val value: Map<String, String>) : Mark
 }

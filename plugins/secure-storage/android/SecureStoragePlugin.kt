@@ -44,17 +44,17 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 
 /** When a stored value can be read. */
-enum class Readable { whenUnlocked, afterFirstUnlock }
+enum class Readable { WhenUnlocked, AfterFirstUnlock }
 
 /** The authentication a read requires. */
 enum class Authentication(val keyTypes: Int, val authenticators: Int, val invalidatedByEnrollment: Boolean) {
-    biometricsOrPasscode(
+    BiometricsOrPasscode(
         KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL,
         Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL,
         invalidatedByEnrollment = false,
     ),
-    biometrics(KeyProperties.AUTH_BIOMETRIC_STRONG, Authenticators.BIOMETRIC_STRONG, invalidatedByEnrollment = false),
-    currentBiometrics(KeyProperties.AUTH_BIOMETRIC_STRONG, Authenticators.BIOMETRIC_STRONG, invalidatedByEnrollment = true),
+    Biometrics(KeyProperties.AUTH_BIOMETRIC_STRONG, Authenticators.BIOMETRIC_STRONG, invalidatedByEnrollment = false),
+    CurrentBiometrics(KeyProperties.AUTH_BIOMETRIC_STRONG, Authenticators.BIOMETRIC_STRONG, invalidatedByEnrollment = true),
 }
 
 /** How a value is stored. */
@@ -176,7 +176,7 @@ class TokamakSecureStoragePlugin(
                 .setKeySize(KEY_SIZE)
                 .setDigests(KeyProperties.DIGEST_SHA256)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_OAEP)
-                .setUnlockedDeviceRequired(options.readable == Readable.whenUnlocked)
+                .setUnlockedDeviceRequired(options.readable == Readable.WhenUnlocked)
         options.authentication?.let { requireAuthentication(spec, it) }
         val file = file(name)
         val previous = read(file)

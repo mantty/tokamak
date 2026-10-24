@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import com.tokamak.runtime.tokamakPlugin
 
 private const val CHANNEL = "tokamak.location"
 private const val NOTIFICATION_ID = 1
@@ -24,8 +25,8 @@ class TokamakLocationService : Service() {
     /** Shows the notification the start [intent] carries, or on a restart, the running updates'. */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val content =
-            intent?.getStringExtra(NOTIFICATION_EXTRA)?.let { UpdateOptions.from(it).foregroundService }
-                ?: LocationUpdates(this, LocationUpdates.UPDATES).options?.foregroundService
+            intent?.getStringArrayExtra(NOTIFICATION_EXTRA)?.let { (title, body, channel) -> ServiceNotification(title, body, channel) }
+                ?: (tokamakPlugin("location") as? TokamakLocationPlugin)?.getUpdates()?.foregroundService
         if (content == null) {
             stopSelf()
             return START_NOT_STICKY
@@ -58,13 +59,13 @@ class TokamakLocationService : Service() {
             ?: android.R.drawable.sym_def_app_icon
 
     companion object {
-        /** The start intent's updates' options, as JSON. */
+        /** The start intent's notification: its title, body and channel. */
         private const val NOTIFICATION_EXTRA = "com.tokamak.plugins.location.NOTIFICATION"
 
-        /** Starts the service showing the notification of [options], or shows it in the running service. */
-        fun start(context: Context, options: UpdateOptions) {
-            val start = Intent(context, TokamakLocationService::class.java).putExtra(NOTIFICATION_EXTRA, options.json().toString())
-            context.startForegroundService(start)
+        /** Starts the service showing [notification], or shows it in the running service. */
+        fun start(context: Context, notification: ServiceNotification) {
+            val content = arrayOf(notification.title, notification.body, notification.channel)
+            context.startForegroundService(Intent(context, TokamakLocationService::class.java).putExtra(NOTIFICATION_EXTRA, content))
         }
 
         fun stop(context: Context) {
