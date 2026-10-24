@@ -1106,6 +1106,7 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn counts_a_certificate_refusal_but_not_a_protocol_alert_as_the_client_leaving() {
@@ -1186,35 +1187,44 @@ mod tests {
         Ok(())
     }
 
+    /// A response with as many headers as a header map holds, including a
+    /// `connection` header unless `scenario` is 0, with a stream body when it is 2.
+    fn excess_headers_response(
+        scenario: u8,
+    ) -> Result<(HttpResponse, Option<CancellationToken>), Box<dyn std::error::Error>> {
+        let mut headers = HeaderMap::new();
+        if scenario != 0 {
+            headers.insert("connection", HeaderValue::from_static("close"));
+        }
+        for index in 0..30000 {
+            let name = HeaderName::from_bytes(format!("x-{index}").as_bytes())?;
+            if headers
+                .try_insert(name, HeaderValue::from_static("v"))
+                .is_err()
+            {
+                break;
+            }
+        }
+        let (body, cancelled) = if scenario == 2 {
+            let (_, cancelled, body) = response_stream();
+            (body, Some(cancelled))
+        } else {
+            (HttpBody::Buffered(Vec::new()), None)
+        };
+        let response = HttpResponse {
+            status: 200,
+            status_text: "OK".to_owned(),
+            headers,
+            body,
+        };
+        Ok((response, cancelled))
+    }
+
     #[test]
     fn rejects_excess_response_headers_without_panicking() -> Result<(), Box<dyn std::error::Error>>
     {
         for scenario in 0..3 {
-            let mut headers = HeaderMap::new();
-            if scenario != 0 {
-                headers.insert("connection", HeaderValue::from_static("close"));
-            }
-            for index in 0..30000 {
-                let name = HeaderName::from_bytes(format!("x-{index}").as_bytes())?;
-                if headers
-                    .try_insert(name, HeaderValue::from_static("v"))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            let (body, cancelled) = if scenario == 2 {
-                let (_, cancelled, body) = response_stream();
-                (body, Some(cancelled))
-            } else {
-                (HttpBody::Buffered(Vec::new()), None)
-            };
-            let response = HttpResponse {
-                status: 200,
-                status_text: "OK".to_owned(),
-                headers,
-                body,
-            };
+            let (response, cancelled) = excess_headers_response(scenario)?;
             let mut output = Vec::new();
             assert!(
                 write_response_inner(&mut output, response, None, None, |_| Ok(false), false)
