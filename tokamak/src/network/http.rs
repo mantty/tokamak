@@ -235,17 +235,19 @@ fn request_body<'js>(
     let (sender, receiver) = flume::bounded::<io::Result<Vec<u8>>>(1);
     let (finished, completion) = tokio::sync::oneshot::channel();
     ctx.spawn(async move {
-        let result = tokio::select! {
+        let ended = tokio::select! {
             biased;
-            () = cancelled.cancelled() => Ok(()),
-            result = pump_upload(&reader, &sender) => result,
+            () = cancelled.cancelled() => Ok(false),
+            ended = pump_upload(&reader, &sender) => ended,
         };
-        if let Err(error) = &result {
+        if let Err(error) = &ended {
             let _ = sender
                 .send_async(Err(io::Error::other(error.to_string())))
                 .await;
         }
-        if cancelled.is_cancelled()
+        // workerd cancels a body the request stops reading, as it does when
+        // the fetch is aborted or its connection closes.
+        if (cancelled.is_cancelled() || matches!(ended, Ok(false)))
             && let Ok(cancel) = reader.get::<_, Function>("cancel")
         {
             let _ = cancel.call::<_, Promise>((This(reader.clone()),));
@@ -253,7 +255,7 @@ fn request_body<'js>(
         if let Ok(release) = reader.get::<_, Function>("releaseLock") {
             let _ = release.call::<_, ()>((This(reader),));
         }
-        let _ = finished.send(result.map_err(|error| error.to_string()));
+        let _ = finished.send(ended.map(|_| ()).map_err(|error| error.to_string()));
     });
     let completion = async move { completion.await.map_err(|error| error.to_string())? }
         .boxed_local()
@@ -266,16 +268,18 @@ fn request_body<'js>(
     Ok((RequestBody::Stream(Some(body.boxed())), completion))
 }
 
+/// Sends the body's chunks to the request, returning whether the body ended
+/// before the request stopped reading it.
 async fn pump_upload(
     reader: &Object<'_>,
     sender: &flume::Sender<io::Result<Vec<u8>>>,
-) -> rquickjs::Result<()> {
+) -> rquickjs::Result<bool> {
     let read: Function = reader.get("read")?;
     loop {
         let result: Promise = read.call((This(reader.clone()),))?;
         let result: Object = result.into_future().await?;
         if result.get::<_, bool>("done")? {
-            return Ok(());
+            return Ok(true);
         }
         let bytes: TypedArray<u8> = result.get("value")?;
         let bytes = bytes
@@ -283,7 +287,7 @@ async fn pump_upload(
             .ok_or_else(|| failure(reader.ctx(), "Detached request body"))?
             .to_vec();
         if sender.send_async(Ok(bytes)).await.is_err() {
-            return Ok(());
+            return Ok(false);
         }
     }
 }

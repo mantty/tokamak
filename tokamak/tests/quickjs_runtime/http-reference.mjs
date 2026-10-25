@@ -45,6 +45,10 @@ const upstream = createServer(async (request, response) => {
   if (url.pathname === "/early") return response.end("early");
   if (url.pathname === "/early-204") { response.writeHead(204); return response.end(); }
   if (url.pathname === "/disconnect") return setTimeout(() => request.socket.destroy(), 15);
+  if (url.pathname === "/close") {
+    response.writeHead(200, { connection: "close" });
+    return response.end("closed", () => request.socket.end());
+  }
   if (url.pathname === "/redirect") {
     response.writeHead(Number(url.searchParams.get("status")), { Location: "/echo" });
     return response.end();
