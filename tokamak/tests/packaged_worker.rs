@@ -16,8 +16,8 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject
 use serde_json::json;
 use tokamak::{
     AssetManifest, Config, Event, HtmlHandling, ModuleType, NotFoundHandling, PackageLayout,
-    Runtime, StorageBinding, WorkerEnvironment, WorkerManifest, write_asset_manifest, write_worker,
-    write_worker_environment,
+    Runtime, ServerIdentity, StorageBinding, WorkerEnvironment, WorkerManifest,
+    write_asset_manifest, write_worker, write_worker_environment,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -528,6 +528,39 @@ export default {
 }
 
 #[test]
+fn presents_the_server_certificate_the_shell_provides() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let key = KeyPair::generate()?;
+    let certificate = CertificateParams::new(vec![HOST.to_owned()])?.self_signed(&key)?;
+    let runtime = Runtime::start(
+        Config {
+            app: package(
+                temporary.path(),
+                worker_source(),
+                &WorkerEnvironment::default(),
+            )?,
+            state_dir: temporary.path().join("state"),
+            storage_dir: temporary.path().join("storage"),
+            host: HOST.to_owned(),
+            foreground: true,
+            plugins: None,
+            server_identity: Some(ServerIdentity {
+                certificate_chain: vec![certificate.der().to_vec()],
+                private_key: key.serialize_der(),
+            }),
+        },
+        |_| {},
+    )?;
+
+    assert!(
+        runtime
+            .certificates()
+            .trusts_server_certificate(HOST, &certificate.pem())
+    );
+    Ok(())
+}
+
+#[test]
 fn ends_without_a_failure_when_the_client_rejects_the_certificate() -> TestResult {
     let temporary = tempfile::tempdir()?;
     let (runtime, _, failures) = start_close_runtime(temporary.path())?;
@@ -538,8 +571,7 @@ fn ends_without_a_failure_when_the_client_rejects_the_certificate() -> TestResul
         .with_no_client_auth();
     let mut connection = ClientConnection::new(Arc::new(config), ServerName::try_from(HOST)?)?;
 
-    // The client trusts no certificate authority, as Android's WebView trusts
-    // none of the gateway's until the app approves it.
+    // The client trusts no certificate authority, so it aborts the handshake.
     let handshake = connection.complete_io(&mut open_tunnel(&runtime)?);
     assert!(handshake.is_err(), "the client trusted the certificate");
     assert_no_failures(&failures);
@@ -941,6 +973,7 @@ fn start_runtime(
             host: HOST.to_owned(),
             foreground: true,
             plugins,
+            server_identity: None,
         },
         listener,
     )?;

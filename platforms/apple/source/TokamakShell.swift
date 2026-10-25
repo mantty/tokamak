@@ -211,6 +211,10 @@ private final class NavigationDelegate: NSObject, WKNavigationDelegate, WKUIDele
 }
 
 private final class TokamakController {
+  /// How long each wait for the gateway to move lasts, which bounds how long
+  /// a wait outlives its controller.
+  private static let portWait: TimeInterval = 60
+
   private let app: TokamakApp
   private var runtime: RuntimeHandle?
   private var navigation: NavigationDelegate?
@@ -235,16 +239,37 @@ private final class TokamakController {
   }
 
   func restoreGateway() {
-    guard let runtime, let dataStore else { return }
+    guard let runtime else { return }
     do {
-      let port = try runtime.restoreGateway()
-      guard port != proxyPort else { return }
-      setProxy(port: port, host: runtime.appHost, dataStore: dataStore)
-      proxyPort = port
-      activeWebView?.reload()
+      use(port: try runtime.restoreGateway())
     } catch {
       print("tokamak gateway could not recover: \(error)")
     }
+  }
+
+  /// Routes the WebView through the gateway's `port` and loads the app there
+  /// again, once the gateway has moved. A gateway without a port leaves the
+  /// route on the lost port, where only a server presenting the runtime's
+  /// certificate is trusted.
+  private func use(port: UInt16) {
+    guard let runtime, let dataStore, port != 0, port != proxyPort else { return }
+    setProxy(port: port, host: runtime.appHost, dataStore: dataStore)
+    proxyPort = port
+    activeWebView?.reload()
+  }
+
+  /// Follows the gateway from `port` to each port it moves to, until the
+  /// controller is gone.
+  private func followGateway(runtime: RuntimeHandle, from port: UInt16) {
+    Thread { [weak self] in
+      var port = port
+      while self != nil {
+        let moved = runtime.awaitPortChange(from: port, timeout: Self.portWait)
+        guard moved != port else { continue }
+        port = moved
+        DispatchQueue.main.async { self?.use(port: moved) }
+      }
+    }.start()
   }
 
   private func webView(frame: CGRect, runtime: RuntimeHandle) -> WKWebView {
@@ -273,6 +298,7 @@ private final class TokamakController {
     webView.navigationDelegate = navigation
     webView.uiDelegate = navigation
     webView.load(URLRequest(url: URL(string: "https://\(runtime.appHost)/")!))
+    followGateway(runtime: runtime, from: port)
     return webView
   }
 

@@ -11,6 +11,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import java.io.File
+import java.security.KeyStore
 import java.util.concurrent.Executors
 import kotlin.reflect.KClass
 
@@ -20,6 +21,12 @@ private const val DEV_SESSION_TOKEN_METADATA = "tokamak.dev.session-token"
 
 /** How long the Worker has for `resume` and `suspend`. */
 private const val LIFECYCLE_DEADLINE_MILLIS = 10_000L
+
+/** The asset holding the gateway's server certificate and key, which the build creates. */
+private const val GATEWAY_KEYSTORE = "tokamak-gateway.p12"
+
+/** The gateway keystore's password, which is public: the key ships in the app. */
+private const val GATEWAY_KEYSTORE_PASSWORD = "tokamak"
 
 /**
  * The tokamak process. Owns the runtime and native plugins, which outlive any activity, so a
@@ -194,18 +201,29 @@ class TokamakApplication : Application(), TokamakPlugins {
         val endpoint = metadata?.getString(DEV_ENDPOINT_METADATA)
         val sessionToken = metadata?.getString(DEV_SESSION_TOKEN_METADATA)
         val startsInForeground = activity != null
+        val server = gatewayIdentity()
         val runtime =
             if (!endpoint.isNullOrEmpty() && !sessionToken.isNullOrEmpty()) {
                 TokamakRuntime.startDevelopment(
-                    stateDir(), appHost, endpoint, sessionToken, startsInForeground, workerPlugins,
+                    stateDir(), appHost, endpoint, sessionToken, server, startsInForeground, workerPlugins,
                 )
             } else {
-                TokamakRuntime.start(unpackApp(), stateDir(), storageDir(), appHost, startsInForeground, workerPlugins)
+                TokamakRuntime.start(
+                    unpackApp(), stateDir(), storageDir(), appHost, server, startsInForeground, workerPlugins,
+                )
             }
         mainExecutor.execute {
             record(runtime, ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
         }
         return runtime
+    }
+
+    /** The gateway's server certificate and key. */
+    private fun gatewayIdentity(): KeyStore.PrivateKeyEntry {
+        val password = GATEWAY_KEYSTORE_PASSWORD.toCharArray()
+        val keystore = KeyStore.getInstance("PKCS12")
+        assets.open(GATEWAY_KEYSTORE).use { keystore.load(it, password) }
+        return keystore.getEntry("gateway", KeyStore.PasswordProtection(password)) as KeyStore.PrivateKeyEntry
     }
 
     private fun metadata() =

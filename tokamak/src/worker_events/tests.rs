@@ -94,7 +94,7 @@ impl Started {
                 }
             }),
         )?;
-        let events = WorkerEvents::start(Arc::clone(gateway.shared()), foreground);
+        let events = WorkerEvents::start(gateway.handle(), foreground);
         Ok(Self {
             events,
             log,
@@ -332,7 +332,7 @@ fn an_app_without_a_tokamak_worker_runs_nothing_for_events() -> TestResult {
         "example.test".to_owned(),
         Events::new(|_| {}),
     )?;
-    let events = WorkerEvents::start(Arc::clone(gateway.shared()), true);
+    let events = WorkerEvents::start(gateway.handle(), true);
 
     let reply = events.emit("echo", b"{}", Duration::from_secs(5))?;
 

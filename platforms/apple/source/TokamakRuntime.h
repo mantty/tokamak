@@ -46,6 +46,8 @@ void *tokamak_runtime_start_development(const char *state_dir, const char *host,
                                      TokamakPluginHandler plugins,
                                      char *error, size_t error_len);
 uint16_t tokamak_runtime_port(const void *runtime);
+uint16_t tokamak_runtime_await_port_change(const void *runtime, uint16_t known,
+                                        uint64_t timeout_ms);
 uint16_t tokamak_runtime_restore_gateway(const void *runtime, char *error,
                                       size_t error_len);
 void tokamak_runtime_stop(void *runtime);

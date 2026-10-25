@@ -81,7 +81,7 @@ mod worker_events;
 use thiserror::Error as Fail;
 
 #[cfg(feature = "native")]
-pub use certificates::{Certificates, Challenge, Decision};
+pub use certificates::{Certificates, Challenge, Decision, ServerIdentity};
 pub use env_vars::{
     Error as WorkerEnvironmentError, ServiceBinding, StorageBinding, WorkerEnvironment,
     load as load_worker_environment, store_id_problem, write as write_worker_environment,

@@ -411,6 +411,13 @@ final class RuntimeHandle {
     tokamak_runtime_port(handle)
   }
 
+  /// The gateway's port once it differs from `known`, or after `timeout` its
+  /// current port. Blocks. The port is 0 once the gateway lost its port and
+  /// could not bind another.
+  func awaitPortChange(from known: UInt16, timeout: TimeInterval) -> UInt16 {
+    tokamak_runtime_await_port_change(handle, known, UInt64(timeout * 1000))
+  }
+
   func restoreGateway() throws -> UInt16 {
     var error = [CChar](repeating: 0, count: 512)
     let port = error.withUnsafeMutableBufferPointer { error in

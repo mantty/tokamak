@@ -216,6 +216,23 @@ pub unsafe extern "C" fn tokamak_runtime_port(handle: *const c_void) -> u16 {
     unsafe { runtime(handle) }.map_or(0, Runtime::port)
 }
 
+/// Wait up to `timeout_ms` for the gateway's port to differ from `known`, and
+/// return its port, which is 0 once the gateway holds none.
+///
+/// # Safety
+///
+/// `handle` must be null or a live handle returned by [`tokamak_runtime_start`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tokamak_runtime_await_port_change(
+    handle: *const c_void,
+    known: u16,
+    timeout_ms: u64,
+) -> u16 {
+    unsafe { runtime(handle) }.map_or(0, |runtime| {
+        runtime.wait_for_port_change(known, Duration::from_millis(timeout_ms))
+    })
+}
+
 /// Wait for the runtime's loopback gateway and return its current port.
 ///
 /// # Safety
@@ -545,6 +562,7 @@ fn shell(foreground: bool, plugins: TokamakPluginHandler) -> Shell {
     Shell {
         foreground,
         plugins: Arc::new(plugins),
+        server_identity: None,
         report,
     }
 }

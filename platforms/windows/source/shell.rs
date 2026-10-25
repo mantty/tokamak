@@ -13,7 +13,7 @@ use p12_keystore::{Certificate, KeyStore, KeyStoreEntry, PrivateKey, PrivateKeyC
 use rustls_pki_types::{CertificateDer, pem::PemObject};
 use serde::Deserialize;
 use tao::event::{Event as TaoEvent, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
+use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::platform::windows::IconExtWindows;
 use tao::window::{Icon, Window, WindowBuilder};
@@ -28,13 +28,14 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_PERMISSION_STATE_DENY, COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW,
     COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL, ICoreWebView2, ICoreWebView2_5,
     ICoreWebView2_14, ICoreWebView2ClientCertificate,
-    ICoreWebView2ClientCertificateRequestedEventArgs, ICoreWebView2PermissionRequestedEventArgs,
+    ICoreWebView2ClientCertificateRequestedEventArgs, ICoreWebView2Environment5,
+    ICoreWebView2PermissionRequestedEventArgs,
     ICoreWebView2ServerCertificateErrorDetectedEventArgs,
 };
 use webview2_com::take_pwstr;
 use webview2_com::{
-    ClientCertificateRequestedEventHandler, PermissionRequestedEventHandler,
-    ServerCertificateErrorDetectedEventHandler,
+    BrowserProcessExitedEventHandler, ClientCertificateRequestedEventHandler,
+    PermissionRequestedEventHandler, ServerCertificateErrorDetectedEventHandler,
 };
 use windows::Win32::Security::Cryptography::{
     CERT_CONTEXT, CERT_STORE_ADD_REPLACE_EXISTING_INHERIT_PROPERTIES, CRYPT_INTEGER_BLOB,
@@ -73,36 +74,16 @@ pub(crate) fn run() -> Result<()> {
     let root = executable_dir()?;
     let config = read_config(&root)?;
     let state = state_dir(&config.slug)?;
-    let runtime = Arc::new(start_runtime(&config, &root, &state, events)?);
+    let runtime = Arc::new(start_runtime(&config, &root, &state, events.clone())?);
     let identity = ClientIdentity::install(&runtime.certificates(), &config.host)?;
-    let client_certificate = Arc::new(RwLock::new(identity.der.clone()));
-    let icon = load_window_icon(&root)?;
-    let window = WindowBuilder::new()
-        .with_title(&config.name)
-        .with_window_icon(icon)
-        .build(&event_loop)
-        .context("create app window")?;
-    let mut context = WebContext::new(Some(state.join("webview")));
-    let webview = build_webview(&window, &mut context, &config.host, runtime.port())?;
-    let handlers = Handlers::install(
-        &webview,
-        runtime.certificates(),
-        &config.host,
-        &config.name,
-        Arc::clone(&client_certificate),
-    )?;
-    webview
-        .load_url(&frontend_url(&config.host))
-        .context("load app URL")?;
+    let window = build_window(&event_loop, &root, &config.name)?;
+    let mut app = AppWindow::new(&window, &config, &state, &runtime, identity, events)?;
 
-    let certificates = runtime.certificates();
-    let host = config.host.clone();
-    let mut identity = identity;
     let (lifecycle, deliveries) = deliver_lifecycle_events(Arc::clone(&runtime))?;
     let set_foreground = |foreground| runtime.set_foreground(foreground);
     let window = &window;
-    let view = &webview;
     let controls_runtime = Arc::clone(&runtime);
+    // The closure, which owns the page, drops as `run_return` returns.
     event_loop.run_return(move |event, _, flow| {
         *flow = ControlFlow::Wait;
         match event {
@@ -111,7 +92,7 @@ pub(crate) fn run() -> Result<()> {
                 plugin,
                 method,
                 payload,
-            }) => controls::call(view, &controls_runtime, id, &plugin, &method, &payload),
+            }) => app.call(&controls_runtime, id, &plugin, &method, &payload),
             TaoEvent::UserEvent(ShellEvent::Unsupported(id)) => controls::respond(
                 &controls_runtime,
                 id,
@@ -121,8 +102,20 @@ pub(crate) fn run() -> Result<()> {
                 )),
             ),
             TaoEvent::UserEvent(ShellEvent::Runtime(Event::CertificatesRenewed)) => {
-                if let Err(error) = identity.replace(&certificates, &host, &client_certificate) {
+                if let Err(error) = app.renew_identity() {
                     eprintln!("tokamak client certificate renewal failed: {error:#}");
+                }
+            }
+            TaoEvent::UserEvent(ShellEvent::Runtime(Event::Listening { port })) => {
+                if let Err(error) = app.gateway_moved(port) {
+                    eprintln!("tokamak could not follow the gateway to port {port}: {error:#}");
+                    *flow = ControlFlow::Exit;
+                }
+            }
+            TaoEvent::UserEvent(ShellEvent::BrowserExited) => {
+                if let Err(error) = app.browser_exited() {
+                    eprintln!("tokamak could not reopen the app: {error:#}");
+                    *flow = ControlFlow::Exit;
                 }
             }
             // Windows resizes the window as it is minimised and restored.
@@ -142,11 +135,160 @@ pub(crate) fn run() -> Result<()> {
             _ => {}
         }
     });
-    drop(handlers);
-    drop(webview);
     let _ = deliveries.join();
     drop(runtime);
     Ok(())
+}
+
+/// The app's `WebView`, with the handlers installed on it.
+struct Page {
+    // The handlers are removed before the WebView closes.
+    _handlers: Handlers,
+    webview: WebView,
+}
+
+/// The app's window, whose page follows the gateway to each port it listens
+/// on. A `WebView2` browser keeps the proxy it started with, so the page closes
+/// and opens on the new port once its browser process has exited.
+struct AppWindow<'a> {
+    window: &'a Window,
+    context: WebContext,
+    config: &'a ShellConfig,
+    certificates: Arc<Certificates>,
+    /// The client certificate the page presents, which `identity` installs.
+    client_certificate: Arc<RwLock<Vec<u8>>>,
+    identity: ClientIdentity,
+    events: EventLoopProxy<ShellEvent>,
+    /// The port the gateway listens on.
+    port: u16,
+    page: Option<Page>,
+    /// Waits for the browser process of the closed page to exit.
+    exit: Option<BrowserExit>,
+}
+
+impl<'a> AppWindow<'a> {
+    /// The app's `window`, with the page open on the gateway's port.
+    fn new(
+        window: &'a Window,
+        config: &'a ShellConfig,
+        state: &Path,
+        runtime: &Runtime,
+        identity: ClientIdentity,
+        events: EventLoopProxy<ShellEvent>,
+    ) -> Result<Self> {
+        let mut app = Self {
+            window,
+            context: WebContext::new(Some(state.join("webview"))),
+            config,
+            certificates: runtime.certificates(),
+            client_certificate: Arc::new(RwLock::new(identity.der.clone())),
+            identity,
+            events,
+            port: runtime.port(),
+            page: None,
+            exit: None,
+        };
+        app.open()?;
+        Ok(app)
+    }
+
+    /// Opens the page on the gateway's port.
+    fn open(&mut self) -> Result<()> {
+        let host = &self.config.host;
+        let webview = build_webview(self.window, &mut self.context, host, self.port)?;
+        let handlers = Handlers::install(
+            &webview,
+            Arc::clone(&self.certificates),
+            host,
+            &self.config.name,
+            Arc::clone(&self.client_certificate),
+        )?;
+        webview
+            .load_url(&frontend_url(host))
+            .context("load app URL")?;
+        self.page = Some(Page {
+            _handlers: handlers,
+            webview,
+        });
+        Ok(())
+    }
+
+    /// Performs the Worker's call `id` on the `WebView`, or refuses it while
+    /// the page is closed.
+    fn call(&self, runtime: &Arc<Runtime>, id: u64, plugin: &str, method: &str, payload: &[u8]) {
+        match &self.page {
+            Some(page) => controls::call(&page.webview, runtime, id, plugin, method, payload),
+            None => controls::respond(
+                runtime,
+                id,
+                Err(("InvalidStateError", "The WebView is restarting".into())),
+            ),
+        }
+    }
+
+    /// Records that the gateway listens on `port`, closing the page once the
+    /// gateway has moved.
+    fn gateway_moved(&mut self, port: u16) -> Result<()> {
+        if port == self.port {
+            return Ok(());
+        }
+        self.port = port;
+        if let Some(page) = self.page.take() {
+            self.exit = Some(BrowserExit::watch(&page.webview, self.events.clone())?);
+        }
+        Ok(())
+    }
+
+    /// Installs the renewed client certificate, which the page presents from
+    /// then on.
+    fn renew_identity(&mut self) -> Result<()> {
+        self.identity.replace(
+            &self.certificates,
+            &self.config.host,
+            &self.client_certificate,
+        )
+    }
+
+    /// Opens the page on the gateway's port once the browser that served the
+    /// closed page has exited.
+    fn browser_exited(&mut self) -> Result<()> {
+        if self.exit.take().is_none() {
+            return Ok(());
+        }
+        self.open()
+    }
+}
+
+/// Sends `ShellEvent::BrowserExited` once the browser process behind a
+/// `WebView` exits, which it does after its last `WebView` closes.
+struct BrowserExit {
+    environment: ICoreWebView2Environment5,
+    token: i64,
+}
+
+impl BrowserExit {
+    fn watch(webview: &WebView, events: EventLoopProxy<ShellEvent>) -> Result<Self> {
+        let environment: ICoreWebView2Environment5 = webview.environment().cast()?;
+        let mut token = 0;
+        unsafe {
+            environment.add_BrowserProcessExited(
+                &BrowserProcessExitedEventHandler::create(Box::new(move |_, _| {
+                    let _ = events.send_event(ShellEvent::BrowserExited);
+                    Ok(())
+                })),
+                &raw mut token,
+            )?;
+        }
+        Ok(Self { environment, token })
+    }
+}
+
+impl Drop for BrowserExit {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.environment.remove_BrowserProcessExited(self.token);
+        }
+    }
 }
 
 /// The `WebView` in `window`, which keeps the app's origin and opens other
@@ -228,6 +370,7 @@ fn start_runtime(
                 },
                 foreground: true,
                 plugins: Some(plugins),
+                server_identity: None,
             },
             listener,
         )?),
@@ -239,6 +382,7 @@ fn start_runtime(
                 host: config.host.clone(),
                 foreground: true,
                 plugins: Some(plugins),
+                server_identity: None,
             },
             listener,
         )?),
@@ -250,6 +394,15 @@ fn executable_dir() -> Result<PathBuf> {
         .parent()
         .map(Path::to_path_buf)
         .context("app executable has no parent directory")
+}
+
+/// The app's window, titled `title`, with the app icon when the app has one.
+fn build_window(event_loop: &EventLoop<ShellEvent>, root: &Path, title: &str) -> Result<Window> {
+    WindowBuilder::new()
+        .with_title(title)
+        .with_window_icon(load_window_icon(root)?)
+        .build(event_loop)
+        .context("create app window")
 }
 
 fn load_window_icon(root: &Path) -> Result<Option<Icon>> {
@@ -631,6 +784,7 @@ fn webview_string(
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
     use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS;
 
     use super::{
@@ -640,11 +794,18 @@ mod tests {
     };
 
     #[test]
-    fn routes_only_the_app_host_through_the_local_proxy() {
+    fn routes_only_the_app_host_through_the_local_proxy() -> anyhow::Result<()> {
         let arguments = browser_arguments("app.tokamak.local", 1234);
+        let (_, pac) = arguments
+            .split_once("--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,")
+            .ok_or_else(|| anyhow::anyhow!("no proxy PAC in {arguments}"))?;
+        let pac = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(pac)?)?;
         assert!(
-            arguments.contains("--proxy-pac-url=data:application/x-ns-proxy-autoconfig;base64,")
+            pac.contains(
+                "host.toLowerCase()==='app.tokamak.local'?'PROXY 127.0.0.1:1234':'DIRECT'"
+            )
         );
+        Ok(())
     }
 
     #[test]

@@ -299,7 +299,7 @@ fn write_temporary(path: &Path, content: &[u8], private: bool) -> std::io::Resul
 
 #[cfg(test)]
 mod bundle_tests {
-    use super::{CertificateBundle, CertificatePaths};
+    use super::{CertificateBundle, CertificatePaths, generated_identity};
     use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
     use std::time::SystemTime;
     use time::{Duration, OffsetDateTime};
@@ -408,29 +408,51 @@ mod bundle_tests {
 
     #[test]
     fn completes_a_mutual_tls_handshake_with_generated_certificates() -> TestResult {
-        use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
-
         let bundle = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
-        let server = crate::tls::server_config(
-            bundle.server_cert.as_bytes(),
-            bundle.server_key.as_bytes(),
-            bundle.ca_cert.as_bytes(),
-        )?;
+        let identity = generated_identity(&bundle).ok_or("no server identity")?;
+        let server = crate::tls::server_config(&identity, bundle.ca_cert.as_bytes())?;
+
+        let server = handshake(client_config(&bundle.ca_cert, &bundle)?, server)?;
+
+        assert!(
+            server
+                .peer_certificates()
+                .is_some_and(|chain| !chain.is_empty())
+        );
+        Ok(())
+    }
+
+    /// A client that trusts `authority` and presents `bundle`'s client certificate.
+    pub(super) fn client_config(
+        authority: &str,
+        bundle: &CertificateBundle,
+    ) -> TestResult<rustls::ClientConfig> {
+        use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+
         let mut roots = rustls::RootCertStore::empty();
-        for authority in CertificateDer::pem_slice_iter(bundle.ca_cert.as_bytes()) {
+        for authority in CertificateDer::pem_slice_iter(authority.as_bytes()) {
             roots.add(authority?)?;
         }
         let chain = CertificateDer::pem_slice_iter(bundle.client_cert.as_bytes())
             .collect::<Result<Vec<_>, _>>()?;
         let key = PrivateKeyDer::from_pem_slice(bundle.client_key.as_bytes())?;
-        let client = rustls::ClientConfig::builder_with_provider(crate::tls::provider())
-            .with_safe_default_protocol_versions()?
-            .with_root_certificates(roots)
-            .with_client_auth_cert(chain, key)?;
-        let host = ServerName::try_from("app.tokamak.local")?;
+        Ok(
+            rustls::ClientConfig::builder_with_provider(crate::tls::provider())
+                .with_safe_default_protocol_versions()?
+                .with_root_certificates(roots)
+                .with_client_auth_cert(chain, key)?,
+        )
+    }
+
+    /// The server's side of a completed handshake between `client`, connecting
+    /// to the app host, and `server`.
+    pub(super) fn handshake(
+        client: rustls::ClientConfig,
+        server: std::sync::Arc<rustls::ServerConfig>,
+    ) -> TestResult<rustls::ServerConnection> {
+        let host = rustls_pki_types::ServerName::try_from("app.tokamak.local")?;
         let mut client = rustls::ClientConnection::new(std::sync::Arc::new(client), host)?;
         let mut server = rustls::ServerConnection::new(server)?;
-
         for _ in 0..8 {
             let mut bytes = Vec::new();
             client.write_tls(&mut bytes)?;
@@ -441,14 +463,8 @@ mod bundle_tests {
             client.read_tls(&mut bytes.as_slice())?;
             client.process_new_packets()?;
         }
-
         assert!(!client.is_handshaking() && !server.is_handshaking());
-        assert!(
-            server
-                .peer_certificates()
-                .is_some_and(|chain| !chain.is_empty())
-        );
-        Ok(())
+        Ok(server)
     }
 
     #[test]
@@ -844,6 +860,16 @@ pub enum Decision {
     },
 }
 
+/// A server certificate and key the shell gives the gateway in place of the
+/// generated ones: a certificate the platform's own verification trusts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServerIdentity {
+    /// Certificate chain, leaf first, each in DER.
+    pub certificate_chain: Vec<Vec<u8>>,
+    /// The leaf's private key, in PKCS#8 DER.
+    pub private_key: Vec<u8>,
+}
+
 /// Certificate material for the app's local mTLS gateway.
 ///
 /// Certificates are generated on first use, cached in the app's state
@@ -853,16 +879,22 @@ pub struct Certificates {
     state_dir: PathBuf,
     host: String,
     current: Shared,
+    server_identity: Option<ServerIdentity>,
     server_config: Mutex<Option<Arc<ServerConfig>>>,
 }
 
 impl Certificates {
-    pub(crate) fn start(state_dir: PathBuf, host: String) -> Result<Self> {
+    pub(crate) fn start(
+        state_dir: PathBuf,
+        host: String,
+        server_identity: Option<ServerIdentity>,
+    ) -> Result<Self> {
         let bundle = CertificateBundle::ensure(&state_dir, &host, SystemTime::now())?;
         Ok(Self {
             state_dir,
             host,
             current: Arc::new(RwLock::new(bundle)),
+            server_identity,
             server_config: Mutex::new(None),
         })
     }
@@ -880,13 +912,26 @@ impl Certificates {
             .current
             .read()
             .map_err(|_| Error::CertificatesUnavailable)?;
-        let config = crate::tls::server_config(
-            bundle.server_cert.as_bytes(),
-            bundle.server_key.as_bytes(),
-            bundle.ca_cert.as_bytes(),
-        )?;
+        let config =
+            crate::tls::server_config(&self.server_identity(&bundle)?, bundle.ca_cert.as_bytes())?;
         *cached = Some(Arc::clone(&config));
         Ok(config)
+    }
+
+    /// The gateway's server certificate and key: the shell's, or else the generated ones.
+    fn server_identity(&self, current: &CertificateBundle) -> Result<ServerIdentity> {
+        self.server_identity
+            .clone()
+            .or_else(|| generated_identity(current))
+            .ok_or(Error::CertificatesUnavailable)
+    }
+
+    /// The certificate the gateway's server certificate chains to, in DER.
+    fn server_authority(&self, current: &CertificateBundle) -> Option<Vec<u8>> {
+        match &self.server_identity {
+            Some(identity) => identity.certificate_chain.last().cloned(),
+            None => pem_contents(&current.ca_cert),
+        }
     }
 
     pub(crate) fn start_renewal(self: &Arc<Self>, events: Events) -> Renewal {
@@ -929,9 +974,9 @@ impl Certificates {
             return Decision::Cancel;
         };
         match *challenge {
-            Challenge::ServerTrust { .. } => {
-                pem_contents(&current.ca_cert).map_or(Decision::Cancel, Decision::TrustAuthority)
-            }
+            Challenge::ServerTrust { .. } => self
+                .server_authority(&current)
+                .map_or(Decision::Cancel, Decision::TrustAuthority),
             Challenge::ClientCertificate {
                 previous_failures, ..
             } => client_identity(&current, previous_failures),
@@ -944,11 +989,21 @@ impl Certificates {
         if !same_dns_host(host, &self.host) {
             return false;
         }
-        let Ok(current) = self.current.read() else {
+        let (Ok(current), Some(presented)) = (self.current.read(), pem_contents(certificate))
+        else {
             return false;
         };
-        pem_contents(certificate) == pem_contents(&current.server_cert)
+        self.server_identity(&current)
+            .is_ok_and(|identity| identity.certificate_chain.first() == Some(&presented))
     }
+}
+
+/// The generated server certificate and key in `current`.
+fn generated_identity(current: &CertificateBundle) -> Option<ServerIdentity> {
+    Some(ServerIdentity {
+        certificate_chain: vec![pem_contents(&current.server_cert)?],
+        private_key: pem_contents(&current.server_key)?,
+    })
 }
 
 fn client_identity(current: &CertificateBundle, previous_failures: usize) -> Decision {
@@ -1026,21 +1081,32 @@ impl Drop for Renewal {
 mod certificate_tests {
     use std::sync::Arc;
 
-    use super::{CertificatePaths, Certificates, Challenge, Decision};
+    use std::time::SystemTime;
+
+    use super::bundle_tests::{client_config, handshake};
+    use super::{
+        CertificateBundle, CertificatePaths, Certificates, Challenge, Decision, ServerIdentity,
+        generated_identity, pem_contents,
+    };
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-    fn certificates(directory: &std::path::Path) -> TestResult<Certificates> {
+    /// Certificates for the app host, presenting `server_identity` when given.
+    fn certificates(
+        directory: &std::path::Path,
+        server_identity: Option<ServerIdentity>,
+    ) -> TestResult<Certificates> {
         Ok(Certificates::start(
             directory.to_path_buf(),
             "app.tokamak.local".to_owned(),
+            server_identity,
         )?)
     }
 
     #[test]
     fn reuses_the_tls_server_config_until_certificates_refresh() -> TestResult {
         let directory = tempfile::tempdir()?;
-        let certificates = certificates(directory.path())?;
+        let certificates = certificates(directory.path(), None)?;
 
         let first = certificates.server_config()?;
         let again = certificates.server_config()?;
@@ -1055,7 +1121,7 @@ mod certificate_tests {
     #[test]
     fn pins_the_generated_authority_for_the_app_host() -> TestResult {
         let directory = tempfile::tempdir()?;
-        let certificates = certificates(directory.path())?;
+        let certificates = certificates(directory.path(), None)?;
 
         let decision = certificates.decide(&Challenge::ServerTrust {
             host: "APP.TOKAMAK.LOCAL.",
@@ -1068,7 +1134,7 @@ mod certificate_tests {
     #[test]
     fn presents_a_client_identity_for_the_app_host() -> TestResult {
         let directory = tempfile::tempdir()?;
-        let certificates = certificates(directory.path())?;
+        let certificates = certificates(directory.path(), None)?;
 
         let decision = certificates.decide(&Challenge::ClientCertificate {
             host: "app.tokamak.local",
@@ -1090,7 +1156,7 @@ mod certificate_tests {
     #[test]
     fn leaves_other_hosts_to_the_platform() -> TestResult {
         let directory = tempfile::tempdir()?;
-        let certificates = certificates(directory.path())?;
+        let certificates = certificates(directory.path(), None)?;
 
         assert_eq!(
             certificates.decide(&Challenge::ServerTrust {
@@ -1111,7 +1177,7 @@ mod certificate_tests {
     #[test]
     fn refuses_a_client_certificate_that_already_failed() -> TestResult {
         let directory = tempfile::tempdir()?;
-        let certificates = certificates(directory.path())?;
+        let certificates = certificates(directory.path(), None)?;
 
         assert_eq!(
             certificates.decide(&Challenge::ClientCertificate {
@@ -1126,7 +1192,7 @@ mod certificate_tests {
     #[test]
     fn trusts_only_the_current_server_certificate_for_the_app_host() -> TestResult {
         let directory = tempfile::tempdir()?;
-        let certificates = certificates(directory.path())?;
+        let certificates = certificates(directory.path(), None)?;
         let server =
             std::fs::read_to_string(directory.path().join(CertificatePaths::SERVER_CERT_PEM))?;
         let certificate = server
@@ -1138,6 +1204,69 @@ mod certificate_tests {
         assert!(certificates.trusts_server_certificate("app.tokamak.local", &certificate));
         assert!(!certificates.trusts_server_certificate("example.com", &certificate));
         assert!(!certificates.trusts_server_certificate("app.tokamak.local", "invalid"));
+        Ok(())
+    }
+
+    #[test]
+    fn presents_the_server_identity_the_shell_provides() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let shell = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
+        let authority = pem_contents(&shell.ca_cert).ok_or("no authority")?;
+        let mut identity = generated_identity(&shell).ok_or("no server identity")?;
+        identity.certificate_chain.push(authority.clone());
+        let certificates = certificates(directory.path(), Some(identity))?;
+        let generated = CertificateBundle::load_cached(directory.path())?;
+
+        let server = handshake(
+            client_config(&shell.ca_cert, &generated)?,
+            certificates.server_config()?,
+        )?;
+        certificates.refresh()?;
+        let renewed = CertificateBundle::load_cached(directory.path())?;
+        handshake(
+            client_config(&shell.ca_cert, &renewed)?,
+            certificates.server_config()?,
+        )?;
+
+        assert!(server.peer_certificates().is_some());
+        assert_eq!(
+            certificates.decide(&Challenge::ServerTrust {
+                host: "app.tokamak.local"
+            }),
+            Decision::TrustAuthority(authority)
+        );
+        assert!(certificates.trusts_server_certificate("app.tokamak.local", &shell.server_cert));
+        assert!(
+            !certificates.trusts_server_certificate("app.tokamak.local", &generated.server_cert)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn presents_a_key_that_leaves_out_its_public_key() -> TestResult {
+        use p256::pkcs8::DecodePrivateKey;
+
+        let directory = tempfile::tempdir()?;
+        let shell = CertificateBundle::generate_at("app.tokamak.local", SystemTime::now())?;
+        let mut identity = generated_identity(&shell).ok_or("no server identity")?;
+        // A P-256 PKCS#8 key without its public key, as keytool writes them.
+        let mut private_key = vec![
+            0x30, 0x41, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d,
+            0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x04, 0x27,
+            0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20,
+        ];
+        private_key
+            .extend_from_slice(&p256::SecretKey::from_pkcs8_der(&identity.private_key)?.to_bytes());
+        let raw = rustls::pki_types::PrivatePkcs8KeyDer::from(private_key.clone()).into();
+        assert!(rustls::crypto::ring::sign::any_supported_type(&raw).is_err());
+        identity.private_key = private_key;
+        let certificates = certificates(directory.path(), Some(identity))?;
+        let generated = CertificateBundle::load_cached(directory.path())?;
+
+        handshake(
+            client_config(&shell.ca_cert, &generated)?,
+            certificates.server_config()?,
+        )?;
         Ok(())
     }
 }

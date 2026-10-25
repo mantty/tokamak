@@ -2,8 +2,8 @@ use flume::{Receiver, Sender};
 use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,8 @@ use crate::transport::{
 const MAX_WEBSOCKET_QUEUE: usize = 100;
 /// How long an idle persistent connection waits for its next request.
 const KEEP_ALIVE_IDLE_TIMEOUT: Duration = Duration::from_mins(1);
+/// How long the gateway waits after an accept error before accepting again.
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Why a handler could not answer a request.
 pub(super) type HandlerError = Box<dyn std::error::Error + Send + Sync>;
@@ -43,16 +45,51 @@ impl std::fmt::Debug for Runtime {
     }
 }
 
-pub(super) struct Shared {
-    pub(super) handler: Arc<dyn Handler>,
-    pub(super) certificates: Arc<Certificates>,
-    pub(super) host: String,
-    pub(super) tokio: tokio::runtime::Handle,
-    pub(super) port: AtomicU16,
-    /// Cancelled once the runtime stops.
-    pub(super) stopped: CancellationToken,
-    pub(super) connections: Mutex<Vec<Arc<Connection>>>,
-    pub(super) events: Events,
+struct Shared {
+    handler: Arc<dyn Handler>,
+    certificates: Arc<Certificates>,
+    host: String,
+    tokio: tokio::runtime::Handle,
+    port: Port,
+    /// Cancelled once the runtime stops. The handler gets child tokens of it,
+    /// which see the gateway stop but cannot stop it.
+    stopped: CancellationToken,
+    connections: Mutex<Vec<Arc<Connection>>>,
+    events: Events,
+}
+
+/// The port the gateway listens on, which a shell waits on to learn that it
+/// moved, or 0 once the gateway lost its port and could not bind another.
+struct Port {
+    current: Mutex<u16>,
+    changed: Condvar,
+}
+
+impl Port {
+    fn new(port: u16) -> Self {
+        Self {
+            current: Mutex::new(port),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn get(&self) -> u16 {
+        *lock(&self.current)
+    }
+
+    fn set(&self, port: u16) {
+        *lock(&self.current) = port;
+        self.changed.notify_all();
+    }
+
+    /// The port once it differs from `known`, or after `timeout` the current port.
+    fn wait_for_change(&self, known: u16, timeout: Duration) -> u16 {
+        let (current, _) = self
+            .changed
+            .wait_timeout_while(lock(&self.current), timeout, |port| *port == known)
+            .unwrap_or_else(PoisonError::into_inner);
+        *current
+    }
 }
 
 pub(super) trait Handler: Send + Sync {
@@ -157,8 +194,8 @@ impl Runtime {
         host: String,
         events: Events,
     ) -> io::Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let port = listener.local_addr()?.port();
+        let listener = Listener::bind(0)?;
+        let port = listener.port;
         let tokio_runtime = TokioBuilder::new_multi_thread()
             .thread_name("tokamak-tokio")
             .enable_all()
@@ -168,12 +205,14 @@ impl Runtime {
             certificates,
             host,
             tokio: tokio_runtime.handle().clone(),
-            port: AtomicU16::new(port),
+            port: Port::new(port),
             stopped: CancellationToken::new(),
             connections: Mutex::new(Vec::new()),
             events,
         });
-        shared.handler.start(&shared.tokio, &shared.stopped);
+        shared
+            .handler
+            .start(&shared.tokio, &shared.stopped.child_token());
         let gateway_shared = Arc::clone(&shared);
         let gateway = thread::Builder::new()
             .name("tokamak-gateway".to_owned())
@@ -187,82 +226,97 @@ impl Runtime {
     }
 
     pub(crate) fn port(&self) -> u16 {
-        self.shared.port.load(Ordering::Acquire)
+        self.shared.port.get()
+    }
+
+    pub(crate) fn wait_for_port_change(&self, known: u16, timeout: Duration) -> u16 {
+        self.shared.port.wait_for_change(known, timeout)
     }
 
     pub(crate) fn restore_gateway(&self) -> io::Result<u16> {
         wait_for_gateway(|| self.port())
     }
 
-    /// The state its handler's events are delivered through.
-    pub(crate) fn shared(&self) -> &Arc<Shared> {
-        &self.shared
+    /// Delivers events and fetches paths through the gateway's handler.
+    pub(crate) fn handle(&self) -> Handle {
+        Handle(Arc::clone(&self.shared))
     }
 }
 
-/// Delivers the event `name`, whose JSON is `event`, to the handler on a
-/// blocking Tokio thread, as it does a request. The handler returns by
-/// `deadline`.
-pub(crate) fn deliver(
-    shared: &Arc<Shared>,
-    name: &str,
-    event: &[u8],
-    deadline: Instant,
-) -> Result<Delivery, String> {
-    let (delivered, result) = flume::bounded(1);
-    let job = EventJob {
-        name: name.to_owned(),
-        event: event.to_owned(),
-        deadline,
-        delivered,
-    };
-    let worker = Arc::clone(shared);
-    drop(shared.tokio.spawn_blocking(move || {
-        if !worker.stopped.is_cancelled() {
-            worker.handler.deliver(job, &worker.stopped);
+/// Delivers events and fetches paths through a running gateway's handler,
+/// without being able to stop the gateway or change its port.
+pub(crate) struct Handle(Arc<Shared>);
+
+impl Handle {
+    /// Delivers the event `name`, whose JSON is `event`, to the handler on a
+    /// blocking Tokio thread, as it does a request. The handler returns by
+    /// `deadline`.
+    pub(crate) fn deliver(
+        &self,
+        name: &str,
+        event: &[u8],
+        deadline: Instant,
+    ) -> Result<Delivery, String> {
+        let (delivered, result) = flume::bounded(1);
+        let job = EventJob {
+            name: name.to_owned(),
+            event: event.to_owned(),
+            deadline,
+            delivered,
+        };
+        let worker = Arc::clone(&self.0);
+        drop(self.0.tokio.spawn_blocking(move || {
+            if !worker.stopped.is_cancelled() {
+                worker.handler.deliver(job, &worker.stopped.child_token());
+            }
+        }));
+        match result.recv() {
+            Ok(delivery) => delivery.map_err(|error| error.to_string()),
+            Err(_) => Err(format!("the runtime stopped before {name} was delivered")),
         }
-    }));
-    match result.recv() {
-        Ok(delivery) => delivery.map_err(|error| error.to_string()),
-        Err(_) => Err(format!("the runtime stopped before {name} was delivered")),
     }
-}
 
-/// What the app serves at `path`, which the handler answers as it does the
-/// `WebView`'s requests, by `deadline`.
-pub(crate) fn fetch(
-    shared: &Arc<Shared>,
-    path: &str,
-    deadline: Instant,
-) -> Result<Vec<u8>, String> {
-    if !path.starts_with('/') {
-        return Err(format!("{path} is not a path the app serves"));
-    }
-    let mut headers = HeaderMap::new();
-    append_header(&mut headers, "host", &shared.host).map_err(|error| error.to_string())?;
-    let request = HttpRequest {
-        persistent: false,
-        method: "GET".to_owned(),
-        target: path.to_owned(),
-        url: format!("https://{}{path}", shared.host),
-        headers,
-        body: None,
-    };
-    let cancelled = shared.stopped.child_token();
-    let _request = cancelled.clone().drop_guard();
-    let response =
-        match spawn_job(shared, request, None, cancelled, Some(deadline)).recv_deadline(deadline) {
+    /// What the app serves at `path`, which the handler answers as it does
+    /// the `WebView`'s requests, by `deadline`.
+    pub(crate) fn fetch(&self, path: &str, deadline: Instant) -> Result<Vec<u8>, String> {
+        let shared = &self.0;
+        if !path.starts_with('/') {
+            return Err(format!("{path} is not a path the app serves"));
+        }
+        let mut headers = HeaderMap::new();
+        append_header(&mut headers, "host", &shared.host).map_err(|error| error.to_string())?;
+        let request = HttpRequest {
+            persistent: false,
+            method: "GET".to_owned(),
+            target: path.to_owned(),
+            url: format!("https://{}{path}", shared.host),
+            headers,
+            body: None,
+        };
+        let cancelled = shared.stopped.child_token();
+        let _request = cancelled.clone().drop_guard();
+        let response = match spawn_job(shared, request, None, cancelled, Some(deadline))
+            .recv_deadline(deadline)
+        {
             Ok(JobResponse::Http(response)) => response,
             Ok(JobResponse::WebSocket) => return Err(format!("GET {path} answered a WebSocket")),
             Err(_) => return Err(format!("GET {path} timed out")),
         };
-    if !(200..300).contains(&response.status) {
-        return Err(format!(
-            "GET {path} answered {} {}",
-            response.status, response.status_text
-        ));
+        if !(200..300).contains(&response.status) {
+            return Err(format!(
+                "GET {path} answered {} {}",
+                response.status, response.status_text
+            ));
+        }
+        response.body.collect(deadline)
     }
-    response.body.collect(deadline)
+
+    /// Reports `message` as a failure, unless the gateway has stopped.
+    pub(crate) fn report_failure(&self, message: String) {
+        if !self.0.stopped.is_cancelled() {
+            self.0.events.emit(Event::Failed { message });
+        }
+    }
 }
 
 impl Drop for Runtime {
@@ -279,7 +333,7 @@ impl Drop for Runtime {
     }
 }
 
-fn gateway_loop(shared: &Arc<Shared>, mut listener: TcpListener) {
+fn gateway_loop(shared: &Arc<Shared>, mut listener: Listener) {
     let mut connection_threads = Vec::new();
     let mut listener_failed = false;
     loop {
@@ -287,17 +341,19 @@ fn gateway_loop(shared: &Arc<Shared>, mut listener: TcpListener) {
         if shared.stopped.is_cancelled() {
             break;
         }
-        let stream = match listener.accept() {
+        let stream = match listener.socket.accept() {
             Ok((stream, _)) => stream,
-            Err(error) if listener_was_closed(&error) => {
-                let Some(replacement) = recover_listener(shared, listener) else {
+            Err(error) if listener_was_lost(&listener, &error) => {
+                let Some(replacement) = replace_lost_listener(shared, listener) else {
                     break;
                 };
                 listener = replacement;
                 continue;
             }
             Err(error) => {
-                if !listener_failed {
+                if listener_failed {
+                    thread::sleep(ACCEPT_RETRY_DELAY);
+                } else {
                     shared.events.emit(Event::Failed {
                         message: format!("gateway listener failed: {error}"),
                     });
@@ -320,16 +376,18 @@ fn gateway_loop(shared: &Arc<Shared>, mut listener: TcpListener) {
     }
 }
 
-/// A listener replacing the closed `listener`, reported as listening, or
-/// `None` once no port can be bound.
-fn recover_listener(shared: &Shared, listener: TcpListener) -> Option<TcpListener> {
-    match replace_closed_listener(listener, shared.port.load(Ordering::Acquire)) {
-        Ok((replacement, port)) => {
-            shared.port.store(port, Ordering::Release);
+/// The replacement listener, whose port the gateway reports as listening, or
+/// `None` with port 0 reported once no port could be bound.
+fn publish_replacement(shared: &Shared, replacement: io::Result<Listener>) -> Option<Listener> {
+    match replacement {
+        Ok(replacement) => {
+            let port = replacement.port;
+            shared.port.set(port);
             shared.events.emit(Event::Listening { port });
             Some(replacement)
         }
         Err(error) => {
+            shared.port.set(0);
             shared.events.emit(Event::Failed {
                 message: format!("gateway listener could not recover: {error}"),
             });
@@ -354,38 +412,156 @@ fn spawn_connection(shared: &Arc<Shared>, stream: TcpStream) -> io::Result<JoinH
         })
 }
 
-#[cfg(unix)]
-pub(super) fn listener_was_closed(error: &io::Error) -> bool {
-    error.raw_os_error() == Some(libc::EBADF)
+/// The gateway's loopback listener and the port it holds.
+struct Listener {
+    socket: TcpListener,
+    port: u16,
+    /// A second socket on `port` that never listens. Linux lets sockets share
+    /// a port through `SO_REUSEPORT` only when one user owns them all, and
+    /// each Android app runs as its own user, so no other app can bind `port`
+    /// while this is open, even after `socket` is lost.
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    _reservation: socket2::Socket,
 }
 
-#[cfg(not(unix))]
-pub(super) fn listener_was_closed(_: &io::Error) -> bool {
-    false
+impl Listener {
+    /// A listener on loopback `port`, or on a free port for 0.
+    fn bind(port: u16) -> io::Result<Self> {
+        let socket = bind_loopback(port)?;
+        let port = socket.local_addr()?.port();
+        Ok(Self {
+            socket,
+            port,
+            #[cfg(any(target_os = "android", target_os = "linux"))]
+            _reservation: user_port_socket(port)?,
+        })
+    }
 }
 
-fn replace_closed_listener(listener: TcpListener, port: u16) -> io::Result<(TcpListener, u16)> {
-    std::mem::forget(listener);
-    bind_replacement_listener(port)
+/// Whether `listener` stopped listening, after `accept` failed. Linux
+/// `accept` also reports the network errors of the connection it was
+/// accepting, so the socket itself is asked.
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn listener_was_lost(listener: &Listener, _: &io::Error) -> bool {
+    !socket2::SockRef::from(&listener.socket)
+        .is_listener()
+        .unwrap_or(false)
 }
 
-pub(super) fn bind_replacement_listener(port: u16) -> io::Result<(TcpListener, u16)> {
-    let replacement = match TcpListener::bind(("127.0.0.1", port)) {
-        Ok(listener) => listener,
-        Err(port_error) => TcpListener::bind(("127.0.0.1", 0)).map_err(|random_error| {
-            io::Error::new(
-                random_error.kind(),
-                format!(
-                    "port {port} is unavailable ({port_error}); random port failed: {random_error}"
-                ),
-            )
-        })?,
+/// Whether `listener` stopped listening, which `accept` reports with these
+/// errors once its descriptor no longer holds a listening stream socket.
+#[cfg(all(unix, not(any(target_os = "android", target_os = "linux"))))]
+fn listener_was_lost(_: &Listener, error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EBADF | libc::EINVAL | libc::ENOTSOCK | libc::EOPNOTSUPP)
+    )
+}
+
+/// Whether `listener` stopped listening, which `accept` reports with these
+/// errors once its handle no longer holds a listening stream socket.
+#[cfg(windows)]
+fn listener_was_lost(_: &Listener, error: &io::Error) -> bool {
+    use windows_sys::Win32::Networking::WinSock::{WSAEINVAL, WSAENOTSOCK, WSAEOPNOTSUPP};
+
+    matches!(
+        error.raw_os_error(),
+        Some(WSAENOTSOCK | WSAEINVAL | WSAEOPNOTSUPP)
+    )
+}
+
+/// A loopback listener on `port`, or on a free port for 0, which no other
+/// socket can bind while it is open.
+#[cfg(windows)]
+fn bind_loopback(port: u16) -> io::Result<TcpListener> {
+    use socket2::{Domain, Socket, Type};
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{SO_EXCLUSIVEADDRUSE, SOL_SOCKET, setsockopt};
+
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None)?;
+    let raw = usize::try_from(socket.as_raw_socket()).map_err(io::Error::other)?;
+    let enabled = 1_i32.to_ne_bytes();
+    let length = i32::try_from(enabled.len()).map_err(io::Error::other)?;
+    // SAFETY: `raw` is an open socket and `enabled` is `length` readable bytes.
+    let result = unsafe {
+        setsockopt(
+            raw,
+            SOL_SOCKET,
+            SO_EXCLUSIVEADDRUSE,
+            enabled.as_ptr(),
+            length,
+        )
     };
-    let replacement_port = replacement.local_addr()?.port();
-    Ok((replacement, replacement_port))
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    socket.bind(&SocketAddr::from(([127, 0, 0, 1], port)).into())?;
+    socket.listen(128)?;
+    Ok(socket.into())
 }
 
-pub(super) struct Connection {
+/// A loopback listener on `port`, or on a free port for 0, which only
+/// sockets of this user can share.
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn bind_loopback(port: u16) -> io::Result<TcpListener> {
+    let socket = user_port_socket(port)?;
+    socket.listen(128)?;
+    Ok(socket.into())
+}
+
+/// A socket bound to loopback `port` with `SO_REUSEPORT`, which Linux lets
+/// only sockets of the same user share. It leaves out `SO_REUSEADDR`, which
+/// lets any user bind a port that no socket listens on.
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn user_port_socket(port: u16) -> io::Result<socket2::Socket> {
+    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)?;
+    socket.set_reuse_port(true)?;
+    socket.bind(&SocketAddr::from(([127, 0, 0, 1], port)).into())?;
+    Ok(socket)
+}
+
+/// A loopback listener on `port`, or on a free port for 0.
+#[cfg(not(any(windows, target_os = "android", target_os = "linux")))]
+fn bind_loopback(port: u16) -> io::Result<TcpListener> {
+    TcpListener::bind(("127.0.0.1", port))
+}
+
+/// The listener replacing `lost`, whose descriptor may have been closed and
+/// its number reused for another file, published by `publish_replacement`.
+/// The lost listener's reservation keeps the port until the replacement holds
+/// it.
+fn replace_lost_listener(shared: &Shared, lost: Listener) -> Option<Listener> {
+    std::mem::forget(lost.socket);
+    let replacement = Listener::bind(lost.port)
+        .or_else(|error| handle_unavailable_port(shared, lost.port, &error));
+    publish_replacement(shared, replacement)
+}
+
+/// Ends the process once the gateway cannot bind its port again: the `WebView`
+/// trusts a certificate whose key ships in the APK, so whatever holds the port
+/// could pose as the gateway.
+#[cfg(target_os = "android")]
+fn handle_unavailable_port(shared: &Shared, port: u16, error: &io::Error) -> io::Result<Listener> {
+    shared.events.emit(Event::Failed {
+        message: format!(
+            "gateway listener could not recover: port {port} is unavailable ({error})"
+        ),
+    });
+    std::process::abort()
+}
+
+/// A listener on a free port once the gateway cannot bind `port` again.
+#[cfg(not(target_os = "android"))]
+fn handle_unavailable_port(_: &Shared, port: u16, error: &io::Error) -> io::Result<Listener> {
+    Listener::bind(0).map_err(|random_error| {
+        io::Error::new(
+            random_error.kind(),
+            format!("port {port} is unavailable ({error}); random port failed: {random_error}"),
+        )
+    })
+}
+
+struct Connection {
     stream: TcpStream,
     cancelled: AtomicBool,
 }
@@ -402,21 +578,23 @@ impl Drop for ConnectionGuard {
     }
 }
 
-pub(super) fn lock_connections(shared: &Shared) -> MutexGuard<'_, Vec<Arc<Connection>>> {
-    shared
-        .connections
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+fn lock_connections(shared: &Shared) -> MutexGuard<'_, Vec<Arc<Connection>>> {
+    lock(&shared.connections)
 }
 
-pub(super) fn close_connections(shared: &Shared) {
+/// The guard of `mutex`, whose data stays usable after a panic poisoned it.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn close_connections(shared: &Shared) {
     for connection in lock_connections(shared).iter() {
         connection.cancelled.store(true, Ordering::Release);
         let _ = connection.stream.shutdown(Shutdown::Both);
     }
 }
 
-pub(super) fn probe_gateway(port: u16) -> io::Result<()> {
+fn probe_gateway(port: u16) -> io::Result<()> {
     let timeout = Duration::from_millis(100);
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream =
@@ -442,7 +620,7 @@ fn describe(context: &'static str) -> impl FnOnce(io::Error) -> io::Error {
     move |error| io::Error::new(error.kind(), format!("{context}: {error}"))
 }
 
-pub(super) fn wait_for_gateway(mut port: impl FnMut() -> u16) -> io::Result<u16> {
+fn wait_for_gateway(mut port: impl FnMut() -> u16) -> io::Result<u16> {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let current = port();
@@ -464,7 +642,7 @@ fn reap_finished_connections(connections: &mut Vec<JoinHandle<()>>) {
     }
 }
 
-pub(super) fn serve_connection(shared: &Arc<Shared>, stream: TcpStream) -> io::Result<()> {
+fn serve_connection(shared: &Arc<Shared>, stream: TcpStream) -> io::Result<()> {
     let connection = Arc::new(Connection {
         stream: stream.try_clone()?,
         cancelled: AtomicBool::new(false),
@@ -652,14 +830,17 @@ pub(super) fn websocket_channels() -> io::Result<(WebSocketJob, WebSocketBridge)
     Ok((job, bridge))
 }
 
-pub(super) fn execute_job(shared: &Shared, job: Job) {
+fn execute_job(shared: &Shared, job: Job) {
     if shared.stopped.is_cancelled() {
         return;
     }
     let response = job.response.clone();
-    if let Err(error) = shared.handler.handle(job, &shared.stopped) {
+    if let Err(error) = shared.handler.handle(job, &shared.stopped.child_token()) {
         let message = format!("Worker error: {error}");
         let _ = response.send(JobResponse::Http(HttpResponse::text(500, &message)));
         shared.events.emit(Event::RequestFailed { message });
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -42,6 +42,8 @@ native = [
     "dep:x25519-dalek",
     "dep:rustls-platform-verifier",
     "dep:webpki-roots",
+    "dep:socket2",
+    "dep:windows-sys",
     "dep:base64",
     "dep:brotlic-sys",
     "dep:encoding_rs",
@@ -166,6 +168,12 @@ webpki-roots = { workspace = true, optional = true }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 rustls-platform-verifier = { workspace = true, optional = true }
+
+[target.'cfg(any(windows, target_os = "android", target_os = "linux"))'.dependencies]
+socket2 = { workspace = true, optional = true, features = ["all"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, optional = true }
 
 
 [lints]
