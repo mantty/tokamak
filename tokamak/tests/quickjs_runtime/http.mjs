@@ -148,6 +148,23 @@ export default {
       }
     }
 
+    {
+      let cancelled = 0;
+      const cancellation = Promise.withResolvers();
+      const body = new ReadableStream({
+        async pull(controller) {
+          await new Promise(resolve => setTimeout(resolve, 1));
+          if (!cancelled) controller.enqueue(new Uint8Array(1024));
+        },
+        cancel() { cancelled++; cancellation.resolve(); },
+      });
+      // The server closes the connection after its response, before the body ends, so the fetch
+      // can resolve or reject; either way both runtimes cancel the body.
+      await fetch(`${base}/close`, { method: "POST", body }).then(response => response.text()).catch(() => {});
+      await Promise.race([cancellation.promise, new Promise(resolve => setTimeout(resolve, 1000))]);
+      results.closedUpload = { cancelled };
+    }
+
     results.redirects = [];
     for (const status of [301, 302, 303, 307, 308]) {
       for (const method of ["POST", "PUT", "HEAD"]) {
