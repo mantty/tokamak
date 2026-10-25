@@ -291,7 +291,7 @@ impl PluginHandler for Shell {
 }
 
 #[test]
-fn presents_the_server_certificate_the_shell_provides() -> TestResult {
+fn trusts_the_server_certificate_the_shell_provides() -> TestResult {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let temporary = tempfile::tempdir()?;
     let key = rcgen::KeyPair::generate()?;

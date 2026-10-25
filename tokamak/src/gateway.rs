@@ -401,11 +401,9 @@ fn spawn_connection(shared: &Arc<Shared>, stream: TcpStream) -> io::Result<JoinH
     thread::Builder::new()
         .name("tokamak-connection".to_owned())
         .spawn(move || {
-            // A client that disconnects, or a connection the stopping gateway
-            // closed, has not failed.
+            // A client that disconnects has not failed.
             if let Err(error) = serve_connection(&shared, stream)
                 && !connection_ended(&error)
-                && !shared.stopped.is_cancelled()
             {
                 shared.events.emit(Event::RequestFailed {
                     message: error.to_string(),
@@ -675,10 +673,16 @@ fn serve_connection(shared: &Arc<Shared>, stream: TcpStream) -> io::Result<()> {
     if shared.stopped.is_cancelled() {
         return Ok(());
     }
-    let Some(mut tls) = open_tunnel(shared, stream, &connection)? else {
-        return Ok(());
+    let served = match open_tunnel(shared, stream, &connection) {
+        Ok(Some(mut tls)) => serve_requests(shared, &mut tls, &connection),
+        Ok(None) => Ok(()),
+        Err(error) => Err(error),
     };
-    serve_requests(shared, &mut tls, &connection)
+    // A connection the gateway closed has not failed.
+    if connection.cancelled.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    served
 }
 
 /// The mutually authenticated TLS session a client opens through a CONNECT

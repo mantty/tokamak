@@ -1,21 +1,19 @@
 #[cfg(unix)]
 use super::gateway_loop;
 use super::{
-    EventJob, Handle, Handler, HandlerError, Job, JobResponse, Listener, Port, Runtime, Shared,
-    close_connections, execute_job, listener_was_lost, lock_connections, probe_gateway,
+    Delivery, EventJob, Handle, Handler, HandlerError, Job, JobResponse, Listener, Port, Runtime,
+    Shared, close_connections, execute_job, listener_was_lost, lock_connections, probe_gateway,
     publish_replacement, replace_lost_listener, serve_connection, wait_for_gateway,
 };
-use crate::dispatcher::Dispatcher;
 use crate::lifecycle_events::{Event, Events};
-use crate::packaging::{PackageLayout, WorkerManifest};
-use crate::quickjs::WorkerBundle;
-use crate::tests::{HOST, certificates, request, runtime_config};
+use crate::tests::{HOST, certificates, request};
+use crate::transport::HttpResponse;
 use flume::Receiver;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -144,16 +142,9 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
 {
     let directory = tempfile::tempdir()?;
     let tokio = tokio::runtime::Builder::new_current_thread().build()?;
-    let handler = Dispatcher::new(
-        WorkerBundle::new(
-            WorkerManifest::es_modules("entry.js", &[]),
-            PackageLayout::new(PathBuf::default()),
-        ),
-        runtime_config(),
-    );
     let shared = Arc::new(shared(
         directory.path(),
-        handler,
+        Arc::new(UnreachableHandler),
         &tokio,
         Events::new(|_| {}),
     )?);
@@ -161,10 +152,9 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
     let client = TcpStream::connect(listener.local_addr()?)?;
     let (server, _) = listener.accept()?;
     let connection_shared = Arc::clone(&shared);
-    let (finished, connection) = flume::bounded(1);
+    let (finished, outcome) = flume::bounded(1);
     thread::spawn(move || {
-        let _ = serve_connection(&connection_shared, server);
-        let _ = finished.send(());
+        let _ = finished.send(serve_connection(&connection_shared, server));
     });
 
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -174,11 +164,10 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
         }
         thread::yield_now();
     }
-    shared.stopped.cancel();
     close_connections(&shared);
-    connection
+    outcome
         .recv_timeout(Duration::from_secs(5))
-        .map_err(|_| "the connection did not close")?;
+        .map_err(|_| "the connection did not close")??;
     assert!(lock_connections(&shared).is_empty());
     drop(client);
     Ok(())
@@ -308,7 +297,7 @@ fn replaces_a_listener_whose_descriptor_holds_a_file() -> Result<(), Box<dyn std
         events.recv_timeout(Duration::from_secs(5))?,
         Event::Listening { port }
     );
-    assert_eq!(wait_for_gateway(|| port)?, port);
+    wait_for_gateway(|| port)?;
     shared.stopped.cancel();
     drop(TcpStream::connect(("127.0.0.1", port))?);
     gateway.join().map_err(|_| "gateway thread panicked")?;
@@ -502,13 +491,20 @@ fn keeps_serving_when_its_handler_cancels_the_token_it_was_given()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     struct CancellingHandler;
     impl Handler for CancellingHandler {
-        fn handle(&self, _: Job, stopped: &CancellationToken) -> Result<(), HandlerError> {
+        fn handle(&self, job: Job, stopped: &CancellationToken) -> Result<(), HandlerError> {
             stopped.cancel();
-            Err("cancelled".into())
+            let _ = job
+                .response
+                .send(JobResponse::Http(HttpResponse::text(200, "served")));
+            Ok(())
         }
 
-        fn deliver(&self, _: EventJob, stopped: &CancellationToken) {
+        fn deliver(&self, event: EventJob, stopped: &CancellationToken) {
             stopped.cancel();
+            let _ = event.delivered.send(Ok(Delivery {
+                reply: Vec::new(),
+                listened: None,
+            }));
         }
 
         fn start(&self, _: &tokio::runtime::Handle, stopped: &CancellationToken) {
@@ -524,8 +520,8 @@ fn keeps_serving_when_its_handler_cancels_the_token_it_was_given()
     )?;
     let handle = runtime.handle();
     let deadline = Instant::now() + Duration::from_secs(5);
-    assert!(handle.deliver("ping", b"{}", deadline).is_err());
-    assert!(handle.fetch("/", deadline).is_err());
+    handle.deliver("ping", b"{}", deadline)?;
+    handle.fetch("/", deadline)?;
 
     // A stopped gateway drops the connection it accepts instead of serving it.
     wait_for_gateway(|| runtime.port())?;
