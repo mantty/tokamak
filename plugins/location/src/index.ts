@@ -60,9 +60,9 @@ export function location(ctx: TokamakContext) {
       const position = await platformApi(ctx, { apple, android }, located.signal).currentPosition()
         .finally(() => { clearTimeout(timer); });
       if (position) return position;
-      // Android finds no position in the background without background permission.
+      // Android finds no position in the background without permission at all times.
       const background = await lifecycleStage(ctx) === "background";
-      throw background && (await native.permission()).background !== "granted" ? backgroundDenied() : unavailable("Location is unavailable");
+      throw background && (await native.permission()).backgroundAlways !== "granted" ? backgroundDenied() : unavailable("Location is unavailable");
     },
 
     /**
@@ -74,12 +74,12 @@ export function location(ctx: TokamakContext) {
       return native.watchPosition();
     },
 
-    /** The app's in-use and background permission, and the precision it gets. Never asks. */
+    /** The app's location permission, and the precision it gets. Never asks. */
     permission: (): Promise<LocationPermission> => native.permission(),
 
     /**
      * Asks for in-use permission, and for what `options` names, where the user has not answered.
-     * Android asks for background permission once in-use permission is granted. Rejects with
+     * Android asks for permission at all times once in-use permission is granted. Rejects with
      * `NeedsUIError` when a prompt would show off screen.
      */
     requestPermission: (options?: PermissionRequest): Promise<LocationPermission> => native.requestPermission(options),

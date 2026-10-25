@@ -87,7 +87,7 @@ class TokamakLocationPlugin(
     /** Each position as the device moves, until the provider turns off. */
     fun watchPosition(): Flow<Position> = positions.watch().map(::Position).catch { throw locationError(it) }
 
-    /** The app's in-use and background permission, and the precision it gets, or would get once allowed. */
+    /** The app's location permission, and the precision it gets, or would get once allowed. */
     fun permission(): LocationPermission {
         val inUse = if (hasForegroundPermission()) Permission.Granted else state(COARSE)
         val background = if (BACKGROUND in declared) state(BACKGROUND) else Permission.Denied
@@ -100,9 +100,9 @@ class TokamakLocationPlugin(
      * Android grants background permission only to an app with foreground permission.
      */
     suspend fun requestPermission(request: PermissionRequest?): LocationPermission {
-        val background = request?.background == true
+        val background = request?.backgroundAlways == true
         if (background && BACKGROUND !in declared) {
-            throw TokamakPluginError.notSupported("Background location needs the location plugin's background build setting")
+            throw TokamakPluginError.notSupported("backgroundAlways needs the location plugin's background-always build setting")
         }
         val asked = if (request?.precision == Precision.Approximate) setOf(COARSE) else foreground
         val allowed = ask(asked).containsValue(true)

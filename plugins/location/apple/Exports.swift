@@ -8,7 +8,7 @@ extension TokamakLocationPlugin: TokamakExports {
     e.call(currentPosition, doc: "A new fix. Cancelling the call stops locating.")
     e.stream(watchPosition, overflow: .dropOldest, doc: "Positions as the device moves.")
     e.call(
-      permission, doc: "The app's in-use and background permission, and the precision it gets.")
+      permission, doc: "The app's location permission, and the precision it gets.")
     e.call(
       requestPermission,
       doc: "Asks for the permission `request` names where the user has not answered.")

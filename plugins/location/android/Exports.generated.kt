@@ -137,14 +137,14 @@ class TokamakLocationPluginDispatch(host: TokamakHost) : TokamakDispatch<Tokamak
         private fun TokamakValue.asLocationPermission(): LocationPermission =
             LocationPermission(
                 inUse = this["inUse"].enum(Permission.entries),
-                background = this["background"].enum(Permission.entries),
+                backgroundAlways = this["backgroundAlways"].enum(Permission.entries),
                 precision = this["precision"].enum(Precision.entries),
             )
 
         private fun json(value: LocationPermission): JSONObject =
             JSONObject()
                 .put("inUse", jsonName(value.inUse.name))
-                .put("background", jsonName(value.background.name))
+                .put("backgroundAlways", jsonName(value.backgroundAlways.name))
                 .put("precision", jsonName(value.precision.name))
 
         private fun TokamakValue.asLocationUpdate(): LocationUpdate =
@@ -177,13 +177,13 @@ class TokamakLocationPluginDispatch(host: TokamakHost) : TokamakDispatch<Tokamak
 
         private fun TokamakValue.asPermissionRequest(): PermissionRequest =
             PermissionRequest(
-                background = this["background"].nullable { it.boolean() },
+                backgroundAlways = this["backgroundAlways"].nullable { it.boolean() },
                 precision = this["precision"].nullable { it.enum(Precision.entries) },
             )
 
         private fun json(value: PermissionRequest): JSONObject =
             JSONObject()
-                .putOpt("background", value.background)
+                .putOpt("backgroundAlways", value.backgroundAlways)
                 .putOpt("precision", value.precision?.let { jsonName(it.name) })
 
         private fun TokamakValue.asPosition(): Position =

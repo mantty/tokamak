@@ -1,5 +1,6 @@
 {
   "class": "string",
+  "compilation-conditions": "strings",
   "plist": "path",
   "resources": "paths"
 }

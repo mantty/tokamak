@@ -6,11 +6,12 @@ const ALWAYS = "This app uses your location in the background for location featu
 
 /**
  * The file that declares what `settings` ask for on `platform`, the plugin section key that names
- * it, and notices for the build; or the problems with the settings.
+ * it, the Swift compilation conditions of an Apple build, and notices for the build; or the
+ * problems with the settings.
  */
 export function declarations(platform, settings) {
-  if (settings["always-description"] !== undefined && !settings.background) {
-    return { problems: ["always-description needs background, which declares the permission it describes"] };
+  if (settings["always-description"] !== undefined && !settings["background-always"]) {
+    return { problems: ["always-description needs background-always, which declares the permission it describes"] };
   }
   if (platform === "android") {
     return { key: "manifest", name: "AndroidManifest.xml", contents: androidManifest(settings), notices: [] };
@@ -19,7 +20,16 @@ export function declarations(platform, settings) {
     platform === "macos" && settings.precision === "approximate"
       ? ["macOS has no declaration of approximate location, so precision approximate applies to iOS and Android only"]
       : [];
-  return { key: "plist", name: "Info.plist", contents: plist(appleKeys(platform, settings)), notices };
+  const keys = appleKeys(platform, settings);
+  // Only a build that gives the Always reason compiles the code that asks for Always.
+  const always = "NSLocationAlwaysAndWhenInUseUsageDescription" in keys;
+  return {
+    key: "plist",
+    name: "Info.plist",
+    contents: plist(keys),
+    notices,
+    ...(always ? { conditions: ["LOCATION_ALWAYS"] } : {}),
+  };
 }
 
 /** The Info.plist keys of `settings` on the Apple `platform`. */
@@ -37,7 +47,7 @@ function appleKeys(platform, settings) {
     };
   }
   const keys = { NSLocationWhenInUseUsageDescription: whenInUse };
-  if (settings.background) keys.NSLocationAlwaysAndWhenInUseUsageDescription = settings["always-description"] ?? ALWAYS;
+  if (settings["background-always"]) keys.NSLocationAlwaysAndWhenInUseUsageDescription = settings["always-description"] ?? ALWAYS;
   if (settings["background-updates"]) keys.UIBackgroundModes = ["location"];
   if (settings.precision === "approximate") keys.NSLocationDefaultAccuracyReduced = true;
   return { ...keys, ...temporary };
@@ -47,7 +57,7 @@ function appleKeys(platform, settings) {
 function androidManifest(settings) {
   const permissions = ["ACCESS_COARSE_LOCATION", "RECEIVE_BOOT_COMPLETED"];
   if (settings.precision !== "approximate") permissions.push("ACCESS_FINE_LOCATION");
-  if (settings.background) permissions.push("ACCESS_BACKGROUND_LOCATION");
+  if (settings["background-always"]) permissions.push("ACCESS_BACKGROUND_LOCATION");
   if (settings["background-updates"]) permissions.push("FOREGROUND_SERVICE", "FOREGROUND_SERVICE_LOCATION");
   const service = settings["background-updates"]
     ? [

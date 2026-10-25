@@ -238,6 +238,9 @@ swift_type='^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$'
 # <directory>/<name> compiles as <plugin>-<directory>-<name>.
 plugin_sources=$temporary/plugin-sources
 mkdir "$plugin_sources"
+# A plugin's compilation conditions start with its id in capitals, such as
+# LOCATION_ for location, as every plugin compiles into one module.
+compilation_conditions=()
 registry=$temporary/TokamakPluginRegistry.swift
 printf '%s\n\n%s\n%s\n' 'import Foundation' 'func tokamakPlugins(app: TokamakApp) -> [any TokamakPlugin] {' '  [' > "$registry"
 for plugin in "$input/plugins"/*/; do
@@ -248,6 +251,15 @@ for plugin in "$input/plugins"/*/; do
     exit 1
   fi
   printf '    %s(host: TokamakHost(app: app, plugin: "%s")),\n' "$class" "$plugin_id" >> "$registry"
+  condition_prefix=$(printf '%s' "$plugin_id" | tr 'a-z-' 'A-Z_')_
+  for condition_file in "$plugin/compilation-conditions"/*; do
+    condition=$(<"$condition_file")
+    if [[ ! "$condition" =~ ^${condition_prefix}[A-Za-z0-9_]+$ ]]; then
+      echo "plugin '$plugin_id' has compilation condition '$condition', which must be $condition_prefix followed by letters, digits or underscores" >&2
+      exit 1
+    fi
+    compilation_conditions+=(-D "$condition")
+  done
   [[ -d "$plugin/native" ]] || continue
   while IFS= read -r -d '' source; do
     relative=${source#"$plugin/native/"}
@@ -282,6 +294,10 @@ swift_args=(
   -Xlinker -dead_strip
   -Xlinker -exported_symbols_list -Xlinker "$exported_symbols"
 )
+# Bash 3.2 cannot expand an empty array under set -u.
+if [[ ${#compilation_conditions[@]} -gt 0 ]]; then
+  swift_args+=("${compilation_conditions[@]}")
+fi
 
 # Simulator builds embed their entitlements in __TEXT,__entitlements, where
 # the simulator reads them.

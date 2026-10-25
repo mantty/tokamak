@@ -21,7 +21,7 @@ export interface LocationErrorEvent {
 
 export interface LocationPermission {
   readonly inUse: Permission;
-  readonly background: Permission;
+  readonly backgroundAlways: Permission;
   readonly precision: Precision;
 }
 
@@ -41,7 +41,7 @@ export interface MonitoredRegion {
 export type Permission = "granted" | "denied" | "prompt";
 
 export interface PermissionRequest {
-  readonly background?: boolean;
+  readonly backgroundAlways?: boolean;
   readonly precision?: Precision;
 }
 
@@ -96,7 +96,7 @@ export interface Android {
   currentPosition(): Promise<Position | null>;
   /** Positions as the device moves. */
   watchPosition(): JsonStream<Position>;
-  /** The app's in-use and background permission, and the precision it gets. */
+  /** The app's location permission, and the precision it gets. */
   permission(): Promise<LocationPermission>;
   /** Asks for the permission `request` names where the user has not answered. */
   requestPermission(request?: PermissionRequest | null): Promise<LocationPermission>;

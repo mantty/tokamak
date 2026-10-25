@@ -39,9 +39,9 @@ enum class Permission { Granted, Denied, Prompt }
 
 enum class Precision { Precise, Approximate }
 
-data class LocationPermission(val inUse: Permission, val background: Permission, val precision: Precision)
+data class LocationPermission(val inUse: Permission, val backgroundAlways: Permission, val precision: Precision)
 
-data class PermissionRequest(val background: Boolean?, val precision: Precision?)
+data class PermissionRequest(val backgroundAlways: Boolean?, val precision: Precision?)
 
 data class SetupConfig(val significantChanges: Boolean?)
 

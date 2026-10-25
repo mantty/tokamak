@@ -44,7 +44,7 @@ export async function permission(): Promise<LocationPermission> {
   const permissions = (globalThis as { navigator?: { permissions?: Permissions } }).navigator?.permissions;
   if (!permissions) throw new DOMException("The Permissions API is unavailable", "NotSupportedError");
   const { state } = await permissions.query({ name: "geolocation" });
-  return { inUse: state, background: "denied", precision: "precise" };
+  return { inUse: state, backgroundAlways: "denied", precision: "precise" };
 }
 
 /** Rejects as the web does for what only native apps have. */

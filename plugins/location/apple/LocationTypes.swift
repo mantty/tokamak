@@ -95,12 +95,12 @@ extension TokamakLocationPlugin {
 
   struct LocationPermission: Codable {
     let inUse: Permission
-    let background: Permission
+    let backgroundAlways: Permission
     let precision: Precision
   }
 
   struct PermissionRequest: Codable {
-    let background: Bool?
+    let backgroundAlways: Bool?
     let precision: Precision?
     /// The key in the app's `NSLocationTemporaryUsageDescriptionDictionary` of the reason to show.
     let purpose: String?

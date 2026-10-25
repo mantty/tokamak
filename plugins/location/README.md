@@ -23,7 +23,7 @@ for await (const next of decodeValues<Position>(location.watchPosition())) {
   break; // Cancels the watch.
 }
 
-await location.requestPermission({ background: true });
+await location.requestPermission({ backgroundAlways: true });
 await location.addRegion({ id: "home", latitude: 51.5, longitude: -0.12, radius: 150 });
 ```
 
@@ -56,7 +56,7 @@ Wi-Fi and cell signals.
 decodes them. Cancelling the stream ends the native watch; errors terminate it.
 
 Both ask for in-use permission when the user has not answered. Off screen
-without background permission, the platforms stop locating the app, so
+without permission at all times, the platforms stop locating the app, so
 `getCurrentPosition` rejects with `NotAllowedError` there. iOS still locates
 the app for a few seconds after it leaves the screen. With approximate
 permission, Android gives an app a new position at most every 10 minutes, so
@@ -66,23 +66,24 @@ permission, Android gives an app a new position at most every 10 minutes, so
 
 `permission()` reports the app's permission without asking:
 
-- `inUse` and `background`, each `"granted"`, `"denied"` or `"prompt"`.
-  `background` is `"denied"` unless the `background` build setting declares
-  it. macOS has no separate background permission, so `background` equals
-  `inUse` there.
+- `inUse` and `backgroundAlways`, each `"granted"`, `"denied"` or `"prompt"`.
+  `backgroundAlways` is location at all times: Apple's Always, Android's
+  "Allow all the time". It is `"denied"` unless the `background-always` build
+  setting declares it. macOS has no separate permission at all times, so
+  `backgroundAlways` equals `inUse` there.
 - `precision`: `"precise"` or `"approximate"`, what the app gets or would get
   once allowed.
 
 `requestPermission(options)` asks for in-use permission where the user has not
 answered, and for what `options` names, then resolves with the permission:
 
-- `background: true` asks for background permission.
+- `backgroundAlways: true` asks for permission at all times.
   - **iOS** shows the Always prompt once, from When In Use. Asked before the
     user has answered, it gives provisional Always, which iOS confirms with
-    the user later. Without the `background` build setting it rejects with
+    the user later. Without the `background-always` build setting it rejects with
     `NotSupportedError`.
   - **Android** asks for in-use permission first, as Android grants
-    background permission only after it. From Android 11 the request opens
+    permission at all times only after it. From Android 11 the request opens
     the app's page in Settings, where the user picks "Allow all the time".
 - `precision: "precise"` asks for precise location where the user allowed
   approximate. Apple platforms grant it temporarily, while the app is in use,
@@ -103,7 +104,7 @@ Vite plugin's options, as `--location-<key>`, or as `TOKAMAK_LOCATION_<KEY>`:
 // vite.config.js
 tokamak({
   location: {
-    background: true,
+    "background-always": true,
     "background-updates": true,
     "accuracy-purposes": { Directions: "Shows directions from where you are" },
   },
@@ -112,11 +113,11 @@ tokamak({
 
 | Setting | Kind | Declares |
 |---|---|---|
-| `background` | boolean | Background permission: iOS's Always reason, Android's `ACCESS_BACKGROUND_LOCATION`. |
+| `background-always` | boolean | Location at all times: iOS's Always reason and the code that asks for Always, Android's `ACCESS_BACKGROUND_LOCATION`. |
 | `background-updates` | boolean | Updates off screen: iOS's `location` background mode, Android's location foreground service and its permissions. |
 | `precision` | `precise` or `approximate` | `approximate` declares approximate location only: iOS's `NSLocationDefaultAccuracyReduced`, and Android without `ACCESS_FINE_LOCATION`. macOS has no such declaration. |
 | `when-in-use-description` | string | Apple: the in-use prompt's reason, and macOS's only reason. |
-| `always-description` | string | iOS: the Always prompt's reason. Needs `background`. |
+| `always-description` | string | iOS: the Always prompt's reason. Needs `background-always`. |
 | `accuracy-purposes` | map of string | Apple: the reasons for temporary precise location, by purpose key. |
 
 Without a description the plugin uses a generic English reason. Declare only
@@ -174,7 +175,7 @@ monitor significant changes.
 - `visits`, Apple only, delivers arrivals at and departures from the places
   the user stays to `onVisit`. It uses the least power of all.
 
-With background permission, iOS relaunches the app for both, and Android starts
+With permission at all times, iOS relaunches the app for both, and Android starts
 the app's process for significant changes. [Regions](#regions) wake the app
 the same way.
 
@@ -212,18 +213,18 @@ app's process for each update.
 - `accuracy` is `"high"` (default), `"balanced"` or `"low"`; `distance` the
   metres between updates, 0 by default; `interval` the milliseconds between
   them, 10 seconds by default.
-- Off screen, updates need background permission and arrive a few times an
+- Off screen, updates need permission at all times and arrive a few times an
   hour, unless they run in a foreground service.
 - `foregroundService: { title, body, channel }` runs updates in a foreground
   service, with that notification in a channel of that name, at the requested
   rate off screen. It needs the `background-updates` build setting, and
-  rejects with `NotSupportedError` without it. Off screen it needs background
-  permission, and Android starts the service only within 10 seconds of an
+  rejects with `NotSupportedError` without it. Off screen it needs permission
+  at all times, and Android starts the service only within 10 seconds of an
   update; otherwise it rejects with `NeedsUIError`. A region transition does
   not allow the start.
 - The plugin requests updates again after a restart, an app update and a
   force stop, and starts the service again on screen, or after a restart or
-  update with background permission. Android restarts a service it ends for
+  update with permission at all times. Android restarts a service it ends for
   memory.
 
 ## Regions
@@ -237,7 +238,7 @@ entry. `getRegions()` resolves with the regions, each with its `state` on
 Apple platforms: `"inside"`, `"outside"` or `"unknown"`.
 
 Regions need precise location, and reject with `NotAllowedError` without it,
-and background permission off screen.
+and permission at all times off screen.
 
 - **Apple** uses `CLMonitor`, which monitors up to 20 regions; `addRegion`
   rejects with `QuotaExceededError` beyond them. iOS relaunches the app for a

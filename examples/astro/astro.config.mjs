@@ -9,10 +9,10 @@ export default defineConfig({
     version: "1.0.0",
     // Bundles the sound files in sounds/ for the `sound` field and channels.
     notifications: { sounds: "sounds" },
-    // Declares background location, updates off screen, and the reason for the temporary
+    // Declares location at all times, updates off screen, and the reason for the temporary
     // precise location the Location card asks for.
     location: {
-      background: true,
+      "background-always": true,
       "background-updates": true,
       "accuracy-purposes": { Directions: "Shows directions from where you are" },
     },
