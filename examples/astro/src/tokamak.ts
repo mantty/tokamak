@@ -31,7 +31,8 @@ function record(env: Tokamak.Env, entry: string): Promise<void> {
 }
 
 // Records each start, sets up notifications and location awareness, and, on
-// screen, where location first places the device.
+// screen once the user has answered the location prompt, where location first
+// places the device.
 onStart(async (event, env, ctx) => {
   ctx.waitUntil(
     record(
@@ -50,9 +51,14 @@ onStart(async (event, env, ctx) => {
   );
 
   if ((await getLifecycleStage(ctx)) !== "foreground") return;
+  // `start` has 10 seconds and every event waits for it, so the listener never
+  // waits for the user to answer a prompt, and the lookup leaves time to
+  // record its outcome.
+  if ((await location(ctx).permission()).inUse === "prompt") return;
   try {
     const { coords } = await location(ctx).getCurrentPosition({
-      timeout: 10_000,
+      maximumAge: 60_000,
+      timeout: 5_000,
     });
     await record(
       env,

@@ -466,16 +466,10 @@ fn cancels_service_calls_and_streams_when_the_http_client_disconnects() -> TestR
     let (subscribed, subscriptions) = mpsc::channel();
     let (removed, removals) = mpsc::channel();
     let (failed, failures) = mpsc::channel();
-    let state = temporary.path().join("state");
-    let runtime = Runtime::start(
-        Config {
-            app,
-            state_dir: state.clone(),
-            storage_dir: temporary.path().join("storage"),
-            host: HOST.into(),
-            foreground: true,
-            plugins: Some(Arc::new(CancellablePlugins(subscribed, removed))),
-        },
+    let (runtime, state) = start_runtime(
+        temporary.path(),
+        app,
+        Some(Arc::new(CancellablePlugins(subscribed, removed))),
         move |event| {
             if let Event::RequestFailed { message } = event {
                 let _ = failed.send(message);
@@ -771,19 +765,23 @@ fn follows_cloudflare_where_local_r2_differs() -> TestResult {
 #[ignore = "needs the app tok packages from examples/astro at TOKAMAK_TEST_ASTRO_APP"]
 fn serves_the_astro_example_that_tok_packages() -> TestResult {
     let temporary = tempfile::tempdir()?;
-    let app = PackageLayout::new(std::env::var("TOKAMAK_TEST_ASTRO_APP")?);
-    let (runtime, state) = start_runtime(temporary.path(), app, |_| {})?;
-    // Events wait for `start`, so both are recorded once this returns.
-    runtime.emit("suspend", b"{}", Duration::from_secs(30))?;
+    let example = start_astro_example(temporary.path(), "granted")?;
+    // Events wait for `start`, so each is recorded once this returns.
+    example
+        .runtime
+        .emit("suspend", b"{}", Duration::from_secs(30))?;
+
+    assert_no_failures(&example.failures);
     for (path, text) in [
         ("/", "<html"),
         ("/about", "About - tokamak Example"),
         ("/plugins", "Plugins - tokamak Example"),
         // Each entry begins with its time, which ends in Z.
         ("/events", "Z start in the foreground"),
+        ("/events", "Z location failed: TimeoutError"),
         ("/events", "Z suspend"),
     ] {
-        let mut tls = connect_gateway(&runtime, &state)?;
+        let mut tls = connect_gateway(&example.runtime, &example.state)?;
         tls.write_all(
             format!("GET {path} HTTP/1.1\r\nHost: {HOST}\r\nConnection: close\r\n\r\n").as_bytes(),
         )?;
@@ -794,6 +792,32 @@ fn serves_the_astro_example_that_tok_packages() -> TestResult {
         assert!(response.starts_with("HTTP/1.1 200"), "{path}: {response}");
         assert!(response.contains(text), "{path}: {response}");
     }
+    Ok(())
+}
+
+#[test]
+#[ignore = "needs the app tok packages from examples/astro at TOKAMAK_TEST_ASTRO_APP"]
+fn starts_the_astro_example_without_asking_for_location() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let example = start_astro_example(temporary.path(), "prompt")?;
+    example
+        .runtime
+        .emit("suspend", b"{}", Duration::from_secs(30))?;
+
+    assert_no_failures(&example.failures);
+    let called: Vec<String> = example.called.try_iter().collect();
+    assert!(
+        called
+            .iter()
+            .any(|operation| operation == "location.permission"),
+        "{called:?}"
+    );
+    assert!(
+        !called
+            .iter()
+            .any(|operation| operation == "location.requestPermission"),
+        "{called:?}"
+    );
     Ok(())
 }
 
@@ -843,7 +867,12 @@ fn start_packaged_runtime(
     worker: &[u8],
     environment: &WorkerEnvironment,
 ) -> TestResult<(Runtime, PathBuf)> {
-    start_runtime(temporary, package(temporary, worker, environment)?, |_| {})
+    start_runtime(
+        temporary,
+        package(temporary, worker, environment)?,
+        None,
+        |_| {},
+    )
 }
 
 /// `worker`, with `environment`, packaged in `temporary` as both the main
@@ -895,11 +924,12 @@ fn emit(
     Ok(serde_json::from_slice(&reply)?)
 }
 
-/// The runtime of the packaged `app`, with its state in `temporary`, which
-/// tells `listener` its events.
+/// The runtime of the packaged `app`, with its state in `temporary` and the
+/// shell's `plugins`, which tells `listener` its events.
 fn start_runtime(
     temporary: &Path,
     app: PackageLayout,
+    plugins: Option<Arc<dyn tokamak::PluginHandler>>,
     listener: impl Fn(Event) + Send + Sync + 'static,
 ) -> TestResult<(Runtime, PathBuf)> {
     let state = temporary.join("state");
@@ -910,11 +940,94 @@ fn start_runtime(
             storage_dir: temporary.join("storage"),
             host: HOST.to_owned(),
             foreground: true,
-            plugins: None,
+            plugins,
         },
         listener,
     )?;
     Ok((runtime, state))
+}
+
+/// Shell plugins that pass each call's ID and `plugin.method` to the first
+/// channel, and its `plugin.method` to the second as the Worker calls it.
+struct PluginCalls(mpsc::Sender<(u64, String)>, mpsc::Sender<String>);
+
+impl tokamak::PluginHandler for PluginCalls {
+    fn call(&self, id: u64, plugin: &str, method: &str, _: &[u8]) {
+        let operation = format!("{plugin}.{method}");
+        let _ = self.1.send(operation.clone());
+        let _ = self.0.send((id, operation));
+    }
+    fn call_with_body(&self, id: u64, plugin: &str, method: &str, arguments: &[u8]) {
+        self.call(id, plugin, method, arguments);
+    }
+    fn chunk(&self, _: u64, _: &tokamak::PluginReply) {}
+    fn subscribe(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
+    fn cancel(&self, _: u64) {}
+}
+
+/// The running Astro example, its state directory, the failures it reports,
+/// and the plugin operations its Worker called.
+struct AstroExample {
+    runtime: Arc<Runtime>,
+    state: PathBuf,
+    failures: Receiver<String>,
+    called: Receiver<String>,
+}
+
+/// The Astro example at `TOKAMAK_TEST_ASTRO_APP`, with its state in
+/// `temporary`, on a device whose location permission is `in_use`.
+fn start_astro_example(temporary: &Path, in_use: &str) -> TestResult<AstroExample> {
+    let (calls, received) = mpsc::channel();
+    let (operations, called) = mpsc::channel();
+    let (failed, failures) = mpsc::channel();
+    let (runtime, state) = start_runtime(
+        temporary,
+        PackageLayout::new(std::env::var("TOKAMAK_TEST_ASTRO_APP")?),
+        Some(Arc::new(PluginCalls(calls, operations))),
+        move |event| {
+            if let Event::Failed { message } = event {
+                let _ = failed.send(message);
+            }
+        },
+    )?;
+    let runtime = Arc::new(runtime);
+    answer_as_a_device(&runtime, received, in_use);
+    Ok(AstroExample {
+        runtime,
+        state,
+        failures,
+        called,
+    })
+}
+
+/// Answers `calls` as a device whose location permission is `in_use` and
+/// which knows no recent position, where `location.requestPermission` and
+/// `location.currentPosition` never reply.
+fn answer_as_a_device(runtime: &Arc<Runtime>, calls: Receiver<(u64, String)>, in_use: &str) {
+    let runtime = Arc::downgrade(runtime);
+    let permission = format!(r#"{{"inUse":"{in_use}"}}"#);
+    std::thread::spawn(move || {
+        for (id, operation) in calls {
+            let payload = match operation.as_str() {
+                "location.requestPermission" | "location.currentPosition" => continue,
+                "location.servicesEnabled" => "true",
+                "location.permission" => permission.as_str(),
+                "notifications.setup" => r#"{"unapplied":[]}"#,
+                _ => "null",
+            };
+            let Some(runtime) = runtime.upgrade() else {
+                return;
+            };
+            runtime.reply(
+                id,
+                tokamak::PluginReply {
+                    payload: payload.into(),
+                    failed: false,
+                    done: true,
+                },
+            );
+        }
+    });
 }
 
 /// The runtime of a Worker that records how its WebSocket closed, and the
@@ -939,7 +1052,7 @@ fn start_reporting_runtime(
 ) -> TestResult<(Runtime, PathBuf, Receiver<String>)> {
     let app = package(temporary, worker, environment)?;
     let (failed, failures) = mpsc::channel();
-    let (runtime, state) = start_runtime(temporary, app, move |event| {
+    let (runtime, state) = start_runtime(temporary, app, None, move |event| {
         if let Event::RequestFailed { message } = event {
             let _ = failed.send(message);
         }
@@ -959,7 +1072,7 @@ fn recorded(runtime: &Runtime, name: &str) -> TestResult<serde_json::Value> {
     }
 }
 
-/// Asserts the runtime reports no request failure, including one reported shortly after.
+/// Asserts the runtime reports no failure to `failures`, including one reported shortly after.
 fn assert_no_failures(failures: &Receiver<String>) {
     let failure = failures.recv_timeout(Duration::from_millis(200));
     assert!(failure.is_err(), "reported {failure:?}");
