@@ -734,18 +734,18 @@ impl Upstream {
     }
 
     /// The connection for the request whose headers are `initial`, and the
-    /// bytes to send it first: the dev socket for a marked request, which
-    /// keeps its session token for the plugin to check, and otherwise the
-    /// development server.
+    /// bytes to send it first: the dev socket for a marked request, and
+    /// otherwise the development server.
     async fn connect(&self, initial: Vec<u8>) -> io::Result<(ServerStream, Vec<u8>)> {
         let marked = header_values(&initial, tokamak::DEV_SOCKET_HEADER.as_bytes())
             .next()
             .is_some();
         if marked {
+            let request = rewrite_request(&initial, None)?;
             let socket = TcpStream::connect((Ipv4Addr::LOCALHOST, self.socket_port)).await?;
-            return Ok((Either::Left(socket), initial));
+            return Ok((Either::Left(socket), request));
         }
-        let request = rewrite_request(&initial, &self.server.authority)?;
+        let request = rewrite_request(&initial, Some(&self.server.authority))?;
         Ok((self.server.connect().await?, request))
     }
 }
@@ -906,7 +906,10 @@ fn header_values<'a>(request: &'a [u8], name: &'a [u8]) -> impl Iterator<Item = 
         })
 }
 
-fn rewrite_request(request: &[u8], authority: &str) -> io::Result<Vec<u8>> {
+/// `request` as its upstream receives it: the development server at
+/// `server_authority` with that host and without the session secret, or
+/// otherwise the dev socket, which checks the secret itself.
+fn rewrite_request(request: &[u8], server_authority: Option<&str>) -> io::Result<Vec<u8>> {
     let end = find_header_end(request).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -927,14 +930,16 @@ fn rewrite_request(request: &[u8], authority: &str) -> io::Result<Vec<u8>> {
             .filter(|_| index > 0)
             .map(|(name, _)| name);
         let named = |expected: &[u8]| name.is_some_and(|name| name.eq_ignore_ascii_case(expected));
-        if named(b"x-tokamak-session") || (named(b"connection") && !upgrade) {
+        if named(b"connection") && !upgrade {
             continue;
         }
-        if named(b"host") {
-            rewritten.extend_from_slice(b"Host: ");
-            rewritten.extend_from_slice(authority.as_bytes());
-        } else {
-            rewritten.extend_from_slice(line);
+        match server_authority {
+            Some(_) if named(b"x-tokamak-session") => continue,
+            Some(authority) if named(b"host") => {
+                rewritten.extend_from_slice(b"Host: ");
+                rewritten.extend_from_slice(authority.as_bytes());
+            }
+            _ => rewritten.extend_from_slice(line),
         }
         rewritten.extend_from_slice(b"\r\n");
     }
@@ -1241,7 +1246,7 @@ mod tests {
     fn rewrites_host_and_removes_the_session_secret() {
         let request =
             b"GET / HTTP/1.1\r\nHost: app.tokamak.local\r\nX-Tokamak-Session: token\r\n\r\n";
-        let rewritten = rewrite_request(request, "127.0.0.1:5173").ok();
+        let rewritten = rewrite_request(request, Some("127.0.0.1:5173")).ok();
         assert_eq!(
             rewritten,
             Some(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:5173\r\nConnection: close\r\n\r\n".to_vec())
@@ -1252,13 +1257,22 @@ mod tests {
     fn closes_the_connection_after_one_request_unless_it_upgrades() {
         let request = b"POST / HTTP/1.1\r\nconnection: keep-alive\r\nContent-Length: 2\r\n\r\nhi";
         assert_eq!(
-            rewrite_request(request, "127.0.0.1:5173").ok(),
+            rewrite_request(request, Some("127.0.0.1:5173")).ok(),
             Some(b"POST / HTTP/1.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".to_vec())
         );
         let upgrade = b"GET / HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n";
         assert_eq!(
-            rewrite_request(upgrade, "127.0.0.1:5173").ok(),
+            rewrite_request(upgrade, Some("127.0.0.1:5173")).ok(),
             Some(upgrade.to_vec())
+        );
+    }
+
+    #[test]
+    fn keeps_the_host_and_session_secret_for_the_dev_socket() {
+        let request = b"POST /_tokamak/app HTTP/1.1\r\nHost: app.tokamak.local\r\nX-Tokamak-Session: token\r\nConnection: keep-alive\r\nContent-Length: 2\r\n\r\nhi";
+        assert_eq!(
+            rewrite_request(request, None).ok(),
+            Some(b"POST /_tokamak/app HTTP/1.1\r\nHost: app.tokamak.local\r\nX-Tokamak-Session: token\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".to_vec())
         );
     }
 
@@ -1473,7 +1487,7 @@ mod tests {
         )?;
 
         let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, relay.port()))?;
-        let request = "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Tokamak-Session: token\r\nX-Tokamak-Dev-Socket: 1\r\n\r\n";
+        let request = "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Tokamak-Session: token\r\nX-Tokamak-Dev-Socket: 1\r\n\r\n";
         client.write_all(request.as_bytes())?;
         let mut response = [0_u8; 12];
         client.read_exact(&mut response)?;
@@ -1482,6 +1496,32 @@ mod tests {
         assert_eq!(
             plugin.join().map_err(|_| "plugin thread panicked")??,
             request.as_bytes()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn relays_a_marked_request_that_does_not_upgrade_with_connection_close()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let socket = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let socket_port = socket.local_addr()?.port();
+        let plugin = thread::spawn(move || -> std::io::Result<String> {
+            let (mut stream, _) = socket.accept()?;
+            read_head(&mut stream)
+        });
+        let server = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let relay = DevRelay::bind(
+            upstream(&format!("http://{}", server.local_addr()?), socket_port)?,
+            "token".to_owned(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        )?;
+
+        let mut client = relay_client(&relay)?;
+        client.write_all(b"GET /_tokamak/capabilities.js HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Tokamak-Session: token\r\nX-Tokamak-Dev-Socket: 1\r\n\r\n")?;
+
+        assert_eq!(
+            plugin.join().map_err(|_| "plugin thread panicked")??,
+            "GET /_tokamak/capabilities.js HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Tokamak-Session: token\r\nX-Tokamak-Dev-Socket: 1\r\nConnection: close\r\n\r\n"
         );
         Ok(())
     }
