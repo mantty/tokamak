@@ -5,8 +5,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::gateway::{self, Shared};
-use crate::lifecycle_events::Event;
+use crate::gateway;
 
 /// How long the Worker has for `start`.
 const START_DEADLINE: Duration = Duration::from_secs(10);
@@ -15,7 +14,7 @@ const START_DEADLINE: Duration = Duration::from_secs(10);
 /// lifecycle events one at a time. A packaged Worker reports the events it
 /// listens for, and no Worker runs for any other.
 pub(crate) struct WorkerEvents {
-    shared: Arc<Shared>,
+    gateway: gateway::Handle,
     state: Mutex<State>,
     started: Condvar,
     /// Held while a lifecycle event is delivered.
@@ -30,10 +29,10 @@ struct State {
 }
 
 impl WorkerEvents {
-    /// Delivers `start` to the Worker `shared` serves, in the background.
-    pub(crate) fn start(shared: Arc<Shared>, foreground: bool) -> Arc<Self> {
+    /// Delivers `start` to the Worker `gateway` serves, in the background.
+    pub(crate) fn start(gateway: gateway::Handle, foreground: bool) -> Arc<Self> {
         let events = Arc::new(Self {
-            shared,
+            gateway,
             state: Mutex::new(State {
                 started: false,
                 listened: None,
@@ -86,10 +85,8 @@ impl WorkerEvents {
     /// Lets events through after `start`, reporting its `failure` unless the
     /// runtime is stopping.
     fn finish_start(&self, failure: Option<String>) {
-        if let Some(message) = failure
-            && !self.shared.stopped.is_cancelled()
-        {
-            self.shared.events.emit(Event::Failed { message });
+        if let Some(message) = failure {
+            self.gateway.report_failure(message);
         }
         lock(&self.state).started = true;
         self.started.notify_all();
@@ -120,7 +117,7 @@ impl WorkerEvents {
     }
 
     fn deliver(&self, name: &str, event: &[u8], deadline: Instant) -> Result<Vec<u8>, String> {
-        let delivery = gateway::deliver(&self.shared, name, event, deadline)?;
+        let delivery = self.gateway.deliver(name, event, deadline)?;
         if let Some(listened) = delivery.listened {
             lock(&self.state).listened = Some(listened);
         }

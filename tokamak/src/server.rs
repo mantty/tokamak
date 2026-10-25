@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::assets::Assets;
-use crate::certificates::{Certificates, Renewal};
+use crate::certificates::{Certificates, Renewal, ServerIdentity};
 use crate::env_vars::StorageBinding;
 use crate::gateway;
 use crate::lifecycle_events::{Event, Events};
@@ -37,6 +37,8 @@ pub struct Config {
     /// The shell's plugins, which the Worker calls; without them, the Worker's
     /// plugin calls fail with `NotSupportedError`.
     pub plugins: Option<Arc<dyn PluginHandler>>,
+    /// The gateway's server certificate, when the shell provides one.
+    pub server_identity: Option<ServerIdentity>,
 }
 
 /// Host development-server connection settings.
@@ -61,6 +63,8 @@ pub struct DevelopmentConfig {
     pub foreground: bool,
     /// The shell's plugins, which the development Worker calls.
     pub plugins: Option<Arc<dyn PluginHandler>>,
+    /// The gateway's server certificate, when the shell provides one.
+    pub server_identity: Option<ServerIdentity>,
 }
 
 /// A running tokamak service.
@@ -94,6 +98,7 @@ impl Runtime {
         let certificates = Arc::new(Certificates::start(
             config.state_dir.clone(),
             config.host.clone(),
+            config.server_identity.clone(),
         )?);
         let plugins = PluginCalls::new(config.plugins.clone(), config.foreground);
         let handler = services::load(&config, &plugins)?;
@@ -127,7 +132,11 @@ impl Runtime {
         })?;
         let events = Events::new(listener);
         events.emit(Event::Starting);
-        let certificates = Arc::new(Certificates::start(config.state_dir, config.host.clone())?);
+        let certificates = Arc::new(Certificates::start(
+            config.state_dir,
+            config.host.clone(),
+            config.server_identity,
+        )?);
         let plugins = PluginCalls::new(config.plugins, config.foreground);
         let handler = (development.handler)(&config.proxy, Arc::clone(&plugins))?;
         finish_start(
@@ -161,6 +170,16 @@ impl Runtime {
         Ok(self.gateway.restore_gateway()?)
     }
 
+    /// Wait up to `timeout` for the gateway's port to differ from `known`, and
+    /// return its port. The gateway moves only when it loses its port, and
+    /// never on Android, where it ends the process instead; a shell then
+    /// routes its `WebView` through the new port before loading again.
+    /// The port is 0 once the gateway lost its port and could not bind another.
+    #[must_use]
+    pub fn wait_for_port_change(&self, known: u16, timeout: Duration) -> u16 {
+        self.gateway.wait_for_port_change(known, timeout)
+    }
+
     /// Deliver the event `name`, whose encoded data is `event`, to the Tokamak
     /// worker's listeners and return the encoded reply: the first value a
     /// listener returns other than `undefined`, or nothing.
@@ -192,7 +211,9 @@ impl Runtime {
     /// with a status outside 200 to 299, or the body does not arrive within
     /// `timeout`.
     pub fn fetch(&self, path: &str, timeout: Duration) -> Result<Vec<u8>> {
-        gateway::fetch(self.gateway.shared(), path, Instant::now() + timeout)
+        self.gateway
+            .handle()
+            .fetch(path, Instant::now() + timeout)
             .map_err(crate::Error::Fetch)
     }
 
@@ -253,7 +274,7 @@ fn finish_start(
         host,
         certificates,
         _renewal: renewal,
-        events: WorkerEvents::start(Arc::clone(gateway.shared()), foreground),
+        events: WorkerEvents::start(gateway.handle(), foreground),
         plugins,
         gateway,
     })
@@ -348,6 +369,7 @@ mod tests {
             host: "example.tokamak.local".to_owned(),
             foreground: true,
             plugins: None,
+            server_identity: None,
         }
     }
     use crate::packaging::{
@@ -480,6 +502,7 @@ mod tests {
                 },
                 foreground: true,
                 plugins: None,
+                server_identity: None,
             },
             |_| {},
         )

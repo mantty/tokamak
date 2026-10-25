@@ -8,6 +8,8 @@ use wry::WebView;
 
 pub(super) enum ShellEvent {
     Runtime(Event),
+    /// The browser process that served the app's closed page has exited.
+    BrowserExited,
     Call {
         id: u64,
         plugin: String,

@@ -18,7 +18,7 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
-use tokamak::{DevProxyConfig, DevelopmentConfig, Event, PluginHandler, Runtime};
+use tokamak::{DevProxyConfig, DevelopmentConfig, Event, PluginHandler, Runtime, ServerIdentity};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -291,6 +291,38 @@ impl PluginHandler for Shell {
 }
 
 #[test]
+fn trusts_the_server_certificate_the_shell_provides() -> TestResult {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let temporary = tempfile::tempdir()?;
+    let key = rcgen::KeyPair::generate()?;
+    let certificate = rcgen::CertificateParams::new(vec![HOST.to_owned()])?.self_signed(&key)?;
+    let runtime = Runtime::start_development(
+        DevelopmentConfig {
+            state_dir: temporary.path().join("state"),
+            host: HOST.to_owned(),
+            proxy: DevProxyConfig {
+                endpoint: format!("http://127.0.0.1:{}", listener.local_addr()?.port()),
+                session_token: "test-session".to_owned(),
+            },
+            foreground: false,
+            plugins: None,
+            server_identity: Some(ServerIdentity {
+                certificate_chain: vec![certificate.der().to_vec()],
+                private_key: key.serialize_der(),
+            }),
+        },
+        |_| {},
+    )?;
+
+    assert!(
+        runtime
+            .certificates()
+            .trusts_server_certificate(HOST, &certificate.pem())
+    );
+    Ok(())
+}
+
+#[test]
 fn runs_the_development_workers_plugin_calls_on_the_device() -> TestResult {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let temporary = tempfile::tempdir()?;
@@ -305,6 +337,7 @@ fn runs_the_development_workers_plugin_calls_on_the_device() -> TestResult {
             },
             foreground: false,
             plugins: Some(Arc::new(Shell(sender))),
+            server_identity: None,
         },
         |_| {},
     )?;
@@ -380,6 +413,7 @@ fn relays_a_call_body_as_the_device_pulls_each_chunk() -> TestResult {
             },
             foreground: false,
             plugins: Some(Arc::new(Shell(sender))),
+            server_identity: None,
         },
         |_| {},
     )?;
@@ -641,6 +675,7 @@ fn start_test_runtime_reporting(
             },
             foreground: true,
             plugins: None,
+            server_identity: None,
         },
         events,
     )?;

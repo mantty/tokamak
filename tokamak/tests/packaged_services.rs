@@ -167,6 +167,7 @@ fn config(root: &Path, app: PackageLayout) -> Config {
         host: "services.tokamak.local".into(),
         foreground: true,
         plugins: None,
+        server_identity: None,
     }
 }
 

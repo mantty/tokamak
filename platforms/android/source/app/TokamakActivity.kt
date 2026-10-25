@@ -23,9 +23,6 @@ class TokamakActivity : Activity() {
         get() = application as TokamakApplication
     internal lateinit var webView: WebView
         private set
-    private var runtime: TokamakRuntime? = null
-    private var proxyPort: Int? = null
-    private var restoreGeneration = 0L
     private var destroyed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,19 +51,10 @@ class TokamakActivity : Activity() {
         deliver(intent)
     }
 
-    override fun onResume() {
-        super.onResume()
-        restoreGeneration += 1
-        val generation = restoreGeneration
-        runtime?.let { restoreGateway(it, generation) }
-    }
-
     override fun onDestroy() {
         destroyed = true
-        restoreGeneration += 1
         if (tokamak.activity === this) tokamak.activity = null
         if (isFinishing) tokamak.permissionRequests.cancel()
-        TokamakProxy.release(this)
         webView.stopLoading()
         webView.destroy()
         super.onDestroy()
@@ -97,37 +85,11 @@ class TokamakActivity : Activity() {
             show(FAILED)
             return
         }
-        this.runtime = runtime
-        proxyPort = runtime.port
-        TokamakProxy.acquire(this, tokamak.appHost, runtime.port)
+        TokamakProxy.route(this, tokamak.appHost, runtime.port) { load(runtime) }
     }
 
-    private fun restoreGateway(runtime: TokamakRuntime, generation: Long) {
-        Thread {
-            val result = runCatching { runtime.restoreGateway() }
-            runOnUiThread {
-                if (
-                    destroyed ||
-                    this.runtime !== runtime ||
-                    generation != restoreGeneration
-                ) return@runOnUiThread
-                result
-                    .onSuccess { port ->
-                        if (port == runtime.port && port != proxyPort) {
-                            proxyPort = port
-                            TokamakProxy.acquire(this, tokamak.appHost, port)
-                        }
-                    }
-                    .onFailure { error ->
-                        Log.w(TAG, "tokamak gateway could not recover", error)
-                    }
-            }
-        }.start()
-    }
-
-    internal fun proxyReady() {
+    private fun load(runtime: TokamakRuntime) {
         if (destroyed) return
-        val runtime = runtime ?: return
         webView.webViewClient =
             TokamakWebViewClient(this, tokamak.appHost, runtime)
         webView.loadUrl("https://${tokamak.appHost}/")

@@ -55,6 +55,7 @@ fn serves_storage_bindings_through_the_exported_entry_point() -> TestResult {
             host: "app.tokamak.local".to_owned(),
             foreground: true,
             plugins: None,
+            server_identity: None,
         },
         |_| {},
     )?;

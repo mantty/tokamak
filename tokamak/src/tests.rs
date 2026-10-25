@@ -4,11 +4,8 @@ use crate::dispatcher::{
 };
 use crate::fs::VirtualFileSystem;
 use crate::gateway::{
-    Handler, HandlerError, Job, JobResponse, Shared, WebSocketInbound, WebSocketOutbound,
-    bind_replacement_listener, close_connections, execute_job, listener_was_closed,
-    lock_connections, probe_gateway, serve_connection, wait_for_gateway, websocket_channels,
+    Handler, Job, JobResponse, WebSocketInbound, WebSocketOutbound, websocket_channels,
 };
-use crate::lifecycle_events::{Event, Events};
 use crate::packaging::{PackageLayout, WorkerManifest, write_worker};
 use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{HttpBody, HttpRequest, queue_websocket_message};
@@ -16,16 +13,13 @@ use flume::{Receiver, Sender};
 use hyper::header::HeaderMap;
 use rquickjs::{ArrayBuffer, Context, Function, Module, Object, Runtime as JsRuntime, TypedArray};
 use std::collections::BTreeMap;
-use std::io::{self, BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::io;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-const HOST: &str = "example.test";
+pub(crate) const HOST: &str = "example.test";
 
 const WEBSOCKET_WORKER: &[u8] = br#"
 export default {
@@ -199,7 +193,7 @@ fn releases_invocation_owned_listeners_when_the_request_finishes()
     Ok(())
 }
 
-fn request(method: &str, path: &str) -> HttpRequest {
+pub(crate) fn request(method: &str, path: &str) -> HttpRequest {
     HttpRequest {
         persistent: true,
         method: method.to_owned(),
@@ -755,249 +749,10 @@ fn request_tasks_run_concurrently_on_tokio_blocking_workers()
     Ok(())
 }
 
-#[test]
-fn reports_handler_failures_through_the_event_listener()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    struct FailingHandler;
-    impl Handler for FailingHandler {
-        fn handle(&self, _: Job, _: &CancellationToken) -> Result<(), HandlerError> {
-            Err("handler exploded".into())
-        }
-
-        fn deliver(&self, _: crate::gateway::EventJob, _: &CancellationToken) {}
-    }
-    let directory = tempfile::tempdir()?;
-    let tokio = tokio::runtime::Builder::new_current_thread().build()?;
-    let (sink, events) = flume::unbounded();
-    let shared = Shared {
-        handler: Arc::new(FailingHandler),
-        certificates: certificates(directory.path())?,
-        host: HOST.to_owned(),
-        tokio: tokio.handle().clone(),
-        port: AtomicU16::new(0),
-        stopped: CancellationToken::new(),
-        connections: Mutex::new(Vec::new()),
-        events: Events::new(move |event| {
-            let _ = sink.send(event);
-        }),
-    };
-    let (response, responses) = flume::bounded(1);
-
-    execute_job(
-        &shared,
-        Job {
-            cancelled: CancellationToken::new(),
-            deadline: None,
-            request: request("GET", "/"),
-            response,
-            websocket: None,
-        },
-    );
-
-    let JobResponse::Http(response) = responses.try_recv()? else {
-        return Err("expected an HTTP error response".into());
-    };
-    assert_eq!(response.status, 500);
-    let events: Vec<Event> = events.try_iter().collect();
-    assert!(
-        matches!(
-            events.as_slice(),
-            [Event::RequestFailed { message }]
-                if message.starts_with("Worker error: ") && message.ends_with("handler exploded")
-        ),
-        "unexpected events: {events:?}"
-    );
-    Ok(())
-}
-
-#[test]
-fn reports_connection_failures_through_the_event_listener()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    struct UnreachableHandler;
-    impl Handler for UnreachableHandler {
-        fn handle(&self, _: Job, _: &CancellationToken) -> Result<(), HandlerError> {
-            Err("handler must not run".into())
-        }
-
-        fn deliver(&self, _: crate::gateway::EventJob, _: &CancellationToken) {}
-    }
-    let directory = tempfile::tempdir()?;
-    let (sink, events) = flume::unbounded();
-    let runtime = crate::gateway::Runtime::start(
-        Arc::new(UnreachableHandler),
-        certificates(directory.path())?,
-        HOST.to_owned(),
-        Events::new(move |event| {
-            let _ = sink.send(event);
-        }),
-    )?;
-    assert_eq!(
-        events.recv_timeout(Duration::from_secs(5))?,
-        Event::Listening {
-            port: runtime.port()
-        }
-    );
-
-    // A client that hangs up has not failed, but one that answers the tunnel
-    // with something other than TLS fails its connection.
-    drop(TcpStream::connect(("127.0.0.1", runtime.port()))?);
-    let mut client = TcpStream::connect(("127.0.0.1", runtime.port()))?;
-    client
-        .write_all(format!("CONNECT {HOST}:443 HTTP/1.1\r\n\r\nnot a TLS handshake").as_bytes())?;
-
-    let event = events.recv_timeout(Duration::from_secs(5))?;
-    assert!(
-        matches!(&event, Event::RequestFailed { message } if message.contains("corrupt message")),
-        "unexpected event: {event:?}"
-    );
-    let late = events.recv_timeout(Duration::from_millis(200));
-    assert!(late.is_err(), "unexpected event: {late:?}");
-    Ok(())
-}
-
 pub(crate) fn certificates(directory: &Path) -> io::Result<Arc<Certificates>> {
-    Certificates::start(directory.join("state"), HOST.to_owned())
+    Certificates::start(directory.join("state"), HOST.to_owned(), None)
         .map(Arc::new)
         .map_err(io::Error::other)
-}
-
-#[test]
-fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-{
-    let directory = tempfile::tempdir()?;
-    let tokio = tokio::runtime::Builder::new_current_thread().build()?;
-    let shared = Arc::new(Shared {
-        handler: Dispatcher::new(
-            WorkerBundle::new(
-                WorkerManifest::es_modules("entry.js", &[]),
-                PackageLayout::new(PathBuf::default()),
-            ),
-            runtime_config(),
-        ),
-        certificates: certificates(directory.path())?,
-        host: HOST.to_owned(),
-        tokio: tokio.handle().clone(),
-        port: AtomicU16::new(0),
-        stopped: CancellationToken::new(),
-        connections: Mutex::new(Vec::new()),
-        events: Events::new(|_| {}),
-    });
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let client = TcpStream::connect(listener.local_addr()?)?;
-    let (server, _) = listener.accept()?;
-    let connection_shared = Arc::clone(&shared);
-    let connection = thread::spawn(move || serve_connection(&connection_shared, server));
-
-    while lock_connections(&shared).is_empty() {
-        thread::yield_now();
-    }
-    shared.stopped.cancel();
-    close_connections(&shared);
-    let _ = connection
-        .join()
-        .map_err(|_| "connection thread panicked")?;
-    assert!(lock_connections(&shared).is_empty());
-    drop(client);
-    Ok(())
-}
-
-#[test]
-#[cfg(unix)]
-fn closed_listener_reclaims_its_port() -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = listener.local_addr()?.port();
-    let error = io::Error::from_raw_os_error(libc::EBADF);
-    assert!(listener_was_closed(&error));
-    drop(listener);
-
-    let (_listener, replacement_port) = bind_replacement_listener(port)?;
-
-    assert_eq!(replacement_port, port);
-    Ok(())
-}
-
-#[test]
-#[cfg(unix)]
-fn closed_listener_uses_a_random_port_when_its_port_was_taken()
--> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    let _occupied = TcpListener::bind(("127.0.0.1", port))?;
-
-    let (_listener, replacement_port) = bind_replacement_listener(port)?;
-
-    assert_ne!(replacement_port, port);
-    Ok(())
-}
-
-#[test]
-fn probes_a_gateway_through_connect() -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = listener.local_addr()?.port();
-    let server = thread::spawn(move || -> io::Result<()> {
-        let (mut stream, _) = listener.accept()?;
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let mut request_line = String::new();
-        reader.read_line(&mut request_line)?;
-        if !request_line.starts_with("CONNECT tokamak-probe.invalid:443 ") {
-            return Err(io::Error::other("unexpected probe request"));
-        }
-        while reader.read_line(&mut String::new())? > 2 {}
-        stream
-            .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 19\r\n\r\nBad CONNECT request")
-    });
-
-    probe_gateway(port)?;
-    server.join().map_err(|_| "probe server panicked")??;
-    Ok(())
-}
-
-#[test]
-fn waits_for_the_gateway_to_publish_a_new_port() -> Result<(), Box<dyn std::error::Error>> {
-    let old_listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let old_port = old_listener.local_addr()?.port();
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let new_port = listener.local_addr()?.port();
-    drop(old_listener);
-    let port = Arc::new(AtomicU16::new(old_port));
-    let server_port = Arc::clone(&port);
-    let server = thread::spawn(move || -> io::Result<()> {
-        thread::sleep(Duration::from_millis(20));
-        server_port.store(new_port, Ordering::Release);
-        let (mut stream, _) = listener.accept()?;
-        let mut reader = BufReader::new(stream.try_clone()?);
-        while reader.read_line(&mut String::new())? > 2 {}
-        stream
-            .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 19\r\n\r\nBad CONNECT request")
-    });
-
-    assert_eq!(wait_for_gateway(|| port.load(Ordering::Acquire))?, new_port);
-    server.join().map_err(|_| "probe server panicked")??;
-    Ok(())
-}
-
-#[test]
-fn reports_an_unexpected_gateway_response() -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = listener.local_addr()?.port();
-    let server = thread::spawn(move || -> io::Result<()> {
-        let (mut stream, _) = listener.accept()?;
-        let mut reader = BufReader::new(stream.try_clone()?);
-        while reader.read_line(&mut String::new())? > 2 {}
-        stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
-    });
-
-    let error = match probe_gateway(port) {
-        Ok(()) => return Err("unexpected response was accepted".into()),
-        Err(error) => error,
-    };
-    assert_eq!(
-        error.to_string(),
-        "unexpected CONNECT response: HTTP/1.1 503 Service Unavailable"
-    );
-    server.join().map_err(|_| "probe server panicked")??;
-    Ok(())
 }
 
 fn spawn_blocking_request(

@@ -1,65 +1,37 @@
 package com.tokamak.runtime
 
+import android.content.Context
 import androidx.webkit.ProxyConfig
 import androidx.webkit.ProxyController
 
+/**
+ * Routes the app host, in every WebView of the process, through the gateway's port. The gateway
+ * keeps one port for the life of the process, so the route is set once and never cleared: without
+ * it the WebView would connect to the app host itself, where another app or device could answer.
+ * Main thread only.
+ */
 internal object TokamakProxy {
-    private var active: Request? = null
-    private var desired: Request? = null
-    private var changing = false
+    private var routed = false
+    private val waiting = mutableListOf<() -> Unit>()
 
-    fun acquire(activity: TokamakActivity, host: String, port: Int) {
-        desired = Request(activity, host, port)
-        reconcile()
-    }
-
-    fun release(activity: TokamakActivity) {
-        if (desired?.activity === activity) desired = null
-        reconcile()
-    }
-
-    private fun reconcile() {
-        if (changing || active === desired) return
-        val current = active
-        if (current != null) {
-            clear(current)
+    /** Routes [host] through the gateway's [port], then runs [ready] once the route is in place. */
+    fun route(context: Context, host: String, port: Int, ready: () -> Unit) {
+        if (routed) {
+            ready()
             return
         }
-        desired?.let(::set)
-    }
-
-    private fun clear(request: Request) {
-        changing = true
-        ProxyController.getInstance().clearProxyOverride(request.activity.mainExecutor) {
-            active = null
-            changing = false
-            reconcile()
-        }
-    }
-
-    private fun set(request: Request) {
-        changing = true
-        ProxyController.getInstance().setProxyOverride(
-            proxyConfig(request),
-            request.activity.mainExecutor,
-        ) {
-            active = request
-            changing = false
-            if (desired === request) request.activity.proxyReady()
-            reconcile()
-        }
-    }
-
-    private fun proxyConfig(request: Request): ProxyConfig =
-        ProxyConfig.Builder()
-            .addProxyRule("http://127.0.0.1:${request.port}")
-            .addBypassRule(request.host)
+        waiting += ready
+        // Only the first caller requests the route.
+        if (waiting.size > 1) return
+        val config = ProxyConfig.Builder()
+            .addProxyRule("http://127.0.0.1:$port")
+            .addBypassRule(host)
             .setReverseBypassEnabled(true)
             .build()
-
-    private class Request(
-        val activity: TokamakActivity,
-        val host: String,
-        val port: Int,
-    )
+        ProxyController.getInstance().setProxyOverride(config, context.mainExecutor) {
+            routed = true
+            waiting.forEach { it() }
+            waiting.clear()
+        }
+    }
 }

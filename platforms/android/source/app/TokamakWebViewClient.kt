@@ -4,10 +4,8 @@ import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
-import android.net.http.SslError
 import android.webkit.ClientCertRequest
 import android.webkit.WebResourceRequest
-import android.webkit.SslErrorHandler
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import java.io.ByteArrayInputStream
@@ -17,7 +15,10 @@ import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.security.spec.PKCS8EncodedKeySpec
 
-/** Answers the app origin's TLS challenges with the runtime's decision. */
+/**
+ * Answers the app origin's client certificate requests with the runtime's decision. The network
+ * security config trusts the gateway's certificate, so no certificate error reaches the app.
+ */
 internal class TokamakWebViewClient(
     private val activity: Activity,
     private val host: String,
@@ -38,18 +39,6 @@ internal class TokamakWebViewClient(
         if (!request.isForMainFrame || request.url.isAppOrigin(host)) return false
         openExternal(request.url)
         return true
-    }
-
-    override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-        val host = Uri.parse(error.url).host
-        val authority = host?.let(runtime::serverAuthority)
-        val trusted = authority != null && chainsTo(error, authority)
-        if (trusted) {
-            handler.proceed()
-            return
-        }
-        if (authority != null) android.util.Log.w("tokamak", "refused the gateway's certificate: $error")
-        handler.cancel()
     }
 
     override fun onReceivedClientCertRequest(view: WebView, request: ClientCertRequest) {
@@ -76,16 +65,6 @@ internal class TokamakWebViewClient(
         }.onFailure { error ->
             android.util.Log.w("tokamak", "could not open external URL", error)
         }
-    }
-
-    private fun chainsTo(error: SslError, authority: ByteArray): Boolean {
-        if (error.primaryError != SslError.SSL_UNTRUSTED) return false
-        val presented = error.certificate.x509Certificate ?: return false
-        val issuer = certificate(authority) ?: return false
-        return runCatching {
-            presented.checkValidity()
-            presented.verify(issuer.publicKey)
-        }.isSuccess
     }
 
     private fun certificate(der: ByteArray): X509Certificate? =

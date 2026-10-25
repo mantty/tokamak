@@ -172,6 +172,9 @@ jobs:
       - name: Test the CLI
         run: cargo test -p tokamak-cli
 
+      - name: Test the gateway
+        run: cargo test -p tokamak --features native --lib -- gateway::tests
+
       - name: Select the newest Xcode
         run: |
           sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -n 1)"
@@ -224,6 +227,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           cargo test -p windows-shell
           cargo test -p tokamak-cli
+          cargo test -p tokamak --features native --lib -- gateway::tests
 
   validate:
     name: Validate

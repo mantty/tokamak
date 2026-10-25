@@ -249,6 +249,55 @@ release_signing() {
 EOF
 }
 
+# The gateway's server certificate for the app host, with its key, in
+# assets/tokamak-gateway.p12. The network security config trusts the
+# certificate's authority for the app host alone, so the WebView verifies the
+# gateway itself. Each build creates its own authority and discards the
+# authority's key. The gateway's key ships in the app, which is safe only while
+# the WebView sends the app host's traffic to no listener but the gateway. The
+# keystore's password is public, so the keystore uses the algorithms every
+# Android version reads, at one iteration, and the certificates outlive any app.
+gateway_identity() {
+  local keytool=keytool
+  if [[ -n "${JAVA_HOME:-}" ]]; then
+    keytool=$JAVA_HOME/bin/keytool
+  fi
+  if ! command -v "$keytool" > /dev/null; then
+    echo "Android builds create the gateway certificate with keytool, which the JDK provides" >&2
+    exit 69
+  fi
+  local resources=$app/src/main/res
+  local keystore=(
+    "$keytool"
+    -J-Dkeystore.pkcs12.certProtectionAlgorithm=NONE
+    -J-Dkeystore.pkcs12.keyProtectionAlgorithm=PBEWithSHA1AndDESede
+    -J-Dkeystore.pkcs12.macAlgorithm=HmacPBESHA1
+    -J-Dkeystore.pkcs12.keyPbeIterationCount=1
+    -J-Dkeystore.pkcs12.macIterationCount=1
+    -keystore "$app/src/main/assets/tokamak-gateway.p12" -storetype PKCS12 -storepass tokamak
+  )
+  local key=(-keyalg EC -groupname secp256r1 -sigalg SHA256withECDSA -validity 36500)
+  mkdir -p "$resources/raw" "$resources/xml"
+  "${keystore[@]}" -genkeypair -alias authority "${key[@]}" -dname 'CN=tokamak gateway' \
+    -ext bc:c=ca:true,pathlen:0
+  "${keystore[@]}" -genkeypair -alias gateway "${key[@]}" -dname "CN=$host" -signer authority \
+    -ext "san=dns:$host" -ext eku=serverAuth -ext ku:c=digitalSignature
+  "${keystore[@]}" -exportcert -alias authority -rfc -file "$resources/raw/tokamak_gateway_authority.pem"
+  "${keystore[@]}" -delete -alias authority
+  cat > "$resources/xml/tokamak_network_security_config.xml" <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+  <base-config cleartextTrafficPermitted="false" />
+  <domain-config>
+    <domain includeSubdomains="false">$(xml_escape "$host")</domain>
+    <trust-anchors>
+      <certificates src="@raw/tokamak_gateway_authority" />
+    </trust-anchors>
+  </domain-config>
+</network-security-config>
+EOF
+}
+
 xml_escape() {
   printf '%s' "$1" |
     sed -e 's/&/\&amp;/g' \
@@ -290,6 +339,7 @@ if [[ -n "$icon" ]]; then
   fi
   has_icon=true
 fi
+gateway_identity
 
 # Each plugin is a library module, so its manifest merges below the app's and
 # its dependencies stay its own. Its class is a Kotlin class name in a package,
@@ -503,7 +553,7 @@ manifest=$app/src/main/AndroidManifest.xml
   if [[ "$has_icon" == true ]]; then
     icon_attribute=' android:icon="@mipmap/ic_launcher"'
   fi
-  printf '  <application android:name=".TokamakApplication" android:label="%s"%s android:usesCleartextTraffic="false">\n' "$(xml_escape "$app_name")" "$icon_attribute"
+  printf '  <application android:name=".TokamakApplication" android:label="%s"%s android:networkSecurityConfig="@xml/tokamak_network_security_config">\n' "$(xml_escape "$app_name")" "$icon_attribute"
   printf '    <meta-data android:name="tokamak.host" android:value="%s" />\n' "$host"
   if [[ -n "$dev_endpoint" ]]; then
     printf '    <meta-data android:name="tokamak.dev.endpoint" android:value="%s" />\n' "$dev_endpoint"
