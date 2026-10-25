@@ -48,7 +48,7 @@ export function tokamak(options: TokamakOptions = {}, cloudflareOptions: Cloudfl
         },
         async "astro:config:done"(context) {
           await adapter.hooks["astro:config:done"]?.(context);
-          const driver = context.config.session?.driver;
+          const driver = context.config.session ? context.config.session.driver : undefined;
           const entry = typeof driver === "string" ? driver : driver?.entrypoint.toString();
           if (entry === "cloudflareKVBinding" || entry?.endsWith("cloudflare-kv-binding") ||
             entry === sessionDrivers.cloudflareKVBinding().entrypoint) {
