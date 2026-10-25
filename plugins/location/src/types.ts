@@ -28,7 +28,7 @@ export type PositionErrorCallback = (error: DOMException) => void;
 /**
  * Long-term location awareness, which runs across launches and restarts, uses little power and shows
  * no indicator: `setup` starts what it names and stops what it leaves out. Off screen it needs
- * background permission, with which the system launches the app for its events.
+ * permission at all times, with which the system launches the app for its events.
  */
 export interface SetupConfig {
   /**
@@ -50,16 +50,16 @@ export type Precision = "precise" | "approximate";
 export interface LocationPermission {
   /** Location while the app is in use. */
   readonly inUse: Permission;
-  /** Location while it is not: Apple's Always, Android's "Allow all the time". The same as `inUse` on macOS. */
-  readonly background: Permission;
+  /** Location at all times: Apple's Always, Android's "Allow all the time". The same as `inUse` on macOS. */
+  readonly backgroundAlways: Permission;
   /** The precision the app gets, or would get once allowed. */
   readonly precision: Precision;
 }
 
 /** What `requestPermission` asks for besides in-use permission. */
 export interface PermissionRequest {
-  /** Background permission, which needs the `background` build setting. */
-  readonly background?: boolean;
+  /** Location at all times, which needs the `background-always` build setting. */
+  readonly backgroundAlways?: boolean;
   /**
    * `"precise"` asks for precise location where the user allowed approximate: on Apple platforms
    * temporarily, for `purpose`. `"approximate"` asks Android for approximate location only.

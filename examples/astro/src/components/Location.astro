@@ -16,7 +16,7 @@ import PluginCard from "./PluginCard.astro";
     <button id="location-watch" class="button">Watch position</button>
     <button id="location-permission" class="button">Permission</button>
     <button id="location-request" class="button">Request permission</button>
-    <button id="location-background" class="button">Request background</button>
+    <button id="location-always" class="button">Request at all times</button>
     <button id="location-precise" class="button">Request precise</button>
     <button id="location-services" class="button">Services enabled</button>
     <button id="location-settings" class="button">Open settings</button>
@@ -73,7 +73,7 @@ import PluginCard from "./PluginCard.astro";
 
   onClick(log, "location-permission", () => location.permission());
   onClick(log, "location-request", () => location.requestPermission());
-  onClick(log, "location-background", () => location.requestPermission({ background: true }));
+  onClick(log, "location-always", () => location.requestPermission({ backgroundAlways: true }));
   // astro.config.mjs gives the reason for the Directions purpose.
   onClick(log, "location-precise", () =>
     location.requestPermission({ precision: "precise", purpose: "Directions" }),

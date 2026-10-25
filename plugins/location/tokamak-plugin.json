@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "id": "location",
   "settings": {
-    "background": {
+    "background-always": {
       "kind": "boolean",
       "default": false,
-      "description": "Declares background location permission: Apple's Always, Android's ACCESS_BACKGROUND_LOCATION"
+      "description": "Declares location permission at all times: Apple's Always, Android's ACCESS_BACKGROUND_LOCATION"
     },
     "background-updates": {
       "kind": "boolean",

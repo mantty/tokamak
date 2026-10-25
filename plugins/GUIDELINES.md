@@ -282,6 +282,13 @@ The manifest's `platforms` entries name the native class. Every Swift file in
 platform if that is what the capability needs. Add permissions and
 other packaging metadata through the existing platform build hooks.
 
+A build script can set Apple's `compilation-conditions`, Swift compilation
+conditions that `#if` blocks test. Each starts with the plugin's id in
+capitals, with `_` for `-`, then `_`, such as `LOCATION_ALWAYS` for `location`.
+App Store Connect asks for the reason of each permission whose API a build's
+code calls, so a build that does not declare a permission leaves its calls out
+this way.
+
 ## Events and browser implementations
 
 Native code emits a registered event with a value of its type. The generated

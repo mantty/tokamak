@@ -1016,6 +1016,10 @@ fn stages_the_plugins_installed_above_a_relative_project_directory() -> TestResu
     assert!(
         fs::read_to_string(plugin.join("plist"))?.contains("<key>NSLocationUsageDescription</key>")
     );
+    assert_eq!(
+        fs::read_to_string(plugin.join("compilation-conditions/0"))?,
+        "LOCATION_ALWAYS"
+    );
     assert!(plugin.join("native/LocationPlugin.swift").is_file());
     Ok(())
 }
@@ -1025,10 +1029,17 @@ fn stages_the_plugins_installed_above_a_relative_project_directory() -> TestResu
 fn builds_the_location_plugin_s_declarations_from_its_settings() -> TestResult {
     let (_temporary, project, platform_pack) = create_inputs("ios-arm64")?;
     install_location_plugin(&project)?;
+    let plugin = project.join("build/ios/demo-app.app/plugins/location");
+
+    build_command("ios", &project, &platform_pack)?
+        .assert()
+        .success();
+    assert!(plugin.join("plist").is_file());
+    assert!(!plugin.join("compilation-conditions").exists());
 
     build_command("ios", &project, &platform_pack)?
         .args([
-            "--location-background",
+            "--location-background-always",
             "--location-precision",
             "approximate",
         ])
@@ -1039,7 +1050,7 @@ fn builds_the_location_plugin_s_declarations_from_its_settings() -> TestResult {
         .assert()
         .success();
 
-    let plist = fs::read_to_string(project.join("build/ios/demo-app.app/plugins/location/plist"))?;
+    let plist = fs::read_to_string(plugin.join("plist"))?;
     for key in [
         "NSLocationWhenInUseUsageDescription",
         "NSLocationAlwaysAndWhenInUseUsageDescription",
@@ -1049,11 +1060,15 @@ fn builds_the_location_plugin_s_declarations_from_its_settings() -> TestResult {
         assert!(plist.contains(key), "{key} is missing from {plist}");
     }
     assert!(!plist.contains("UIBackgroundModes"), "{plist}");
+    assert_eq!(
+        fs::read_to_string(plugin.join("compilation-conditions/0"))?,
+        "LOCATION_ALWAYS"
+    );
     build_command("ios", &project, &platform_pack)?
         .args(["--location-always-description", "Records runs"])
         .assert()
         .failure()
-        .stderr(contains("always-description needs background"));
+        .stderr(contains("always-description needs background-always"));
     Ok(())
 }
 

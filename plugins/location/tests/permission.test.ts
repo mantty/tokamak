@@ -13,7 +13,7 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "navigator");
 });
 
-const granted = { inUse: "granted", background: "prompt", precision: "precise" };
+const granted = { inUse: "granted", backgroundAlways: "prompt", precision: "precise" };
 
 void test("calls the native plugin with each permission method's arguments", async () => {
   const native = connectNative();
@@ -22,9 +22,9 @@ void test("calls the native plugin with each permission method's arguments", asy
     [() => location.permission(), "permission", {}],
     [() => location.requestPermission(), "requestPermission", {}],
     [
-      () => location.requestPermission({ background: true, precision: "precise", purpose: "RunTracking" }),
+      () => location.requestPermission({ backgroundAlways: true, precision: "precise", purpose: "RunTracking" }),
       "requestPermission",
-      { request: { background: true, precision: "precise", purpose: "RunTracking" } },
+      { request: { backgroundAlways: true, precision: "precise", purpose: "RunTracking" } },
     ],
     [() => location.servicesEnabled(), "servicesEnabled", {}],
     [() => location.openSettings(), "openSettings", {}],
@@ -48,5 +48,5 @@ void test("reports the web page's permission from the Permissions API", async ()
     },
   });
 
-  assert.deepEqual(await location.permission(), { inUse: "granted", background: "denied", precision: "precise" });
+  assert.deepEqual(await location.permission(), { inUse: "granted", backgroundAlways: "denied", precision: "precise" });
 });

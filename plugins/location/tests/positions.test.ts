@@ -20,7 +20,7 @@ function device(platform: NativePlatform, answers: Answers): FakeNativeTransport
   const native = connectNative(platform);
   const common: Answers = {
     servicesEnabled: { value: true },
-    permission: { value: { inUse: "granted", background: "prompt", precision: "precise" } },
+    permission: { value: { inUse: "granted", backgroundAlways: "prompt", precision: "precise" } },
   };
   native.answer((request) => {
     const answer = answers[request.method ?? ""] ?? common[request.method ?? ""];
@@ -78,8 +78,8 @@ void test("the timeout starts once a new fix is needed, not while recent positio
 
 void test("location asks for in-use permission it lacks, and rejects without it", async () => {
   const native = device("ios", {
-    permission: { value: { inUse: "prompt", background: "prompt", precision: "precise" } },
-    requestPermission: { value: { inUse: "denied", background: "denied", precision: "precise" } },
+    permission: { value: { inUse: "prompt", backgroundAlways: "prompt", precision: "precise" } },
+    requestPermission: { value: { inUse: "denied", backgroundAlways: "denied", precision: "precise" } },
   });
   await assert.rejects(location(native.ctx).getCurrentPosition(), { name: "NotAllowedError" });
   assert.equal(calls(native, "requestPermission").length, 1);
@@ -123,15 +123,15 @@ void test("watching subscribes after the permission checks, keeps the newest for
 });
 
 void test("watching without permission fails the stream without subscribing", async () => {
-  const native = device("android", { permission: { value: { inUse: "denied", background: "denied", precision: "precise" } } });
+  const native = device("android", { permission: { value: { inUse: "denied", backgroundAlways: "denied", precision: "precise" } } });
   await assert.rejects(decodeValues(location(native.ctx).watchPosition()).next(), { name: "NotAllowedError" });
   assert.equal(calls(native, "watchPosition").length, 0);
 });
 
 void test("watching asks for permission the user has not given, then subscribes", async () => {
   const native = device("ios", {
-    permission: { value: { inUse: "prompt", background: "prompt", precision: "precise" } },
-    requestPermission: { value: { inUse: "granted", background: "prompt", precision: "precise" } },
+    permission: { value: { inUse: "prompt", backgroundAlways: "prompt", precision: "precise" } },
+    requestPermission: { value: { inUse: "granted", backgroundAlways: "prompt", precision: "precise" } },
     watchPosition: () => undefined,
   });
   const values = decodeValues<Position>(location(native.ctx).watchPosition());

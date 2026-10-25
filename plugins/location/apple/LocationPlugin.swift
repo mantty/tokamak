@@ -39,7 +39,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   private let events: TokamakLocationEvents
   private let updates: TokamakLocationUpdates
   private let regions: TokamakLocationRegions
-  #if os(iOS)
+  #if os(iOS) && LOCATION_ALWAYS
     /// The `CLServiceSession` iOS 18 needs for updates and regions to reach an
     /// app that is not in use, held while the app has Always permission.
     private var alwaysSession: AnyObject?
@@ -107,7 +107,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     let status = authorization.authorizationStatus
     return LocationPermission(
       inUse: Self.state(status),
-      background: backgroundPermission(status),
+      backgroundAlways: alwaysPermission(status),
       precision: authorization.accuracyAuthorization == .reducedAccuracy ? .approximate : .precise
     )
   }
@@ -117,10 +117,10 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   /// location when `request` names a purpose.
   @MainActor
   func requestPermission(_ request: PermissionRequest?) async throws -> LocationPermission {
-    let always = request?.background == true
+    let always = request?.backgroundAlways == true
     if always && !Self.declaresAlways {
       throw TokamakPluginError.notSupported(
-        "Background location needs the location plugin's background build setting")
+        "backgroundAlways needs the location plugin's background-always build setting")
     }
     let purpose = try Self.purpose(request)
     let status = authorization.authorizationStatus
@@ -131,12 +131,19 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     return try await withCheckedThrowingContinuation { answer in
       prompts[UUID()] = Prompt(purpose: purpose, answer: answer)
       if always {
-        defaults.set(true, forKey: askedForAlwaysKey)
-        authorization.requestAlwaysAuthorization()
+        requestAlways()
       } else {
         authorization.requestWhenInUseAuthorization()
       }
     }
+  }
+
+  /// Asks for Always permission, in a build that declares it.
+  private func requestAlways() {
+    #if LOCATION_ALWAYS
+      defaults.set(true, forKey: askedForAlwaysKey)
+      authorization.requestAlwaysAuthorization()
+    #endif
   }
 
   /// Whether location services are on, which Core Location reports off the
@@ -268,7 +275,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     }
   }
 
-  private func backgroundPermission(_ status: CLAuthorizationStatus) -> Permission {
+  private func alwaysPermission(_ status: CLAuthorizationStatus) -> Permission {
     if status == .authorizedAlways { return .granted }
     let asks = status == .notDetermined ? Self.declaresAlways : canUpgradeToAlways(status)
     return asks ? .prompt : .denied
@@ -296,7 +303,7 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
   }
 
   private func holdAlwaysSession() {
-    #if os(iOS)
+    #if os(iOS) && LOCATION_ALWAYS
       guard #available(iOS 18, *) else { return }
       let always = authorization.authorizationStatus == .authorizedAlways
       if always && alwaysSession == nil {
@@ -316,10 +323,13 @@ final class TokamakLocationPlugin: NSObject, TokamakPlugin,
     }
   }
 
-  /// Whether the Info.plist declares Always permission, as the `background`
-  /// build setting does on iOS and every macOS build does.
-  private static let declaresAlways =
-    Bundle.main.object(forInfoDictionaryKey: "NSLocationAlwaysAndWhenInUseUsageDescription") != nil
+  #if LOCATION_ALWAYS
+    /// Whether the build declares Always permission, as the `background-always`
+    /// build setting does on iOS and every macOS build does.
+    private static let declaresAlways = true
+  #else
+    private static let declaresAlways = false
+  #endif
 
   private var askedForAlways: Bool {
     defaults.bool(forKey: askedForAlwaysKey)

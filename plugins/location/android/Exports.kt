@@ -10,7 +10,7 @@ object LocationExports : TokamakExports<TokamakLocationPlugin> {
         e.call(TokamakLocationPlugin::recentPosition, doc = "The provider's last known position, when it is no older than `maximumAge`.")
         e.call(TokamakLocationPlugin::currentPosition, doc = "A new fix, or null when Android finds none. Cancelling the call stops locating.")
         e.stream(TokamakLocationPlugin::watchPosition, overflow = TokamakOverflow.DROP_OLDEST, doc = "Positions as the device moves.")
-        e.call(TokamakLocationPlugin::permission, doc = "The app's in-use and background permission, and the precision it gets.")
+        e.call(TokamakLocationPlugin::permission, doc = "The app's location permission, and the precision it gets.")
         e.call(TokamakLocationPlugin::requestPermission, doc = "Asks for the permission `request` names where the user has not answered.")
         e.call(TokamakLocationPlugin::servicesEnabled, doc = "Whether location services are on for the device.")
         e.call(TokamakLocationPlugin::openSettings, doc = "Opens the app's page in the system settings.")

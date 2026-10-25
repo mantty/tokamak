@@ -8,7 +8,7 @@ import { test } from "node:test";
 
 import { declarations, type Declarations, type Settings } from "../build/declarations.mjs";
 
-const defaults: Settings = { background: false, "background-updates": false, precision: "precise" };
+const defaults: Settings = { "background-always": false, "background-updates": false, precision: "precise" };
 
 const WHEN_IN_USE = "This app uses your location when you request location features.";
 
@@ -51,7 +51,7 @@ void test("declares in-use location on iOS by default", () => {
 
 void test("declares what each iOS setting asks for", () => {
   const lines = plistLines("ios", {
-    background: true,
+    "background-always": true,
     "background-updates": true,
     precision: "approximate",
     "when-in-use-description": "Shows nearby <shops> & cafés",
@@ -82,7 +82,7 @@ void test("declares what each iOS setting asks for", () => {
 
 void test("declares the location background mode and Always permission separately on iOS", () => {
   const updates = plistLines("ios", { "background-updates": true });
-  const background = plistLines("ios", { background: true });
+  const background = plistLines("ios", { "background-always": true });
 
   assert.ok(updates.includes("<key>UIBackgroundModes</key>"));
   assert.ok(!updates.includes("<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>"));
@@ -92,7 +92,7 @@ void test("declares the location background mode and Always permission separatel
 
 void test("uses a generic Always reason without always-description", () => {
   assert.ok(
-    plistLines("ios", { background: true }).includes(
+    plistLines("ios", { "background-always": true }).includes(
       "<string>This app uses your location in the background for location features you turn on.</string>",
     ),
   );
@@ -100,7 +100,7 @@ void test("uses a generic Always reason without always-description", () => {
 
 void test("declares the macOS usage key and the iOS keys it names with the same reason", () => {
   const { contents, notices } = declared("macos", {
-    background: true,
+    "background-always": true,
     "background-updates": true,
     "when-in-use-description": "Finds you",
     "always-description": "Unused on macOS",
@@ -138,7 +138,7 @@ void test("notices that macOS cannot declare approximate location", () => {
 void test("declares Android permissions for each setting", () => {
   assert.deepEqual(permissions(), ["ACCESS_COARSE_LOCATION", "RECEIVE_BOOT_COMPLETED", "ACCESS_FINE_LOCATION"]);
   assert.deepEqual(permissions({ precision: "approximate" }), ["ACCESS_COARSE_LOCATION", "RECEIVE_BOOT_COMPLETED"]);
-  assert.deepEqual(permissions({ background: true }), [
+  assert.deepEqual(permissions({ "background-always": true }), [
     "ACCESS_COARSE_LOCATION",
     "RECEIVE_BOOT_COMPLETED",
     "ACCESS_FINE_LOCATION",
@@ -151,7 +151,7 @@ void test("declares Android permissions for each setting", () => {
     "FOREGROUND_SERVICE",
     "FOREGROUND_SERVICE_LOCATION",
   ]);
-  assert.deepEqual(permissions({ background: true, "background-updates": true, precision: "approximate" }), [
+  assert.deepEqual(permissions({ "background-always": true, "background-updates": true, precision: "approximate" }), [
     "ACCESS_COARSE_LOCATION",
     "RECEIVE_BOOT_COMPLETED",
     "ACCESS_BACKGROUND_LOCATION",
@@ -182,10 +182,17 @@ void test("declares the Android receivers of updates, regions and restarts", () 
   assert.match(contents, /TokamakLocationBootReceiver[\s\S]*BOOT_COMPLETED[\s\S]*MY_PACKAGE_REPLACED/);
 });
 
-void test("rejects always-description without background", () => {
+void test("compiles the Always request only into builds that declare Always permission", () => {
+  assert.deepEqual(declared("ios", { "background-always": true }).conditions, ["LOCATION_ALWAYS"]);
+  assert.equal(declared("ios", { "background-updates": true }).conditions, undefined);
+  assert.deepEqual(declared("macos").conditions, ["LOCATION_ALWAYS"]);
+  assert.equal(declared("android", { "background-always": true }).conditions, undefined);
+});
+
+void test("rejects always-description without background-always", () => {
   for (const platform of ["ios", "macos", "android"]) {
     assert.deepEqual(declarations(platform, { ...defaults, "always-description": "Records your runs" }), {
-      problems: ["always-description needs background, which declares the permission it describes"],
+      problems: ["always-description needs background-always, which declares the permission it describes"],
     });
   }
 });
@@ -204,6 +211,13 @@ void test("writes the declarations into the output directory tok gives", () => {
   assert.deepEqual(JSON.parse(ios.stdout), { plist: join(output, "Info.plist") });
   assert.ok(readFileSync(join(output, "Info.plist"), "utf8").includes(WHEN_IN_USE));
 
+  const always = run("ios", { "background-always": true });
+  assert.equal(always.status, 0, always.stderr);
+  assert.deepEqual(JSON.parse(always.stdout), {
+    plist: join(output, "Info.plist"),
+    "compilation-conditions": ["LOCATION_ALWAYS"],
+  });
+
   const macos = run("macos", { precision: "approximate" });
   assert.equal(macos.status, 0);
   assert.match(macos.stderr, /^macOS has no declaration of approximate location/);
@@ -213,5 +227,5 @@ void test("writes the declarations into the output directory tok gives", () => {
 
   const rejected = run("ios", { "always-description": "Records your runs" });
   assert.equal(rejected.status, 1);
-  assert.match(rejected.stderr, /always-description needs background/);
+  assert.match(rejected.stderr, /always-description needs background-always/);
 });
