@@ -401,9 +401,11 @@ fn spawn_connection(shared: &Arc<Shared>, stream: TcpStream) -> io::Result<JoinH
     thread::Builder::new()
         .name("tokamak-connection".to_owned())
         .spawn(move || {
-            // A client that disconnects has not failed.
+            // A client that disconnects, or a connection the stopping gateway
+            // closed, has not failed.
             if let Err(error) = serve_connection(&shared, stream)
                 && !connection_ended(&error)
+                && !shared.stopped.is_cancelled()
             {
                 shared.events.emit(Event::RequestFailed {
                     message: error.to_string(),
@@ -591,7 +593,25 @@ fn close_connections(shared: &Shared) {
     for connection in lock_connections(shared).iter() {
         connection.cancelled.store(true, Ordering::Release);
         let _ = connection.stream.shutdown(Shutdown::Both);
+        #[cfg(windows)]
+        cancel_pending_io(&connection.stream);
     }
+}
+
+/// Ends the reads and writes other threads are blocked in on `stream`'s
+/// socket, which a Windows `shutdown` leaves waiting for the peer.
+#[cfg(windows)]
+fn cancel_pending_io(stream: &TcpStream) {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::IO::CancelIoEx;
+
+    let Ok(socket) = usize::try_from(stream.as_raw_socket()) else {
+        return;
+    };
+    // SAFETY: `stream` keeps the socket open, and `CancelIoEx` only cancels
+    // the operations pending on it.
+    unsafe { CancelIoEx(socket as HANDLE, std::ptr::null()) };
 }
 
 fn probe_gateway(port: u16) -> io::Result<()> {
