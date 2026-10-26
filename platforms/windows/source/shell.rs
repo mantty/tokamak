@@ -825,27 +825,28 @@ mod tests {
     fn prompts_for_location_camera_and_microphone_from_the_app_origin() {
         let app = "https://app.tokamak.local/";
         let host = "app.tokamak.local";
-        assert_eq!(
-            app_permission_prompt(COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION, app, host),
-            Some(PermissionPrompt {
-                request: "access your location",
-                caption: "Location access",
-            })
-        );
-        assert_eq!(
-            app_permission_prompt(COREWEBVIEW2_PERMISSION_KIND_CAMERA, app, host),
-            Some(PermissionPrompt {
-                request: "use your camera",
-                caption: "Camera access",
-            })
-        );
-        assert_eq!(
-            app_permission_prompt(COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, app, host),
-            Some(PermissionPrompt {
-                request: "use your microphone",
-                caption: "Microphone access",
-            })
-        );
+        for (kind, request, caption) in [
+            (
+                COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+                "access your location",
+                "Location access",
+            ),
+            (
+                COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+                "use your camera",
+                "Camera access",
+            ),
+            (
+                COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+                "use your microphone",
+                "Microphone access",
+            ),
+        ] {
+            assert_eq!(
+                app_permission_prompt(kind, app, host),
+                Some(PermissionPrompt { request, caption })
+            );
+        }
     }
 
     #[test]
