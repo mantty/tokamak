@@ -1389,12 +1389,16 @@ fn builds_with_a_configured_display_name() -> TestResult {
     command.assert().success();
 
     let bundle = project.join("build/windows/my-app-pro");
-    assert!(bundle.join("my-app-pro.exe").is_file());
+    assert_file(&bundle.join("my-app-pro.exe"));
     let config: serde_json::Value =
         serde_json::from_slice(&fs::read(bundle.join("tokamak.json"))?)?;
-    assert_eq!(config["name"], "My App Pro");
-    assert_eq!(config["slug"], "my-app-pro");
-    assert_eq!(config["host"], "my-app-pro.tokamak.local");
+    for (key, value) in [
+        ("name", "My App Pro"),
+        ("slug", "my-app-pro"),
+        ("host", "my-app-pro.tokamak.local"),
+    ] {
+        assert_eq!(config[key], value, "{key}");
+    }
     Ok(())
 }
 
