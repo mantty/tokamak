@@ -27,16 +27,15 @@ impl Brotli {
         // the returned instance once, including when parameter setup fails.
         let codec = unsafe {
             if encode {
-                Self::Encoder(
-                    NonNull::new(b::BrotliEncoderCreateInstance(None, None, ptr::null_mut()))
-                        .ok_or_else(failure)?,
-                )
+                NonNull::new(b::BrotliEncoderCreateInstance(None, None, ptr::null_mut()))
+                    .map(Self::Encoder)
             } else {
-                Self::Decoder(
-                    NonNull::new(b::BrotliDecoderCreateInstance(None, None, ptr::null_mut()))
-                        .ok_or_else(failure)?,
-                )
+                NonNull::new(b::BrotliDecoderCreateInstance(None, None, ptr::null_mut()))
+                    .map(Self::Decoder)
             }
+        };
+        let Some(codec) = codec else {
+            return Err(failure());
         };
         for (&key, &value) in params {
             // SAFETY: The instance is initialized and unused. Brotli validates
