@@ -683,9 +683,9 @@ pub(super) fn cp_sync<'js>(
         ));
     }
     for name in ["preserveTimestamps", "verbatimSymlinks"] {
-        if let Some(value) = option_property(&ctx, options_value.as_ref(), name)? {
-            let _ = bool::from_js(&ctx, value)?;
-        }
+        option_property(&ctx, options_value.as_ref(), name)?
+            .map(|value| bool::from_js(&ctx, value))
+            .transpose()?;
     }
     let force = option_property(&ctx, options_value.as_ref(), "force")?
         .map(|value| bool::from_js(&ctx, value))
