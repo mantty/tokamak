@@ -400,27 +400,28 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
             format!("WebSocket worker stopped before upgrade: {error}; {worker_error:?}").into(),
         );
     }
-    assert!(matches!(response?, JobResponse::WebSocket));
-    assert!(matches!(
-        outgoing_receiver.recv_timeout(Duration::from_secs(1))?,
-        WebSocketOutbound::Ready
-    ));
+    let JobResponse::WebSocket = response? else {
+        panic!("Worker returned a non-WebSocket response");
+    };
+    let WebSocketOutbound::Ready = outgoing_receiver.recv_timeout(Duration::from_secs(1))? else {
+        panic!("Worker did not finish handling the upgrade");
+    };
     incoming_sender.send(WebSocketInbound::Message {
         binary: false,
         payload: b"ping 42".to_vec(),
     })?;
     match outgoing_receiver.recv_timeout(Duration::from_secs(1))? {
-        WebSocketOutbound::Message { binary, payload } => {
-            assert!(!binary);
-            assert_eq!(payload, b"pong ping 42");
-        }
+        WebSocketOutbound::Message {
+            binary: false,
+            payload,
+        } => assert_eq!(payload, b"pong ping 42"),
+        WebSocketOutbound::Message { binary: true, .. } => panic!("Worker answered in binary"),
         WebSocketOutbound::Close { .. } => panic!("Worker closed the WebSocket"),
         WebSocketOutbound::Ready => panic!("Worker completed without a response"),
     }
-    assert!(matches!(
-        outgoing_receiver.recv_timeout(Duration::from_secs(1))?,
-        WebSocketOutbound::Ready
-    ));
+    let WebSocketOutbound::Ready = outgoing_receiver.recv_timeout(Duration::from_secs(1))? else {
+        panic!("Worker did not finish handling the message");
+    };
     incoming_sender.send(WebSocketInbound::Close {
         code: 1000,
         reason: String::new(),
