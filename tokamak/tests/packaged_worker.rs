@@ -145,9 +145,7 @@ fn upgrades_to_a_websocket_on_a_reused_connection() -> TestResult {
 
     upgrade_websocket(&mut tls)?;
     write_masked_frame(&mut tls, true, 0x1, b"ping 1")?;
-    let (opcode, payload) = read_server_frame(&mut tls)?;
-    assert_eq!(opcode, 0x1);
-    assert_eq!(payload, b"pong ping 1");
+    assert_eq!(read_server_frame(&mut tls)?, (0x1, b"pong ping 1".to_vec()));
     Ok(())
 }
 
