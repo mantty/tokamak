@@ -637,6 +637,7 @@ pub(crate) fn platform_help(
 mod tests {
     use std::collections::BTreeMap;
     use std::ffi::OsString;
+    use std::fmt::Debug;
     use std::path::Path;
 
     use anyhow::Result;
@@ -723,6 +724,18 @@ mod tests {
         fn resolve(&self, platform: Platform) -> Result<PlatformSettings> {
             let manifest = manifest(platform.default_target()?);
             self.with(|sources| resolve(sources, platform, &manifest))
+        }
+
+        /// Asserts what `read` takes from `platform`'s settings.
+        #[track_caller]
+        fn assert_resolves<T: Debug + PartialEq>(
+            &self,
+            platform: Platform,
+            read: impl FnOnce(PlatformSettings) -> T,
+            expected: &T,
+        ) -> Result<()> {
+            assert_eq!(&read(self.resolve(platform)?), expected, "{platform:?}");
+            Ok(())
         }
     }
 
@@ -843,48 +856,29 @@ mod tests {
             "identifier": "com.config.top",
             "ios": { "identifier": "com.config.ios" },
         }))?;
-        assert_eq!(
-            fixture.resolve(Platform::Ios)?.identifier.as_deref(),
-            Some("com.config.ios")
-        );
-        assert_eq!(
-            fixture.resolve(Platform::Macos)?.identifier.as_deref(),
-            Some("com.config.top")
-        );
+        let identifier = |settings: PlatformSettings| settings.identifier;
+        fixture.assert_resolves(Platform::Ios, identifier, &Some("com.config.ios".into()))?;
+        fixture.assert_resolves(Platform::Macos, identifier, &Some("com.config.top".into()))?;
 
         fixture
             .environment
             .insert("TOKAMAK_IDENTIFIER".to_owned(), "com.env.top".to_owned());
-        assert_eq!(
-            fixture.resolve(Platform::Ios)?.identifier.as_deref(),
-            Some("com.env.top")
-        );
+        fixture.assert_resolves(Platform::Ios, identifier, &Some("com.env.top".into()))?;
         fixture.environment.insert(
             "TOKAMAK_IOS_IDENTIFIER".to_owned(),
             "com.env.ios".to_owned(),
         );
-        assert_eq!(
-            fixture
-                .resolve(Platform::IosSimulator)?
-                .identifier
-                .as_deref(),
-            Some("com.env.ios")
-        );
+        fixture.assert_resolves(
+            Platform::IosSimulator,
+            identifier,
+            &Some("com.env.ios".into()),
+        )?;
 
         fixture.top.identifier = Some("com.option.top".to_owned());
-        assert_eq!(
-            fixture.resolve(Platform::Ios)?.identifier.as_deref(),
-            Some("com.option.top")
-        );
+        fixture.assert_resolves(Platform::Ios, identifier, &Some("com.option.top".into()))?;
         fixture.options = namespaced_options(&["--ios-identifier", "com.option.ios"])?;
-        assert_eq!(
-            fixture.resolve(Platform::Ios)?.identifier.as_deref(),
-            Some("com.option.ios")
-        );
-        assert_eq!(
-            fixture.resolve(Platform::Macos)?.identifier.as_deref(),
-            Some("com.option.top")
-        );
+        fixture.assert_resolves(Platform::Ios, identifier, &Some("com.option.ios".into()))?;
+        fixture.assert_resolves(Platform::Macos, identifier, &Some("com.option.top".into()))?;
         Ok(())
     }
 
