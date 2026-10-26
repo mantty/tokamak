@@ -36,6 +36,8 @@ super::host_functions! {
     "builtinNamespace" => |ctx: Ctx<'js>, name: String| runtime_modules::builtin_namespace(ctx, &name),
     "isNodeBuiltin" => |name: String| runtime_modules::is_node_builtin(&name),
     "nodeBuiltinNames" => runtime_modules::node_builtin_names,
+    "processCwd" => crate::fs::working_directory,
+    "processChdir" => crate::fs::change_directory,
 }
 
 /// The `DOMException` class native errors are created with, registered by the

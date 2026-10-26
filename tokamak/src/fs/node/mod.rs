@@ -9,32 +9,43 @@ use std::sync::{Arc, Mutex};
 
 use crate::fs::vfs::{
     CopyOptions, DirectoryEntry, Error as VfsError, ErrorKind, MAX_PATH_LENGTH, MAX_PATH_SEGMENTS,
-    NodeType, OpenOptions, Result as VfsResult, Stat, VirtualFileSystem, lock,
+    NodeType, OpenOptions, Result as VfsResult, Stat, VirtualFileSystem, escape_at,
+    escaped_in_names, lock, push_escape,
 };
 use rquickjs::function::{IntoJsFunc, Opt, Rest, This};
 use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{
-    Array, ArrayBuffer, BigInt, Constructor, Ctx, Exception, Function, Object, Promise, Symbol,
-    TypedArray, Value,
+    Array, ArrayBuffer, BigInt, Constructor, Ctx, Exception, Function, Object, Promise, TypedArray,
+    Value, qjs,
 };
 use rquickjs::{Coerced, FromJs, IntoJs};
+use url::Url;
 
 mod callback_api;
 mod exports;
 mod filesystem_operations;
+mod glob;
 mod javascript_objects;
+mod reads;
 #[cfg(test)]
 mod tests;
+mod writes;
 
 #[allow(clippy::wildcard_imports)]
 use callback_api::*;
 #[allow(clippy::wildcard_imports)]
 use filesystem_operations::*;
 #[allow(clippy::wildcard_imports)]
+use glob::*;
+#[allow(clippy::wildcard_imports)]
 use javascript_objects::*;
+#[allow(clippy::wildcard_imports)]
+use reads::*;
+#[allow(clippy::wildcard_imports)]
+use writes::*;
 
 pub use exports::{
-    MODULE_NAME, NodeFsModule, NodeFsPromisesModule, PROMISES_MODULE_NAME, install,
-    read_bundle_file,
+    MODULE_NAME, NodeFsModule, NodeFsPromisesModule, PROMISES_MODULE_NAME, change_directory,
+    install, read_bundle_file, working_directory,
 };
 use exports::{VfsHandle, VfsUserData};

@@ -8,6 +8,8 @@ use std::fmt::{self, Display, Formatter};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use indexmap::IndexMap;
+
 use super::nodes::{Directory, FileNode, Node, OpenFile, shared_devices};
 use super::path::{
     absolute_components, checked_size, join_child, path_from_components, random_suffix,
@@ -16,6 +18,8 @@ use super::path::{
 
 /// Maximum size of one virtual file.
 pub const MAX_FILE_SIZE: u64 = 128 * 1024 * 1024;
+/// Largest explicit position a non-appending write accepts: `u32::MAX`.
+const MAX_WRITE_POSITION: u64 = 0xFFFF_FFFF;
 /// Maximum length of a virtual path in Unicode scalar values.
 pub const MAX_PATH_LENGTH: usize = 4096;
 /// Maximum number of non-empty path segments.
@@ -45,11 +49,10 @@ pub enum ErrorKind {
     AlreadyExists,
     /// A directory is not empty.
     NotEmpty,
-    /// The target is read-only.
-    ReadOnly,
     /// The operation is not permitted.
     NotPermitted,
-    /// The operation would exceed the file-size limit.
+    /// The operation would exceed the file-size limit, reported as `EPERM`
+    /// as workerd reports it.
     FileTooLarge,
     /// The operation would exceed the available virtual space.
     NoSpace,
@@ -67,6 +70,8 @@ pub enum ErrorKind {
     Host,
     /// The random source failed.
     Entropy,
+    /// The filesystem failed internally, reported without a code.
+    Internal,
 }
 
 impl ErrorKind {
@@ -79,15 +84,14 @@ impl ErrorKind {
             Self::IsDirectory => "EISDIR",
             Self::AlreadyExists => "EEXIST",
             Self::NotEmpty => "ENOTEMPTY",
-            Self::ReadOnly => "EROFS",
-            Self::NotPermitted => "EPERM",
-            Self::FileTooLarge => "EFBIG",
+            Self::NotPermitted | Self::FileTooLarge => "EPERM",
             Self::NoSpace => "ENOSPC",
             Self::InvalidPath | Self::InvalidInput => "EINVAL",
             Self::InvalidDescriptor => "EBADF",
             Self::SymlinkLoop => "ELOOP",
             Self::Unsupported => "ENOSYS",
             Self::Host | Self::Entropy => "EIO",
+            Self::Internal => "",
         }
     }
 
@@ -98,9 +102,8 @@ impl ErrorKind {
             Self::IsDirectory => "is a directory",
             Self::AlreadyExists => "file already exists",
             Self::NotEmpty => "directory not empty",
-            Self::ReadOnly => "read-only file system",
             Self::NotPermitted => "operation not permitted",
-            Self::FileTooLarge => "file too large",
+            Self::FileTooLarge => "file size limit exceeded",
             Self::NoSpace => "no space left on device",
             Self::InvalidPath | Self::InvalidInput => "invalid argument",
             Self::InvalidDescriptor => "bad file descriptor",
@@ -108,6 +111,7 @@ impl ErrorKind {
             Self::Unsupported => "operation not supported",
             Self::Host => "host filesystem error",
             Self::Entropy => "random source failed",
+            Self::Internal => "internal error",
         }
     }
 }
@@ -127,7 +131,7 @@ pub struct Error {
 }
 
 impl Error {
-    pub(super) fn new(kind: ErrorKind, path: impl Display) -> Self {
+    pub(crate) fn new(kind: ErrorKind, path: impl Display) -> Self {
         Self {
             message: kind.default_message().to_owned(),
             kind,
@@ -285,6 +289,7 @@ pub struct VirtualFileSystem {
     root: Directory,
     descriptors: BTreeMap<u32, OpenFile>,
     next_descriptor: u32,
+    working_directory: String,
 }
 
 impl VirtualFileSystem {
@@ -296,16 +301,59 @@ impl VirtualFileSystem {
         let dev = Node::Directory(shared_devices());
         let root = Directory::with_entries(
             false,
-            BTreeMap::from([
+            IndexMap::from([
                 ("bundle".to_owned(), bundle),
-                ("dev".to_owned(), dev),
                 ("tmp".to_owned(), Node::Directory(tmp)),
+                ("dev".to_owned(), dev),
             ]),
         );
         Self {
             root,
             descriptors: BTreeMap::new(),
             next_descriptor: 3,
+            working_directory: "/bundle".to_owned(),
+        }
+    }
+
+    /// The directory relative paths resolve against.
+    #[must_use]
+    pub fn working_directory(&self) -> &str {
+        &self.working_directory
+    }
+
+    /// Make the directory `path` names, relative to the working directory,
+    /// the working directory. Errors name the directory without its leading
+    /// slash.
+    pub fn change_directory(&mut self, path: &str) -> Result<()> {
+        if path.is_empty() {
+            return Err(Error::new(ErrorKind::NotFound, ""));
+        }
+        let mut components = if path.starts_with('/') {
+            Vec::new()
+        } else {
+            absolute_components(&self.working_directory)?
+        };
+        for part in path.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => components
+                    .pop()
+                    .map(drop)
+                    .ok_or_else(|| Error::new(ErrorKind::Internal, ""))?,
+                part => components.push(part.to_owned()),
+            }
+        }
+        let named = components.join("/");
+        match self.resolve(&path_from_components(&components), true) {
+            Ok(Node::Directory(_)) => {
+                self.working_directory = path_from_components(&components);
+                Ok(())
+            }
+            Ok(_) => Err(Error::new(ErrorKind::NotDirectory, named)),
+            Err(error) if error.kind() == ErrorKind::NotDirectory => {
+                Err(Error::new(ErrorKind::NotFound, named))
+            }
+            Err(error) => Err(Error::new(error.kind(), named)),
         }
     }
 
@@ -340,16 +388,38 @@ impl VirtualFileSystem {
         self.resolve(path, false)?.stat()
     }
 
-    /// List a directory in lexical order.
+    /// List a directory in the order its entries are stored.
     pub fn read_dir(&self, path: &str) -> Result<Vec<DirectoryEntry>> {
-        self.resolve(path, true)?.read_dir(path)
+        self.listed_directory(path)?.entries()
     }
 
-    /// List a directory tree in lexical order.
+    /// List a directory tree depth first, each directory in its stored order,
+    /// descending into symbolic links to directories under the link's path.
     pub fn walk(&self, path: &str) -> Result<Vec<(String, DirectoryEntry)>> {
+        let directory = self.listed_directory(path)?;
         let mut entries = Vec::new();
-        self.walk_directory(path, &mut entries)?;
+        self.walk_directory(path, &directory, &mut vec![path.to_owned()], &mut entries)?;
         Ok(entries)
+    }
+
+    /// The directory `path` names without passing through a symbolic link.
+    fn listed_directory(&self, path: &str) -> Result<Directory> {
+        let components = absolute_components(path)?;
+        let mut directory = self.root.clone();
+        for (index, name) in components.iter().enumerate() {
+            let final_component = index + 1 == components.len();
+            directory = match directory.lookup(name)? {
+                Some(Node::Directory(child)) => child,
+                Some(Node::Symlink(_)) if final_component => {
+                    return Err(Error::new(ErrorKind::InvalidInput, path));
+                }
+                Some(Node::File(_)) if final_component => {
+                    return Err(Error::new(ErrorKind::NotDirectory, path));
+                }
+                _ => return Err(Error::new(ErrorKind::NotFound, path)),
+            };
+        }
+        Ok(directory)
     }
 
     /// Check whether a path satisfies the requested access mode.
@@ -403,6 +473,9 @@ impl VirtualFileSystem {
             None if force => return Ok(()),
             None => return Err(Error::new(ErrorKind::NotFound, path)),
         };
+        if !parent.writable() {
+            return Err(Error::new(ErrorKind::NotPermitted, path));
+        }
         if let Node::Directory(directory) = &node
             && !recursive
             && !directory.is_empty()?
@@ -431,46 +504,36 @@ impl VirtualFileSystem {
         self.remove(path, false, false)
     }
 
-    /// Rename a node within the virtual filesystem.
+    /// Rename a node to a name that is not taken.
     pub fn rename(&mut self, from: &str, to: &str) -> Result<()> {
-        let from_components = absolute_components(from)?;
-        let to_components = absolute_components(to)?;
-        if from_components == to_components {
-            return Ok(());
-        }
-        if to_components.starts_with(&from_components) {
-            return Err(Error::new(ErrorKind::InvalidInput, to));
+        if self.resolve(to, false).is_ok() {
+            return Err(Error::new(ErrorKind::AlreadyExists, ""));
         }
         let (source_parent, source_name) = self.parent(from)?;
         let source = source_parent
             .lookup(&source_name)?
             .ok_or_else(|| Error::new(ErrorKind::NotFound, from))?;
+        if absolute_components(to)?.starts_with(&absolute_components(from)?) {
+            return Err(Error::new(ErrorKind::InvalidInput, to));
+        }
         let (destination_parent, destination_name) = self.parent(to)?;
         if !source_parent.writable() || !destination_parent.writable() {
             return Err(Error::new(
-                ErrorKind::ReadOnly,
+                ErrorKind::NotPermitted,
                 if source_parent.writable() { to } else { from },
             ));
-        }
-        if let Some(existing) = destination_parent.lookup(&destination_name)? {
-            if let Node::Directory(directory) = &existing
-                && !directory.is_empty()?
-            {
-                return Err(Error::new(ErrorKind::NotEmpty, to));
-            }
-            destination_parent.remove(&destination_name)?;
         }
         destination_parent.insert(destination_name, source)?;
         source_parent.remove(&source_name)?;
         Ok(())
     }
 
-    /// Copy a regular file with optional exclusive creation.
-    pub fn copy_file_with_options(&mut self, from: &str, to: &str, exclusive: bool) -> Result<()> {
-        let bytes = self.read_file(from)?;
-        if exclusive && self.resolve(to, true).is_ok() {
-            return Err(Error::new(ErrorKind::AlreadyExists, to));
+    /// Copy a regular file to a name that is not taken.
+    pub fn copy_file(&mut self, from: &str, to: &str) -> Result<()> {
+        if self.resolve(to, false).is_ok() {
+            return Err(Error::new(ErrorKind::AlreadyExists, ""));
         }
+        let bytes = self.read_file(from)?;
         self.write_file(to, &bytes, false)
     }
 
@@ -581,7 +644,7 @@ impl VirtualFileSystem {
         }
         let file = node.file(path)?;
         if options.write && !file.writable() {
-            return Err(Error::new(ErrorKind::ReadOnly, path));
+            return Err(Error::new(ErrorKind::NotPermitted, path));
         }
         if options.truncate && options.write {
             file.resize(0, path)?;
@@ -641,6 +704,13 @@ impl VirtualFileSystem {
         let open = self.descriptor_mut(descriptor)?;
         if !open.write {
             return Err(Error::new(ErrorKind::NotPermitted, descriptor));
+        }
+        if !open.append && position.is_some_and(|position| position > MAX_WRITE_POSITION) {
+            return Err(Error::with_message(
+                ErrorKind::InvalidInput,
+                "",
+                "position out of range",
+            ));
         }
         let offset = position.unwrap_or(open.position);
         let written = open.node.write(offset, data, open.append)?;
@@ -736,18 +806,33 @@ impl VirtualFileSystem {
         Ok(())
     }
 
+    /// Appends the tree below `directory`, reached at `path`, to `entries`.
+    /// `ancestors` holds the real paths of the directories being walked, which
+    /// a symbolic link may not lead back to.
     fn walk_directory(
         &self,
         path: &str,
+        directory: &Directory,
+        ancestors: &mut Vec<String>,
         entries: &mut Vec<(String, DirectoryEntry)>,
     ) -> Result<()> {
-        for entry in self.read_dir(path)? {
+        for entry in directory.entries()? {
             let child = join_child(path, &entry.name);
-            let is_directory = entry.kind == NodeType::Directory;
             entries.push((child.clone(), entry));
-            if is_directory {
-                self.walk_directory(&child, entries)?;
+            let Ok(Node::Directory(child_directory)) = self.resolve(&child, true) else {
+                continue;
+            };
+            let real_path = self.realpath(&child)?;
+            if ancestors.contains(&real_path) {
+                return Err(Error::with_message(
+                    ErrorKind::SymlinkLoop,
+                    "",
+                    "symlink depth exceeded",
+                ));
             }
+            ancestors.push(real_path);
+            self.walk_directory(&child, &child_directory, ancestors, entries)?;
+            ancestors.pop();
         }
         Ok(())
     }

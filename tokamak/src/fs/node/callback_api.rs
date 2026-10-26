@@ -6,6 +6,9 @@ use super::*;
 pub(super) enum CallbackOperation {
     /// `(input, options?)`, answering with a value.
     Value(ValueOperation),
+    /// `(input, options?)`, answering with a value, with the options checked
+    /// before the call.
+    Encoded(ValueOperation, EncodingCheck),
     /// `(path, options?)`.
     Options(OptionsOperation),
     /// `(first, second)`.
@@ -63,15 +66,33 @@ pub(super) fn callback_operations() -> &'static [(&'static str, CallbackOperatio
         ("lstat", CallbackOperation::Value(lstat_sync)),
         ("lutimes", CallbackOperation::Times(lutimes_sync)),
         ("mkdir", CallbackOperation::Options(mkdir_sync)),
-        ("mkdtemp", CallbackOperation::Value(mkdtemp_sync)),
+        (
+            "mkdtemp",
+            CallbackOperation::Encoded(mkdtemp_sync, EncodingCheck::NullAllowed),
+        ),
         ("open", CallbackOperation::Open),
-        ("opendir", CallbackOperation::Value(opendir_sync)),
+        (
+            "opendir",
+            CallbackOperation::Encoded(opendir_sync, EncodingCheck::ObjectOnly),
+        ),
         ("read", CallbackOperation::Read),
-        ("readFile", CallbackOperation::Value(read_file_sync)),
-        ("readlink", CallbackOperation::Value(read_link_sync)),
+        (
+            "readFile",
+            CallbackOperation::Encoded(read_file_sync, EncodingCheck::NullAllowed),
+        ),
+        (
+            "readlink",
+            CallbackOperation::Encoded(read_link_sync, EncodingCheck::NullAllowed),
+        ),
         ("readv", CallbackOperation::Readv),
-        ("readdir", CallbackOperation::Value(readdir_sync)),
-        ("realpath", CallbackOperation::Value(realpath_sync)),
+        (
+            "readdir",
+            CallbackOperation::Encoded(readdir_sync, EncodingCheck::NullRejected),
+        ),
+        (
+            "realpath",
+            CallbackOperation::Encoded(realpath_sync, EncodingCheck::NullAllowed),
+        ),
         ("rename", CallbackOperation::Pair(rename_sync)),
         ("rm", CallbackOperation::Options(rm_sync)),
         ("rmdir", CallbackOperation::Options(rmdir_sync)),
@@ -107,13 +128,24 @@ pub(super) fn callback_call<'js>(
     }
     let callback = args
         .pop()
-        .ok_or_else(|| Exception::throw_type(&ctx, "callback is required"))?;
-    let callback = Function::from_value(callback)
-        .map_err(|_| Exception::throw_type(&ctx, "callback must be a function"))?;
+        .and_then(|callback| Function::from_value(callback).ok())
+        .ok_or_else(|| {
+            throw_type_error(
+                &ctx,
+                "ERR_INVALID_ARG_TYPE",
+                "The \"callback\" argument must be of type function",
+            )
+        })?;
     let result = match operation {
         CallbackOperation::Value(operation) => {
             let input = take_arg(&ctx, &mut args)?;
             let options = take_opt_value(&mut args);
+            reply(&ctx, operation(ctx.clone(), input, options))
+        }
+        CallbackOperation::Encoded(operation, check) => {
+            let input = take_arg(&ctx, &mut args)?;
+            let options = take_opt_value(&mut args);
+            check_encoding(&ctx, options.0.as_ref(), check)?;
             reply(&ctx, operation(ctx.clone(), input, options))
         }
         CallbackOperation::Options(operation) => {
@@ -158,10 +190,10 @@ pub(super) fn callback_call<'js>(
             reply(&ctx, close_sync(ctx.clone(), descriptor))
         }
         CallbackOperation::CopyFile => {
-            let from = take_arg(&ctx, &mut args)?;
-            let to = take_arg(&ctx, &mut args)?;
-            let mode = take_opt_u32(&ctx, &mut args)?;
-            reply(&ctx, copy_file_sync(ctx.clone(), from, to, mode))
+            let from = path(&ctx, take_arg(&ctx, &mut args)?)?;
+            let to = path(&ctx, take_arg(&ctx, &mut args)?)?;
+            check_copy_mode(&ctx, &to, take_front_value(&mut args))?;
+            reply(&ctx, vfs_call(&ctx, |vfs| vfs.copy_file(&from, &to)))
         }
         CallbackOperation::Fchmod => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
@@ -202,28 +234,17 @@ pub(super) fn callback_call<'js>(
         }
         CallbackOperation::Read => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            let ReadArguments {
-                buffer,
-                offset,
-                length,
-                position,
-            } = normalize_read_arguments(&ctx, args)?;
-            let count = read_sync(
-                ctx.clone(),
-                descriptor,
-                buffer.clone(),
-                optional_u32(&ctx, offset)?,
-                optional_u32(&ctx, length)?,
-                Opt(position),
-            );
-            reply_with_buffer(&ctx, count, buffer)
+            let arguments = normalize_read_arguments(&ctx, args)?;
+            let buffer = arguments.buffer.clone();
+            let read = node_read(&ctx, arguments)?;
+            reply_with_buffer(&ctx, read_views(&ctx, descriptor, &read), buffer)
         }
         CallbackOperation::Readv => {
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
+            let descriptor = take_arg(&ctx, &mut args)?;
             let buffers = take_arg(&ctx, &mut args)?;
-            let array = Array::from_value(buffers.clone())?;
             let position = take_opt_value(&mut args);
-            let count = readv_sync(ctx.clone(), descriptor, array, position);
+            optional_position(&ctx, position.0.clone())?;
+            let count = readv_sync(ctx.clone(), descriptor, buffers.clone(), position);
             reply_with_buffer(&ctx, count, buffers)
         }
         CallbackOperation::Truncate => {
@@ -238,16 +259,16 @@ pub(super) fn callback_call<'js>(
         CallbackOperation::Write => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
             let value = take_arg(&ctx, &mut args)?;
-            let count = write_sync(ctx.clone(), descriptor, value.clone(), Rest(args));
-            reply_with_buffer(&ctx, count, value)
+            let write = callback_write(&ctx, value, args)?;
+            let count = write_views(&ctx, descriptor, &write);
+            reply_with_buffer(&ctx, count, write.data)
         }
         CallbackOperation::Writev => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
             let buffers = take_arg(&ctx, &mut args)?;
-            let array = Array::from_value(buffers.clone())?;
-            let position = take_opt_value(&mut args);
-            let count = writev_sync(ctx.clone(), descriptor, array, position);
-            reply_with_buffer(&ctx, count, buffers)
+            let write = vector_write(&ctx, buffers, take_opt_value(&mut args).0)?;
+            let count = write_views(&ctx, descriptor, &write);
+            reply_with_buffer(&ctx, count, write.data)
         }
     };
     callback_values(&ctx, callback, result)
@@ -318,11 +339,11 @@ pub(super) fn normalize_read_arguments<'js>(
             position: None,
         });
     };
-    if is_buffer_value(&value) {
+    if is_array_buffer_view(&value) {
         args.remove(0);
         if args
             .first()
-            .is_some_and(|value| value.is_object() && !is_buffer_value(value))
+            .is_some_and(|value| value.is_object() && !is_array_buffer_view(value))
         {
             let (offset, length, position) = read_options(ctx, args.remove(0))?;
             return Ok(ReadArguments {
@@ -500,102 +521,6 @@ pub(super) fn open_options<'js>(
         truncate: first == 'w',
         ..OpenOptions::default()
     })
-}
-
-pub(super) fn position_value<'js>(
-    ctx: &Ctx<'js>,
-    value: Option<Value<'js>>,
-) -> rquickjs::Result<Option<u64>> {
-    let Some(value) = defined(value) else {
-        return Ok(None);
-    };
-    let position: Coerced<i64> = Coerced::from_js(ctx, value)?;
-    if *position < -1 {
-        return Err(Exception::throw_range(
-            ctx,
-            "file position must be -1 or non-negative",
-        ));
-    }
-    Ok((*position >= 0).then_some(position.cast_unsigned()))
-}
-
-pub(super) fn write_arguments<'js>(
-    ctx: &Ctx<'js>,
-    value: Value<'js>,
-    args: Vec<Value<'js>>,
-) -> rquickjs::Result<(Vec<u8>, Option<u64>)> {
-    let string = value.is_string();
-    let (offset, length, position, encoding) = if string {
-        let position = args.first().cloned();
-        let encoding = args
-            .get(1)
-            .and_then(|value| value.as_string())
-            .map(rquickjs::String::to_string)
-            .transpose()?;
-        (0_u64, None, position, encoding)
-    } else {
-        let offset = args
-            .first()
-            .map(|value| Coerced::<u64>::from_js(ctx, value.clone()))
-            .transpose()?
-            .map_or(0, |value| *value);
-        let length = args
-            .get(1)
-            .map(|value| Coerced::<u64>::from_js(ctx, value.clone()))
-            .transpose()?;
-        (
-            offset,
-            length.map(|value| *value),
-            args.get(2).cloned(),
-            None,
-        )
-    };
-    let bytes = bytes(ctx, value, encoding.as_deref())?;
-    let offset =
-        usize::try_from(offset).map_err(|_| Exception::throw_range(ctx, "offset is too large"))?;
-    if offset > bytes.len() {
-        return Err(Exception::throw_range(ctx, "offset is outside the buffer"));
-    }
-    let length = length
-        .map(|length| {
-            usize::try_from(length).map_err(|_| Exception::throw_range(ctx, "length is too large"))
-        })
-        .transpose()?
-        .unwrap_or(bytes.len() - offset);
-    if length > bytes.len() - offset {
-        return Err(Exception::throw_range(ctx, "length is outside the buffer"));
-    }
-    Ok((
-        bytes[offset..offset + length].to_vec(),
-        position_value(ctx, position)?,
-    ))
-}
-
-pub(super) fn normalize_write_options<'js>(
-    ctx: &Ctx<'js>,
-    data_is_string: bool,
-    args: Vec<Value<'js>>,
-) -> rquickjs::Result<Vec<Value<'js>>> {
-    let Some(first) = args.first() else {
-        return Ok(args);
-    };
-    if !first.is_object() {
-        return Ok(args);
-    }
-    let options = first
-        .clone()
-        .try_into_object()
-        .map_err(|_| Exception::throw_type(ctx, "write options must be an object"))?;
-    let value = |name: &str| -> rquickjs::Result<Value<'js>> {
-        Ok(options
-            .get::<_, Option<Value>>(name)?
-            .unwrap_or_else(|| Value::new_undefined(ctx.clone())))
-    };
-    if data_is_string {
-        Ok(vec![value("position")?, value("encoding")?])
-    } else {
-        Ok(vec![value("offset")?, value("length")?, value("position")?])
-    }
 }
 
 pub(super) struct WritableBytes<'js> {

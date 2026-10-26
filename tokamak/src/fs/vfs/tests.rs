@@ -34,7 +34,18 @@ fn keeps_tmp_mutable_and_bundle_readonly() -> TestResult {
         Ok(()) => return Err("readonly bundle accepted a write".into()),
         Err(error) => error,
     };
-    assert_eq!(error.kind(), ErrorKind::ReadOnly);
+    assert_eq!(error.kind(), ErrorKind::NotPermitted);
+    Ok(())
+}
+
+#[test]
+fn spells_bundle_names_as_stored_names() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    std::fs::write(directory.path().join("a b\u{e9}.txt"), b"named")?;
+    let vfs = vfs(directory.path());
+
+    assert_eq!(vfs.read_dir("/bundle")?[0].name, "a%20b%C3%A9.txt");
+    assert_eq!(vfs.read_file("/bundle/a%20b%C3%A9.txt")?, b"named");
     Ok(())
 }
 

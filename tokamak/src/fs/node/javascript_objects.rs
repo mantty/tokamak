@@ -1,7 +1,5 @@
 #![allow(clippy::wildcard_imports)]
 
-use std::collections::VecDeque;
-
 use super::*;
 
 pub(super) fn illegal_constructor(ctx: Ctx<'_>) -> rquickjs::Result<()> {
@@ -23,31 +21,123 @@ pub(super) fn constructor<'js>(
     Ok((function, prototype))
 }
 
-pub(super) fn dirent_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
-    let (function, prototype) = constructor(ctx, "Dirent", "__tokamak_node_fs_dirent_proto")?;
-    for (name, method) in [
-        ("isFile", dirent_is_file as fn(This<Object<'_>>) -> bool),
-        ("isDirectory", dirent_is_directory),
-        ("isBlockDevice", never),
-        ("isCharacterDevice", dirent_is_character_device),
-        ("isSymbolicLink", dirent_is_symbolic_link),
-        ("isFIFO", never),
-        ("isSocket", never),
-    ] {
-        prototype.set(name, Function::new(ctx.clone(), method)?)?;
+/// workerd's `Dirent` class, which holds an entry's libuv `UV_DIRENT_*` type
+/// under a private symbol.
+const DIRENT_CLASS: &str = r#"(() => {
+  const kType = Symbol("type");
+  return class Dirent {
+    name;
+    parentPath;
+    [kType];
+    constructor(name, type, path) {
+      this.name = name;
+      this.parentPath = path;
+      this[kType] = type;
     }
-    Ok(function)
+    isDirectory() { return this[kType] === 2; }
+    isFile() { return this[kType] === 1; }
+    isBlockDevice() { return this[kType] === 7; }
+    isCharacterDevice() { return this[kType] === 6; }
+    isSymbolicLink() { return this[kType] === 3; }
+    isFIFO() { return this[kType] === 4; }
+    isSocket() { return this[kType] === 5; }
+  };
+})()"#;
+
+pub(super) fn dirent_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Constructor<'js>> {
+    cached(ctx, "__tokamak_node_fs_dirent", |ctx| {
+        ctx.eval(DIRENT_CLASS)
+    })
 }
 
-pub(super) fn dir_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
-    constructor(ctx, "Dir", "__tokamak_node_fs_dir_proto").map(|(function, _)| function)
+/// workerd's `Dir` class, made from `Buffer` and `Dirent`, which reads the
+/// `{ name, type, parentPath }` handles it is given.
+const DIR_CLASS: &str = r#"(Buffer, Dirent) => {
+  const coded = (Type, code, message) => Object.assign(new Type(message), { code });
+  const closed = () => coded(Error, "ERR_DIR_CLOSED", "Directory is closed");
+  return class Dir {
+    #handle;
+    #encoding;
+    #path;
+    constructor(handle, path, options) {
+      if (handle == null) throw coded(TypeError, "ERR_MISSING_ARGS", 'The "handle" argument must be specified');
+      this.#handle = handle;
+      this.#path = path;
+      if (options === null || typeof options !== "object" || Array.isArray(options)) {
+        throw coded(TypeError, "ERR_INVALID_ARG_TYPE", 'The "options" argument must be of type object');
+      }
+      const { encoding = "utf8" } = options;
+      if (typeof encoding !== "string") {
+        throw coded(TypeError, "ERR_INVALID_ARG_TYPE", 'The "options.encoding" property must be of type string');
+      }
+      this.#encoding = encoding;
+    }
+    get path() { return this.#path; }
+    read(callback) {
+      if (typeof callback === "function") {
+        try {
+          const entry = this.readSync();
+          queueMicrotask(() => callback(null, entry));
+        } catch (error) {
+          queueMicrotask(() => callback(error, null));
+        }
+        return;
+      }
+      try { return Promise.resolve(this.readSync()); }
+      catch (error) { return Promise.reject(error); }
+    }
+    readSync() {
+      if (this.#handle === undefined) throw closed();
+      const entry = this.#handle.shift();
+      if (entry == null) return null;
+      const name = Buffer.from(entry.name);
+      return new Dirent(this.#encoding === "buffer" ? name : name.toString(this.#encoding), entry.type, entry.parentPath);
+    }
+    close(callback) {
+      this.closeSync();
+      if (typeof callback === "function") {
+        queueMicrotask(() => callback(null));
+        return undefined;
+      }
+      return Promise.resolve();
+    }
+    closeSync() {
+      if (this.#handle === undefined) throw closed();
+      this.#handle = undefined;
+    }
+    async *entries() {
+      for (;;) {
+        const entry = await this.read();
+        if (entry == null) return;
+        yield entry;
+      }
+    }
+    [Symbol.asyncIterator]() { return this.entries(); }
+    async [Symbol.asyncDispose]() { await this.close(); }
+    [Symbol.dispose]() { this.closeSync(); }
+  };
+}"#;
+
+pub(super) fn dir_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Constructor<'js>> {
+    cached(ctx, "__tokamak_node_fs_dir", |ctx| {
+        let class: Function = ctx.eval(DIR_CLASS)?;
+        class.call((buffer_class(ctx)?, dirent_constructor(ctx)?))
+    })
 }
 
-#[derive(Clone)]
-pub(super) struct DirState {
-    entries: Arc<Mutex<Option<VecDeque<DirItem>>>>,
-    path: String,
-    encoding: Option<String>,
+/// The value `create` makes, made once per context and kept in the hidden
+/// global `name`.
+fn cached<'js, T: FromJs<'js> + IntoJs<'js> + Clone>(
+    ctx: &Ctx<'js>,
+    name: &str,
+    create: impl FnOnce(&Ctx<'js>) -> rquickjs::Result<T>,
+) -> rquickjs::Result<T> {
+    if let Some(value) = ctx.globals().get::<_, Option<T>>(name)? {
+        return Ok(value);
+    }
+    let value = create(ctx)?;
+    ctx.globals().set(name, value.clone())?;
+    Ok(value)
 }
 
 #[derive(Clone)]
@@ -57,96 +147,27 @@ pub(super) struct DirItem {
     pub(super) entry: DirectoryEntry,
 }
 
+/// A `Dir` reading `entries`, whose `path` is the `path` argument it was
+/// opened with.
 pub(super) fn dir_object<'js>(
     ctx: &Ctx<'js>,
-    path: String,
+    path: Value<'js>,
     entries: Vec<DirItem>,
     encoding: Option<&str>,
 ) -> rquickjs::Result<Object<'js>> {
-    let prototype: Option<Object> = ctx.globals().get("__tokamak_node_fs_dir_proto")?;
-    let object = Object::new_proto(ctx.clone(), prototype.as_ref())?;
-    let state = DirState {
-        entries: Arc::new(Mutex::new(Some(VecDeque::from(entries)))),
-        path,
-        encoding: encoding.map(ToOwned::to_owned),
-    };
-    object.set("path", state.path.clone())?;
-
-    let read_state = state.clone();
-    object.set(
-        "readSync",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            dir_read_entry(&ctx, &read_state)
-        })?,
-    )?;
-    let read_state = state.clone();
-    object.set(
-        "read",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
-            let mut args = args.0;
-            let callback = pop_callback(&mut args);
-            let result = dir_read_entry(&ctx, &read_state);
-            if let Some(callback) = callback {
-                callback_values(&ctx, callback, reply(&ctx, result))?;
-                Ok(Value::new_undefined(ctx))
-            } else {
-                promise(ctx.clone(), result).map(Promise::into_value)
-            }
-        })?,
-    )?;
-    let close_state = state.clone();
-    object.set(
-        "closeSync",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            dir_close(&ctx, &close_state)
-        })?,
-    )?;
-    let close_state = state.clone();
-    object.set(
-        "close",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
-            let mut args = args.0;
-            let callback = pop_callback(&mut args);
-            let result = dir_close(&ctx, &close_state).map(|()| Value::new_undefined(ctx.clone()));
-            if let Some(callback) = callback {
-                callback_values(
-                    &ctx,
-                    callback,
-                    result.map(|_| vec![Value::new_null(ctx.clone())]),
-                )?;
-                Ok(Value::new_undefined(ctx))
-            } else {
-                promise(ctx.clone(), result).map(Promise::into_value)
-            }
-        })?,
-    )?;
-    object.set("entries", dir_iterator_function(ctx, state.clone())?)?;
-    object.set(
-        Symbol::async_iterator(ctx.clone()),
-        dir_iterator_function(ctx, state)?,
-    )?;
-    Ok(object)
-}
-
-fn dir_iterator_function<'js>(ctx: &Ctx<'js>, state: DirState) -> rquickjs::Result<Function<'js>> {
-    Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-        dir_iterator(&ctx, state.clone())
-    })
-}
-
-pub(super) fn dir_read_entry<'js>(
-    ctx: &Ctx<'js>,
-    state: &DirState,
-) -> rquickjs::Result<Value<'js>> {
-    let item = lock(&state.entries)
-        .as_mut()
-        .ok_or_else(|| Exception::throw_message(ctx, "ERR_DIR_CLOSED: directory is closed"))?
-        .pop_front();
-    if let Some(item) = item {
-        item_dirent(ctx, &item, state.encoding.as_deref()).map(Object::into_value)
-    } else {
-        Ok(Value::new_null(ctx.clone()))
+    let handles = Array::new(ctx.clone())?;
+    for (index, item) in entries.iter().enumerate() {
+        let handle = Object::new(ctx.clone())?;
+        handle.set("name", item.name.as_str())?;
+        handle.set("type", dirent_type(&item.entry))?;
+        handle.set("parentPath", normalized_parent(&item.parent))?;
+        handles.set(index, handle)?;
     }
+    let options = Object::new(ctx.clone())?;
+    if let Some(encoding) = encoding {
+        options.set("encoding", encoding)?;
+    }
+    dir_constructor(ctx)?.construct((handles, path, options))
 }
 
 pub(super) fn item_dirent<'js>(
@@ -155,26 +176,12 @@ pub(super) fn item_dirent<'js>(
     encoding: Option<&str>,
 ) -> rquickjs::Result<Object<'js>> {
     let name = text_value(ctx, &item.name, encoding)?;
-    dirent(ctx, &item.entry, name, normalized_parent(&item.parent))
-}
-
-pub(super) fn dir_close(ctx: &Ctx<'_>, state: &DirState) -> rquickjs::Result<()> {
-    let mut entries = lock(&state.entries);
-    if entries.take().is_none() {
-        return Err(Exception::throw_message(
-            ctx,
-            "ERR_DIR_CLOSED: directory is closed",
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn dir_iterator<'js>(ctx: &Ctx<'js>, state: DirState) -> rquickjs::Result<Object<'js>> {
-    let next = Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-        let value = dir_read_entry(&ctx, &state)?;
-        iterator_result(ctx, value.is_null(), value)
-    })?;
-    async_iterator(ctx, next)
+    dirent(
+        ctx,
+        name,
+        dirent_type(&item.entry),
+        normalized_parent(&item.parent),
+    )
 }
 
 #[derive(Clone)]
@@ -212,11 +219,13 @@ pub(super) fn file_handle_object<'js>(
         "readv",
         Function::new(
             ctx.clone(),
-            move |ctx: Ctx<'js>, buffers: Array<'js>, position: Opt<Value<'js>>| {
-                let descriptor = open_descriptor(&ctx, &vector_read_state)?;
-                let bytes_read = readv_sync(ctx.clone(), descriptor, buffers.clone(), position)?;
-                let buffers = buffers.into_value();
-                transfer_result(&ctx, "bytesRead", bytes_read as usize, "buffers", buffers)
+            move |ctx: Ctx<'js>, buffers: Value<'js>, position: Opt<Value<'js>>| {
+                let read = open_descriptor(&ctx, &vector_read_state).and_then(|descriptor| {
+                    let count =
+                        read_views(&ctx, descriptor, &vector_read(&ctx, &buffers, position.0)?)?;
+                    transfer_value(&ctx, "bytesRead", count as usize, "buffers", buffers)
+                });
+                promise(ctx.clone(), read)
             },
         )?,
     )?;
@@ -258,15 +267,15 @@ pub(super) fn file_handle_object<'js>(
     let vector_write_state = state.clone();
     object.set(
         "writev",
-        Function::new(
-            ctx.clone(),
-            move |ctx: Ctx<'js>, buffers: Array<'js>, position: Opt<Value<'js>>| {
-                let descriptor = open_descriptor(&ctx, &vector_write_state)?;
-                let bytes_written = write_buffers(&ctx, descriptor, &buffers, position.0)?;
-                let buffers = buffers.into_value();
-                transfer_result(&ctx, "bytesWritten", bytes_written, "buffers", buffers)
-            },
-        )?,
+        Function::new(ctx.clone(), move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
+            let mut args = args.0.into_iter();
+            let buffers = args
+                .next()
+                .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+            handle_write_promise(&ctx, &vector_write_state, "buffers", || {
+                vector_write(&ctx, buffers, defined(args.next()))
+            })
+        })?,
     )?;
     let write_file_state = state.clone();
     object.set(
@@ -414,10 +423,24 @@ fn transfer_result<'js>(
     buffer_name: &str,
     buffer: Value<'js>,
 ) -> rquickjs::Result<Promise<'js>> {
+    promise(
+        ctx.clone(),
+        transfer_value(ctx, count_name, count, buffer_name, buffer),
+    )
+}
+
+/// `{ [count_name]: count, [buffer_name]: buffer }`.
+fn transfer_value<'js>(
+    ctx: &Ctx<'js>,
+    count_name: &str,
+    count: usize,
+    buffer_name: &str,
+    buffer: Value<'js>,
+) -> rquickjs::Result<Value<'js>> {
     let result = Object::new(ctx.clone())?;
     result.set(count_name, count)?;
     result.set(buffer_name, buffer)?;
-    promise(ctx.clone(), Ok(result.into_value()))
+    Ok(result.into_value())
 }
 
 pub(super) fn take_descriptor(state: &FileHandleState) -> Option<u32> {
@@ -501,31 +524,13 @@ pub(super) fn handle_read<'js>(
     state: &FileHandleState,
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<Promise<'js>> {
-    let descriptor = open_descriptor(ctx, state)?;
-    let ReadArguments {
-        buffer,
-        offset: offset_value,
-        length: length_value,
-        position: position_arg,
-    } = normalize_read_arguments(ctx, args.0)?;
-    let writable = writable_bytes(ctx, buffer.clone())?;
-    let offset = offset_value
-        .map(|value| Coerced::<u64>::from_js(ctx, value))
-        .transpose()?
-        .map_or(0, |value| usize::try_from(*value).unwrap_or(usize::MAX));
-    let length = length_value
-        .map(|value| Coerced::<u64>::from_js(ctx, value))
-        .transpose()?
-        .map_or(writable.len.saturating_sub(offset), |value| {
-            usize::try_from(*value).unwrap_or(usize::MAX)
-        });
-    let position = position_value(ctx, position_arg)?;
-    if offset > writable.len || length > writable.len - offset {
-        return Err(Exception::throw_range(ctx, "read buffer range is invalid"));
-    }
-    let bytes = vfs_call(ctx, |vfs| vfs.read(descriptor, length, position))?;
-    writable.write(offset, &bytes);
-    transfer_result(ctx, "bytesRead", bytes.len(), "buffer", buffer)
+    let read = open_descriptor(ctx, state).and_then(|descriptor| {
+        let arguments = normalize_read_arguments(ctx, args.0)?;
+        let buffer = arguments.buffer.clone();
+        let count = read_views(ctx, descriptor, &node_read(ctx, arguments)?)?;
+        transfer_value(ctx, "bytesRead", count as usize, "buffer", buffer)
+    });
+    promise(ctx.clone(), read)
 }
 
 pub(super) fn handle_write<'js>(
@@ -533,17 +538,29 @@ pub(super) fn handle_write<'js>(
     state: &FileHandleState,
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<Promise<'js>> {
-    let descriptor = open_descriptor(ctx, state)?;
-    let mut args = args.0;
-    if args.is_empty() {
-        return Err(Exception::throw_type(ctx, "data is required"));
-    }
-    let value = args.remove(0);
-    let args = normalize_write_options(ctx, value.is_string(), args)?;
-    let (data, position) = write_arguments(ctx, value.clone(), args)?;
-    let bytes_written = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, position))?;
-    let buffer = write_buffer_value(ctx, &value, &data)?;
-    transfer_result(ctx, "bytesWritten", bytes_written, "buffer", buffer)
+    let mut args = args.0.into_iter();
+    let value = args
+        .next()
+        .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+    handle_write_promise(ctx, state, "buffer", || {
+        file_handle_write(ctx, value, args.collect())
+    })
+}
+
+/// A promise of `{ bytesWritten, [data_name]: data }` for the write `request`
+/// returns, rejected with any error.
+fn handle_write_promise<'js>(
+    ctx: &Ctx<'js>,
+    state: &FileHandleState,
+    data_name: &str,
+    request: impl FnOnce() -> rquickjs::Result<WriteRequest<'js>>,
+) -> rquickjs::Result<Promise<'js>> {
+    let written = open_descriptor(ctx, state).and_then(|descriptor| {
+        let write = request()?;
+        let count = write_views(ctx, descriptor, &write)?;
+        transfer_value(ctx, "bytesWritten", count as usize, data_name, write.data)
+    });
+    promise(ctx.clone(), written)
 }
 
 /// A `createReadStream` or `createWriteStream` export.
@@ -716,19 +733,14 @@ pub(super) fn stream_write<'js>(
     }
     let value = args.remove(0);
     let callback = pop_callback(&mut args);
-    let (data, position) = if value.is_string() {
-        let encoding = args
-            .first()
-            .and_then(|value| value.as_string())
-            .map(rquickjs::String::to_string)
-            .transpose()?;
-        (bytes(ctx, value, encoding.as_deref())?, None)
-    } else {
-        let args = normalize_write_options(ctx, false, args)?;
-        write_arguments(ctx, value, args)?
-    };
+    let encoding = args
+        .first()
+        .and_then(|value| value.as_string())
+        .map(rquickjs::String::to_string)
+        .transpose()?;
+    let data = bytes(ctx, value, encoding.as_deref())?;
     let descriptor = open_descriptor(ctx, state)?;
-    let result = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, position));
+    let result = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, None));
     let Some(callback) = callback else {
         return Ok(true);
     };
@@ -788,116 +800,117 @@ pub(super) fn readable_web_stream<'js>(
     constructor.construct((source,))
 }
 
-pub(super) fn stats_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
-    let (function, prototype) = constructor(ctx, "Stats", "__tokamak_node_fs_stats_proto")?;
-    for (name, file_type) in [
-        ("isFile", 0o100_000),
-        ("isDirectory", 0o040_000),
-        ("isBlockDevice", 0o060_000),
-        ("isCharacterDevice", 0o020_000),
-        ("isSymbolicLink", 0o120_000),
-        ("isFIFO", 0o010_000),
-        ("isSocket", 0o140_000),
-    ] {
-        let method = move |this: This<Object<'js>>| stats_type(&this) == Some(file_type);
-        prototype.set(name, Function::new(ctx.clone(), method)?)?;
+/// workerd's `Stats` class, with a function that makes one from a stat
+/// record and whether its numbers are bigints.
+const STATS_CLASS: &str = r#"(() => {
+  const badge = Symbol("badge");
+  class Stats {
+    dev;
+    ino;
+    mode;
+    nlink;
+    uid;
+    gid;
+    rdev;
+    size;
+    blksize;
+    blocks;
+    atimeMs;
+    mtimeMs;
+    ctimeMs;
+    birthtimeMs;
+    atimeNs;
+    mtimeNs;
+    ctimeNs;
+    birthtimeNs;
+    atime;
+    mtime;
+    ctime;
+    birthtime;
+    constructor(key, stat, options) {
+      if (key !== badge) throw new TypeError("Illegal constructor");
+      this.mode = 0o444;
+      if (stat.writable) this.mode |= 0o222;
+      if (stat.device) this.mode |= 0o20000;
+      else this.mode |= { file: 0o100000, directory: 0o40000, symlink: 0o120000 }[stat.type];
+      if (options.bigint) {
+        this.dev = BigInt(stat.device);
+        this.size = BigInt(stat.size);
+        this.mode = BigInt(this.mode);
+        this.atimeNs = 0n;
+        this.mtimeNs = stat.lastModified;
+        this.ctimeNs = stat.lastModified;
+        this.birthtimeNs = stat.created;
+        this.atimeMs = this.atimeNs / 1000000n;
+        this.mtimeMs = this.mtimeNs / 1000000n;
+        this.ctimeMs = this.ctimeNs / 1000000n;
+        this.birthtimeMs = this.birthtimeNs / 1000000n;
+        this.atime = new Date(Number(this.atimeMs));
+        this.mtime = new Date(Number(this.mtimeMs));
+        this.ctime = new Date(Number(this.ctimeMs));
+        this.birthtime = new Date(Number(this.birthtimeMs));
+        this.ino = 0n;
+        this.nlink = 1n;
+        this.uid = 0n;
+        this.gid = 0n;
+        this.rdev = 0n;
+        this.blksize = 0n;
+        this.blocks = 0n;
+      } else {
+        this.dev = Number(stat.device);
+        this.size = stat.size;
+        this.atimeMs = 0;
+        this.mtimeMs = Number(stat.lastModified) / 1000000;
+        this.ctimeMs = Number(stat.lastModified) / 1000000;
+        this.birthtimeMs = Number(stat.created) / 1000000;
+        this.atime = new Date(this.atimeMs);
+        this.mtime = new Date(this.mtimeMs);
+        this.ctime = new Date(this.ctimeMs);
+        this.birthtime = new Date(this.birthtimeMs);
+        this.ino = 0;
+        this.nlink = 1;
+        this.uid = 0;
+        this.gid = 0;
+        this.rdev = 0;
+        this.blksize = 0;
+        this.blocks = 0;
+      }
     }
-    Ok(function)
+    isBlockDevice() { return (Number(this.mode) & 0o170000) === 0o60000; }
+    isCharacterDevice() { return (Number(this.mode) & 0o170000) === 0o20000; }
+    isDirectory() { return (Number(this.mode) & 0o170000) === 0o40000; }
+    isFIFO() { return (Number(this.mode) & 0o170000) === 0o10000; }
+    isFile() { return (Number(this.mode) & 0o170000) === 0o100000; }
+    isSocket() { return (Number(this.mode) & 0o170000) === 0o140000; }
+    isSymbolicLink() { return (Number(this.mode) & 0o170000) === 0o120000; }
+  }
+  return [Stats, (stat, bigint) => new Stats(badge, stat, { bigint })];
+})()"#;
+
+/// `Stats` and the function that makes one.
+fn stats_class<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Array<'js>> {
+    cached(ctx, "__tokamak_node_fs_stats", |ctx| ctx.eval(STATS_CLASS))
 }
 
-pub(super) fn stats_mode(this: &This<Object<'_>>) -> Option<u32> {
-    let mode: Value = this.0.get("mode").ok()?;
-    if mode.is_big_int() {
-        let bigint = BigInt::from_value(mode).ok()?;
-        return u32::try_from(bigint.to_i64().ok()?).ok();
-    }
-    let ctx = mode.ctx().clone();
-    Coerced::<i64>::from_js(&ctx, mode)
-        .ok()
-        .and_then(|value| u32::try_from(*value).ok())
+pub(super) fn stats_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Constructor<'js>> {
+    stats_class(ctx)?.get(0)
 }
 
-pub(super) fn stats_type(this: &This<Object<'_>>) -> Option<u32> {
-    Some(stats_mode(this)? & 0o170_000)
-}
-
-fn dirent_device(object: &Object<'_>) -> bool {
-    matches!(object.get::<_, Option<bool>>("device"), Ok(Some(true)))
-}
-
-fn dirent_has_type(object: &Object<'_>, kind: &str) -> bool {
-    object
-        .get::<_, Option<String>>("type")
-        .ok()
-        .flatten()
-        .is_some_and(|value| value == kind)
-}
-
-fn dirent_is_file(this: This<Object<'_>>) -> bool {
-    !dirent_device(&this.0) && dirent_has_type(&this.0, "file")
-}
-
-fn dirent_is_directory(this: This<Object<'_>>) -> bool {
-    dirent_has_type(&this.0, "directory")
-}
-
-fn dirent_is_character_device(this: This<Object<'_>>) -> bool {
-    dirent_device(&this.0)
-}
-
-fn dirent_is_symbolic_link(this: This<Object<'_>>) -> bool {
-    dirent_has_type(&this.0, "symlink")
-}
-
-fn never(_: This<Object<'_>>) -> bool {
-    false
-}
-
+/// The `Stats` workerd reports for `stat`, which has no times.
 pub(super) fn stat_object<'js>(
     ctx: &Ctx<'js>,
     stat: &Stat,
     bigint: bool,
 ) -> rquickjs::Result<Object<'js>> {
-    let prototype: Option<Object> = ctx.globals().get("__tokamak_node_fs_stats_proto")?;
-    let object = Object::new_proto(ctx.clone(), prototype.as_ref())?;
-    let mode: u32 = match (stat.device, stat.kind, stat.writable) {
-        (true, _, _) => 0o020_666,
-        (false, NodeType::File, true) => 0o100_666,
-        (false, NodeType::File, false) => 0o100_444,
-        (false, NodeType::Directory, true) => 0o40_777,
-        (false, NodeType::Directory, false) => 0o40_555,
-        _ => 0o120_777,
-    };
-    object.set("type", node_type_name(stat.kind))?;
-    for (name, value) in [
-        ("dev", u64::from(stat.device)),
-        ("ino", 0),
-        ("mode", u64::from(mode)),
-        ("nlink", 1),
-        ("uid", 0),
-        ("gid", 0),
-        ("rdev", 0),
-        ("size", stat.size),
-        ("blksize", 0),
-        ("blocks", 0),
-    ] {
-        set_number_or_bigint(ctx, &object, name, value, bigint)?;
-    }
-    object.set("writable", stat.writable)?;
-    object.set("device", stat.device)?;
-    for name in ["atimeMs", "mtimeMs", "ctimeMs", "birthtimeMs"] {
-        set_number_or_bigint(ctx, &object, name, 0, bigint)?;
-    }
-    if bigint {
-        for name in ["atimeNs", "mtimeNs", "ctimeNs", "birthtimeNs"] {
-            object.set(name, BigInt::from_i64(ctx.clone(), 0)?)?;
-        }
-    }
-    let date: Object = ctx.eval("new Date(0)")?;
-    for name in ["atime", "mtime", "ctime", "birthtime"] {
-        object.set(name, date.clone())?;
-    }
-    Ok(object)
+    let record = Object::new(ctx.clone())?;
+    record.set("type", node_type_name(stat.kind))?;
+    record.set("size", stat.size)?;
+    record.set("writable", stat.writable)?;
+    record.set("device", stat.device)?;
+    record.set("lastModified", BigInt::from_i64(ctx.clone(), 0)?)?;
+    record.set("created", BigInt::from_i64(ctx.clone(), 0)?)?;
+    let create: Function = stats_class(ctx)?.get(1)?;
+    create.call((record, bigint))
 }
 
 pub(super) fn set_number_or_bigint<'js>(
@@ -921,6 +934,7 @@ pub(super) fn text_value<'js>(
 ) -> rquickjs::Result<Value<'js>> {
     match encoding.map(str::to_ascii_lowercase).as_deref() {
         None | Some("utf8" | "utf-8") => value.to_owned().into_js(ctx),
+        Some("buffer") => output(ctx.clone(), value.as_bytes(), None),
         Some(_) => output(ctx.clone(), value.as_bytes(), encoding),
     }
 }
@@ -951,87 +965,6 @@ pub(super) fn statfs_object<'js>(ctx: &Ctx<'js>, bigint: bool) -> rquickjs::Resu
         set_number_or_bigint(ctx, &object, name, 0, bigint)?;
     }
     Ok(object)
-}
-
-pub(super) fn glob_matches(
-    ctx: &Ctx<'_>,
-    cwd: &str,
-    pattern: &str,
-) -> rquickjs::Result<Vec<(String, DirectoryEntry)>> {
-    let entries = vfs_call(ctx, |vfs| vfs.walk(cwd))?;
-    let patterns = expand_braces(pattern);
-    let mut result = Vec::new();
-    for (path, entry) in entries {
-        let candidate = glob_candidate(&path, cwd, pattern);
-        if patterns
-            .iter()
-            .any(|expanded| glob_match(expanded, &candidate))
-        {
-            result.push((path, entry));
-        }
-    }
-    result.sort_by(|left, right| left.0.cmp(&right.0));
-    result.dedup_by(|left, right| left.0 == right.0);
-    Ok(result)
-}
-
-pub(super) fn expand_braces(pattern: &str) -> Vec<String> {
-    let Some(start) = pattern.find('{') else {
-        return vec![pattern.to_owned()];
-    };
-    let Some(end) = pattern[start + 1..].find('}') else {
-        return vec![pattern.to_owned()];
-    };
-    let end = start + 1 + end;
-    let prefix = &pattern[..start];
-    let suffix = &pattern[end + 1..];
-    pattern[start + 1..end]
-        .split(',')
-        .flat_map(|part| expand_braces(&format!("{prefix}{part}{suffix}")))
-        .collect()
-}
-
-pub(super) fn glob_match(pattern: &str, path: &str) -> bool {
-    let pattern: Vec<&str> = pattern.split('/').filter(|part| !part.is_empty()).collect();
-    let path: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
-    glob_segments(&pattern, &path)
-}
-
-pub(super) fn glob_segments(pattern: &[&str], path: &[&str]) -> bool {
-    if pattern.is_empty() {
-        return path.is_empty();
-    }
-    if pattern[0] == "**" {
-        return glob_segments(&pattern[1..], path)
-            || (!path.is_empty() && glob_segments(pattern, &path[1..]));
-    }
-    !path.is_empty()
-        && segment_match(pattern[0], path[0])
-        && glob_segments(&pattern[1..], &path[1..])
-}
-
-pub(super) fn segment_match(pattern: &str, value: &str) -> bool {
-    let pattern = pattern.as_bytes();
-    let value = value.as_bytes();
-    let mut states = vec![false; value.len() + 1];
-    let mut next = vec![false; value.len() + 1];
-    states[0] = true;
-    for &character in pattern {
-        next.fill(false);
-        if character == b'*' {
-            next[0] = states[0];
-            for index in 1..=value.len() {
-                next[index] = states[index] || next[index - 1];
-            }
-        } else {
-            for index in 1..=value.len() {
-                next[index] =
-                    states[index - 1] && (character == b'?' || character == value[index - 1]);
-            }
-        }
-        std::mem::swap(&mut states, &mut next);
-    }
-    states[value.len()]
 }
 
 /// Removes a trailing callback argument, leaving other trailing values in place.
@@ -1087,38 +1020,22 @@ const fn node_type_name(kind: NodeType) -> &'static str {
     }
 }
 
+/// A `Dirent` named `name` of the libuv `UV_DIRENT_*` type `kind`.
 pub(super) fn dirent<'js>(
     ctx: &Ctx<'js>,
-    entry: &DirectoryEntry,
     name: Value<'js>,
+    kind: u32,
     parent_path: &str,
 ) -> rquickjs::Result<Object<'js>> {
-    let prototype: Option<Object> = ctx.globals().get("__tokamak_node_fs_dirent_proto")?;
-    let object = Object::new_proto(ctx.clone(), prototype.as_ref())?;
-    object.set("name", name)?;
-    object.set("parentPath", parent_path)?;
-    object.set("type", node_type_name(entry.kind))?;
-    object.set("device", entry.device)?;
-    set_type_methods(ctx, &object, entry.kind, entry.device)?;
-    Ok(object)
+    dirent_constructor(ctx)?.construct((name, kind, parent_path))
 }
 
-pub(super) fn set_type_methods<'js>(
-    ctx: &Ctx<'js>,
-    object: &Object<'js>,
-    kind: NodeType,
-    device: bool,
-) -> rquickjs::Result<()> {
-    for (name, result) in [
-        ("isFile", kind == NodeType::File && !device),
-        ("isDirectory", kind == NodeType::Directory),
-        ("isSymbolicLink", kind == NodeType::Symlink),
-        ("isCharacterDevice", device),
-        ("isBlockDevice", false),
-        ("isFIFO", false),
-        ("isSocket", false),
-    ] {
-        object.set(name, Function::new(ctx.clone(), move || result)?)?;
+/// The libuv `UV_DIRENT_*` type of `entry`.
+pub(super) const fn dirent_type(entry: &DirectoryEntry) -> u32 {
+    match entry.kind {
+        _ if entry.device => 6,
+        NodeType::File => 1,
+        NodeType::Directory => 2,
+        NodeType::Symlink => 3,
     }
-    Ok(())
 }

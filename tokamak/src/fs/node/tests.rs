@@ -166,7 +166,7 @@ fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>
                   dir.closeSync();
                   const recursiveDir = fs.opendirSync(temp, { recursive: true });
                   const recursiveNames = [];
-                  for (let entry; (entry = recursiveDir.readSync()) !== null;) recursiveNames.push(entry.name);
+                  for (let entry; (entry = recursiveDir.readSync()) !== null;) recursiveNames.push(entry.name.slice(temp.length));
                   recursiveDir.closeSync();
                   const callbackDir = fs.opendirSync(temp);
                   const callbackDirEntry = await new Promise((resolve, reject) => callbackDir.read(
@@ -249,7 +249,7 @@ fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>
             })?;
             assert_eq!(
                 advanced_result,
-                r#"{"accessCode":"ENOENT","hardLink":"nested","fdAppend":"ab","matches":["hard.txt","nested.txt"],"written":4,"read":4,"first":[1,2],"second":[3,4],"dirEntry":"hard.txt","recursiveNames":["hard.txt","nested.txt"],"callbackDirEntry":"hard.txt","callbackDirClose":"closed","callbackDirClosedRead":"ERR_DIR_CLOSED: directory is closed","handleText":"hello","writeResult":5,"handleWriteText":"write!","blobText":"{\"enabled\":true}","callbackRead":{"count":3,"output":[1,2,3]},"callbackReadOptions":{"count":3,"output":[1,2,3]},"callbackReadBufferOptions":{"count":3,"output":[1,2,3]},"nativeRealpath":"/tmp/data/value.txt","bigint":"6"}"#
+                r#"{"accessCode":"ENOENT","hardLink":"nested","fdAppend":"ab","matches":["nested.txt","hard.txt"],"written":4,"read":4,"first":[1,2],"second":[3,4],"dirEntry":"nested.txt","recursiveNames":["nested.txt","hard.txt"],"callbackDirEntry":"nested.txt","callbackDirClose":"closed","callbackDirClosedRead":"Directory is closed","handleText":"hello","writeResult":5,"handleWriteText":"write!","blobText":"{\"enabled\":true}","callbackRead":{"count":3,"output":[1,2,3]},"callbackReadOptions":{"count":3,"output":[1,2,3]},"callbackReadBufferOptions":{"count":3,"output":[1,2,3]},"nativeRealpath":"/tmp/data/value.txt","bigint":"6"}"#
             );
             Ok(())
         })
@@ -348,8 +348,7 @@ fn exposes_native_stream_bindings() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn dirent_prototype_treats_a_missing_device_flag_as_a_plain_file()
--> Result<(), Box<dyn std::error::Error>> {
+fn dirents_report_their_libuv_type() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let runtime = node_fs_runtime(directory.path())?;
     let context = Context::full(&runtime)?;
@@ -358,10 +357,9 @@ fn dirent_prototype_treats_a_missing_device_flag_as_a_plain_file()
         let result: String = ctx.eval(
             r#"(() => {
               const fs = process.getBuiltinModule("node:fs");
-              const entry = properties => Object.assign(Object.create(fs.Dirent.prototype), properties);
-              const file = entry({ name: "value.txt", type: "file" });
-              const device = entry({ name: "zero", type: "file", device: true });
-              const directory = entry({ name: "data", type: "directory" });
+              const file = new fs.Dirent("value.txt", 1, "/tmp");
+              const device = new fs.Dirent("zero", 6, "/dev");
+              const directory = new fs.Dirent("data", 2, "/tmp");
               return JSON.stringify({
                 file: [file.isFile(), file.isCharacterDevice(), file.isDirectory()],
                 device: [device.isFile(), device.isCharacterDevice(), device.isDirectory()],

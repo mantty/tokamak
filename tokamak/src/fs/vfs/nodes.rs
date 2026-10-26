@@ -1,10 +1,12 @@
 //! In-memory nodes and character devices for the virtual filesystem.
 
-use std::collections::btree_map::{BTreeMap, Entry};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 
-use super::path::{checked_size, lock, read_bytes, read_memory, write_memory};
+use indexmap::IndexMap;
+use indexmap::map::Entry;
+
+use super::path::{checked_size, decoded_name, lock, read_bytes, read_memory, write_memory};
 use super::{Bundle, DirectoryEntry, Error, ErrorKind, NodeType, Result, Stat};
 
 #[derive(Clone)]
@@ -48,9 +50,9 @@ impl Node {
                 writable: directory.writable(),
                 device: false,
             }),
-            Self::Symlink(target) => Ok(Stat {
+            Self::Symlink(_) => Ok(Stat {
                 kind: NodeType::Symlink,
-                size: target.len() as u64,
+                size: 0,
                 writable: false,
                 device: false,
             }),
@@ -74,13 +76,6 @@ impl Node {
         file.read(0, length)
     }
 
-    pub(super) fn read_dir(&self, path: &str) -> Result<Vec<DirectoryEntry>> {
-        match self {
-            Self::Directory(directory) => directory.entries(),
-            _ => Err(Error::new(ErrorKind::NotDirectory, path)),
-        }
-    }
-
     pub(super) fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>> {
         self.file("")?.read(offset, length)
     }
@@ -102,10 +97,13 @@ impl Node {
     }
 }
 
+/// A directory. Memory and static directories list their entries in insertion
+/// order, and removing an entry moves the last entry into its place, as
+/// workerd's directories do.
 #[derive(Clone)]
 pub(super) enum Directory {
     Memory {
-        entries: Arc<Mutex<BTreeMap<String, Node>>>,
+        entries: Arc<Mutex<IndexMap<String, Node>>>,
         writable: bool,
     },
     Bundle {
@@ -113,16 +111,16 @@ pub(super) enum Directory {
         relative: PathBuf,
     },
     Static {
-        entries: Arc<BTreeMap<String, Node>>,
+        entries: Arc<IndexMap<String, Node>>,
     },
 }
 
 impl Directory {
     pub(super) fn memory(writable: bool) -> Self {
-        Self::with_entries(writable, BTreeMap::new())
+        Self::with_entries(writable, IndexMap::new())
     }
 
-    pub(super) fn with_entries(writable: bool, entries: BTreeMap<String, Node>) -> Self {
+    pub(super) fn with_entries(writable: bool, entries: IndexMap<String, Node>) -> Self {
         Self::Memory {
             entries: Arc::new(Mutex::new(entries)),
             writable,
@@ -137,18 +135,19 @@ impl Directory {
         match self {
             Self::Memory { entries, .. } => Ok(lock(entries).get(name).cloned()),
             Self::Static { entries } => Ok(entries.get(name).cloned()),
-            Self::Bundle { bundle, relative } => bundle.node(&relative.join(name)),
+            Self::Bundle { bundle, relative } => match decoded_name(name) {
+                Some(name) => bundle.node(&relative.join(name)),
+                None => Ok(None),
+            },
         }
     }
 
     pub(super) fn entries(&self) -> Result<Vec<DirectoryEntry>> {
-        let mut entries = match self {
-            Self::Memory { entries, .. } => lock(entries).iter().map(directory_entry).collect(),
-            Self::Static { entries } => entries.iter().map(directory_entry).collect(),
-            Self::Bundle { bundle, relative } => bundle.entries(relative)?,
-        };
-        entries.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(entries)
+        match self {
+            Self::Memory { entries, .. } => Ok(lock(entries).iter().map(directory_entry).collect()),
+            Self::Static { entries } => Ok(entries.iter().map(directory_entry).collect()),
+            Self::Bundle { bundle, relative } => bundle.entries(relative),
+        }
     }
 
     pub(super) fn insert(&self, name: String, node: Node) -> Result<()> {
@@ -157,7 +156,7 @@ impl Directory {
             writable: true,
         } = self
         else {
-            return Err(Error::new(ErrorKind::ReadOnly, name));
+            return Err(Error::new(ErrorKind::NotPermitted, name));
         };
         match lock(entries).entry(name) {
             Entry::Occupied(entry) => Err(Error::new(ErrorKind::AlreadyExists, entry.key())),
@@ -170,8 +169,8 @@ impl Directory {
 
     pub(super) fn remove(&self, name: &str) -> Result<Option<Node>> {
         match self {
-            Self::Memory { entries, writable } if *writable => Ok(lock(entries).remove(name)),
-            _ => Err(Error::new(ErrorKind::ReadOnly, name)),
+            Self::Memory { entries, writable } if *writable => Ok(lock(entries).swap_remove(name)),
+            _ => Err(Error::new(ErrorKind::NotPermitted, name)),
         }
     }
 
@@ -247,7 +246,7 @@ impl FileNode {
     pub(super) fn write(&self, offset: u64, data: &[u8], append: bool) -> Result<usize> {
         match self {
             Self::Memory(bytes) => write_memory(bytes, offset, data, append),
-            Self::Bundle { .. } => Err(Error::new(ErrorKind::ReadOnly, "")),
+            Self::Bundle { .. } => Err(Error::new(ErrorKind::NotPermitted, "")),
             Self::Device(device) => device.write(data),
         }
     }
@@ -259,7 +258,7 @@ impl FileNode {
                 lock(data).resize(size, 0);
                 Ok(())
             }
-            Self::Bundle { .. } => Err(Error::new(ErrorKind::ReadOnly, path)),
+            Self::Bundle { .. } => Err(Error::new(ErrorKind::NotPermitted, path)),
             Self::Device(Device::Null | Device::Zero) => Ok(()),
             Self::Device(Device::Full | Device::Random) => {
                 Err(Error::new(ErrorKind::NotPermitted, path))
@@ -304,10 +303,10 @@ pub(super) fn shared_devices() -> Directory {
     static DEVICES: LazyLock<Directory> = LazyLock::new(|| Directory::Static {
         entries: Arc::new(
             [
-                ("full", Device::Full),
                 ("null", Device::Null),
-                ("random", Device::Random),
                 ("zero", Device::Zero),
+                ("full", Device::Full),
+                ("random", Device::Random),
             ]
             .into_iter()
             .map(|(name, device)| (name.to_owned(), Node::File(FileNode::Device(device))))

@@ -4492,6 +4492,7 @@ dependencies = [
  "icu_provider",
  "icu_provider_adapters",
  "icu_provider_blob",
+ "indexmap",
  "jiff",
  "jni 0.21.1",
  "libc",
