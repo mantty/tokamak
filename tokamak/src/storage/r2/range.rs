@@ -51,17 +51,17 @@ impl Bounds {
 /// The one range a `Range` header's value selects of a `size`-byte object, or
 /// none when the value selects no single satisfiable range.
 pub(super) fn header_range(header: &str, size: u64) -> Option<Range> {
-    let rest = header.trim_start_matches(' ');
-    let (unit, rest) = (rest.get(..5)?, rest.get(5..)?);
-    if !unit.eq_ignore_ascii_case("bytes") {
-        return None;
-    }
+    let (_, rest) = header
+        .trim_start_matches(' ')
+        .split_at_checked(5)
+        .filter(|(unit, _)| unit.eq_ignore_ascii_case("bytes"))?;
     let rest = rest.trim_start_matches(' ').strip_prefix('=')?;
     let mut ranges = Vec::new();
     for spec in rest.split(',') {
-        if let Selection::Bytes(first, last) = spec_range(spec, size)? {
-            ranges.push((first, last));
-        }
+        let Selection::Bytes(first, last) = spec_range(spec, size)? else {
+            continue;
+        };
+        ranges.push((first, last));
     }
     let [(start, end)] = ranges[..] else {
         return None;
