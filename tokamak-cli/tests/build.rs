@@ -444,22 +444,25 @@ fn stages_the_identifier_and_version_from_each_source() -> TestResult {
 }"#,
     )?;
     let metadata = project.join("build/macos/demo-app.app/metadata");
-    let staged = |name: &str| fs::read_to_string(metadata.join(name));
 
     build_command("macos", &project, &platform_pack)?
         .env_remove("TOKAMAK_VERSION")
         .assert()
         .success();
-    assert_eq!(staged("identifier")?, "com.example.desktop");
-    assert_eq!(staged("version")?, "2.3.4");
+    assert_texts(&[
+        (metadata.join("identifier"), "com.example.desktop"),
+        (metadata.join("version"), "2.3.4"),
+    ])?;
 
     build_command("macos", &project, &platform_pack)?
         .env("TOKAMAK_MACOS_IDENTIFIER", "com.example.environment")
         .env("TOKAMAK_VERSION", "1.0'beta\"")
         .assert()
         .success();
-    assert_eq!(staged("identifier")?, "com.example.environment");
-    assert_eq!(staged("version")?, "1.0'beta\"");
+    assert_texts(&[
+        (metadata.join("identifier"), "com.example.environment"),
+        (metadata.join("version"), "1.0'beta\""),
+    ])?;
     Ok(())
 }
 
