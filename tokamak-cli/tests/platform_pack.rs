@@ -168,10 +168,11 @@ fn rejects_invalid_plugin_keys() {
     let mut manifest = valid_manifest();
     manifest.plugin_keys = BTreeMap::from([("../class".to_owned(), PluginKeyKind::String)]);
 
-    assert!(matches!(
-        manifest.validate(),
-        Err(PlatformPackError::InvalidPluginKey(key)) if key == "../class"
-    ));
+    let result = manifest.validate();
+    let Err(PlatformPackError::InvalidPluginKey(key)) = &result else {
+        panic!("expected an invalid plugin key error: {result:?}");
+    };
+    assert_eq!(key, "../class");
 }
 
 #[test]
