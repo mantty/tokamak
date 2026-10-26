@@ -63,17 +63,15 @@ impl AsyncRead for DecodedBody {
             if this.ended || buf.remaining() == 0 {
                 return Poll::Ready(Ok(()));
             }
-            if this.consumed < this.input.len() {
-                let written = this.decode(buf.initialize_unfilled(), false)?;
-                buf.advance(written);
-                if written > 0 || this.ended {
-                    return Poll::Ready(Ok(()));
-                }
-                continue;
-            }
-            if std::task::ready!(this.fill(cx))? == 0 {
-                let written = this.decode(buf.initialize_unfilled(), true)?;
-                buf.advance(written);
+            let finish = this.consumed >= this.input.len()
+                && match this.fill(cx) {
+                    Poll::Ready(Ok(length)) => length == 0,
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                    Poll::Pending => return Poll::Pending,
+                };
+            let written = this.decode(buf.initialize_unfilled(), finish)?;
+            buf.advance(written);
+            if finish || written > 0 || this.ended {
                 return Poll::Ready(Ok(()));
             }
         }
