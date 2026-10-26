@@ -1809,13 +1809,15 @@ mod tests {
             .err()
             .context("matching company teams are ambiguous")?
             .to_string();
-            for team in [
-                "TEAMAAAAAA  First Company",
-                "TEAMBBBBBB  Second Company",
-                "TEAMCCCCCC  Personal Developer",
-            ] {
-                assert!(error.contains(team), "missing {team}: {error}");
-            }
+            assert_contains(
+                &error,
+                &[
+                    "TEAMAAAAAA  First Company",
+                    "TEAMBBBBBB  Second Company",
+                    "TEAMCCCCCC  Personal Developer",
+                ],
+                &[],
+            );
         }
         Ok(())
     }
