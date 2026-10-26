@@ -999,17 +999,17 @@ fn insert_framing_headers(
     headers.remove("transfer-encoding");
     if (100..200).contains(&status) || matches!(status, 204 | 304) {
         headers.remove("content-length");
-    } else if let HttpBody::Buffered(body) = body {
-        insert_header(headers, "content-length", HeaderValue::from(body.len()))?;
-    } else {
-        headers.remove("content-length");
-        insert_header(
-            headers,
-            "transfer-encoding",
-            HeaderValue::from_static("chunked"),
-        )?;
+        return Ok(());
     }
-    Ok(())
+    if let HttpBody::Buffered(body) = body {
+        return insert_header(headers, "content-length", HeaderValue::from(body.len()));
+    }
+    headers.remove("content-length");
+    insert_header(
+        headers,
+        "transfer-encoding",
+        HeaderValue::from_static("chunked"),
+    )
 }
 
 fn write_stream_body<W: Write>(
