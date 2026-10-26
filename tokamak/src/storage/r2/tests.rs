@@ -97,32 +97,28 @@ fn reads_ranges_of_a_body() -> TestResult {
     let bytes: Vec<u8> = (0..=255).cycle().take(200_000).collect();
     put(&bucket, "range", &bytes)?;
 
-    let range = |get: Value| read(&bucket, "range", &get);
-    assert_eq!(
-        range(json!({ "range": { "offset": 70_000, "length": 70_000 } }))?,
-        Some(bytes[70_000..140_000].to_vec())
+    for (get, expected) in [
+        (
+            json!({ "range": { "offset": 70_000, "length": 70_000 } }),
+            &bytes[70_000..140_000],
+        ),
+        (json!({ "range": { "suffix": 3 } }), &bytes[199_997..]),
+        (json!({ "rangeHeader": "bytes=1-2" }), &bytes[1..3]),
+        (json!({ "rangeHeader": "bytes=1-2,4-5" }), &bytes[..]),
+    ] {
+        assert_eq!(
+            read(&bucket, "range", &get)?,
+            Some(expected.to_vec()),
+            "{get}"
+        );
+    }
+    let past_the_end = bucket.get(
+        "range",
+        &request(&json!({ "range": { "offset": 200_000 } }))?,
     );
-    assert_eq!(
-        range(json!({ "range": { "suffix": 3 } }))?,
-        Some(bytes[199_997..].to_vec())
-    );
-    assert_eq!(
-        range(json!({ "rangeHeader": "bytes=1-2" }))?,
-        Some(bytes[1..3].to_vec())
-    );
-    assert_eq!(
-        range(json!({ "rangeHeader": "bytes=1-2,4-5" }))?,
-        Some(bytes.clone())
-    );
-    assert_eq!(
-        bucket
-            .get(
-                "range",
-                &request(&json!({ "range": { "offset": 200_000 } }))?
-            )
-            .err(),
-        Some(Failure::InvalidRange)
-    );
+    let Err(Failure::InvalidRange) = past_the_end else {
+        panic!("a range past the end read {past_the_end:?}");
+    };
     Ok(())
 }
 
