@@ -314,15 +314,17 @@ fn write_signing_identity(output: &mut String, identity: &Identity) -> Result<()
     if let Some(team_id) = certificate_team_id(&identity.certificate_der) {
         writeln!(output, "    Team: {team_id}")?;
     }
-    if let Ok((_, certificate)) = x509_parser::parse_x509_certificate(&identity.certificate_der) {
-        let validity = certificate.validity();
-        let status = if validity.is_valid() {
-            ""
-        } else {
-            " (outside validity period)"
-        };
-        writeln!(output, "    Expires: {}{status}", validity.not_after)?;
-    }
+    let Ok((_, certificate)) = x509_parser::parse_x509_certificate(&identity.certificate_der)
+    else {
+        return Ok(());
+    };
+    let validity = certificate.validity();
+    let status = if validity.is_valid() {
+        ""
+    } else {
+        " (outside validity period)"
+    };
+    writeln!(output, "    Expires: {}{status}", validity.not_after)?;
     Ok(())
 }
 
