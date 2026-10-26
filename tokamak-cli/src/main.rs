@@ -468,13 +468,18 @@ mod tests {
         let (remaining, _, plugins) = split_arguments(arguments.clone())?;
         let matches = command(&remaining, &plugins).try_get_matches_from(&remaining)?;
 
-        assert_eq!(remaining, arguments[..6]);
-        assert_eq!(plugins.len(), 1);
-        assert!(matches!(
-            matches.subcommand(),
-            Some(("build", build)) if build.get_one::<serde_json::Value>("alerts-ios-loud")
-                == Some(&serde_json::Value::Bool(true))
-        ));
+        assert_eq!(
+            (remaining.as_slice(), plugins.len()),
+            (&arguments[..6], 1),
+            "(arguments left for tok, plugins discovered)"
+        );
+        let Some(("build", build)) = matches.subcommand() else {
+            panic!("the arguments did not parse as `tok build`");
+        };
+        assert_eq!(
+            build.get_one::<serde_json::Value>("alerts-ios-loud"),
+            Some(&serde_json::Value::Bool(true))
+        );
         Ok(())
     }
 
