@@ -31,6 +31,25 @@ pub fn install(ctx: &Ctx<'_>, vfs: &VfsHandle) -> rquickjs::Result<()> {
     Ok(())
 }
 
+/// `process.cwd()`: the request VFS's working directory.
+pub fn working_directory(ctx: Ctx<'_>) -> rquickjs::Result<String> {
+    let vfs = vfs_handle(&ctx)?;
+    Ok(lock(&vfs).working_directory().to_owned())
+}
+
+/// `process.chdir(directory)`.
+pub fn change_directory<'js>(ctx: Ctx<'js>, directory: Value<'js>) -> rquickjs::Result<()> {
+    let Some(directory) = directory.as_string() else {
+        return Err(throw_type_error(
+            &ctx,
+            "ERR_INVALID_ARG_TYPE",
+            "The \"directory\" argument must be of type string",
+        ));
+    };
+    let directory = directory.to_string()?;
+    vfs_call(&ctx, |vfs| vfs.change_directory(&directory))
+}
+
 /// The contents of `/bundle/<name>` in the request VFS.
 pub fn read_bundle_file(ctx: &Ctx<'_>, name: &str) -> rquickjs::Result<Vec<u8>> {
     let vfs = vfs_handle(ctx)?;

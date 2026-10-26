@@ -33,9 +33,6 @@ fn apply_components(components: &mut Vec<String>, target: &str, path: &str) -> R
                     return Err(Error::new(ErrorKind::InvalidPath, path));
                 }
             }
-            part if part.contains('\\') => {
-                return Err(Error::new(ErrorKind::InvalidPath, path));
-            }
             part => {
                 components.push(part.to_owned());
                 if components.len() > MAX_PATH_SEGMENTS {

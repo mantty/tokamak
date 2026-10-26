@@ -42,7 +42,7 @@ use javascript_objects::*;
 use writes::*;
 
 pub use exports::{
-    MODULE_NAME, NodeFsModule, NodeFsPromisesModule, PROMISES_MODULE_NAME, install,
-    read_bundle_file,
+    MODULE_NAME, NodeFsModule, NodeFsPromisesModule, PROMISES_MODULE_NAME, change_directory,
+    install, read_bundle_file, working_directory,
 };
 use exports::{VfsHandle, VfsUserData};

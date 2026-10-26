@@ -158,7 +158,8 @@ fn path_url<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Url> {
     let base = if text.starts_with('/') {
         "file://".to_owned()
     } else {
-        "file:///bundle/".to_owned()
+        let vfs = vfs_handle(ctx)?;
+        format!("file://{}/", lock(&vfs).working_directory())
     };
     Url::parse(&base)
         .and_then(|base| base.join(&text))
@@ -1200,7 +1201,9 @@ pub(super) fn vfs_exception<'js>(
 ) -> rquickjs::Result<Exception<'js>> {
     let message = error.to_string();
     let exception = Exception::from_message(ctx.clone(), &message)?;
-    exception.as_object().set("code", error.code())?;
+    if !error.code().is_empty() {
+        exception.as_object().set("code", error.code())?;
+    }
     if !error.path().is_empty() {
         exception.as_object().set("path", error.path())?;
     }

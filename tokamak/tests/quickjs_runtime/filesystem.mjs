@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import process from "node:process";
 import { byteInputs } from "./bytes.mjs";
 
 const SIZE_LIMIT = 128 * 1024 * 1024;
@@ -540,6 +541,42 @@ function pathContracts() {
   };
 }
 
+// process.chdir, and the paths and globs that resolve against the directory it sets.
+function workingDirectoryContracts() {
+  const root = "/tmp/filesystem-cwd";
+  fs.mkdirSync(`${root}/inner`, { recursive: true });
+  fs.writeFileSync(`${root}/file`, "f");
+  fs.writeFileSync(`${root}/inner/nested.txt`, "n");
+  fs.symlinkSync(`${root}/inner`, `${root}/link`);
+  const change = directory => ({ result: attempt(() => process.chdir(directory)) ?? null, cwd: process.cwd() });
+  try {
+    return {
+      initial: process.cwd(),
+      absolute: change(root),
+      relativeRead: attempt(() => fs.readFileSync("file", "utf8")),
+      relativeList: attempt(() => fs.readdirSync(".")),
+      relative: change("inner"),
+      glob: attempt(() => fs.globSync("*")),
+      globDirents: attempt(() => fs.globSync("*", { withFileTypes: true }).map(direntOutcome)),
+      parent: change(".."),
+      dots: change("./inner/../inner//"),
+      link: change(`${root}/link`),
+      missing: change(`${root}/missing`),
+      file: change(`${root}/file`),
+      throughFile: change(`${root}/file/x`),
+      empty: change(""),
+      escaped: change(`${root}/%69nner`),
+      backslash: change("/tmp\\filesystem-cwd"),
+      number: change(5),
+      buffer: change(Buffer.from(root)),
+      aboveRoot: change("/../tmp"),
+      root: change("/"),
+      fromRoot: attempt(() => fs.readdirSync("tmp").includes("filesystem-cwd")),
+      functions: [process.chdir.name, process.chdir.length, process.cwd.name, process.cwd.length],
+    };
+  } finally { process.chdir("/bundle"); }
+}
+
 export async function filesystemContracts() {
   const result = { write: {} };
   for (const [name, write] of Object.entries(writers)) result.write[name] = await writerOutcomes(write);
@@ -553,5 +590,6 @@ export async function filesystemContracts() {
   result.glob = await globContracts();
   result.globDetails = await globDetailContracts();
   result.paths = pathContracts();
+  result.workingDirectory = workingDirectoryContracts();
   return result;
 }

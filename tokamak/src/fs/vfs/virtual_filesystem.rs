@@ -70,6 +70,8 @@ pub enum ErrorKind {
     Host,
     /// The random source failed.
     Entropy,
+    /// The filesystem failed internally, reported without a code.
+    Internal,
 }
 
 impl ErrorKind {
@@ -89,6 +91,7 @@ impl ErrorKind {
             Self::SymlinkLoop => "ELOOP",
             Self::Unsupported => "ENOSYS",
             Self::Host | Self::Entropy => "EIO",
+            Self::Internal => "",
         }
     }
 
@@ -108,6 +111,7 @@ impl ErrorKind {
             Self::Unsupported => "operation not supported",
             Self::Host => "host filesystem error",
             Self::Entropy => "random source failed",
+            Self::Internal => "internal error",
         }
     }
 }
@@ -285,6 +289,7 @@ pub struct VirtualFileSystem {
     root: Directory,
     descriptors: BTreeMap<u32, OpenFile>,
     next_descriptor: u32,
+    working_directory: String,
 }
 
 impl VirtualFileSystem {
@@ -306,6 +311,49 @@ impl VirtualFileSystem {
             root,
             descriptors: BTreeMap::new(),
             next_descriptor: 3,
+            working_directory: "/bundle".to_owned(),
+        }
+    }
+
+    /// The directory relative paths resolve against.
+    #[must_use]
+    pub fn working_directory(&self) -> &str {
+        &self.working_directory
+    }
+
+    /// Make the directory `path` names, relative to the working directory,
+    /// the working directory. Errors name the directory without its leading
+    /// slash.
+    pub fn change_directory(&mut self, path: &str) -> Result<()> {
+        if path.is_empty() {
+            return Err(Error::new(ErrorKind::NotFound, ""));
+        }
+        let mut components = if path.starts_with('/') {
+            Vec::new()
+        } else {
+            absolute_components(&self.working_directory)?
+        };
+        for part in path.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => components
+                    .pop()
+                    .map(drop)
+                    .ok_or_else(|| Error::new(ErrorKind::Internal, ""))?,
+                part => components.push(part.to_owned()),
+            }
+        }
+        let named = components.join("/");
+        match self.resolve(&path_from_components(&components), true) {
+            Ok(Node::Directory(_)) => {
+                self.working_directory = path_from_components(&components);
+                Ok(())
+            }
+            Ok(_) => Err(Error::new(ErrorKind::NotDirectory, named)),
+            Err(error) if error.kind() == ErrorKind::NotDirectory => {
+                Err(Error::new(ErrorKind::NotFound, named))
+            }
+            Err(error) => Err(Error::new(error.kind(), named)),
         }
     }
 

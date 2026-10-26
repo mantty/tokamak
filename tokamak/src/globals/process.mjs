@@ -1,4 +1,4 @@
-import { builtinNamespace, isNodeBuiltin } from "tokamak:host";
+import { builtinNamespace, isNodeBuiltin, processChdir, processCwd } from "tokamak:host";
 import EventEmitter from "../events/events.mjs";
 import { usvString } from "./conversions.mjs";
 
@@ -41,7 +41,8 @@ process.stderr = { write() { return true; } };
 process.stdin = { isTTY: false };
 process.exit = code => { globalThis.process.exitCode = Number(code ?? 0); };
 process.abort = () => { throw new Error("process.abort is not available in the Tokamak runtime"); };
-process.cwd = () => "/bundle";
+const processImpl = { getCwd: () => processCwd() };
+process.cwd = processImpl.getCwd.bind(processImpl);
 process.hrtime = (start) => {
   const now = Date.now();
   const value = [Math.floor(now / 1000), (now % 1000) * 1e6];
@@ -77,7 +78,7 @@ Object.assign(process, {
   availableMemory: () => 0,
   binding: () => { throw new Error("process.binding is not available in the Tokamak runtime"); },
   channel: () => undefined,
-  chdir: () => { throw new Error("process.chdir is not available in the Tokamak runtime"); },
+  chdir: directory => processChdir(directory),
   config: {},
   connected: false,
   constrainedMemory: () => 0,
