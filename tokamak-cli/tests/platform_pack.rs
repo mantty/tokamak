@@ -118,11 +118,11 @@ fn accepts_matching_cli_version() {
 #[test]
 fn rejects_a_different_cli_version() {
     let manifest = valid_manifest();
-    assert!(matches!(
-        manifest.validate_cli_version("0.1.1"),
-        Err(PlatformPackError::IncompatibleTokamakVersion { required, actual })
-            if required == "0.1.0" && actual == "0.1.1"
-    ));
+    let result = manifest.validate_cli_version("0.1.1");
+    let Err(PlatformPackError::IncompatibleTokamakVersion { required, actual }) = &result else {
+        panic!("expected an incompatible version error: {result:?}");
+    };
+    assert_eq!((required.as_str(), actual.as_str()), ("0.1.0", "0.1.1"));
 }
 
 #[test]
