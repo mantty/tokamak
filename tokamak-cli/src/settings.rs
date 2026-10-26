@@ -1175,21 +1175,13 @@ mod tests {
     #[test]
     fn applies_plugin_setting_defaults_last() -> Result<()> {
         let mut fixture = Fixture::new();
-        assert_eq!(
-            fixture.plugin_settings(Platform::Ios)?,
-            with_defaults(json!({}))
-        );
+        fixture.assert_plugin_settings(Platform::Ios, &with_defaults(json!({})))?;
 
         fixture.config = configured(&json!({ "alerts": { "loud": true } }))?;
         fixture.options = parsed_options(&["--alerts-ios-loud=false"], &alerts()?)?;
-        assert_eq!(
-            fixture.plugin_settings(Platform::Ios)?,
-            with_defaults(json!({ "loud": false }))
-        );
-        assert_eq!(
-            fixture.plugin_settings(Platform::Android)?,
-            with_defaults(json!({ "loud": true }))
-        );
+        fixture.assert_plugin_settings(Platform::Ios, &with_defaults(json!({ "loud": false })))?;
+        fixture
+            .assert_plugin_settings(Platform::Android, &with_defaults(json!({ "loud": true })))?;
         Ok(())
     }
 
