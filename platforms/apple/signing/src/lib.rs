@@ -1835,11 +1835,15 @@ mod tests {
             .err()
             .context("a team must be selected")?
             .to_string();
-        for team in ["TEAMAAAAAA", "TEAMBBBBBB"] {
-            assert!(error.contains(&format!("{team}  (team name unavailable; signing identity: Apple Development: Same Developer)")));
-        }
-        assert!(error.contains("tok build ios --ios-team-id TEAM_ID"));
-        assert!(!error.contains("tok dev"));
+        assert_contains(
+            &error,
+            &[
+                "TEAMAAAAAA  (team name unavailable; signing identity: Apple Development: Same Developer)",
+                "TEAMBBBBBB  (team name unavailable; signing identity: Apple Development: Same Developer)",
+                "tok build ios --ios-team-id TEAM_ID",
+            ],
+            &["tok dev"],
+        );
         Ok(())
     }
 
