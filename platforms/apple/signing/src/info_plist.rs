@@ -355,11 +355,7 @@ impl PluginMerge<'_> {
                     self.dictionary(existing, values, path, plugin)?;
                 }
                 (Some(Value::Array(existing)), Value::Array(values)) => {
-                    for value in values {
-                        if !existing.contains(&value) {
-                            existing.push(value);
-                        }
-                    }
+                    append_missing(existing, values);
                 }
                 (Some(existing), value) if *existing == value || self.user_sets(path) => {}
                 (Some(_), _) => bail!(
@@ -397,6 +393,15 @@ impl PluginMerge<'_> {
             }
         }
         true
+    }
+}
+
+/// Appends, in order, each of `values` that `existing` does not hold yet.
+fn append_missing(existing: &mut Vec<Value>, values: Vec<Value>) {
+    for value in values {
+        if !existing.contains(&value) {
+            existing.push(value);
+        }
     }
 }
 
