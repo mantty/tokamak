@@ -164,24 +164,24 @@ mod tests {
 
     #[test]
     fn reads_one_satisfiable_range_from_a_header() {
-        assert_eq!(header_range("bytes=1-3", 10), Some(range(1, 3)));
-        assert_eq!(header_range(" Bytes = 5- ", 10), Some(range(5, 5)));
-        assert_eq!(header_range("bytes=-2", 10), Some(range(8, 2)));
-        assert_eq!(header_range("bytes=8-20", 10), Some(range(8, 2)));
-        assert_eq!(header_range("bytes=-0, 2-3", 10), Some(range(2, 2)));
-        for unsatisfied in [
-            "bytes=1-2,4-5",
-            "bytes=20-",
-            "bytes=3-1",
-            "bytes=-20",
-            "bytes=-0",
-            "bytes=",
-            "items=1-2",
-            "bytes=1-2-3",
-            "bytes=a-",
-            "bytes",
+        for (header, expected) in [
+            ("bytes=1-3", Some(range(1, 3))),
+            (" Bytes = 5- ", Some(range(5, 5))),
+            ("bytes=-2", Some(range(8, 2))),
+            ("bytes=8-20", Some(range(8, 2))),
+            ("bytes=-0, 2-3", Some(range(2, 2))),
+            ("bytes=1-2,4-5", None),
+            ("bytes=20-", None),
+            ("bytes=3-1", None),
+            ("bytes=-20", None),
+            ("bytes=-0", None),
+            ("bytes=", None),
+            ("items=1-2", None),
+            ("bytes=1-2-3", None),
+            ("bytes=a-", None),
+            ("bytes", None),
         ] {
-            assert_eq!(header_range(unsatisfied, 10), None, "{unsatisfied}");
+            assert_eq!(header_range(header, 10), expected, "{header}");
         }
     }
 }
