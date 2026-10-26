@@ -553,7 +553,7 @@ pub(super) fn stat_sync<'js>(
 ) -> rquickjs::Result<Value<'js>> {
     let options = parse_options(&ctx, options.0)?;
     match path_or_fd(&ctx, input)? {
-        PathOrFd::Path(path) => stat_value(&ctx, &path, true, &options),
+        PathOrFd::Path(path) => stat_value(&ctx, &path, VirtualFileSystem::stat, &options),
         PathOrFd::Fd(descriptor) => {
             let stat = vfs_call(&ctx, |vfs| vfs.fstat(descriptor))?;
             stat_object(&ctx, &stat, options.bigint).map(Object::into_value)
@@ -568,21 +568,17 @@ pub(super) fn lstat_sync<'js>(
 ) -> rquickjs::Result<Value<'js>> {
     let path = path(&ctx, input)?;
     let options = parse_options(&ctx, options.0)?;
-    stat_value(&ctx, &path, false, &options)
+    stat_value(&ctx, &path, VirtualFileSystem::lstat, &options)
 }
 
 pub(super) fn stat_value<'js>(
     ctx: &Ctx<'js>,
     path: &str,
-    follow_symlinks: bool,
+    stat: fn(&VirtualFileSystem, &str) -> VfsResult<Stat>,
     options: &FsOptions,
 ) -> rquickjs::Result<Value<'js>> {
     let vfs = vfs_handle(ctx)?;
-    let result = if follow_symlinks {
-        lock(&vfs).stat(path)
-    } else {
-        lock(&vfs).lstat(path)
-    };
+    let result = stat(&lock(&vfs), path);
     match result {
         Ok(stat) => stat_object(ctx, &stat, options.bigint).map(Object::into_value),
         Err(error) if error.kind() == ErrorKind::NotFound && !options.throw_if_no_entry => {
