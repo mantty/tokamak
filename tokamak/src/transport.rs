@@ -1109,12 +1109,18 @@ mod tests {
                 rustls::Error::AlertReceived(description),
             )
         };
-        assert!(connection_ended(&alert(
-            AlertDescription::CertificateUnknown
-        )));
-        assert!(connection_ended(&alert(AlertDescription::CloseNotify)));
-        assert!(!connection_ended(&alert(AlertDescription::DecodeError)));
-        assert!(!connection_ended(&alert(AlertDescription::BadRecordMac)));
+        for (description, ended) in [
+            (AlertDescription::CertificateUnknown, true),
+            (AlertDescription::CloseNotify, true),
+            (AlertDescription::DecodeError, false),
+            (AlertDescription::BadRecordMac, false),
+        ] {
+            assert_eq!(
+                connection_ended(&alert(description)),
+                ended,
+                "{description:?}"
+            );
+        }
     }
 
     #[test]
