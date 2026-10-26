@@ -189,15 +189,22 @@ impl<'js> Exclude<'js> {
         let Some(patterns) = exclude.as_array() else {
             return Ok(Self::Nothing);
         };
+        let string_class: Value = ctx.globals().get("String")?;
         let mut matchers = Vec::new();
         for pattern in patterns.iter::<Value>() {
-            let Some(pattern) = pattern?.into_string() else {
+            let pattern = pattern?;
+            let is_text = pattern.is_string()
+                || pattern
+                    .as_object()
+                    .is_some_and(|object| object.is_instance_of(&string_class));
+            if !is_text {
                 return Err(Exception::throw_type(
                     ctx,
                     "exclude patterns must be strings",
                 ));
-            };
-            for expanded in expand_braces(&pattern.to_string()?) {
+            }
+            let pattern = Coerced::<String>::from_js(ctx, pattern)?.0;
+            for expanded in expand_braces(&pattern) {
                 matchers.push(NameMatcher::new(ctx, &exclude_source(&expanded))?);
             }
         }

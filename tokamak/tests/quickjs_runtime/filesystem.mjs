@@ -472,6 +472,8 @@ async function globDetailContracts() {
     excludeNames: at("**", { exclude: name => name.includes("a") }),
     excludeDirents: at("**", { withFileTypes: true, exclude: entry => entry.isDirectory() }),
     excludeString: at("*", { exclude: "beta.txt" }),
+    excludeStringObjects: at("**", { exclude: [new String("alpha/**"), new String("*.{md,txt}")] }),
+    excludeNumbers: globOutcome("*", { cwd: root, exclude: [5] }),
     numberPattern: globOutcome(5),
     numberInPatterns: globOutcome(["*", 5]),
     nullOptions: globOutcome("*", null),
