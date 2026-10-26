@@ -33,10 +33,12 @@ pub(crate) fn ip_version(input: &str) -> u8 {
         Some(_) => return 0,
         None => input,
     };
-    match address.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(_)) => 4,
-        Ok(std::net::IpAddr::V6(_)) => 6,
-        Err(_) => 0,
+    let Ok(address) = address.parse::<std::net::IpAddr>() else {
+        return 0;
+    };
+    match address {
+        std::net::IpAddr::V4(_) => 4,
+        std::net::IpAddr::V6(_) => 6,
     }
 }
 
