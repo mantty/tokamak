@@ -946,7 +946,9 @@ fn send_message(socket: &mut TcpStream, message: &Value) -> TestResult {
 
 fn read_message(socket: &mut TcpStream) -> TestResult<Value> {
     let (opcode, bytes) = read_frame(socket)?;
-    assert_eq!(opcode, 0x2);
+    if opcode != 0x2 {
+        return Err(format!("unexpected opcode {opcode}").into());
+    }
     let metadata = u32::from_le_bytes(bytes[4..8].try_into()?) as usize;
     let mut message: Value = serde_json::from_slice(&bytes[8..8 + metadata])?;
     let payload = &bytes[8 + metadata..];
@@ -955,15 +957,15 @@ fn read_message(socket: &mut TcpStream) -> TestResult<Value> {
     } else {
         serde_json::from_slice(payload)?
     };
-    if message["type"] == "event" {
-        message["event"] = payload;
-    } else if message["type"] == "result" {
-        let key = if message["failed"] == true {
-            "error"
-        } else {
-            "value"
-        };
-        message["result"] = json!({ key: payload, "done": message["done"] });
+    match (message["type"].as_str(), message["failed"] == true) {
+        (Some("event"), _) => message["event"] = payload,
+        (Some("result"), true) => {
+            message["result"] = json!({ "error": payload, "done": message["done"] });
+        }
+        (Some("result"), false) => {
+            message["result"] = json!({ "value": payload, "done": message["done"] });
+        }
+        _ => {}
     }
     let header = message.as_object_mut().ok_or("no header")?;
     header.remove("failed");
