@@ -526,13 +526,18 @@ mod tests {
 
     #[test]
     fn accepts_dev_command() {
-        assert!(matches!(
-            Cli::try_parse_from(["tok", "dev", "ios", "--", "astro", "dev"]),
-            Ok(Cli {
-                command: Command::Dev { device_id, command, .. }
-            }) if device_id == "ios"
-                && command == vec![OsString::from("astro"), OsString::from("dev")]
-        ));
+        let Ok(Cli {
+            command: Command::Dev {
+                device_id, command, ..
+            },
+        }) = Cli::try_parse_from(["tok", "dev", "ios", "--", "astro", "dev"])
+        else {
+            panic!("`tok dev ios -- astro dev` did not parse as a dev command");
+        };
+        assert_eq!(
+            (device_id.as_str(), command),
+            ("ios", vec![OsString::from("astro"), OsString::from("dev")])
+        );
     }
 
     #[test]
