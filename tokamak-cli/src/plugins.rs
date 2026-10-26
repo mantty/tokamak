@@ -912,15 +912,31 @@ mod tests {
 
     #[test]
     fn rejects_settings_whose_options_belong_to_a_plugin_with_a_longer_id() -> TestResult {
+        let setting = serde_json::json!({ "kind": "string", "description": "X" });
         for (short, long, message) in [
             (
-                ("secure", Some("storage-x")),
-                ("secure-storage", None),
+                serde_json::json!({
+                    "schemaVersion": 1,
+                    "id": "secure",
+                    "settings": { "storage-x": setting },
+                    "build": "build.mjs",
+                }),
+                serde_json::json!({ "schemaVersion": 1, "id": "secure-storage" }),
                 "plugin 'secure' setting storage-x takes the option --secure-storage-x, which belongs to plugin 'secure-storage'",
             ),
             (
-                ("alerts", Some("sound")),
-                ("alerts-ios", Some("sound")),
+                serde_json::json!({
+                    "schemaVersion": 1,
+                    "id": "alerts",
+                    "settings": { "sound": setting },
+                    "build": "build.mjs",
+                }),
+                serde_json::json!({
+                    "schemaVersion": 1,
+                    "id": "alerts-ios",
+                    "settings": { "sound": setting },
+                    "build": "build.mjs",
+                }),
                 "plugin 'alerts' setting sound takes the option --alerts-ios-sound, which belongs to plugin 'alerts-ios'",
             ),
         ] {
@@ -929,15 +945,9 @@ mod tests {
                 project.path().join("package.json"),
                 r#"{"dependencies":{"one":"1.0.0","two":"1.0.0"}}"#,
             )?;
-            for (package, (id, setting)) in [("one", short), ("two", long)] {
+            for (package, manifest) in [("one", short), ("two", long)] {
                 let root = project.path().join("node_modules").join(package);
                 fs::create_dir_all(&root)?;
-                let mut manifest = serde_json::json!({ "schemaVersion": 1, "id": id });
-                if let Some(setting) = setting {
-                    manifest["settings"] =
-                        serde_json::json!({ setting: { "kind": "string", "description": "X" } });
-                    manifest["build"] = "build.mjs".into();
-                }
                 fs::write(root.join("tokamak-plugin.json"), manifest.to_string())?;
             }
 
