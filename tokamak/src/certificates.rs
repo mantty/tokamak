@@ -1039,23 +1039,19 @@ impl Renewal {
     fn start(certificates: Arc<Certificates>, events: Events) -> Self {
         let (stop, stopped) = mpsc::channel();
         let task = thread::spawn(move || {
-            let mut retrying = false;
+            let mut retry_delay = None;
             loop {
-                let delay = if retrying {
-                    RETRY_DELAY
-                } else {
-                    certificates.next_delay()
-                };
+                let delay = retry_delay.unwrap_or_else(|| certificates.next_delay());
                 if stopped.recv_timeout(delay).is_ok() {
                     break;
                 }
                 match certificates.refresh() {
                     Ok(()) => {
-                        retrying = false;
+                        retry_delay = None;
                         events.emit(Event::CertificatesRenewed);
                     }
                     Err(error) => {
-                        retrying = true;
+                        retry_delay = Some(RETRY_DELAY);
                         events.emit(Event::Failed {
                             message: format!("certificate renewal failed: {error}"),
                         });
