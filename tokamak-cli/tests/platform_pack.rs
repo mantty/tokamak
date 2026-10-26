@@ -42,14 +42,28 @@ fn parses_known_targets_and_rejects_unknown_targets() {
 
 #[test]
 fn maps_targets_to_one_platform_metadata_model() {
-    assert_eq!(Target::AndroidArm64.platform(), Platform::Android);
-    assert_eq!(Target::IosArm64.platform(), Platform::Ios);
-    assert_eq!(Target::IosSimulatorArm64.platform(), Platform::IosSimulator);
-    assert_eq!(Target::MacosArm64.platform(), Platform::Macos);
-    assert_eq!(Target::WindowsX64.platform(), Platform::Windows);
-    assert_eq!(Platform::Macos.output_name("demo"), "demo.app");
-    assert_eq!(Platform::Android.output_name("demo"), "demo.apk");
-    assert_eq!(Platform::Windows.output_name("demo"), "demo");
+    assert_eq!(
+        [
+            Target::AndroidArm64,
+            Target::IosArm64,
+            Target::IosSimulatorArm64,
+            Target::MacosArm64,
+            Target::WindowsX64,
+        ]
+        .map(Target::platform),
+        [
+            Platform::Android,
+            Platform::Ios,
+            Platform::IosSimulator,
+            Platform::Macos,
+            Platform::Windows,
+        ]
+    );
+    assert_eq!(
+        [Platform::Macos, Platform::Android, Platform::Windows]
+            .map(|platform| platform.output_name("demo")),
+        ["demo.app", "demo.apk", "demo"]
+    );
 }
 
 #[test]
