@@ -505,15 +505,17 @@ mod tests {
 
     #[test]
     fn parses_host_endpoints() -> Result<(), Box<dyn std::error::Error>> {
-        let local = endpoint("http://localhost:5173")?;
-        assert_eq!(local.host_str(), Some("localhost"));
-        assert_eq!(local.port_or_known_default(), Some(5173));
-        assert_eq!(local.scheme(), "http");
-
-        let loopback = endpoint("https://[::1]")?;
-        assert_eq!(loopback.host_str(), Some("[::1]"));
-        assert_eq!(loopback.port_or_known_default(), Some(443));
-        assert_eq!(loopback.scheme(), "https");
+        for (value, host, port, scheme) in [
+            ("http://localhost:5173", "localhost", 5173, "http"),
+            ("https://[::1]", "[::1]", 443, "https"),
+        ] {
+            let url = endpoint(value)?;
+            assert_eq!(
+                (url.host_str(), url.port_or_known_default(), url.scheme()),
+                (Some(host), Some(port), scheme),
+                "{value}"
+            );
+        }
         Ok(())
     }
 
