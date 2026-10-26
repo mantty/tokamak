@@ -88,11 +88,9 @@ impl NamespacedOptions {
     /// [`plugin_arguments`] adds.
     pub(crate) fn with_plugin_options(mut self, matches: &ArgMatches, plugins: &[Plugin]) -> Self {
         for (plugin, key, setting) in declared_settings(plugins) {
-            for namespace in option_namespaces() {
-                let name = option_name(&plugin.id, namespace, key);
-                if !matches.contains_id(&name) {
-                    continue;
-                }
+            let names =
+                option_namespaces().map(|namespace| option_name(&plugin.id, namespace, key));
+            for name in names.filter(|name| matches.contains_id(name)) {
                 let value = setting.kind.option_value(matches, &name);
                 self.plugins.insert(name, value);
             }
