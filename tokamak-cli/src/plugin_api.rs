@@ -761,16 +761,6 @@ fn interface_name(family: Family) -> &'static str {
 /// The imports the generated source uses: one statement per module.
 fn imports(description: &Description) -> String {
     let any = |test: &dyn Fn(&Method) -> bool| description.methods.iter().any(test);
-    let mut names = vec!["NativeEndpoint"];
-    if any(&|method| bytes_parameter(method).is_some() && method.returns != Some(Type::Bytes)) {
-        names.push("decodeJson");
-    }
-    if any(&|method| bytes_parameter(method).is_none() && method.returns == Some(Type::Bytes)) {
-        names.push("encodeJson");
-    }
-    if any(&|method| method.kind == Kind::Stream) {
-        names.push("type JsonStream");
-    }
     let fields = description
         .types
         .iter()
@@ -799,9 +789,6 @@ fn imports(description: &Description) -> String {
                 .flat_map(|event| std::iter::once(&event.ty).chain(&event.reply)),
         )
         .chain(fields);
-    if types.any(mentions_json) {
-        names.push("type JsonValue");
-    }
     let references = |method: &Method| {
         method.kind == Kind::Resource
             || method
@@ -809,10 +796,29 @@ fn imports(description: &Description) -> String {
                 .iter()
                 .any(|parameter| parameter.ty == Type::Reference)
     };
-    if any(&references) {
-        names.push("type NativeReference");
-    }
-    names.push("type TokamakContext");
+    // Each name the generated source may import, with whether it does.
+    let used = [
+        ("NativeEndpoint", true),
+        (
+            "decodeJson",
+            any(&|method| bytes_parameter(method).is_some() && method.returns != Some(Type::Bytes)),
+        ),
+        (
+            "encodeJson",
+            any(&|method| bytes_parameter(method).is_none() && method.returns == Some(Type::Bytes)),
+        ),
+        (
+            "type JsonStream",
+            any(&|method| method.kind == Kind::Stream),
+        ),
+        ("type JsonValue", types.any(mentions_json)),
+        ("type NativeReference", any(&references)),
+        ("type TokamakContext", true),
+    ];
+    let names = used
+        .into_iter()
+        .filter_map(|(name, used)| used.then_some(name))
+        .collect::<Vec<_>>();
     let mut imports = format!(
         "import {{ {} }} from \"@tokamakdev/plugin\";\n",
         names.join(", ")
