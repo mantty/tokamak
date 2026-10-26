@@ -83,7 +83,8 @@ pub(super) fn create<'js>(
                     .to_vec();
                 let mut remaining = input.as_slice();
                 let mut output = [0; 16384];
-                while !ended {
+                let mut stalled = false;
+                while !ended && !stalled {
                     let (consumed, written, status) = codec
                         .step(remaining, &mut output, finish)
                         .map_err(|error| Exception::throw_type(&ctx, &error))?;
@@ -95,15 +96,13 @@ pub(super) fn create<'js>(
                         )?,))?;
                     }
                     ended = status == Status::StreamEnd;
-                    if !ended && consumed == 0 && written == 0 {
-                        if finish {
-                            return Err(Exception::throw_type(
-                                &ctx,
-                                "Called close() on a decompression stream with incomplete data",
-                            ));
-                        }
-                        break;
-                    }
+                    stalled = !ended && consumed == 0 && written == 0;
+                }
+                if stalled && finish {
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        "Called close() on a decompression stream with incomplete data",
+                    ));
                 }
                 if ended && !remaining.is_empty() {
                     return Err(Exception::throw_type(
