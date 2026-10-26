@@ -150,16 +150,19 @@ fn run() -> Result<()> {
     };
 
     match cli.command {
-        Command::Plugin { command } => match command {
-            PluginCommand::New {
-                directory,
-                platforms,
-            } => scaffold::create(&directory, &platforms),
-            PluginCommand::Generate { family } => {
-                plugin_api::generate(&env::current_dir()?, family)
-            }
-            PluginCommand::Check => plugin_api::check(&env::current_dir()?),
-        },
+        Command::Plugin {
+            command:
+                PluginCommand::New {
+                    directory,
+                    platforms,
+                },
+        } => scaffold::create(&directory, &platforms),
+        Command::Plugin {
+            command: PluginCommand::Generate { family },
+        } => plugin_api::generate(&env::current_dir()?, family),
+        Command::Plugin {
+            command: PluginCommand::Check,
+        } => plugin_api::check(&env::current_dir()?),
         Command::Build {
             platforms,
             project,
@@ -168,28 +171,17 @@ fn run() -> Result<()> {
             top,
             build_command,
             skip_project_build,
-        } => {
-            let platforms = parse_platforms(&platforms)?;
-            let summaries = pipeline::run(&pipeline::BuildRequest {
-                platforms,
-                project_dir: project,
-                build_dir,
-                platform_pack_dir: platform_pack,
-                top,
-                namespaced_options,
-                plugins,
-                build_command,
-                skip_project_build,
-            })?;
-            for summary in summaries {
-                println!(
-                    "Built {} bundle: {}",
-                    summary.platform.display_name(),
-                    paths::command_path(&summary.bundle_dir).display()
-                );
-            }
-            Ok(())
-        }
+        } => build(&pipeline::BuildRequest {
+            platforms: parse_platforms(&platforms)?,
+            project_dir: project,
+            build_dir,
+            platform_pack_dir: platform_pack,
+            top,
+            namespaced_options,
+            plugins,
+            build_command,
+            skip_project_build,
+        }),
         Command::Dev {
             device_id,
             project,
@@ -221,6 +213,18 @@ fn run() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Build the bundles `request` asks for and say where each one is.
+fn build(request: &pipeline::BuildRequest) -> Result<()> {
+    for summary in pipeline::run(request)? {
+        println!(
+            "Built {} bundle: {}",
+            summary.platform.display_name(),
+            paths::command_path(&summary.bundle_dir).display()
+        );
+    }
+    Ok(())
 }
 
 /// Split platform options from the arguments of the commands that take them,
