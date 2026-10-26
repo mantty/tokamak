@@ -121,12 +121,7 @@ pub(super) fn path<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<S
         match part {
             "" | "." => {}
             ".." => {
-                if parts.pop().is_none() {
-                    return Err(Exception::throw_range(
-                        ctx,
-                        "path escapes the virtual filesystem",
-                    ));
-                }
+                parts.pop();
             }
             part => {
                 parts.push(part);

@@ -492,6 +492,24 @@ async function globDetailContracts() {
   };
 }
 
+// Paths whose `..` segments climb above the root, which stops them.
+function pathContracts() {
+  const root = "/tmp/filesystem-paths";
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(`${root}/file.txt`, "f");
+  const attempt = run => {
+    try { return run(); } catch (error) { return { thrown: failure(error) }; }
+  };
+  return {
+    rootParent: attempt(() => fs.readdirSync("/..")),
+    readdirAboveRoot: attempt(() => fs.readdirSync("/../tmp/filesystem-paths")),
+    readAboveRoot: attempt(() => fs.readFileSync("/../../tmp/filesystem-paths/file.txt", "utf8")),
+    relativeAboveRoot: attempt(() => fs.readFileSync("../../../tmp/filesystem-paths/file.txt", "utf8")),
+    existsAboveRoot: fs.existsSync("/../tmp/filesystem-paths/file.txt"),
+    globAboveRoot: globOutcome("*", { cwd: "/../tmp/filesystem-paths" }),
+  };
+}
+
 export async function filesystemContracts() {
   const result = { write: {} };
   for (const [name, write] of Object.entries(writers)) result.write[name] = await writerOutcomes(write);
@@ -504,5 +522,6 @@ export async function filesystemContracts() {
   result.readData = await readDataContracts();
   result.glob = await globContracts();
   result.globDetails = await globDetailContracts();
+  result.paths = pathContracts();
   return result;
 }
