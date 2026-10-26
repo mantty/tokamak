@@ -1326,14 +1326,15 @@ fn physical_ios_status(value: &Value) -> DeviceStatus {
     if connection.contains("disconnect") || connection.contains("offline") {
         return DeviceStatus::Blocked("connect the device".to_owned());
     }
-    for path in [
+    let unavailable = [
         &["isAvailable"][..],
         &["isConnected"][..],
         &["connectionProperties", "isConnected"][..],
-    ] {
-        if json_at(value, path).and_then(Value::as_bool) == Some(false) {
-            return DeviceStatus::Blocked("connect or trust the device".to_owned());
-        }
+    ]
+    .into_iter()
+    .any(|path| json_at(value, path).and_then(Value::as_bool) == Some(false));
+    if unavailable {
+        return DeviceStatus::Blocked("connect or trust the device".to_owned());
     }
     DeviceStatus::Available
 }
