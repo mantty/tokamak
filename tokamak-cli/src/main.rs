@@ -359,10 +359,10 @@ mod tests {
 
     #[test]
     fn parses_comma_separated_platforms() {
-        assert!(matches!(
-            parse_platforms("macos,android"),
-            Ok(platforms) if platforms == vec![Platform::Macos, Platform::Android]
-        ));
+        assert_eq!(
+            parse_platforms("macos,android").ok(),
+            Some(vec![Platform::Macos, Platform::Android])
+        );
     }
 
     #[test]
