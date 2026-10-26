@@ -898,20 +898,16 @@ fn date_fields(options: &Value, style: Option<&str>) -> DateFields {
 }
 
 fn time_precision(options: &Value, style: Option<&str>) -> TimePrecision {
-    if matches!(style, Some("long" | "full")) {
-        return TimePrecision::Second;
-    }
-    if style == Some("short")
-        || options.get("hour").is_some()
-            && options.get("minute").is_none()
-            && options.get("second").is_none()
-    {
-        return TimePrecision::Hour;
-    }
-    if options.get("second").is_none() && options.get("fractionalSecondDigits").is_none() {
-        TimePrecision::Minute
-    } else {
-        TimePrecision::Second
+    let hour_only = options.get("hour").is_some()
+        && options.get("minute").is_none()
+        && options.get("second").is_none();
+    let seconds =
+        options.get("second").is_some() || options.get("fractionalSecondDigits").is_some();
+    match (style, hour_only, seconds) {
+        (Some("long" | "full"), ..) => TimePrecision::Second,
+        (Some("short"), ..) | (_, true, _) => TimePrecision::Hour,
+        (_, _, true) => TimePrecision::Second,
+        _ => TimePrecision::Minute,
     }
 }
 
