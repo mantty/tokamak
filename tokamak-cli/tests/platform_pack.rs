@@ -151,15 +151,15 @@ fn rejects_invalid_variables() {
             },
         )]);
         let result = manifest.validate();
-        assert!(
-            matches!(
-                result,
-                Err(PlatformPackError::InvalidVariableName(ref rejected)
-                    | PlatformPackError::ReservedVariableName(ref rejected)
-                    | PlatformPackError::MissingVariableDescription(ref rejected)) if rejected == name
-            ),
-            "accepted {name}: {result:?}"
-        );
+        let Err(
+            PlatformPackError::InvalidVariableName(rejected)
+            | PlatformPackError::ReservedVariableName(rejected)
+            | PlatformPackError::MissingVariableDescription(rejected),
+        ) = &result
+        else {
+            panic!("accepted {name}: {result:?}");
+        };
+        assert_eq!(rejected, name, "accepted {name}: {result:?}");
     }
 }
 
