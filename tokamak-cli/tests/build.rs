@@ -1140,20 +1140,21 @@ fn stages_the_location_plugin_s_generated_android_manifest() -> TestResult {
 
     let plugin = project.join("build/android/demo-app.apk/plugins/location");
     let manifest = fs::read_to_string(plugin.join("manifest"))?;
-    for declaration in [
-        "android.permission.FOREGROUND_SERVICE_LOCATION",
-        "com.tokamak.plugins.location.TokamakLocationService",
-        "com.tokamak.plugins.location.TokamakLocationBootReceiver",
+    for (declaration, declared) in [
+        ("android.permission.FOREGROUND_SERVICE_LOCATION", true),
+        ("com.tokamak.plugins.location.TokamakLocationService", true),
+        (
+            "com.tokamak.plugins.location.TokamakLocationBootReceiver",
+            true,
+        ),
+        ("ACCESS_BACKGROUND_LOCATION", false),
     ] {
-        assert!(
+        assert_eq!(
             manifest.contains(declaration),
-            "{declaration} is missing from {manifest}"
+            declared,
+            "{declaration} in {manifest}"
         );
     }
-    assert!(
-        !manifest.contains("ACCESS_BACKGROUND_LOCATION"),
-        "{manifest}"
-    );
     Ok(())
 }
 
