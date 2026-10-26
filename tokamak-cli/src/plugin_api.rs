@@ -199,16 +199,14 @@ pub(crate) fn generate(root: &Path, family: Family) -> Result<()> {
 /// differ from what this host generates. Families this host cannot describe are not checked.
 pub(crate) fn check(root: &Path) -> Result<()> {
     let mut stale = Vec::new();
-    for family in Family::ALL {
-        if !root.join(family.registration()).is_file() {
+    let registered = Family::ALL
+        .into_iter()
+        .filter(|family| root.join(family.registration()).is_file());
+    for family in registered {
+        let Ok(files) = generated(root, family)?.inspect_err(|reason| {
+            eprintln!("{} files are not checked: {reason}", family.name());
+        }) else {
             continue;
-        }
-        let files = match generated(root, family)? {
-            Ok(files) => files,
-            Err(reason) => {
-                eprintln!("{} files are not checked: {reason}", family.name());
-                continue;
-            }
         };
         let changed = files
             .into_iter()
