@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
 use serde::Deserialize;
 use tokamak_cli::Platform;
@@ -506,20 +506,20 @@ fn form<'a>(alternative: &'a Alternative, types: &Types<'a>) -> Result<Form<'a>>
         return Ok(Form::Name(&alternative.name));
     };
     check_value(ty, types)?;
-    Ok(match ty {
-        Type::String => Form::Kind(JsonKind::String),
-        Type::Number => Form::Kind(JsonKind::Number),
-        Type::Boolean => Form::Kind(JsonKind::Boolean),
-        Type::Array(_) => Form::Kind(JsonKind::Array),
-        Type::Record(_) => Form::Kind(JsonKind::Object),
+    match ty {
+        Type::String => Ok(Form::Kind(JsonKind::String)),
+        Type::Number => Ok(Form::Kind(JsonKind::Number)),
+        Type::Boolean => Ok(Form::Kind(JsonKind::Boolean)),
+        Type::Array(_) => Ok(Form::Kind(JsonKind::Array)),
+        Type::Record(_) => Ok(Form::Kind(JsonKind::Object)),
         Type::Named(name) => match &types[name.as_str()].shape {
-            Shape::Values(values) => Form::Values(values),
-            Shape::Fields(fields) => Form::Struct(name, fields),
-            Shape::Alternatives(_) => bail!("a union's form is not a union"),
+            Shape::Values(values) => Ok(Form::Values(values)),
+            Shape::Fields(fields) => Ok(Form::Struct(name, fields)),
+            Shape::Alternatives(_) => Err(anyhow!("a union's form is not a union")),
         },
-        Type::Optional(_) => bail!("a union's form is not optional"),
-        _ => bail!("a union's form is not any JSON value"),
-    })
+        Type::Optional(_) => Err(anyhow!("a union's form is not optional")),
+        _ => Err(anyhow!("a union's form is not any JSON value")),
+    }
 }
 
 /// Checks that each form is a name or a struct without the field `tag`.
