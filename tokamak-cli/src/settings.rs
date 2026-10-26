@@ -770,15 +770,14 @@ mod tests {
                 "TEAM"
             ])
         );
-        assert_eq!(
-            options.value("ios", "plist")?.as_deref(),
-            Some("Info.plist")
-        );
-        assert_eq!(
-            options.value("android", "manifest")?.as_deref(),
-            Some("AndroidManifest.xml")
-        );
-        assert_eq!(options.value("ios", "team-id")?, None);
+        let assert_value = |namespace, key, expected| -> Result<()> {
+            let value = options.value(namespace, key)?;
+            assert_eq!(value.as_deref(), expected, "--{namespace}-{key}");
+            Ok(())
+        };
+        assert_value("ios", "plist", Some("Info.plist"))?;
+        assert_value("android", "manifest", Some("AndroidManifest.xml"))?;
+        assert_value("ios", "team-id", None)?;
         Ok(())
     }
 
