@@ -378,24 +378,32 @@ mod tests {
 
     #[test]
     fn accepts_top_level_application_options() {
-        assert!(matches!(
-            Cli::try_parse_from([
-                "tok",
-                "build",
-                "ios",
-                "--identifier",
-                "com.example.app",
-                "--version",
-                "1.2.0",
-                "--build",
-                "pnpm build"
-            ]),
-            Ok(Cli {
-                command: Command::Build { top, build_command, .. }
-            }) if top.identifier.as_deref() == Some("com.example.app")
-                && top.version.as_deref() == Some("1.2.0")
-                && build_command.as_deref() == Some("pnpm build")
-        ));
+        let Ok(Cli {
+            command: Command::Build {
+                top, build_command, ..
+            },
+        }) = Cli::try_parse_from([
+            "tok",
+            "build",
+            "ios",
+            "--identifier",
+            "com.example.app",
+            "--version",
+            "1.2.0",
+            "--build",
+            "pnpm build",
+        ])
+        else {
+            panic!("`tok build ios` with application options did not parse as a build command");
+        };
+        assert_eq!(
+            (
+                top.identifier.as_deref(),
+                top.version.as_deref(),
+                build_command.as_deref()
+            ),
+            (Some("com.example.app"), Some("1.2.0"), Some("pnpm build"))
+        );
     }
 
     #[test]
