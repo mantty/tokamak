@@ -1130,15 +1130,13 @@ mod tests {
             (true, "connection: keep-alive"),
             (false, "connection: close"),
         ] {
-            let mut headers = HeaderMap::new();
-            headers.insert("connection", HeaderValue::from_static("close"));
-            headers.insert("keep-alive", HeaderValue::from_static("timeout=5"));
-            let response = HttpResponse::buffered(200, headers, b"ok".to_vec());
-            let mut output = Vec::new();
-            write_response_inner(&mut output, response, None, None, |_| Ok(false), persistent)?;
-            let text = String::from_utf8(output)?;
-            assert!(text.contains(expected), "{text}");
-            assert!(!text.contains("keep-alive:"), "{text}");
+            assert_framing(
+                HttpResponse::buffered(200, HeaderMap::new(), b"ok".to_vec()),
+                "GET",
+                persistent,
+                &[("connection", "close"), ("keep-alive", "timeout=5")],
+                &[(expected, true), ("keep-alive:", false)],
+            )?;
         }
         Ok(())
     }
@@ -1292,11 +1290,13 @@ mod tests {
         Ok(())
     }
 
-    /// Writes `response` with `headers` set, for a `method` request, and asserts
-    /// whether each probe appears in the output.
+    /// Writes `response` with `headers` set, for a `method` request on a
+    /// connection that stays open when `persistent`, and asserts whether each
+    /// probe appears in the output.
     fn assert_framing(
         mut response: HttpResponse,
         method: &str,
+        persistent: bool,
         headers: &[(&'static str, &'static str)],
         probes: &[(&str, bool)],
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1312,7 +1312,7 @@ mod tests {
             Some(method),
             None,
             |_| Ok(false),
-            false,
+            persistent,
         )?;
         let output = String::from_utf8(output)?;
         for &(probe, present) in probes {
@@ -1327,6 +1327,7 @@ mod tests {
         assert_framing(
             HttpResponse::text(200, "ok"),
             "GET",
+            false,
             &[("content-length", "99"), ("transfer-encoding", "identity")],
             &[
                 ("content-length: 2\r\n", true),
@@ -1345,6 +1346,7 @@ mod tests {
             assert_framing(
                 response,
                 "HEAD",
+                false,
                 &[],
                 &[
                     ("content-length: 99\r\n", explicit),
@@ -1357,6 +1359,7 @@ mod tests {
             assert_framing(
                 HttpResponse::text(status, ""),
                 "GET",
+                false,
                 &[("content-length", "99")],
                 &[
                     ("content-length: 0\r\n", status == 205),
