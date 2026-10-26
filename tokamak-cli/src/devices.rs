@@ -1560,9 +1560,13 @@ mod tests {
         let devices = parse_xctrace_devices(
             "== Devices ==\nTom's iPhone (iOS 18.0) (PHONE-1)\nMacBook Pro (macOS 15.0) (MAC-1)\n== Simulators ==\niPhone 15 (iOS 18.0) (SIM-1)\n",
         );
-        assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].id, "PHONE-1");
-        assert_eq!(devices[0].kind, "Tom's iPhone / physical iPhone");
+        assert_eq!(
+            devices
+                .iter()
+                .map(|device| (device.id.as_str(), device.kind.as_str()))
+                .collect::<Vec<_>>(),
+            [("PHONE-1", "Tom's iPhone / physical iPhone")]
+        );
     }
 
     #[test]
