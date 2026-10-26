@@ -599,43 +599,28 @@ mod tests {
             Some(&user_path),
             None,
         )?;
-        assert_eq!(
-            result.get("CFBundleIdentifier").and_then(Value::as_string),
-            Some("com.user.override")
-        );
-        assert_eq!(
-            result.get("CFBundlePackageType").and_then(Value::as_string),
-            Some("APPL")
-        );
         let transport = result
             .get("NSAppTransportSecurity")
             .and_then(Value::as_dictionary)
             .context("transport dictionary")?;
-        assert_eq!(
-            transport
-                .get("NSAllowsLocalNetworking")
-                .and_then(Value::as_boolean),
-            Some(false)
-        );
-        assert_eq!(
-            transport
-                .get("NSAllowsArbitraryLoads")
-                .and_then(Value::as_boolean),
-            Some(true)
-        );
-        assert_eq!(
-            result.get("UserData").and_then(Value::as_data),
-            Some(&[1, 2, 3][..])
-        );
-        assert!(result.get("UserDate").and_then(Value::as_date).is_some());
-        assert_eq!(
-            result
-                .get("UISupportedInterfaceOrientations")
-                .and_then(Value::as_array),
-            Some(&vec![Value::String(
-                "UIInterfaceOrientationPortraitUpsideDown".into(),
-            )])
-        );
+        for (plist, key, value) in [
+            (&result, "CFBundleIdentifier", string("com.user.override")),
+            (&result, "CFBundlePackageType", string("APPL")),
+            (transport, "NSAllowsLocalNetworking", Value::Boolean(false)),
+            (transport, "NSAllowsArbitraryLoads", Value::Boolean(true)),
+            (&result, "UserData", Value::Data(vec![1, 2, 3])),
+            (
+                &result,
+                "UISupportedInterfaceOrientations",
+                array(&["UIInterfaceOrientationPortraitUpsideDown"]),
+            ),
+        ] {
+            assert_eq!(plist.get(key), Some(&value), "missing or incorrect {key}");
+        }
+        result
+            .get("UserDate")
+            .and_then(Value::as_date)
+            .context("UserDate must be a date")?;
         Ok(())
     }
 
