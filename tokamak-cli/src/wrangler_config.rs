@@ -611,25 +611,15 @@ fn segment_matches(pattern: &str, value: &str) -> bool {
     let value = value.as_bytes();
     let mut states = vec![(0, 0)];
     while let Some((pattern_index, value_index)) = states.pop() {
-        if pattern_index == pattern.len() {
-            if value_index == value.len() {
-                return true;
-            }
-            continue;
-        }
-        match pattern[pattern_index] {
-            b'*' => {
+        match (pattern.get(pattern_index), value.get(value_index)) {
+            (None, None) => return true,
+            (Some(b'*'), next) => {
                 states.push((pattern_index + 1, value_index));
-                if value_index < value.len() {
-                    states.push((pattern_index, value_index + 1));
-                }
+                states.extend(next.map(|_| (pattern_index, value_index + 1)));
             }
-            b'?' if value_index < value.len() => {
-                states.push((pattern_index + 1, value_index + 1));
-            }
-            character if value_index < value.len() && character == value[value_index] => {
-                states.push((pattern_index + 1, value_index + 1));
-            }
+            (Some(&wanted), Some(&next)) => states.extend(
+                (wanted == b'?' || wanted == next).then_some((pattern_index + 1, value_index + 1)),
+            ),
             _ => {}
         }
     }
@@ -654,7 +644,7 @@ mod tests {
 
     use super::{
         HtmlHandling, NotFoundHandling, WranglerMigrations, WranglerModuleType, WranglerRule,
-        WranglerStorage, applied_rules, collect_bindings, deploy_config, load_config,
+        WranglerStorage, applied_rules, collect_bindings, deploy_config, glob_matches, load_config,
         normalize_relative_path, pattern_within,
     };
 
@@ -1006,5 +996,34 @@ mod tests {
         assert_eq!(normalize_relative_path("a/../b"), "b");
         assert_eq!(normalize_relative_path("../../db"), "../../db");
         assert_eq!(normalize_relative_path("./"), ".");
+    }
+
+    #[test]
+    fn matches_globs_segment_by_segment() {
+        for (pattern, path, expected) in [
+            ("*.sql", "0001_init.sql", true),
+            ("*.sql", "nested/0001.sql", false),
+            ("**/*.js", "index.js", true),
+            ("**/*.js", "assets/lazy.js", true),
+            ("**/*.js", "assets/lazy.mjs", false),
+            (
+                "./drizzle/*/migration.sql",
+                "drizzle/0001/migration.sql",
+                true,
+            ),
+            ("*/migration.sql", "0001/other.sql", false),
+            ("?.sql", "1.sql", true),
+            ("?.sql", "12.sql", false),
+            ("?", "", false),
+            ("*", "", true),
+            ("a*b?c", "aXXbYc", true),
+            ("a*b?c", "abc", false),
+            ("*x", "abc", false),
+            ("data.bin", "data.bin", true),
+            ("data.bin", "data.bix", false),
+            ("data.bin", "data.bin2", false),
+        ] {
+            assert_eq!(glob_matches(pattern, path), expected, "{pattern} {path}");
+        }
     }
 }
