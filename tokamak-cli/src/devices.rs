@@ -1623,13 +1623,13 @@ mod tests {
 
     #[test]
     fn retries_only_transient_devicectl_errors() {
-        assert!(is_transient_devicectl_error("Connection reset by peer"));
-        assert!(is_transient_devicectl_error(
-            "CoreDevice.ControlChannelConnectionError"
-        ));
-        assert!(!is_transient_devicectl_error(
-            "The executable contains an invalid signature"
-        ));
+        for (detail, transient) in [
+            ("Connection reset by peer", true),
+            ("CoreDevice.ControlChannelConnectionError", true),
+            ("The executable contains an invalid signature", false),
+        ] {
+            assert_eq!(is_transient_devicectl_error(detail), transient, "{detail}");
+        }
     }
 
     #[test]
