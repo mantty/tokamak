@@ -399,13 +399,12 @@ mod tests {
         )?;
 
         assert_eq!(config.version, None);
-        assert_eq!(
-            config.for_platform(Platform::Ios),
-            PlatformConfig::default()
-        );
-        assert_eq!(
-            config.for_platform(Platform::Macos),
-            PlatformConfig::default()
+        assert_platforms(
+            &config,
+            &[
+                (Platform::Ios, PlatformConfig::default()),
+                (Platform::Macos, PlatformConfig::default()),
+            ],
         );
         Ok(())
     }
