@@ -1451,10 +1451,14 @@ mod tests {
             }"#,
         )
         .unwrap_or_default();
-        assert_eq!(devices.len(), 2);
+        assert_eq!(
+            devices
+                .iter()
+                .map(|device| device.id.as_str())
+                .collect::<Vec<_>>(),
+            ["SIM-1", "SIM-2"]
+        );
         assert_eq!(devices[0].status, DeviceStatus::Available);
-        assert_eq!(devices[0].id, "SIM-1");
-        assert_eq!(devices[1].id, "SIM-2");
     }
 
     #[test]
