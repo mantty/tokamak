@@ -541,21 +541,22 @@ mod tests {
     #[test]
     fn rejects_invalid_pack_keys_and_values() -> TestResult {
         let temporary = tempfile::tempdir()?;
-        assert_eq!(
-            invalid_message(temporary.path(), r#"{ "ios": { "Plist": "Info.plist" } }"#)?,
-            "ios.Plist must be lowercase words joined by hyphens"
-        );
-        assert_eq!(
-            invalid_message(temporary.path(), r#"{ "ios": { "team.id": "TEAM" } }"#)?,
-            "ios.team.id must be lowercase words joined by hyphens"
-        );
-        assert_eq!(
-            invalid_message(
-                temporary.path(),
-                r#"{ "ios": { "plist": ["Info.plist"] } }"#
-            )?,
-            "ios.plist must be a string, number, or boolean"
-        );
+        let assert_invalid = |config: &str, expected: &str| -> TestResult {
+            assert_eq!(invalid_message(temporary.path(), config)?, expected);
+            Ok(())
+        };
+        assert_invalid(
+            r#"{ "ios": { "Plist": "Info.plist" } }"#,
+            "ios.Plist must be lowercase words joined by hyphens",
+        )?;
+        assert_invalid(
+            r#"{ "ios": { "team.id": "TEAM" } }"#,
+            "ios.team.id must be lowercase words joined by hyphens",
+        )?;
+        assert_invalid(
+            r#"{ "ios": { "plist": ["Info.plist"] } }"#,
+            "ios.plist must be a string, number, or boolean",
+        )?;
         assert!(
             invalid_message(temporary.path(), r#"{ "ios": { "plist": " " } }"#)?
                 .starts_with("ios.plist")
