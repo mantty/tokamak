@@ -205,33 +205,31 @@ mod tests {
 
     #[test]
     fn accepts_only_identifiers_safe_as_file_names() {
-        for id in [
-            "0f2ac74b498b48028cb68387c421e279",
-            "8a5e1d43-7c3e-4bb6-9a8e-0d2f4c1b3e5a",
-            "app-files",
-            "SESSION",
-            "my.bucket",
-            "$DB_2",
-            "CONSOLE",
+        let too_long = "a".repeat(201);
+        for (id, safe) in [
+            ("0f2ac74b498b48028cb68387c421e279", true),
+            ("8a5e1d43-7c3e-4bb6-9a8e-0d2f4c1b3e5a", true),
+            ("app-files", true),
+            ("SESSION", true),
+            ("my.bucket", true),
+            ("$DB_2", true),
+            ("CONSOLE", true),
+            ("", false),
+            ("../escape", false),
+            ("a/b", false),
+            ("a\\b", false),
+            (".hidden", false),
+            ("trailing.", false),
+            ("space d", false),
+            ("CON", false),
+            ("nul.db", false),
+            ("com1", false),
+            ("LPT9", false),
+            ("é", false),
+            (too_long.as_str(), false),
         ] {
-            assert_eq!(store_id_problem(id), None, "{id}");
+            let problem = store_id_problem(id);
+            assert_eq!(problem.is_none(), safe, "{id}: {problem:?}");
         }
-        for id in [
-            "",
-            "../escape",
-            "a/b",
-            "a\\b",
-            ".hidden",
-            "trailing.",
-            "space d",
-            "CON",
-            "nul.db",
-            "com1",
-            "LPT9",
-            "é",
-        ] {
-            assert!(store_id_problem(id).is_some(), "{id}");
-        }
-        assert!(store_id_problem(&"a".repeat(201)).is_some());
     }
 }
