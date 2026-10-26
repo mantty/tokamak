@@ -737,6 +737,16 @@ mod tests {
             assert_eq!(&read(self.resolve(platform)?), expected, "{platform:?}");
             Ok(())
         }
+
+        /// Asserts that resolving `platform` fails with an error `accepts` holds for.
+        #[track_caller]
+        fn assert_rejects(&self, platform: Platform, accepts: impl FnOnce(&str) -> bool) {
+            let error = self.resolve(platform).err().map(|error| error.to_string());
+            assert!(
+                error.as_deref().is_some_and(accepts),
+                "{platform:?}: {error:?}"
+            );
+        }
     }
 
     #[test]
@@ -1411,20 +1421,18 @@ mod tests {
     fn rejects_keys_the_platform_pack_does_not_declare() -> Result<()> {
         let mut fixture = Fixture::new();
         fixture.options = namespaced_options(&["--ios-manifest", "AndroidManifest.xml"])?;
-        assert!(fixture.resolve(Platform::Ios).is_err_and(|error| {
-            error.to_string()
+        fixture.assert_rejects(Platform::Ios, |error| {
+            error
                 == "unknown option --ios-manifest; iOS accepts --ios-name, --ios-identifier, \
                     --ios-icon, --ios-plist, --ios-team-id"
-        }));
+        });
         assert!(fixture.resolve(Platform::Macos).is_ok());
 
         fixture.options = NamespacedOptions::default();
         fixture.config = configured(&json!({ "macos": { "plsit": "Info.plist" } }))?;
-        assert!(fixture.resolve(Platform::Macos).is_err_and(|error| {
-            error
-                .to_string()
-                .starts_with("unknown key macos.plsit in the tokamak() options; macOS accepts")
-        }));
+        fixture.assert_rejects(Platform::Macos, |error| {
+            error.starts_with("unknown key macos.plsit in the tokamak() options; macOS accepts")
+        });
         assert!(fixture.resolve(Platform::Ios).is_ok());
         Ok(())
     }
