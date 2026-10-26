@@ -43,47 +43,23 @@ fn starts_a_packaged_worker_with_its_declared_environment() -> TestResult {
     let client = (state.join("client.cert.pem"), state.join("client.key.pem"));
     let foreign = write_foreign_client(temporary.path())?;
     let script = write_client_script(temporary.path())?;
+    let authority = state.join("ca.cert.pem");
 
-    assert!(
-        !connect(
-            &script,
-            runtime.port(),
-            host,
-            &state.join("ca.cert.pem"),
-            None
-        )?
-        .status
-        .success()
-    );
-    let output = connect(
-        &script,
-        runtime.port(),
-        host,
-        &state.join("ca.cert.pem"),
-        Some(&client),
-    )?;
-    assert!(
-        output.status.success(),
-        "stdout={:?} stderr={:?}",
-        output.stdout,
-        output.stderr
-    );
-    assert!(
-        !connect(
-            &script,
-            runtime.port(),
-            host,
-            &state.join("ca.cert.pem"),
-            Some(&foreign)
-        )?
-        .status
-        .success()
-    );
-    assert!(
-        !connect(&script, runtime.port(), host, &foreign.0, Some(&client))?
-            .status
-            .success()
-    );
+    for (authority, client, accepted) in [
+        (&authority, None, false),
+        (&authority, Some(&client), true),
+        (&authority, Some(&foreign), false),
+        (&foreign.0, Some(&client), false),
+    ] {
+        let output = connect(&script, runtime.port(), host, authority, client)?;
+        assert_eq!(
+            output.status.success(),
+            accepted,
+            "authority={authority:?} client={client:?} stdout={:?} stderr={:?}",
+            output.stdout,
+            output.stderr
+        );
+    }
     Ok(())
 }
 
