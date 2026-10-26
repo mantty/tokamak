@@ -539,7 +539,6 @@ pub(super) fn handle_write<'js>(
         return Err(Exception::throw_type(ctx, "data is required"));
     }
     let value = args.remove(0);
-    let args = normalize_write_options(ctx, value.is_string(), args)?;
     let (data, position) = write_arguments(ctx, value.clone(), args)?;
     let bytes_written = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, position))?;
     let buffer = write_buffer_value(ctx, &value, &data)?;
@@ -724,7 +723,6 @@ pub(super) fn stream_write<'js>(
             .transpose()?;
         (bytes(ctx, value, encoding.as_deref())?, None)
     } else {
-        let args = normalize_write_options(ctx, false, args)?;
         write_arguments(ctx, value, args)?
     };
     let descriptor = open_descriptor(ctx, state)?;
@@ -962,7 +960,7 @@ pub(super) fn glob_matches(
     let patterns = expand_braces(pattern);
     let mut result = Vec::new();
     for (path, entry) in entries {
-        let candidate = glob_candidate(&path, cwd, pattern);
+        let candidate = relative_to(&path, cwd);
         if patterns
             .iter()
             .any(|expanded| glob_match(expanded, &candidate))

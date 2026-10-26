@@ -2,7 +2,7 @@
 
 use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 /// `(input, options?)` operations answering with a value.
 pub(super) type ValueOperation =
@@ -534,7 +534,7 @@ fn dir_items(ctx: &Ctx<'_>, path: &str, recursive: bool) -> rquickjs::Result<Vec
 }
 
 /// `path` relative to `base`, without a leading slash.
-fn relative_to(path: &str, base: &str) -> String {
+pub(super) fn relative_to(path: &str, base: &str) -> String {
     path.strip_prefix(base)
         .unwrap_or(path)
         .trim_start_matches('/')
@@ -843,9 +843,13 @@ fn glob_array<'js>(
     let cwd = path(ctx, cwd.into_js(ctx)?)?;
     let encoding = options.encoding.as_deref();
     let mut matches: Vec<Value<'js>> = Vec::new();
+    let mut seen_paths = HashSet::new();
     for pattern in patterns {
         for (path, entry) in glob_matches(ctx, &cwd, &pattern)? {
-            let relative = glob_candidate(&path, &cwd, &pattern);
+            if !seen_paths.insert(path.clone()) {
+                continue;
+            }
+            let relative = relative_to(&path, &cwd);
             if glob_excluded(
                 ctx,
                 exclude.as_ref(),
@@ -870,15 +874,6 @@ fn glob_array<'js>(
         result.set(index, value)?;
     }
     Ok(result)
-}
-
-/// `path` as a glob `pattern` sees it: absolute for absolute patterns, else relative to `cwd`.
-pub(super) fn glob_candidate(path: &str, cwd: &str, pattern: &str) -> String {
-    if pattern.starts_with('/') {
-        path.to_owned()
-    } else {
-        relative_to(path, cwd)
-    }
 }
 
 pub(super) fn glob_excluded<'js>(
@@ -1027,40 +1022,6 @@ pub(super) fn write_sync<'js>(
     let (bytes, position) = write_arguments(&ctx, value, args.0)?;
     let written = vfs_call(&ctx, |vfs| vfs.write(descriptor, &bytes, position))?;
     u32::try_from(written).map_err(|_| Exception::throw_range(&ctx, "write is too large"))
-}
-
-pub(super) fn write_sync_export<'js>(
-    ctx: Ctx<'js>,
-    descriptor: u32,
-    value: Value<'js>,
-    offset_or_options: Opt<Value<'js>>,
-    length: Opt<Value<'js>>,
-    position: Opt<Value<'js>>,
-) -> rquickjs::Result<u32> {
-    let args = match offset_or_options.0 {
-        Some(options) if options.is_object() => {
-            let options = options
-                .try_into_object()
-                .map_err(|_| Exception::throw_type(&ctx, "write options must be an object"))?;
-            let offset = options.get::<_, Option<Value>>("offset")?;
-            let length = options.get::<_, Option<Value>>("length")?;
-            let position = options.get::<_, Option<Value>>("position")?;
-            let fields = if value.is_string() {
-                vec![position, options.get("encoding")?]
-            } else {
-                vec![offset, length, position]
-            };
-            fields
-                .into_iter()
-                .map(|field| field.unwrap_or_else(|| Value::new_undefined(ctx.clone())))
-                .collect()
-        }
-        offset => [offset, length.0, position.0]
-            .into_iter()
-            .flatten()
-            .collect(),
-    };
-    write_sync(ctx, descriptor, value, Rest(args))
 }
 
 pub(super) fn truncate_sync<'js>(

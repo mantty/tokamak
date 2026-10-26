@@ -525,6 +525,7 @@ pub(super) fn write_arguments<'js>(
     args: Vec<Value<'js>>,
 ) -> rquickjs::Result<(Vec<u8>, Option<u64>)> {
     let string = value.is_string();
+    let args = normalize_write_options(ctx, string, args)?;
     let (offset, length, position, encoding) = if string {
         let position = args.first().cloned();
         let encoding = args
@@ -534,14 +535,12 @@ pub(super) fn write_arguments<'js>(
             .transpose()?;
         (0_u64, None, position, encoding)
     } else {
-        let offset = args
-            .first()
-            .map(|value| Coerced::<u64>::from_js(ctx, value.clone()))
+        let offset = defined(args.first().cloned())
+            .map(|value| Coerced::<u64>::from_js(ctx, value))
             .transpose()?
             .map_or(0, |value| *value);
-        let length = args
-            .get(1)
-            .map(|value| Coerced::<u64>::from_js(ctx, value.clone()))
+        let length = defined(args.get(1).cloned())
+            .map(|value| Coerced::<u64>::from_js(ctx, value))
             .transpose()?;
         (
             offset,
@@ -561,7 +560,7 @@ pub(super) fn write_arguments<'js>(
             usize::try_from(length).map_err(|_| Exception::throw_range(ctx, "length is too large"))
         })
         .transpose()?
-        .unwrap_or(bytes.len() - offset);
+        .unwrap_or(bytes.len());
     if length > bytes.len() - offset {
         return Err(Exception::throw_range(ctx, "length is outside the buffer"));
     }
@@ -571,7 +570,7 @@ pub(super) fn write_arguments<'js>(
     ))
 }
 
-pub(super) fn normalize_write_options<'js>(
+fn normalize_write_options<'js>(
     ctx: &Ctx<'js>,
     data_is_string: bool,
     args: Vec<Value<'js>>,

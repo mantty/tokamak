@@ -359,7 +359,7 @@ fn export_sync(module: &ModuleExports<'_, '_>) -> rquickjs::Result<()> {
     module.function("fstatSync", fstat_sync)?;
     module.function("readSync", read_sync_export)?;
     module.function("readvSync", readv_sync)?;
-    module.function("writeSync", write_sync_export)?;
+    module.function("writeSync", write_sync)?;
     module.function("writevSync", writev_sync)?;
     module.function("truncateSync", truncate_sync)?;
     module.function("ftruncateSync", ftruncate_sync)?;
