@@ -852,22 +852,21 @@ mod tests {
     #[test]
     fn leaves_other_origins_and_permissions_to_webview2() {
         let host = "app.tokamak.local";
-        for uri in [
-            "https://other.tokamak.local/",
-            "https://app.tokamak.local:444/",
-        ] {
-            assert_eq!(
-                app_permission_prompt(COREWEBVIEW2_PERMISSION_KIND_CAMERA, uri, host),
-                None
-            );
-        }
-        assert_eq!(
-            app_permission_prompt(
+        for (kind, uri) in [
+            (
+                COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+                "https://other.tokamak.local/",
+            ),
+            (
+                COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+                "https://app.tokamak.local:444/",
+            ),
+            (
                 COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
                 "https://app.tokamak.local/",
-                host
             ),
-            None
-        );
+        ] {
+            assert_eq!(app_permission_prompt(kind, uri, host), None, "{uri}");
+        }
     }
 }
