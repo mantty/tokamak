@@ -514,30 +514,32 @@ fn passes_options_then_environment_then_configured_values_to_the_entrypoint() ->
     let (_temporary, project, platform_pack) = create_inputs("android-arm64")?;
     configure(&project, r#"{ "android": { "test": "configured" } }"#)?;
     let output = project.join("build/android/demo-app.apk");
-    let build = |configure: &dyn Fn(&mut Command)| -> TestResult<Option<String>> {
+    let assert_received = |configure: &dyn Fn(&mut Command), value: &str| -> TestResult {
         let mut command = build_command("android", &project, &platform_pack)?;
         configure(&mut command);
         command.assert().success();
-        received(&output, "TOKAMAK_ANDROID_TEST")
+        assert_eq!(
+            received(&output, "TOKAMAK_ANDROID_TEST")?.as_deref(),
+            Some(value)
+        );
+        Ok(())
     };
 
-    assert_eq!(build(&|_| {})?.as_deref(), Some("configured"));
-    assert_eq!(
-        build(&|command| {
+    assert_received(&|_| {}, "configured")?;
+    assert_received(
+        &|command| {
             command.env("TOKAMAK_ANDROID_TEST", "environment");
-        })?
-        .as_deref(),
-        Some("environment")
-    );
-    assert_eq!(
-        build(&|command| {
+        },
+        "environment",
+    )?;
+    assert_received(
+        &|command| {
             command
                 .env("TOKAMAK_ANDROID_TEST", "environment")
                 .args(["--android-test", "option"]);
-        })?
-        .as_deref(),
-        Some("option")
-    );
+        },
+        "option",
+    )?;
     Ok(())
 }
 
