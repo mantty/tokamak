@@ -358,19 +358,7 @@ const RESERVED: &[&str] = &[
 impl Description {
     /// Checks the rules every family's methods follow.
     pub(crate) fn validate(&self) -> Result<()> {
-        let mut types = Types::new();
-        for named in &self.types {
-            check_identifier("type", &named.name)?;
-            if GENERATED.contains(&named.name.as_str()) {
-                bail!("type {} has a name the generated API declares", named.name);
-            }
-            if types.insert(named.name.as_str(), named).is_some() {
-                bail!("type {} is described twice", named.name);
-            }
-        }
-        for named in &self.types {
-            named.validate(&types)?;
-        }
+        let types = self.described_types()?;
         let mut methods = BTreeSet::new();
         for method in &self.methods {
             if !methods.insert(method.name.as_str()) {
@@ -391,6 +379,24 @@ impl Description {
                 .map_err(|error| error.context(format!("event {}", event.name)))?;
         }
         Ok(())
+    }
+
+    /// The described types, by name, once each one's name and shape are checked.
+    fn described_types(&self) -> Result<Types<'_>> {
+        let mut types = Types::new();
+        for named in &self.types {
+            check_identifier("type", &named.name)?;
+            if GENERATED.contains(&named.name.as_str()) {
+                bail!("type {} has a name the generated API declares", named.name);
+            }
+            if types.insert(named.name.as_str(), named).is_some() {
+                bail!("type {} is described twice", named.name);
+            }
+        }
+        for named in &self.types {
+            named.validate(&types)?;
+        }
+        Ok(types)
     }
 }
 
