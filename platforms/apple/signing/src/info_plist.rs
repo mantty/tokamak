@@ -747,22 +747,25 @@ mod tests {
 
         let result = build(&input, "iphoneos", None)?;
 
-        assert_eq!(
-            result.get("UIBackgroundModes"),
-            Some(&array(&["audio", "remote-notification", "fetch"]))
-        );
         let transport = result
             .get("NSAppTransportSecurity")
             .and_then(Value::as_dictionary)
             .context("transport dictionary")?;
-        assert_eq!(
-            transport.get("NSAllowsLocalNetworking"),
-            Some(&Value::Boolean(true))
-        );
-        assert_eq!(
-            transport.get("NSAllowsArbitraryLoadsInWebContent"),
-            Some(&Value::Boolean(true))
-        );
+        for (plist, key, value) in [
+            (
+                &result,
+                "UIBackgroundModes",
+                array(&["audio", "remote-notification", "fetch"]),
+            ),
+            (transport, "NSAllowsLocalNetworking", Value::Boolean(true)),
+            (
+                transport,
+                "NSAllowsArbitraryLoadsInWebContent",
+                Value::Boolean(true),
+            ),
+        ] {
+            assert_eq!(plist.get(key), Some(&value), "missing or incorrect {key}");
+        }
         Ok(())
     }
 
