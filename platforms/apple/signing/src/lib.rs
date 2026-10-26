@@ -2004,15 +2004,17 @@ mod tests {
 
     #[test]
     fn accepts_wildcard_application_identifiers() {
-        assert!(app_identifier_matches(
-            "TEAM.com.example.*",
-            "com.example.app"
-        ));
-        assert!(!app_identifier_matches(
-            "TEAM.com.example.*",
-            "com.other.app"
-        ));
-        assert!(app_identifier_matches("TEAM.*", "com.other.app"));
+        for (application_identifier, bundle_id, matches) in [
+            ("TEAM.com.example.*", "com.example.app", true),
+            ("TEAM.com.example.*", "com.other.app", false),
+            ("TEAM.*", "com.other.app", true),
+        ] {
+            assert_eq!(
+                app_identifier_matches(application_identifier, bundle_id),
+                matches,
+                "{application_identifier} for {bundle_id}"
+            );
+        }
     }
 
     #[test]
