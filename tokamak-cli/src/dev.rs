@@ -910,12 +910,12 @@ fn header_values<'a>(request: &'a [u8], name: &'a [u8]) -> impl Iterator<Item = 
 /// `server_authority` with that host and without the session secret, or
 /// otherwise the dev socket, which checks the secret itself.
 fn rewrite_request(request: &[u8], server_authority: Option<&str>) -> io::Result<Vec<u8>> {
-    let end = find_header_end(request).ok_or_else(|| {
-        io::Error::new(
+    let Some(end) = find_header_end(request) else {
+        return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "development relay received an incomplete request",
-        )
-    })?;
+        ));
+    };
     let lines = request[..end]
         .split(|byte| *byte == b'\n')
         .map(|line| line.strip_suffix(b"\r").unwrap_or(line));
@@ -924,23 +924,20 @@ fn rewrite_request(request: &[u8], server_authority: Option<&str>) -> io::Result
         .skip(1)
         .filter_map(header_parts)
         .any(|(name, _)| name.eq_ignore_ascii_case(b"upgrade"));
+    let host =
+        server_authority.map(|authority| [b"Host: ".as_slice(), authority.as_bytes()].concat());
     let mut rewritten = Vec::with_capacity(request.len());
     for (index, line) in lines.enumerate() {
         let name = header_parts(line)
             .filter(|_| index > 0)
             .map(|(name, _)| name);
         let named = |expected: &[u8]| name.is_some_and(|name| name.eq_ignore_ascii_case(expected));
-        if named(b"connection") && !upgrade {
+        let dropped = (named(b"connection") && !upgrade)
+            || (server_authority.is_some() && named(b"x-tokamak-session"));
+        if dropped {
             continue;
         }
-        match server_authority {
-            Some(_) if named(b"x-tokamak-session") => continue,
-            Some(authority) if named(b"host") => {
-                rewritten.extend_from_slice(b"Host: ");
-                rewritten.extend_from_slice(authority.as_bytes());
-            }
-            _ => rewritten.extend_from_slice(line),
-        }
+        rewritten.extend_from_slice(host.as_deref().filter(|_| named(b"host")).unwrap_or(line));
         rewritten.extend_from_slice(b"\r\n");
     }
     // The relay rewrites only a connection's first request, so a request
