@@ -391,15 +391,20 @@ fn links_only_the_runtime_entry_points_the_app_uses() -> Result<()> {
     for target in ["macos-arm64", "macos-x64"] {
         let fixture = Fixture::new(target)?;
         let executable = fixture.output().join("Contents/MacOS/demo-app");
-        let exports_storage = |symbols: &str| -> Result<bool> {
+        let assert_exports_storage = |symbols: &str, exported: bool| -> Result<()> {
             fs::write(fixture.input().join("metadata/exported-symbols"), symbols)?;
             run(&mut fixture.build())?;
-            let symbols = Command::new("nm").arg("-gU").arg(&executable).output()?;
-            Ok(String::from_utf8(symbols.stdout)?.contains("_tokamak_storage"))
+            let nm = Command::new("nm").arg("-gU").arg(&executable).output()?;
+            assert_eq!(
+                String::from_utf8(nm.stdout)?.contains("_tokamak_storage"),
+                exported,
+                "{target} exporting {symbols:?}"
+            );
+            Ok(())
         };
 
-        assert!(!exports_storage("")?, "{target}");
-        assert!(exports_storage("tokamak_storage\n")?, "{target}");
+        assert_exports_storage("", false)?;
+        assert_exports_storage("tokamak_storage\n", true)?;
     }
     Ok(())
 }

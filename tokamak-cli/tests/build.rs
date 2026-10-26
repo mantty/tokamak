@@ -320,6 +320,51 @@ fn write_executable(path: &Path, contents: &str) -> TestResult {
     Ok(())
 }
 
+/// Assert that each file holds its text.
+#[track_caller]
+fn assert_texts(files: &[(PathBuf, &str)]) -> TestResult {
+    for (path, text) in files {
+        assert_eq!(fs::read_to_string(path)?, *text, "{}", path.display());
+    }
+    Ok(())
+}
+
+#[track_caller]
+fn assert_file(path: &Path) {
+    assert!(path.is_file(), "{} is not a file", path.display());
+}
+
+#[track_caller]
+fn assert_missing(path: &Path) {
+    assert!(!path.exists(), "{} exists", path.display());
+}
+
+/// Assert that the packaged ES module `module` is `source` compiled.
+#[track_caller]
+fn assert_compiled(app: &PackageLayout, module: &str, source: &Path) -> TestResult {
+    assert_eq!(
+        read_worker_module(app, module)?,
+        compile_module(module, &fs::read(source)?)?
+    );
+    Ok(())
+}
+
+/// Assert that `app` packages the Worker and assets of the demo `project`.
+#[cfg(unix)]
+#[track_caller]
+fn assert_packages_demo_app(app: &Path, project: &Path) -> TestResult {
+    let layout = PackageLayout::new(app);
+    assert_eq!(read_worker_manifest(&layout)?.entry, "index.js");
+    assert_compiled(&layout, "index.js", &project.join("dist/app/index.js"))?;
+    assert_file(&app.join("assets/index.html"));
+    assert_eq!(
+        read_asset_manifest(&layout)?.files["styles/app.css"],
+        "text/css"
+    );
+    assert_missing(&app.join("config.capnp"));
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn stages_the_entry_points_of_the_runtime_parts_the_app_links() -> TestResult {
@@ -359,43 +404,28 @@ fn stages_the_app_and_its_metadata_and_runs_the_entrypoint_from_the_pack_root() 
         ["app", "arguments", "directory", "environment", "metadata"]
     );
     let input = project.join("build/.tokamak/macos/input");
-    assert_eq!(
-        fs::read_to_string(output.join("arguments"))?,
-        format!("build\n{}\n{}\n", input.display(), output.display())
-    );
+    assert_texts(&[(
+        output.join("arguments"),
+        &format!("build\n{}\n{}\n", input.display(), output.display()),
+    )])?;
     assert_eq!(
         PathBuf::from(fs::read_to_string(output.join("directory"))?.trim_end()),
         fs::canonicalize(&platform_pack)?
     );
     let project_dir = project.display().to_string();
-    for (name, value) in [
-        ("app-name", "demo-app"),
-        ("app-slug", "demo-app"),
-        ("identifier", "com.tokamak.demo-app"),
-        ("host", "demo-app.tokamak.local"),
-        ("platform", "macos"),
-        ("target", "macos-arm64"),
-        ("project-dir", &project_dir),
-        ("version", "1.0.0"),
-    ] {
-        assert_eq!(
-            fs::read_to_string(output.join("metadata").join(name))?,
-            value,
-            "{name}"
-        );
-    }
+    let metadata = output.join("metadata");
+    assert_texts(&[
+        (metadata.join("app-name"), "demo-app"),
+        (metadata.join("app-slug"), "demo-app"),
+        (metadata.join("identifier"), "com.tokamak.demo-app"),
+        (metadata.join("host"), "demo-app.tokamak.local"),
+        (metadata.join("platform"), "macos"),
+        (metadata.join("target"), "macos-arm64"),
+        (metadata.join("project-dir"), &project_dir),
+        (metadata.join("version"), "1.0.0"),
+    ])?;
 
-    let app = PackageLayout::new(output.join("app"));
-    let manifest = read_worker_manifest(&app)?;
-    assert_eq!(manifest.entry, "index.js");
-    assert_eq!(
-        read_worker_module(&app, "index.js")?,
-        compile_module("index.js", &fs::read(project.join("dist/app/index.js"))?)?
-    );
-    assert!(output.join("app/assets/index.html").is_file());
-    let manifest = read_asset_manifest(&app)?;
-    assert_eq!(manifest.files["styles/app.css"], "text/css");
-    assert!(!output.join("app/config.capnp").exists());
+    assert_packages_demo_app(&output.join("app"), &project)?;
     Ok(())
 }
 
@@ -412,22 +442,25 @@ fn stages_the_identifier_and_version_from_each_source() -> TestResult {
 }"#,
     )?;
     let metadata = project.join("build/macos/demo-app.app/metadata");
-    let staged = |name: &str| fs::read_to_string(metadata.join(name));
 
     build_command("macos", &project, &platform_pack)?
         .env_remove("TOKAMAK_VERSION")
         .assert()
         .success();
-    assert_eq!(staged("identifier")?, "com.example.desktop");
-    assert_eq!(staged("version")?, "2.3.4");
+    assert_texts(&[
+        (metadata.join("identifier"), "com.example.desktop"),
+        (metadata.join("version"), "2.3.4"),
+    ])?;
 
     build_command("macos", &project, &platform_pack)?
         .env("TOKAMAK_MACOS_IDENTIFIER", "com.example.environment")
         .env("TOKAMAK_VERSION", "1.0'beta\"")
         .assert()
         .success();
-    assert_eq!(staged("identifier")?, "com.example.environment");
-    assert_eq!(staged("version")?, "1.0'beta\"");
+    assert_texts(&[
+        (metadata.join("identifier"), "com.example.environment"),
+        (metadata.join("version"), "1.0'beta\""),
+    ])?;
     Ok(())
 }
 
@@ -464,18 +497,11 @@ fn stages_the_display_name_and_names_the_output_after_its_slug() -> TestResult {
             .success();
 
         let metadata = project.join(output).join("metadata");
-        assert_eq!(
-            fs::read_to_string(metadata.join("app-name"))?,
-            "Vigilus & <Co> \"Pro\" 'X'"
-        );
-        assert_eq!(
-            fs::read_to_string(metadata.join("app-slug"))?,
-            "vigilus-co-pro-x"
-        );
-        assert_eq!(
-            fs::read_to_string(metadata.join("host"))?,
-            "vigilus-co-pro-x.tokamak.local"
-        );
+        assert_texts(&[
+            (metadata.join("app-name"), "Vigilus & <Co> \"Pro\" 'X'"),
+            (metadata.join("app-slug"), "vigilus-co-pro-x"),
+            (metadata.join("host"), "vigilus-co-pro-x.tokamak.local"),
+        ])?;
     }
     Ok(())
 }
@@ -486,30 +512,32 @@ fn passes_options_then_environment_then_configured_values_to_the_entrypoint() ->
     let (_temporary, project, platform_pack) = create_inputs("android-arm64")?;
     configure(&project, r#"{ "android": { "test": "configured" } }"#)?;
     let output = project.join("build/android/demo-app.apk");
-    let build = |configure: &dyn Fn(&mut Command)| -> TestResult<Option<String>> {
+    let assert_received = |configure: &dyn Fn(&mut Command), value: &str| -> TestResult {
         let mut command = build_command("android", &project, &platform_pack)?;
         configure(&mut command);
         command.assert().success();
-        received(&output, "TOKAMAK_ANDROID_TEST")
+        assert_eq!(
+            received(&output, "TOKAMAK_ANDROID_TEST")?.as_deref(),
+            Some(value)
+        );
+        Ok(())
     };
 
-    assert_eq!(build(&|_| {})?.as_deref(), Some("configured"));
-    assert_eq!(
-        build(&|command| {
+    assert_received(&|_| {}, "configured")?;
+    assert_received(
+        &|command| {
             command.env("TOKAMAK_ANDROID_TEST", "environment");
-        })?
-        .as_deref(),
-        Some("environment")
-    );
-    assert_eq!(
-        build(&|command| {
+        },
+        "environment",
+    )?;
+    assert_received(
+        &|command| {
             command
                 .env("TOKAMAK_ANDROID_TEST", "environment")
                 .args(["--android-test", "option"]);
-        })?
-        .as_deref(),
-        Some("option")
-    );
+        },
+        "option",
+    )?;
     Ok(())
 }
 
@@ -811,40 +839,42 @@ fn packages_both_workers_with_their_own_bindings_and_migrations() -> TestResult 
     let main = PackageLayout::new(output.join("app"));
     let native = main.tokamak_worker();
     assert_eq!(read_worker_manifest(&native)?.entry, "index.js");
-    let environment = |layout: &PackageLayout| -> TestResult<serde_json::Value> {
-        Ok(serde_json::from_slice(&fs::read(
-            layout.worker_environment(),
-        )?)?)
+    let assert_environment = |layout: &PackageLayout,
+                              vars: serde_json::Value,
+                              services: serde_json::Value|
+     -> TestResult {
+        let environment: serde_json::Value =
+            serde_json::from_slice(&fs::read(layout.worker_environment())?)?;
+        let worker = layout.root().display();
+        assert_eq!(environment["vars"], vars, "vars of {worker}");
+        assert_eq!(environment["services"], services, "services of {worker}");
+        Ok(())
     };
-    assert_eq!(
-        environment(&main)?["vars"],
-        serde_json::json!({ "ROLE": "main" })
-    );
-    assert_eq!(
-        environment(&main)?["services"],
+    assert_environment(
+        &main,
+        serde_json::json!({ "ROLE": "main" }),
         serde_json::json!({
             "TOKAMAK": { "service": "tokamak", "entrypoint": "default" },
             "LOCATION": { "service": "tokamak", "entrypoint": "Location" }
-        })
-    );
-    assert_eq!(
-        environment(&native)?["vars"],
-        serde_json::json!({ "ROLE": "native" })
-    );
-    assert_eq!(
-        environment(&native)?["services"],
+        }),
+    )?;
+    assert_environment(
+        &native,
+        serde_json::json!({ "ROLE": "native" }),
         serde_json::json!({
             "MAIN": { "service": "main", "entrypoint": "default" }
-        })
-    );
-    assert_eq!(
-        fs::read_to_string(native.d1_migrations("DB").join("001.sql"))?,
-        "CREATE TABLE locations (latitude REAL);"
-    );
-    assert_eq!(
-        fs::read_to_string(output.join("metadata/exported-symbols"))?,
-        "tokamak_storage\n"
-    );
+        }),
+    )?;
+    assert_texts(&[
+        (
+            native.d1_migrations("DB").join("001.sql"),
+            "CREATE TABLE locations (latitude REAL);",
+        ),
+        (
+            output.join("metadata/exported-symbols"),
+            "tokamak_storage\n",
+        ),
+    ])?;
     Ok(())
 }
 
@@ -859,21 +889,17 @@ fn caches_worker_bundles_independently_and_refreshes_native_environment() -> Tes
             .success();
         Ok(())
     };
-    let compiled_at = |name: &str| -> TestResult<_> {
-        let layout =
-            PackageLayout::new(project.join(format!("build/.tokamak/worker/{name}/compiled")));
-        Ok(fs::metadata(layout.worker_manifest())?.modified()?)
-    };
+    let build_dir = project.join("build");
     build()?;
-    let main_time = compiled_at("main")?;
-    let native_time = compiled_at("tokamak")?;
+    let main_time = worker_compiled_at(&build_dir, "main")?;
+    let native_time = worker_compiled_at(&build_dir, "tokamak")?;
     let config_path = project.join("dist/device/wrangler.json");
     let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&config_path)?)?;
     config["vars"]["ROLE"] = "updated".into();
     fs::write(&config_path, serde_json::to_vec(&config)?)?;
     build()?;
-    assert_eq!(compiled_at("main")?, main_time);
-    assert_eq!(compiled_at("tokamak")?, native_time);
+    assert_worker_reused(&build_dir, "main", main_time)?;
+    assert_worker_reused(&build_dir, "tokamak", native_time)?;
     let app = PackageLayout::new(project.join("build/macos/demo-app.app/app"));
     let env: serde_json::Value =
         serde_json::from_slice(&fs::read(app.tokamak_worker().worker_environment())?)?;
@@ -882,8 +908,8 @@ fn caches_worker_bundles_independently_and_refreshes_native_environment() -> Tes
     let source = "export default { value: 2 }; export class Location {};";
     fs::write(project.join("dist/device/index.js"), source)?;
     build()?;
-    assert_eq!(compiled_at("main")?, main_time);
-    assert_ne!(compiled_at("tokamak")?, native_time);
+    assert_worker_reused(&build_dir, "main", main_time)?;
+    assert_worker_recompiled(&build_dir, "tokamak", native_time)?;
     assert_eq!(
         read_worker_module(&app.tokamak_worker(), "index.js")?,
         compile_module("index.js", source.as_bytes())?
@@ -910,29 +936,48 @@ fn packages_each_generated_configuration_without_recompiling_unchanged_modules()
         packaged_vars(r#"{ "STAGE": "test" }"#)?,
         serde_json::json!({ "STAGE": "test" })
     );
-    let compiled = worker_compiled_at(&build_dir)?;
+    let compiled = worker_compiled_at(&build_dir, "main")?;
 
     assert_eq!(
         packaged_vars(r#"{ "STAGE": "production" }"#)?,
         serde_json::json!({ "STAGE": "production" })
     );
-    assert_eq!(worker_compiled_at(&build_dir)?, compiled);
+    assert_worker_reused(&build_dir, "main", compiled)?;
 
     let entry = project.join("dist/app/index.js");
     fs::write(&entry, "export default { value: 2 };")?;
     packaged_vars(r#"{ "STAGE": "production" }"#)?;
-    assert_ne!(worker_compiled_at(&build_dir)?, compiled);
-    assert_eq!(
-        read_worker_module(&PackageLayout::new(&app), "index.js")?,
-        compile_module("index.js", &fs::read(&entry)?)?
-    );
+    assert_worker_recompiled(&build_dir, "main", compiled)?;
+    assert_compiled(&PackageLayout::new(&app), "index.js", &entry)?;
     Ok(())
 }
 
-/// When the Worker of the build in `build_dir` was last compiled.
-fn worker_compiled_at(build_dir: &Path) -> TestResult<std::time::SystemTime> {
-    let compiled = PackageLayout::new(build_dir.join(".tokamak/worker/main/compiled"));
+/// When the Worker `worker` of the build in `build_dir` was last compiled.
+fn worker_compiled_at(build_dir: &Path, worker: &str) -> TestResult<std::time::SystemTime> {
+    let compiled = PackageLayout::new(build_dir.join(format!(".tokamak/worker/{worker}/compiled")));
     Ok(fs::metadata(compiled.worker_manifest())?.modified()?)
+}
+
+/// Assert that the build in `build_dir` reused the Worker `worker` it compiled at `compiled`.
+#[track_caller]
+fn assert_worker_reused(
+    build_dir: &Path,
+    worker: &str,
+    compiled: std::time::SystemTime,
+) -> TestResult {
+    assert_eq!(worker_compiled_at(build_dir, worker)?, compiled);
+    Ok(())
+}
+
+/// Assert that the build in `build_dir` compiled the Worker `worker` again since `compiled`.
+#[track_caller]
+fn assert_worker_recompiled(
+    build_dir: &Path,
+    worker: &str,
+    compiled: std::time::SystemTime,
+) -> TestResult {
+    assert_ne!(worker_compiled_at(build_dir, worker)?, compiled);
+    Ok(())
 }
 
 #[test]
@@ -946,7 +991,7 @@ fn updates_changed_assets_without_recompiling_the_worker() -> TestResult {
     };
 
     build()?;
-    let compiled = worker_compiled_at(&project.join("build"))?;
+    let compiled = worker_compiled_at(&project.join("build"), "main")?;
     fs::write(
         project.join("dist/client/index.html"),
         "<html>updated</html>",
@@ -957,7 +1002,10 @@ fn updates_changed_assets_without_recompiling_the_worker() -> TestResult {
         fs::read_to_string(project.join("build/windows/demo-app/app/assets/index.html"))?,
         "<html>updated</html>"
     );
-    assert_eq!(worker_compiled_at(&project.join("build"))?, compiled);
+    assert_eq!(
+        worker_compiled_at(&project.join("build"), "main")?,
+        compiled
+    );
     Ok(())
 }
 
@@ -978,18 +1026,24 @@ fn ignores_unrelated_files_when_reusing_worker_modules() -> TestResult {
     };
 
     build()?;
-    let compiled = worker_compiled_at(&project.join("build"))?;
+    let compiled = worker_compiled_at(&project.join("build"), "main")?;
     fs::write(worker.join("unrelated.md"), "changed")?;
     build()?;
-    assert_eq!(worker_compiled_at(&project.join("build"))?, compiled);
+    assert_eq!(
+        worker_compiled_at(&project.join("build"), "main")?,
+        compiled
+    );
 
     fs::write(worker.join("settings.json"), r#"{"feature":false}"#)?;
     build()?;
-    assert_ne!(worker_compiled_at(&project.join("build"))?, compiled);
-    assert_eq!(
-        fs::read(project.join("build/windows/demo-app/app/bundle/settings.json"))?,
-        br#"{"feature":false}"#
+    assert_ne!(
+        worker_compiled_at(&project.join("build"), "main")?,
+        compiled
     );
+    assert_texts(&[(
+        project.join("build/windows/demo-app/app/bundle/settings.json"),
+        r#"{"feature":false}"#,
+    )])?;
     Ok(())
 }
 
@@ -1009,18 +1063,12 @@ fn stages_the_plugins_installed_above_a_relative_project_directory() -> TestResu
         .success();
 
     let plugin = project.join("build/macos/demo-app.app/plugins/location");
-    assert_eq!(
-        fs::read_to_string(plugin.join("class"))?,
-        "TokamakLocationPlugin"
-    );
+    assert_texts(&[(plugin.join("class"), "TokamakLocationPlugin")])?;
     assert!(
         fs::read_to_string(plugin.join("plist"))?.contains("<key>NSLocationUsageDescription</key>")
     );
-    assert_eq!(
-        fs::read_to_string(plugin.join("compilation-conditions/0"))?,
-        "LOCATION_ALWAYS"
-    );
-    assert!(plugin.join("native/LocationPlugin.swift").is_file());
+    assert_texts(&[(plugin.join("compilation-conditions/0"), "LOCATION_ALWAYS")])?;
+    assert_file(&plugin.join("native/LocationPlugin.swift"));
     Ok(())
 }
 
@@ -1034,8 +1082,8 @@ fn builds_the_location_plugin_s_declarations_from_its_settings() -> TestResult {
     build_command("ios", &project, &platform_pack)?
         .assert()
         .success();
-    assert!(plugin.join("plist").is_file());
-    assert!(!plugin.join("compilation-conditions").exists());
+    assert_file(&plugin.join("plist"));
+    assert_missing(&plugin.join("compilation-conditions"));
 
     build_command("ios", &project, &platform_pack)?
         .args([
@@ -1051,19 +1099,16 @@ fn builds_the_location_plugin_s_declarations_from_its_settings() -> TestResult {
         .success();
 
     let plist = fs::read_to_string(plugin.join("plist"))?;
-    for key in [
-        "NSLocationWhenInUseUsageDescription",
-        "NSLocationAlwaysAndWhenInUseUsageDescription",
-        "NSLocationDefaultAccuracyReduced",
-        "<key>Directions</key>",
+    for (key, declared) in [
+        ("NSLocationWhenInUseUsageDescription", true),
+        ("NSLocationAlwaysAndWhenInUseUsageDescription", true),
+        ("NSLocationDefaultAccuracyReduced", true),
+        ("<key>Directions</key>", true),
+        ("UIBackgroundModes", false),
     ] {
-        assert!(plist.contains(key), "{key} is missing from {plist}");
+        assert_eq!(plist.contains(key), declared, "{key} in {plist}");
     }
-    assert!(!plist.contains("UIBackgroundModes"), "{plist}");
-    assert_eq!(
-        fs::read_to_string(plugin.join("compilation-conditions/0"))?,
-        "LOCATION_ALWAYS"
-    );
+    assert_texts(&[(plugin.join("compilation-conditions/0"), "LOCATION_ALWAYS")])?;
     build_command("ios", &project, &platform_pack)?
         .args(["--location-always-description", "Records runs"])
         .assert()
@@ -1085,20 +1130,21 @@ fn stages_the_location_plugin_s_generated_android_manifest() -> TestResult {
 
     let plugin = project.join("build/android/demo-app.apk/plugins/location");
     let manifest = fs::read_to_string(plugin.join("manifest"))?;
-    for declaration in [
-        "android.permission.FOREGROUND_SERVICE_LOCATION",
-        "com.tokamak.plugins.location.TokamakLocationService",
-        "com.tokamak.plugins.location.TokamakLocationBootReceiver",
+    for (declaration, declared) in [
+        ("android.permission.FOREGROUND_SERVICE_LOCATION", true),
+        ("com.tokamak.plugins.location.TokamakLocationService", true),
+        (
+            "com.tokamak.plugins.location.TokamakLocationBootReceiver",
+            true,
+        ),
+        ("ACCESS_BACKGROUND_LOCATION", false),
     ] {
-        assert!(
+        assert_eq!(
             manifest.contains(declaration),
-            "{declaration} is missing from {manifest}"
+            declared,
+            "{declaration} in {manifest}"
         );
     }
-    assert!(
-        !manifest.contains("ACCESS_BACKGROUND_LOCATION"),
-        "{manifest}"
-    );
     Ok(())
 }
 
@@ -1239,9 +1285,9 @@ fn builds_windows_app_with_its_runtime_files() -> TestResult {
         .stdout(contains("Built Windows bundle").and(contains(r"\\?\").not()));
 
     let bundle = project.join("build/windows/demo-app");
-    assert!(bundle.join("demo-app.exe").is_file());
-    assert!(!bundle.join("tokamak-runtime.dll").exists());
-    assert!(bundle.join("app/worker-manifest.json").is_file());
+    assert_file(&bundle.join("demo-app.exe"));
+    assert_missing(&bundle.join("tokamak-runtime.dll"));
+    assert_file(&bundle.join("app/worker-manifest.json"));
     let config: serde_json::Value =
         serde_json::from_slice(&fs::read(bundle.join("tokamak.json"))?)?;
     assert_eq!(
@@ -1343,12 +1389,16 @@ fn builds_with_a_configured_display_name() -> TestResult {
     command.assert().success();
 
     let bundle = project.join("build/windows/my-app-pro");
-    assert!(bundle.join("my-app-pro.exe").is_file());
+    assert_file(&bundle.join("my-app-pro.exe"));
     let config: serde_json::Value =
         serde_json::from_slice(&fs::read(bundle.join("tokamak.json"))?)?;
-    assert_eq!(config["name"], "My App Pro");
-    assert_eq!(config["slug"], "my-app-pro");
-    assert_eq!(config["host"], "my-app-pro.tokamak.local");
+    for (key, value) in [
+        ("name", "My App Pro"),
+        ("slug", "my-app-pro"),
+        ("host", "my-app-pro.tokamak.local"),
+    ] {
+        assert_eq!(config[key], value, "{key}");
+    }
     Ok(())
 }
 

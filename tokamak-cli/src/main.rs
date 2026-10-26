@@ -150,16 +150,19 @@ fn run() -> Result<()> {
     };
 
     match cli.command {
-        Command::Plugin { command } => match command {
-            PluginCommand::New {
-                directory,
-                platforms,
-            } => scaffold::create(&directory, &platforms),
-            PluginCommand::Generate { family } => {
-                plugin_api::generate(&env::current_dir()?, family)
-            }
-            PluginCommand::Check => plugin_api::check(&env::current_dir()?),
-        },
+        Command::Plugin {
+            command:
+                PluginCommand::New {
+                    directory,
+                    platforms,
+                },
+        } => scaffold::create(&directory, &platforms),
+        Command::Plugin {
+            command: PluginCommand::Generate { family },
+        } => plugin_api::generate(&env::current_dir()?, family),
+        Command::Plugin {
+            command: PluginCommand::Check,
+        } => plugin_api::check(&env::current_dir()?),
         Command::Build {
             platforms,
             project,
@@ -168,28 +171,17 @@ fn run() -> Result<()> {
             top,
             build_command,
             skip_project_build,
-        } => {
-            let platforms = parse_platforms(&platforms)?;
-            let summaries = pipeline::run(&pipeline::BuildRequest {
-                platforms,
-                project_dir: project,
-                build_dir,
-                platform_pack_dir: platform_pack,
-                top,
-                namespaced_options,
-                plugins,
-                build_command,
-                skip_project_build,
-            })?;
-            for summary in summaries {
-                println!(
-                    "Built {} bundle: {}",
-                    summary.platform.display_name(),
-                    paths::command_path(&summary.bundle_dir).display()
-                );
-            }
-            Ok(())
-        }
+        } => build(&pipeline::BuildRequest {
+            platforms: parse_platforms(&platforms)?,
+            project_dir: project,
+            build_dir,
+            platform_pack_dir: platform_pack,
+            top,
+            namespaced_options,
+            plugins,
+            build_command,
+            skip_project_build,
+        }),
         Command::Dev {
             device_id,
             project,
@@ -221,6 +213,18 @@ fn run() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Build the bundles `request` asks for and say where each one is.
+fn build(request: &pipeline::BuildRequest) -> Result<()> {
+    for summary in pipeline::run(request)? {
+        println!(
+            "Built {} bundle: {}",
+            summary.platform.display_name(),
+            paths::command_path(&summary.bundle_dir).display()
+        );
+    }
+    Ok(())
 }
 
 /// Split platform options from the arguments of the commands that take them,
@@ -355,41 +359,51 @@ mod tests {
 
     #[test]
     fn parses_comma_separated_platforms() {
-        assert!(matches!(
-            parse_platforms("macos,android"),
-            Ok(platforms) if platforms == vec![Platform::Macos, Platform::Android]
-        ));
+        assert_eq!(
+            parse_platforms("macos,android").ok(),
+            Some(vec![Platform::Macos, Platform::Android])
+        );
     }
 
     #[test]
     fn accepts_one_comma_separated_platform_argument() {
-        assert!(matches!(
-            Cli::try_parse_from(["tok", "build", "macos,android"]),
-            Ok(Cli { command: Command::Build { platforms, .. } })
-                if platforms == "macos,android"
-        ));
+        let Ok(Cli {
+            command: Command::Build { platforms, .. },
+        }) = Cli::try_parse_from(["tok", "build", "macos,android"])
+        else {
+            panic!("`tok build macos,android` did not parse as a build command");
+        };
+        assert_eq!(platforms, "macos,android");
     }
 
     #[test]
     fn accepts_top_level_application_options() {
-        assert!(matches!(
-            Cli::try_parse_from([
-                "tok",
-                "build",
-                "ios",
-                "--identifier",
-                "com.example.app",
-                "--version",
-                "1.2.0",
-                "--build",
-                "pnpm build"
-            ]),
-            Ok(Cli {
-                command: Command::Build { top, build_command, .. }
-            }) if top.identifier.as_deref() == Some("com.example.app")
-                && top.version.as_deref() == Some("1.2.0")
-                && build_command.as_deref() == Some("pnpm build")
-        ));
+        let Ok(Cli {
+            command: Command::Build {
+                top, build_command, ..
+            },
+        }) = Cli::try_parse_from([
+            "tok",
+            "build",
+            "ios",
+            "--identifier",
+            "com.example.app",
+            "--version",
+            "1.2.0",
+            "--build",
+            "pnpm build",
+        ])
+        else {
+            panic!("`tok build ios` with application options did not parse as a build command");
+        };
+        assert_eq!(
+            (
+                top.identifier.as_deref(),
+                top.version.as_deref(),
+                build_command.as_deref()
+            ),
+            (Some("com.example.app"), Some("1.2.0"), Some("pnpm build"))
+        );
     }
 
     #[test]
@@ -454,32 +468,38 @@ mod tests {
         let (remaining, _, plugins) = split_arguments(arguments.clone())?;
         let matches = command(&remaining, &plugins).try_get_matches_from(&remaining)?;
 
-        assert_eq!(remaining, arguments[..6]);
-        assert_eq!(plugins.len(), 1);
-        assert!(matches!(
-            matches.subcommand(),
-            Some(("build", build)) if build.get_one::<serde_json::Value>("alerts-ios-loud")
-                == Some(&serde_json::Value::Bool(true))
-        ));
+        assert_eq!(
+            (remaining.as_slice(), plugins.len()),
+            (&arguments[..6], 1),
+            "(arguments left for tok, plugins discovered)"
+        );
+        let Some(("build", build)) = matches.subcommand() else {
+            panic!("the arguments did not parse as `tok build`");
+        };
+        assert_eq!(
+            build.get_one::<serde_json::Value>("alerts-ios-loud"),
+            Some(&serde_json::Value::Bool(true))
+        );
         Ok(())
     }
 
     #[test]
     fn reserves_the_first_word_of_each_of_tok_s_own_options() {
         let command = Cli::command();
-        for subcommand in ["build", "dev"] {
-            let options = command
+        let options = ["build", "dev"].into_iter().flat_map(|subcommand| {
+            command
                 .find_subcommand(subcommand)
                 .into_iter()
                 .flat_map(clap::Command::get_arguments)
-                .filter_map(clap::Arg::get_long);
-            for option in options {
-                let word = option.split('-').next().unwrap_or(option);
-                assert!(
-                    plugins::RESERVED_WORDS.contains(&word),
-                    "--{option} of tok {subcommand} starts with an unreserved word"
-                );
-            }
+                .filter_map(clap::Arg::get_long)
+                .map(move |option| (subcommand, option))
+        });
+        for (subcommand, option) in options {
+            let word = option.split('-').next().unwrap_or(option);
+            assert!(
+                plugins::RESERVED_WORDS.contains(&word),
+                "--{option} of tok {subcommand} starts with an unreserved word"
+            );
         }
     }
 
@@ -506,13 +526,18 @@ mod tests {
 
     #[test]
     fn accepts_dev_command() {
-        assert!(matches!(
-            Cli::try_parse_from(["tok", "dev", "ios", "--", "astro", "dev"]),
-            Ok(Cli {
-                command: Command::Dev { device_id, command, .. }
-            }) if device_id == "ios"
-                && command == vec![OsString::from("astro"), OsString::from("dev")]
-        ));
+        let Ok(Cli {
+            command: Command::Dev {
+                device_id, command, ..
+            },
+        }) = Cli::try_parse_from(["tok", "dev", "ios", "--", "astro", "dev"])
+        else {
+            panic!("`tok dev ios -- astro dev` did not parse as a dev command");
+        };
+        assert_eq!(
+            (device_id.as_str(), command),
+            ("ios", vec![OsString::from("astro"), OsString::from("dev")])
+        );
     }
 
     #[test]

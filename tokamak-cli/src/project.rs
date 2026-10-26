@@ -97,8 +97,10 @@ mod tests {
     #[test]
     fn selects_platform_package_manager_commands() {
         let suffix = if cfg!(windows) { ".cmd" } else { "" };
-        for name in ["npm", "pnpm", "yarn"] {
-            assert_eq!(package_manager(name), format!("{name}{suffix}"));
-        }
+        let names = ["npm", "pnpm", "yarn"];
+        assert_eq!(
+            names.map(package_manager),
+            names.map(|name| format!("{name}{suffix}"))
+        );
     }
 }

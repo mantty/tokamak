@@ -810,74 +810,63 @@ mod tests {
 
     #[test]
     fn recognizes_only_the_exact_app_origin() {
-        assert!(is_app_origin(
-            "https://app.tokamak.local/path",
-            "app.tokamak.local"
-        ));
-        assert!(is_app_origin(
-            "HTTPS://APP.TOKAMAK.LOCAL:443/path",
-            "app.tokamak.local"
-        ));
-        assert!(!is_app_origin(
-            "https://app.tokamak.local.evil/path",
-            "app.tokamak.local"
-        ));
-        assert!(!is_app_origin(
-            "https://app.tokamak.local:444/path",
-            "app.tokamak.local"
-        ));
-        assert!(!is_app_origin(
-            "http://app.tokamak.local/path",
-            "app.tokamak.local"
-        ));
+        for (uri, app_origin) in [
+            ("https://app.tokamak.local/path", true),
+            ("HTTPS://APP.TOKAMAK.LOCAL:443/path", true),
+            ("https://app.tokamak.local.evil/path", false),
+            ("https://app.tokamak.local:444/path", false),
+            ("http://app.tokamak.local/path", false),
+        ] {
+            assert_eq!(is_app_origin(uri, "app.tokamak.local"), app_origin, "{uri}");
+        }
     }
 
     #[test]
     fn prompts_for_location_camera_and_microphone_from_the_app_origin() {
         let app = "https://app.tokamak.local/";
         let host = "app.tokamak.local";
-        assert_eq!(
-            app_permission_prompt(COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION, app, host),
-            Some(PermissionPrompt {
-                request: "access your location",
-                caption: "Location access",
-            })
-        );
-        assert_eq!(
-            app_permission_prompt(COREWEBVIEW2_PERMISSION_KIND_CAMERA, app, host),
-            Some(PermissionPrompt {
-                request: "use your camera",
-                caption: "Camera access",
-            })
-        );
-        assert_eq!(
-            app_permission_prompt(COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, app, host),
-            Some(PermissionPrompt {
-                request: "use your microphone",
-                caption: "Microphone access",
-            })
-        );
+        for (kind, request, caption) in [
+            (
+                COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
+                "access your location",
+                "Location access",
+            ),
+            (
+                COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+                "use your camera",
+                "Camera access",
+            ),
+            (
+                COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+                "use your microphone",
+                "Microphone access",
+            ),
+        ] {
+            assert_eq!(
+                app_permission_prompt(kind, app, host),
+                Some(PermissionPrompt { request, caption })
+            );
+        }
     }
 
     #[test]
     fn leaves_other_origins_and_permissions_to_webview2() {
         let host = "app.tokamak.local";
-        for uri in [
-            "https://other.tokamak.local/",
-            "https://app.tokamak.local:444/",
-        ] {
-            assert_eq!(
-                app_permission_prompt(COREWEBVIEW2_PERMISSION_KIND_CAMERA, uri, host),
-                None
-            );
-        }
-        assert_eq!(
-            app_permission_prompt(
+        for (kind, uri) in [
+            (
+                COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+                "https://other.tokamak.local/",
+            ),
+            (
+                COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+                "https://app.tokamak.local:444/",
+            ),
+            (
                 COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS,
                 "https://app.tokamak.local/",
-                host
             ),
-            None
-        );
+        ] {
+            assert_eq!(app_permission_prompt(kind, uri, host), None, "{uri}");
+        }
     }
 }

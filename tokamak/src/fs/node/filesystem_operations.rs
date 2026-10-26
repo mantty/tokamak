@@ -219,25 +219,21 @@ pub(super) fn write_buffer_value<'js>(
 pub(super) fn typed_array_bytes(object: &Object<'_>) -> Option<Vec<u8>> {
     macro_rules! typed_array {
         ($type:ty) => {
-            if object.is_typed_array::<$type>() {
-                return TypedArray::<$type>::from_object(object.clone())
-                    .ok()?
-                    .as_bytes()
-                    .map(ToOwned::to_owned);
-            }
+            object.as_typed_array::<$type>().map(TypedArray::as_bytes)
         };
     }
-    typed_array!(u8);
-    typed_array!(i8);
-    typed_array!(u16);
-    typed_array!(i16);
-    typed_array!(u32);
-    typed_array!(i32);
-    typed_array!(u64);
-    typed_array!(i64);
-    typed_array!(f32);
-    typed_array!(f64);
-    None
+    typed_array!(u8)
+        .or_else(|| typed_array!(i8))
+        .or_else(|| typed_array!(u16))
+        .or_else(|| typed_array!(i16))
+        .or_else(|| typed_array!(u32))
+        .or_else(|| typed_array!(i32))
+        .or_else(|| typed_array!(u64))
+        .or_else(|| typed_array!(i64))
+        .or_else(|| typed_array!(f32))
+        .or_else(|| typed_array!(f64))
+        .flatten()
+        .map(ToOwned::to_owned)
 }
 
 pub(super) fn is_buffer_value(value: &Value<'_>) -> bool {
@@ -557,7 +553,7 @@ pub(super) fn stat_sync<'js>(
 ) -> rquickjs::Result<Value<'js>> {
     let options = parse_options(&ctx, options.0)?;
     match path_or_fd(&ctx, input)? {
-        PathOrFd::Path(path) => stat_value(&ctx, &path, true, &options),
+        PathOrFd::Path(path) => stat_value(&ctx, &path, VirtualFileSystem::stat, &options),
         PathOrFd::Fd(descriptor) => {
             let stat = vfs_call(&ctx, |vfs| vfs.fstat(descriptor))?;
             stat_object(&ctx, &stat, options.bigint).map(Object::into_value)
@@ -572,21 +568,17 @@ pub(super) fn lstat_sync<'js>(
 ) -> rquickjs::Result<Value<'js>> {
     let path = path(&ctx, input)?;
     let options = parse_options(&ctx, options.0)?;
-    stat_value(&ctx, &path, false, &options)
+    stat_value(&ctx, &path, VirtualFileSystem::lstat, &options)
 }
 
 pub(super) fn stat_value<'js>(
     ctx: &Ctx<'js>,
     path: &str,
-    follow_symlinks: bool,
+    stat: fn(&VirtualFileSystem, &str) -> VfsResult<Stat>,
     options: &FsOptions,
 ) -> rquickjs::Result<Value<'js>> {
     let vfs = vfs_handle(ctx)?;
-    let result = if follow_symlinks {
-        lock(&vfs).stat(path)
-    } else {
-        lock(&vfs).lstat(path)
-    };
+    let result = stat(&lock(&vfs), path);
     match result {
         Ok(stat) => stat_object(ctx, &stat, options.bigint).map(Object::into_value),
         Err(error) if error.kind() == ErrorKind::NotFound && !options.throw_if_no_entry => {
@@ -691,9 +683,9 @@ pub(super) fn cp_sync<'js>(
         ));
     }
     for name in ["preserveTimestamps", "verbatimSymlinks"] {
-        if let Some(value) = option_property(&ctx, options_value.as_ref(), name)? {
-            let _ = bool::from_js(&ctx, value)?;
-        }
+        option_property(&ctx, options_value.as_ref(), name)?
+            .map(|value| bool::from_js(&ctx, value))
+            .transpose()?;
     }
     let force = option_property(&ctx, options_value.as_ref(), "force")?
         .map(|value| bool::from_js(&ctx, value))

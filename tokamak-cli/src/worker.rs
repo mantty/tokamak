@@ -129,10 +129,11 @@ fn collect_modules(wrangler: &WranglerConfig) -> Result<(&Path, WorkerManifest)>
             continue;
         }
         let name = slash_path(file.path().strip_prefix(root)?)?;
-        if let Some(rule_type) = rule_type(&name, wrangler) {
-            let module_type = module_type(&name, rule_type)?;
-            modules.entry(name).or_insert(module_type);
-        }
+        let Some(rule_type) = rule_type(&name, wrangler) else {
+            continue;
+        };
+        let module_type = module_type(&name, rule_type)?;
+        modules.entry(name).or_insert(module_type);
     }
     Ok((root, WorkerManifest { entry, modules }))
 }
@@ -208,17 +209,19 @@ mod tests {
         let (module_root, manifest) = collect_modules(&wrangler)?;
 
         assert_eq!(module_root, root);
-        assert_eq!(manifest.entry, "index.js");
         assert_eq!(
-            manifest.modules,
-            BTreeMap::from([
-                ("assets/data.bin".to_owned(), ModuleType::Data),
-                ("assets/lazy.js".to_owned(), ModuleType::EsModule),
-                ("assets/page.html".to_owned(), ModuleType::Text),
-                ("assets/query.sql".to_owned(), ModuleType::Text),
-                ("chunks/page.mjs".to_owned(), ModuleType::EsModule),
-                ("index.js".to_owned(), ModuleType::EsModule),
-            ])
+            manifest,
+            WorkerManifest {
+                entry: "index.js".to_owned(),
+                modules: BTreeMap::from([
+                    ("assets/data.bin".to_owned(), ModuleType::Data),
+                    ("assets/lazy.js".to_owned(), ModuleType::EsModule),
+                    ("assets/page.html".to_owned(), ModuleType::Text),
+                    ("assets/query.sql".to_owned(), ModuleType::Text),
+                    ("chunks/page.mjs".to_owned(), ModuleType::EsModule),
+                    ("index.js".to_owned(), ModuleType::EsModule),
+                ]),
+            }
         );
         Ok(())
     }

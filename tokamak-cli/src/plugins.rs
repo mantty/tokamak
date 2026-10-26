@@ -149,13 +149,10 @@ pub(crate) fn generate(
 ) -> Result<Generated> {
     let namespace = platform.namespace();
     let mut generated = Generated::new();
-    for plugin in plugins {
+    for plugin in plugins.iter().filter(|plugin| plugin.builds_for(namespace)) {
         let Some(script) = &plugin.build else {
             continue;
         };
-        if !plugin.platforms.contains_key(namespace) {
-            continue;
-        }
         let script = plugin.package_file("build script", script)?;
         let output = empty_directory(&output.join(&plugin.id))?;
         let input = json!({
@@ -272,17 +269,23 @@ pub(crate) fn stage(
         };
         let root = destination.join(&plugin.id);
         fs::create_dir_all(&root)?;
-        for (path, staged) in files {
-            let path = root.join(path);
-            fs::create_dir_all(path.parent().unwrap_or(&root))?;
-            match staged {
-                Staged::Value(value) => fs::write(path, value)?,
-                Staged::Copy(source) => copy_file(source, path)?,
-            }
-        }
+        write_staged_files(&root, files)?;
         let native = plugin.root.join(family);
         if native.is_dir() {
             copy_dir_contents(&native, &root.join("native"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Writes the staged `files`, by path under `root`.
+fn write_staged_files(root: &Path, files: Vec<(PathBuf, Staged)>) -> Result<()> {
+    for (path, staged) in files {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap_or(root))?;
+        match staged {
+            Staged::Value(value) => fs::write(path, value)?,
+            Staged::Copy(source) => copy_file(source, path)?,
         }
     }
     Ok(())
@@ -511,6 +514,28 @@ mod tests {
         Ok(())
     }
 
+    /// Asserts the contents of each file under `root`, or, for `None`, that it does not exist.
+    #[track_caller]
+    fn assert_contents(root: &Path, expected: &[(&str, Option<&str>)]) -> TestResult {
+        for (path, expected) in expected {
+            let path = root.join(path);
+            let contents = path
+                .exists()
+                .then(|| fs::read_to_string(&path))
+                .transpose()?;
+            assert_eq!(contents.as_deref(), *expected, "{}", path.display());
+        }
+        Ok(())
+    }
+
+    /// Asserts that each of `paths` under `root` is a file.
+    #[track_caller]
+    fn assert_files(root: &Path, paths: &[&str]) {
+        for path in paths {
+            assert!(root.join(path).is_file(), "{path}");
+        }
+    }
+
     fn discovered_ids(project: &Path) -> TestResult<Vec<String>> {
         Ok(discover(project)?
             .into_iter()
@@ -551,17 +576,18 @@ mod tests {
             &staged,
         )?;
 
-        assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].id, "location");
+        let ids = plugins.iter().map(|plugin| &plugin.id).collect::<Vec<_>>();
+        assert_eq!(ids, ["location"]);
         assert_eq!(
             fs::read_to_string(staged.join("location/class"))?,
             "LocationPlugin"
         );
-        assert!(staged.join("location/native/plugin.swift").is_file());
-        assert!(
-            staged
-                .join("location/native/regions/Regions.swift")
-                .is_file()
+        assert_files(
+            &staged,
+            &[
+                "location/native/plugin.swift",
+                "location/native/regions/Regions.swift",
+            ],
         );
         Ok(())
     }
@@ -758,24 +784,19 @@ mod tests {
             &staged.join("android"),
         )?;
 
-        assert_eq!(
-            fs::read_to_string(staged.join("ios/alerts/class"))?,
-            "Alerts"
-        );
-        assert_eq!(
-            fs::read_to_string(staged.join("ios/alerts/plist"))?,
-            "not read"
-        );
-        assert!(!staged.join("ios/alerts/manifest").exists());
-        assert_eq!(
-            fs::read_to_string(staged.join("android/alerts/manifest"))?,
-            "<manifest />"
-        );
-        assert_eq!(
-            fs::read_to_string(staged.join("android/alerts/dependencies/0"))?,
-            "com.example:library:1.2.3"
-        );
-        Ok(())
+        assert_contents(
+            &staged,
+            &[
+                ("ios/alerts/class", Some("Alerts")),
+                ("ios/alerts/plist", Some("not read")),
+                ("ios/alerts/manifest", None),
+                ("android/alerts/manifest", Some("<manifest />")),
+                (
+                    "android/alerts/dependencies/0",
+                    Some("com.example:library:1.2.3"),
+                ),
+            ],
+        )
     }
 
     #[test]
@@ -891,15 +912,31 @@ mod tests {
 
     #[test]
     fn rejects_settings_whose_options_belong_to_a_plugin_with_a_longer_id() -> TestResult {
+        let setting = serde_json::json!({ "kind": "string", "description": "X" });
         for (short, long, message) in [
             (
-                ("secure", Some("storage-x")),
-                ("secure-storage", None),
+                serde_json::json!({
+                    "schemaVersion": 1,
+                    "id": "secure",
+                    "settings": { "storage-x": setting },
+                    "build": "build.mjs",
+                }),
+                serde_json::json!({ "schemaVersion": 1, "id": "secure-storage" }),
                 "plugin 'secure' setting storage-x takes the option --secure-storage-x, which belongs to plugin 'secure-storage'",
             ),
             (
-                ("alerts", Some("sound")),
-                ("alerts-ios", Some("sound")),
+                serde_json::json!({
+                    "schemaVersion": 1,
+                    "id": "alerts",
+                    "settings": { "sound": setting },
+                    "build": "build.mjs",
+                }),
+                serde_json::json!({
+                    "schemaVersion": 1,
+                    "id": "alerts-ios",
+                    "settings": { "sound": setting },
+                    "build": "build.mjs",
+                }),
                 "plugin 'alerts' setting sound takes the option --alerts-ios-sound, which belongs to plugin 'alerts-ios'",
             ),
         ] {
@@ -908,15 +945,9 @@ mod tests {
                 project.path().join("package.json"),
                 r#"{"dependencies":{"one":"1.0.0","two":"1.0.0"}}"#,
             )?;
-            for (package, (id, setting)) in [("one", short), ("two", long)] {
+            for (package, manifest) in [("one", short), ("two", long)] {
                 let root = project.path().join("node_modules").join(package);
                 fs::create_dir_all(&root)?;
-                let mut manifest = serde_json::json!({ "schemaVersion": 1, "id": id });
-                if let Some(setting) = setting {
-                    manifest["settings"] =
-                        serde_json::json!({ setting: { "kind": "string", "description": "X" } });
-                    manifest["build"] = "build.mjs".into();
-                }
                 fs::write(root.join("tokamak-plugin.json"), manifest.to_string())?;
             }
 
@@ -975,15 +1006,14 @@ mod tests {
         let staged = project.path().join("staged");
         stage(&plugins, &pack(Target::IosArm64), &generated, &staged)?;
 
-        assert_eq!(
-            fs::read_to_string(staged.join("alerts/resources/0-chime.caf"))?,
-            "chime"
-        );
-        assert_eq!(
-            fs::read_to_string(staged.join("alerts/plist"))?,
-            "generated"
-        );
-        assert!(!output.join("alerts/stale").exists());
+        assert_contents(
+            &staged,
+            &[
+                ("alerts/resources/0-chime.caf", Some("chime")),
+                ("alerts/plist", Some("generated")),
+            ],
+        )?;
+        assert_contents(&output, &[("alerts/stale", None)])?;
         let Err(error) = generate(&plugins, Platform::Android, &settings, &output) else {
             return Err("the failing script was accepted".into());
         };
@@ -1082,11 +1112,15 @@ mod tests {
 
     #[test]
     fn validates_protocol_identifiers() {
-        assert!(valid_plugin_id("location"));
-        assert!(valid_plugin_id("photo-library2"));
-        assert!(!valid_plugin_id("PhotoLibrary"));
-        assert!(!valid_plugin_id("2photo"));
-        assert!(!valid_plugin_id("photo--library"));
-        assert!(!valid_plugin_id("../photo"));
+        for (id, valid) in [
+            ("location", true),
+            ("photo-library2", true),
+            ("PhotoLibrary", false),
+            ("2photo", false),
+            ("photo--library", false),
+            ("../photo", false),
+        ] {
+            assert_eq!(valid_plugin_id(id), valid, "{id}");
+        }
     }
 }

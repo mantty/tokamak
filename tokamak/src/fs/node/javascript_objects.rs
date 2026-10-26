@@ -729,12 +729,13 @@ pub(super) fn stream_write<'js>(
     };
     let descriptor = open_descriptor(ctx, state)?;
     let result = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, position));
-    if let Some(callback) = callback {
-        match result {
-            Ok(_) => callback.call::<_, ()>((Value::new_null(ctx.clone()),))?,
-            Err(_error) if ctx.has_exception() => callback.call::<_, ()>((ctx.catch(),))?,
-            Err(error) => return Err(error),
-        }
+    let Some(callback) = callback else {
+        return Ok(true);
+    };
+    match result {
+        Ok(_) => callback.call::<_, ()>((Value::new_null(ctx.clone()),))?,
+        Err(_error) if ctx.has_exception() => callback.call::<_, ()>((ctx.catch(),))?,
+        Err(error) => return Err(error),
     }
     Ok(true)
 }

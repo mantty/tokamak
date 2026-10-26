@@ -246,9 +246,8 @@ fn prepare_ios_simulator(selector: &str) -> Result<Option<PreparedDevice>> {
     if !simulators.success {
         bail!("Xcode Simulator services are unavailable");
     }
-    let Some(targets) = parse_ios_simulator_targets(&simulators.stdout) else {
-        bail!("unable to read iOS Simulator devices");
-    };
+    let targets = parse_ios_simulator_targets(&simulators.stdout)
+        .context("unable to read iOS Simulator devices")?;
     let Some(target) = targets.into_iter().find(|target| target.id == selector) else {
         return Ok(None);
     };
@@ -404,14 +403,11 @@ fn create_managed_android_avd() -> Result<()> {
             tool_failure(&sdkmanager, "sdkmanager failed")
         );
     }
-    let Some(system_image) = select_android_system_image(&sdkmanager.stdout) else {
-        bail!(
-            "no Android system image is installed; install one with sdkmanager before using `tok dev android`"
-        );
-    };
-    let Some(avdmanager) = android_tool_program("avdmanager", "cmdline-tools") else {
-        bail!("Android command-line tools are not installed");
-    };
+    let system_image = select_android_system_image(&sdkmanager.stdout).context(
+        "no Android system image is installed; install one with sdkmanager before using `tok dev android`",
+    )?;
+    let avdmanager = android_tool_program("avdmanager", "cmdline-tools")
+        .context("Android command-line tools are not installed")?;
     let created = run_tool_with_input(
         &avdmanager,
         &[
@@ -972,44 +968,41 @@ fn parse_ios_simulator_devices(source: &str) -> Option<Vec<Device>> {
 
 fn parse_ios_simulator_targets(source: &str) -> Option<Vec<IosSimulatorTarget>> {
     let value = serde_json::from_str::<Value>(source).ok()?;
-    let runtimes = value.get("devices")?.as_object()?;
+    let runtimes = value.get("devices").and_then(Value::as_object)?;
+    let entries = runtimes
+        .iter()
+        .filter(|(runtime, _)| is_ios_runtime(runtime))
+        .filter_map(|(_, entries)| entries.as_array())
+        .flatten();
     let mut targets = Vec::new();
-    for (runtime, entries) in runtimes {
-        if !is_ios_runtime(runtime) {
-            continue;
-        }
-        let Some(entries) = entries.as_array() else {
+    for entry in entries {
+        let Some(id) = entry.get("udid").and_then(Value::as_str) else {
             continue;
         };
-        for entry in entries {
-            let Some(id) = entry.get("udid").and_then(Value::as_str) else {
-                continue;
-            };
-            let name = entry
-                .get("name")
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("iOS Simulator");
+        let availability_error = entry
+            .get("availabilityError")
+            .and_then(Value::as_str)
+            .filter(|reason| !reason.is_empty())
+            .map(str::to_owned);
+        targets.push(IosSimulatorTarget {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            available: entry
+                .get("isAvailable")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            state: entry
+                .get("state")
                 .and_then(Value::as_str)
-                .unwrap_or("iOS Simulator");
-            let availability_error = entry
-                .get("availabilityError")
-                .and_then(Value::as_str)
-                .filter(|reason| !reason.is_empty())
-                .map(str::to_owned);
-            targets.push(IosSimulatorTarget {
-                id: id.to_owned(),
-                name: name.to_owned(),
-                available: entry
-                    .get("isAvailable")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                state: entry
-                    .get("state")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                has_been_booted: simulator_has_been_booted(entry),
-                availability_error,
-            });
-        }
+                .unwrap_or_default()
+                .to_owned(),
+            has_been_booted: simulator_has_been_booted(entry),
+            availability_error,
+        });
     }
     Some(targets)
 }
@@ -1095,20 +1088,10 @@ fn parse_android_system_images(source: &str) -> Vec<String> {
     let mut images = Vec::new();
     for line in source.lines() {
         let line = line.trim();
-        if line.eq_ignore_ascii_case("installed packages:") {
-            installed_packages = true;
-            continue;
-        }
-        if installed_packages && line.to_ascii_lowercase().ends_with("packages:") {
-            installed_packages = false;
-        }
-        if !installed_packages {
-            continue;
-        }
-        let Some(package) = line.split_whitespace().next() else {
-            continue;
-        };
-        if package.starts_with("system-images;") {
+        installed_packages = line.eq_ignore_ascii_case("installed packages:")
+            || (installed_packages && !line.to_ascii_lowercase().ends_with("packages:"));
+        let package = line.split_whitespace().next().unwrap_or_default();
+        if installed_packages && package.starts_with("system-images;") {
             images.push(package.to_owned());
         }
     }
@@ -1135,8 +1118,7 @@ fn parse_devicectl_devices(source: &str) -> Option<Vec<Device>> {
         .get("devices")
         .and_then(Value::as_array)
         .or_else(|| value.get("result")?.get("devices")?.as_array())?;
-    let mut devices = Vec::new();
-    for entry in entries {
+    let physical_ios_entries = entries.iter().filter(|entry| {
         let platform = first_json_string(
             entry,
             &[
@@ -1147,11 +1129,11 @@ fn parse_devicectl_devices(source: &str) -> Option<Vec<Device>> {
         )
         .unwrap_or_default()
         .to_ascii_lowercase();
-        if !(platform.contains("ios") || platform.contains("iphone") || platform.contains("ipad"))
-            || platform.contains("simulator")
-        {
-            continue;
-        }
+        (platform.contains("ios") || platform.contains("iphone") || platform.contains("ipad"))
+            && !platform.contains("simulator")
+    });
+    let mut devices = Vec::new();
+    for entry in physical_ios_entries {
         let Some(id) = first_json_string(
             entry,
             &[
@@ -1266,26 +1248,28 @@ fn parse_android_adb_devices(source: &str) -> Vec<Device> {
             || generic_kind.to_owned(),
             |model| format!("{model} / {generic_kind}"),
         );
-        let status = match state {
-            "device" => DeviceStatus::Available,
-            "unauthorized" => {
-                DeviceStatus::Blocked("authorize USB debugging on the device".to_owned())
-            }
-            "offline" => DeviceStatus::Blocked("the device is offline".to_owned()),
-            "no" if line.contains("permissions") => {
-                DeviceStatus::Blocked("grant this user USB access to the device".to_owned())
-            }
-            state => DeviceStatus::Blocked(format!("adb reports {state}")),
-        };
         devices.push(Device {
             id: id.to_owned(),
             kind,
             platform: Platform::Android,
             group,
-            status,
+            status: adb_device_status(state, line),
         });
     }
     devices
+}
+
+/// The status of a device that `adb devices -l` lists on `line` in `state`.
+fn adb_device_status(state: &str, line: &str) -> DeviceStatus {
+    match state {
+        "device" => DeviceStatus::Available,
+        "unauthorized" => DeviceStatus::Blocked("authorize USB debugging on the device".to_owned()),
+        "offline" => DeviceStatus::Blocked("the device is offline".to_owned()),
+        "no" if line.contains("permissions") => {
+            DeviceStatus::Blocked("grant this user USB access to the device".to_owned())
+        }
+        state => DeviceStatus::Blocked(format!("adb reports {state}")),
+    }
 }
 
 fn first_json_string(value: &Value, paths: &[&[&str]]) -> Option<String> {
@@ -1342,14 +1326,15 @@ fn physical_ios_status(value: &Value) -> DeviceStatus {
     if connection.contains("disconnect") || connection.contains("offline") {
         return DeviceStatus::Blocked("connect the device".to_owned());
     }
-    for path in [
+    let unavailable = [
         &["isAvailable"][..],
         &["isConnected"][..],
         &["connectionProperties", "isConnected"][..],
-    ] {
-        if json_at(value, path).and_then(Value::as_bool) == Some(false) {
-            return DeviceStatus::Blocked("connect or trust the device".to_owned());
-        }
+    ]
+    .into_iter()
+    .any(|path| json_at(value, path).and_then(Value::as_bool) == Some(false));
+    if unavailable {
+        return DeviceStatus::Blocked("connect or trust the device".to_owned());
     }
     DeviceStatus::Available
 }
@@ -1466,10 +1451,14 @@ mod tests {
             }"#,
         )
         .unwrap_or_default();
-        assert_eq!(devices.len(), 2);
+        assert_eq!(
+            devices
+                .iter()
+                .map(|device| device.id.as_str())
+                .collect::<Vec<_>>(),
+            ["SIM-1", "SIM-2"]
+        );
         assert_eq!(devices[0].status, DeviceStatus::Available);
-        assert_eq!(devices[0].id, "SIM-1");
-        assert_eq!(devices[1].id, "SIM-2");
     }
 
     #[test]
@@ -1531,17 +1520,18 @@ mod tests {
         let devices = parse_android_adb_devices(
             "List of devices attached\n emulator-5554 device product:sdk model:Pixel_8\n phone-1 unauthorized usb:1\n phone-2 no permissions usb:2\n",
         );
-        assert_eq!(devices.len(), 3);
+        assert_eq!(
+            devices
+                .iter()
+                .map(|device| &device.status)
+                .collect::<Vec<_>>(),
+            [
+                &DeviceStatus::Available,
+                &DeviceStatus::Blocked("authorize USB debugging on the device".to_owned()),
+                &DeviceStatus::Blocked("grant this user USB access to the device".to_owned()),
+            ]
+        );
         assert_eq!(devices[0].id, "emulator-5554");
-        assert_eq!(devices[0].status, DeviceStatus::Available);
-        assert_eq!(
-            devices[1].status,
-            DeviceStatus::Blocked("authorize USB debugging on the device".to_owned())
-        );
-        assert_eq!(
-            devices[2].status,
-            DeviceStatus::Blocked("grant this user USB access to the device".to_owned())
-        );
     }
 
     #[test]
@@ -1570,9 +1560,13 @@ mod tests {
         let devices = parse_xctrace_devices(
             "== Devices ==\nTom's iPhone (iOS 18.0) (PHONE-1)\nMacBook Pro (macOS 15.0) (MAC-1)\n== Simulators ==\niPhone 15 (iOS 18.0) (SIM-1)\n",
         );
-        assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].id, "PHONE-1");
-        assert_eq!(devices[0].kind, "Tom's iPhone / physical iPhone");
+        assert_eq!(
+            devices
+                .iter()
+                .map(|device| (device.id.as_str(), device.kind.as_str()))
+                .collect::<Vec<_>>(),
+            [("PHONE-1", "Tom's iPhone / physical iPhone")]
+        );
     }
 
     #[test]
@@ -1629,13 +1623,13 @@ mod tests {
 
     #[test]
     fn retries_only_transient_devicectl_errors() {
-        assert!(is_transient_devicectl_error("Connection reset by peer"));
-        assert!(is_transient_devicectl_error(
-            "CoreDevice.ControlChannelConnectionError"
-        ));
-        assert!(!is_transient_devicectl_error(
-            "The executable contains an invalid signature"
-        ));
+        for (detail, transient) in [
+            ("Connection reset by peer", true),
+            ("CoreDevice.ControlChannelConnectionError", true),
+            ("The executable contains an invalid signature", false),
+        ] {
+            assert_eq!(is_transient_devicectl_error(detail), transient, "{detail}");
+        }
     }
 
     #[test]

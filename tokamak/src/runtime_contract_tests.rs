@@ -513,8 +513,11 @@ fn node_reference(script: &str) -> TestResult<serde_json::Value> {
 /// Assert that every domain of `actual` equals `expected`, printing each
 /// difference.
 fn assert_contract_domains(expected: &serde_json::Value, actual: &serde_json::Value) -> TestResult {
+    let Some(domains) = expected.as_object() else {
+        return Err("reference is not an object".into());
+    };
     let mut failures = Vec::new();
-    for (name, expected) in expected.as_object().ok_or("reference is not an object")? {
+    for (name, expected) in domains {
         if actual.get(name) == Some(expected) {
             continue;
         }
@@ -557,11 +560,9 @@ fn report_contract_difference(
     };
     let extra_keys = actual.keys().filter(|key| !expected.contains_key(*key));
     for key in expected.keys().chain(extra_keys) {
-        let (actual, expected) = (actual.get(key), expected.get(key));
-        if actual != expected {
-            let null = serde_json::Value::Null;
-            report_contract_difference(&format!("{name}.{key}"), actual, expected.unwrap_or(&null));
-        }
+        let null = serde_json::Value::Null;
+        let expected = expected.get(key).unwrap_or(&null);
+        report_contract_difference(&format!("{name}.{key}"), actual.get(key), expected);
     }
 }
 

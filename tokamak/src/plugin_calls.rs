@@ -232,9 +232,10 @@ impl PluginCalls {
         let queued = match waiting.get(&id) {
             Some(Waiting::Subscription { results, overflow }) => results.push(result, *overflow),
             Some(Waiting::Call { .. }) => {
-                if let Some(Waiting::Call { result: sender, .. }) = waiting.remove(&id) {
-                    let _ = sender.send(result);
-                }
+                let Some(call) = waiting.remove(&id) else {
+                    return;
+                };
+                call.send(result);
                 return;
             }
             None => return,

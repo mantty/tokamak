@@ -42,14 +42,28 @@ fn parses_known_targets_and_rejects_unknown_targets() {
 
 #[test]
 fn maps_targets_to_one_platform_metadata_model() {
-    assert_eq!(Target::AndroidArm64.platform(), Platform::Android);
-    assert_eq!(Target::IosArm64.platform(), Platform::Ios);
-    assert_eq!(Target::IosSimulatorArm64.platform(), Platform::IosSimulator);
-    assert_eq!(Target::MacosArm64.platform(), Platform::Macos);
-    assert_eq!(Target::WindowsX64.platform(), Platform::Windows);
-    assert_eq!(Platform::Macos.output_name("demo"), "demo.app");
-    assert_eq!(Platform::Android.output_name("demo"), "demo.apk");
-    assert_eq!(Platform::Windows.output_name("demo"), "demo");
+    assert_eq!(
+        [
+            Target::AndroidArm64,
+            Target::IosArm64,
+            Target::IosSimulatorArm64,
+            Target::MacosArm64,
+            Target::WindowsX64,
+        ]
+        .map(Target::platform),
+        [
+            Platform::Android,
+            Platform::Ios,
+            Platform::IosSimulator,
+            Platform::Macos,
+            Platform::Windows,
+        ]
+    );
+    assert_eq!(
+        [Platform::Macos, Platform::Android, Platform::Windows]
+            .map(|platform| platform.output_name("demo")),
+        ["demo.app", "demo.apk", "demo"]
+    );
 }
 
 #[test]
@@ -104,11 +118,11 @@ fn accepts_matching_cli_version() {
 #[test]
 fn rejects_a_different_cli_version() {
     let manifest = valid_manifest();
-    assert!(matches!(
-        manifest.validate_cli_version("0.1.1"),
-        Err(PlatformPackError::IncompatibleTokamakVersion { required, actual })
-            if required == "0.1.0" && actual == "0.1.1"
-    ));
+    let result = manifest.validate_cli_version("0.1.1");
+    let Err(PlatformPackError::IncompatibleTokamakVersion { required, actual }) = &result else {
+        panic!("expected an incompatible version error: {result:?}");
+    };
+    assert_eq!((required.as_str(), actual.as_str()), ("0.1.0", "0.1.1"));
 }
 
 #[test]
@@ -137,15 +151,15 @@ fn rejects_invalid_variables() {
             },
         )]);
         let result = manifest.validate();
-        assert!(
-            matches!(
-                result,
-                Err(PlatformPackError::InvalidVariableName(ref rejected)
-                    | PlatformPackError::ReservedVariableName(ref rejected)
-                    | PlatformPackError::MissingVariableDescription(ref rejected)) if rejected == name
-            ),
-            "accepted {name}: {result:?}"
-        );
+        let Err(
+            PlatformPackError::InvalidVariableName(rejected)
+            | PlatformPackError::ReservedVariableName(rejected)
+            | PlatformPackError::MissingVariableDescription(rejected),
+        ) = &result
+        else {
+            panic!("accepted {name}: {result:?}");
+        };
+        assert_eq!(rejected, name, "accepted {name}: {result:?}");
     }
 }
 
@@ -154,10 +168,11 @@ fn rejects_invalid_plugin_keys() {
     let mut manifest = valid_manifest();
     manifest.plugin_keys = BTreeMap::from([("../class".to_owned(), PluginKeyKind::String)]);
 
-    assert!(matches!(
-        manifest.validate(),
-        Err(PlatformPackError::InvalidPluginKey(key)) if key == "../class"
-    ));
+    let result = manifest.validate();
+    let Err(PlatformPackError::InvalidPluginKey(key)) = &result else {
+        panic!("expected an invalid plugin key error: {result:?}");
+    };
+    assert_eq!(key, "../class");
 }
 
 #[test]
@@ -196,22 +211,30 @@ fn load_manifest_rejects_contract_invalid_json() -> TestResult {
 }"#,
     )?;
 
-    assert!(matches!(
-        load_manifest(&manifest_path),
-        Err(PlatformPackError::InvalidPluginKey(key)) if key == "../class"
-    ));
+    let result = load_manifest(&manifest_path);
+    let Err(PlatformPackError::InvalidPluginKey(key)) = &result else {
+        panic!("expected an invalid plugin key error: {result:?}");
+    };
+    assert_eq!(key, "../class");
 
     Ok(())
 }
 
 #[test]
 fn keys_are_lowercase_words_joined_by_hyphens() {
-    for key in ["plist", "team-id", "build-number", "a1-b2"] {
-        assert!(is_valid_key(key), "rejected {key}");
-    }
-    for key in [
-        "", "Plist", "team_id", "-plist", "plist-", "team--id", "1plist",
+    for (key, valid) in [
+        ("plist", true),
+        ("team-id", true),
+        ("build-number", true),
+        ("a1-b2", true),
+        ("", false),
+        ("Plist", false),
+        ("team_id", false),
+        ("-plist", false),
+        ("plist-", false),
+        ("team--id", false),
+        ("1plist", false),
     ] {
-        assert!(!is_valid_key(key), "accepted {key}");
+        assert_eq!(is_valid_key(key), valid, "{key}");
     }
 }

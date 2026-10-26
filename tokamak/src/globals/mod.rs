@@ -38,13 +38,17 @@ fn run_task<'js>(
     cancelled: &tokio_util::sync::CancellationToken,
 ) {
     let ctx = callback.ctx();
-    while ctx.execute_pending_job() {}
+    drain_pending_jobs(ctx);
     if cancelled.is_cancelled() {
         return;
     }
     if callback.call::<_, ()>(args).is_err() {
         let _ = ctx.catch();
     }
+    drain_pending_jobs(ctx);
+}
+
+fn drain_pending_jobs(ctx: &rquickjs::Ctx<'_>) {
     while ctx.execute_pending_job() {}
 }
 

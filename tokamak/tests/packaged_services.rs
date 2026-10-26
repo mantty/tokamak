@@ -35,10 +35,9 @@ export default {
         }
         let runtime = Runtime::start(config(directory.path(), app), |_| {})?;
         let result: Value = serde_json::from_slice(&runtime.fetch("/", TIMEOUT)?)?;
-        assert_eq!(
-            result,
-            json!({"context": "undefined", "global": "undefined"})
-        );
+        if result != json!({"context": "undefined", "global": "undefined"}) {
+            return Err(format!("split {split}: {result}").into());
+        }
     }
     Ok(())
 }

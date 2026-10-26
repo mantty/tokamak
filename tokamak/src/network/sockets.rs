@@ -33,10 +33,12 @@ pub(crate) fn ip_version(input: &str) -> u8 {
         Some(_) => return 0,
         None => input,
     };
-    match address.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(_)) => 4,
-        Ok(std::net::IpAddr::V6(_)) => 6,
-        Err(_) => 0,
+    let Ok(address) = address.parse::<std::net::IpAddr>() else {
+        return 0;
+    };
+    match address {
+        std::net::IpAddr::V4(_) => 4,
+        std::net::IpAddr::V6(_) => 6,
     }
 }
 
@@ -140,10 +142,10 @@ impl Socket {
         self.closed.cancel();
         let reader = self.reader.lock().await.take().ok_or_else(closed_error)?;
         let writer = self.writer.lock().await.take().ok_or_else(closed_error)?;
-        match reader.unsplit(writer) {
-            Either::Left(stream) => tls(stream, host).await.map(Either::Right),
-            Either::Right(_) => Err(io::Error::other("Socket is already secure")),
-        }
+        let Either::Left(stream) = reader.unsplit(writer) else {
+            return Err(io::Error::other("Socket is already secure"));
+        };
+        tls(stream, host).await.map(Either::Right)
     }
 }
 
@@ -155,11 +157,10 @@ async fn tls(stream: TcpStream, host: &str) -> io::Result<TlsStream<TcpStream>> 
 
 async fn connect(host: &str, port: u16, secure: bool) -> io::Result<Connection> {
     let stream = TcpStream::connect((host, port)).await?;
-    if secure {
-        tls(stream, host).await.map(Either::Right)
-    } else {
-        Ok(Either::Left(stream))
+    if !secure {
+        return Ok(Either::Left(stream));
     }
+    tls(stream, host).await.map(Either::Right)
 }
 
 fn opening(

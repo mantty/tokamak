@@ -354,20 +354,32 @@ mod tests {
 
     #[test]
     fn reserves_names_beginning_cf_in_any_case() {
-        assert!(allowed_name("users"));
-        assert!(allowed_name("_cf"));
-        assert!(allowed_name("cf_users"));
-        assert!(!allowed_name("_cf_KV"));
-        assert!(!allowed_name("_CF_metadata"));
+        for (name, allowed) in [
+            ("users", true),
+            ("_cf", true),
+            ("cf_users", true),
+            ("_cf_KV", false),
+            ("_CF_metadata", false),
+        ] {
+            assert_eq!(allowed_name(name), allowed, "{name}");
+        }
     }
 
     #[test]
     fn permits_introspection_pragmas_for_allowed_names() {
-        assert!(allowed_pragma("table_list", None));
-        assert!(allowed_pragma("table_info", Some("users")));
-        assert!(!allowed_pragma("table_info", Some("_cf_KV")));
-        assert!(!allowed_pragma("index_list", None));
-        assert!(!allowed_pragma("TABLE_LIST", None));
+        for (pragma, argument, allowed) in [
+            ("table_list", None, true),
+            ("table_info", Some("users"), true),
+            ("table_info", Some("_cf_KV"), false),
+            ("index_list", None, false),
+            ("TABLE_LIST", None, false),
+        ] {
+            assert_eq!(
+                allowed_pragma(pragma, argument),
+                allowed,
+                "{pragma} {argument:?}"
+            );
+        }
     }
 
     #[test]

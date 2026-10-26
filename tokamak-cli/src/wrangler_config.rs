@@ -548,40 +548,37 @@ fn collect_bindings(values: &BTreeMap<String, Value>) -> Vec<WranglerBinding> {
     bindings
 }
 
+/// The keys under which a binding kind's configuration object nests its
+/// bindings.
+const NESTED_BINDING_KEYS: [(&str, &[&str]); 2] = [
+    ("durable_objects", &["bindings"]),
+    ("queues", &["producers", "consumers"]),
+];
+
 fn collect_binding_names(kind: &str, value: &Value, names: &mut Vec<String>) {
-    match value {
-        Value::Array(values) => {
-            for value in values {
-                collect_binding_names(kind, value, names);
-            }
-        }
+    let nested: Vec<&Value> = match value {
+        Value::Array(values) => values.iter().collect(),
         Value::Object(values) => {
-            if kind == "durable_objects"
-                && let Some(value) = values.get("bindings")
-            {
-                collect_binding_names(kind, value, names);
-                return;
-            }
-            if kind == "queues" {
-                let mut nested = false;
-                for key in ["producers", "consumers"] {
-                    if let Some(value) = values.get(key) {
-                        collect_binding_names(kind, value, names);
-                        nested = true;
-                    }
-                }
-                if nested {
-                    return;
-                }
-            }
+            let nested: Vec<&Value> = NESTED_BINDING_KEYS
+                .iter()
+                .filter(|(nesting_kind, _)| *nesting_kind == kind)
+                .flat_map(|(_, keys)| keys.iter().filter_map(|key| values.get(*key)))
+                .collect();
             let name = ["binding", "name", "queue", "dataset", "id"]
                 .into_iter()
                 .find_map(|key| values.get(key).and_then(Value::as_str))
                 .unwrap_or("<unnamed>");
-            names.push(name.to_owned());
+            names.extend(nested.is_empty().then(|| name.to_owned()));
+            nested
         }
-        Value::String(name) => names.push(name.clone()),
-        _ => {}
+        Value::String(name) => {
+            names.push(name.clone());
+            Vec::new()
+        }
+        _ => Vec::new(),
+    };
+    for value in nested {
+        collect_binding_names(kind, value, names);
     }
 }
 
@@ -611,25 +608,15 @@ fn segment_matches(pattern: &str, value: &str) -> bool {
     let value = value.as_bytes();
     let mut states = vec![(0, 0)];
     while let Some((pattern_index, value_index)) = states.pop() {
-        if pattern_index == pattern.len() {
-            if value_index == value.len() {
-                return true;
-            }
-            continue;
-        }
-        match pattern[pattern_index] {
-            b'*' => {
+        match (pattern.get(pattern_index), value.get(value_index)) {
+            (None, None) => return true,
+            (Some(b'*'), next) => {
                 states.push((pattern_index + 1, value_index));
-                if value_index < value.len() {
-                    states.push((pattern_index, value_index + 1));
-                }
+                states.extend(next.map(|_| (pattern_index, value_index + 1)));
             }
-            b'?' if value_index < value.len() => {
-                states.push((pattern_index + 1, value_index + 1));
-            }
-            character if value_index < value.len() && character == value[value_index] => {
-                states.push((pattern_index + 1, value_index + 1));
-            }
+            (Some(&wanted), Some(&next)) => states.extend(
+                (wanted == b'?' || wanted == next).then_some((pattern_index + 1, value_index + 1)),
+            ),
             _ => {}
         }
     }
@@ -654,7 +641,7 @@ mod tests {
 
     use super::{
         HtmlHandling, NotFoundHandling, WranglerMigrations, WranglerModuleType, WranglerRule,
-        WranglerStorage, applied_rules, collect_bindings, deploy_config, load_config,
+        WranglerStorage, applied_rules, collect_bindings, deploy_config, glob_matches, load_config,
         normalize_relative_path, pattern_within,
     };
 
@@ -685,6 +672,40 @@ mod tests {
                 ("durable_objects", "ROOMS"),
                 ("queues", "EVENTS"),
                 ("vectorize", "INDEX"),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn collects_binding_names_from_every_shape() -> Result<()> {
+        let values = serde_json::from_str::<BTreeMap<String, Value>>(
+            r#"{
+                "ai": { "binding": "AI" },
+                "analytics_engine_datasets": [{ "dataset": "events" }],
+                "durable_objects": { "name": "ROOMS", "class_name": "Room" },
+                "images": "IMAGES",
+                "pipelines": [{ "pipeline": "pipeline" }],
+                "queues": {
+                    "producers": [{ "binding": "OUT", "queue": "out" }],
+                    "consumers": [{ "queue": "in" }]
+                },
+                "rate_limiting": 5
+            }"#,
+        )?;
+        assert_eq!(
+            collect_bindings(&values)
+                .iter()
+                .map(|binding| (binding.kind, binding.name.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("ai", "AI"),
+                ("analytics_engine_datasets", "events"),
+                ("durable_objects", "ROOMS"),
+                ("images", "IMAGES"),
+                ("pipelines", "<unnamed>"),
+                ("queues", "OUT"),
+                ("queues", "in"),
             ]
         );
         Ok(())
@@ -750,8 +771,14 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(loaded.bindings.len(), 1);
-        assert_eq!(loaded.bindings[0].kind, "queues");
+        assert_eq!(
+            loaded
+                .bindings
+                .iter()
+                .map(|binding| binding.kind)
+                .collect::<Vec<_>>(),
+            ["queues"]
+        );
         Ok(())
     }
 
@@ -1001,10 +1028,43 @@ mod tests {
 
     #[test]
     fn normalizes_relative_paths_as_wrangler_does() {
-        assert_eq!(normalize_relative_path("./migrations/"), "migrations");
-        assert_eq!(normalize_relative_path("db\\migrations"), "db/migrations");
-        assert_eq!(normalize_relative_path("a/../b"), "b");
-        assert_eq!(normalize_relative_path("../../db"), "../../db");
-        assert_eq!(normalize_relative_path("./"), ".");
+        for (path, expected) in [
+            ("./migrations/", "migrations"),
+            ("db\\migrations", "db/migrations"),
+            ("a/../b", "b"),
+            ("../../db", "../../db"),
+            ("./", "."),
+        ] {
+            assert_eq!(normalize_relative_path(path), expected, "{path}");
+        }
+    }
+
+    #[test]
+    fn matches_globs_segment_by_segment() {
+        for (pattern, path, expected) in [
+            ("*.sql", "0001_init.sql", true),
+            ("*.sql", "nested/0001.sql", false),
+            ("**/*.js", "index.js", true),
+            ("**/*.js", "assets/lazy.js", true),
+            ("**/*.js", "assets/lazy.mjs", false),
+            (
+                "./drizzle/*/migration.sql",
+                "drizzle/0001/migration.sql",
+                true,
+            ),
+            ("*/migration.sql", "0001/other.sql", false),
+            ("?.sql", "1.sql", true),
+            ("?.sql", "12.sql", false),
+            ("?", "", false),
+            ("*", "", true),
+            ("a*b?c", "aXXbYc", true),
+            ("a*b?c", "abc", false),
+            ("*x", "abc", false),
+            ("data.bin", "data.bin", true),
+            ("data.bin", "data.bix", false),
+            ("data.bin", "data.bin2", false),
+        ] {
+            assert_eq!(glob_matches(pattern, path), expected, "{pattern} {path}");
+        }
     }
 }

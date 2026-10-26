@@ -22,28 +22,17 @@ impl Codec {
         finish: bool,
     ) -> Result<(usize, usize, Status), String> {
         let (before_in, before_out) = self.totals();
+        let (compress_flush, decompress_flush) = if finish {
+            (FlushCompress::Finish, FlushDecompress::Finish)
+        } else {
+            (FlushCompress::None, FlushDecompress::None)
+        };
         let status = match self {
             Self::Compress(codec) => codec
-                .compress(
-                    input,
-                    output,
-                    if finish {
-                        FlushCompress::Finish
-                    } else {
-                        FlushCompress::None
-                    },
-                )
+                .compress(input, output, compress_flush)
                 .map_err(|error| error.to_string())?,
             Self::Decompress(codec) => codec
-                .decompress(
-                    input,
-                    output,
-                    if finish {
-                        FlushDecompress::Finish
-                    } else {
-                        FlushDecompress::None
-                    },
-                )
+                .decompress(input, output, decompress_flush)
                 .map_err(|error| error.to_string())?,
         };
         let (after_in, after_out) = self.totals();
@@ -94,7 +83,8 @@ pub(super) fn create<'js>(
                     .to_vec();
                 let mut remaining = input.as_slice();
                 let mut output = [0; 16384];
-                while !ended {
+                let mut stalled = false;
+                while !ended && !stalled {
                     let (consumed, written, status) = codec
                         .step(remaining, &mut output, finish)
                         .map_err(|error| Exception::throw_type(&ctx, &error))?;
@@ -106,15 +96,13 @@ pub(super) fn create<'js>(
                         )?,))?;
                     }
                     ended = status == Status::StreamEnd;
-                    if !ended && consumed == 0 && written == 0 {
-                        if finish {
-                            return Err(Exception::throw_type(
-                                &ctx,
-                                "Called close() on a decompression stream with incomplete data",
-                            ));
-                        }
-                        break;
-                    }
+                    stalled = !ended && consumed == 0 && written == 0;
+                }
+                if stalled && finish {
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        "Called close() on a decompression stream with incomplete data",
+                    ));
                 }
                 if ended && !remaining.is_empty() {
                     return Err(Exception::throw_type(

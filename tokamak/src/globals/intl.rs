@@ -816,19 +816,17 @@ fn date_time_formatter(
 ) -> rquickjs::Result<DateTimeFormatter<CompositeFieldSet>> {
     let field_set = field_set(ctx, options)?;
     let mut preferences = DateTimeFormatterPreferences::from(locale);
-    if let Some(hour_cycle) = options
+    let hour_cycle = options
         .get("hourCycle")
         .and_then(Value::as_str)
-        .and_then(parse_hour_cycle)
-    {
-        preferences.hour_cycle = Some(hour_cycle);
-    } else if let Some(hour12) = options.get("hour12").and_then(Value::as_bool) {
-        preferences.hour_cycle = Some(if hour12 {
-            HourCycle::H12
-        } else {
-            HourCycle::H23
-        });
-    }
+        .and_then(parse_hour_cycle);
+    let hour12 = options.get("hour12").and_then(Value::as_bool);
+    preferences.hour_cycle = match (hour_cycle, hour12) {
+        (Some(hour_cycle), _) => Some(hour_cycle),
+        (None, Some(true)) => Some(HourCycle::H12),
+        (None, Some(false)) => Some(HourCycle::H23),
+        (None, None) => preferences.hour_cycle,
+    };
     DateTimeFormatter::try_new_unstable(&*PROVIDER, preferences, field_set)
         .map_err(range_error(ctx))
 }
@@ -852,9 +850,8 @@ fn field_set(ctx: &Ctx<'_>, options: &Value) -> rquickjs::Result<CompositeFieldS
         date_style.is_some() || has_date_option || (!has_time_option && time_style.is_none());
     let has_time = time_style.is_some() || has_time_option;
     let mut builder = FieldSetBuilder::new();
-    if options.get("year").and_then(Value::as_str) == Some("numeric") {
-        builder.year_style = Some(YearStyle::Full);
-    }
+    builder.year_style =
+        (options.get("year").and_then(Value::as_str) == Some("numeric")).then_some(YearStyle::Full);
     builder.date_fields = has_date.then(|| date_fields(options, date_style));
     builder.time_precision = has_time.then(|| time_precision(options, time_style));
     builder.length = Some(length(date_style.or(time_style).or_else(|| {
@@ -864,12 +861,13 @@ fn field_set(ctx: &Ctx<'_>, options: &Value) -> rquickjs::Result<CompositeFieldS
             _ => None,
         }
     })));
-    if options.get("timeZoneName").is_some() || matches!(time_style, Some("long" | "full")) {
-        builder.zone_style = Some(match options.get("timeZoneName").and_then(Value::as_str) {
-            Some("long") => ZoneStyle::SpecificLong,
-            _ => ZoneStyle::SpecificShort,
-        });
-    }
+    let zone_style = match options.get("timeZoneName").and_then(Value::as_str) {
+        Some("long") => ZoneStyle::SpecificLong,
+        _ => ZoneStyle::SpecificShort,
+    };
+    let has_zone =
+        options.get("timeZoneName").is_some() || matches!(time_style, Some("long" | "full"));
+    builder.zone_style = has_zone.then_some(zone_style);
     builder.build_composite().map_err(range_error(ctx))
 }
 
@@ -900,20 +898,16 @@ fn date_fields(options: &Value, style: Option<&str>) -> DateFields {
 }
 
 fn time_precision(options: &Value, style: Option<&str>) -> TimePrecision {
-    if matches!(style, Some("long" | "full")) {
-        return TimePrecision::Second;
-    }
-    if style == Some("short")
-        || options.get("hour").is_some()
-            && options.get("minute").is_none()
-            && options.get("second").is_none()
-    {
-        return TimePrecision::Hour;
-    }
-    if options.get("second").is_none() && options.get("fractionalSecondDigits").is_none() {
-        TimePrecision::Minute
-    } else {
-        TimePrecision::Second
+    let hour_only = options.get("hour").is_some()
+        && options.get("minute").is_none()
+        && options.get("second").is_none();
+    let seconds =
+        options.get("second").is_some() || options.get("fractionalSecondDigits").is_some();
+    match (style, hour_only, seconds) {
+        (Some("long" | "full"), ..) => TimePrecision::Second,
+        (Some("short"), ..) | (_, true, _) => TimePrecision::Hour,
+        (_, _, true) => TimePrecision::Second,
+        _ => TimePrecision::Minute,
     }
 }
 
@@ -964,17 +958,15 @@ fn format_number_parts(
         .unwrap_or("standard");
     let decimal = prepared_number(ctx, value, style, notation, &options)?;
 
-    match notation {
-        "compact" => compact_parts(ctx, &locale, &decimal, &options),
-        "scientific" | "engineering" => {
+    match (notation, style) {
+        ("compact", _) => compact_parts(ctx, &locale, &decimal, &options),
+        ("scientific" | "engineering", _) => {
             scientific_parts(ctx, &locale, &decimal, notation == "engineering")
         }
-        _ => match style {
-            "currency" => currency_parts(ctx, &locale, &decimal, &options),
-            "percent" => percent_parts(ctx, &locale, &decimal, &options),
-            "unit" => unit_parts(ctx, &locale, &decimal, &options),
-            _ => decimal_parts(ctx, &locale, &decimal, grouping_strategy(&options)),
-        },
+        (_, "currency") => currency_parts(ctx, &locale, &decimal, &options),
+        (_, "percent") => percent_parts(ctx, &locale, &decimal, &options),
+        (_, "unit") => unit_parts(ctx, &locale, &decimal, &options),
+        _ => decimal_parts(ctx, &locale, &decimal, grouping_strategy(&options)),
     }
 }
 
@@ -1097,9 +1089,12 @@ fn sign_display(options: &Value) -> SignDisplay {
 fn grouping_strategy(options: &Value) -> GroupingStrategy {
     match options.get("useGrouping") {
         Some(Value::Bool(false)) => GroupingStrategy::Never,
-        Some(Value::String(value)) if value == "never" => GroupingStrategy::Never,
-        Some(Value::String(value)) if value == "always" => GroupingStrategy::Always,
-        Some(Value::String(value)) if value == "min2" => GroupingStrategy::Min2,
+        Some(Value::String(value)) => match value.as_str() {
+            "never" => GroupingStrategy::Never,
+            "always" => GroupingStrategy::Always,
+            "min2" => GroupingStrategy::Min2,
+            _ => GroupingStrategy::Auto,
+        },
         _ => GroupingStrategy::Auto,
     }
 }

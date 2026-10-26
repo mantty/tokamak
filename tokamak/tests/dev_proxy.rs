@@ -83,8 +83,10 @@ fn forwards_http_and_websocket_traffic_to_the_host_server() -> TestResult {
         b"GET /@vite/client HTTP/1.1\r\nHost: dev.tokamak.local\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n\r\n",
     )?;
     websocket.flush()?;
-    let upgrade = read_header_block(&mut websocket)?;
-    assert!(String::from_utf8(upgrade)?.starts_with("HTTP/1.1 101"));
+    let upgrade = String::from_utf8(read_header_block(&mut websocket)?)?;
+    if !upgrade.starts_with("HTTP/1.1 101") {
+        return Err(format!("unexpected WebSocket response: {upgrade:?}").into());
+    }
     assert_eq!(read_frame(&mut websocket)?, (0x1, b"update".to_vec()));
     write_masked_frame(&mut websocket, 0x1, b"ping")?;
     assert_eq!(read_frame(&mut websocket)?, (0x1, b"pong".to_vec()));
@@ -161,10 +163,10 @@ fn closes_client_websocket_after_an_upstream_reset() -> TestResult {
     if !upgrade.starts_with("HTTP/1.1 101") {
         return Err(format!("unexpected WebSocket response: {upgrade:?}").into());
     }
-    let (opcode, payload) = read_frame(&mut websocket)?;
-    assert_eq!(opcode, 0x8);
-    assert_eq!(&payload[..2], &[3, 243]);
-    assert_eq!(&payload[2..], b"development server connection failed");
+    // 1011, "development server connection failed"
+    let mut close = vec![3, 243];
+    close.extend_from_slice(b"development server connection failed");
+    assert_eq!(read_frame(&mut websocket)?, (0x8, close));
 
     host_server.join().map_err(|_| "host server panicked")??;
     Ok(())
@@ -582,11 +584,16 @@ fn forwards_chunked_host_responses_as_they_arrive() -> TestResult {
     http.write_all(b"GET /stream HTTP/1.1\r\nHost: dev.tokamak.local\r\n\r\n")?;
     http.flush()?;
     let headers = String::from_utf8(read_header_block(&mut http)?)?;
-    assert!(headers.contains("transfer-encoding: chunked\r\n"));
+    if !headers.contains("transfer-encoding: chunked\r\n") {
+        return Err(format!("the response is not chunked: {headers:?}").into());
+    }
     assert_eq!(read_chunk(&mut http)?, b"part");
     release_sender.send(())?;
     assert_eq!(read_chunk(&mut http)?, b" two!");
-    assert!(read_chunk(&mut http)?.is_empty());
+    let last = read_chunk(&mut http)?;
+    if !last.is_empty() {
+        return Err(format!("unexpected last chunk {last:?}").into());
+    }
 
     host_server.join().map_err(|_| "host server panicked")??;
     Ok(())
@@ -610,12 +617,16 @@ fn forwards_close_delimited_host_responses_as_they_arrive() -> TestResult {
     http.write_all(b"GET /stream HTTP/1.1\r\nHost: dev.tokamak.local\r\n\r\n")?;
     http.flush()?;
     let headers = String::from_utf8(read_header_block(&mut http)?)?;
-    assert!(headers.contains("transfer-encoding: chunked\r\n"));
-    assert!(!headers.contains("content-length:"));
+    if !headers.contains("transfer-encoding: chunked\r\n") || headers.contains("content-length:") {
+        return Err(format!("unexpected response framing: {headers:?}").into());
+    }
     assert_eq!(read_chunk(&mut http)?, b"part");
     release_sender.send(())?;
     assert_eq!(read_chunk(&mut http)?, b" two!");
-    assert!(read_chunk(&mut http)?.is_empty());
+    let last = read_chunk(&mut http)?;
+    if !last.is_empty() {
+        return Err(format!("unexpected last chunk {last:?}").into());
+    }
 
     host_server.join().map_err(|_| "host server panicked")??;
     Ok(())
@@ -685,12 +696,13 @@ fn start_test_runtime_reporting(
 fn serve_host(listener: &TcpListener) -> TestResult {
     let (mut http, text) = accept_page(listener)?;
     let (request_line, headers) = text.split_once("\r\n").ok_or("missing request line")?;
-    assert_eq!(request_line, "POST /api HTTP/1.1");
-    let mut headers: Vec<_> = headers.lines().filter(|line| !line.is_empty()).collect();
-    headers.sort_unstable();
+    let mut head: Vec<_> = headers.lines().filter(|line| !line.is_empty()).collect();
+    head.sort_unstable();
+    head.insert(0, request_line);
     assert_eq!(
-        headers,
+        head,
         [
+            "POST /api HTTP/1.1",
             "content-length: 3",
             "host: dev.tokamak.local",
             "x-forwarded-host: dev.tokamak.local",
@@ -702,27 +714,27 @@ fn serve_host(listener: &TcpListener) -> TestResult {
     );
     let mut body = [0; 3];
     http.read_exact(&mut body)?;
-    assert_eq!(body, [0, 0xff, 1]);
+    let [0, 0xff, 1] = body else {
+        return Err(format!("unexpected body {body:?}").into());
+    };
     http.write_all(
         "HTTP/1.1 201 Created Here\r\nSet-Cookie: first=1\r\nSet-Cookie: second=2\r\nX-Text: 東京\r\nContent-Length: 13\r\nConnection: close\r\n\r\nhost response".as_bytes(),
     )?;
 
     let (mut websocket, text) = accept_page(listener)?;
     let key = header_value(&text, "sec-websocket-key").ok_or("missing WebSocket key")?;
-    assert_eq!(header_value(&text, "sec-websocket-extensions"), None);
+    if let Some(extensions) = header_value(&text, "sec-websocket-extensions") {
+        return Err(format!("forwarded sec-websocket-extensions: {extensions:?}").into());
+    }
     let accept = websocket_accept(key);
     write!(
         websocket,
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
     )?;
     write_frame(&mut websocket, 0x1, b"update", false)?;
-    let (opcode, payload) = read_frame(&mut websocket)?;
-    assert_eq!(opcode, 0x1);
-    assert_eq!(payload, b"ping");
+    assert_eq!(read_frame(&mut websocket)?, (0x1, b"ping".to_vec()));
     write_frame(&mut websocket, 0x1, b"pong", false)?;
-    let (opcode, payload) = read_frame(&mut websocket)?;
-    assert_eq!(opcode, 0x8);
-    assert_eq!(payload, [3, 232]);
+    assert_eq!(read_frame(&mut websocket)?, (0x8, vec![3, 232]));
     Ok(())
 }
 
@@ -934,7 +946,9 @@ fn send_message(socket: &mut TcpStream, message: &Value) -> TestResult {
 
 fn read_message(socket: &mut TcpStream) -> TestResult<Value> {
     let (opcode, bytes) = read_frame(socket)?;
-    assert_eq!(opcode, 0x2);
+    if opcode != 0x2 {
+        return Err(format!("unexpected opcode {opcode}").into());
+    }
     let metadata = u32::from_le_bytes(bytes[4..8].try_into()?) as usize;
     let mut message: Value = serde_json::from_slice(&bytes[8..8 + metadata])?;
     let payload = &bytes[8 + metadata..];
@@ -943,15 +957,15 @@ fn read_message(socket: &mut TcpStream) -> TestResult<Value> {
     } else {
         serde_json::from_slice(payload)?
     };
-    if message["type"] == "event" {
-        message["event"] = payload;
-    } else if message["type"] == "result" {
-        let key = if message["failed"] == true {
-            "error"
-        } else {
-            "value"
-        };
-        message["result"] = json!({ key: payload, "done": message["done"] });
+    match (message["type"].as_str(), message["failed"] == true) {
+        (Some("event"), _) => message["event"] = payload,
+        (Some("result"), true) => {
+            message["result"] = json!({ "error": payload, "done": message["done"] });
+        }
+        (Some("result"), false) => {
+            message["result"] = json!({ "value": payload, "done": message["done"] });
+        }
+        _ => {}
     }
     let header = message.as_object_mut().ok_or("no header")?;
     header.remove("failed");
@@ -1097,16 +1111,15 @@ fn read_frame(stream: &mut impl Read) -> TestResult<(u8, Vec<u8>)> {
     let mut header = [0; 2];
     stream.read_exact(&mut header)?;
     let length = usize::from(header[1] & 0x7f);
+    // An unmasked frame's mask stays zero, which leaves its payload unchanged.
     let mut mask = [0; 4];
     if header[1] & 0x80 != 0 {
         stream.read_exact(&mut mask)?;
     }
     let mut payload = vec![0; length];
     stream.read_exact(&mut payload)?;
-    if header[1] & 0x80 != 0 {
-        for (index, byte) in payload.iter_mut().enumerate() {
-            *byte ^= mask[index % mask.len()];
-        }
+    for (index, byte) in payload.iter_mut().enumerate() {
+        *byte ^= mask[index % mask.len()];
     }
     Ok((header[0] & 0x0f, payload))
 }

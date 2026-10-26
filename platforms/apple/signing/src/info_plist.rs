@@ -355,11 +355,7 @@ impl PluginMerge<'_> {
                     self.dictionary(existing, values, path, plugin)?;
                 }
                 (Some(Value::Array(existing)), Value::Array(values)) => {
-                    for value in values {
-                        if !existing.contains(&value) {
-                            existing.push(value);
-                        }
-                    }
+                    append_missing(existing, values);
                 }
                 (Some(existing), value) if *existing == value || self.user_sets(path) => {}
                 (Some(_), _) => bail!(
@@ -397,6 +393,15 @@ impl PluginMerge<'_> {
             }
         }
         true
+    }
+}
+
+/// Appends, in order, each of `values` that `existing` does not hold yet.
+fn append_missing(existing: &mut Vec<Value>, values: Vec<Value>) {
+    for value in values {
+        if !existing.contains(&value) {
+            existing.push(value);
+        }
     }
 }
 
@@ -594,43 +599,28 @@ mod tests {
             Some(&user_path),
             None,
         )?;
-        assert_eq!(
-            result.get("CFBundleIdentifier").and_then(Value::as_string),
-            Some("com.user.override")
-        );
-        assert_eq!(
-            result.get("CFBundlePackageType").and_then(Value::as_string),
-            Some("APPL")
-        );
         let transport = result
             .get("NSAppTransportSecurity")
             .and_then(Value::as_dictionary)
             .context("transport dictionary")?;
-        assert_eq!(
-            transport
-                .get("NSAllowsLocalNetworking")
-                .and_then(Value::as_boolean),
-            Some(false)
-        );
-        assert_eq!(
-            transport
-                .get("NSAllowsArbitraryLoads")
-                .and_then(Value::as_boolean),
-            Some(true)
-        );
-        assert_eq!(
-            result.get("UserData").and_then(Value::as_data),
-            Some(&[1, 2, 3][..])
-        );
-        assert!(result.get("UserDate").and_then(Value::as_date).is_some());
-        assert_eq!(
-            result
-                .get("UISupportedInterfaceOrientations")
-                .and_then(Value::as_array),
-            Some(&vec![Value::String(
-                "UIInterfaceOrientationPortraitUpsideDown".into(),
-            )])
-        );
+        for (plist, key, value) in [
+            (&result, "CFBundleIdentifier", string("com.user.override")),
+            (&result, "CFBundlePackageType", string("APPL")),
+            (transport, "NSAllowsLocalNetworking", Value::Boolean(false)),
+            (transport, "NSAllowsArbitraryLoads", Value::Boolean(true)),
+            (&result, "UserData", Value::Data(vec![1, 2, 3])),
+            (
+                &result,
+                "UISupportedInterfaceOrientations",
+                array(&["UIInterfaceOrientationPortraitUpsideDown"]),
+            ),
+        ] {
+            assert_eq!(plist.get(key), Some(&value), "missing or incorrect {key}");
+        }
+        result
+            .get("UserDate")
+            .and_then(Value::as_date)
+            .context("UserDate must be a date")?;
         Ok(())
     }
 
@@ -757,22 +747,25 @@ mod tests {
 
         let result = build(&input, "iphoneos", None)?;
 
-        assert_eq!(
-            result.get("UIBackgroundModes"),
-            Some(&array(&["audio", "remote-notification", "fetch"]))
-        );
         let transport = result
             .get("NSAppTransportSecurity")
             .and_then(Value::as_dictionary)
             .context("transport dictionary")?;
-        assert_eq!(
-            transport.get("NSAllowsLocalNetworking"),
-            Some(&Value::Boolean(true))
-        );
-        assert_eq!(
-            transport.get("NSAllowsArbitraryLoadsInWebContent"),
-            Some(&Value::Boolean(true))
-        );
+        for (plist, key, value) in [
+            (
+                &result,
+                "UIBackgroundModes",
+                array(&["audio", "remote-notification", "fetch"]),
+            ),
+            (transport, "NSAllowsLocalNetworking", Value::Boolean(true)),
+            (
+                transport,
+                "NSAllowsArbitraryLoadsInWebContent",
+                Value::Boolean(true),
+            ),
+        ] {
+            assert_eq!(plist.get(key), Some(&value), "missing or incorrect {key}");
+        }
         Ok(())
     }
 
@@ -955,18 +948,17 @@ mod tests {
         let input = input(temporary.path(), "macos")?;
         let metadata = Metadata::read(&input)?;
         let result = build_info_plist(&input, &metadata, &toolchain("macosx"), None, None)?;
-        assert_eq!(
-            result.get("CFBundleName").and_then(Value::as_string),
-            Some("Demo App")
-        );
-        assert_eq!(
-            result.get("DTPlatformName").and_then(Value::as_string),
-            Some("macosx")
-        );
-        assert_eq!(
-            result.get("DTSDKName").and_then(Value::as_string),
-            Some("macosx26.5")
-        );
+        for (key, value) in [
+            ("CFBundleName", "Demo App"),
+            ("DTPlatformName", "macosx"),
+            ("DTSDKName", "macosx26.5"),
+        ] {
+            assert_eq!(
+                result.get(key).and_then(Value::as_string),
+                Some(value),
+                "missing or incorrect {key}"
+            );
+        }
         Ok(())
     }
 
@@ -1079,11 +1071,19 @@ mod tests {
 
     #[test]
     fn validates_apple_build_numbers() {
-        for value in ["1", "1.2", "1.2.3", "001"] {
-            assert!(validate_build_number(value).is_ok(), "accepted {value}");
-        }
-        for value in ["", "1.", ".1", "1..2", "1.2.3.4", "1.2-3"] {
-            assert!(validate_build_number(value).is_err(), "accepted {value}");
+        for (value, valid) in [
+            ("1", true),
+            ("1.2", true),
+            ("1.2.3", true),
+            ("001", true),
+            ("", false),
+            ("1.", false),
+            (".1", false),
+            ("1..2", false),
+            ("1.2.3.4", false),
+            ("1.2-3", false),
+        ] {
+            assert_eq!(validate_build_number(value).is_ok(), valid, "{value:?}");
         }
     }
 

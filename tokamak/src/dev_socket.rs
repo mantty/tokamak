@@ -78,20 +78,17 @@ impl DevSocket {
         );
         let (sender, answer) = oneshot::channel();
         connection.pending().insert(id, sender);
-        if !matches!(
-            tokio::time::timeout_at(deadline, connection.outgoing.send(message)).await,
-            Ok(Ok(()))
-        ) {
+        let Ok(Ok(())) = tokio::time::timeout_at(deadline, connection.outgoing.send(message)).await
+        else {
             connection.pending().remove(&id);
             return Err(closed().into());
-        }
+        };
         let answer = tokio::time::timeout_at(deadline, answer).await;
         connection.pending().remove(&id);
-        match answer {
-            Err(_) => Err(late().into()),
-            Ok(Err(_)) => Err(closed().into()),
-            Ok(Ok(answer)) => answer.map_err(Into::into),
-        }
+        answer
+            .map_err(|_| late())?
+            .map_err(|_| closed())?
+            .map_err(Into::into)
     }
 
     /// Relays `upgraded`'s frames until it closes or `stopped` is cancelled,

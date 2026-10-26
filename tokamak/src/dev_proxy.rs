@@ -219,18 +219,11 @@ impl DevProxy {
     }
 
     async fn forward_websocket(
-        &self,
-        request: &HttpRequest,
+        upstream: Upgraded,
         response: &Sender<JobResponse>,
         websocket: &WebSocketJob,
         stopped: &CancellationToken,
-        cancelled: &CancellationToken,
     ) -> Result<(), HandlerError> {
-        let upstream = tokio::select! {
-            upstream = self.open_websocket(request) => upstream?,
-            () = stopped.cancelled() => return Ok(()),
-            () = cancelled.cancelled() => return Ok(()),
-        };
         response
             .send(JobResponse::WebSocket)
             .map_err(|_| io::Error::other("WebSocket gateway closed"))?;
@@ -346,7 +339,14 @@ impl Handler for DevProxy {
             });
         };
         // The incoming channel carries the client's close frame before disconnection.
-        tokio.block_on(self.forward_websocket(&request, &response, &websocket, stopped, &cancelled))
+        tokio.block_on(async {
+            let upstream = tokio::select! {
+                upstream = self.open_websocket(&request) => upstream?,
+                () = stopped.cancelled() => return Ok(()),
+                () = cancelled.cancelled() => return Ok(()),
+            };
+            Self::forward_websocket(upstream, &response, &websocket, stopped).await
+        })
     }
 
     fn deliver(&self, event: EventJob, stopped: &CancellationToken) {
@@ -505,15 +505,17 @@ mod tests {
 
     #[test]
     fn parses_host_endpoints() -> Result<(), Box<dyn std::error::Error>> {
-        let local = endpoint("http://localhost:5173")?;
-        assert_eq!(local.host_str(), Some("localhost"));
-        assert_eq!(local.port_or_known_default(), Some(5173));
-        assert_eq!(local.scheme(), "http");
-
-        let loopback = endpoint("https://[::1]")?;
-        assert_eq!(loopback.host_str(), Some("[::1]"));
-        assert_eq!(loopback.port_or_known_default(), Some(443));
-        assert_eq!(loopback.scheme(), "https");
+        for (value, host, port, scheme) in [
+            ("http://localhost:5173", "localhost", 5173, "http"),
+            ("https://[::1]", "[::1]", 443, "https"),
+        ] {
+            let url = endpoint(value)?;
+            assert_eq!(
+                (url.host_str(), url.port_or_known_default(), url.scheme()),
+                (Some(host), Some(port), scheme),
+                "{value}"
+            );
+        }
         Ok(())
     }
 

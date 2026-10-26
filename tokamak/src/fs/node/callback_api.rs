@@ -310,54 +310,53 @@ pub(super) fn normalize_read_arguments<'js>(
     ctx: &Ctx<'js>,
     mut args: Vec<Value<'js>>,
 ) -> rquickjs::Result<ReadArguments<'js>> {
-    let first = args.first().cloned();
-    match first {
-        Some(value) if is_buffer_value(&value) => {
-            args.remove(0);
-            if args
-                .first()
-                .is_some_and(|value| value.is_object() && !is_buffer_value(value))
-            {
-                let (offset, length, position) = read_options(ctx, args.remove(0))?;
-                return Ok(ReadArguments {
-                    buffer: value,
-                    offset,
-                    length,
-                    position,
-                });
-            }
-            Ok(ReadArguments {
-                buffer: value,
-                offset: take_front_value(&mut args),
-                length: take_front_value(&mut args),
-                position: take_front_value(&mut args),
-            })
-        }
-        Some(value) if value.is_object() => {
-            let options = value
-                .try_into_object()
-                .map_err(|_| Exception::throw_type(ctx, "read options must be an object"))?;
-            let length = options.get::<_, Option<Value>>("length")?;
-            let buffer = options
-                .get::<_, Option<Value>>("buffer")?
-                .map_or_else(|| default_read_buffer(ctx, length.as_ref()), Ok)?;
-            Ok(ReadArguments {
-                buffer,
-                offset: options.get("offset")?,
-                length,
-                position: options.get("position")?,
-            })
-        }
-        None => Ok(ReadArguments {
+    let Some(value) = args.first().cloned() else {
+        return Ok(ReadArguments {
             buffer: default_read_buffer(ctx, None)?,
             offset: None,
             length: None,
             position: None,
-        }),
-        Some(_) => Err(Exception::throw_type(
+        });
+    };
+    if is_buffer_value(&value) {
+        args.remove(0);
+        if args
+            .first()
+            .is_some_and(|value| value.is_object() && !is_buffer_value(value))
+        {
+            let (offset, length, position) = read_options(ctx, args.remove(0))?;
+            return Ok(ReadArguments {
+                buffer: value,
+                offset,
+                length,
+                position,
+            });
+        }
+        Ok(ReadArguments {
+            buffer: value,
+            offset: take_front_value(&mut args),
+            length: take_front_value(&mut args),
+            position: take_front_value(&mut args),
+        })
+    } else if value.is_object() {
+        let options = value
+            .try_into_object()
+            .map_err(|_| Exception::throw_type(ctx, "read options must be an object"))?;
+        let length = options.get::<_, Option<Value>>("length")?;
+        let buffer = options
+            .get::<_, Option<Value>>("buffer")?
+            .map_or_else(|| default_read_buffer(ctx, length.as_ref()), Ok)?;
+        Ok(ReadArguments {
+            buffer,
+            offset: options.get("offset")?,
+            length,
+            position: options.get("position")?,
+        })
+    } else {
+        Err(Exception::throw_type(
             ctx,
             "buffer or read options are required",
-        )),
+        ))
     }
 }
 

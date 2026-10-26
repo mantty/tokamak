@@ -169,10 +169,9 @@ fn redirect(asset: impl Into<String>) -> Step {
 
 /// The path Cloudflare serves the HTML asset at `path` at under `handling`.
 fn html_path(handling: HtmlHandling, path: &str) -> String {
-    let (page, index) = match path.strip_suffix("/index.html") {
-        Some(page) => (page, true),
-        None => (path.strip_suffix(".html").unwrap_or(path), false),
-    };
+    let index_page = path.strip_suffix("/index.html");
+    let index = index_page.is_some();
+    let page = index_page.unwrap_or_else(|| path.strip_suffix(".html").unwrap_or(path));
     let trailing_slash = match handling {
         HtmlHandling::AutoTrailingSlash => index,
         HtmlHandling::ForceTrailingSlash => true,

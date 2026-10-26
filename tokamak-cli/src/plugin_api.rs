@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
 use serde::Deserialize;
 use tokamak_cli::Platform;
@@ -199,16 +199,14 @@ pub(crate) fn generate(root: &Path, family: Family) -> Result<()> {
 /// differ from what this host generates. Families this host cannot describe are not checked.
 pub(crate) fn check(root: &Path) -> Result<()> {
     let mut stale = Vec::new();
-    for family in Family::ALL {
-        if !root.join(family.registration()).is_file() {
+    let registered = Family::ALL
+        .into_iter()
+        .filter(|family| root.join(family.registration()).is_file());
+    for family in registered {
+        let Ok(files) = generated(root, family)?.inspect_err(|reason| {
+            eprintln!("{} files are not checked: {reason}", family.name());
+        }) else {
             continue;
-        }
-        let files = match generated(root, family)? {
-            Ok(files) => files,
-            Err(reason) => {
-                eprintln!("{} files are not checked: {reason}", family.name());
-                continue;
-            }
         };
         let changed = files
             .into_iter()
@@ -360,19 +358,7 @@ const RESERVED: &[&str] = &[
 impl Description {
     /// Checks the rules every family's methods follow.
     pub(crate) fn validate(&self) -> Result<()> {
-        let mut types = Types::new();
-        for named in &self.types {
-            check_identifier("type", &named.name)?;
-            if GENERATED.contains(&named.name.as_str()) {
-                bail!("type {} has a name the generated API declares", named.name);
-            }
-            if types.insert(named.name.as_str(), named).is_some() {
-                bail!("type {} is described twice", named.name);
-            }
-        }
-        for named in &self.types {
-            named.validate(&types)?;
-        }
+        let types = self.described_types()?;
         let mut methods = BTreeSet::new();
         for method in &self.methods {
             if !methods.insert(method.name.as_str()) {
@@ -393,6 +379,24 @@ impl Description {
                 .map_err(|error| error.context(format!("event {}", event.name)))?;
         }
         Ok(())
+    }
+
+    /// The described types, by name, once each one's name and shape are checked.
+    fn described_types(&self) -> Result<Types<'_>> {
+        let mut types = Types::new();
+        for named in &self.types {
+            check_identifier("type", &named.name)?;
+            if GENERATED.contains(&named.name.as_str()) {
+                bail!("type {} has a name the generated API declares", named.name);
+            }
+            if types.insert(named.name.as_str(), named).is_some() {
+                bail!("type {} is described twice", named.name);
+            }
+        }
+        for named in &self.types {
+            named.validate(&types)?;
+        }
+        Ok(types)
     }
 }
 
@@ -502,20 +506,20 @@ fn form<'a>(alternative: &'a Alternative, types: &Types<'a>) -> Result<Form<'a>>
         return Ok(Form::Name(&alternative.name));
     };
     check_value(ty, types)?;
-    Ok(match ty {
-        Type::String => Form::Kind(JsonKind::String),
-        Type::Number => Form::Kind(JsonKind::Number),
-        Type::Boolean => Form::Kind(JsonKind::Boolean),
-        Type::Array(_) => Form::Kind(JsonKind::Array),
-        Type::Record(_) => Form::Kind(JsonKind::Object),
+    match ty {
+        Type::String => Ok(Form::Kind(JsonKind::String)),
+        Type::Number => Ok(Form::Kind(JsonKind::Number)),
+        Type::Boolean => Ok(Form::Kind(JsonKind::Boolean)),
+        Type::Array(_) => Ok(Form::Kind(JsonKind::Array)),
+        Type::Record(_) => Ok(Form::Kind(JsonKind::Object)),
         Type::Named(name) => match &types[name.as_str()].shape {
-            Shape::Values(values) => Form::Values(values),
-            Shape::Fields(fields) => Form::Struct(name, fields),
-            Shape::Alternatives(_) => bail!("a union's form is not a union"),
+            Shape::Values(values) => Ok(Form::Values(values)),
+            Shape::Fields(fields) => Ok(Form::Struct(name, fields)),
+            Shape::Alternatives(_) => Err(anyhow!("a union's form is not a union")),
         },
-        Type::Optional(_) => bail!("a union's form is not optional"),
-        _ => bail!("a union's form is not any JSON value"),
-    })
+        Type::Optional(_) => Err(anyhow!("a union's form is not optional")),
+        _ => Err(anyhow!("a union's form is not any JSON value")),
+    }
 }
 
 /// Checks that each form is a name or a struct without the field `tag`.
@@ -679,9 +683,7 @@ pub(crate) fn typescript(
         source,
         "\n/** The {id} plugin's native methods on {names}. */\nexport interface {interface} {{\n"
     );
-    for method in &description.methods {
-        source.push_str(&signature(method));
-    }
+    source.extend(description.methods.iter().map(signature));
     let namespaces = platforms
         .iter()
         .map(|platform| platform.namespace())
@@ -691,9 +693,12 @@ pub(crate) fn typescript(
         "}}\n\n/**\n * The {id} plugin's native methods. Off {names} they reject with `NotSupportedError`.\n * Aborting `signal` cancels their calls, streams and resource acquisitions.\n */\nexport function {}(ctx: TokamakContext, signal?: AbortSignal): {interface} {{\n  const endpoint = new NativeEndpoint(ctx, {id:?}, {namespaces:?}, signal);\n  return {{\n",
         family.name()
     );
-    for method in &description.methods {
-        let _ = writeln!(source, "    {}: {},", method.name, implementation(method));
-    }
+    source.extend(
+        description
+            .methods
+            .iter()
+            .map(|method| format!("    {}: {},\n", method.name, implementation(method))),
+    );
     source.push_str("  };\n}\n");
     if !description.events.is_empty() {
         source.push_str(&events(description, id, family, &namespaces));
@@ -761,16 +766,6 @@ fn interface_name(family: Family) -> &'static str {
 /// The imports the generated source uses: one statement per module.
 fn imports(description: &Description) -> String {
     let any = |test: &dyn Fn(&Method) -> bool| description.methods.iter().any(test);
-    let mut names = vec!["NativeEndpoint"];
-    if any(&|method| bytes_parameter(method).is_some() && method.returns != Some(Type::Bytes)) {
-        names.push("decodeJson");
-    }
-    if any(&|method| bytes_parameter(method).is_none() && method.returns == Some(Type::Bytes)) {
-        names.push("encodeJson");
-    }
-    if any(&|method| method.kind == Kind::Stream) {
-        names.push("type JsonStream");
-    }
     let fields = description
         .types
         .iter()
@@ -799,9 +794,6 @@ fn imports(description: &Description) -> String {
                 .flat_map(|event| std::iter::once(&event.ty).chain(&event.reply)),
         )
         .chain(fields);
-    if types.any(mentions_json) {
-        names.push("type JsonValue");
-    }
     let references = |method: &Method| {
         method.kind == Kind::Resource
             || method
@@ -809,10 +801,29 @@ fn imports(description: &Description) -> String {
                 .iter()
                 .any(|parameter| parameter.ty == Type::Reference)
     };
-    if any(&references) {
-        names.push("type NativeReference");
-    }
-    names.push("type TokamakContext");
+    // Each name the generated source may import, with whether it does.
+    let used = [
+        ("NativeEndpoint", true),
+        (
+            "decodeJson",
+            any(&|method| bytes_parameter(method).is_some() && method.returns != Some(Type::Bytes)),
+        ),
+        (
+            "encodeJson",
+            any(&|method| bytes_parameter(method).is_none() && method.returns == Some(Type::Bytes)),
+        ),
+        (
+            "type JsonStream",
+            any(&|method| method.kind == Kind::Stream),
+        ),
+        ("type JsonValue", types.any(mentions_json)),
+        ("type NativeReference", any(&references)),
+        ("type TokamakContext", true),
+    ];
+    let names = used
+        .into_iter()
+        .filter_map(|(name, used)| used.then_some(name))
+        .collect::<Vec<_>>();
     let mut imports = format!(
         "import {{ {} }} from \"@tokamakdev/plugin\";\n",
         names.join(", ")

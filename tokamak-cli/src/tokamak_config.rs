@@ -64,15 +64,11 @@ impl TokamakConfig {
 /// Return the lowercase ASCII slug of a display name, as used for bundle
 /// filenames, application identifiers, and `tokamak.local` hosts.
 pub(crate) fn slug(name: &str) -> String {
-    let mut slug = String::new();
-    for character in name.chars() {
-        if character.is_ascii_alphanumeric() {
-            slug.push(character.to_ascii_lowercase());
-        } else if !slug.is_empty() && !slug.ends_with('-') {
-            slug.push('-');
-        }
-    }
-    slug.trim_end_matches('-').to_owned()
+    name.split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// The configuration `config`, the plugin's options, in the Vite root `root`.
@@ -132,28 +128,38 @@ fn plugin_config(id: &str, section: serde_json::Map<String, Value>) -> Result<Pl
     let mut config = PluginConfig::default();
     for (key, value) in section {
         let field = format!("{id}.{key}");
-        if !Platform::ALL
+        if Platform::ALL
             .iter()
             .any(|platform| platform.namespace() == key)
         {
-            if let Some(value) = plugin_value(&field, &key, value)? {
-                config.values.insert(key, value);
-            }
-            continue;
-        }
-        let values = match value {
-            Value::Null => continue,
-            Value::Object(values) => values,
-            _ => return Err(invalid(format!("{field} must be an object"))),
-        };
-        let platform = config.platforms.entry(key).or_default();
-        for (key, value) in values {
-            if let Some(value) = plugin_value(&format!("{field}.{key}"), &key, value)? {
-                platform.insert(key, value);
-            }
+            let Some(values) = plugin_platform_values(&field, value)? else {
+                continue;
+            };
+            config.platforms.insert(key, values);
+        } else {
+            let Some(value) = plugin_value(&field, &key, value)? else {
+                continue;
+            };
+            config.values.insert(key, value);
         }
     }
     Ok(config)
+}
+
+/// A plugin's values for one platform, from its object at `field`; unset when `null`.
+fn plugin_platform_values(field: &str, value: Value) -> Result<Option<BTreeMap<String, Value>>> {
+    let values = match value {
+        Value::Null => return Ok(None),
+        Value::Object(values) => values,
+        _ => return Err(invalid(format!("{field} must be an object"))),
+    };
+    let mut platform = BTreeMap::new();
+    for (key, value) in values {
+        if let Some(value) = plugin_value(&format!("{field}.{key}"), &key, value)? {
+            platform.insert(key, value);
+        }
+    }
+    Ok(Some(platform))
 }
 
 #[derive(Deserialize)]
@@ -318,6 +324,14 @@ mod tests {
         }
     }
 
+    /// Asserts each platform's values in `config`.
+    #[track_caller]
+    fn assert_platforms(config: &TokamakConfig, expected: &[(Platform, PlatformConfig)]) {
+        for (platform, expected) in expected {
+            assert_eq!(&config.for_platform(*platform), expected, "{platform:?}");
+        }
+    }
+
     #[test]
     fn top_level_values_are_defaults_and_platform_objects_override_them() -> TestResult {
         let temporary = tempfile::tempdir()?;
@@ -338,19 +352,24 @@ mod tests {
         assert_eq!(config.root, temporary.path());
         assert_eq!(config.version.as_deref(), Some("1.0.0"));
         let ios = named(Some("Myapp Pro"), Some("com.example.myapp"), Some(pro_icon));
-        assert_eq!(config.for_platform(Platform::Ios), ios);
-        assert_eq!(config.for_platform(Platform::IosSimulator), ios);
-        assert_eq!(
-            config.for_platform(Platform::Android),
-            named(
-                Some("My App"),
-                Some("com.example.myapp.android"),
-                Some(icon.clone())
-            )
-        );
-        assert_eq!(
-            config.for_platform(Platform::Macos),
-            named(Some("My App"), Some("com.example.myapp"), Some(icon))
+        assert_platforms(
+            &config,
+            &[
+                (Platform::Ios, ios.clone()),
+                (Platform::IosSimulator, ios),
+                (
+                    Platform::Android,
+                    named(
+                        Some("My App"),
+                        Some("com.example.myapp.android"),
+                        Some(icon.clone()),
+                    ),
+                ),
+                (
+                    Platform::Macos,
+                    named(Some("My App"), Some("com.example.myapp"), Some(icon)),
+                ),
+            ],
         );
         Ok(())
     }
@@ -380,13 +399,12 @@ mod tests {
         )?;
 
         assert_eq!(config.version, None);
-        assert_eq!(
-            config.for_platform(Platform::Ios),
-            PlatformConfig::default()
-        );
-        assert_eq!(
-            config.for_platform(Platform::Macos),
-            PlatformConfig::default()
+        assert_platforms(
+            &config,
+            &[
+                (Platform::Ios, PlatformConfig::default()),
+                (Platform::Macos, PlatformConfig::default()),
+            ],
         );
         Ok(())
     }
@@ -523,21 +541,22 @@ mod tests {
     #[test]
     fn rejects_invalid_pack_keys_and_values() -> TestResult {
         let temporary = tempfile::tempdir()?;
-        assert_eq!(
-            invalid_message(temporary.path(), r#"{ "ios": { "Plist": "Info.plist" } }"#)?,
-            "ios.Plist must be lowercase words joined by hyphens"
-        );
-        assert_eq!(
-            invalid_message(temporary.path(), r#"{ "ios": { "team.id": "TEAM" } }"#)?,
-            "ios.team.id must be lowercase words joined by hyphens"
-        );
-        assert_eq!(
-            invalid_message(
-                temporary.path(),
-                r#"{ "ios": { "plist": ["Info.plist"] } }"#
-            )?,
-            "ios.plist must be a string, number, or boolean"
-        );
+        let assert_invalid = |config: &str, expected: &str| -> TestResult {
+            assert_eq!(invalid_message(temporary.path(), config)?, expected);
+            Ok(())
+        };
+        assert_invalid(
+            r#"{ "ios": { "Plist": "Info.plist" } }"#,
+            "ios.Plist must be lowercase words joined by hyphens",
+        )?;
+        assert_invalid(
+            r#"{ "ios": { "team.id": "TEAM" } }"#,
+            "ios.team.id must be lowercase words joined by hyphens",
+        )?;
+        assert_invalid(
+            r#"{ "ios": { "plist": ["Info.plist"] } }"#,
+            "ios.plist must be a string, number, or boolean",
+        )?;
         assert!(
             invalid_message(temporary.path(), r#"{ "ios": { "plist": " " } }"#)?
                 .starts_with("ios.plist")

@@ -51,17 +51,17 @@ impl Bounds {
 /// The one range a `Range` header's value selects of a `size`-byte object, or
 /// none when the value selects no single satisfiable range.
 pub(super) fn header_range(header: &str, size: u64) -> Option<Range> {
-    let rest = header.trim_start_matches(' ');
-    let (unit, rest) = (rest.get(..5)?, rest.get(5..)?);
-    if !unit.eq_ignore_ascii_case("bytes") {
-        return None;
-    }
+    let (_, rest) = header
+        .trim_start_matches(' ')
+        .split_at_checked(5)
+        .filter(|(unit, _)| unit.eq_ignore_ascii_case("bytes"))?;
     let rest = rest.trim_start_matches(' ').strip_prefix('=')?;
     let mut ranges = Vec::new();
     for spec in rest.split(',') {
-        if let Selection::Bytes(first, last) = spec_range(spec, size)? {
-            ranges.push((first, last));
-        }
+        let Selection::Bytes(first, last) = spec_range(spec, size)? else {
+            continue;
+        };
+        ranges.push((first, last));
     }
     let [(start, end)] = ranges[..] else {
         return None;
@@ -147,40 +147,41 @@ mod tests {
 
     #[test]
     fn rejects_bounds_that_select_nothing() {
-        for rejected in [
-            bounds(None, None, Some(0)),
-            bounds(Some(10), None, None),
-            bounds(Some(11), None, None),
-            bounds(Some(1), Some(0), None),
+        for (rejected, size) in [
+            (bounds(None, None, Some(0)), 10),
+            (bounds(Some(10), None, None), 10),
+            (bounds(Some(11), None, None), 10),
+            (bounds(Some(1), Some(0), None), 10),
+            (bounds(None, None, None), 0),
         ] {
-            assert_eq!(rejected.resolve(10), Err(Failure::InvalidRange));
+            assert_eq!(
+                rejected.resolve(size),
+                Err(Failure::InvalidRange),
+                "{rejected:?} of {size} bytes"
+            );
         }
-        assert_eq!(
-            bounds(None, None, None).resolve(0),
-            Err(Failure::InvalidRange)
-        );
     }
 
     #[test]
     fn reads_one_satisfiable_range_from_a_header() {
-        assert_eq!(header_range("bytes=1-3", 10), Some(range(1, 3)));
-        assert_eq!(header_range(" Bytes = 5- ", 10), Some(range(5, 5)));
-        assert_eq!(header_range("bytes=-2", 10), Some(range(8, 2)));
-        assert_eq!(header_range("bytes=8-20", 10), Some(range(8, 2)));
-        assert_eq!(header_range("bytes=-0, 2-3", 10), Some(range(2, 2)));
-        for unsatisfied in [
-            "bytes=1-2,4-5",
-            "bytes=20-",
-            "bytes=3-1",
-            "bytes=-20",
-            "bytes=-0",
-            "bytes=",
-            "items=1-2",
-            "bytes=1-2-3",
-            "bytes=a-",
-            "bytes",
+        for (header, expected) in [
+            ("bytes=1-3", Some(range(1, 3))),
+            (" Bytes = 5- ", Some(range(5, 5))),
+            ("bytes=-2", Some(range(8, 2))),
+            ("bytes=8-20", Some(range(8, 2))),
+            ("bytes=-0, 2-3", Some(range(2, 2))),
+            ("bytes=1-2,4-5", None),
+            ("bytes=20-", None),
+            ("bytes=3-1", None),
+            ("bytes=-20", None),
+            ("bytes=-0", None),
+            ("bytes=", None),
+            ("items=1-2", None),
+            ("bytes=1-2-3", None),
+            ("bytes=a-", None),
+            ("bytes", None),
         ] {
-            assert_eq!(header_range(unsatisfied, 10), None, "{unsatisfied}");
+            assert_eq!(header_range(header, 10), expected, "{header}");
         }
     }
 }

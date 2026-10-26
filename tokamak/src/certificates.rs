@@ -306,6 +306,7 @@ mod bundle_tests {
     use x509_parser::{
         certificate::X509Certificate,
         extensions::{GeneralName, ParsedExtension},
+        oid_registry::Oid,
         parse_x509_certificate,
         pem::parse_x509_pem,
     };
@@ -337,6 +338,44 @@ mod bundle_tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rcgen-certificates")
     }
 
+    /// What a generated certificate shares with the one rcgen generated.
+    #[derive(Debug, PartialEq)]
+    struct RcgenTraits<'a> {
+        extensions: Vec<(String, bool)>,
+        serial: &'a [u8],
+        subject: String,
+        issuer: String,
+        lifetime: i64,
+        signature_algorithm: &'a Oid<'a>,
+        key_identifier: Option<Vec<u8>>,
+    }
+
+    fn rcgen_traits<'a>(certificate: &'a X509Certificate<'_>) -> RcgenTraits<'a> {
+        let mut extensions: Vec<_> = certificate
+            .extensions()
+            .iter()
+            .map(|extension| (extension.oid.to_id_string(), extension.critical))
+            .collect();
+        extensions.sort();
+        RcgenTraits {
+            extensions,
+            serial: certificate.raw_serial(),
+            subject: certificate.subject().to_string(),
+            issuer: certificate.issuer().to_string(),
+            lifetime: certificate.validity().not_after.timestamp()
+                - certificate.validity().not_before.timestamp(),
+            signature_algorithm: &certificate.signature_algorithm.algorithm,
+            key_identifier: certificate.extensions().iter().find_map(|extension| {
+                match extension.parsed_extension() {
+                    ParsedExtension::SubjectKeyIdentifier(identifier) => {
+                        Some(identifier.0.to_vec())
+                    }
+                    _ => None,
+                }
+            }),
+        }
+    }
+
     #[test]
     fn generates_certificates_like_those_rcgen_generated() -> TestResult {
         use sha2::{Digest, Sha256};
@@ -353,53 +392,16 @@ mod bundle_tests {
                 (decode_certificate(pem)?, decode_certificate(&fixture)?);
             let (_, generated) = parse_x509_certificate(&generated_der)?;
             let (_, expected) = parse_x509_certificate(&expected_der)?;
-            let lifetime = |certificate: &X509Certificate<'_>| {
-                certificate.validity().not_after.timestamp()
-                    - certificate.validity().not_before.timestamp()
-            };
-            let extensions = |certificate: &X509Certificate<'_>| {
-                let mut kinds: Vec<_> = certificate
-                    .extensions()
-                    .iter()
-                    .map(|extension| (extension.oid.to_id_string(), extension.critical))
-                    .collect();
-                kinds.sort();
-                kinds
-            };
-            let key_identifier = |certificate: &X509Certificate<'_>| {
-                certificate.extensions().iter().find_map(|extension| {
-                    match extension.parsed_extension() {
-                        ParsedExtension::SubjectKeyIdentifier(identifier) => {
-                            Some(identifier.0.to_vec())
-                        }
-                        _ => None,
-                    }
-                })
-            };
-            let derived_identifier = |certificate: &X509Certificate<'_>| {
-                Sha256::digest(&certificate.public_key().subject_public_key.data)[..20].to_vec()
-            };
+            // The generated key identifier is the truncated SHA-256 digest of its key.
+            let derived_identifier =
+                Sha256::digest(&generated.public_key().subject_public_key.data)[..20].to_vec();
 
-            assert_eq!(extensions(&generated), extensions(&expected), "{name}");
-            assert_eq!(generated.raw_serial(), expected.raw_serial(), "{name}");
             assert_eq!(
-                generated.subject().to_string(),
-                expected.subject().to_string(),
-                "{name}"
-            );
-            assert_eq!(
-                generated.issuer().to_string(),
-                expected.issuer().to_string(),
-                "{name}"
-            );
-            assert_eq!(lifetime(&generated), lifetime(&expected), "{name}");
-            assert_eq!(
-                generated.signature_algorithm.algorithm, expected.signature_algorithm.algorithm,
-                "{name}"
-            );
-            assert_eq!(
-                key_identifier(&generated),
-                Some(derived_identifier(&generated)),
+                rcgen_traits(&generated),
+                RcgenTraits {
+                    key_identifier: Some(derived_identifier),
+                    ..rcgen_traits(&expected)
+                },
                 "{name}"
             );
         }
@@ -1037,23 +1039,19 @@ impl Renewal {
     fn start(certificates: Arc<Certificates>, events: Events) -> Self {
         let (stop, stopped) = mpsc::channel();
         let task = thread::spawn(move || {
-            let mut retrying = false;
+            let mut retry_delay = None;
             loop {
-                let delay = if retrying {
-                    RETRY_DELAY
-                } else {
-                    certificates.next_delay()
-                };
+                let delay = retry_delay.unwrap_or_else(|| certificates.next_delay());
                 if stopped.recv_timeout(delay).is_ok() {
                     break;
                 }
                 match certificates.refresh() {
                     Ok(()) => {
-                        retrying = false;
+                        retry_delay = None;
                         events.emit(Event::CertificatesRenewed);
                     }
                     Err(error) => {
-                        retrying = true;
+                        retry_delay = Some(RETRY_DELAY);
                         events.emit(Event::Failed {
                             message: format!("certificate renewal failed: {error}"),
                         });

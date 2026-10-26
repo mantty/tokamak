@@ -91,26 +91,45 @@ mod tests {
         let weak = r#"[{"type": "weak", "value": "abc"}]"#;
         let wildcard = r#"[{"type": "wildcard"}]"#;
 
-        assert!(conditional(&format!(r#"{{"etagMatches": {strong}}}"#))?.holds(OBJECT));
-        assert!(!conditional(&format!(r#"{{"etagMatches": {weak}}}"#))?.holds(OBJECT));
-        assert!(conditional(&format!(r#"{{"etagMatches": {wildcard}}}"#))?.holds(OBJECT));
-        assert!(!conditional(&format!(r#"{{"etagDoesNotMatch": {weak}}}"#))?.holds(OBJECT));
-        assert!(!conditional(&format!(r#"{{"etagDoesNotMatch": {wildcard}}}"#))?.holds(OBJECT));
-        assert!(conditional(&format!(r#"{{"etagDoesNotMatch": {wildcard}}}"#))?.holds(None));
-        assert!(!conditional(&format!(r#"{{"etagMatches": {wildcard}}}"#))?.holds(None));
+        for (condition, etags, current, holds) in [
+            ("etagMatches", strong, OBJECT, true),
+            ("etagMatches", weak, OBJECT, false),
+            ("etagMatches", wildcard, OBJECT, true),
+            ("etagDoesNotMatch", weak, OBJECT, false),
+            ("etagDoesNotMatch", wildcard, OBJECT, false),
+            ("etagDoesNotMatch", wildcard, None, true),
+            ("etagMatches", wildcard, None, false),
+        ] {
+            let json = format!(r#"{{"{condition}": {etags}}}"#);
+            assert_eq!(
+                conditional(&json)?.holds(current),
+                holds,
+                "{json} on {current:?}"
+            );
+        }
         Ok(())
     }
 
     #[test]
     fn compares_upload_times_optionally_by_the_second() -> TestResult {
-        assert!(conditional(r#"{"uploadedAfter": 10000}"#)?.holds(OBJECT));
-        assert!(
-            !conditional(r#"{"uploadedAfter": 10000, "secondsGranularity": true}"#)?.holds(OBJECT)
-        );
-        assert!(!conditional(r#"{"uploadedBefore": 10500}"#)?.holds(OBJECT));
-        assert!(conditional(r#"{"uploadedBefore": 10501}"#)?.holds(OBJECT));
-        assert!(!conditional(r#"{"uploadedAfter": 10000}"#)?.holds(None));
-        assert!(conditional(r#"{"uploadedBefore": 0}"#)?.holds(None));
+        for (json, current, holds) in [
+            (r#"{"uploadedAfter": 10000}"#, OBJECT, true),
+            (
+                r#"{"uploadedAfter": 10000, "secondsGranularity": true}"#,
+                OBJECT,
+                false,
+            ),
+            (r#"{"uploadedBefore": 10500}"#, OBJECT, false),
+            (r#"{"uploadedBefore": 10501}"#, OBJECT, true),
+            (r#"{"uploadedAfter": 10000}"#, None, false),
+            (r#"{"uploadedBefore": 0}"#, None, true),
+        ] {
+            assert_eq!(
+                conditional(json)?.holds(current),
+                holds,
+                "{json} on {current:?}"
+            );
+        }
         Ok(())
     }
 

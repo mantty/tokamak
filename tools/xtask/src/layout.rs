@@ -68,25 +68,29 @@ mod tests {
             root: "/workspace/tokamak".into(),
         };
 
-        assert_eq!(
-            layout.platform_pack(Target::MacosArm64),
-            Path::new("/workspace/tokamak/target/tokamak-platform-packs/macos-arm64")
-        );
-        assert_eq!(
-            layout.platform_recipe(Target::AndroidArm64),
-            Path::new("/workspace/tokamak/platforms/android/build/platform-pack")
-        );
-        assert_eq!(
-            layout.platform_recipe(Target::IosArm64),
-            Path::new("/workspace/tokamak/platforms/apple/build/platform-pack")
-        );
-        assert_eq!(
-            layout.platform_recipe(Target::WindowsX64),
-            Path::new("/workspace/tokamak/platforms/windows/build/platform-pack.ps1")
-        );
-        assert_eq!(
-            layout.platform_build(Target::IosSimulatorArm64),
-            Path::new("/workspace/tokamak/platforms/apple/build")
-        );
+        for (path, expected) in [
+            (
+                layout.platform_pack(Target::MacosArm64),
+                "/workspace/tokamak/target/tokamak-platform-packs/macos-arm64",
+            ),
+            (
+                layout.platform_recipe(Target::AndroidArm64),
+                "/workspace/tokamak/platforms/android/build/platform-pack",
+            ),
+            (
+                layout.platform_recipe(Target::IosArm64),
+                "/workspace/tokamak/platforms/apple/build/platform-pack",
+            ),
+            (
+                layout.platform_recipe(Target::WindowsX64),
+                "/workspace/tokamak/platforms/windows/build/platform-pack.ps1",
+            ),
+            (
+                layout.platform_build(Target::IosSimulatorArm64),
+                "/workspace/tokamak/platforms/apple/build",
+            ),
+        ] {
+            assert_eq!(path, Path::new(expected));
+        }
     }
 }

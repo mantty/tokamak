@@ -174,29 +174,35 @@ fn write_native(
 ) -> Result<Map<String, Value>> {
     let native = directory.join(family.name());
     fs::create_dir(&native)?;
-    let files = match family {
-        Family::Apple => [
-            (
-                "Plugin.swift",
-                include_str!("../templates/plugin/Plugin.swift"),
-            ),
-            (
-                "Exports.swift",
-                include_str!("../templates/plugin/Exports.swift"),
-            ),
-            (
-                "Exports.generated.swift",
-                include_str!("../templates/plugin/Exports.generated.swift"),
-            ),
-        ],
-        Family::Android => [
-            ("Plugin.kt", include_str!("../templates/plugin/Plugin.kt")),
-            ("Exports.kt", include_str!("../templates/plugin/Exports.kt")),
-            (
-                "Exports.generated.kt",
-                include_str!("../templates/plugin/Exports.generated.kt"),
-            ),
-        ],
+    let (files, class) = match family {
+        Family::Apple => (
+            [
+                (
+                    "Plugin.swift",
+                    include_str!("../templates/plugin/Plugin.swift"),
+                ),
+                (
+                    "Exports.swift",
+                    include_str!("../templates/plugin/Exports.swift"),
+                ),
+                (
+                    "Exports.generated.swift",
+                    include_str!("../templates/plugin/Exports.generated.swift"),
+                ),
+            ],
+            class.to_owned(),
+        ),
+        Family::Android => (
+            [
+                ("Plugin.kt", include_str!("../templates/plugin/Plugin.kt")),
+                ("Exports.kt", include_str!("../templates/plugin/Exports.kt")),
+                (
+                    "Exports.generated.kt",
+                    include_str!("../templates/plugin/Exports.generated.kt"),
+                ),
+            ],
+            format!("tokamak.plugins.{class}"),
+        ),
     };
     for (name, source) in files {
         fs::write(native.join(name), template(source))?;
@@ -210,10 +216,6 @@ fn write_native(
             platforms,
         ),
     )?;
-    let class = match family {
-        Family::Apple => class.to_owned(),
-        Family::Android => format!("tokamak.plugins.{class}"),
-    };
     Ok(platforms
         .iter()
         .map(|platform| (platform.namespace().to_owned(), json!({ "class": class })))

@@ -184,7 +184,10 @@ fn releases_invocation_owned_listeners_when_the_request_finishes()
     };
     let subscription = subscribed.recv_timeout(Duration::from_secs(5))?;
 
-    assert!(matches!(response.body, HttpBody::Buffered(body) if body == b"listening"));
+    let HttpBody::Buffered(body) = response.body else {
+        panic!("Worker response was streamed");
+    };
+    assert_eq!(body, b"listening");
     assert_eq!(
         cancelled.recv_timeout(Duration::from_secs(5))?,
         subscription
@@ -400,27 +403,28 @@ fn routes_worker_websocket_messages_through_the_native_bridge()
             format!("WebSocket worker stopped before upgrade: {error}; {worker_error:?}").into(),
         );
     }
-    assert!(matches!(response?, JobResponse::WebSocket));
-    assert!(matches!(
-        outgoing_receiver.recv_timeout(Duration::from_secs(1))?,
-        WebSocketOutbound::Ready
-    ));
+    let JobResponse::WebSocket = response? else {
+        panic!("Worker returned a non-WebSocket response");
+    };
+    let WebSocketOutbound::Ready = outgoing_receiver.recv_timeout(Duration::from_secs(1))? else {
+        panic!("Worker did not finish handling the upgrade");
+    };
     incoming_sender.send(WebSocketInbound::Message {
         binary: false,
         payload: b"ping 42".to_vec(),
     })?;
     match outgoing_receiver.recv_timeout(Duration::from_secs(1))? {
-        WebSocketOutbound::Message { binary, payload } => {
-            assert!(!binary);
-            assert_eq!(payload, b"pong ping 42");
-        }
+        WebSocketOutbound::Message {
+            binary: false,
+            payload,
+        } => assert_eq!(payload, b"pong ping 42"),
+        WebSocketOutbound::Message { binary: true, .. } => panic!("Worker answered in binary"),
         WebSocketOutbound::Close { .. } => panic!("Worker closed the WebSocket"),
         WebSocketOutbound::Ready => panic!("Worker completed without a response"),
     }
-    assert!(matches!(
-        outgoing_receiver.recv_timeout(Duration::from_secs(1))?,
-        WebSocketOutbound::Ready
-    ));
+    let WebSocketOutbound::Ready = outgoing_receiver.recv_timeout(Duration::from_secs(1))? else {
+        panic!("Worker did not finish handling the message");
+    };
     incoming_sender.send(WebSocketInbound::Close {
         code: 1000,
         reason: String::new(),
@@ -709,15 +713,25 @@ fn assembles_fragmented_text_and_binary_websocket_messages()
     queue_websocket_message(&incoming, &mut fragmented, true, 0x0, b"42".to_vec())?;
     queue_websocket_message(&incoming, &mut fragmented, true, 0x2, vec![1, 2, 3])?;
 
-    assert!(fragmented.is_none());
-    assert!(matches!(
-        incoming_receiver.recv()?,
-        WebSocketInbound::Message { binary: false, payload } if payload == b"ping 42"
-    ));
-    assert!(matches!(
-        incoming_receiver.recv()?,
-        WebSocketInbound::Message { binary: true, payload } if payload == vec![1, 2, 3]
-    ));
+    let None = fragmented else {
+        panic!("a fragmented message was left unfinished");
+    };
+    let WebSocketInbound::Message {
+        binary: false,
+        payload,
+    } = incoming_receiver.recv()?
+    else {
+        panic!("the fragmented message was not text");
+    };
+    assert_eq!(payload, b"ping 42");
+    let WebSocketInbound::Message {
+        binary: true,
+        payload,
+    } = incoming_receiver.recv()?
+    else {
+        panic!("the binary message was not binary");
+    };
+    assert_eq!(payload, vec![1, 2, 3]);
     Ok(())
 }
 

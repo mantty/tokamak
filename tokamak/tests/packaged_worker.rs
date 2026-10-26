@@ -43,47 +43,23 @@ fn starts_a_packaged_worker_with_its_declared_environment() -> TestResult {
     let client = (state.join("client.cert.pem"), state.join("client.key.pem"));
     let foreign = write_foreign_client(temporary.path())?;
     let script = write_client_script(temporary.path())?;
+    let authority = state.join("ca.cert.pem");
 
-    assert!(
-        !connect(
-            &script,
-            runtime.port(),
-            host,
-            &state.join("ca.cert.pem"),
-            None
-        )?
-        .status
-        .success()
-    );
-    let output = connect(
-        &script,
-        runtime.port(),
-        host,
-        &state.join("ca.cert.pem"),
-        Some(&client),
-    )?;
-    assert!(
-        output.status.success(),
-        "stdout={:?} stderr={:?}",
-        output.stdout,
-        output.stderr
-    );
-    assert!(
-        !connect(
-            &script,
-            runtime.port(),
-            host,
-            &state.join("ca.cert.pem"),
-            Some(&foreign)
-        )?
-        .status
-        .success()
-    );
-    assert!(
-        !connect(&script, runtime.port(), host, &foreign.0, Some(&client))?
-            .status
-            .success()
-    );
+    for (authority, client, accepted) in [
+        (&authority, None, false),
+        (&authority, Some(&client), true),
+        (&authority, Some(&foreign), false),
+        (&foreign.0, Some(&client), false),
+    ] {
+        let output = connect(&script, runtime.port(), host, authority, client)?;
+        assert_eq!(
+            output.status.success(),
+            accepted,
+            "authority={authority:?} client={client:?} stdout={:?} stderr={:?}",
+            output.stdout,
+            output.stderr
+        );
+    }
     Ok(())
 }
 
@@ -145,9 +121,7 @@ fn upgrades_to_a_websocket_on_a_reused_connection() -> TestResult {
 
     upgrade_websocket(&mut tls)?;
     write_masked_frame(&mut tls, true, 0x1, b"ping 1")?;
-    let (opcode, payload) = read_server_frame(&mut tls)?;
-    assert_eq!(opcode, 0x1);
-    assert_eq!(payload, b"pong ping 1");
+    assert_eq!(read_server_frame(&mut tls)?, (0x1, b"pong ping 1".to_vec()));
     Ok(())
 }
 
@@ -878,15 +852,13 @@ fn fetches_what_the_app_serves_at_a_path() -> TestResult {
 
     assert_eq!(runtime.fetch("/sounds/chime.caf", TIMEOUT)?, b"chime");
     assert_eq!(runtime.fetch("/generated", TIMEOUT)?, b"generated");
-    let missing = runtime
-        .fetch("/missing", TIMEOUT)
-        .err()
-        .ok_or("fetched a missing path")?;
+    let Err(missing) = runtime.fetch("/missing", TIMEOUT) else {
+        return Err("fetched a missing path".into());
+    };
     assert_eq!(missing.to_string(), "GET /missing answered 404 Not Found");
-    let relative = runtime
-        .fetch("sounds/chime.caf", TIMEOUT)
-        .err()
-        .ok_or("fetched a URL")?;
+    let Err(relative) = runtime.fetch("sounds/chime.caf", TIMEOUT) else {
+        return Err("fetched a URL".into());
+    };
     assert_eq!(
         relative.to_string(),
         "sounds/chime.caf is not a path the app serves"

@@ -262,32 +262,49 @@ pub fn sign_macos_bundle(project: &Path, bundle: &Path, bundle_id: &str) -> Resu
 #[cfg(target_os = "macos")]
 fn signing_inventory(identities: &[Identity], profiles: &[Result<Profile>]) -> Result<String> {
     let mut output = String::from("iOS signing identities (certificate and private key):\n");
-    let mut count = 0;
-    for identity in identities.iter().filter(|identity| {
-        [
-            "Apple Development:",
-            "Apple Distribution:",
-            "iPhone Developer:",
-            "iPhone Distribution:",
-        ]
+    let signing_identities = identities
         .iter()
-        .any(|prefix| identity.name.starts_with(prefix))
-    }) {
-        count += 1;
-        write_signing_identity(&mut output, identity)?;
-    }
-    if count == 0 {
-        writeln!(output, "  None found.")?;
-    }
+        .filter(|identity| {
+            [
+                "Apple Development:",
+                "Apple Distribution:",
+                "iPhone Developer:",
+                "iPhone Distribution:",
+            ]
+            .iter()
+            .any(|prefix| identity.name.starts_with(prefix))
+        })
+        .collect::<Vec<_>>();
+    write_entries(
+        &mut output,
+        "  ",
+        &signing_identities,
+        |output, identity| write_signing_identity(output, identity),
+    )?;
 
     writeln!(output, "\niOS provisioning profiles:")?;
-    if profiles.is_empty() {
-        writeln!(output, "  None found.")?;
-    }
-    for result in profiles {
-        write_profile_entry(&mut output, result, identities)?;
-    }
+    write_entries(&mut output, "  ", profiles, |output, result| {
+        write_profile_entry(output, result, identities)
+    })?;
     Ok(output)
+}
+
+/// Writes each of `entries` with `write_entry`, or `None found.` after
+/// `indent` when there are none.
+#[cfg(target_os = "macos")]
+fn write_entries<T>(
+    output: &mut String,
+    indent: &str,
+    entries: &[T],
+    mut write_entry: impl FnMut(&mut String, &T) -> Result<()>,
+) -> Result<()> {
+    if entries.is_empty() {
+        writeln!(output, "{indent}None found.")?;
+    }
+    for entry in entries {
+        write_entry(output, entry)?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -297,15 +314,17 @@ fn write_signing_identity(output: &mut String, identity: &Identity) -> Result<()
     if let Some(team_id) = certificate_team_id(&identity.certificate_der) {
         writeln!(output, "    Team: {team_id}")?;
     }
-    if let Ok((_, certificate)) = x509_parser::parse_x509_certificate(&identity.certificate_der) {
-        let validity = certificate.validity();
-        let status = if validity.is_valid() {
-            ""
-        } else {
-            " (outside validity period)"
-        };
-        writeln!(output, "    Expires: {}{status}", validity.not_after)?;
-    }
+    let Ok((_, certificate)) = x509_parser::parse_x509_certificate(&identity.certificate_der)
+    else {
+        return Ok(());
+    };
+    let validity = certificate.validity();
+    let status = if validity.is_valid() {
+        ""
+    } else {
+        " (outside validity period)"
+    };
+    writeln!(output, "    Expires: {}{status}", validity.not_after)?;
     Ok(())
 }
 
@@ -339,13 +358,13 @@ fn write_profile_entry(
         .iter()
         .filter(|identity| profile.includes(identity))
         .collect::<Vec<_>>();
-    if matching.is_empty() {
-        writeln!(output, "      None found.")?;
-    }
-    for identity in matching {
-        writeln!(output, "      {}  {}", identity.selector, identity.name)?;
-    }
-    Ok(())
+    write_entries(output, "      ", &matching, |output, identity| {
+        Ok(writeln!(
+            output,
+            "      {}  {}",
+            identity.selector, identity.name
+        )?)
+    })
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -1790,13 +1809,15 @@ mod tests {
             .err()
             .context("matching company teams are ambiguous")?
             .to_string();
-            for team in [
-                "TEAMAAAAAA  First Company",
-                "TEAMBBBBBB  Second Company",
-                "TEAMCCCCCC  Personal Developer",
-            ] {
-                assert!(error.contains(team), "missing {team}: {error}");
-            }
+            assert_contains(
+                &error,
+                &[
+                    "TEAMAAAAAA  First Company",
+                    "TEAMBBBBBB  Second Company",
+                    "TEAMCCCCCC  Personal Developer",
+                ],
+                &[],
+            );
         }
         Ok(())
     }
@@ -1814,11 +1835,15 @@ mod tests {
             .err()
             .context("a team must be selected")?
             .to_string();
-        for team in ["TEAMAAAAAA", "TEAMBBBBBB"] {
-            assert!(error.contains(&format!("{team}  (team name unavailable; signing identity: Apple Development: Same Developer)")));
-        }
-        assert!(error.contains("tok build ios --ios-team-id TEAM_ID"));
-        assert!(!error.contains("tok dev"));
+        assert_contains(
+            &error,
+            &[
+                "TEAMAAAAAA  (team name unavailable; signing identity: Apple Development: Same Developer)",
+                "TEAMBBBBBB  (team name unavailable; signing identity: Apple Development: Same Developer)",
+                "tok build ios --ios-team-id TEAM_ID",
+            ],
+            &["tok dev"],
+        );
         Ok(())
     }
 
@@ -1979,15 +2004,17 @@ mod tests {
 
     #[test]
     fn accepts_wildcard_application_identifiers() {
-        assert!(app_identifier_matches(
-            "TEAM.com.example.*",
-            "com.example.app"
-        ));
-        assert!(!app_identifier_matches(
-            "TEAM.com.example.*",
-            "com.other.app"
-        ));
-        assert!(app_identifier_matches("TEAM.*", "com.other.app"));
+        for (application_identifier, bundle_id, matches) in [
+            ("TEAM.com.example.*", "com.example.app", true),
+            ("TEAM.com.example.*", "com.other.app", false),
+            ("TEAM.*", "com.other.app", true),
+        ] {
+            assert_eq!(
+                app_identifier_matches(application_identifier, bundle_id),
+                matches,
+                "{application_identifier} for {bundle_id}"
+            );
+        }
     }
 
     #[test]
@@ -2125,18 +2152,19 @@ mod tests {
         deviceless.application_identifier = "COMPANY.com.tokamak.new-app".to_owned();
         profiles.push(deviceless);
         let eligible = super::development_profiles(profiles.into_iter().map(Ok).collect());
-        for device_id in [Some("DEVICE"), None] {
-            assert_eq!(
+        let teams = [Some("DEVICE"), None]
+            .into_iter()
+            .map(|device_id| {
                 automatic_team_id(
                     project.path(),
                     "com.tokamak.new-app",
                     device_id,
                     &identities,
-                    &eligible
-                )?,
-                "PERSONAL"
-            );
-        }
+                    &eligible,
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        assert_eq!(teams, ["PERSONAL", "PERSONAL"]);
         Ok(())
     }
 
@@ -2270,9 +2298,15 @@ mod tests {
         let project =
             write_signing_probe(Platform::Macos, temporary.path(), "com.example.probe", None)?;
         let contents = std::fs::read_to_string(project.join("project.pbxproj"))?;
-        assert!(contents.contains("PRODUCT_BUNDLE_IDENTIFIER = \"com.example.probe\";"));
-        assert!(contents.contains("SDKROOT = macosx;"));
-        assert!(contents.contains("CODE_SIGN_ENTITLEMENTS = TokamakSigningProbe.entitlements;"));
+        assert_contains(
+            &contents,
+            &[
+                "PRODUCT_BUNDLE_IDENTIFIER = \"com.example.probe\";",
+                "SDKROOT = macosx;",
+                "CODE_SIGN_ENTITLEMENTS = TokamakSigningProbe.entitlements;",
+            ],
+            &[],
+        );
         let entitlements =
             Value::from_file(temporary.path().join("TokamakSigningProbe.entitlements"))?;
         assert!(

@@ -94,12 +94,19 @@ mod tests {
         fs::write(bin.path().join("node.cmd"), "")?;
         let path = std::env::join_paths([empty.path(), bin.path()])?;
 
-        let find = |program: &str| find_program(OsStr::new(program), &path, EXTENSIONS);
-        assert_eq!(find("vite"), Some(bin.path().join("vite.cmd")));
-        assert_eq!(find("node"), Some(bin.path().join("node.exe")));
-        assert_eq!(find("astro"), None);
-        assert_eq!(find("vite.cmd"), None);
-        assert_eq!(find("bin/vite"), None);
+        for (program, expected) in [
+            ("vite", Some(bin.path().join("vite.cmd"))),
+            ("node", Some(bin.path().join("node.exe"))),
+            ("astro", None),
+            ("vite.cmd", None),
+            ("bin/vite", None),
+        ] {
+            assert_eq!(
+                find_program(OsStr::new(program), &path, EXTENSIONS),
+                expected,
+                "{program}"
+            );
+        }
         Ok(())
     }
 }

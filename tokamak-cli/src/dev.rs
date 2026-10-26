@@ -490,16 +490,17 @@ fn terminate_process_tree(child: &mut Child) -> Result<()> {
     while Instant::now() < deadline && child.try_wait()?.is_none() {
         thread::sleep(SERVER_POLL_INTERVAL);
     }
-    if child.try_wait()?.is_none() {
-        let status = ProcessCommand::new("taskkill")
-            .args(["/PID", &pid, "/T", "/F"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .context("force-stop development command")?;
-        if !status.success() && child.try_wait()?.is_none() {
-            child.kill().context("force-stop development command")?;
-        }
+    if child.try_wait()?.is_some() {
+        return Ok(());
+    }
+    let status = ProcessCommand::new("taskkill")
+        .args(["/PID", &pid, "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("force-stop development command")?;
+    if !status.success() && child.try_wait()?.is_none() {
+        child.kill().context("force-stop development command")?;
     }
     Ok(())
 }
@@ -910,12 +911,12 @@ fn header_values<'a>(request: &'a [u8], name: &'a [u8]) -> impl Iterator<Item = 
 /// `server_authority` with that host and without the session secret, or
 /// otherwise the dev socket, which checks the secret itself.
 fn rewrite_request(request: &[u8], server_authority: Option<&str>) -> io::Result<Vec<u8>> {
-    let end = find_header_end(request).ok_or_else(|| {
-        io::Error::new(
+    let Some(end) = find_header_end(request) else {
+        return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "development relay received an incomplete request",
-        )
-    })?;
+        ));
+    };
     let lines = request[..end]
         .split(|byte| *byte == b'\n')
         .map(|line| line.strip_suffix(b"\r").unwrap_or(line));
@@ -924,23 +925,20 @@ fn rewrite_request(request: &[u8], server_authority: Option<&str>) -> io::Result
         .skip(1)
         .filter_map(header_parts)
         .any(|(name, _)| name.eq_ignore_ascii_case(b"upgrade"));
+    let host =
+        server_authority.map(|authority| [b"Host: ".as_slice(), authority.as_bytes()].concat());
     let mut rewritten = Vec::with_capacity(request.len());
     for (index, line) in lines.enumerate() {
         let name = header_parts(line)
             .filter(|_| index > 0)
             .map(|(name, _)| name);
         let named = |expected: &[u8]| name.is_some_and(|name| name.eq_ignore_ascii_case(expected));
-        if named(b"connection") && !upgrade {
+        let dropped = (named(b"connection") && !upgrade)
+            || (server_authority.is_some() && named(b"x-tokamak-session"));
+        if dropped {
             continue;
         }
-        match server_authority {
-            Some(_) if named(b"x-tokamak-session") => continue,
-            Some(authority) if named(b"host") => {
-                rewritten.extend_from_slice(b"Host: ");
-                rewritten.extend_from_slice(authority.as_bytes());
-            }
-            _ => rewritten.extend_from_slice(line),
-        }
+        rewritten.extend_from_slice(host.as_deref().filter(|_| named(b"host")).unwrap_or(line));
         rewritten.extend_from_slice(b"\r\n");
     }
     // The relay rewrites only a connection's first request, so a request
@@ -1575,13 +1573,9 @@ mod tests {
             read_head(&mut client)?,
             "HTTP/1.1 101 Switching Protocols\r\n\r\n"
         );
-        let mut hello = [0_u8; 5];
-        client.read_exact(&mut hello)?;
-        assert_eq!(&hello, b"hello");
+        assert_reads(&mut client, b"hello")?;
         client.write_all(b"ping")?;
-        let mut pong = [0_u8; 4];
-        client.read_exact(&mut pong)?;
-        assert_eq!(&pong, b"pong");
+        assert_reads(&mut client, b"pong")?;
         upstream_thread
             .join()
             .map_err(|_| "upstream thread panicked")??;
@@ -1748,6 +1742,16 @@ mod tests {
             head.push(byte[0]);
         }
         String::from_utf8(head).map_err(std::io::Error::other)
+    }
+
+    /// Reads as many bytes as `expected` holds from `stream` and asserts they
+    /// are `expected`.
+    #[track_caller]
+    fn assert_reads(stream: &mut impl Read, expected: &[u8]) -> std::io::Result<()> {
+        let mut bytes = vec![0_u8; expected.len()];
+        stream.read_exact(&mut bytes)?;
+        assert_eq!(bytes, expected);
+        Ok(())
     }
 
     #[test]

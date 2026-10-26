@@ -493,13 +493,12 @@ impl Resolver for WorkerResolver {
         } else {
             crate::compiler::resolve_module_name(base, name)
         };
-        if is_module_name(&resolved)
-            && (!resolved.starts_with("tokamak:") || base.starts_with("tokamak:"))
+        if !is_module_name(&resolved)
+            || (resolved.starts_with("tokamak:") && !base.starts_with("tokamak:"))
         {
-            Ok(resolved)
-        } else {
-            Err(rquickjs::Error::new_resolving(base, name))
+            return Err(rquickjs::Error::new_resolving(base, name));
         }
+        Ok(resolved)
     }
 }
 

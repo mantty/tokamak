@@ -88,11 +88,9 @@ impl NamespacedOptions {
     /// [`plugin_arguments`] adds.
     pub(crate) fn with_plugin_options(mut self, matches: &ArgMatches, plugins: &[Plugin]) -> Self {
         for (plugin, key, setting) in declared_settings(plugins) {
-            for namespace in option_namespaces() {
-                let name = option_name(&plugin.id, namespace, key);
-                if !matches.contains_id(&name) {
-                    continue;
-                }
+            let names =
+                option_namespaces().map(|namespace| option_name(&plugin.id, namespace, key));
+            for name in names.filter(|name| matches.contains_id(name)) {
                 let value = setting.kind.option_value(matches, &name);
                 self.plugins.insert(name, value);
             }
@@ -639,6 +637,7 @@ pub(crate) fn platform_help(
 mod tests {
     use std::collections::BTreeMap;
     use std::ffi::OsString;
+    use std::fmt::Debug;
     use std::path::Path;
 
     use anyhow::Result;
@@ -726,6 +725,28 @@ mod tests {
             let manifest = manifest(platform.default_target()?);
             self.with(|sources| resolve(sources, platform, &manifest))
         }
+
+        /// Asserts what `read` takes from `platform`'s settings.
+        #[track_caller]
+        fn assert_resolves<T: Debug + PartialEq>(
+            &self,
+            platform: Platform,
+            read: impl FnOnce(PlatformSettings) -> T,
+            expected: &T,
+        ) -> Result<()> {
+            assert_eq!(&read(self.resolve(platform)?), expected, "{platform:?}");
+            Ok(())
+        }
+
+        /// Asserts that resolving `platform` fails with an error `accepts` holds for.
+        #[track_caller]
+        fn assert_rejects(&self, platform: Platform, accepts: impl FnOnce(&str) -> bool) {
+            let error = self.resolve(platform).err().map(|error| error.to_string());
+            assert!(
+                error.as_deref().is_some_and(accepts),
+                "{platform:?}: {error:?}"
+            );
+        }
     }
 
     #[test]
@@ -759,15 +780,14 @@ mod tests {
                 "TEAM"
             ])
         );
-        assert_eq!(
-            options.value("ios", "plist")?.as_deref(),
-            Some("Info.plist")
-        );
-        assert_eq!(
-            options.value("android", "manifest")?.as_deref(),
-            Some("AndroidManifest.xml")
-        );
-        assert_eq!(options.value("ios", "team-id")?, None);
+        let assert_value = |namespace, key, expected| -> Result<()> {
+            let value = options.value(namespace, key)?;
+            assert_eq!(value.as_deref(), expected, "--{namespace}-{key}");
+            Ok(())
+        };
+        assert_value("ios", "plist", Some("Info.plist"))?;
+        assert_value("android", "manifest", Some("AndroidManifest.xml"))?;
+        assert_value("ios", "team-id", None)?;
         Ok(())
     }
 
@@ -845,48 +865,29 @@ mod tests {
             "identifier": "com.config.top",
             "ios": { "identifier": "com.config.ios" },
         }))?;
-        assert_eq!(
-            fixture.resolve(Platform::Ios)?.identifier.as_deref(),
-            Some("com.config.ios")
-        );
-        assert_eq!(
-            fixture.resolve(Platform::Macos)?.identifier.as_deref(),
-            Some("com.config.top")
-        );
+        let identifier = |settings: PlatformSettings| settings.identifier;
+        fixture.assert_resolves(Platform::Ios, identifier, &Some("com.config.ios".into()))?;
+        fixture.assert_resolves(Platform::Macos, identifier, &Some("com.config.top".into()))?;
 
         fixture
             .environment
             .insert("TOKAMAK_IDENTIFIER".to_owned(), "com.env.top".to_owned());
-        assert_eq!(
-            fixture.resolve(Platform::Ios)?.identifier.as_deref(),
-            Some("com.env.top")
-        );
+        fixture.assert_resolves(Platform::Ios, identifier, &Some("com.env.top".into()))?;
         fixture.environment.insert(
             "TOKAMAK_IOS_IDENTIFIER".to_owned(),
             "com.env.ios".to_owned(),
         );
-        assert_eq!(
-            fixture
-                .resolve(Platform::IosSimulator)?
-                .identifier
-                .as_deref(),
-            Some("com.env.ios")
-        );
+        fixture.assert_resolves(
+            Platform::IosSimulator,
+            identifier,
+            &Some("com.env.ios".into()),
+        )?;
 
         fixture.top.identifier = Some("com.option.top".to_owned());
-        assert_eq!(
-            fixture.resolve(Platform::Ios)?.identifier.as_deref(),
-            Some("com.option.top")
-        );
+        fixture.assert_resolves(Platform::Ios, identifier, &Some("com.option.top".into()))?;
         fixture.options = namespaced_options(&["--ios-identifier", "com.option.ios"])?;
-        assert_eq!(
-            fixture.resolve(Platform::Ios)?.identifier.as_deref(),
-            Some("com.option.ios")
-        );
-        assert_eq!(
-            fixture.resolve(Platform::Macos)?.identifier.as_deref(),
-            Some("com.option.top")
-        );
+        fixture.assert_resolves(Platform::Ios, identifier, &Some("com.option.ios".into()))?;
+        fixture.assert_resolves(Platform::Macos, identifier, &Some("com.option.top".into()))?;
         Ok(())
     }
 
@@ -894,33 +895,35 @@ mod tests {
     fn passes_the_icon_to_the_pack_as_a_path() -> Result<()> {
         let mut fixture = Fixture::new();
         let icon =
-            |settings: PlatformSettings, name: &str| settings.pack_environment.get(name).cloned();
-        assert_eq!(
-            icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
-            None
-        );
+            |name| move |settings: PlatformSettings| settings.pack_environment.get(name).cloned();
+        let macos_icon = icon("TOKAMAK_MACOS_ICON");
+        fixture.assert_resolves(Platform::Macos, macos_icon, &None)?;
         fixture.config = configured(&json!({ "icon": "../AppIcon.icon" }))?;
-        assert_eq!(
-            icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
-            Some(joined("/config", "../AppIcon.icon"))
-        );
+        fixture.assert_resolves(
+            Platform::Macos,
+            macos_icon,
+            &Some(joined("/config", "../AppIcon.icon")),
+        )?;
         fixture
             .environment
             .insert("TOKAMAK_ICON".to_owned(), "icons/App.icon".to_owned());
-        assert_eq!(
-            icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
-            Some(joined("/work", "icons/App.icon"))
-        );
+        fixture.assert_resolves(
+            Platform::Macos,
+            macos_icon,
+            &Some(joined("/work", "icons/App.icon")),
+        )?;
         fixture.top.icon = Some("top/App.icon".to_owned());
         fixture.options = namespaced_options(&["--macos-icon", "macos/App.icon"])?;
-        assert_eq!(
-            icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
-            Some(joined("/work", "macos/App.icon"))
-        );
-        assert_eq!(
-            icon(fixture.resolve(Platform::IosSimulator)?, "TOKAMAK_IOS_ICON"),
-            Some(joined("/work", "top/App.icon"))
-        );
+        fixture.assert_resolves(
+            Platform::Macos,
+            macos_icon,
+            &Some(joined("/work", "macos/App.icon")),
+        )?;
+        fixture.assert_resolves(
+            Platform::IosSimulator,
+            icon("TOKAMAK_IOS_ICON"),
+            &Some(joined("/work", "top/App.icon")),
+        )?;
         Ok(())
     }
 
@@ -949,32 +952,34 @@ mod tests {
             "ios": { "plist": "native/Info.plist", "team-id": "CONFIG" },
         }))?;
         let environment = |settings: PlatformSettings| settings.pack_environment;
-        assert_eq!(
-            environment(fixture.resolve(Platform::Ios)?),
-            BTreeMap::from([
+        fixture.assert_resolves(
+            Platform::Ios,
+            environment,
+            &BTreeMap::from([
                 (
                     "TOKAMAK_IOS_PLIST".to_owned(),
-                    joined("/config", "native/Info.plist")
+                    joined("/config", "native/Info.plist"),
                 ),
                 ("TOKAMAK_IOS_TEAM_ID".to_owned(), OsString::from("CONFIG")),
-            ])
-        );
+            ]),
+        )?;
 
         fixture
             .environment
             .insert("TOKAMAK_IOS_PLIST".to_owned(), "env/Info.plist".to_owned());
         fixture.options = namespaced_options(&["--ios-team-id", "OPTION"])?;
-        assert_eq!(
-            environment(fixture.resolve(Platform::IosSimulator)?),
-            BTreeMap::from([
+        fixture.assert_resolves(
+            Platform::IosSimulator,
+            environment,
+            &BTreeMap::from([
                 (
                     "TOKAMAK_IOS_PLIST".to_owned(),
-                    joined("/work", "env/Info.plist")
+                    joined("/work", "env/Info.plist"),
                 ),
                 ("TOKAMAK_IOS_TEAM_ID".to_owned(), OsString::from("OPTION")),
-            ])
-        );
-        assert!(environment(fixture.resolve(Platform::Macos)?).is_empty());
+            ]),
+        )?;
+        fixture.assert_resolves(Platform::Macos, environment, &BTreeMap::new())?;
         Ok(())
     }
 
@@ -1028,6 +1033,13 @@ mod tests {
             let plugins = alerts()?;
             let mut resolved = self.with(|sources| resolve_plugins(sources, platform, &plugins))?;
             Ok(Value::Object(resolved.remove("alerts").unwrap_or_default()))
+        }
+
+        /// Asserts the alerts plugin's settings on `platform`.
+        #[track_caller]
+        fn assert_plugin_settings(&self, platform: Platform, expected: &Value) -> Result<()> {
+            assert_eq!(&self.plugin_settings(platform)?, expected, "{platform:?}");
+            Ok(())
         }
     }
 
@@ -1173,21 +1185,13 @@ mod tests {
     #[test]
     fn applies_plugin_setting_defaults_last() -> Result<()> {
         let mut fixture = Fixture::new();
-        assert_eq!(
-            fixture.plugin_settings(Platform::Ios)?,
-            with_defaults(json!({}))
-        );
+        fixture.assert_plugin_settings(Platform::Ios, &with_defaults(json!({})))?;
 
         fixture.config = configured(&json!({ "alerts": { "loud": true } }))?;
         fixture.options = parsed_options(&["--alerts-ios-loud=false"], &alerts()?)?;
-        assert_eq!(
-            fixture.plugin_settings(Platform::Ios)?,
-            with_defaults(json!({ "loud": false }))
-        );
-        assert_eq!(
-            fixture.plugin_settings(Platform::Android)?,
-            with_defaults(json!({ "loud": true }))
-        );
+        fixture.assert_plugin_settings(Platform::Ios, &with_defaults(json!({ "loud": false })))?;
+        fixture
+            .assert_plugin_settings(Platform::Android, &with_defaults(json!({ "loud": true })))?;
         Ok(())
     }
 
@@ -1243,28 +1247,28 @@ mod tests {
         fixture.config = configured(&json!({
             "alerts": { "sounds": "sounds", "volume": 1, "ios": { "sounds": "ios-sounds" } },
         }))?;
-        assert_eq!(
-            fixture.plugin_settings(Platform::Ios)?,
-            with_defaults(json!({ "sounds": path("/config", "ios-sounds"), "volume": 1 }))
-        );
-        assert_eq!(
-            fixture.plugin_settings(Platform::Android)?,
-            with_defaults(json!({ "sounds": path("/config", "sounds"), "volume": 1 }))
-        );
+        fixture.assert_plugin_settings(
+            Platform::Ios,
+            &with_defaults(json!({ "sounds": path("/config", "ios-sounds"), "volume": 1 })),
+        )?;
+        fixture.assert_plugin_settings(
+            Platform::Android,
+            &with_defaults(json!({ "sounds": path("/config", "sounds"), "volume": 1 })),
+        )?;
 
         fixture.environment.extend([
             ("TOKAMAK_ALERTS_SOUNDS".to_owned(), "env".to_owned()),
             ("TOKAMAK_ALERTS_MACOS_VOLUME".to_owned(), "2".to_owned()),
         ]);
         fixture.options = parsed_options(&["--alerts-android-volume", "3"], &alerts()?)?;
-        assert_eq!(
-            fixture.plugin_settings(Platform::Macos)?,
-            with_defaults(json!({ "sounds": path("/work", "env"), "volume": 2 }))
-        );
-        assert_eq!(
-            fixture.plugin_settings(Platform::Android)?,
-            with_defaults(json!({ "sounds": path("/work", "env"), "volume": 3 }))
-        );
+        fixture.assert_plugin_settings(
+            Platform::Macos,
+            &with_defaults(json!({ "sounds": path("/work", "env"), "volume": 2 })),
+        )?;
+        fixture.assert_plugin_settings(
+            Platform::Android,
+            &with_defaults(json!({ "sounds": path("/work", "env"), "volume": 3 })),
+        )?;
         Ok(())
     }
 
@@ -1417,37 +1421,39 @@ mod tests {
     fn rejects_keys_the_platform_pack_does_not_declare() -> Result<()> {
         let mut fixture = Fixture::new();
         fixture.options = namespaced_options(&["--ios-manifest", "AndroidManifest.xml"])?;
-        assert!(fixture.resolve(Platform::Ios).is_err_and(|error| {
-            error.to_string()
+        fixture.assert_rejects(Platform::Ios, |error| {
+            error
                 == "unknown option --ios-manifest; iOS accepts --ios-name, --ios-identifier, \
                     --ios-icon, --ios-plist, --ios-team-id"
-        }));
+        });
         assert!(fixture.resolve(Platform::Macos).is_ok());
 
         fixture.options = NamespacedOptions::default();
         fixture.config = configured(&json!({ "macos": { "plsit": "Info.plist" } }))?;
-        assert!(fixture.resolve(Platform::Macos).is_err_and(|error| {
-            error
-                .to_string()
-                .starts_with("unknown key macos.plsit in the tokamak() options; macOS accepts")
-        }));
+        fixture.assert_rejects(Platform::Macos, |error| {
+            error.starts_with("unknown key macos.plsit in the tokamak() options; macOS accepts")
+        });
         assert!(fixture.resolve(Platform::Ios).is_ok());
         Ok(())
     }
 
     #[test]
     fn top_level_keys_prefer_options_then_environment_then_configuration() -> Result<()> {
+        let assert_version = |fixture: &Fixture, expected: &str| -> Result<()> {
+            assert_eq!(fixture.with(version)?.as_deref(), Some(expected));
+            Ok(())
+        };
         let mut fixture = Fixture::new();
         fixture.config = configured(&json!({ "version": "1.0.0" }))?;
-        assert_eq!(fixture.with(version)?.as_deref(), Some("1.0.0"));
+        assert_version(&fixture, "1.0.0")?;
         fixture
             .environment
             .insert("TOKAMAK_VERSION".to_owned(), "2.0.0".to_owned());
-        assert_eq!(fixture.with(version)?.as_deref(), Some("2.0.0"));
+        assert_version(&fixture, "2.0.0")?;
         fixture.top.version = Some("3.0.0".to_owned());
-        assert_eq!(fixture.with(version)?.as_deref(), Some("3.0.0"));
+        assert_version(&fixture, "3.0.0")?;
         fixture.top.version = Some("1.0'beta\"".to_owned());
-        assert_eq!(fixture.with(version)?.as_deref(), Some("1.0'beta\""));
+        assert_version(&fixture, "1.0'beta\"")?;
         fixture.top.version = None;
         fixture
             .environment

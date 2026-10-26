@@ -42,7 +42,7 @@ impl Invocation {
                 self.caller_interrupted.store(true, Ordering::Release);
                 return true;
             }
-            self.background_deadline();
+            return self.background_deadline() <= Instant::now();
         }
         self.background
             .get()

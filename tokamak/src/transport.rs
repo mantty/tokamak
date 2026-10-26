@@ -54,15 +54,12 @@ pub(super) fn client_disconnected(
             .process_new_packets()
             .map(|_| false)
             .map_err(io::Error::other),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
-            ) =>
-        {
-            Ok(false)
-        }
-        Err(error) => Err(error),
+        Err(error) => match error.kind() {
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted => {
+                Ok(false)
+            }
+            _ => Err(error),
+        },
     }
 }
 
@@ -329,10 +326,7 @@ fn parse_header_fields<'a>(
     let mut headers = HeaderMap::new();
     let mut content_length = None;
     let mut chunked = false;
-    for line in lines {
-        if line.is_empty() {
-            break;
-        }
+    for line in lines.take_while(|line| !line.is_empty()) {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
@@ -345,9 +339,7 @@ fn parse_header_fields<'a>(
                     .map_err(|_| invalid_data("invalid content length"))?,
             );
         }
-        if name == "transfer-encoding" && has_token(value, "chunked") {
-            chunked = true;
-        }
+        chunked |= name == "transfer-encoding" && has_token(value, "chunked");
         append_header(&mut headers, &name, value)?;
     }
     Ok((headers, content_length, chunked))
@@ -1007,17 +999,17 @@ fn insert_framing_headers(
     headers.remove("transfer-encoding");
     if (100..200).contains(&status) || matches!(status, 204 | 304) {
         headers.remove("content-length");
-    } else if let HttpBody::Buffered(body) = body {
-        insert_header(headers, "content-length", HeaderValue::from(body.len()))?;
-    } else {
-        headers.remove("content-length");
-        insert_header(
-            headers,
-            "transfer-encoding",
-            HeaderValue::from_static("chunked"),
-        )?;
+        return Ok(());
     }
-    Ok(())
+    if let HttpBody::Buffered(body) = body {
+        return insert_header(headers, "content-length", HeaderValue::from(body.len()));
+    }
+    headers.remove("content-length");
+    insert_header(
+        headers,
+        "transfer-encoding",
+        HeaderValue::from_static("chunked"),
+    )
 }
 
 fn write_stream_body<W: Write>(
@@ -1032,7 +1024,8 @@ fn write_stream_body<W: Write>(
     };
     loop {
         let chunk = match body.receiver.recv_timeout(RESPONSE_STREAM_POLL) {
-            Ok(chunk) => chunk.map_err(|error| stream_failure(&error))?,
+            Ok(Ok(chunk)) => chunk,
+            Ok(Err(error)) => return Err(stream_failure(&error)),
             Err(flume::RecvTimeoutError::Timeout) => {
                 if is_cancelled() {
                     break;
@@ -1116,12 +1109,18 @@ mod tests {
                 rustls::Error::AlertReceived(description),
             )
         };
-        assert!(connection_ended(&alert(
-            AlertDescription::CertificateUnknown
-        )));
-        assert!(connection_ended(&alert(AlertDescription::CloseNotify)));
-        assert!(!connection_ended(&alert(AlertDescription::DecodeError)));
-        assert!(!connection_ended(&alert(AlertDescription::BadRecordMac)));
+        for (description, ended) in [
+            (AlertDescription::CertificateUnknown, true),
+            (AlertDescription::CloseNotify, true),
+            (AlertDescription::DecodeError, false),
+            (AlertDescription::BadRecordMac, false),
+        ] {
+            assert_eq!(
+                connection_ended(&alert(description)),
+                ended,
+                "{description:?}"
+            );
+        }
     }
 
     #[test]
@@ -1131,15 +1130,13 @@ mod tests {
             (true, "connection: keep-alive"),
             (false, "connection: close"),
         ] {
-            let mut headers = HeaderMap::new();
-            headers.insert("connection", HeaderValue::from_static("close"));
-            headers.insert("keep-alive", HeaderValue::from_static("timeout=5"));
-            let response = HttpResponse::buffered(200, headers, b"ok".to_vec());
-            let mut output = Vec::new();
-            write_response_inner(&mut output, response, None, None, |_| Ok(false), persistent)?;
-            let text = String::from_utf8(output)?;
-            assert!(text.contains(expected), "{text}");
-            assert!(!text.contains("keep-alive:"), "{text}");
+            assert_framing(
+                HttpResponse::buffered(200, HeaderMap::new(), b"ok".to_vec()),
+                "GET",
+                persistent,
+                &[("connection", "close"), ("keep-alive", "timeout=5")],
+                &[(expected, true), ("keep-alive:", false)],
+            )?;
         }
         Ok(())
     }
@@ -1244,9 +1241,13 @@ mod tests {
         let request = read_request(&mut input, "app.test")?.ok_or("request was empty")?;
         let json = serde_json::to_value(request)?;
         let pairs = json["headers"].as_array().ok_or("expected header pairs")?;
-        assert!(pairs.contains(&serde_json::json!(["x-repeated", "one"])));
-        assert!(pairs.contains(&serde_json::json!(["x-repeated", "two"])));
-        assert!(pairs.contains(&serde_json::json!(["x-text", "東京"])));
+        for pair in [
+            serde_json::json!(["x-repeated", "one"]),
+            serde_json::json!(["x-repeated", "two"]),
+            serde_json::json!(["x-text", "東京"]),
+        ] {
+            assert!(pairs.contains(&pair), "{pair} in {pairs:?}");
+        }
         Ok(())
     }
 
@@ -1293,11 +1294,13 @@ mod tests {
         Ok(())
     }
 
-    /// Writes `response` with `headers` set, for a `method` request, and asserts
-    /// whether each probe appears in the output.
+    /// Writes `response` with `headers` set, for a `method` request on a
+    /// connection that stays open when `persistent`, and asserts whether each
+    /// probe appears in the output.
     fn assert_framing(
         mut response: HttpResponse,
         method: &str,
+        persistent: bool,
         headers: &[(&'static str, &'static str)],
         probes: &[(&str, bool)],
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1313,7 +1316,7 @@ mod tests {
             Some(method),
             None,
             |_| Ok(false),
-            false,
+            persistent,
         )?;
         let output = String::from_utf8(output)?;
         for &(probe, present) in probes {
@@ -1328,6 +1331,7 @@ mod tests {
         assert_framing(
             HttpResponse::text(200, "ok"),
             "GET",
+            false,
             &[("content-length", "99"), ("transfer-encoding", "identity")],
             &[
                 ("content-length: 2\r\n", true),
@@ -1346,6 +1350,7 @@ mod tests {
             assert_framing(
                 response,
                 "HEAD",
+                false,
                 &[],
                 &[
                     ("content-length: 99\r\n", explicit),
@@ -1358,6 +1363,7 @@ mod tests {
             assert_framing(
                 HttpResponse::text(status, ""),
                 "GET",
+                false,
                 &[("content-length", "99")],
                 &[
                     ("content-length: 0\r\n", status == 205),
@@ -1522,11 +1528,12 @@ mod tests {
     #[test]
     fn rejects_chunked_request_bodies_over_the_limit() {
         let input = format!("{:X}\r\n", super::MAX_HTTP_BODY + 1);
-        assert!(matches!(
-            super::read_chunked_body(&mut Cursor::new(input.as_bytes())),
-            Err(error) if error.kind() == io::ErrorKind::InvalidData
-                && error.to_string() == "HTTP body exceeds the limit"
-        ));
+        assert!(
+            super::read_chunked_body(&mut Cursor::new(input.as_bytes())).is_err_and(|error| {
+                error.kind() == io::ErrorKind::InvalidData
+                    && error.to_string() == "HTTP body exceeds the limit"
+            })
+        );
     }
 
     #[test]
