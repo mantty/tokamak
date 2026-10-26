@@ -390,14 +390,36 @@ impl VirtualFileSystem {
 
     /// List a directory in the order its entries are stored.
     pub fn read_dir(&self, path: &str) -> Result<Vec<DirectoryEntry>> {
-        self.resolve(path, true)?.read_dir(path)
+        self.listed_directory(path)?.entries()
     }
 
-    /// List a directory tree depth first, each directory in its stored order.
+    /// List a directory tree depth first, each directory in its stored order,
+    /// descending into symbolic links to directories under the link's path.
     pub fn walk(&self, path: &str) -> Result<Vec<(String, DirectoryEntry)>> {
+        let directory = self.listed_directory(path)?;
         let mut entries = Vec::new();
-        self.walk_directory(path, &mut entries)?;
+        self.walk_directory(path, &directory, &mut vec![path.to_owned()], &mut entries)?;
         Ok(entries)
+    }
+
+    /// The directory `path` names without passing through a symbolic link.
+    fn listed_directory(&self, path: &str) -> Result<Directory> {
+        let components = absolute_components(path)?;
+        let mut directory = self.root.clone();
+        for (index, name) in components.iter().enumerate() {
+            let final_component = index + 1 == components.len();
+            directory = match directory.lookup(name)? {
+                Some(Node::Directory(child)) => child,
+                Some(Node::Symlink(_)) if final_component => {
+                    return Err(Error::new(ErrorKind::InvalidInput, path));
+                }
+                Some(Node::File(_)) if final_component => {
+                    return Err(Error::new(ErrorKind::NotDirectory, path));
+                }
+                _ => return Err(Error::new(ErrorKind::NotFound, path)),
+            };
+        }
+        Ok(directory)
     }
 
     /// Check whether a path satisfies the requested access mode.
@@ -794,18 +816,33 @@ impl VirtualFileSystem {
         Ok(())
     }
 
+    /// Appends the tree below `directory`, reached at `path`, to `entries`.
+    /// `ancestors` holds the real paths of the directories being walked, which
+    /// a symbolic link may not lead back to.
     fn walk_directory(
         &self,
         path: &str,
+        directory: &Directory,
+        ancestors: &mut Vec<String>,
         entries: &mut Vec<(String, DirectoryEntry)>,
     ) -> Result<()> {
-        for entry in self.read_dir(path)? {
+        for entry in directory.entries()? {
             let child = join_child(path, &entry.name);
-            let is_directory = entry.kind == NodeType::Directory;
             entries.push((child.clone(), entry));
-            if is_directory {
-                self.walk_directory(&child, entries)?;
+            let Ok(Node::Directory(child_directory)) = self.resolve(&child, true) else {
+                continue;
+            };
+            let real_path = self.realpath(&child)?;
+            if ancestors.contains(&real_path) {
+                return Err(Error::with_message(
+                    ErrorKind::SymlinkLoop,
+                    "",
+                    "symlink depth exceeded",
+                ));
             }
+            ancestors.push(real_path);
+            self.walk_directory(&child, &child_directory, ancestors, entries)?;
+            ancestors.pop();
         }
         Ok(())
     }

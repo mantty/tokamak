@@ -76,13 +76,6 @@ impl Node {
         file.read(0, length)
     }
 
-    pub(super) fn read_dir(&self, path: &str) -> Result<Vec<DirectoryEntry>> {
-        match self {
-            Self::Directory(directory) => directory.entries(),
-            _ => Err(Error::new(ErrorKind::NotDirectory, path)),
-        }
-    }
-
     pub(super) fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>> {
         self.file("")?.read(offset, length)
     }

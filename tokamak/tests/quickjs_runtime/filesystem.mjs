@@ -541,6 +541,65 @@ function pathContracts() {
   };
 }
 
+// Symbolic links: their targets, and listings and copies that reach them.
+async function symlinkContracts() {
+  const root = "/tmp/filesystem-links";
+  const alias = `${root}/alias`;
+  fs.mkdirSync(`${root}/real/sub`, { recursive: true });
+  fs.writeFileSync(`${root}/real/file.txt`, "f");
+  fs.symlinkSync(`${root}/real`, alias);
+  fs.symlinkSync(alias, `${root}/chain`);
+  fs.symlinkSync("real", `${root}/relative`);
+  fs.symlinkSync(`${root}/real/file.txt`, `${root}/file-link`);
+  fs.symlinkSync(`${root}/missing`, `${root}/dangling`);
+  const cycle = "/tmp/filesystem-links-cycle";
+  fs.mkdirSync(`${cycle}/sub`, { recursive: true });
+  fs.symlinkSync(cycle, `${cycle}/sub/up`);
+  return {
+    readlinkRelative: attempt(() => fs.readlinkSync(`${root}/relative`)),
+    readThroughRelative: attempt(() => fs.readFileSync(`${root}/relative/file.txt`, "utf8")),
+    readlinkSpaced: attempt(() => { fs.symlinkSync("a b/./c/../d", `${root}/spaced`); return fs.readlinkSync(`${root}/spaced`); }),
+    readlinkUrl: attempt(() => { fs.symlinkSync(new URL(`file://${root}/real`), `${root}/url`); return fs.readlinkSync(`${root}/url`); }),
+    numberTarget: attempt(() => fs.symlinkSync(5, `${root}/number`)),
+    readThroughLink: attempt(() => fs.readFileSync(`${alias}/file.txt`, "utf8")),
+    readdirLink: attempt(() => fs.readdirSync(alias)),
+    readdirChain: attempt(() => fs.readdirSync(`${root}/chain`)),
+    readdirFileLink: attempt(() => fs.readdirSync(`${root}/file-link`)),
+    readdirDangling: attempt(() => fs.readdirSync(`${root}/dangling`)),
+    readdirThroughLink: attempt(() => fs.readdirSync(`${alias}/sub`)),
+    readdirThroughFile: attempt(() => fs.readdirSync(`${root}/real/file.txt/sub`)),
+    readdirFile: attempt(() => fs.readdirSync(`${root}/real/file.txt`)),
+    opendirLink: attempt(() => fs.opendirSync(alias).closeSync()),
+    promiseLink: await fs.promises.readdir(alias).then(names => names, error => ({ thrown: failure(error) })),
+    recursive: attempt(() => fs.readdirSync(root, { recursive: true })),
+    recursiveDirents: attempt(() => fs.readdirSync(root, { recursive: true, withFileTypes: true }).map(direntOutcome)),
+    recursiveOpendir: attempt(() => openedDirents(root, { recursive: true })),
+    cycle: attempt(() => fs.readdirSync(cycle, { recursive: true })),
+    cycleOpendir: attempt(() => fs.opendirSync(cycle, { recursive: true })),
+    glob: globOutcome("alias/*", { cwd: root }),
+    globCwd: globOutcome("*", { cwd: alias }),
+    globstar: globOutcome("**", { cwd: root }),
+    copyLink: attempt(() => {
+      fs.cpSync(alias, `${root}/copy`, { recursive: true });
+      return [fs.lstatSync(`${root}/copy`).isSymbolicLink(), fs.readlinkSync(`${root}/copy`)];
+    }),
+    copyDereferenced: attempt(() => {
+      fs.cpSync(alias, `${root}/copy-dereferenced`, { recursive: true, dereference: true });
+      return [fs.lstatSync(`${root}/copy-dereferenced`).isSymbolicLink(), fs.readdirSync(`${root}/copy-dereferenced`)];
+    }),
+    copyTreeWithDanglingLink: attempt(() => {
+      fs.mkdirSync(`${root}/tree`);
+      fs.symlinkSync(`${root}/missing`, `${root}/tree/dangling`);
+      fs.cpSync(`${root}/tree`, `${root}/tree-copy`, { recursive: true });
+      return fs.readlinkSync(`${root}/tree-copy/dangling`);
+    }),
+    copyFileLink: attempt(() => {
+      fs.cpSync(`${root}/file-link`, `${root}/copy-file`);
+      return fs.lstatSync(`${root}/copy-file`).isSymbolicLink();
+    }),
+  };
+}
+
 // process.chdir, and the paths and globs that resolve against the directory it sets.
 function workingDirectoryContracts() {
   const root = "/tmp/filesystem-cwd";
@@ -590,6 +649,7 @@ export async function filesystemContracts() {
   result.glob = await globContracts();
   result.globDetails = await globDetailContracts();
   result.paths = pathContracts();
+  result.symlinks = await symlinkContracts();
   result.workingDirectory = workingDirectoryContracts();
   return result;
 }

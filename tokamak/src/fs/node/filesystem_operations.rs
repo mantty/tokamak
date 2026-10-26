@@ -861,9 +861,9 @@ pub(super) fn symlink_sync<'js>(
     target: Value<'js>,
     input: Value<'js>,
 ) -> rquickjs::Result<()> {
-    let target = Coerced::<String>::from_js(&ctx, target)?.0;
-    let path = path(&ctx, input)?;
-    vfs_call(&ctx, |vfs| vfs.symlink(&target, &path))
+    let link = path(&ctx, input)?;
+    let target = path(&ctx, target)?;
+    vfs_call(&ctx, |vfs| vfs.symlink(&target, &link))
 }
 
 pub(super) fn read_link_sync<'js>(
