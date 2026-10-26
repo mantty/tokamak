@@ -852,9 +852,8 @@ fn field_set(ctx: &Ctx<'_>, options: &Value) -> rquickjs::Result<CompositeFieldS
         date_style.is_some() || has_date_option || (!has_time_option && time_style.is_none());
     let has_time = time_style.is_some() || has_time_option;
     let mut builder = FieldSetBuilder::new();
-    if options.get("year").and_then(Value::as_str) == Some("numeric") {
-        builder.year_style = Some(YearStyle::Full);
-    }
+    builder.year_style =
+        (options.get("year").and_then(Value::as_str) == Some("numeric")).then_some(YearStyle::Full);
     builder.date_fields = has_date.then(|| date_fields(options, date_style));
     builder.time_precision = has_time.then(|| time_precision(options, time_style));
     builder.length = Some(length(date_style.or(time_style).or_else(|| {
@@ -864,12 +863,13 @@ fn field_set(ctx: &Ctx<'_>, options: &Value) -> rquickjs::Result<CompositeFieldS
             _ => None,
         }
     })));
-    if options.get("timeZoneName").is_some() || matches!(time_style, Some("long" | "full")) {
-        builder.zone_style = Some(match options.get("timeZoneName").and_then(Value::as_str) {
-            Some("long") => ZoneStyle::SpecificLong,
-            _ => ZoneStyle::SpecificShort,
-        });
-    }
+    let zone_style = match options.get("timeZoneName").and_then(Value::as_str) {
+        Some("long") => ZoneStyle::SpecificLong,
+        _ => ZoneStyle::SpecificShort,
+    };
+    let has_zone =
+        options.get("timeZoneName").is_some() || matches!(time_style, Some("long" | "full"));
+    builder.zone_style = has_zone.then_some(zone_style);
     builder.build_composite().map_err(range_error(ctx))
 }
 
