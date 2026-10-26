@@ -254,9 +254,15 @@ mod tests {
             None,
         )?;
         let graph = WorkerGraph::load(project.path())?;
-        assert_eq!(graph.main.bindings.len(), 1);
-        assert_eq!(graph.main.bindings[0].name, "API");
-        assert_eq!(graph.main.bindings[0].kind, "services");
+        assert_eq!(
+            graph
+                .main
+                .bindings
+                .iter()
+                .map(|binding| (binding.name.as_str(), binding.kind))
+                .collect::<Vec<_>>(),
+            [("API", "services")]
+        );
         Ok(())
     }
 
