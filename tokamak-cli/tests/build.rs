@@ -1067,18 +1067,12 @@ fn stages_the_plugins_installed_above_a_relative_project_directory() -> TestResu
         .success();
 
     let plugin = project.join("build/macos/demo-app.app/plugins/location");
-    assert_eq!(
-        fs::read_to_string(plugin.join("class"))?,
-        "TokamakLocationPlugin"
-    );
+    assert_texts(&[(plugin.join("class"), "TokamakLocationPlugin")])?;
     assert!(
         fs::read_to_string(plugin.join("plist"))?.contains("<key>NSLocationUsageDescription</key>")
     );
-    assert_eq!(
-        fs::read_to_string(plugin.join("compilation-conditions/0"))?,
-        "LOCATION_ALWAYS"
-    );
-    assert!(plugin.join("native/LocationPlugin.swift").is_file());
+    assert_texts(&[(plugin.join("compilation-conditions/0"), "LOCATION_ALWAYS")])?;
+    assert_file(&plugin.join("native/LocationPlugin.swift"));
     Ok(())
 }
 
