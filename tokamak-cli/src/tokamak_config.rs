@@ -64,15 +64,11 @@ impl TokamakConfig {
 /// Return the lowercase ASCII slug of a display name, as used for bundle
 /// filenames, application identifiers, and `tokamak.local` hosts.
 pub(crate) fn slug(name: &str) -> String {
-    let mut slug = String::new();
-    for character in name.chars() {
-        if character.is_ascii_alphanumeric() {
-            slug.push(character.to_ascii_lowercase());
-        } else if !slug.is_empty() && !slug.ends_with('-') {
-            slug.push('-');
-        }
-    }
-    slug.trim_end_matches('-').to_owned()
+    name.split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// The configuration `config`, the plugin's options, in the Vite root `root`.
