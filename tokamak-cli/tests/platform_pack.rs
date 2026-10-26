@@ -220,12 +220,19 @@ fn load_manifest_rejects_contract_invalid_json() -> TestResult {
 
 #[test]
 fn keys_are_lowercase_words_joined_by_hyphens() {
-    for key in ["plist", "team-id", "build-number", "a1-b2"] {
-        assert!(is_valid_key(key), "rejected {key}");
-    }
-    for key in [
-        "", "Plist", "team_id", "-plist", "plist-", "team--id", "1plist",
+    for (key, valid) in [
+        ("plist", true),
+        ("team-id", true),
+        ("build-number", true),
+        ("a1-b2", true),
+        ("", false),
+        ("Plist", false),
+        ("team_id", false),
+        ("-plist", false),
+        ("plist-", false),
+        ("team--id", false),
+        ("1plist", false),
     ] {
-        assert!(!is_valid_key(key), "accepted {key}");
+        assert_eq!(is_valid_key(key), valid, "{key}");
     }
 }
