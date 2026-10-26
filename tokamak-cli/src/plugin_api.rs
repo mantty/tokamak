@@ -683,9 +683,7 @@ pub(crate) fn typescript(
         source,
         "\n/** The {id} plugin's native methods on {names}. */\nexport interface {interface} {{\n"
     );
-    for method in &description.methods {
-        source.push_str(&signature(method));
-    }
+    source.extend(description.methods.iter().map(signature));
     let namespaces = platforms
         .iter()
         .map(|platform| platform.namespace())
@@ -695,9 +693,12 @@ pub(crate) fn typescript(
         "}}\n\n/**\n * The {id} plugin's native methods. Off {names} they reject with `NotSupportedError`.\n * Aborting `signal` cancels their calls, streams and resource acquisitions.\n */\nexport function {}(ctx: TokamakContext, signal?: AbortSignal): {interface} {{\n  const endpoint = new NativeEndpoint(ctx, {id:?}, {namespaces:?}, signal);\n  return {{\n",
         family.name()
     );
-    for method in &description.methods {
-        let _ = writeln!(source, "    {}: {},", method.name, implementation(method));
-    }
+    source.extend(
+        description
+            .methods
+            .iter()
+            .map(|method| format!("    {}: {},\n", method.name, implementation(method))),
+    );
     source.push_str("  };\n}\n");
     if !description.events.is_empty() {
         source.push_str(&events(description, id, family, &namespaces));
