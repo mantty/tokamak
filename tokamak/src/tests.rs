@@ -184,7 +184,10 @@ fn releases_invocation_owned_listeners_when_the_request_finishes()
     };
     let subscription = subscribed.recv_timeout(Duration::from_secs(5))?;
 
-    assert!(matches!(response.body, HttpBody::Buffered(body) if body == b"listening"));
+    let HttpBody::Buffered(body) = response.body else {
+        panic!("Worker response was streamed");
+    };
+    assert_eq!(body, b"listening");
     assert_eq!(
         cancelled.recv_timeout(Duration::from_secs(5))?,
         subscription
