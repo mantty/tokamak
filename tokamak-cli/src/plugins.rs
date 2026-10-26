@@ -269,17 +269,23 @@ pub(crate) fn stage(
         };
         let root = destination.join(&plugin.id);
         fs::create_dir_all(&root)?;
-        for (path, staged) in files {
-            let path = root.join(path);
-            fs::create_dir_all(path.parent().unwrap_or(&root))?;
-            match staged {
-                Staged::Value(value) => fs::write(path, value)?,
-                Staged::Copy(source) => copy_file(source, path)?,
-            }
-        }
+        write_staged_files(&root, files)?;
         let native = plugin.root.join(family);
         if native.is_dir() {
             copy_dir_contents(&native, &root.join("native"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Writes the staged `files`, by path under `root`.
+fn write_staged_files(root: &Path, files: Vec<(PathBuf, Staged)>) -> Result<()> {
+    for (path, staged) in files {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap_or(root))?;
+        match staged {
+            Staged::Value(value) => fs::write(path, value)?,
+            Staged::Copy(source) => copy_file(source, path)?,
         }
     }
     Ok(())
