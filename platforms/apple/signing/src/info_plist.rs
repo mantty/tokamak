@@ -948,18 +948,17 @@ mod tests {
         let input = input(temporary.path(), "macos")?;
         let metadata = Metadata::read(&input)?;
         let result = build_info_plist(&input, &metadata, &toolchain("macosx"), None, None)?;
-        assert_eq!(
-            result.get("CFBundleName").and_then(Value::as_string),
-            Some("Demo App")
-        );
-        assert_eq!(
-            result.get("DTPlatformName").and_then(Value::as_string),
-            Some("macosx")
-        );
-        assert_eq!(
-            result.get("DTSDKName").and_then(Value::as_string),
-            Some("macosx26.5")
-        );
+        for (key, value) in [
+            ("CFBundleName", "Demo App"),
+            ("DTPlatformName", "macosx"),
+            ("DTSDKName", "macosx26.5"),
+        ] {
+            assert_eq!(
+                result.get(key).and_then(Value::as_string),
+                Some(value),
+                "missing or incorrect {key}"
+            );
+        }
         Ok(())
     }
 
