@@ -696,12 +696,13 @@ fn start_test_runtime_reporting(
 fn serve_host(listener: &TcpListener) -> TestResult {
     let (mut http, text) = accept_page(listener)?;
     let (request_line, headers) = text.split_once("\r\n").ok_or("missing request line")?;
-    assert_eq!(request_line, "POST /api HTTP/1.1");
-    let mut headers: Vec<_> = headers.lines().filter(|line| !line.is_empty()).collect();
-    headers.sort_unstable();
+    let mut head: Vec<_> = headers.lines().filter(|line| !line.is_empty()).collect();
+    head.sort_unstable();
+    head.insert(0, request_line);
     assert_eq!(
-        headers,
+        head,
         [
+            "POST /api HTTP/1.1",
             "content-length: 3",
             "host: dev.tokamak.local",
             "x-forwarded-host: dev.tokamak.local",
@@ -713,27 +714,27 @@ fn serve_host(listener: &TcpListener) -> TestResult {
     );
     let mut body = [0; 3];
     http.read_exact(&mut body)?;
-    assert_eq!(body, [0, 0xff, 1]);
+    let [0, 0xff, 1] = body else {
+        return Err(format!("unexpected body {body:?}").into());
+    };
     http.write_all(
         "HTTP/1.1 201 Created Here\r\nSet-Cookie: first=1\r\nSet-Cookie: second=2\r\nX-Text: 東京\r\nContent-Length: 13\r\nConnection: close\r\n\r\nhost response".as_bytes(),
     )?;
 
     let (mut websocket, text) = accept_page(listener)?;
     let key = header_value(&text, "sec-websocket-key").ok_or("missing WebSocket key")?;
-    assert_eq!(header_value(&text, "sec-websocket-extensions"), None);
+    if let Some(extensions) = header_value(&text, "sec-websocket-extensions") {
+        return Err(format!("forwarded sec-websocket-extensions: {extensions:?}").into());
+    }
     let accept = websocket_accept(key);
     write!(
         websocket,
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
     )?;
     write_frame(&mut websocket, 0x1, b"update", false)?;
-    let (opcode, payload) = read_frame(&mut websocket)?;
-    assert_eq!(opcode, 0x1);
-    assert_eq!(payload, b"ping");
+    assert_eq!(read_frame(&mut websocket)?, (0x1, b"ping".to_vec()));
     write_frame(&mut websocket, 0x1, b"pong", false)?;
-    let (opcode, payload) = read_frame(&mut websocket)?;
-    assert_eq!(opcode, 0x8);
-    assert_eq!(payload, [3, 232]);
+    assert_eq!(read_frame(&mut websocket)?, (0x8, vec![3, 232]));
     Ok(())
 }
 
