@@ -943,32 +943,34 @@ mod tests {
             "ios": { "plist": "native/Info.plist", "team-id": "CONFIG" },
         }))?;
         let environment = |settings: PlatformSettings| settings.pack_environment;
-        assert_eq!(
-            environment(fixture.resolve(Platform::Ios)?),
-            BTreeMap::from([
+        fixture.assert_resolves(
+            Platform::Ios,
+            environment,
+            &BTreeMap::from([
                 (
                     "TOKAMAK_IOS_PLIST".to_owned(),
-                    joined("/config", "native/Info.plist")
+                    joined("/config", "native/Info.plist"),
                 ),
                 ("TOKAMAK_IOS_TEAM_ID".to_owned(), OsString::from("CONFIG")),
-            ])
-        );
+            ]),
+        )?;
 
         fixture
             .environment
             .insert("TOKAMAK_IOS_PLIST".to_owned(), "env/Info.plist".to_owned());
         fixture.options = namespaced_options(&["--ios-team-id", "OPTION"])?;
-        assert_eq!(
-            environment(fixture.resolve(Platform::IosSimulator)?),
-            BTreeMap::from([
+        fixture.assert_resolves(
+            Platform::IosSimulator,
+            environment,
+            &BTreeMap::from([
                 (
                     "TOKAMAK_IOS_PLIST".to_owned(),
-                    joined("/work", "env/Info.plist")
+                    joined("/work", "env/Info.plist"),
                 ),
                 ("TOKAMAK_IOS_TEAM_ID".to_owned(), OsString::from("OPTION")),
-            ])
-        );
-        assert!(environment(fixture.resolve(Platform::Macos)?).is_empty());
+            ]),
+        )?;
+        fixture.assert_resolves(Platform::Macos, environment, &BTreeMap::new())?;
         Ok(())
     }
 
