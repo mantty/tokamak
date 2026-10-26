@@ -2152,18 +2152,19 @@ mod tests {
         deviceless.application_identifier = "COMPANY.com.tokamak.new-app".to_owned();
         profiles.push(deviceless);
         let eligible = super::development_profiles(profiles.into_iter().map(Ok).collect());
-        for device_id in [Some("DEVICE"), None] {
-            assert_eq!(
+        let teams = [Some("DEVICE"), None]
+            .into_iter()
+            .map(|device_id| {
                 automatic_team_id(
                     project.path(),
                     "com.tokamak.new-app",
                     device_id,
                     &identities,
-                    &eligible
-                )?,
-                "PERSONAL"
-            );
-        }
+                    &eligible,
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        assert_eq!(teams, ["PERSONAL", "PERSONAL"]);
         Ok(())
     }
 
