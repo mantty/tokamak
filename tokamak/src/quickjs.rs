@@ -144,27 +144,34 @@ mod tests {
     #[test]
     fn transferred_external_buffers_release_their_owner_once()
     -> Result<(), Box<dyn std::error::Error>> {
-        for method in ["transfer", "transferToFixedLength"] {
-            for length in [0, 2, 4, 8] {
-                let drops = Arc::new(AtomicUsize::new(0));
-                let runtime = Runtime::new()?;
-                let context = Context::full(&runtime)?;
-                context.with(|ctx| -> rquickjs::Result<()> {
-                    let source = OwnedBytes { bytes: vec![1, 2, 3, 4], drops: Arc::clone(&drops) };
-                    ctx.globals().set("original", ArrayBuffer::from_source(ctx.clone(), source)?)?;
-                    let data: Vec<u8> = ctx.eval(format!("globalThis.moved = original.{method}({length}); Array.from(new Uint8Array(moved))"))?;
-                    let expected: Vec<_> = (0..length).map(|index| if index < 4 { index + 1 } else { 0 }).collect();
-                    assert_eq!(data, expected);
-                    assert_eq!(ctx.eval::<usize, _>("original.byteLength")?, 0);
-                    ctx.globals().remove("original")?;
-                    assert_eq!(drops.load(Ordering::Relaxed), usize::from(length != 4));
-                    ctx.globals().remove("moved")?;
-                    assert_eq!(drops.load(Ordering::Relaxed), 1);
-                    Ok(())
-                })?;
-                runtime.run_gc();
+        for (method, length) in [
+            ("transfer", 0),
+            ("transfer", 2),
+            ("transfer", 4),
+            ("transfer", 8),
+            ("transferToFixedLength", 0),
+            ("transferToFixedLength", 2),
+            ("transferToFixedLength", 4),
+            ("transferToFixedLength", 8),
+        ] {
+            let drops = Arc::new(AtomicUsize::new(0));
+            let runtime = Runtime::new()?;
+            let context = Context::full(&runtime)?;
+            context.with(|ctx| -> rquickjs::Result<()> {
+                let source = OwnedBytes { bytes: vec![1, 2, 3, 4], drops: Arc::clone(&drops) };
+                ctx.globals().set("original", ArrayBuffer::from_source(ctx.clone(), source)?)?;
+                let data: Vec<u8> = ctx.eval(format!("globalThis.moved = original.{method}({length}); Array.from(new Uint8Array(moved))"))?;
+                let expected: Vec<_> = (0..length).map(|index| if index < 4 { index + 1 } else { 0 }).collect();
+                assert_eq!(data, expected);
+                assert_eq!(ctx.eval::<usize, _>("original.byteLength")?, 0);
+                ctx.globals().remove("original")?;
+                assert_eq!(drops.load(Ordering::Relaxed), usize::from(length != 4));
+                ctx.globals().remove("moved")?;
                 assert_eq!(drops.load(Ordering::Relaxed), 1);
-            }
+                Ok(())
+            })?;
+            runtime.run_gc();
+            assert_eq!(drops.load(Ordering::Relaxed), 1, "{method}({length})");
         }
         Ok(())
     }
