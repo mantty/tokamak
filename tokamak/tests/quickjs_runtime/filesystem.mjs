@@ -780,6 +780,52 @@ async function encodingContracts() {
   return outcomes;
 }
 
+// The own properties of `value` and of each prototype above it, each with
+// its type or "getter".
+function shape(value) {
+  const levels = [];
+  for (let object = value; object && object !== Object.prototype; object = Object.getPrototypeOf(object)) {
+    levels.push(Reflect.ownKeys(object).map(key => {
+      const descriptor = Object.getOwnPropertyDescriptor(object, key);
+      return `${String(key)}:${descriptor.get ? "getter" : typeof descriptor.value}`;
+    }));
+  }
+  return levels;
+}
+
+const statFields = ["dev", "ino", "mode", "nlink", "uid", "gid", "rdev", "size", "blksize", "blocks", "atimeMs"];
+
+// What Stats and Dir objects look like.
+async function shapeContracts() {
+  const root = "/tmp/filesystem-shapes";
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(`${root}/file`, "abc");
+  fs.symlinkSync(`${root}/file`, `${root}/link`);
+  const stats = {
+    file: fs.statSync(`${root}/file`),
+    bigint: fs.statSync(`${root}/file`, { bigint: true }),
+    directory: fs.statSync(root),
+    link: fs.lstatSync(`${root}/link`),
+    promise: await fs.promises.stat(`${root}/file`),
+  };
+  const fd = fs.openSync(`${root}/file`, "r");
+  stats.descriptor = fs.fstatSync(fd);
+  fs.closeSync(fd);
+  const dir = fs.opendirSync(root);
+  const dirShape = shape(dir);
+  dir.closeSync();
+  return {
+    stats: Object.fromEntries(Object.entries(stats).map(([name, stat]) => [name, {
+      shape: shape(stat),
+      values: statFields.map(field => String(stat[field])),
+      instance: stat instanceof fs.Stats,
+    }])),
+    statsClass: [typeof fs.Stats, fs.Stats.name, attempt(() => new fs.Stats()) ?? null],
+    dir: { shape: dirShape, instance: dir instanceof fs.Dir, path: dir.path },
+    dirClass: [typeof fs.Dir, fs.Dir.name],
+  };
+}
+
 // process.chdir, and the paths and globs that resolve against the directory it sets.
 function workingDirectoryContracts() {
   const root = "/tmp/filesystem-cwd";
@@ -833,6 +879,7 @@ export async function filesystemContracts() {
   result.overwrite = await overwriteContracts();
   result.reads = await readContracts();
   result.encodings = await encodingContracts();
+  result.shapes = await shapeContracts();
   result.workingDirectory = workingDirectoryContracts();
   return result;
 }

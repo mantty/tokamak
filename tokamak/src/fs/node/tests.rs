@@ -249,7 +249,7 @@ fn exposes_the_native_node_fs_surface() -> Result<(), Box<dyn std::error::Error>
             })?;
             assert_eq!(
                 advanced_result,
-                r#"{"accessCode":"ENOENT","hardLink":"nested","fdAppend":"ab","matches":["nested.txt","hard.txt"],"written":4,"read":4,"first":[1,2],"second":[3,4],"dirEntry":"nested.txt","recursiveNames":["nested.txt","hard.txt"],"callbackDirEntry":"nested.txt","callbackDirClose":"closed","callbackDirClosedRead":"ERR_DIR_CLOSED: directory is closed","handleText":"hello","writeResult":5,"handleWriteText":"write!","blobText":"{\"enabled\":true}","callbackRead":{"count":3,"output":[1,2,3]},"callbackReadOptions":{"count":3,"output":[1,2,3]},"callbackReadBufferOptions":{"count":3,"output":[1,2,3]},"nativeRealpath":"/tmp/data/value.txt","bigint":"6"}"#
+                r#"{"accessCode":"ENOENT","hardLink":"nested","fdAppend":"ab","matches":["nested.txt","hard.txt"],"written":4,"read":4,"first":[1,2],"second":[3,4],"dirEntry":"nested.txt","recursiveNames":["nested.txt","hard.txt"],"callbackDirEntry":"nested.txt","callbackDirClose":"closed","callbackDirClosedRead":"Directory is closed","handleText":"hello","writeResult":5,"handleWriteText":"write!","blobText":"{\"enabled\":true}","callbackRead":{"count":3,"output":[1,2,3]},"callbackReadOptions":{"count":3,"output":[1,2,3]},"callbackReadBufferOptions":{"count":3,"output":[1,2,3]},"nativeRealpath":"/tmp/data/value.txt","bigint":"6"}"#
             );
             Ok(())
         })

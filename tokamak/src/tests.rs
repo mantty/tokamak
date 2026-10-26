@@ -687,9 +687,12 @@ fn exposes_bundle_tmp_and_device_operations() -> Result<(), Box<dyn std::error::
         let device_info: Object = info
             .call(("/dev/zero", true))
             .map_err(|error| Error::Engine(error.to_string()))?;
+        let is_character_device: Function = device_info
+            .get("isCharacterDevice")
+            .map_err(|error| Error::Engine(error.to_string()))?;
         assert!(
-            device_info
-                .get::<_, bool>("device")
+            is_character_device
+                .call::<_, bool>((rquickjs::function::This(device_info),))
                 .map_err(|error| Error::Engine(error.to_string()))?
         );
         let close: Function = object

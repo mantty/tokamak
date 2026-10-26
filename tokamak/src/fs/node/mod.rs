@@ -15,8 +15,8 @@ use crate::fs::vfs::{
 use rquickjs::function::{IntoJsFunc, Opt, Rest, This};
 use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{
-    Array, ArrayBuffer, BigInt, Constructor, Ctx, Exception, Function, Object, Promise, Symbol,
-    TypedArray, Value, qjs,
+    Array, ArrayBuffer, BigInt, Constructor, Ctx, Exception, Function, Object, Promise, TypedArray,
+    Value, qjs,
 };
 use rquickjs::{Coerced, FromJs, IntoJs};
 use url::Url;

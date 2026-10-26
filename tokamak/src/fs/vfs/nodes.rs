@@ -50,9 +50,9 @@ impl Node {
                 writable: directory.writable(),
                 device: false,
             }),
-            Self::Symlink(target) => Ok(Stat {
+            Self::Symlink(_) => Ok(Stat {
                 kind: NodeType::Symlink,
-                size: target.len() as u64,
+                size: 0,
                 writable: false,
                 device: false,
             }),

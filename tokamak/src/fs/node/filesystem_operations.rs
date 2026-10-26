@@ -1075,36 +1075,6 @@ pub(super) fn access_promise<'js>(
     promise_unit(ctx.clone(), access_sync(ctx, input, mode))
 }
 
-/// An async iterator object over `next`.
-pub(super) fn async_iterator<'js>(
-    ctx: &Ctx<'js>,
-    next: Function<'js>,
-) -> rquickjs::Result<Object<'js>> {
-    let iterator = Object::new(ctx.clone())?;
-    iterator.set("next", next)?;
-    iterator.set(
-        Symbol::async_iterator(ctx.clone()),
-        Function::new(ctx.clone(), return_this)?,
-    )?;
-    Ok(iterator)
-}
-
-fn return_this<'js>(this: This<Object<'js>>) -> Object<'js> {
-    this.0
-}
-
-/// A promise of the iterator result `{ done, value }`.
-pub(super) fn iterator_result<'js>(
-    ctx: Ctx<'js>,
-    done: bool,
-    value: Value<'js>,
-) -> rquickjs::Result<Value<'js>> {
-    let result = Object::new(ctx.clone())?;
-    result.set("done", done)?;
-    result.set("value", value)?;
-    promise(ctx, Ok(result.into_value())).map(Promise::into_value)
-}
-
 pub(super) fn open_promise<'js>(
     ctx: Ctx<'js>,
     input: Value<'js>,
