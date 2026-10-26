@@ -2298,9 +2298,15 @@ mod tests {
         let project =
             write_signing_probe(Platform::Macos, temporary.path(), "com.example.probe", None)?;
         let contents = std::fs::read_to_string(project.join("project.pbxproj"))?;
-        assert!(contents.contains("PRODUCT_BUNDLE_IDENTIFIER = \"com.example.probe\";"));
-        assert!(contents.contains("SDKROOT = macosx;"));
-        assert!(contents.contains("CODE_SIGN_ENTITLEMENTS = TokamakSigningProbe.entitlements;"));
+        assert_contains(
+            &contents,
+            &[
+                "PRODUCT_BUNDLE_IDENTIFIER = \"com.example.probe\";",
+                "SDKROOT = macosx;",
+                "CODE_SIGN_ENTITLEMENTS = TokamakSigningProbe.entitlements;",
+            ],
+            &[],
+        );
         let entitlements =
             Value::from_file(temporary.path().join("TokamakSigningProbe.entitlements"))?;
         assert!(
