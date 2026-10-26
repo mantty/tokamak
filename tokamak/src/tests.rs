@@ -709,15 +709,25 @@ fn assembles_fragmented_text_and_binary_websocket_messages()
     queue_websocket_message(&incoming, &mut fragmented, true, 0x0, b"42".to_vec())?;
     queue_websocket_message(&incoming, &mut fragmented, true, 0x2, vec![1, 2, 3])?;
 
-    assert!(fragmented.is_none());
-    assert!(matches!(
-        incoming_receiver.recv()?,
-        WebSocketInbound::Message { binary: false, payload } if payload == b"ping 42"
-    ));
-    assert!(matches!(
-        incoming_receiver.recv()?,
-        WebSocketInbound::Message { binary: true, payload } if payload == vec![1, 2, 3]
-    ));
+    let None = fragmented else {
+        panic!("a fragmented message was left unfinished");
+    };
+    let WebSocketInbound::Message {
+        binary: false,
+        payload,
+    } = incoming_receiver.recv()?
+    else {
+        panic!("the fragmented message was not text");
+    };
+    assert_eq!(payload, b"ping 42");
+    let WebSocketInbound::Message {
+        binary: true,
+        payload,
+    } = incoming_receiver.recv()?
+    else {
+        panic!("the binary message was not binary");
+    };
+    assert_eq!(payload, vec![1, 2, 3]);
     Ok(())
 }
 
