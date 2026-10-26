@@ -1097,9 +1097,12 @@ fn sign_display(options: &Value) -> SignDisplay {
 fn grouping_strategy(options: &Value) -> GroupingStrategy {
     match options.get("useGrouping") {
         Some(Value::Bool(false)) => GroupingStrategy::Never,
-        Some(Value::String(value)) if value == "never" => GroupingStrategy::Never,
-        Some(Value::String(value)) if value == "always" => GroupingStrategy::Always,
-        Some(Value::String(value)) if value == "min2" => GroupingStrategy::Min2,
+        Some(Value::String(value)) => match value.as_str() {
+            "never" => GroupingStrategy::Never,
+            "always" => GroupingStrategy::Always,
+            "min2" => GroupingStrategy::Min2,
+            _ => GroupingStrategy::Auto,
+        },
         _ => GroupingStrategy::Auto,
     }
 }
