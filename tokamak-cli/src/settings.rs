@@ -1433,17 +1433,21 @@ mod tests {
 
     #[test]
     fn top_level_keys_prefer_options_then_environment_then_configuration() -> Result<()> {
+        let assert_version = |fixture: &Fixture, expected: &str| -> Result<()> {
+            assert_eq!(fixture.with(version)?.as_deref(), Some(expected));
+            Ok(())
+        };
         let mut fixture = Fixture::new();
         fixture.config = configured(&json!({ "version": "1.0.0" }))?;
-        assert_eq!(fixture.with(version)?.as_deref(), Some("1.0.0"));
+        assert_version(&fixture, "1.0.0")?;
         fixture
             .environment
             .insert("TOKAMAK_VERSION".to_owned(), "2.0.0".to_owned());
-        assert_eq!(fixture.with(version)?.as_deref(), Some("2.0.0"));
+        assert_version(&fixture, "2.0.0")?;
         fixture.top.version = Some("3.0.0".to_owned());
-        assert_eq!(fixture.with(version)?.as_deref(), Some("3.0.0"));
+        assert_version(&fixture, "3.0.0")?;
         fixture.top.version = Some("1.0'beta\"".to_owned());
-        assert_eq!(fixture.with(version)?.as_deref(), Some("1.0'beta\""));
+        assert_version(&fixture, "1.0'beta\"")?;
         fixture.top.version = None;
         fixture
             .environment
