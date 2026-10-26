@@ -54,15 +54,12 @@ pub(super) fn client_disconnected(
             .process_new_packets()
             .map(|_| false)
             .map_err(io::Error::other),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
-            ) =>
-        {
-            Ok(false)
-        }
-        Err(error) => Err(error),
+        Err(error) => match error.kind() {
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted => {
+                Ok(false)
+            }
+            _ => Err(error),
+        },
     }
 }
 
