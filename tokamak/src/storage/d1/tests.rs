@@ -174,16 +174,22 @@ fn applies_d1_limits() -> TestResult {
     let compound = ["SELECT 1"; 6].join(" UNION ALL ");
     let placeholders = ["?"; 101].join(", ");
 
-    assert!(error(&database, &wide)?.starts_with("too many columns"));
-    assert!(error(&database, &compound)?.starts_with("too many terms in compound SELECT"));
-    assert!(
-        error(&database, &format!("SELECT {placeholders}"))?.starts_with("too many SQL variables")
-    );
-    assert!(error(&database, "SELECT zeroblob(2000001)")?.starts_with("string or blob too big"));
-    assert!(
-        error(&database, &format!("SELECT '{}'", "x".repeat(100_000)))?
-            .starts_with("statement too long")
-    );
+    for (sql, refusal) in [
+        (wide, "too many columns"),
+        (compound, "too many terms in compound SELECT"),
+        (format!("SELECT {placeholders}"), "too many SQL variables"),
+        (
+            "SELECT zeroblob(2000001)".to_owned(),
+            "string or blob too big",
+        ),
+        (
+            format!("SELECT '{}'", "x".repeat(100_000)),
+            "statement too long",
+        ),
+    ] {
+        let message = error(&database, &sql)?;
+        assert!(message.starts_with(refusal), "{refusal}: {message}");
+    }
     rows(&database, "SELECT length(zeroblob(2000000))")?;
     Ok(())
 }
