@@ -771,8 +771,14 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(loaded.bindings.len(), 1);
-        assert_eq!(loaded.bindings[0].kind, "queues");
+        assert_eq!(
+            loaded
+                .bindings
+                .iter()
+                .map(|binding| binding.kind)
+                .collect::<Vec<_>>(),
+            ["queues"]
+        );
         Ok(())
     }
 
