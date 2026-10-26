@@ -403,14 +403,11 @@ fn create_managed_android_avd() -> Result<()> {
             tool_failure(&sdkmanager, "sdkmanager failed")
         );
     }
-    let Some(system_image) = select_android_system_image(&sdkmanager.stdout) else {
-        bail!(
-            "no Android system image is installed; install one with sdkmanager before using `tok dev android`"
-        );
-    };
-    let Some(avdmanager) = android_tool_program("avdmanager", "cmdline-tools") else {
-        bail!("Android command-line tools are not installed");
-    };
+    let system_image = select_android_system_image(&sdkmanager.stdout).context(
+        "no Android system image is installed; install one with sdkmanager before using `tok dev android`",
+    )?;
+    let avdmanager = android_tool_program("avdmanager", "cmdline-tools")
+        .context("Android command-line tools are not installed")?;
     let created = run_tool_with_input(
         &avdmanager,
         &[
