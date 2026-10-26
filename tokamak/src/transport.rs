@@ -326,10 +326,7 @@ fn parse_header_fields<'a>(
     let mut headers = HeaderMap::new();
     let mut content_length = None;
     let mut chunked = false;
-    for line in lines {
-        if line.is_empty() {
-            break;
-        }
+    for line in lines.take_while(|line| !line.is_empty()) {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
@@ -342,9 +339,7 @@ fn parse_header_fields<'a>(
                     .map_err(|_| invalid_data("invalid content length"))?,
             );
         }
-        if name == "transfer-encoding" && has_token(value, "chunked") {
-            chunked = true;
-        }
+        chunked |= name == "transfer-encoding" && has_token(value, "chunked");
         append_header(&mut headers, &name, value)?;
     }
     Ok((headers, content_length, chunked))
