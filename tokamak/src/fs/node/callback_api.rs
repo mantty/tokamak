@@ -238,16 +238,16 @@ pub(super) fn callback_call<'js>(
         CallbackOperation::Write => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
             let value = take_arg(&ctx, &mut args)?;
-            let count = write_sync(ctx.clone(), descriptor, value.clone(), Rest(args));
-            reply_with_buffer(&ctx, count, value)
+            let write = callback_write(&ctx, value, args)?;
+            let count = write_views(&ctx, descriptor, &write);
+            reply_with_buffer(&ctx, count, write.data)
         }
         CallbackOperation::Writev => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
             let buffers = take_arg(&ctx, &mut args)?;
-            let array = Array::from_value(buffers.clone())?;
-            let position = take_opt_value(&mut args);
-            let count = writev_sync(ctx.clone(), descriptor, array, position);
-            reply_with_buffer(&ctx, count, buffers)
+            let write = vector_write(&ctx, buffers, take_opt_value(&mut args).0)?;
+            let count = write_views(&ctx, descriptor, &write);
+            reply_with_buffer(&ctx, count, write.data)
         }
     };
     callback_values(&ctx, callback, result)
@@ -517,84 +517,6 @@ pub(super) fn position_value<'js>(
         ));
     }
     Ok((*position >= 0).then_some(position.cast_unsigned()))
-}
-
-pub(super) fn write_arguments<'js>(
-    ctx: &Ctx<'js>,
-    value: Value<'js>,
-    args: Vec<Value<'js>>,
-) -> rquickjs::Result<(Vec<u8>, Option<u64>)> {
-    let string = value.is_string();
-    let args = normalize_write_options(ctx, string, args)?;
-    let (offset, length, position, encoding) = if string {
-        let position = args.first().cloned();
-        let encoding = args
-            .get(1)
-            .and_then(|value| value.as_string())
-            .map(rquickjs::String::to_string)
-            .transpose()?;
-        (0_u64, None, position, encoding)
-    } else {
-        let offset = defined(args.first().cloned())
-            .map(|value| Coerced::<u64>::from_js(ctx, value))
-            .transpose()?
-            .map_or(0, |value| *value);
-        let length = defined(args.get(1).cloned())
-            .map(|value| Coerced::<u64>::from_js(ctx, value))
-            .transpose()?;
-        (
-            offset,
-            length.map(|value| *value),
-            args.get(2).cloned(),
-            None,
-        )
-    };
-    let bytes = bytes(ctx, value, encoding.as_deref())?;
-    let offset =
-        usize::try_from(offset).map_err(|_| Exception::throw_range(ctx, "offset is too large"))?;
-    if offset > bytes.len() {
-        return Err(Exception::throw_range(ctx, "offset is outside the buffer"));
-    }
-    let length = length
-        .map(|length| {
-            usize::try_from(length).map_err(|_| Exception::throw_range(ctx, "length is too large"))
-        })
-        .transpose()?
-        .unwrap_or(bytes.len());
-    if length > bytes.len() - offset {
-        return Err(Exception::throw_range(ctx, "length is outside the buffer"));
-    }
-    Ok((
-        bytes[offset..offset + length].to_vec(),
-        position_value(ctx, position)?,
-    ))
-}
-
-fn normalize_write_options<'js>(
-    ctx: &Ctx<'js>,
-    data_is_string: bool,
-    args: Vec<Value<'js>>,
-) -> rquickjs::Result<Vec<Value<'js>>> {
-    let Some(first) = args.first() else {
-        return Ok(args);
-    };
-    if !first.is_object() {
-        return Ok(args);
-    }
-    let options = first
-        .clone()
-        .try_into_object()
-        .map_err(|_| Exception::throw_type(ctx, "write options must be an object"))?;
-    let value = |name: &str| -> rquickjs::Result<Value<'js>> {
-        Ok(options
-            .get::<_, Option<Value>>(name)?
-            .unwrap_or_else(|| Value::new_undefined(ctx.clone())))
-    };
-    if data_is_string {
-        Ok(vec![value("position")?, value("encoding")?])
-    } else {
-        Ok(vec![value("offset")?, value("length")?, value("position")?])
-    }
 }
 
 pub(super) struct WritableBytes<'js> {

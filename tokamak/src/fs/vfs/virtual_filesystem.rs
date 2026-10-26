@@ -16,6 +16,8 @@ use super::path::{
 
 /// Maximum size of one virtual file.
 pub const MAX_FILE_SIZE: u64 = 128 * 1024 * 1024;
+/// Largest explicit position a non-appending write accepts: `u32::MAX`.
+const MAX_WRITE_POSITION: u64 = 0xFFFF_FFFF;
 /// Maximum length of a virtual path in Unicode scalar values.
 pub const MAX_PATH_LENGTH: usize = 4096;
 /// Maximum number of non-empty path segments.
@@ -49,7 +51,8 @@ pub enum ErrorKind {
     ReadOnly,
     /// The operation is not permitted.
     NotPermitted,
-    /// The operation would exceed the file-size limit.
+    /// The operation would exceed the file-size limit, reported as `EPERM`
+    /// as workerd reports it.
     FileTooLarge,
     /// The operation would exceed the available virtual space.
     NoSpace,
@@ -80,8 +83,7 @@ impl ErrorKind {
             Self::AlreadyExists => "EEXIST",
             Self::NotEmpty => "ENOTEMPTY",
             Self::ReadOnly => "EROFS",
-            Self::NotPermitted => "EPERM",
-            Self::FileTooLarge => "EFBIG",
+            Self::NotPermitted | Self::FileTooLarge => "EPERM",
             Self::NoSpace => "ENOSPC",
             Self::InvalidPath | Self::InvalidInput => "EINVAL",
             Self::InvalidDescriptor => "EBADF",
@@ -100,7 +102,7 @@ impl ErrorKind {
             Self::NotEmpty => "directory not empty",
             Self::ReadOnly => "read-only file system",
             Self::NotPermitted => "operation not permitted",
-            Self::FileTooLarge => "file too large",
+            Self::FileTooLarge => "file size limit exceeded",
             Self::NoSpace => "no space left on device",
             Self::InvalidPath | Self::InvalidInput => "invalid argument",
             Self::InvalidDescriptor => "bad file descriptor",
@@ -641,6 +643,13 @@ impl VirtualFileSystem {
         let open = self.descriptor_mut(descriptor)?;
         if !open.write {
             return Err(Error::new(ErrorKind::NotPermitted, descriptor));
+        }
+        if !open.append && position.is_some_and(|position| position > MAX_WRITE_POSITION) {
+            return Err(Error::with_message(
+                ErrorKind::InvalidInput,
+                "",
+                "position out of range",
+            ));
         }
         let offset = position.unwrap_or(open.position);
         let written = open.node.write(offset, data, open.append)?;

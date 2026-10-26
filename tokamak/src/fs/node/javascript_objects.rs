@@ -258,15 +258,15 @@ pub(super) fn file_handle_object<'js>(
     let vector_write_state = state.clone();
     object.set(
         "writev",
-        Function::new(
-            ctx.clone(),
-            move |ctx: Ctx<'js>, buffers: Array<'js>, position: Opt<Value<'js>>| {
-                let descriptor = open_descriptor(&ctx, &vector_write_state)?;
-                let bytes_written = write_buffers(&ctx, descriptor, &buffers, position.0)?;
-                let buffers = buffers.into_value();
-                transfer_result(&ctx, "bytesWritten", bytes_written, "buffers", buffers)
-            },
-        )?,
+        Function::new(ctx.clone(), move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
+            let mut args = args.0.into_iter();
+            let buffers = args
+                .next()
+                .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+            handle_write_promise(&ctx, &vector_write_state, "buffers", || {
+                vector_write(&ctx, buffers, defined(args.next()))
+            })
+        })?,
     )?;
     let write_file_state = state.clone();
     object.set(
@@ -414,10 +414,24 @@ fn transfer_result<'js>(
     buffer_name: &str,
     buffer: Value<'js>,
 ) -> rquickjs::Result<Promise<'js>> {
+    promise(
+        ctx.clone(),
+        transfer_value(ctx, count_name, count, buffer_name, buffer),
+    )
+}
+
+/// `{ [count_name]: count, [buffer_name]: buffer }`.
+fn transfer_value<'js>(
+    ctx: &Ctx<'js>,
+    count_name: &str,
+    count: usize,
+    buffer_name: &str,
+    buffer: Value<'js>,
+) -> rquickjs::Result<Value<'js>> {
     let result = Object::new(ctx.clone())?;
     result.set(count_name, count)?;
     result.set(buffer_name, buffer)?;
-    promise(ctx.clone(), Ok(result.into_value()))
+    Ok(result.into_value())
 }
 
 pub(super) fn take_descriptor(state: &FileHandleState) -> Option<u32> {
@@ -533,16 +547,29 @@ pub(super) fn handle_write<'js>(
     state: &FileHandleState,
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<Promise<'js>> {
-    let descriptor = open_descriptor(ctx, state)?;
-    let mut args = args.0;
-    if args.is_empty() {
-        return Err(Exception::throw_type(ctx, "data is required"));
-    }
-    let value = args.remove(0);
-    let (data, position) = write_arguments(ctx, value.clone(), args)?;
-    let bytes_written = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, position))?;
-    let buffer = write_buffer_value(ctx, &value, &data)?;
-    transfer_result(ctx, "bytesWritten", bytes_written, "buffer", buffer)
+    let mut args = args.0.into_iter();
+    let value = args
+        .next()
+        .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+    handle_write_promise(ctx, state, "buffer", || {
+        file_handle_write(ctx, value, args.collect())
+    })
+}
+
+/// A promise of `{ bytesWritten, [data_name]: data }` for the write `request`
+/// returns, rejected with any error.
+fn handle_write_promise<'js>(
+    ctx: &Ctx<'js>,
+    state: &FileHandleState,
+    data_name: &str,
+    request: impl FnOnce() -> rquickjs::Result<WriteRequest<'js>>,
+) -> rquickjs::Result<Promise<'js>> {
+    let written = open_descriptor(ctx, state).and_then(|descriptor| {
+        let write = request()?;
+        let count = write_views(ctx, descriptor, &write)?;
+        transfer_value(ctx, "bytesWritten", count as usize, data_name, write.data)
+    });
+    promise(ctx.clone(), written)
 }
 
 /// A `createReadStream` or `createWriteStream` export.
@@ -715,18 +742,14 @@ pub(super) fn stream_write<'js>(
     }
     let value = args.remove(0);
     let callback = pop_callback(&mut args);
-    let (data, position) = if value.is_string() {
-        let encoding = args
-            .first()
-            .and_then(|value| value.as_string())
-            .map(rquickjs::String::to_string)
-            .transpose()?;
-        (bytes(ctx, value, encoding.as_deref())?, None)
-    } else {
-        write_arguments(ctx, value, args)?
-    };
+    let encoding = args
+        .first()
+        .and_then(|value| value.as_string())
+        .map(rquickjs::String::to_string)
+        .transpose()?;
+    let data = bytes(ctx, value, encoding.as_deref())?;
     let descriptor = open_descriptor(ctx, state)?;
-    let result = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, position));
+    let result = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, None));
     let Some(callback) = callback else {
         return Ok(true);
     };

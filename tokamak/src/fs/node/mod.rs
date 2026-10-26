@@ -15,7 +15,7 @@ use rquickjs::function::{IntoJsFunc, Opt, Rest, This};
 use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{
     Array, ArrayBuffer, BigInt, Constructor, Ctx, Exception, Function, Object, Promise, Symbol,
-    TypedArray, Value,
+    TypedArray, Value, qjs,
 };
 use rquickjs::{Coerced, FromJs, IntoJs};
 
@@ -25,6 +25,7 @@ mod filesystem_operations;
 mod javascript_objects;
 #[cfg(test)]
 mod tests;
+mod writes;
 
 #[allow(clippy::wildcard_imports)]
 use callback_api::*;
@@ -32,6 +33,8 @@ use callback_api::*;
 use filesystem_operations::*;
 #[allow(clippy::wildcard_imports)]
 use javascript_objects::*;
+#[allow(clippy::wildcard_imports)]
+use writes::*;
 
 pub use exports::{
     MODULE_NAME, NodeFsModule, NodeFsPromisesModule, PROMISES_MODULE_NAME, install,

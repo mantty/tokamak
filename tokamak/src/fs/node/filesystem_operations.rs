@@ -762,26 +762,11 @@ pub(super) fn readv_sync<'js>(
 pub(super) fn writev_sync<'js>(
     ctx: Ctx<'js>,
     descriptor: u32,
-    buffers: Array<'js>,
+    buffers: Value<'js>,
     position: Opt<Value<'js>>,
 ) -> rquickjs::Result<u32> {
-    let written = write_buffers(&ctx, descriptor, &buffers, position.0)?;
-    u32::try_from(written).map_err(|_| Exception::throw_range(&ctx, "write is too large"))
-}
-
-/// Write `buffers` in order, returning the byte count.
-pub(super) fn write_buffers<'js>(
-    ctx: &Ctx<'js>,
-    descriptor: u32,
-    buffers: &Array<'js>,
-    position: Option<Value<'js>>,
-) -> rquickjs::Result<usize> {
-    let position = position_value(ctx, position)?;
-    let values = buffers
-        .iter::<Value>()
-        .map(|value| bytes(ctx, value?, None))
-        .collect::<rquickjs::Result<Vec<_>>>()?;
-    vfs_call(ctx, |vfs| vfs.writev(descriptor, &values, position))
+    let write = vector_write(&ctx, buffers, defined(position.0))?;
+    write_views(&ctx, descriptor, &write)
 }
 
 pub(super) fn statfs_sync<'js>(
@@ -1019,9 +1004,22 @@ pub(super) fn write_sync<'js>(
     value: Value<'js>,
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<u32> {
-    let (bytes, position) = write_arguments(&ctx, value, args.0)?;
-    let written = vfs_call(&ctx, |vfs| vfs.write(descriptor, &bytes, position))?;
-    u32::try_from(written).map_err(|_| Exception::throw_range(&ctx, "write is too large"))
+    let write = sync_write(&ctx, value, args.0)?;
+    write_views(&ctx, descriptor, &write)
+}
+
+/// Perform `write`, returning the byte count. Writing no views writes nothing.
+pub(super) fn write_views<'js>(
+    ctx: &Ctx<'js>,
+    descriptor: u32,
+    write: &WriteRequest<'js>,
+) -> rquickjs::Result<u32> {
+    if write.buffers.is_empty() {
+        return Ok(0);
+    }
+    let position = file_position(ctx, write.position.clone())?;
+    let written = vfs_call(ctx, |vfs| vfs.writev(descriptor, &write.buffers, position))?;
+    u32::try_from(written).map_err(|_| Exception::throw_range(ctx, "write is too large"))
 }
 
 pub(super) fn truncate_sync<'js>(
@@ -1257,6 +1255,29 @@ pub(super) fn vfs_exception<'js>(
         exception.as_object().set("path", error.path())?;
     }
     Ok(exception)
+}
+
+/// Throws a `TypeError` carrying the Node.js error `code`.
+pub(super) fn throw_type_error(ctx: &Ctx<'_>, code: &str, message: &str) -> rquickjs::Error {
+    let _thrown = Exception::throw_type(ctx, message);
+    with_code(ctx, code)
+}
+
+/// Throws a `RangeError` carrying the Node.js error `code`.
+pub(super) fn throw_range_error(ctx: &Ctx<'_>, code: &str, message: &str) -> rquickjs::Error {
+    let _thrown = Exception::throw_range(ctx, message);
+    with_code(ctx, code)
+}
+
+/// Throws the pending exception again with `code` set on it.
+fn with_code(ctx: &Ctx<'_>, code: &str) -> rquickjs::Error {
+    let exception = ctx.catch();
+    if let Some(object) = exception.as_object()
+        && let Err(error) = object.set("code", code)
+    {
+        return error;
+    }
+    ctx.throw(exception)
 }
 
 pub(super) fn decode_hex(ctx: &Ctx<'_>, value: &str) -> rquickjs::Result<Vec<u8>> {
