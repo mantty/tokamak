@@ -176,25 +176,31 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
 #[cfg(not(any(target_os = "android", target_os = "linux")))]
 fn recognizes_the_errors_of_a_lost_listener() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(unix)]
-    let (lost, failed) = (
-        [libc::EBADF, libc::EINVAL, libc::ENOTSOCK, libc::EOPNOTSUPP],
-        libc::ECONNABORTED,
-    );
+    let cases = [
+        (libc::EBADF, true),
+        (libc::EINVAL, true),
+        (libc::ENOTSOCK, true),
+        (libc::EOPNOTSUPP, true),
+        (libc::ECONNABORTED, false),
+    ];
     #[cfg(windows)]
-    let (lost, failed) = {
+    let cases = {
         use windows_sys::Win32::Networking::WinSock::{
             WSAECONNRESET, WSAEINVAL, WSAENOTSOCK, WSAEOPNOTSUPP,
         };
-        ([WSAENOTSOCK, WSAEINVAL, WSAEOPNOTSUPP], WSAECONNRESET)
+        [
+            (WSAENOTSOCK, true),
+            (WSAEINVAL, true),
+            (WSAEOPNOTSUPP, true),
+            (WSAECONNRESET, false),
+        ]
     };
     let listener = Listener::bind(0)?;
 
-    for code in lost {
+    for (code, lost) in cases {
         let error = io::Error::from_raw_os_error(code);
-        assert!(listener_was_lost(&listener, &error), "{error}");
+        assert_eq!(listener_was_lost(&listener, &error), lost, "{error}");
     }
-    let failed = io::Error::from_raw_os_error(failed);
-    assert!(!listener_was_lost(&listener, &failed));
     Ok(())
 }
 
