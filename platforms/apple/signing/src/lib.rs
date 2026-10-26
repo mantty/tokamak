@@ -262,32 +262,49 @@ pub fn sign_macos_bundle(project: &Path, bundle: &Path, bundle_id: &str) -> Resu
 #[cfg(target_os = "macos")]
 fn signing_inventory(identities: &[Identity], profiles: &[Result<Profile>]) -> Result<String> {
     let mut output = String::from("iOS signing identities (certificate and private key):\n");
-    let mut count = 0;
-    for identity in identities.iter().filter(|identity| {
-        [
-            "Apple Development:",
-            "Apple Distribution:",
-            "iPhone Developer:",
-            "iPhone Distribution:",
-        ]
+    let signing_identities = identities
         .iter()
-        .any(|prefix| identity.name.starts_with(prefix))
-    }) {
-        count += 1;
-        write_signing_identity(&mut output, identity)?;
-    }
-    if count == 0 {
-        writeln!(output, "  None found.")?;
-    }
+        .filter(|identity| {
+            [
+                "Apple Development:",
+                "Apple Distribution:",
+                "iPhone Developer:",
+                "iPhone Distribution:",
+            ]
+            .iter()
+            .any(|prefix| identity.name.starts_with(prefix))
+        })
+        .collect::<Vec<_>>();
+    write_entries(
+        &mut output,
+        "  ",
+        &signing_identities,
+        |output, identity| write_signing_identity(output, identity),
+    )?;
 
     writeln!(output, "\niOS provisioning profiles:")?;
-    if profiles.is_empty() {
-        writeln!(output, "  None found.")?;
-    }
-    for result in profiles {
-        write_profile_entry(&mut output, result, identities)?;
-    }
+    write_entries(&mut output, "  ", profiles, |output, result| {
+        write_profile_entry(output, result, identities)
+    })?;
     Ok(output)
+}
+
+/// Writes each of `entries` with `write_entry`, or `None found.` after
+/// `indent` when there are none.
+#[cfg(target_os = "macos")]
+fn write_entries<T>(
+    output: &mut String,
+    indent: &str,
+    entries: &[T],
+    mut write_entry: impl FnMut(&mut String, &T) -> Result<()>,
+) -> Result<()> {
+    if entries.is_empty() {
+        writeln!(output, "{indent}None found.")?;
+    }
+    for entry in entries {
+        write_entry(output, entry)?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
