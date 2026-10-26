@@ -112,14 +112,24 @@ mod tests {
 
     #[test]
     fn compares_upload_times_optionally_by_the_second() -> TestResult {
-        assert!(conditional(r#"{"uploadedAfter": 10000}"#)?.holds(OBJECT));
-        assert!(
-            !conditional(r#"{"uploadedAfter": 10000, "secondsGranularity": true}"#)?.holds(OBJECT)
-        );
-        assert!(!conditional(r#"{"uploadedBefore": 10500}"#)?.holds(OBJECT));
-        assert!(conditional(r#"{"uploadedBefore": 10501}"#)?.holds(OBJECT));
-        assert!(!conditional(r#"{"uploadedAfter": 10000}"#)?.holds(None));
-        assert!(conditional(r#"{"uploadedBefore": 0}"#)?.holds(None));
+        for (json, current, holds) in [
+            (r#"{"uploadedAfter": 10000}"#, OBJECT, true),
+            (
+                r#"{"uploadedAfter": 10000, "secondsGranularity": true}"#,
+                OBJECT,
+                false,
+            ),
+            (r#"{"uploadedBefore": 10500}"#, OBJECT, false),
+            (r#"{"uploadedBefore": 10501}"#, OBJECT, true),
+            (r#"{"uploadedAfter": 10000}"#, None, false),
+            (r#"{"uploadedBefore": 0}"#, None, true),
+        ] {
+            assert_eq!(
+                conditional(json)?.holds(current),
+                holds,
+                "{json} on {current:?}"
+            );
+        }
         Ok(())
     }
 
