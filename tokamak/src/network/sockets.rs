@@ -142,10 +142,10 @@ impl Socket {
         self.closed.cancel();
         let reader = self.reader.lock().await.take().ok_or_else(closed_error)?;
         let writer = self.writer.lock().await.take().ok_or_else(closed_error)?;
-        match reader.unsplit(writer) {
-            Either::Left(stream) => tls(stream, host).await.map(Either::Right),
-            Either::Right(_) => Err(io::Error::other("Socket is already secure")),
-        }
+        let Either::Left(stream) = reader.unsplit(writer) else {
+            return Err(io::Error::other("Socket is already secure"));
+        };
+        tls(stream, host).await.map(Either::Right)
     }
 }
 
