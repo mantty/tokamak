@@ -568,22 +568,22 @@ mod tests {
     fn makes_paths_absolute() -> Result<()> {
         let directory = Path::new("/root");
         let path = |relative: &str| directory.join(relative).to_string_lossy().into_owned();
-        assert_eq!(
-            Kind::One(Item::Path).resolve_paths(json!("a"), directory)?,
-            json!(path("a"))
-        );
-        assert_eq!(
-            Kind::List(Item::Path).resolve_paths(json!(["a", "/b"]), directory)?,
-            json!([path("a"), "/b"])
-        );
-        assert_eq!(
-            Kind::Map(Item::Path).resolve_paths(json!({ "x": "a" }), directory)?,
-            json!({ "x": path("a") })
-        );
-        assert_eq!(
-            Kind::One(Item::String).resolve_paths(json!("a"), directory)?,
-            json!("a")
-        );
+        for (kind, value, expected) in [
+            (Kind::One(Item::Path), json!("a"), json!(path("a"))),
+            (
+                Kind::List(Item::Path),
+                json!(["a", "/b"]),
+                json!([path("a"), "/b"]),
+            ),
+            (
+                Kind::Map(Item::Path),
+                json!({ "x": "a" }),
+                json!({ "x": path("a") }),
+            ),
+            (Kind::One(Item::String), json!("a"), json!("a")),
+        ] {
+            assert_eq!(kind.resolve_paths(value, directory)?, expected, "{kind:?}");
+        }
         Ok(())
     }
 }
