@@ -810,26 +810,15 @@ mod tests {
 
     #[test]
     fn recognizes_only_the_exact_app_origin() {
-        assert!(is_app_origin(
-            "https://app.tokamak.local/path",
-            "app.tokamak.local"
-        ));
-        assert!(is_app_origin(
-            "HTTPS://APP.TOKAMAK.LOCAL:443/path",
-            "app.tokamak.local"
-        ));
-        assert!(!is_app_origin(
-            "https://app.tokamak.local.evil/path",
-            "app.tokamak.local"
-        ));
-        assert!(!is_app_origin(
-            "https://app.tokamak.local:444/path",
-            "app.tokamak.local"
-        ));
-        assert!(!is_app_origin(
-            "http://app.tokamak.local/path",
-            "app.tokamak.local"
-        ));
+        for (uri, app_origin) in [
+            ("https://app.tokamak.local/path", true),
+            ("HTTPS://APP.TOKAMAK.LOCAL:443/path", true),
+            ("https://app.tokamak.local.evil/path", false),
+            ("https://app.tokamak.local:444/path", false),
+            ("http://app.tokamak.local/path", false),
+        ] {
+            assert_eq!(is_app_origin(uri, "app.tokamak.local"), app_origin, "{uri}");
+        }
     }
 
     #[test]
