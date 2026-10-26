@@ -486,19 +486,20 @@ mod tests {
     #[test]
     fn reserves_the_first_word_of_each_of_tok_s_own_options() {
         let command = Cli::command();
-        for subcommand in ["build", "dev"] {
-            let options = command
+        let options = ["build", "dev"].into_iter().flat_map(|subcommand| {
+            command
                 .find_subcommand(subcommand)
                 .into_iter()
                 .flat_map(clap::Command::get_arguments)
-                .filter_map(clap::Arg::get_long);
-            for option in options {
-                let word = option.split('-').next().unwrap_or(option);
-                assert!(
-                    plugins::RESERVED_WORDS.contains(&word),
-                    "--{option} of tok {subcommand} starts with an unreserved word"
-                );
-            }
+                .filter_map(clap::Arg::get_long)
+                .map(move |option| (subcommand, option))
+        });
+        for (subcommand, option) in options {
+            let word = option.split('-').next().unwrap_or(option);
+            assert!(
+                plugins::RESERVED_WORDS.contains(&word),
+                "--{option} of tok {subcommand} starts with an unreserved word"
+            );
         }
     }
 
