@@ -53,12 +53,11 @@ fn reports_handler_failures_through_the_event_listener()
     };
     assert_eq!(response.status, 500);
     let events: Vec<Event> = events.try_iter().collect();
+    let [Event::RequestFailed { message }] = events.as_slice() else {
+        panic!("unexpected events: {events:?}");
+    };
     assert!(
-        matches!(
-            events.as_slice(),
-            [Event::RequestFailed { message }]
-                if message.starts_with("Worker error: ") && message.ends_with("handler exploded")
-        ),
+        message.starts_with("Worker error: ") && message.ends_with("handler exploded"),
         "unexpected events: {events:?}"
     );
     Ok(())
