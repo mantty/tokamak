@@ -1022,11 +1022,15 @@ mod tests {
 
     #[test]
     fn normalizes_relative_paths_as_wrangler_does() {
-        assert_eq!(normalize_relative_path("./migrations/"), "migrations");
-        assert_eq!(normalize_relative_path("db\\migrations"), "db/migrations");
-        assert_eq!(normalize_relative_path("a/../b"), "b");
-        assert_eq!(normalize_relative_path("../../db"), "../../db");
-        assert_eq!(normalize_relative_path("./"), ".");
+        for (path, expected) in [
+            ("./migrations/", "migrations"),
+            ("db\\migrations", "db/migrations"),
+            ("a/../b", "b"),
+            ("../../db", "../../db"),
+            ("./", "."),
+        ] {
+            assert_eq!(normalize_relative_path(path), expected, "{path}");
+        }
     }
 
     #[test]
