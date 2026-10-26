@@ -476,15 +476,23 @@ fn write_build_metadata(input: &Path, project: &Path, metadata: &BuildMetadata<'
     for (name, value) in values {
         fs::write(metadata_dir.join(name), value)?;
     }
-    if let Some(version) = metadata.version {
-        fs::write(metadata_dir.join("version"), version)?;
-    }
-    if let Some((endpoint, session_token)) = metadata.development {
-        fs::write(metadata_dir.join("dev-endpoint"), endpoint)?;
-        fs::write(metadata_dir.join("dev-session-token"), session_token)?;
-    }
-    if let Some(device_id) = metadata.device_id {
-        fs::write(metadata_dir.join("device-id"), device_id)?;
+    let optional_values = [
+        ("version", metadata.version),
+        (
+            "dev-endpoint",
+            metadata.development.map(|(endpoint, _)| endpoint),
+        ),
+        (
+            "dev-session-token",
+            metadata.development.map(|(_, session_token)| session_token),
+        ),
+        ("device-id", metadata.device_id),
+    ];
+    for (name, value) in optional_values
+        .into_iter()
+        .filter_map(|(name, value)| value.map(|value| (name, value)))
+    {
+        fs::write(metadata_dir.join(name), value)?;
     }
     Ok(())
 }
