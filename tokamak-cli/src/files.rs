@@ -29,13 +29,9 @@ pub fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
 /// Returns an error when `from` holds anything but files and directories, or
 /// a copy fails.
 pub fn copy_dir_contents(from: &Path, to: &Path) -> Result<()> {
-    for entry in WalkDir::new(from).follow_links(true) {
+    for entry in WalkDir::new(from).follow_links(true).min_depth(1) {
         let entry = entry.map_err(std::io::Error::other)?;
-        let relative = entry.path().strip_prefix(from)?;
-        if relative.as_os_str().is_empty() {
-            continue;
-        }
-        let destination = to.join(relative);
+        let destination = to.join(entry.path().strip_prefix(from)?);
         let metadata = entry.metadata()?;
         if metadata.is_dir() {
             fs::create_dir_all(destination)?;
@@ -72,6 +68,20 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn copies_nothing_from_a_file_and_fails_without_a_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let file = temporary.path().join("file");
+        let destination = temporary.path().join("destination");
+        std::fs::write(&file, "content")?;
+
+        assert!(super::copy_dir_contents(&temporary.path().join("missing"), &destination).is_err());
+        super::copy_dir_contents(&file, &destination)?;
+        assert!(!destination.exists());
         Ok(())
     }
 }
