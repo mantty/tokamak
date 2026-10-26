@@ -1071,11 +1071,19 @@ mod tests {
 
     #[test]
     fn validates_apple_build_numbers() {
-        for value in ["1", "1.2", "1.2.3", "001"] {
-            assert!(validate_build_number(value).is_ok(), "accepted {value}");
-        }
-        for value in ["", "1.", ".1", "1..2", "1.2.3.4", "1.2-3"] {
-            assert!(validate_build_number(value).is_err(), "accepted {value}");
+        for (value, valid) in [
+            ("1", true),
+            ("1.2", true),
+            ("1.2.3", true),
+            ("001", true),
+            ("", false),
+            ("1.", false),
+            (".1", false),
+            ("1..2", false),
+            ("1.2.3.4", false),
+            ("1.2-3", false),
+        ] {
+            assert_eq!(validate_build_number(value).is_ok(), valid, "{value:?}");
         }
     }
 
