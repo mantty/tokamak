@@ -886,33 +886,35 @@ mod tests {
     fn passes_the_icon_to_the_pack_as_a_path() -> Result<()> {
         let mut fixture = Fixture::new();
         let icon =
-            |settings: PlatformSettings, name: &str| settings.pack_environment.get(name).cloned();
-        assert_eq!(
-            icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
-            None
-        );
+            |name| move |settings: PlatformSettings| settings.pack_environment.get(name).cloned();
+        let macos_icon = icon("TOKAMAK_MACOS_ICON");
+        fixture.assert_resolves(Platform::Macos, macos_icon, &None)?;
         fixture.config = configured(&json!({ "icon": "../AppIcon.icon" }))?;
-        assert_eq!(
-            icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
-            Some(joined("/config", "../AppIcon.icon"))
-        );
+        fixture.assert_resolves(
+            Platform::Macos,
+            macos_icon,
+            &Some(joined("/config", "../AppIcon.icon")),
+        )?;
         fixture
             .environment
             .insert("TOKAMAK_ICON".to_owned(), "icons/App.icon".to_owned());
-        assert_eq!(
-            icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
-            Some(joined("/work", "icons/App.icon"))
-        );
+        fixture.assert_resolves(
+            Platform::Macos,
+            macos_icon,
+            &Some(joined("/work", "icons/App.icon")),
+        )?;
         fixture.top.icon = Some("top/App.icon".to_owned());
         fixture.options = namespaced_options(&["--macos-icon", "macos/App.icon"])?;
-        assert_eq!(
-            icon(fixture.resolve(Platform::Macos)?, "TOKAMAK_MACOS_ICON"),
-            Some(joined("/work", "macos/App.icon"))
-        );
-        assert_eq!(
-            icon(fixture.resolve(Platform::IosSimulator)?, "TOKAMAK_IOS_ICON"),
-            Some(joined("/work", "top/App.icon"))
-        );
+        fixture.assert_resolves(
+            Platform::Macos,
+            macos_icon,
+            &Some(joined("/work", "macos/App.icon")),
+        )?;
+        fixture.assert_resolves(
+            Platform::IosSimulator,
+            icon("TOKAMAK_IOS_ICON"),
+            &Some(joined("/work", "top/App.icon")),
+        )?;
         Ok(())
     }
 
