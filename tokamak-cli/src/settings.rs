@@ -1024,6 +1024,13 @@ mod tests {
             let mut resolved = self.with(|sources| resolve_plugins(sources, platform, &plugins))?;
             Ok(Value::Object(resolved.remove("alerts").unwrap_or_default()))
         }
+
+        /// Asserts the alerts plugin's settings on `platform`.
+        #[track_caller]
+        fn assert_plugin_settings(&self, platform: Platform, expected: &Value) -> Result<()> {
+            assert_eq!(&self.plugin_settings(platform)?, expected, "{platform:?}");
+            Ok(())
+        }
     }
 
     /// The alerts plugin's defaults, with `values`.
@@ -1238,28 +1245,28 @@ mod tests {
         fixture.config = configured(&json!({
             "alerts": { "sounds": "sounds", "volume": 1, "ios": { "sounds": "ios-sounds" } },
         }))?;
-        assert_eq!(
-            fixture.plugin_settings(Platform::Ios)?,
-            with_defaults(json!({ "sounds": path("/config", "ios-sounds"), "volume": 1 }))
-        );
-        assert_eq!(
-            fixture.plugin_settings(Platform::Android)?,
-            with_defaults(json!({ "sounds": path("/config", "sounds"), "volume": 1 }))
-        );
+        fixture.assert_plugin_settings(
+            Platform::Ios,
+            &with_defaults(json!({ "sounds": path("/config", "ios-sounds"), "volume": 1 })),
+        )?;
+        fixture.assert_plugin_settings(
+            Platform::Android,
+            &with_defaults(json!({ "sounds": path("/config", "sounds"), "volume": 1 })),
+        )?;
 
         fixture.environment.extend([
             ("TOKAMAK_ALERTS_SOUNDS".to_owned(), "env".to_owned()),
             ("TOKAMAK_ALERTS_MACOS_VOLUME".to_owned(), "2".to_owned()),
         ]);
         fixture.options = parsed_options(&["--alerts-android-volume", "3"], &alerts()?)?;
-        assert_eq!(
-            fixture.plugin_settings(Platform::Macos)?,
-            with_defaults(json!({ "sounds": path("/work", "env"), "volume": 2 }))
-        );
-        assert_eq!(
-            fixture.plugin_settings(Platform::Android)?,
-            with_defaults(json!({ "sounds": path("/work", "env"), "volume": 3 }))
-        );
+        fixture.assert_plugin_settings(
+            Platform::Macos,
+            &with_defaults(json!({ "sounds": path("/work", "env"), "volume": 2 })),
+        )?;
+        fixture.assert_plugin_settings(
+            Platform::Android,
+            &with_defaults(json!({ "sounds": path("/work", "env"), "volume": 3 })),
+        )?;
         Ok(())
     }
 
