@@ -218,6 +218,55 @@ function sizeLimitOutcomes() {
   } finally { fs.closeSync(fd); }
 }
 
+// A fresh directory under /tmp holding `names` as files, created in order.
+function directoryOf(name, names) {
+  const root = `/tmp/filesystem-order/${name}`;
+  fs.mkdirSync(root, { recursive: true });
+  for (const entry of names) fs.writeFileSync(`${root}/${entry}`, entry);
+  return root;
+}
+
+// What `change` leaves `readdirSync` listing in a directory of `names`.
+function listingAfter(name, names, change) {
+  const root = directoryOf(name, names);
+  change(root);
+  return fs.readdirSync(root);
+}
+
+async function orderContracts() {
+  const created = directoryOf("created", ["zeta", "beta", "Capital", "_under", "10", "9"]);
+  fs.mkdirSync(`${created}/alpha`);
+  const dir = fs.opendirSync(created);
+  const opened = [];
+  for (let entry; (entry = dir.readSync()) !== null;) opened.push(entry.name);
+  dir.closeSync();
+  const letters = ["a", "b", "c", "d", "e"];
+  return {
+    created: fs.readdirSync(created),
+    createdTypes: fs.readdirSync(created, { withFileTypes: true }).map(entry => entry.name),
+    createdPromise: await fs.promises.readdir(created),
+    opened,
+    unlinkFirst: listingAfter("unlinkFirst", letters, root => fs.unlinkSync(`${root}/a`)),
+    unlinkTwo: listingAfter("unlinkTwo", letters, root => { fs.unlinkSync(`${root}/a`); fs.unlinkSync(`${root}/b`); }),
+    unlinkLast: listingAfter("unlinkLast", letters, root => fs.unlinkSync(`${root}/e`)),
+    renameInPlace: listingAfter("renameInPlace", letters, root => fs.renameSync(`${root}/b`, `${root}/z`)),
+    renameAway: listingAfter("renameAway", letters, root => fs.renameSync(`${root}/a`, "/tmp/filesystem-order/renamed")),
+    renameInto: listingAfter("renameInto", letters, root => fs.renameSync(`${root}/../renamed`, `${root}/0`)),
+    rmdir: listingAfter("rmdir", letters, root => { fs.mkdirSync(`${root}/0`); fs.writeFileSync(`${root}/1`, ""); fs.rmdirSync(`${root}/0`); }),
+    rmRecursive: listingAfter("rmRecursive", letters, root => { fs.mkdirSync(`${root}/0/1`, { recursive: true }); fs.rmSync(`${root}/b`); fs.rmSync(`${root}/0`, { recursive: true }); }),
+    recreated: listingAfter("recreated", letters, root => { fs.unlinkSync(`${root}/b`); fs.writeFileSync(`${root}/b`, "again"); }),
+    overwritten: listingAfter("overwritten", letters, root => { fs.writeFileSync(`${root}/a`, "again"); fs.appendFileSync(`${root}/b`, "more"); fs.truncateSync(`${root}/c`); }),
+    linked: listingAfter("linked", ["b", "a"], root => { fs.linkSync(`${root}/a`, `${root}/0`); fs.symlinkSync(`${root}/a`, `${root}/1`); fs.copyFileSync(`${root}/a`, `${root}/2`); }),
+    copiedDirectory: (() => {
+      const source = directoryOf("copySource", ["z", "a", "m"]);
+      fs.cpSync(source, "/tmp/filesystem-order/copyTarget", { recursive: true });
+      return fs.readdirSync("/tmp/filesystem-order/copyTarget");
+    })(),
+    root: fs.readdirSync("/"),
+    devices: fs.readdirSync("/dev"),
+  };
+}
+
 async function globContracts() {
   const root = "/tmp/filesystem-glob";
   fs.mkdirSync(`${root}/sub`, { recursive: true });
@@ -245,6 +294,7 @@ export async function filesystemContracts() {
   for (const [name, write] of Object.entries(vectorWriters)) result.writev[name] = await vectorOutcomes(write);
   result.append = { uint32Bigint: appendOutcome(2n ** 32n), negativeBigint: appendOutcome(-1n), beyondSizeLimit: appendOutcome(SIZE_LIMIT) };
   result.sizeLimit = sizeLimitOutcomes();
+  result.order = await orderContracts();
   result.glob = await globContracts();
   return result;
 }

@@ -87,6 +87,7 @@ impl Bundle {
                 device: false,
             });
         }
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(entries)
     }
 }

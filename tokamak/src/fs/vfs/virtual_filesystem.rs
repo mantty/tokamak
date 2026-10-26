@@ -8,6 +8,8 @@ use std::fmt::{self, Display, Formatter};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use indexmap::IndexMap;
+
 use super::nodes::{Directory, FileNode, Node, OpenFile, shared_devices};
 use super::path::{
     absolute_components, checked_size, join_child, path_from_components, random_suffix,
@@ -298,10 +300,10 @@ impl VirtualFileSystem {
         let dev = Node::Directory(shared_devices());
         let root = Directory::with_entries(
             false,
-            BTreeMap::from([
+            IndexMap::from([
                 ("bundle".to_owned(), bundle),
-                ("dev".to_owned(), dev),
                 ("tmp".to_owned(), Node::Directory(tmp)),
+                ("dev".to_owned(), dev),
             ]),
         );
         Self {
