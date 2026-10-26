@@ -1024,7 +1024,8 @@ fn write_stream_body<W: Write>(
     };
     loop {
         let chunk = match body.receiver.recv_timeout(RESPONSE_STREAM_POLL) {
-            Ok(chunk) => chunk.map_err(|error| stream_failure(&error))?,
+            Ok(Ok(chunk)) => chunk,
+            Ok(Err(error)) => return Err(stream_failure(&error)),
             Err(flume::RecvTimeoutError::Timeout) => {
                 if is_cancelled() {
                     break;
