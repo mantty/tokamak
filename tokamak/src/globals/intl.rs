@@ -958,17 +958,15 @@ fn format_number_parts(
         .unwrap_or("standard");
     let decimal = prepared_number(ctx, value, style, notation, &options)?;
 
-    match notation {
-        "compact" => compact_parts(ctx, &locale, &decimal, &options),
-        "scientific" | "engineering" => {
+    match (notation, style) {
+        ("compact", _) => compact_parts(ctx, &locale, &decimal, &options),
+        ("scientific" | "engineering", _) => {
             scientific_parts(ctx, &locale, &decimal, notation == "engineering")
         }
-        _ => match style {
-            "currency" => currency_parts(ctx, &locale, &decimal, &options),
-            "percent" => percent_parts(ctx, &locale, &decimal, &options),
-            "unit" => unit_parts(ctx, &locale, &decimal, &options),
-            _ => decimal_parts(ctx, &locale, &decimal, grouping_strategy(&options)),
-        },
+        (_, "currency") => currency_parts(ctx, &locale, &decimal, &options),
+        (_, "percent") => percent_parts(ctx, &locale, &decimal, &options),
+        (_, "unit") => unit_parts(ctx, &locale, &decimal, &options),
+        _ => decimal_parts(ctx, &locale, &decimal, grouping_strategy(&options)),
     }
 }
 
