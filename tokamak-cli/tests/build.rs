@@ -342,7 +342,6 @@ fn assert_missing(path: &Path) {
 }
 
 /// Assert that the packaged ES module `module` is `source` compiled.
-#[cfg(unix)]
 #[track_caller]
 fn assert_compiled(app: &PackageLayout, module: &str, source: &Path) -> TestResult {
     assert_eq!(
@@ -951,16 +950,13 @@ fn packages_each_generated_configuration_without_recompiling_unchanged_modules()
         packaged_vars(r#"{ "STAGE": "production" }"#)?,
         serde_json::json!({ "STAGE": "production" })
     );
-    assert_eq!(worker_compiled_at(&build_dir)?, compiled);
+    assert_worker_reused(&build_dir, compiled)?;
 
     let entry = project.join("dist/app/index.js");
     fs::write(&entry, "export default { value: 2 };")?;
     packaged_vars(r#"{ "STAGE": "production" }"#)?;
-    assert_ne!(worker_compiled_at(&build_dir)?, compiled);
-    assert_eq!(
-        read_worker_module(&PackageLayout::new(&app), "index.js")?,
-        compile_module("index.js", &fs::read(&entry)?)?
-    );
+    assert_worker_recompiled(&build_dir, compiled)?;
+    assert_compiled(&PackageLayout::new(&app), "index.js", &entry)?;
     Ok(())
 }
 
@@ -968,6 +964,20 @@ fn packages_each_generated_configuration_without_recompiling_unchanged_modules()
 fn worker_compiled_at(build_dir: &Path) -> TestResult<std::time::SystemTime> {
     let compiled = PackageLayout::new(build_dir.join(".tokamak/worker/main/compiled"));
     Ok(fs::metadata(compiled.worker_manifest())?.modified()?)
+}
+
+/// Assert that the build in `build_dir` reused the Worker it compiled at `compiled`.
+#[track_caller]
+fn assert_worker_reused(build_dir: &Path, compiled: std::time::SystemTime) -> TestResult {
+    assert_eq!(worker_compiled_at(build_dir)?, compiled);
+    Ok(())
+}
+
+/// Assert that the build in `build_dir` compiled the Worker again since `compiled`.
+#[track_caller]
+fn assert_worker_recompiled(build_dir: &Path, compiled: std::time::SystemTime) -> TestResult {
+    assert_ne!(worker_compiled_at(build_dir)?, compiled);
+    Ok(())
 }
 
 #[test]
