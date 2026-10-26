@@ -845,40 +845,42 @@ fn packages_both_workers_with_their_own_bindings_and_migrations() -> TestResult 
     let main = PackageLayout::new(output.join("app"));
     let native = main.tokamak_worker();
     assert_eq!(read_worker_manifest(&native)?.entry, "index.js");
-    let environment = |layout: &PackageLayout| -> TestResult<serde_json::Value> {
-        Ok(serde_json::from_slice(&fs::read(
-            layout.worker_environment(),
-        )?)?)
+    let assert_environment = |layout: &PackageLayout,
+                              vars: serde_json::Value,
+                              services: serde_json::Value|
+     -> TestResult {
+        let environment: serde_json::Value =
+            serde_json::from_slice(&fs::read(layout.worker_environment())?)?;
+        let worker = layout.root().display();
+        assert_eq!(environment["vars"], vars, "vars of {worker}");
+        assert_eq!(environment["services"], services, "services of {worker}");
+        Ok(())
     };
-    assert_eq!(
-        environment(&main)?["vars"],
-        serde_json::json!({ "ROLE": "main" })
-    );
-    assert_eq!(
-        environment(&main)?["services"],
+    assert_environment(
+        &main,
+        serde_json::json!({ "ROLE": "main" }),
         serde_json::json!({
             "TOKAMAK": { "service": "tokamak", "entrypoint": "default" },
             "LOCATION": { "service": "tokamak", "entrypoint": "Location" }
-        })
-    );
-    assert_eq!(
-        environment(&native)?["vars"],
-        serde_json::json!({ "ROLE": "native" })
-    );
-    assert_eq!(
-        environment(&native)?["services"],
+        }),
+    )?;
+    assert_environment(
+        &native,
+        serde_json::json!({ "ROLE": "native" }),
         serde_json::json!({
             "MAIN": { "service": "main", "entrypoint": "default" }
-        })
-    );
-    assert_eq!(
-        fs::read_to_string(native.d1_migrations("DB").join("001.sql"))?,
-        "CREATE TABLE locations (latitude REAL);"
-    );
-    assert_eq!(
-        fs::read_to_string(output.join("metadata/exported-symbols"))?,
-        "tokamak_storage\n"
-    );
+        }),
+    )?;
+    assert_texts(&[
+        (
+            native.d1_migrations("DB").join("001.sql"),
+            "CREATE TABLE locations (latitude REAL);",
+        ),
+        (
+            output.join("metadata/exported-symbols"),
+            "tokamak_storage\n",
+        ),
+    ])?;
     Ok(())
 }
 
