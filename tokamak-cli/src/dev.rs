@@ -490,16 +490,17 @@ fn terminate_process_tree(child: &mut Child) -> Result<()> {
     while Instant::now() < deadline && child.try_wait()?.is_none() {
         thread::sleep(SERVER_POLL_INTERVAL);
     }
-    if child.try_wait()?.is_none() {
-        let status = ProcessCommand::new("taskkill")
-            .args(["/PID", &pid, "/T", "/F"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .context("force-stop development command")?;
-        if !status.success() && child.try_wait()?.is_none() {
-            child.kill().context("force-stop development command")?;
-        }
+    if child.try_wait()?.is_some() {
+        return Ok(());
+    }
+    let status = ProcessCommand::new("taskkill")
+        .args(["/PID", &pid, "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("force-stop development command")?;
+    if !status.success() && child.try_wait()?.is_none() {
+        child.kill().context("force-stop development command")?;
     }
     Ok(())
 }
