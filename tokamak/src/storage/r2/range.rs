@@ -147,18 +147,19 @@ mod tests {
 
     #[test]
     fn rejects_bounds_that_select_nothing() {
-        for rejected in [
-            bounds(None, None, Some(0)),
-            bounds(Some(10), None, None),
-            bounds(Some(11), None, None),
-            bounds(Some(1), Some(0), None),
+        for (rejected, size) in [
+            (bounds(None, None, Some(0)), 10),
+            (bounds(Some(10), None, None), 10),
+            (bounds(Some(11), None, None), 10),
+            (bounds(Some(1), Some(0), None), 10),
+            (bounds(None, None, None), 0),
         ] {
-            assert_eq!(rejected.resolve(10), Err(Failure::InvalidRange));
+            assert_eq!(
+                rejected.resolve(size),
+                Err(Failure::InvalidRange),
+                "{rejected:?} of {size} bytes"
+            );
         }
-        assert_eq!(
-            bounds(None, None, None).resolve(0),
-            Err(Failure::InvalidRange)
-        );
     }
 
     #[test]
