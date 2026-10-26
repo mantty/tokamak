@@ -509,7 +509,8 @@ pub(super) fn readdir_sync<'js>(
     Ok(result.into_value())
 }
 
-/// The entries below `path`, named relative to it.
+/// The entries in `path`, or below it when `recursive`, each named by its full
+/// path without the leading slash.
 fn dir_items(ctx: &Ctx<'_>, path: &str, recursive: bool) -> rquickjs::Result<Vec<DirItem>> {
     if !recursive {
         let entries = vfs_call(ctx, |vfs| vfs.read_dir(path))?;
@@ -526,7 +527,7 @@ fn dir_items(ctx: &Ctx<'_>, path: &str, recursive: bool) -> rquickjs::Result<Vec
     Ok(entries
         .into_iter()
         .map(|(entry_path, entry)| DirItem {
-            name: relative_to(&entry_path, path),
+            name: entry_path.trim_start_matches('/').to_owned(),
             parent: normalized_parent(parent_of(&entry_path)).to_owned(),
             entry,
         })
@@ -732,10 +733,10 @@ pub(super) fn opendir_sync<'js>(
     input: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
-    let path = path(&ctx, input)?;
+    let normalized = path(&ctx, input.clone())?;
     let options = parse_options(&ctx, options.0)?;
-    let entries = dir_items(&ctx, &path, options.recursive)?;
-    dir_object(&ctx, path, entries, options.encoding.as_deref()).map(Object::into_value)
+    let entries = dir_items(&ctx, &normalized, options.recursive)?;
+    dir_object(&ctx, input, entries, options.encoding.as_deref()).map(Object::into_value)
 }
 
 pub(super) fn readv_sync<'js>(

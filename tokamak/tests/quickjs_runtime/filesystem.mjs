@@ -267,6 +267,67 @@ async function orderContracts() {
   };
 }
 
+// A dirent's visible shape and type.
+function direntOutcome(entry) {
+  return {
+    name: entry.name,
+    parentPath: entry.parentPath,
+    path: entry.path ?? null,
+    keys: Reflect.ownKeys(entry).map(String),
+    json: JSON.stringify(entry),
+    types: ["isFile", "isDirectory", "isSymbolicLink", "isCharacterDevice", "isBlockDevice", "isFIFO", "isSocket"]
+      .filter(method => entry[method]()),
+    prototype: Object.getPrototypeOf(entry) === fs.Dirent.prototype,
+  };
+}
+
+// The dirents `opendirSync` reads from `path`.
+function openedDirents(path, options) {
+  const dir = fs.opendirSync(path, options);
+  const entries = [];
+  for (let entry; (entry = dir.readSync()) !== null;) entries.push(direntOutcome(entry));
+  dir.closeSync();
+  return entries;
+}
+
+async function direntContracts() {
+  const root = "/tmp/filesystem-dirents";
+  fs.mkdirSync(`${root}/sub/deeper`, { recursive: true });
+  fs.writeFileSync(`${root}/file`, "f");
+  fs.writeFileSync(`${root}/sub/inner`, "i");
+  fs.symlinkSync(`${root}/file`, `${root}/link`);
+  const typed = (path, options = {}) => fs.readdirSync(path, { ...options, withFileTypes: true }).map(direntOutcome);
+  const constructed = (() => {
+    try { return direntOutcome(new fs.Dirent("made", 1, "/somewhere")); }
+    catch (error) { return { thrown: failure(error) }; }
+  })();
+  return {
+    names: fs.readdirSync(root),
+    typed: typed(root),
+    trailingSlash: typed(`${root}/`),
+    doubledSlash: typed("/tmp//filesystem-dirents"),
+    dotSegments: typed("/tmp/./filesystem-dirents/sub/.."),
+    devices: typed("/dev"),
+    root: typed("/").filter(entry => entry.name !== "bundle"),
+    recursive: fs.readdirSync(root, { recursive: true }),
+    recursiveTyped: typed(root, { recursive: true }),
+    recursiveTrailingSlash: fs.readdirSync(`${root}/`, { recursive: true }),
+    recursiveDotSegments: fs.readdirSync("/tmp/./filesystem-dirents/sub/..", { recursive: true }),
+    recursiveRelative: fs.readdirSync("../tmp/filesystem-dirents", { recursive: true }),
+    recursivePromise: await fs.promises.readdir(root, { recursive: true }),
+    recursiveTypedPromise: (await fs.promises.readdir(root, { recursive: true, withFileTypes: true })).map(direntOutcome),
+    recursiveCallback: await new Promise((resolve, reject) =>
+      fs.readdir(root, { recursive: true }, (error, names) => error ? reject(error) : resolve(names))),
+    recursiveFromRoot: fs.readdirSync("/", { recursive: true })
+      .filter(name => name.includes("filesystem-dirents") || name.startsWith("dev")),
+    opened: openedDirents(root),
+    openedRecursive: openedDirents(root, { recursive: true }),
+    openedTrailingSlash: openedDirents(`${root}/`, { recursive: true }),
+    openedPath: fs.opendirSync(`${root}/`).path,
+    constructed,
+  };
+}
+
 async function globContracts() {
   const root = "/tmp/filesystem-glob";
   fs.mkdirSync(`${root}/sub`, { recursive: true });
@@ -295,6 +356,7 @@ export async function filesystemContracts() {
   result.append = { uint32Bigint: appendOutcome(2n ** 32n), negativeBigint: appendOutcome(-1n), beyondSizeLimit: appendOutcome(SIZE_LIMIT) };
   result.sizeLimit = sizeLimitOutcomes();
   result.order = await orderContracts();
+  result.dirents = await direntContracts();
   result.glob = await globContracts();
   return result;
 }

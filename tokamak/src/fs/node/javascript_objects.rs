@@ -23,20 +23,34 @@ pub(super) fn constructor<'js>(
     Ok((function, prototype))
 }
 
-pub(super) fn dirent_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
-    let (function, prototype) = constructor(ctx, "Dirent", "__tokamak_node_fs_dirent_proto")?;
-    for (name, method) in [
-        ("isFile", dirent_is_file as fn(This<Object<'_>>) -> bool),
-        ("isDirectory", dirent_is_directory),
-        ("isBlockDevice", never),
-        ("isCharacterDevice", dirent_is_character_device),
-        ("isSymbolicLink", dirent_is_symbolic_link),
-        ("isFIFO", never),
-        ("isSocket", never),
-    ] {
-        prototype.set(name, Function::new(ctx.clone(), method)?)?;
+/// workerd's `Dirent` class, which holds an entry's libuv `UV_DIRENT_*` type
+/// under a private symbol.
+const DIRENT_CLASS: &str = r#"(() => {
+  const kType = Symbol("type");
+  return class Dirent {
+    name;
+    parentPath;
+    [kType];
+    constructor(name, type, path) {
+      this.name = name;
+      this.parentPath = path;
+      this[kType] = type;
     }
-    Ok(function)
+    isDirectory() { return this[kType] === 2; }
+    isFile() { return this[kType] === 1; }
+    isBlockDevice() { return this[kType] === 7; }
+    isCharacterDevice() { return this[kType] === 6; }
+    isSymbolicLink() { return this[kType] === 3; }
+    isFIFO() { return this[kType] === 4; }
+    isSocket() { return this[kType] === 5; }
+  };
+})()"#;
+
+pub(super) fn dirent_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
+    let class: Function = ctx.eval(DIRENT_CLASS)?;
+    ctx.globals()
+        .set("__tokamak_node_fs_dirent", class.clone())?;
+    Ok(class)
 }
 
 pub(super) fn dir_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
@@ -46,7 +60,6 @@ pub(super) fn dir_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<
 #[derive(Clone)]
 pub(super) struct DirState {
     entries: Arc<Mutex<Option<VecDeque<DirItem>>>>,
-    path: String,
     encoding: Option<String>,
 }
 
@@ -57,9 +70,11 @@ pub(super) struct DirItem {
     pub(super) entry: DirectoryEntry,
 }
 
+/// A `Dir` reading `entries`, whose `path` is the `path` argument it was
+/// opened with.
 pub(super) fn dir_object<'js>(
     ctx: &Ctx<'js>,
-    path: String,
+    path: Value<'js>,
     entries: Vec<DirItem>,
     encoding: Option<&str>,
 ) -> rquickjs::Result<Object<'js>> {
@@ -67,10 +82,9 @@ pub(super) fn dir_object<'js>(
     let object = Object::new_proto(ctx.clone(), prototype.as_ref())?;
     let state = DirState {
         entries: Arc::new(Mutex::new(Some(VecDeque::from(entries)))),
-        path,
         encoding: encoding.map(ToOwned::to_owned),
     };
-    object.set("path", state.path.clone())?;
+    object.set("path", path)?;
 
     let read_state = state.clone();
     object.set(
@@ -842,38 +856,6 @@ pub(super) fn stats_type(this: &This<Object<'_>>) -> Option<u32> {
     Some(stats_mode(this)? & 0o170_000)
 }
 
-fn dirent_device(object: &Object<'_>) -> bool {
-    matches!(object.get::<_, Option<bool>>("device"), Ok(Some(true)))
-}
-
-fn dirent_has_type(object: &Object<'_>, kind: &str) -> bool {
-    object
-        .get::<_, Option<String>>("type")
-        .ok()
-        .flatten()
-        .is_some_and(|value| value == kind)
-}
-
-fn dirent_is_file(this: This<Object<'_>>) -> bool {
-    !dirent_device(&this.0) && dirent_has_type(&this.0, "file")
-}
-
-fn dirent_is_directory(this: This<Object<'_>>) -> bool {
-    dirent_has_type(&this.0, "directory")
-}
-
-fn dirent_is_character_device(this: This<Object<'_>>) -> bool {
-    dirent_device(&this.0)
-}
-
-fn dirent_is_symbolic_link(this: This<Object<'_>>) -> bool {
-    dirent_has_type(&this.0, "symlink")
-}
-
-fn never(_: This<Object<'_>>) -> bool {
-    false
-}
-
 pub(super) fn stat_object<'js>(
     ctx: &Ctx<'js>,
     stat: &Stat,
@@ -1114,32 +1096,16 @@ pub(super) fn dirent<'js>(
     name: Value<'js>,
     parent_path: &str,
 ) -> rquickjs::Result<Object<'js>> {
-    let prototype: Option<Object> = ctx.globals().get("__tokamak_node_fs_dirent_proto")?;
-    let object = Object::new_proto(ctx.clone(), prototype.as_ref())?;
-    object.set("name", name)?;
-    object.set("parentPath", parent_path)?;
-    object.set("type", node_type_name(entry.kind))?;
-    object.set("device", entry.device)?;
-    set_type_methods(ctx, &object, entry.kind, entry.device)?;
-    Ok(object)
+    let class: Constructor = ctx.globals().get("__tokamak_node_fs_dirent")?;
+    class.construct((name, dirent_type(entry), parent_path))
 }
 
-pub(super) fn set_type_methods<'js>(
-    ctx: &Ctx<'js>,
-    object: &Object<'js>,
-    kind: NodeType,
-    device: bool,
-) -> rquickjs::Result<()> {
-    for (name, result) in [
-        ("isFile", kind == NodeType::File && !device),
-        ("isDirectory", kind == NodeType::Directory),
-        ("isSymbolicLink", kind == NodeType::Symlink),
-        ("isCharacterDevice", device),
-        ("isBlockDevice", false),
-        ("isFIFO", false),
-        ("isSocket", false),
-    ] {
-        object.set(name, Function::new(ctx.clone(), move || result)?)?;
+/// The libuv `UV_DIRENT_*` type of `entry`.
+const fn dirent_type(entry: &DirectoryEntry) -> u32 {
+    match entry.kind {
+        _ if entry.device => 6,
+        NodeType::File => 1,
+        NodeType::Directory => 2,
+        NodeType::Symlink => 3,
     }
-    Ok(())
 }
