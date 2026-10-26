@@ -312,10 +312,10 @@ fn reports_a_failed_start_and_still_delivers_events() -> TestResult {
 
     assert!(error.contains("does not export TokamakEvents"), "{error}");
     let failure = started.failures.recv_timeout(Duration::from_secs(5))?;
-    assert!(
-        matches!(&failure, Event::Failed { message } if message.starts_with("start failed: ")),
-        "{failure:?}"
-    );
+    let Event::Failed { message } = &failure else {
+        panic!("{failure:?}");
+    };
+    assert!(message.starts_with("start failed: "), "{failure:?}");
     Ok(())
 }
 
