@@ -354,11 +354,15 @@ mod tests {
 
     #[test]
     fn reserves_names_beginning_cf_in_any_case() {
-        assert!(allowed_name("users"));
-        assert!(allowed_name("_cf"));
-        assert!(allowed_name("cf_users"));
-        assert!(!allowed_name("_cf_KV"));
-        assert!(!allowed_name("_CF_metadata"));
+        for (name, allowed) in [
+            ("users", true),
+            ("_cf", true),
+            ("cf_users", true),
+            ("_cf_KV", false),
+            ("_CF_metadata", false),
+        ] {
+            assert_eq!(allowed_name(name), allowed, "{name}");
+        }
     }
 
     #[test]
