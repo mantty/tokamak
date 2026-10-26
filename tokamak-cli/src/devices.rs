@@ -246,9 +246,8 @@ fn prepare_ios_simulator(selector: &str) -> Result<Option<PreparedDevice>> {
     if !simulators.success {
         bail!("Xcode Simulator services are unavailable");
     }
-    let Some(targets) = parse_ios_simulator_targets(&simulators.stdout) else {
-        bail!("unable to read iOS Simulator devices");
-    };
+    let targets = parse_ios_simulator_targets(&simulators.stdout)
+        .context("unable to read iOS Simulator devices")?;
     let Some(target) = targets.into_iter().find(|target| target.id == selector) else {
         return Ok(None);
     };
