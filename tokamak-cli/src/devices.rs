@@ -1249,26 +1249,28 @@ fn parse_android_adb_devices(source: &str) -> Vec<Device> {
             || generic_kind.to_owned(),
             |model| format!("{model} / {generic_kind}"),
         );
-        let status = match state {
-            "device" => DeviceStatus::Available,
-            "unauthorized" => {
-                DeviceStatus::Blocked("authorize USB debugging on the device".to_owned())
-            }
-            "offline" => DeviceStatus::Blocked("the device is offline".to_owned()),
-            "no" if line.contains("permissions") => {
-                DeviceStatus::Blocked("grant this user USB access to the device".to_owned())
-            }
-            state => DeviceStatus::Blocked(format!("adb reports {state}")),
-        };
         devices.push(Device {
             id: id.to_owned(),
             kind,
             platform: Platform::Android,
             group,
-            status,
+            status: adb_device_status(state, line),
         });
     }
     devices
+}
+
+/// The status of a device that `adb devices -l` lists on `line` in `state`.
+fn adb_device_status(state: &str, line: &str) -> DeviceStatus {
+    match state {
+        "device" => DeviceStatus::Available,
+        "unauthorized" => DeviceStatus::Blocked("authorize USB debugging on the device".to_owned()),
+        "offline" => DeviceStatus::Blocked("the device is offline".to_owned()),
+        "no" if line.contains("permissions") => {
+            DeviceStatus::Blocked("grant this user USB access to the device".to_owned())
+        }
+        state => DeviceStatus::Blocked(format!("adb reports {state}")),
+    }
 }
 
 fn first_json_string(value: &Value, paths: &[&[&str]]) -> Option<String> {
