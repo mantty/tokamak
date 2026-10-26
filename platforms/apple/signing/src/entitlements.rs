@@ -216,18 +216,16 @@ mod tests {
             Some(&declared),
         );
 
-        assert_eq!(
-            entitlements.get("aps-environment"),
-            Some(&string("development"))
-        );
-        assert_eq!(
-            entitlements.get("keychain-access-groups"),
-            Some(&strings(&["TEAM.com.example.shared"]))
-        );
-        assert_eq!(
-            entitlements.get("get-task-allow"),
-            Some(&Value::Boolean(true))
-        );
+        for (key, value) in [
+            ("aps-environment", string("development")),
+            (
+                "keychain-access-groups",
+                strings(&["TEAM.com.example.shared"]),
+            ),
+            ("get-task-allow", Value::Boolean(true)),
+        ] {
+            assert_eq!(entitlements.get(key), Some(&value), "{key}");
+        }
     }
 
     #[test]
