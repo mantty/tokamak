@@ -498,25 +498,25 @@ mod tests {
     fn refuses_parameters_before_the_last_statement() -> TestResult {
         let (_directory, connection) = database()?;
 
-        let error = query(&connection, "SELECT ?; SELECT 1", &[]).err();
-        let missing = query(&connection, "SELECT ?", &[]).err();
-        let empty = query(&connection, "  -- nothing", &[]).err();
-
-        assert_eq!(
-            error.as_deref(),
-            Some(
+        let errors = [
+            (
+                query(&connection, "SELECT ?; SELECT 1", &[]).err(),
                 "When executing multiple SQL statements in a single call, only the last \
-                 statement can have parameters."
-            )
-        );
-        assert_eq!(
-            missing.as_deref(),
-            Some("Wrong number of parameter bindings for SQL query.")
-        );
-        assert_eq!(
-            empty.as_deref(),
-            Some("SQL code did not contain a statement.")
-        );
+                 statement can have parameters.",
+            ),
+            (
+                query(&connection, "SELECT ?", &[]).err(),
+                "Wrong number of parameter bindings for SQL query.",
+            ),
+            (
+                query(&connection, "  -- nothing", &[]).err(),
+                "SQL code did not contain a statement.",
+            ),
+        ];
+
+        for (error, expected) in errors {
+            assert_eq!(error.as_deref(), Some(expected));
+        }
         Ok(())
     }
 
