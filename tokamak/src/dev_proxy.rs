@@ -219,18 +219,11 @@ impl DevProxy {
     }
 
     async fn forward_websocket(
-        &self,
-        request: &HttpRequest,
+        upstream: Upgraded,
         response: &Sender<JobResponse>,
         websocket: &WebSocketJob,
         stopped: &CancellationToken,
-        cancelled: &CancellationToken,
     ) -> Result<(), HandlerError> {
-        let upstream = tokio::select! {
-            upstream = self.open_websocket(request) => upstream?,
-            () = stopped.cancelled() => return Ok(()),
-            () = cancelled.cancelled() => return Ok(()),
-        };
         response
             .send(JobResponse::WebSocket)
             .map_err(|_| io::Error::other("WebSocket gateway closed"))?;
@@ -346,7 +339,14 @@ impl Handler for DevProxy {
             });
         };
         // The incoming channel carries the client's close frame before disconnection.
-        tokio.block_on(self.forward_websocket(&request, &response, &websocket, stopped, &cancelled))
+        tokio.block_on(async {
+            let upstream = tokio::select! {
+                upstream = self.open_websocket(&request) => upstream?,
+                () = stopped.cancelled() => return Ok(()),
+                () = cancelled.cancelled() => return Ok(()),
+            };
+            Self::forward_websocket(upstream, &response, &websocket, stopped).await
+        })
     }
 
     fn deliver(&self, event: EventJob, stopped: &CancellationToken) {
