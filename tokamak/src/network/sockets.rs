@@ -157,11 +157,10 @@ async fn tls(stream: TcpStream, host: &str) -> io::Result<TlsStream<TcpStream>> 
 
 async fn connect(host: &str, port: u16, secure: bool) -> io::Result<Connection> {
     let stream = TcpStream::connect((host, port)).await?;
-    if secure {
-        tls(stream, host).await.map(Either::Right)
-    } else {
-        Ok(Either::Left(stream))
+    if !secure {
+        return Ok(Either::Left(stream));
     }
+    tls(stream, host).await.map(Either::Right)
 }
 
 fn opening(
