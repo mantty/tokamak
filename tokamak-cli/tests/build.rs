@@ -320,6 +320,55 @@ fn write_executable(path: &Path, contents: &str) -> TestResult {
     Ok(())
 }
 
+/// Assert that each file holds its text.
+#[cfg(unix)]
+#[track_caller]
+fn assert_texts(files: &[(PathBuf, &str)]) -> TestResult {
+    for (path, text) in files {
+        assert_eq!(fs::read_to_string(path)?, *text, "{}", path.display());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[track_caller]
+fn assert_file(path: &Path) {
+    assert!(path.is_file(), "{} is not a file", path.display());
+}
+
+#[cfg(unix)]
+#[track_caller]
+fn assert_missing(path: &Path) {
+    assert!(!path.exists(), "{} exists", path.display());
+}
+
+/// Assert that the packaged ES module `module` is `source` compiled.
+#[cfg(unix)]
+#[track_caller]
+fn assert_compiled(app: &PackageLayout, module: &str, source: &Path) -> TestResult {
+    assert_eq!(
+        read_worker_module(app, module)?,
+        compile_module(module, &fs::read(source)?)?
+    );
+    Ok(())
+}
+
+/// Assert that `app` packages the Worker and assets of the demo `project`.
+#[cfg(unix)]
+#[track_caller]
+fn assert_packages_demo_app(app: &Path, project: &Path) -> TestResult {
+    let layout = PackageLayout::new(app);
+    assert_eq!(read_worker_manifest(&layout)?.entry, "index.js");
+    assert_compiled(&layout, "index.js", &project.join("dist/app/index.js"))?;
+    assert_file(&app.join("assets/index.html"));
+    assert_eq!(
+        read_asset_manifest(&layout)?.files["styles/app.css"],
+        "text/css"
+    );
+    assert_missing(&app.join("config.capnp"));
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn stages_the_entry_points_of_the_runtime_parts_the_app_links() -> TestResult {
@@ -359,43 +408,28 @@ fn stages_the_app_and_its_metadata_and_runs_the_entrypoint_from_the_pack_root() 
         ["app", "arguments", "directory", "environment", "metadata"]
     );
     let input = project.join("build/.tokamak/macos/input");
-    assert_eq!(
-        fs::read_to_string(output.join("arguments"))?,
-        format!("build\n{}\n{}\n", input.display(), output.display())
-    );
+    assert_texts(&[(
+        output.join("arguments"),
+        &format!("build\n{}\n{}\n", input.display(), output.display()),
+    )])?;
     assert_eq!(
         PathBuf::from(fs::read_to_string(output.join("directory"))?.trim_end()),
         fs::canonicalize(&platform_pack)?
     );
     let project_dir = project.display().to_string();
-    for (name, value) in [
-        ("app-name", "demo-app"),
-        ("app-slug", "demo-app"),
-        ("identifier", "com.tokamak.demo-app"),
-        ("host", "demo-app.tokamak.local"),
-        ("platform", "macos"),
-        ("target", "macos-arm64"),
-        ("project-dir", &project_dir),
-        ("version", "1.0.0"),
-    ] {
-        assert_eq!(
-            fs::read_to_string(output.join("metadata").join(name))?,
-            value,
-            "{name}"
-        );
-    }
+    let metadata = output.join("metadata");
+    assert_texts(&[
+        (metadata.join("app-name"), "demo-app"),
+        (metadata.join("app-slug"), "demo-app"),
+        (metadata.join("identifier"), "com.tokamak.demo-app"),
+        (metadata.join("host"), "demo-app.tokamak.local"),
+        (metadata.join("platform"), "macos"),
+        (metadata.join("target"), "macos-arm64"),
+        (metadata.join("project-dir"), &project_dir),
+        (metadata.join("version"), "1.0.0"),
+    ])?;
 
-    let app = PackageLayout::new(output.join("app"));
-    let manifest = read_worker_manifest(&app)?;
-    assert_eq!(manifest.entry, "index.js");
-    assert_eq!(
-        read_worker_module(&app, "index.js")?,
-        compile_module("index.js", &fs::read(project.join("dist/app/index.js"))?)?
-    );
-    assert!(output.join("app/assets/index.html").is_file());
-    let manifest = read_asset_manifest(&app)?;
-    assert_eq!(manifest.files["styles/app.css"], "text/css");
-    assert!(!output.join("app/config.capnp").exists());
+    assert_packages_demo_app(&output.join("app"), &project)?;
     Ok(())
 }
 
