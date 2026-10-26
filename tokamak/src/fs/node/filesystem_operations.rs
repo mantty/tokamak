@@ -108,40 +108,112 @@ pub(super) fn option_property<'js>(
     object.get(name)
 }
 
+/// The virtual path `value` names: a string or `Buffer` resolved as a URL
+/// against the working directory, or a `file:` URL, spelled as names are
+/// stored.
 pub(super) fn path<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<String> {
-    let mut path = Coerced::<String>::from_js(ctx, value)?.0;
-    if !path.starts_with('/') {
-        path = format!("/bundle/{path}");
+    let url = path_url(ctx, value)?;
+    if url.scheme() != "file" {
+        return Err(Exception::throw_type(ctx, "File path must be a file: URL"));
     }
+    if url.host_str().is_some_and(|host| !host.is_empty()) {
+        return Err(Exception::throw_message(
+            ctx,
+            "File path must not have a host",
+        ));
+    }
+    let parts: Vec<String> = stored_path(url)
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let path = format!("/{}", parts.join("/"));
     if path.chars().count() > MAX_PATH_LENGTH {
         return Err(Exception::throw_range(ctx, "path is too long"));
     }
-    let mut parts = Vec::new();
-    for part in path.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                parts.pop();
-            }
-            part => {
-                parts.push(part);
-                if parts.len() > MAX_PATH_SEGMENTS {
-                    return Err(Exception::throw_range(ctx, "path has too many segments"));
-                }
-            }
-        }
-    }
-    let path = format!("/{}", parts.join("/"));
-    if !["/", "/bundle", "/tmp", "/dev"].into_iter().any(|root| {
-        path.strip_prefix(root)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-    }) {
-        return Err(Exception::throw_message(
-            ctx,
-            &format!("ENOENT: no such file or directory, '{path}'"),
-        ));
+    if parts.len() > MAX_PATH_SEGMENTS {
+        return Err(Exception::throw_range(ctx, "path has too many segments"));
     }
     Ok(path)
+}
+
+/// The `file:` URL a path argument names, resolved as workerd resolves it.
+fn path_url<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Url> {
+    let invalid = |_| Exception::throw_type(ctx, "Invalid URL");
+    if let Some(url) = url_object(ctx, &value)? {
+        return Url::parse(&url.get::<_, String>("href")?).map_err(invalid);
+    }
+    let text = path_text(ctx, &value)?;
+    if text.contains('\0') {
+        return Err(throw_type_error(
+            ctx,
+            "ERR_INVALID_ARG_VALUE",
+            "The argument 'path' must not contain null bytes",
+        ));
+    }
+    let text = text
+        .replace('#', "%23")
+        .replace('?', "%3F")
+        .replace("//", "/");
+    let base = if text.starts_with('/') {
+        "file://".to_owned()
+    } else {
+        "file:///bundle/".to_owned()
+    };
+    Url::parse(&base)
+        .and_then(|base| base.join(&text))
+        .map_err(invalid)
+}
+
+/// The text of a string or `Buffer` path.
+fn path_text<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> rquickjs::Result<String> {
+    if let Some(text) = value.as_string() {
+        return text.to_string();
+    }
+    if let Some(object) = value.as_object()
+        && object.is_instance_of(buffer_class(ctx)?)
+    {
+        let bytes = typed_array_bytes(object).unwrap_or_default();
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    Err(throw_type_error(
+        ctx,
+        "ERR_INVALID_ARG_TYPE",
+        "The \"path\" argument must be of type string or an instance of Buffer or URL",
+    ))
+}
+
+/// `value` when it is a `URL`.
+pub(super) fn url_object<'js>(
+    ctx: &Ctx<'js>,
+    value: &Value<'js>,
+) -> rquickjs::Result<Option<Object<'js>>> {
+    let url: Option<Value> = ctx.globals().get("URL")?;
+    Ok(match (value.as_object(), url) {
+        (Some(object), Some(url)) if object.is_instance_of(&url) => Some(object.clone()),
+        _ => None,
+    })
+}
+
+/// `url`'s path with each escape of a byte names hold unescaped decoded once,
+/// then parsed again as a path.
+fn stored_path(mut url: Url) -> String {
+    let path = url.path().as_bytes();
+    let mut decoded = String::with_capacity(path.len());
+    let mut index = 0;
+    while let Some(&byte) = path.get(index) {
+        let escaped = escape_at(path, index);
+        match escaped {
+            Some(escaped) if escaped_in_names(escaped) => {
+                push_escape(&mut decoded, escaped);
+            }
+            Some(escaped) => decoded.push(char::from(escaped)),
+            None => decoded.push(char::from(byte)),
+        }
+        index += if escaped.is_some() { 3 } else { 1 };
+    }
+    url.set_path(&decoded);
+    url.path().replace('^', "%5E")
 }
 
 pub(super) enum PathOrFd {

@@ -161,11 +161,10 @@ impl<'js> GlobOptions<'js> {
 
 /// The `cwd` option: a `file:` URL's path, the string given, or `/bundle`.
 fn glob_cwd<'js>(ctx: &Ctx<'js>, cwd: Value<'js>) -> rquickjs::Result<String> {
-    let url: Option<Value> = ctx.globals().get("URL")?;
-    let cwd = match (cwd.as_object(), url) {
-        (Some(object), Some(url)) if object.is_instance_of(&url) => object.get("pathname")?,
-        _ if cwd.is_null() || cwd.is_undefined() => "/bundle".into_js(ctx)?,
-        _ => cwd,
+    let cwd = match url_object(ctx, &cwd)? {
+        Some(url) => url.get("pathname")?,
+        None if cwd.is_null() || cwd.is_undefined() => "/bundle".into_js(ctx)?,
+        None => cwd,
     };
     match cwd.as_string() {
         Some(text) => text.to_string(),

@@ -7,6 +7,11 @@ function failure(error) {
   return { error: error.name, code: error.code ?? null };
 }
 
+// What `run` returns, or the failure it throws.
+function attempt(run) {
+  try { return run(); } catch (error) { return { thrown: failure(error) }; }
+}
+
 // The trailing arguments each write of [1, 2, 3, 4] takes after its data.
 const bufferArguments = {
   none: [],
@@ -495,12 +500,37 @@ async function globDetailContracts() {
 // Paths whose `..` segments climb above the root, which stops them.
 function pathContracts() {
   const root = "/tmp/filesystem-paths";
-  fs.mkdirSync(root, { recursive: true });
+  const encoded = `${root}/encoded`;
+  fs.mkdirSync(encoded, { recursive: true });
   fs.writeFileSync(`${root}/file.txt`, "f");
-  const attempt = run => {
-    try { return run(); } catch (error) { return { thrown: failure(error) }; }
-  };
+  const names = ["a b", "\u00e9", "x#y", "x?y", "pct%41", "lt<gt>", "q\"b`c{d}", "tab\tx", "trail ", "caret^",
+    "brack[]|';@", "%2f%3c%e9", "%2541", "50%", "c\u0001d", "\u0001lead"];
+  for (const name of names) fs.writeFileSync(`${encoded}/${name}`, name);
   return {
+    encodedNames: fs.readdirSync(encoded),
+    readEncoded: attempt(() => fs.readFileSync(`${encoded}/a%20b`, "utf8")),
+    readDecoded: attempt(() => fs.readFileSync(`${encoded}/pctA`, "utf8")),
+    readLowercase: attempt(() => fs.readFileSync(`${encoded}/%c3%a9`, "utf8")),
+    doubleEncodedDots: attempt(() => fs.readdirSync(`${encoded}/%252e%252e`)),
+    backslash: attempt(() => fs.readdirSync("/tmp\\filesystem-paths")),
+    host: attempt(() => fs.readdirSync("///tmp")),
+    driveLetter: attempt(() => fs.readdirSync("/C|/x")),
+    emptyPath: attempt(() => fs.statSync("").isDirectory()),
+    nullByte: attempt(() => fs.readdirSync("/tmp/\0")),
+    number: attempt(() => fs.readdirSync(5)),
+    uint8Array: attempt(() => fs.readdirSync(new Uint8Array([47]))),
+    buffer: attempt(() => fs.readdirSync(Buffer.from(root))),
+    fileUrl: attempt(() => fs.readdirSync(new URL(`file://${root}`))),
+    encodedFileUrl: attempt(() => fs.readFileSync(new URL(`file://${encoded}/a%20b`), "utf8")),
+    httpUrl: attempt(() => fs.readdirSync(new URL("http://example.com/tmp"))),
+    hostUrl: attempt(() => fs.readdirSync(new URL("file://host/tmp"))),
+    urlString: attempt(() => fs.readdirSync("http://example.com/tmp")),
+    writeOutsideRoots: attempt(() => fs.writeFileSync("/outside", "x")),
+    mkdirOutsideRoots: attempt(() => fs.mkdirSync("/outside/inner", { recursive: true })),
+    statOutsideRoots: attempt(() => fs.statSync("/outside")),
+    symlinkOutsideRoots: attempt(() => fs.symlinkSync("/tmp", "/outside")),
+    writeBundle: attempt(() => fs.writeFileSync("/bundle/outside", "x")),
+    removeTmp: attempt(() => fs.rmdirSync("/tmp")),
     rootParent: attempt(() => fs.readdirSync("/..")),
     readdirAboveRoot: attempt(() => fs.readdirSync("/../tmp/filesystem-paths")),
     readAboveRoot: attempt(() => fs.readFileSync("/../../tmp/filesystem-paths/file.txt", "utf8")),

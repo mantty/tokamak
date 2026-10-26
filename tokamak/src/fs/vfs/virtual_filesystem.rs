@@ -49,8 +49,6 @@ pub enum ErrorKind {
     AlreadyExists,
     /// A directory is not empty.
     NotEmpty,
-    /// The target is read-only.
-    ReadOnly,
     /// The operation is not permitted.
     NotPermitted,
     /// The operation would exceed the file-size limit, reported as `EPERM`
@@ -84,7 +82,6 @@ impl ErrorKind {
             Self::IsDirectory => "EISDIR",
             Self::AlreadyExists => "EEXIST",
             Self::NotEmpty => "ENOTEMPTY",
-            Self::ReadOnly => "EROFS",
             Self::NotPermitted | Self::FileTooLarge => "EPERM",
             Self::NoSpace => "ENOSPC",
             Self::InvalidPath | Self::InvalidInput => "EINVAL",
@@ -102,7 +99,6 @@ impl ErrorKind {
             Self::IsDirectory => "is a directory",
             Self::AlreadyExists => "file already exists",
             Self::NotEmpty => "directory not empty",
-            Self::ReadOnly => "read-only file system",
             Self::NotPermitted => "operation not permitted",
             Self::FileTooLarge => "file size limit exceeded",
             Self::NoSpace => "no space left on device",
@@ -407,6 +403,9 @@ impl VirtualFileSystem {
             None if force => return Ok(()),
             None => return Err(Error::new(ErrorKind::NotFound, path)),
         };
+        if !parent.writable() {
+            return Err(Error::new(ErrorKind::NotPermitted, path));
+        }
         if let Node::Directory(directory) = &node
             && !recursive
             && !directory.is_empty()?
@@ -452,7 +451,7 @@ impl VirtualFileSystem {
         let (destination_parent, destination_name) = self.parent(to)?;
         if !source_parent.writable() || !destination_parent.writable() {
             return Err(Error::new(
-                ErrorKind::ReadOnly,
+                ErrorKind::NotPermitted,
                 if source_parent.writable() { to } else { from },
             ));
         }
@@ -585,7 +584,7 @@ impl VirtualFileSystem {
         }
         let file = node.file(path)?;
         if options.write && !file.writable() {
-            return Err(Error::new(ErrorKind::ReadOnly, path));
+            return Err(Error::new(ErrorKind::NotPermitted, path));
         }
         if options.truncate && options.write {
             file.resize(0, path)?;

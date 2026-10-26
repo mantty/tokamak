@@ -6,7 +6,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 
-use super::path::{checked_size, lock, read_bytes, read_memory, write_memory};
+use super::path::{checked_size, decoded_name, lock, read_bytes, read_memory, write_memory};
 use super::{Bundle, DirectoryEntry, Error, ErrorKind, NodeType, Result, Stat};
 
 #[derive(Clone)]
@@ -142,7 +142,10 @@ impl Directory {
         match self {
             Self::Memory { entries, .. } => Ok(lock(entries).get(name).cloned()),
             Self::Static { entries } => Ok(entries.get(name).cloned()),
-            Self::Bundle { bundle, relative } => bundle.node(&relative.join(name)),
+            Self::Bundle { bundle, relative } => match decoded_name(name) {
+                Some(name) => bundle.node(&relative.join(name)),
+                None => Ok(None),
+            },
         }
     }
 
@@ -160,7 +163,7 @@ impl Directory {
             writable: true,
         } = self
         else {
-            return Err(Error::new(ErrorKind::ReadOnly, name));
+            return Err(Error::new(ErrorKind::NotPermitted, name));
         };
         match lock(entries).entry(name) {
             Entry::Occupied(entry) => Err(Error::new(ErrorKind::AlreadyExists, entry.key())),
@@ -174,7 +177,7 @@ impl Directory {
     pub(super) fn remove(&self, name: &str) -> Result<Option<Node>> {
         match self {
             Self::Memory { entries, writable } if *writable => Ok(lock(entries).swap_remove(name)),
-            _ => Err(Error::new(ErrorKind::ReadOnly, name)),
+            _ => Err(Error::new(ErrorKind::NotPermitted, name)),
         }
     }
 
@@ -250,7 +253,7 @@ impl FileNode {
     pub(super) fn write(&self, offset: u64, data: &[u8], append: bool) -> Result<usize> {
         match self {
             Self::Memory(bytes) => write_memory(bytes, offset, data, append),
-            Self::Bundle { .. } => Err(Error::new(ErrorKind::ReadOnly, "")),
+            Self::Bundle { .. } => Err(Error::new(ErrorKind::NotPermitted, "")),
             Self::Device(device) => device.write(data),
         }
     }
@@ -262,7 +265,7 @@ impl FileNode {
                 lock(data).resize(size, 0);
                 Ok(())
             }
-            Self::Bundle { .. } => Err(Error::new(ErrorKind::ReadOnly, path)),
+            Self::Bundle { .. } => Err(Error::new(ErrorKind::NotPermitted, path)),
             Self::Device(Device::Null | Device::Zero) => Ok(()),
             Self::Device(Device::Full | Device::Random) => {
                 Err(Error::new(ErrorKind::NotPermitted, path))

@@ -47,6 +47,58 @@ fn apply_components(components: &mut Vec<String>, target: &str, path: &str) -> R
     Ok(())
 }
 
+/// Whether names hold `byte` percent-encoded.
+pub(crate) const fn escaped_in_names(byte: u8) -> bool {
+    byte < 0x20
+        || byte >= 0x7F
+        || matches!(
+            byte,
+            b' ' | b'"' | b'#' | b'/' | b'<' | b'>' | b'?' | b'^' | b'`' | b'{' | b'}'
+        )
+}
+
+/// Appends `byte` to `text` as an uppercase percent escape.
+pub(crate) fn push_escape(text: &mut String, byte: u8) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    text.push('%');
+    text.push(char::from(HEX[usize::from(byte >> 4)]));
+    text.push(char::from(HEX[usize::from(byte & 0xF)]));
+}
+
+/// The stored name of the host file name `name`.
+pub(super) fn encoded_name(name: &str) -> String {
+    let mut encoded = String::with_capacity(name.len());
+    for &byte in name.as_bytes() {
+        if escaped_in_names(byte) {
+            push_escape(&mut encoded, byte);
+        } else {
+            encoded.push(char::from(byte));
+        }
+    }
+    encoded
+}
+
+/// The byte the percent escape at `index` of `bytes` encodes, if one is there.
+pub(crate) fn escape_at(bytes: &[u8], index: usize) -> Option<u8> {
+    let hex = bytes
+        .get(index + 1..index + 3)
+        .filter(|_| bytes[index] == b'%')?;
+    u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()
+}
+
+/// The host file name the stored name `name` spells, if it is valid UTF-8.
+pub(super) fn decoded_name(name: &str) -> Option<String> {
+    let bytes = name.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while let Some(&byte) = bytes.get(index) {
+        let escaped = escape_at(bytes, index);
+        decoded.push(escaped.unwrap_or(byte));
+        index += if escaped.is_some() { 3 } else { 1 };
+    }
+    String::from_utf8(decoded).ok()
+}
+
 pub(crate) fn join_child(parent: &str, name: &str) -> String {
     if parent == "/" {
         format!("/{name}")

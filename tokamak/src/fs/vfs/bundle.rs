@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use super::nodes::{Directory, FileNode, Node};
+use super::path::encoded_name;
 use super::{Bundle, DirectoryEntry, Error, ErrorKind, NodeType, Result};
 
 impl Bundle {
@@ -82,7 +83,7 @@ impl Bundle {
                 return Err(Error::new(ErrorKind::Unsupported, name));
             };
             entries.push(DirectoryEntry {
-                name,
+                name: encoded_name(&name),
                 kind,
                 device: false,
             });
