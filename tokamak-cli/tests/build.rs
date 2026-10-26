@@ -321,7 +321,6 @@ fn write_executable(path: &Path, contents: &str) -> TestResult {
 }
 
 /// Assert that each file holds its text.
-#[cfg(unix)]
 #[track_caller]
 fn assert_texts(files: &[(PathBuf, &str)]) -> TestResult {
     for (path, text) in files {
@@ -1022,10 +1021,10 @@ fn ignores_unrelated_files_when_reusing_worker_modules() -> TestResult {
     fs::write(worker.join("settings.json"), r#"{"feature":false}"#)?;
     build()?;
     assert_ne!(worker_compiled_at(&project.join("build"))?, compiled);
-    assert_eq!(
-        fs::read(project.join("build/windows/demo-app/app/bundle/settings.json"))?,
-        br#"{"feature":false}"#
-    );
+    assert_texts(&[(
+        project.join("build/windows/demo-app/app/bundle/settings.json"),
+        r#"{"feature":false}"#,
+    )])?;
     Ok(())
 }
 
