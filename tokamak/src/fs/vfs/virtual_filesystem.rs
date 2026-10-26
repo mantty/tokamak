@@ -344,12 +344,12 @@ impl VirtualFileSystem {
         self.resolve(path, false)?.stat()
     }
 
-    /// List a directory in lexical order.
+    /// List a directory in the order its entries are stored.
     pub fn read_dir(&self, path: &str) -> Result<Vec<DirectoryEntry>> {
         self.resolve(path, true)?.read_dir(path)
     }
 
-    /// List a directory tree in lexical order.
+    /// List a directory tree depth first, each directory in its stored order.
     pub fn walk(&self, path: &str) -> Result<Vec<(String, DirectoryEntry)>> {
         let mut entries = Vec::new();
         self.walk_directory(path, &mut entries)?;
