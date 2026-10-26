@@ -90,6 +90,68 @@ pub(super) fn parse_options<'js>(
     })
 }
 
+/// How a read checks its options before reading.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum EncodingCheck {
+    /// A string or `null` names the encoding, which may be `null`.
+    NullAllowed,
+    /// A string or `null` names the encoding, which may not be `null`.
+    NullRejected,
+    /// The options are an object, whose encoding may not be `null`.
+    ObjectOnly,
+}
+
+/// Checks a read's `options` as workerd does before reading: they are an
+/// object, or a string or `null` naming the encoding, and the encoding is
+/// `"buffer"` or one `Buffer.isEncoding` accepts.
+pub(super) fn check_encoding<'js>(
+    ctx: &Ctx<'js>,
+    options: Option<&Value<'js>>,
+    check: EncodingCheck,
+) -> rquickjs::Result<()> {
+    let Some(options) = options.filter(|options| !options.is_undefined()) else {
+        return Ok(());
+    };
+    let named = check != EncodingCheck::ObjectOnly && (options.is_string() || options.is_null());
+    let encoding: Value = if named {
+        options.clone()
+    } else if options.is_object() && !options.is_array() && !options.is_function() {
+        Object::from_value(options.clone())?.get("encoding")?
+    } else {
+        return Err(throw_type_error(
+            ctx,
+            "ERR_INVALID_ARG_TYPE",
+            "The \"options\" argument must be of type object",
+        ));
+    };
+    let allowed = encoding.is_undefined()
+        || (encoding.is_null() && check == EncodingCheck::NullAllowed)
+        || is_encoding(ctx, &encoding)?;
+    if allowed {
+        return Ok(());
+    }
+    Err(throw_type_error(
+        ctx,
+        "ERR_INVALID_ARG_VALUE",
+        &format!(
+            "The property 'options.encoding' is invalid. Received {}",
+            inspected(ctx, &encoding)?
+        ),
+    ))
+}
+
+/// Whether `encoding` is `"buffer"` or an encoding `Buffer.isEncoding` accepts.
+fn is_encoding<'js>(ctx: &Ctx<'js>, encoding: &Value<'js>) -> rquickjs::Result<bool> {
+    if let Some(text) = encoding.as_string()
+        && text.to_string()? == "buffer"
+    {
+        return Ok(true);
+    }
+    let class = buffer_class(ctx)?;
+    let is_encoding: Function = class.get("isEncoding")?;
+    is_encoding.call((This(class), encoding.clone()))
+}
+
 pub(super) fn option_property<'js>(
     ctx: &Ctx<'js>,
     value: Option<&Value<'js>>,
@@ -229,12 +291,6 @@ pub(super) fn path_or_fd<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Re
     path(ctx, value).map(PathOrFd::Path)
 }
 
-pub(super) fn descriptor_value<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<u32> {
-    let descriptor: Coerced<i64> = Coerced::from_js(ctx, value)?;
-    u32::try_from(*descriptor)
-        .map_err(|_| Exception::throw_range(ctx, "file descriptor must be non-negative"))
-}
-
 pub(super) fn bytes<'js>(
     ctx: &Ctx<'js>,
     value: Value<'js>,
@@ -299,18 +355,7 @@ pub(super) fn typed_array_bytes(object: &Object<'_>) -> Option<Vec<u8>> {
         .map(ToOwned::to_owned)
 }
 
-pub(super) fn is_buffer_value(value: &Value<'_>) -> bool {
-    if ArrayBuffer::from_value(value.clone()).is_some() {
-        return true;
-    }
-    value
-        .clone()
-        .try_into_object()
-        .ok()
-        .is_some_and(|object| typed_array_bytes(&object).is_some())
-}
-
-/// `bytes` as a `Buffer`, or as text in `encoding` unless that is `"buffer"`.
+/// `bytes` as a `Buffer`, or as text in `encoding`.
 pub(super) fn output<'js>(
     ctx: Ctx<'js>,
     bytes: &[u8],
@@ -320,7 +365,7 @@ pub(super) fn output<'js>(
     let from: Function = class.get("from")?;
     let buffer: Object = from.call((This(class), ArrayBuffer::new_copy(ctx.clone(), bytes)?))?;
     match encoding {
-        None | Some("buffer") => Ok(buffer.into_value()),
+        None => Ok(buffer.into_value()),
         Some(encoding) => {
             let to_string: Function = buffer.get("toString")?;
             to_string.call((This(buffer), encoding))
@@ -368,6 +413,7 @@ pub(super) fn read_file_sync<'js>(
     input: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
+    check_encoding(&ctx, options.0.as_ref(), EncodingCheck::NullAllowed)?;
     let options = parse_options(&ctx, options.0)?;
     let bytes = match path_or_fd(&ctx, input)? {
         PathOrFd::Path(path) => vfs_call(&ctx, |vfs| vfs.read_file(&path))?,
@@ -566,6 +612,7 @@ pub(super) fn readdir_sync<'js>(
     input: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
+    check_encoding(&ctx, options.0.as_ref(), EncodingCheck::NullRejected)?;
     let path = path(&ctx, input)?;
     let options = parse_options(&ctx, options.0)?;
     let items = dir_items(&ctx, &path, options.recursive)?;
@@ -819,10 +866,9 @@ pub(super) fn mkdtemp_sync<'js>(
     prefix: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
+    check_encoding(&ctx, options.0.as_ref(), EncodingCheck::NullRejected)?;
     let prefix = path(&ctx, prefix)?;
-    let directory = vfs_call(&ctx, |vfs| vfs.make_temp_dir(&prefix))?;
-    let options = parse_options(&ctx, options.0)?;
-    text_value(&ctx, &directory, options.encoding.as_deref())
+    vfs_call(&ctx, |vfs| vfs.make_temp_dir(&prefix))?.into_js(&ctx)
 }
 
 pub(super) fn opendir_sync<'js>(
@@ -830,6 +876,7 @@ pub(super) fn opendir_sync<'js>(
     input: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
+    check_encoding(&ctx, options.0.as_ref(), EncodingCheck::ObjectOnly)?;
     let normalized = path(&ctx, input.clone())?;
     let options = parse_options(&ctx, options.0)?;
     let entries = dir_items(&ctx, &normalized, options.recursive)?;
@@ -838,31 +885,22 @@ pub(super) fn opendir_sync<'js>(
 
 pub(super) fn readv_sync<'js>(
     ctx: Ctx<'js>,
-    descriptor: u32,
-    buffers: Array<'js>,
+    descriptor: Value<'js>,
+    buffers: Value<'js>,
     position: Opt<Value<'js>>,
 ) -> rquickjs::Result<u32> {
-    let position = position_value(&ctx, position.0)?;
-    let writable = buffers
-        .iter::<Value>()
-        .map(|value| writable_bytes(&ctx, value?))
-        .collect::<rquickjs::Result<Vec<_>>>()?;
-    let lengths: Vec<usize> = writable.iter().map(|bytes| bytes.len).collect();
-    let chunks = vfs_call(&ctx, |vfs| vfs.readv(descriptor, &lengths, position))?;
-    let mut total = 0_usize;
-    for (buffer, bytes) in writable.iter().zip(chunks) {
-        buffer.write(0, &bytes);
-        total += bytes.len();
-    }
-    u32::try_from(total).map_err(|_| Exception::throw_range(&ctx, "read is too large"))
+    let descriptor = descriptor_value(&ctx, descriptor)?;
+    let read = vector_read(&ctx, &buffers, position.0)?;
+    read_views(&ctx, descriptor, &read)
 }
 
 pub(super) fn writev_sync<'js>(
     ctx: Ctx<'js>,
-    descriptor: u32,
+    descriptor: Value<'js>,
     buffers: Value<'js>,
     position: Opt<Value<'js>>,
 ) -> rquickjs::Result<u32> {
+    let descriptor = descriptor_value(&ctx, descriptor)?;
     let write = vector_write(&ctx, buffers, defined(position.0))?;
     write_views(&ctx, descriptor, &write)
 }
@@ -903,10 +941,10 @@ pub(super) fn read_link_sync<'js>(
     input: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
+    check_encoding(&ctx, options.0.as_ref(), EncodingCheck::NullRejected)?;
     let path = path(&ctx, input)?;
     let target = vfs_call(&ctx, |vfs| vfs.read_link(&path))?;
-    let options = parse_options(&ctx, options.0)?;
-    text_value(&ctx, &target, options.encoding.as_deref())
+    target_value(ctx, &target, options.0)
 }
 
 pub(super) fn realpath_sync<'js>(
@@ -914,10 +952,22 @@ pub(super) fn realpath_sync<'js>(
     input: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
+    check_encoding(&ctx, options.0.as_ref(), EncodingCheck::NullRejected)?;
     let path = path(&ctx, input)?;
     let target = vfs_call(&ctx, |vfs| vfs.realpath(&path))?;
-    let options = parse_options(&ctx, options.0)?;
-    text_value(&ctx, &target, options.encoding.as_deref())
+    target_value(ctx, &target, options.0)
+}
+
+/// A link target or real path, decoded with the encoding of `options` as
+/// `Buffer.prototype.toString` decodes it.
+fn target_value<'js>(
+    ctx: Ctx<'js>,
+    target: &str,
+    options: Option<Value<'js>>,
+) -> rquickjs::Result<Value<'js>> {
+    let options = parse_options(&ctx, options)?;
+    let encoding = options.encoding.as_deref().unwrap_or("utf8");
+    output(ctx, target.as_bytes(), Some(encoding))
 }
 
 pub(super) fn open_sync<'js>(
@@ -950,57 +1000,22 @@ pub(super) fn fstat_sync<'js>(
 
 pub(super) fn read_sync<'js>(
     ctx: Ctx<'js>,
-    descriptor: u32,
+    descriptor: Value<'js>,
     buffer: Value<'js>,
-    offset: Opt<u32>,
-    length: Opt<u32>,
-    position: Opt<Value<'js>>,
+    args: Rest<Value<'js>>,
 ) -> rquickjs::Result<u32> {
-    let buffer = writable_bytes(&ctx, buffer)?;
-    let offset = offset.0.unwrap_or(0) as usize;
-    if offset > buffer.len {
-        return Err(Exception::throw_range(&ctx, "offset is outside the buffer"));
-    }
-    let length = length
-        .0
-        .map_or(buffer.len - offset, |length| length as usize);
-    if length > buffer.len - offset {
-        return Err(Exception::throw_range(&ctx, "length is outside the buffer"));
-    }
-    let position = position_value(&ctx, position.0)?;
-    let bytes = vfs_call(&ctx, |vfs| vfs.read(descriptor, length, position))?;
-    buffer.write(offset, &bytes);
-    u32::try_from(bytes.len()).map_err(|_| Exception::throw_range(&ctx, "read is too large"))
-}
-
-pub(super) fn read_sync_export<'js>(
-    ctx: Ctx<'js>,
-    descriptor: u32,
-    buffer: Value<'js>,
-    offset_or_options: Opt<Value<'js>>,
-    length: Opt<Value<'js>>,
-    position: Opt<Value<'js>>,
-) -> rquickjs::Result<u32> {
-    let (offset, length, position) = match offset_or_options.0 {
-        Some(value) if value.is_object() => read_options(&ctx, value)?,
-        offset => (offset, length.0, position.0),
-    };
-    read_sync(
-        ctx.clone(),
-        descriptor,
-        buffer,
-        optional_u32(&ctx, offset)?,
-        optional_u32(&ctx, length)?,
-        Opt(position),
-    )
+    let descriptor = descriptor_value(&ctx, descriptor)?;
+    let read = sync_read(&ctx, buffer, args.0)?;
+    read_views(&ctx, descriptor, &read)
 }
 
 pub(super) fn write_sync<'js>(
     ctx: Ctx<'js>,
-    descriptor: u32,
+    descriptor: Value<'js>,
     value: Value<'js>,
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<u32> {
+    let descriptor = descriptor_value(&ctx, descriptor)?;
     let write = sync_write(&ctx, value, args.0)?;
     write_views(&ctx, descriptor, &write)
 }

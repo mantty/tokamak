@@ -376,7 +376,7 @@ fn export_sync(module: &ModuleExports<'_, '_>) -> rquickjs::Result<()> {
     module.function("openSync", open_sync)?;
     module.function("closeSync", close_sync)?;
     module.function("fstatSync", fstat_sync)?;
-    module.function("readSync", read_sync_export)?;
+    module.function("readSync", read_sync)?;
     module.function("readvSync", readv_sync)?;
     module.function("writeSync", write_sync)?;
     module.function("writevSync", writev_sync)?;

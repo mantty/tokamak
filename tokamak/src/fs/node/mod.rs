@@ -26,6 +26,7 @@ mod exports;
 mod filesystem_operations;
 mod glob;
 mod javascript_objects;
+mod reads;
 #[cfg(test)]
 mod tests;
 mod writes;
@@ -38,6 +39,8 @@ use filesystem_operations::*;
 use glob::*;
 #[allow(clippy::wildcard_imports)]
 use javascript_objects::*;
+#[allow(clippy::wildcard_imports)]
+use reads::*;
 #[allow(clippy::wildcard_imports)]
 use writes::*;
 

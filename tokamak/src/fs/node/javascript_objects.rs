@@ -231,11 +231,13 @@ pub(super) fn file_handle_object<'js>(
         "readv",
         Function::new(
             ctx.clone(),
-            move |ctx: Ctx<'js>, buffers: Array<'js>, position: Opt<Value<'js>>| {
-                let descriptor = open_descriptor(&ctx, &vector_read_state)?;
-                let bytes_read = readv_sync(ctx.clone(), descriptor, buffers.clone(), position)?;
-                let buffers = buffers.into_value();
-                transfer_result(&ctx, "bytesRead", bytes_read as usize, "buffers", buffers)
+            move |ctx: Ctx<'js>, buffers: Value<'js>, position: Opt<Value<'js>>| {
+                let read = open_descriptor(&ctx, &vector_read_state).and_then(|descriptor| {
+                    let count =
+                        read_views(&ctx, descriptor, &vector_read(&ctx, &buffers, position.0)?)?;
+                    transfer_value(&ctx, "bytesRead", count as usize, "buffers", buffers)
+                });
+                promise(ctx.clone(), read)
             },
         )?,
     )?;
@@ -534,31 +536,13 @@ pub(super) fn handle_read<'js>(
     state: &FileHandleState,
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<Promise<'js>> {
-    let descriptor = open_descriptor(ctx, state)?;
-    let ReadArguments {
-        buffer,
-        offset: offset_value,
-        length: length_value,
-        position: position_arg,
-    } = normalize_read_arguments(ctx, args.0)?;
-    let writable = writable_bytes(ctx, buffer.clone())?;
-    let offset = offset_value
-        .map(|value| Coerced::<u64>::from_js(ctx, value))
-        .transpose()?
-        .map_or(0, |value| usize::try_from(*value).unwrap_or(usize::MAX));
-    let length = length_value
-        .map(|value| Coerced::<u64>::from_js(ctx, value))
-        .transpose()?
-        .map_or(writable.len.saturating_sub(offset), |value| {
-            usize::try_from(*value).unwrap_or(usize::MAX)
-        });
-    let position = position_value(ctx, position_arg)?;
-    if offset > writable.len || length > writable.len - offset {
-        return Err(Exception::throw_range(ctx, "read buffer range is invalid"));
-    }
-    let bytes = vfs_call(ctx, |vfs| vfs.read(descriptor, length, position))?;
-    writable.write(offset, &bytes);
-    transfer_result(ctx, "bytesRead", bytes.len(), "buffer", buffer)
+    let read = open_descriptor(ctx, state).and_then(|descriptor| {
+        let arguments = normalize_read_arguments(ctx, args.0)?;
+        let buffer = arguments.buffer.clone();
+        let count = read_views(ctx, descriptor, &node_read(ctx, arguments)?)?;
+        transfer_value(ctx, "bytesRead", count as usize, "buffer", buffer)
+    });
+    promise(ctx.clone(), read)
 }
 
 pub(super) fn handle_write<'js>(
@@ -929,6 +913,7 @@ pub(super) fn text_value<'js>(
 ) -> rquickjs::Result<Value<'js>> {
     match encoding.map(str::to_ascii_lowercase).as_deref() {
         None | Some("utf8" | "utf-8") => value.to_owned().into_js(ctx),
+        Some("buffer") => output(ctx.clone(), value.as_bytes(), None),
         Some(_) => output(ctx.clone(), value.as_bytes(), encoding),
     }
 }

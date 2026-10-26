@@ -6,6 +6,9 @@ use super::*;
 pub(super) enum CallbackOperation {
     /// `(input, options?)`, answering with a value.
     Value(ValueOperation),
+    /// `(input, options?)`, answering with a value, with the options checked
+    /// before the call.
+    Encoded(ValueOperation, EncodingCheck),
     /// `(path, options?)`.
     Options(OptionsOperation),
     /// `(first, second)`.
@@ -63,15 +66,33 @@ pub(super) fn callback_operations() -> &'static [(&'static str, CallbackOperatio
         ("lstat", CallbackOperation::Value(lstat_sync)),
         ("lutimes", CallbackOperation::Times(lutimes_sync)),
         ("mkdir", CallbackOperation::Options(mkdir_sync)),
-        ("mkdtemp", CallbackOperation::Value(mkdtemp_sync)),
+        (
+            "mkdtemp",
+            CallbackOperation::Encoded(mkdtemp_sync, EncodingCheck::NullAllowed),
+        ),
         ("open", CallbackOperation::Open),
-        ("opendir", CallbackOperation::Value(opendir_sync)),
+        (
+            "opendir",
+            CallbackOperation::Encoded(opendir_sync, EncodingCheck::ObjectOnly),
+        ),
         ("read", CallbackOperation::Read),
-        ("readFile", CallbackOperation::Value(read_file_sync)),
-        ("readlink", CallbackOperation::Value(read_link_sync)),
+        (
+            "readFile",
+            CallbackOperation::Encoded(read_file_sync, EncodingCheck::NullAllowed),
+        ),
+        (
+            "readlink",
+            CallbackOperation::Encoded(read_link_sync, EncodingCheck::NullAllowed),
+        ),
         ("readv", CallbackOperation::Readv),
-        ("readdir", CallbackOperation::Value(readdir_sync)),
-        ("realpath", CallbackOperation::Value(realpath_sync)),
+        (
+            "readdir",
+            CallbackOperation::Encoded(readdir_sync, EncodingCheck::NullRejected),
+        ),
+        (
+            "realpath",
+            CallbackOperation::Encoded(realpath_sync, EncodingCheck::NullAllowed),
+        ),
         ("rename", CallbackOperation::Pair(rename_sync)),
         ("rm", CallbackOperation::Options(rm_sync)),
         ("rmdir", CallbackOperation::Options(rmdir_sync)),
@@ -119,6 +140,12 @@ pub(super) fn callback_call<'js>(
         CallbackOperation::Value(operation) => {
             let input = take_arg(&ctx, &mut args)?;
             let options = take_opt_value(&mut args);
+            reply(&ctx, operation(ctx.clone(), input, options))
+        }
+        CallbackOperation::Encoded(operation, check) => {
+            let input = take_arg(&ctx, &mut args)?;
+            let options = take_opt_value(&mut args);
+            check_encoding(&ctx, options.0.as_ref(), check)?;
             reply(&ctx, operation(ctx.clone(), input, options))
         }
         CallbackOperation::Options(operation) => {
@@ -207,28 +234,17 @@ pub(super) fn callback_call<'js>(
         }
         CallbackOperation::Read => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            let ReadArguments {
-                buffer,
-                offset,
-                length,
-                position,
-            } = normalize_read_arguments(&ctx, args)?;
-            let count = read_sync(
-                ctx.clone(),
-                descriptor,
-                buffer.clone(),
-                optional_u32(&ctx, offset)?,
-                optional_u32(&ctx, length)?,
-                Opt(position),
-            );
-            reply_with_buffer(&ctx, count, buffer)
+            let arguments = normalize_read_arguments(&ctx, args)?;
+            let buffer = arguments.buffer.clone();
+            let read = node_read(&ctx, arguments)?;
+            reply_with_buffer(&ctx, read_views(&ctx, descriptor, &read), buffer)
         }
         CallbackOperation::Readv => {
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
+            let descriptor = take_arg(&ctx, &mut args)?;
             let buffers = take_arg(&ctx, &mut args)?;
-            let array = Array::from_value(buffers.clone())?;
             let position = take_opt_value(&mut args);
-            let count = readv_sync(ctx.clone(), descriptor, array, position);
+            optional_position(&ctx, position.0.clone())?;
+            let count = readv_sync(ctx.clone(), descriptor, buffers.clone(), position);
             reply_with_buffer(&ctx, count, buffers)
         }
         CallbackOperation::Truncate => {
@@ -323,11 +339,11 @@ pub(super) fn normalize_read_arguments<'js>(
             position: None,
         });
     };
-    if is_buffer_value(&value) {
+    if is_array_buffer_view(&value) {
         args.remove(0);
         if args
             .first()
-            .is_some_and(|value| value.is_object() && !is_buffer_value(value))
+            .is_some_and(|value| value.is_object() && !is_array_buffer_view(value))
         {
             let (offset, length, position) = read_options(ctx, args.remove(0))?;
             return Ok(ReadArguments {
@@ -505,23 +521,6 @@ pub(super) fn open_options<'js>(
         truncate: first == 'w',
         ..OpenOptions::default()
     })
-}
-
-pub(super) fn position_value<'js>(
-    ctx: &Ctx<'js>,
-    value: Option<Value<'js>>,
-) -> rquickjs::Result<Option<u64>> {
-    let Some(value) = defined(value) else {
-        return Ok(None);
-    };
-    let position: Coerced<i64> = Coerced::from_js(ctx, value)?;
-    if *position < -1 {
-        return Err(Exception::throw_range(
-            ctx,
-            "file position must be -1 or non-negative",
-        ));
-    }
-    Ok((*position >= 0).then_some(position.cast_unsigned()))
 }
 
 pub(super) struct WritableBytes<'js> {

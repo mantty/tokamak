@@ -83,14 +83,7 @@ pub(super) fn vector_write<'js>(
     buffers: Value<'js>,
     position: Option<Value<'js>>,
 ) -> rquickjs::Result<WriteRequest<'js>> {
-    let views: Vec<Value> = buffers
-        .as_array()
-        .ok_or_else(|| invalid_buffers(ctx))?
-        .iter()
-        .collect::<rquickjs::Result<_>>()?;
-    if !views.iter().all(is_array_buffer_view) {
-        return Err(invalid_buffers(ctx));
-    }
+    let views = buffer_views(ctx, &buffers)?;
     let position = position.map_or(Ok(None), |position| validate_position(ctx, position))?;
     Ok(WriteRequest {
         buffers: views
@@ -100,6 +93,22 @@ pub(super) fn vector_write<'js>(
         data: buffers,
         position,
     })
+}
+
+/// The views in `buffers`, as `validateBufferArray` accepts them.
+pub(super) fn buffer_views<'js>(
+    ctx: &Ctx<'js>,
+    buffers: &Value<'js>,
+) -> rquickjs::Result<Vec<Value<'js>>> {
+    let views: Vec<Value> = buffers
+        .as_array()
+        .ok_or_else(|| invalid_buffers(ctx))?
+        .iter()
+        .collect::<rquickjs::Result<_>>()?;
+    if !views.iter().all(is_array_buffer_view) {
+        return Err(invalid_buffers(ctx));
+    }
+    Ok(views)
 }
 
 /// The file offset `position` names, converted as workerd's native write
@@ -248,13 +257,17 @@ fn validate_hex_length<'js>(
 }
 
 /// A typed array or `DataView`.
-fn is_array_buffer_view(value: &Value<'_>) -> bool {
+pub(super) fn is_array_buffer_view(value: &Value<'_>) -> bool {
     // SAFETY: Both calls only read the class of a live value.
     unsafe { qjs::JS_GetTypedArrayType(value.as_raw()) >= 0 || qjs::JS_IsDataView(value.as_raw()) }
 }
 
 /// The non-negative integer property `name` of `object`.
-fn index_property<'js>(ctx: &Ctx<'js>, object: &Object<'js>, name: &str) -> rquickjs::Result<u64> {
+pub(super) fn index_property<'js>(
+    ctx: &Ctx<'js>,
+    object: &Object<'js>,
+    name: &str,
+) -> rquickjs::Result<u64> {
     Coerced::<u64>::from_js(ctx, object.get(name)?).map(|value| value.0)
 }
 
@@ -277,7 +290,7 @@ fn validate_integer<'js>(ctx: &Ctx<'js>, value: Value<'js>, name: &str) -> rquic
 }
 
 /// `value` validated as a position, with `undefined` read as `null`.
-fn optional_position<'js>(
+pub(super) fn optional_position<'js>(
     ctx: &Ctx<'js>,
     value: Option<Value<'js>>,
 ) -> rquickjs::Result<Option<Value<'js>>> {
@@ -286,7 +299,7 @@ fn optional_position<'js>(
 
 /// `value` as `validatePosition` accepts it: `null`, a bigint or an unsigned
 /// 32-bit integer.
-fn validate_position<'js>(
+pub(super) fn validate_position<'js>(
     ctx: &Ctx<'js>,
     value: Value<'js>,
 ) -> rquickjs::Result<Option<Value<'js>>> {
@@ -296,20 +309,61 @@ fn validate_position<'js>(
     if value.is_big_int() {
         return Ok(Some(value));
     }
-    let Some(number) = value.as_number() else {
+    if !value.is_number() {
         return Err(throw_type_error(
             ctx,
             "ERR_INVALID_ARG_TYPE",
             "The \"position\" argument must be of type bigint or one of integer or null",
         ));
+    }
+    validate_uint32(ctx, &value, "position")?;
+    Ok(Some(value))
+}
+
+/// `value` as `validateUint32(value, name)` accepts it.
+pub(super) fn validate_uint32<'js>(
+    ctx: &Ctx<'js>,
+    value: &Value<'js>,
+    name: &str,
+) -> rquickjs::Result<u32> {
+    validate_integer_range(
+        ctx,
+        value,
+        name,
+        0.0..=f64::from(u32::MAX),
+        ">= 0 && < 4294967296",
+    )
+}
+
+/// The file descriptor `value` names, as `getValidatedFd` accepts it.
+pub(super) fn descriptor_value<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<u32> {
+    let range = 0.0..=f64::from(i32::MAX);
+    validate_integer_range(ctx, &value, "fd", range, ">= 0 && <= 2147483647")
+}
+
+/// `value` when it is an integer number in `range`, which `text` describes.
+fn validate_integer_range<'js>(
+    ctx: &Ctx<'js>,
+    value: &Value<'js>,
+    name: &str,
+    range: std::ops::RangeInclusive<f64>,
+    text: &str,
+) -> rquickjs::Result<u32> {
+    let Some(number) = value.as_number() else {
+        return Err(throw_type_error(
+            ctx,
+            "ERR_INVALID_ARG_TYPE",
+            &format!("The \"{name}\" argument must be of type number"),
+        ));
     };
     if !is_integer(number) {
-        return Err(out_of_range(ctx, "position", "an integer"));
+        return Err(out_of_range(ctx, name, "an integer"));
     }
-    if !(0.0..=f64::from(u32::MAX)).contains(&number) {
-        return Err(out_of_range(ctx, "position", ">= 0 && < 4294967296"));
+    if !range.contains(&number) {
+        return Err(out_of_range(ctx, name, text));
     }
-    Ok(Some(value))
+    let integer = Coerced::<i64>::from_js(ctx, value.clone())?.0;
+    u32::try_from(integer).map_err(|_| out_of_range(ctx, name, text))
 }
 
 fn is_integer(number: f64) -> bool {
@@ -332,7 +386,7 @@ fn invalid_buffers(ctx: &Ctx<'_>) -> rquickjs::Error {
     )
 }
 
-fn out_of_bounds(ctx: &Ctx<'_>, name: &str) -> rquickjs::Error {
+pub(super) fn out_of_bounds(ctx: &Ctx<'_>, name: &str) -> rquickjs::Error {
     throw_range_error(
         ctx,
         "ERR_BUFFER_OUT_OF_BOUNDS",

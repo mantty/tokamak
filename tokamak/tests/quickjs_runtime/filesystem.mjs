@@ -637,6 +637,149 @@ async function overwriteContracts() {
   };
 }
 
+// The trailing arguments each read into a four-byte buffer takes after it.
+const readArguments = {
+  none: [],
+  emptyOptions: [{}],
+  undefinedOptions: [undefined],
+  nullOptions: [null],
+  offset: [1],
+  offsetAndLength: [1, 2],
+  undefinedLength: [0, undefined],
+  nullLength: [0, null],
+  position: [0, 2, 3],
+  nullPosition: [0, 2, null],
+  undefinedPosition: [0, 2, undefined],
+  negativePosition: [0, 2, -1],
+  bigintPosition: [0, 2, 3n],
+  stringPosition: [0, 2, "1"],
+  lengthOption: [{ length: 2 }],
+  offsetOption: [{ offset: 1 }],
+  offsetAndLengthOptions: [{ offset: 1, length: 2 }],
+  positionOption: [{ position: 3 }],
+  stringOffset: ["1"],
+  negativeOffset: [-1],
+  fractionalOffset: [0.5],
+  negativeLength: [0, -1],
+  lengthBeyondBuffer: [0, 5],
+  offsetBeyondBuffer: [5, 0],
+  emptyLength: [0, 0],
+  arrayOptions: [[1]],
+};
+
+// The sync, callback and file handle forms of a read of `path` into `buffer`.
+const readers = {
+  sync: (path, buffer, args) => withDescriptor(path, fd => attempt(() => ({ read: fs.readSync(fd, buffer, ...args) }))),
+  callback: (path, buffer, args) => withDescriptor(path, fd => new Promise(resolve => {
+    try { fs.read(fd, buffer, ...args, (error, read) => resolve(error ? { error: failure(error) } : { read })); }
+    catch (error) { resolve({ thrown: failure(error) }); }
+  })),
+  handle: async (path, buffer, args) => {
+    const handle = await fs.promises.open(path, "r");
+    try {
+      let pending;
+      try { pending = handle.read(buffer, ...args); }
+      catch (error) { return { thrown: failure(error) }; }
+      return await pending.then(result => ({ read: result.bytesRead }), error => ({ error: failure(error) }));
+    } finally { await handle.close(); }
+  },
+};
+
+// Reads that workerd's fs.read and fileHandle.read default differently from
+// readSync, by form.
+const unmatchedReads = {
+  callback: ["emptyOptions", "undefinedOptions", "nullOptions", "offset", "offsetAndLength", "undefinedLength", "nullLength", "nullPosition", "undefinedPosition", "bigintPosition", "stringPosition", "offsetOption", "negativeOffset", "fractionalOffset", "negativeLength", "lengthBeyondBuffer", "offsetBeyondBuffer", "emptyLength", "middleView", "data", "string", "stringOffset"],
+  handle: ["offset", "offsetOption", "stringOffset", "arrayOptions", "middleView", "string"],
+};
+
+// What each reader reports for each argument list over a file of [1, ..., 8],
+// with the bytes of the memory under the buffer it read into.
+async function readContracts() {
+  const path = "/tmp/filesystem-read.bin";
+  fs.writeFileSync(path, Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]));
+  const reads = Object.fromEntries(Object.entries(readArguments).map(([name, args]) => [name, [() => new Uint8Array(4), [args]]]));
+  Object.assign(reads, {
+    middleView: [() => new Uint8Array(8).subarray(2, 6), [[], [1], [0, 6], [-1, 2], [{ offset: 1 }]]],
+    data: [() => new DataView(new ArrayBuffer(4)), [[], [1, 2, 0]]],
+    string: [() => "abcd", [[]]],
+  });
+  const outcomes = {};
+  for (const [form, read] of Object.entries(readers)) {
+    outcomes[form] = {};
+    for (const [name, [buffer, argumentLists]] of Object.entries(reads)) {
+      if (unmatchedReads[form]?.includes(name)) continue;
+      outcomes[form][name] = [];
+      for (const args of argumentLists) {
+        const view = buffer();
+        const outcome = await read(path, view, args);
+        outcomes[form][name].push({ ...outcome, bytes: view.buffer ? [...new Uint8Array(view.buffer)] : null });
+      }
+    }
+  }
+  const fd = fs.openSync(path, "r");
+  try {
+    const vectors = { none: [], nullPosition: [null], position: [3], negativePosition: [-1], stringPosition: ["1"], bigintPosition: [3n] };
+    outcomes.vector = {};
+    for (const [name, args] of Object.entries(vectors)) {
+      const buffers = [new Uint8Array(2), new Uint8Array(8).subarray(2, 5)];
+      const outcome = attempt(() => ({ read: fs.readvSync(fd, buffers, ...args) }));
+      outcomes.vector[name] = { ...outcome, bytes: buffers.map(buffer => [...new Uint8Array(buffer.buffer)]) };
+    }
+    outcomes.vector.notArray = attempt(() => fs.readvSync(fd, new Uint8Array(2)));
+    outcomes.vector.string = attempt(() => fs.readvSync(fd, ["ab"]));
+    outcomes.badDescriptor = ["1", -1, 1.5, 2 ** 31].map(fd => attempt(() => fs.readSync(fd, new Uint8Array(4))));
+  } finally { fs.closeSync(fd); }
+  return outcomes;
+}
+
+// The options each read of a name or file contents is given.
+const encodingOptions = {
+  unknown: "bogus",
+  unknownProperty: { encoding: "bogus" },
+  buffer: "buffer",
+  hex: "hex",
+  upperCase: "UTF8",
+  empty: "",
+  nullOptions: null,
+  nullEncoding: { encoding: null },
+  number: 5,
+  numberEncoding: { encoding: 5 },
+};
+
+function encodedOutcome(value, prefix) {
+  if (value instanceof fs.Dir) { value.closeSync(); return "Dir"; }
+  if (prefix) return { type: typeof value, prefixed: String(value).startsWith(prefix) };
+  if (Array.isArray(value)) return value.map(dataOutcome);
+  return dataOutcome(value);
+}
+
+// The sync, callback and promise forms of each read that takes an encoding,
+// with each of the encoding options.
+async function encodingContracts() {
+  const root = "/tmp/filesystem-encoding";
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(`${root}/file`, "abc");
+  fs.symlinkSync(`${root}/file`, `${root}/link`);
+  const prefix = `${root}/t-`;
+  const reads = { readFile: `${root}/file`, readdir: root, readlink: `${root}/link`, realpath: `${root}/link`, mkdtemp: prefix, opendir: root };
+  const outcomes = {};
+  for (const [name, path] of Object.entries(reads)) {
+    const outcome = value => encodedOutcome(value, name === "mkdtemp" && prefix);
+    outcomes[name] = {};
+    for (const [optionName, options] of Object.entries(encodingOptions)) {
+      outcomes[name][optionName] = {
+        sync: attempt(() => outcome(fs[`${name}Sync`](path, options))),
+        callback: await new Promise(resolve => {
+          try { fs[name](path, options, (error, value) => resolve(error ? { error: failure(error) } : outcome(value))); }
+          catch (error) { resolve({ thrown: failure(error) }); }
+        }),
+        promise: await Promise.resolve().then(() => fs.promises[name](path, options)).then(outcome, error => ({ error: failure(error) })),
+      };
+    }
+  }
+  return outcomes;
+}
+
 // process.chdir, and the paths and globs that resolve against the directory it sets.
 function workingDirectoryContracts() {
   const root = "/tmp/filesystem-cwd";
@@ -688,6 +831,8 @@ export async function filesystemContracts() {
   result.paths = pathContracts();
   result.symlinks = await symlinkContracts();
   result.overwrite = await overwriteContracts();
+  result.reads = await readContracts();
+  result.encodings = await encodingContracts();
   result.workingDirectory = workingDirectoryContracts();
   return result;
 }
