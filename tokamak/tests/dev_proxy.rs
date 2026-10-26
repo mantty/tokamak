@@ -1111,16 +1111,15 @@ fn read_frame(stream: &mut impl Read) -> TestResult<(u8, Vec<u8>)> {
     let mut header = [0; 2];
     stream.read_exact(&mut header)?;
     let length = usize::from(header[1] & 0x7f);
+    // An unmasked frame's mask stays zero, which leaves its payload unchanged.
     let mut mask = [0; 4];
     if header[1] & 0x80 != 0 {
         stream.read_exact(&mut mask)?;
     }
     let mut payload = vec![0; length];
     stream.read_exact(&mut payload)?;
-    if header[1] & 0x80 != 0 {
-        for (index, byte) in payload.iter_mut().enumerate() {
-            *byte ^= mask[index % mask.len()];
-        }
+    for (index, byte) in payload.iter_mut().enumerate() {
+        *byte ^= mask[index % mask.len()];
     }
     Ok((header[0] & 0x0f, payload))
 }
