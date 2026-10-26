@@ -528,6 +528,14 @@ mod tests {
         Ok(())
     }
 
+    /// Asserts that each of `paths` under `root` is a file.
+    #[track_caller]
+    fn assert_files(root: &Path, paths: &[&str]) {
+        for path in paths {
+            assert!(root.join(path).is_file(), "{path}");
+        }
+    }
+
     fn discovered_ids(project: &Path) -> TestResult<Vec<String>> {
         Ok(discover(project)?
             .into_iter()
@@ -568,17 +576,18 @@ mod tests {
             &staged,
         )?;
 
-        assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].id, "location");
+        let ids = plugins.iter().map(|plugin| &plugin.id).collect::<Vec<_>>();
+        assert_eq!(ids, ["location"]);
         assert_eq!(
             fs::read_to_string(staged.join("location/class"))?,
             "LocationPlugin"
         );
-        assert!(staged.join("location/native/plugin.swift").is_file());
-        assert!(
-            staged
-                .join("location/native/regions/Regions.swift")
-                .is_file()
+        assert_files(
+            &staged,
+            &[
+                "location/native/plugin.swift",
+                "location/native/regions/Regions.swift",
+            ],
         );
         Ok(())
     }
