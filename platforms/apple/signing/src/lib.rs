@@ -358,13 +358,13 @@ fn write_profile_entry(
         .iter()
         .filter(|identity| profile.includes(identity))
         .collect::<Vec<_>>();
-    if matching.is_empty() {
-        writeln!(output, "      None found.")?;
-    }
-    for identity in matching {
-        writeln!(output, "      {}  {}", identity.selector, identity.name)?;
-    }
-    Ok(())
+    write_entries(output, "      ", &matching, |output, identity| {
+        Ok(writeln!(
+            output,
+            "      {}  {}",
+            identity.selector, identity.name
+        )?)
+    })
 }
 
 #[cfg(any(target_os = "macos", test))]
