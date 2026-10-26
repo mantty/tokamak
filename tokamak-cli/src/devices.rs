@@ -1520,17 +1520,18 @@ mod tests {
         let devices = parse_android_adb_devices(
             "List of devices attached\n emulator-5554 device product:sdk model:Pixel_8\n phone-1 unauthorized usb:1\n phone-2 no permissions usb:2\n",
         );
-        assert_eq!(devices.len(), 3);
+        assert_eq!(
+            devices
+                .iter()
+                .map(|device| &device.status)
+                .collect::<Vec<_>>(),
+            [
+                &DeviceStatus::Available,
+                &DeviceStatus::Blocked("authorize USB debugging on the device".to_owned()),
+                &DeviceStatus::Blocked("grant this user USB access to the device".to_owned()),
+            ]
+        );
         assert_eq!(devices[0].id, "emulator-5554");
-        assert_eq!(devices[0].status, DeviceStatus::Available);
-        assert_eq!(
-            devices[1].status,
-            DeviceStatus::Blocked("authorize USB debugging on the device".to_owned())
-        );
-        assert_eq!(
-            devices[2].status,
-            DeviceStatus::Blocked("grant this user USB access to the device".to_owned())
-        );
     }
 
     #[test]
