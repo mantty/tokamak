@@ -1,7 +1,6 @@
 #![allow(clippy::wildcard_imports)]
 
 use super::*;
-use base64::{Engine, engine::general_purpose::STANDARD};
 use std::collections::{HashSet, VecDeque};
 
 /// `(input, options?)` operations answering with a value.
@@ -247,25 +246,35 @@ pub(super) fn is_buffer_value(value: &Value<'_>) -> bool {
         .is_some_and(|object| typed_array_bytes(&object).is_some())
 }
 
+/// `bytes` as a `Buffer`, or as text in `encoding` unless that is `"buffer"`.
 pub(super) fn output<'js>(
     ctx: Ctx<'js>,
     bytes: &[u8],
     encoding: Option<&str>,
 ) -> rquickjs::Result<Value<'js>> {
-    match encoding.map(str::to_ascii_lowercase).as_deref() {
-        None | Some("buffer") => Ok(TypedArray::<u8>::new_copy(ctx, bytes)?.into_value()),
-        Some("base64") => STANDARD.encode(bytes).into_js(&ctx),
-        Some("hex") => {
-            use std::fmt::Write as _;
-            let mut value = String::with_capacity(bytes.len() * 2);
-            for byte in bytes {
-                let _ = write!(&mut value, "{byte:02x}");
-            }
-            value.into_js(&ctx)
+    let class = buffer_class(&ctx)?;
+    let from: Function = class.get("from")?;
+    let buffer: Object = from.call((This(class), ArrayBuffer::new_copy(ctx.clone(), bytes)?))?;
+    match encoding {
+        None | Some("buffer") => Ok(buffer.into_value()),
+        Some(encoding) => {
+            let to_string: Function = buffer.get("toString")?;
+            to_string.call((This(buffer), encoding))
         }
-        Some("utf8" | "utf-8") => String::from_utf8_lossy(bytes).into_owned().into_js(&ctx),
-        Some(_) => Err(Exception::throw_type(&ctx, "unsupported encoding")),
     }
+}
+
+/// The `Buffer` class of `node:buffer`, loaded on first use.
+pub(super) fn buffer_class<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Object<'js>> {
+    const CACHE: &str = "__tokamak_node_fs_buffer";
+    if let Some(class) = ctx.globals().get::<_, Option<Object>>(CACHE)? {
+        return Ok(class);
+    }
+    let namespace = crate::runtime_modules::builtin_namespace(ctx.clone(), "node:buffer")?
+        .ok_or_else(|| Exception::throw_internal(ctx, "node:buffer is not a builtin module"))?;
+    let class: Object = namespace.get("Buffer")?;
+    ctx.globals().set(CACHE, class.clone())?;
+    Ok(class)
 }
 
 pub(super) fn read_descriptor(ctx: &Ctx<'_>, descriptor: u32) -> rquickjs::Result<Vec<u8>> {

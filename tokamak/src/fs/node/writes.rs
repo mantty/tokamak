@@ -220,12 +220,9 @@ fn encoded<'js>(
     text: Value<'js>,
     encoding: Value<'js>,
 ) -> rquickjs::Result<Value<'js>> {
-    let process: Object = ctx.globals().get("process")?;
-    let get_builtin: Function = process.get("getBuiltinModule")?;
-    let module: Object = get_builtin.call(("node:buffer",))?;
-    let buffer: Object = module.get("Buffer")?;
-    let from: Function = buffer.get("from")?;
-    from.call((This(buffer), text, encoding))
+    let class = buffer_class(ctx)?;
+    let from: Function = class.get("from")?;
+    from.call((This(class), text, encoding))
 }
 
 /// Rejects hex text of odd length, as `validateEncoding` does.

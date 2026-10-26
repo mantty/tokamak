@@ -328,6 +328,54 @@ async function direntContracts() {
   };
 }
 
+// The kind of data a read returns, and its text.
+function dataOutcome(value) {
+  return {
+    type: typeof value,
+    buffer: Buffer.isBuffer(value),
+    constructor: value?.constructor?.name ?? null,
+    text: String(value),
+  };
+}
+
+function attemptData(read) {
+  try { return dataOutcome(read()); }
+  catch (error) { return { thrown: failure(error) }; }
+}
+
+async function readDataContracts() {
+  const root = "/tmp/filesystem-data";
+  const file = `${root}/hello.txt`;
+  fs.mkdirSync(`${root}/sub`, { recursive: true });
+  fs.writeFileSync(file, "h\u00e9llo");
+  fs.symlinkSync(file, `${root}/link`);
+  const handle = await fs.promises.open(file, "r");
+  const handleData = await handle.readFile();
+  await handle.close();
+  const dir = fs.opendirSync(root, { encoding: "buffer" });
+  const opened = dir.readSync();
+  dir.closeSync();
+  return {
+    file: attemptData(() => fs.readFileSync(file)),
+    fileOptions: attemptData(() => fs.readFileSync(file, { encoding: null })),
+    fileLatin1: attemptData(() => fs.readFileSync(file, "latin1")),
+    fileBase64url: attemptData(() => fs.readFileSync(file, "base64url")),
+    fileUcs2: attemptData(() => fs.readFileSync(file, "ucs2")),
+    fileHex: attemptData(() => fs.readFileSync(file, "hex")),
+    promise: dataOutcome(await fs.promises.readFile(file)),
+    callback: dataOutcome(await new Promise((resolve, reject) =>
+      fs.readFile(file, (error, data) => error ? reject(error) : resolve(data)))),
+    handle: dataOutcome(handleData),
+    names: fs.readdirSync(root, "buffer").map(dataOutcome),
+    namesHex: fs.readdirSync(root, { encoding: "hex" }),
+    namesLatin1: fs.readdirSync(root, { encoding: "latin1" }),
+    recursiveNames: fs.readdirSync(root, { recursive: true, encoding: "buffer" }).map(dataOutcome),
+    direntNames: fs.readdirSync(root, { withFileTypes: true, encoding: "buffer" }).map(entry => dataOutcome(entry.name)),
+    openedName: dataOutcome(opened.name),
+    readlinkHex: attemptData(() => fs.readlinkSync(`${root}/link`, "hex")),
+  };
+}
+
 async function globContracts() {
   const root = "/tmp/filesystem-glob";
   fs.mkdirSync(`${root}/sub`, { recursive: true });
@@ -357,6 +405,7 @@ export async function filesystemContracts() {
   result.sizeLimit = sizeLimitOutcomes();
   result.order = await orderContracts();
   result.dirents = await direntContracts();
+  result.readData = await readDataContracts();
   result.glob = await globContracts();
   return result;
 }
