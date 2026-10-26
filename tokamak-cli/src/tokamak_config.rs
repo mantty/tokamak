@@ -128,28 +128,38 @@ fn plugin_config(id: &str, section: serde_json::Map<String, Value>) -> Result<Pl
     let mut config = PluginConfig::default();
     for (key, value) in section {
         let field = format!("{id}.{key}");
-        if !Platform::ALL
+        if Platform::ALL
             .iter()
             .any(|platform| platform.namespace() == key)
         {
-            if let Some(value) = plugin_value(&field, &key, value)? {
-                config.values.insert(key, value);
-            }
-            continue;
-        }
-        let values = match value {
-            Value::Null => continue,
-            Value::Object(values) => values,
-            _ => return Err(invalid(format!("{field} must be an object"))),
-        };
-        let platform = config.platforms.entry(key).or_default();
-        for (key, value) in values {
-            if let Some(value) = plugin_value(&format!("{field}.{key}"), &key, value)? {
-                platform.insert(key, value);
-            }
+            let Some(values) = plugin_platform_values(&field, value)? else {
+                continue;
+            };
+            config.platforms.insert(key, values);
+        } else {
+            let Some(value) = plugin_value(&field, &key, value)? else {
+                continue;
+            };
+            config.values.insert(key, value);
         }
     }
     Ok(config)
+}
+
+/// A plugin's values for one platform, from its object at `field`; unset when `null`.
+fn plugin_platform_values(field: &str, value: Value) -> Result<Option<BTreeMap<String, Value>>> {
+    let values = match value {
+        Value::Null => return Ok(None),
+        Value::Object(values) => values,
+        _ => return Err(invalid(format!("{field} must be an object"))),
+    };
+    let mut platform = BTreeMap::new();
+    for (key, value) in values {
+        if let Some(value) = plugin_value(&format!("{field}.{key}"), &key, value)? {
+            platform.insert(key, value);
+        }
+    }
+    Ok(Some(platform))
 }
 
 #[derive(Deserialize)]
