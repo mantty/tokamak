@@ -499,18 +499,11 @@ fn stages_the_display_name_and_names_the_output_after_its_slug() -> TestResult {
             .success();
 
         let metadata = project.join(output).join("metadata");
-        assert_eq!(
-            fs::read_to_string(metadata.join("app-name"))?,
-            "Vigilus & <Co> \"Pro\" 'X'"
-        );
-        assert_eq!(
-            fs::read_to_string(metadata.join("app-slug"))?,
-            "vigilus-co-pro-x"
-        );
-        assert_eq!(
-            fs::read_to_string(metadata.join("host"))?,
-            "vigilus-co-pro-x.tokamak.local"
-        );
+        assert_texts(&[
+            (metadata.join("app-name"), "Vigilus & <Co> \"Pro\" 'X'"),
+            (metadata.join("app-slug"), "vigilus-co-pro-x"),
+            (metadata.join("host"), "vigilus-co-pro-x.tokamak.local"),
+        ])?;
     }
     Ok(())
 }
