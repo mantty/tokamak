@@ -1573,13 +1573,9 @@ mod tests {
             read_head(&mut client)?,
             "HTTP/1.1 101 Switching Protocols\r\n\r\n"
         );
-        let mut hello = [0_u8; 5];
-        client.read_exact(&mut hello)?;
-        assert_eq!(&hello, b"hello");
+        assert_reads(&mut client, b"hello")?;
         client.write_all(b"ping")?;
-        let mut pong = [0_u8; 4];
-        client.read_exact(&mut pong)?;
-        assert_eq!(&pong, b"pong");
+        assert_reads(&mut client, b"pong")?;
         upstream_thread
             .join()
             .map_err(|_| "upstream thread panicked")??;
@@ -1746,6 +1742,16 @@ mod tests {
             head.push(byte[0]);
         }
         String::from_utf8(head).map_err(std::io::Error::other)
+    }
+
+    /// Reads as many bytes as `expected` holds from `stream` and asserts they
+    /// are `expected`.
+    #[track_caller]
+    fn assert_reads(stream: &mut impl Read, expected: &[u8]) -> std::io::Result<()> {
+        let mut bytes = vec![0_u8; expected.len()];
+        stream.read_exact(&mut bytes)?;
+        assert_eq!(bytes, expected);
+        Ok(())
     }
 
     #[test]
