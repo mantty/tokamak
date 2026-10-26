@@ -149,13 +149,10 @@ pub(crate) fn generate(
 ) -> Result<Generated> {
     let namespace = platform.namespace();
     let mut generated = Generated::new();
-    for plugin in plugins {
+    for plugin in plugins.iter().filter(|plugin| plugin.builds_for(namespace)) {
         let Some(script) = &plugin.build else {
             continue;
         };
-        if !plugin.platforms.contains_key(namespace) {
-            continue;
-        }
         let script = plugin.package_file("build script", script)?;
         let output = empty_directory(&output.join(&plugin.id))?;
         let input = json!({
