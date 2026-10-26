@@ -1241,9 +1241,13 @@ mod tests {
         let request = read_request(&mut input, "app.test")?.ok_or("request was empty")?;
         let json = serde_json::to_value(request)?;
         let pairs = json["headers"].as_array().ok_or("expected header pairs")?;
-        assert!(pairs.contains(&serde_json::json!(["x-repeated", "one"])));
-        assert!(pairs.contains(&serde_json::json!(["x-repeated", "two"])));
-        assert!(pairs.contains(&serde_json::json!(["x-text", "東京"])));
+        for pair in [
+            serde_json::json!(["x-repeated", "one"]),
+            serde_json::json!(["x-repeated", "two"]),
+            serde_json::json!(["x-text", "東京"]),
+        ] {
+            assert!(pairs.contains(&pair), "{pair} in {pairs:?}");
+        }
         Ok(())
     }
 
