@@ -971,44 +971,41 @@ fn parse_ios_simulator_devices(source: &str) -> Option<Vec<Device>> {
 
 fn parse_ios_simulator_targets(source: &str) -> Option<Vec<IosSimulatorTarget>> {
     let value = serde_json::from_str::<Value>(source).ok()?;
-    let runtimes = value.get("devices")?.as_object()?;
+    let runtimes = value.get("devices").and_then(Value::as_object)?;
+    let entries = runtimes
+        .iter()
+        .filter(|(runtime, _)| is_ios_runtime(runtime))
+        .filter_map(|(_, entries)| entries.as_array())
+        .flatten();
     let mut targets = Vec::new();
-    for (runtime, entries) in runtimes {
-        if !is_ios_runtime(runtime) {
-            continue;
-        }
-        let Some(entries) = entries.as_array() else {
+    for entry in entries {
+        let Some(id) = entry.get("udid").and_then(Value::as_str) else {
             continue;
         };
-        for entry in entries {
-            let Some(id) = entry.get("udid").and_then(Value::as_str) else {
-                continue;
-            };
-            let name = entry
-                .get("name")
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("iOS Simulator");
+        let availability_error = entry
+            .get("availabilityError")
+            .and_then(Value::as_str)
+            .filter(|reason| !reason.is_empty())
+            .map(str::to_owned);
+        targets.push(IosSimulatorTarget {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            available: entry
+                .get("isAvailable")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            state: entry
+                .get("state")
                 .and_then(Value::as_str)
-                .unwrap_or("iOS Simulator");
-            let availability_error = entry
-                .get("availabilityError")
-                .and_then(Value::as_str)
-                .filter(|reason| !reason.is_empty())
-                .map(str::to_owned);
-            targets.push(IosSimulatorTarget {
-                id: id.to_owned(),
-                name: name.to_owned(),
-                available: entry
-                    .get("isAvailable")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                state: entry
-                    .get("state")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                has_been_booted: simulator_has_been_booted(entry),
-                availability_error,
-            });
-        }
+                .unwrap_or_default()
+                .to_owned(),
+            has_been_booted: simulator_has_been_booted(entry),
+            availability_error,
+        });
     }
     Some(targets)
 }
