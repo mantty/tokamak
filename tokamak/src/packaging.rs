@@ -318,34 +318,23 @@ mod tests {
     #[test]
     fn resolves_every_path_under_the_app_root() {
         let layout = PackageLayout::new("/apps/example");
-        assert_eq!(
-            layout.worker_manifest(),
-            std::path::Path::new("/apps/example/worker-manifest.json")
-        );
-        assert_eq!(
-            layout.worker_modules(),
-            std::path::Path::new("/apps/example/worker-modules")
-        );
-        assert_eq!(
-            layout.worker_environment(),
-            std::path::Path::new("/apps/example/worker-environment.json")
-        );
-        assert_eq!(
-            layout.asset_manifest(),
-            std::path::Path::new("/apps/example/asset-manifest.json")
-        );
-        assert_eq!(
-            layout.assets(),
-            std::path::Path::new("/apps/example/assets")
-        );
-        assert_eq!(
-            layout.bundle(),
-            std::path::Path::new("/apps/example/bundle")
-        );
-        assert_eq!(
-            layout.d1_migrations("DB"),
-            std::path::Path::new("/apps/example/d1-migrations/DB")
-        );
+        for (path, expected) in [
+            (
+                layout.worker_manifest(),
+                "/apps/example/worker-manifest.json",
+            ),
+            (layout.worker_modules(), "/apps/example/worker-modules"),
+            (
+                layout.worker_environment(),
+                "/apps/example/worker-environment.json",
+            ),
+            (layout.asset_manifest(), "/apps/example/asset-manifest.json"),
+            (layout.assets(), "/apps/example/assets"),
+            (layout.bundle(), "/apps/example/bundle"),
+            (layout.d1_migrations("DB"), "/apps/example/d1-migrations/DB"),
+        ] {
+            assert_eq!(path, std::path::Path::new(expected));
+        }
     }
 
     #[test]
