@@ -878,15 +878,13 @@ fn fetches_what_the_app_serves_at_a_path() -> TestResult {
 
     assert_eq!(runtime.fetch("/sounds/chime.caf", TIMEOUT)?, b"chime");
     assert_eq!(runtime.fetch("/generated", TIMEOUT)?, b"generated");
-    let missing = runtime
-        .fetch("/missing", TIMEOUT)
-        .err()
-        .ok_or("fetched a missing path")?;
+    let Err(missing) = runtime.fetch("/missing", TIMEOUT) else {
+        return Err("fetched a missing path".into());
+    };
     assert_eq!(missing.to_string(), "GET /missing answered 404 Not Found");
-    let relative = runtime
-        .fetch("sounds/chime.caf", TIMEOUT)
-        .err()
-        .ok_or("fetched a URL")?;
+    let Err(relative) = runtime.fetch("sounds/chime.caf", TIMEOUT) else {
+        return Err("fetched a URL".into());
+    };
     assert_eq!(
         relative.to_string(),
         "sounds/chime.caf is not a path the app serves"
