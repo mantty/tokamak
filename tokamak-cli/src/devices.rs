@@ -1091,20 +1091,10 @@ fn parse_android_system_images(source: &str) -> Vec<String> {
     let mut images = Vec::new();
     for line in source.lines() {
         let line = line.trim();
-        if line.eq_ignore_ascii_case("installed packages:") {
-            installed_packages = true;
-            continue;
-        }
-        if installed_packages && line.to_ascii_lowercase().ends_with("packages:") {
-            installed_packages = false;
-        }
-        if !installed_packages {
-            continue;
-        }
-        let Some(package) = line.split_whitespace().next() else {
-            continue;
-        };
-        if package.starts_with("system-images;") {
+        installed_packages = line.eq_ignore_ascii_case("installed packages:")
+            || (installed_packages && !line.to_ascii_lowercase().ends_with("packages:"));
+        let package = line.split_whitespace().next().unwrap_or_default();
+        if installed_packages && package.starts_with("system-images;") {
             images.push(package.to_owned());
         }
     }
