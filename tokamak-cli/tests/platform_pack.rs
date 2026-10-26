@@ -211,10 +211,11 @@ fn load_manifest_rejects_contract_invalid_json() -> TestResult {
 }"#,
     )?;
 
-    assert!(matches!(
-        load_manifest(&manifest_path),
-        Err(PlatformPackError::InvalidPluginKey(key)) if key == "../class"
-    ));
+    let result = load_manifest(&manifest_path);
+    let Err(PlatformPackError::InvalidPluginKey(key)) = &result else {
+        panic!("expected an invalid plugin key error: {result:?}");
+    };
+    assert_eq!(key, "../class");
 
     Ok(())
 }
