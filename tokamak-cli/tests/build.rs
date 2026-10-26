@@ -1092,8 +1092,8 @@ fn builds_the_location_plugin_s_declarations_from_its_settings() -> TestResult {
     build_command("ios", &project, &platform_pack)?
         .assert()
         .success();
-    assert!(plugin.join("plist").is_file());
-    assert!(!plugin.join("compilation-conditions").exists());
+    assert_file(&plugin.join("plist"));
+    assert_missing(&plugin.join("compilation-conditions"));
 
     build_command("ios", &project, &platform_pack)?
         .args([
@@ -1109,19 +1109,16 @@ fn builds_the_location_plugin_s_declarations_from_its_settings() -> TestResult {
         .success();
 
     let plist = fs::read_to_string(plugin.join("plist"))?;
-    for key in [
-        "NSLocationWhenInUseUsageDescription",
-        "NSLocationAlwaysAndWhenInUseUsageDescription",
-        "NSLocationDefaultAccuracyReduced",
-        "<key>Directions</key>",
+    for (key, declared) in [
+        ("NSLocationWhenInUseUsageDescription", true),
+        ("NSLocationAlwaysAndWhenInUseUsageDescription", true),
+        ("NSLocationDefaultAccuracyReduced", true),
+        ("<key>Directions</key>", true),
+        ("UIBackgroundModes", false),
     ] {
-        assert!(plist.contains(key), "{key} is missing from {plist}");
+        assert_eq!(plist.contains(key), declared, "{key} in {plist}");
     }
-    assert!(!plist.contains("UIBackgroundModes"), "{plist}");
-    assert_eq!(
-        fs::read_to_string(plugin.join("compilation-conditions/0"))?,
-        "LOCATION_ALWAYS"
-    );
+    assert_texts(&[(plugin.join("compilation-conditions/0"), "LOCATION_ALWAYS")])?;
     build_command("ios", &project, &platform_pack)?
         .args(["--location-always-description", "Records runs"])
         .assert()
