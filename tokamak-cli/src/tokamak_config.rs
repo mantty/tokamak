@@ -324,6 +324,14 @@ mod tests {
         }
     }
 
+    /// Asserts each platform's values in `config`.
+    #[track_caller]
+    fn assert_platforms(config: &TokamakConfig, expected: &[(Platform, PlatformConfig)]) {
+        for (platform, expected) in expected {
+            assert_eq!(&config.for_platform(*platform), expected, "{platform:?}");
+        }
+    }
+
     #[test]
     fn top_level_values_are_defaults_and_platform_objects_override_them() -> TestResult {
         let temporary = tempfile::tempdir()?;
@@ -344,19 +352,24 @@ mod tests {
         assert_eq!(config.root, temporary.path());
         assert_eq!(config.version.as_deref(), Some("1.0.0"));
         let ios = named(Some("Myapp Pro"), Some("com.example.myapp"), Some(pro_icon));
-        assert_eq!(config.for_platform(Platform::Ios), ios);
-        assert_eq!(config.for_platform(Platform::IosSimulator), ios);
-        assert_eq!(
-            config.for_platform(Platform::Android),
-            named(
-                Some("My App"),
-                Some("com.example.myapp.android"),
-                Some(icon.clone())
-            )
-        );
-        assert_eq!(
-            config.for_platform(Platform::Macos),
-            named(Some("My App"), Some("com.example.myapp"), Some(icon))
+        assert_platforms(
+            &config,
+            &[
+                (Platform::Ios, ios.clone()),
+                (Platform::IosSimulator, ios),
+                (
+                    Platform::Android,
+                    named(
+                        Some("My App"),
+                        Some("com.example.myapp.android"),
+                        Some(icon.clone()),
+                    ),
+                ),
+                (
+                    Platform::Macos,
+                    named(Some("My App"), Some("com.example.myapp"), Some(icon)),
+                ),
+            ],
         );
         Ok(())
     }
