@@ -37,11 +37,15 @@ mod tests {
 
     #[test]
     fn bounds_a_prefix_by_its_next_string() {
-        assert_eq!(prefix_end("ab").as_deref(), Some("ac"));
-        assert_eq!(prefix_end("a\u{D7FF}").as_deref(), Some("a\u{E000}"));
-        assert_eq!(prefix_end("a\u{10FFFF}").as_deref(), Some("b"));
-        assert_eq!(prefix_end("\u{10FFFF}"), None);
-        assert_eq!(prefix_end(""), None);
+        for (prefix, end) in [
+            ("ab", Some("ac")),
+            ("a\u{D7FF}", Some("a\u{E000}")),
+            ("a\u{10FFFF}", Some("b")),
+            ("\u{10FFFF}", None),
+            ("", None),
+        ] {
+            assert_eq!(prefix_end(prefix).as_deref(), end, "{prefix:?}");
+        }
     }
 
     #[test]
