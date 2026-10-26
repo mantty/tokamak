@@ -548,40 +548,37 @@ fn collect_bindings(values: &BTreeMap<String, Value>) -> Vec<WranglerBinding> {
     bindings
 }
 
+/// The keys under which a binding kind's configuration object nests its
+/// bindings.
+const NESTED_BINDING_KEYS: [(&str, &[&str]); 2] = [
+    ("durable_objects", &["bindings"]),
+    ("queues", &["producers", "consumers"]),
+];
+
 fn collect_binding_names(kind: &str, value: &Value, names: &mut Vec<String>) {
-    match value {
-        Value::Array(values) => {
-            for value in values {
-                collect_binding_names(kind, value, names);
-            }
-        }
+    let nested: Vec<&Value> = match value {
+        Value::Array(values) => values.iter().collect(),
         Value::Object(values) => {
-            if kind == "durable_objects"
-                && let Some(value) = values.get("bindings")
-            {
-                collect_binding_names(kind, value, names);
-                return;
-            }
-            if kind == "queues" {
-                let mut nested = false;
-                for key in ["producers", "consumers"] {
-                    if let Some(value) = values.get(key) {
-                        collect_binding_names(kind, value, names);
-                        nested = true;
-                    }
-                }
-                if nested {
-                    return;
-                }
-            }
+            let nested: Vec<&Value> = NESTED_BINDING_KEYS
+                .iter()
+                .filter(|(nesting_kind, _)| *nesting_kind == kind)
+                .flat_map(|(_, keys)| keys.iter().filter_map(|key| values.get(*key)))
+                .collect();
             let name = ["binding", "name", "queue", "dataset", "id"]
                 .into_iter()
                 .find_map(|key| values.get(key).and_then(Value::as_str))
                 .unwrap_or("<unnamed>");
-            names.push(name.to_owned());
+            names.extend(nested.is_empty().then(|| name.to_owned()));
+            nested
         }
-        Value::String(name) => names.push(name.clone()),
-        _ => {}
+        Value::String(name) => {
+            names.push(name.clone());
+            Vec::new()
+        }
+        _ => Vec::new(),
+    };
+    for value in nested {
+        collect_binding_names(kind, value, names);
     }
 }
 
@@ -675,6 +672,40 @@ mod tests {
                 ("durable_objects", "ROOMS"),
                 ("queues", "EVENTS"),
                 ("vectorize", "INDEX"),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn collects_binding_names_from_every_shape() -> Result<()> {
+        let values = serde_json::from_str::<BTreeMap<String, Value>>(
+            r#"{
+                "ai": { "binding": "AI" },
+                "analytics_engine_datasets": [{ "dataset": "events" }],
+                "durable_objects": { "name": "ROOMS", "class_name": "Room" },
+                "images": "IMAGES",
+                "pipelines": [{ "pipeline": "pipeline" }],
+                "queues": {
+                    "producers": [{ "binding": "OUT", "queue": "out" }],
+                    "consumers": [{ "queue": "in" }]
+                },
+                "rate_limiting": 5
+            }"#,
+        )?;
+        assert_eq!(
+            collect_bindings(&values)
+                .iter()
+                .map(|binding| (binding.kind, binding.name.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("ai", "AI"),
+                ("analytics_engine_datasets", "events"),
+                ("durable_objects", "ROOMS"),
+                ("images", "IMAGES"),
+                ("pipelines", "<unnamed>"),
+                ("queues", "OUT"),
+                ("queues", "in"),
             ]
         );
         Ok(())
