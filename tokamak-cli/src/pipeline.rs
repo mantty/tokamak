@@ -610,26 +610,24 @@ mod tests {
     }
 
     #[test]
-    fn resolves_identifiers_with_platform_defaults() -> Result<(), Box<dyn std::error::Error>> {
-        assert_eq!(
-            resolve_identifier(
-                Some("com.example.ios".to_owned()),
-                "demo-app",
-                Platform::Ios
-            )?,
-            "com.example.ios"
-        );
-        assert_eq!(
-            resolve_identifier(None, "demo-app", Platform::Android)?,
-            "com.tokamak.demo_app"
-        );
-        assert_eq!(
-            resolve_identifier(None, "demo-app", Platform::Ios)?,
-            "com.tokamak.demo-app"
-        );
-        assert!(
-            resolve_identifier(Some("com..app".to_owned()), "demo-app", Platform::Ios).is_err()
-        );
-        Ok(())
+    fn resolves_identifiers_with_platform_defaults() {
+        for (identifier, platform, expected) in [
+            (
+                Some("com.example.ios"),
+                Platform::Ios,
+                Some("com.example.ios"),
+            ),
+            (None, Platform::Android, Some("com.tokamak.demo_app")),
+            (None, Platform::Ios, Some("com.tokamak.demo-app")),
+            (Some("com..app"), Platform::Ios, None),
+        ] {
+            assert_eq!(
+                resolve_identifier(identifier.map(str::to_owned), "demo-app", platform)
+                    .ok()
+                    .as_deref(),
+                expected,
+                "{identifier:?} on {platform:?}"
+            );
+        }
     }
 }
