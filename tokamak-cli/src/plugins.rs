@@ -1082,11 +1082,15 @@ mod tests {
 
     #[test]
     fn validates_protocol_identifiers() {
-        assert!(valid_plugin_id("location"));
-        assert!(valid_plugin_id("photo-library2"));
-        assert!(!valid_plugin_id("PhotoLibrary"));
-        assert!(!valid_plugin_id("2photo"));
-        assert!(!valid_plugin_id("photo--library"));
-        assert!(!valid_plugin_id("../photo"));
+        for (id, valid) in [
+            ("location", true),
+            ("photo-library2", true),
+            ("PhotoLibrary", false),
+            ("2photo", false),
+            ("photo--library", false),
+            ("../photo", false),
+        ] {
+            assert_eq!(valid_plugin_id(id), valid, "{id}");
+        }
     }
 }
