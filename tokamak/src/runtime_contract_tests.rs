@@ -557,11 +557,9 @@ fn report_contract_difference(
     };
     let extra_keys = actual.keys().filter(|key| !expected.contains_key(*key));
     for key in expected.keys().chain(extra_keys) {
-        let (actual, expected) = (actual.get(key), expected.get(key));
-        if actual != expected {
-            let null = serde_json::Value::Null;
-            report_contract_difference(&format!("{name}.{key}"), actual, expected.unwrap_or(&null));
-        }
+        let null = serde_json::Value::Null;
+        let expected = expected.get(key).unwrap_or(&null);
+        report_contract_difference(&format!("{name}.{key}"), actual.get(key), expected);
     }
 }
 
