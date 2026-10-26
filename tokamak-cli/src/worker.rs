@@ -129,10 +129,11 @@ fn collect_modules(wrangler: &WranglerConfig) -> Result<(&Path, WorkerManifest)>
             continue;
         }
         let name = slash_path(file.path().strip_prefix(root)?)?;
-        if let Some(rule_type) = rule_type(&name, wrangler) {
-            let module_type = module_type(&name, rule_type)?;
-            modules.entry(name).or_insert(module_type);
-        }
+        let Some(rule_type) = rule_type(&name, wrangler) else {
+            continue;
+        };
+        let module_type = module_type(&name, rule_type)?;
+        modules.entry(name).or_insert(module_type);
     }
     Ok((root, WorkerManifest { entry, modules }))
 }
