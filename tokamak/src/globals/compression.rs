@@ -22,28 +22,17 @@ impl Codec {
         finish: bool,
     ) -> Result<(usize, usize, Status), String> {
         let (before_in, before_out) = self.totals();
+        let (compress_flush, decompress_flush) = if finish {
+            (FlushCompress::Finish, FlushDecompress::Finish)
+        } else {
+            (FlushCompress::None, FlushDecompress::None)
+        };
         let status = match self {
             Self::Compress(codec) => codec
-                .compress(
-                    input,
-                    output,
-                    if finish {
-                        FlushCompress::Finish
-                    } else {
-                        FlushCompress::None
-                    },
-                )
+                .compress(input, output, compress_flush)
                 .map_err(|error| error.to_string())?,
             Self::Decompress(codec) => codec
-                .decompress(
-                    input,
-                    output,
-                    if finish {
-                        FlushDecompress::Finish
-                    } else {
-                        FlushDecompress::None
-                    },
-                )
+                .decompress(input, output, decompress_flush)
                 .map_err(|error| error.to_string())?,
         };
         let (after_in, after_out) = self.totals();
