@@ -246,6 +246,7 @@ async function orderContracts() {
     createdTypes: fs.readdirSync(created, { withFileTypes: true }).map(entry => entry.name),
     createdPromise: await fs.promises.readdir(created),
     opened,
+    unlinkFirstOfThree: listingAfter("unlinkFirstOfThree", ["a", "b", "c"], root => fs.unlinkSync(`${root}/a`)),
     unlinkFirst: listingAfter("unlinkFirst", letters, root => fs.unlinkSync(`${root}/a`)),
     unlinkTwo: listingAfter("unlinkTwo", letters, root => { fs.unlinkSync(`${root}/a`); fs.unlinkSync(`${root}/b`); }),
     unlinkLast: listingAfter("unlinkLast", letters, root => fs.unlinkSync(`${root}/e`)),
