@@ -163,10 +163,10 @@ fn closes_client_websocket_after_an_upstream_reset() -> TestResult {
     if !upgrade.starts_with("HTTP/1.1 101") {
         return Err(format!("unexpected WebSocket response: {upgrade:?}").into());
     }
-    let (opcode, payload) = read_frame(&mut websocket)?;
-    assert_eq!(opcode, 0x8);
-    assert_eq!(&payload[..2], &[3, 243]);
-    assert_eq!(&payload[2..], b"development server connection failed");
+    // 1011, "development server connection failed"
+    let mut close = vec![3, 243];
+    close.extend_from_slice(b"development server connection failed");
+    assert_eq!(read_frame(&mut websocket)?, (0x8, close));
 
     host_server.join().map_err(|_| "host server panicked")??;
     Ok(())
