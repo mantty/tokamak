@@ -987,15 +987,14 @@ mod tests {
         let staged = project.path().join("staged");
         stage(&plugins, &pack(Target::IosArm64), &generated, &staged)?;
 
-        assert_eq!(
-            fs::read_to_string(staged.join("alerts/resources/0-chime.caf"))?,
-            "chime"
-        );
-        assert_eq!(
-            fs::read_to_string(staged.join("alerts/plist"))?,
-            "generated"
-        );
-        assert!(!output.join("alerts/stale").exists());
+        assert_contents(
+            &staged,
+            &[
+                ("alerts/resources/0-chime.caf", Some("chime")),
+                ("alerts/plist", Some("generated")),
+            ],
+        )?;
+        assert_contents(&output, &[("alerts/stale", None)])?;
         let Err(error) = generate(&plugins, Platform::Android, &settings, &output) else {
             return Err("the failing script was accepted".into());
         };
