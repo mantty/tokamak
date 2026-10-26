@@ -816,19 +816,17 @@ fn date_time_formatter(
 ) -> rquickjs::Result<DateTimeFormatter<CompositeFieldSet>> {
     let field_set = field_set(ctx, options)?;
     let mut preferences = DateTimeFormatterPreferences::from(locale);
-    if let Some(hour_cycle) = options
+    let hour_cycle = options
         .get("hourCycle")
         .and_then(Value::as_str)
-        .and_then(parse_hour_cycle)
-    {
-        preferences.hour_cycle = Some(hour_cycle);
-    } else if let Some(hour12) = options.get("hour12").and_then(Value::as_bool) {
-        preferences.hour_cycle = Some(if hour12 {
-            HourCycle::H12
-        } else {
-            HourCycle::H23
-        });
-    }
+        .and_then(parse_hour_cycle);
+    let hour12 = options.get("hour12").and_then(Value::as_bool);
+    preferences.hour_cycle = match (hour_cycle, hour12) {
+        (Some(hour_cycle), _) => Some(hour_cycle),
+        (None, Some(true)) => Some(HourCycle::H12),
+        (None, Some(false)) => Some(HourCycle::H23),
+        (None, None) => preferences.hour_cycle,
+    };
     DateTimeFormatter::try_new_unstable(&*PROVIDER, preferences, field_set)
         .map_err(range_error(ctx))
 }
