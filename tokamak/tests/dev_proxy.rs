@@ -83,8 +83,10 @@ fn forwards_http_and_websocket_traffic_to_the_host_server() -> TestResult {
         b"GET /@vite/client HTTP/1.1\r\nHost: dev.tokamak.local\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n\r\n",
     )?;
     websocket.flush()?;
-    let upgrade = read_header_block(&mut websocket)?;
-    assert!(String::from_utf8(upgrade)?.starts_with("HTTP/1.1 101"));
+    let upgrade = String::from_utf8(read_header_block(&mut websocket)?)?;
+    if !upgrade.starts_with("HTTP/1.1 101") {
+        return Err(format!("unexpected WebSocket response: {upgrade:?}").into());
+    }
     assert_eq!(read_frame(&mut websocket)?, (0x1, b"update".to_vec()));
     write_masked_frame(&mut websocket, 0x1, b"ping")?;
     assert_eq!(read_frame(&mut websocket)?, (0x1, b"pong".to_vec()));
