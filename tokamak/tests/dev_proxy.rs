@@ -617,12 +617,16 @@ fn forwards_close_delimited_host_responses_as_they_arrive() -> TestResult {
     http.write_all(b"GET /stream HTTP/1.1\r\nHost: dev.tokamak.local\r\n\r\n")?;
     http.flush()?;
     let headers = String::from_utf8(read_header_block(&mut http)?)?;
-    assert!(headers.contains("transfer-encoding: chunked\r\n"));
-    assert!(!headers.contains("content-length:"));
+    if !headers.contains("transfer-encoding: chunked\r\n") || headers.contains("content-length:") {
+        return Err(format!("unexpected response framing: {headers:?}").into());
+    }
     assert_eq!(read_chunk(&mut http)?, b"part");
     release_sender.send(())?;
     assert_eq!(read_chunk(&mut http)?, b" two!");
-    assert!(read_chunk(&mut http)?.is_empty());
+    let last = read_chunk(&mut http)?;
+    if !last.is_empty() {
+        return Err(format!("unexpected last chunk {last:?}").into());
+    }
 
     host_server.join().map_err(|_| "host server panicked")??;
     Ok(())
