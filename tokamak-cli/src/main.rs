@@ -367,11 +367,13 @@ mod tests {
 
     #[test]
     fn accepts_one_comma_separated_platform_argument() {
-        assert!(matches!(
-            Cli::try_parse_from(["tok", "build", "macos,android"]),
-            Ok(Cli { command: Command::Build { platforms, .. } })
-                if platforms == "macos,android"
-        ));
+        let Ok(Cli {
+            command: Command::Build { platforms, .. },
+        }) = Cli::try_parse_from(["tok", "build", "macos,android"])
+        else {
+            panic!("`tok build macos,android` did not parse as a build command");
+        };
+        assert_eq!(platforms, "macos,android");
     }
 
     #[test]
