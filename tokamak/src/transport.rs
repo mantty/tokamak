@@ -1528,11 +1528,12 @@ mod tests {
     #[test]
     fn rejects_chunked_request_bodies_over_the_limit() {
         let input = format!("{:X}\r\n", super::MAX_HTTP_BODY + 1);
-        assert!(matches!(
-            super::read_chunked_body(&mut Cursor::new(input.as_bytes())),
-            Err(error) if error.kind() == io::ErrorKind::InvalidData
-                && error.to_string() == "HTTP body exceeds the limit"
-        ));
+        assert!(
+            super::read_chunked_body(&mut Cursor::new(input.as_bytes())).is_err_and(|error| {
+                error.kind() == io::ErrorKind::InvalidData
+                    && error.to_string() == "HTTP body exceeds the limit"
+            })
+        );
     }
 
     #[test]
