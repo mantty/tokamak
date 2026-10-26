@@ -329,13 +329,11 @@ fn assert_texts(files: &[(PathBuf, &str)]) -> TestResult {
     Ok(())
 }
 
-#[cfg(unix)]
 #[track_caller]
 fn assert_file(path: &Path) {
     assert!(path.is_file(), "{} is not a file", path.display());
 }
 
-#[cfg(unix)]
 #[track_caller]
 fn assert_missing(path: &Path) {
     assert!(!path.exists(), "{} exists", path.display());
@@ -1287,9 +1285,9 @@ fn builds_windows_app_with_its_runtime_files() -> TestResult {
         .stdout(contains("Built Windows bundle").and(contains(r"\\?\").not()));
 
     let bundle = project.join("build/windows/demo-app");
-    assert!(bundle.join("demo-app.exe").is_file());
-    assert!(!bundle.join("tokamak-runtime.dll").exists());
-    assert!(bundle.join("app/worker-manifest.json").is_file());
+    assert_file(&bundle.join("demo-app.exe"));
+    assert_missing(&bundle.join("tokamak-runtime.dll"));
+    assert_file(&bundle.join("app/worker-manifest.json"));
     let config: serde_json::Value =
         serde_json::from_slice(&fs::read(bundle.join("tokamak.json"))?)?;
     assert_eq!(
