@@ -893,21 +893,17 @@ fn caches_worker_bundles_independently_and_refreshes_native_environment() -> Tes
             .success();
         Ok(())
     };
-    let compiled_at = |name: &str| -> TestResult<_> {
-        let layout =
-            PackageLayout::new(project.join(format!("build/.tokamak/worker/{name}/compiled")));
-        Ok(fs::metadata(layout.worker_manifest())?.modified()?)
-    };
+    let build_dir = project.join("build");
     build()?;
-    let main_time = compiled_at("main")?;
-    let native_time = compiled_at("tokamak")?;
+    let main_time = worker_compiled_at(&build_dir, "main")?;
+    let native_time = worker_compiled_at(&build_dir, "tokamak")?;
     let config_path = project.join("dist/device/wrangler.json");
     let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&config_path)?)?;
     config["vars"]["ROLE"] = "updated".into();
     fs::write(&config_path, serde_json::to_vec(&config)?)?;
     build()?;
-    assert_eq!(compiled_at("main")?, main_time);
-    assert_eq!(compiled_at("tokamak")?, native_time);
+    assert_worker_reused(&build_dir, "main", main_time)?;
+    assert_worker_reused(&build_dir, "tokamak", native_time)?;
     let app = PackageLayout::new(project.join("build/macos/demo-app.app/app"));
     let env: serde_json::Value =
         serde_json::from_slice(&fs::read(app.tokamak_worker().worker_environment())?)?;
@@ -916,8 +912,8 @@ fn caches_worker_bundles_independently_and_refreshes_native_environment() -> Tes
     let source = "export default { value: 2 }; export class Location {};";
     fs::write(project.join("dist/device/index.js"), source)?;
     build()?;
-    assert_eq!(compiled_at("main")?, main_time);
-    assert_ne!(compiled_at("tokamak")?, native_time);
+    assert_worker_reused(&build_dir, "main", main_time)?;
+    assert_worker_recompiled(&build_dir, "tokamak", native_time)?;
     assert_eq!(
         read_worker_module(&app.tokamak_worker(), "index.js")?,
         compile_module("index.js", source.as_bytes())?
@@ -944,39 +940,47 @@ fn packages_each_generated_configuration_without_recompiling_unchanged_modules()
         packaged_vars(r#"{ "STAGE": "test" }"#)?,
         serde_json::json!({ "STAGE": "test" })
     );
-    let compiled = worker_compiled_at(&build_dir)?;
+    let compiled = worker_compiled_at(&build_dir, "main")?;
 
     assert_eq!(
         packaged_vars(r#"{ "STAGE": "production" }"#)?,
         serde_json::json!({ "STAGE": "production" })
     );
-    assert_worker_reused(&build_dir, compiled)?;
+    assert_worker_reused(&build_dir, "main", compiled)?;
 
     let entry = project.join("dist/app/index.js");
     fs::write(&entry, "export default { value: 2 };")?;
     packaged_vars(r#"{ "STAGE": "production" }"#)?;
-    assert_worker_recompiled(&build_dir, compiled)?;
+    assert_worker_recompiled(&build_dir, "main", compiled)?;
     assert_compiled(&PackageLayout::new(&app), "index.js", &entry)?;
     Ok(())
 }
 
-/// When the Worker of the build in `build_dir` was last compiled.
-fn worker_compiled_at(build_dir: &Path) -> TestResult<std::time::SystemTime> {
-    let compiled = PackageLayout::new(build_dir.join(".tokamak/worker/main/compiled"));
+/// When the Worker `worker` of the build in `build_dir` was last compiled.
+fn worker_compiled_at(build_dir: &Path, worker: &str) -> TestResult<std::time::SystemTime> {
+    let compiled = PackageLayout::new(build_dir.join(format!(".tokamak/worker/{worker}/compiled")));
     Ok(fs::metadata(compiled.worker_manifest())?.modified()?)
 }
 
-/// Assert that the build in `build_dir` reused the Worker it compiled at `compiled`.
+/// Assert that the build in `build_dir` reused the Worker `worker` it compiled at `compiled`.
 #[track_caller]
-fn assert_worker_reused(build_dir: &Path, compiled: std::time::SystemTime) -> TestResult {
-    assert_eq!(worker_compiled_at(build_dir)?, compiled);
+fn assert_worker_reused(
+    build_dir: &Path,
+    worker: &str,
+    compiled: std::time::SystemTime,
+) -> TestResult {
+    assert_eq!(worker_compiled_at(build_dir, worker)?, compiled);
     Ok(())
 }
 
-/// Assert that the build in `build_dir` compiled the Worker again since `compiled`.
+/// Assert that the build in `build_dir` compiled the Worker `worker` again since `compiled`.
 #[track_caller]
-fn assert_worker_recompiled(build_dir: &Path, compiled: std::time::SystemTime) -> TestResult {
-    assert_ne!(worker_compiled_at(build_dir)?, compiled);
+fn assert_worker_recompiled(
+    build_dir: &Path,
+    worker: &str,
+    compiled: std::time::SystemTime,
+) -> TestResult {
+    assert_ne!(worker_compiled_at(build_dir, worker)?, compiled);
     Ok(())
 }
 
@@ -991,7 +995,7 @@ fn updates_changed_assets_without_recompiling_the_worker() -> TestResult {
     };
 
     build()?;
-    let compiled = worker_compiled_at(&project.join("build"))?;
+    let compiled = worker_compiled_at(&project.join("build"), "main")?;
     fs::write(
         project.join("dist/client/index.html"),
         "<html>updated</html>",
@@ -1002,7 +1006,10 @@ fn updates_changed_assets_without_recompiling_the_worker() -> TestResult {
         fs::read_to_string(project.join("build/windows/demo-app/app/assets/index.html"))?,
         "<html>updated</html>"
     );
-    assert_eq!(worker_compiled_at(&project.join("build"))?, compiled);
+    assert_eq!(
+        worker_compiled_at(&project.join("build"), "main")?,
+        compiled
+    );
     Ok(())
 }
 
@@ -1023,14 +1030,20 @@ fn ignores_unrelated_files_when_reusing_worker_modules() -> TestResult {
     };
 
     build()?;
-    let compiled = worker_compiled_at(&project.join("build"))?;
+    let compiled = worker_compiled_at(&project.join("build"), "main")?;
     fs::write(worker.join("unrelated.md"), "changed")?;
     build()?;
-    assert_eq!(worker_compiled_at(&project.join("build"))?, compiled);
+    assert_eq!(
+        worker_compiled_at(&project.join("build"), "main")?,
+        compiled
+    );
 
     fs::write(worker.join("settings.json"), r#"{"feature":false}"#)?;
     build()?;
-    assert_ne!(worker_compiled_at(&project.join("build"))?, compiled);
+    assert_ne!(
+        worker_compiled_at(&project.join("build"), "main")?,
+        compiled
+    );
     assert_texts(&[(
         project.join("build/windows/demo-app/app/bundle/settings.json"),
         r#"{"feature":false}"#,
