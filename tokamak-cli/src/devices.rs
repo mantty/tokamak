@@ -1118,8 +1118,7 @@ fn parse_devicectl_devices(source: &str) -> Option<Vec<Device>> {
         .get("devices")
         .and_then(Value::as_array)
         .or_else(|| value.get("result")?.get("devices")?.as_array())?;
-    let mut devices = Vec::new();
-    for entry in entries {
+    let physical_ios_entries = entries.iter().filter(|entry| {
         let platform = first_json_string(
             entry,
             &[
@@ -1130,11 +1129,11 @@ fn parse_devicectl_devices(source: &str) -> Option<Vec<Device>> {
         )
         .unwrap_or_default()
         .to_ascii_lowercase();
-        if !(platform.contains("ios") || platform.contains("iphone") || platform.contains("ipad"))
-            || platform.contains("simulator")
-        {
-            continue;
-        }
+        (platform.contains("ios") || platform.contains("iphone") || platform.contains("ipad"))
+            && !platform.contains("simulator")
+    });
+    let mut devices = Vec::new();
+    for entry in physical_ios_entries {
         let Some(id) = first_json_string(
             entry,
             &[
