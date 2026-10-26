@@ -397,6 +397,101 @@ async function globContracts() {
   };
 }
 
+// What `globSync` returns for `pattern` and `options`, or throws.
+function globOutcome(pattern, options) {
+  try {
+    const matches = fs.globSync(pattern, options);
+    return options?.withFileTypes ? matches.map(direntOutcome) : matches;
+  } catch (error) { return { thrown: failure(error) }; }
+}
+
+async function globDetailContracts() {
+  const root = "/tmp/filesystem-glob-order";
+  fs.mkdirSync(`${root}/zeta`, { recursive: true });
+  fs.writeFileSync(`${root}/zeta/inner.txt`, "i");
+  fs.writeFileSync(`${root}/beta.txt`, "b");
+  fs.mkdirSync(`${root}/alpha/deep`, { recursive: true });
+  fs.writeFileSync(`${root}/alpha/inner.txt`, "i");
+  fs.writeFileSync(`${root}/alpha/deep/x.md`, "x");
+  for (const name of ["Capital.txt", "_under.txt", "10.txt", "9.txt", "a*b.txt", "a[b].txt"]) fs.writeFileSync(`${root}/${name}`, name);
+  fs.symlinkSync(`${root}/beta.txt`, `${root}/link`);
+  const at = (pattern, options = {}) => globOutcome(pattern, { cwd: root, ...options });
+  return {
+    everything: at("**"),
+    everythingTwice: at("**/**"),
+    textFiles: at("**/*.txt"),
+    top: at("*"),
+    directoryContents: at("alpha/**"),
+    braces: at("{zeta,alpha}/*.txt"),
+    nestedBraces: at("{zeta,alpha/{deep,inner.txt}}"),
+    singleBrace: at("{beta}.txt"),
+    patterns: at(["zeta/*", "alpha/*", "*.txt"]),
+    patternSet: at(new Set(["beta.txt", "9.txt"])),
+    characterClass: at("[ab]*"),
+    negatedClass: at("[!ab_]*"),
+    rangeClass: at("[0-9]*"),
+    unclosedClass: at("[ab"),
+    question: at("?.txt"),
+    escaped: at("a\\*b.txt"),
+    literalBrackets: at("a\\[b\\].txt"),
+    exactlyOne: at("@(alpha|zeta)"),
+    noneOf: at("!(alpha|zeta)"),
+    zeroOrMore: at("*(1|0).txt"),
+    oneOrMore: at("+(1|0).txt"),
+    zeroOrOne: at("?(1)0.txt"),
+    dot: at("./zeta/../alpha/*"),
+    dotSegment: at("zeta/./inner.txt"),
+    parentEscape: at("../filesystem-glob-order/*"),
+    parentAtEnd: at("alpha/deep/.."),
+    currentAtEnd: at("alpha/."),
+    trailingSlash: at("zeta/"),
+    doubledSlashes: at("alpha//deep///x.md"),
+    leadingDot: at("./beta.txt"),
+    throughFile: at("beta.txt/*"),
+    missingCwd: globOutcome("*", { cwd: "/tmp/filesystem-glob-missing" }),
+    empty: at(""),
+    slash: at("/"),
+    encoding: at("beta.txt", { encoding: "buffer" }),
+    rootDirents: globOutcome("tmp/filesystem-glob-order/*", { cwd: "/", withFileTypes: true }),
+    slashDirents: globOutcome("filesystem-glob-order/zeta/*", { cwd: "/tmp/", withFileTypes: true }),
+    dotDirents: globOutcome("zeta/*", { cwd: "/tmp/./filesystem-glob-order", withFileTypes: true }),
+    relativeCwd: globOutcome("*.txt", { cwd: "../tmp/filesystem-glob-order" }),
+    relativeDirents: globOutcome("zeta/*", { cwd: "../tmp/filesystem-glob-order", withFileTypes: true }),
+    urlCwd: globOutcome("zeta/*", { cwd: new URL(`file://${root}`), withFileTypes: true }),
+    currentDirents: at("alpha/.", { withFileTypes: true }),
+    everythingDirents: at("**", { withFileTypes: true }),
+    excludePatterns: at("**", { exclude: ["alpha/**", "*.{md,txt}"] }),
+    excludeMiddle: at("**", { exclude: ["**/deep/**"] }),
+    excludeParent: at("**", { exclude: ["zeta/../alpha"] }),
+    excludeNames: at("**", { exclude: name => name.includes("a") }),
+    excludeDirents: at("**", { withFileTypes: true, exclude: entry => entry.isDirectory() }),
+    excludeString: at("*", { exclude: "beta.txt" }),
+    numberPattern: globOutcome(5),
+    numberInPatterns: globOutcome(["*", 5]),
+    nullOptions: globOutcome("*", null),
+    stringOptions: globOutcome("*", "x"),
+    functionOptions: globOutcome("*", () => {}),
+    numberCwd: globOutcome("*", { cwd: 5 }),
+    callbackRequired: (() => {
+      try { fs.glob("*", { cwd: root }); return "returned"; }
+      catch (error) { return failure(error); }
+    })(),
+    callbackError: await new Promise(resolve => fs.glob(5, (error, matches) =>
+      resolve(error ? { error: failure(error) } : { matches }))),
+    callbackDefaultOptions: await new Promise(resolve => fs.glob("*.mjs", (error, matches) =>
+      resolve(error ? { error: failure(error) } : { matches: Array.isArray(matches) }))),
+    promiseError: await Array.fromAsync(fs.promises.glob(5)).then(matches => ({ matches }), error => ({ error: failure(error) })),
+    promiseDirents: (await Array.fromAsync(fs.promises.glob("zeta/*", { cwd: root, withFileTypes: true }))).map(direntOutcome),
+    promiseGenerator: await (async () => {
+      const matches = fs.promises.glob("zeta/*", { cwd: root });
+      const first = await matches.next();
+      const returned = await matches.return("done");
+      return [Object.prototype.toString.call(matches), matches[Symbol.asyncIterator]() === matches,
+        fs.promises.glob.name, fs.promises.glob.length, first, returned, await matches.next()];
+    })(),
+  };
+}
+
 export async function filesystemContracts() {
   const result = { write: {} };
   for (const [name, write] of Object.entries(writers)) result.write[name] = await writerOutcomes(write);
@@ -408,5 +503,6 @@ export async function filesystemContracts() {
   result.dirents = await direntContracts();
   result.readData = await readDataContracts();
   result.glob = await globContracts();
+  result.globDetails = await globDetailContracts();
   return result;
 }

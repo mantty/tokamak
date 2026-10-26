@@ -1,7 +1,6 @@
 #![allow(clippy::wildcard_imports)]
 
 use super::*;
-use std::collections::{HashSet, VecDeque};
 
 /// `(input, options?)` operations answering with a value.
 pub(super) type ValueOperation =
@@ -32,7 +31,6 @@ pub(super) struct FsOptions {
     with_file_types: bool,
     pub(super) bigint: bool,
     throw_if_no_entry: bool,
-    cwd: Option<String>,
     blob_type: Option<String>,
 }
 
@@ -47,7 +45,6 @@ impl Default for FsOptions {
             with_file_types: false,
             bigint: false,
             throw_if_no_entry: true,
-            cwd: None,
             blob_type: None,
         }
     }
@@ -89,7 +86,6 @@ pub(super) fn parse_options<'js>(
         with_file_types: boolean("withFileTypes", false)?,
         bigint: boolean("bigint", false)?,
         throw_if_no_entry: boolean("throwIfNoEntry", true)?,
-        cwd: object.get("cwd")?,
         blob_type: object.get("type")?,
     })
 }
@@ -543,14 +539,6 @@ fn dir_items(ctx: &Ctx<'_>, path: &str, recursive: bool) -> rquickjs::Result<Vec
         .collect())
 }
 
-/// `path` relative to `base`, without a leading slash.
-pub(super) fn relative_to(path: &str, base: &str) -> String {
-    path.strip_prefix(base)
-        .unwrap_or(path)
-        .trim_start_matches('/')
-        .to_owned()
-}
-
 /// Everything before the final slash of `path`; `"/"` without one.
 fn parent_of(path: &str) -> &str {
     path.rsplit_once('/').map_or("/", |(parent, _)| parent)
@@ -800,107 +788,6 @@ pub(super) fn open_as_blob<'js>(
     blob_object(&ctx, bytes, options.blob_type.as_deref().unwrap_or("")).map(Object::into_value)
 }
 
-pub(super) fn glob_sync<'js>(
-    ctx: Ctx<'js>,
-    pattern: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Value<'js>> {
-    glob_array(&ctx, pattern, options.0).map(Array::into_value)
-}
-
-pub(super) fn glob_promise<'js>(
-    ctx: Ctx<'js>,
-    pattern: Value<'js>,
-    options: Opt<Value<'js>>,
-) -> rquickjs::Result<Object<'js>> {
-    let values = glob_array(&ctx, pattern, options.0)?
-        .iter::<Value>()
-        .collect::<rquickjs::Result<Vec<_>>>()?;
-    async_value_iterator(&ctx, values)
-}
-
-/// The matches of `pattern`, as names or dirents.
-fn glob_array<'js>(
-    ctx: &Ctx<'js>,
-    pattern: Value<'js>,
-    options_value: Option<Value<'js>>,
-) -> rquickjs::Result<Array<'js>> {
-    let exclude = option_property(ctx, options_value.as_ref(), "exclude")?;
-    let options = parse_options(ctx, options_value)?;
-    let patterns = if pattern.is_array() {
-        Array::from_value(pattern)?
-            .iter::<String>()
-            .collect::<rquickjs::Result<Vec<_>>>()?
-    } else {
-        vec![Coerced::<String>::from_js(ctx, pattern)?.0]
-    };
-    let cwd = options.cwd.as_deref().unwrap_or("/bundle");
-    let cwd = path(ctx, cwd.into_js(ctx)?)?;
-    let encoding = options.encoding.as_deref();
-    let mut matches: Vec<Value<'js>> = Vec::new();
-    let mut seen_paths = HashSet::new();
-    for pattern in patterns {
-        for (path, entry) in glob_matches(ctx, &cwd, &pattern)? {
-            if !seen_paths.insert(path.clone()) {
-                continue;
-            }
-            let relative = relative_to(&path, &cwd);
-            if glob_excluded(
-                ctx,
-                exclude.as_ref(),
-                &relative,
-                &entry,
-                options.with_file_types,
-                &path,
-            )? {
-                continue;
-            }
-            matches.push(if options.with_file_types {
-                let name = path.rsplit('/').next().unwrap_or_default();
-                let name = text_value(ctx, name, encoding)?;
-                dirent(ctx, &entry, name, normalized_parent(parent_of(&path)))?.into_value()
-            } else {
-                text_value(ctx, &relative, encoding)?
-            });
-        }
-    }
-    let result = Array::new(ctx.clone())?;
-    for (index, value) in matches.into_iter().enumerate() {
-        result.set(index, value)?;
-    }
-    Ok(result)
-}
-
-pub(super) fn glob_excluded<'js>(
-    ctx: &Ctx<'js>,
-    exclude: Option<&Value<'js>>,
-    relative: &str,
-    entry: &DirectoryEntry,
-    with_file_types: bool,
-    parent_path: &str,
-) -> rquickjs::Result<bool> {
-    let Some(exclude) = exclude else {
-        return Ok(false);
-    };
-    if let Ok(function) = Function::from_value(exclude.clone()) {
-        let value = if with_file_types {
-            let name = text_value(ctx, relative.rsplit('/').next().unwrap_or_default(), None)?;
-            dirent(ctx, entry, name, normalized_parent(parent_of(parent_path)))?.into_value()
-        } else {
-            relative.to_owned().into_js(ctx)?
-        };
-        return function.call::<_, bool>((value,));
-    }
-    let patterns = Array::from_value(exclude.clone())
-        .map_err(|_| Exception::throw_type(ctx, "options.exclude must be a function or array"))?;
-    for pattern in patterns.iter::<String>() {
-        if glob_match(&pattern?, relative) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 pub(super) fn symlink_sync<'js>(
     ctx: Ctx<'js>,
     target: Value<'js>,
@@ -1071,20 +958,6 @@ pub(super) fn access_promise<'js>(
     mode: Opt<u32>,
 ) -> rquickjs::Result<Promise<'js>> {
     promise_unit(ctx.clone(), access_sync(ctx, input, mode))
-}
-
-pub(super) fn async_value_iterator<'js>(
-    ctx: &Ctx<'js>,
-    values: Vec<Value<'js>>,
-) -> rquickjs::Result<Object<'js>> {
-    let state = Mutex::new(VecDeque::from(values));
-    let next = Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-        let value = lock(&state).pop_front();
-        let done = value.is_none();
-        let value = value.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-        iterator_result(ctx, done, value)
-    })?;
-    async_iterator(ctx, next)
 }
 
 /// An async iterator object over `next`.

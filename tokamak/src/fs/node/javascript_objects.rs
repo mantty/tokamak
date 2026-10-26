@@ -169,7 +169,12 @@ pub(super) fn item_dirent<'js>(
     encoding: Option<&str>,
 ) -> rquickjs::Result<Object<'js>> {
     let name = text_value(ctx, &item.name, encoding)?;
-    dirent(ctx, &item.entry, name, normalized_parent(&item.parent))
+    dirent(
+        ctx,
+        name,
+        dirent_type(&item.entry),
+        normalized_parent(&item.parent),
+    )
 }
 
 pub(super) fn dir_close(ctx: &Ctx<'_>, state: &DirState) -> rquickjs::Result<()> {
@@ -956,87 +961,6 @@ pub(super) fn statfs_object<'js>(ctx: &Ctx<'js>, bigint: bool) -> rquickjs::Resu
     Ok(object)
 }
 
-pub(super) fn glob_matches(
-    ctx: &Ctx<'_>,
-    cwd: &str,
-    pattern: &str,
-) -> rquickjs::Result<Vec<(String, DirectoryEntry)>> {
-    let entries = vfs_call(ctx, |vfs| vfs.walk(cwd))?;
-    let patterns = expand_braces(pattern);
-    let mut result = Vec::new();
-    for (path, entry) in entries {
-        let candidate = relative_to(&path, cwd);
-        if patterns
-            .iter()
-            .any(|expanded| glob_match(expanded, &candidate))
-        {
-            result.push((path, entry));
-        }
-    }
-    result.sort_by(|left, right| left.0.cmp(&right.0));
-    result.dedup_by(|left, right| left.0 == right.0);
-    Ok(result)
-}
-
-pub(super) fn expand_braces(pattern: &str) -> Vec<String> {
-    let Some(start) = pattern.find('{') else {
-        return vec![pattern.to_owned()];
-    };
-    let Some(end) = pattern[start + 1..].find('}') else {
-        return vec![pattern.to_owned()];
-    };
-    let end = start + 1 + end;
-    let prefix = &pattern[..start];
-    let suffix = &pattern[end + 1..];
-    pattern[start + 1..end]
-        .split(',')
-        .flat_map(|part| expand_braces(&format!("{prefix}{part}{suffix}")))
-        .collect()
-}
-
-pub(super) fn glob_match(pattern: &str, path: &str) -> bool {
-    let pattern: Vec<&str> = pattern.split('/').filter(|part| !part.is_empty()).collect();
-    let path: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
-    glob_segments(&pattern, &path)
-}
-
-pub(super) fn glob_segments(pattern: &[&str], path: &[&str]) -> bool {
-    if pattern.is_empty() {
-        return path.is_empty();
-    }
-    if pattern[0] == "**" {
-        return glob_segments(&pattern[1..], path)
-            || (!path.is_empty() && glob_segments(pattern, &path[1..]));
-    }
-    !path.is_empty()
-        && segment_match(pattern[0], path[0])
-        && glob_segments(&pattern[1..], &path[1..])
-}
-
-pub(super) fn segment_match(pattern: &str, value: &str) -> bool {
-    let pattern = pattern.as_bytes();
-    let value = value.as_bytes();
-    let mut states = vec![false; value.len() + 1];
-    let mut next = vec![false; value.len() + 1];
-    states[0] = true;
-    for &character in pattern {
-        next.fill(false);
-        if character == b'*' {
-            next[0] = states[0];
-            for index in 1..=value.len() {
-                next[index] = states[index] || next[index - 1];
-            }
-        } else {
-            for index in 1..=value.len() {
-                next[index] =
-                    states[index - 1] && (character == b'?' || character == value[index - 1]);
-            }
-        }
-        std::mem::swap(&mut states, &mut next);
-    }
-    states[value.len()]
-}
-
 /// Removes a trailing callback argument, leaving other trailing values in place.
 fn pop_callback<'js>(args: &mut Vec<Value<'js>>) -> Option<Function<'js>> {
     args.pop_if(|value| value.is_function())
@@ -1090,18 +1014,19 @@ const fn node_type_name(kind: NodeType) -> &'static str {
     }
 }
 
+/// A `Dirent` named `name` of the libuv `UV_DIRENT_*` type `kind`.
 pub(super) fn dirent<'js>(
     ctx: &Ctx<'js>,
-    entry: &DirectoryEntry,
     name: Value<'js>,
+    kind: u32,
     parent_path: &str,
 ) -> rquickjs::Result<Object<'js>> {
     let class: Constructor = ctx.globals().get("__tokamak_node_fs_dirent")?;
-    class.construct((name, dirent_type(entry), parent_path))
+    class.construct((name, kind, parent_path))
 }
 
 /// The libuv `UV_DIRENT_*` type of `entry`.
-const fn dirent_type(entry: &DirectoryEntry) -> u32 {
+pub(super) const fn dirent_type(entry: &DirectoryEntry) -> u32 {
     match entry.kind {
         _ if entry.device => 6,
         NodeType::File => 1,

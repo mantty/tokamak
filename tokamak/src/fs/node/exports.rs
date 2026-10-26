@@ -442,7 +442,7 @@ fn export_promises(module: &ModuleExports<'_, '_>) -> rquickjs::Result<()> {
         ("chmod", pair_promise(ctx, chmod_sync)?),
         ("chown", owner_promise(ctx, chown_sync)?),
         ("cp", pair_options_promise(ctx, cp_sync)?),
-        ("glob", Function::new(ctx.clone(), glob_promise)?),
+        ("glob", glob_promise(ctx)?),
         ("lchmod", pair_promise(ctx, lchmod_sync)?),
         ("lchown", owner_promise(ctx, lchown_sync)?),
         ("link", pair_promise(ctx, link_sync)?),

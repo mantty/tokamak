@@ -22,6 +22,7 @@ use rquickjs::{Coerced, FromJs, IntoJs};
 mod callback_api;
 mod exports;
 mod filesystem_operations;
+mod glob;
 mod javascript_objects;
 #[cfg(test)]
 mod tests;
@@ -31,6 +32,8 @@ mod writes;
 use callback_api::*;
 #[allow(clippy::wildcard_imports)]
 use filesystem_operations::*;
+#[allow(clippy::wildcard_imports)]
+use glob::*;
 #[allow(clippy::wildcard_imports)]
 use javascript_objects::*;
 #[allow(clippy::wildcard_imports)]

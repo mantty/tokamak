@@ -107,9 +107,14 @@ pub(super) fn callback_call<'js>(
     }
     let callback = args
         .pop()
-        .ok_or_else(|| Exception::throw_type(&ctx, "callback is required"))?;
-    let callback = Function::from_value(callback)
-        .map_err(|_| Exception::throw_type(&ctx, "callback must be a function"))?;
+        .and_then(|callback| Function::from_value(callback).ok())
+        .ok_or_else(|| {
+            throw_type_error(
+                &ctx,
+                "ERR_INVALID_ARG_TYPE",
+                "The \"callback\" argument must be of type function",
+            )
+        })?;
     let result = match operation {
         CallbackOperation::Value(operation) => {
             let input = take_arg(&ctx, &mut args)?;
