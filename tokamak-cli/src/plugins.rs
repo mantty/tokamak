@@ -514,6 +514,20 @@ mod tests {
         Ok(())
     }
 
+    /// Asserts the contents of each file under `root`, or, for `None`, that it does not exist.
+    #[track_caller]
+    fn assert_contents(root: &Path, expected: &[(&str, Option<&str>)]) -> TestResult {
+        for (path, expected) in expected {
+            let path = root.join(path);
+            let contents = path
+                .exists()
+                .then(|| fs::read_to_string(&path))
+                .transpose()?;
+            assert_eq!(contents.as_deref(), *expected, "{}", path.display());
+        }
+        Ok(())
+    }
+
     fn discovered_ids(project: &Path) -> TestResult<Vec<String>> {
         Ok(discover(project)?
             .into_iter()
@@ -761,24 +775,19 @@ mod tests {
             &staged.join("android"),
         )?;
 
-        assert_eq!(
-            fs::read_to_string(staged.join("ios/alerts/class"))?,
-            "Alerts"
-        );
-        assert_eq!(
-            fs::read_to_string(staged.join("ios/alerts/plist"))?,
-            "not read"
-        );
-        assert!(!staged.join("ios/alerts/manifest").exists());
-        assert_eq!(
-            fs::read_to_string(staged.join("android/alerts/manifest"))?,
-            "<manifest />"
-        );
-        assert_eq!(
-            fs::read_to_string(staged.join("android/alerts/dependencies/0"))?,
-            "com.example:library:1.2.3"
-        );
-        Ok(())
+        assert_contents(
+            &staged,
+            &[
+                ("ios/alerts/class", Some("Alerts")),
+                ("ios/alerts/plist", Some("not read")),
+                ("ios/alerts/manifest", None),
+                ("android/alerts/manifest", Some("<manifest />")),
+                (
+                    "android/alerts/dependencies/0",
+                    Some("com.example:library:1.2.3"),
+                ),
+            ],
+        )
     }
 
     #[test]
