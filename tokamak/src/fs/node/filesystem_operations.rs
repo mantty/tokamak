@@ -219,25 +219,21 @@ pub(super) fn write_buffer_value<'js>(
 pub(super) fn typed_array_bytes(object: &Object<'_>) -> Option<Vec<u8>> {
     macro_rules! typed_array {
         ($type:ty) => {
-            if object.is_typed_array::<$type>() {
-                return TypedArray::<$type>::from_object(object.clone())
-                    .ok()?
-                    .as_bytes()
-                    .map(ToOwned::to_owned);
-            }
+            object.as_typed_array::<$type>().map(TypedArray::as_bytes)
         };
     }
-    typed_array!(u8);
-    typed_array!(i8);
-    typed_array!(u16);
-    typed_array!(i16);
-    typed_array!(u32);
-    typed_array!(i32);
-    typed_array!(u64);
-    typed_array!(i64);
-    typed_array!(f32);
-    typed_array!(f64);
-    None
+    typed_array!(u8)
+        .or_else(|| typed_array!(i8))
+        .or_else(|| typed_array!(u16))
+        .or_else(|| typed_array!(i16))
+        .or_else(|| typed_array!(u32))
+        .or_else(|| typed_array!(i32))
+        .or_else(|| typed_array!(u64))
+        .or_else(|| typed_array!(i64))
+        .or_else(|| typed_array!(f32))
+        .or_else(|| typed_array!(f64))
+        .flatten()
+        .map(ToOwned::to_owned)
 }
 
 pub(super) fn is_buffer_value(value: &Value<'_>) -> bool {

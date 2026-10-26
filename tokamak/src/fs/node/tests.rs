@@ -376,3 +376,33 @@ fn dirent_prototype_treats_a_missing_device_flag_as_a_plain_file()
         Ok(())
     })
 }
+
+#[test]
+fn writes_the_viewed_bytes_of_each_supported_typed_array() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let runtime = node_fs_runtime(directory.path())?;
+    let context = Context::full(&runtime)?;
+    context.with(|ctx| -> Result<(), Box<dyn std::error::Error>> {
+        install_node_fs(&ctx, directory.path())?;
+        let result: String = ctx.eval(
+            r#"(() => {
+              const fs = process.getBuiltinModule("node:fs");
+              const source = Uint8Array.from({ length: 16 }, (_, index) => index);
+              const types = [Uint8Array, Int8Array, Uint16Array, Int16Array, Uint32Array, Int32Array,
+                BigUint64Array, BigInt64Array, Float32Array, Float64Array, Uint8ClampedArray];
+              return JSON.stringify(types.map(type => {
+                const view = new type(source.buffer, 8, 8 / type.BYTES_PER_ELEMENT);
+                try { fs.writeFileSync("/tmp/typed", view); }
+                catch (error) { return `${type.name}: ${error.message}`; }
+                return `${type.name}: ${[...fs.readFileSync("/tmp/typed")]}`;
+              }));
+            })()"#,
+        )?;
+        assert_eq!(
+            result,
+            r#"["Uint8Array: 8,9,10,11,12,13,14,15","Int8Array: 8,9,10,11,12,13,14,15","Uint16Array: 8,9,10,11,12,13,14,15","Int16Array: 8,9,10,11,12,13,14,15","Uint32Array: 8,9,10,11,12,13,14,15","Int32Array: 8,9,10,11,12,13,14,15","BigUint64Array: 8,9,10,11,12,13,14,15","BigInt64Array: 8,9,10,11,12,13,14,15","Float32Array: 8,9,10,11,12,13,14,15","Float64Array: 8,9,10,11,12,13,14,15","Uint8ClampedArray: data must be a string, ArrayBuffer, or typed array"]"#
+        );
+        Ok(())
+    })
+}
