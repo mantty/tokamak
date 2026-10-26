@@ -701,17 +701,49 @@ pub(super) fn copy_file_sync<'js>(
     ctx: Ctx<'js>,
     from: Value<'js>,
     to: Value<'js>,
-    mode: Opt<u32>,
+    mode: Opt<Value<'js>>,
 ) -> rquickjs::Result<()> {
     let from = path(&ctx, from)?;
     let to = path(&ctx, to)?;
-    let mode = mode.0.unwrap_or_default();
-    if mode > 2 {
-        return Err(Exception::throw_range(&ctx, "unsupported copy mode"));
+    check_copy_mode(&ctx, &to, mode.0)?;
+    vfs_call(&ctx, |vfs| vfs.copy_file(&from, &to))
+}
+
+/// Checks a copy `mode` as workerd does before copying: it is one of 0 and
+/// the `COPYFILE_*` flags, it is not `COPYFILE_FICLONE_FORCE`, and under
+/// `COPYFILE_EXCL` nothing exists at `to`.
+pub(super) fn check_copy_mode<'js>(
+    ctx: &Ctx<'js>,
+    to: &str,
+    mode: Option<Value<'js>>,
+) -> rquickjs::Result<()> {
+    let Some(mode) = mode.filter(|mode| !mode.is_undefined()) else {
+        return Ok(());
+    };
+    let number = mode.as_number();
+    match [0, 1, 4, 2]
+        .into_iter()
+        .find(|allowed| number == Some(f64::from(*allowed)))
+    {
+        None => Err(throw_type_error(
+            ctx,
+            "ERR_INVALID_ARG_VALUE",
+            &format!(
+                "The argument 'mode' must be one of: 0, 1, 4, 2. Received {}",
+                inspected(ctx, &mode)?
+            ),
+        )),
+        Some(4) => Err(throw_error(
+            ctx,
+            "ERR_UNSUPPORTED_OPERATION",
+            "The requested operation is unsupported",
+        )),
+        Some(1) => vfs_call(ctx, |vfs| match vfs.stat(to) {
+            Ok(_) => Err(VfsError::new(ErrorKind::AlreadyExists, to)),
+            Err(_) => Ok(()),
+        }),
+        Some(_) => Ok(()),
     }
-    vfs_call(&ctx, |vfs| {
-        vfs.copy_file_with_options(&from, &to, mode & 1 != 0)
-    })
 }
 
 pub(super) fn cp_sync<'js>(
@@ -1015,7 +1047,7 @@ pub(super) fn copy_file_promise<'js>(
     ctx: Ctx<'js>,
     from: Value<'js>,
     to: Value<'js>,
-    mode: Opt<u32>,
+    mode: Opt<Value<'js>>,
 ) -> rquickjs::Result<Promise<'js>> {
     promise_unit(ctx.clone(), copy_file_sync(ctx, from, to, mode))
 }
@@ -1210,6 +1242,12 @@ pub(super) fn vfs_exception<'js>(
     Ok(exception)
 }
 
+/// Throws an `Error` carrying the Node.js error `code`.
+pub(super) fn throw_error(ctx: &Ctx<'_>, code: &str, message: &str) -> rquickjs::Error {
+    let _thrown = Exception::throw_message(ctx, message);
+    with_code(ctx, code)
+}
+
 /// Throws a `TypeError` carrying the Node.js error `code`.
 pub(super) fn throw_type_error(ctx: &Ctx<'_>, code: &str, message: &str) -> rquickjs::Error {
     let _thrown = Exception::throw_type(ctx, message);
@@ -1220,6 +1258,16 @@ pub(super) fn throw_type_error(ctx: &Ctx<'_>, code: &str, message: &str) -> rqui
 pub(super) fn throw_range_error(ctx: &Ctx<'_>, code: &str, message: &str) -> rquickjs::Error {
     let _thrown = Exception::throw_range(ctx, message);
     with_code(ctx, code)
+}
+
+/// A primitive as `util.inspect` shows it in Node.js error messages.
+pub(super) fn inspected<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> rquickjs::Result<String> {
+    if let Some(text) = value.as_string() {
+        return Ok(format!("'{}'", text.to_string()?));
+    }
+    ctx.globals()
+        .get::<_, Function>("String")?
+        .call((value.clone(),))
 }
 
 /// Throws the pending exception again with `code` set on it.

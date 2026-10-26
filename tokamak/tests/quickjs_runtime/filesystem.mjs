@@ -600,6 +600,43 @@ async function symlinkContracts() {
   };
 }
 
+// rename and copyFile onto existing names, and copyFile's modes.
+async function overwriteContracts() {
+  const root = "/tmp/filesystem-overwrite";
+  fs.mkdirSync(`${root}/dir`, { recursive: true });
+  fs.mkdirSync(`${root}/other`);
+  for (const name of ["a", "b"]) fs.writeFileSync(`${root}/${name}`, name);
+  const settled = promise => promise.then(() => "done", error => ({ thrown: failure(error) }));
+  const called = start => new Promise(resolve => start(error => resolve(error ? { thrown: failure(error) } : "done")));
+  const { COPYFILE_EXCL, COPYFILE_FICLONE, COPYFILE_FICLONE_FORCE } = fs.constants;
+  return {
+    renameOntoFile: attempt(() => fs.renameSync(`${root}/a`, `${root}/b`)),
+    renameOntoDirectory: attempt(() => fs.renameSync(`${root}/a`, `${root}/dir`)),
+    renameDirectoryOntoDirectory: attempt(() => fs.renameSync(`${root}/other`, `${root}/dir`)),
+    renameOntoItself: attempt(() => fs.renameSync(`${root}/a`, `${root}/a`)),
+    renameMissing: attempt(() => fs.renameSync(`${root}/missing`, `${root}/x`)),
+    renamePromise: await settled(fs.promises.rename(`${root}/a`, `${root}/b`)),
+    renameCallback: await called(done => fs.rename(`${root}/a`, `${root}/b`, done)),
+    copyOntoFile: attempt(() => fs.copyFileSync(`${root}/a`, `${root}/b`)),
+    copyOntoDirectory: attempt(() => fs.copyFileSync(`${root}/a`, `${root}/dir`)),
+    copyDirectory: attempt(() => fs.copyFileSync(`${root}/dir`, `${root}/e`)),
+    copyMissing: attempt(() => fs.copyFileSync(`${root}/missing`, `${root}/e`)),
+    copyExclusive: attempt(() => fs.copyFileSync(`${root}/a`, `${root}/b`, COPYFILE_EXCL)),
+    copyExclusiveNew: attempt(() => fs.copyFileSync(`${root}/a`, `${root}/f`, COPYFILE_EXCL)),
+    copyClone: attempt(() => fs.copyFileSync(`${root}/a`, `${root}/g`, COPYFILE_FICLONE)),
+    copyCloneForce: attempt(() => fs.copyFileSync(`${root}/a`, `${root}/h`, COPYFILE_FICLONE_FORCE)),
+    copyModes: [3, 5, -1, "1", 1.5, null, undefined, -0].map((mode, index) =>
+      attempt(() => fs.copyFileSync(`${root}/a`, `${root}/mode${index}`, mode)) ?? "copied"),
+    copyPromise: await settled(fs.promises.copyFile(`${root}/a`, `${root}/b`)),
+    copyPromiseMode: await settled(fs.promises.copyFile(`${root}/a`, `${root}/n`, 3)),
+    copyCallback: await called(done => fs.copyFile(`${root}/a`, `${root}/b`, done)),
+    copyCallbackExclusive: attempt(() => fs.copyFile(`${root}/a`, `${root}/b`, COPYFILE_EXCL, () => {})) ?? "returned",
+    copyCallbackMode: attempt(() => fs.copyFile(`${root}/a`, `${root}/b`, 3, () => {})) ?? "returned",
+    names: fs.readdirSync(root),
+    contents: fs.readdirSync(root).filter(name => fs.statSync(`${root}/${name}`).isFile()).map(name => fs.readFileSync(`${root}/${name}`, "utf8")),
+  };
+}
+
 // process.chdir, and the paths and globs that resolve against the directory it sets.
 function workingDirectoryContracts() {
   const root = "/tmp/filesystem-cwd";
@@ -650,6 +687,7 @@ export async function filesystemContracts() {
   result.globDetails = await globDetailContracts();
   result.paths = pathContracts();
   result.symlinks = await symlinkContracts();
+  result.overwrite = await overwriteContracts();
   result.workingDirectory = workingDirectoryContracts();
   return result;
 }

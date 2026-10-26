@@ -163,10 +163,10 @@ pub(super) fn callback_call<'js>(
             reply(&ctx, close_sync(ctx.clone(), descriptor))
         }
         CallbackOperation::CopyFile => {
-            let from = take_arg(&ctx, &mut args)?;
-            let to = take_arg(&ctx, &mut args)?;
-            let mode = take_opt_u32(&ctx, &mut args)?;
-            reply(&ctx, copy_file_sync(ctx.clone(), from, to, mode))
+            let from = path(&ctx, take_arg(&ctx, &mut args)?)?;
+            let to = path(&ctx, take_arg(&ctx, &mut args)?)?;
+            check_copy_mode(&ctx, &to, take_front_value(&mut args))?;
+            reply(&ctx, vfs_call(&ctx, |vfs| vfs.copy_file(&from, &to)))
         }
         CallbackOperation::Fchmod => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;

@@ -131,7 +131,7 @@ pub struct Error {
 }
 
 impl Error {
-    pub(super) fn new(kind: ErrorKind, path: impl Display) -> Self {
+    pub(crate) fn new(kind: ErrorKind, path: impl Display) -> Self {
         Self {
             message: kind.default_message().to_owned(),
             kind,
@@ -504,20 +504,18 @@ impl VirtualFileSystem {
         self.remove(path, false, false)
     }
 
-    /// Rename a node within the virtual filesystem.
+    /// Rename a node to a name that is not taken.
     pub fn rename(&mut self, from: &str, to: &str) -> Result<()> {
-        let from_components = absolute_components(from)?;
-        let to_components = absolute_components(to)?;
-        if from_components == to_components {
-            return Ok(());
-        }
-        if to_components.starts_with(&from_components) {
-            return Err(Error::new(ErrorKind::InvalidInput, to));
+        if self.resolve(to, false).is_ok() {
+            return Err(Error::new(ErrorKind::AlreadyExists, ""));
         }
         let (source_parent, source_name) = self.parent(from)?;
         let source = source_parent
             .lookup(&source_name)?
             .ok_or_else(|| Error::new(ErrorKind::NotFound, from))?;
+        if absolute_components(to)?.starts_with(&absolute_components(from)?) {
+            return Err(Error::new(ErrorKind::InvalidInput, to));
+        }
         let (destination_parent, destination_name) = self.parent(to)?;
         if !source_parent.writable() || !destination_parent.writable() {
             return Err(Error::new(
@@ -525,25 +523,17 @@ impl VirtualFileSystem {
                 if source_parent.writable() { to } else { from },
             ));
         }
-        if let Some(existing) = destination_parent.lookup(&destination_name)? {
-            if let Node::Directory(directory) = &existing
-                && !directory.is_empty()?
-            {
-                return Err(Error::new(ErrorKind::NotEmpty, to));
-            }
-            destination_parent.remove(&destination_name)?;
-        }
         destination_parent.insert(destination_name, source)?;
         source_parent.remove(&source_name)?;
         Ok(())
     }
 
-    /// Copy a regular file with optional exclusive creation.
-    pub fn copy_file_with_options(&mut self, from: &str, to: &str, exclusive: bool) -> Result<()> {
-        let bytes = self.read_file(from)?;
-        if exclusive && self.resolve(to, true).is_ok() {
-            return Err(Error::new(ErrorKind::AlreadyExists, to));
+    /// Copy a regular file to a name that is not taken.
+    pub fn copy_file(&mut self, from: &str, to: &str) -> Result<()> {
+        if self.resolve(to, false).is_ok() {
+            return Err(Error::new(ErrorKind::AlreadyExists, ""));
         }
+        let bytes = self.read_file(from)?;
         self.write_file(to, &bytes, false)
     }
 
