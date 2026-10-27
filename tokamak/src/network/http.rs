@@ -15,7 +15,7 @@ use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
 use hyper_util::client::legacy::{self, connect::HttpConnector};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use rquickjs::{
-    Ctx, Exception, Function, Object, Promise, TypedArray, Value,
+    Constructor, Ctx, Exception, Function, Object, Promise, TypedArray, Value,
     function::{Async, This},
 };
 use serde::Serialize;
@@ -315,7 +315,9 @@ async fn send(
     mut request: Request,
     upload_stopped: &CancellationToken,
 ) -> Result<FetchResponse, BoxError> {
+    let mut visited = Vec::new();
     for count in 0..=20 {
+        visited.push(request.url.to_string());
         let mut outgoing = hyper::Request::builder()
             .method(request.method.clone())
             .uri(request.url.as_str())
@@ -335,7 +337,7 @@ async fn send(
             });
         };
         if count == 20 {
-            return Err("Redirect limit exceeded".into());
+            return Err(format!("Too many redirects.{}", visited.join(", ")).into());
         }
         request.url = request.url.join(location.to_str()?)?;
         while response.body_mut().frame().await.transpose()?.is_some() {}
@@ -355,15 +357,8 @@ fn redirect_as_get(request: &mut Request, status: u16) {
     {
         request.method = Method::GET;
         request.body = RequestBody::Bytes(Vec::new());
-        for name in [
-            "content-encoding",
-            "content-language",
-            "content-location",
-            "content-type",
-            "content-length",
-        ] {
-            request.headers.remove(name);
-        }
+        // workerd keeps the body's other Content-* headers.
+        request.headers.remove("content-length");
     }
 }
 
@@ -460,6 +455,15 @@ fn decode_body(
     })
 }
 
+/// Throws a `TypeError` with `error` as its whole message, which the `QuickJS`
+/// throw functions cut at 255 bytes.
 fn failure(ctx: &Ctx<'_>, error: impl std::fmt::Display) -> rquickjs::Error {
-    Exception::throw_type(ctx, &error.to_string())
+    let error = ctx
+        .globals()
+        .get::<_, Constructor>("TypeError")
+        .and_then(|constructor| constructor.construct::<_, Value>((error.to_string(),)));
+    match error {
+        Ok(error) => ctx.throw(error),
+        Err(error) => error,
+    }
 }

@@ -50,7 +50,11 @@ const upstream = createServer(async (request, response) => {
     return response.end("closed", () => request.socket.end());
   }
   if (url.pathname === "/redirect") {
-    response.writeHead(Number(url.searchParams.get("status")), { Location: "/echo" });
+    response.writeHead(Number(url.searchParams.get("status")), { Location: url.searchParams.get("to") ?? "/echo" });
+    return response.end();
+  }
+  if (url.pathname === "/loop") {
+    response.writeHead(302, { Location: "/loop" });
     return response.end();
   }
   if (url.pathname === "/gzip") {

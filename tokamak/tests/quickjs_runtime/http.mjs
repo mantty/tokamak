@@ -206,6 +206,14 @@ export default {
     results.replayedForwarded = await (await fetch(reusable)).json();
     results.rejectRedirect = await caught(() => fetch(`${base}/redirect?status=302`, { redirect: "error" }));
     results.rejectRedirectRequest = await caught(() => new Request(`${base}/redirect?status=302`, { redirect: "error" }));
+    results.redirectLimit = await caught(() => fetch(`${base}/loop`));
+    const redirectedHeaders = await (await fetch(`${base}/redirect?status=303&to=/headers`, {
+      method: "POST",
+      body: "body",
+      headers: { "content-type": "text/plain", "content-language": "en", "content-location": "/body", "content-encoding": "identity" },
+    })).json();
+    // tokamak deliberately sends no cf-worker header.
+    results.redirectedHeaders = Object.entries(redirectedHeaders).filter(([name]) => name !== "cf-worker").sort();
     const compressed = await fetch(`${base}/gzip`);
     results.compressed = { encoding: compressed.headers.get("content-encoding"), cookies: compressed.headers.getSetCookie(), text: await compressed.text() };
     return Response.json(results);
