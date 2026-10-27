@@ -3,7 +3,7 @@ import { AsyncResource } from "../node/async-hooks.mjs";
 import { abortError, codedError } from "../node/errors.mjs";
 import { inspect } from "../node/util.mjs";
 import { emitProcessWarning } from "./process-warnings.mjs";
-import { invalidType, outOfRange, validateAbortSignal, validateFunction, validateObject } from "../node/validators.mjs";
+import { invalidArgType, outOfRange, validateAbortSignal, validateFunction, validateObject } from "../node/validators.mjs";
 
 const kRejection = Symbol.for("nodejs.rejection");
 const kCapture = Symbol("kCapture");
@@ -48,7 +48,7 @@ export class EventEmitterAsyncResource extends EventEmitter {
 }
 
 export function addAbortListener(signal, listener) {
-  if (signal === undefined) throw invalidType("signal", "an instance of AbortSignal", signal);
+  if (signal === undefined) throw invalidArgType("signal", "AbortSignal", signal);
   validateAbortSignal(signal, "signal");
   validateFunction(listener, "listener");
   let removeEventListener;
@@ -97,7 +97,7 @@ Object.defineProperties(EventEmitter, {
       return EventEmitter.prototype[kCapture];
     },
     set(value) {
-      if (typeof value !== "boolean") throw invalidType("EventEmitter.captureRejections", "of type boolean", value);
+      if (typeof value !== "boolean") throw invalidArgType("EventEmitter.captureRejections", "boolean", value);
       EventEmitter.prototype[kCapture] = value;
     },
     enumerable: true,
@@ -127,7 +127,7 @@ EventEmitter.init = function (opts) {
   this.domain = null;
   if (opts?.captureRejections) {
     if (typeof opts.captureRejections !== "boolean") {
-      throw invalidType("options.captureRejections", "of type boolean", opts.captureRejections);
+      throw invalidArgType("options.captureRejections", "boolean", opts.captureRejections);
     }
     this[kCapture] = true;
   } else {
@@ -148,7 +148,7 @@ export function setMaxListeners(n = defaultMaxListeners, ...eventTargets) {
     } else if (typeof target.setMaxListeners === "function") {
       target.setMaxListeners(n);
     } else {
-      throw invalidType("eventTargets", "an instance of EventEmitter or EventTarget", target);
+      throw invalidArgType("eventTargets", ["EventEmitter", "EventTarget"], target);
     }
   }
 }
@@ -410,7 +410,7 @@ export function getEventListeners(emitterOrTarget, type) {
   if (typeof emitterOrTarget.listeners === "function") return emitterOrTarget.listeners(type);
   // Like workerd, an EventTarget does not report its listeners.
   if (emitterOrTarget instanceof EventTarget) return [];
-  throw invalidType("emitter", "an instance of EventEmitter or EventTarget", emitterOrTarget);
+  throw invalidArgType("emitter", ["EventEmitter", "EventTarget"], emitterOrTarget);
 }
 
 export async function once(emitter, name, options = {}) {
@@ -450,7 +450,7 @@ function iterResult(value, done) {
 function removeAgnosticListener(emitter, name, listener, flags = undefined) {
   if (typeof emitter.removeListener === "function") emitter.removeListener(name, listener);
   else if (typeof emitter.removeEventListener === "function") emitter.removeEventListener(name, listener, flags);
-  else throw invalidType("emitter", "an instance of EventEmitter", emitter);
+  else throw invalidArgType("emitter", "EventEmitter", emitter);
 }
 
 function addAgnosticListener(emitter, name, listener, flags = {}) {
@@ -460,7 +460,7 @@ function addAgnosticListener(emitter, name, listener, flags = {}) {
   } else if (typeof emitter.addEventListener === "function") {
     emitter.addEventListener(name, arg => listener(arg), flags);
   } else {
-    throw invalidType("emitter", "an instance of EventEmitter", emitter);
+    throw invalidArgType("emitter", "EventEmitter", emitter);
   }
 }
 
@@ -496,7 +496,7 @@ export function on(emitter, event, options = {}) {
     },
 
     throw(thrown) {
-      if (!thrown || !(thrown instanceof Error)) throw invalidType("EventEmitter.AsyncIterator", "an instance of Error", thrown);
+      if (!thrown || !(thrown instanceof Error)) throw invalidArgType("EventEmitter.AsyncIterator", "Error", thrown);
       error = thrown;
       removeAgnosticListener(emitter, event, eventHandler);
       removeAgnosticListener(emitter, "error", errorHandler);

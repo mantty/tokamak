@@ -621,6 +621,8 @@ fn exposes_bundle_tmp_and_device_operations() -> Result<(), Box<dyn std::error::
         ))));
         crate::fs::install(&ctx, &vfs)
             .map_err(|error| Error::Engine(format!("{error}; {:?}", ctx.catch())))?;
+        crate::compat::initialize(&ctx)
+            .map_err(|error| Error::Engine(format!("{error}; {:?}", ctx.catch())))?;
         let object: Object = Module::import(&ctx, "node:fs")
             .map_err(|error| Error::Engine(format!("{error}; {:?}", ctx.catch())))?
             .finish()

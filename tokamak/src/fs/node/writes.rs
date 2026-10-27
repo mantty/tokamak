@@ -210,22 +210,6 @@ pub(super) fn file_view<'js>(
     encoded(ctx, data, encoding.into_js(ctx)?)
 }
 
-/// The bytes `WriteStream.write` writes for `chunk`: a view's, or a string's
-/// encoded in `encoding`.
-pub(super) fn chunk_bytes<'js>(
-    ctx: &Ctx<'js>,
-    chunk: Value<'js>,
-    encoding: Value<'js>,
-) -> rquickjs::Result<Vec<u8>> {
-    if chunk.is_string() {
-        return view_bytes(ctx, &encoded(ctx, chunk, encoding)?);
-    }
-    if !is_array_buffer_view(&chunk) {
-        return Err(invalid_bytes(ctx, "chunk"));
-    }
-    view_bytes(ctx, &chunk)
-}
-
 /// The bytes `view` covers, with none when its buffer is detached.
 pub(super) fn attached_bytes<'js>(ctx: &Ctx<'js>, view: &Value<'js>) -> rquickjs::Result<Vec<u8>> {
     // A detached view's length is 0.

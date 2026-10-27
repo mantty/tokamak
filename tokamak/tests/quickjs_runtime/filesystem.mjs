@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import process from "node:process";
+import { Readable, Writable } from "node:stream";
 import { byteInputs } from "./bytes.mjs";
 import { failure as namedFailure } from "./outcome.mjs";
 
@@ -1326,6 +1327,157 @@ async function formContracts(calls, base) {
   return outcomes;
 }
 
+// "name", once `emitter` emits `name`, or "timeout" after 100ms.
+function eventOrTimeout(emitter, name) {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve("timeout"), 100);
+    emitter.once(name, () => { clearTimeout(timer); resolve(name); });
+  });
+}
+
+// An event argument as a contract reports it.
+function eventValue(value) {
+  if (value instanceof Error) return failure(value);
+  if (Buffer.isBuffer(value)) return [...value];
+  if (typeof value === "number") return "number";
+  if (value instanceof Readable || value instanceof Writable) return "stream";
+  return value ?? null;
+}
+
+// Each event `stream` emits until it closes, with its arguments.
+async function streamEvents(stream, names = ["open", "ready", "data", "end", "finish", "error", "close"]) {
+  const log = [];
+  for (const name of names) stream.on(name, (...args) => log.push([name, ...args.map(eventValue)]));
+  const ending = await eventOrTimeout(stream, "close");
+  return [...log, ending];
+}
+
+// The properties a file stream reports.
+function streamProperties(stream) {
+  return {
+    path: stream.path ?? "none",
+    fd: typeof stream.fd,
+    mode: stream.mode ?? "none",
+    start: stream.start ?? "none",
+    end: stream.end === Infinity ? "Infinity" : stream.end ?? "none",
+    pos: stream.pos ?? "none",
+    bytesRead: stream.bytesRead ?? "none",
+    bytesWritten: stream.bytesWritten ?? "none",
+    pending: stream.pending,
+    autoClose: stream.autoClose,
+    flush: stream.flush ?? "none",
+    highWaterMark: stream.readableHighWaterMark ?? stream.writableHighWaterMark,
+    encoding: stream.readableEncoding ?? "none",
+  };
+}
+
+// The file a write stream over "abcdef", opened with `options`, leaves after `write`.
+async function writtenFile(options, write) {
+  const path = "/tmp/filesystem-stream-write.bin";
+  fs.writeFileSync(path, "abcdef");
+  const stream = fs.createWriteStream(path, { flags: "r+", ...options });
+  const events = streamEvents(stream);
+  try { write(stream); } catch (error) { stream.destroy(); return { thrown: failure(error), events: await events }; }
+  return { events: await events, contents: fs.readFileSync(path, "latin1"), bytesWritten: stream.bytesWritten };
+}
+
+// When a write stream writes, and the events it emits around its writes.
+async function writeStreamTiming() {
+  const path = "/tmp/filesystem-stream-timing.bin";
+  fs.writeFileSync(path, "zz");
+  const log = [];
+  const stream = fs.createWriteStream(path, { flags: "r+" });
+  const state = () => [stream.pending, typeof stream.fd, stream.bytesWritten, stream.pos, fs.readFileSync(path, "latin1")];
+  log.push(["created", ...state()]);
+  for (const name of ["open", "ready", "prefinish", "finish", "drain", "error", "close"]) stream.on(name, () => log.push([name, ...state()]));
+  log.push(["write", stream.write("ab", error => log.push(["written", eventValue(error), ...state()])), stream.writableLength]);
+  log.push(["afterWrite", ...state()]);
+  queueMicrotask(() => log.push(["microtask", ...state()]));
+  await Promise.resolve();
+  log.push(["tick", ...state()]);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  log.push(["timer", ...state()]);
+  stream.end("cd", error => log.push(["ended", eventValue(error), ...state()]));
+  log.push([await eventOrTimeout(stream, "close"), stream.closed, stream.destroyed, ...state()]);
+  return log;
+}
+
+// When a read stream reads, and the events it emits.
+async function readStreamTiming() {
+  const path = "/tmp/filesystem-stream-timing.bin";
+  fs.writeFileSync(path, "abcdef");
+  const log = [];
+  const stream = fs.createReadStream(path, { highWaterMark: 4 });
+  const state = () => [stream.pending, typeof stream.fd, stream.bytesRead, stream.pos];
+  log.push(["created", ...state()]);
+  for (const name of ["open", "ready", "end", "pause", "resume", "error", "close"]) stream.on(name, () => log.push([name, ...state()]));
+  stream.on("data", chunk => log.push(["data", eventValue(chunk), ...state()]));
+  queueMicrotask(() => log.push(["microtask", ...state()]));
+  await Promise.resolve();
+  log.push(["tick", ...state()]);
+  log.push([await eventOrTimeout(stream, "close"), stream.destroyed, ...state()]);
+  return log;
+}
+
+// Each options value given to both stream constructors.
+const streamOptionCases = {
+  none: undefined,
+  nullOptions: null,
+  encodingString: "hex",
+  unknownEncodingString: "nope",
+  number: 5,
+  array: [],
+  encodingUpperCase: { encoding: "HEX" },
+  bufferEncoding: { encoding: "buffer" },
+  negativeStart: { start: -1 },
+  fractionalStart: { start: 1.5 },
+  stringStart: { start: "1" },
+  startAfterEnd: { start: 5, end: 2 },
+  startAtEnd: { start: 2, end: 2 },
+  negativeEnd: { end: -1 },
+  infiniteEnd: { end: Infinity },
+  negativeHighWaterMark: { highWaterMark: -1 },
+  zeroHighWaterMark: { highWaterMark: 0 },
+  numberFlags: { flags: 1 },
+  octalMode: { mode: "644" },
+  invalidMode: { mode: "9" },
+  numberMode: { mode: 0o600 },
+  largeMode: { mode: 2 ** 32 },
+  numberAutoClose: { autoClose: 1 },
+  noAutoClose: { autoClose: false },
+  stringEmitClose: { emitClose: "x" },
+  plainSignal: { signal: {} },
+  stringDescriptor: { fd: "1" },
+  negativeDescriptor: { fd: -1 },
+  fractionalDescriptor: { fd: 1.5 },
+  objectDescriptor: { fd: { fd: 1 } },
+  numberFs: { fs: 5 },
+  numberFsOpen: { fs: { open: 5 } },
+  numberFlush: { flush: 1 },
+  nullFlush: { flush: null },
+  flush: { flush: true },
+};
+
+// What each stream constructor reports for each options value, once the
+// stream it makes closes.
+async function streamOptionContracts() {
+  const path = "/tmp/filesystem-stream-options.bin";
+  fs.writeFileSync(path, "abcdef");
+  const outcomes = {};
+  for (const [name, options] of Object.entries(streamOptionCases)) {
+    outcomes[name] = {};
+    for (const [kind, create] of Object.entries({ read: fs.createReadStream, write: fs.createWriteStream })) {
+      let stream;
+      try { stream = create(path, options); } catch (error) { outcomes[name][kind] = { thrown: failure(error) }; continue; }
+      const properties = streamProperties(stream);
+      stream.on("error", () => {});
+      stream.destroy();
+      outcomes[name][kind] = { properties, closed: await eventOrTimeout(stream, "close") };
+    }
+  }
+  return outcomes;
+}
+
 // Calls naming paths with a trailing slash, with `$` for a fresh tree's root.
 const slashCalls = {
   statFile: ["stat", "$/a/"],
@@ -1419,6 +1571,61 @@ function callOutcomes(calls, base, build) {
       return "opened";
     });
     outcomes[name] = { result, tree: attempt(() => treeOf(root)) };
+  }
+  return outcomes;
+}
+
+// The path each read stream reports, and what it reads, for each path argument.
+async function streamPathContracts() {
+  const root = "/tmp/filesystem-stream-paths";
+  fs.mkdirSync(root, { recursive: true });
+  for (const name of ["relative", "double", "a#b?c", "A", "buffer", "u x"]) fs.writeFileSync(`${root}/${name}`, name);
+  const paths = {
+    relative: "relative",
+    dotSegments: "./inner/../relative",
+    doubledSlashes: "/tmp//filesystem-stream-paths//double",
+    reserved: `${root}/a#b?c`,
+    escaped: `${root}/%41`,
+    buffer: Buffer.from(`${root}/buffer`),
+    url: new URL(`file://${root}/u%20x`),
+    number: 5,
+    nullByte: `${root}/a\0b`,
+    missing: undefined,
+  };
+  const outcomes = {};
+  process.chdir(root);
+  try {
+    for (const [name, path] of Object.entries(paths)) {
+      let stream;
+      try { stream = fs.createReadStream(path, { encoding: "latin1" }); } catch (error) { outcomes[name] = { thrown: failure(error) }; continue; }
+      const reported = stream.path;
+      outcomes[name] = { path: reported, events: await streamEvents(stream) };
+    }
+  } finally { process.chdir("/bundle"); }
+  return outcomes;
+}
+
+// What read streams over "0123456789" emit for each range and buffer size.
+async function readRangeContracts() {
+  const path = "/tmp/filesystem-stream-range.bin";
+  fs.writeFileSync(path, "0123456789");
+  const ranges = {
+    whole: {},
+    start: { start: 7 },
+    range: { start: 2, end: 5 },
+    single: { start: 3, end: 3 },
+    firstByte: { end: 0 },
+    lastByte: { start: 9 },
+    beyondEnd: { start: 20 },
+    endBeyondFile: { start: 8, end: 100 },
+    smallChunks: { start: 1, end: 4, highWaterMark: 1 },
+    unevenChunks: { highWaterMark: 3 },
+  };
+  const outcomes = {};
+  for (const [name, options] of Object.entries(ranges)) {
+    const stream = fs.createReadStream(path, options);
+    const events = await streamEvents(stream);
+    outcomes[name] = { events, bytesRead: stream.bytesRead, pos: stream.pos };
   }
   return outcomes;
 }
@@ -1661,6 +1868,207 @@ function cpTree(root) {
   fs.linkSync(`${root}/sourceLink/l`, `${root}/hardLinks/l`);
 }
 
+// What read streams decode and write streams encode.
+async function streamEncodingContracts() {
+  const path = "/tmp/filesystem-stream-encoding.bin";
+  fs.writeFileSync(path, "héllo €");
+  const reads = {
+    utf8: { encoding: "utf8", highWaterMark: 2 },
+    hex: { encoding: "hex", highWaterMark: 3 },
+    base64: { encoding: "base64", highWaterMark: 4 },
+    latin1: { encoding: "latin1" },
+    utf16le: { encoding: "utf16le", highWaterMark: 3 },
+    upperCase: { encoding: "UTF8" },
+    string: "base64url",
+  };
+  const outcomes = { read: {}, write: {} };
+  for (const [name, options] of Object.entries(reads)) outcomes.read[name] = await streamEvents(fs.createReadStream(path, options));
+  outcomes.read.setEncoding = await (async () => {
+    const stream = fs.createReadStream(path);
+    stream.setEncoding("hex");
+    return streamEvents(stream);
+  })();
+  const writes = {
+    defaultEncoding: [{ encoding: "hex" }, stream => stream.end("6869")],
+    upperCaseEncoding: [{ encoding: "HEX" }, stream => stream.end("6869")],
+    stringOptions: ["base64", stream => stream.end("aGk=")],
+    chunkEncoding: [{}, stream => { stream.write("aGk=", "base64"); stream.end("6869", "hex"); }],
+    bufferChunk: [{ encoding: "hex" }, stream => stream.end(Buffer.from("hi"))],
+    latin1: [{ encoding: "latin1" }, stream => stream.end("hé")],
+    utf16le: [{}, stream => stream.end("hé", "utf16le")],
+    unknownChunkEncoding: [{}, stream => stream.end("hi", "nope")],
+    setDefaultEncoding: [{}, stream => { stream.setDefaultEncoding("base64"); stream.end("aGk="); }],
+  };
+  for (const [name, [options, write]] of Object.entries(writes)) outcomes.write[name] = await writtenFile(typeof options === "string" ? { encoding: options } : options, write);
+  return outcomes;
+}
+
+// Streams over descriptors and file handles, and whether they close them.
+async function streamDescriptorContracts() {
+  const path = "/tmp/filesystem-stream-descriptor.bin";
+  const reset = () => fs.writeFileSync(path, "0123456789");
+  const isOpen = fd => attempt(() => { fs.fstatSync(fd); return true; });
+  const outcomes = {};
+  reset();
+  let fd = fs.openSync(path, "r+");
+  let stream = fs.createReadStream(null, { fd, start: 2, end: 4 });
+  outcomes.read = { properties: streamProperties(stream), events: await streamEvents(stream), open: isOpen(fd) };
+  fd = fs.openSync(path, "r+");
+  fs.readSync(fd, Buffer.alloc(3));
+  stream = fs.createReadStream(undefined, { fd, autoClose: false, highWaterMark: 4 });
+  outcomes.keptOpen = { events: await streamEvents(stream), open: isOpen(fd), properties: streamProperties(stream) };
+  fs.closeSync(fd);
+  fd = fs.openSync(path, "r+");
+  stream = fs.createWriteStream("ignored", { fd, start: 4 });
+  stream.end("XY");
+  outcomes.write = { properties: streamProperties(stream), events: await streamEvents(stream), open: isOpen(fd), contents: fs.readFileSync(path, "latin1") };
+  reset();
+  let handle = await fs.promises.open(path, "r+");
+  stream = handle.createReadStream({ start: 1, end: 3 });
+  outcomes.handleRead = { properties: streamProperties(stream), events: await streamEvents(stream), handleFd: typeof handle.fd };
+  handle = await fs.promises.open(path, "r+");
+  stream = handle.createWriteStream({ start: 8 });
+  stream.end("XY");
+  outcomes.handleWrite = { properties: streamProperties(stream), events: await streamEvents(stream), handleFd: typeof handle.fd, contents: fs.readFileSync(path, "latin1") };
+  handle = await fs.promises.open(path, "r+");
+  stream = fs.createReadStream(null, { fd: handle, encoding: "latin1", autoClose: false });
+  outcomes.handleOption = { events: await streamEvents(stream), handleFd: typeof handle.fd };
+  const closing = streamEvents(stream = fs.createReadStream(null, { fd: handle, highWaterMark: 2 }));
+  await handle.close();
+  outcomes.handleClosed = { events: await closing, destroyed: stream.destroyed };
+  handle = await fs.promises.open(path, "r+");
+  outcomes.handleWithFs = attempt(() => { fs.createReadStream(null, { fd: handle, fs: {} }).destroy(); return "created"; });
+  await handle.close();
+  return outcomes;
+}
+
+// Closing and destroying streams, and the errors streams emit.
+async function streamEndingContracts() {
+  const path = "/tmp/filesystem-stream-ending.bin";
+  fs.writeFileSync(path, "abcdef");
+  const writer = () => fs.createWriteStream(path, { flags: "r+" });
+  const outcomes = {};
+  let stream = writer();
+  let events = streamEvents(stream);
+  stream.write("1");
+  const closeCallbacks = [];
+  stream.close(error => closeCallbacks.push(eventValue(error)));
+  outcomes.writeClose = { events: await events, callbacks: closeCallbacks };
+  stream.close(error => closeCallbacks.push(["again", eventValue(error)]));
+  await Promise.resolve();
+  outcomes.writeCloseAgain = [...closeCallbacks];
+  stream = fs.createWriteStream(path, { flags: "r+", autoClose: false });
+  events = streamEvents(stream);
+  stream.close(error => closeCallbacks.push(["noAutoClose", eventValue(error)]));
+  outcomes.writeCloseWithoutAutoClose = { events: await events, callbacks: closeCallbacks.slice(2) };
+  stream = fs.createReadStream(path);
+  events = streamEvents(stream);
+  const readCallbacks = [];
+  stream.close(error => readCallbacks.push(eventValue(error)));
+  outcomes.readClose = { events: await events, callbacks: readCallbacks };
+  stream = fs.createReadStream(path);
+  events = streamEvents(stream);
+  stream.destroy(Object.assign(new Error("boom"), { code: "BOOM" }));
+  outcomes.readDestroyed = await events;
+  stream = writer();
+  events = streamEvents(stream);
+  stream.write("2");
+  stream.destroy();
+  outcomes.writeDestroyed = { events: await events, written: attempt(() => eventValue(stream.write("3"))) };
+  stream = writer();
+  events = streamEvents(stream);
+  stream.end("4");
+  const lateWrites = [];
+  const lateWrite = attempt(() => eventValue(stream.write("5", error => lateWrites.push(eventValue(error)))));
+  outcomes.writeAfterEnd = { result: lateWrite, events: await events, callbacks: lateWrites };
+  stream = writer();
+  events = streamEvents(stream);
+  stream.destroySoon("6");
+  outcomes.destroySoon = await events;
+  outcomes.writes = {
+    nullChunk: await writtenFile({}, stream => stream.write(null)),
+    numberChunk: await writtenFile({}, stream => stream.write(5)),
+    noChunk: await writtenFile({}, stream => stream.end()),
+    view: await writtenFile({}, stream => stream.end(new Uint16Array([0x6968]))),
+    corked: await writtenFile({}, stream => { stream.cork(); stream.write("x"); stream.write("y"); stream.write("z"); stream.uncork(); stream.end(); }),
+    start: await writtenFile({ start: 2 }, stream => stream.end("XY")),
+    startBeyond: await writtenFile({ start: 8 }, stream => stream.end("XY")),
+  };
+  outcomes.contents = fs.readFileSync(path, "latin1");
+  outcomes.badReadDescriptor = await streamEvents(fs.createReadStream(null, { fd: 1000 }));
+  stream = fs.createWriteStream(null, { fd: 1001 });
+  events = streamEvents(stream);
+  stream.write("x", error => outcomes.badWriteCallback = eventValue(error));
+  outcomes.badWriteDescriptor = await events;
+  return outcomes;
+}
+
+// Backpressure, piping and async iteration.
+async function streamFlowContracts() {
+  const path = "/tmp/filesystem-stream-flow.bin";
+  fs.writeFileSync(path, "0123456789");
+  const outcomes = {};
+  const writer = fs.createWriteStream("/tmp/filesystem-stream-flow-copy.bin", { highWaterMark: 4 });
+  const log = [];
+  writer.on("drain", () => log.push(["drain", writer.writableLength]));
+  log.push(["first", writer.write("abc"), writer.writableLength, writer.writableNeedDrain]);
+  log.push(["second", writer.write("de"), writer.writableLength, writer.writableNeedDrain]);
+  log.push(await eventOrTimeout(writer, "drain"));
+  writer.end();
+  log.push(await eventOrTimeout(writer, "close"));
+  outcomes.backpressure = { log, contents: fs.readFileSync("/tmp/filesystem-stream-flow-copy.bin", "latin1") };
+  const source = fs.createReadStream(path, { highWaterMark: 3 });
+  const target = fs.createWriteStream("/tmp/filesystem-stream-flow-copy.bin", { flags: "r+", highWaterMark: 2 });
+  const piped = Promise.all([streamEvents(source, ["open", "end", "close"]), streamEvents(target, ["open", "pipe", "finish", "unpipe", "close"])]);
+  source.pipe(target);
+  outcomes.pipe = { events: await piped, contents: fs.readFileSync("/tmp/filesystem-stream-flow-copy.bin", "latin1") };
+  const chunks = [];
+  for await (const chunk of fs.createReadStream(path, { highWaterMark: 4, encoding: "latin1" })) chunks.push(chunk);
+  outcomes.iterated = chunks;
+  return outcomes;
+}
+
+// The stream classes, their prototypes and their exports.
+function streamShapeContracts() {
+  const created = attempt(() => {
+    const stream = fs.ReadStream("/tmp/filesystem-stream-flow.bin");
+    stream.destroy();
+    return [stream instanceof fs.ReadStream, stream instanceof Readable];
+  });
+  return {
+    classes: [fs.ReadStream, fs.WriteStream].map(Class => [typeof Class, Class.name, Class.length]),
+    factories: [fs.createReadStream.length, fs.createWriteStream.length],
+    aliases: [fs.FileReadStream === fs.ReadStream, fs.FileWriteStream === fs.WriteStream],
+    chains: [
+      Object.getPrototypeOf(fs.ReadStream.prototype) === Readable.prototype,
+      Object.getPrototypeOf(fs.WriteStream.prototype) === Writable.prototype,
+      Object.getPrototypeOf(fs.ReadStream) === Readable,
+      Object.getPrototypeOf(fs.WriteStream) === Writable,
+    ],
+    readPrototype: Object.getOwnPropertyNames(fs.ReadStream.prototype),
+    writePrototype: Object.getOwnPropertyNames(fs.WriteStream.prototype),
+    destroySoon: fs.WriteStream.prototype.destroySoon === Writable.prototype.end,
+    prototypeAutoClose: [attempt(() => fs.ReadStream.prototype.autoClose), attempt(() => fs.WriteStream.prototype.autoClose)],
+    prototypePending: [fs.ReadStream.prototype.pending, fs.WriteStream.prototype.pending],
+    withoutNew: created,
+  };
+}
+
+async function fileStreamContracts() {
+  return {
+    writeTiming: await writeStreamTiming(),
+    readTiming: await readStreamTiming(),
+    options: await streamOptionContracts(),
+    paths: await streamPathContracts(),
+    ranges: await readRangeContracts(),
+    encodings: await streamEncodingContracts(),
+    descriptors: await streamDescriptorContracts(),
+    ending: await streamEndingContracts(),
+    flow: await streamFlowContracts(),
+    shapes: streamShapeContracts(),
+  };
+}
+
 export async function filesystemContracts() {
   const result = { write: {} };
   for (const [name, write] of Object.entries(writers)) result.write[name] = await writerOutcomes(write);
@@ -1691,5 +2099,6 @@ export async function filesystemContracts() {
   result.linkedPaths = callOutcomes(linkedPathCalls, "/tmp/filesystem-linked-paths", linkedTree);
   result.underFile = callOutcomes(underFileCalls, "/tmp/filesystem-under-file", slashTree);
   result.descriptorKinds = descriptorKindContracts();
+  result.streams = await fileStreamContracts();
   return result;
 }

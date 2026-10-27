@@ -7,7 +7,7 @@ import { ipVersion } from "tokamak:host";
 import { abortError, codedError } from "./errors.mjs";
 import { GATEWAY_ADDRESS, HOST_ADDRESS, bindPort, tcpPorts, validatePort } from "./tcp-ports.mjs";
 import { inspect, types } from "./util.mjs";
-import { invalidArgument, invalidType, invalidValue, outOfRange, validateAbortSignal, validateFunction, validateObject, validateType } from "./validators.mjs";
+import { invalidArgType, invalidArgValue, outOfRange, validateAbortSignal, validateBoolean, validateFunction, validateInt32, validateNumber, validateObject, validateString, validateUint32 } from "./validators.mjs";
 
 const kLastWriteQueueSize = Symbol("kLastWriteQueueSize");
 const kTimeout = Symbol("kTimeout");
@@ -29,24 +29,12 @@ const DEFAULT_IPV4_ADDR = "0.0.0.0";
 const DEFAULT_IPV6_ADDR = "::";
 const TIMEOUT_MAX = 2 ** 31 - 1;
 
-function validateInt32(value, name, min) {
-  validateType(value, name, "number");
-  if (!Number.isInteger(value)) throw outOfRange(name, "an integer", value);
-  if (value < min || value > 2147483647) throw outOfRange(name, `>= ${min} && <= 2147483647`, value);
-}
-
 function validateFamily(family, name = "family") {
-  if (family !== "ipv4" && family !== "ipv6") throw invalidValue(name, family, "must be one of: 'ipv4', 'ipv6'");
-}
-
-function validateUint32(value, name) {
-  validateType(value, name, "number");
-  if (!Number.isInteger(value)) throw outOfRange(name, "an integer", value);
-  if (value < 0 || value > 0xffffffff) throw outOfRange(name, ">= 0 && < 4294967296", value);
+  if (family !== "ipv4" && family !== "ipv6") throw invalidArgValue(name, family, "must be one of: 'ipv4', 'ipv6'");
 }
 
 function invalidIPAddress(address) {
-  return invalidArgument(`Invalid IP address: ${address}`, "ERR_INVALID_IP_ADDRESS");
+  return codedError(TypeError, `Invalid IP address: ${address}`, "ERR_INVALID_IP_ADDRESS");
 }
 
 function invalidAddress(family) {
@@ -121,20 +109,20 @@ export class BoundSocket {
 
   constructor(options = {}) {
     validateObject(options, "options");
-    if (options.path !== undefined) throw invalidValue("options.path", options.path, "is not supported");
+    if (options.path !== undefined) throw invalidArgValue("options.path", options.path, "is not supported");
     const port = validatePort(options.port ?? 0, "options.port");
     this.#ephemeral = port === 0;
     const ipv6Only = options.ipv6Only ?? false;
-    validateType(ipv6Only, "options.ipv6Only", "boolean");
+    validateBoolean(ipv6Only, "options.ipv6Only");
     const reusePort = options.reusePort ?? false;
-    validateType(reusePort, "options.reusePort", "boolean");
+    validateBoolean(reusePort, "options.reusePort");
     let { host } = options;
     let addressType = ipv6Only ? 6 : 4;
     if (host === undefined || host === null) host = ipv6Only ? DEFAULT_IPV6_ADDR : DEFAULT_IPV4_ADDR;
     else {
-      validateType(host, "options.host", "string");
+      validateString(host, "options.host");
       addressType = isIP(host);
-      if (addressType === 0) throw invalidValue("options.host", host, "must be a numeric IP address; net.BoundSocket does not perform DNS resolution");
+      if (addressType === 0) throw invalidArgValue("options.host", host, "must be a numeric IP address; net.BoundSocket does not perform DNS resolution");
     }
     this.#address = { address: host, family: addressType === 6 ? "IPv6" : "IPv4", port: bindPort(host, port, reusePort) };
     tcpPorts.register(this, this.#address.port);
@@ -174,15 +162,15 @@ export class BoundSocket {
 
 // The host, port and reusePort of a server's listen() options.
 function listenOptions(options) {
-  if (options.path != null) throw invalidValue("options.path", options.path, "is not supported");
-  if (options.handle != null || options.fd != null) throw invalidValue("options", options, "only a net.BoundSocket handle is supported");
+  if (options.path != null) throw invalidArgValue("options.path", options.path, "is not supported");
+  if (options.handle != null || options.fd != null) throw invalidArgValue("options", options, "only a net.BoundSocket handle is supported");
   const port = options.port == null ? 0 : validatePort(options.port, "options.port");
   const reusePort = options.reusePort ?? false;
-  validateType(reusePort, "options.reusePort", "boolean");
+  validateBoolean(reusePort, "options.reusePort");
   let { host } = options;
   if (host === undefined) host = options.ipv6Only ? DEFAULT_IPV6_ADDR : DEFAULT_IPV4_ADDR;
   else {
-    validateType(host, "options.host", "string");
+    validateString(host, "options.host");
     if (host === "localhost") host = "127.0.0.1";
   }
   return { host, port, reusePort };
@@ -217,7 +205,7 @@ export class Server extends EventEmitter {
     }
     let { keepAliveInitialDelay } = options;
     if (keepAliveInitialDelay !== undefined) {
-      validateType(keepAliveInitialDelay, "options.keepAliveInitialDelay", "number");
+      validateNumber(keepAliveInitialDelay, "options.keepAliveInitialDelay");
       if (keepAliveInitialDelay < 0) keepAliveInitialDelay = 0;
     }
     this.allowHalfOpen = options.allowHalfOpen ?? false;
@@ -379,13 +367,13 @@ function adoptHandle(socket, handle) {
 
 export function Socket(options) {
   if (!(this instanceof Socket)) return new Socket(options);
-  if (options?.objectMode) throw invalidValue("options.objectMode", options.objectMode, "is not supported");
+  if (options?.objectMode) throw invalidArgValue("options.objectMode", options.objectMode, "is not supported");
   if (options?.readableObjectMode || options?.writableObjectMode) {
     const name = options.readableObjectMode ? "readableObjectMode" : "writableObjectMode";
-    throw invalidValue(`options.${name}`, options.readableObjectMode || options.writableObjectMode, "is not supported");
+    throw invalidArgValue(`options.${name}`, options.readableObjectMode || options.writableObjectMode, "is not supported");
   }
   if (options?.keepAliveInitialDelay !== undefined) {
-    validateType(options.keepAliveInitialDelay, "options.keepAliveInitialDelay", "number");
+    validateNumber(options.keepAliveInitialDelay, "options.keepAliveInitialDelay");
     if (options.keepAliveInitialDelay < 0) options.keepAliveInitialDelay = 0;
   }
   options = typeof options === "number" ? { fd: options } : { ...options };
@@ -498,7 +486,7 @@ function concatenatedChunks(chunks) {
   return Buffer.concat(chunks.map(({ chunk, encoding }) => {
     if (typeof chunk === "string") return Buffer.from(chunk, encoding);
     if (types.isArrayBufferView(chunk)) return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-    throw invalidType("chunk", "of type string or an instance of ArrayBufferView", chunk);
+    throw invalidArgType("chunk", ["string", "ArrayBufferView"], chunk);
   }));
 }
 
@@ -641,10 +629,10 @@ Socket.prototype.connect = function (...args) {
   if (cb !== null) this.once("connect", cb);
   if (this._parentWrap?.connecting) return this;
   if (options.port === undefined && options.path == null) {
-    throw invalidArgument("The \"options\" or \"port\" or \"path\" argument must be specified", "ERR_MISSING_ARGS");
+    throw codedError(TypeError, "The \"options\" or \"port\" or \"path\" argument must be specified", "ERR_MISSING_ARGS");
   }
   if (this.write !== Socket.prototype.write) this.write = Socket.prototype.write;
-  if (options.path != null) throw invalidValue("path", options.path, "is not supported");
+  if (options.path != null) throw invalidArgValue("path", options.path, "is not supported");
   this[kBytesRead] = 0;
   this[kBytesWritten] = 0;
   if (this._handle) reconnect(this, options);
@@ -730,14 +718,14 @@ function initializeConnection(socket, options) {
   const { host = "localhost", family, hints, autoSelectFamily, autoSelectFamilyAttemptTimeout, lookup, localAddress, localPort } = options;
   let { port } = options;
   if (socket[kBoundSource] != null && (localAddress !== undefined || localPort !== undefined)) {
-    throw invalidValue("options", options, "localAddress and localPort cannot be used with an adopted bound socket");
+    throw invalidArgValue("options", options, "localAddress and localPort cannot be used with an adopted bound socket");
   }
   if (localAddress && !isIP(localAddress)) throw invalidIPAddress(localAddress);
-  if (localPort) validateType(localPort, "options.localPort", "number");
-  if (typeof port !== "number" && typeof port !== "string") throw invalidType("options.port", "one of type number or string", port);
+  if (localPort) validateNumber(localPort, "options.localPort");
+  if (typeof port !== "number" && typeof port !== "string") throw invalidArgType("options.port", ["number", "string"], port);
   validatePort(port);
   port |= 0;
-  if (autoSelectFamily != null) validateType(autoSelectFamily, "options.autoSelectFamily", "boolean");
+  if (autoSelectFamily != null) validateBoolean(autoSelectFamily, "options.autoSelectFamily");
   if (autoSelectFamilyAttemptTimeout != null) validateInt32(autoSelectFamilyAttemptTimeout, "options.autoSelectFamilyAttemptTimeout", 1);
   socket._unrefTimer();
   socket.connecting = true;
@@ -756,7 +744,7 @@ function initializeConnection(socket, options) {
       return;
     }
     if (isIP(address) === 0) throw invalidIPAddress(address);
-    if (![4, 6, "IPv4", "IPv6"].includes(resolvedFamily)) throw invalidValue("family", resolvedFamily, "must be 4 or 6");
+    if (![4, 6, "IPv4", "IPv6"].includes(resolvedFamily)) throw invalidArgValue("family", resolvedFamily, "must be 4 or 6");
     openConnection(socket, connection, address, resolvedFamily);
   });
 }
@@ -822,7 +810,7 @@ function onConnectionClosed() {
 // The view a read loop reads into: `buffer`, or its continuation over the
 // store that a previous read transferred it to.
 function readView(socket, buffer) {
-  if (!types.isUint8Array(buffer)) throw invalidType("onread.buffer", "an instance of Buffer or Uint8Array", buffer);
+  if (!types.isUint8Array(buffer)) throw invalidArgType("onread.buffer", ["Buffer", "Uint8Array"], buffer);
   const view = socket[kBufferContinuations]?.get(buffer) ?? buffer;
   if (view.byteLength === 0) throw Object.assign(codedError(Error, "read ENOBUFS", "ENOBUFS"), { syscall: "read" });
   return view;
@@ -894,7 +882,7 @@ function onReadableStreamEnd() {
 }
 
 function getTimerDuration(msecs, name) {
-  validateType(msecs, name, "number");
+  validateNumber(msecs, name);
   if (msecs < 0 || !Number.isFinite(msecs)) throw outOfRange(name, "a non-negative finite number", msecs);
   return Math.min(msecs, TIMEOUT_MAX);
 }
@@ -1015,7 +1003,7 @@ function ruleText(rule) {
 // The address and family of `value`: a SocketAddress, or an address string of `family`.
 function addressOf(value, family, name) {
   if (value instanceof SocketAddress) return { address: value.address, family: value.family };
-  validateType(value, name, "string");
+  validateString(value, name);
   validateFamily(family);
   return { address: value, family };
 }
@@ -1045,7 +1033,7 @@ function addJSONRule(list, item) {
 
 function parseRulesJSON(data) {
   try { return JSON.parse(data); }
-  catch { throw invalidValue("data", data, "must be valid JSON"); }
+  catch { throw invalidArgValue("data", data, "must be valid JSON"); }
 }
 
 export class BlockList {
@@ -1062,19 +1050,19 @@ export class BlockList {
   addRange(start, end, family = "ipv4") {
     const first = addressOf(start, family, "start");
     const endIsAddress = end instanceof SocketAddress;
-    if (!endIsAddress) validateType(end, "end", "string");
-    else if (start instanceof SocketAddress && end.family !== first.family) throw invalidValue("end", end, "must be same family as start");
+    if (!endIsAddress) validateString(end, "end");
+    else if (start instanceof SocketAddress && end.family !== first.family) throw invalidArgValue("end", end, "must be same family as start");
     const last = endIsAddress ? end.address : end;
     requireAddress(first.address, first.family);
     requireAddress(last, first.family);
     const number = first.family === "ipv4" ? ipv4Number : ipv6Number;
-    if (number(first.address) > number(last)) throw invalidValue("start", first.address, "must come before end");
+    if (number(first.address) > number(last)) throw invalidArgValue("start", first.address, "must come before end");
     this.#rules.push({ kind: "range", family: first.family, start: first.address, end: last });
   }
 
   addSubnet(network, prefix, family = "ipv4") {
     const subnet = addressOf(network, family, "network");
-    validateType(prefix, "prefix", "number");
+    validateNumber(prefix, "prefix");
     if (!Number.isInteger(prefix)) throw outOfRange("prefix", "an integer", prefix);
     if (prefix !== (prefix | 0)) throw outOfRange("prefix", ">= -2147483648 && <= 2147483647", prefix);
     const bits = subnet.family === "ipv4" ? 32 : 128;
@@ -1101,7 +1089,7 @@ export class BlockList {
   // Iterating `data` rather than the parsed rules makes JSON text add no rules.
   fromJSON(data) {
     const rules = typeof data === "string" ? parseRulesJSON(data) : data;
-    if (!Array.isArray(rules)) throw invalidType("data", "an instance of Array", rules);
+    if (!Array.isArray(rules)) throw invalidArgType("data", "Array", rules);
     for (const item of data) addJSONRule(this, item);
   }
 }
@@ -1115,15 +1103,15 @@ export class SocketAddress {
   static isSocketAddress(value) { return value instanceof SocketAddress; }
 
   constructor(options = {}) {
-    if (options === null || typeof options !== "object" || Array.isArray(options)) throw invalidType("options", "of type object", options);
+    if (options === null || typeof options !== "object" || Array.isArray(options)) throw invalidArgType("options", "object", options);
     const requestedFamily = options.family || "ipv4";
     const family = typeof requestedFamily.toLowerCase === "function" ? requestedFamily.toLowerCase() : requestedFamily;
     validateFamily(family, "options.family");
     const { address = family === "ipv4" ? "127.0.0.1" : "::", port = 0, flowlabel = 0 } = options;
-    validateType(address, "options.address", "string");
+    validateString(address, "options.address");
     const portNumber = validatePort(port, "options.port");
     validateUint32(flowlabel, "options.flowlabel");
-    if (!isFamilyAddress(address, family)) throw invalidArgument("Invalid socket address", "ERR_INVALID_ADDRESS");
+    if (!isFamilyAddress(address, family)) throw codedError(TypeError, "Invalid socket address", "ERR_INVALID_ADDRESS");
     this.#address = address;
     this.#port = portNumber;
     this.#family = family;
@@ -1144,7 +1132,7 @@ export class SocketAddress {
 
   // The address `input` gives as "host[:port]", or undefined when it is not an IP socket address.
   static parse(input) {
-    validateType(input, "input", "string");
+    validateString(input, "input");
     try {
       const url = URL.parse(`http://${input}`);
       if (url === null) return undefined;
@@ -1177,7 +1165,7 @@ export function getDefaultAutoSelectFamily() {
 }
 
 export function setDefaultAutoSelectFamily(value) {
-  if (value) throw invalidValue("val", value, "is invalid");
+  if (value) throw invalidArgValue("val", value, "is invalid");
 }
 
 // Read back only; no connection uses it.
