@@ -223,28 +223,56 @@ function receivedValue(value) {
   return `type ${typeof value} (${inspected.length > 25 ? `${inspected.slice(0, 25)}...` : inspected})`;
 }
 
+// "property" for a dotted name such as "options.port", "argument" otherwise.
+function nameKind(name) {
+  return name.includes(".") ? "property" : "argument";
+}
+
+function invalidType(name, expected, value) {
+  return invalidArgument(`The "${name}" ${nameKind(name)} must be ${expected}. Received ${receivedValue(value)}`, "ERR_INVALID_ARG_TYPE");
+}
+
 function validateType(value, name, type) {
-  if (typeof value !== type) throw invalidArgument(`The "${name}" argument must be of type ${type}. Received ${receivedValue(value)}`, "ERR_INVALID_ARG_TYPE");
+  if (typeof value !== type) throw invalidType(name, `of type ${type}`, value);
 }
 
 function invalidValue(name, value, reason) {
-  return invalidArgument(`The argument '${name}' ${reason}. Received ${inspect(value)}`);
+  return invalidArgument(`The ${nameKind(name)} '${name}' ${reason}. Received ${inspect(value)}`);
 }
 
 function outOfRange(name, range, value) {
   return codedError(RangeError, `The value of "${name}" is out of range. It must be ${range}. Received ${inspect(value)}`, "ERR_OUT_OF_RANGE");
 }
 
-function validateFamily(family) {
-  if (family !== "ipv4" && family !== "ipv6") throw invalidValue("family", family, "must be one of: 'ipv4', 'ipv6'");
+function validateFamily(family, name = "family") {
+  if (family !== "ipv4" && family !== "ipv6") throw invalidValue(name, family, "must be one of: 'ipv4', 'ipv6'");
+}
+
+// The port `port` names, a number or a numeric string from 0 to 65535.
+function validatePort(port, name) {
+  const numeric = typeof port === "number" || (typeof port === "string" && port.trim() !== "");
+  if (!numeric || +port !== +port >>> 0 || +port > 0xffff) {
+    throw codedError(Error, `${name} should be >= 0 and < 65536. Received ${typeof port}.`, "ERR_SOCKET_BAD_PORT");
+  }
+  return +port | 0;
+}
+
+function validateUint32(value, name) {
+  validateType(value, name, "number");
+  if (!Number.isInteger(value)) throw outOfRange(name, "an integer", value);
+  if (value < 0 || value > 0xffffffff) throw outOfRange(name, ">= 0 && < 4294967296", value);
 }
 
 function invalidAddress(family) {
   return invalidArgument(`Invalid IP address: Invalid ${family === "ipv4" ? "IPv4" : "IPv6"} address`, "ERR_INVALID_IP_ADDRESS");
 }
 
+function isFamilyAddress(address, family) {
+  return ipVersion(address) === (family === "ipv4" ? 4 : 6);
+}
+
 function requireAddress(address, family) {
-  if (ipVersion(address) !== (family === "ipv4" ? 4 : 6)) throw invalidAddress(family);
+  if (!isFamilyAddress(address, family)) throw invalidAddress(family);
 }
 
 function ipv4Parts(address) {
@@ -309,55 +337,149 @@ function ruleText(rule) {
   return `Subnet: ${family} ${rule.network}/${rule.prefix}`;
 }
 
+// The address and family of `value`: a SocketAddress, or an address string of `family`.
+function addressOf(value, family, name) {
+  if (value instanceof SocketAddress) return { address: value.address, family: value.family };
+  validateType(value, name, "string");
+  validateFamily(family);
+  return { address: value, family };
+}
+
+// `options` one level deeper, for the value a custom inspection formats.
+function nestedInspectOptions(options) {
+  return { ...options, depth: options.depth == null ? null : options.depth - 1 };
+}
+
+// A BlockList JSON rule's family marker, pattern and the call that adds it.
+const jsonRules = [
+  ["IPv4", /Subnet: IPv4 (\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})/, (list, [, network, prefix]) => list.addSubnet(network, parseInt(prefix, 10))],
+  ["IPv4", /Address: IPv4 (\d{1,3}(?:\.\d{1,3}){3})/, (list, [, address]) => list.addAddress(address)],
+  ["IPv4", /Range: IPv4 (\d{1,3}(?:\.\d{1,3}){3})-(\d{1,3}(?:\.\d{1,3}){3})/, (list, [, start, end]) => list.addRange(start, end)],
+  ["IPv6", /Subnet: IPv6 ([0-9a-fA-F:]{1,39})\/(\d{1,3})/i, (list, [, network, prefix]) => list.addSubnet(network, parseInt(prefix, 10), "ipv6")],
+  ["IPv6", /Address: IPv6 ([0-9a-fA-F:]{1,39})/i, (list, [, address]) => list.addAddress(address, "ipv6")],
+  ["IPv6", /Range: IPv6 ([0-9a-fA-F:]{1,39})-([0-9a-fA-F:]{1,39})/i, (list, [, start, end]) => list.addRange(start, end, "ipv6")],
+];
+
+// Adds the first rule `item` describes to `list`; an item describing none is skipped.
+function addJSONRule(list, item) {
+  for (const [family, pattern, add] of jsonRules) {
+    const match = item.includes(family) && item.match(pattern);
+    if (match) return add(list, match);
+  }
+}
+
+function parseRulesJSON(data) {
+  try { return JSON.parse(data); }
+  catch { throw invalidValue("data", data, "must be valid JSON"); }
+}
+
 export class BlockList {
   #rules = [];
 
   static isBlockList(value) { return value instanceof BlockList; }
 
   addAddress(address, family = "ipv4") {
-    validateType(address, "address", "string");
-    validateFamily(family);
-    requireAddress(address, family);
-    this.#rules.push({ kind: "address", family, address });
+    const rule = addressOf(address, family, "address");
+    requireAddress(rule.address, rule.family);
+    this.#rules.push({ kind: "address", ...rule });
   }
 
   addRange(start, end, family = "ipv4") {
-    validateType(start, "start", "string");
-    validateFamily(family);
-    validateType(end, "end", "string");
-    requireAddress(start, family);
-    requireAddress(end, family);
-    const number = family === "ipv4" ? ipv4Number : ipv6Number;
-    if (number(start) > number(end)) throw invalidValue("start", start, "must come before end");
-    this.#rules.push({ kind: "range", family, start, end });
+    const first = addressOf(start, family, "start");
+    const endIsAddress = end instanceof SocketAddress;
+    if (!endIsAddress) validateType(end, "end", "string");
+    else if (start instanceof SocketAddress && end.family !== first.family) throw invalidValue("end", end, "must be same family as start");
+    const last = endIsAddress ? end.address : end;
+    requireAddress(first.address, first.family);
+    requireAddress(last, first.family);
+    const number = first.family === "ipv4" ? ipv4Number : ipv6Number;
+    if (number(first.address) > number(last)) throw invalidValue("start", first.address, "must come before end");
+    this.#rules.push({ kind: "range", family: first.family, start: first.address, end: last });
   }
 
   addSubnet(network, prefix, family = "ipv4") {
-    validateType(network, "network", "string");
-    validateFamily(family);
+    const subnet = addressOf(network, family, "network");
     validateType(prefix, "prefix", "number");
     if (!Number.isInteger(prefix)) throw outOfRange("prefix", "an integer", prefix);
     if (prefix !== (prefix | 0)) throw outOfRange("prefix", ">= -2147483648 && <= 2147483647", prefix);
-    const bits = family === "ipv4" ? 32 : 128;
+    const bits = subnet.family === "ipv4" ? 32 : 128;
     if (prefix < 0 || prefix > bits) throw outOfRange("prefix", `between 0 and ${bits}`, prefix);
-    requireAddress(network, family);
-    this.#rules.push({ kind: "subnet", family, network, prefix });
+    requireAddress(subnet.address, subnet.family);
+    this.#rules.push({ kind: "subnet", family: subnet.family, network: subnet.address, prefix });
   }
 
   check(address, family = "ipv4") {
-    validateType(address, "address", "string");
-    validateFamily(family);
-    if (ipVersion(address) !== (family === "ipv4" ? 4 : 6)) return false;
-    return this.#rules.some(rule => ruleMatches(rule, address, family));
+    const candidate = addressOf(address, family, "address");
+    if (!isFamilyAddress(candidate.address, candidate.family)) return false;
+    return this.#rules.some(rule => ruleMatches(rule, candidate.address, candidate.family));
   }
 
   get rules() { return this.#rules.map(ruleText); }
 
+  [inspect.custom](depth, options) {
+    if (depth < 0) return "[BlockList]";
+    return `BlockList {\n  rules: ${inspect(this.rules, nestedInspectOptions(options))}\n}`;
+  }
+
   toJSON() { return this.rules; }
+
+  // Iterating `data` rather than the parsed rules makes JSON text add no rules.
+  fromJSON(data) {
+    const rules = typeof data === "string" ? parseRulesJSON(data) : data;
+    if (!Array.isArray(rules)) throw invalidType("data", "an instance of Array", rules);
+    for (const item of data) addJSONRule(this, item);
+  }
 }
 
 export class SocketAddress {
-  constructor(options = {}) { Object.assign(this, options); }
+  #address;
+  #port;
+  #family;
+  #flowlabel;
+
+  static isSocketAddress(value) { return value instanceof SocketAddress; }
+
+  constructor(options = {}) {
+    if (options === null || typeof options !== "object" || Array.isArray(options)) throw invalidType("options", "of type object", options);
+    const requestedFamily = options.family || "ipv4";
+    const family = typeof requestedFamily.toLowerCase === "function" ? requestedFamily.toLowerCase() : requestedFamily;
+    validateFamily(family, "options.family");
+    const { address = family === "ipv4" ? "127.0.0.1" : "::", port = 0, flowlabel = 0 } = options;
+    validateType(address, "options.address", "string");
+    const portNumber = validatePort(port, "options.port");
+    validateUint32(flowlabel, "options.flowlabel");
+    if (!isFamilyAddress(address, family)) throw invalidArgument("Invalid socket address", "ERR_INVALID_ADDRESS");
+    this.#address = address;
+    this.#port = portNumber;
+    this.#family = family;
+    this.#flowlabel = flowlabel;
+  }
+
+  get address() { return this.#address; }
+  get port() { return this.#port; }
+  get family() { return this.#family; }
+  get flowlabel() { return this.#flowlabel; }
+
+  [inspect.custom](depth, options) {
+    if (depth < 0) return this;
+    return `SocketAddress ${inspect(this.toJSON(), nestedInspectOptions(options))}`;
+  }
+
+  toJSON() { return { address: this.address, port: this.port, family: this.family, flowlabel: this.flowlabel }; }
+
+  // The address `input` gives as "host[:port]", or undefined when it is not an IP socket address.
+  static parse(input) {
+    validateType(input, "input", "string");
+    try {
+      const url = URL.parse(`http://${input}`);
+      if (url === null) return undefined;
+      const port = url.port | 0;
+      if (url.hostname.startsWith("[") && url.hostname.endsWith("]")) return new SocketAddress({ address: url.hostname.slice(1, -1), port, family: "ipv6" });
+      return new SocketAddress({ address: url.hostname, port });
+    } catch {
+      return undefined;
+    }
+  }
 }
 
 export function connect(...args) {
