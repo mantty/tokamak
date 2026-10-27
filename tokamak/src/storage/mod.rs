@@ -15,13 +15,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rquickjs::{Ctx, Module};
 use serde::Serialize;
 
 use crate::env_vars::{StorageBinding, store_id_problem};
 use crate::linked::{OpenedStorage, StorageCatalog, StorageEntry, StorageRuntime};
+use crate::lock;
 use crate::packaging::PackageLayout;
 use d1::{D1Database, Migrations};
 use kv::KvNamespace;
@@ -335,10 +336,6 @@ fn kind_of(binding: &StorageBinding) -> &'static str {
         StorageBinding::D1 { .. } => D1,
         StorageBinding::R2 { .. } => R2,
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn text(error: impl std::fmt::Display) -> String {

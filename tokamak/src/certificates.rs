@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
@@ -25,7 +25,7 @@ use crate::cert_validation::{
     certificate_names_host, certificate_not_before, pem_contents,
 };
 use crate::lifecycle_events::{Event, Events};
-use crate::{Error, Result};
+use crate::{Error, Result, lock};
 
 /// How long after its validity starts a leaf certificate is renewed.
 const LEAF_RENEWAL: Duration = Duration::from_hours(30 * 24);
@@ -903,10 +903,7 @@ impl Certificates {
 
     /// The gateway's TLS configuration for the current server certificate, built once per renewal.
     pub(crate) fn server_config(&self) -> Result<Arc<ServerConfig>> {
-        let mut cached = self
-            .server_config
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut cached = lock(&self.server_config);
         if let Some(config) = &*cached {
             return Ok(Arc::clone(config));
         }
@@ -951,10 +948,7 @@ impl Certificates {
             *held = bundle;
         }
         // Cleared after the bundle lock is released: `server_config` takes them in the other order.
-        *self
-            .server_config
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = None;
+        *lock(&self.server_config) = None;
         Ok(())
     }
 

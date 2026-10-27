@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use hyper::upgrade::Upgraded;
@@ -17,6 +17,7 @@ use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::gateway::HandlerError;
+use crate::lock;
 use crate::native_protocol::{self, Header};
 use crate::plugin_calls::{Body, Overflow, PluginCalls, PluginReply, error};
 use crate::transport::{parse_websocket_frame, write_frame};
@@ -77,14 +78,14 @@ impl DevSocket {
             event.to_vec(),
         );
         let (sender, answer) = oneshot::channel();
-        connection.pending().insert(id, sender);
+        lock(&connection.pending).insert(id, sender);
         let Ok(Ok(())) = tokio::time::timeout_at(deadline, connection.outgoing.send(message)).await
         else {
-            connection.pending().remove(&id);
+            lock(&connection.pending).remove(&id);
             return Err(closed().into());
         };
         let answer = tokio::time::timeout_at(deadline, answer).await;
-        connection.pending().remove(&id);
+        lock(&connection.pending).remove(&id);
         answer
             .map_err(|_| late())?
             .map_err(|_| closed())?
@@ -107,7 +108,7 @@ impl DevSocket {
         })
         .await;
         self.connection.send_replace(None);
-        connection.pending().clear();
+        lock(&connection.pending).clear();
         for request in requests.tasks.values() {
             request.abort();
         }
@@ -267,13 +268,9 @@ async fn send_result(
 }
 
 impl Connection {
-    fn pending(&self) -> std::sync::MutexGuard<'_, PendingReplies> {
-        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// Passes the plugin's `answer` to the delivery of the event `id`.
     fn answer(&self, id: u64, answer: Result<&[u8], &str>) {
-        if let Some(sender) = self.pending().remove(&id) {
+        if let Some(sender) = lock(&self.pending).remove(&id) {
             let _ = sender.send(answer.map(<[u8]>::to_vec).map_err(str::to_owned));
         }
     }

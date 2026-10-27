@@ -2,10 +2,11 @@
 use super::gateway_loop;
 use super::{
     Delivery, EventJob, Handle, Handler, HandlerError, Job, JobResponse, Listener, Port, Runtime,
-    Shared, close_connections, execute_job, listener_was_lost, lock_connections, probe_gateway,
-    publish_replacement, replace_lost_listener, serve_connection, wait_for_gateway,
+    Shared, close_connections, execute_job, listener_was_lost, probe_gateway, publish_replacement,
+    replace_lost_listener, serve_connection, wait_for_gateway,
 };
 use crate::lifecycle_events::{Event, Events};
+use crate::lock;
 use crate::tests::{HOST, certificates, request};
 use crate::transport::HttpResponse;
 use flume::Receiver;
@@ -157,7 +158,7 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
     });
 
     let deadline = Instant::now() + Duration::from_secs(5);
-    while lock_connections(&shared).is_empty() {
+    while lock(&shared.connections).is_empty() {
         if Instant::now() > deadline {
             return Err("the connection was never registered".into());
         }
@@ -167,7 +168,7 @@ fn shutdown_closes_registered_connections() -> Result<(), Box<dyn std::error::Er
     outcome
         .recv_timeout(Duration::from_secs(5))
         .map_err(|_| "the connection did not close")??;
-    assert!(lock_connections(&shared).is_empty());
+    assert!(lock(&shared.connections).is_empty());
     drop(client);
     Ok(())
 }

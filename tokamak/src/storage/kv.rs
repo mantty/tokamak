@@ -12,7 +12,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use super::keys::{cursor, cursor_key, prefix_end};
-use super::{Location, Open, SQLITE_FILES, lock, sqlite, text};
+use super::{Location, Open, SQLITE_FILES, sqlite, text};
+use crate::lock;
 
 // Lengths are in UTF-8 bytes, but a bulk read's total is in UTF-16 units of
 // its values decoded as text, and is at most one value's length.

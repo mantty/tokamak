@@ -5,23 +5,8 @@ use std::fs;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use thiserror::Error;
 
-use crate::packaging::PackageLayout;
-
-/// Failures reading or writing the packaged Worker environment.
-#[derive(Debug, Error)]
-pub enum Error {
-    /// Operating-system IO failed.
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    /// JSON encoding or decoding failed.
-    #[error(transparent)]
-    Json(#[from] serde_json::Error),
-}
-
-/// Result type for packaged environment operations.
-pub type Result<T> = std::result::Result<T, Error>;
+use crate::packaging::{PackageLayout, Result};
 
 /// Bindings that tokamak passes to a Worker at runtime.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -145,10 +130,9 @@ pub fn write(layout: &PackageLayout, environment: &WorkerEnvironment) -> Result<
 /// # Errors
 ///
 /// Returns an error when the environment cannot be read or parsed.
-pub fn load(layout: &PackageLayout) -> Result<WorkerEnvironment> {
-    Ok(serde_json::from_slice(&fs::read(
-        layout.worker_environment(),
-    )?)?)
+#[cfg(feature = "native")]
+pub(crate) fn load(layout: &PackageLayout) -> Result<WorkerEnvironment> {
+    crate::packaging::read_json(&layout.worker_environment())
 }
 
 #[cfg(test)]
@@ -157,8 +141,8 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{ServiceBinding, StorageBinding, WorkerEnvironment, load, store_id_problem, write};
-    use crate::packaging::PackageLayout;
+    use super::{ServiceBinding, StorageBinding, WorkerEnvironment, store_id_problem, write};
+    use crate::packaging::{PackageLayout, read_json};
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -188,7 +172,10 @@ mod tests {
 
         write(&layout, &environment)?;
 
-        assert_eq!(load(&layout)?, environment);
+        assert_eq!(
+            read_json::<WorkerEnvironment>(&layout.worker_environment())?,
+            environment
+        );
         Ok(())
     }
 

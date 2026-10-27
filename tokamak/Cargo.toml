@@ -56,6 +56,7 @@ native = [
     "dep:icu_provider",
     "dep:icu_provider_blob",
     "dep:icu_provider_adapters",
+    "dep:indexmap",
     "dep:jiff",
     "dep:lol_html",
     "dep:libz-rs-sys",
@@ -120,7 +121,7 @@ icu = { workspace = true, optional = true }
 icu_provider = { workspace = true, optional = true }
 icu_provider_blob = { workspace = true, optional = true }
 icu_provider_adapters = { workspace = true, optional = true }
-indexmap.workspace = true
+indexmap = { workspace = true, optional = true }
 jiff = { workspace = true, optional = true }
 lol_html = { workspace = true, optional = true }
 libz-rs-sys = { workspace = true, optional = true }
@@ -144,7 +145,6 @@ const-oid = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
-mime_guess.workspace = true
 # Independent certificate tooling that checks the generated certificates.
 rcgen = { workspace = true, features = ["pem", "x509-parser"] }
 rustls.workspace = true

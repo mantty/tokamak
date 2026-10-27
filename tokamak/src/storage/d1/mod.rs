@@ -20,7 +20,8 @@ use rusqlite::{Connection, TransactionState};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 
-use super::{Location, Open, SQLITE_FILES, lock, sqlite, text};
+use super::{Location, Open, SQLITE_FILES, sqlite, text};
+use crate::lock;
 use authorizer::Decision;
 use statement::{Output, Param, Value};
 

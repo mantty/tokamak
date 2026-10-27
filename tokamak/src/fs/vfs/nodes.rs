@@ -6,8 +6,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 
-use super::path::{checked_size, decoded_name, lock, read_bytes, read_memory, write_memory};
+use super::path::{checked_size, decoded_name, read_bytes, read_memory, write_memory};
 use super::{Bundle, DirectoryEntry, Error, ErrorKind, NodeType, Result, Stat};
+use crate::lock;
 
 #[derive(Clone)]
 pub(super) struct OpenFile {

@@ -83,8 +83,8 @@ use thiserror::Error as Fail;
 #[cfg(feature = "native")]
 pub use certificates::{Certificates, Challenge, Decision, ServerIdentity};
 pub use env_vars::{
-    Error as WorkerEnvironmentError, ServiceBinding, StorageBinding, WorkerEnvironment,
-    load as load_worker_environment, store_id_problem, write as write_worker_environment,
+    ServiceBinding, StorageBinding, WorkerEnvironment, store_id_problem,
+    write as write_worker_environment,
 };
 #[cfg(feature = "native")]
 pub use lifecycle_events::Event;
@@ -144,10 +144,6 @@ pub enum Error {
     #[cfg(feature = "native")]
     #[error(transparent)]
     Bundle(#[from] BundleError),
-    /// The packaged Worker environment is invalid.
-    #[cfg(feature = "native")]
-    #[error(transparent)]
-    Environment(#[from] WorkerEnvironmentError),
     /// Certificate state is held by a thread that stopped unexpectedly.
     #[cfg(feature = "native")]
     #[error("certificate state is unavailable")]
@@ -160,6 +156,14 @@ pub enum Error {
     #[cfg(feature = "native")]
     #[error("{0}")]
     Fetch(String),
+}
+
+/// The guard of `mutex`, whose data stays usable after a panic poisoned it.
+#[cfg(feature = "native")]
+pub(crate) fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Return the URL a shell's `WebView` loads.

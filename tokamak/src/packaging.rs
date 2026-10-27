@@ -299,7 +299,7 @@ fn write_file(path: &Path, contents: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
+pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
 

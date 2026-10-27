@@ -22,7 +22,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 
-use super::{Location, Open, lock, remove_entries, sqlite, text};
+use super::{Location, Open, remove_entries, sqlite, text};
+use crate::lock;
 pub(crate) use body::{Body, BodyReader, BodyWriter, Checksum};
 use conditional::Conditional;
 pub(crate) use failure::Failure;

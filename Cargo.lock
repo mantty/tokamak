@@ -4501,7 +4501,6 @@ dependencies = [
  "md-5",
  "md4",
  "mime",
- "mime_guess",
  "mio",
  "p256",
  "p384",

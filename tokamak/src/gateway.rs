@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::certificates::Certificates;
 use crate::lifecycle_events::{Event, Events};
+use crate::lock;
 use crate::readiness::{Readiness, Waker};
 
 use crate::transport::{
@@ -573,22 +574,13 @@ struct ConnectionGuard {
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        lock_connections(&self.shared)
+        lock(&self.shared.connections)
             .retain(|connection| !Arc::ptr_eq(connection, &self.connection));
     }
 }
 
-fn lock_connections(shared: &Shared) -> MutexGuard<'_, Vec<Arc<Connection>>> {
-    lock(&shared.connections)
-}
-
-/// The guard of `mutex`, whose data stays usable after a panic poisoned it.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 fn close_connections(shared: &Shared) {
-    for connection in lock_connections(shared).iter() {
+    for connection in lock(&shared.connections).iter() {
         connection.cancelled.store(true, Ordering::Release);
         let _ = connection.stream.shutdown(Shutdown::Both);
         #[cfg(windows)]
@@ -665,7 +657,7 @@ fn serve_connection(shared: &Arc<Shared>, stream: TcpStream) -> io::Result<()> {
         stream: stream.try_clone()?,
         cancelled: AtomicBool::new(false),
     });
-    lock_connections(shared).push(Arc::clone(&connection));
+    lock(&shared.connections).push(Arc::clone(&connection));
     let _guard = ConnectionGuard {
         shared: Arc::clone(shared),
         connection: Arc::clone(&connection),

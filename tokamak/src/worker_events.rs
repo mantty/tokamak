@@ -1,11 +1,12 @@
 //! Events delivered to the Worker's listeners.
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::gateway;
+use crate::lock;
 
 /// How long the Worker has for `start`.
 const START_DEADLINE: Duration = Duration::from_secs(10);
@@ -131,10 +132,6 @@ impl std::fmt::Debug for WorkerEvents {
             .debug_struct("WorkerEvents")
             .finish_non_exhaustive()
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]

@@ -10,8 +10,9 @@ use std::sync::{Arc, Mutex};
 use crate::fs::vfs::{
     CopyOptions, DirectoryEntry, Error as VfsError, ErrorKind, MAX_PATH_LENGTH, MAX_PATH_SEGMENTS,
     NodeType, OpenOptions, Result as VfsResult, Stat, VirtualFileSystem, escape_at,
-    escaped_in_names, lock, push_escape,
+    escaped_in_names, push_escape,
 };
+use crate::lock;
 use rquickjs::function::{IntoJsFunc, Opt, Rest, This};
 use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{

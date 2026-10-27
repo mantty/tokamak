@@ -7,10 +7,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::json;
 use tokio::sync::{Notify, mpsc, oneshot};
+
+use crate::lock;
 
 /// The plugin ID the runtime answers calls to itself.
 const RUNTIME_PLUGIN: &str = "tokamak";
@@ -441,10 +443,6 @@ impl Drop for Registration {
             handler.cancel(self.id);
         }
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// A failed result, which ends a subscription.
