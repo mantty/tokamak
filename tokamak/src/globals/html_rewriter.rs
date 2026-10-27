@@ -16,7 +16,7 @@ use rquickjs::function::Async;
 use rquickjs::{Ctx, Exception, Function, Object, TypedArray, Value};
 use serde_json::json;
 
-use parser::{Event, Handler, Port, Releases, Reply};
+use parser::{Event, Handler, Port, Release, Releases, Reply};
 
 #[allow(clippy::needless_pass_by_value)]
 pub(super) fn validate_selector(ctx: Ctx<'_>, selector: String) -> rquickjs::Result<()> {
@@ -64,6 +64,33 @@ struct State {
 }
 
 impl State {
+    fn new(handlers: Vec<Handler>, encoding: AsciiCompatibleEncoding) -> Self {
+        Self {
+            handlers: Some(handlers),
+            encoding,
+            channels: None,
+            ended: false,
+            releases: Releases::default(),
+        }
+    }
+
+    /// The registrations the parser released since the last call.
+    fn take_releases(&self) -> Vec<Release> {
+        std::mem::take(
+            &mut *self
+                .releases
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Where replies to the running parser go.
+    fn replies(&self) -> Option<&Sender<Reply>> {
+        self.channels
+            .as_ref()
+            .and_then(|channels| channels.replies.as_ref())
+    }
+
     fn events(&mut self) -> Result<Option<Receiver<Event>>, String> {
         if self.ended {
             return Ok(None);
@@ -114,13 +141,7 @@ pub(super) fn rewrite_html<'js>(
     let handlers = parser::handlers(&handlers)
         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
     let encoding = parse_encoding(&ctx, &content_type)?;
-    let state = Rc::new(RefCell::new(State {
-        handlers: Some(handlers),
-        encoding,
-        channels: None,
-        ended: false,
-        releases: Releases::default(),
-    }));
+    let state = Rc::new(RefCell::new(State::new(handlers, encoding)));
     let result = Object::new(ctx.clone())?;
     let reader = Rc::clone(&state);
     result.set(
@@ -140,9 +161,7 @@ pub(super) fn rewrite_html<'js>(
                 return Ok(());
             }
             state
-                .channels
-                .as_ref()
-                .and_then(|channels| channels.replies.as_ref())
+                .replies()
                 .ok_or_else(|| Exception::throw_internal(&ctx, "HTML parser is not running"))?
                 .try_send(reply)
                 .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))
@@ -159,13 +178,7 @@ pub(super) fn rewrite_html<'js>(
     result.set(
         "releases",
         Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            let released = std::mem::take(
-                &mut *registry
-                    .borrow()
-                    .releases
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            );
+            let released = registry.borrow().take_releases();
             ctx.json_parse(
                 serde_json::to_string(&released)
                     .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?,
@@ -189,9 +202,7 @@ fn mutate<'js>(ctx: &Ctx<'js>, state: &State, operation: &str) -> rquickjs::Resu
         .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?;
     let (result, response) = flume::bounded(1);
     state
-        .channels
-        .as_ref()
-        .and_then(|channels| channels.replies.as_ref())
+        .replies()
         .ok_or_else(|| Exception::throw_type(ctx, "HTML parser is not running"))?
         .try_send(Reply::Operation(operation, result))
         .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
@@ -283,29 +294,19 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
-    fn take_releases(state: &State) -> serde_json::Value {
-        let released = std::mem::take(
-            &mut *state
-                .releases
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        serde_json::to_value(released).unwrap_or_default()
+    fn released(state: &State) -> serde_json::Value {
+        serde_json::to_value(state.take_releases()).unwrap_or_default()
     }
 
     #[test]
     fn discarded_registrations_are_released_before_the_next_token() -> TestResult {
         for tag in ["p", "br"] {
-            let mut state = State {
-                handlers: Some(parser::handlers(r#"[{"selector":"*","element":0}]"#)?),
-                encoding: AsciiCompatibleEncoding::utf_8(),
-                channels: None,
-                ended: false,
-                releases: Releases::default(),
-            };
+            let mut state = State::new(
+                parser::handlers(r#"[{"selector":"*","element":0}]"#)?,
+                AsciiCompatibleEncoding::utf_8(),
+            );
             let events = state.events()?.ok_or("event channel closed")?;
-            let channels = state.channels.as_ref().ok_or("channels missing")?;
-            let replies = channels.replies.as_ref().ok_or("replies missing")?;
+            let replies = state.replies().ok_or("replies missing")?;
             assert!(matches!(events.recv()?, Event::Input(0)));
             replies
                 .send(Reply::Input(Some(format!("<{tag}>").into_bytes())))
@@ -328,13 +329,13 @@ mod tests {
                     None
                 };
                 assert_eq!(
-                    take_releases(&state),
+                    released(&state),
                     expected.map_or(json!([]), |id| json!([{"kind":"handler","id":id}]))
                 );
             }
             state.stop()?;
             assert_eq!(
-                take_releases(&state).as_array().map_or(0, Vec::len),
+                released(&state).as_array().map_or(0, Vec::len),
                 usize::from(tag == "p")
             );
         }
@@ -354,13 +355,10 @@ mod tests {
                     ),
                     _ => ("[]", Some(vec![b'x'; 65536])),
                 };
-                let mut state = State {
-                    handlers: Some(parser::handlers(handlers).map_err(|error| error.to_string())?),
-                    encoding: AsciiCompatibleEncoding::utf_8(),
-                    channels: None,
-                    ended: false,
-                    releases: Releases::default(),
-                };
+                let mut state = State::new(
+                    parser::handlers(handlers).map_err(|error| error.to_string())?,
+                    AsciiCompatibleEncoding::utf_8(),
+                );
                 let events = state
                     .events()?
                     .ok_or_else(|| "event channel closed".to_owned())?;
@@ -369,13 +367,8 @@ mod tests {
                     .map_err(|error| error.to_string())?;
                 assert!(matches!(first, Event::Input(0)));
                 if let Some(bytes) = input {
-                    let channels = state
-                        .channels
-                        .as_ref()
-                        .ok_or_else(|| "channels missing".to_owned())?;
-                    channels
-                        .replies
-                        .as_ref()
+                    state
+                        .replies()
                         .ok_or_else(|| "replies missing".to_owned())?
                         .send(Reply::Input(Some(bytes)))
                         .map_err(|error| error.to_string())?;
