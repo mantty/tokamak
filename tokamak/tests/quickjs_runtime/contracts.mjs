@@ -2565,6 +2565,26 @@ export async function run(handlerEnv, ctx, constructors) {
       mime: (() => { const value = new nodeUtil.MIMEType("text/html; charset=utf-8"); return { essence: value.essence, type: value.type, subtype: value.subtype, params: [...value.params], string: value.toString() }; })(),
       parseArgs: result(() => nodeUtil.parseArgs()),
       parseEnv: result(() => nodeUtil.parseEnv("A=1\nB=two\n# comment\nEMPTY=\nQUOTED=\"a b\"")),
+      inspectCustom: (() => {
+        const custom = nodeUtil.inspect.custom;
+        const calls = [];
+        const recorder = { [custom](depth, options) { calls.push([depth, options.depth, typeof options.stylize, options.showHidden, options.breakLength]); return "R"; } };
+        const prototype = function Thing() {}.prototype;
+        prototype[custom] = () => "instance";
+        const cycle = { [custom]: () => "cycle" };
+        cycle.self = cycle;
+        const describeDepth = { [custom]: (depth, options) => `d${depth}:${options.depth}` };
+        return {
+          empty: [{}, [], new Map(), new Set(), new Uint8Array(0), { a: {} }, [[]]].map(value => nodeUtil.inspect(value)),
+          depths: [[recorder], [{ a: recorder }], [{ a: { b: recorder } }, { depth: 0 }], [{ a: recorder }, { depth: 0 }], [recorder, { depth: null }], [recorder, { depth: -1 }]].map(args => nodeUtil.inspect(...args)),
+          calls,
+          results: [() => ({ x: 1 }), () => [1, 2], () => 5, () => undefined, () => null].map(method => nodeUtil.inspect({ [custom]: method })),
+          nestedResult: nodeUtil.inspect({ a: { [custom]: () => ({ x: { y: { z: 1 } } }) } }),
+          skipped: [nodeUtil.inspect(Object.create(prototype)), nodeUtil.inspect({ [custom]: () => "custom" }, { customInspect: false }) === "custom"],
+          cycles: [nodeUtil.inspect({ c: cycle }), nodeUtil.inspect({ x: { [custom]: () => "deep" } }, { depth: -1 })],
+          formats: [nodeUtil.format("%s", describeDepth), nodeUtil.format("%o", describeDepth), nodeUtil.format("%O", describeDepth)],
+        };
+      })(),
     },
     module: {
       aliases: [nodeModule === nodeModule.Module, nodeModule.builtinModules === nodeModule.Module.builtinModules, nodeModule.isBuiltin === nodeModule.Module.isBuiltin, nodeModule.createRequire === nodeModule.Module.createRequire, nodeModule === nodeModule.default],
