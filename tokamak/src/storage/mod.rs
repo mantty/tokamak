@@ -162,6 +162,7 @@ impl Storage {
         bindings: &[StorageBinding],
     ) -> io::Result<Self> {
         let mut entries = BTreeMap::new();
+        let mut kinds = BTreeMap::new();
         for binding in bindings {
             let entry = match binding {
                 StorageBinding::Kv { id, .. } => Binding::Kv(catalog.namespaces.get(id)),
@@ -182,17 +183,11 @@ impl Storage {
                 },
             };
             entries.insert(binding.name().to_owned(), entry);
+            kinds.insert(binding.name(), kind_of(binding));
         }
-        let installed: Vec<Installed<'_>> = entries
-            .iter()
-            .map(|(name, binding)| Installed {
-                name,
-                kind: match binding {
-                    Binding::Kv(_) => KV,
-                    Binding::D1 { .. } => D1,
-                    Binding::R2(_) => R2,
-                },
-            })
+        let installed: Vec<Installed<'_>> = kinds
+            .into_iter()
+            .map(|(name, kind)| Installed { name, kind })
             .collect();
         let installed = serde_json::to_string(&installed).map_err(io::Error::other)?;
         Ok(Self {

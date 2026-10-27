@@ -422,15 +422,12 @@ fn param(value: &serde_json::Value) -> Result<Param, String> {
             .ok_or_else(|| "Type 'object' not supported for value 'array'".to_owned()),
         other => Err(format!(
             "Type '{}' not supported for value '{other}'",
-            json_type(other)
+            if other.is_boolean() {
+                "boolean"
+            } else {
+                "object"
+            }
         )),
-    }
-}
-
-fn json_type(value: &serde_json::Value) -> &'static str {
-    match value {
-        serde_json::Value::Bool(_) => "boolean",
-        _ => "object",
     }
 }
 

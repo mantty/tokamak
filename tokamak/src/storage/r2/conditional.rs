@@ -3,7 +3,7 @@
 use serde::Deserialize;
 
 /// The conditions a read or write carries in `onlyIf`.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Conditional {
     etag_matches: Option<Vec<Etag>>,

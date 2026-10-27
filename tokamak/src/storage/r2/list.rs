@@ -21,7 +21,7 @@ const DEFAULT_LIMIT: usize = 1000;
 const METADATA_LIMIT: usize = 100;
 
 /// What a listing asks for.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListRequest {
     limit: Option<usize>,

@@ -22,7 +22,7 @@ impl Range {
 }
 
 /// An offset and length, or a suffix length, that a read asks for.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct Bounds {
     offset: Option<u64>,
     length: Option<u64>,

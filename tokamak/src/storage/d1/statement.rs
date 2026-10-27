@@ -33,7 +33,7 @@ pub(super) enum Value {
 }
 
 /// The rows the last statement of some SQL returned, and its row counters.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub(super) struct Output {
     pub(super) columns: Vec<String>,
     pub(super) rows: Vec<Vec<Value>>,
@@ -235,11 +235,6 @@ fn bind_param(
     param: &Param,
 ) -> Result<c_int, String> {
     let statement = statement.as_ptr();
-    let length = match param {
-        Param::Text(text) => bind_length(text.len())?,
-        Param::Blob(blob) => bind_length(blob.len())?,
-        Param::Null | Param::Number(_) => 0,
-    };
     let copy = ffi::SQLITE_TRANSIENT();
     // SAFETY: `statement` is a live statement, `index` is a parameter of it,
     // and SQLite copies text and blobs before returning.
@@ -248,9 +243,11 @@ fn bind_param(
             Param::Null => ffi::sqlite3_bind_null(statement, index),
             Param::Number(number) => ffi::sqlite3_bind_double(statement, index, *number),
             Param::Text(text) => {
+                let length = bind_length(text.len())?;
                 ffi::sqlite3_bind_text(statement, index, text.as_ptr().cast(), length, copy)
             }
             Param::Blob(blob) => {
+                let length = bind_length(blob.len())?;
                 ffi::sqlite3_bind_blob(statement, index, blob.as_ptr().cast(), length, copy)
             }
         }
