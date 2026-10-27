@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::Read;
 use std::rc::Rc;
 
 use icu::locale::Locale;
@@ -76,11 +77,10 @@ fn locale_data(ctx: &Ctx<'_>, index: usize) -> rquickjs::Result<Rc<Value>> {
         if let Some(data) = cache.get(&index) {
             return Ok(Rc::clone(data));
         }
-        let (_, offset, length) = LOCALES[index];
-        let bytes = zstd::decode_all(DATA_ZST)
+        let bytes = locale_bytes(index)
             .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
         let data = Rc::new(
-            serde_json::from_slice(&bytes[offset..offset + length])
+            serde_json::from_slice(&bytes)
                 .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?,
         );
         if cache.len() == 8 {
@@ -89,6 +89,20 @@ fn locale_data(ctx: &Ctx<'_>, index: usize) -> rquickjs::Result<Rc<Value>> {
         cache.insert(index, Rc::clone(&data));
         Ok(data)
     })
+}
+
+/// The unit pattern JSON of locale `index`, decompressing the data only as
+/// far as its end.
+fn locale_bytes(index: usize) -> std::io::Result<Vec<u8>> {
+    let (_, offset, length) = LOCALES[index];
+    let mut decoder = zstd::stream::read::Decoder::with_buffer(DATA_ZST)?;
+    std::io::copy(
+        &mut (&mut decoder).take(offset as u64),
+        &mut std::io::sink(),
+    )?;
+    let mut bytes = vec![0; length];
+    decoder.read_exact(&mut bytes)?;
+    Ok(bytes)
 }
 
 pub(super) fn parts(pattern: &str, number: Vec<(String, String)>) -> Vec<(String, String)> {

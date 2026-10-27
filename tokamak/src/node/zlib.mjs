@@ -1,16 +1,17 @@
 import { createNodeCompression } from "tokamak:host";
 import { Buffer } from "./buffer.mjs";
 import { Transform } from "../streams/node.mjs";
+import { codedError } from "./errors.mjs";
 
 const empty = Buffer.alloc(0);
 const flushMarker = Symbol("zlib flush");
 
 function invalidType(name, expected) {
-  return Object.assign(new TypeError('The "' + name + '" argument must be of type ' + expected), { code: "ERR_INVALID_ARG_TYPE" });
+  return codedError(TypeError, 'The "' + name + '" argument must be of type ' + expected, "ERR_INVALID_ARG_TYPE");
 }
 
 function outOfRange(name) {
-  return Object.assign(new RangeError(name + " is out of range"), { code: "ERR_OUT_OF_RANGE" });
+  return codedError(RangeError, name + " is out of range", "ERR_OUT_OF_RANGE");
 }
 
 function numberOption(value, name, min, max, fallback) {
@@ -43,7 +44,7 @@ function codecOptions(mode, options) {
       const id = Number(key);
       const max = mode < 10 ? 8 : mode === 11 ? 100 : 402;
       if (!Number.isInteger(id) || id < 0 || id > max || Object.hasOwn(result.params, id)) {
-        throw Object.assign(new RangeError(key + " is not a valid compression parameter"), { code: mode < 10 ? "ERR_BROTLI_INVALID_PARAM" : "ERR_ZSTD_INVALID_PARAM" });
+        throw codedError(RangeError, key + " is not a valid compression parameter", mode < 10 ? "ERR_BROTLI_INVALID_PARAM" : "ERR_ZSTD_INVALID_PARAM");
       }
       let value = options.params[key];
       if (typeof value === "boolean") value = Number(value);

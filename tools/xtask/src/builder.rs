@@ -13,18 +13,13 @@ use crate::layout::WorkspaceLayout;
 use crate::support::{reset_dir, run};
 
 pub(crate) fn build_source_platform_pack(target: Target) -> Result<PathBuf> {
-    let workspace = WorkspaceLayout::from_source()
-        .context("source workspace is unavailable; run this command from a tokamak checkout")?;
-    build_source_platform_pack_at(&workspace, target)
-}
-
-fn build_source_platform_pack_at(workspace: &WorkspaceLayout, target: Target) -> Result<PathBuf> {
+    let workspace = WorkspaceLayout::from_source()?;
     let pack_dir = workspace.platform_pack(target);
     let recipe_output = workspace.recipe_output(target);
     reset_dir(&pack_dir)?;
     reset_dir(&recipe_output)?;
 
-    run_platform_recipe(workspace, target, &recipe_output)?;
+    run_platform_recipe(&workspace, target, &recipe_output)?;
     copy_dir_contents(&recipe_output, &pack_dir).context("copy platform-pack artifacts")?;
     fs::remove_dir_all(&recipe_output)?;
 
@@ -33,8 +28,8 @@ fn build_source_platform_pack_at(workspace: &WorkspaceLayout, target: Target) ->
     let manifest = PlatformPackManifest {
         tokamak_version: env!("CARGO_PKG_VERSION").to_owned(),
         target,
-        variables: target_variables(workspace, target)?,
-        plugin_keys: plugin_keys(workspace, target)?,
+        variables: target_variables(&workspace, target)?,
+        plugin_keys: plugin_keys(&workspace, target)?,
     };
     let manifest_path = workspace.manifest(target);
     write_manifest(&manifest_path, &manifest)?;
@@ -127,8 +122,6 @@ fn validate_entrypoint(pack: &Path, target: Target) -> Result<()> {
 mod tests {
     use std::fs;
 
-    use anyhow::Context;
-
     use super::{cargo_target_dir, plugin_keys, target_variables, validate_entrypoint};
     use tokamak_cli::{PluginKeyKind, Target, VariableKind};
 
@@ -136,7 +129,7 @@ mod tests {
 
     #[test]
     fn finds_where_cargo_builds_the_workspace() -> anyhow::Result<()> {
-        let workspace = WorkspaceLayout::from_source().context("source workspace")?;
+        let workspace = WorkspaceLayout::from_source()?;
 
         let target_dir = cargo_target_dir(&workspace)?;
 
@@ -151,7 +144,7 @@ mod tests {
 
     #[test]
     fn selects_the_variables_for_the_target_namespace() -> anyhow::Result<()> {
-        let workspace = WorkspaceLayout::from_source().context("source workspace")?;
+        let workspace = WorkspaceLayout::from_source()?;
         let simulator = target_variables(&workspace, Target::IosSimulatorArm64)?;
         let macos = target_variables(&workspace, Target::MacosArm64)?;
         let windows = target_variables(&workspace, Target::WindowsX64)?;
@@ -168,7 +161,7 @@ mod tests {
 
     #[test]
     fn reads_the_plugin_keys_each_pack_declares() -> anyhow::Result<()> {
-        let workspace = WorkspaceLayout::from_source().context("source workspace")?;
+        let workspace = WorkspaceLayout::from_source()?;
 
         assert_eq!(
             plugin_keys(&workspace, Target::IosSimulatorArm64)?.get("resources"),

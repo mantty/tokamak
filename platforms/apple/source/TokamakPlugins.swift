@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import WebKit
 
 #if os(iOS)
@@ -56,13 +57,9 @@ struct TokamakPluginResult {
   let payload: Data
   let failed: Bool
   let done: Bool
+}
 
-  init(payload: Data, failed: Bool, done: Bool) {
-    self.payload = payload
-    self.failed = failed
-    self.done = done
-  }
-
+extension TokamakPluginResult {
   init(_ result: Result<Data, TokamakPluginError>, done: Bool) {
     self.done = done
     switch result {
@@ -94,6 +91,14 @@ func decodePluginValue(_ payload: Data) throws(TokamakPluginError) -> Any {
     throw .init(name: "DataCloneError", message: error.localizedDescription)
   }
 }
+
+#if os(macOS)
+  /// The value of the app's entitlement `key`, or nil when its signature lacks it.
+  func tokamakEntitlement(_ key: String) -> Any? {
+    guard let task = SecTaskCreateFromSelf(nil) else { return nil }
+    return SecTaskCopyValueForEntitlement(task, key as CFString, nil)
+  }
+#endif
 
 /// The app as one plugin sees it.
 final class TokamakHost {

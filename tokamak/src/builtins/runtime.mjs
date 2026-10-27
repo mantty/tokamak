@@ -1,9 +1,9 @@
 import "./globals.mjs";
 import { createTracing } from "./tracing.mjs";
 import { reportError } from "../events/web.mjs";
-import { DOMException } from "../globals/dom-exception.mjs";
 import { Request, Response } from "../network/fetch.mjs";
 import { URL } from "../network/url.mjs";
+import { nativeError, platformGlobal } from "../native-protocol.mjs";
 
 export { installServices, invokeService } from "../services/bindings.mjs";
 
@@ -26,7 +26,7 @@ export function installAssets(binding, fetchAsset) {
 // which `@tokamakdev/plugin` reads, as its `platformGlobal` names, while the
 // Worker's modules load.
 export function installPlugins(call, subscribe, platform) {
-  globalThis.__tokamak_platform = platform;
+  globalThis[platformGlobal] = platform;
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const decoded = payload => JSON.parse(decoder.decode(payload));
@@ -79,13 +79,6 @@ export function installPlugins(call, subscribe, platform) {
     },
   };
   globalThis.__tokamak_context[Symbol.for("tokamak.native")] = connection;
-}
-
-// The error a native failure describes, with its details as the `cause`.
-function nativeError({ name, message, cause }) {
-  const error = new DOMException(message, name);
-  if (cause !== undefined) Object.defineProperty(error, "cause", { value: cause, writable: true, configurable: true });
-  return error;
 }
 
 // Delivers the event `name`, whose encoded data is `event`, to the

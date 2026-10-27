@@ -7,7 +7,7 @@ use crate::env_vars::WorkerEnvironment;
 use crate::packaging::PackageLayout;
 use crate::plugin_calls::PluginCalls;
 use crate::quickjs::{Error, WorkerBundle};
-use crate::services::{Registry, Service, Target};
+use crate::services::{Registry, Service};
 
 /// The generated entrypoint through which the host delivers native events.
 const EVENT_ENTRYPOINT: &str = "TokamakEvents";
@@ -57,20 +57,11 @@ pub(super) fn load(config: &Config, plugins: &Arc<PluginCalls>) -> Result<Arc<Di
             Service {
                 bundle,
                 config,
-                bindings: environment
-                    .services
-                    .iter()
-                    .map(|(binding, target)| {
-                        (
-                            binding.clone(),
-                            Target::new(&target.service, &target.entrypoint),
-                        )
-                    })
-                    .collect(),
+                bindings: environment.services,
             },
         );
     }
-    let registry = Arc::new(Registry::new(services)?);
+    let registry = Arc::new(Registry::new(services));
     let (worker, config) = registry.worker("main")?;
     if !split {
         return Ok(Dispatcher::new(worker, config));

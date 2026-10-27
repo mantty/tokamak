@@ -11,9 +11,10 @@ use serde::Deserialize;
 
 use super::body::Pending;
 use super::{
-    Body, BodyWriter, Failure, Json, Object, ObjectMetadata, R2Bucket, Written, find, hex, lock,
+    Body, BodyWriter, Failure, Json, Object, ObjectMetadata, R2Bucket, Written, find, hex,
     random_name, record, remove_files, validate_key, validate_metadata,
 };
+use crate::lock;
 
 /// An upload's states.
 const IN_PROGRESS: i64 = 0;

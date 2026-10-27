@@ -4,7 +4,7 @@ use rsa::traits::PublicKeyParts;
 use rsa::{BoxedUint, Oaep, Pkcs1v15Sign, Pss, RsaPrivateKey, RsaPublicKey};
 
 use super::hash::{Hash, with_digest};
-use super::keys::{KeyError, integer};
+use super::keys::{KeyError, integer, left_pad};
 use super::rng;
 
 type Result<T> = std::result::Result<T, KeyError>;
@@ -127,10 +127,9 @@ pub(super) fn public_decrypt(
     input: &[u8],
 ) -> Result<Vec<u8>> {
     let size = key.size();
-    if input.len() > size {
-        return Err(KeyError::operation("data too large for key size"));
-    }
-    let value = BoxedUint::from_be_slice(&fixed_width(input, size), key.n_bits_precision())?;
+    let input =
+        left_pad(input, size).ok_or_else(|| KeyError::operation("data too large for key size"))?;
+    let value = BoxedUint::from_be_slice(&input, key.n_bits_precision())?;
     let output = fixed_width(&rsa::hazmat::rsa_encrypt(key, &value)?.to_be_bytes(), size);
     match padding {
         Padding::None => Ok(output),

@@ -1,5 +1,6 @@
 import { writeStderr, writeStdout } from "tokamak:host";
 import { console as consoleObject } from "../globals/console.mjs";
+import { codedError } from "./errors.mjs";
 
 function noop() {}
 
@@ -14,9 +15,7 @@ consoleObject._times ??= new Map();
 
 export class Console {
   constructor() {
-    const error = new Error("The Console method is not implemented");
-    error.code = "ERR_METHOD_NOT_IMPLEMENTED";
-    throw error;
+    throw codedError(Error, "The Console method is not implemented", "ERR_METHOD_NOT_IMPLEMENTED");
   }
 }
 

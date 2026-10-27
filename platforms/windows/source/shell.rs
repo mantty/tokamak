@@ -62,9 +62,7 @@ struct ShellConfig {
     name: String,
     slug: String,
     host: String,
-    #[serde(rename = "devEndpoint")]
     dev_endpoint: Option<String>,
-    #[serde(rename = "devSessionToken")]
     dev_session_token: Option<String>,
 }
 
@@ -89,18 +87,12 @@ pub(crate) fn run() -> Result<()> {
         match event {
             TaoEvent::UserEvent(ShellEvent::Call {
                 id,
-                plugin,
                 method,
                 payload,
-            }) => app.call(&controls_runtime, id, &plugin, &method, &payload),
-            TaoEvent::UserEvent(ShellEvent::Unsupported(id)) => controls::respond(
-                &controls_runtime,
-                id,
-                Err((
-                    "NotSupportedError",
-                    "Subscriptions are not supported".into(),
-                )),
-            ),
+            }) => app.call(&controls_runtime, id, &method, &payload),
+            TaoEvent::UserEvent(ShellEvent::Unsupported { id, message }) => {
+                controls::respond(&controls_runtime, id, Err(("NotSupportedError", message)));
+            }
             TaoEvent::UserEvent(ShellEvent::Runtime(Event::CertificatesRenewed)) => {
                 if let Err(error) = app.renew_identity() {
                     eprintln!("tokamak client certificate renewal failed: {error:#}");
@@ -215,9 +207,9 @@ impl<'a> AppWindow<'a> {
 
     /// Performs the Worker's call `id` on the `WebView`, or refuses it while
     /// the page is closed.
-    fn call(&self, runtime: &Arc<Runtime>, id: u64, plugin: &str, method: &str, payload: &[u8]) {
+    fn call(&self, runtime: &Arc<Runtime>, id: u64, method: &str, payload: &[u8]) {
         match &self.page {
-            Some(page) => controls::call(&page.webview, runtime, id, plugin, method, payload),
+            Some(page) => controls::call(&page.webview, runtime, id, method, payload),
             None => controls::respond(
                 runtime,
                 id,
@@ -353,7 +345,7 @@ fn start_runtime(
 ) -> Result<Runtime> {
     let plugins: Arc<dyn tokamak::PluginHandler> = Arc::new(Controls(events.clone()));
     let listener = move |event: Event| {
-        report(&event);
+        eprintln!("tokamak runtime: {event:?}");
         let _ = events.send_event(ShellEvent::Runtime(event));
     };
     match (
@@ -454,10 +446,6 @@ fn open_external(url: &str) {
     if result.0 as usize <= 32 {
         eprintln!("tokamak could not open external URL");
     }
-}
-
-fn report(event: &Event) {
-    eprintln!("tokamak runtime: {event:?}");
 }
 
 struct ClientIdentity {
@@ -580,7 +568,7 @@ struct Handlers {
 impl Handlers {
     fn install(
         webview: &WebView,
-        certificates: std::sync::Arc<Certificates>,
+        certificates: Arc<Certificates>,
         host: &str,
         name: &str,
         client: Arc<RwLock<Vec<u8>>>,
@@ -736,7 +724,7 @@ fn is_app_origin(uri: &str, host: &str) -> bool {
 }
 
 fn server_challenge(
-    certificates: std::sync::Arc<Certificates>,
+    certificates: Arc<Certificates>,
     host: String,
 ) -> impl FnMut(
     Option<ICoreWebView2>,

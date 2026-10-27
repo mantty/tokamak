@@ -89,11 +89,7 @@ pub(crate) fn parse_config(root: &Path, config: &Value) -> Result<TokamakConfig>
             Value::Object(section) => section,
             _ => return Err(invalid(format!("unknown field `{key}`"))),
         };
-        if !is_valid_key(&key) {
-            return Err(invalid(format!(
-                "{key} must be lowercase words joined by hyphens"
-            )));
-        }
+        check_key(&key, &key)?;
         plugins.insert(key.clone(), plugin_config(&key, section)?);
     }
     let version = raw
@@ -271,11 +267,16 @@ pub(crate) fn value_problem(value: &str) -> Option<String> {
         .then(|| format!("must be {VALUE_FORM}"))
 }
 
-fn validate_value(field: &str, value: String) -> Result<String> {
+/// `value` if it can be a setting's text, or else why not, naming its `source`.
+pub(crate) fn valid(source: &str, value: String) -> Result<String> {
     match value_problem(&value) {
-        Some(problem) => Err(invalid(format!("{field} {problem}"))),
+        Some(problem) => Err(anyhow!("{source} {problem}")),
         None => Ok(value),
     }
+}
+
+fn validate_value(field: &str, value: String) -> Result<String> {
+    valid(field, value).map_err(invalid)
 }
 
 fn invalid(message: impl std::fmt::Display) -> anyhow::Error {

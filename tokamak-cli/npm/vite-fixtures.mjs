@@ -6,7 +6,7 @@ import { after } from "node:test";
 
 import { tokamak } from "@tokamakdev/tok/vite";
 import { createBuilder, createServer } from "vite";
-import { workerTypes } from "./worker-fixtures.mjs";
+import { workerTypes, writeFiles } from "./worker-fixtures.mjs";
 
 export const WORKER = `export default {
   fetch() {
@@ -32,16 +32,12 @@ roots.push(process.env.MINIFLARE_REGISTRY_PATH);
 export function project(files = {}, options) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tokamak-vite-")));
   roots.push(root);
-  const all = {
+  writeFiles(root, {
     "wrangler.jsonc": JSON.stringify({ name: "app", main: "src/index.ts", compatibility_date: "2026-09-01" }),
     "src/index.ts": WORKER,
     "worker-configuration.d.ts": workerTypes,
     ...files,
-  };
-  for (const [name, contents] of Object.entries(all)) {
-    fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
-    fs.writeFileSync(path.join(root, name), contents);
-  }
+  });
   return { root, options, output: path.join(root, "build/.tokamak/vite") };
 }
 

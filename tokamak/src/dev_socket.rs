@@ -6,17 +6,18 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::gateway::HandlerError;
+use crate::lock;
 use crate::native_protocol::{self, Header};
 use crate::plugin_calls::{Body, Overflow, PluginCalls, PluginReply, error};
 use crate::transport::{parse_websocket_frame, write_frame};
@@ -77,14 +78,14 @@ impl DevSocket {
             event.to_vec(),
         );
         let (sender, answer) = oneshot::channel();
-        connection.pending().insert(id, sender);
+        lock(&connection.pending).insert(id, sender);
         let Ok(Ok(())) = tokio::time::timeout_at(deadline, connection.outgoing.send(message)).await
         else {
-            connection.pending().remove(&id);
+            lock(&connection.pending).remove(&id);
             return Err(closed().into());
         };
         let answer = tokio::time::timeout_at(deadline, answer).await;
-        connection.pending().remove(&id);
+        lock(&connection.pending).remove(&id);
         answer
             .map_err(|_| late())?
             .map_err(|_| closed())?
@@ -102,12 +103,12 @@ impl DevSocket {
         });
         self.connection.send_replace(Some(Arc::clone(&connection)));
         let mut requests = Requests::default();
-        let _ = relay(upgraded, messages, stopped, |message| {
+        let _ = relay(TokioIo::new(upgraded), messages, stopped, |message| {
             self.receive(&connection, &mut requests, message)
         })
         .await;
         self.connection.send_replace(None);
-        connection.pending().clear();
+        lock(&connection.pending).clear();
         for request in requests.tasks.values() {
             request.abort();
         }
@@ -267,41 +268,44 @@ async fn send_result(
 }
 
 impl Connection {
-    fn pending(&self) -> std::sync::MutexGuard<'_, PendingReplies> {
-        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// Passes the plugin's `answer` to the delivery of the event `id`.
     fn answer(&self, id: u64, answer: Result<&[u8], &str>) {
-        if let Some(sender) = self.pending().remove(&id) {
+        if let Some(sender) = lock(&self.pending).remove(&id) {
             let _ = sender.send(answer.map(<[u8]>::to_vec).map_err(str::to_owned));
         }
     }
 }
 
-/// Relays frames between `upgraded` and the app, passing each message the
+/// Relays frames between `socket` and the app, passing each message the
 /// plugin sends to `receive` and sending each of `messages`, until either
 /// side closes or `stopped` is cancelled.
 async fn relay(
-    upgraded: Upgraded,
+    socket: impl AsyncRead + AsyncWrite,
     mut messages: mpsc::Receiver<(Header, Vec<u8>)>,
     stopped: &CancellationToken,
     mut receive: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> io::Result<()> {
-    let (mut reader, mut writer) = tokio::io::split(TokioIo::new(upgraded));
+    let (mut reader, mut writer) = tokio::io::split(socket);
     let mut buffer = Vec::new();
     let mut bytes = [0; 8192];
-    // The text of a message whose frames have not all arrived.
+    // The bytes of a binary message whose frames have not all arrived.
     let mut message = Vec::new();
+    // Whether the arriving data frames belong to a binary message; text
+    // messages are ignored.
+    let mut binary = false;
     loop {
         while let Some(frame) = parse_websocket_frame(&mut buffer, false)? {
             match frame.opcode {
-                0x0 | 0x2 => message.extend_from_slice(&frame.payload),
+                0x1 | 0x2 => binary = frame.opcode == 0x2,
                 0x8 => return Ok(()),
                 0x9 => write_frame(&mut writer, 0xA, &frame.payload).await?,
-                _ => continue,
+                _ => {}
             }
-            if frame.final_frame && matches!(frame.opcode, 0x0 | 0x2) {
+            if !binary || frame.opcode > 0x2 {
+                continue;
+            }
+            message.extend_from_slice(&frame.payload);
+            if frame.final_frame {
                 receive(&std::mem::take(&mut message))?;
             }
         }
@@ -323,8 +327,40 @@ async fn relay(
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::DevSocket;
+    use tokio::io::AsyncWriteExt;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{DevSocket, relay};
     use crate::plugin_calls::PluginCalls;
+    use crate::transport::encode_websocket_frame;
+
+    #[tokio::test]
+    async fn passes_on_only_binary_messages() -> std::io::Result<()> {
+        let (mut plugin, app) = tokio::io::duplex(1024);
+        let first_text_fragment = [0x01, 4, b't', b'e', b'x', b't'];
+        plugin.write_all(&first_text_fragment).await?;
+        plugin
+            .write_all(&encode_websocket_frame(0x0, b"more", false)?)
+            .await?;
+        plugin
+            .write_all(&encode_websocket_frame(0x2, b"binary", false)?)
+            .await?;
+        plugin
+            .write_all(&encode_websocket_frame(0x8, &[], false)?)
+            .await?;
+        let (_sender, messages) = mpsc::channel(1);
+        let mut received = Vec::new();
+
+        relay(app, messages, &CancellationToken::new(), |message| {
+            received.push(message.to_vec());
+            Ok(())
+        })
+        .await?;
+
+        assert_eq!(received, [b"binary".to_vec()]);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn fails_an_event_while_the_development_server_is_unreachable() {

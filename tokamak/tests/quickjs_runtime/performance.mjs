@@ -1,9 +1,5 @@
 import * as perf from "node:perf_hooks";
-
-function outcome(callback) {
-  try { return callback(); }
-  catch (error) { return { error: error.name, code: error.code ?? null }; }
-}
+import { outcome } from "./outcome.mjs";
 
 export async function performanceContracts() {
   const p = performance;

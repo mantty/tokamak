@@ -137,7 +137,7 @@ struct Resolver {
       title: method.name,
       parameters: parameters,
       result: result,
-      throwing: method.has("throws") || method.has("rethrows"),
+      throwing: method.has("throws"),
       awaited: method.has("async")
         || method.declarationFragments.contains {
           $0.kind == "attribute" && $0.preciseIdentifier != nil

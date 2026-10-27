@@ -8,7 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::kv::{Entry, Value};
 use super::r2::{BodyReader, BodyWriter, Failure, R2Bucket, Read};
-use super::{Storage, lock, text};
+use super::{Storage, text};
+use crate::lock;
 use rquickjs::class::Trace;
 use rquickjs::function::Async;
 use rquickjs::module::{Declarations, Exports, ModuleDef};

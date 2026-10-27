@@ -4,6 +4,10 @@ import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricManager.Authenticators
 import android.hardware.biometrics.BiometricPrompt
 import android.os.CancellationSignal
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
  * Throws unless the device owner can authenticate with [authenticators]: `NotSupportedError`
@@ -20,44 +24,41 @@ fun TokamakHost.requireOwnerAuthentication(authenticators: Int) {
 
 /**
  * Shows the system prompt, titled [title], for the device owner to authenticate with
- * [authenticators], authorising [crypto] when given. Calls [succeeded] once they do; otherwise
- * [reply] receives the failure. Throws `NeedsUIError` while the app is in the background. Call it
- * on the main thread.
+ * [authenticators], authorising [crypto] when given, and returns once they do. Throws the failure
+ * otherwise, and `NeedsUIError` while the app is in the background. Call it on the main thread.
  */
-fun TokamakHost.authenticateOwner(
+suspend fun TokamakHost.authenticateOwner(
     title: CharSequence,
     authenticators: Int,
-    crypto: BiometricPrompt.CryptoObject?,
-    reply: TokamakPluginReply,
-    cancellation: CancellationSignal = CancellationSignal(),
-    succeeded: () -> Unit,
-): () -> Unit {
-    cancellation.throwIfCanceled()
+    crypto: BiometricPrompt.CryptoObject? = null,
+) {
     val activity = requireForegroundActivity()
-    val builder = BiometricPrompt.Builder(activity).setTitle(title).setAllowedAuthenticators(authenticators)
-    if ((authenticators and Authenticators.DEVICE_CREDENTIAL) == 0) {
-        builder.setNegativeButton(activity.getString(android.R.string.cancel), activity.mainExecutor) { _, _ ->
-            reply(Result.failure(TokamakPluginError("NotAllowedError", "Authentication was cancelled")))
+    suspendCancellableCoroutine { continuation ->
+        val builder = BiometricPrompt.Builder(activity).setTitle(title).setAllowedAuthenticators(authenticators)
+        if ((authenticators and Authenticators.DEVICE_CREDENTIAL) == 0) {
+            builder.setNegativeButton(activity.getString(android.R.string.cancel), activity.mainExecutor) { _, _ ->
+                continuation.resumeWithException(TokamakPluginError("NotAllowedError", "Authentication was cancelled"))
+            }
+        }
+        val prompt = builder.build()
+        val cancellation = CancellationSignal()
+        continuation.invokeOnCancellation { cancellation.cancel() }
+        val callback = PromptCallback(continuation)
+        if (crypto == null) {
+            prompt.authenticate(cancellation, activity.mainExecutor, callback)
+        } else {
+            prompt.authenticate(crypto, cancellation, activity.mainExecutor, callback)
         }
     }
-    val prompt = builder.build()
-    val callback = PromptCallback(reply, succeeded)
-    if (crypto == null) {
-        prompt.authenticate(cancellation, activity.mainExecutor, callback)
-    } else {
-        prompt.authenticate(crypto, cancellation, activity.mainExecutor, callback)
-    }
-    return { cancellation.cancel() }
 }
 
 private class PromptCallback(
-    private val reply: TokamakPluginReply,
-    private val succeeded: () -> Unit,
+    private val continuation: CancellableContinuation<Unit>,
 ) : BiometricPrompt.AuthenticationCallback() {
-    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = succeeded()
+    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = continuation.resume(Unit)
 
     override fun onAuthenticationError(code: Int, message: CharSequence) =
-        reply(Result.failure(TokamakPluginError(authenticationErrorName(code), message.toString())))
+        continuation.resumeWithException(TokamakPluginError(authenticationErrorName(code), message.toString()))
 }
 
 private fun authenticationErrorName(code: Int): String =

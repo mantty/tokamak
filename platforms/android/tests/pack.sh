@@ -138,7 +138,7 @@ test_builds_shrunk_lint_checked_release_apps() {
   contains "$gradle/gradle-arguments" "-Ptokamak.version=1.0'beta\" :app:lintRelease :app:assembleRelease"
   local script=$gradle/app/build.gradle
   contains "$script" "versionName providers.gradleProperty('tokamak.version').get()"
-  contains "$script" "minSdk $(<"$build/min-sdk")"
+  contains "$gradle/build.gradle" "minSdk $(<"$build/min-sdk")"
   contains "$script" "checkOnly 'NewApi'"
   contains "$script" "abortOnError true"
   contains "$script" "checkDependencies true"

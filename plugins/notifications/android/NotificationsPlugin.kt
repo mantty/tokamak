@@ -52,16 +52,9 @@ private const val REGISTER_TIMEOUT_SECONDS = 30L
 private const val RESPONSE_DEADLINE_MILLIS = 8_000L
 private const val FCM_MESSAGE_ID_EXTRA = "google.message_id"
 
-/** The names the page gives channel importances. */
-private val IMPORTANCES =
-    mapOf(
-        NotificationManager.IMPORTANCE_NONE to Importance.None,
-        NotificationManager.IMPORTANCE_MIN to Importance.Min,
-        NotificationManager.IMPORTANCE_LOW to Importance.Low,
-        NotificationManager.IMPORTANCE_DEFAULT to Importance.Default,
-        NotificationManager.IMPORTANCE_HIGH to Importance.High,
-        NotificationManager.IMPORTANCE_MAX to Importance.High,
-    )
+/** The name the page gives a channel's [importance]: High for `IMPORTANCE_MAX`, Default when unspecified. */
+private fun importanceNamed(importance: Int): Importance =
+    Importance.entries.find { it.value == importance.coerceAtMost(NotificationManager.IMPORTANCE_HIGH) } ?: Importance.Default
 
 class TokamakNotificationsPlugin(
     private val host: TokamakHost,
@@ -109,11 +102,7 @@ class TokamakNotificationsPlugin(
 
     /** Asks for permission when that shows the system prompt, which needs the app in the foreground. */
     suspend fun requestPermission(): Permission {
-        if (canPrompt()) {
-            suspendCancellableCoroutine { asked ->
-                host.requestPermissions(setOf(Manifest.permission.POST_NOTIFICATIONS)) { asked.resume(Unit) }
-            }
-        }
+        if (canPrompt()) host.requestPermissions(setOf(Manifest.permission.POST_NOTIFICATIONS))
         return permission()
     }
 
@@ -122,7 +111,7 @@ class TokamakNotificationsPlugin(
         val manager = context.getSystemService(NotificationManager::class.java)
         return NotificationSettings(
             permission = permission(),
-            channels = manager.notificationChannels.map { ChannelImportance(it.id, IMPORTANCES[it.importance] ?: Importance.Default) },
+            channels = manager.notificationChannels.map { ChannelImportance(it.id, importanceNamed(it.importance)) },
             blockedChannelGroups = manager.notificationChannelGroups.filter { it.isBlocked }.map { it.id },
             doNotDisturbAccess = manager.isNotificationPolicyAccessGranted,
             exactAlarms = schedule.canScheduleExact,

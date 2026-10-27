@@ -1,8 +1,9 @@
 //! Virtual path and memory-buffer helpers.
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::Mutex;
 
 use super::{Error, ErrorKind, MAX_FILE_SIZE, MAX_PATH_LENGTH, MAX_PATH_SEGMENTS, Result};
+use crate::lock;
 
 pub(super) fn absolute_components(path: &str) -> Result<Vec<String>> {
     if !path.starts_with('/') {
@@ -105,11 +106,7 @@ pub(crate) fn join_child(parent: &str, name: &str) -> String {
 }
 
 pub(super) fn path_from_components(components: &[String]) -> String {
-    if components.is_empty() {
-        "/".to_owned()
-    } else {
-        format!("/{}", components.join("/"))
-    }
+    format!("/{}", components.join("/"))
 }
 
 pub(super) fn checked_size(size: u64, path: &str) -> Result<usize> {
@@ -164,8 +161,4 @@ pub(super) fn write_memory(
     }
     data[start..end].copy_from_slice(input);
     Ok(input.len())
-}
-
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }

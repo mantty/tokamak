@@ -12,11 +12,14 @@ pub(super) enum ShellEvent {
     BrowserExited,
     Call {
         id: u64,
-        plugin: String,
         method: String,
         payload: Vec<u8>,
     },
-    Unsupported(u64),
+    /// A request the shell refuses with `NotSupportedError` and `message`.
+    Unsupported {
+        id: u64,
+        message: String,
+    },
 }
 
 pub(super) struct Controls(pub(super) EventLoopProxy<ShellEvent>);
@@ -28,26 +31,31 @@ impl PluginHandler for Controls {
         plugin == "tokamak" && method.starts_with("webview.")
     }
 
-    fn call(&self, id: u64, plugin: &str, method: &str, payload: &[u8]) {
+    fn call(&self, id: u64, _: &str, method: &str, payload: &[u8]) {
         let _ = self.0.send_event(ShellEvent::Call {
             id,
-            plugin: plugin.into(),
             method: method.into(),
             payload: payload.to_vec(),
         });
     }
 
-    fn call_with_body(&self, id: u64, _: &str, _: &str, _: &[u8]) {
-        let _ = self.0.send_event(ShellEvent::Unsupported(id));
+    fn call_with_body(&self, id: u64, _: &str, method: &str, _: &[u8]) {
+        self.refuse(id, format!("tokamak.{method} does not take a body"));
     }
 
     fn chunk(&self, _: u64, _: &PluginReply) {}
 
     fn subscribe(&self, id: u64, _: &str, _: &str, _: &[u8]) {
-        let _ = self.0.send_event(ShellEvent::Unsupported(id));
+        self.refuse(id, "Subscriptions are not supported".into());
     }
 
     fn cancel(&self, _: u64) {}
+}
+
+impl Controls {
+    fn refuse(&self, id: u64, message: String) {
+        let _ = self.0.send_event(ShellEvent::Unsupported { id, message });
+    }
 }
 
 pub(super) fn respond(runtime: &Runtime, id: u64, result: Result<Value, (&str, String)>) {
@@ -65,15 +73,8 @@ pub(super) fn respond(runtime: &Runtime, id: u64, result: Result<Value, (&str, S
     );
 }
 
-pub(super) fn call(
-    view: &WebView,
-    runtime: &Arc<Runtime>,
-    id: u64,
-    plugin: &str,
-    method: &str,
-    payload: &[u8],
-) {
-    let result = perform(view, runtime, id, plugin, method, payload);
+pub(super) fn call(view: &WebView, runtime: &Arc<Runtime>, id: u64, method: &str, payload: &[u8]) {
+    let result = perform(view, runtime, id, method, payload);
     if let Some(result) = result.transpose() {
         respond(runtime, id, result);
     }
@@ -83,7 +84,6 @@ fn perform(
     view: &WebView,
     runtime: &Arc<Runtime>,
     id: u64,
-    plugin: &str,
     method: &str,
     payload: &[u8],
 ) -> Result<Option<Value>, (&'static str, String)> {
@@ -135,7 +135,7 @@ fn perform(
         }
         _ => Err((
             "NotSupportedError",
-            format!("{plugin}.{method} is not supported"),
+            format!("tokamak.{method} is not supported"),
         )),
     }
 }

@@ -2,6 +2,8 @@
 //! exports, as this test executable does.
 #![cfg(feature = "native")]
 
+mod common;
+
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::Path;
@@ -10,17 +12,15 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(unix)]
-use std::io;
-
 use base64::{Engine, engine::general_purpose::STANDARD};
-use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
-use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject};
+use rustls::{ClientConnection, StreamOwned};
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 use tokamak::{DevProxyConfig, DevelopmentConfig, Event, PluginHandler, Runtime, ServerIdentity};
 
-type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+#[cfg(unix)]
+use common::reset_connection;
+use common::{TestResult, connect_tls, read_header_block, write_masked_frame};
 
 const HOST: &str = "dev.tokamak.local";
 
@@ -88,9 +88,9 @@ fn forwards_http_and_websocket_traffic_to_the_host_server() -> TestResult {
         return Err(format!("unexpected WebSocket response: {upgrade:?}").into());
     }
     assert_eq!(read_frame(&mut websocket)?, (0x1, b"update".to_vec()));
-    write_masked_frame(&mut websocket, 0x1, b"ping")?;
+    write_masked_frame(&mut websocket, true, 0x1, b"ping")?;
     assert_eq!(read_frame(&mut websocket)?, (0x1, b"pong".to_vec()));
-    write_masked_frame(&mut websocket, 0x8, &[3, 232])?;
+    write_masked_frame(&mut websocket, true, 0x8, &[3, 232])?;
 
     host_server.join().map_err(|_| "host server panicked")??;
     Ok(())
@@ -114,7 +114,7 @@ fn relays_the_page_answer_to_a_host_close() -> TestResult {
     // 4000, "bye"
     let close = [15, 160, b'b', b'y', b'e'];
     assert_eq!(read_frame(&mut websocket)?, (0x8, close.to_vec()));
-    write_masked_frame(&mut websocket, 0x8, &close)?;
+    write_masked_frame(&mut websocket, true, 0x8, &close)?;
 
     let answer = host_server.join().map_err(|_| "host server panicked")??;
     assert_eq!(answer, (0x8, close.to_vec()));
@@ -219,7 +219,7 @@ fn preserves_opaque_event_payloads_and_replies() -> TestResult {
         assert_eq!(header["name"], "example.binary");
         assert_eq!(&frame[8 + length..], &bytes);
         let reply = encode_payload(&json!({ "type": "reply", "id": header["id"] }), &bytes)?;
-        write_frame(&mut socket, 0x2, &reply, false)?;
+        write_frame(&mut socket, 0x2, &reply)?;
         Ok(())
     });
     assert_eq!(
@@ -436,7 +436,7 @@ fn relays_a_call_body_as_the_device_pulls_each_chunk() -> TestResult {
             json!({ "type": "pull", "id": 7 })
         );
         let chunk = json!({ "type": "chunk", "id": 7, "done": done });
-        write_frame(&mut socket, 0x2, &encode_payload(&chunk, payload)?, false)?;
+        write_frame(&mut socket, 0x2, &encode_payload(&chunk, payload)?)?;
         let text = String::from_utf8_lossy(payload);
         assert_eq!(next_request()?, (call, format!("chunk {text} {done}")));
     }
@@ -485,7 +485,7 @@ fn assembles_a_reply_sent_in_fragments() -> TestResult {
         let (first, last) = reply.split_at(reply.len() / 2);
         socket.write_all(&[0x02, u8::try_from(first.len())?])?;
         socket.write_all(first)?;
-        write_frame(&mut socket, 0x0, last, false)
+        write_frame(&mut socket, 0x0, last)
     });
 
     let reply = runtime.emit("example.ping", b"{}", Duration::from_secs(5))?;
@@ -731,9 +731,9 @@ fn serve_host(listener: &TcpListener) -> TestResult {
         websocket,
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
     )?;
-    write_frame(&mut websocket, 0x1, b"update", false)?;
+    write_frame(&mut websocket, 0x1, b"update")?;
     assert_eq!(read_frame(&mut websocket)?, (0x1, b"ping".to_vec()));
-    write_frame(&mut websocket, 0x1, b"pong", false)?;
+    write_frame(&mut websocket, 0x1, b"pong")?;
     assert_eq!(read_frame(&mut websocket)?, (0x8, vec![3, 232]));
     Ok(())
 }
@@ -761,7 +761,7 @@ fn accept_closing_websocket(listener: &TcpListener) -> TestResult<(TcpStream, St
         websocket,
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
     )?;
-    write_frame(&mut websocket, 0x8, &[15, 160, b'b', b'y', b'e'], false)?;
+    write_frame(&mut websocket, 0x8, &[15, 160, b'b', b'y', b'e'])?;
     Ok((websocket, headers))
 }
 
@@ -800,31 +800,6 @@ fn serve_resetting_websocket(listener: &TcpListener) -> TestResult {
     thread::sleep(Duration::from_millis(100));
     reset_connection(&websocket)?;
     Ok(())
-}
-
-#[cfg(unix)]
-fn reset_connection(stream: &TcpStream) -> TestResult {
-    use std::os::fd::AsRawFd;
-
-    let linger = libc::linger {
-        l_onoff: 1,
-        l_linger: 0,
-    };
-    let linger_size = libc::socklen_t::try_from(std::mem::size_of_val(&linger))?;
-    let result = unsafe {
-        libc::setsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_LINGER,
-            (&raw const linger).cast(),
-            linger_size,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error().into())
-    }
 }
 
 fn serve_interrupted_post(listener: &TcpListener) -> TestResult {
@@ -941,7 +916,7 @@ fn encode_payload(header: &Value, payload: &[u8]) -> TestResult<Vec<u8>> {
 }
 
 fn send_message(socket: &mut TcpStream, message: &Value) -> TestResult {
-    write_frame(socket, 0x2, &encode_message(message)?, false)
+    write_frame(socket, 0x2, &encode_message(message)?)
 }
 
 fn read_message(socket: &mut TcpStream) -> TestResult<Value> {
@@ -1058,18 +1033,6 @@ fn read_line(stream: &mut impl Read) -> TestResult<Vec<u8>> {
     }
 }
 
-fn read_header_block(stream: &mut impl Read) -> TestResult<Vec<u8>> {
-    let mut data = Vec::new();
-    loop {
-        let mut byte = [0; 1];
-        stream.read_exact(&mut byte)?;
-        data.push(byte[0]);
-        if data.ends_with(b"\r\n\r\n") {
-            return Ok(data);
-        }
-    }
-}
-
 fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
     headers.lines().find_map(|line| {
         let (key, value) = line.split_once(':')?;
@@ -1083,26 +1046,11 @@ fn websocket_accept(key: &str) -> String {
     ))
 }
 
-fn write_masked_frame(stream: &mut impl Write, opcode: u8, payload: &[u8]) -> TestResult {
-    write_frame(stream, opcode, payload, true)
-}
-
-fn write_frame(stream: &mut impl Write, opcode: u8, payload: &[u8], mask: bool) -> TestResult {
-    let key = [1, 2, 3, 4];
-    let mask_bit = if mask { 0x80 } else { 0 };
+/// Writes a WebSocket frame as a server sends it, unmasked.
+fn write_frame(stream: &mut impl Write, opcode: u8, payload: &[u8]) -> TestResult {
     let length = u8::try_from(payload.len())?;
-    stream.write_all(&[0x80 | opcode, mask_bit | length])?;
-    if mask {
-        stream.write_all(&key)?;
-        let payload: Vec<_> = payload
-            .iter()
-            .enumerate()
-            .map(|(index, byte)| byte ^ key[index % key.len()])
-            .collect();
-        stream.write_all(&payload)?;
-    } else {
-        stream.write_all(payload)?;
-    }
+    stream.write_all(&[0x80 | opcode, length])?;
+    stream.write_all(payload)?;
     stream.flush()?;
     Ok(())
 }
@@ -1122,32 +1070,6 @@ fn read_frame(stream: &mut impl Read) -> TestResult<(u8, Vec<u8>)> {
         *byte ^= mask[index % mask.len()];
     }
     Ok((header[0] & 0x0f, payload))
-}
-
-fn connect_tls(
-    state: &Path,
-    host: &str,
-    stream: TcpStream,
-) -> TestResult<StreamOwned<ClientConnection, TcpStream>> {
-    let mut roots = RootCertStore::empty();
-    for certificate in CertificateDer::pem_file_iter(state.join("ca.cert.pem"))? {
-        roots.add(certificate?)?;
-    }
-    let chain = CertificateDer::pem_file_iter(state.join("client.cert.pem"))?
-        .collect::<Result<Vec<_>, _>>()?;
-    let key = PrivateKeyDer::from_pem_file(state.join("client.key.pem"))?;
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(roots)
-        .with_client_auth_cert(chain, key)?;
-    let connection =
-        ClientConnection::new(Arc::new(config), ServerName::try_from(host.to_owned())?)?;
-    let mut tls = StreamOwned::new(connection, stream);
-    while tls.conn.is_handshaking() {
-        tls.conn.complete_io(&mut tls.sock)?;
-    }
-    Ok(tls)
 }
 
 fn value(payload: &[u8], done: bool) -> tokamak::PluginReply {

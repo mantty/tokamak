@@ -351,10 +351,7 @@ impl<'a, 'js> GlobWalk<'a, 'js> {
         if self.matches.contains_key(relative) {
             return;
         }
-        let parent = absolute
-            .rfind('/')
-            .filter(|&slash| slash > 0)
-            .map_or(absolute, |slash| &absolute[..slash]);
+        let parent = parent_of(absolute);
         let name = relative.rsplit('/').next().unwrap_or_default();
         let entry = self
             .listing(parent)
@@ -377,10 +374,7 @@ impl<'a, 'js> GlobWalk<'a, 'js> {
         if !below_cwd {
             return Ok(());
         }
-        let parent = absolute
-            .rfind('/')
-            .filter(|&slash| slash > 0)
-            .map_or("/", |slash| &absolute[..slash]);
+        let parent = parent_of(absolute);
         let mut parts: Vec<&str> = relative
             .split('/')
             .filter(|part| !part.is_empty())

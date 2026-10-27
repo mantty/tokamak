@@ -33,6 +33,10 @@ node -e '
 ' "$output/description.json" "$root/plugins/core/tests/fixtures/description.json"
 diff -u "$fixture/android/Exports.generated.kt" "$output/Exports.generated.kt"
 
+# The build tools' versions are the pack's.
+agp_version=$(sed -n 's/^agp_version=//p' "$android/build/entrypoint")
+kotlin_version=$(sed -n 's/^kotlin_version=//p' "$android/build/entrypoint")
+coroutines_version=$(sed -n 's/^coroutines_version=//p' "$android/build/entrypoint")
 project=$temporary/dispatch
 mkdir -p "$project/plugin/src/main/kotlin" "$project/plugin/src/test/kotlin"
 cp "$android/source/plugin/"*.kt "$fixture/android/"*.kt "$project/plugin/src/main/kotlin/"
@@ -53,10 +57,10 @@ dependencyResolutionManagement {
 }
 include ':plugin'
 EOF
-cat > "$project/build.gradle" <<'EOF'
+cat > "$project/build.gradle" <<EOF
 plugins {
-  id 'com.android.library' version '8.7.3' apply false
-  id 'org.jetbrains.kotlin.android' version '2.1.0' apply false
+  id 'com.android.library' version '$agp_version' apply false
+  id 'org.jetbrains.kotlin.android' version '$kotlin_version' apply false
 }
 EOF
 cat > "$project/plugin/build.gradle" <<EOF
@@ -70,10 +74,6 @@ android {
   compileSdk 35
   defaultConfig {
     minSdk $(<"$android/build/min-sdk")
-  }
-  compileOptions {
-    sourceCompatibility JavaVersion.VERSION_17
-    targetCompatibility JavaVersion.VERSION_17
   }
   testOptions {
     unitTests.all {
@@ -93,7 +93,7 @@ kotlin {
 }
 
 dependencies {
-  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutines_version'
   testImplementation 'junit:junit:4.13.2'
   // android.jar's org.json is stubs; the JVM runs the reference implementation.
   testImplementation 'org.json:json:20250517'

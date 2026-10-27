@@ -40,20 +40,8 @@ pub(crate) fn encode(header: &Header, payload: &[u8]) -> io::Result<Vec<u8>> {
 
 pub(crate) fn decode(bytes: &[u8]) -> io::Result<(Header, &[u8])> {
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "Invalid native message length");
-    let length = u32::from_le_bytes(
-        bytes
-            .get(..4)
-            .ok_or_else(invalid)?
-            .try_into()
-            .map_err(|_| invalid())?,
-    ) as usize;
-    let metadata = u32::from_le_bytes(
-        bytes
-            .get(4..8)
-            .ok_or_else(invalid)?
-            .try_into()
-            .map_err(|_| invalid())?,
-    ) as usize;
+    let length = u32::from_le_bytes(*bytes.first_chunk::<4>().ok_or_else(invalid)?) as usize;
+    let metadata = u32::from_le_bytes(*bytes[4..].first_chunk::<4>().ok_or_else(invalid)?) as usize;
     if length != bytes.len() - 4 || metadata > length.saturating_sub(4) {
         return Err(invalid());
     }

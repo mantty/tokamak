@@ -2,25 +2,6 @@
 
 use super::*;
 
-pub(super) fn illegal_constructor(ctx: Ctx<'_>) -> rquickjs::Result<()> {
-    Err(Exception::throw_type(&ctx, "Illegal constructor"))
-}
-
-pub(super) fn constructor<'js>(
-    ctx: &Ctx<'js>,
-    name: &str,
-    prototype_name: &str,
-) -> rquickjs::Result<(Function<'js>, Object<'js>)> {
-    let function = Function::new(ctx.clone(), illegal_constructor)?;
-    function.set_name(name)?;
-    let function_object = Object::from_value(function.clone().into_value())?;
-    let prototype = Object::new(ctx.clone())?;
-    function_object.set("prototype", prototype.clone())?;
-    prototype.set("constructor", function.clone())?;
-    ctx.globals().set(prototype_name, prototype.clone())?;
-    Ok((function, prototype))
-}
-
 /// workerd's `Dirent` class, which holds an entry's libuv `UV_DIRENT_*` type
 /// under a private symbol.
 const DIRENT_CLASS: &str = r#"(() => {
@@ -127,7 +108,7 @@ pub(super) fn dir_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Construct
 
 /// The value `create` makes, made once per context and kept in the hidden
 /// global `name`.
-fn cached<'js, T: FromJs<'js> + IntoJs<'js> + Clone>(
+pub(super) fn cached<'js, T: FromJs<'js> + IntoJs<'js> + Clone>(
     ctx: &Ctx<'js>,
     name: &str,
     create: impl FnOnce(&Ctx<'js>) -> rquickjs::Result<T>,
@@ -160,7 +141,7 @@ pub(super) fn dir_object<'js>(
         let handle = Object::new(ctx.clone())?;
         handle.set("name", item.name.as_str())?;
         handle.set("type", dirent_type(&item.entry))?;
-        handle.set("parentPath", normalized_parent(&item.parent))?;
+        handle.set("parentPath", item.parent.as_str())?;
         handles.set(index, handle)?;
     }
     let options = Object::new(ctx.clone())?;
@@ -176,12 +157,7 @@ pub(super) fn item_dirent<'js>(
     encoding: Option<&str>,
 ) -> rquickjs::Result<Object<'js>> {
     let name = text_value(ctx, &item.name, encoding)?;
-    dirent(
-        ctx,
-        name,
-        dirent_type(&item.entry),
-        normalized_parent(&item.parent),
-    )
+    dirent(ctx, name, dirent_type(&item.entry), &item.parent)
 }
 
 #[derive(Clone)]
@@ -191,21 +167,31 @@ pub(super) struct FileHandleState {
 }
 
 pub(super) fn file_handle_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
-    constructor(ctx, "FileHandle", "__tokamak_node_fs_file_handle_proto")
-        .map(|(function, _)| function)
+    let function = Function::new(ctx.clone(), |ctx: Ctx<'_>| -> rquickjs::Result<()> {
+        Err(Exception::throw_type(&ctx, "Illegal constructor"))
+    })?;
+    function.set_name("FileHandle")?;
+    let prototype = Object::new(ctx.clone())?;
+    function.set("prototype", prototype.clone())?;
+    prototype.set("constructor", function.clone())?;
+    ctx.globals()
+        .set("__tokamak_node_fs_file_handle_proto", prototype)?;
+    Ok(function)
 }
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn file_handle_object<'js>(
     ctx: &Ctx<'js>,
-    state: FileHandleState,
+    descriptor: u32,
 ) -> rquickjs::Result<Object<'js>> {
     let prototype: Option<Object> = ctx.globals().get("__tokamak_node_fs_file_handle_proto")?;
     let object = Object::new_proto(ctx.clone(), prototype.as_ref())?;
     install_event_emitter(ctx, &object)?;
-    let descriptor = handle_descriptor(&state)
-        .ok_or_else(|| Exception::throw_internal(ctx, "file descriptor was closed"))?;
     object.set("fd", descriptor)?;
+    let state = FileHandleState {
+        descriptor: Arc::new(Mutex::new(Some(descriptor))),
+        owns_descriptor: true,
+    };
 
     let read_state = state.clone();
     object.set(
@@ -283,12 +269,13 @@ pub(super) fn file_handle_object<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, data: Value<'js>, options: Opt<Value<'js>>| {
-                let descriptor = open_descriptor(&ctx, &write_file_state)?;
-                let options = parse_options(&ctx, options.0)?;
-                let bytes = bytes(&ctx, data.clone(), options.encoding.as_deref())?;
-                let bytes_written = write_descriptor(&ctx, descriptor, &bytes, false)?;
-                let buffer = write_buffer_value(&ctx, &data, &bytes)?;
-                transfer_result(&ctx, "bytesWritten", bytes_written, "buffer", buffer)
+                let written = open_descriptor(&ctx, &write_file_state).and_then(|descriptor| {
+                    let view = file_view(&ctx, data, options.0.as_ref())?;
+                    let bytes = attached_bytes(&ctx, &view)?;
+                    let count = write_descriptor(&ctx, descriptor, &bytes, false)?;
+                    transfer_value(&ctx, "bytesWritten", count, "buffer", view)
+                });
+                promise(ctx.clone(), written)
             },
         )?,
     )?;
@@ -298,11 +285,10 @@ pub(super) fn file_handle_object<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, data: Value<'js>, options: Opt<Value<'js>>| {
-                let descriptor = open_descriptor(&ctx, &append_state)?;
-                let options = parse_options(&ctx, options.0)?;
-                let data = bytes(&ctx, data, options.encoding.as_deref())?;
-                write_descriptor(&ctx, descriptor, &data, true)?;
-                promise_unit(ctx, Ok(()))
+                let appended = open_descriptor(&ctx, &append_state).and_then(|descriptor| {
+                    append_file_sync(ctx.clone(), descriptor.into_js(&ctx)?, data, options)
+                });
+                promise_unit(ctx, appended)
             },
         )?,
     )?;
@@ -413,20 +399,6 @@ pub(super) fn handle_descriptor(state: &FileHandleState) -> Option<u32> {
 fn open_descriptor(ctx: &Ctx<'_>, state: &FileHandleState) -> rquickjs::Result<u32> {
     handle_descriptor(state)
         .ok_or_else(|| Exception::throw_message(ctx, "EBADF: file descriptor closed"))
-}
-
-/// A promise of `{ [count_name]: count, [buffer_name]: buffer }`.
-fn transfer_result<'js>(
-    ctx: &Ctx<'js>,
-    count_name: &str,
-    count: usize,
-    buffer_name: &str,
-    buffer: Value<'js>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        transfer_value(ctx, count_name, count, buffer_name, buffer),
-    )
 }
 
 /// `{ [count_name]: count, [buffer_name]: buffer }`.
@@ -683,7 +655,7 @@ fn stream_descriptor<'js>(
     let open_path = path
         .as_deref()
         .ok_or_else(|| Exception::throw_type(ctx, "stream path is required"))?;
-    let flags = option_property(ctx, options, "flags")?
+    let flags = option_property(options, "flags")?
         .or_else(|| default_flags.and_then(|flags| flags.into_js(ctx).ok()));
     let open_options = open_options(ctx, flags)?;
     let descriptor = vfs_call(ctx, |vfs| vfs.open(open_path, open_options))?;
@@ -694,13 +666,10 @@ pub(super) fn option_descriptor<'js>(
     ctx: &Ctx<'js>,
     options: Option<&Value<'js>>,
 ) -> rquickjs::Result<Option<u32>> {
-    let Some(value) = defined(option_property(ctx, options, "fd")?) else {
+    let Some(value) = defined(option_property(options, "fd")?) else {
         return Ok(None);
     };
-    if value.is_object() {
-        let object = value
-            .try_into_object()
-            .map_err(|_| Exception::throw_type(ctx, "options.fd must be a file descriptor"))?;
+    if let Some(object) = value.as_object() {
         return object
             .get::<_, Option<Value>>("fd")?
             .map(|value| descriptor_value(ctx, value))
@@ -732,13 +701,15 @@ pub(super) fn stream_write<'js>(
         return Err(Exception::throw_type(ctx, "chunk is required"));
     }
     let value = args.remove(0);
+    if value.is_null() {
+        return Err(throw_type_error(
+            ctx,
+            "ERR_STREAM_NULL_VALUES",
+            "May not write null values to stream",
+        ));
+    }
     let callback = pop_callback(&mut args);
-    let encoding = args
-        .first()
-        .and_then(|value| value.as_string())
-        .map(rquickjs::String::to_string)
-        .transpose()?;
-    let data = bytes(ctx, value, encoding.as_deref())?;
+    let data = chunk_bytes(ctx, value, stream_encoding(ctx, args.first())?)?;
     let descriptor = open_descriptor(ctx, state)?;
     let result = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, None));
     let Some(callback) = callback else {
@@ -752,6 +723,30 @@ pub(super) fn stream_write<'js>(
     Ok(true)
 }
 
+/// The encoding `WriteStream.write` encodes a string chunk in, as Node's
+/// `Writable.write` reads its `encoding` argument: a falsy one means utf8,
+/// and any other must name an encoding.
+fn stream_encoding<'js>(
+    ctx: &Ctx<'js>,
+    encoding: Option<&Value<'js>>,
+) -> rquickjs::Result<Value<'js>> {
+    let Some(encoding) = encoding else {
+        return Ok(Value::new_undefined(ctx.clone()));
+    };
+    if !Coerced::<bool>::from_js(ctx, encoding.clone())?.0 {
+        return Ok(Value::new_undefined(ctx.clone()));
+    }
+    if !is_encoding(ctx, encoding)? {
+        let name = Coerced::<String>::from_js(ctx, encoding.clone())?.0;
+        return Err(throw_type_error(
+            ctx,
+            "ERR_UNKNOWN_ENCODING",
+            &format!("Unknown encoding: {name}"),
+        ));
+    }
+    Ok(encoding.clone())
+}
+
 pub(super) fn stream_end<'js>(
     ctx: &Ctx<'js>,
     state: &FileHandleState,
@@ -760,8 +755,11 @@ pub(super) fn stream_end<'js>(
 ) -> rquickjs::Result<Object<'js>> {
     let mut args = args.0;
     let callback = pop_callback(&mut args);
-    if let Some(value) = args.into_iter().next() {
-        stream_write(ctx, state, Rest(vec![value]))?;
+    if args
+        .first()
+        .is_some_and(|chunk| !chunk.is_undefined() && !chunk.is_null())
+    {
+        stream_write(ctx, state, Rest(args))?;
     }
     if state.owns_descriptor
         && let Some(descriptor) = take_descriptor(state)
@@ -913,20 +911,6 @@ pub(super) fn stat_object<'js>(
     create.call((record, bigint))
 }
 
-pub(super) fn set_number_or_bigint<'js>(
-    ctx: &Ctx<'js>,
-    object: &Object<'js>,
-    name: &str,
-    value: u64,
-    bigint: bool,
-) -> rquickjs::Result<()> {
-    if bigint {
-        object.set(name, BigInt::from_u64(ctx.clone(), value)?)
-    } else {
-        object.set(name, value)
-    }
-}
-
 pub(super) fn text_value<'js>(
     ctx: &Ctx<'js>,
     value: &str,
@@ -937,10 +921,6 @@ pub(super) fn text_value<'js>(
         Some("buffer") => output(ctx.clone(), value.as_bytes(), None),
         Some(_) => output(ctx.clone(), value.as_bytes(), encoding),
     }
-}
-
-pub(super) fn normalized_parent(path: &str) -> &str {
-    if path.is_empty() { "/" } else { path }
 }
 
 pub(super) fn validate_mode<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<()> {
@@ -959,10 +939,15 @@ pub(super) fn validate_mode<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs:
 
 pub(super) fn statfs_object<'js>(ctx: &Ctx<'js>, bigint: bool) -> rquickjs::Result<Object<'js>> {
     let object = Object::new(ctx.clone())?;
+    let zero = if bigint {
+        BigInt::from_u64(ctx.clone(), 0)?.into_value()
+    } else {
+        0.into_js(ctx)?
+    };
     for name in [
         "type", "bsize", "blocks", "bfree", "bavail", "files", "ffree",
     ] {
-        set_number_or_bigint(ctx, &object, name, 0, bigint)?;
+        object.set(name, zero.clone())?;
     }
     Ok(object)
 }

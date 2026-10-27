@@ -10,18 +10,24 @@ import { capabilitiesFor, type NativePlatform } from "@tokamakdev/plugin/capabil
 import { openDevSocket, type DevSocket } from "./dev-socket.mjs";
 import type { Config } from "./index.mjs";
 import { findModule } from "./worker-contract.mjs";
-import { createWorkerGraph, type WorkerGraph } from "./worker-graph.mjs";
+import { CAPABILITIES, createWorkerGraph, type WorkerGraph } from "./worker-graph.mjs";
 
 export type TokamakOptions = Config & {
   /** Native worker entrypoint, relative to the Vite root; defaults to src/tokamak.ts or .js. */
   module?: string;
 };
 
-const CAPABILITIES = "/_tokamak/capabilities.js";
 const MIDDLEWARE_MODE_ERROR =
   "Vite is running in middleware mode, so tokamak cannot find the development server's address; tok dev needs Vite's own dev server";
 
 type AuxiliaryWorker = NonNullable<PluginConfig["auxiliaryWorkers"]>[number];
+
+/** Rejects Cloudflare options that add Workers beside the main and native workers Tokamak hosts. */
+export function rejectAuxiliaryWorkers(options: { auxiliaryWorkers?: readonly unknown[] }): void {
+  if (options.auxiliaryWorkers?.length) {
+    throw new Error("Tokamak hosts the main and native workers; additional auxiliary workers are not supported.");
+  }
+}
 
 /** The native worker and its development relay. */
 export function createNativeWorker(

@@ -55,12 +55,6 @@ impl Events {
     }
 }
 
-impl std::fmt::Debug for Events {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("Events")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::Event;

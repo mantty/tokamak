@@ -1,6 +1,6 @@
-use std::env;
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context, Result};
 use tokamak_cli::{MANIFEST_FILE, Platform, Target};
 
 pub(crate) struct WorkspaceLayout {
@@ -8,12 +8,15 @@ pub(crate) struct WorkspaceLayout {
 }
 
 impl WorkspaceLayout {
-    pub(crate) fn from_source() -> Option<Self> {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let root = manifest_dir.parent()?.parent()?.to_path_buf();
-        let layout = Self { root };
-        (layout.root.join("Cargo.toml").is_file() && layout.root.join("tokamak").is_dir())
-            .then_some(layout)
+    pub(crate) fn from_source() -> Result<Self> {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .filter(|root| root.join("Cargo.toml").is_file() && root.join("tokamak").is_dir())
+            .map(|root| Self {
+                root: root.to_path_buf(),
+            })
+            .context("source workspace is unavailable; run this command from a tokamak checkout")
     }
 
     pub(crate) fn root(&self) -> &Path {

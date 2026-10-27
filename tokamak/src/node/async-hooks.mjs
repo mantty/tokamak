@@ -37,7 +37,6 @@ export class AsyncLocalStorage {
     return runInAsyncContext(context, callback, undefined, args);
   }
   exit(callback, ...args) {
-    validateCallback(callback);
     return this.run(undefined, callback, ...args);
   }
 }

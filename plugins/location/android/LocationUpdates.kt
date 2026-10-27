@@ -14,13 +14,6 @@ import org.json.JSONObject
 private const val PREFERENCES = "tokamak.location"
 private const val DEFAULT_INTERVAL_MILLIS = 10_000L
 
-private val QUALITIES =
-    mapOf(
-        Accuracy.High to LocationRequest.QUALITY_HIGH_ACCURACY,
-        Accuracy.Balanced to LocationRequest.QUALITY_BALANCED_POWER_ACCURACY,
-        Accuracy.Low to LocationRequest.QUALITY_LOW_POWER,
-    )
-
 /**
  * Location updates of one kind, [name]: `startUpdates`' or significant changes'. `LocationManager`
  * sends them to [TokamakLocationReceiver] through a `PendingIntent`, starting the app's process when
@@ -82,7 +75,7 @@ internal class LocationUpdates(private val host: TokamakHost, private val name: 
         val accuracy = options.accuracy ?: Accuracy.High
         val request =
             LocationRequest.Builder(options.interval ?: DEFAULT_INTERVAL_MILLIS)
-                .setQuality(QUALITIES.getValue(accuracy))
+                .setQuality(accuracy.quality)
                 .setMinUpdateDistanceMeters((options.distance ?: 0.0).toFloat())
                 .build()
         val updates = checkNotNull(pendingIntent(PendingIntent.FLAG_UPDATE_CURRENT))

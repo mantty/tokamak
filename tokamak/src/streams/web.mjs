@@ -294,25 +294,3 @@ export class FixedLengthStream extends IdentityTransformStream {
 for (const Type of [TransformStream, CompressionStream, DecompressionStream, IdentityTransformStream, FixedLengthStream]) {
   Object.defineProperty(Type.prototype, Symbol.toStringTag, { value: Type.name, configurable: true });
 }
-
-export default {
-  ReadableStream,
-  ReadableStreamBYOBReader,
-  ReadableStreamBYOBRequest,
-  ReadableByteStreamController,
-  ReadableStreamDefaultController,
-  ReadableStreamDefaultReader,
-  WritableStream,
-  WritableStreamDefaultController,
-  WritableStreamDefaultWriter,
-  TransformStream,
-  TransformStreamDefaultController,
-  TextEncoderStream,
-  TextDecoderStream,
-  CompressionStream,
-  DecompressionStream,
-  CountQueuingStrategy,
-  ByteLengthQueuingStrategy,
-  FixedLengthStream,
-  IdentityTransformStream,
-};

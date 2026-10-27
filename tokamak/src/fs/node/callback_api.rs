@@ -4,11 +4,9 @@ use super::*;
 
 #[derive(Clone, Copy)]
 pub(super) enum CallbackOperation {
-    /// `(input, options?)`, answering with a value.
-    Value(ValueOperation),
     /// `(input, options?)`, answering with a value, with the options checked
-    /// before the call.
-    Encoded(ValueOperation, EncodingCheck),
+    /// before the call when it names a check.
+    Value(ValueOperation, Option<EncodingCheck>),
     /// `(path, options?)`.
     Options(OptionsOperation),
     /// `(first, second)`.
@@ -20,6 +18,9 @@ pub(super) enum CallbackOperation {
     /// `(path, atime, mtime)`.
     Times(TimesOperation),
     Access,
+    /// `(path, data, options?)`, written as `writeFile` writes when given
+    /// options, as workerd does.
+    AppendFile,
     Exists,
     Close,
     CopyFile,
@@ -43,10 +44,7 @@ pub(super) fn callback_operations() -> &'static [(&'static str, CallbackOperatio
     &[
         ("access", CallbackOperation::Access),
         ("exists", CallbackOperation::Exists),
-        (
-            "appendFile",
-            CallbackOperation::PairOptions(append_file_sync),
-        ),
+        ("appendFile", CallbackOperation::AppendFile),
         ("chmod", CallbackOperation::Pair(chmod_sync)),
         ("chown", CallbackOperation::Owner(chown_sync)),
         ("close", CallbackOperation::Close),
@@ -59,45 +57,45 @@ pub(super) fn callback_operations() -> &'static [(&'static str, CallbackOperatio
         ("fsync", CallbackOperation::Fsync),
         ("ftruncate", CallbackOperation::Ftruncate),
         ("futimes", CallbackOperation::Futimes),
-        ("glob", CallbackOperation::Value(glob_sync)),
+        ("glob", CallbackOperation::Value(glob_sync, None)),
         ("lchmod", CallbackOperation::Pair(lchmod_sync)),
         ("lchown", CallbackOperation::Owner(lchown_sync)),
         ("link", CallbackOperation::Pair(link_sync)),
-        ("lstat", CallbackOperation::Value(lstat_sync)),
+        ("lstat", CallbackOperation::Value(lstat_sync, None)),
         ("lutimes", CallbackOperation::Times(lutimes_sync)),
         ("mkdir", CallbackOperation::Options(mkdir_sync)),
         (
             "mkdtemp",
-            CallbackOperation::Encoded(mkdtemp_sync, EncodingCheck::NullAllowed),
+            CallbackOperation::Value(mkdtemp_sync, Some(EncodingCheck::NullAllowed)),
         ),
         ("open", CallbackOperation::Open),
         (
             "opendir",
-            CallbackOperation::Encoded(opendir_sync, EncodingCheck::ObjectOnly),
+            CallbackOperation::Value(opendir_sync, Some(EncodingCheck::ObjectOnly)),
         ),
         ("read", CallbackOperation::Read),
         (
             "readFile",
-            CallbackOperation::Encoded(read_file_sync, EncodingCheck::NullAllowed),
+            CallbackOperation::Value(read_file_sync, Some(EncodingCheck::NullAllowed)),
         ),
         (
             "readlink",
-            CallbackOperation::Encoded(read_link_sync, EncodingCheck::NullAllowed),
+            CallbackOperation::Value(read_link_sync, Some(EncodingCheck::NullAllowed)),
         ),
         ("readv", CallbackOperation::Readv),
         (
             "readdir",
-            CallbackOperation::Encoded(readdir_sync, EncodingCheck::NullRejected),
+            CallbackOperation::Value(readdir_sync, Some(EncodingCheck::NullRejected)),
         ),
         (
             "realpath",
-            CallbackOperation::Encoded(realpath_sync, EncodingCheck::NullAllowed),
+            CallbackOperation::Value(realpath_sync, Some(EncodingCheck::NullAllowed)),
         ),
         ("rename", CallbackOperation::Pair(rename_sync)),
         ("rm", CallbackOperation::Options(rm_sync)),
         ("rmdir", CallbackOperation::Options(rmdir_sync)),
-        ("stat", CallbackOperation::Value(stat_sync)),
-        ("statfs", CallbackOperation::Value(statfs_sync)),
+        ("stat", CallbackOperation::Value(stat_sync, None)),
+        ("statfs", CallbackOperation::Value(statfs_sync, None)),
         ("symlink", CallbackOperation::Pair(symlink_sync)),
         ("truncate", CallbackOperation::Truncate),
         ("unlink", CallbackOperation::Unlink),
@@ -137,20 +135,17 @@ pub(super) fn callback_call<'js>(
             )
         })?;
     let result = match operation {
-        CallbackOperation::Value(operation) => {
+        CallbackOperation::Value(operation, check) => {
             let input = take_arg(&ctx, &mut args)?;
-            let options = take_opt_value(&mut args);
-            reply(&ctx, operation(ctx.clone(), input, options))
-        }
-        CallbackOperation::Encoded(operation, check) => {
-            let input = take_arg(&ctx, &mut args)?;
-            let options = take_opt_value(&mut args);
-            check_encoding(&ctx, options.0.as_ref(), check)?;
+            let options = Opt(args.pop());
+            if let Some(check) = check {
+                check_encoding(&ctx, options.0.as_ref(), check)?;
+            }
             reply(&ctx, operation(ctx.clone(), input, options))
         }
         CallbackOperation::Options(operation) => {
             let input = take_arg(&ctx, &mut args)?;
-            let options = take_opt_value(&mut args);
+            let options = Opt(args.pop());
             reply(&ctx, operation(ctx.clone(), input, options))
         }
         CallbackOperation::Pair(operation) => {
@@ -161,7 +156,7 @@ pub(super) fn callback_call<'js>(
         CallbackOperation::PairOptions(operation) => {
             let first = take_arg(&ctx, &mut args)?;
             let second = take_arg(&ctx, &mut args)?;
-            let options = take_opt_value(&mut args);
+            let options = Opt(args.pop());
             reply(&ctx, operation(ctx.clone(), first, second, options))
         }
         CallbackOperation::Owner(operation) => {
@@ -180,6 +175,16 @@ pub(super) fn callback_call<'js>(
             let input = take_arg(&ctx, &mut args)?;
             let mode = take_opt_u32(&ctx, &mut args)?;
             reply(&ctx, access_sync(ctx.clone(), input, mode))
+        }
+        CallbackOperation::AppendFile => {
+            let input = take_arg(&ctx, &mut args)?;
+            let data = take_arg(&ctx, &mut args)?;
+            let write: PairOptionsOperation = if args.is_empty() {
+                append_file_sync
+            } else {
+                write_file_sync
+            };
+            reply(&ctx, write(ctx.clone(), input, data, Opt(args.pop())))
         }
         CallbackOperation::Exists => {
             let input = take_arg(&ctx, &mut args)?;
@@ -208,7 +213,7 @@ pub(super) fn callback_call<'js>(
         }
         CallbackOperation::Fstat => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            let options = take_opt_value(&mut args);
+            let options = Opt(args.pop());
             reply(&ctx, fstat_sync(ctx.clone(), descriptor, options))
         }
         CallbackOperation::Fdatasync | CallbackOperation::Fsync => {
@@ -242,7 +247,7 @@ pub(super) fn callback_call<'js>(
         CallbackOperation::Readv => {
             let descriptor = take_arg(&ctx, &mut args)?;
             let buffers = take_arg(&ctx, &mut args)?;
-            let position = take_opt_value(&mut args);
+            let position = Opt(args.pop());
             optional_position(&ctx, position.0.clone())?;
             let count = readv_sync(ctx.clone(), descriptor, buffers.clone(), position);
             reply_with_buffer(&ctx, count, buffers)
@@ -266,7 +271,7 @@ pub(super) fn callback_call<'js>(
         CallbackOperation::Writev => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
             let buffers = take_arg(&ctx, &mut args)?;
-            let write = vector_write(&ctx, buffers, take_opt_value(&mut args).0)?;
+            let write = vector_write(&ctx, buffers, args.pop())?;
             let count = write_views(&ctx, descriptor, &write);
             reply_with_buffer(&ctx, count, write.data)
         }
@@ -305,19 +310,15 @@ pub(super) fn take_arg<'js>(
     Ok(args.remove(0))
 }
 
-pub(super) fn take_opt_value<'js>(args: &mut Vec<Value<'js>>) -> Opt<Value<'js>> {
-    Opt(args.pop())
-}
-
 pub(super) fn take_front_value<'js>(args: &mut Vec<Value<'js>>) -> Option<Value<'js>> {
     (!args.is_empty()).then(|| args.remove(0))
 }
 
-pub(super) fn take_opt_u32<'js>(
-    ctx: &Ctx<'js>,
-    args: &mut Vec<Value<'js>>,
-) -> rquickjs::Result<Opt<u32>> {
-    optional_u32(ctx, args.pop())
+fn take_opt_u32<'js>(ctx: &Ctx<'js>, args: &mut Vec<Value<'js>>) -> rquickjs::Result<Opt<u32>> {
+    defined(args.pop())
+        .map(|value| numeric_u32(ctx, value))
+        .transpose()
+        .map(Opt)
 }
 
 pub(super) struct ReadArguments<'js> {
@@ -341,11 +342,12 @@ pub(super) fn normalize_read_arguments<'js>(
     };
     if is_array_buffer_view(&value) {
         args.remove(0);
-        if args
+        if let Some(options) = args
             .first()
-            .is_some_and(|value| value.is_object() && !is_array_buffer_view(value))
+            .filter(|value| !is_array_buffer_view(value))
+            .and_then(Value::as_object)
         {
-            let (offset, length, position) = read_options(ctx, args.remove(0))?;
+            let (offset, length, position) = read_options(options)?;
             return Ok(ReadArguments {
                 buffer: value,
                 offset,
@@ -359,10 +361,7 @@ pub(super) fn normalize_read_arguments<'js>(
             length: take_front_value(&mut args),
             position: take_front_value(&mut args),
         })
-    } else if value.is_object() {
-        let options = value
-            .try_into_object()
-            .map_err(|_| Exception::throw_type(ctx, "read options must be an object"))?;
+    } else if let Some(options) = value.as_object() {
         let length = options.get::<_, Option<Value>>("length")?;
         let buffer = options
             .get::<_, Option<Value>>("buffer")?
@@ -382,13 +381,9 @@ pub(super) fn normalize_read_arguments<'js>(
 }
 
 /// The `offset`, `length`, and `position` of a read options object.
-pub(super) fn read_options<'js>(
-    ctx: &Ctx<'js>,
-    value: Value<'js>,
+fn read_options<'js>(
+    options: &Object<'js>,
 ) -> rquickjs::Result<(Option<Value<'js>>, Option<Value<'js>>, Option<Value<'js>>)> {
-    let options = value
-        .try_into_object()
-        .map_err(|_| Exception::throw_type(ctx, "read options must be an object"))?;
     Ok((
         options.get("offset")?,
         options.get("length")?,
@@ -417,33 +412,13 @@ pub(super) fn defined(value: Option<Value<'_>>) -> Option<Value<'_>> {
     value.filter(|value| !value.is_null() && !value.is_undefined())
 }
 
-pub(super) fn optional_u32<'js>(
-    ctx: &Ctx<'js>,
-    value: Option<Value<'js>>,
-) -> rquickjs::Result<Opt<u32>> {
-    defined(value)
-        .map(|value| numeric_u32(ctx, value))
-        .transpose()
-        .map(Opt)
-}
-
 pub(super) fn numeric_u32<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<u32> {
     let value = Coerced::<i64>::from_js(ctx, value)?.0;
     u32::try_from(value).map_err(|_| Exception::throw_range(ctx, "value is out of range"))
 }
 
-pub(super) fn take_opt_u64<'js>(
-    ctx: &Ctx<'js>,
-    args: &mut Vec<Value<'js>>,
-) -> rquickjs::Result<Opt<u64>> {
-    optional_u64(ctx, args.pop())
-}
-
-pub(super) fn optional_u64<'js>(
-    ctx: &Ctx<'js>,
-    value: Option<Value<'js>>,
-) -> rquickjs::Result<Opt<u64>> {
-    defined(value)
+fn take_opt_u64<'js>(ctx: &Ctx<'js>, args: &mut Vec<Value<'js>>) -> rquickjs::Result<Opt<u64>> {
+    defined(args.pop())
         .map(|value| Coerced::<u64>::from_js(ctx, value).map(|value| value.0))
         .transpose()
         .map(Opt)
@@ -496,7 +471,6 @@ pub(super) fn open_options<'js>(
             append: flags & 1024 != 0,
             create: flags & 64 != 0,
             exclusive: flags & 128 != 0,
-            truncate: flags & 512 != 0,
             ..OpenOptions::default()
         });
     }
@@ -518,7 +492,6 @@ pub(super) fn open_options<'js>(
         append: first == 'a',
         create: matches!(first, 'w' | 'a') || value.contains('x'),
         exclusive: value.contains('x'),
-        truncate: first == 'w',
         ..OpenOptions::default()
     })
 }

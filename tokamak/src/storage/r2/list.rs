@@ -5,7 +5,8 @@ use rusqlite::{Connection, Statement};
 use serde::{Deserialize, Serialize};
 
 use super::super::keys::{cursor, cursor_key, prefix_end};
-use super::{Failure, Object, R2Bucket, lock, object_columns};
+use super::{Failure, Object, R2Bucket, object_columns};
+use crate::lock;
 
 /// Objects from a key onwards, in key order.
 const OBJECTS_FROM: &str = concat!(
@@ -20,7 +21,7 @@ const DEFAULT_LIMIT: usize = 1000;
 const METADATA_LIMIT: usize = 100;
 
 /// What a listing asks for.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListRequest {
     limit: Option<usize>,

@@ -4,8 +4,10 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
-use super::{Registry, Service, Target};
+use super::{Registry, Service};
+use crate::env_vars::ServiceBinding;
 use crate::quickjs::WorkerBundle;
+use crate::tests::{Gate, native_completion};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -25,28 +27,35 @@ fn service(
     })
 }
 
+fn target(service: &str, entrypoint: &str) -> ServiceBinding {
+    ServiceBinding {
+        service: service.into(),
+        entrypoint: entrypoint.into(),
+    }
+}
+
 fn run(client: &str, server: &str) -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut main = service(client, "main", directory.path())?;
     let mut device = service(server, "device", directory.path())?;
     main.bindings
-        .insert("DEVICE".into(), Target::new("device", "default"));
+        .insert("DEVICE".into(), target("device", "default"));
     main.bindings
-        .insert("NAMED".into(), Target::new("device", "Named"));
+        .insert("NAMED".into(), target("device", "Named"));
     device
         .bindings
-        .insert("MAIN".into(), Target::new("main", "default"));
+        .insert("MAIN".into(), target("main", "default"));
     let registry = Arc::new(Registry::new(BTreeMap::from([
         ("main".into(), main),
         ("device".into(), device),
-    ]))?);
+    ])));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
         let scope = super::Scope::new(&CancellationToken::new());
         let call = registry.invoke(
-            Target::new("main", "default"),
+            target("main", "default"),
             "run".into(),
             super::Message::empty_arguments(),
             scope.lifetime.clone(),
@@ -308,18 +317,6 @@ export default class extends WorkerEntrypoint {
     )
 }
 
-struct Gate(flume::Sender<(u64, String)>);
-
-impl crate::PluginHandler for Gate {
-    fn call(&self, id: u64, _: &str, method: &str, _: &[u8]) {
-        let _ = self.0.send((id, method.to_owned()));
-    }
-    fn call_with_body(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
-    fn chunk(&self, _: u64, _: &crate::PluginReply) {}
-    fn subscribe(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
-    fn cancel(&self, _: u64) {}
-}
-
 #[test]
 fn wait_until_continues_after_the_caller_receives_its_result() -> TestResult {
     let directory = tempfile::tempdir()?;
@@ -351,14 +348,14 @@ export default class extends WorkerEntrypoint {
         directory.path(),
     )?;
     main.bindings
-        .insert("DEVICE".into(), Target::new("device", "default"));
+        .insert("DEVICE".into(), target("device", "default"));
     let (sent, received) = flume::unbounded();
     let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(sent))), true);
     device.config.plugins = Some(Arc::clone(&plugins));
     let registry = Arc::new(Registry::new(BTreeMap::from([
         ("main".into(), main),
         ("device".into(), device),
-    ]))?);
+    ])));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -368,7 +365,7 @@ export default class extends WorkerEntrypoint {
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             registry.invoke(
-                Target::new("main", "default"),
+                target("main", "default"),
                 "run".into(),
                 super::Message::empty_arguments(),
                 scope.lifetime.clone(),
@@ -402,7 +399,7 @@ export default class extends WorkerEntrypoint { run() { while (true) {} } }
         "device",
         directory.path(),
     )?;
-    let registry = Arc::new(Registry::new(BTreeMap::from([("device".into(), worker)]))?);
+    let registry = Arc::new(Registry::new(BTreeMap::from([("device".into(), worker)])));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -414,7 +411,7 @@ export default class extends WorkerEntrypoint { run() { while (true) {} } }
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             registry.invoke(
-                Target::new("device", "default"),
+                target("device", "default"),
                 "run".into(),
                 super::Message::empty_arguments(),
                 scope.lifetime.clone(),
@@ -453,7 +450,7 @@ export default class extends WorkerEntrypoint {
     let (sent, received) = flume::unbounded();
     let plugins = crate::plugin_calls::PluginCalls::new(Some(Arc::new(Gate(sent))), true);
     worker.config.plugins = Some(Arc::clone(&plugins));
-    let registry = Arc::new(Registry::new(BTreeMap::from([("device".into(), worker)]))?);
+    let registry = Arc::new(Registry::new(BTreeMap::from([("device".into(), worker)])));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -465,7 +462,7 @@ export default class extends WorkerEntrypoint {
         let call = tokio::spawn(async move {
             registry
                 .invoke(
-                    Target::new("device", "default"),
+                    target("device", "default"),
                     "run".into(),
                     super::Message::empty_arguments(),
                     lifetime,
@@ -648,12 +645,4 @@ export default class extends WorkerEntrypoint {
         drop(response);
         Ok::<_, Box<dyn std::error::Error>>(())
     })
-}
-
-fn native_completion() -> crate::PluginReply {
-    crate::PluginReply {
-        payload: b"null".to_vec(),
-        failed: false,
-        done: true,
-    }
 }

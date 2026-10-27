@@ -14,11 +14,9 @@ import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
 import kotlin.coroutines.cancellation.CancellationException
-import kotlin.coroutines.resume
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.suspendCancellableCoroutine
 
 class TokamakLocationPlugin(
     private val host: TokamakHost,
@@ -105,9 +103,9 @@ class TokamakLocationPlugin(
             throw TokamakPluginError.notSupported("backgroundAlways needs the location plugin's background-always build setting")
         }
         val asked = if (request?.precision == Precision.Approximate) setOf(COARSE) else foreground
-        val allowed = ask(asked).containsValue(true)
+        val allowed = host.requestPermissions(asked).containsValue(true)
         if (allowed) restore(updatesRemoved = false)
-        if (background && allowed) ask(setOf(BACKGROUND))
+        if (background && allowed) host.requestPermissions(setOf(BACKGROUND))
         return permission()
     }
 
@@ -156,10 +154,6 @@ class TokamakLocationPlugin(
     fun onRegionTransition(): Flow<RegionTransition> = events.transitions.stream()
 
     fun onLocationError(): Flow<LocationErrorEvent> = events.errors.stream()
-
-    /** Asks the user for [permissions], returning whether each is granted. */
-    private suspend fun ask(permissions: Set<String>): Map<String, Boolean> =
-        suspendCancellableCoroutine { continuation -> host.requestPermissions(permissions) { continuation.resume(it) } }
 
     private fun granted(permission: String): Boolean =
         context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED

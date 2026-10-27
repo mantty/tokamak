@@ -137,14 +137,7 @@ class Element {
   onEndTag(handler) {
     if (typeof handler !== "function") throw new TypeError("HTMLRewriter end-tag handler must be a function");
     const state = requireState(elementStates, this);
-    applyMutation(state, {
-      name: "onEndTag",
-      handler: state.resources.addHandler(async properties => {
-        const token = new EndTag(properties, state.resources.mutate, state.resources);
-        try { await handler(token); }
-        finally { expiredTokens.add(token); }
-      }, true),
-    });
+    applyMutation(state, { name: "onEndTag", handler: state.resources.addHandler(tokenHandler(handler, undefined, EndTag), true) });
   }
 
   get [Symbol.toStringTag]() { return "Element"; }
@@ -213,9 +206,13 @@ class EndTag {
     });
   }
 
-  before(value, options) { contentOperation(endTagStates, this, "before", value, options); }
-  after(value, options) { contentOperation(endTagStates, this, "after", value, options); }
-  remove() { applyMutation(requireState(endTagStates, this), { name: "remove" }); }
+  before(value, options) { return contentOperation(endTagStates, this, "before", value, options); }
+  after(value, options) { return contentOperation(endTagStates, this, "after", value, options); }
+
+  remove() {
+    applyMutation(requireState(endTagStates, this), { name: "remove" });
+    return this;
+  }
 
   get [Symbol.toStringTag]() { return "EndTag"; }
 }
@@ -247,9 +244,14 @@ function callbackHandler(registered, name, Token) {
   const callback = registered?.[name];
   if (callback === undefined) return undefined;
   if (typeof callback !== "function") throw new TypeError(`HTMLRewriter ${name} handler must be a function`);
+  return tokenHandler(callback, registered, Token);
+}
+
+// Calls `callback` on `receiver` with a `Token` that expires when the callback settles.
+function tokenHandler(callback, receiver, Token) {
   return async (properties, resources) => {
     const token = new Token(properties, resources.mutate, resources);
-    try { await callback.call(registered, token); }
+    try { await callback.call(receiver, token); }
     finally { expiredTokens.add(token); }
   };
 }
@@ -338,7 +340,7 @@ export class HTMLRewriter {
       },
     };
     const register = handlers => Object.fromEntries(Object.entries(handlers).map(([name, callback]) => [name, resources.addHandler(callback)]));
-    const handlers = state.handlers.map(({ selector, handlers }) => ({ selector: String(selector), ...register(handlers) }));
+    const handlers = state.handlers.map(({ selector, handlers }) => ({ selector, ...register(handlers) }));
     for (const document of state.documentHandlers) handlers.push(register(document));
     const parser = htmlRewrite(JSON.stringify(handlers), response.headers.get("content-type") ?? "");
     resources.addSource(response.body);

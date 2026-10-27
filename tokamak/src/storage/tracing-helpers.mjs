@@ -6,5 +6,3 @@ const tracing = createTracing();
 export function withSpan(name, callback) {
   return callback(tracing.startSpan(name));
 }
-
-export const startActiveSpan = withSpan;

@@ -50,6 +50,7 @@ internal class Export(
     val doc: String,
     val overflow: TokamakOverflow,
     val parameters: List<KParameter>,
+    /** The call's result type, or the type of each value the stream sends. */
     val returns: KType,
     val suspends: Boolean,
 )
@@ -83,7 +84,8 @@ private fun exports(exporter: TokamakExporter<TokamakPlugin>, plugin: KClass<*>)
         if (export.kind == "stream" && method.isSuspend) {
             throw DescribeError("${plugin.simpleName}.${method.name} returns its Flow without suspending")
         }
-        Export(export.kind, method.name, export.doc, export.overflow, method.parameters.drop(1), method.returnType, method.isSuspend)
+        val returns = if (export.kind == "stream") element(method.returnType, "${method.name}:") else method.returnType
+        Export(export.kind, method.name, export.doc, export.overflow, method.parameters.drop(1), returns, method.isSuspend)
     }
 
 /** The description of [exports] and [events], which records the data classes and enums they use in [types]. */
@@ -99,7 +101,7 @@ private fun description(exports: List<Export>, events: List<Event>, types: Types
             }
             when (export.kind) {
                 "call" -> put("returns", types.describe(export.returns, "$context result"))
-                "stream" -> put("returns", types.describe(element(export.returns, context), "$context values"))
+                "stream" -> put("returns", types.describe(export.returns, "$context values"))
             }
             if (export.overflow == TokamakOverflow.DROP_OLDEST) put("overflow", "dropOldest")
         }
@@ -135,7 +137,7 @@ private class Types {
         val value: Any = when (classifier) {
             String::class -> "string"
             Boolean::class -> "boolean"
-            Int::class, Long::class, Short::class, Byte::class, Double::class, Float::class -> "number"
+            in NUMBERS -> "number"
             Unit::class -> "void"
             ByteArray::class -> "bytes"
             Any::class -> "json"

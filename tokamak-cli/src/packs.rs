@@ -32,7 +32,7 @@ impl PlatformPack {
         manifest
             .validate_cli_version(env!("CARGO_PKG_VERSION"))
             .with_context(|| format!("incompatible platform pack: {}", manifest_path.display()))?;
-        if !platform.accepts(manifest.target) {
+        if manifest.target.platform() != platform {
             bail!(
                 "platform pack {} cannot build {}",
                 manifest.target,

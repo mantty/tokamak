@@ -1,14 +1,14 @@
 import { valueStream, type JsonStream } from "@tokamakdev/plugin/streams";
 import * as web from "./index.js";
-import type { Message, OpenedNotification, DismissedNotification, Subscription, SetupConfig, SetupResult, NotificationContent, SubscribeOptions } from "../src/types.js";
+import type { Message, OpenedNotification, DismissedNotification, Subscription, SubscribeOptions } from "../src/types.js";
 
 export const notifications = {
-  setup: (config: SetupConfig): Promise<SetupResult> => web.setup(config),
+  setup: web.setup,
   permission: web.permission,
   requestPermission: web.requestPermission,
   settings: web.settings,
-  setBadge: (count: number): Promise<void> => web.setBadge(count),
-  show: (notification: NotificationContent): Promise<void> => web.show(notification),
+  setBadge: web.setBadge,
+  show: web.show,
   getDelivered: web.getDelivered,
   remove: web.remove,
   subscribe: (options: SubscribeOptions = {}) => web.subscribe(options),

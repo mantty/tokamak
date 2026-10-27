@@ -311,16 +311,8 @@ enum TokamakBackgroundResult {
   }
 }
 
-enum RuntimeError: Error, CustomStringConvertible {
-  case configuration(String)
-  case runtime(String)
-
-  var description: String {
-    switch self {
-    case .configuration(let message), .runtime(let message):
-      return message
-    }
-  }
+struct RuntimeError: Error, CustomStringConvertible {
+  let description: String
 }
 
 enum AuthenticationMaterial<Value> {
@@ -338,7 +330,7 @@ final class RuntimeHandle {
   /// Worker calls `plugins`.
   init(foreground: Bool, plugins: TokamakPluginHandler) throws {
     guard let appHost = Bundle.main.tokamakHost, !appHost.isEmpty else {
-      throw RuntimeError.configuration("TokamakHost is required")
+      throw RuntimeError(description: "TokamakHost is required")
     }
     self.appHost = appHost
 
@@ -371,7 +363,7 @@ final class RuntimeHandle {
     } else {
       let bundle = Bundle.main.resourceURL?.appendingPathComponent("app")
       guard let bundle else {
-        throw RuntimeError.configuration("app bundle resources are unavailable")
+        throw RuntimeError(description: "app bundle resources are unavailable")
       }
       let storage = try Self.storageDirectory()
       handle = bundle.path.withCString { bundlePath in
@@ -396,7 +388,7 @@ final class RuntimeHandle {
       }
     }
     guard handle != nil else {
-      throw RuntimeError.runtime(String(cString: error))
+      throw RuntimeError(description: String(cString: error))
     }
     try? FileManager.default.removeItem(at: state.appendingPathComponent(startupErrorFile))
   }
@@ -424,7 +416,7 @@ final class RuntimeHandle {
       tokamak_runtime_restore_gateway(handle, error.baseAddress, error.count)
     }
     guard port != 0 else {
-      throw RuntimeError.runtime(String(cString: error))
+      throw RuntimeError(description: String(cString: error))
     }
     return port
   }
@@ -453,7 +445,7 @@ final class RuntimeHandle {
     }
     defer { tokamak_bytes_free(reply) }
     guard succeeded else {
-      throw RuntimeError.runtime(String(cString: error))
+      throw RuntimeError(description: String(cString: error))
     }
     return reply.contents ?? Data()
   }
@@ -477,7 +469,7 @@ final class RuntimeHandle {
     }
     defer { tokamak_bytes_free(body) }
     guard succeeded else {
-      throw RuntimeError.runtime(String(cString: error))
+      throw RuntimeError(description: String(cString: error))
     }
     return body.contents ?? Data()
   }
@@ -574,7 +566,7 @@ final class RuntimeHandle {
   /// This app's folder in the user's `directory`.
   private static func appDirectory(_ directory: FileManager.SearchPathDirectory) throws -> URL {
     guard let identifier = Bundle.main.bundleIdentifier else {
-      throw RuntimeError.configuration("CFBundleIdentifier is required")
+      throw RuntimeError(description: "CFBundleIdentifier is required")
     }
     return try FileManager.default.url(
       for: directory,

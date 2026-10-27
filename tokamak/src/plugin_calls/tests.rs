@@ -1,6 +1,7 @@
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use super::{Overflow, PluginCalls, PluginHandler, PluginReply, SUBSCRIPTION_CAPACITY};
+use crate::lock;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -12,16 +13,10 @@ struct Shell {
 }
 impl Shell {
     fn record(&self, id: u64, method: String, payload: &[u8]) {
-        self.requests
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push((id, method, payload.to_vec()));
+        lock(&self.requests).push((id, method, payload.to_vec()));
     }
     fn requests(&self) -> Vec<(u64, String, Vec<u8>)> {
-        self.requests
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        lock(&self.requests).clone()
     }
 }
 impl PluginHandler for Shell {

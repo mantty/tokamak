@@ -15,13 +15,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rquickjs::{Ctx, Module};
 use serde::Serialize;
 
 use crate::env_vars::{StorageBinding, store_id_problem};
 use crate::linked::{OpenedStorage, StorageCatalog, StorageEntry, StorageRuntime};
+use crate::lock;
 use crate::packaging::PackageLayout;
 use d1::{D1Database, Migrations};
 use kv::KvNamespace;
@@ -161,6 +162,7 @@ impl Storage {
         bindings: &[StorageBinding],
     ) -> io::Result<Self> {
         let mut entries = BTreeMap::new();
+        let mut kinds = BTreeMap::new();
         for binding in bindings {
             let entry = match binding {
                 StorageBinding::Kv { id, .. } => Binding::Kv(catalog.namespaces.get(id)),
@@ -181,17 +183,11 @@ impl Storage {
                 },
             };
             entries.insert(binding.name().to_owned(), entry);
+            kinds.insert(binding.name(), kind_of(binding));
         }
-        let installed: Vec<Installed<'_>> = entries
-            .iter()
-            .map(|(name, binding)| Installed {
-                name,
-                kind: match binding {
-                    Binding::Kv(_) => KV,
-                    Binding::D1 { .. } => D1,
-                    Binding::R2(_) => R2,
-                },
-            })
+        let installed: Vec<Installed<'_>> = kinds
+            .into_iter()
+            .map(|(name, kind)| Installed { name, kind })
             .collect();
         let installed = serde_json::to_string(&installed).map_err(io::Error::other)?;
         Ok(Self {
@@ -335,10 +331,6 @@ fn kind_of(binding: &StorageBinding) -> &'static str {
         StorageBinding::D1 { .. } => D1,
         StorageBinding::R2 { .. } => R2,
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn text(error: impl std::fmt::Display) -> String {

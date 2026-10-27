@@ -7,7 +7,6 @@ version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-tokamak = { path = "../../tokamak" }
 tokamak-cli = { path = "../../tokamak-cli" }
 clap.workspace = true
 hex.workspace = true

@@ -433,12 +433,7 @@ fn load(root: &Path, path: &Path) -> Result<Plugin> {
     if let Some(name) = plugin.platforms.keys().find(|name| !is_namespace(name)) {
         bail!("plugin '{}' has unknown platform '{name}'", plugin.id);
     }
-    let starts_with =
-        |name: &str, word: &str| name == word || name.starts_with(&format!("{word}-"));
-    if let Some(word) = RESERVED_WORDS
-        .iter()
-        .find(|word| starts_with(&plugin.id, word))
-    {
+    if let Some(word) = reserved_prefix(&plugin.id) {
         bail!(
             "plugin id '{}' must not start with '{word}', which tok's own options and settings use",
             plugin.id
@@ -454,7 +449,7 @@ fn load(root: &Path, path: &Path) -> Result<Plugin> {
     let names_a_platform = |key: &str| {
         Platform::ALL
             .iter()
-            .any(|platform| starts_with(key, platform.namespace()))
+            .any(|platform| starts_with_word(key, platform.namespace()))
     };
     if let Some(key) = plugin
         .settings
@@ -470,8 +465,20 @@ fn load(root: &Path, path: &Path) -> Result<Plugin> {
     Ok(plugin)
 }
 
-fn valid_plugin_id(id: &str) -> bool {
+pub(crate) fn valid_plugin_id(id: &str) -> bool {
     is_valid_key(id) && id.len() <= 63
+}
+
+/// The reserved word `id` is or starts with.
+pub(crate) fn reserved_prefix(id: &str) -> Option<&'static str> {
+    RESERVED_WORDS
+        .iter()
+        .copied()
+        .find(|word| starts_with_word(id, word))
+}
+
+fn starts_with_word(name: &str, word: &str) -> bool {
+    name == word || name.starts_with(&format!("{word}-"))
 }
 
 #[cfg(test)]

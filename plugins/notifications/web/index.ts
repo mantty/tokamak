@@ -83,21 +83,6 @@ export async function setBadge(count: number): Promise<void> {
   await navigator.setAppBadge(count);
 }
 
-export function openSettings(): Promise<void> {
-  return Promise.reject(
-    new DOMException("Browsers have no notification settings to open", "NotSupportedError"),
-  );
-}
-
-export function topics(): Promise<void> {
-  return Promise.reject(new DOMException("Topics are an FCM feature", "NotSupportedError"));
-}
-
-export function schedule(): Promise<void> {
-  return Promise.reject(
-    new DOMException("Scheduled notifications are not supported on the web", "NotSupportedError"),
-  );
-}
 
 export async function getDelivered(): Promise<NotificationContent[]> {
   const registration = await serviceWorkerRegistration();

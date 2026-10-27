@@ -1,7 +1,7 @@
 import { encode, decode, dataCloneError } from '../rpc/values.mjs';
 import { takeStream, receiveStream } from '../rpc/streams.mjs';
 
-function failure(error) {
+export function failure(error) {
   try { return { failed: true, value: encode(error) }; }
   catch { return { failed: true, value: encode(dataCloneError()) }; }
 }
@@ -22,7 +22,7 @@ export function openServiceStream(stream) {
   };
 }
 
-function result(reply) {
+export function replyValue(reply) {
   const value = decode(reply.value);
   if (reply.failed) throw value;
   return value;
@@ -30,8 +30,8 @@ function result(reply) {
 
 export function receiveServiceStream(read, cancel) {
   return receiveStream({
-    read: async () => result(await read(serviceStreamCodec)),
-    cancel: async reason => result(await cancel(encode(reason), serviceStreamCodec)),
+    read: async () => replyValue(await read(serviceStreamCodec)),
+    cancel: async reason => replyValue(await cancel(encode(reason), serviceStreamCodec)),
   });
 }
 

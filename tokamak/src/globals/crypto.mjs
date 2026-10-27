@@ -1,5 +1,5 @@
 import { markHostObject } from "./objects.mjs";
-import { randomBytes, digest, cryptoCreateDigest, cryptoHmac, cryptoAesGcm, cryptoPbkdf2, cryptoHkdf, cryptoGenerateKey, cryptoImportKey, cryptoExportKey, cryptoSign, cryptoVerify, cryptoEncrypt, cryptoDecrypt, cryptoDerive, cryptoTimingSafeEqual } from "tokamak:host";
+import { randomBytes, digest, cryptoCreateDigest, cryptoAesGcm, cryptoPbkdf2, cryptoHkdf, cryptoGenerateKey, cryptoImportKey, cryptoExportKey, cryptoSign, cryptoVerify, cryptoEncrypt, cryptoDecrypt, cryptoDerive, cryptoTimingSafeEqual } from "tokamak:host";
 import { bufferSourceBytes, sharedBufferSourceBytes } from "./conversions.mjs";
 import { DOMException } from "./dom-exception.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
@@ -17,6 +17,7 @@ const keyRecords = new WeakMap();
 const cryptoKeyBrand = {};
 const hashNames = ["SHA-1", "SHA-256", "SHA-384", "SHA-512"];
 const symmetricNames = ["AES-CTR", "AES-CBC", "AES-GCM", "AES-KW"];
+const aesCipherNames = ["AES-CTR", "AES-CBC", "AES-GCM"];
 const ecCurves = ["P-256", "P-384", "P-521"];
 
 export class SubtleCrypto {
@@ -36,7 +37,7 @@ export class SubtleCrypto {
       validateSecretLength(name, bytes);
       validateHmacImportLength(algorithm, bytes);
       validateUsages(keyUsages, ["sign", "verify"]);
-      return secretKey({ name, hash: { name: hash }, length: algorithmLength(algorithm) ?? bytes.byteLength * 8 }, extractable, keyUsages, bytes, { kind: "hmac", format: "raw" });
+      return secretKey({ name, hash: { name: hash }, length: algorithmLength(algorithm) ?? bytes.byteLength * 8 }, extractable, keyUsages, bytes);
     }
     if (symmetricNames.includes(name)) {
       if (formatName === "jwk") return importJwk(data, algorithm, extractable, keyUsages, name);
@@ -44,13 +45,13 @@ export class SubtleCrypto {
       const bytes = toBytes(data);
       validateSecretLength(name, bytes);
       validateUsages(keyUsages, secretUsages(name));
-      return secretKey({ name, length: bytes.byteLength * 8 }, extractable, keyUsages, bytes, { kind: "aes", format: "raw" });
+      return secretKey({ name, length: bytes.byteLength * 8 }, extractable, keyUsages, bytes);
     }
     if (name === "HKDF" || name === "PBKDF2") {
       if (formatName !== "raw") throw notSupported();
       const bytes = toBytes(data);
       validateUsages(keyUsages, ["deriveBits", "deriveKey"]);
-      return secretKey({ name }, false, keyUsages, bytes, { kind: name.toLowerCase(), format: "raw" });
+      return secretKey({ name }, false, keyUsages, bytes);
     }
     const asymmetric = normalizeAsymmetricAlgorithm(algorithm);
     if (formatName === "jwk") return importJwk(data, algorithm, extractable, keyUsages, name);
@@ -74,7 +75,7 @@ export class SubtleCrypto {
     }
     if (formatName === "raw" && record.type !== "public") throw new DOMException("The key is not public", "InvalidAccessError");
     if (!["raw", "spki", "pkcs8", "jwk"].includes(formatName)) throw notSupported();
-    const output = cryptoExportKey({ format: formatName, keyFormat: record.meta.private ? "pkcs8" : "spki", kind: record.meta.kind, key: record.data });
+    const output = cryptoExportKey({ format: formatName, keyFormat: derFormat(record), kind: record.kind, key: record.data });
     if (formatName === "jwk") return addJwkMetadata(JSON.parse(new TextDecoder().decode(output)), record);
     return output;
   }
@@ -83,56 +84,56 @@ export class SubtleCrypto {
     const keyUsages = normalizeUsages(usages);
     if (name === "HMAC") {
       const hash = algorithmHash(algorithm);
-      const length = algorithmLength(algorithm) ?? hashBlockLength(hash);
-      validateHmacLength(length);
+      const length = hmacLength(algorithm, hash);
       validateUsages(keyUsages, ["sign", "verify"]);
-      return secretKey({ name, hash: { name: hash }, length }, extractable, keyUsages, randomBytes(length / 8), { kind: "hmac", format: "raw" });
+      return secretKey({ name, hash: { name: hash }, length }, extractable, keyUsages, randomBytes(length / 8));
     }
     if (symmetricNames.includes(name)) {
       const length = requiredAesLength(algorithm);
       validateUsages(keyUsages, secretUsages(name));
-      return secretKey({ name, length }, extractable, keyUsages, randomBytes(length / 8), { kind: "aes", format: "raw" });
+      return secretKey({ name, length }, extractable, keyUsages, randomBytes(length / 8));
     }
     if (name === "HKDF" || name === "PBKDF2") throw notSupported();
     const asymmetric = normalizeAsymmetricAlgorithm(algorithm);
     validateAsymmetricUsages(keyUsages, name, "pair");
     const key = cryptoGenerateKey({ kind: asymmetric.kind, curve: asymmetric.namedCurve, modulusLength: asymmetric.modulusLength, publicExponent: asymmetric.publicExponent });
-    const publicKey = createKey(asymmetric.keyAlgorithm, extractable, asymmetricPublicUsages(name, keyUsages), "public", key.public, { kind: asymmetric.kind, format: "spki", private: false });
-    const privateKey = createKey(asymmetric.keyAlgorithm, extractable, asymmetricPrivateUsages(name, keyUsages), "private", key.private, { kind: asymmetric.kind, format: "pkcs8", private: true });
+    const allowed = asymmetricUsages(name);
+    const publicKey = asymmetricKey(asymmetric, extractable, keyUsages.filter(usage => allowed.public.includes(usage)), key, false);
+    const privateKey = asymmetricKey(asymmetric, extractable, keyUsages.filter(usage => allowed.private.includes(usage)), key, true);
     return { publicKey, privateKey };
   }
   async decrypt(algorithm, key, data) {
     validateKey(key, "decrypt");
     const record = requireAlgorithmKey(key, algorithm);
-    if (record.type === "secret" && symmetricNames.includes(record.algorithm.name) && record.algorithm.name !== "AES-KW") return aesCrypt(false, record, algorithm, () => toBytes(data));
+    if (aesCipherNames.includes(record.algorithm.name)) return aesCrypt(false, record, algorithm, () => toBytes(data));
     if (record.algorithm.name !== "RSA-OAEP") throw notSupported();
-    return rsaOaep(false, record, algorithm, toBytes(data), "pkcs8");
+    return rsaOaep(false, record, algorithm, toBytes(data));
   }
   async encrypt(algorithm, key, data) {
     validateKey(key, "encrypt");
     const record = requireAlgorithmKey(key, algorithm);
-    if (record.type === "secret" && symmetricNames.includes(record.algorithm.name) && record.algorithm.name !== "AES-KW") return aesCrypt(true, record, algorithm, () => toBytes(data));
+    if (aesCipherNames.includes(record.algorithm.name)) return aesCrypt(true, record, algorithm, () => toBytes(data));
     if (record.algorithm.name !== "RSA-OAEP") throw notSupported();
-    return rsaOaep(true, record, algorithm, toBytes(data), "spki");
+    return rsaOaep(true, record, algorithm, toBytes(data));
   }
   async sign(algorithm, key, data) {
     validateKey(key, "sign");
     const record = requireAlgorithmKey(key, algorithm);
-    if (record.algorithm.name === "HMAC") return cryptoHmac(record.algorithm.hash.name, record.data, toBytes(data));
+    if (record.algorithm.name === "HMAC") return hmac(record, toBytes(data));
     const hash = signatureHash(record, algorithm);
-    return cryptoSign(toBytes(data), { kind: record.meta.kind, format: record.meta.format, key: record.data, hash, saltLength: saltLength(record, algorithm) });
+    return cryptoSign(toBytes(data), { kind: record.kind, format: derFormat(record), key: record.data, hash, saltLength: saltLength(record, algorithm) });
   }
   async verify(algorithm, key, signature, data) {
     validateKey(key, "verify");
     const record = requireAlgorithmKey(key, algorithm);
     const actual = toBytes(signature);
     if (record.algorithm.name === "HMAC") {
-      const expected = new Uint8Array(cryptoHmac(record.algorithm.hash.name, record.data, toBytes(data)));
+      const expected = new Uint8Array(hmac(record, toBytes(data)));
       if (expected.byteLength !== actual.byteLength) return false;
       return cryptoTimingSafeEqual(expected, actual);
     }
     const hash = signatureHash(record, algorithm);
-    return cryptoVerify(actual, { kind: record.meta.kind, format: record.meta.format, key: record.data, hash, message: toBytes(data), saltLength: saltLength(record, algorithm) });
+    return cryptoVerify(actual, { kind: record.kind, format: derFormat(record), key: record.data, hash, message: toBytes(data), saltLength: saltLength(record, algorithm) });
   }
   timingSafeEqual(left, right) { return cryptoTimingSafeEqual(toBytes(left), toBytes(right)); }
   async deriveBits(algorithm, key, length) {
@@ -163,10 +164,10 @@ const { importKey, exportKey } = SubtleCrypto.prototype;
 const subtle = new SubtleCrypto();
 
 export class CryptoKey {
-  constructor(algorithm, extractable, usages, type, data, brand, meta) {
+  constructor(algorithm, extractable, usages, type, data, brand, kind) {
     markHostObject(this);
     if (brand !== cryptoKeyBrand) throw new TypeError("Illegal constructor");
-    const record = { algorithm: cloneAlgorithm(algorithm), extractable: Boolean(extractable), usages: [...usages], type, data: data.slice(), meta: { ...meta } };
+    const record = { algorithm: cloneAlgorithm(algorithm), extractable: Boolean(extractable), usages: [...usages], type, data: data.slice(), kind };
     keyRecords.set(this, record);
     Object.defineProperties(this, {
       usages: { configurable: true, enumerable: true, get: () => record.usages.slice() },
@@ -234,7 +235,7 @@ function deriveBitsWithUsage(algorithm, key, length, usage) {
   const peer = algorithm?.public;
   if (!(peer instanceof CryptoKey) || peer.type !== "public" || peer.algorithm.name !== name) throw invalidAccess();
   if (name === "ECDH" && record.algorithm.namedCurve !== peer.algorithm.namedCurve) throw invalidAccess();
-  const output = cryptoDerive({ kind: name === "X25519" ? "x25519" : "ec", format: "pkcs8", keyFormat: "pkcs8", key: record.data, peer: requireKey(peer).data });
+  const output = cryptoDerive({ kind: name === "X25519" ? "x25519" : "ec", format: "pkcs8", key: record.data, peer: requireKey(peer).data });
   if (bitLength > output.byteLength * 8) throw operationError("Derived secret is shorter than requested");
   return output.slice(0, bitLength / 8);
 }
@@ -261,12 +262,16 @@ function validateUsages(usages, allowed) {
 function secretUsages(name) {
   return name === "HMAC" ? ["sign", "verify"] : name === "AES-KW" ? ["wrapKey", "unwrapKey"] : ["encrypt", "decrypt"];
 }
+// The usages each key of an asymmetric algorithm's pair allows.
+function asymmetricUsages(name) {
+  if (name === "RSA-OAEP") return { public: ["encrypt"], private: ["decrypt"] };
+  if (name === "ECDH" || name === "X25519") return { public: [], private: ["deriveBits", "deriveKey"] };
+  return { public: ["verify"], private: ["sign"] };
+}
+// `type` is "public", "private" or "pair".
 function validateAsymmetricUsages(usages, name, type) {
-  const publicAllowed = name === "RSA-OAEP" ? ["encrypt"] : name === "ECDH" || name === "X25519" ? [] : ["verify"];
-  const privateAllowed = name === "RSA-OAEP" ? ["decrypt"] : name === "ECDH" || name === "X25519" ? ["deriveBits", "deriveKey"] : ["sign"];
-  if (type === "public") validateUsages(usages, publicAllowed);
-  else if (type === "private") validateUsages(usages, privateAllowed);
-  else validateUsages(usages, [...new Set([...publicAllowed, ...privateAllowed])]);
+  const allowed = asymmetricUsages(name);
+  validateUsages(usages, type === "pair" ? [...allowed.public, ...allowed.private] : allowed[type]);
 }
 function validateKey(key, usage) { if (!requireKey(key).usages.includes(usage)) throw invalidAccess(); }
 function requireKey(key) {
@@ -285,17 +290,21 @@ function toBytes(value) {
   return bytes.slice();
 }
 
-function aesOptions(tagLength, mode, additionalData) { return { tagLength, mode, additionalData }; }
-// AES-GCM, AES-CBC or AES-CTR. `input()` supplies the data once the IV or counter and the length are read.
+// One of `aesCipherNames`. `input()` supplies the data once the IV or counter and the length are read.
 function aesCrypt(encrypt, record, algorithm, input) {
   const counter = record.algorithm.name === "AES-CTR";
   const parameter = requiredBytes(algorithm, counter ? "counter" : "iv", "AES algorithm ");
   const length = counter ? ctrLength(algorithm) : tagLength(algorithm);
-  return cryptoAesGcm(encrypt, record.data, parameter, input(), aesOptions(length, record.algorithm.name, optionalBytes(algorithm?.additionalData)));
+  return cryptoAesGcm(encrypt, record.data, parameter, input(), { tagLength: length, mode: record.algorithm.name, additionalData: optionalBytes(algorithm?.additionalData) });
 }
-function rsaOaep(encrypt, record, algorithm, bytes, keyFormat) {
-  const options = { kind: "rsa-oaep", format: record.meta.format, keyFormat, key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) };
+function rsaOaep(encrypt, record, algorithm, bytes) {
+  const options = { kind: "rsa-oaep", format: derFormat(record), key: record.data, hash: record.algorithm.hash.name, label: optionalBytes(algorithm?.label) };
   return encrypt ? cryptoEncrypt(bytes, options) : cryptoDecrypt(bytes, options);
+}
+function hmac(record, data) {
+  const state = cryptoCreateDigest(record.algorithm.hash.name, record.data);
+  state.update(data);
+  return state.finish();
 }
 function signatureHash(record, algorithm) {
   return record.algorithm.hash?.name ?? (["Ed25519", "NODE-ED25519"].includes(record.algorithm.name) ? "SHA-256" : algorithmHash(algorithm));
@@ -307,12 +316,14 @@ function saltLength(record, algorithm) {
   if (length > 0x7fffffff) throw new TypeError("RSA-PSS saltLength is too large");
   return length;
 }
-function createKey(algorithm, extractable, usages, type, data, meta) { return new CryptoKey(algorithm, extractable, usages, type, data, cryptoKeyBrand, meta); }
-function secretKey(algorithm, extractable, usages, data, meta) { return createKey(algorithm, extractable, usages, "secret", data, meta); }
-function asymmetricKey(algorithm, extractable, usages, key, privateOnly) {
-  if (privateOnly) return createKey(algorithm.keyAlgorithm, extractable, usages, "private", key.private, { kind: algorithm.kind, format: "pkcs8", private: true });
-  return createKey(algorithm.keyAlgorithm, extractable, usages, "public", key.public, { kind: algorithm.kind, format: "spki", private: false });
+function createKey(algorithm, extractable, usages, type, data, kind) { return new CryptoKey(algorithm, extractable, usages, type, data, cryptoKeyBrand, kind); }
+function secretKey(algorithm, extractable, usages, data) { return createKey(algorithm, extractable, usages, "secret", data); }
+function asymmetricKey(algorithm, extractable, usages, key, isPrivate) {
+  const type = isPrivate ? "private" : "public";
+  return createKey(algorithm.keyAlgorithm, extractable, usages, type, key[type], algorithm.kind);
 }
+// The DER structure an asymmetric key's data holds.
+function derFormat(record) { return record.type === "private" ? "pkcs8" : "spki"; }
 function normalizeAsymmetricAlgorithm(algorithm) {
   const name = algorithmName(algorithm);
   if (["RSASSA-PKCS1-V1_5", "RSA-PSS", "RSA-OAEP"].includes(name)) {
@@ -335,22 +346,21 @@ function normalizeAsymmetricAlgorithm(algorithm) {
   }
   throw notSupported();
 }
-function asymmetricPublicUsages(name, usages) { return name === "ECDH" || name === "X25519" ? [] : usages.filter(value => value === "verify" || value === "encrypt"); }
-function asymmetricPrivateUsages(name, usages) { return name === "RSA-OAEP" ? usages.filter(value => value === "decrypt") : name === "ECDH" || name === "X25519" ? usages.filter(value => value === "deriveBits" || value === "deriveKey") : usages.filter(value => value === "sign"); }
 function integer(value, name) { const number = Number(value); if (!Number.isSafeInteger(number) || number < 0) throw new TypeError(`${name} must be an integer`); return number; }
 function positiveInteger(value, name) { const number = integer(value, name); if (number < 1) throw operationError(`${name} must be positive`); return number; }
 function requiredAesLength(algorithm) { const length = integer(algorithm?.length, "length"); if (![128, 192, 256].includes(length)) throw dataError("Invalid AES key length"); return length; }
+// `name` is HMAC or an AES algorithm.
 function validateSecretLength(name, data) {
   if (name === "HMAC" && data.byteLength === 0) throw dataError("Invalid HMAC key length");
-  if (name !== "HMAC" && name !== "HKDF" && name !== "PBKDF2" && ![16, 24, 32].includes(data.byteLength)) throw dataError("Invalid AES key length");
+  if (name !== "HMAC" && ![16, 24, 32].includes(data.byteLength)) throw dataError("Invalid AES key length");
 }
 function algorithmLength(algorithm) { if (algorithm?.length === undefined) return undefined; const length = integer(algorithm.length, "length"); if (length < 1 || length % 8 !== 0) throw dataError("Invalid HMAC key length"); return length; }
 function validateHmacImportLength(algorithm, data) {
   const length = algorithmLength(algorithm);
   if (length !== undefined && length !== data.byteLength * 8) throw dataError("Invalid HMAC key length");
 }
-function validateHmacLength(length) { if (!Number.isSafeInteger(length) || length < 1 || length % 8 !== 0) throw dataError("Invalid HMAC key length"); }
-function hashBlockLength(hash) { return hash === "SHA-384" || hash === "SHA-512" ? 1024 : 512; }
+// The HMAC key length `algorithm` names, or else the block length of `hash`.
+function hmacLength(algorithm, hash) { return algorithmLength(algorithm) ?? (hash === "SHA-384" || hash === "SHA-512" ? 1024 : 512); }
 
 function importJwk(jwk, algorithm, extractable, usages, expectedName) {
   if (jwk === null || typeof jwk !== "object" || jwk instanceof ArrayBuffer || ArrayBuffer.isView(jwk) || Array.isArray(jwk)) {
@@ -365,7 +375,7 @@ function importJwk(jwk, algorithm, extractable, usages, expectedName) {
     const hash = expectedName === "HMAC" ? algorithmHash(algorithm) : undefined;
     if (expectedName === "HMAC") validateHmacImportLength(algorithm, bytes);
     validateUsages(usages, secretUsages(expectedName));
-    return secretKey(expectedName === "HMAC" ? { name: expectedName, hash: { name: hash }, length: algorithmLength(algorithm) ?? bytes.byteLength * 8 } : { name: expectedName, length: bytes.byteLength * 8 }, extractable, usages, bytes, { kind: expectedName === "HMAC" ? "hmac" : "aes", format: "jwk" });
+    return secretKey(expectedName === "HMAC" ? { name: expectedName, hash: { name: hash }, length: algorithmLength(algorithm) ?? bytes.byteLength * 8 } : { name: expectedName, length: bytes.byteLength * 8 }, extractable, usages, bytes);
   }
   const asymmetric = normalizeAsymmetricAlgorithm(algorithm);
   const expectedType = asymmetric.name === "RSASSA-PKCS1-V1_5" || asymmetric.name === "RSA-PSS" || asymmetric.name === "RSA-OAEP" ? "RSA" : asymmetric.kind === "ec" ? "EC" : "OKP";
@@ -381,8 +391,8 @@ function importJwk(jwk, algorithm, extractable, usages, expectedName) {
 
 function secretJwk(record) {
   const value = { kty: "oct", k: base64urlEncode(record.data), key_ops: record.usages.slice(), ext: record.extractable };
-  if (record.algorithm.name === "HMAC") value.alg = ({ "SHA-1": "HS1", "SHA-256": "HS256", "SHA-384": "HS384", "SHA-512": "HS512" })[record.algorithm.hash.name];
-  else value.alg = `A${record.algorithm.length}${({ "AES-GCM": "GCM", "AES-CBC": "CBC", "AES-CTR": "CTR", "AES-KW": "KW" })[record.algorithm.name]}`;
+  if (record.algorithm.name === "HMAC") value.alg = `HS${record.algorithm.hash.name.slice(4)}`;
+  else value.alg = `A${record.algorithm.length}${record.algorithm.name.slice(4)}`;
   return value;
 }
 function addJwkMetadata(value, record) {
@@ -390,8 +400,8 @@ function addJwkMetadata(value, record) {
   value.ext = record.extractable;
   const name = algorithmName(record.algorithm);
   const hash = record.algorithm.hash?.name;
-  if (name === "RSASSA-PKCS1-V1_5") value.alg = ({ "SHA-1": "RS1", "SHA-256": "RS256", "SHA-384": "RS384", "SHA-512": "RS512" })[hash];
-  else if (name === "RSA-PSS") value.alg = ({ "SHA-1": "PS1", "SHA-256": "PS256", "SHA-384": "PS384", "SHA-512": "PS512" })[hash];
+  if (name === "RSASSA-PKCS1-V1_5") value.alg = `RS${hash.slice(4)}`;
+  else if (name === "RSA-PSS") value.alg = `PS${hash.slice(4)}`;
   else if (name === "RSA-OAEP") value.alg = hash === "SHA-1" ? "RSA-OAEP" : `RSA-OAEP-${hash.slice(4)}`;
   else if (name === "Ed25519" || name === "NODE-ED25519") value.alg = "EdDSA";
   return value;
@@ -425,18 +435,15 @@ function deriveLength(length) {
 function derivedKeyLength(algorithm) {
   const name = algorithmName(algorithm);
   if (symmetricNames.includes(name)) return requiredAesLength(algorithm);
-  if (name === "HMAC") {
-    const hash = algorithmHash(algorithm);
-    return algorithmLength(algorithm) ?? hashBlockLength(hash);
-  }
+  if (name === "HMAC") return hmacLength(algorithm, algorithmHash(algorithm));
   throw notSupported();
 }
 function wrapCrypt(encrypt, key, algorithm, bytes) {
   const record = requireAlgorithmKey(key, algorithm);
   const name = record.algorithm.name;
-  if (name === "AES-KW") return cryptoAesGcm(encrypt, record.data, new Uint8Array(), bytes, aesOptions(128, "AES-KW"));
-  if (name === "AES-GCM" || name === "AES-CBC" || name === "AES-CTR") return aesCrypt(encrypt, record, algorithm, () => bytes);
-  if (name === "RSA-OAEP") return rsaOaep(encrypt, record, algorithm, bytes, encrypt && !record.meta.private ? "spki" : "pkcs8");
+  if (name === "AES-KW") return cryptoAesGcm(encrypt, record.data, new Uint8Array(), bytes, { tagLength: 128, mode: name });
+  if (aesCipherNames.includes(name)) return aesCrypt(encrypt, record, algorithm, () => bytes);
+  if (name === "RSA-OAEP") return rsaOaep(encrypt, record, algorithm, bytes);
   throw notSupported();
 }
 

@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import com.tokamak.runtime.tokamakNotificationIcon
 import com.tokamak.runtime.tokamakPlugin
 
 private const val CHANNEL = "tokamak.location"
@@ -44,19 +45,13 @@ class TokamakLocationService : Service() {
                 PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE)
             }
         return Notification.Builder(this, CHANNEL)
-            .setSmallIcon(icon())
+            .setSmallIcon(tokamakNotificationIcon())
             .setContentTitle(content.title)
             .setContentText(content.body)
             .setContentIntent(open)
             .setOngoing(true)
             .build()
     }
-
-    /** The app's monochrome `drawable/tokamak_notification`, or its launcher icon. */
-    private fun icon(): Int =
-        resources.getIdentifier("tokamak_notification", "drawable", packageName).takeIf { it != 0 }
-            ?: applicationInfo.icon.takeIf { it != 0 }
-            ?: android.R.drawable.sym_def_app_icon
 
     companion object {
         /** The start intent's notification: its title, body and channel. */

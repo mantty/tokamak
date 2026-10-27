@@ -1,13 +1,5 @@
 import * as nodeCrypto from "node:crypto";
-
-function outcome(callback) {
-  try { return callback(); }
-  catch (error) { return { error: error.name, code: error.code ?? null }; }
-}
-async function asyncOutcome(callback) {
-  try { return await callback(); }
-  catch (error) { return { error: error.name, code: error.code ?? null }; }
-}
+import { asyncOutcome, outcome } from "./outcome.mjs";
 
 export async function cryptoContracts() {
   const result = {};
@@ -162,6 +154,17 @@ async function webCryptoContracts() {
     reimported: await subtle.exportKey("jwk", rsaReimport),
     spkiJwk: await subtle.exportKey("jwk", await subtle.importKey("spki", spki, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["verify"])),
   };
+  const exportedAlg = async (algorithm, usages, key) => {
+    const generated = key ? await subtle.importKey("spki", key, algorithm, true, usages) : await subtle.generateKey(algorithm, true, usages);
+    return (await subtle.exportKey("jwk", generated)).alg;
+  };
+  result.jwkAlgorithms = await Promise.all([
+    [{ name: "HMAC", hash: "SHA-1" }, ["sign"]], [{ name: "HMAC", hash: "SHA-512" }, ["sign"]],
+    [{ name: "AES-GCM", length: 128 }, ["encrypt"]], [{ name: "AES-CBC", length: 192 }, ["encrypt"]],
+    [{ name: "AES-CTR", length: 256 }, ["encrypt"]], [{ name: "AES-KW", length: 128 }, ["wrapKey"]],
+    [{ name: "RSASSA-PKCS1-v1_5", hash: "SHA-1" }, ["verify"], spki], [{ name: "RSA-PSS", hash: "SHA-384" }, ["verify"], spki],
+    [{ name: "RSA-OAEP", hash: "SHA-512" }, ["encrypt"], spki],
+  ].map(([algorithm, usages, key]) => exportedAlg(algorithm, usages, key)));
   const pssPrivate = await subtle.importKey("jwk", { ...fixtures.rsaPrivateJwk, alg: "PS256" }, { name: "RSA-PSS", hash: "SHA-256" }, true, ["sign"]);
   const pssPublic = await subtle.importKey("jwk", { ...fixtures.rsaPublicJwk, alg: "PS256" }, { name: "RSA-PSS", hash: "SHA-256" }, true, ["verify"]);
   const pssSignature = await subtle.sign({ name: "RSA-PSS", saltLength: 32 }, pssPrivate, text("abc"));
