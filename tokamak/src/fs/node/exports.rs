@@ -42,7 +42,7 @@ pub fn change_directory<'js>(ctx: Ctx<'js>, directory: Value<'js>) -> rquickjs::
         ));
     };
     let directory = directory.to_string()?;
-    vfs_call(&ctx, |vfs| vfs.change_directory(&directory))
+    vfs_call(&ctx, "chdir", |vfs| vfs.change_directory(&directory))
 }
 
 /// The contents of `/bundle/<name>` in the request VFS.
@@ -194,6 +194,7 @@ fn declare_exports(declare: &Declarations, promises_only: bool) -> rquickjs::Res
         for &(name, _) in callback_operations() {
             declare.declare(name)?;
         }
+        declare.declare("read")?;
     }
     Ok(())
 }
@@ -272,7 +273,7 @@ fn export_sync(module: &ModuleExports<'_, '_>) -> rquickjs::Result<()> {
     module.function("accessSync", access_sync)?;
     module.function("chmodSync", chmod_sync as PairOperation)?;
     module.function("chownSync", chown_sync as OwnerOperation)?;
-    module.function("mkdirSync", mkdir_sync as OptionsOperation)?;
+    module.function("mkdirSync", mkdir_sync as ValueOperation)?;
     module.function("readdirSync", readdir_sync as ValueOperation)?;
     module.function("statSync", stat_sync as ValueOperation)?;
     module.function("lstatSync", lstat_sync as ValueOperation)?;
@@ -323,7 +324,7 @@ fn export_callback<'js>(module: &ModuleExports<'_, 'js>) -> rquickjs::Result<()>
         }
         module.value(name, function.into_value())?;
     }
-    Ok(())
+    module.function("read", read_callback)
 }
 
 fn export_streams(module: &ModuleExports<'_, '_>) -> rquickjs::Result<()> {
@@ -391,7 +392,7 @@ fn export_promises(module: &ModuleExports<'_, '_>) -> rquickjs::Result<()> {
         ("lchown", owner_promise(ctx, lchown_sync)?),
         ("link", pair_promise(ctx, link_sync)?),
         ("lutimes", times_promise(ctx, lutimes_sync)?),
-        ("mkdir", options_promise(ctx, mkdir_sync)?),
+        ("mkdir", value_promise(ctx, mkdir_sync)?),
         ("mkdtemp", value_promise(ctx, mkdtemp_sync)?),
         ("open", Function::new(ctx.clone(), open_promise)?),
         ("opendir", value_promise(ctx, opendir_sync)?),

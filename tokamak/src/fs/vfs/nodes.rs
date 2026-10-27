@@ -23,7 +23,8 @@ pub(super) struct OpenFile {
 pub(super) enum Node {
     File(FileNode),
     Directory(Directory),
-    Symlink(String),
+    /// A symbolic link to an absolute path, shared by its hard links.
+    Symlink(Arc<str>),
 }
 
 impl Node {
@@ -32,6 +33,16 @@ impl Node {
             Self::File(_) => NodeType::File,
             Self::Directory(_) => NodeType::Directory,
             Self::Symlink(_) => NodeType::Symlink,
+        }
+    }
+
+    /// Whether `self` and `other` are one node, as hard links are.
+    pub(super) fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::File(file), Self::File(other)) => file.same(other),
+            (Self::Directory(directory), Self::Directory(other)) => directory.same(other),
+            (Self::Symlink(target), Self::Symlink(other)) => Arc::ptr_eq(target, other),
+            _ => false,
         }
     }
 
@@ -60,29 +71,28 @@ impl Node {
         }
     }
 
-    /// The file behind this node; `path` names it in the error otherwise.
-    pub(super) fn file(&self, path: &str) -> Result<&FileNode> {
+    /// The file behind this node.
+    pub(super) fn file(&self) -> Result<&FileNode> {
         match self {
             Self::File(file) => Ok(file),
-            Self::Directory(_) => Err(Error::new(ErrorKind::IsDirectory, path)),
-            Self::Symlink(_) => Err(Error::new(ErrorKind::Unsupported, path)),
+            Self::Directory(_) => Err(Error::new(ErrorKind::IsDirectory)),
+            Self::Symlink(_) => Err(Error::new(ErrorKind::Unsupported)),
         }
     }
 
-    pub(super) fn read_all(&self, path: &str) -> Result<Vec<u8>> {
-        let file = self.file(path)?;
+    pub(super) fn read_all(&self) -> Result<Vec<u8>> {
+        let file = self.file()?;
         let size = file.size()?;
-        let length =
-            usize::try_from(size).map_err(|_| Error::new(ErrorKind::FileTooLarge, path))?;
+        let length = usize::try_from(size).map_err(|_| Error::new(ErrorKind::FileTooLarge))?;
         file.read(0, length)
     }
 
     pub(super) fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>> {
-        self.file("")?.read(offset, length)
+        self.file()?.read(offset, length)
     }
 
     pub(super) fn write(&self, offset: u64, data: &[u8], append: bool) -> Result<usize> {
-        self.file("")?.write(offset, data, append)
+        self.file()?.write(offset, data, append)
     }
 
     pub(super) fn is_device(&self) -> bool {
@@ -93,8 +103,8 @@ impl Node {
         Ok(self.stat()?.size)
     }
 
-    pub(super) fn resize(&self, size: u64, path: &str) -> Result<()> {
-        self.file(path)?.resize(size, path)
+    pub(super) fn resize(&self, size: u64) -> Result<()> {
+        self.file()?.resize(size)
     }
 }
 
@@ -133,6 +143,7 @@ impl Directory {
     }
 
     pub(super) fn lookup(&self, name: &str) -> Result<Option<Node>> {
+        check_name(name)?;
         match self {
             Self::Memory { entries, .. } => Ok(lock(entries).get(name).cloned()),
             Self::Static { entries } => Ok(entries.get(name).cloned()),
@@ -157,10 +168,13 @@ impl Directory {
             writable: true,
         } = self
         else {
-            return Err(Error::new(ErrorKind::NotPermitted, name));
+            return Err(Error::new(ErrorKind::NotPermitted));
         };
+        if name.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidPath));
+        }
         match lock(entries).entry(name) {
-            Entry::Occupied(entry) => Err(Error::new(ErrorKind::AlreadyExists, entry.key())),
+            Entry::Occupied(_) => Err(Error::new(ErrorKind::AlreadyExists)),
             Entry::Vacant(entry) => {
                 entry.insert(node);
                 Ok(())
@@ -169,14 +183,34 @@ impl Directory {
     }
 
     pub(super) fn remove(&self, name: &str) -> Result<Option<Node>> {
+        check_name(name)?;
         match self {
             Self::Memory { entries, writable } if *writable => Ok(lock(entries).swap_remove(name)),
-            _ => Err(Error::new(ErrorKind::NotPermitted, name)),
+            _ => Err(Error::new(ErrorKind::NotPermitted)),
         }
     }
 
     pub(super) fn is_empty(&self) -> Result<bool> {
         Ok(self.entries()?.is_empty())
+    }
+
+    /// Whether `self` and `other` are one directory.
+    pub(super) fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Memory { entries, .. }, Self::Memory { entries: other, .. }) => {
+                Arc::ptr_eq(entries, other)
+            }
+            (Self::Static { entries }, Self::Static { entries: other }) => {
+                Arc::ptr_eq(entries, other)
+            }
+            (
+                Self::Bundle { relative, .. },
+                Self::Bundle {
+                    relative: other, ..
+                },
+            ) => relative == other,
+            _ => false,
+        }
     }
 
     pub(super) fn writable(&self) -> bool {
@@ -225,12 +259,27 @@ impl FileNode {
         Ok(self.stat()?.size)
     }
 
+    /// Whether `self` and `other` are one file, as hard links are.
+    pub(super) fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Memory(data), Self::Memory(other)) => Arc::ptr_eq(data, other),
+            (
+                Self::Bundle { relative, .. },
+                Self::Bundle {
+                    relative: other, ..
+                },
+            ) => relative == other,
+            (Self::Device(device), Self::Device(other)) => device == other,
+            _ => false,
+        }
+    }
+
     /// An independent in-memory copy of this file, which `path` names in
     /// errors. A device copies as an empty file.
-    pub(super) fn copied(&self, path: &str) -> Result<Self> {
+    pub(super) fn copied(&self) -> Result<Self> {
         let bytes = match self {
             Self::Device(_) => Vec::new(),
-            _ => self.read(0, checked_size(self.size()?, path)?)?,
+            _ => self.read(0, checked_size(self.size()?)?)?,
         };
         Ok(Self::Memory(Arc::new(Mutex::new(bytes))))
     }
@@ -257,28 +306,27 @@ impl FileNode {
     pub(super) fn write(&self, offset: u64, data: &[u8], append: bool) -> Result<usize> {
         match self {
             Self::Memory(bytes) => write_memory(bytes, offset, data, append),
-            Self::Bundle { .. } => Err(Error::new(ErrorKind::NotPermitted, "")),
+            Self::Bundle { .. } => Err(Error::new(ErrorKind::NotPermitted)),
             Self::Device(device) => device.write(data),
         }
     }
 
-    pub(super) fn resize(&self, size: u64, path: &str) -> Result<()> {
+    pub(super) fn resize(&self, size: u64) -> Result<()> {
         match self {
             Self::Memory(data) => {
-                let size = checked_size(size, path)?;
+                let size = checked_size(size)?;
                 lock(data).resize(size, 0);
                 Ok(())
             }
-            Self::Bundle { .. } => Err(Error::new(ErrorKind::NotPermitted, path)),
             Self::Device(Device::Null | Device::Zero) => Ok(()),
-            Self::Device(Device::Full | Device::Random) => {
-                Err(Error::new(ErrorKind::NotPermitted, path))
+            Self::Bundle { .. } | Self::Device(Device::Full | Device::Random) => {
+                Err(Error::new(ErrorKind::NotPermitted))
             }
         }
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Device {
     Null,
     Zero,
@@ -293,9 +341,8 @@ impl Device {
             Self::Zero | Self::Full => Ok(vec![0; length]),
             Self::Random => {
                 let mut data = vec![0; length];
-                getrandom::fill(&mut data).map_err(|error| {
-                    Error::with_message(ErrorKind::Entropy, "", error.to_string())
-                })?;
+                getrandom::fill(&mut data)
+                    .map_err(|error| Error::with_message(ErrorKind::Entropy, error.to_string()))?;
                 Ok(data)
             }
         }
@@ -304,8 +351,8 @@ impl Device {
     pub(super) fn write(self, data: &[u8]) -> Result<usize> {
         match self {
             Self::Null | Self::Zero => Ok(data.len()),
-            Self::Full => Err(Error::new(ErrorKind::NoSpace, "")),
-            Self::Random => Err(Error::new(ErrorKind::NotPermitted, "")),
+            Self::Full => Err(Error::new(ErrorKind::NoSpace)),
+            Self::Random => Err(Error::new(ErrorKind::NotPermitted)),
         }
     }
 }
@@ -325,4 +372,13 @@ pub(super) fn shared_devices() -> Directory {
         ),
     });
     DEVICES.clone()
+}
+
+/// Fails for the empty name a trailing slash leaves, as workerd fails, without
+/// a system error, to build a path from it.
+fn check_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::new(ErrorKind::Internal));
+    }
+    Ok(())
 }

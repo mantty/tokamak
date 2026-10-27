@@ -84,7 +84,9 @@ pub(super) fn vector_write<'js>(
     position: Option<Value<'js>>,
 ) -> rquickjs::Result<WriteRequest<'js>> {
     let views = buffer_views(ctx, &buffers)?;
-    let position = position.map_or(Ok(None), |position| validate_position(ctx, position))?;
+    let position = position.map_or(Ok(None), |position| {
+        validate_position(ctx, position, "position")
+    })?;
     Ok(WriteRequest {
         buffers: views
             .iter()
@@ -148,7 +150,9 @@ fn view_write<'js>(
     let view = Object::from_value(value.clone())?;
     let (offset, length, position) = write_fields(args)?;
     let offset = offset.map_or(Ok(0), |offset| validate_integer(ctx, offset, "offset"))?;
-    let position = position.map_or(Ok(None), |position| validate_position(ctx, position))?;
+    let position = position.map_or(Ok(None), |position| {
+        validate_position(ctx, position, "position")
+    })?;
     let available = index_property(ctx, &view, "byteLength")?
         .checked_sub(offset)
         .ok_or_else(|| out_of_bounds(ctx, "offset"))?;
@@ -262,7 +266,7 @@ fn buffer_range<'js>(
 }
 
 /// `Buffer.from(text, encoding)`.
-fn encoded<'js>(
+pub(super) fn encoded<'js>(
     ctx: &Ctx<'js>,
     text: Value<'js>,
     encoding: Value<'js>,
@@ -320,14 +324,15 @@ pub(super) fn optional_position<'js>(
     ctx: &Ctx<'js>,
     value: Option<Value<'js>>,
 ) -> rquickjs::Result<Option<Value<'js>>> {
-    defined(value).map_or(Ok(None), |value| validate_position(ctx, value))
+    defined(value).map_or(Ok(None), |value| validate_position(ctx, value, "position"))
 }
 
-/// `value` as `validatePosition` accepts it: `null`, a bigint or an unsigned
-/// 32-bit integer.
+/// `value` as `validatePosition(value, name)` accepts it: `null`, a bigint or
+/// an unsigned 32-bit integer.
 pub(super) fn validate_position<'js>(
     ctx: &Ctx<'js>,
     value: Value<'js>,
+    name: &str,
 ) -> rquickjs::Result<Option<Value<'js>>> {
     if value.is_null() {
         return Ok(None);
@@ -339,10 +344,13 @@ pub(super) fn validate_position<'js>(
         return Err(throw_type_error(
             ctx,
             "ERR_INVALID_ARG_TYPE",
-            "The \"position\" argument must be of type bigint or one of integer or null",
+            &format!(
+                "The \"{name}\" {} must be of type bigint or one of integer or null",
+                argument_kind(name)
+            ),
         ));
     }
-    validate_uint32(ctx, &value, "position")?;
+    validate_uint32(ctx, &value, name)?;
     Ok(Some(value))
 }
 
@@ -383,7 +391,10 @@ fn validate_integer_range<'js, T: TryFrom<i64>>(
         return Err(throw_type_error(
             ctx,
             "ERR_INVALID_ARG_TYPE",
-            &format!("The \"{name}\" argument must be of type number"),
+            &format!(
+                "The \"{name}\" {} must be of type number",
+                argument_kind(name)
+            ),
         ));
     };
     if !is_integer(number) {
@@ -394,6 +405,16 @@ fn validate_integer_range<'js, T: TryFrom<i64>>(
     }
     let integer = Coerced::<i64>::from_js(ctx, value.clone())?.0;
     T::try_from(integer).map_err(|_| out_of_range(ctx, name, text))
+}
+
+/// How Node.js error messages name `name`: "property" for a dotted name such
+/// as `options.offset`, "argument" otherwise.
+pub(super) fn argument_kind(name: &str) -> &'static str {
+    if name.contains('.') {
+        "property"
+    } else {
+        "argument"
+    }
 }
 
 fn is_integer(number: f64) -> bool {

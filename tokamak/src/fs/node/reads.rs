@@ -19,13 +19,77 @@ pub(super) struct ReadRequest<'js> {
     pub(super) position: Option<Value<'js>>,
 }
 
-/// How a read reports a range that runs past the end of its buffer.
-#[derive(Clone, Copy)]
-pub(super) enum ReadOverrun {
-    /// `readSync`'s `ERR_OUT_OF_RANGE` for the length.
-    OutOfRange,
-    /// The callback `fs.read`'s own `ERR_INVALID_ARG_VALUE` for the offset.
-    InvalidOffset,
+/// The buffer a read fills and the range and position it asks for, before
+/// `readSync` checks them.
+pub(super) struct ReadFields<'js> {
+    pub(super) buffer: Value<'js>,
+    offset: Value<'js>,
+    length: Value<'js>,
+    position: Value<'js>,
+}
+
+impl<'js> ReadFields<'js> {
+    /// All `size` bytes of `buffer`, read from the descriptor's own position.
+    fn whole(ctx: &Ctx<'js>, buffer: Value<'js>, size: f64) -> Self {
+        Self {
+            buffer,
+            offset: Value::new_int(ctx.clone(), 0),
+            length: Value::new_number(ctx.clone(), size),
+            position: Value::new_null(ctx.clone()),
+        }
+    }
+
+    /// The ranges `readSync(fd, buffer, offset, length, position)` fills, after
+    /// its checks of each field.
+    pub(super) fn request(&self, ctx: &Ctx<'js>) -> rquickjs::Result<ReadRequest<'js>> {
+        let byte_length = view_byte_length(ctx, &self.buffer)?;
+        let offset = validate_uint32(ctx, &self.offset, "offset")?;
+        let length = validate_uint32(ctx, &self.length, "length")?;
+        let position = validate_position(ctx, self.position.clone(), "position")?;
+        if length == 0 {
+            return Ok(ReadRequest {
+                targets: Vec::new(),
+                position,
+            });
+        }
+        let remaining = byte_length - f64::from(offset);
+        if f64::from(length) > remaining {
+            return Err(throw_range_error(
+                ctx,
+                "ERR_OUT_OF_RANGE",
+                &format!(
+                    "The value of \"length\" is out of range. It must be <= {remaining}. Received {length}"
+                ),
+            ));
+        }
+        let view = Object::from_value(self.buffer.clone())?;
+        let start = usize::try_from(index_property(ctx, &view, "byteOffset")? + u64::from(offset))
+            .map_err(|_| out_of_bounds(ctx, "offset"))?;
+        Ok(ReadRequest {
+            targets: vec![buffer_target(
+                ctx,
+                view.get("buffer")?,
+                start,
+                length as usize,
+            )?],
+            position,
+        })
+    }
+
+    /// Whether the read asks for no bytes, which the callback `fs.read`
+    /// answers without reading.
+    pub(super) fn is_empty(&self, ctx: &Ctx<'js>) -> rquickjs::Result<bool> {
+        Ok(self.length.as_number() == Some(0.0) || view_byte_length(ctx, &self.buffer)? == 0.0)
+    }
+
+    /// workerd's checks of the offset, length and position, named with
+    /// `prefix`.
+    fn validate(&self, ctx: &Ctx<'js>, prefix: &str) -> rquickjs::Result<()> {
+        validate_uint32(ctx, &self.offset, &format!("{prefix}offset"))?;
+        validate_uint32(ctx, &self.length, &format!("{prefix}length"))?;
+        validate_position(ctx, self.position.clone(), &format!("{prefix}position"))?;
+        Ok(())
+    }
 }
 
 /// `fs.readSync(fd, buffer, ...args)`, as workerd's `validateReadArgs` reads
@@ -34,61 +98,271 @@ pub(super) fn sync_read<'js>(
     ctx: &Ctx<'js>,
     buffer: Value<'js>,
     args: Vec<Value<'js>>,
-    overrun: ReadOverrun,
 ) -> rquickjs::Result<ReadRequest<'js>> {
-    if !is_array_buffer_view(&buffer) {
-        return Err(throw_type_error(
+    let byte_length = view_byte_length(ctx, &buffer)?;
+    let (offset, length, position) = read_fields(ctx, byte_length, args)?;
+    ReadFields {
+        buffer,
+        offset,
+        length,
+        position,
+    }
+    .request(ctx)
+}
+
+/// The read `fs.read(fd, ...args)` asks for and its callback, as workerd reads
+/// `args`: `(callback)`, `(options, callback)` or a buffer and the arguments
+/// `buffer_read` reads.
+pub(super) fn callback_read<'js>(
+    ctx: &Ctx<'js>,
+    args: &[Value<'js>],
+) -> rquickjs::Result<(ReadFields<'js>, Function<'js>)> {
+    let first = argument(ctx, args, 0);
+    let (fields, callback) = if first.is_function() {
+        let buffer = new_read_buffer(ctx)?;
+        let size = view_byte_length(ctx, &buffer)?;
+        (ReadFields::whole(ctx, buffer, size), first)
+    } else if first.is_object() && !is_array_buffer_view(&first) {
+        let fields = options_fields(ctx, &first, None)?;
+        if !is_array_buffer_view(&fields.buffer) {
+            return Err(invalid_buffer(ctx, "options.buffer"));
+        }
+        fields.validate(ctx, "options.")?;
+        (fields, argument(ctx, args, 1))
+    } else {
+        buffer_read(ctx, first, args.get(1..).unwrap_or_default())?
+    };
+    let callback = Function::from_value(callback).map_err(|_| {
+        throw_type_error(
             ctx,
             "ERR_INVALID_ARG_TYPE",
-            "The \"buffer\" argument must be an instance of Buffer, TypedArray, or DataView",
+            "The \"callback\" argument must be of type function",
+        )
+    })?;
+    let size = view_byte_length(ctx, &fields.buffer)?;
+    if outside_buffer(ctx, &fields.offset, &fields.length, size)? {
+        return Err(throw_type_error(
+            ctx,
+            "ERR_INVALID_ARG_VALUE",
+            "The argument 'offset' is invalid. Received 'must be >= 0 and <= buffer.length'",
         ));
     }
-    let view = Object::from_value(buffer)?;
-    let byte_length: f64 = view.get("byteLength")?;
-    let (offset, length, position) = read_fields(ctx, byte_length, args)?;
-    let offset = validate_uint32(ctx, &offset, "offset")?;
-    let length = validate_uint32(ctx, &length, "length")?;
-    let position = validate_position(ctx, position)?;
-    if length == 0 {
-        return Ok(ReadRequest {
-            targets: Vec::new(),
+    Ok((fields, callback))
+}
+
+/// The read a callback `fs.read` into `buffer` asks for and its callback, as
+/// workerd reads the arguments after the buffer: `(callback)`,
+/// `(options, callback)`, `(offset, callback)` or
+/// `(offset, length, position, callback)`.
+fn buffer_read<'js>(
+    ctx: &Ctx<'js>,
+    buffer: Value<'js>,
+    args: &[Value<'js>],
+) -> rquickjs::Result<(ReadFields<'js>, Value<'js>)> {
+    let size = view_byte_length(ctx, &buffer)?;
+    let first = argument(ctx, args, 0);
+    if first.is_function() {
+        return Ok((ReadFields::whole(ctx, buffer, size), first));
+    }
+    if (first.is_object() || first.is_null()) && !is_number_object(ctx, &first)? {
+        let fields = options_fields(ctx, &first, Some(buffer))?;
+        fields.validate(ctx, "options.")?;
+        return Ok((fields, argument(ctx, args, 1)));
+    }
+    let offset = if first.is_number() {
+        first
+    } else {
+        Value::new_int(ctx.clone(), 0)
+    };
+    let second = argument(ctx, args, 1);
+    let (length, position, callback) = if second.is_function() {
+        let length = remaining_length(ctx, size, &offset)?;
+        (length, Value::new_null(ctx.clone()), second)
+    } else {
+        let length = match defined(Some(second)) {
+            Some(length) => length,
+            None => remaining_length(ctx, size, &offset)?,
+        };
+        let position = argument(ctx, args, 2);
+        validate_uint32(ctx, &position, "position")?;
+        (length, position, argument(ctx, args, 3))
+    };
+    let fields = ReadFields {
+        buffer,
+        offset,
+        length,
+        position,
+    };
+    Ok((fields, callback))
+}
+
+/// The read `fileHandle.read(...args)` asks for, as workerd reads `args`:
+/// `(buffer, offset, length?, position?)`, `(buffer, options?)` or
+/// `(options?)`.
+pub(super) fn file_handle_read<'js>(
+    ctx: &Ctx<'js>,
+    args: &[Value<'js>],
+) -> rquickjs::Result<ReadFields<'js>> {
+    let (first, second) = (argument(ctx, args, 0), argument(ctx, args, 1));
+    let fields = if is_array_buffer_view(&first) && second.is_number() {
+        let length = match defined(Some(argument(ctx, args, 2))) {
+            Some(length) => length,
+            None => remaining_length(ctx, view_byte_length(ctx, &first)?, &second)?,
+        };
+        let position =
+            defined(Some(argument(ctx, args, 3))).unwrap_or_else(|| Value::new_null(ctx.clone()));
+        ReadFields {
+            buffer: first,
+            offset: second,
+            length,
             position,
-        });
-    }
-    let remaining = byte_length - f64::from(offset);
-    if f64::from(length) > remaining {
-        return Err(overrun_error(ctx, overrun, length, remaining));
-    }
-    let start = usize::try_from(index_property(ctx, &view, "byteOffset")? + u64::from(offset))
-        .map_err(|_| out_of_bounds(ctx, "offset"))?;
-    Ok(ReadRequest {
-        targets: vec![buffer_target(
-            ctx,
-            view.get("buffer")?,
-            start,
-            length as usize,
-        )?],
+        }
+    } else {
+        let options = if is_array_buffer_view(&first) {
+            with_buffer(ctx, first, &second)?
+        } else if first.is_undefined() {
+            Object::new(ctx.clone())?.into_value()
+        } else {
+            first
+        };
+        options_fields(ctx, &options, None)?
+    };
+    fields.validate(ctx, "")?;
+    Ok(fields)
+}
+
+/// The argument at `index`, `undefined` when there is none.
+fn argument<'js>(ctx: &Ctx<'js>, args: &[Value<'js>], index: usize) -> Value<'js> {
+    args.get(index)
+        .cloned()
+        .unwrap_or_else(|| Value::new_undefined(ctx.clone()))
+}
+
+/// The fields of the read options `options`, as workerd destructures them:
+/// `{ buffer = Buffer.alloc(16384), offset = 0, length = buffer.byteLength -
+/// offset, position = null }`, with `buffer` taken from the arguments instead
+/// when the read names one.
+fn options_fields<'js>(
+    ctx: &Ctx<'js>,
+    options: &Value<'js>,
+    buffer: Option<Value<'js>>,
+) -> rquickjs::Result<ReadFields<'js>> {
+    let buffer = match buffer {
+        Some(buffer) => buffer,
+        None => match property(ctx, options, "buffer")? {
+            buffer if buffer.is_undefined() => new_read_buffer(ctx)?,
+            buffer => buffer,
+        },
+    };
+    let offset = match property(ctx, options, "offset")? {
+        offset if offset.is_undefined() => Value::new_int(ctx.clone(), 0),
+        offset => offset,
+    };
+    let length = match property(ctx, options, "length")? {
+        length if length.is_undefined() => {
+            let size = Coerced::<f64>::from_js(ctx, property(ctx, &buffer, "byteLength")?)?.0;
+            remaining_length(ctx, size, &offset)?
+        }
+        length => length,
+    };
+    let position = match property(ctx, options, "position")? {
+        position if position.is_undefined() => Value::new_null(ctx.clone()),
+        position => position,
+    };
+    Ok(ReadFields {
+        buffer,
+        offset,
+        length,
         position,
     })
 }
 
-/// A read with the arguments of Node.js's `fs.read` and `fileHandle.read`,
-/// where a missing or `null` offset is 0 and a missing or `null` length runs
-/// to the end of the buffer.
-pub(super) fn node_read<'js>(
+/// `{ buffer, ...options }`.
+fn with_buffer<'js>(
     ctx: &Ctx<'js>,
-    arguments: ReadArguments<'js>,
-    overrun: ReadOverrun,
-) -> rquickjs::Result<ReadRequest<'js>> {
-    let undefined = || Value::new_undefined(ctx.clone());
-    let offset = defined(arguments.offset).unwrap_or_else(|| Value::new_int(ctx.clone(), 0));
-    let length = defined(arguments.length).unwrap_or_else(undefined);
-    let position = arguments.position.unwrap_or_else(undefined);
-    sync_read(
+    buffer: Value<'js>,
+    options: &Value<'js>,
+) -> rquickjs::Result<Value<'js>> {
+    let merged = Object::new(ctx.clone())?;
+    merged.set("buffer", buffer)?;
+    if let Some(options) = options.as_object() {
+        for key in options.keys::<rquickjs::Atom>() {
+            let key = key?;
+            merged.set(key.clone(), options.get::<_, Value>(key)?)?;
+        }
+    }
+    Ok(merged.into_value())
+}
+
+/// `value[name]`, which throws for `null` and `undefined`. Of the primitives,
+/// only a string has a property a read asks for: its `length`.
+fn property<'js>(ctx: &Ctx<'js>, value: &Value<'js>, name: &str) -> rquickjs::Result<Value<'js>> {
+    if let Some(object) = value.as_object() {
+        return object.get(name);
+    }
+    if value.is_null() || value.is_undefined() {
+        let kind = if value.is_null() { "null" } else { "undefined" };
+        return Err(Exception::throw_type(
+            ctx,
+            &format!("cannot read property '{name}' of {kind}"),
+        ));
+    }
+    match value.as_string() {
+        Some(string) if name == "length" => string.to_string()?.encode_utf16().count().into_js(ctx),
+        _ => Ok(Value::new_undefined(ctx.clone())),
+    }
+}
+
+/// Whether `value instanceof Number`.
+fn is_number_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> rquickjs::Result<bool> {
+    let number: Value = ctx.globals().get("Number")?;
+    Ok(value
+        .as_object()
+        .is_some_and(|object| object.is_instance_of(&number)))
+}
+
+/// Whether the callback `fs.read` range `offset`, `length` falls outside a
+/// buffer of `size` bytes, by workerd's check. The length can still be any
+/// value the caller passed, so the check keeps JavaScript's comparison and
+/// addition.
+fn outside_buffer<'js>(
+    ctx: &Ctx<'js>,
+    offset: &Value<'js>,
+    length: &Value<'js>,
+    size: f64,
+) -> rquickjs::Result<bool> {
+    let check: Function = cached(ctx, "__tokamak_node_fs_outside_buffer", |ctx| {
+        ctx.eval(
+            "(offset, length, size) => offset < 0 || length < 0 || (length !== 0 && offset + length > size)",
+        )
+    })?;
+    check.call((offset.clone(), length.clone(), size))
+}
+
+/// `Buffer.alloc(16384)`, the buffer a read fills when given none.
+fn new_read_buffer<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Value<'js>> {
+    let class = buffer_class(ctx)?;
+    let alloc: Function = class.get("alloc")?;
+    alloc.call((This(class), 16_384))
+}
+
+/// The `byteLength` of `buffer`, which must be a `Buffer`, `TypedArray` or
+/// `DataView`.
+fn view_byte_length<'js>(ctx: &Ctx<'js>, buffer: &Value<'js>) -> rquickjs::Result<f64> {
+    if !is_array_buffer_view(buffer) {
+        return Err(invalid_buffer(ctx, "buffer"));
+    }
+    Object::from_value(buffer.clone())?.get("byteLength")
+}
+
+fn invalid_buffer(ctx: &Ctx<'_>, name: &str) -> rquickjs::Error {
+    throw_type_error(
         ctx,
-        arguments.buffer,
-        vec![offset, length, position],
-        overrun,
+        "ERR_INVALID_ARG_TYPE",
+        &format!(
+            "The \"{name}\" {} must be an instance of Buffer, TypedArray, or DataView",
+            argument_kind(name)
+        ),
     )
 }
 
@@ -118,7 +392,7 @@ pub(super) fn read_views<'js>(
     }
     let position = file_position(ctx, read.position.clone())?;
     let lengths: Vec<usize> = read.targets.iter().map(|target| target.length).collect();
-    let chunks = vfs_call(ctx, |vfs| vfs.readv(descriptor, &lengths, position))?;
+    let chunks = vfs_call(ctx, "read", |vfs| vfs.readv(descriptor, &lengths, position))?;
     let mut total = 0;
     for (target, bytes) in read.targets.iter().zip(chunks) {
         target.bytes.write(target.offset, &bytes);
@@ -191,30 +465,6 @@ fn remaining_length<'js>(
 ) -> rquickjs::Result<Value<'js>> {
     let offset = Coerced::<f64>::from_js(ctx, offset.clone())?.0;
     Ok(Value::new_number(ctx.clone(), byte_length - offset))
-}
-
-/// The error a read of `length` bytes reports when `remaining` bytes follow
-/// its offset.
-fn overrun_error(
-    ctx: &Ctx<'_>,
-    overrun: ReadOverrun,
-    length: u32,
-    remaining: f64,
-) -> rquickjs::Error {
-    match overrun {
-        ReadOverrun::OutOfRange => throw_range_error(
-            ctx,
-            "ERR_OUT_OF_RANGE",
-            &format!(
-                "The value of \"length\" is out of range. It must be <= {remaining}. Received {length}"
-            ),
-        ),
-        ReadOverrun::InvalidOffset => throw_type_error(
-            ctx,
-            "ERR_INVALID_ARG_VALUE",
-            "The argument 'offset' is invalid. Received 'must be >= 0 and <= buffer.length'",
-        ),
-    }
 }
 
 /// The range `view` covers in its `ArrayBuffer`.

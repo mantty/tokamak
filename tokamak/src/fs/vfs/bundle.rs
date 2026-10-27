@@ -12,11 +12,11 @@ impl Bundle {
         let metadata = match fs::symlink_metadata(self.root.join(relative)) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(Error::from_io(relative.display(), &error)),
+            Err(error) => return Err(Error::from_io(&error)),
         };
         let file_type = metadata.file_type();
         if file_type.is_symlink() {
-            return Err(Error::new(ErrorKind::Unsupported, relative.display()));
+            return Err(Error::new(ErrorKind::Unsupported));
         }
         if file_type.is_dir() {
             return Ok(Some(Node::Directory(Directory::bundle(
@@ -30,22 +30,21 @@ impl Bundle {
                 relative: relative.to_owned(),
             })));
         }
-        Err(Error::new(ErrorKind::Unsupported, relative.display()))
+        Err(Error::new(ErrorKind::Unsupported))
     }
 
     pub(super) fn metadata(&self, relative: &Path) -> Result<fs::Metadata> {
         let metadata = fs::symlink_metadata(self.root.join(relative))
-            .map_err(|error| Error::from_io(relative.display(), &error))?;
+            .map_err(|error| Error::from_io(&error))?;
         if !metadata.file_type().is_file() {
-            return Err(Error::new(ErrorKind::IsDirectory, relative.display()));
+            return Err(Error::new(ErrorKind::IsDirectory));
         }
         Ok(metadata)
     }
 
     pub(super) fn read(&self, relative: &Path) -> Result<Vec<u8>> {
         self.metadata(relative)?;
-        fs::read(self.root.join(relative))
-            .map_err(|error| Error::from_io(relative.display(), &error))
+        fs::read(self.root.join(relative)).map_err(|error| Error::from_io(&error))
     }
 
     pub(super) fn entries(&self, relative: &Path) -> Result<Vec<DirectoryEntry>> {
@@ -58,29 +57,25 @@ impl Bundle {
             {
                 return Ok(Vec::new());
             }
-            Err(error) => return Err(Error::from_io(relative.display(), &error)),
+            Err(error) => return Err(Error::from_io(&error)),
         };
         if !metadata.file_type().is_dir() {
-            return Err(Error::new(ErrorKind::NotDirectory, relative.display()));
+            return Err(Error::new(ErrorKind::NotDirectory));
         }
         let mut entries = Vec::new();
-        for entry in
-            fs::read_dir(root).map_err(|error| Error::from_io(relative.display(), &error))?
-        {
-            let entry = entry.map_err(|error| Error::from_io(relative.display(), &error))?;
+        for entry in fs::read_dir(root).map_err(|error| Error::from_io(&error))? {
+            let entry = entry.map_err(|error| Error::from_io(&error))?;
             let name = entry
                 .file_name()
                 .into_string()
-                .map_err(|_| Error::new(ErrorKind::InvalidPath, relative.display()))?;
-            let file_type = entry
-                .file_type()
-                .map_err(|error| Error::from_io(name.clone(), &error))?;
+                .map_err(|_| Error::new(ErrorKind::InvalidPath))?;
+            let file_type = entry.file_type().map_err(|error| Error::from_io(&error))?;
             let kind = if file_type.is_file() {
                 NodeType::File
             } else if file_type.is_dir() {
                 NodeType::Directory
             } else {
-                return Err(Error::new(ErrorKind::Unsupported, name));
+                return Err(Error::new(ErrorKind::Unsupported));
             };
             entries.push(DirectoryEntry {
                 name: encoded_name(&name),
