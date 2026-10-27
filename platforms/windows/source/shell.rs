@@ -21,6 +21,7 @@ use tokamak::{
     Certificates, Config, DevProxyConfig, DevelopmentConfig, Event, PackageLayout, Runtime,
     frontend_url,
 };
+use url::Url;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
     COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
@@ -715,12 +716,10 @@ fn app_permission_prompt(
 }
 
 fn is_app_origin(uri: &str, host: &str) -> bool {
-    request_authority(uri).is_some_and(|authority| {
-        authority
-            .strip_suffix(":443")
-            .unwrap_or(authority)
-            .eq_ignore_ascii_case(host)
-    })
+    let Ok(app) = Url::parse(&format!("https://{host}/")) else {
+        return false;
+    };
+    Url::parse(uri).is_ok_and(|url| url.origin() == app.origin())
 }
 
 fn server_challenge(
@@ -746,12 +745,6 @@ fn server_challenge(
         };
         unsafe { args.SetAction(action) }
     }
-}
-
-fn request_authority(url: &str) -> Option<&str> {
-    let (scheme, remainder) = url.split_once("://")?;
-    scheme.eq_ignore_ascii_case("https").then_some(())?;
-    remainder.split(['/', '?', '#']).next()
 }
 
 fn certificate_matches(
@@ -801,6 +794,7 @@ mod tests {
         for (uri, app_origin) in [
             ("https://app.tokamak.local/path", true),
             ("HTTPS://APP.TOKAMAK.LOCAL:443/path", true),
+            ("https://user@app.tokamak.local/path", true),
             ("https://app.tokamak.local.evil/path", false),
             ("https://app.tokamak.local:444/path", false),
             ("http://app.tokamak.local/path", false),
