@@ -1,4 +1,3 @@
-#![deny(missing_docs)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::elidable_lifetime_names)]
 #![allow(clippy::needless_pass_by_value)]

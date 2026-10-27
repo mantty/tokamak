@@ -29,7 +29,7 @@ use rquickjs::convert::List;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::module::{Declarations, Exports, ModuleDef};
 use rquickjs::{
-    Array, ArrayBuffer, AsyncContext, AsyncRuntime, Ctx, Function, Module, Object, Promise,
+    Array, ArrayBuffer, AsyncContext, AsyncRuntime, Ctx, Function, IntoJs, Module, Object, Promise,
     TypedArray, Value,
 };
 
@@ -129,22 +129,23 @@ pub(super) fn execute_request(
 }
 
 /// A fresh `QuickJS` runtime that loads the Worker's modules and is
-/// interrupted once `interrupted` returns true.
+/// interrupted once `owner` is.
 async fn worker_runtime(
     worker: &WorkerBundle,
-    storage: Option<&Arc<dyn StorageRuntime>>,
-    interrupted: impl Fn() -> bool + Send + 'static,
+    config: &RuntimeConfig,
+    owner: &Arc<invocation::Invocation>,
 ) -> Result<(AsyncRuntime, AsyncContext), Error> {
     let runtime = AsyncRuntime::new().map_err(|error| js_error("runtime", error))?;
+    let interrupted = Arc::clone(owner);
     runtime
-        .set_interrupt_handler(Some(Box::new(interrupted)))
+        .set_interrupt_handler(Some(Box::new(move || interrupted.interrupted())))
         .await;
     runtime
         .set_loader(
             WorkerResolver,
             WorkerLoader {
                 bundle: worker.clone(),
-                storage: storage.cloned(),
+                storage: config.storage.clone(),
             },
         )
         .await;
@@ -167,11 +168,7 @@ async fn execute_request_async(
     };
     let services = crate::services::Scope::within(&lifetime);
     let owner = invocation::Invocation::new(lifetime.clone(), Arc::clone(&services.streams));
-    let interrupted = Arc::clone(&owner);
-    let (runtime, context) = worker_runtime(worker, config.storage.as_ref(), move || {
-        interrupted.interrupted()
-    })
-    .await?;
+    let (runtime, context) = worker_runtime(worker, config, &owner).await?;
     let awaited = crate::event_loop::AwaitedPromise::default();
     let request = context.async_with(async |ctx| -> Result<(), Error> {
         let Job {
@@ -181,8 +178,7 @@ async fn execute_request_async(
             response: response_sender,
             websocket,
         } = job;
-        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &services)?;
-        owner.track_wait_until(&ctx, &bootstrap)?;
+        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &services, &owner)?;
         let descriptor = install_request(&ctx, &request)?;
         let response = tokio::select! {
             response = invoke_worker(&ctx, worker, &bootstrap, descriptor, &request) => response?,
@@ -239,12 +235,7 @@ pub(super) async fn execute_event(
     };
     let services = crate::services::Scope::until(stopped, deadline);
     let owner = invocation::Invocation::new(lifetime, Arc::clone(&services.streams));
-    let interrupted = Arc::clone(&owner);
-    let invocation = worker_runtime(worker, config.storage.as_ref(), move || {
-        interrupted.interrupted()
-    })
-    .await;
-    let (runtime, context) = match invocation {
+    let (runtime, context) = match worker_runtime(worker, config, &owner).await {
         Ok(invocation) => invocation,
         Err(error) => {
             let _ = delivered.send(Err(error.into()));
@@ -253,8 +244,7 @@ pub(super) async fn execute_event(
     };
     let awaited = crate::event_loop::AwaitedPromise::default();
     let dispatch = context.async_with(async |ctx| -> Result<Delivery, Error> {
-        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &services)?;
-        owner.track_wait_until(&ctx, &bootstrap)?;
+        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &services, &owner)?;
         let exports = load_worker_exports(&ctx, worker).await?;
         let pending: Promise = property::<Function>(&bootstrap, "dispatchEvent")?
             .call((
@@ -294,13 +284,15 @@ pub(super) async fn execute_event(
 }
 
 /// Installs the Worker's globals, the runtime bootstrap, the app's assets and
-/// the native calls on its plugins, returning the bootstrap's exports.
+/// the native calls on its plugins, and gives `owner` the Worker's `waitUntil`
+/// work, returning the bootstrap's exports.
 fn prepare_worker_context<'js>(
     ctx: &Ctx<'js>,
     worker: &WorkerBundle,
     config: &RuntimeConfig,
     awaited: &crate::event_loop::AwaitedPromise,
     services: &crate::services::Scope,
+    owner: &Arc<invocation::Invocation>,
 ) -> Result<Object<'js>, Error> {
     ctx.store_userdata(awaited.clone())
         .map_err(|error| js_error("event loop", error))?;
@@ -318,6 +310,7 @@ fn prepare_worker_context<'js>(
         crate::services::install(ctx, &bootstrap, bindings, services)
             .map_err(|error| js_exception(ctx, "service bindings", error))?;
     }
+    owner.track_wait_until(ctx, &bootstrap)?;
     Ok(bootstrap)
 }
 
@@ -339,14 +332,8 @@ async fn invoke_worker<'js>(
     let request: Object = property::<Function>(bootstrap, "hostRequest")?
         .call((descriptor, body))
         .map_err(|error| js_exception(ctx, "request", error))?;
-    let environment: Object = ctx
-        .globals()
-        .get("__tokamak_env")
-        .map_err(|error| js_error("environment", error))?;
-    let execution_context: Object = ctx
-        .globals()
-        .get("__tokamak_context")
-        .map_err(|error| js_error("execution context", error))?;
+    let environment: Object = global(ctx, "__tokamak_env")?;
+    let execution_context: Object = global(ctx, "__tokamak_context")?;
     let response: Promise = fetch
         .call((request, environment, execution_context))
         .map_err(|error| js_error("fetch", error))?;
@@ -397,14 +384,8 @@ pub(super) async fn load_worker<'js>(
     bundle: &WorkerBundle,
 ) -> Result<Object<'js>, Error> {
     let exports = load_worker_exports(ctx, bundle).await?;
-    let execution_context: Value = ctx
-        .globals()
-        .get("__tokamak_context")
-        .map_err(|error| js_error("execution context", error))?;
-    let environment: Value = ctx
-        .globals()
-        .get("__tokamak_env")
-        .map_err(|error| js_error("environment", error))?;
+    let execution_context: Value = global(ctx, "__tokamak_context")?;
+    let environment: Value = global(ctx, "__tokamak_env")?;
     let default: Value = exports
         .get("default")
         .map_err(|error| js_error("worker export", error))?;
@@ -434,10 +415,7 @@ async fn load_worker_exports<'js>(
     ctx.globals()
         .set("__tokamak_exports", exports.clone())
         .map_err(|error| js_error("worker exports", error))?;
-    let execution_context: Value = ctx
-        .globals()
-        .get("__tokamak_context")
-        .map_err(|error| js_error("execution context", error))?;
+    let execution_context: Value = global(ctx, "__tokamak_context")?;
     if let Some(context) = execution_context.as_object() {
         context
             .set("exports", exports.clone())
@@ -670,18 +648,15 @@ fn deliver_websocket_event<'js>(
 ) -> Result<bool, Error> {
     match event {
         Ok(WebSocketInbound::Message { binary, payload }) => {
-            if binary {
-                let data = ArrayBuffer::new_copy(ctx.clone(), payload)
-                    .map_err(|error| js_error("WebSocket message", error))?;
-                receive
-                    .call::<_, ()>((data, true))
-                    .map_err(|error| js_exception(ctx, "WebSocket message", error))?;
+            let data = if binary {
+                ArrayBuffer::new_copy(ctx.clone(), payload).map(ArrayBuffer::into_value)
             } else {
-                let data = String::from_utf8_lossy(&payload).into_owned();
-                receive
-                    .call::<_, ()>((data, false))
-                    .map_err(|error| js_exception(ctx, "WebSocket message", error))?;
+                String::from_utf8_lossy(&payload).into_js(ctx)
             }
+            .map_err(|error| js_error("WebSocket message", error))?;
+            receive
+                .call::<_, ()>((data, binary))
+                .map_err(|error| js_exception(ctx, "WebSocket message", error))?;
             Ok(true)
         }
         // The client's close frame ended the connection.
@@ -758,10 +733,7 @@ fn receiver_closed(message: &str) -> io::Error {
 }
 
 async fn drain_wait_until(ctx: &Ctx<'_>) -> Result<(), Error> {
-    let drain: Function = ctx
-        .globals()
-        .get("__tokamak_drain_wait_until")
-        .map_err(|error| js_error("waitUntil", error))?;
+    let drain: Function = global(ctx, "__tokamak_drain_wait_until")?;
     let pending: Promise = drain
         .call(())
         .map_err(|error| js_error("waitUntil", error))?;
@@ -948,10 +920,7 @@ fn cancel_response_stream<'js>(ctx: &Ctx<'js>, cancel: &Function<'js>) -> Result
     let pending: Promise = cancel
         .call(())
         .map_err(|error| js_exception(ctx, "response stream cancel", error))?;
-    let context: Object = ctx
-        .globals()
-        .get("__tokamak_context")
-        .map_err(|error| js_exception(ctx, "execution context", error))?;
+    let context: Object = global(ctx, "__tokamak_context")?;
     property::<Function>(&context, "waitUntil")?
         .call((pending,))
         .map_err(|error| js_exception(ctx, "response stream cleanup", error))
@@ -970,8 +939,7 @@ async fn finish_promise<'js, T: rquickjs::FromJs<'js>>(
         .map_err(|error| js_exception(ctx, stage, error))
 }
 
-/// Give the runtime the app's `assets`: their binding's name and `fetch`.
-/// Bind the app's assets in the Worker's environment through the runtime's
+/// Bind the app's `assets` in the Worker's environment through the runtime's
 /// `installAssets`.
 fn install_assets<'js>(
     ctx: &Ctx<'js>,
@@ -1003,6 +971,13 @@ fn asset_response<'js>(ctx: &Ctx<'js>, response: AssetResponse) -> rquickjs::Res
 /// The `name` property of `object`.
 fn property<'js, T: rquickjs::FromJs<'js>>(object: &Object<'js>, name: &str) -> Result<T, Error> {
     object.get(name).map_err(|error| js_error(name, error))
+}
+
+/// The global `name` of `ctx`.
+fn global<'js, T: rquickjs::FromJs<'js>>(ctx: &Ctx<'js>, name: &str) -> Result<T, Error> {
+    ctx.globals()
+        .get(name)
+        .map_err(|error| js_error(name, error))
 }
 
 /// The function `source` evaluates to.

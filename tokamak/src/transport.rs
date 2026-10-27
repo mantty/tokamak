@@ -29,6 +29,17 @@ const WEBSOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) type BodyChunk = Result<Vec<u8>, String>;
 pub(super) type TlsStream = StreamOwned<ServerConnection, TcpStream>;
 
+/// Watches `stream`'s socket for the client disconnecting, giving it a 1 ms
+/// read timeout so that [`client_disconnected`] returns promptly.
+pub(super) fn watch_disconnection(stream: &TlsStream) -> io::Result<Readiness> {
+    let (mut readiness, _wake) = Readiness::new()?;
+    readiness.observe(stream.get_ref())?;
+    stream
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(1)))?;
+    Ok(readiness)
+}
+
 /// Observes connection failures without consuming pipelined HTTP requests.
 pub(super) fn client_disconnected(
     stream: &mut TlsStream,
@@ -920,14 +931,7 @@ pub(super) fn write_response(
     persistent: bool,
 ) -> io::Result<ResponseOutcome> {
     let mut readiness = match response.body {
-        HttpBody::Stream(_) => {
-            let (mut readiness, _wake) = Readiness::new()?;
-            readiness.observe(stream.get_ref())?;
-            stream
-                .get_ref()
-                .set_read_timeout(Some(Duration::from_millis(1)))?;
-            Some(readiness)
-        }
+        HttpBody::Stream(_) => Some(watch_disconnection(stream)?),
         HttpBody::Buffered(_) => None,
     };
     write_response_inner(

@@ -210,16 +210,6 @@ pub(crate) fn request(method: &str, path: &str) -> HttpRequest {
 #[test]
 fn http_wait_until_survives_caller_cancellation_but_ends_at_the_host_deadline()
 -> Result<(), Box<dyn std::error::Error>> {
-    struct Shell(Sender<String>);
-    impl crate::PluginHandler for Shell {
-        fn call(&self, _: u64, _: &str, method: &str, _: &[u8]) {
-            let _ = self.0.send(method.into());
-        }
-        fn call_with_body(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
-        fn chunk(&self, _: u64, _: &crate::PluginReply) {}
-        fn subscribe(&self, _: u64, _: &str, _: &str, _: &[u8]) {}
-        fn cancel(&self, _: u64) {}
-    }
     let directory = tempfile::tempdir()?;
     let worker = WorkerBundle::of_source(
         br"const nativeCall = async (ctx, plugin, method, value = null) => JSON.parse(new TextDecoder().decode(await ctx[Symbol.for('tokamak.native')].call(plugin, method, new TextEncoder().encode(JSON.stringify(value)))));
@@ -239,7 +229,7 @@ export default {
     let (events, received) = flume::unbounded();
     let config = RuntimeConfig {
         plugins: Some(crate::plugin_calls::PluginCalls::new(
-            Some(Arc::new(Shell(events))),
+            Some(Arc::new(Gate(events))),
             true,
         )),
         ..runtime_config()
@@ -258,9 +248,9 @@ export default {
         websocket: None,
     };
     let execution = tokio.spawn_blocking(move || execute_request(&worker, &config, job, &stopped));
-    assert_eq!(received.recv_timeout(Duration::from_secs(2))?, "handler");
+    assert_eq!(received.recv_timeout(Duration::from_secs(2))?.1, "handler");
     caller.cancel();
-    assert_eq!(received.recv_timeout(Duration::from_secs(2))?, "retained");
+    assert_eq!(received.recv_timeout(Duration::from_secs(2))?.1, "retained");
     let finished =
         tokio.block_on(async { tokio::time::timeout(Duration::from_secs(2), execution).await });
     assert!(
@@ -286,7 +276,7 @@ fn completes_response_cancellation_cleanup_without_other_background_work()
 }
 
 /// Shell plugins that record each call's ID and method.
-struct Gate(Sender<(u64, String)>);
+pub(crate) struct Gate(pub(crate) Sender<(u64, String)>);
 
 impl crate::PluginHandler for Gate {
     fn call(&self, id: u64, _: &str, method: &str, _: &[u8]) {
@@ -795,7 +785,7 @@ pub(crate) fn runtime_config() -> RuntimeConfig {
     }
 }
 
-fn native_completion() -> crate::PluginReply {
+pub(crate) fn native_completion() -> crate::PluginReply {
     crate::PluginReply {
         payload: b"null".to_vec(),
         failed: false,

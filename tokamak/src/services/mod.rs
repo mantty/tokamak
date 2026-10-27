@@ -8,13 +8,8 @@ use std::sync::Arc;
 
 use rquickjs::{Array, ArrayBuffer, Ctx, Exception, Function, Object, Promise};
 
+use crate::env_vars::ServiceBinding;
 use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
-
-#[derive(Clone, Debug)]
-pub(crate) struct Target {
-    service: String,
-    entrypoint: String,
-}
 
 pub(crate) struct Call {
     pub(crate) entrypoint: String,
@@ -22,20 +17,11 @@ pub(crate) struct Call {
     pub(crate) arguments: Message,
 }
 
-impl Target {
-    pub(crate) fn new(service: impl Into<String>, entrypoint: impl Into<String>) -> Self {
-        Self {
-            service: service.into(),
-            entrypoint: entrypoint.into(),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct Service {
     pub(crate) bundle: WorkerBundle,
     pub(crate) config: RuntimeConfig,
-    pub(crate) bindings: BTreeMap<String, Target>,
+    pub(crate) bindings: BTreeMap<String, ServiceBinding>,
 }
 
 #[derive(Debug)]
@@ -46,27 +32,12 @@ pub(crate) struct Registry {
 #[derive(Clone, Debug)]
 pub(crate) struct Bindings {
     registry: Arc<Registry>,
-    targets: BTreeMap<String, Target>,
+    targets: BTreeMap<String, ServiceBinding>,
 }
 
 impl Registry {
-    pub(crate) fn new(services: BTreeMap<String, Service>) -> Result<Self, Error> {
-        for service in services.values() {
-            for (name, target) in &service.bindings {
-                if !services.contains_key(&target.service) {
-                    return Err(Error::Startup(format!(
-                        "Service binding {name} targets missing service {}",
-                        target.service
-                    )));
-                }
-                if service.config.environment.contains_key(name) {
-                    return Err(Error::Startup(format!(
-                        "Service binding {name} conflicts with an environment value"
-                    )));
-                }
-            }
-        }
-        Ok(Self { services })
+    pub(crate) fn new(services: BTreeMap<String, Service>) -> Self {
+        Self { services }
     }
 
     fn configuration(self: &Arc<Self>, service: &Service) -> RuntimeConfig {
@@ -92,7 +63,7 @@ impl Registry {
 
     pub(crate) async fn invoke(
         self: &Arc<Self>,
-        target: Target,
+        target: ServiceBinding,
         method: String,
         arguments: Message,
         lifetime: Lifetime,

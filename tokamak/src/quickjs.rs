@@ -1,5 +1,3 @@
-#![deny(missing_docs)]
-
 //! `QuickJS` runtime integration for tokamak.
 
 #[cfg(feature = "native")]

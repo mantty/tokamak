@@ -16,15 +16,10 @@ pub(crate) async fn execute_service(
 ) -> Result<(), Error> {
     let services = Scope::within(lifetime);
     let owner = Invocation::new(lifetime.clone(), Arc::clone(&services.streams));
-    let interrupted = Arc::clone(&owner);
-    let (runtime, context) = worker_runtime(worker, config.storage.as_ref(), move || {
-        interrupted.interrupted()
-    })
-    .await?;
+    let (runtime, context) = worker_runtime(worker, config, &owner).await?;
     let awaited = crate::event_loop::AwaitedPromise::default();
     let invocation = context.async_with(async |ctx| -> Result<Reply, Error> {
-        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &services)?;
-        owner.track_wait_until(&ctx, &bootstrap)?;
+        let bootstrap = prepare_worker_context(&ctx, worker, config, &awaited, &services, &owner)?;
         let exports = load_worker_exports(&ctx, worker).await?;
         let arguments = call
             .arguments

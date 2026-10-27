@@ -1,5 +1,6 @@
-import { encode, decode } from '../rpc/values.mjs';
+import { encode } from '../rpc/values.mjs';
 import { encodeRequest, decodeResponse } from '../rpc/http.mjs';
+import { replyValue } from './streams.mjs';
 
 export async function fetchService(call, name, input, init) {
   const request = new Request(input, init);
@@ -13,8 +14,7 @@ export async function fetchService(call, name, input, init) {
   try {
     const reply = await operation.result;
     signal.throwIfAborted();
-    value = decode(reply.value);
-    if (reply.failed) throw value;
+    value = replyValue(reply);
   } catch (error) {
     finish();
     signal.throwIfAborted();

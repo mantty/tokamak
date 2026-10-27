@@ -12,7 +12,7 @@ use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
 use hyper::{
     Method, Response, StatusCode, Uri,
     body::{Body as _, Bytes, Frame, Incoming},
-    header::{HeaderMap, HeaderName, HeaderValue},
+    header::{HeaderMap, HeaderValue},
 };
 use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
 use hyper_util::client::legacy::{self, connect::HttpConnector};
@@ -31,6 +31,7 @@ use url::Url;
 
 use super::decoder::DecodedBody;
 use crate::globals::ContentDecoder;
+use crate::transport::append_header;
 
 type Body = BoxBody<Bytes, io::Error>;
 pub(crate) type Client = legacy::Client<Connector, Body>;
@@ -199,12 +200,7 @@ fn request_headers(ctx: &Ctx<'_>, json: &str) -> rquickjs::Result<HeaderMap> {
         serde_json::from_str(json).map_err(|error| failure(ctx, error))?;
     let mut headers = HeaderMap::new();
     for (name, value) in pairs {
-        let name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| failure(ctx, error))?;
-        let value =
-            HeaderValue::from_bytes(value.as_bytes()).map_err(|error| failure(ctx, error))?;
-        headers
-            .try_append(name, value)
-            .map_err(|error| failure(ctx, error))?;
+        append_header(&mut headers, &name, &value).map_err(|error| failure(ctx, error))?;
     }
     Ok(headers)
 }

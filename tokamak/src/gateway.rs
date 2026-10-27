@@ -19,7 +19,7 @@ use crate::readiness::{Readiness, Waker};
 use crate::transport::{
     HttpRequest, HttpResponse, ResponseOutcome, TlsStream, append_header, client_disconnected,
     connection_ended, is_connect, is_websocket, read_header_block, read_request, tls_accept,
-    tls_close, websocket_session, write_plain_response, write_response,
+    tls_close, watch_disconnection, websocket_session, write_plain_response, write_response,
 };
 
 const MAX_WEBSOCKET_QUEUE: usize = 100;
@@ -772,11 +772,8 @@ fn wait_for_response(
     result: &Receiver<JobResponse>,
     tls: &mut TlsStream,
 ) -> io::Result<JobResponse> {
-    let (mut readiness, _wake) = Readiness::new()?;
-    readiness.observe(tls.get_ref())?;
     let timeout = tls.get_ref().read_timeout()?;
-    tls.get_ref()
-        .set_read_timeout(Some(Duration::from_millis(1)))?;
+    let mut readiness = watch_disconnection(tls)?;
     loop {
         match result.recv_timeout(Duration::from_millis(100)) {
             Ok(response) => {

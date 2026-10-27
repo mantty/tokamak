@@ -1,4 +1,3 @@
-#![deny(missing_docs)]
 #![allow(clippy::missing_errors_doc)]
 
 //! A small in-memory filesystem for the tokamak Worker contract.

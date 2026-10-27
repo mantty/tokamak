@@ -1,7 +1,7 @@
-import { serviceStreamCodec } from './streams.mjs';
+import { serviceStreamCodec, failure, replyValue } from './streams.mjs';
 import { decodeRequest, encodeResponse } from '../rpc/http.mjs';
 import { fetchService } from './http.mjs';
-import { encode, decode, dataCloneError } from '../rpc/values.mjs';
+import { encode, decode } from '../rpc/values.mjs';
 import { WorkerEntrypoint, ServiceStub } from '../builtins/cloudflare-workers.mjs';
 
 export function installServices(names, dispatch) {
@@ -12,12 +12,7 @@ export function installServices(names, dispatch) {
       get(target, method) {
         if (method === 'fetch') return (input, init) => fetchService(call, name, input, init);
         if (method === 'then' || typeof method === 'symbol') return undefined;
-        return async (...args) => {
-          const reply = await call(name, method, encode(args)).result;
-          const value = decode(reply.value);
-          if (reply.failed) throw value;
-          return value;
-        };
+        return async (...args) => replyValue(await call(name, method, encode(args)).result);
       },
     });
   }
@@ -57,7 +52,6 @@ export async function invokeService(exports, entrypoint, method, argumentsMessag
     const result = await operation(worker, method).apply(worker, decode(argumentsMessage));
     return { failed: false, value: encode(result) };
   } catch (error) {
-    try { return { failed: true, value: encode(error) }; }
-    catch { return { failed: true, value: encode(dataCloneError()) }; }
+    return failure(error);
   }
 }

@@ -1,5 +1,3 @@
-#![deny(missing_docs)]
-
 //! C ABI used by the native Apple application shell.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};

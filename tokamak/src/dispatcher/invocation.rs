@@ -44,9 +44,7 @@ impl Invocation {
             }
             return self.background_deadline() <= Instant::now();
         }
-        self.background
-            .get()
-            .is_some_and(|deadline| Instant::now() >= *deadline)
+        false
     }
 
     pub(super) fn caller_interrupted(&self) -> bool {

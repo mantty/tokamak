@@ -69,32 +69,19 @@ impl CertificateBundle {
     ///
     /// Returns an error when generation, cache loading, or cache writing fails.
     pub(crate) fn ensure(work_dir: &Path, host: &str, now: SystemTime) -> Result<Self> {
-        let Ok(bundle) = Self::load_cached(work_dir) else {
-            return Self::renew_or_generate(work_dir, host, now);
+        let issuer = match Self::load_issuer(work_dir) {
+            Ok(issuer) if issuer.issuer_is_current(now) => issuer,
+            _ => return Self::generate_and_cache(work_dir, host, now),
         };
-        if !bundle.issuer_is_current(now) {
-            return Self::generate_and_cache(work_dir, host, now);
-        }
-        if !bundle.cached_material_is_current(now)
-            || !bundle.server_certificate_matches_host(host)
-            || bundle.leaf_renewal_is_due(now)
+        if let Ok(bundle) = Self::load_cached(work_dir)
+            && bundle.leaves_are_current(now)
+            && bundle.server_certificate_matches_host(host)
+            && !bundle.leaf_renewal_is_due(now)
         {
-            let replacement = bundle.renew_leaves(host, now)?;
-            replacement.write_leaves(work_dir)?;
-            return Ok(replacement);
-        }
-        Ok(bundle)
-    }
-
-    fn renew_or_generate(work_dir: &Path, host: &str, now: SystemTime) -> Result<Self> {
-        let Ok(issuer) = Self::load_issuer(work_dir) else {
-            return Self::generate_and_cache(work_dir, host, now);
-        };
-        if !issuer.issuer_is_current(now) {
-            return Self::generate_and_cache(work_dir, host, now);
+            return Ok(bundle);
         }
         let replacement = issuer.renew_leaves(host, now)?;
-        replacement.write_all(work_dir)?;
+        replacement.write_leaves(work_dir)?;
         Ok(replacement)
     }
 
@@ -166,24 +153,21 @@ impl CertificateBundle {
         })
     }
 
-    pub(crate) fn cached_material_is_current(&self, now: SystemTime) -> bool {
-        self.issuer_is_current(now)
-            && self.leaves_are_current(now)
-            && certificate_matches_key(&self.server_cert, &self.server_key)
-            && certificate_matches_key(&self.client_cert, &self.client_key)
-            && certificate_is_issued_by(&self.server_cert, &self.ca_cert)
-            && certificate_is_issued_by(&self.client_cert, &self.ca_cert)
-    }
-
     pub(crate) fn issuer_is_current(&self, now: SystemTime) -> bool {
         certificate_is_valid_now(&self.ca_cert, now)
             && certificate_matches_key(&self.ca_cert, &self.ca_key)
     }
 
+    /// Whether the leaves are valid at `now`, match their keys and are issued
+    /// by this bundle's authority.
     fn leaves_are_current(&self, now: SystemTime) -> bool {
         [self.server_cert.as_str(), self.client_cert.as_str()]
             .into_iter()
             .all(|pem| certificate_is_valid_now(pem, now))
+            && certificate_matches_key(&self.server_cert, &self.server_key)
+            && certificate_matches_key(&self.client_cert, &self.client_key)
+            && certificate_is_issued_by(&self.server_cert, &self.ca_cert)
+            && certificate_is_issued_by(&self.client_cert, &self.ca_cert)
     }
 
     pub(crate) fn leaf_renewal_is_due(&self, now: SystemTime) -> bool {
@@ -524,7 +508,8 @@ mod bundle_tests {
         assert_eq!(kept, cached);
         assert_eq!(renewed.ca_cert, cached.ca_cert);
         assert_ne!(renewed.server_cert, cached.server_cert);
-        assert!(renewed.cached_material_is_current(issued + day * 33));
+        assert!(renewed.issuer_is_current(issued + day * 33));
+        assert!(renewed.leaves_are_current(issued + day * 33));
         Ok(())
     }
 
@@ -660,7 +645,8 @@ mod bundle_tests {
 
         assert_eq!(second.ca_cert, first.ca_cert);
         assert_ne!(second.client_key, first.client_key);
-        assert!(second.cached_material_is_current(SystemTime::now()));
+        assert!(second.issuer_is_current(SystemTime::now()));
+        assert!(second.leaves_are_current(SystemTime::now()));
         Ok(())
     }
 
@@ -825,8 +811,6 @@ mod bundle_tests {
 
 const RETRY_DELAY: Duration = Duration::from_hours(1);
 
-type Shared = Arc<RwLock<CertificateBundle>>;
-
 /// A TLS authentication challenge raised by a platform `WebView`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Challenge<'a> {
@@ -880,7 +864,7 @@ pub struct ServerIdentity {
 pub struct Certificates {
     state_dir: PathBuf,
     host: String,
-    current: Shared,
+    current: RwLock<CertificateBundle>,
     server_identity: Option<ServerIdentity>,
     server_config: Mutex<Option<Arc<ServerConfig>>>,
 }
@@ -895,7 +879,7 @@ impl Certificates {
         Ok(Self {
             state_dir,
             host,
-            current: Arc::new(RwLock::new(bundle)),
+            current: RwLock::new(bundle),
             server_identity,
             server_config: Mutex::new(None),
         })
