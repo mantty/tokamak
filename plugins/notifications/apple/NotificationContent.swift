@@ -9,8 +9,6 @@ import UserNotifications
 /// a scheduled notification's trigger in the same object, which `getScheduled` and
 /// `getDelivered` return.
 private let contentKey = "tokamak.content"
-/// The data of a notification scheduled without its content stored.
-private let dataKey = "tokamak.data"
 
 /// A notification the page asked to show or schedule.
 struct TokamakNotificationRequest {
@@ -184,8 +182,7 @@ struct TokamakNotificationFields {
     title = content.title.isEmpty ? nil : content.title
     body = content.body.isEmpty ? nil : content.body
     category = content.categoryIdentifier.isEmpty ? nil : content.categoryIdentifier
-    (data, isPush) = Self.data(content.userInfo)
-    stored = isPush ? nil : storedContent(content.userInfo)?.content
+    (data, isPush, stored) = Self.contents(content.userInfo)
   }
 
   /// A push message delivered to the app without a notification.
@@ -195,27 +192,24 @@ struct TokamakNotificationFields {
     title = (alert as? [String: Any])?["title"] as? String
     body = (alert as? [String: Any])?["body"] as? String ?? alert as? String
     category = (userInfo["aps"] as? [String: Any])?["category"] as? String
-    (data, isPush) = Self.data(userInfo)
+    (data, isPush, _) = Self.contents(userInfo)
     stored = nil
   }
 
   /// A push message's data is every top-level key but `aps`; a local
-  /// notification's is the data the page gave it.
-  private static func data(_ userInfo: [AnyHashable: Any]) -> (
-    [String: TokamakJSON], isPush: Bool
+  /// notification's is the data the page gave it, stored with its content.
+  private static func contents(_ userInfo: [AnyHashable: Any]) -> (
+    [String: TokamakJSON], isPush: Bool, stored: TokamakNotificationsPlugin.NotificationContent?
   ) {
     if userInfo["aps"] != nil {
       var data: [String: TokamakJSON] = [:]
       for case (let key as String, let value) in userInfo where key != "aps" {
         data[key] = TokamakJSON(value)
       }
-      return (data, true)
+      return (data, true, nil)
     }
-    if let stored = storedContent(userInfo) {
-      return (stored.content.data ?? [:], false)
-    }
-    let json = (userInfo[dataKey] as? String)?.data(using: .utf8) ?? Data()
-    return ((try? JSONDecoder().decode([String: TokamakJSON].self, from: json)) ?? [:], false)
+    let stored = storedContent(userInfo)?.content
+    return (stored?.data ?? [:], false, stored)
   }
 
   var message: TokamakNotificationsPlugin.Message {
