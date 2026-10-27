@@ -24,7 +24,6 @@ super::host_functions! {
     pub(super),
     "digest" => digest,
     "cryptoCreateDigest" => digest::create,
-    "cryptoHmac" => hmac,
     "cryptoAesGcm" => aes_gcm,
     "cryptoCreateCipher" => cipher::create,
     "cryptoTimingSafeEqual" => timing_safe_equal,
@@ -82,21 +81,6 @@ pub(super) fn digest<'js>(
     ArrayBuffer::new_copy(ctx, hash.digest(&input))
 }
 
-pub(super) fn hmac<'js>(
-    ctx: Ctx<'js>,
-    algorithm: String,
-    key: TypedArray<'js, u8>,
-    input: TypedArray<'js, u8>,
-) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let hash = message_digest(&ctx, &algorithm)?;
-    let key = bytes(&ctx, key)?;
-    let input = bytes(&ctx, input)?;
-    let output = hash
-        .hmac(&key, &input)
-        .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?;
-    ArrayBuffer::new_copy(ctx, &output)
-}
-
 pub(super) fn pbkdf2<'js>(
     ctx: Ctx<'js>,
     algorithm: String,
@@ -150,13 +134,10 @@ pub(super) fn aes_gcm<'js>(
     let key = bytes(&ctx, key)?;
     let iv = bytes(&ctx, iv)?;
     let input = bytes(&ctx, input)?;
-    let tag_length = options.get::<_, Option<u32>>("tagLength")?.unwrap_or(128);
-    let mode: Option<String> = options.get("mode")?;
+    let tag_length: u32 = options.get("tagLength")?;
+    let mode: String = options.get("mode")?;
     let additional_data = optional_bytes(&ctx, &options, "additionalData")?;
-    if !aes::valid_key(&key) {
-        return Err(data_error(&ctx, "AES keys must be 128, 192, or 256 bits"));
-    }
-    let output = match mode.as_deref().unwrap_or("AES-GCM") {
+    let output = match mode.as_str() {
         "AES-GCM" => aes_gcm_operation(
             &ctx,
             encrypt,
@@ -195,9 +176,7 @@ fn aes_gcm_operation(
         tag_length,
     } = params;
     let tag_bytes = usize::try_from(tag_length / 8)
-        .ok()
-        .filter(|length| aes::valid_tag_length(*length))
-        .ok_or_else(|| operation_error(ctx, "Invalid AES-GCM tag length"))?;
+        .map_err(|_| operation_error(ctx, "Invalid AES-GCM tag length"))?;
     let failed = |error: aes::Failure| operation_error(ctx, error.0);
     let mut stream = aes::stream(Mode::Gcm, encrypt, key, iv, tag_bytes).map_err(failed)?;
     stream.set_aad(additional_data).map_err(failed)?;
@@ -343,10 +322,9 @@ fn key_object<'js>(ctx: &Ctx<'js>, material: &KeyMaterial) -> rquickjs::Result<O
 
 fn host_export_key<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
     let format = required_string(&ctx, &options, "format")?;
-    let key_format = option_string(&options, "keyFormat")?;
-    let parse_format = key_format.as_deref().unwrap_or(format.as_str());
+    let key_format = required_string(&ctx, &options, "keyFormat")?;
     let input = required_bytes(&ctx, &options, "key")?;
-    let material = parse_key_with_format(&ctx, &input, &options, parse_format)?;
+    let material = parse_key_with_format(&ctx, &input, &options, &key_format)?;
     let output = match format.as_str() {
         "spki" => public_der(&ctx, &material.public())?,
         "pkcs8" => private_der(&ctx, &material)?,
@@ -883,15 +861,18 @@ fn unsupported_format(ctx: &Ctx<'_>) -> rquickjs::Error {
 mod tests {
     use super::*;
     use base64::Engine;
+    use rquickjs::function::Opt;
 
     #[test]
-    fn one_shot_hmac_accepts_an_empty_key() -> rquickjs::Result<()> {
+    fn hmac_accepts_an_empty_key() -> rquickjs::Result<()> {
         let runtime = rquickjs::Runtime::new()?;
         let context = rquickjs::Context::full(&runtime)?;
         context.with(|ctx| {
             let key = TypedArray::new(ctx.clone(), Vec::<u8>::new())?;
             let input = TypedArray::new(ctx.clone(), b"abc".to_vec())?;
-            let output = hmac(ctx.clone(), "SHA-256".into(), key, input)?;
+            let state = digest::create(ctx.clone(), "SHA-256".into(), Opt(Some(key)))?;
+            state.borrow_mut().update(input)?;
+            let output = state.borrow_mut().finish(ctx.clone())?;
             let bytes = output
                 .as_bytes()
                 .ok_or_else(|| Exception::throw_message(&ctx, "detached ArrayBuffer"))?;
