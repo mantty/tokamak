@@ -62,11 +62,13 @@ async function pump(socket, state) {
 function connectSocketToNode(socket, state, options, callback) {
   state.options = options;
   state.connecting = true;
+  state.peer = { address: options.host, port: options.port, family: { 4: "IPv4", 6: "IPv6" }[isIP(options.host)] };
   try {
     state.native = connectSocket(
       { hostname: options.host, port: options.port },
       { secureTransport: options.secureTransport ?? "off", allowHalfOpen: true },
     );
+    state.sockname = { address: "0.0.0.0", port: 0, family: "IPv4" };
   } catch (error) {
     socket.destroy(error);
     return socket;
@@ -92,6 +94,8 @@ export class Socket extends Duplex {
       options: { ...options },
       secureTransport: options.secureTransport ?? "off",
       native: null,
+      peer: null,
+      sockname: null,
       reader: null,
       reading: false,
       readEnded: false,
@@ -112,9 +116,9 @@ export class Socket extends Duplex {
   get bufferSize() { return this.writableLength; }
   get bytesRead() { return socketStates.get(this).bytesRead; }
   get bytesWritten() { return socketStates.get(this).bytesWritten; }
-  get localAddress() { return undefined; }
-  get localFamily() { return undefined; }
-  get localPort() { return undefined; }
+  get localAddress() { return this._getsockname().address; }
+  get localFamily() { return this._getsockname().family; }
+  get localPort() { return this._getsockname().port; }
   get pending() { return !socketStates.get(this).connected; }
   get readyState() {
     if (this.destroyed) return "closed";
@@ -123,9 +127,9 @@ export class Socket extends Duplex {
     if (this.readable) return "readOnly";
     return this.writable ? "writeOnly" : "closed";
   }
-  get remoteAddress() { return socketStates.get(this).options.host; }
-  get remoteFamily() { return isIPv6(socketStates.get(this).options.host) ? "IPv6" : "IPv4"; }
-  get remotePort() { return socketStates.get(this).options.port; }
+  get remoteAddress() { return this._getpeername().address; }
+  get remoteFamily() { return this._getpeername().family; }
+  get remotePort() { return this._getpeername().port; }
 
   connect(...args) {
     const { options: connection, callback } = normalizeConnection(args);
@@ -160,13 +164,17 @@ export class Socket extends Duplex {
   }
   ref() { return this; }
   unref() { return this; }
-  address() { return this.localAddress === undefined ? null : { address: this.localAddress, family: this.localFamily, port: this.localPort }; }
+  address() { return this._getsockname(); }
   _destroy(error, callback) {
     const state = socketStates.get(this);
     state.closed = true;
     state.connecting = false;
     clearTimeout(state.timer);
-    Promise.resolve(state.native?.close()).then(() => callback(error), failure => callback(error ?? failure));
+    const finish = closeError => {
+      state.peer = null;
+      callback(closeError);
+    };
+    Promise.resolve(state.native?.close()).then(() => finish(error), failure => finish(error ?? failure));
   }
   _final(callback) {
     const state = socketStates.get(this);
@@ -176,8 +184,8 @@ export class Socket extends Duplex {
       return state.writer.close();
     }).then(() => callback(), callback);
   }
-  _getpeername() { return this.remoteAddress === undefined ? null : { address: this.remoteAddress, family: this.remoteFamily, port: this.remotePort }; }
-  _getsockname() { return this.address(); }
+  _getpeername() { return { ...socketStates.get(this).peer }; }
+  _getsockname() { return socketStates.get(this).sockname ?? {}; }
   _onTimeout() { this.emit("timeout"); }
   _read() {
     const state = socketStates.get(this);

@@ -2667,6 +2667,25 @@ export async function run(handlerEnv, ctx, constructors) {
         const socket = new nodeNet.Socket();
         return { prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(socket)).sort(), destroyed: socket.destroyed };
       }),
+      socketAddresses: await asyncResult(async () => {
+        const describe = socket => [
+          socket.address(), socket._getsockname(), socket._getpeername(),
+          socket.localAddress, socket.localPort, socket.localFamily, socket.remoteAddress, socket.remotePort, socket.remoteFamily,
+        ];
+        const unconnected = new nodeNet.Socket();
+        const states = [describe(unconnected)];
+        for (const host of ["127.0.0.1", "::1", "localhost"]) {
+          const socket = nodeNet.connect({ host, port: 0 });
+          const closed = new Promise(resolve => socket.on("close", resolve));
+          socket.on("error", () => {});
+          states.push(describe(socket));
+          socket.destroy();
+          states.push(describe(socket));
+          await closed;
+          states.push(describe(socket));
+        }
+        return states;
+      }),
       server: result(() => nodeNet.createServer()),
       blockList: (() => {
         const list = new nodeNet.BlockList();
