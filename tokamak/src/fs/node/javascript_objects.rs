@@ -286,8 +286,7 @@ pub(super) fn file_handle_object<'js>(
             ctx.clone(),
             move |ctx: Ctx<'js>, data: Value<'js>, options: Opt<Value<'js>>| {
                 let appended = open_descriptor(&ctx, &append_state).and_then(|descriptor| {
-                    let bytes = attached_bytes(&ctx, &file_view(&ctx, data, options.0.as_ref())?)?;
-                    write_descriptor(&ctx, descriptor, &bytes, true).map(|_| ())
+                    append_file_sync(ctx.clone(), descriptor.into_js(&ctx)?, data, options)
                 });
                 promise_unit(ctx, appended)
             },
@@ -702,13 +701,15 @@ pub(super) fn stream_write<'js>(
         return Err(Exception::throw_type(ctx, "chunk is required"));
     }
     let value = args.remove(0);
+    if value.is_null() {
+        return Err(throw_type_error(
+            ctx,
+            "ERR_STREAM_NULL_VALUES",
+            "May not write null values to stream",
+        ));
+    }
     let callback = pop_callback(&mut args);
-    let encoding = args
-        .first()
-        .filter(|encoding| encoding.is_string())
-        .cloned()
-        .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-    let data = chunk_bytes(ctx, value, encoding)?;
+    let data = chunk_bytes(ctx, value, stream_encoding(ctx, args.first())?)?;
     let descriptor = open_descriptor(ctx, state)?;
     let result = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, None));
     let Some(callback) = callback else {
@@ -722,6 +723,30 @@ pub(super) fn stream_write<'js>(
     Ok(true)
 }
 
+/// The encoding `WriteStream.write` encodes a string chunk in, as Node's
+/// `Writable.write` reads its `encoding` argument: a falsy one means utf8,
+/// and any other must name an encoding.
+fn stream_encoding<'js>(
+    ctx: &Ctx<'js>,
+    encoding: Option<&Value<'js>>,
+) -> rquickjs::Result<Value<'js>> {
+    let Some(encoding) = encoding else {
+        return Ok(Value::new_undefined(ctx.clone()));
+    };
+    if !Coerced::<bool>::from_js(ctx, encoding.clone())?.0 {
+        return Ok(Value::new_undefined(ctx.clone()));
+    }
+    if !is_encoding(ctx, encoding)? {
+        let name = Coerced::<String>::from_js(ctx, encoding.clone())?.0;
+        return Err(throw_type_error(
+            ctx,
+            "ERR_UNKNOWN_ENCODING",
+            &format!("Unknown encoding: {name}"),
+        ));
+    }
+    Ok(encoding.clone())
+}
+
 pub(super) fn stream_end<'js>(
     ctx: &Ctx<'js>,
     state: &FileHandleState,
@@ -730,8 +755,11 @@ pub(super) fn stream_end<'js>(
 ) -> rquickjs::Result<Object<'js>> {
     let mut args = args.0;
     let callback = pop_callback(&mut args);
-    if let Some(value) = args.into_iter().next() {
-        stream_write(ctx, state, Rest(vec![value]))?;
+    if args
+        .first()
+        .is_some_and(|chunk| !chunk.is_undefined() && !chunk.is_null())
+    {
+        stream_write(ctx, state, Rest(args))?;
     }
     if state.owns_descriptor
         && let Some(descriptor) = take_descriptor(state)

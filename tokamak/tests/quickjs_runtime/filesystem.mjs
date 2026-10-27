@@ -225,17 +225,24 @@ const fileWriteData = {
   upperCase: [() => "h\u00e9", "LATIN1"],
   buffer: [() => "hi", "buffer"],
   unknown: [() => "hi", "nope"],
+  numberEncoding: [() => "hi", 5],
+  emptyEncoding: [() => "hi", ""],
+  nullEncoding: [() => "hi", null],
+  viewUnknown: [() => Uint8Array.from([1, 2]), "nope"],
+  viewNumberEncoding: [() => Uint8Array.from([1, 2]), 5],
+  nullData: [() => null, undefined],
   ...Object.fromEntries(Object.entries(byteInputs).map(([name, input]) => [name, [input, undefined]])),
 };
 
-// A write stream's write of `data` in `encoding` to `path`, once the stream finishes.
-async function streamWrite(path, data, encoding) {
+// A write stream's write of `data` in `encoding` to `path`, by `write` or by
+// `end`, once the stream finishes.
+async function streamWrite(path, data, encoding, method = "write") {
   const stream = fs.createWriteStream(path);
   try {
     await new Promise((resolve, reject) => {
       stream.on("error", reject);
-      stream.write(data, encoding);
-      stream.end(resolve);
+      if (method === "end") stream.end(data, encoding, resolve);
+      else { stream.write(data, encoding); stream.end(resolve); }
     });
   } finally { stream.destroy(); }
 }
@@ -258,6 +265,7 @@ const fileWrites = {
   handleWriteFile: (path, data, encoding) => withHandle(path, "writeFile", data, encoding),
   handleAppendFile: (path, data, encoding) => withHandle(path, "appendFile", data, encoding),
   streamWrite,
+  streamEnd: (path, data, encoding) => streamWrite(path, data, encoding, "end"),
 };
 
 // The file each whole-file write leaves from each data and encoding, over a
@@ -687,6 +695,36 @@ async function symlinkContracts() {
   };
 }
 
+// What a one-byte write leaves in a four-byte file opened with each flag,
+// whole-file writes of one byte, and a write stream's one-byte write.
+async function openFlagContracts() {
+  const path = "/tmp/filesystem-open-flags.bin";
+  const reset = () => fs.writeFileSync(path, Uint8Array.from([9, 9, 9, 9]));
+  const { O_WRONLY, O_RDWR, O_CREAT, O_TRUNC } = fs.constants;
+  const flags = { w: "w", "w+": "w+", a: "a", "a+": "a+", "r+": "r+", truncating: O_WRONLY | O_CREAT | O_TRUNC, readTruncating: O_RDWR | O_TRUNC };
+  const outcomes = {};
+  for (const [name, flag] of Object.entries(flags)) {
+    reset();
+    const fd = fs.openSync(path, flag);
+    fs.writeSync(fd, Uint8Array.from([1]));
+    fs.closeSync(fd);
+    outcomes[name] = [...fs.readFileSync(path)];
+  }
+  reset();
+  fs.writeFileSync(path, Uint8Array.from([1]), { flag: "r+" });
+  outcomes.writeFileReadWrite = [...fs.readFileSync(path)];
+  reset();
+  const fd = fs.openSync(path, "r+");
+  fs.writeFileSync(fd, Uint8Array.from([1]));
+  fs.closeSync(fd);
+  outcomes.writeFileDescriptor = [...fs.readFileSync(path)];
+  reset();
+  const stream = fs.createWriteStream(path);
+  await new Promise(resolve => { stream.write(Uint8Array.from([1])); stream.end(resolve); });
+  outcomes.stream = [...fs.readFileSync(path)];
+  return outcomes;
+}
+
 // rename and copyFile onto existing names, and copyFile's modes.
 async function overwriteContracts() {
   const root = "/tmp/filesystem-overwrite";
@@ -965,6 +1003,7 @@ export async function filesystemContracts() {
   result.globDetails = await globDetailContracts();
   result.paths = pathContracts();
   result.symlinks = await symlinkContracts();
+  result.openFlags = await openFlagContracts();
   result.overwrite = await overwriteContracts();
   result.reads = await readContracts();
   result.encodings = await encodingContracts();

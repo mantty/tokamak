@@ -471,7 +471,6 @@ pub(super) fn open_options<'js>(
             append: flags & 1024 != 0,
             create: flags & 64 != 0,
             exclusive: flags & 128 != 0,
-            truncate: flags & 512 != 0,
             ..OpenOptions::default()
         });
     }
@@ -493,7 +492,6 @@ pub(super) fn open_options<'js>(
         append: first == 'a',
         create: matches!(first, 'w' | 'a') || value.contains('x'),
         exclusive: value.contains('x'),
-        truncate: first == 'w',
         ..OpenOptions::default()
     })
 }

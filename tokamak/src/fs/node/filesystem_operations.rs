@@ -136,7 +136,7 @@ pub(super) fn check_encoding<'js>(
 }
 
 /// Whether `encoding` is `"buffer"` or an encoding `Buffer.isEncoding` accepts.
-fn is_encoding<'js>(ctx: &Ctx<'js>, encoding: &Value<'js>) -> rquickjs::Result<bool> {
+pub(super) fn is_encoding<'js>(ctx: &Ctx<'js>, encoding: &Value<'js>) -> rquickjs::Result<bool> {
     if let Some(text) = encoding.as_string()
         && text.to_string()? == "buffer"
     {
@@ -352,16 +352,10 @@ pub(super) fn write_file_sync<'js>(
     let append = flag_string(flag.as_ref())?.is_some_and(|flag| flag.contains('a'));
     match path_or_fd(&ctx, input)? {
         PathOrFd::Path(path) => {
-            let open_options = if let Some(flag) = flag {
-                open_options(&ctx, Some(flag))?
-            } else {
-                OpenOptions {
-                    read: false,
-                    write: true,
-                    create: true,
-                    truncate: true,
-                    ..OpenOptions::default()
-                }
+            let flag = flag.map_or_else(|| "w".into_js(&ctx), Ok)?;
+            let open_options = OpenOptions {
+                truncate: !append,
+                ..open_options(&ctx, Some(flag))?
             };
             vfs_call(&ctx, |vfs| {
                 let descriptor = vfs.open(&path, open_options)?;
@@ -379,11 +373,34 @@ pub(super) fn append_file_sync<'js>(
     data: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<()> {
-    let bytes = attached_bytes(&ctx, &file_view(&ctx, data, options.0.as_ref())?)?;
-    match path_or_fd(&ctx, input)? {
-        PathOrFd::Path(path) => vfs_call(&ctx, |vfs| vfs.write_file(&path, &bytes, true)),
-        PathOrFd::Fd(descriptor) => write_descriptor(&ctx, descriptor, &bytes, true).map(|_| ()),
-    }
+    let options = append_options(&ctx, options.0)?;
+    write_file_sync(ctx, input, data, Opt(Some(options)))
+}
+
+/// The `writeFileSync` options an append of `options` writes with, as
+/// workerd's `appendFileSync` builds them: a string or `null` names the
+/// encoding, other values' `encoding` and `flag` default to `utf8` and `a`.
+fn append_options<'js>(
+    ctx: &Ctx<'js>,
+    options: Option<Value<'js>>,
+) -> rquickjs::Result<Value<'js>> {
+    let options = options.filter(|options| !options.is_undefined());
+    let named = options
+        .as_ref()
+        .filter(|options| options.is_string() || options.is_null());
+    let encoding = match named {
+        Some(encoding) => Some(encoding.clone()),
+        None => option_property(options.as_ref(), "encoding")?,
+    };
+    let flag = option_property(options.as_ref(), "flag")?;
+    let defined = |value: Option<Value<'js>>, default: &str| match value {
+        Some(value) if !value.is_undefined() => Ok(value),
+        _ => default.into_js(ctx),
+    };
+    let append = Object::new(ctx.clone())?;
+    append.set("encoding", defined(encoding, "utf8")?)?;
+    append.set("flag", defined(flag, "a")?)?;
+    Ok(append.into_value())
 }
 
 pub(super) fn access_sync<'js>(
