@@ -140,6 +140,8 @@ function headerEntries(values) {
 
 // The bytes a Blob holds.
 let blobBytes;
+// The type a Blob holds.
+let blobType;
 // Sets a Blob's type as given.
 let setBlobType;
 
@@ -176,6 +178,7 @@ export class Blob {
 
   static {
     blobBytes = blob => blob.#bytes;
+    blobType = blob => blob.#type;
     setBlobType = (blob, type) => { blob.#type = type; };
     hostObjectCopies.set("Blob", blob => new Blob([blob.#bytes], { type: blob.#type }));
   }
@@ -202,7 +205,9 @@ function formDataValue(value, filename) {
   if (value instanceof File && filename === undefined) return value;
   if (value instanceof Blob) {
     const name = filename === undefined ? (value instanceof File ? value.name : "blob") : usvString(filename);
-    return new File([value], name, { type: value.type });
+    const file = new File([value], name);
+    setBlobType(file, blobType(value));
+    return file;
   }
   return usvString(value);
 }
@@ -261,7 +266,7 @@ export class Body {
   async bytes() { return this.#consume(); }
   async blob() {
     const data = await this.#consume();
-    return new Blob([data], { type: this.headers.get("content-type") ?? "" });
+    return exactBlob(data, extractMimeType(this.headers.get("content-type") ?? ""));
   }
   async text() { return new TextDecoder().decode(await this.#consume()); }
   async json() { return JSON.parse(await this.text()); }
@@ -560,6 +565,102 @@ function mimeType(value) {
   return /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : "";
 }
 
+// workerd's token characters, which include a backslash.
+const MIME_TOKEN = /^[!#$%&'*+\\\-.^_`|~0-9A-Za-z]+$/;
+// workerd checks a parameter value's UTF-8 bytes, which every non-ASCII
+// character passes.
+const MIME_PARAMETER_VALUE = /^[^\x00-\x08\x0a-\x1f\x7f]*$/;
+
+// The MIME type in a Content-Type value, serialized, as workerd's
+// `MimeType::extract` and `toString` give it; "" when there is none.
+function extractMimeType(value) {
+  let found = null;
+  let rest = value;
+  while (rest !== "") {
+    const separator = mimeListSeparator(rest);
+    const parsed = parseMimeType(separator < 0 ? rest : rest.slice(0, separator));
+    if (parsed && parsed.essence !== "*/*") {
+      const charset = found?.essence === parsed.essence ? found.parameters.get("charset") : undefined;
+      if (charset !== undefined && !parsed.parameters.has("charset")) parsed.parameters.set("charset", charset);
+      found = parsed;
+    }
+    if (separator < 0) break;
+    rest = rest.slice(separator + 1);
+  }
+  if (found === null) return "";
+  let type = found.essence;
+  for (const [name, parameter] of found.parameters) {
+    const quoted = parameter === "" || !MIME_TOKEN.test(parameter);
+    type += (name === "boundary" ? "; " : ";") + name + "="
+      + (quoted ? '"' + parameter.replace(/["\\]/g, "\\$&") + '"' : parameter);
+  }
+  return type;
+}
+
+// The index of the first comma in `value` outside quotes and not after a
+// backslash, or -1.
+function mimeListSeparator(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === '"' && value[index - 1] !== "\\") {
+      index += 1;
+      while (index < value.length && (value[index] !== '"' || value[index - 1] === "\\")) index += 1;
+    } else if (value[index] === "," && value[index - 1] !== "\\") return index;
+  }
+  return -1;
+}
+
+// `{ essence, parameters }` for one MIME type, as workerd's
+// `MimeType::tryParse` reads it, or null.
+function parseMimeType(value) {
+  let rest = value.replace(/^[\t\n\r ]+/, "");
+  const slash = rest.indexOf("/");
+  const type = rest.slice(0, slash);
+  if (slash < 0 || !MIME_TOKEN.test(type)) return null;
+  rest = rest.slice(slash + 1);
+  const semicolon = rest.indexOf(";");
+  const subtype = (semicolon < 0 ? rest : rest.slice(0, semicolon)).replace(/[\t\n\r ]+$/, "");
+  if (!MIME_TOKEN.test(subtype)) return null;
+  const parameters = new Map();
+  const addParameter = (name, parameter) => {
+    const key = name.toLowerCase();
+    if (MIME_PARAMETER_VALUE.test(parameter) && !parameters.has(key)) parameters.set(key, parameter);
+  };
+  rest = semicolon < 0 ? "" : rest.slice(semicolon + 1);
+  while ((rest = rest.replace(/^[\t\n\r ]+/, "")) !== "") {
+    const delimiter = rest.search(/[;=]/);
+    if (delimiter < 0) break;
+    const name = rest.slice(0, delimiter);
+    const assigns = rest[delimiter] === "=";
+    rest = rest.slice(delimiter + 1);
+    if (!assigns) continue;
+    let end;
+    if (MIME_TOKEN.test(name) && rest.startsWith('"')) {
+      const [parameter, length] = mimeQuotedString(rest);
+      addParameter(name, parameter);
+      end = rest.indexOf(";", length);
+    } else {
+      end = rest.indexOf(";");
+      const parameter = (end < 0 ? rest : rest.slice(0, end)).replace(/[\t\n\r ]+$/, "");
+      if (MIME_TOKEN.test(name) && parameter !== "") addParameter(name, parameter);
+    }
+    if (end < 0) break;
+    rest = rest.slice(end + 1);
+  }
+  return { essence: type.toLowerCase() + "/" + subtype.toLowerCase(), parameters };
+}
+
+// The value of the quoted string that starts `value`, and the index after it.
+function mimeQuotedString(value) {
+  let result = "";
+  let index = 1;
+  while (index < value.length) {
+    const character = value[index++];
+    if (character === '"') break;
+    result += character === "\\" && index < value.length ? value[index++] : character;
+  }
+  return [result, index];
+}
+
 function parseUrlEncoded(value) {
   const form = new FormData();
   for (const pair of value.split("&")) {
@@ -611,15 +712,16 @@ function parseMultipart(data, contentType) {
     const headerStart = afterBoundary + 2;
     const headerEnd = indexOfBytes(data, new Uint8Array([13, 10, 13, 10]), headerStart);
     if (headerEnd < 0) throw new TypeError("Invalid multipart headers");
-    const headers = parseMultipartHeaders(ascii(data.subarray(headerStart, headerEnd)));
+    const headers = parseMultipartHeaders(new TextDecoder("utf-8", { ignoreBOM: true }).decode(data.subarray(headerStart, headerEnd)));
     const contentStart = headerEnd + 4;
     const nextBoundary = nextMultipartBoundary(data, delimiter, contentStart);
     if (nextBoundary < 0) throw new TypeError("Invalid multipart body");
     const value = data.subarray(contentStart, nextBoundary - 2);
     const disposition = multipartDisposition(headers["content-disposition"]);
     if (disposition.filename !== undefined) {
-      const type = headers["content-type"]?.split(";", 1)[0].trim() || "application/octet-stream";
-      form.append(disposition.name, new File([value], disposition.filename, { type }));
+      const file = new File([value], disposition.filename);
+      setBlobType(file, headers["content-type"] ?? "");
+      form.append(disposition.name, file);
     } else form.append(disposition.name, new TextDecoder().decode(value));
     position = nextBoundary;
   }
@@ -638,7 +740,8 @@ function parseMultipartHeaders(value) {
   for (const line of value.split("\r\n")) {
     const separator = line.indexOf(":");
     if (separator <= 0) throw new TypeError("Invalid multipart headers");
-    headers[line.slice(0, separator).trim().toLowerCase()] = line.slice(separator + 1).trim();
+    const name = line.slice(0, separator).replace(/^[\t ]+|[\t ]+$/g, "").toLowerCase();
+    headers[name] = line.slice(separator + 1).replace(/^[\t ]+|[\t ]+$/g, "");
   }
   return headers;
 }
@@ -687,12 +790,6 @@ function indexOfBytes(haystack, needle, start = 0) {
     if (matchesBytes(haystack, needle, index)) return index;
   }
   return -1;
-}
-
-function ascii(bytes) {
-  let value = "";
-  for (const byte of bytes) value += String.fromCharCode(byte);
-  return value;
 }
 
 function formDataBody(form) {
