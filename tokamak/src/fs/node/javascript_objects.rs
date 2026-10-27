@@ -163,15 +163,19 @@ pub(super) fn item_dirent<'js>(
 #[derive(Clone)]
 pub(super) struct FileHandleState {
     pub(super) descriptor: Arc<Mutex<Option<u32>>>,
-    pub(super) owns_descriptor: bool,
 }
 
+/// `FileHandle`, which extends `EventEmitter`.
 pub(super) fn file_handle_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
+    let event_emitter: Object =
+        crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:events/events.mjs")?
+            .get("EventEmitter")?;
     let function = Function::new(ctx.clone(), |ctx: Ctx<'_>| -> rquickjs::Result<()> {
         Err(Exception::throw_type(&ctx, "Illegal constructor"))
     })?;
     function.set_name("FileHandle")?;
-    let prototype = Object::new(ctx.clone())?;
+    function.set_prototype(Some(&event_emitter))?;
+    let prototype = Object::new_proto(ctx.clone(), Some(&event_emitter.get("prototype")?))?;
     function.set("prototype", prototype.clone())?;
     prototype.set("constructor", function.clone())?;
     ctx.globals()
@@ -186,11 +190,9 @@ pub(super) fn file_handle_object<'js>(
 ) -> rquickjs::Result<Object<'js>> {
     let prototype: Option<Object> = ctx.globals().get("__tokamak_node_fs_file_handle_proto")?;
     let object = Object::new_proto(ctx.clone(), prototype.as_ref())?;
-    install_event_emitter(ctx, &object)?;
     object.set("fd", descriptor)?;
     let state = FileHandleState {
         descriptor: Arc::new(Mutex::new(Some(descriptor))),
-        owns_descriptor: true,
     };
 
     let read_state = state.clone();
@@ -376,8 +378,12 @@ pub(super) fn file_handle_object<'js>(
             },
         )?,
     )?;
-    object.set("createReadStream", file_handle_stream(ctx, &state, true)?)?;
-    object.set("createWriteStream", file_handle_stream(ctx, &state, false)?)?;
+    let streams = streams_module(ctx)?;
+    let stream_methods: Object = streams.get("fileHandleMethods")?;
+    for name in ["createReadStream", "createWriteStream"] {
+        object.set(name, stream_methods.get::<_, Function>(name)?)?;
+    }
+    object.set(streams.get::<_, Value>("kFileHandle")?, true)?;
     let web_stream_state = state;
     object.set(
         "readableWebStream",
@@ -391,19 +397,11 @@ pub(super) fn file_handle_object<'js>(
     Ok(object)
 }
 
-fn file_handle_stream<'js>(
-    ctx: &Ctx<'js>,
-    state: &FileHandleState,
-    readable: bool,
-) -> rquickjs::Result<Function<'js>> {
-    let state = state.clone();
-    Function::new(
-        ctx.clone(),
-        move |ctx: Ctx<'js>, options: Opt<Value<'js>>| {
-            let descriptor = open_descriptor(&ctx, &state)?;
-            create_stream(&ctx, readable, None, Some(descriptor), options.0)
-        },
-    )
+/// The namespace of the module of workerd's `ReadStream` and `WriteStream`.
+pub(super) fn streams_module<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Object<'js>> {
+    cached(ctx, "__tokamak_node_fs_streams", |ctx| {
+        crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:fs/node/streams.mjs")
+    })
 }
 
 pub(super) fn handle_descriptor(state: &FileHandleState) -> Option<u32> {
@@ -445,54 +443,6 @@ pub(super) fn close_handle<'js>(
         object.set("fd", Value::new_undefined(ctx.clone()))?;
         if let Ok(Some(emit)) = object.get::<_, Option<Function>>("emit") {
             emit.call::<_, bool>((This(object.clone()), "close"))?;
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn install_event_emitter<'js>(
-    ctx: &Ctx<'js>,
-    object: &Object<'js>,
-) -> rquickjs::Result<()> {
-    let process: Option<Object> = ctx.globals().get("process")?;
-    let Some(process) = process else {
-        return Ok(());
-    };
-    let Ok(get_builtin) = process.get::<_, Function>("getBuiltinModule") else {
-        return Ok(());
-    };
-    let Ok(Some(module)) = get_builtin.call::<_, Option<Object>>(("node:events",)) else {
-        return Ok(());
-    };
-    let Ok(Some(constructor)) = module.get::<_, Option<Constructor>>("EventEmitter") else {
-        return Ok(());
-    };
-    let Ok(Some(prototype)) = constructor.get::<_, Option<Object>>("prototype") else {
-        return Ok(());
-    };
-    constructor
-        .get::<_, Function>("init")?
-        .call::<_, ()>((This(object.clone()),))?;
-    for name in [
-        "on",
-        "addEventListener",
-        "addListener",
-        "once",
-        "off",
-        "removeListener",
-        "removeEventListener",
-        "removeAllListeners",
-        "emit",
-        "listeners",
-        "listenerCount",
-        "eventNames",
-        "setMaxListeners",
-        "getMaxListeners",
-        "prependListener",
-        "prependOnceListener",
-    ] {
-        if let Some(method) = prototype.get::<_, Option<Function>>(name)? {
-            object.set(name, method)?;
         }
     }
     Ok(())
@@ -549,243 +499,6 @@ fn handle_write_promise<'js>(
         transfer_value(ctx, "bytesWritten", count as usize, data_name, write.data)
     });
     promise(ctx.clone(), written)
-}
-
-/// A `createReadStream` or `createWriteStream` export.
-pub(super) fn stream_function<'js>(
-    ctx: &Ctx<'js>,
-    readable: bool,
-) -> rquickjs::Result<Function<'js>> {
-    Function::new(
-        ctx.clone(),
-        move |ctx: Ctx<'js>, input: Value<'js>, options: Opt<Value<'js>>| {
-            create_stream(&ctx, readable, Some(input), None, options.0)
-        },
-    )
-}
-
-pub(super) fn create_stream<'js>(
-    ctx: &Ctx<'js>,
-    readable: bool,
-    input: Option<Value<'js>>,
-    descriptor: Option<u32>,
-    options: Option<Value<'js>>,
-) -> rquickjs::Result<Object<'js>> {
-    if readable {
-        create_read_stream(ctx, input, descriptor, options)
-    } else {
-        create_write_stream(ctx, input, descriptor, options)
-    }
-}
-
-fn create_read_stream<'js>(
-    ctx: &Ctx<'js>,
-    input: Option<Value<'js>>,
-    descriptor: Option<u32>,
-    options: Option<Value<'js>>,
-) -> rquickjs::Result<Object<'js>> {
-    let (path, descriptor, owns_descriptor) =
-        stream_descriptor(ctx, input, descriptor, options.as_ref(), None)?;
-    let bytes = read_descriptor(ctx, descriptor)?;
-    let stream = stream_object(ctx, "Readable")?;
-    stream.set("path", path.unwrap_or_default())?;
-    stream.set("fd", descriptor)?;
-    stream.set("bytesRead", bytes.len())?;
-    let push: Function = ctx.eval("(stream, chunk) => stream.push(chunk)")?;
-    push.call::<_, ()>((
-        stream.clone(),
-        TypedArray::<u8>::new_copy(ctx.clone(), &bytes)?,
-    ))?;
-    push.call::<_, ()>((stream.clone(), Value::new_null(ctx.clone())))?;
-    if owns_descriptor {
-        close_descriptor(ctx, descriptor)?;
-        stream.set("fd", Value::new_null(ctx.clone()))?;
-    }
-    Ok(stream)
-}
-
-fn create_write_stream<'js>(
-    ctx: &Ctx<'js>,
-    input: Option<Value<'js>>,
-    descriptor: Option<u32>,
-    options: Option<Value<'js>>,
-) -> rquickjs::Result<Object<'js>> {
-    let (path, descriptor, owns_descriptor) =
-        stream_descriptor(ctx, input, descriptor, options.as_ref(), Some("w"))?;
-    let stream = stream_object(ctx, "Writable")?;
-    stream.set("path", path.unwrap_or_default())?;
-    stream.set("fd", descriptor)?;
-    let state = FileHandleState {
-        descriptor: Arc::new(Mutex::new(Some(descriptor))),
-        owns_descriptor,
-    };
-    let write_state = state.clone();
-    stream.set(
-        "write",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
-            stream_write(&ctx, &write_state, args)
-        })?,
-    )?;
-    let end_state = state.clone();
-    stream.set(
-        "end",
-        Function::new(
-            ctx.clone(),
-            move |ctx: Ctx<'js>, this: This<Object<'js>>, args: Rest<Value<'js>>| {
-                stream_end(&ctx, &end_state, this.0, args)
-            },
-        )?,
-    )?;
-    let destroy_state = state;
-    stream.set(
-        "destroy",
-        Function::new(
-            ctx.clone(),
-            move |ctx: Ctx<'js>, this: This<Object<'js>>, _error: Opt<Value<'js>>| {
-                if destroy_state.owns_descriptor
-                    && let Some(descriptor) = take_descriptor(&destroy_state)
-                {
-                    close_descriptor(&ctx, descriptor)?;
-                }
-                Ok::<Object<'js>, rquickjs::Error>(this.0)
-            },
-        )?,
-    )?;
-    Ok(stream)
-}
-
-/// The stream's path and descriptor, and whether the stream opened that
-/// descriptor itself, with `default_flags` when `options` names none.
-fn stream_descriptor<'js>(
-    ctx: &Ctx<'js>,
-    input: Option<Value<'js>>,
-    descriptor: Option<u32>,
-    options: Option<&Value<'js>>,
-    default_flags: Option<&str>,
-) -> rquickjs::Result<(Option<String>, u32, bool)> {
-    let path = input.map(|value| path(ctx, value)).transpose()?;
-    let option_descriptor = option_descriptor(ctx, options)?;
-    if let Some(descriptor) = descriptor.or(option_descriptor) {
-        return Ok((path, descriptor, false));
-    }
-    let open_path = path
-        .as_deref()
-        .ok_or_else(|| Exception::throw_type(ctx, "stream path is required"))?;
-    let flags = option_property(options, "flags")?
-        .or_else(|| default_flags.and_then(|flags| flags.into_js(ctx).ok()));
-    let open_options = open_options(ctx, flags)?;
-    let descriptor = vfs_call(ctx, "open", |vfs| vfs.open(open_path, open_options))?;
-    Ok((path, descriptor, true))
-}
-
-pub(super) fn option_descriptor<'js>(
-    ctx: &Ctx<'js>,
-    options: Option<&Value<'js>>,
-) -> rquickjs::Result<Option<u32>> {
-    let Some(value) = defined(option_property(options, "fd")?) else {
-        return Ok(None);
-    };
-    if let Some(object) = value.as_object() {
-        return object
-            .get::<_, Option<Value>>("fd")?
-            .map(|value| descriptor_value(ctx, value))
-            .transpose();
-    }
-    descriptor_value(ctx, value).map(Some)
-}
-
-pub(super) fn stream_object<'js>(ctx: &Ctx<'js>, kind: &str) -> rquickjs::Result<Object<'js>> {
-    let process: Option<Object> = ctx.globals().get("process")?;
-    if let Some(process) = process
-        && let Ok(get_builtin) = process.get::<_, Function>("getBuiltinModule")
-        && let Ok(module) = get_builtin.call::<_, Option<Object>>(("node:stream",))
-        && let Some(module) = module
-        && let Ok(constructor) = module.get::<_, Constructor>(kind)
-    {
-        return constructor.construct(());
-    }
-    Object::new(ctx.clone())
-}
-
-pub(super) fn stream_write<'js>(
-    ctx: &Ctx<'js>,
-    state: &FileHandleState,
-    args: Rest<Value<'js>>,
-) -> rquickjs::Result<bool> {
-    let mut args = args.0;
-    if args.is_empty() {
-        return Err(Exception::throw_type(ctx, "chunk is required"));
-    }
-    let value = args.remove(0);
-    if value.is_null() {
-        return Err(throw_type_error(
-            ctx,
-            "ERR_STREAM_NULL_VALUES",
-            "May not write null values to stream",
-        ));
-    }
-    let callback = pop_callback(&mut args);
-    let data = chunk_bytes(ctx, value, stream_encoding(ctx, args.first())?)?;
-    let descriptor = open_descriptor(ctx, state)?;
-    let result = vfs_call(ctx, "write", |vfs| vfs.write(descriptor, &data, None));
-    let Some(callback) = callback else {
-        return Ok(true);
-    };
-    match result {
-        Ok(_) => callback.call::<_, ()>((Value::new_null(ctx.clone()),))?,
-        Err(_error) if ctx.has_exception() => callback.call::<_, ()>((ctx.catch(),))?,
-        Err(error) => return Err(error),
-    }
-    Ok(true)
-}
-
-/// The encoding `WriteStream.write` encodes a string chunk in, as Node's
-/// `Writable.write` reads its `encoding` argument: a falsy one means utf8,
-/// and any other must name an encoding.
-fn stream_encoding<'js>(
-    ctx: &Ctx<'js>,
-    encoding: Option<&Value<'js>>,
-) -> rquickjs::Result<Value<'js>> {
-    let Some(encoding) = encoding else {
-        return Ok(Value::new_undefined(ctx.clone()));
-    };
-    if !Coerced::<bool>::from_js(ctx, encoding.clone())?.0 {
-        return Ok(Value::new_undefined(ctx.clone()));
-    }
-    if !is_encoding(ctx, encoding)? {
-        let name = Coerced::<String>::from_js(ctx, encoding.clone())?.0;
-        return Err(throw_type_error(
-            ctx,
-            "ERR_UNKNOWN_ENCODING",
-            &format!("Unknown encoding: {name}"),
-        ));
-    }
-    Ok(encoding.clone())
-}
-
-pub(super) fn stream_end<'js>(
-    ctx: &Ctx<'js>,
-    state: &FileHandleState,
-    stream: Object<'js>,
-    args: Rest<Value<'js>>,
-) -> rquickjs::Result<Object<'js>> {
-    let mut args = args.0;
-    let callback = pop_callback(&mut args);
-    if args
-        .first()
-        .is_some_and(|chunk| !chunk.is_undefined() && !chunk.is_null())
-    {
-        stream_write(ctx, state, Rest(args))?;
-    }
-    if state.owns_descriptor
-        && let Some(descriptor) = take_descriptor(state)
-    {
-        close_descriptor(ctx, descriptor)?;
-    }
-    if let Some(callback) = callback {
-        callback.call::<_, ()>((Value::new_null(ctx.clone()),))?;
-    }
-    Ok(stream)
 }
 
 pub(super) fn readable_web_stream<'js>(
@@ -966,12 +679,6 @@ pub(super) fn statfs_object<'js>(ctx: &Ctx<'js>, bigint: bool) -> rquickjs::Resu
         object.set(name, zero.clone())?;
     }
     Ok(object)
-}
-
-/// Removes a trailing callback argument, leaving other trailing values in place.
-fn pop_callback<'js>(args: &mut Vec<Value<'js>>) -> Option<Function<'js>> {
-    args.pop_if(|value| value.is_function())
-        .and_then(Value::into_function)
 }
 
 pub(super) fn blob_object<'js>(

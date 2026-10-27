@@ -163,10 +163,15 @@ pub(crate) fn builtin_namespace<'js>(
     let Some(target) = public_module(name) else {
         return Ok(None);
     };
+    module_namespace(ctx, target).map(Some)
+}
+
+/// The namespace of the runtime module `target`, evaluated now.
+pub(crate) fn module_namespace<'js>(ctx: Ctx<'js>, target: &str) -> rquickjs::Result<Object<'js>> {
     // Evaluating a module that re-exports the namespace reaches it synchronously.
     let source = format!("export * as namespace from {target:?};");
     let module = Module::declare(ctx, format!("{target}#namespace"), source)?;
     let (module, evaluation) = module.eval()?;
     evaluation.result::<()>().transpose()?;
-    module.get("namespace").map(Some)
+    module.get("namespace")
 }

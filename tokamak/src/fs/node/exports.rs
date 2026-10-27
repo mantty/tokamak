@@ -328,18 +328,16 @@ fn export_callback<'js>(module: &ModuleExports<'_, 'js>) -> rquickjs::Result<()>
 }
 
 fn export_streams(module: &ModuleExports<'_, '_>) -> rquickjs::Result<()> {
-    let read_stream = stream_type_constructor(module.ctx, "Readable")?;
-    let write_stream = stream_type_constructor(module.ctx, "Writable")?;
-    for (name, value) in [
-        ("ReadStream", read_stream.clone()),
-        ("FileReadStream", read_stream),
-        ("WriteStream", write_stream.clone()),
-        ("FileWriteStream", write_stream),
+    let streams = streams_module(module.ctx)?;
+    for (name, export) in [
+        ("ReadStream", "ReadStream"),
+        ("FileReadStream", "ReadStream"),
+        ("WriteStream", "WriteStream"),
+        ("FileWriteStream", "WriteStream"),
+        ("createReadStream", "createReadStream"),
+        ("createWriteStream", "createWriteStream"),
     ] {
-        module.value(name, value.into_value())?;
-    }
-    for (name, readable) in [("createReadStream", true), ("createWriteStream", false)] {
-        module.value(name, stream_function(module.ctx, readable)?.into_value())?;
+        module.value(name, streams.get(export)?)?;
     }
     module.function("unwatchFile", unsupported_watch)?;
     module.function("watch", unsupported_watch)?;
@@ -351,30 +349,6 @@ fn unsupported_watch(ctx: Ctx<'_>) -> rquickjs::Result<()> {
         &ctx,
         "filesystem watching is not available in the Tokamak runtime",
     ))
-}
-
-fn stream_type_constructor<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Constructor<'js>> {
-    let readable = name == "Readable";
-    let prototype_name = if readable {
-        "__tokamak_node_fs_read_stream_proto"
-    } else {
-        "__tokamak_node_fs_write_stream_proto"
-    };
-    let prototype = Object::new(ctx.clone())?;
-    ctx.globals().set(prototype_name, prototype.clone())?;
-    let prototype_name = prototype_name.to_owned();
-    Constructor::new_prototype(
-        ctx,
-        prototype,
-        move |ctx: Ctx<'js>, input: Opt<Value<'js>>, options: Opt<Value<'js>>| {
-            let stream = create_stream(&ctx, readable, input.0, None, options.0)?;
-            if let Some(base_prototype) = stream.get_prototype() {
-                let prototype: Object = ctx.globals().get(&prototype_name)?;
-                prototype.set_prototype(Some(&base_prototype))?;
-            }
-            Ok::<Object<'js>, rquickjs::Error>(stream)
-        },
-    )
 }
 
 fn export_promises(module: &ModuleExports<'_, '_>) -> rquickjs::Result<()> {
