@@ -3,7 +3,7 @@ import {
   r2ObjectWriter, r2PartWriter, r2Put, r2Read, r2UploadPart, r2Write,
 } from "tokamak:storage";
 import { bufferSourceBytes, sharedBufferSourceBytes } from "../globals/conversions.mjs";
-import { Blob, Headers, bytes, consumeStream } from "../network/fetch.mjs";
+import { Blob, Headers, bytes, consumeStream, exactBlob } from "../network/fetch.mjs";
 import { TextDecoder } from "../streams/text.mjs";
 import { ReadableStream, isDisturbed, nativeReadableStream, setStreamLength, streamLength } from "../streams/web.mjs";
 
@@ -422,7 +422,7 @@ class GetResult extends HeadResult {
   async bytes() { return this.#read(); }
   async text() { return new TextDecoder().decode(await this.#read()); }
   async json() { return JSON.parse(await this.text()); }
-  async blob() { return new Blob([await this.#read()], { type: this.httpMetadata.contentType ?? "" }); }
+  async blob() { return exactBlob(await this.#read(), this.httpMetadata.contentType ?? ""); }
 
   async #read() {
     if (isDisturbed(this.#body) || this.#body.locked) throw new TypeError(BODY_USED);

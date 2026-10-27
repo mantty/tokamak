@@ -328,6 +328,18 @@ async function r2Contracts(r2) {
       stream: await new Response((await r2.get("json")).body).text(),
     };
   });
+  await record("blobTypes", async () => {
+    const types = {};
+    for (const [name, contentType] of [["mixedCase", "Text/Plain; Charset=UTF-8"], ["nonAscii", "text/pl\u00e4in"], ["none", undefined]]) {
+      try {
+        await r2.put(`typed-${name}`, "x", contentType === undefined ? {} : { httpMetadata: { contentType } });
+        types[name] = (await (await r2.get(`typed-${name}`)).blob()).type;
+      } catch (error) {
+        types[name] = error.name;
+      }
+    }
+    return types;
+  });
   await record("bodyUsed", async () => {
     const object = await r2.get("a");
     const before = object.bodyUsed;

@@ -133,6 +133,44 @@ async function tracingContracts(tracing) {
   };
 }
 
+// The type of each Blob and File the runtime makes from a type it was given:
+// a body's, a form field's, and a clone's. A body's type is parsed as a MIME
+// type, which the later cases cover.
+async function blobTypeContracts() {
+  const result = {};
+  for (const [name, type] of [
+    ["mixedCase", "Text/Plain; Charset=UTF-8"],
+    ["nonAscii", "text/pl\u00e4in"],
+    ["none", undefined],
+    ["list", "text/html;charset=gbk, text/html, */*"],
+    ["parameters", 'text/plain; a="q\\"x"; A=2; =3; b; c=\u00e4; d=y z; e=""; f="g'],
+    ["spacing", "text/plain ;x =1; y= 2 ;z=3"],
+    ["boundary", "multipart/form-data;boundary=x"],
+    ["invalid", "text/"],
+  ]) {
+    const headers = type === undefined ? {} : { "content-type": type };
+    const response = await new Response("blob", { headers }).blob();
+    const request = await new Request("https://example.test/", { method: "POST", body: "blob", headers }).blob();
+    const form = new FormData();
+    form.append("file", response);
+    const part = type === undefined ? "" : `Content-Type: ${type}\r\n`;
+    const multipart = await new Response(`--b\r\nContent-Disposition: form-data; name="file"; filename="\u00e4.txt"\r\n${part}\r\nx\r\n--b--\r\n`, {
+      headers: { "content-type": "multipart/form-data; boundary=b" },
+    }).formData();
+    const file = multipart.get("file");
+    let cloned;
+    try { cloned = structuredClone(response).type; } catch (error) { cloned = error.name; }
+    result[name] = {
+      response: response.type,
+      request: request.type,
+      appended: form.get("file").type,
+      multipart: { type: file.type, name: file.name },
+      cloned,
+    };
+  }
+  return result;
+}
+
 export async function run(handlerEnv, ctx, constructors) {
   const output = {};
   const consoleBeforeNodeConsole = Object.getOwnPropertyNames(console).sort();
@@ -1521,6 +1559,7 @@ export async function run(handlerEnv, ctx, constructors) {
       responseJson: Response.json({ value: 42 }).headers.get("content-type"),
       responseBytes: [...new Uint8Array(await new Response("bytes").bytes())],
       responseBlob: await new Response("blob", { headers: { "content-type": "text/plain" } }).blob().then(async value => ({ type: value.type, text: await value.text() })),
+      blobTypes: await blobTypeContracts(),
     },
     url: {
       static: [typeof URL.canParse, typeof URL.parse, typeof URL.createObjectURL, typeof URL.revokeObjectURL],
@@ -2465,6 +2504,11 @@ export async function run(handlerEnv, ctx, constructors) {
       }),
       missingBoundary: await asyncResult(async () => {
         const request = new Request("https://example.test", { method: "POST", body: "body", headers: { "content-type": "multipart/form-data" } });
+        return [...await request.formData()];
+      }),
+      byteOrderMarkMultipart: await asyncResult(async () => {
+        const body = "--b\r\n\ufeffContent-Disposition: form-data; name=\"field\"\r\n\r\nvalue\r\n--b--\r\n";
+        const request = new Request("https://example.test", { method: "POST", body, headers: { "content-type": "multipart/form-data; boundary=b" } });
         return [...await request.formData()];
       }),
     },
