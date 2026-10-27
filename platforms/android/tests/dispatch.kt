@@ -40,27 +40,27 @@ import org.junit.Test
 
 /** Runs the Worker's requests through the fixture plugin's generated dispatch. */
 class DispatchTest {
-    private val replies = mutableMapOf<Int, MutableList<TokamakPluginResult>>()
+    private val replies = mutableMapOf<Long, MutableList<TokamakPluginResult>>()
     private val pulled = CountDownLatch(1)
-    private val requests = TokamakPluginRequests<Int>(
+    private val requests = TokamakPluginRequests(
         mapOf("example" to TokamakExamplePluginDispatch(Host())),
         pull = { pulled.countDown() },
     ) { id, result -> synchronized(replies) { replies.getOrPut(id) { mutableListOf() } += result } }
-    private var next = 0
+    private var next = 0L
 
-    private fun request(method: String, payload: String, kind: TokamakPluginRequest = TokamakPluginRequest.CALL): Int {
+    private fun request(method: String, payload: String, kind: TokamakPluginRequest = TokamakPluginRequest.CALL): Long {
         requests.run(++next, kind, "example", method, payload.toByteArray())
         return next
     }
 
     /** The first [count] replies to [id], once they arrive. */
-    private fun wait(id: Int, count: Int = 1): List<TokamakPluginResult> {
+    private fun wait(id: Long, count: Int = 1): List<TokamakPluginResult> {
         val deadline = System.nanoTime() + 2_000_000_000
         while (synchronized(replies) { replies[id].orEmpty().size } < count && System.nanoTime() < deadline) Thread.sleep(1)
         return synchronized(replies) { replies[id].orEmpty().toList() }.also { check(it.size >= count) { "request $id has ${it.size} replies" } }
     }
 
-    private fun reply(id: Int) = wait(id).last()
+    private fun reply(id: Long) = wait(id).last()
 
     private fun TokamakPluginResult.text() = payload.toString(Charsets.UTF_8)
 

@@ -52,7 +52,7 @@ enum PluginRequestsTests {
     drain()
     precondition(received.map(\.0) == [2, 4, 4])
     precondition(received[1].1.done == false)
-    requests.cancelAll()
+    requests.cancel(4)
     plugin.replies["stream"]?(.success("late"))
     drain()
     precondition(received.count == 3)
@@ -103,13 +103,8 @@ enum PluginRequestsTests {
       calls.run(
         10, subscribe ? .subscribe : .call, plugin: "gated", method: "wait", payload: Data())
       precondition(gated.entered.wait(timeout: .now() + 2) == .success)
-      if subscribe {
-        calls.cancelAll()
-        calls.cancelAll()
-      } else {
-        calls.cancel(10)
-        calls.cancel(10)
-      }
+      calls.cancel(10)
+      calls.cancel(10)
       gated.release.signal()
       precondition(gated.cancelled.wait(timeout: .now() + 2) == .success)
       gated.queue.sync {}
@@ -286,10 +281,10 @@ private final class TestPlugin: TokamakPlugin {
     return { self.cancelled.append(method) }
   }
 
-  func subscribe(
-    method: String, arguments: Any, reply: @escaping TokamakPluginReply
-  ) throws(TokamakPluginError) -> (() -> Void) {
-    replies[method] = reply
+  func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
+    throws(TokamakPluginError) -> (() -> Void)
+  {
+    replies[method] = { reply(TokamakPluginResult($0.flatMap(encodePluginValue), done: false)) }
     return { self.cancelled.append(method) }
   }
 }
@@ -334,7 +329,7 @@ private final class Producer: TokamakPlugin {
   let frame = NSData(bytes: [0, 255, 7] as [UInt8], length: 3)
   private let host: TokamakHost
   init(host: TokamakHost) { self.host = host }
-  func subscribe(method: String, arguments: Any, reply: @escaping TokamakPluginReply)
+  func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
     throws(TokamakPluginError) -> (() -> Void)
   {
     host.resources.retain(method == "frame" ? frame : NSObject(), reply: reply)
@@ -362,8 +357,9 @@ private final class BodyReader: TokamakPlugin {
   private let queue = DispatchQueue(label: "test.reader")
   init(host: TokamakHost) {}
   func executor(for method: String) -> DispatchQueue { queue }
-  func call(
-    method: String, arguments: Any, body: TokamakPluginBody, reply: @escaping TokamakPluginReply
+  func callBytes(
+    method: String, payload: Data, body: TokamakPluginBody,
+    reply: @escaping TokamakPluginBytesReply
   ) -> (() -> Void)? {
     var sum = 0
     func next() {
@@ -373,8 +369,8 @@ private final class BodyReader: TokamakPlugin {
         case .success(let bytes?):
           sum += bytes.reduce(0) { $0 + Int($1) }
           next()
-        case .success(nil): reply(.success(sum))
-        case .failure(let error): reply(.failure(error))
+        case .success(nil): reply(TokamakPluginResult(encodePluginValue(sum), done: true))
+        case .failure(let error): reply(TokamakPluginResult(.failure(error), done: true))
         }
       }
     }

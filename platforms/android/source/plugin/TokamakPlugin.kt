@@ -119,7 +119,7 @@ private val uiExecutor by lazy {
 }
 
 /**
- * A native plugin, created once per process with the app's [TokamakHost]. A [call] or [subscribe]
+ * A native plugin, created once per process with the app's [TokamakHost]. A call or subscription
  * that throws replies with the exception.
  */
 interface TokamakPlugin {
@@ -136,34 +136,15 @@ interface TokamakPlugin {
         payload: ByteArray,
         body: TokamakPluginBody,
         reply: TokamakPluginBytesReply,
-    ): (() -> Unit)? =
-        call(method, decodePluginValue(payload), body) {
-            reply(TokamakPluginResult.encoded(it.mapCatching(::encodePluginValue), true))
-        }
+    ): (() -> Unit)? = throw TokamakPluginError.notSupported("$id.$method does not take a body")
 
     fun subscribeBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply): () -> Unit =
-        subscribe(method, decodePluginValue(payload)) {
-            reply(TokamakPluginResult.encoded(it.mapCatching(::encodePluginValue), false))
-        }
+        throw TokamakPluginError.notSupported("$id.$method is not supported")
 
     /** Returns cancellation for pending work when the platform supports it. */
     fun call(method: String, arguments: Any?, reply: TokamakPluginReply): (() -> Unit)? {
         reply(Result.failure(TokamakPluginError.notSupported("$id.$method is not supported")))
         return null
-    }
-
-    /** A call whose [body] of bytes the Worker streams, which the plugin reads one chunk at a time. */
-    fun call(method: String, arguments: Any?, body: TokamakPluginBody, reply: TokamakPluginReply): (() -> Unit)? {
-        reply(Result.failure(TokamakPluginError.notSupported("$id.$method does not take a body")))
-        return null
-    }
-
-    fun subscribe(
-        method: String,
-        arguments: Any?,
-        reply: TokamakPluginReply,
-    ): () -> Unit {
-        throw TokamakPluginError.notSupported("$id.$method is not supported")
     }
 
     /** Receives the intent that started the app's activity, and each intent it receives later. */

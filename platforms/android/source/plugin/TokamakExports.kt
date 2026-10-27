@@ -259,7 +259,7 @@ abstract class TokamakDispatch<P : TokamakPlugin>(val plugin: P, protected val h
 
     /** Retains [value], replying with its ID, until the subscription ends. */
     protected fun retain(reply: TokamakPluginBytesReply, value: Any): () -> Unit =
-        host.resources.retain(value) { reply(TokamakPluginResult.encoded(it.mapCatching(::encodePluginValue), false)) }
+        host.resources.retain(value, reply)
 
     /** Retains what the suspending [block] returns, replying with its ID, until the subscription ends. */
     protected fun retain(method: String, reply: TokamakPluginBytesReply, block: suspend () -> Any): () -> Unit {

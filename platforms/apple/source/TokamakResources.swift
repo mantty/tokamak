@@ -8,10 +8,10 @@ final class TokamakResources {
 
   /// Keeps `object`, replies with its ID, and returns the release to return
   /// from `subscribe`.
-  func retain(_ object: Any, reply: TokamakPluginReply) -> () -> Void {
+  func retain(_ object: Any, reply: TokamakPluginBytesReply) -> () -> Void {
     let id = UUID().uuidString
     lock.withLock { objects[id] = object }
-    reply(.success(id))
+    reply(TokamakPluginResult(encodePluginValue(id), done: false))
     return { [self] in drop(lock.withLock { objects.removeValue(forKey: id) }) }
   }
 

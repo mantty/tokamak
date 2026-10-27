@@ -7,10 +7,10 @@ class TokamakResources {
     private val objects = HashMap<String, Any>()
 
     /** Keeps [value], replies with its ID, and returns the release to return from `subscribe`. */
-    fun retain(value: Any, reply: TokamakPluginReply): () -> Unit {
+    fun retain(value: Any, reply: TokamakPluginBytesReply): () -> Unit {
         val id = UUID.randomUUID().toString()
         synchronized(this) { objects[id] = value }
-        reply(Result.success(id))
+        reply(TokamakPluginResult(encodePluginValue(id), false, false))
         return { synchronized(this) { objects.remove(id) } }
     }
 
