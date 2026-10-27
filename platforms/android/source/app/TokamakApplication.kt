@@ -58,7 +58,7 @@ class TokamakApplication : Application(), TokamakPlugins {
     /** The running runtime, started on first use. Blocks while it starts. */
     internal val runtime: TokamakRuntime by started
 
-    private lateinit var workerRequests: TokamakPluginRequests<Long>
+    private lateinit var workerRequests: TokamakPluginRequests
 
     /** The plugins as the runtime calls them, on its own threads. */
     private val workerPlugins =

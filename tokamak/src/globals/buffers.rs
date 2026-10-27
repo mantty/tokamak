@@ -26,8 +26,20 @@ unsafe extern "C" {
     ) -> qjs::JSValue;
 }
 
-#[allow(clippy::needless_pass_by_value)]
-pub(super) fn view<'js>(ctx: Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Object<'js>> {
+/// A typed array's or `DataView`'s buffer, byte offset and byte length as the
+/// engine holds them, which properties a Worker defines cannot shadow, and
+/// whether its length tracks a resizable buffer.
+pub(crate) struct ViewParts<'js> {
+    pub(crate) buffer: Value<'js>,
+    pub(crate) offset: usize,
+    pub(crate) length: usize,
+    tracking: bool,
+}
+
+pub(crate) fn view_parts<'js>(
+    ctx: &Ctx<'js>,
+    value: &Value<'js>,
+) -> rquickjs::Result<ViewParts<'js>> {
     let (mut offset, mut length, mut tracking) = (0, 0, false);
     // SAFETY: The engine validates the view and returns an owned buffer value.
     // Metadata outputs point to live variables with C size_t/bool layouts.
@@ -43,11 +55,22 @@ pub(super) fn view<'js>(ctx: Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Ob
             ),
         )
     })?;
+    Ok(ViewParts {
+        buffer,
+        offset,
+        length,
+        tracking,
+    })
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn view<'js>(ctx: Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Object<'js>> {
+    let parts = view_parts(&ctx, &value)?;
     let info = Object::new(ctx)?;
-    info.set("buffer", buffer)?;
-    info.set("offset", offset)?;
-    info.set("length", length)?;
-    info.set("tracking", tracking)?;
+    info.set("buffer", parts.buffer)?;
+    info.set("offset", parts.offset)?;
+    info.set("length", parts.length)?;
+    info.set("tracking", parts.tracking)?;
     Ok(info)
 }
 

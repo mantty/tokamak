@@ -411,9 +411,7 @@ func tokamakResource(
   _ resources: TokamakResources, _ reply: @escaping TokamakPluginBytesReply,
   _ method: () throws -> Any
 ) throws(TokamakPluginError) -> () -> Void {
-  resources.retain(try catching(method)) {
-    reply(TokamakPluginResult($0.flatMap(encodePluginValue), done: false))
-  }
+  resources.retain(try catching(method), reply: reply)
 }
 
 func tokamakResource(
@@ -424,10 +422,7 @@ func tokamakResource(
   let cancel = task {
     do {
       let object = try await method()
-      retained.hold(
-        resources.retain(object) {
-          reply(TokamakPluginResult($0.flatMap(encodePluginValue), done: false))
-        })
+      retained.hold(resources.retain(object, reply: reply))
     } catch {
       reply(TokamakPluginResult(.failure(TokamakPluginError(error)), done: true))
     }

@@ -21,7 +21,7 @@ fun main() {
             return { check(Thread.currentThread().name != "main"); cancelled.countDown() }
         }
     }
-    val requests = TokamakPluginRequests<Long>(mapOf("test" to plugin)) { _, result ->
+    val requests = TokamakPluginRequests(mapOf("test" to plugin), pull = {}) { _, result ->
         check(Thread.currentThread().name != "main")
         check(result.payload.contentEquals(byteArrayOf(0, -1)))
         replied.countDown()
@@ -30,7 +30,8 @@ fun main() {
     check(replied.await(2, TimeUnit.SECONDS))
     requests.run(2, TokamakPluginRequest.SUBSCRIBE, "test", "once", byteArrayOf(0, -1))
     check(cancelled.await(2, TimeUnit.SECONDS))
-    requests.cancelAll()
+    requests.cancel(1)
+    requests.cancel(2)
     executor.shutdown()
     check(executor.awaitTermination(2, TimeUnit.SECONDS))
     check(completedCleanups.get() == 0)
@@ -56,10 +57,11 @@ fun main() {
             override fun callBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply) = begin(reply)
             override fun subscribeBytes(method: String, payload: ByteArray, reply: TokamakPluginBytesReply) = begin(reply)
         }
-        val calls = TokamakPluginRequests<Int>(mapOf("gated" to gated)) { _, _ -> error("Cancelled request replied") }
+        val calls = TokamakPluginRequests(mapOf("gated" to gated), pull = {}) { _, _ -> error("Cancelled request replied") }
         calls.run(1, if (subscribe) TokamakPluginRequest.SUBSCRIBE else TokamakPluginRequest.CALL, "gated", "wait", byteArrayOf())
         check(entered.await(2, TimeUnit.SECONDS))
-        if (subscribe) { calls.cancelAll(); calls.cancelAll() } else { calls.cancel(1); calls.cancel(1) }
+        calls.cancel(1)
+        calls.cancel(1)
         release.countDown()
         check(cleaned.await(2, TimeUnit.SECONDS))
         serial.shutdown()
@@ -76,7 +78,7 @@ fun testResources() {
     val resources = TokamakResources()
     val frame = byteArrayOf(0, -1, 7)
     var id: Any? = null
-    val release = resources.retain(frame) { id = it.getOrThrow() }
+    val release = resources.retain(frame) { id = decodePluginValue(it.payload) }
     check(resources.get(id, ByteArray::class.java) === frame)
     check(failure { resources.get(id, String::class.java) } == "TypeError")
     release()
@@ -108,7 +110,7 @@ fun testBodies() {
             return null
         }
     }
-    val requests = TokamakPluginRequests<Long>(mapOf("reader" to reader), pull = { pulls.put(it) }) { _, result -> replies.put(result) }
+    val requests = TokamakPluginRequests(mapOf("reader" to reader), pull = { pulls.put(it) }) { _, result -> replies.put(result) }
     requests.run(1, TokamakPluginRequest.CALL_WITH_BODY, "reader", "sum", byteArrayOf())
     for (chunk in listOf(TokamakPluginResult(byteArrayOf(1, 2), false, false), TokamakPluginResult(byteArrayOf(3), false, false), TokamakPluginResult(byteArrayOf(), false, true))) {
         check(pulls.poll(2, TimeUnit.SECONDS) == 1L)

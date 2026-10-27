@@ -40,32 +40,51 @@ pub(crate) fn command_path(path: &Path) -> PathBuf {
 }
 
 /// `program` as a Windows command line finds it: the first file in `PATH`
-/// named `program` with one of `PATHEXT`'s extensions, such as the `vite.cmd`
-/// an npm package installs. Elsewhere, or when no such file exists, `program`.
+/// that runs as `program`. Elsewhere, or when no such file exists, `program`.
 pub(crate) fn command_program(program: &OsStr) -> PathBuf {
     #[cfg(windows)]
-    if let Some(found) = find_program(
-        program,
-        &std::env::var_os("PATH").unwrap_or_default(),
-        &std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned()),
-    ) {
+    if let Some(found) = std::env::var_os("PATH")
+        .and_then(|path| find_executable(program, std::env::split_paths(&path)))
+    {
         return found;
     }
     program.into()
 }
 
-/// The first file in the directories of `path` named `program` with one of the
-/// `;`-separated `extensions`, when `program` is a name without one.
-#[cfg(any(windows, test))]
-fn find_program(program: &OsStr, path: &OsStr, extensions: &str) -> Option<PathBuf> {
+/// The first file in `directories` that runs as the command `program`, a name
+/// without an extension: on Windows, `program` with one of `PATHEXT`'s
+/// extensions, such as the `vite.cmd` an npm package installs; elsewhere,
+/// `program` itself.
+pub(crate) fn find_executable(
+    program: &OsStr,
+    directories: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    #[cfg(windows)]
+    let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned());
+    #[cfg(windows)]
+    let extensions: Vec<&str> = extensions
+        .split(';')
+        .filter(|extension| !extension.is_empty())
+        .collect();
+    #[cfg(not(windows))]
+    let extensions = [""];
+    find_program(program, directories, &extensions)
+}
+
+/// The first file in `directories` named `program` with one of `extensions`,
+/// when `program` is a name without one.
+fn find_program(
+    program: &OsStr,
+    directories: impl IntoIterator<Item = PathBuf>,
+    extensions: &[&str],
+) -> Option<PathBuf> {
     let name = Path::new(program);
     if name.components().count() != 1 || name.extension().is_some() {
         return None;
     }
-    std::env::split_paths(path).find_map(|directory| {
+    directories.into_iter().find_map(|directory| {
         extensions
-            .split(';')
-            .filter(|extension| !extension.is_empty())
+            .iter()
             .map(|extension| {
                 let mut file = program.to_owned();
                 file.push(extension);
@@ -80,10 +99,10 @@ mod tests {
     use std::ffi::OsStr;
     use std::fs;
 
-    use super::find_program;
+    use super::{find_executable, find_program};
 
     // Lowercase, as the files are: Windows matches extensions in any case, Linux exactly.
-    const EXTENSIONS: &str = ".com;.exe;.bat;.cmd";
+    const EXTENSIONS: [&str; 4] = [".com", ".exe", ".bat", ".cmd"];
 
     #[test]
     fn finds_a_name_in_the_first_directory_with_the_first_extension_that_matches()
@@ -102,11 +121,30 @@ mod tests {
             ("bin/vite", None),
         ] {
             assert_eq!(
-                find_program(OsStr::new(program), &path, EXTENSIONS),
+                find_program(
+                    OsStr::new(program),
+                    std::env::split_paths(&path),
+                    &EXTENSIONS
+                ),
                 expected,
                 "{program}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn finds_an_executable_as_the_platform_runs_it() -> anyhow::Result<()> {
+        let bin = tempfile::tempdir()?;
+        // Windows runs `adb` as `adb.EXE`, whose extension `PATHEXT` lists.
+        let file = if cfg!(windows) { "adb.EXE" } else { "adb" };
+        fs::write(bin.path().join(file), "")?;
+        let directories = || [bin.path().to_owned()];
+        assert_eq!(
+            find_executable(OsStr::new("adb"), directories()),
+            Some(bin.path().join(file))
+        );
+        assert_eq!(find_executable(OsStr::new("emulator"), directories()), None);
         Ok(())
     }
 }

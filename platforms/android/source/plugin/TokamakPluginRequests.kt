@@ -9,10 +9,10 @@ enum class TokamakPluginRequest { CALL, CALL_WITH_BODY, SUBSCRIBE }
  * Runs the Worker's requests on the executor each plugin chooses, and passes replies straight to the
  * runtime with [send]; [pull] asks the Worker for the next chunk of a call's body.
  */
-class TokamakPluginRequests<K>(
+class TokamakPluginRequests(
     private val plugins: Map<String, TokamakPlugin>,
-    private val pull: (K) -> Unit = {},
-    private val send: (K, TokamakPluginResult) -> Unit,
+    private val pull: (Long) -> Unit,
+    private val send: (Long, TokamakPluginResult) -> Unit,
 ) {
     /** A pending call or subscription. Only its serial executor touches [cancellation], so a cancellation runs after the operation started. */
     private class Request(val executor: Executor) {
@@ -20,9 +20,9 @@ class TokamakPluginRequests<K>(
         var cancellation: (() -> Unit)? = null
     }
 
-    private val pending = mutableMapOf<K, Request>()
+    private val pending = mutableMapOf<Long, Request>()
 
-    fun run(key: K, kind: TokamakPluginRequest, plugin: String, method: String, payload: ByteArray) {
+    fun run(key: Long, kind: TokamakPluginRequest, plugin: String, method: String, payload: ByteArray) {
         val target = plugins[plugin]
         if (target == null || method.isEmpty()) {
             send(key, failure(TokamakPluginError.notSupported("Plugin is not supported")))
@@ -55,17 +55,12 @@ class TokamakPluginRequests<K>(
     }
 
     /** Answers the pending read of the call [key]'s body with the chunk the Worker sent. */
-    fun chunk(key: K, chunk: TokamakPluginResult) {
+    fun chunk(key: Long, chunk: TokamakPluginResult) {
         synchronized(pending) { pending[key]?.body }?.receive(chunk)
     }
 
-    fun cancel(key: K) {
+    fun cancel(key: Long) {
         synchronized(pending) { pending.remove(key) }?.let(::cancel)
-    }
-
-    fun cancelAll() {
-        val requests = synchronized(pending) { pending.values.toList().also { pending.clear() } }
-        requests.forEach(::cancel)
     }
 
     /** Runs the operation's cancellation on its executor. */
@@ -76,10 +71,10 @@ class TokamakPluginRequests<K>(
         }
     }
 
-    private fun isPending(key: K, request: Request) = synchronized(pending) { pending[key] === request }
+    private fun isPending(key: Long, request: Request) = synchronized(pending) { pending[key] === request }
 
     /** Removes [request], returning whether it was pending. */
-    private fun remove(key: K, request: Request) = synchronized(pending) {
+    private fun remove(key: Long, request: Request) = synchronized(pending) {
         (pending[key] === request).also { if (it) pending.remove(key) }
     }
 

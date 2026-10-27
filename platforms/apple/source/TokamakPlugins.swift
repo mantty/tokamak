@@ -263,23 +263,6 @@ protocol TokamakPlugin: AnyObject {
     reply: @escaping TokamakPluginReply
   ) -> (() -> Void)?
 
-  /// A call whose `body` of bytes the Worker streams, which the plugin reads
-  /// one chunk at a time.
-  func call(
-    method: String,
-    arguments: Any,
-    body: TokamakPluginBody,
-    reply: @escaping TokamakPluginReply
-  ) -> (() -> Void)?
-
-  /// Replies with each value until the returned function is called. Throws
-  /// when the subscription cannot start, which ends it.
-  func subscribe(
-    method: String,
-    arguments: Any,
-    reply: @escaping TokamakPluginReply
-  ) throws(TokamakPluginError) -> (() -> Void)
-
   func didRegisterForRemoteNotifications(deviceToken: Data)
 
   func didFailToRegisterForRemoteNotifications(error: Error)
@@ -307,17 +290,13 @@ extension TokamakPlugin {
     method: String, payload: Data, body: TokamakPluginBody,
     reply: @escaping TokamakPluginBytesReply
   ) throws(TokamakPluginError) -> (() -> Void)? {
-    try call(method: method, arguments: decodePluginValue(payload), body: body) {
-      reply(TokamakPluginResult($0.flatMap(encodePluginValue), done: true))
-    }
+    throw .notSupported("\(id).\(method) does not take a body")
   }
 
   func subscribeBytes(method: String, payload: Data, reply: @escaping TokamakPluginBytesReply)
     throws(TokamakPluginError) -> (() -> Void)
   {
-    try subscribe(method: method, arguments: decodePluginValue(payload)) {
-      reply(TokamakPluginResult($0.flatMap(encodePluginValue), done: false))
-    }
+    throw .notSupported("\(id).\(method) is not supported")
   }
 
   func call(
@@ -327,24 +306,6 @@ extension TokamakPlugin {
   ) -> (() -> Void)? {
     reply(.failure(.notSupported("\(id).\(method) is not supported")))
     return nil
-  }
-
-  func call(
-    method: String,
-    arguments: Any,
-    body: TokamakPluginBody,
-    reply: @escaping TokamakPluginReply
-  ) -> (() -> Void)? {
-    reply(.failure(.notSupported("\(id).\(method) does not take a body")))
-    return nil
-  }
-
-  func subscribe(
-    method: String,
-    arguments: Any,
-    reply: @escaping TokamakPluginReply
-  ) throws(TokamakPluginError) -> (() -> Void) {
-    throw .notSupported("\(id).\(method) is not supported")
   }
 
   func didRegisterForRemoteNotifications(deviceToken: Data) {}
@@ -483,14 +444,6 @@ final class TokamakPluginRequests<Key: Hashable> {
 
   func cancel(_ key: Key) {
     if let request = lock.withLock({ pending.removeValue(forKey: key) }) { cancel(request) }
-  }
-
-  func cancelAll() {
-    let requests = lock.withLock {
-      defer { pending.removeAll() }
-      return Array(pending.values)
-    }
-    for request in requests { cancel(request) }
   }
 
   /// Runs the operation's cancellation on its executor.

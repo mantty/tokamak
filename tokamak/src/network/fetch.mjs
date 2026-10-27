@@ -140,6 +140,15 @@ function headerEntries(values) {
 
 // The bytes a Blob holds.
 let blobBytes;
+// Sets a Blob's type as given.
+let setBlobType;
+
+/** A Blob of `bytes` whose type is `type` unchanged, as workerd's own Blobs are. */
+export function exactBlob(bytes, type) {
+  const blob = new Blob([bytes]);
+  setBlobType(blob, type);
+  return blob;
+}
 
 export class Blob {
   #bytes;
@@ -167,6 +176,7 @@ export class Blob {
 
   static {
     blobBytes = blob => blob.#bytes;
+    setBlobType = (blob, type) => { blob.#type = type; };
     hostObjectCopies.set("Blob", blob => new Blob([blob.#bytes], { type: blob.#type }));
   }
 }

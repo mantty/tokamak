@@ -427,53 +427,21 @@ pub(super) struct WritableBytes<'js> {
     pub(super) len: usize,
 }
 
+/// The memory of the `ArrayBuffer` `value`.
 pub(super) fn writable_bytes<'js>(
     ctx: &Ctx<'js>,
     value: Value<'js>,
 ) -> rquickjs::Result<WritableBytes<'js>> {
-    if let Some(buffer) = ArrayBuffer::from_value(value.clone()) {
-        let raw = buffer
-            .as_raw()
-            .ok_or_else(|| Exception::throw_type(ctx, "buffer is detached"))?;
-        return Ok(WritableBytes {
-            _value: value,
-            ptr: raw.ptr.as_ptr(),
-            len: raw.len,
-        });
-    }
-    let object = value
-        .clone()
-        .try_into_object()
-        .map_err(|_| Exception::throw_type(ctx, "buffer must be an ArrayBuffer or typed array"))?;
-    macro_rules! typed_array {
-        ($type:ty) => {
-            if object.is_typed_array::<$type>() {
-                let array = TypedArray::<$type>::from_object(object.clone())?;
-                let raw = array
-                    .as_raw()
-                    .ok_or_else(|| Exception::throw_type(ctx, "buffer is detached"))?;
-                return Ok(WritableBytes {
-                    _value: value,
-                    ptr: raw.ptr.as_ptr(),
-                    len: raw.len,
-                });
-            }
-        };
-    }
-    typed_array!(u8);
-    typed_array!(i8);
-    typed_array!(u16);
-    typed_array!(i16);
-    typed_array!(u32);
-    typed_array!(i32);
-    typed_array!(u64);
-    typed_array!(i64);
-    typed_array!(f32);
-    typed_array!(f64);
-    Err(Exception::throw_type(
-        ctx,
-        "buffer must be an ArrayBuffer or typed array",
-    ))
+    let buffer = ArrayBuffer::from_value(value.clone())
+        .ok_or_else(|| Exception::throw_type(ctx, "buffer must be an ArrayBuffer"))?;
+    let raw = buffer
+        .as_raw()
+        .ok_or_else(|| Exception::throw_type(ctx, "buffer is detached"))?;
+    Ok(WritableBytes {
+        _value: value,
+        ptr: raw.ptr.as_ptr(),
+        len: raw.len,
+    })
 }
 
 impl WritableBytes<'_> {

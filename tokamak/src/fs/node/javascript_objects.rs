@@ -686,38 +686,12 @@ pub(super) fn blob_object<'js>(
     bytes: Vec<u8>,
     mime_type: &str,
 ) -> rquickjs::Result<Object<'js>> {
-    if let Some(constructor) = ctx.globals().get::<_, Option<Constructor>>("Blob")? {
-        let parts = Array::new(ctx.clone())?;
-        parts.set(0, TypedArray::<u8>::new_copy(ctx.clone(), &bytes)?)?;
-        let options = Object::new(ctx.clone())?;
-        options.set("type", mime_type)?;
-        return constructor.construct((parts, options));
-    }
-    let object = Object::new(ctx.clone())?;
-    object.set("size", bytes.len())?;
-    object.set("type", mime_type)?;
-    let text_bytes = bytes.clone();
-    object.set(
-        "text",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            promise(
-                ctx.clone(),
-                String::from_utf8_lossy(&text_bytes)
-                    .into_owned()
-                    .into_js(&ctx),
-            )
-        })?,
-    )?;
-    object.set(
-        "arrayBuffer",
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            promise(
-                ctx.clone(),
-                ArrayBuffer::new_copy(ctx.clone(), &bytes).map(ArrayBuffer::into_value),
-            )
-        })?,
-    )?;
-    Ok(object)
+    // workerd's `openAsBlob` makes its own `Blob`, whatever `globalThis.Blob` is.
+    let exact_blob: Function = cached(ctx, "__tokamak_node_fs_blob", |ctx| {
+        crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:network/fetch.mjs")?
+            .get("exactBlob")
+    })?;
+    exact_blob.call((TypedArray::<u8>::new_copy(ctx.clone(), &bytes)?, mime_type))
 }
 
 const fn node_type_name(kind: NodeType) -> &'static str {

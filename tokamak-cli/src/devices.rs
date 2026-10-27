@@ -1,5 +1,6 @@
 //! Development target discovery, preparation, and app installation.
 
+use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -9,6 +10,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tokamak_cli::Platform;
+
+use super::paths::find_executable;
 
 const MANAGED_IOS_NAME: &str = "tokamak iPhone";
 const MANAGED_ANDROID_NAME: &str = "tokamak-managed";
@@ -906,7 +909,10 @@ fn run_android_tool(name: &str, directory: &str, arguments: &[&str]) -> ToolOutp
 }
 
 fn android_tool_program(name: &str, directory: &str) -> Option<String> {
-    let program = executable_in_path(name).or_else(|| {
+    let name = OsStr::new(name);
+    let in_path = std::env::var_os("PATH")
+        .and_then(|path| find_executable(name, std::env::split_paths(&path)));
+    let program = in_path.or_else(|| {
         let sdk_root = android_sdk_root()?;
         let directories = if directory == "cmdline-tools" {
             vec![
@@ -917,33 +923,9 @@ fn android_tool_program(name: &str, directory: &str) -> Option<String> {
         } else {
             vec![sdk_root.join(directory)]
         };
-        executable_in(directories, name)
+        find_executable(name, directories)
     })?;
     Some(program.to_string_lossy().into_owned())
-}
-
-fn executable_suffixes() -> &'static [&'static str] {
-    if cfg!(windows) {
-        &["", ".exe", ".bat", ".cmd"]
-    } else {
-        &[""]
-    }
-}
-
-fn executable_in_path(name: &str) -> Option<PathBuf> {
-    executable_in(std::env::split_paths(&std::env::var_os("PATH")?), name)
-}
-
-/// The first `name` executable in `directories`.
-fn executable_in(directories: impl IntoIterator<Item = PathBuf>, name: &str) -> Option<PathBuf> {
-    directories
-        .into_iter()
-        .flat_map(|directory| {
-            executable_suffixes()
-                .iter()
-                .map(move |suffix| directory.join(format!("{name}{suffix}")))
-        })
-        .find(|candidate| candidate.is_file())
 }
 
 fn android_sdk_root() -> Option<PathBuf> {
