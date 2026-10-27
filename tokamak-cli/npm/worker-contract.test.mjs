@@ -1,26 +1,22 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
-import { readWorkerContract, readServiceContracts } from "./dist/worker-contract.mjs";
-import { workerTypes } from "./worker-fixtures.mjs";
+import { readWorkerContracts } from "./dist/worker-contract.mjs";
+import { temporaryProject, workerTypes } from "./worker-fixtures.mjs";
+
+const readWorkerContract = (entry, root) => readWorkerContracts(entry, undefined, root, true).native;
+const readServiceContracts = (entry, root) => readWorkerContracts(undefined, entry, root, true).main;
 
 function project(t, source, files = {}, read = readWorkerContract) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tokamak-contract-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  for (const [name, text] of Object.entries({
+  const root = temporaryProject(t, "tokamak-contract-", {
     "src/tokamak.ts": `import { WorkerEntrypoint } from "cloudflare:workers";\n${source}`,
     "worker-configuration.d.ts": workerTypes,
     ...files,
-  })) {
-    const file = path.join(root, name);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, text);
-  }
+  });
   return () => read(path.join(root, "src/tokamak.ts"), root);
 }
 

@@ -26,7 +26,7 @@ export interface WorkerGraph {
   /** The generated service bindings of the main Worker configuration `config`, once it binds none of their names. */
   serviceBindings(config: ServiceConfiguration): ServiceBindings;
   native: AuxiliaryCustomizer;
-  names(): { main: string; native: string; app: string };
+  names(): { native: string; app: string };
   types: WorkerTypes;
   cloudflare: PluginConfig;
   plugin: Plugin & {
@@ -42,6 +42,8 @@ export interface WorkerGraph {
   };
 }
 
+/** The Tokamak worker's page module of each plugin operation's support on the app's platform. */
+export const CAPABILITIES = "/_tokamak/capabilities.js";
 const NATIVE_CONNECTION = "virtual:tokamak/native-connection";
 const PLATFORM = "virtual:tokamak/platform";
 const NATIVE_CALLS = normalizePath(fileURLToPath(new URL("./native.mjs", import.meta.url)));
@@ -54,7 +56,7 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
   const types = path.join(root, "tokamak-env.d.ts");
   const contracts = new WorkerTypes(root, entry);
   contracts.discover();
-  const events = normalizePath(fileURLToPath(new URL("./entrypoint.js", import.meta.resolve("@tokamakdev/plugin/events"))));
+  const events = corePath("./entrypoint.js");
   let mainName: string;
   let nativeName: string;
   let appName: string;
@@ -65,7 +67,7 @@ export function createWorkerGraph(root: string, entry: string | undefined, outpu
   let configuredEntrypoints: string;
   const entrypoints = () => Object.keys(contracts.named).join();
   const signatures = new Map<string, string>();
-  const development = normalizePath(fileURLToPath(new URL("./rpc/binding.mjs", import.meta.resolve("@tokamakdev/plugin/events"))));
+  const development = corePath("./rpc/binding.mjs");
   let relay: DeviceRelay | undefined;
   const serviceModule = (role: string) => `virtual:tokamak/service/${role}`;
   const bindingsModule = (role: string) => `\0tokamak:bindings:${role}`;
@@ -145,7 +147,7 @@ export const TokamakEvents = eventEntrypoint(Worker, nativeContext);\n`);
     configure,
     serviceBindings: config => services(checkedName(config)),
     native,
-    names: () => ({ main: mainName, native: nativeName, app: appName }),
+    names: () => ({ native: nativeName, app: appName }),
     types: contracts,
     cloudflare: {
       config: config => { configure(config); },
@@ -297,7 +299,7 @@ function availability(plugins: PluginContract[]): Availability {
 
 function serviceEntrypoint(entry: string | undefined, services: NativeService[]): string {
   const sdk = normalizePath(fileURLToPath(import.meta.resolve("@tokamakdev/plugin/worker")));
-  const rpc = normalizePath(fileURLToPath(new URL("./rpc/endpoint.mjs", import.meta.resolve("@tokamakdev/plugin/events"))));
+  const rpc = corePath("./rpc/endpoint.mjs");
   const plugins = services.flatMap(service => service.plugin ? [service.plugin] : []);
   const imports = services.map((service, index) => {
     if (service.plugin) {
@@ -344,7 +346,7 @@ export default class extends WorkerEntrypoint {
   get #instance() { return this.#worker ??= services[0].create(this.ctx, this.env); }
   fetch(request) {
     const { pathname } = new URL(request.url);
-    if (pathname === "/_tokamak/capabilities.js") return capabilitiesModule(nativeContext(this.ctx));
+    if (pathname === ${JSON.stringify(CAPABILITIES)}) return capabilitiesModule(nativeContext(this.ctx));
     const service = services.find(service => service.route === pathname);
     if (service) return rpcResponse(request, ctx => service.create(ctx, this.env), service.methods, this.ctx);
     if (typeof this.#instance.fetch !== "function") throw new TypeError("The Tokamak worker has no fetch handler");
@@ -354,6 +356,11 @@ export default class extends WorkerEntrypoint {
 }
 ${named.join("")}
 `;
+}
+
+/** The Vite path of `file`, relative to the source directory of `@tokamakdev/plugin`. */
+export function corePath(file: string): string {
+  return normalizePath(fileURLToPath(new URL(file, import.meta.resolve("@tokamakdev/plugin/events"))));
 }
 
 /** Writes `source` to `file` unless it already holds it, so watchers see only changes. */

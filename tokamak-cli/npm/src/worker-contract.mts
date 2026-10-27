@@ -5,7 +5,8 @@ import ts from "typescript";
 
 import { aliased, checkRpcMethod, WorkerOnlyMethod } from "./rpc-contract.mjs";
 import { serviceTypes, type ServiceMethod } from "./service-types.mjs";
-import type { NativePlatform, PluginDefinition } from "./plugin-manifest.mjs";
+import type { NativePlatform } from "@tokamakdev/plugin/capabilities";
+import type { PluginDefinition } from "./plugin-manifest.mjs";
 
 /** The callable prototype methods and source dependencies of a Worker entrypoint. */
 export interface WorkerContract {
@@ -40,15 +41,6 @@ export function findModule(root: string, name: string | undefined): string | und
   return file;
 }
 
-/** Resolve the application's types before generating its service adapters. */
-export function readWorkerContract(entry: string, root: string): WorkerContract {
-  return readWorkerContracts(entry, undefined, root, true).native;
-}
-
-/** Check every WorkerEntrypoint exported by an application service bundle. */
-export function readServiceContracts(entry: string, root: string): Record<string, WorkerContract> {
-  return readWorkerContracts(undefined, entry, root, true).main;
-}
 
 /** Analyze both entrypoints in one TypeScript program. */
 export function readWorkerContracts(entry: string | undefined, main: string | undefined, root: string, validate: boolean, plugins: PluginDefinition[] = []): {

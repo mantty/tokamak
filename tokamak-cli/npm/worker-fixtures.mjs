@@ -19,3 +19,19 @@ async function runtimeTypes() {
 }
 
 export const workerTypes = await runtimeTypes();
+
+/** A new temporary directory, removed after `t`, holding `files` by their paths in it. */
+export function temporaryProject(t, prefix, files) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  writeFiles(root, files);
+  return root;
+}
+
+/** Writes each of `files` at its path under `root`. */
+export function writeFiles(root, files) {
+  for (const [name, contents] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
+    fs.writeFileSync(path.join(root, name), contents);
+  }
+}
