@@ -31,8 +31,6 @@ Object.assign(EventEmitter.prototype, {
     return this;
   },
 
-  removeEventListener(name, listener) { return this.removeListener(name, listener); },
-  addEventListener(name, listener) { return this.on(name, listener); },
   removeAllListeners(name) {
     if (name === undefined) {
       for (const key of [...this.__events.keys()].filter(value => value !== "removeListener")) this.removeAllListeners(key);

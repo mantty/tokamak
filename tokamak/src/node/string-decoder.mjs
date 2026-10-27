@@ -1,5 +1,6 @@
 import { bufferBytes } from "../globals/conversions.mjs";
 import { Buffer } from "./buffer.mjs";
+import { codedError } from "./errors.mjs";
 
 const states = new WeakMap();
 
@@ -10,9 +11,7 @@ function normalizeEncoding(value) {
   if (["latin1", "binary"].includes(encoding)) return "latin1";
   if (["ascii"].includes(encoding)) return "ascii";
   if (["base64", "base64url", "hex"].includes(encoding)) return encoding;
-  const error = new TypeError(`Unknown encoding: ${encoding}`);
-  error.code = "ERR_UNKNOWN_ENCODING";
-  throw error;
+  throw codedError(TypeError, `Unknown encoding: ${encoding}`, "ERR_UNKNOWN_ENCODING");
 }
 
 function bytes(value) {

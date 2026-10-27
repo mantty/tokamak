@@ -1,32 +1,20 @@
 import { string } from "../globals/conversions.mjs";
-import { TextDecoder, TextEncoder } from "../streams/text.mjs";
+import { TextDecoder } from "../streams/text.mjs";
+import { Buffer } from "./buffer.mjs";
 
 function escape(value) {
   return encodeURIComponent(string(value));
 }
 
-function decodeComponent(value, plusAsSpace) {
-  const input = string(value).replace(plusAsSpace ? /\+/g : /$^/, " ");
+function decodeComponent(input, decodeSpaces) {
   try { return decodeURIComponent(input); }
-  catch { return decodeInvalid(input); }
+  catch { return new TextDecoder("utf-8", { ignoreBOM: true }).decode(unescapeBuffer(input, decodeSpaces)); }
 }
 
-function decodeInvalid(value) {
-  const bytes = [];
-  let output = "";
-  for (let index = 0; index < value.length;) {
-    if (value[index] === "%" && /^[0-9a-f]{2}$/i.test(value.slice(index + 1, index + 3))) {
-      bytes.push(parseInt(value.slice(index + 1, index + 3), 16));
-      index += 3;
-    } else {
-      if (bytes.length) { output += new TextDecoder().decode(new Uint8Array(bytes)); bytes.length = 0; }
-      const character = value[index];
-      output += character;
-      index += character.length;
-    }
-  }
-  if (bytes.length) output += new TextDecoder().decode(new Uint8Array(bytes));
-  return output;
+// A parsed key or value is decoded only when it holds a valid percent escape.
+function decodeParsed(value) {
+  const input = value.replaceAll("+", " ");
+  return /%[0-9a-f]{2}/i.test(input) ? decodeComponent(input, true) : input;
 }
 
 function valueString(value) {
@@ -39,7 +27,7 @@ export function parse(input, separator = "&", equal = "=", options = {}) {
   const value = input == null ? "" : string(input);
   const pairSeparator = string(separator);
   const keyValueSeparator = string(equal);
-  const decoder = typeof options?.decodeURIComponent === "function" ? options.decodeURIComponent : value => decodeComponent(value, true);
+  const decoder = typeof options?.decodeURIComponent === "function" ? options.decodeURIComponent : decodeParsed;
   const maxKeys = options?.maxKeys === undefined ? 1000 : Number(options.maxKeys);
   const limit = maxKeys === 0 ? Infinity : Math.max(0, Math.trunc(maxKeys));
   if (value === "" || limit === 0) return output;
@@ -77,23 +65,21 @@ export function stringify(value, separator = "&", equal = "=", options = {}) {
 export const encode = stringify;
 export { escape };
 
-export function unescape(value) { return decodeComponent(value, false); }
+export function unescape(value, decodeSpaces = false) { return decodeComponent(string(value), decodeSpaces); }
 
+// Each UTF-16 unit that is not a percent escape becomes its low byte.
 export function unescapeBuffer(value, decodeSpaces = false) {
   const input = string(value);
   const bytes = [];
-  for (let index = 0; index < input.length;) {
-    if (decodeSpaces && input[index] === "+") { bytes.push(32); index += 1; continue; }
-    if (input[index] === "%" && /^[0-9a-f]{2}$/i.test(input.slice(index + 1, index + 3))) {
-      bytes.push(parseInt(input.slice(index + 1, index + 3), 16));
-      index += 3;
-    } else {
-      const character = String.fromCodePoint(input.codePointAt(index));
-      bytes.push(...new TextEncoder().encode(character));
-      index += character.length;
-    }
+  for (let index = 0; index < input.length; index += 1) {
+    const hex = input.slice(index + 1, index + 3);
+    if (decodeSpaces && input[index] === "+") bytes.push(32);
+    else if (input[index] === "%" && /^[0-9a-f]{2}$/i.test(hex)) {
+      bytes.push(parseInt(hex, 16));
+      index += 2;
+    } else bytes.push(input.charCodeAt(index) & 0xff);
   }
-  return new Uint8Array(bytes);
+  return Buffer.from(bytes);
 }
 
 export default { parse, decode, stringify, encode, escape, unescape, unescapeBuffer };

@@ -173,6 +173,7 @@ export function connect(address, options = {}) {
   return new Socket(createState(target, mode, native, Boolean(options.allowHalfOpen)));
 }
 
-export function internalNewHttpClient() {
-  return { fetch: globalThis.fetch };
+// workerd provides the HTTP client only under its experimental compatibility flag.
+export function internalNewHttpClient(socket) {
+  throw new TypeError("sockets.internalNewHttpClient is not a function");
 }

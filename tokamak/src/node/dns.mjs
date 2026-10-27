@@ -1,12 +1,7 @@
-const errorNames = [
-  "ADDRCONFIG", "ADDRGETNETWORKPARAMS", "ALL", "BADFAMILY", "BADFLAGS", "BADHINTS", "BADNAME", "BADQUERY", "BADRESP",
-  "BADSTR", "CANCELLED", "CONNREFUSED", "DESTRUCTION", "EOF", "FILE", "FORMERR", "LOADIPHLPAPI", "NODATA", "NOMEM",
-  "NONAME", "NOTFOUND", "NOTIMP", "NOTINITIALIZED", "REFUSED", "SERVFAIL", "TIMEOUT", "V4MAPPED",
-];
-export const constants = Object.fromEntries(errorNames.map(name => [name, 0]));
-const promiseConstants = Object.fromEntries(
-  Object.entries(constants).filter(([name]) => !["ADDRCONFIG", "ALL", "V4MAPPED"].includes(name)),
-);
+import * as codes from "./dns-codes.mjs";
+import { codedError } from "./errors.mjs";
+
+export * from "./dns-codes.mjs";
 
 const dohEndpoint = "https://1.1.1.1/dns-query";
 const typeNumbers = {
@@ -22,8 +17,7 @@ function dnsError(name, code = "ENOTFOUND") {
 }
 
 function unsupported(name) {
-  const error = new Error(`node:dns ${name} is not implemented in the Workers runtime`);
-  error.code = "ERR_METHOD_NOT_IMPLEMENTED";
+  const error = codedError(Error, `node:dns ${name} is not implemented in the Workers runtime`, "ERR_METHOD_NOT_IMPLEMENTED");
   error.syscall = name;
   return error;
 }
@@ -107,7 +101,7 @@ async function dohQuery(name, type) {
   return result.Answer.filter(answer => answer.type === typeNumbers[recordType]);
 }
 
-export function resolvePromise(name, type, options = {}) {
+function resolvePromise(name, type, options = {}) {
   return dohQuery(name, type).then(answers => {
     if (type === "TXT") return answers.map(answer => answerValue(answer));
     return answers.map(answer => options.ttl ? answerWithTtl(answer) : answerValue(answer));
@@ -194,7 +188,7 @@ export class Resolver {
 }
 
 export const promises = {
-  ...promiseConstants,
+  ...codes,
   Resolver,
   getDefaultResultOrder,
   getServers,
@@ -219,7 +213,7 @@ export const promises = {
 };
 
 export default {
-  ...constants,
+  ...codes,
   Resolver, getDefaultResultOrder, getServers, lookup, lookupService, resolve, resolve4, resolve6, resolveAny,
   resolveCaa, resolveCname, resolveMx, resolveNaptr, resolveNs, resolvePtr, resolveSoa, resolveSrv, resolveTxt,
   reverse, setDefaultResultOrder, setServers, promises,

@@ -2,6 +2,7 @@ import {
   Performance, PerformanceEntry, PerformanceMark, PerformanceMeasure, PerformanceObserver, PerformanceObserverEntryList,
   PerformanceResourceTiming, performance,
 } from "../globals/performance.mjs";
+import { codedError } from "./errors.mjs";
 
 export function timerify(callback) {
   return performance.timerify(callback);
@@ -12,9 +13,7 @@ export function eventLoopUtilization() {
 }
 
 function unsupported(name) {
-  const error = new Error(`node:perf_hooks ${name} is not implemented`);
-  error.code = "ERR_METHOD_NOT_IMPLEMENTED";
-  throw error;
+  throw codedError(Error, `node:perf_hooks ${name} is not implemented`, "ERR_METHOD_NOT_IMPLEMENTED");
 }
 
 export function createHistogram() { return unsupported("createHistogram"); }

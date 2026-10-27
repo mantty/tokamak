@@ -6,6 +6,7 @@ import { TextDecoder } from "../streams/text.mjs";
 import { Transform } from "../streams/node.mjs";
 import { Buffer } from "./buffer.mjs";
 import { unsupportedFunction } from "./unsupported.mjs";
+import { codedError } from "./errors.mjs";
 
 const unsupportedCrypto = name => unsupportedFunction(`crypto.${name}`);
 const hashToken = Symbol("hash");
@@ -23,12 +24,6 @@ function normalizeHash(algorithm) {
 
 function inputBytes(value, encoding) {
   return Buffer.from(value, encoding);
-}
-
-function codedError(ErrorType, message, code) {
-  const error = new ErrorType(message);
-  error.code = code;
-  return error;
 }
 
 function integerInRange(value, name, min) {

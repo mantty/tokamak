@@ -1,7 +1,7 @@
+import { codedError } from "./errors.mjs";
+
 export function unsupported(name) {
-  const error = new Error(`${name} is not available in the Tokamak runtime`);
-  error.code = "ERR_METHOD_NOT_IMPLEMENTED";
-  throw error;
+  throw codedError(Error, `${name} is not available in the Tokamak runtime`, "ERR_METHOD_NOT_IMPLEMENTED");
 }
 
 export function unsupportedFunction(name) {
