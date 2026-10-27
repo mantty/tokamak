@@ -162,6 +162,13 @@ test("reports again when the development server restarts", async () => {
   });
 });
 
+test("closes the dev socket of a development server that never listened", async () => {
+  const app = project();
+  const server = await createServer(viteConfig(app, { server: { host: "127.0.0.1", port: 0 } }));
+  await server.close();
+  assert.deepEqual(process.getActiveResourcesInfo().filter(resource => resource === "TCPServerWrap"), []);
+});
+
 test("reports that a development server in middleware mode has no address", async () => {
   const app = project();
   const server = await createServer(viteConfig(app, { server: { middlewareMode: true } }));

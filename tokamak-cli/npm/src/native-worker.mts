@@ -4,7 +4,7 @@ import type { ServerOptions as HttpsServerOptions } from "node:https";
 import path from "node:path";
 
 import type { PluginConfig } from "@cloudflare/vite-plugin";
-import { normalizePath, type Plugin, type ViteDevServer } from "vite";
+import { normalizePath, type Environment, type Plugin, type ViteDevServer } from "vite";
 
 import { capabilitiesFor, type NativePlatform } from "@tokamakdev/plugin/capabilities";
 import { openDevSocket, type DevSocket } from "./dev-socket.mjs";
@@ -40,6 +40,8 @@ export function createNativeWorker(
   const platform = process.env.TOKAMAK_PLATFORM as NativePlatform | undefined;
   const buildDir = process.env.TOKAMAK_BUILD_DIR;
   let graph: WorkerGraph;
+  // Each development server's dev socket, by the server's client environment.
+  const devSockets = new Map<Environment, DevSocket>();
   const plugin: Plugin = {
     name: "tokamak",
     enforce: "pre",
@@ -75,6 +77,7 @@ export function createNativeWorker(
       order: "pre",
       async handler(server) {
         const devSocket = await serveNativeWorker(server, graph.names(), output, token);
+        if (devSocket) devSockets.set(server.environments.client, devSocket);
         if (devSocket && token) graph.relay({ port: devSocket.port, token, platform });
         // A page loaded from this server, not the device, still gets the device's capabilities.
         server.middlewares.use(CAPABILITIES, (_request, response) => {
@@ -83,6 +86,14 @@ export function createNativeWorker(
           response.end(`export default ${JSON.stringify(capabilities)};\n`);
         });
       },
+    },
+    // Vite awaits this however a development server closes, so the development Worker's
+    // runtime, which watches the dev registry, is disposed before Cloudflare's plugin removes
+    // the app's registrations.
+    async closeBundle() {
+      const devSocket = devSockets.get(this.environment);
+      devSockets.delete(this.environment);
+      await devSocket?.close();
     },
   };
   return {
@@ -107,7 +118,6 @@ async function serveNativeWorker(
     return;
   }
   const socket = await openDevSocket(names.native, token);
-  httpServer.once("close", () => void socket.close());
   httpServer.once("listening", () => {
     const urls = server.resolvedUrls;
     writeJson(output, "server.json", {
