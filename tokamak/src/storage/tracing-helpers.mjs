@@ -4,5 +4,5 @@ import { createTracing } from "../builtins/tracing.mjs";
 const tracing = createTracing();
 
 export function withSpan(name, callback) {
-  return callback(tracing.startSpan(name));
+  return tracing.enterSpan(name, callback);
 }

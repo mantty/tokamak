@@ -63,6 +63,74 @@ function describeHtmlRewriterAttributes(attributes) {
   };
 }
 
+// What a span's methods return and throw for each kind of argument.
+function spanCalls(span) {
+  return {
+    spanContext: [span.spanContext(), span.spanContext() === span.spanContext()],
+    setAttribute: [["key", "value"], ["key", 1], ["key", true], ["key", {}], [1n], ["key"], [], ["key", 1n], ["key", Symbol("value")], [Symbol("key"), "value"]]
+      .map(args => detailedResult(() => span.setAttribute(...args) === span)),
+    setAttributes: [{ a: 1, b: undefined, c: {} }, () => {}, [], null, "abc", undefined, { a: 1n, b: Symbol("value") }, { a: Symbol("value") }]
+      .map(attributes => detailedResult(() => span.setAttributes(attributes) === span)),
+    recordException: [["boom"], [new Error("boom")], [{}], [undefined], []]
+      .map(args => detailedResult(() => typeof span.recordException(...args))),
+    updateName: [["renamed"], [5], [undefined], [], [Symbol("name")]]
+      .map(args => detailedResult(() => span.updateName(...args) === span)),
+    setStatus: [[{ code: "ok" }], [{ code: "error", message: "failed" }], [{ code: "unset", message: null }], [{ code: "OK" }], [{}], [[]], [{ code: "bad", message: Symbol("message") }], ["ok"], [null], [undefined], []]
+      .map(args => detailedResult(() => span.setStatus(...args) === span)),
+  };
+}
+
+// The tracing API's spans before and after they end, its argument checks, and
+// which span is active inside callbacks, timers and promises.
+async function tracingContracts(tracing) {
+  const span = tracing.startSpan("contract");
+  const live = spanCalls(span);
+  const end = [typeof span.end(), typeof span.end()];
+  const ended = spanCalls(span);
+  const root = tracing.getActiveSpan();
+  const order = [];
+  const resolved = Promise.resolve("value");
+  tracing.enterSpan("order", () => resolved).then(value => order.push(`entered ${value}`));
+  resolved.then(() => order.push("job 1")).then(() => order.push("job 2")).then(() => order.push("job 3"));
+  const rejection = new Error("rejected");
+  const thenable = { then(resolve) { resolve("thenable"); } };
+  const activeCall = function (active, ...args) { return [tracing.getActiveSpan() === active, this === globalThis, args]; };
+  const callbackCalls = method => [[], ["name"], [Symbol("name")], ["name", "callback"], [5, () => "value"], [undefined, () => "value"]]
+    .map(args => detailedResult(() => tracing[method](...args)));
+  return {
+    tags: [Object.prototype.toString.call(tracing), Object.prototype.toString.call(span)],
+    constructors: [() => new tracing.Span(), () => new (Object.getPrototypeOf(tracing).constructor)()].map(detailedResult),
+    live,
+    end,
+    ended,
+    startSpan: [[], ["name"], [5], [undefined], [Symbol("name")]].map(args => detailedResult(() => tracing.startSpan(...args) instanceof tracing.Span)),
+    enterSpan: callbackCalls("enterSpan"),
+    startActiveSpan: callbackCalls("startActiveSpan"),
+    root: [root instanceof tracing.Span, root === tracing.getActiveSpan(), root.isTraced, root === span, typeof root.end(), root === tracing.getActiveSpan()],
+    active: {
+      entered: tracing.enterSpan("entered", activeCall, 1, 2),
+      started: tracing.startActiveSpan("started", activeCall, 3),
+      nested: tracing.enterSpan("outer", outer => tracing.enterSpan("inner", inner => [tracing.getActiveSpan() === inner, tracing.getActiveSpan() === outer])),
+      startSpan: tracing.enterSpan("outer", outer => [tracing.startSpan("inner") === tracing.getActiveSpan(), tracing.getActiveSpan() === outer]),
+      after: tracing.getActiveSpan() === root,
+      awaited: await tracing.enterSpan("awaited", async active => {
+        await new Promise(resolve => setTimeout(resolve, 1));
+        return tracing.getActiveSpan() === active;
+      }),
+      timer: await new Promise(resolve => tracing.enterSpan("timer", active => setTimeout(() => resolve(tracing.getActiveSpan() === active), 0))),
+      microtask: await new Promise(resolve => tracing.enterSpan("microtask", active => queueMicrotask(() => resolve(tracing.getActiveSpan() === active)))),
+    },
+    results: {
+      entered: [tracing.enterSpan("promise", () => resolved) === resolved, tracing.enterSpan("promise", () => resolved) instanceof Promise, await tracing.enterSpan("promise", async () => "async")],
+      started: tracing.startActiveSpan("promise", () => resolved) === resolved,
+      thenable: tracing.enterSpan("thenable", () => thenable) === thenable,
+      thrown: detailedResult(() => tracing.enterSpan("thrown", () => { throw new RangeError("thrown"); })),
+      rejected: await tracing.enterSpan("rejected", () => Promise.reject(rejection)).catch(reason => reason === rejection),
+      order,
+    },
+  };
+}
+
 export async function run(handlerEnv, ctx, constructors) {
   const output = {};
   const consoleBeforeNodeConsole = Object.getOwnPropertyNames(console).sort();
@@ -1570,6 +1638,7 @@ export async function run(handlerEnv, ctx, constructors) {
         end: span.end(),
         active: workers.tracing.startActiveSpan("active", () => "value"),
         entered: workers.tracing.enterSpan("entered", () => "value"),
+        behaviour: await tracingContracts(workers.tracing),
       },
       sockets: {
         prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(socket)).sort(),
