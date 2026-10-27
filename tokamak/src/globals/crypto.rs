@@ -857,6 +857,16 @@ fn unsupported_format(ctx: &Ctx<'_>) -> rquickjs::Error {
     not_supported_error(ctx, "The requested key format is not supported")
 }
 
+/// The bytes the hexadecimal `text` spells.
+#[cfg(test)]
+fn hex(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&text[index..index + 2], 16))
+        .collect::<Result<_, _>>()
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
