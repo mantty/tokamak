@@ -62,6 +62,7 @@ export async function cryptoContracts() {
     return { digest: [...new Uint8Array(await stream.digest)], count: String(stream.bytesWritten) };
   });
   result.webCrypto = await webCryptoContracts();
+  result.secretKeys = await secretKeyContracts();
   result.node = nodeCryptoContracts();
   return result;
 }
@@ -247,6 +248,422 @@ async function webCryptoContracts() {
   const sharedA = hex(await subtle.deriveBits({ name: "X25519", public: xPairB.publicKey }, xPairA.privateKey, 256));
   const sharedB = hex(await subtle.deriveBits({ name: "X25519", public: xPairA.publicKey }, xPairB.privateKey, 256));
   result.generated.x25519 = { agree: sharedA === sharedB, length: sharedA.length };
+  return result;
+}
+
+// HMAC, AES, HKDF and PBKDF2 keys through every operation, including the order of validation errors.
+async function secretKeyContracts() {
+  const subtle = crypto.subtle;
+  const describe = value => {
+    if (value instanceof CryptoKey) return { type: value.type, algorithm: value.algorithm, usages: value.usages, extractable: value.extractable };
+    return value instanceof ArrayBuffer ? hex(value) : value;
+  };
+  const attempt = callback => asyncOutcome(async () => describe(await callback()));
+  const all = async cases => Object.fromEntries(await Promise.all(Object.entries(cases).map(async ([name, callback]) => [name, await attempt(callback)])));
+  const oct = (k, fields = {}) => ({ kty: "oct", k, ...fields });
+  const k128 = "AAAAAAAAAAAAAAAAAAAAAA";
+  const sha256 = { name: "HMAC", hash: "SHA-256" };
+  const hmacRaw = (bytes, fields = {}, usages = ["sign"]) => () => subtle.importKey("raw", bytes, { ...sha256, ...fields }, true, usages);
+  const hmacJwk = (jwk, fields = {}, usages = ["sign"], extractable = true) => () => subtle.importKey("jwk", jwk, { ...sha256, ...fields }, extractable, usages);
+  const aesJwk = (jwk, usages = ["encrypt"], name = "AES-GCM") => () => subtle.importKey("jwk", jwk, name, true, usages);
+  const exportRaw = make => async () => hex(await subtle.exportKey("raw", await make()));
+  const ones = () => new Uint8Array([255, 255, 255]);
+  const hkdf = (usages = ["deriveBits", "deriveKey"]) => subtle.importKey("raw", new Uint8Array(8), "HKDF", false, usages);
+  const pbkdf2 = () => subtle.importKey("raw", new Uint8Array(8), "PBKDF2", false, ["deriveBits", "deriveKey"]);
+  const hkdfParams = { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(), info: new Uint8Array() };
+  const pbkdf2Params = { name: "PBKDF2", hash: "SHA-256", salt: new Uint8Array(), iterations: 2 };
+  const hkdfBits = (fields, length) => async () => subtle.deriveBits({ ...hkdfParams, ...fields }, await hkdf(), length);
+  const pbkdf2Bits = (fields, length) => async () => subtle.deriveBits({ ...pbkdf2Params, ...fields }, await pbkdf2(), length);
+  const hkdfKey = (derived, usages = ["sign"]) => async () => subtle.deriveKey(hkdfParams, await hkdf(), derived, true, usages);
+  const hmacKey = (usages = ["sign", "verify"]) => subtle.importKey("raw", new Uint8Array([1, 2, 3]), sha256, true, usages);
+  const aesKey = (name, usages = name === "AES-KW" ? ["wrapKey", "unwrapKey"] : ["encrypt", "decrypt", "wrapKey", "unwrapKey"], extractable = true) => subtle.importKey("raw", new Uint8Array(16), name, extractable, usages);
+  const gcm = { name: "AES-GCM", iv: new Uint8Array(12) };
+  const ctr = { name: "AES-CTR", counter: new Uint8Array(16), length: 64 };
+  const gcmUnwrap = (text, algorithm, usages = ["sign"], format = "jwk") => async () => {
+    const key = await aesKey("AES-GCM");
+    return subtle.unwrapKey(format, await subtle.encrypt(gcm, key, text), key, gcm, algorithm, true, usages);
+  };
+  const result = {};
+  result.usages = await all({
+    order: hmacRaw(new Uint8Array(3), {}, ["verify", "sign", "verify"]),
+    derivation: () => hkdf(["deriveBits", "deriveKey"]),
+    generated: () => subtle.generateKey({ name: "AES-CBC", length: 192 }, false, ["wrapKey", "encrypt", "encrypt"]),
+    stringified: hmacRaw(new Uint8Array(3), {}, [{ toString: () => "sign" }]),
+    number: hmacRaw(new Uint8Array(3), {}, [1]),
+    string: hmacRaw(new Uint8Array(3), {}, "sign"),
+    set: hmacRaw(new Uint8Array(3), {}, new Set(["sign"])),
+    missing: () => subtle.importKey("raw", new Uint8Array(3), sha256, true),
+    aesWrap: () => Promise.all(["AES-CTR", "AES-CBC", "AES-GCM"].map(name => aesKey(name).then(describe))),
+    kwEncrypt: () => aesKey("AES-KW", ["encrypt"]),
+    beforeHash: () => subtle.importKey("raw", new Uint8Array(3), { name: "HMAC" }, false, ["encrypt"]),
+    beforeKeyType: hmacJwk({ kty: "RSA" }, {}, ["encrypt"]),
+    beforeKeyData: aesJwk(oct("@@"), ["sign"]),
+    beforeFormat: () => subtle.importKey("spki", new Uint8Array(3), sha256, true, ["encrypt"]),
+    generateBeforeLength: () => subtle.generateKey({ name: "AES-GCM", length: 100 }, false, ["sign"]),
+    generateMissingLength: () => subtle.generateKey({ name: "AES-GCM" }, false, ["sign"]),
+    generateHmacLength: () => subtle.generateKey({ ...sha256, length: 0 }, false, ["encrypt"]),
+    generateAfterHash: () => subtle.generateKey({ name: "HMAC", hash: "SHA-999" }, false, ["encrypt"]),
+  });
+  result.emptyUsages = await all({
+    hmac: hmacRaw(new Uint8Array(3), {}, []),
+    hmacBadLength: hmacRaw(new Uint8Array(), {}, []),
+    hmacBadHash: hmacRaw(new Uint8Array(3), { hash: "SHA-999" }, []),
+    aes: () => aesKey("AES-GCM", []),
+    aesKeyOps: aesJwk(oct(k128, { key_ops: [] }), []),
+    hkdf: () => hkdf([]),
+    pbkdf2: () => subtle.importKey("raw", new Uint8Array(3), "PBKDF2", false, []),
+    generateHmac: () => subtle.generateKey(sha256, true, []),
+    generateHmacLength: () => subtle.generateKey({ ...sha256, length: 0 }, true, []),
+    generateAes: () => subtle.generateKey({ name: "AES-GCM", length: 128 }, true, []),
+    generateAesLength: () => subtle.generateKey({ name: "AES-GCM", length: 100 }, true, []),
+    derived: hkdfKey({ name: "AES-GCM", length: 128 }, []),
+    unwrapped: gcmUnwrap(text('{"kty":"oct","k":"AAAA"}'), sha256, []),
+    privateKey: async () => {
+      const pair = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+      return subtle.importKey("pkcs8", await subtle.exportKey("pkcs8", pair.privateKey), { name: "ECDSA", namedCurve: "P-256" }, true, []);
+    },
+  });
+  result.formats = await all({
+    upperRaw: () => subtle.importKey("RAW", new Uint8Array(3), sha256, true, ["sign"]),
+    upperAes: () => subtle.importKey("RAW", new Uint8Array(16), "AES-GCM", true, ["encrypt"]),
+    upperHkdf: () => subtle.importKey("RAW", new Uint8Array(3), "HKDF", false, ["sign"]),
+    upperJwk: () => subtle.importKey("JWK", oct("AAAA"), sha256, true, ["sign"]),
+    number: () => subtle.importKey(5, new Uint8Array(3), sha256, true, ["sign"]),
+    spkiHmac: () => subtle.importKey("spki", new Uint8Array(3), sha256, true, ["sign"]),
+    spkiHmacNoHash: () => subtle.importKey("spki", new Uint8Array(3), { name: "HMAC" }, true, ["sign"]),
+    spkiAes: () => subtle.importKey("spki", new Uint8Array(16), "AES-GCM", true, ["encrypt"]),
+    unknownWithObject: () => subtle.importKey("foo", oct("AAAA"), "FOO", true, ["sign"]),
+    rawWithObject: () => subtle.importKey("raw", oct("AAAA"), "FOO", true, ["encrypt"]),
+    jwkWithBytes: () => subtle.importKey("jwk", new Uint8Array(3), "HKDF", false, ["deriveBits"]),
+    rawArrayBuffer: hmacRaw(new ArrayBuffer(3)),
+    rawDataView: hmacRaw(new DataView(new ArrayBuffer(3))),
+    upperSpki: () => subtle.importKey("SPKI", new Uint8Array(16), { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]),
+  });
+  result.algorithms = await all({
+    lowerNames: () => subtle.importKey("raw", new Uint8Array(3), { name: "hmac", hash: "sha-256" }, true, ["sign"]),
+    hashObject: hmacRaw(new Uint8Array(3), { hash: { name: "sha-384" } }),
+    md5: hmacRaw(new Uint8Array(3), { hash: "MD5" }),
+    md5Sign: async () => hex(await subtle.sign("HMAC", await hmacRaw(new Uint8Array(3), { hash: "md5" })(), new Uint8Array(1))),
+    md5Jwk: async () => subtle.exportKey("jwk", await hmacRaw(new Uint8Array(3), { hash: "MD5" })()),
+    sha224: hmacRaw(new Uint8Array(3), { hash: "SHA-224" }),
+    hashNull: hmacRaw(new Uint8Array(3), { hash: null }),
+    hashEmpty: hmacRaw(new Uint8Array(3), { hash: {} }),
+    empty: () => subtle.importKey("raw", new Uint8Array(3), {}, true, ["sign"]),
+    null: () => subtle.importKey("raw", new Uint8Array(3), null, true, ["sign"]),
+    number: () => subtle.importKey("raw", new Uint8Array(3), 5, true, ["sign"]),
+    symbolName: () => subtle.importKey("raw", new Uint8Array(3), { name: Symbol("HMAC") }, true, ["sign"]),
+    unknown: () => subtle.importKey("jwk", oct("AAAA"), "FOO", false, ["sign"]),
+    extFalseUnknown: () => subtle.importKey("jwk", { kty: "oct", ext: false }, "FOO", true, ["sign"]),
+    aesIgnoresLength: () => subtle.importKey("raw", new Uint8Array(16), { name: "AES-GCM", length: 256, hash: "SHA-999" }, true, ["encrypt"]),
+    aesHugeLength: () => subtle.importKey("raw", new Uint8Array(16), { name: "AES-GCM", length: 2 ** 40 }, true, ["encrypt"]),
+    digestEmpty: () => subtle.digest({}, new Uint8Array()),
+    digestNull: () => subtle.digest(null, new Uint8Array()),
+    digestNumber: () => subtle.digest(5, new Uint8Array()),
+    digestDataBeforeName: () => subtle.digest("SHA-999", "x"),
+    digestStreamEmpty: () => new crypto.DigestStream({}),
+    digestStreamNull: () => new crypto.DigestStream(null),
+    digestStreamNumber: () => new crypto.DigestStream(5),
+  });
+  result.hmacLengths = await all(Object.fromEntries([24, 20, 17, 16, 25, 0, -1, 20.5, "20", true, NaN, null, Infinity, -Infinity, -0.5, 2 ** 31 - 1, 2 ** 31, -(2 ** 31) - 1, [20], { valueOf: () => 20 }]
+    .map(length => [String(length), hmacRaw(new Uint8Array(3), { length })])));
+  Object.assign(result.hmacLengths, await all({
+    bigint: hmacRaw(new Uint8Array(3), { length: 20n }),
+    symbol: hmacRaw(new Uint8Array(3), { length: Symbol("length") }),
+    hugeBeforeUsages: hmacRaw(new Uint8Array(3), { length: 2 ** 40 }, ["encrypt"]),
+    emptyBeforeHash: hmacRaw(new Uint8Array(), { hash: "SHA-999" }),
+    mismatchBeforeHash: hmacRaw(new Uint8Array(3), { hash: "SHA-999", length: 8 }),
+    jwk: hmacJwk(oct("AAAA"), { length: 20 }),
+    zeroed20: exportRaw(hmacRaw(ones(), { length: 20 })),
+    zeroed17: exportRaw(hmacRaw(ones(), { length: 17 })),
+    zeroedJwk: async () => subtle.exportKey("jwk", await hmacRaw(ones(), { length: 20 })()),
+    zeroedSign: async () => [
+      hex(await subtle.sign("HMAC", await hmacRaw(ones(), { length: 20 })(), new Uint8Array(1))),
+      hex(await subtle.sign("HMAC", await hmacRaw(new Uint8Array([255, 255, 240]))(), new Uint8Array(1))),
+    ],
+  }));
+  result.hmacJwk = await all({
+    ...Object.fromEntries([
+      ["SHA-256", "HS256"], ["SHA-1", "HS1"], ["SHA-384", "HS384"], ["SHA-512", "HS512"], ["SHA-256", "HS512"], ["SHA-256", "hs256"],
+      ["SHA-256", "XYZ"], ["SHA-512", ""], ["SHA-1", "HS160"], ["SHA-999", "HS256"], ["SHA-999", "HS999"], ["sha-256", "HS256"],
+      ["sha-256", "XYZ"], ["MD5", "HS"], ["MD5", "HS5"], ["XXX-256", "HS256"], [{ name: "SHA-256" }, "HS256"], [{ name: "sha-256" }, "HS256"],
+    ].map(([hash, alg]) => [`${JSON.stringify(hash)}:${alg}`, hmacJwk(oct("AAAA", { alg }), { hash })])),
+    algBeforeLength: hmacJwk(oct("", { alg: "HS512" })),
+    algAfterKeyType: hmacJwk({ kty: "RSA", alg: "HS512" }),
+    algAfterKeyData: hmacJwk(oct("@@", { alg: "HS512" })),
+    keyTypeBeforeHash: hmacJwk({ kty: "RSA" }, { hash: "SHA-999" }),
+    keyDataBeforeHash: hmacJwk(oct("@@"), { hash: "SHA-999" }),
+    noHash: () => subtle.importKey("jwk", { kty: "RSA" }, { name: "HMAC" }, false, ["sign"]),
+    keyOpsIgnored: hmacJwk(oct("AAAA", { key_ops: ["verify", "verify"] })),
+    useIgnored: hmacJwk(oct("AAAA", { use: "enc" })),
+    noKeyType: hmacJwk({ k: "AAAA" }),
+    keyTypeArray: hmacJwk({ kty: ["oct"], k: "AAAA" }),
+    keyDataArray: hmacJwk({ kty: "oct", k: ["AAAA"] }),
+    noKeyData: hmacJwk({ kty: "oct" }),
+    numericKeyData: hmacJwk({ kty: "oct", k: 5 }),
+    array: hmacJwk([]),
+    null: hmacJwk(null),
+    string: hmacJwk("oct"),
+    inherited: aesJwk(Object.create(oct(k128))),
+    keyOpsString: hmacJwk(oct("AAAA", { key_ops: "sign" })),
+    keyOpsNull: hmacJwk(oct("AAAA", { key_ops: null })),
+    othString: hmacJwk(oct("AAAA", { oth: "x" })),
+    ...Object.fromEntries([false, "", null, 0, true, "no"].map(ext => [`ext:${JSON.stringify(ext)}`, hmacJwk(oct("AAAA", { ext }))])),
+    extFalseNotExtractable: hmacJwk(oct("AAAA", { ext: false }), {}, ["sign"], false),
+    extBeforeUsages: hmacJwk(oct("AAAA", { ext: false }), {}, ["encrypt"]),
+    extBeforeKeyType: hmacJwk({ kty: "RSA", ext: false }),
+  });
+  result.base64url = await all(Object.fromEntries(["", "A", "AA", "AAA", "AAAA", "AA=", "AA==", "AAA=", "AAAA=", "AAAA==", "AB", "AB==", "A+A/", "-_-_", "A-A_", "/w", "_w", "__8",
+    "A A A A", "AA\nAA", "AA\tAA", "AA\vAA", "AA\fAA", "AA\rAA", " AAAA ", "AA==AA", "AAA=A", "=AAA", "AAAA ", "AA AA=", "AA = =", "AA=\n=", "AAAAA", "AAAAAA", "AAAA.", "éAAA"]
+    .map(k => [JSON.stringify(k), exportRaw(hmacJwk(oct(k)))])));
+  result.aesJwk = await all({
+    good: aesJwk(oct(k128)),
+    alg: aesJwk(oct(k128, { alg: "A128GCM" })),
+    algMismatch: aesJwk(oct(k128, { alg: "A256GCM" })),
+    algLower: aesJwk(oct(k128, { alg: "a128gcm" })),
+    algNumber: aesJwk(oct(k128, { alg: 5 })),
+    algNull: aesJwk(oct(k128, { alg: null })),
+    algCbc: aesJwk(oct(k128, { alg: "A128CBC" }), ["encrypt"], "AES-CBC"),
+    algCbcMismatch: aesJwk(oct(k128, { alg: "A128GCM" }), ["encrypt"], "AES-CBC"),
+    algCtr: aesJwk(oct(k128, { alg: "A128CTR" }), ["encrypt"], "AES-CTR"),
+    algKw: aesJwk(oct("A".repeat(32), { alg: "A192KW" }), ["wrapKey"], "aes-kw"),
+    useEnc: aesJwk(oct(k128, { use: "enc" })),
+    useSig: aesJwk(oct(k128, { use: "sig" })),
+    useEmpty: aesJwk(oct(k128, { use: "" })),
+    useNull: aesJwk(oct(k128, { use: null })),
+    useSigWithoutUsages: aesJwk(oct(k128, { use: "sig" }), []),
+    keyOps: aesJwk(oct(k128, { key_ops: ["encrypt"] })),
+    keyOpsExtra: aesJwk(oct(k128, { key_ops: ["encrypt", "decrypt", "sign"] })),
+    keyOpsMissing: aesJwk(oct(k128, { key_ops: ["decrypt"] })),
+    keyOpsPartial: aesJwk(oct(k128, { key_ops: ["encrypt"] }), ["encrypt", "decrypt"]),
+    keyOpsEmpty: aesJwk(oct(k128, { key_ops: [] })),
+    keyOpsDuplicate: aesJwk(oct(k128, { key_ops: ["encrypt", "encrypt"] })),
+    keyOpsNumbers: aesJwk(oct(k128, { key_ops: [1] })),
+    duplicateBeforeMissing: aesJwk(oct(k128, { key_ops: ["decrypt", "decrypt"] })),
+    useBeforeKeyOps: aesJwk(oct(k128, { use: "sig", key_ops: ["decrypt"] })),
+    algBeforeUse: aesJwk(oct(k128, { use: "sig", alg: "A256GCM" })),
+    algBeforeKeyOps: aesJwk(oct(k128, { key_ops: ["decrypt"], alg: "A256GCM" })),
+    lengthBeforeAlg: aesJwk(oct("AAAA", { alg: "A256GCM" })),
+    lengthBeforeKeyOps: aesJwk(oct("AAAA", { key_ops: ["decrypt"] })),
+    keyType: aesJwk({ kty: "RSA", use: "sig" }),
+    noKeyData: aesJwk({ kty: "oct" }),
+    badKeyData: aesJwk(oct("@@")),
+    rawEmpty: () => subtle.importKey("raw", new Uint8Array(), "AES-GCM", true, ["encrypt"]),
+    extFalse: aesJwk(oct(k128, { ext: false }), ["sign"]),
+  });
+  result.derivationImport = await all({
+    hkdfExtractable: () => subtle.importKey("raw", new Uint8Array(3), "HKDF", true, ["deriveBits"]),
+    pbkdf2Extractable: () => subtle.importKey("raw", new Uint8Array(3), "PBKDF2", true, ["deriveBits"]),
+    extractableBeforeFormat: () => subtle.importKey("jwk", oct("AAAA"), "HKDF", true, ["deriveBits"]),
+    usagesBeforeExtractable: () => subtle.importKey("raw", new Uint8Array(3), "PBKDF2", true, ["sign"]),
+    usagesBeforeFormat: () => subtle.importKey("jwk", oct("AAAA"), "PBKDF2", false, ["sign"]),
+    extractableBeforeEmptyUsages: () => subtle.importKey("raw", new Uint8Array(3), "HKDF", true, []),
+    jwk: () => subtle.importKey("jwk", oct("AAAA"), "PBKDF2", false, ["deriveBits"]),
+    spki: () => subtle.importKey("spki", new Uint8Array(3), "HKDF", false, ["deriveBits"]),
+    extFalse: () => subtle.importKey("jwk", oct("AAAA", { ext: false }), "HKDF", true, ["deriveBits"]),
+    emptyKey: () => subtle.importKey("raw", new Uint8Array(), "HKDF", false, ["deriveBits"]),
+    lowerName: () => subtle.importKey("raw", new Uint8Array(3), "pbkdf2", false, ["deriveKey"]),
+    export: async () => subtle.exportKey("raw", await hkdf()),
+  });
+  result.generate = await all({
+    hmac20: async () => {
+      const key = await subtle.generateKey({ ...sha256, length: 20 }, true, ["sign"]);
+      const bytes = new Uint8Array(await subtle.exportKey("raw", key));
+      return [describe(key), bytes.length, bytes[2] & 0x0f];
+    },
+    hmac1: async () => { const bytes = new Uint8Array(await subtle.exportKey("raw", await subtle.generateKey({ ...sha256, length: 1 }, true, ["sign"]))); return [bytes.length, bytes[0] & 0x7f]; },
+    hmacLarge: async () => {
+      const key = await subtle.generateKey({ ...sha256, length: 2 ** 20 + 3 }, true, ["sign"]);
+      const bytes = new Uint8Array(await subtle.exportKey("raw", key));
+      return [describe(key), bytes.length, bytes[bytes.length - 1] & 0x1f];
+    },
+    hmacImportLarge: () => subtle.importKey("raw", new Uint8Array(200000), sha256, true, ["sign"]),
+    hmacFraction: () => subtle.generateKey({ ...sha256, length: 20.5 }, true, ["sign"]),
+    hmacNegative: () => subtle.generateKey({ ...sha256, length: -8 }, true, ["sign"]),
+    hmacZero: () => subtle.generateKey({ ...sha256, length: 0 }, true, ["sign"]),
+    hmacNaN: () => subtle.generateKey({ ...sha256, length: "abc" }, true, ["sign"]),
+    hmacHuge: () => subtle.generateKey({ name: "HMAC", hash: "SHA-999", length: 2 ** 31 }, true, ["sign"]),
+    hmacSha1: () => subtle.generateKey({ name: "HMAC", hash: "sha-1" }, true, ["verify", "sign"]),
+    hmacSha384: () => subtle.generateKey({ name: "HMAC", hash: "SHA-384" }, true, ["sign"]),
+    hmacSha512: () => subtle.generateKey({ name: "HMAC", hash: { name: "SHA-512" } }, true, ["sign"]),
+    hmacMd5: () => subtle.generateKey({ name: "HMAC", hash: "MD5" }, true, ["sign"]),
+    hmacNoHash: () => subtle.generateKey({ name: "HMAC", length: 0 }, true, ["encrypt"]),
+    hmacBadHash: () => subtle.generateKey({ name: "HMAC", hash: "SHA-999" }, true, ["sign"]),
+    hmacJwk: async () => subtle.exportKey("jwk", await subtle.generateKey({ ...sha256, length: 24 }, true, ["verify", "sign"])).then(jwk => [jwk.key_ops, jwk.alg, jwk.k.length]),
+    aesString: () => subtle.generateKey({ name: "AES-GCM", length: "128" }, true, ["encrypt"]),
+    aesFraction: () => subtle.generateKey({ name: "AES-GCM", length: 128.5 }, true, ["encrypt"]),
+    aes100: () => subtle.generateKey({ name: "AES-GCM", length: 100 }, true, ["encrypt"]),
+    aesZero: () => subtle.generateKey({ name: "AES-GCM", length: "abc" }, true, ["encrypt"]),
+    aesHuge: () => subtle.generateKey({ name: "AES-GCM", length: 2 ** 31 }, true, ["encrypt"]),
+    aesNoLength: () => subtle.generateKey({ name: "AES-GCM" }, true, ["encrypt"]),
+    aesLower: () => subtle.generateKey({ name: "aes-kw", length: 256 }, true, ["wrapKey"]),
+    aesHashNull: () => subtle.generateKey({ name: "AES-GCM", length: 128, hash: null }, true, ["encrypt"]),
+    aesExponent: () => subtle.generateKey({ name: "AES-GCM", length: 128, publicExponent: "x" }, true, ["encrypt"]),
+    hkdf: () => subtle.generateKey({ name: "HKDF" }, false, ["sign"]),
+    pbkdf2: () => subtle.generateKey("PBKDF2", false, ["deriveBits"]),
+    unknown: () => subtle.generateKey("FOO", false, ["sign"]),
+    usagesNull: () => subtle.generateKey({ name: "AES-GCM", length: 128 }, false, null),
+    algorithmNull: () => subtle.generateKey(null, false, ["sign"]),
+  });
+  result.deriveBits = await all({
+    hkdfNoSalt: hkdfBits({ salt: undefined }, 256),
+    hkdfNoInfo: hkdfBits({ info: undefined }, 256),
+    hkdfNoHash: hkdfBits({ hash: undefined }, 256),
+    hkdfHashNull: hkdfBits({ hash: null }, 256),
+    hkdfBadHash: hkdfBits({ hash: "SHA-999", salt: undefined }, 256),
+    hkdfMd5: hkdfBits({ hash: "MD5" }, 128),
+    hkdfSaltString: hkdfBits({ salt: "abc" }, 256),
+    hkdfSaltNull: hkdfBits({ salt: null }, 256),
+    hkdfInfoString: hkdfBits({ info: "abc" }, 256),
+    hkdfIterations: hkdfBits({ iterations: 2 ** 40 }, 16),
+    hkdfPublic: hkdfBits({ public: {} }, 16),
+    hkdfLengthNull: hkdfBits({}, null),
+    hkdfLengthMissing: async () => subtle.deriveBits(hkdfParams, await hkdf()),
+    hkdfLengthZero: hkdfBits({}, 0),
+    hkdfLengthNegative: hkdfBits({ salt: undefined }, -8),
+    hkdfLength20: hkdfBits({}, 20),
+    hkdfLengthHuge: hkdfBits({}, 2 ** 32),
+    hkdfLengthString: hkdfBits({}, "16"),
+    hkdfLengthFraction: hkdfBits({}, 16.9),
+    hkdfLengthNaN: hkdfBits({}, NaN),
+    hkdfTooLong: hkdfBits({}, 255 * 32 * 8 + 8),
+    hkdfLowerName: async () => subtle.deriveBits({ ...hkdfParams, name: "hkdf" }, await hkdf(), 16),
+    hkdfStringAlgorithm: async () => subtle.deriveBits("HKDF", await hkdf(), 16),
+    hkdfEmptyKey: async () => subtle.deriveBits(hkdfParams, await subtle.importKey("raw", new Uint8Array(), "HKDF", false, ["deriveBits"]), 16),
+    wrongAlgorithm: async () => subtle.deriveBits({ ...hkdfParams, name: "PBKDF2" }, await hkdf(), 16),
+    unknownAlgorithm: async () => subtle.deriveBits({ ...hkdfParams, name: "FOO" }, await hkdf(), 16),
+    emptyAlgorithm: async () => subtle.deriveBits({}, await hkdf(), 16),
+    nullAlgorithm: async () => subtle.deriveBits(null, await hkdf(), 16),
+    noUsage: async () => subtle.deriveBits(hkdfParams, await hkdf(["deriveKey"]), 16),
+    notKey: () => subtle.deriveBits(hkdfParams, {}, -8),
+    hmacKey: async () => subtle.deriveBits({ ...hkdfParams, name: "HMAC" }, await hmacKey(), 16),
+    pbkdf2NoIterations: pbkdf2Bits({ iterations: undefined }, null),
+    pbkdf2NoSalt: pbkdf2Bits({ salt: undefined, iterations: undefined }, 16),
+    pbkdf2BadHash: pbkdf2Bits({ hash: "SHA-999", salt: undefined }, 16),
+    pbkdf2Md5: pbkdf2Bits({ hash: "MD5" }, 16),
+    pbkdf2IterationsZero: pbkdf2Bits({ iterations: 0 }, 256),
+    pbkdf2IterationsNegative: pbkdf2Bits({ iterations: -1 }, 256),
+    pbkdf2IterationsString: pbkdf2Bits({ iterations: "3" }, 16),
+    pbkdf2IterationsFraction: pbkdf2Bits({ iterations: 2.9 }, 16),
+    pbkdf2IterationsNaN: pbkdf2Bits({ iterations: NaN }, 16),
+    pbkdf2IterationsHuge: pbkdf2Bits({ iterations: 2 ** 31 }, 16),
+    pbkdf2LengthBeforeIterations: pbkdf2Bits({ iterations: 0 }, 20),
+    pbkdf2LengthNull: pbkdf2Bits({}, null),
+    pbkdf2LengthZero: pbkdf2Bits({}, 0),
+    pbkdf2EmptyPassword: async () => subtle.deriveBits(pbkdf2Params, await subtle.importKey("raw", new Uint8Array(), "PBKDF2", false, ["deriveBits"]), 16),
+  });
+  result.deriveKey = await all({
+    aesNoLength: hkdfKey({ name: "AES-GCM" }, ["encrypt"]),
+    aesString: hkdfKey("AES-GCM", ["encrypt"]),
+    aes100: hkdfKey({ name: "AES-GCM", length: 100 }, ["encrypt"]),
+    aesLengthString: hkdfKey({ name: "AES-GCM", length: "128" }, ["encrypt"]),
+    aesLowerName: hkdfKey({ name: "aes-gcm", length: 128 }, ["encrypt"]),
+    aesBadUsage: hkdfKey({ name: "AES-GCM", length: 128 }, ["sign"]),
+    lengthBeforeUsages: hkdfKey({ name: "AES-GCM", length: 100 }, ["sign"]),
+    kwZero: hkdfKey({ name: "AES-KW", length: 0 }, ["wrapKey"]),
+    huge: hkdfKey({ name: "AES-GCM", length: 2 ** 40 }, ["encrypt"]),
+    nullAlgorithm: hkdfKey(null),
+    hmacZero: hkdfKey({ ...sha256, length: 0 }),
+    hmacNegative: hkdfKey({ ...sha256, length: -8 }),
+    hmac20: hkdfKey({ ...sha256, length: 20 }),
+    hmacNoHash: hkdfKey({ name: "HMAC", length: 16 }),
+    hmacNoHashOrLength: hkdfKey({ name: "HMAC" }),
+    hmacString: hkdfKey("HMAC"),
+    hmacBadHash: hkdfKey({ name: "HMAC", hash: "SHA-999" }),
+    hmacMd5: hkdfKey({ name: "HMAC", hash: "MD5" }),
+    hmacSha1: hkdfKey({ name: "HMAC", hash: "SHA-1" }),
+    hmacSha384: hkdfKey({ name: "HMAC", hash: "SHA-384" }),
+    hmacLowerName: hkdfKey({ name: "hmac", hash: "sha-256", length: 16 }),
+    hmacBytes: async () => hex(await subtle.exportKey("raw", await hkdfKey({ ...sha256, length: 16 })())),
+    hkdf: async () => subtle.deriveKey(hkdfParams, await hkdf(), "HKDF", false, ["deriveBits"]),
+    pbkdf2: async () => subtle.deriveKey(hkdfParams, await hkdf(), "PBKDF2", false, ["deriveBits"]),
+    ecdsa: hkdfKey({ name: "ECDSA", namedCurve: "P-256" }),
+    unknown: hkdfKey("FOO"),
+    noUsage: async () => subtle.deriveKey(hkdfParams, await hkdf(["deriveBits"]), { name: "AES-GCM", length: 100 }, true, ["encrypt"]),
+    derivedBeforeParams: async () => subtle.deriveKey({ ...hkdfParams, salt: undefined }, await hkdf(), { name: "AES-GCM", length: 100 }, true, ["encrypt"]),
+    params: async () => subtle.deriveKey({ ...hkdfParams, salt: undefined }, await hkdf(), { name: "AES-GCM", length: 128 }, true, ["encrypt"]),
+    wrongAlgorithm: async () => subtle.deriveKey({ ...hkdfParams, name: "PBKDF2" }, await hkdf(), { name: "AES-GCM", length: 128 }, true, ["encrypt"]),
+    pbkdf2Hmac20: async () => subtle.deriveKey(pbkdf2Params, await pbkdf2(), { ...sha256, length: 20 }, true, ["sign"]),
+    pbkdf2Aes: async () => subtle.deriveKey(pbkdf2Params, await pbkdf2(), { name: "AES-CBC", length: 256 }, true, ["decrypt", "encrypt"]),
+    usagesNull: async () => subtle.deriveKey(hkdfParams, await hkdf(), { name: "AES-GCM", length: 128 }, true, null),
+  });
+  result.export = await all({
+    hmacJwk: async () => { const jwk = await subtle.exportKey("jwk", await hmacKey(["verify", "sign"])); return [Object.keys(jwk), jwk]; },
+    aesJwk: async () => { const jwk = await subtle.exportKey("jwk", await aesKey("AES-GCM", ["unwrapKey", "decrypt"])); return [Object.keys(jwk), jwk]; },
+    kwJwk: async () => subtle.exportKey("jwk", await aesKey("AES-KW", ["wrapKey", "unwrapKey"])),
+    ctrJwk: async () => subtle.exportKey("jwk", await subtle.importKey("raw", new Uint8Array(32), "AES-CTR", true, ["encrypt"])),
+    ecJwkFields: async () => Object.keys(await subtle.exportKey("jwk", (await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign"])).privateKey)),
+    upperRaw: async () => subtle.exportKey("RAW", await hmacKey()),
+    hmacSpki: async () => subtle.exportKey("spki", await hmacKey()),
+    aesSpki: async () => subtle.exportKey("spki", await aesKey("AES-GCM")),
+    aesNumber: async () => subtle.exportKey(5, await aesKey("AES-GCM")),
+    extractableBeforeFormat: async () => subtle.exportKey("foo", await aesKey("AES-GCM", ["encrypt"], false)),
+    notKey: () => subtle.exportKey("raw", {}),
+  });
+  result.wrap = await all({
+    jwkText: async () => { const key = await aesKey("AES-GCM"); return new TextDecoder().decode(await subtle.decrypt(gcm, key, await subtle.wrapKey("jwk", await hmacKey(["verify", "sign"]), key, gcm))); },
+    kwLowerName: async () => hex(await subtle.wrapKey("raw", await aesKey("AES-GCM"), await aesKey("AES-KW"), "aes-kw")),
+    kwShort: async () => subtle.wrapKey("raw", await hmacKey(), await aesKey("AES-KW"), "AES-KW"),
+    cbc: async () => hex(await subtle.wrapKey("raw", await hmacKey(), await aesKey("AES-CBC"), { name: "AES-CBC", iv: new Uint8Array(16) })),
+    ctr: async () => hex(await subtle.wrapKey("raw", await hmacKey(), await aesKey("AES-CTR"), ctr)),
+    wrongAlgorithm: async () => subtle.wrapKey("raw", await aesKey("AES-GCM"), await aesKey("AES-KW"), gcm),
+    unknownAlgorithm: async () => subtle.wrapKey("raw", await aesKey("AES-GCM"), await aesKey("AES-KW"), "FOO"),
+    noUsage: async () => subtle.wrapKey("raw", await aesKey("AES-GCM"), await aesKey("AES-KW", ["unwrapKey"]), "AES-KW"),
+    hmacWrapping: async () => subtle.wrapKey("raw", await aesKey("AES-GCM"), await hmacKey(), "HMAC"),
+    notExtractable: async () => subtle.wrapKey("foo", await aesKey("AES-GCM", ["encrypt"], false), await aesKey("AES-KW"), "AES-KW"),
+    badFormat: async () => subtle.wrapKey("RAW", await aesKey("AES-GCM"), await aesKey("AES-KW"), "AES-KW"),
+    notKey: async () => subtle.wrapKey("raw", {}, await aesKey("AES-KW"), "AES-KW"),
+    gcmNoIv: async () => subtle.wrapKey("raw", await hmacKey(), await aesKey("AES-GCM"), "AES-GCM"),
+    ctrNoLength: async () => subtle.wrapKey("raw", await hmacKey(), await aesKey("AES-CTR"), { name: "AES-CTR", counter: new Uint8Array(16) }),
+    kwIvString: async () => subtle.wrapKey("raw", await aesKey("AES-GCM"), await aesKey("AES-KW"), { name: "AES-KW", iv: "x" }),
+    unwrapJson: gcmUnwrap(text("{"), sha256),
+    unwrapBom: gcmUnwrap(text('﻿{"kty":"oct","k":"AAAA"}'), sha256),
+    unwrapNoKeyType: gcmUnwrap(text('{"k":"AAAA"}'), sha256),
+    unwrapArray: gcmUnwrap(text("[]"), sha256),
+    unwrapNull: gcmUnwrap(text("null"), sha256),
+    unwrapNumber: gcmUnwrap(text("5"), sha256),
+    unwrapKeyOpsString: gcmUnwrap(text('{"kty":"oct","k":"AAAA","key_ops":"x"}'), sha256),
+    unwrapJwk: gcmUnwrap(text('{"kty":"oct","k":"AAAA","key_ops":["sign","sign"]}'), sha256, ["verify", "sign"]),
+    unwrapExtFalse: gcmUnwrap(text('{"kty":"oct","k":"AAAA","ext":false}'), sha256),
+    unwrapRaw: gcmUnwrap(text("abc"), sha256, ["sign"], "raw"),
+    unwrapBadFormat: gcmUnwrap(text("abc"), sha256, ["sign"], "foo"),
+    unwrapBadAlgorithm: gcmUnwrap(text("abc"), "FOO", ["sign"], "raw"),
+    unwrapHkdfExtractable: gcmUnwrap(text("abc"), "HKDF", ["deriveBits"], "raw"),
+    unwrapWrongAlgorithm: async () => subtle.unwrapKey("raw", new Uint8Array(24), await aesKey("AES-GCM"), "AES-KW", "AES-GCM", true, ["encrypt"]),
+    unwrapNoUsage: async () => subtle.unwrapKey("raw", new Uint8Array(24), await aesKey("AES-KW", ["wrapKey"]), "AES-KW", "AES-GCM", true, ["encrypt"]),
+    unwrapCorrupt: async () => subtle.unwrapKey("raw", new Uint8Array(24), await aesKey("AES-KW"), "AES-KW", "AES-GCM", true, ["encrypt"]),
+    unwrapShort: async () => subtle.unwrapKey("raw", new Uint8Array(16), await aesKey("AES-KW"), "AES-KW", "AES-GCM", true, ["encrypt"]),
+    unwrapNotBytes: async () => subtle.unwrapKey("raw", "abc", await aesKey("AES-KW"), "AES-KW", "AES-GCM", true, ["encrypt"]),
+    roundTrip: async () => {
+      const kek = await aesKey("AES-KW");
+      const wrapped = await subtle.wrapKey("raw", await aesKey("AES-GCM"), kek, "AES-KW");
+      return Promise.all([["decrypt", "encrypt"], ["sign"]].map(usages => attempt(() => subtle.unwrapKey("raw", wrapped, kek, "AES-KW", "AES-GCM", true, usages))));
+    },
+  });
+  result.operations = await all({
+    signWrongAlgorithm: async () => subtle.sign("AES-GCM", await hmacKey(), new Uint8Array(1)),
+    signEmptyAlgorithm: async () => subtle.sign({}, await hmacKey(), new Uint8Array(1)),
+    signNullAlgorithm: async () => subtle.sign(null, await hmacKey(), new Uint8Array(1)),
+    signNoUsage: async () => subtle.sign("HMAC", await hmacKey(["verify"]), new Uint8Array(1)),
+    signNotKey: () => subtle.sign("HMAC", {}, new Uint8Array(1)),
+    signLowerName: async () => hex(await subtle.sign({ name: "hmac" }, await hmacKey(), new Uint8Array(1))),
+    verifyNotBytes: async () => subtle.verify("HMAC", await hmacKey(), "x", new Uint8Array(1)),
+    verifyLength20: async () => {
+      const key = await subtle.importKey("raw", ones(), { name: "HMAC", hash: "SHA-1", length: 20 }, false, ["sign", "verify"]);
+      const signature = await subtle.sign("HMAC", key, new Uint8Array([1]));
+      return [hex(signature), await subtle.verify("HMAC", key, signature, new Uint8Array([1]))];
+    },
+    encryptWrongAlgorithm: async () => subtle.encrypt({ name: "AES-CBC", iv: new Uint8Array(16) }, await aesKey("AES-GCM"), new Uint8Array(1)),
+    encryptNoUsage: async () => subtle.encrypt(gcm, await aesKey("AES-GCM", ["decrypt"]), new Uint8Array(1)),
+    encryptKw: async () => subtle.encrypt("AES-KW", await aesKey("AES-KW"), new Uint8Array(16)),
+    gcmIvString: async () => subtle.encrypt({ name: "AES-GCM", iv: "abc" }, await aesKey("AES-GCM"), new Uint8Array(1)),
+    gcmAdditionalDataNull: async () => subtle.encrypt({ ...gcm, additionalData: null }, await aesKey("AES-GCM"), new Uint8Array(1)),
+    gcmTagHuge: async () => subtle.encrypt({ ...gcm, tagLength: 2 ** 40 }, await aesKey("AES-GCM"), new Uint8Array(1)),
+    gcmTagString: async () => hex(await subtle.encrypt({ ...gcm, tagLength: "96" }, await aesKey("AES-GCM"), new Uint8Array(1))),
+    gcmTagNaN: async () => subtle.encrypt({ ...gcm, tagLength: "abc" }, await aesKey("AES-GCM"), new Uint8Array(1)),
+    ctrNoCounter: async () => subtle.encrypt({ name: "AES-CTR", length: 64 }, await aesKey("AES-CTR"), new Uint8Array(1)),
+    ctrLengthZero: async () => subtle.encrypt({ ...ctr, length: 0 }, await aesKey("AES-CTR"), new Uint8Array(1)),
+    cbcNoIv: async () => subtle.encrypt({ name: "AES-CBC" }, await aesKey("AES-CBC"), new Uint8Array(1)),
+  });
   return result;
 }
 
