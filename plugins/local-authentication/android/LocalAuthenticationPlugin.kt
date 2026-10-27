@@ -7,8 +7,6 @@ import com.tokamak.runtime.TokamakPlugin
 import com.tokamak.runtime.TokamakPluginError
 import com.tokamak.runtime.authenticateOwner
 import com.tokamak.runtime.requireOwnerAuthentication
-import kotlin.coroutines.resume
-import kotlinx.coroutines.suspendCancellableCoroutine
 
 /** The authentication the device owner performs. */
 enum class Authentication(val authenticators: Int) {
@@ -36,11 +34,6 @@ class TokamakLocalAuthenticationPlugin(
     suspend fun authenticate(authentication: Authentication, prompt: String) {
         if (prompt.isEmpty()) throw TokamakPluginError.typeError("prompt must be a non-empty string")
         host.requireOwnerAuthentication(authentication.authenticators)
-        suspendCancellableCoroutine { continuation ->
-            val cancel = host.authenticateOwner(prompt, authentication.authenticators, null, { failed ->
-                continuation.resumeWith(failed.map {})
-            }) { continuation.resume(Unit) }
-            continuation.invokeOnCancellation { cancel() }
-        }
+        host.authenticateOwner(prompt, authentication.authenticators)
     }
 }

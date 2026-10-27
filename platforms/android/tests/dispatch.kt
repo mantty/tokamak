@@ -283,7 +283,7 @@ class DispatchTest {
 
         override fun wouldPrompt(permission: String) = false
 
-        override fun requestPermissions(permissions: Set<String>, callback: (Map<String, Boolean>) -> Unit) = error("unused")
+        override suspend fun requestPermissions(permissions: Set<String>): Map<String, Boolean> = error("unused")
 
         /** The events emitted, by name, which the Worker's listeners answer with [reply]. */
         val emitted = mutableListOf<String>()

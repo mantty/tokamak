@@ -2,7 +2,6 @@ package com.tokamak.plugins.notifications
 
 import android.app.NotificationChannel
 import android.app.NotificationChannelGroup
-import android.app.NotificationManager
 import android.content.ContentResolver
 import android.content.Context
 import android.graphics.Color
@@ -56,14 +55,7 @@ internal class Setup(val config: SetupConfig) {
 
 /** An Android notification channel `setup` describes. */
 internal class ChannelSpec(val id: String, private val settings: ChannelSettings) {
-    private val importance =
-        when (settings.importance ?: Importance.Default) {
-            Importance.None -> NotificationManager.IMPORTANCE_NONE
-            Importance.Min -> NotificationManager.IMPORTANCE_MIN
-            Importance.Low -> NotificationManager.IMPORTANCE_LOW
-            Importance.Default -> NotificationManager.IMPORTANCE_DEFAULT
-            Importance.High -> NotificationManager.IMPORTANCE_HIGH
-        }
+    private val importance = (settings.importance ?: Importance.Default).value
 
     /** A non-empty pattern, which turns vibration on. */
     private val vibrationPattern: LongArray? = (settings.vibration as? Vibration.Pattern)?.value?.toLongArray()

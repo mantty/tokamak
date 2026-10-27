@@ -73,6 +73,6 @@ internal class TokamakPermissions(private val app: TokamakApplication) {
 
     private fun refused(): Set<String> = preferences.getStringSet(REFUSED, null).orEmpty()
 
-    private fun isGranted(permission: String): Boolean =
+    fun isGranted(permission: String): Boolean =
         app.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 }

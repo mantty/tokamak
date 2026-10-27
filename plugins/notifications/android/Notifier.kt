@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.service.notification.StatusBarNotification
 import com.tokamak.runtime.TokamakHost
 import com.tokamak.runtime.TokamakPluginError
+import com.tokamak.runtime.tokamakNotificationIcon
 import com.tokamak.runtime.tokamakPlugin
 import org.json.JSONObject
 
@@ -94,7 +95,7 @@ internal class Notifier(private val host: TokamakHost) {
         }
         val builder =
             Notification.Builder(context, channel)
-                .setSmallIcon(icon())
+                .setSmallIcon(context.tokamakNotificationIcon())
                 .setContentTitle(content.title)
                 .setContentText(content.body)
                 .setContentIntent(launch("opened\n${content.id}", opened, mutable = false))
@@ -138,15 +139,15 @@ internal class Notifier(private val host: TokamakHost) {
         content.timeoutAfter?.let(::setTimeoutAfter)
         content.sortKey?.let(::setSortKey)
         content.settingsText?.let(::setSettingsText)
-        content.lockScreenVisibility?.let(::setVisibility)
-        content.systemCategory?.let(::setCategory)
+        content.visibility?.let { setVisibility(it.value) }
+        content.androidCategory?.let { setCategory(it.category) }
         when (val progress = content.progress) {
             is Progress.ProgressValue -> setProgress(progress.max, progress.current, false)
             is Progress.IndeterminateProgress -> setProgress(0, 0, progress.indeterminate)
             null -> {}
         }
         content.publicVersion?.let { (title, body) ->
-            setPublicVersion(Notification.Builder(context, channel).setSmallIcon(icon()).setContentTitle(title).setContentText(body).build())
+            setPublicVersion(Notification.Builder(context, channel).setSmallIcon(context.tokamakNotificationIcon()).setContentTitle(title).setContentText(body).build())
         }
         content.icon?.let(images::get)?.let(::setLargeIcon)
         style(content.style, content.image?.let(images::get))?.let(::setStyle)
@@ -165,7 +166,7 @@ internal class Notifier(private val host: TokamakHost) {
         if (manager.activeNotifications.any { it.id == SUMMARY_ID && it.tag == group }) return
         val summary =
             Notification.Builder(context, channel)
-                .setSmallIcon(icon())
+                .setSmallIcon(context.tokamakNotificationIcon())
                 .setGroup(group)
                 .setGroupSummary(true)
                 .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
@@ -259,14 +260,6 @@ internal class Notifier(private val host: TokamakHost) {
         label?.let { builder.addRemoteInput(RemoteInput.Builder(INPUT_KEY).setLabel(it).build()) }
         return builder.build()
     }
-
-    /** The app's monochrome `drawable/tokamak_notification`, or its launcher icon. */
-    private fun icon(): Int =
-        context.resources
-            .getIdentifier("tokamak_notification", "drawable", context.packageName)
-            .takeIf { it != 0 }
-            ?: context.applicationInfo.icon.takeIf { it != 0 }
-            ?: android.R.drawable.sym_def_app_icon
 
     /** Launches the app with [response]'s extras. */
     private fun launch(identifier: String, response: Intent, mutable: Boolean): PendingIntent {

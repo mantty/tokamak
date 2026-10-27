@@ -198,11 +198,10 @@ interface TokamakHost {
 
     /**
      * Asks the user for [permissions] in the app's activity once earlier requests finish, then
-     * passes [callback] whether each is granted. Answers at once, without UI, when none would
-     * prompt; throws `NeedsUIError` when one would while the app is in the background. Call it on
-     * the main thread; [callback] runs on the main thread.
+     * returns whether each is granted. Answers at once, without UI, when none would prompt; throws
+     * `NeedsUIError` when one would while the app is in the background. Call it on the main thread.
      */
-    fun requestPermissions(permissions: Set<String>, callback: (Map<String, Boolean>) -> Unit)
+    suspend fun requestPermissions(permissions: Set<String>): Map<String, Boolean>
 
     /**
      * Delivers the plugin's event [name], which the Worker's listeners receive as
@@ -252,3 +251,9 @@ interface TokamakPlugins {
 
 /** The plugin with [id] in the app this context belongs to, or null when the app does not include it. */
 fun Context.tokamakPlugin(id: String): TokamakPlugin? = (applicationContext as TokamakPlugins).plugin(id)
+
+/** The app's monochrome `drawable/tokamak_notification`, or its launcher icon, for a notification's small icon. */
+fun Context.tokamakNotificationIcon(): Int =
+    resources.getIdentifier("tokamak_notification", "drawable", packageName).takeIf { it != 0 }
+        ?: applicationInfo.icon.takeIf { it != 0 }
+        ?: android.R.drawable.sym_def_app_icon
