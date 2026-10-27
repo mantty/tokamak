@@ -1041,7 +1041,9 @@ fn blob_type<'js>(ctx: &Ctx<'js>, options: Option<Value<'js>>) -> rquickjs::Resu
     if options.is_array() || options.is_function() {
         return Err(invalid("options", "object"));
     }
-    let options = options.into_object().ok_or_else(|| invalid("options", "object"))?;
+    let options = options
+        .into_object()
+        .ok_or_else(|| invalid("options", "object"))?;
     match options.get::<_, Value>("type")? {
         blob_type if blob_type.is_undefined() => Ok(String::new()),
         blob_type => blob_type

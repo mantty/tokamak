@@ -3,6 +3,7 @@ import { bufferBytes } from "../globals/conversions.mjs";
 import { Blob, File } from "../network/fetch.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 import { codedError } from "./errors.mjs";
+import { invalidArgType } from "./validators.mjs";
 
 const encodingNames = new Set(["utf8", "utf-8", "ascii", "latin1", "binary", "base64", "base64url", "hex", "ucs2", "ucs-2", "utf16le", "utf-16le"]);
 
@@ -121,21 +122,34 @@ function pattern(value, encoding) {
   return toBytes(value, true, encoding);
 }
 
+// workerd's `fromArrayBuffer`.
+function fromArrayBuffer(buffer, byteOffset, length) {
+  let offset = byteOffset === undefined ? 0 : +byteOffset;
+  if (Number.isNaN(offset)) offset = 0;
+  const maxLength = buffer.byteLength - offset;
+  if (maxLength < 0) throw outOfBufferBounds("offset");
+  let size = maxLength;
+  if (length !== undefined) {
+    size = +length;
+    if (!(size > 0)) size = 0;
+    else if (size > maxLength) throw outOfBufferBounds("length");
+  }
+  return new Buffer(buffer, offset, size);
+}
+
+function outOfBufferBounds(name) {
+  return codedError(RangeError, `"${name}" is outside of buffer bounds`, "ERR_BUFFER_OUT_OF_BOUNDS");
+}
+
 export class Buffer extends Uint8Array {
   static from(value, encodingOrOffset, length) {
     // Like workerd's, a string with an encoding that is not a non-empty string is utf8.
     if (typeof value === "string") return new Buffer(stringBytes(value, typeof encodingOrOffset === "string" && encodingOrOffset !== "" ? encodingOrOffset : "utf8"));
     if (value && value.type === "Buffer" && Array.isArray(value.data)) return new Buffer(value.data);
-    if (isArrayBufferLike(value)) {
-      const offset = encodingOrOffset === undefined ? 0 : integer(encodingOrOffset);
-      const available = value.byteLength - offset;
-      const size = length === undefined ? available : integer(length);
-      if (offset < 0 || size < 0 || offset + size > value.byteLength) throw rangeError("offset", offset, 0, value.byteLength);
-      return new Buffer(value, offset, size);
-    }
+    if (isArrayBufferLike(value)) return fromArrayBuffer(value, encodingOrOffset, length);
     if (ArrayBuffer.isView(value)) return value instanceof DataView ? new Buffer(value.buffer, value.byteOffset, value.byteLength) : new Buffer(Uint8Array.from(value));
     if (Array.isArray(value) || (value && typeof value.length === "number")) return new Buffer(value);
-    throw new TypeError("The first argument must be a string or an ArrayBuffer");
+    throw invalidArgType("first argument", ["string", "Buffer", "TypedArray", "ArrayBuffer", "SharedArrayBuffer", "Array", "Array-like Object"], value);
   }
 
   static alloc(size, fill = 0, encoding) {

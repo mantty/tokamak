@@ -62,16 +62,9 @@ impl<'js> ReadFields<'js> {
                 ),
             ));
         }
-        let view = Object::from_value(self.buffer.clone())?;
-        let start = usize::try_from(index_property(ctx, &view, "byteOffset")? + u64::from(offset))
-            .map_err(|_| out_of_bounds(ctx, "offset"))?;
+        let target: Value = read_buffer(ctx)?.call((self.buffer.clone(), offset, length))?;
         Ok(ReadRequest {
-            targets: vec![buffer_target(
-                ctx,
-                view.get("buffer")?,
-                start,
-                length as usize,
-            )?],
+            targets: vec![view_target(ctx, &target)?],
             position,
         })
     }
@@ -376,7 +369,7 @@ pub(super) fn vector_read<'js>(
     let position = optional_position(ctx, position)?;
     let targets = views
         .into_iter()
-        .map(|view| view_target(ctx, view))
+        .map(|view| view_target(ctx, &view))
         .collect::<rquickjs::Result<_>>()?;
     Ok(ReadRequest { targets, position })
 }
@@ -467,14 +460,26 @@ fn remaining_length<'js>(
     Ok(Value::new_number(ctx.clone(), byte_length - offset))
 }
 
-/// The range `view` covers in its `ArrayBuffer`.
-fn view_target<'js>(ctx: &Ctx<'js>, view: Value<'js>) -> rquickjs::Result<ReadTarget<'js>> {
-    let view = Object::from_value(view)?;
-    let offset = usize::try_from(index_property(ctx, &view, "byteOffset")?)
-        .map_err(|_| out_of_bounds(ctx, "offset"))?;
-    let length = usize::try_from(index_property(ctx, &view, "byteLength")?)
-        .map_err(|_| out_of_bounds(ctx, "length"))?;
-    buffer_target(ctx, view.get("buffer")?, offset, length)
+/// workerd's `readSync` target,
+/// `Buffer.from(buffer.buffer, buffer.byteOffset + offset, length)`, which
+/// reads the properties a Worker may define on the view.
+fn read_buffer<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
+    cached(ctx, "__tokamak_node_fs_read_buffer", |ctx| {
+        let buffer: Value =
+            crate::runtime_modules::module_namespace(ctx.clone(), "tokamak:node/buffer.mjs")?
+                .get("Buffer")?;
+        let target: Function = ctx.eval(
+            "Buffer => (view, offset, length) => Buffer.from(view.buffer, view.byteOffset + offset, length)",
+        )?;
+        target.call((buffer,))
+    })
+}
+
+/// The range `view` covers in its `ArrayBuffer`, as the engine holds it:
+/// workerd's native reads ignore properties a Worker defines on the view.
+fn view_target<'js>(ctx: &Ctx<'js>, view: &Value<'js>) -> rquickjs::Result<ReadTarget<'js>> {
+    let parts = crate::globals::view_parts(ctx, view)?;
+    buffer_target(ctx, parts.buffer, parts.offset, parts.length)
 }
 
 /// The bytes `offset..offset + length` of the `ArrayBuffer` `buffer`.

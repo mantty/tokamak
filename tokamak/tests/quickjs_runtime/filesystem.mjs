@@ -2069,6 +2069,64 @@ async function fileStreamContracts() {
   };
 }
 
+// Where reads put their bytes when a Worker overrides a view's `buffer`,
+// `byteOffset` or `byteLength`.
+async function viewPropertyContracts() {
+  const path = "/tmp/filesystem-view-properties";
+  fs.writeFileSync(path, "abcd");
+  const overrides = {
+    none: {},
+    typedArrayBuffer: { buffer: new Uint8Array(8) },
+    smallerBuffer: { buffer: new ArrayBuffer(2) },
+    numberBuffer: { buffer: 1 },
+    byteOffset: { byteOffset: 3 },
+    byteLength: { byteLength: 2 },
+  };
+  const views = {
+    uint8: () => new Uint8Array(new ArrayBuffer(8), 2, 4),
+    uint16: () => new Uint16Array(new ArrayBuffer(8), 2, 2),
+    dataView: () => new DataView(new ArrayBuffer(8), 2, 4),
+    shared: () => new Uint8Array(new SharedArrayBuffer(8), 2, 4),
+  };
+  const settled = start => new Promise(resolve => start((error, read) => resolve(error ? { error: failure(error) } : read)))
+    .catch(error => ({ thrown: failure(error) }));
+  const reads = {
+    readSync: (fd, view) => attempt(() => fs.readSync(fd, view, 0, 4, 0)),
+    readvSync: (fd, view) => attempt(() => fs.readvSync(fd, [view], 0)),
+    read: (fd, view) => settled(done => fs.read(fd, view, 0, 4, 0, done)),
+    readv: (fd, view) => settled(done => fs.readv(fd, [view], 0, done)),
+  };
+  const memoryOf = value => ArrayBuffer.isView(value) ? [...new Uint8Array(value.buffer)]
+    : value instanceof ArrayBuffer ? [...new Uint8Array(value)] : typeof value;
+  const result = {};
+  for (const [readName, read] of Object.entries(reads)) {
+    result[readName] = {};
+    for (const [overrideName, properties] of Object.entries(overrides)) {
+      result[readName][overrideName] = {};
+      for (const [viewName, makeView] of Object.entries(views)) {
+        const view = makeView();
+        const memory = new Uint8Array(view.buffer);
+        const replacement = properties.buffer;
+        for (const [name, value] of Object.entries(properties)) {
+          const own = ArrayBuffer.isView(value) ? new Uint8Array(value.length) : value instanceof ArrayBuffer ? new ArrayBuffer(value.byteLength) : value;
+          Object.defineProperty(view, name, { value: own });
+        }
+        const fd = fs.openSync(path, "r");
+        try {
+          result[readName][overrideName][viewName] = {
+            outcome: await read(fd, view),
+            memory: [...memory],
+            replacement: replacement === undefined ? undefined : memoryOf(view.buffer),
+          };
+        } finally {
+          fs.closeSync(fd);
+        }
+      }
+    }
+  }
+  return result;
+}
+
 // The Blob `openAsBlob` gives, also after a Worker replaces or deletes the
 // global `Blob`, which workerd's `openAsBlob` does not read.
 async function blobContracts() {
@@ -2139,5 +2197,6 @@ export async function filesystemContracts() {
   result.descriptorKinds = descriptorKindContracts();
   result.streams = await fileStreamContracts();
   result.blobs = await blobContracts();
+  result.viewProperties = await viewPropertyContracts();
   return result;
 }
