@@ -280,7 +280,9 @@ instead, which closing or the invocation's end releases.
 The manifest's `platforms` entries name the native class. Every Swift file in
 `apple/` and every Kotlin file in `android/` compiles into the app. Support one
 platform if that is what the capability needs. Add permissions and
-other packaging metadata through the existing platform build hooks.
+other packaging metadata through the existing platform build hooks. On macOS,
+Swift `tokamakEntitlement(_:)` returns the value of one of the app's
+entitlements, or nil when its signature lacks it.
 
 A build script can set Apple's `compilation-conditions`, Swift compilation
 conditions that `#if` blocks test. Each starts with the plugin's id in
