@@ -5,6 +5,28 @@ async function caught(callback) {
   catch (error) { return error === null ? null : typeof error === "object" ? [error.name, error.message] : [typeof error, error]; }
 }
 
+// An upload of `limit` 1 KiB chunks and its state. `settled()` waits up to a second for the upload to
+// end or be cancelled, which runtimes do at no fixed time after its fetch settles or its response ends.
+function trackedUpload(limit = Infinity) {
+  const state = { ended: false, cancelled: 0, reason: null };
+  const settled = Promise.withResolvers();
+  let count = 0;
+  const body = new ReadableStream({
+    async pull(controller) {
+      await new Promise(resolve => setTimeout(resolve, 1));
+      if (state.cancelled) return;
+      if (count++ === limit) { state.ended = true; controller.close(); settled.resolve(); }
+      else controller.enqueue(new Uint8Array(1024));
+    },
+    cancel(reason) {
+      state.cancelled++;
+      state.reason = reason instanceof Error ? [reason.name, reason.message, reason.retryable] : String(reason);
+      settled.resolve();
+    },
+  });
+  return { body, state, settled: () => Promise.race([settled.promise, new Promise(resolve => setTimeout(resolve, 1000))]) };
+}
+
 export default {
   async fetch(request, env) {
     const base = `http://127.0.0.1:${env.FLAG}`;
@@ -107,62 +129,68 @@ export default {
     ]);
     results.transfer.cancelled = cancelledSource;
 
-    let abandoned = 0;
-    let produced = 0;
-    const producer = new ReadableStream({
-      async pull(controller) {
-        await new Promise(resolve => setTimeout(resolve, 1));
-        if (produced++ === 200) controller.close();
-        else controller.enqueue(new Uint8Array(1024));
-      },
-      cancel() { abandoned++; },
-    });
-    const forwarded = new Request(`${base}/redirect-early`, { method: "POST", body: producer });
-    await (await fetch(forwarded)).text();
-    results.abandonedUpload = { cancelled: abandoned, produced };
+    {
+      const abandoned = trackedUpload(200);
+      await (await fetch(new Request(`${base}/redirect-early`, { method: "POST", body: abandoned.body }))).text();
+      await abandoned.settled();
+      results.abandonedUpload = abandoned.state;
+    }
 
     results.earlyUploads = [];
     for (const endpoint of ["early", "early-204", "disconnect"]) {
-      let ended = false;
-      let cancelled = 0;
-      let count = 0;
-      const cancellation = Promise.withResolvers();
-      const body = new ReadableStream({
-        async pull(controller) {
-          await new Promise(resolve => setTimeout(resolve, 1));
-          if (cancelled) return;
-          if (endpoint !== "disconnect" && count++ === 100) { ended = true; controller.close(); }
-          else controller.enqueue(new Uint8Array(1024));
-        },
-        cancel() { cancelled++; cancellation.resolve(); },
-      });
+      const early = trackedUpload(endpoint === "disconnect" ? Infinity : 100);
       try {
-        const response = await fetch(`${base}/${endpoint}`, { method: "POST", body });
-        const headersBeforeEnd = !ended;
+        const response = await fetch(`${base}/${endpoint}`, { method: "POST", body: early.body });
+        const headersBeforeEnd = !early.state.ended;
         const text = await response.text();
-        results.earlyUploads.push({ headersBeforeEnd, text, ended, cancelled });
+        await early.settled();
+        results.earlyUploads.push({ headersBeforeEnd, text, ...early.state });
       } catch {
-        // Both runtimes cancel the upload after the fetch rejects, at no fixed time.
-        await Promise.race([cancellation.promise, new Promise(resolve => setTimeout(resolve, 1000))]);
-        results.earlyUploads.push({ failed: true, ended, cancelled });
+        await early.settled();
+        results.earlyUploads.push({ failed: true, ...early.state });
       }
     }
 
     {
-      let cancelled = 0;
-      const cancellation = Promise.withResolvers();
-      const body = new ReadableStream({
-        async pull(controller) {
-          await new Promise(resolve => setTimeout(resolve, 1));
-          if (!cancelled) controller.enqueue(new Uint8Array(1024));
-        },
-        cancel() { cancelled++; cancellation.resolve(); },
-      });
+      const closed = trackedUpload();
       // The server closes the connection after its response, before the body ends, so the fetch
       // can resolve or reject; either way both runtimes cancel the body.
-      await fetch(`${base}/close`, { method: "POST", body }).then(response => response.text()).catch(() => {});
-      await Promise.race([cancellation.promise, new Promise(resolve => setTimeout(resolve, 1000))]);
-      results.closedUpload = { cancelled };
+      await fetch(`${base}/close`, { method: "POST", body: closed.body }).then(response => response.text()).catch(() => {});
+      await closed.settled();
+      results.closedUpload = closed.state;
+    }
+
+    {
+      const open = trackedUpload(10);
+      const reader = (await fetch(`${base}/stream`, { method: "POST", body: open.body })).body.getReader();
+      await reader.read();
+      await open.settled();
+      results.openResponseUpload = { ...open.state };
+      await reader.cancel();
+      await (await fetch(`${base}/release`)).text();
+      const cancelled = trackedUpload();
+      await (await fetch(`${base}/stream`, { method: "POST", body: cancelled.body })).body.cancel();
+      await cancelled.settled();
+      results.cancelledResponseUpload = cancelled.state;
+      await (await fetch(`${base}/release`)).text();
+    }
+
+    {
+      const aborted = trackedUpload();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort("upload aborted"), 5);
+      const outcome = await caught(() => fetch(`${base}/delay`, { method: "POST", body: aborted.body, signal: controller.signal }));
+      clearTimeout(timer);
+      await aborted.settled();
+      results.abortedUpload = { outcome, ...aborted.state };
+    }
+
+    results.streamRedirects = [];
+    for (const status of [302, 307]) {
+      const redirected = trackedUpload();
+      const outcome = await caught(() => fetch(`${base}/redirect?status=${status}`, { method: "POST", body: redirected.body }));
+      await redirected.settled();
+      results.streamRedirects.push([status, outcome, redirected.state]);
     }
 
     results.redirects = [];
@@ -178,6 +206,14 @@ export default {
     results.replayedForwarded = await (await fetch(reusable)).json();
     results.rejectRedirect = await caught(() => fetch(`${base}/redirect?status=302`, { redirect: "error" }));
     results.rejectRedirectRequest = await caught(() => new Request(`${base}/redirect?status=302`, { redirect: "error" }));
+    results.redirectLimit = await caught(() => fetch(`${base}/loop`));
+    const redirectedHeaders = await (await fetch(`${base}/redirect?status=303&to=/headers`, {
+      method: "POST",
+      body: "body",
+      headers: { "content-type": "text/plain", "content-language": "en", "content-location": "/body", "content-encoding": "identity" },
+    })).json();
+    // tokamak deliberately sends no cf-worker header.
+    results.redirectedHeaders = Object.entries(redirectedHeaders).filter(([name]) => name !== "cf-worker").sort();
     const compressed = await fetch(`${base}/gzip`);
     results.compressed = { encoding: compressed.headers.get("content-encoding"), cookies: compressed.headers.getSetCookie(), text: await compressed.text() };
     return Response.json(results);

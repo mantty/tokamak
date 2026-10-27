@@ -455,7 +455,9 @@ pub(super) fn install_event_emitter<'js>(
     let Ok(Some(prototype)) = constructor.get::<_, Option<Object>>("prototype") else {
         return Ok(());
     };
-    object.set("__events", ctx.eval::<Object, _>("new Map()")?)?;
+    constructor
+        .get::<_, Function>("init")?
+        .call::<_, ()>((This(object.clone()),))?;
     for name in [
         "on",
         "addEventListener",
@@ -499,7 +501,8 @@ pub(super) fn handle_read<'js>(
     let read = open_descriptor(ctx, state).and_then(|descriptor| {
         let arguments = normalize_read_arguments(ctx, args.0)?;
         let buffer = arguments.buffer.clone();
-        let count = read_views(ctx, descriptor, &node_read(ctx, arguments)?)?;
+        let read = node_read(ctx, arguments, ReadOverrun::OutOfRange)?;
+        let count = read_views(ctx, descriptor, &read)?;
         transfer_value(ctx, "bytesRead", count as usize, "buffer", buffer)
     });
     promise(ctx.clone(), read)

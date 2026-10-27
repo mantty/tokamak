@@ -83,7 +83,7 @@ const MAX_OBJECT_SIZE: u64 = 5_363_466_240;
 /// The longest key, in UTF-8 bytes.
 const MAX_KEY_LENGTH: usize = 1024;
 /// The largest custom metadata, as `serialized_length` measures it.
-const MAX_METADATA_SIZE: usize = 2048;
+const MAX_METADATA_SIZE: usize = 8192;
 
 /// An R2 bucket on its one connection.
 #[derive(Debug)]

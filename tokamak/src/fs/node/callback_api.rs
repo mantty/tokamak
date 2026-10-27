@@ -241,7 +241,7 @@ pub(super) fn callback_call<'js>(
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
             let arguments = normalize_read_arguments(&ctx, args)?;
             let buffer = arguments.buffer.clone();
-            let read = node_read(&ctx, arguments)?;
+            let read = node_read(&ctx, arguments, ReadOverrun::InvalidOffset)?;
             reply_with_buffer(&ctx, read_views(&ctx, descriptor, &read), buffer)
         }
         CallbackOperation::Readv => {

@@ -224,7 +224,7 @@ fn verifies_checksums_and_limits() -> TestResult {
     let exceeds = body(&bucket, b"", None)?;
     assert!(
         bucket
-            .put("m", fits, &custom(json!({ "a": "é".repeat(2047) }))?, NOW)
+            .put("m", fits, &custom(json!({ "a": "é".repeat(8191) }))?, NOW)
             .is_ok()
     );
     assert_eq!(
@@ -232,7 +232,7 @@ fn verifies_checksums_and_limits() -> TestResult {
             .put(
                 "m",
                 exceeds,
-                &custom(json!({ "a": "\u{100}".repeat(1024) }))?,
+                &custom(json!({ "a": "\u{100}".repeat(4096) }))?,
                 NOW
             )
             .err(),

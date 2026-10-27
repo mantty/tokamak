@@ -28,6 +28,16 @@ function customInspection(value, options, level) {
   return method.call(value, options.depth === null ? null : options.depth - level, { ...options }, inspect);
 }
 
+// The name of the nearest constructor on `value`'s prototype chain, as Node
+// names an object it does not expand.
+function constructorName(value) {
+  for (let object = value; object !== null; object = Object.getPrototypeOf(object)) {
+    const constructor = Object.getOwnPropertyDescriptor(object, "constructor")?.value;
+    if (typeof constructor === "function" && constructor.name !== "") return constructor.name;
+  }
+  return "Object: null prototype";
+}
+
 function inspectValue(value, options, level, seen) {
   if (typeof value === "string") return quote(value);
   if (value === undefined) return "undefined";
@@ -39,12 +49,7 @@ function inspectValue(value, options, level, seen) {
   if (typeof value === "function") return `[Function${value.name ? `: ${value.name}` : " (anonymous)"}]`;
   if (seen.includes(value)) return "[Circular]";
 
-  if (options.depth !== null && level > options.depth) {
-    if (Array.isArray(value)) return "[Array]";
-    if (value instanceof Map) return "[Map]";
-    if (value instanceof Set) return "[Set]";
-    return "[Object]";
-  }
+  if (options.depth !== null && level > options.depth) return `[${constructorName(value)}]`;
 
   if (value instanceof Buffer) return value.inspect();
   if (objectClass(value) === "Date") return Number.isNaN(Date.prototype.getTime.call(value)) ? "Invalid Date" : Date.prototype.toISOString.call(value);

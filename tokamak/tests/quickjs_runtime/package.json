@@ -4,5 +4,5 @@
   "type": "module",
   "packageManager": "pnpm@9.9.0",
   "scripts": { "reference": "node workerd-reference.mjs" },
-  "devDependencies": { "miniflare": "5.20260825.0-alpha" }
+  "devDependencies": { "miniflare": "5.20261023.0-beta" }
 }

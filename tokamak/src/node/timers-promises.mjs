@@ -1,11 +1,5 @@
 import * as timers from "../globals/timers.mjs";
-
-function abortError() {
-  const error = new Error("The operation was aborted");
-  error.name = "AbortError";
-  error.code = "ABORT_ERR";
-  return error;
-}
+import { abortError } from "./errors.mjs";
 
 function validateOptions(options) {
   if (options === null || (options !== undefined && typeof options !== "object")) throw new TypeError("The options argument must be an object");

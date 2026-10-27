@@ -1,8 +1,10 @@
 import { builtinNamespace, isNodeBuiltin, processChdir, processCwd } from "tokamak:host";
 import EventEmitter from "../events/events.mjs";
+import { setWarningProcess } from "../events/process-warnings.mjs";
 import { usvString } from "./conversions.mjs";
 
 const process = new EventEmitter();
+setWarningProcess(process);
 export default process;
 
 const builtinModules = new Map();

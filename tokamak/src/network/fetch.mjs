@@ -716,13 +716,12 @@ export async function fetch(input, init) {
     request.redirect,
   );
   globalThis.__tokamak_context.waitUntil(task.upload);
-  const abort = () => task.cancel();
+  const abort = () => task.abort();
   request.signal.addEventListener("abort", abort, { once: true });
   const finish = () => request.signal.removeEventListener("abort", abort);
   let response;
   try {
     response = await task.response;
-    if (response.bodyless) await task.upload;
   } catch (error) {
     finish();
     if (request.signal.aborted) throw fetchAbortReason(request.signal);

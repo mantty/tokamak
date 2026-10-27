@@ -5,14 +5,13 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 
 use super::nodes::{Directory, FileNode, Node, OpenFile, shared_devices};
 use super::path::{
-    absolute_components, checked_size, join_child, path_from_components, random_suffix,
-    target_components,
+    absolute_components, join_child, path_from_components, random_suffix, target_components,
 };
 
 /// Maximum size of one virtual file.
@@ -355,22 +354,6 @@ impl VirtualFileSystem {
         self.resolve(path, true)?.read_all(path)
     }
 
-    /// Replace or append to a file.
-    pub fn write_file(&mut self, path: &str, data: &[u8], append: bool) -> Result<()> {
-        let options = OpenOptions {
-            read: false,
-            write: true,
-            append,
-            create: true,
-            truncate: !append,
-            ..OpenOptions::default()
-        };
-        let descriptor = self.open(path, options)?;
-        let result = self.write(descriptor, data, None).map(|_| ());
-        let close_result = self.close(descriptor);
-        result.and(close_result)
-    }
-
     /// Return metadata, following the final symbolic link.
     pub fn stat(&self, path: &str) -> Result<Stat> {
         self.resolve(path, true)?.stat()
@@ -497,37 +480,55 @@ impl VirtualFileSystem {
         self.remove(path, false, false)
     }
 
-    /// Rename a node to a name that is not taken.
+    /// Move the node `from` names, following symbolic links, to `to`,
+    /// replacing what `to` names without following symbolic links. A
+    /// directory replaces only an empty directory, and anything else only a
+    /// non-directory.
     pub fn rename(&mut self, from: &str, to: &str) -> Result<()> {
-        if self.resolve(to, false).is_ok() {
-            return Err(Error::new(ErrorKind::AlreadyExists, ""));
+        let replaced = self.node_without_links(to)?;
+        let to_components = absolute_components(to)?;
+        let from_components = absolute_components(from)?;
+        if replaced.is_some() && to_components == from_components {
+            return Ok(());
         }
-        let (source_parent, source_name) = self.parent(from)?;
-        let source = source_parent
-            .lookup(&source_name)?
+        let (parent, name) = self.containing_directory(to)?;
+        let (source_parent, source_name) = self.containing_directory(from)?;
+        if !source_parent.writable() {
+            return Err(Error::new(ErrorKind::NotPermitted, ""));
+        }
+        let source = self
+            .lookup(from)?
             .ok_or_else(|| Error::new(ErrorKind::NotFound, from))?;
-        if absolute_components(to)?.starts_with(&absolute_components(from)?) {
-            return Err(Error::new(ErrorKind::InvalidInput, to));
+        if matches!(source, Node::Directory(_)) {
+            if to_components.len() > from_components.len()
+                && to_components.starts_with(&from_components)
+            {
+                return Err(Error::new(ErrorKind::InvalidInput, ""));
+            }
+            check_directory_replacement(replaced.as_ref())?;
+        } else {
+            check_file_replacement(replaced.as_ref())?;
         }
-        let (destination_parent, destination_name) = self.parent(to)?;
-        if !source_parent.writable() || !destination_parent.writable() {
-            return Err(Error::new(
-                ErrorKind::NotPermitted,
-                if source_parent.writable() { to } else { from },
-            ));
-        }
-        destination_parent.insert(destination_name, source)?;
+        replace_entry(&parent, name, replaced.is_some(), source)?;
         source_parent.remove(&source_name)?;
         Ok(())
     }
 
-    /// Copy a regular file to a name that is not taken.
+    /// Copy the file `from` names, following symbolic links, to `to`,
+    /// replacing the non-directory `to` names without following symbolic
+    /// links. A device copies as an empty file.
     pub fn copy_file(&mut self, from: &str, to: &str) -> Result<()> {
-        if self.resolve(to, false).is_ok() {
-            return Err(Error::new(ErrorKind::AlreadyExists, ""));
-        }
-        let bytes = self.read_file(from)?;
-        self.write_file(to, &bytes, false)
+        let replaced = self.node_without_links(to)?;
+        let (parent, name) = self.containing_directory(to)?;
+        let source = self
+            .lookup(from)?
+            .ok_or_else(|| Error::new(ErrorKind::NotFound, from))?;
+        let Node::File(file) = source else {
+            return Err(Error::new(ErrorKind::IsDirectory, ""));
+        };
+        check_file_replacement(replaced.as_ref())?;
+        let copy = Node::File(file.copied(from)?);
+        replace_entry(&parent, name, replaced.is_some(), copy)
     }
 
     /// Copy a file or directory tree.
@@ -850,14 +851,13 @@ impl VirtualFileSystem {
         Ok(to.to_owned())
     }
 
+    /// A copy of `node`, which `path` names. A directory holds itself once a
+    /// symbolic link to it is renamed into it; copying one ends at the path
+    /// segment limit.
     fn copy_node(&self, node: &Node, path: &str, dereference: bool) -> Result<Node> {
         match node {
             Node::File(file) if file.is_device() => Err(Error::new(ErrorKind::Unsupported, path)),
-            Node::File(file) => {
-                let size = checked_size(file.size()?, path)?;
-                let bytes = file.read(0, size)?;
-                Ok(Node::File(FileNode::Memory(Arc::new(Mutex::new(bytes)))))
-            }
+            Node::File(file) => Ok(Node::File(file.copied(path)?)),
             Node::Symlink(_) if !dereference => Ok(node.clone()),
             Node::Symlink(_) => {
                 let resolved = self.resolve(path, true)?;
@@ -867,6 +867,7 @@ impl VirtualFileSystem {
                 let target = Directory::memory();
                 for entry in directory.entries()? {
                     let child_path = join_child(path, &entry.name);
+                    absolute_components(&child_path)?;
                     let child = directory
                         .lookup(&entry.name)?
                         .ok_or_else(|| Error::new(ErrorKind::NotFound, &child_path))?;
@@ -890,6 +891,51 @@ impl VirtualFileSystem {
             .as_directory()
             .ok_or_else(|| Error::new(ErrorKind::NotDirectory, path))?;
         Ok((directory, name))
+    }
+
+    /// The directory holding the last component of `path`, and that
+    /// component's name; `/` is held by itself under an empty name. A missing
+    /// directory is reported under the name.
+    fn containing_directory(&self, path: &str) -> Result<(Directory, String)> {
+        let mut components = absolute_components(path)?;
+        let name = components.pop().unwrap_or_default();
+        match self.lookup_components(components, path)? {
+            Some(Node::Directory(directory)) => Ok((directory, name)),
+            Some(_) => Err(Error::new(ErrorKind::NotDirectory, "")),
+            None => Err(Error::new(ErrorKind::NotFound, name)),
+        }
+    }
+
+    /// The node `path` names, following symbolic links, or `None` when it,
+    /// or a directory on the way to it, does not exist.
+    fn lookup(&self, path: &str) -> Result<Option<Node>> {
+        self.lookup_components(absolute_components(path)?, path)
+    }
+
+    /// The node `path` names without following any symbolic link, or `None`
+    /// when a component on the way to it is missing or is not a directory.
+    fn node_without_links(&self, path: &str) -> Result<Option<Node>> {
+        let mut node = Node::Directory(self.root.clone());
+        for name in absolute_components(path)? {
+            let Node::Directory(directory) = node else {
+                return Ok(None);
+            };
+            let Some(child) = directory.lookup(&name)? else {
+                return Ok(None);
+            };
+            node = child;
+        }
+        Ok(Some(node))
+    }
+
+    fn lookup_components(&self, components: Vec<String>, path: &str) -> Result<Option<Node>> {
+        match self.resolve_components(components, true, path) {
+            Ok((node, _)) => Ok(Some(node)),
+            Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotDirectory) => {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn resolve(&self, path: &str, follow_final: bool) -> Result<Node> {
@@ -944,4 +990,36 @@ impl VirtualFileSystem {
             index += 1;
         }
     }
+}
+
+/// Rejects replacing the directory `replaced` with a non-directory.
+fn check_file_replacement(replaced: Option<&Node>) -> Result<()> {
+    match replaced {
+        Some(Node::Directory(_)) => Err(Error::new(ErrorKind::IsDirectory, "")),
+        _ => Ok(()),
+    }
+}
+
+/// Rejects replacing a non-directory or a non-empty directory `replaced`
+/// with a directory.
+fn check_directory_replacement(replaced: Option<&Node>) -> Result<()> {
+    match replaced {
+        Some(Node::Directory(directory)) if !directory.is_empty()? => {
+            Err(Error::new(ErrorKind::NotEmpty, ""))
+        }
+        Some(Node::File(_) | Node::Symlink(_)) => Err(Error::new(ErrorKind::NotDirectory, "")),
+        _ => Ok(()),
+    }
+}
+
+/// Puts `node` in `parent` under `name`, first removing the entry `name`
+/// holds when `replaced`.
+fn replace_entry(parent: &Directory, name: String, replaced: bool, node: Node) -> Result<()> {
+    if !parent.writable() {
+        return Err(Error::new(ErrorKind::NotPermitted, ""));
+    }
+    if replaced {
+        parent.remove(&name)?;
+    }
+    parent.insert(name, node)
 }

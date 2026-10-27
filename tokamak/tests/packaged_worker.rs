@@ -1125,7 +1125,7 @@ async function cloudflare(files) {
     listedMetadata: [listed.httpMetadata, listed.customMetadata],
     writeHttpMetadata,
     encryptionKey: await files.put("key", "x", { ssecKey: "0".repeat(64) }).catch(error => error.message),
-    uploadMetadata: await files.createMultipartUpload("upload", { customMetadata: { a: "\u0100".repeat(1024) } }).catch(error => error.message),
+    uploadMetadata: await files.createMultipartUpload("upload", { customMetadata: { a: "\u0100".repeat(4096) } }).catch(error => error.message),
   };
 }
 

@@ -38,6 +38,12 @@ function secureMode(options) {
 
 const socketStates = new WeakMap();
 
+// Closes a byte stream, ending a pending BYOB read.
+function closeReadable(controller) {
+  controller.close();
+  controller.byobRequest?.respond(0);
+}
+
 class Socket {
   constructor(state) {
     socketStates.set(this, state);
@@ -92,7 +98,7 @@ function createState(address, mode, native, allowHalfOpen, closed = deferred()) 
       }
       if (state.terminated) {
         if (state.error !== undefined) controller.error(state.error);
-        else controller.close();
+        else closeReadable(controller);
         return;
       }
       try {
@@ -105,10 +111,10 @@ function createState(address, mode, native, allowHalfOpen, closed = deferred()) 
             state.writeEnded = true;
           }
           if (state.writeEnded) closeState(state);
-          controller.close();
+          closeReadable(controller);
         } else controller.enqueue(new Uint8Array(chunk));
       } catch (error) {
-        if ((state.terminated && state.error === undefined) || state.transferred) { controller.close(); return; }
+        if ((state.terminated && state.error === undefined) || state.transferred) { closeReadable(controller); return; }
         closeState(state, error);
         controller.error(error);
       }

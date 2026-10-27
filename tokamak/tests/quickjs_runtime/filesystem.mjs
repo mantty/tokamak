@@ -35,6 +35,12 @@ const bufferArguments = {
   arrayOptions: [[1]],
   offsetBeyondLength: [3, 1],
   offsetAtLength: [2, 2],
+  offsetAtEnd: [4],
+  offsetPastEnd: [5],
+  offsetPastEndBeforeLength: [5, "2"],
+  offsetPastEndAfterPosition: [5, 1, "1"],
+  lengthPastEndOption: [{ offset: 1, length: 4 }],
+  nullOptionFields: [{ offset: null, length: null, position: null }],
   emptyAtEnd: [4, 0],
   lengthBeyondBuffer: [0, 5],
   offsetBeyondBuffer: [5, 0],
@@ -273,9 +279,6 @@ async function fileWriteContracts() {
   for (const [writeName, write] of Object.entries(fileWrites)) {
     outcomes[writeName] = {};
     for (const [dataName, [data, encoding]] of Object.entries(fileWriteData)) {
-      // end(null) only opens the file, which the pinned workerd does not
-      // truncate while current workerd and tokamak do.
-      if (writeName === "streamEnd" && dataName === "nullData") continue;
       fs.writeFileSync(path, Uint8Array.from([9]));
       try {
         await write(path, data(), encoding);
@@ -695,13 +698,13 @@ async function symlinkContracts() {
   };
 }
 
-// What a one-byte write leaves in a four-byte file opened with each flag that
-// keeps its bytes, and whole-file writes of one byte. Truncating flags are
-// checked in tokamak's own tests: the pinned workerd does not truncate.
-function openFlagContracts() {
+// What a one-byte write leaves in a four-byte file opened with each flag,
+// whole-file writes of one byte, and a write stream's one-byte write.
+async function openFlagContracts() {
   const path = "/tmp/filesystem-open-flags.bin";
   const reset = () => fs.writeFileSync(path, Uint8Array.from([9, 9, 9, 9]));
-  const flags = { a: "a", "a+": "a+", "r+": "r+" };
+  const { O_WRONLY, O_RDWR, O_CREAT, O_TRUNC } = fs.constants;
+  const flags = { w: "w", "w+": "w+", a: "a", "a+": "a+", "r+": "r+", truncating: O_WRONLY | O_CREAT | O_TRUNC, readTruncating: O_RDWR | O_TRUNC };
   const outcomes = {};
   for (const [name, flag] of Object.entries(flags)) {
     reset();
@@ -718,44 +721,175 @@ function openFlagContracts() {
   fs.writeFileSync(fd, Uint8Array.from([1]));
   fs.closeSync(fd);
   outcomes.writeFileDescriptor = [...fs.readFileSync(path)];
+  reset();
+  const stream = fs.createWriteStream(path);
+  await new Promise(resolve => { stream.write(Uint8Array.from([1])); stream.end(resolve); });
+  outcomes.stream = [...fs.readFileSync(path)];
   return outcomes;
 }
 
+// Each entry under `root` in listing order, with a file's text, a
+// directory's entries or a symbolic link's target.
+function treeOf(root) {
+  return fs.readdirSync(root).map(name => {
+    const path = `${root}/${name}`;
+    const stats = fs.lstatSync(path);
+    if (stats.isSymbolicLink()) return [name, `-> ${fs.readlinkSync(path)}`];
+    return [name, stats.isDirectory() ? treeOf(path) : fs.readFileSync(path, "utf8")];
+  });
+}
+
+// What `change` returns, throws or rejects with in a fresh directory, and the
+// tree it leaves there. The directory holds files a and b, a hard link to a,
+// directories empty and full, and symbolic links to b, to full, to nothing
+// and to each other.
+async function overwriteOutcome(name, change) {
+  const root = `/tmp/filesystem-overwrite/${name}`;
+  fs.mkdirSync(`${root}/full`, { recursive: true });
+  fs.mkdirSync(`${root}/empty`);
+  fs.writeFileSync(`${root}/full/inner`, "inner");
+  for (const file of ["a", "b"]) fs.writeFileSync(`${root}/${file}`, file);
+  fs.linkSync(`${root}/a`, `${root}/hard`);
+  fs.symlinkSync(`${root}/b`, `${root}/link`);
+  fs.symlinkSync(`${root}/full`, `${root}/directoryLink`);
+  fs.symlinkSync(`${root}/nothing`, `${root}/broken`);
+  fs.symlinkSync(`${root}/loopB`, `${root}/loopA`);
+  fs.symlinkSync(`${root}/loopA`, `${root}/loopB`);
+  let result;
+  try { result = (await change(root)) ?? "done"; }
+  catch (error) { result = { thrown: failure(error) }; }
+  return { result, tree: treeOf(root) };
+}
+
+// The path of a file in /bundle.
+function bundleFile() {
+  const name = fs.readdirSync("/bundle", { recursive: true }).find(name => fs.statSync(`/bundle/${name}`).isFile());
+  return `/bundle/${name}`;
+}
+
+// Writes `text` through a descriptor of `path` opened before `change`.
+function writeAfter(path, change, text) {
+  const fd = fs.openSync(path, "r+");
+  try { change(); fs.writeSync(fd, text); }
+  finally { fs.closeSync(fd); }
+}
+
+// Each rename, by name, from a directory `overwriteOutcome` makes.
+const renames = {
+  ontoFile: root => fs.renameSync(`${root}/a`, `${root}/b`),
+  ontoItself: root => fs.renameSync(`${root}/a`, `${root}/a`),
+  ontoHardLink: root => fs.renameSync(`${root}/a`, `${root}/hard`),
+  ontoItselfThroughLink: root => fs.renameSync(`${root}/full/inner`, `${root}/directoryLink/inner`),
+  ontoEmptyDirectory: root => fs.renameSync(`${root}/a`, `${root}/empty`),
+  ontoParent: root => fs.renameSync(`${root}/full/inner`, `${root}/full`),
+  ontoSymlink: root => fs.renameSync(`${root}/a`, `${root}/link`),
+  ontoBrokenSymlink: root => fs.renameSync(`${root}/a`, `${root}/broken`),
+  ontoSymlinkLoop: root => fs.renameSync(`${root}/a`, `${root}/loopA`),
+  directoryOntoEmptyDirectory: root => fs.renameSync(`${root}/full`, `${root}/empty`),
+  directoryOntoFullDirectory: root => fs.renameSync(`${root}/empty`, `${root}/full`),
+  directoryOntoFile: root => fs.renameSync(`${root}/empty`, `${root}/a`),
+  directoryOntoDirectoryLink: root => fs.renameSync(`${root}/empty`, `${root}/directoryLink`),
+  directoryOntoItself: root => fs.renameSync(`${root}/full`, `${root}/full`),
+  directoryIntoItself: root => fs.renameSync(`${root}/full`, `${root}/full/inside`),
+  directoryOntoChild: root => fs.renameSync(`${root}/full`, `${root}/full/inner`),
+  symlink: root => fs.renameSync(`${root}/link`, `${root}/c`),
+  symlinkOntoTarget: root => fs.renameSync(`${root}/link`, `${root}/b`),
+  targetOntoSymlink: root => fs.renameSync(`${root}/b`, `${root}/link`),
+  directoryLink: root => {
+    fs.renameSync(`${root}/directoryLink`, `${root}/moved`);
+    fs.writeFileSync(`${root}/full/added`, "added");
+  },
+  brokenSymlink: root => fs.renameSync(`${root}/broken`, `${root}/c`),
+  symlinkLoop: root => fs.renameSync(`${root}/loopA`, `${root}/c`),
+  intoSymlinkLoop: root => fs.renameSync(`${root}/a`, `${root}/loopA/c`),
+  intoDirectoryLink: root => fs.renameSync(`${root}/a`, `${root}/directoryLink/a`),
+  missing: root => fs.renameSync(`${root}/missing`, `${root}/c`),
+  missingOntoFile: root => fs.renameSync(`${root}/missing`, `${root}/a`),
+  missingParent: root => fs.renameSync(`${root}/a`, `${root}/missing/c`),
+  parentIsFile: root => fs.renameSync(`${root}/a`, `${root}/b/c`),
+  sourceParentIsFile: root => fs.renameSync(`${root}/a/c`, `${root}/c`),
+  throughFile: root => fs.renameSync(`${root}/full`, `${root}/full/inner/c`),
+  replacedDescriptor: root => writeAfter(`${root}/b`, () => fs.renameSync(`${root}/a`, `${root}/b`), "Z"),
+  renamedDescriptor: root => writeAfter(`${root}/a`, () => fs.renameSync(`${root}/a`, `${root}/c`), "Z"),
+  url: root => fs.renameSync(new URL(`file://${root}/a`), new URL(`file://${root}/a?query#hash`)),
+  fromBundle: root => fs.renameSync(bundleFile(), `${root}/c`),
+  missingFromBundle: root => fs.renameSync("/bundle/missing", `${root}/c`),
+  intoBundle: root => fs.renameSync(`${root}/a`, "/bundle/a"),
+  ontoBundleFile: root => fs.renameSync(`${root}/a`, bundleFile()),
+  bundleFileOntoItself: () => fs.renameSync(bundleFile(), bundleFile()),
+  ontoBundle: root => fs.renameSync(`${root}/empty`, "/bundle"),
+  bundle: root => fs.renameSync("/bundle", `${root}/c`),
+  tmpOntoItself: () => fs.renameSync("/tmp", "/tmp"),
+  tmp: root => fs.renameSync("/tmp", `${root}/c`),
+  ontoTmp: root => fs.renameSync(`${root}/a`, "/tmp"),
+  root: root => fs.renameSync("/", `${root}/c`),
+  ontoRoot: root => fs.renameSync(`${root}/a`, "/"),
+  ontoDevice: root => fs.renameSync(`${root}/a`, "/dev/null"),
+  device: root => fs.renameSync("/dev/null", `${root}/c`),
+  relative: root => fs.renameSync(`${root}/a`, "c"),
+  promise: root => fs.promises.rename(`${root}/a`, `${root}/b`),
+  promiseOntoDirectory: root => fs.promises.rename(`${root}/a`, `${root}/empty`),
+  callback: root => new Promise((resolve, reject) => fs.rename(`${root}/a`, `${root}/b`, error => error ? reject(error) : resolve())),
+  callbackOntoDirectory: root => new Promise((resolve, reject) => fs.rename(`${root}/a`, `${root}/empty`, error => error ? reject(error) : resolve())),
+};
+
+// Each copyFile, by name, from a directory `overwriteOutcome` makes.
+const copies = {
+  ontoFile: root => fs.copyFileSync(`${root}/a`, `${root}/b`),
+  ontoItself: root => fs.copyFileSync(`${root}/a`, `${root}/a`),
+  ontoHardLink: root => { fs.copyFileSync(`${root}/b`, `${root}/a`); fs.appendFileSync(`${root}/hard`, "+"); },
+  ontoFileThroughLink: root => fs.copyFileSync(`${root}/a`, `${root}/directoryLink/inner`),
+  ontoEmptyDirectory: root => fs.copyFileSync(`${root}/a`, `${root}/empty`),
+  ontoSymlink: root => fs.copyFileSync(`${root}/a`, `${root}/link`),
+  ontoBrokenSymlink: root => fs.copyFileSync(`${root}/a`, `${root}/broken`),
+  ontoDirectoryLink: root => fs.copyFileSync(`${root}/a`, `${root}/directoryLink`),
+  directory: root => fs.copyFileSync(`${root}/empty`, `${root}/c`),
+  directoryOntoFile: root => fs.copyFileSync(`${root}/empty`, `${root}/a`),
+  symlink: root => fs.copyFileSync(`${root}/link`, `${root}/c`),
+  symlinkOntoTarget: root => fs.copyFileSync(`${root}/link`, `${root}/b`),
+  brokenSymlink: root => fs.copyFileSync(`${root}/broken`, `${root}/c`),
+  symlinkLoop: root => fs.copyFileSync(`${root}/loopA`, `${root}/c`),
+  intoDirectoryLink: root => fs.copyFileSync(`${root}/a`, `${root}/directoryLink/a`),
+  missing: root => fs.copyFileSync(`${root}/missing`, `${root}/c`),
+  missingParent: root => fs.copyFileSync(`${root}/a`, `${root}/missing/c`),
+  parentIsFile: root => fs.copyFileSync(`${root}/a`, `${root}/b/c`),
+  sourceParentIsFile: root => fs.copyFileSync(`${root}/a/c`, `${root}/c`),
+  fromBundle: root => {
+    fs.copyFileSync(bundleFile(), `${root}/c`);
+    const copied = fs.readFileSync(`${root}/c`, "utf8") === fs.readFileSync(bundleFile(), "utf8");
+    fs.unlinkSync(`${root}/c`);
+    return copied;
+  },
+  intoBundle: root => fs.copyFileSync(`${root}/a`, "/bundle/a"),
+  bundleFileOntoItself: () => fs.copyFileSync(bundleFile(), bundleFile()),
+  ontoBundleFile: root => fs.copyFileSync(`${root}/a`, bundleFile()),
+  devices: root => ["null", "zero", "full", "random"].forEach(name => fs.copyFileSync(`/dev/${name}`, `${root}/${name}`)),
+  ontoDevice: root => fs.copyFileSync(`${root}/a`, "/dev/null"),
+  exclusive: root => fs.copyFileSync(`${root}/a`, `${root}/b`, fs.constants.COPYFILE_EXCL),
+  exclusiveSymlink: root => fs.copyFileSync(`${root}/a`, `${root}/link`, fs.constants.COPYFILE_EXCL),
+  exclusiveBrokenSymlink: root => fs.copyFileSync(`${root}/a`, `${root}/broken`, fs.constants.COPYFILE_EXCL),
+  exclusiveNew: root => fs.copyFileSync(`${root}/a`, `${root}/c`, fs.constants.COPYFILE_EXCL),
+  clone: root => fs.copyFileSync(`${root}/a`, `${root}/b`, fs.constants.COPYFILE_FICLONE),
+  cloneForce: root => fs.copyFileSync(`${root}/a`, `${root}/b`, fs.constants.COPYFILE_FICLONE_FORCE),
+  promise: root => fs.promises.copyFile(`${root}/a`, `${root}/b`),
+  promiseMode: root => fs.promises.copyFile(`${root}/a`, `${root}/b`, 3),
+  callback: root => new Promise((resolve, reject) => fs.copyFile(`${root}/a`, `${root}/b`, error => error ? reject(error) : resolve())),
+  callbackExclusive: root => fs.copyFile(`${root}/a`, `${root}/b`, fs.constants.COPYFILE_EXCL, () => {}),
+  callbackMode: root => fs.copyFile(`${root}/a`, `${root}/b`, 3, () => {}),
+};
+
 // rename and copyFile onto existing names, and copyFile's modes.
 async function overwriteContracts() {
-  const root = "/tmp/filesystem-overwrite";
-  fs.mkdirSync(`${root}/dir`, { recursive: true });
-  fs.mkdirSync(`${root}/other`);
-  for (const name of ["a", "b"]) fs.writeFileSync(`${root}/${name}`, name);
-  const settled = promise => promise.then(() => "done", error => ({ thrown: failure(error) }));
-  const called = start => new Promise(resolve => start(error => resolve(error ? { thrown: failure(error) } : "done")));
-  const { COPYFILE_EXCL, COPYFILE_FICLONE, COPYFILE_FICLONE_FORCE } = fs.constants;
-  return {
-    renameOntoFile: attempt(() => fs.renameSync(`${root}/a`, `${root}/b`)),
-    renameOntoDirectory: attempt(() => fs.renameSync(`${root}/a`, `${root}/dir`)),
-    renameDirectoryOntoDirectory: attempt(() => fs.renameSync(`${root}/other`, `${root}/dir`)),
-    renameOntoItself: attempt(() => fs.renameSync(`${root}/a`, `${root}/a`)),
-    renameMissing: attempt(() => fs.renameSync(`${root}/missing`, `${root}/x`)),
-    renamePromise: await settled(fs.promises.rename(`${root}/a`, `${root}/b`)),
-    renameCallback: await called(done => fs.rename(`${root}/a`, `${root}/b`, done)),
-    copyOntoFile: attempt(() => fs.copyFileSync(`${root}/a`, `${root}/b`)),
-    copyOntoDirectory: attempt(() => fs.copyFileSync(`${root}/a`, `${root}/dir`)),
-    copyDirectory: attempt(() => fs.copyFileSync(`${root}/dir`, `${root}/e`)),
-    copyMissing: attempt(() => fs.copyFileSync(`${root}/missing`, `${root}/e`)),
-    copyExclusive: attempt(() => fs.copyFileSync(`${root}/a`, `${root}/b`, COPYFILE_EXCL)),
-    copyExclusiveNew: attempt(() => fs.copyFileSync(`${root}/a`, `${root}/f`, COPYFILE_EXCL)),
-    copyClone: attempt(() => fs.copyFileSync(`${root}/a`, `${root}/g`, COPYFILE_FICLONE)),
-    copyCloneForce: attempt(() => fs.copyFileSync(`${root}/a`, `${root}/h`, COPYFILE_FICLONE_FORCE)),
-    copyModes: [3, 5, -1, "1", 1.5, null, undefined, -0].map((mode, index) =>
-      attempt(() => fs.copyFileSync(`${root}/a`, `${root}/mode${index}`, mode)) ?? "copied"),
-    copyPromise: await settled(fs.promises.copyFile(`${root}/a`, `${root}/b`)),
-    copyPromiseMode: await settled(fs.promises.copyFile(`${root}/a`, `${root}/n`, 3)),
-    copyCallback: await called(done => fs.copyFile(`${root}/a`, `${root}/b`, done)),
-    copyCallbackExclusive: attempt(() => fs.copyFile(`${root}/a`, `${root}/b`, COPYFILE_EXCL, () => {})) ?? "returned",
-    copyCallbackMode: attempt(() => fs.copyFile(`${root}/a`, `${root}/b`, 3, () => {})) ?? "returned",
-    names: fs.readdirSync(root),
-    contents: fs.readdirSync(root).filter(name => fs.statSync(`${root}/${name}`).isFile()).map(name => fs.readFileSync(`${root}/${name}`, "utf8")),
-  };
+  const outcomes = { rename: {}, copyFile: {} };
+  for (const [name, change] of Object.entries(renames)) outcomes.rename[name] = await overwriteOutcome(`rename-${name}`, change);
+  for (const [name, change] of Object.entries(copies)) outcomes.copyFile[name] = await overwriteOutcome(`copy-${name}`, change);
+  const root = "/tmp/filesystem-overwrite/modes";
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(`${root}/a`, "a");
+  outcomes.copyModes = [3, 5, -1, "1", 1.5, null, undefined, -0].map((mode, index) =>
+    attempt(() => fs.copyFileSync(`${root}/a`, `${root}/mode${index}`, mode)) ?? "copied");
+  outcomes.copyModesTree = treeOf(root);
+  return outcomes;
 }
 
 // The trailing arguments each read into a four-byte buffer takes after it.
@@ -784,6 +918,13 @@ const readArguments = {
   negativeLength: [0, -1],
   lengthBeyondBuffer: [0, 5],
   offsetBeyondBuffer: [5, 0],
+  lengthBeyondBufferAtPosition: [0, 5, 0],
+  lengthBeyondBufferOption: [{ length: 5 }],
+  offsetBeyondBufferOption: [{ offset: 5, length: 0 }],
+  offsetOptionBeyondBuffer: [{ offset: 5 }],
+  bigintLength: [0, 1n],
+  nullOffsetOption: [{ offset: null }],
+  nullLengthOption: [{ length: null }],
   emptyLength: [0, 0],
   arrayOptions: [[1]],
 };
@@ -809,8 +950,8 @@ const readers = {
 // Reads that workerd's fs.read and fileHandle.read default differently from
 // readSync, by form.
 const unmatchedReads = {
-  callback: ["emptyOptions", "undefinedOptions", "nullOptions", "offset", "offsetAndLength", "undefinedLength", "nullLength", "nullPosition", "undefinedPosition", "bigintPosition", "stringPosition", "offsetOption", "negativeOffset", "fractionalOffset", "negativeLength", "lengthBeyondBuffer", "offsetBeyondBuffer", "emptyLength", "middleView", "data", "string", "stringOffset"],
-  handle: ["offset", "offsetOption", "stringOffset", "arrayOptions", "middleView", "string"],
+  callback: ["emptyOptions", "undefinedOptions", "nullOptions", "offset", "offsetAndLength", "undefinedLength", "nullLength", "nullPosition", "undefinedPosition", "bigintPosition", "stringPosition", "offsetOption", "negativeOffset", "fractionalOffset", "negativeLength", "lengthBeyondBuffer", "offsetBeyondBuffer", "bigintLength", "nullOffsetOption", "nullLengthOption", "emptyLength", "middleView", "data", "string", "stringOffset"],
+  handle: ["nullOffsetOption", "nullLengthOption", "stringOffset", "arrayOptions", "string"],
 };
 
 // What each reader reports for each argument list over a file of [1, ..., 8],
@@ -999,7 +1140,7 @@ export async function filesystemContracts() {
   result.globDetails = await globDetailContracts();
   result.paths = pathContracts();
   result.symlinks = await symlinkContracts();
-  result.openFlags = openFlagContracts();
+  result.openFlags = await openFlagContracts();
   result.overwrite = await overwriteContracts();
   result.reads = await readContracts();
   result.encodings = await encodingContracts();

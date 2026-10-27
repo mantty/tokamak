@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const revision = "v1.20260825.1";
+const revision = "v1.20261023.1";
 const repository = `https://raw.githubusercontent.com/cloudflare/workerd/${revision}`;
 const temporary = mkdtempSync(path.join(tmpdir(), "tokamak-d1-api-"));
 const output = new URL("../tokamak/src/storage/", import.meta.url);
