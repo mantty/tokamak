@@ -1,7 +1,7 @@
 //! The storage bindings packaged into an app, with D1 migrations.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
 use tokamak::{PackageLayout, StorageBinding, store_id_problem};
@@ -66,22 +66,12 @@ fn package_migrations(
     Ok(names)
 }
 
-/// Binding names must be unique, and a kind's store identifiers must be
-/// file names that no file system confuses.
+/// A kind's store identifiers must be file names that no file system
+/// confuses.
 fn validate(wrangler: &WranglerConfig) -> Result<()> {
-    let mut names: BTreeSet<&str> = wrangler.vars.keys().map(String::as_str).collect();
-    names.extend(
-        wrangler
-            .assets
-            .as_ref()
-            .map(|assets| assets.binding.as_str()),
-    );
     let mut stores: BTreeMap<(&str, String), &str> = BTreeMap::new();
     for binding in &wrangler.storage {
         let (kind, name, store) = (binding.kind(), binding.name(), binding.store());
-        if !names.insert(name) {
-            bail!("more than one binding is named {name}");
-        }
         if let Some(problem) = store_id_problem(store) {
             bail!("{kind} binding {name} names the store `{store}`, which {problem}");
         }
@@ -269,15 +259,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_conflicting_names_and_unsafe_stores() -> TestResult {
+    fn rejects_unsafe_and_case_conflicting_stores() -> TestResult {
         let directory = tempfile::tempdir()?;
         let root = directory.path();
         let layout = PackageLayout::new(root.join("app"));
         for (config, problem) in [
-            (
-                r#""vars": { "DB": "x" }, "d1_databases": [{ "binding": "DB" }]"#,
-                "more than one binding is named DB",
-            ),
             (
                 r#""d1_databases": [{ "binding": "A", "database_id": "../a" }]"#,
                 "names the store `../a`",
@@ -285,10 +271,6 @@ mod tests {
             (
                 r#""d1_databases": [{ "binding": "A", "database_id": "app" }, { "binding": "B", "database_id": "App" }]"#,
                 "differ only in case",
-            ),
-            (
-                r#""kv_namespaces": [{ "binding": "A", "id": "x" }], "d1_databases": [{ "binding": "A", "database_id": "y" }]"#,
-                "more than one binding is named A",
             ),
             (
                 r#""r2_buckets": [{ "binding": "A", "bucket_name": "files" }, { "binding": "B", "bucket_name": "Files" }]"#,

@@ -1,7 +1,6 @@
 import { decodeDevice, encodeDevice } from "./fixtures/native-device.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -10,35 +9,33 @@ import { createBuilder, createServer, resolveConfig } from "vite";
 import WebSocket from "ws";
 
 import { tokamak } from "./dist/vite.mjs";
-import { workerTypes } from "./worker-fixtures.mjs";
+import { temporaryProject, workerTypes } from "./worker-fixtures.mjs";
 
 function project(t, cloudflareOptions = {}) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tokamak-native-vite-")));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  fs.mkdirSync(path.join(root, "src"));
-  fs.writeFileSync(path.join(root, "worker-configuration.d.ts"), workerTypes);
-  fs.writeFileSync(path.join(root, "wrangler.json"), JSON.stringify({
-    name: "native-app", main: "src/main.ts", compatibility_date: "2026-09-01",
-    vars: { LABEL: "configured" },
-  }));
-  fs.writeFileSync(path.join(root, "src/main.ts"), `export default {
+  const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
+  const sdk = fileURLToPath(import.meta.resolve("@tokamakdev/tok"));
+  const context = fileURLToPath(import.meta.resolve("@tokamakdev/plugin/worker"));
+  const root = temporaryProject(t, "tokamak-native-vite-", {
+    "worker-configuration.d.ts": workerTypes,
+    "wrangler.json": JSON.stringify({
+      name: "native-app", main: "src/main.ts", compatibility_date: "2026-09-01",
+      vars: { LABEL: "configured" },
+    }),
+    "src/main.ts": `export default {
     async fetch(request, env) {
       if (new URL(request.url).pathname === "/isolation") {
         return Response.json({ bridge: typeof globalThis[Symbol.for("tokamak.native")], loaded: globalThis.nativeLoaded ?? false, platform: globalThis.__tokamak_platform });
       }
       return Response.json(await env.TOKAMAK.describe());
     }
-  };`);
-  const events = fileURLToPath(import.meta.resolve("@tokamakdev/tok/events"));
-  const sdk = fileURLToPath(import.meta.resolve("@tokamakdev/tok"));
-  const context = fileURLToPath(import.meta.resolve("@tokamakdev/plugin/worker"));
-  fs.writeFileSync(path.join(root, "src/listeners.ts"), `import { onStart } from ${JSON.stringify(events)};
+  };`,
+    "src/listeners.ts": `import { onStart } from ${JSON.stringify(events)};
     import { nativeConnection } from ${JSON.stringify(context)};
     onStart(async (event, env, ctx) => ({
       label: env.LABEL, foreground: event.foreground, revision: "first",
       stage: JSON.parse(new TextDecoder().decode(await ctx[nativeConnection].call("tokamak", "lifecycleStage", new Uint8Array()))),
-    }));`);
-  fs.writeFileSync(path.join(root, "src/tokamak.ts"), `import { TokamakEntrypoint, platform as loadedOn, type TokamakEvent } from ${JSON.stringify(sdk)};
+    }));`,
+    "src/tokamak.ts": `import { TokamakEntrypoint, platform as loadedOn, type TokamakEvent } from ${JSON.stringify(sdk)};
     import { nativeConnection } from ${JSON.stringify(context)};
     import "./listeners";
     globalThis.nativeLoaded = true;
@@ -47,7 +44,8 @@ function project(t, cloudflareOptions = {}) {
         const stage = JSON.parse(new TextDecoder().decode(await this.ctx[nativeConnection].call("tokamak", "lifecycleStage", new Uint8Array())));
         return { label: this.env.LABEL, stage: stage as string, platform: this.ctx.platform, loadedOn };
       }
-    }`);
+    }`,
+  });
   const output = path.join(root, ".tokamak/vite");
   process.env.TOKAMAK_VITE_OUTPUT = output;
   process.env.TOKAMAK_BUILD_DIR = path.join(root, "build");

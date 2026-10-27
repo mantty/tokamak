@@ -175,10 +175,7 @@ fn run_session(session: &mut DevelopmentSession<'_>) -> Result<()> {
     };
     let tokamak = config.parse()?;
     let upstream = Upstream::parse(&report)?;
-    println!(
-        "Development server is ready at {}",
-        upstream.server.display_url()
-    );
+    println!("Development server is ready at {}", upstream.server.url);
     let relay = DevRelay::bind(
         upstream,
         session.session_token.to_owned(),
@@ -248,9 +245,6 @@ fn spawn_framework(
     process
         .args(&command[1..])
         .current_dir(command_path(project))
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
         .envs(plugin.development_environment(session_token, platform));
     configure_process_group(&mut process);
     process.spawn().with_context(|| {
@@ -384,7 +378,7 @@ impl FollowedServer<'_> {
                 writeln!(
                     output,
                     "Development server moved to {}",
-                    upstream.server.display_url()
+                    upstream.server.url
                 )?;
             }
             self.relay.set_upstream(upstream);
@@ -672,10 +666,6 @@ impl ServerEndpoint {
                 connector.connect(name.clone(), stream).await?,
             )),
         }
-    }
-
-    fn display_url(&self) -> &str {
-        &self.url
     }
 }
 
@@ -1031,6 +1021,15 @@ mod tests {
         }
     }
 
+    /// A physical iPhone named `device`.
+    fn iphone() -> PreparedDevice {
+        PreparedDevice {
+            id: "device".to_owned(),
+            kind: "iPhone".to_owned(),
+            platform: Platform::Ios,
+        }
+    }
+
     /// The development server at `url`, with the dev socket on `socket_port`.
     fn upstream(url: &str, socket_port: u16) -> anyhow::Result<Upstream> {
         Ok(Upstream {
@@ -1075,11 +1074,11 @@ mod tests {
     #[test]
     fn takes_the_server_address_from_a_url() -> Result<(), Box<dyn std::error::Error>> {
         let server = ServerEndpoint::parse("http://127.0.0.1:5174/", "")?;
-        assert_eq!(server.display_url(), "http://127.0.0.1:5174");
+        assert_eq!(server.url, "http://127.0.0.1:5174");
         assert_eq!(server.authority, "127.0.0.1:5174");
         let certificate = TlsServer::new()?.certificate;
         let server = ServerEndpoint::parse("https://localhost:5174/", &certificate)?;
-        assert_eq!(server.display_url(), "https://localhost:5174");
+        assert_eq!(server.url, "https://localhost:5174");
         assert!(ServerEndpoint::parse("ftp://127.0.0.1:5174/", "").is_err());
         Ok(())
     }
@@ -1124,11 +1123,7 @@ mod tests {
         let mut server = reported.following()?;
         let mut framework = Command::new("sleep").arg("30").spawn()?;
         let shutdown = AtomicBool::new(false);
-        let device = PreparedDevice {
-            id: "device".to_owned(),
-            kind: "iPhone".to_owned(),
-            platform: Platform::Ios,
-        };
+        let device = iphone();
         let mut output = Vec::new();
 
         let not_ready = wait_for_app_connection(
@@ -1175,11 +1170,7 @@ mod tests {
         let mut server = reported.following()?;
         let mut framework = Command::new("sleep").arg("30").spawn()?;
         let shutdown = AtomicBool::new(true);
-        let device = PreparedDevice {
-            id: "device".to_owned(),
-            kind: "iPhone".to_owned(),
-            platform: Platform::Ios,
-        };
+        let device = iphone();
         let mut output = Vec::new();
 
         let result = wait_for_app_connection(
@@ -1207,11 +1198,7 @@ mod tests {
         let mut framework = Command::new("true").spawn()?;
         let _ = framework.wait()?;
         let shutdown = AtomicBool::new(false);
-        let device = PreparedDevice {
-            id: "device".to_owned(),
-            kind: "iPhone".to_owned(),
-            platform: Platform::Ios,
-        };
+        let device = iphone();
         let mut output = Vec::new();
 
         let result = wait_for_app_connection(
@@ -1292,13 +1279,8 @@ mod tests {
 
     #[test]
     fn explicit_host_address_is_used_for_physical_ios() -> Result<(), Box<dyn std::error::Error>> {
-        let device = PreparedDevice {
-            id: "device".to_owned(),
-            kind: "iPhone".to_owned(),
-            platform: Platform::Ios,
-        };
         assert_eq!(
-            relay_host(&device, Some("192.168.1.42"))?,
+            relay_host(&iphone(), Some("192.168.1.42"))?,
             IpAddr::V4(Ipv4Addr::new(192, 168, 1, 42))
         );
         Ok(())

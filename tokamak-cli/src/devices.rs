@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Output, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -12,7 +12,7 @@ use tokamak_cli::Platform;
 
 const MANAGED_IOS_NAME: &str = "tokamak iPhone";
 const MANAGED_ANDROID_NAME: &str = "tokamak-managed";
-const ANDROID_BOOT_TIMEOUT: usize = 120;
+const ANDROID_BOOT_TIMEOUT: Duration = Duration::from_mins(2);
 const CORE_DEVICE_MAX_RETRIES: usize = 2;
 const CORE_DEVICE_RETRY_DELAY: Duration = Duration::from_secs(1);
 
@@ -239,16 +239,10 @@ fn prepare_ios_simulator(selector: &str) -> Result<Option<PreparedDevice>> {
     if !cfg!(target_os = "macos") {
         return Ok(None);
     }
-    let simulators = run_tool("xcrun", &["simctl", "list", "devices", "--json"]);
-    if !simulators.available {
-        bail!("Xcode command-line tools are not installed");
-    }
-    if !simulators.success {
-        bail!("Xcode Simulator services are unavailable");
-    }
-    let targets = parse_ios_simulator_targets(&simulators.stdout)
-        .context("unable to read iOS Simulator devices")?;
-    let Some(target) = targets.into_iter().find(|target| target.id == selector) else {
+    let Some(target) = ios_simulator_targets()?
+        .into_iter()
+        .find(|target| target.id == selector)
+    else {
         return Ok(None);
     };
     if !target.available {
@@ -268,13 +262,7 @@ fn prepare_managed_ios() -> Result<PreparedDevice> {
 
     let runtime = latest_installed_ios_runtime()?;
 
-    let simulators = run_tool("xcrun", &["simctl", "list", "devices", "--json"]);
-    if !simulators.success {
-        bail!("Xcode Simulator services are unavailable");
-    }
-    let Some(targets) = parse_ios_simulator_targets(&simulators.stdout) else {
-        bail!("unable to read iOS Simulator devices");
-    };
+    let targets = ios_simulator_targets()?;
     if let Some(target) = targets
         .iter()
         .find(|target| target.name == MANAGED_IOS_NAME && target.available)
@@ -298,17 +286,25 @@ fn prepare_managed_ios() -> Result<PreparedDevice> {
 }
 
 fn latest_installed_ios_runtime() -> Result<String> {
-    let runtimes = run_tool("xcrun", &["simctl", "list", "runtimes", "--json"]);
-    if !runtimes.available {
-        bail!("Xcode command-line tools are not installed");
+    let runtimes = simctl_list("runtimes").map_err(anyhow::Error::msg)?;
+    latest_ios_runtime(&runtimes).context("no available iOS Simulator runtime is installed")
+}
+
+fn ios_simulator_targets() -> Result<Vec<IosSimulatorTarget>> {
+    let simulators = simctl_list("devices").map_err(anyhow::Error::msg)?;
+    parse_ios_simulator_targets(&simulators).context("unable to read iOS Simulator devices")
+}
+
+/// The JSON `simctl list <what>` prints, or why simctl could not list it.
+fn simctl_list(what: &str) -> Result<String, &'static str> {
+    let output = run_tool("xcrun", &["simctl", "list", what, "--json"]);
+    if !output.available {
+        return Err("Xcode command-line tools are not installed");
     }
-    if !runtimes.success {
-        bail!("Xcode Simulator services are unavailable");
+    if !output.success {
+        return Err("Xcode Simulator services are unavailable");
     }
-    let Some(runtime) = latest_ios_runtime(&runtimes.stdout) else {
-        bail!("no available iOS Simulator runtime is installed");
-    };
-    Ok(runtime)
+    Ok(output.stdout)
 }
 
 /// Creates the managed simulator on `runtime`, leaving it shut down.
@@ -478,7 +474,10 @@ fn prepare_android_avd(avd_name: &str) -> Result<PreparedDevice> {
     }
 
     let Some(serial) = wait_for_android_avd(avd_name) else {
-        bail!("Android emulator `{avd_name}` did not become ready within 120 seconds");
+        bail!(
+            "Android emulator `{avd_name}` did not become ready within {} seconds",
+            ANDROID_BOOT_TIMEOUT.as_secs()
+        );
     };
     Ok(android_avd_device(serial, avd_name))
 }
@@ -502,7 +501,7 @@ fn find_android_avd(source: &str, avd_name: &str) -> Option<String> {
 }
 
 fn wait_for_android_avd(avd_name: &str) -> Option<String> {
-    for _ in 0..ANDROID_BOOT_TIMEOUT {
+    poll_until(ANDROID_BOOT_TIMEOUT, || {
         let adb = run_android_tool("adb", "platform-tools", &["devices", "-l"]);
         if adb.success
             && let Some(serial) = find_android_avd(&adb.stdout, avd_name)
@@ -510,9 +509,24 @@ fn wait_for_android_avd(avd_name: &str) -> Option<String> {
         {
             return Some(serial);
         }
-        std::thread::sleep(Duration::from_secs(1));
+        None
+    })
+}
+
+/// What `attempt` returns once it returns something, trying about once a
+/// second until `timeout` has passed.
+fn poll_until<T>(timeout: Duration, mut attempt: impl FnMut() -> Option<T>) -> Option<T> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(value) = attempt() {
+            return Some(value);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        std::thread::sleep(remaining.min(Duration::from_secs(1)));
     }
-    None
 }
 
 fn android_boot_completed(serial: &str) -> bool {
@@ -738,22 +752,11 @@ fn discover_ios_devices() -> Vec<Device> {
 /// Available simulators that have booted, or why the managed iOS Simulator is
 /// blocked.
 fn discover_ios_simulators() -> Result<Vec<Device>, &'static str> {
-    let runtimes = run_tool("xcrun", &["simctl", "list", "runtimes", "--json"]);
-    if !runtimes.available {
-        return Err("Xcode command-line tools are not installed");
-    }
-    if !runtimes.success {
-        return Err("Xcode Simulator services are unavailable");
-    }
-    if latest_ios_runtime(&runtimes.stdout).is_none() {
+    if latest_ios_runtime(&simctl_list("runtimes")?).is_none() {
         return Err("no iOS Simulator runtime is installed");
     }
-
-    let simulators = run_tool("xcrun", &["simctl", "list", "devices", "--json"]);
-    if !simulators.success {
-        return Err("Xcode Simulator services are unavailable");
-    }
-    parse_ios_simulator_devices(&simulators.stdout).ok_or("unable to read iOS Simulator devices")
+    parse_ios_simulator_devices(&simctl_list("devices")?)
+        .ok_or("unable to read iOS Simulator devices")
 }
 
 fn discover_ios_physical_devices() -> Vec<Device> {
@@ -1375,14 +1378,29 @@ fn render_devices(devices: &[Device]) -> String {
 mod tests {
     use std::fs;
 
+    use std::time::{Duration, Instant};
+
     use super::{
         Device, DeviceGroup, DeviceStatus, IosSimulatorUi, default_ios_device_type,
         ios_simulator_ui_for_developer_dir, is_locked_device_error, is_transient_devicectl_error,
         latest_ios_runtime, order_devices, parse_android_adb_devices, parse_android_system_images,
         parse_ios_simulator_devices, parse_ios_simulator_targets, parse_xctrace_devices,
-        prepared_device, render_devices, select_android_system_image,
+        poll_until, prepared_device, render_devices, select_android_system_image,
     };
     use tokamak_cli::Platform;
+
+    #[test]
+    fn stops_polling_at_the_deadline_however_long_each_attempt_takes() {
+        let started = Instant::now();
+
+        let found = poll_until(Duration::from_millis(100), || {
+            std::thread::sleep(Duration::from_millis(100));
+            None::<()>
+        });
+
+        assert_eq!(found, None);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn prefers_standalone_simulator_when_both_xcode_uis_exist()

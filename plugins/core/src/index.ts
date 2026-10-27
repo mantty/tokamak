@@ -14,7 +14,8 @@ export { NativeEndpoint, platformApi, type PlatformApis } from "./endpoint.js";
 export type LifecycleStage = "foreground" | "background";
 
 /**
- * The app's stage now, which can differ from the last lifecycle event delivered. Rejects with
+ * The app's stage now, which can differ from the last lifecycle event delivered: an `onSuspend`
+ * listener that runs late reads `"foreground"` once the user has returned. Rejects with
  * `NotSupportedError` without a native host.
  */
 export async function lifecycleStage(ctx: TokamakContext): Promise<LifecycleStage> {

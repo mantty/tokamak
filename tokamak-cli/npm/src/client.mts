@@ -1,14 +1,12 @@
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { normalizePath, type Plugin } from "vite";
 
 import { findModule } from "./worker-contract.mjs";
+import { CAPABILITIES, corePath } from "./worker-graph.mjs";
 import { WorkerTypes, type BindingConfiguration } from "./worker-types.mjs";
 
 const MODULE = "virtual:tokamak/client";
-/** The Tokamak worker's page module of each plugin operation's support on the app's platform. */
-const CAPABILITIES = "/_tokamak/capabilities.js";
-const TRANSPORT = normalizePath(fileURLToPath(new URL("./rpc/client.mjs", import.meta.resolve("@tokamakdev/plugin/events"))));
+const TRANSPORT = corePath("./rpc/client.mjs");
 
 /** The app's public methods, without its native implementation. */
 export function createClientPlugin(module: string | undefined, native: boolean, shared?: () => WorkerTypes): Plugin & {

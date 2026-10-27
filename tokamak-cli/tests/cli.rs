@@ -202,13 +202,32 @@ fn describing_pack(
     dispatch: &str,
     status: i32,
 ) -> TestResult<tempfile::TempDir> {
-    use std::collections::BTreeMap;
-
-    use tokamak_cli::{MANIFEST_FILE, Platform, PlatformPackManifest, write_manifest};
+    use tokamak_cli::Platform;
 
     let packs = tempfile::tempdir()?;
-    let target = Platform::Macos.default_target()?;
-    let pack = packs.path().join(target.to_string());
+    stand_in_pack(
+        packs.path(),
+        Platform::Macos.default_target()?,
+        &format!(
+            "[ \"$1 $4 $5\" = 'describe ios macos' ] || exit 2\n[ {status} = 0 ] || exit {status}\nprintf '%s' '{description}' > \"$3/description.json\"\nprintf '%s' '{dispatch}' > \"$3/Exports.generated.swift\"\n"
+        ),
+    )?;
+    Ok(packs)
+}
+
+/// A stand-in pack for `target` in `packs`, declaring no variables, whose
+/// build entrypoint is the shell script `entrypoint`.
+#[cfg(unix)]
+fn stand_in_pack(
+    packs: &std::path::Path,
+    target: tokamak_cli::Target,
+    entrypoint: &str,
+) -> TestResult<std::path::PathBuf> {
+    use std::collections::BTreeMap;
+
+    use tokamak_cli::{MANIFEST_FILE, PlatformPackManifest, write_manifest};
+
+    let pack = packs.join(target.to_string());
     std::fs::create_dir_all(pack.join("build"))?;
     write_manifest(
         pack.join(MANIFEST_FILE),
@@ -219,13 +238,8 @@ fn describing_pack(
             plugin_keys: BTreeMap::new(),
         },
     )?;
-    std::fs::write(
-        pack.join("build/entrypoint"),
-        format!(
-            "[ \"$1 $4 $5\" = 'describe ios macos' ] || exit 2\n[ {status} = 0 ] || exit {status}\nprintf '%s' '{description}' > \"$3/description.json\"\nprintf '%s' '{dispatch}' > \"$3/Exports.generated.swift\"\n"
-        ),
-    )?;
-    Ok(packs)
+    std::fs::write(pack.join("build/entrypoint"), entrypoint)?;
+    Ok(pack)
 }
 
 /// A new Apple plugin, `device-tools`, in a temporary directory.
@@ -401,25 +415,12 @@ fn explains_the_cert_inventory_command() -> TestResult {
 #[cfg(unix)]
 #[test]
 fn lists_signing_assets_with_the_ios_platform_pack() -> TestResult {
-    use std::collections::BTreeMap;
     use std::fs;
 
-    use tokamak_cli::{MANIFEST_FILE, PlatformPackManifest, Target, write_manifest};
-
     let packs = tempfile::tempdir()?;
-    let pack = packs.path().join("ios-arm64");
-    fs::create_dir_all(pack.join("build"))?;
-    write_manifest(
-        pack.join(MANIFEST_FILE),
-        &PlatformPackManifest {
-            tokamak_version: env!("CARGO_PKG_VERSION").to_owned(),
-            target: Target::IosArm64,
-            variables: BTreeMap::new(),
-            plugin_keys: BTreeMap::new(),
-        },
-    )?;
-    fs::write(
-        pack.join("build/entrypoint"),
+    let pack = stand_in_pack(
+        packs.path(),
+        tokamak_cli::Target::IosArm64,
         "printf '%s from %s\\n' \"$*\" \"$PWD\"\n",
     )?;
 

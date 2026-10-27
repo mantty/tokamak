@@ -55,6 +55,8 @@ pub(crate) struct DevelopmentSummary {
 }
 
 struct BuildContext<'a> {
+    /// The canonical project directory.
+    project: &'a Path,
     build_dir: &'a Path,
     workers: &'a [CompiledWorker<'a>],
     plugins: &'a [plugins::Plugin],
@@ -158,6 +160,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
         .collect::<Result<Vec<_>>>()?;
     let workers = graph.compile(&build_dir.join(".tokamak").join("worker"))?;
     let context = BuildContext {
+        project: &project,
         build_dir: &build_dir,
         workers: &workers,
         plugins,
@@ -166,7 +169,7 @@ pub(crate) fn run(request: &BuildRequest) -> Result<Vec<BuildSummary>> {
 
     builds
         .iter()
-        .map(|build| build_platform(request, build, &context))
+        .map(|build| build_platform(build, &context))
         .collect()
 }
 
@@ -208,13 +211,13 @@ pub(crate) fn run_development(request: &DevelopmentRequest<'_>) -> Result<Develo
     )?;
     let app = resolve_app(&platform_settings, request.worker_name, request.platform)?;
     let version = settings::version(&sources)?;
-    let (input, project) = prepare_platform_input(request.project, &build_dir, request.platform)?;
+    let input = prepare_platform_input(&build_dir, request.platform)?;
     plugins::stage(plugins, manifest, &generated, &input.join("plugins"))
         .context("stage native plugin inputs")?;
     fs::write(input.join("app/.tokamak-development"), b"")?;
     write_build_metadata(
         &input,
-        &project,
+        request.project,
         &BuildMetadata {
             app: &app,
             manifest,
@@ -268,11 +271,7 @@ fn validate_request(request: &BuildRequest) -> Result<()> {
     Ok(())
 }
 
-fn build_platform(
-    request: &BuildRequest,
-    build: &PlatformBuild,
-    context: &BuildContext<'_>,
-) -> Result<BuildSummary> {
+fn build_platform(build: &PlatformBuild, context: &BuildContext<'_>) -> Result<BuildSummary> {
     let PlatformBuild {
         platform,
         pack,
@@ -281,8 +280,7 @@ fn build_platform(
         app,
     } = build;
     let platform = *platform;
-    let (input, project) =
-        prepare_platform_input(&request.project_dir, context.build_dir, platform)?;
+    let input = prepare_platform_input(context.build_dir, platform)?;
 
     for worker in context.workers {
         worker
@@ -298,7 +296,7 @@ fn build_platform(
     .context("stage native plugin inputs")?;
     write_build_metadata(
         &input,
-        &project,
+        context.project,
         &BuildMetadata {
             app,
             manifest: &pack.manifest,
@@ -423,13 +421,7 @@ fn validate_platform_identifier(platform: Platform, identifier: String) -> Resul
     }
 }
 
-fn prepare_platform_input(
-    project_dir: &Path,
-    build_dir: &Path,
-    platform: Platform,
-) -> Result<(PathBuf, PathBuf)> {
-    let project = fs::canonicalize(project_dir)
-        .with_context(|| format!("resolve project directory: {}", project_dir.display()))?;
+fn prepare_platform_input(build_dir: &Path, platform: Platform) -> Result<PathBuf> {
     let staging = build_dir.join(".tokamak").join(platform.directory_name());
     let input = staging.join("input");
     paths::reset_path(&input)
@@ -441,7 +433,7 @@ fn prepare_platform_input(
         )
     })?;
     fs::create_dir_all(input.join("app"))?;
-    Ok((input, project))
+    Ok(input)
 }
 
 fn output_path(build_dir: &Path, platform: Platform, app_slug: &str) -> PathBuf {

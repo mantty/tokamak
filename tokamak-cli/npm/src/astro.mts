@@ -9,7 +9,7 @@ import { sessionDrivers } from "astro/config";
 import { normalizePath, type Plugin, type ViteDevServer } from "vite";
 import { experimental_readRawConfig, unstable_readConfig, type Unstable_RawConfig } from "wrangler";
 
-import { createNativeWorker, type TokamakOptions } from "./native-worker.mjs";
+import { createNativeWorker, rejectAuxiliaryWorkers, type TokamakOptions } from "./native-worker.mjs";
 import { createClientPlugin } from "./client.mjs";
 import { writeChanged } from "./worker-graph.mjs";
 import type { BindingConfiguration } from "./worker-types.mjs";
@@ -58,9 +58,7 @@ export function tokamak(options: TokamakOptions = {}, cloudflareOptions: Cloudfl
       },
     };
   }
-  if (cloudflareOptions.auxiliaryWorkers?.length) {
-    throw new Error("Tokamak hosts the main and native workers; additional auxiliary workers are not supported.");
-  }
+  rejectAuxiliaryWorkers(cloudflareOptions);
   const generated = path.join(path.dirname(cloudflareOptions.configPath ?? "."), `.tokamak.${randomUUID()}.json`);
   let generatedPath: string | undefined;
   const cleanup = () => {

@@ -3,18 +3,12 @@
 const path = require("node:path");
 const { optionalDependencies } = require("./package.json");
 
-const PACKAGES = {
-  "darwin-arm64": "@tokamakdev/tok-darwin-arm64",
-  "darwin-x64": "@tokamakdev/tok-darwin-x64",
-  "linux-x64": "@tokamakdev/tok-linux-x64",
-  "win32-x64": "@tokamakdev/tok-win32-x64",
-};
 
 const PLATFORM_PACKS = Object.keys(optionalDependencies).filter((name) => name.startsWith("@tokamakdev/platform-"));
 
 function packageFor(platform, arch) {
-  const name = PACKAGES[`${platform}-${arch}`];
-  if (!name) throw new Error(`tokamak does not publish a CLI for ${platform} ${arch}`);
+  const name = `@tokamakdev/tok-${platform}-${arch}`;
+  if (!Object.hasOwn(optionalDependencies, name)) throw new Error(`tokamak does not publish a CLI for ${platform} ${arch}`);
   return name;
 }
 

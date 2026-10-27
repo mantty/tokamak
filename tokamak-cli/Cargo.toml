@@ -36,7 +36,6 @@ win32job.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 rcgen.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -84,23 +84,6 @@ export function colour(value: unknown, path: string): void {
   }
 }
 
-/** A whole number from `min` to `max`. */
-export function whole(min: number, max: number): Check {
-  return (value, path) => {
-    if (!(Number.isInteger(value) && (value as number) >= min && (value as number) <= max)) {
-      throw new TypeError(`${path} must be a whole number from ${String(min)} to ${String(max)}`);
-    }
-  };
-}
-
-/** A number from `min` to `max`. */
-export function between(min: number, max: number): Check {
-  return (value, path) => {
-    if (!(typeof value === "number" && value >= min && value <= max)) {
-      throw new TypeError(`${path} must be a number from ${String(min)} to ${String(max)}`);
-    }
-  };
-}
 
 /** A file's name with its extension, such as `"chime.wav"`. */
 export function fileName(value: unknown, path: string): void {

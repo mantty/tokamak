@@ -2,7 +2,6 @@ import { capabilitiesOf, lifecycleStage, platformApi, type JsonStream, type Toka
 
 import { android } from "./android.generated.js";
 import { apple } from "./apple.generated.js";
-import { backgroundDenied, permissionDenied, timedOut, unavailable } from "./errors.js";
 import type {
   LocationErrorEvent,
   LocationPermission,
@@ -25,10 +24,10 @@ export function location(ctx: TokamakContext) {
 
   /** Requires location services and in-use permission, asking for it where the user has not answered. */
   async function authorize(): Promise<void> {
-    if (!await native.servicesEnabled()) throw unavailable("Location services are disabled");
+    if (!await native.servicesEnabled()) throw new DOMException("Location services are disabled", "NotReadableError");
     let { inUse } = await native.permission();
     if (inUse === "prompt") ({ inUse } = await native.requestPermission());
-    if (inUse !== "granted") throw permissionDenied();
+    if (inUse !== "granted") throw new DOMException("Location permission was denied", "NotAllowedError");
   }
 
   return {
@@ -56,13 +55,18 @@ export function location(ctx: TokamakContext) {
       const recent = await native.recentPosition(Math.min(maximumAge, Number.MAX_VALUE));
       if (recent) return recent;
       const located = new AbortController();
-      const timer = timeout === undefined ? undefined : setTimeout(() => { located.abort(timedOut()); }, timeout);
+      const timer = timeout === undefined ? undefined : setTimeout(() => {
+        located.abort(new DOMException("Location was not found in time", "TimeoutError"));
+      }, timeout);
       const position = await platformApi(ctx, { apple, android }, located.signal).currentPosition()
         .finally(() => { clearTimeout(timer); });
       if (position) return position;
       // Android finds no position in the background without permission at all times.
       const background = await lifecycleStage(ctx) === "background";
-      throw background && (await native.permission()).backgroundAlways !== "granted" ? backgroundDenied() : unavailable("Location is unavailable");
+      if (background && (await native.permission()).backgroundAlways !== "granted") {
+        throw new DOMException("Location permission does not cover the background", "NotAllowedError");
+      }
+      throw new DOMException("Location is unavailable", "NotReadableError");
     },
 
     /**

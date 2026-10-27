@@ -32,14 +32,7 @@ use tokamak_cli::{
 
 use super::plugin_settings::{Kind, Setting, option_name, option_namespaces, option_text};
 use super::plugins::Plugin;
-use super::tokamak_config::{TokamakConfig, app_name_problem, value_problem};
-
-/// Keys every platform shares with the top level, with their kind and description.
-const SHARED_OPTIONS: [(&str, VariableKind, &str); 3] = [
-    ("name", VariableKind::String, "Display name"),
-    ("identifier", VariableKind::String, "Application identifier"),
-    ("icon", VariableKind::Path, "Icon in the platform's format"),
-];
+use super::tokamak_config::{TokamakConfig, app_name_problem, valid};
 
 /// Top-level settings from command-line options.
 #[derive(Args, Clone, Debug, Default)]
@@ -339,10 +332,15 @@ fn reject_undeclared_keys(
 ) -> Result<()> {
     let namespace = platform.namespace();
     let declared = |key: &str| manifest.variables.contains_key(key);
+    let shared = |key: &str| {
+        SHARED_PLATFORM_KEYS
+            .iter()
+            .any(|(shared, _, _)| *shared == key)
+    };
     if let Some(key) = sources
         .options
         .keys(namespace)
-        .find(|key| !SHARED_PLATFORM_KEYS.contains(&key.as_str()) && !declared(key))
+        .find(|key| !shared(key) && !declared(key))
     {
         bail!(
             "unknown option --{namespace}-{key}; {}",
@@ -360,7 +358,7 @@ fn reject_undeclared_keys(
 
 fn accepted_options(platform: Platform, manifest: &PlatformPackManifest) -> String {
     let namespace = platform.namespace();
-    let options = SHARED_OPTIONS
+    let options = SHARED_PLATFORM_KEYS
         .iter()
         .map(|(key, _, _)| *key)
         .chain(manifest.variables.keys().map(String::as_str))
@@ -567,14 +565,6 @@ fn environment_name(namespace: Option<&str>, key: &str) -> String {
     name.replace('-', "_").to_ascii_uppercase()
 }
 
-/// A value from an option or environment variable, held to the configuration's rules.
-fn valid(source: &str, value: String) -> Result<String> {
-    match value_problem(&value) {
-        Some(problem) => bail!("{source} {problem}"),
-        None => Ok(value),
-    }
-}
-
 /// `--help` text on the options that set one platform's value of a plugin's
 /// setting, if a plugin declares one.
 pub(crate) fn plugins_help(plugins: &[Plugin]) -> Option<String> {
@@ -605,7 +595,7 @@ pub(crate) fn platform_help(
             .iter()
             .map(|(key, variable)| (key.as_str(), variable.kind, variable.description.as_str()))
     });
-    let rows = SHARED_OPTIONS
+    let rows = SHARED_PLATFORM_KEYS
         .into_iter()
         .chain(pack_options)
         .map(|(key, kind, description)| {
@@ -642,14 +632,13 @@ mod tests {
 
     use anyhow::Result;
     use serde_json::{Value, json};
-    use tokamak_cli::SHARED_PLATFORM_KEYS;
 
     use crate::tokamak_config::{TokamakConfig, parse_config};
     use tokamak_cli::{PackVariable, Platform, PlatformPackManifest, Target, VariableKind};
 
     use super::{
-        NamespacedOptions, PlatformSettings, Plugin, SHARED_OPTIONS, Sources, TopOptions,
-        environment_name, platform_help, plugin_arguments, plugins_help, resolve, resolve_plugins,
+        NamespacedOptions, PlatformSettings, Plugin, Sources, TopOptions, environment_name,
+        platform_help, plugin_arguments, plugins_help, resolve, resolve_plugins,
         split_namespaced_options, version,
     };
 
@@ -850,12 +839,6 @@ mod tests {
             "TOKAMAK_IOS_TEAM_ID"
         );
         assert_eq!(environment_name(None, "identifier"), "TOKAMAK_IDENTIFIER");
-    }
-
-    #[test]
-    fn shared_platform_options_cover_the_shared_keys() {
-        let keys = SHARED_OPTIONS.map(|(key, _, _)| key);
-        assert_eq!(keys, SHARED_PLATFORM_KEYS);
     }
 
     #[test]

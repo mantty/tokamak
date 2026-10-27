@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -10,6 +9,7 @@ import { tokamak } from "@tokamakdev/tok/vite";
 import { createBuilder, createLogger, createServer } from "vite";
 import { createWorkerGraph } from "./dist/worker-graph.mjs";
 import { checkTypes, project } from "./worker-graph-fixture.mjs";
+import { temporaryProject } from "./worker-fixtures.mjs";
 
 
 
@@ -125,11 +125,9 @@ test("generates the same inferred client contract for a clean web build", async 
 });
 
 test("preserves existing user declarations when their filename conflicts with generated types", async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tokamak-type-conflict-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const file = path.join(root, "tokamak-env.d.ts");
   const source = "declare const application: string;\n";
-  fs.writeFileSync(file, source);
+  const root = temporaryProject(t, "tokamak-type-conflict-", { "tokamak-env.d.ts": source });
+  const file = path.join(root, "tokamak-env.d.ts");
   const graph = createWorkerGraph(root, undefined, path.join(root, ".tokamak"));
   await assert.rejects(graph.types.resolve(async id => ({ id })), /reserved for generated Tokamak types/);
   assert.equal(fs.readFileSync(file, "utf8"), source);

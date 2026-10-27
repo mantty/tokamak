@@ -15,7 +15,7 @@ export const SESSION_HEADER = "x-tokamak-session";
 const CONNECT_TIMEOUT = 10_000;
 
 /** The native endpoint's opaque result and completion status. */
-export interface PluginResult {
+interface PluginResult {
   payload: Uint8Array;
   failed: boolean;
   done: boolean;

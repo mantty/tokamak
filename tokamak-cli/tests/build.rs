@@ -288,13 +288,27 @@ fn build_command(platform: &str, project: &Path, platform_pack: &Path) -> TestRe
     Ok(command)
 }
 
-/// A `tok build` that builds the project, without the developer's tokamak
-/// settings.
+/// A `tok build` that builds the project with `platform_pack`.
 fn project_build_command(
     platform: &str,
     project: &Path,
     platform_pack: &Path,
 ) -> TestResult<Command> {
+    let mut command = tok_build(platform, project)?;
+    command.arg("--platform-pack").arg(platform_pack);
+    Ok(command)
+}
+
+/// A `tok build macos` that uses the project's earlier build and searches
+/// for its platform pack.
+fn pack_search_command(project: &Path) -> TestResult<Command> {
+    let mut command = tok_build("macos", project)?;
+    command.arg("--skip-project-build");
+    Ok(command)
+}
+
+/// A `tok build` without the developer's tokamak settings.
+fn tok_build(platform: &str, project: &Path) -> TestResult<Command> {
     let mut command = Command::cargo_bin("tok")?;
     for (name, _) in std::env::vars_os() {
         if name.to_string_lossy().starts_with("TOKAMAK_") {
@@ -304,8 +318,6 @@ fn project_build_command(
     command
         .args(["build", platform, "--project"])
         .arg(project)
-        .arg("--platform-pack")
-        .arg(platform_pack)
         .env("TOKAMAK_VERSION", "1.0.0");
     Ok(command)
 }
@@ -1438,16 +1450,10 @@ fn requires_a_platform_pack_for_app_builds() -> TestResult {
     fs::create_dir_all(&project)?;
     create_project(&project)?;
 
-    let mut command = Command::cargo_bin("tok")?;
-    command
-        .args(["build", "macos", "--project"])
-        .arg(&project)
-        .arg("--skip-project-build")
-        .env("TOKAMAK_VERSION", "1.0.0")
+    pack_search_command(&project)?
         // Installed platform packs under the real home directory must not satisfy the build.
         .env("HOME", temporary.path())
         .env("USERPROFILE", temporary.path())
-        .env_remove("TOKAMAK_PLATFORM_PACK_PATH")
         .assert()
         .failure()
         .stderr(contains("no platform pack found"));
@@ -1469,12 +1475,7 @@ fn finds_platform_packs_installed_in_the_home_directory() -> TestResult {
     create_project(&project)?;
     create_platform_pack(&pack, &target)?;
 
-    let mut command = Command::cargo_bin("tok")?;
-    command
-        .args(["build", "macos", "--project"])
-        .arg(&project)
-        .arg("--skip-project-build")
-        .env("TOKAMAK_VERSION", "1.0.0")
+    pack_search_command(&project)?
         .env("HOME", &home)
         .env("USERPROFILE", &home)
         // An empty path is ignored.
@@ -1495,12 +1496,7 @@ fn reads_platform_pack_path_from_tokamak_environment() -> TestResult {
     fs::create_dir_all(&platform_packs)?;
     create_project(&project)?;
 
-    let mut command = Command::cargo_bin("tok")?;
-    command
-        .args(["build", "macos", "--project"])
-        .arg(&project)
-        .arg("--skip-project-build")
-        .env("TOKAMAK_VERSION", "1.0.0")
+    pack_search_command(&project)?
         .env("TOKAMAK_PLATFORM_PACK_PATH", platform_packs)
         .assert()
         .failure()
@@ -1525,12 +1521,7 @@ fn searches_every_directory_in_the_platform_pack_path() -> TestResult {
     create_project(&project)?;
     create_platform_pack(&pack, &target)?;
 
-    let mut command = Command::cargo_bin("tok")?;
-    command
-        .args(["build", "macos", "--project"])
-        .arg(&project)
-        .arg("--skip-project-build")
-        .env("TOKAMAK_VERSION", "1.0.0")
+    pack_search_command(&project)?
         .env(
             "TOKAMAK_PLATFORM_PACK_PATH",
             std::env::join_paths([&empty, &platform_packs])?,

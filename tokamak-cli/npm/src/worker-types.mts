@@ -45,7 +45,6 @@ export class WorkerTypes {
     const source = path.resolve(config.configPath ? path.dirname(config.configPath) : this.root, config.main);
     this.mainEntry = fs.existsSync(source) ? source : config.main;
     this.mainModule = undefined;
-    this.#ready = false;
     this.bindings(config);
   }
 

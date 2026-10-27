@@ -4,9 +4,7 @@ import path from "node:path";
 
 import type { NativePlatform } from "@tokamakdev/plugin/capabilities";
 
-export type { NativePlatform };
-
-export interface ModuleExport {
+interface ModuleExport {
   module: string;
   export: string;
 }

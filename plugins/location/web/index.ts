@@ -47,10 +47,6 @@ export async function permission(): Promise<LocationPermission> {
   return { inUse: state, backgroundAlways: "denied", precision: "precise" };
 }
 
-/** Rejects as the web does for what only native apps have. */
-export function unsupported(): Promise<never> {
-  return Promise.reject(new DOMException("Native location is unavailable", "NotSupportedError"));
-}
 
 function browserLocationApi(): Geolocation {
   const root: { navigator?: { geolocation?: Geolocation } } = globalThis;
