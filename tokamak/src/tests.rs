@@ -11,7 +11,7 @@ use crate::quickjs::{Error, RuntimeConfig, WorkerBundle};
 use crate::transport::{HttpBody, HttpRequest, queue_websocket_message};
 use flume::{Receiver, Sender};
 use hyper::header::HeaderMap;
-use rquickjs::{ArrayBuffer, Context, Function, Module, Object, Runtime as JsRuntime, TypedArray};
+use rquickjs::{Context, Function, Module, Object, Runtime as JsRuntime, TypedArray};
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
@@ -640,7 +640,7 @@ fn exposes_bundle_tmp_and_device_operations() -> Result<(), Box<dyn std::error::
         let write: Function = object
             .get("writeFileSync")
             .map_err(|error| Error::Engine(format!("writeFileSync: {error}")))?;
-        let data = ArrayBuffer::new_copy(ctx.clone(), b"value")
+        let data = TypedArray::<u8>::new_copy(ctx.clone(), b"value")
             .map_err(|error| Error::Engine(error.to_string()))?;
         write
             .call::<_, ()>(("/tmp/value.txt", data))
