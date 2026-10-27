@@ -29,7 +29,6 @@ pub(super) struct FsOptions {
     with_file_types: bool,
     pub(super) bigint: bool,
     throw_if_no_entry: bool,
-    blob_type: Option<String>,
 }
 
 impl Default for FsOptions {
@@ -40,7 +39,6 @@ impl Default for FsOptions {
             with_file_types: false,
             bigint: false,
             throw_if_no_entry: true,
-            blob_type: None,
         }
     }
 }
@@ -73,7 +71,6 @@ pub(super) fn parse_options<'js>(
         with_file_types: boolean("withFileTypes", false)?,
         bigint: boolean("bigint", false)?,
         throw_if_no_entry: boolean("throwIfNoEntry", true)?,
-        blob_type: object.get("type")?,
     })
 }
 
@@ -1024,9 +1021,34 @@ pub(super) fn open_as_blob<'js>(
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<Value<'js>> {
     let path = path(&ctx, input)?;
-    let options = parse_options(&ctx, options.0)?;
-    let bytes = vfs_call(&ctx, "readAll", |vfs| vfs.read_file(&path))?;
-    blob_object(&ctx, bytes, options.blob_type.as_deref().unwrap_or("")).map(Object::into_value)
+    let blob_type = blob_type(&ctx, options.0)?;
+    let bytes = vfs_call(&ctx, "open", |vfs| vfs.read_file(&path))?;
+    blob_object(&ctx, bytes, &blob_type).map(Object::into_value)
+}
+
+/// `openAsBlob`'s `options.type`, checked as workerd checks it.
+fn blob_type<'js>(ctx: &Ctx<'js>, options: Option<Value<'js>>) -> rquickjs::Result<String> {
+    let Some(options) = options.filter(|options| !options.is_undefined()) else {
+        return Ok(String::new());
+    };
+    let invalid = |name: &str, kind: &str| {
+        throw_type_error(
+            ctx,
+            "ERR_INVALID_ARG_TYPE",
+            &format!("The \"{name}\" argument must be of type {kind}"),
+        )
+    };
+    if options.is_array() || options.is_function() {
+        return Err(invalid("options", "object"));
+    }
+    let options = options.into_object().ok_or_else(|| invalid("options", "object"))?;
+    match options.get::<_, Value>("type")? {
+        blob_type if blob_type.is_undefined() => Ok(String::new()),
+        blob_type => blob_type
+            .into_string()
+            .ok_or_else(|| invalid("options.type", "string"))?
+            .to_string(),
+    }
 }
 
 pub(super) fn symlink_sync<'js>(

@@ -2069,6 +2069,44 @@ async function fileStreamContracts() {
   };
 }
 
+// The Blob `openAsBlob` gives, also after a Worker replaces or deletes the
+// global `Blob`, which workerd's `openAsBlob` does not read.
+async function blobContracts() {
+  const root = "/tmp/filesystem-blob";
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(`${root}/file`, "blob text");
+  fs.symlinkSync(`${root}/file`, `${root}/link`);
+  const Builtin = globalThis.Blob;
+  async function outcome(...args) {
+    try {
+      const blob = fs.openAsBlob(...args);
+      return { builtin: blob instanceof Builtin, size: blob.size, type: blob.type, text: await blob.text() };
+    } catch (error) {
+      return { thrown: failure(error) };
+    }
+  }
+  const result = {
+    file: await outcome(`${root}/file`),
+    typed: await outcome(`${root}/file`, { type: "text/plain" }),
+    mixedCaseType: await outcome(`${root}/file`, { type: "Text/Plain; Charset=UTF-8" }),
+    nonAsciiType: await outcome(`${root}/file`, { type: "text/pläin" }),
+    link: await outcome(`${root}/link`),
+    directory: await outcome(root),
+    missing: await outcome(`${root}/missing`),
+    nullOptions: await outcome(`${root}/file`, null),
+    numberType: await outcome(`${root}/file`, { type: 1 }),
+  };
+  try {
+    globalThis.Blob = class Replaced {};
+    result.replacedGlobal = await outcome(`${root}/file`);
+    result.deletedGlobal = Reflect.deleteProperty(globalThis, "Blob");
+    result.withoutGlobal = await outcome(`${root}/file`);
+  } finally {
+    globalThis.Blob = Builtin;
+  }
+  return result;
+}
+
 export async function filesystemContracts() {
   const result = { write: {} };
   for (const [name, write] of Object.entries(writers)) result.write[name] = await writerOutcomes(write);
@@ -2100,5 +2138,6 @@ export async function filesystemContracts() {
   result.underFile = callOutcomes(underFileCalls, "/tmp/filesystem-under-file", slashTree);
   result.descriptorKinds = descriptorKindContracts();
   result.streams = await fileStreamContracts();
+  result.blobs = await blobContracts();
   return result;
 }
