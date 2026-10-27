@@ -251,6 +251,7 @@ fn reports_results_and_metadata_as_local_d1_does() -> TestResult {
     let meta = &inserted[0]["meta"];
     assert_eq!(inserted[0]["success"], json!(true));
     assert_eq!(meta["served_by"], json!("tokamak.db"));
+    assert_eq!(meta["total_attempts"], json!(1));
     assert_eq!(meta["changes"], json!(1));
     assert_eq!(meta["last_row_id"], json!(1));
     assert_eq!(meta["changed_db"], json!(true));

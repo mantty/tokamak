@@ -51,6 +51,9 @@ const LIMITS: [(Limit, i32); 12] = [
 /// The `served_by` value in query metadata.
 const SERVED_BY: &str = "tokamak.db";
 
+/// The `total_attempts` value in query metadata: each query runs once.
+const TOTAL_ATTEMPTS: u32 = 1;
+
 /// A D1 binding's packaged migrations.
 #[derive(Clone, Debug)]
 pub(crate) struct Migrations {
@@ -242,6 +245,7 @@ impl Session {
             success: true,
             meta: Meta {
                 served_by: SERVED_BY,
+                total_attempts: TOTAL_ATTEMPTS,
                 duration,
                 changes,
                 last_row_id,
@@ -490,6 +494,7 @@ struct Failure<'a> {
 #[derive(Serialize)]
 struct Meta {
     served_by: &'static str,
+    total_attempts: u32,
     duration: f64,
     changes: u64,
     last_row_id: i64,
