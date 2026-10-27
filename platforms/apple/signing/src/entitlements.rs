@@ -1,14 +1,13 @@
 //! App-declared entitlements and how they combine with a profile's.
 
 use std::env;
-use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use plist::{Dictionary, Value};
 
 #[cfg(any(target_os = "macos", test))]
 use crate::Platform;
-use crate::info_plist::overlay_dictionary;
+use crate::info_plist::{configured_file, overlay_dictionary, read_dictionary};
 
 /// Entitlements signed with the profile's value, so one declaration serves
 /// development and distribution profiles.
@@ -22,17 +21,9 @@ const PROFILE_VALUED: [&str; 2] = ["aps-environment", "com.apple.developer.aps-e
 /// Returns an error when the file is missing or is not a plist with a
 /// dictionary root.
 pub(crate) fn declared(variable: &str) -> Result<Option<Dictionary>> {
-    let Some(path) = env::var_os(variable).map(PathBuf::from) else {
-        return Ok(None);
-    };
-    if !path.is_file() {
-        bail!("{variable} does not point to a file: {}", path.display());
-    }
-    Value::from_file(&path)
-        .with_context(|| format!("read entitlements {}", path.display()))?
-        .into_dictionary()
-        .map(Some)
-        .with_context(|| format!("entitlements root must be a dictionary: {}", path.display()))
+    env::var_os(variable)
+        .map(|value| read_dictionary(&configured_file(variable, value)?))
+        .transpose()
 }
 
 /// The first declared entitlement the profile's entitlements do not permit.

@@ -220,16 +220,7 @@ if [[ -n "$icon" ]]; then
 fi
 
 shopt -s nullglob
-swift_sources=()
-for source in "$pack/native-shell"/*.swift; do
-  [[ -f "$source" ]] || continue
-  swift_sources+=("$source")
-done
-
-if [[ ! -f "$pack/native-shell/TokamakShell.swift" ]]; then
-  echo "Apple native shell source is missing: $pack/native-shell/TokamakShell.swift" >&2
-  exit 1
-fi
+swift_sources=("$pack/native-shell"/*.swift)
 
 # A plugin's class is a Swift type name, which the registry creates, and its
 # sources are the Swift files in its native directory.
