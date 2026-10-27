@@ -499,7 +499,8 @@ pub(super) fn handle_read<'js>(
     let read = open_descriptor(ctx, state).and_then(|descriptor| {
         let arguments = normalize_read_arguments(ctx, args.0)?;
         let buffer = arguments.buffer.clone();
-        let count = read_views(ctx, descriptor, &node_read(ctx, arguments)?)?;
+        let read = node_read(ctx, arguments, ReadOverrun::OutOfRange)?;
+        let count = read_views(ctx, descriptor, &read)?;
         transfer_value(ctx, "bytesRead", count as usize, "buffer", buffer)
     });
     promise(ctx.clone(), read)

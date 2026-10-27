@@ -19,12 +19,22 @@ pub(super) struct ReadRequest<'js> {
     pub(super) position: Option<Value<'js>>,
 }
 
+/// How a read reports a range that runs past the end of its buffer.
+#[derive(Clone, Copy)]
+pub(super) enum ReadOverrun {
+    /// `readSync`'s `ERR_OUT_OF_RANGE` for the length.
+    OutOfRange,
+    /// The callback `fs.read`'s own `ERR_INVALID_ARG_VALUE` for the offset.
+    InvalidOffset,
+}
+
 /// `fs.readSync(fd, buffer, ...args)`, as workerd's `validateReadArgs` reads
-/// it. The range may run past the view to the end of its `ArrayBuffer`.
+/// it: a range of the view `buffer` and the position to read it from.
 pub(super) fn sync_read<'js>(
     ctx: &Ctx<'js>,
     buffer: Value<'js>,
     args: Vec<Value<'js>>,
+    overrun: ReadOverrun,
 ) -> rquickjs::Result<ReadRequest<'js>> {
     if !is_array_buffer_view(&buffer) {
         return Err(throw_type_error(
@@ -36,32 +46,28 @@ pub(super) fn sync_read<'js>(
     let view = Object::from_value(buffer)?;
     let byte_length: f64 = view.get("byteLength")?;
     let (offset, length, position) = read_fields(ctx, byte_length, args)?;
-    let offset = match added_number(&offset) {
-        Some(offset) => Value::new_number(ctx.clone(), view.get::<_, f64>("byteOffset")? + offset),
-        None => offset,
-    };
-    let offset = validate_uint32(ctx, &offset, "offset")? as usize;
-    let length = validate_uint32(ctx, &length, "length")? as usize;
+    let offset = validate_uint32(ctx, &offset, "offset")?;
+    let length = validate_uint32(ctx, &length, "length")?;
     let position = validate_position(ctx, position)?;
-    let bytes = writable_bytes(ctx, view.get("buffer")?)?;
-    if offset.saturating_add(length) > bytes.len {
-        return Err(throw_type_error(
-            ctx,
-            "ERR_INVALID_ARG_VALUE",
-            &format!("The argument 'offset' out of bounds. Received {offset}"),
-        ));
+    if length == 0 {
+        return Ok(ReadRequest {
+            targets: Vec::new(),
+            position,
+        });
     }
-    let empty = length == 0 || byte_length <= 0.0;
+    let remaining = byte_length - f64::from(offset);
+    if f64::from(length) > remaining {
+        return Err(overrun_error(ctx, overrun, length, remaining));
+    }
+    let start = usize::try_from(index_property(ctx, &view, "byteOffset")? + u64::from(offset))
+        .map_err(|_| out_of_bounds(ctx, "offset"))?;
     Ok(ReadRequest {
-        targets: if empty {
-            Vec::new()
-        } else {
-            vec![ReadTarget {
-                bytes,
-                offset,
-                length,
-            }]
-        },
+        targets: vec![buffer_target(
+            ctx,
+            view.get("buffer")?,
+            start,
+            length as usize,
+        )?],
         position,
     })
 }
@@ -72,12 +78,18 @@ pub(super) fn sync_read<'js>(
 pub(super) fn node_read<'js>(
     ctx: &Ctx<'js>,
     arguments: ReadArguments<'js>,
+    overrun: ReadOverrun,
 ) -> rquickjs::Result<ReadRequest<'js>> {
     let undefined = || Value::new_undefined(ctx.clone());
     let offset = defined(arguments.offset).unwrap_or_else(|| Value::new_int(ctx.clone(), 0));
     let length = defined(arguments.length).unwrap_or_else(undefined);
     let position = arguments.position.unwrap_or_else(undefined);
-    sync_read(ctx, arguments.buffer, vec![offset, length, position])
+    sync_read(
+        ctx,
+        arguments.buffer,
+        vec![offset, length, position],
+        overrun,
+    )
 }
 
 /// `fs.readvSync(fd, buffers, position)`, with `undefined` read as `null`.
@@ -125,14 +137,13 @@ fn read_fields<'js>(
 ) -> rquickjs::Result<(Value<'js>, Value<'js>, Value<'js>)> {
     let mut args = args.into_iter();
     let first = args.next().filter(|value| !value.is_undefined());
-    let rest = |offset: &Value<'js>| {
-        let offset = added_number(offset).unwrap_or_default();
-        Value::new_number(ctx.clone(), byte_length - offset)
-    };
     let null = Value::new_null(ctx.clone());
     let options = match first {
         Some(offset) if offset.is_number() => {
-            let length = defined(args.next()).unwrap_or_else(|| rest(&offset));
+            let length = match defined(args.next()) {
+                Some(length) => length,
+                None => remaining_length(ctx, byte_length, &offset)?,
+            };
             let position = args.next().filter(|value| !value.is_undefined());
             return Ok((offset, length, position.unwrap_or(null)));
         }
@@ -149,15 +160,21 @@ fn read_fields<'js>(
         }
     };
     let offset: Value = options.get("offset")?;
+    let offset = if offset.is_undefined() {
+        Value::new_int(ctx.clone(), 0)
+    } else {
+        offset
+    };
     let length: Value = options.get("length")?;
+    let length = if length.is_undefined() {
+        remaining_length(ctx, byte_length, &offset)?
+    } else {
+        length
+    };
     let position: Value = options.get("position")?;
     Ok((
-        offset.clone(),
-        if length.is_undefined() {
-            rest(&offset)
-        } else {
-            length
-        },
+        offset,
+        length,
         if position.is_undefined() {
             null
         } else {
@@ -166,16 +183,38 @@ fn read_fields<'js>(
     ))
 }
 
-/// The number `value` adds to a number in JavaScript, or `None` when the
-/// addition makes a string.
-fn added_number(value: &Value<'_>) -> Option<f64> {
-    if value.is_undefined() || value.is_null() {
-        return Some(0.0);
+/// `byteLength - offset`, the length a read from `offset` defaults to.
+fn remaining_length<'js>(
+    ctx: &Ctx<'js>,
+    byte_length: f64,
+    offset: &Value<'js>,
+) -> rquickjs::Result<Value<'js>> {
+    let offset = Coerced::<f64>::from_js(ctx, offset.clone())?.0;
+    Ok(Value::new_number(ctx.clone(), byte_length - offset))
+}
+
+/// The error a read of `length` bytes reports when `remaining` bytes follow
+/// its offset.
+fn overrun_error(
+    ctx: &Ctx<'_>,
+    overrun: ReadOverrun,
+    length: u32,
+    remaining: f64,
+) -> rquickjs::Error {
+    match overrun {
+        ReadOverrun::OutOfRange => throw_range_error(
+            ctx,
+            "ERR_OUT_OF_RANGE",
+            &format!(
+                "The value of \"length\" is out of range. It must be <= {remaining}. Received {length}"
+            ),
+        ),
+        ReadOverrun::InvalidOffset => throw_type_error(
+            ctx,
+            "ERR_INVALID_ARG_VALUE",
+            "The argument 'offset' is invalid. Received 'must be >= 0 and <= buffer.length'",
+        ),
     }
-    value
-        .as_bool()
-        .map(|value| f64::from(u8::from(value)))
-        .or_else(|| value.as_number())
 }
 
 /// The range `view` covers in its `ArrayBuffer`.
@@ -185,7 +224,17 @@ fn view_target<'js>(ctx: &Ctx<'js>, view: Value<'js>) -> rquickjs::Result<ReadTa
         .map_err(|_| out_of_bounds(ctx, "offset"))?;
     let length = usize::try_from(index_property(ctx, &view, "byteLength")?)
         .map_err(|_| out_of_bounds(ctx, "length"))?;
-    let bytes = writable_bytes(ctx, view.get("buffer")?)?;
+    buffer_target(ctx, view.get("buffer")?, offset, length)
+}
+
+/// The bytes `offset..offset + length` of the `ArrayBuffer` `buffer`.
+fn buffer_target<'js>(
+    ctx: &Ctx<'js>,
+    buffer: Value<'js>,
+    offset: usize,
+    length: usize,
+) -> rquickjs::Result<ReadTarget<'js>> {
+    let bytes = writable_bytes(ctx, buffer)?;
     if offset.saturating_add(length) > bytes.len {
         return Err(out_of_bounds(ctx, "length"));
     }

@@ -430,3 +430,31 @@ fn opening_with_a_truncating_flag_empties_the_file() -> Result<(), Box<dyn std::
         Ok(())
     })
 }
+
+#[test]
+fn recursive_operations_end_in_a_directory_cycle() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let runtime = node_fs_runtime(directory.path())?;
+    let context = Context::full(&runtime)?;
+    context.with(|ctx| -> Result<(), Box<dyn std::error::Error>> {
+        install_node_fs(&ctx, directory.path())?;
+        let result: String = ctx.eval(
+            r#"(() => {
+              const fs = process.getBuiltinModule("node:fs");
+              const outcome = run => { try { return run(); } catch (error) { return error.code; } };
+              fs.mkdirSync("/tmp/cycle/sub", { recursive: true });
+              fs.symlinkSync("/tmp/cycle", "/tmp/cycle/up");
+              fs.renameSync("/tmp/cycle/up", "/tmp/cycle/sub/loop");
+              return JSON.stringify([
+                outcome(() => fs.readdirSync("/tmp/cycle", { recursive: true }).length),
+                outcome(() => fs.globSync("**", { cwd: "/tmp/cycle" }).length),
+                outcome(() => fs.cpSync("/tmp/cycle", "/tmp/copy", { recursive: true })),
+                outcome(() => fs.rmSync("/tmp/cycle", { recursive: true })),
+                fs.existsSync("/tmp/cycle"),
+              ]);
+            })()"#,
+        )?;
+        assert_eq!(result, r#"[47,47,"EINVAL",null,false]"#);
+        Ok(())
+    })
+}

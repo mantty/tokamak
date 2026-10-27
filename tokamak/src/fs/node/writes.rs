@@ -146,22 +146,21 @@ fn view_write<'js>(
         return Err(invalid_bytes(ctx, "buffer"));
     }
     let view = Object::from_value(value.clone())?;
-    let byte_length = index_property(ctx, &view, "byteLength")?;
     let (offset, length, position) = write_fields(args)?;
-    let offset = offset.map_or(Ok(0), |offset| validate_integer(ctx, offset, "offset"))?
-        + index_property(ctx, &view, "byteOffset")?;
+    let offset = offset.map_or(Ok(0), |offset| validate_integer(ctx, offset, "offset"))?;
     let position = position.map_or(Ok(None), |position| validate_position(ctx, position))?;
-    let length = length.map_or(Ok(byte_length), |length| {
+    let available = index_property(ctx, &view, "byteLength")?
+        .checked_sub(offset)
+        .ok_or_else(|| out_of_bounds(ctx, "offset"))?;
+    let length = length.map_or(Ok(available), |length| {
         validate_integer(ctx, length, "length")
     })?;
-    if length > byte_length {
+    if length > available {
         return Err(out_of_bounds(ctx, "length"));
     }
-    if offset > length {
-        return Err(out_of_bounds(ctx, "offset"));
-    }
+    let start = index_property(ctx, &view, "byteOffset")? + offset;
     Ok(WriteRequest {
-        buffers: vec![buffer_range(ctx, &view.get("buffer")?, offset, length)?],
+        buffers: vec![buffer_range(ctx, &view.get("buffer")?, start, length)?],
         data: value,
         position,
     })
@@ -181,10 +180,9 @@ fn write_fields(
     else {
         return Ok((defined(first), defined(args.next()), defined(args.next())));
     };
-    let length: Value = options.get("length")?;
     Ok((
         defined(options.get("offset")?),
-        (!length.is_undefined()).then_some(length),
+        defined(options.get("length")?),
         defined(options.get("position")?),
     ))
 }
@@ -348,12 +346,16 @@ pub(super) fn validate_position<'js>(
     Ok(Some(value))
 }
 
-/// `value` as `validateUint32(value, name)` accepts it.
+/// `value` as `validateUint32(value, name)` accepts it, which converts a
+/// non-number to a number first and so throws for a bigint or symbol.
 pub(super) fn validate_uint32<'js>(
     ctx: &Ctx<'js>,
     value: &Value<'js>,
     name: &str,
 ) -> rquickjs::Result<u32> {
+    if !value.is_number() {
+        Coerced::<f64>::from_js(ctx, value.clone())?;
+    }
     validate_integer_range(
         ctx,
         value,

@@ -225,6 +225,16 @@ impl FileNode {
         Ok(self.stat()?.size)
     }
 
+    /// An independent in-memory copy of this file, which `path` names in
+    /// errors. A device copies as an empty file.
+    pub(super) fn copied(&self, path: &str) -> Result<Self> {
+        let bytes = match self {
+            Self::Device(_) => Vec::new(),
+            _ => self.read(0, checked_size(self.size()?, path)?)?,
+        };
+        Ok(Self::Memory(Arc::new(Mutex::new(bytes))))
+    }
+
     pub(super) fn writable(&self) -> bool {
         !matches!(self, Self::Bundle { .. })
     }

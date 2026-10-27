@@ -9,6 +9,27 @@ fn vfs(bundle: &std::path::Path) -> VirtualFileSystem {
     VirtualFileSystem::new(Bundle::new(bundle))
 }
 
+/// Replaces or appends to the file `path` names.
+fn write_file(
+    vfs: &mut VirtualFileSystem,
+    path: &str,
+    data: &[u8],
+    append: bool,
+) -> super::Result<()> {
+    let options = OpenOptions {
+        read: false,
+        write: true,
+        append,
+        create: true,
+        truncate: !append,
+        ..OpenOptions::default()
+    };
+    let descriptor = vfs.open(path, options)?;
+    let result = vfs.write(descriptor, data, None).map(|_| ());
+    let close_result = vfs.close(descriptor);
+    result.and(close_result)
+}
+
 #[test]
 fn keeps_tmp_mutable_and_bundle_readonly() -> TestResult {
     let directory = tempfile::tempdir()?;
@@ -18,8 +39,8 @@ fn keeps_tmp_mutable_and_bundle_readonly() -> TestResult {
 
     assert_eq!(vfs.read_file("/bundle/config/app.json")?, b"hello");
     assert!(!vfs.stat("/bundle/config/app.json")?.writable);
-    vfs.write_file("/tmp/value.txt", b"one", false)?;
-    vfs.write_file("/tmp/value.txt", b" two", true)?;
+    write_file(&mut vfs, "/tmp/value.txt", b"one", false)?;
+    write_file(&mut vfs, "/tmp/value.txt", b" two", true)?;
     assert_eq!(vfs.read_file("/tmp/value.txt")?, b"one two");
     assert_eq!(vfs.read_dir("/bundle/config")?[0].name, "app.json");
     let second = VirtualFileSystem::new(Bundle::new(directory.path()));
@@ -30,7 +51,7 @@ fn keeps_tmp_mutable_and_bundle_readonly() -> TestResult {
             .map(|error| error.kind()),
         Some(ErrorKind::NotFound)
     );
-    let error = match vfs.write_file("/bundle/nope", b"x", false) {
+    let error = match write_file(&mut vfs, "/bundle/nope", b"x", false) {
         Ok(()) => return Err("readonly bundle accepted a write".into()),
         Err(error) => error,
     };
@@ -89,7 +110,7 @@ fn implements_devices() -> TestResult {
 fn handles_symlinks_and_descriptors() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut vfs = vfs(directory.path());
-    vfs.write_file("/tmp/source", b"hello", false)?;
+    write_file(&mut vfs, "/tmp/source", b"hello", false)?;
     assert_eq!(
         vfs.mkdir("/tmp/source", true)
             .err()
@@ -121,7 +142,7 @@ fn handles_symlinks_and_descriptors() -> TestResult {
 fn enforces_descriptor_permissions_and_path_limits() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut vfs = vfs(directory.path());
-    vfs.write_file("/tmp/value", b"hello", false)?;
+    write_file(&mut vfs, "/tmp/value", b"hello", false)?;
 
     let read_only = vfs.open("/tmp/value", OpenOptions::default())?;
     assert_eq!(
@@ -155,9 +176,9 @@ fn enforces_descriptor_permissions_and_path_limits() -> TestResult {
 fn supports_access_copy_links_temp_and_vectors() -> TestResult {
     let directory = tempfile::tempdir()?;
     let mut vfs = vfs(directory.path());
-    vfs.write_file("/tmp/source.txt", b"hello", false)?;
+    write_file(&mut vfs, "/tmp/source.txt", b"hello", false)?;
     vfs.mkdir("/tmp/tree", false)?;
-    vfs.write_file("/tmp/tree/nested.txt", b"nested", false)?;
+    write_file(&mut vfs, "/tmp/tree/nested.txt", b"nested", false)?;
 
     vfs.access("/tmp/source.txt", 0)?;
     assert_eq!(
