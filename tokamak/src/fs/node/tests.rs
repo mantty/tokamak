@@ -404,3 +404,29 @@ fn writes_the_viewed_bytes_of_each_supported_typed_array() -> Result<(), Box<dyn
         Ok(())
     })
 }
+
+#[test]
+fn opening_with_a_truncating_flag_empties_the_file() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let runtime = node_fs_runtime(directory.path())?;
+    let context = Context::full(&runtime)?;
+    context.with(|ctx| -> Result<(), Box<dyn std::error::Error>> {
+        install_node_fs(&ctx, directory.path())?;
+        let result: String = ctx.eval(
+            r#"(() => {
+              const fs = process.getBuiltinModule("node:fs");
+              const { O_WRONLY, O_RDWR, O_CREAT, O_TRUNC } = fs.constants;
+              const flags = ["w", "w+", O_WRONLY | O_CREAT | O_TRUNC, O_RDWR | O_TRUNC, "r+", O_RDWR];
+              return JSON.stringify(flags.map(flag => {
+                fs.writeFileSync("/tmp/truncated", Uint8Array.from([9, 9]));
+                const fd = fs.openSync("/tmp/truncated", flag);
+                fs.writeSync(fd, Uint8Array.from([1]));
+                fs.closeSync(fd);
+                return [...fs.readFileSync("/tmp/truncated")];
+              }));
+            })()"#,
+        )?;
+        assert_eq!(result, "[[1],[1],[1],[1],[1,9],[1,9]]");
+        Ok(())
+    })
+}
