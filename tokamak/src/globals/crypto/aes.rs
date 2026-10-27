@@ -67,10 +67,6 @@ macro_rules! with_aes {
     };
 }
 
-pub(super) fn valid_key(key: &[u8]) -> bool {
-    matches!(key.len(), 16 | 24 | 32)
-}
-
 pub(super) fn valid_tag_length(bytes: usize) -> bool {
     matches!(bytes, 4 | 8 | 12 | 13 | 14 | 15 | 16)
 }
@@ -412,15 +408,8 @@ impl<C: BlockCipherEncrypt<BlockSize = U16> + KeyInit> Stream for Gcm<C> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::hex;
     use super::*;
-
-    fn hex(text: &str) -> Vec<u8> {
-        (0..text.len())
-            .step_by(2)
-            .map(|index| u8::from_str_radix(&text[index..index + 2], 16))
-            .collect::<Result<_, _>>()
-            .unwrap_or_default()
-    }
 
     struct Case<'a> {
         mode: Mode,
@@ -462,47 +451,25 @@ mod tests {
             "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091",
         );
         let tag = hex("5bc94fbc3221a5db94fae95ae7121a47");
-        let (output, produced) = run(
-            &Case {
+        let gcm = |encrypt, tag: Option<&[u8]>, input: &[u8]| {
+            let case = Case {
                 mode: Mode::Gcm,
-                encrypt: true,
+                encrypt,
                 key: &key,
                 iv: &iv,
                 aad: &aad,
-                tag: None,
-            },
-            &plaintext,
-        )?;
+                tag,
+            };
+            run(&case, input)
+        };
+        let (output, produced) = gcm(true, None, &plaintext)?;
         assert_eq!(output, expected);
         assert_eq!(produced.as_deref(), Some(tag.as_slice()));
-        let (decrypted, _) = run(
-            &Case {
-                mode: Mode::Gcm,
-                encrypt: false,
-                key: &key,
-                iv: &iv,
-                aad: &aad,
-                tag: Some(&tag),
-            },
-            &expected,
-        )?;
+        let (decrypted, _) = gcm(false, Some(&tag), &expected)?;
         assert_eq!(decrypted, plaintext);
         let mut wrong = tag.clone();
         wrong[0] ^= 1;
-        assert!(
-            run(
-                &Case {
-                    mode: Mode::Gcm,
-                    encrypt: false,
-                    key: &key,
-                    iv: &iv,
-                    aad: &aad,
-                    tag: Some(&wrong)
-                },
-                &expected
-            )
-            .is_err()
-        );
+        assert!(gcm(false, Some(&wrong), &expected).is_err());
         Ok(())
     }
 
@@ -542,46 +509,24 @@ mod tests {
         let key = hex("2b7e151628aed2a6abf7158809cf4f3c");
         let iv = hex("000102030405060708090a0b0c0d0e0f");
         let plaintext = b"The quick brown fox jumps over the lazy dog";
-        let (ciphertext, _) = run(
-            &Case {
+        let cbc = |encrypt, input: &[u8]| {
+            let case = Case {
                 mode: Mode::Cbc,
-                encrypt: true,
+                encrypt,
                 key: &key,
                 iv: &iv,
                 aad: &[],
                 tag: None,
-            },
-            plaintext,
-        )?;
+            };
+            run(&case, input)
+        };
+        let (ciphertext, _) = cbc(true, plaintext)?;
         assert_eq!(ciphertext.len(), 48);
-        let (decrypted, _) = run(
-            &Case {
-                mode: Mode::Cbc,
-                encrypt: false,
-                key: &key,
-                iv: &iv,
-                aad: &[],
-                tag: None,
-            },
-            &ciphertext,
-        )?;
+        let (decrypted, _) = cbc(false, &ciphertext)?;
         assert_eq!(decrypted, plaintext);
         let mut corrupted = ciphertext.clone();
         corrupted[47] ^= 1;
-        assert!(
-            run(
-                &Case {
-                    mode: Mode::Cbc,
-                    encrypt: false,
-                    key: &key,
-                    iv: &iv,
-                    aad: &[],
-                    tag: None
-                },
-                &corrupted
-            )
-            .is_err()
-        );
+        assert!(cbc(false, &corrupted).is_err());
         Ok(())
     }
 

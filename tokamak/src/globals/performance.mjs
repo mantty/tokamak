@@ -15,6 +15,13 @@ function detailOption(options) {
   return detail;
 }
 
+// `value`, an entry's JSON, with the entry's detail when it has one.
+function detailJson(entry, value) {
+  const { detail } = entryState.get(entry);
+  if (detail !== undefined) value.detail = detail;
+  return value;
+}
+
 export class PerformanceEntry {
   constructor(brand = undefined, state) {
     if (brand !== internal) throw new TypeError("Illegal constructor");
@@ -39,21 +46,12 @@ export class PerformanceMark extends PerformanceEntry {
     super(internal, { name: markName, entryType: "mark", startTime: startTime === undefined ? now() : Number(startTime), duration: 0, detail: detailOption(options) });
   }
   get detail() { return entryState.get(this).detail ?? null; }
-  toJSON() {
-    const value = super.toJSON(), detail = entryState.get(this).detail;
-    if (detail !== undefined) value.detail = detail;
-    return value;
-  }
+  toJSON() { return detailJson(this, super.toJSON()); }
 }
 
 export class PerformanceMeasure extends PerformanceEntry {
-  constructor(brand = undefined, state) { super(brand, state); }
   get detail() { return entryState.get(this).detail ?? null; }
-  toJSON() {
-    const value = super.toJSON(), detail = entryState.get(this).detail;
-    if (detail !== undefined) value.detail = detail;
-    return value;
-  }
+  toJSON() { return detailJson(this, super.toJSON()); }
 }
 
 export class PerformanceResourceTiming extends PerformanceEntry {}

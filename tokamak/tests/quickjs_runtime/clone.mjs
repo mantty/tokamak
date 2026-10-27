@@ -1,7 +1,4 @@
-function outcome(callback) {
-  try { return callback(); }
-  catch (error) { return { error: error.name, code: error.code ?? null }; }
-}
+import { outcome } from "./outcome.mjs";
 
 export async function cloneContracts() {
   const result = {};

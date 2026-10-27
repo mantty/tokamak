@@ -4,7 +4,6 @@ import {
   intlCanonicalLocales,
   intlCollatorCompare,
   intlDateTime,
-  intlDateTimeParts,
   intlDisplayName,
   intlFractionDigits,
   intlHourCycle,
@@ -53,8 +52,9 @@ function optionsObject(options) {
   return Object(options);
 }
 
+// The JSON the host takes for an object's internal options.
 function optionsJson(options) {
-  return JSON.stringify(optionsObject(options), (_, value) => typeof value === "bigint" ? String(value) : value);
+  return JSON.stringify(options, (_, value) => typeof value === "bigint" ? String(value) : value);
 }
 
 // Marks `object` as a host object and returns its canonical locales, as the JSON
@@ -138,12 +138,14 @@ function dateResolvedOptions({ locale, json }, options) {
   };
   if (options.dateStyle !== undefined || options.timeStyle !== undefined) {
     if (options.dateStyle !== undefined) result.dateStyle = options.dateStyle;
-    if (options.timeStyle !== undefined) result.timeStyle = options.timeStyle;
-    if (options.timeStyle !== undefined) resolveHourCycle(result, json, options);
+    if (options.timeStyle !== undefined) {
+      result.timeStyle = options.timeStyle;
+      resolveHourCycle(result, json, options);
+    }
     return result;
   }
-  const hasDate = dateFields.some(field => ["weekday", "era", "year", "month", "day"].includes(field) && options[field] !== undefined);
-  const hasTime = dateFields.some(field => ["dayPeriod", "hour", "minute", "second", "fractionalSecondDigits", "timeZoneName"].includes(field) && options[field] !== undefined);
+  const hasDate = ["weekday", "era", "year", "month", "day"].some(field => options[field] !== undefined);
+  const hasTime = ["dayPeriod", "hour", "minute", "second", "fractionalSecondDigits", "timeZoneName"].some(field => options[field] !== undefined);
   if (!hasDate && !hasTime) {
     result.year = "numeric";
     result.month = "numeric";
@@ -164,15 +166,17 @@ function resolveHourCycle(result, locales, options) {
 class DateTimeFormat {
   #locales;
   #options;
+  #optionsJson;
   #format;
   constructor(locales, options) {
     this.#locales = initIntlObject(this, locales);
     this.#options = dateOptions(options);
-    this.#format = value => intlDateTime(epochMilliseconds(value), this.#locales.json, optionsJson(this.#options));
+    this.#optionsJson = optionsJson(this.#options);
+    this.#format = value => intlDateTime(epochMilliseconds(value), this.#locales.json, this.#optionsJson, false);
   }
   get format() { return this.#format; }
   formatToParts(value = new Date()) {
-    return formatParts(intlDateTimeParts, epochMilliseconds(value), this.#locales.json, optionsJson(this.#options));
+    return formatParts(intlDateTime, epochMilliseconds(value), this.#locales.json, this.#optionsJson, true);
   }
   formatRange(start, end) { return joinRange(this.format(start), this.format(end)); }
   formatRangeToParts(start, end) {
@@ -216,16 +220,18 @@ function numberResolvedOptions(locale, options, [minimumFractionDigits, maximumF
 class NumberFormat {
   #locales;
   #options;
+  #optionsJson;
   #fractionDigits;
   #format;
   constructor(locales, options) {
     this.#locales = initIntlObject(this, locales);
     this.#options = numberOptions(options);
-    this.#fractionDigits = intlFractionDigits(optionsJson(this.#options));
-    this.#format = value => intlNumber(Number(value), this.#locales.json, optionsJson(this.#options));
+    this.#optionsJson = optionsJson(this.#options);
+    this.#fractionDigits = intlFractionDigits(this.#optionsJson);
+    this.#format = value => intlNumber(Number(value), this.#locales.json, this.#optionsJson);
   }
   get format() { return this.#format; }
-  formatToParts(value) { return formatParts(intlNumberParts, Number(value), this.#locales.json, optionsJson(this.#options)); }
+  formatToParts(value) { return formatParts(intlNumberParts, Number(value), this.#locales.json, this.#optionsJson); }
   formatRange(start, end) { return joinRange(this.format(start), this.format(end)); }
   formatRangeToParts(start, end) {
     const first = this.format(start);
@@ -310,12 +316,14 @@ function listJson(list) {
 class ListFormat {
   #locales;
   #options;
+  #optionsJson;
   constructor(locales, options) {
     this.#locales = initIntlObject(this, locales);
     this.#options = listOptions(options);
+    this.#optionsJson = optionsJson(this.#options);
   }
-  format(list) { return intlList(listJson(list), this.#locales.json, optionsJson(this.#options)); }
-  formatToParts(list) { return formatParts(intlListParts, listJson(list), this.#locales.json, optionsJson(this.#options)); }
+  format(list) { return intlList(listJson(list), this.#locales.json, this.#optionsJson); }
+  formatToParts(list) { return formatParts(intlListParts, listJson(list), this.#locales.json, this.#optionsJson); }
   resolvedOptions() { return { locale: this.#locales.locale, ...this.#options }; }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
@@ -323,12 +331,14 @@ class ListFormat {
 class RelativeTimeFormat {
   #locales;
   #options;
+  #optionsJson;
   constructor(locales, options) {
     this.#locales = initIntlObject(this, locales);
     this.#options = relativeOptions(options);
+    this.#optionsJson = optionsJson(this.#options);
   }
-  format(value, unit) { return intlRelative(Number(value), String(unit), this.#locales.json, optionsJson(this.#options)); }
-  formatToParts(value, unit) { return JSON.parse(intlRelativeParts(Number(value), String(unit), this.#locales.json, optionsJson(this.#options))); }
+  format(value, unit) { return intlRelative(Number(value), String(unit), this.#locales.json, this.#optionsJson); }
+  formatToParts(value, unit) { return JSON.parse(intlRelativeParts(Number(value), String(unit), this.#locales.json, this.#optionsJson)); }
   resolvedOptions() { return { locale: this.#locales.locale, ...this.#options, numberingSystem: localeInfo(this.#locales.locale).numberingSystem }; }
   static supportedLocalesOf(locales) { return canonicalLocales(locales); }
 }
@@ -348,7 +358,8 @@ class Collator {
       numeric: source.numeric ?? false,
       caseFirst: source.caseFirst ?? "false",
     };
-    this.#compare = (left, right) => intlCollatorCompare(String(left), String(right), this.#locales.json, optionsJson(this.#options));
+    const json = optionsJson(this.#options);
+    this.#compare = (left, right) => intlCollatorCompare(String(left), String(right), this.#locales.json, json);
   }
   get compare() { return this.#compare; }
   resolvedOptions() { return { locale: this.#locales.locale, ...this.#options }; }
@@ -365,11 +376,12 @@ class Segmenter {
   }
   segment(input) {
     const source = String(input);
-    const values = JSON.parse(intlSegment(source, this.#locales.json, this.#granularity));
+    const values = JSON.parse(intlSegment(source, this.#granularity)).map(([segment, index, isWordLike]) =>
+      isWordLike === null ? { segment, index, input: source } : { segment, index, input: source, isWordLike });
     return {
       containing(index) {
-        const position = Number(index);
-        return values.find((value, valueIndex) => position >= value.index && (values[valueIndex + 1]?.index ?? Infinity) > position);
+        const position = Math.trunc(Number(index)) || 0;
+        return values.find((value, valueIndex) => position >= value.index && position < (values[valueIndex + 1]?.index ?? source.length));
       },
       [Symbol.iterator]: function* () { yield* values; },
     };
@@ -381,6 +393,7 @@ class Segmenter {
 class DisplayNames {
   #locales;
   #options;
+  #optionsJson;
   constructor(locales, options) {
     this.#locales = initIntlObject(this, locales);
     const source = optionsObject(options);
@@ -391,8 +404,9 @@ class DisplayNames {
       languageDisplay: source.languageDisplay ?? "dialect",
     };
     if (!this.#options.type) throw new TypeError("DisplayNames type is required");
+    this.#optionsJson = optionsJson(this.#options);
   }
-  of(value) { return intlDisplayName(String(value), this.#locales.json, optionsJson(this.#options)); }
+  of(value) { return intlDisplayName(String(value), this.#locales.json, this.#optionsJson); }
   resolvedOptions() { return { locale: this.#locales.locale, ...this.#options }; }
 }
 

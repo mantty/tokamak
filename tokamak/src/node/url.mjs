@@ -2,6 +2,7 @@ import { string } from "../globals/conversions.mjs";
 import { URL, URLSearchParams } from "../network/url.mjs";
 import { parse as parseQuery, stringify as stringifyQuery } from "./querystring.mjs";
 import { toASCII, toUnicode } from "./punycode.mjs";
+import { codedError } from "./errors.mjs";
 
 export { URL, URLSearchParams };
 
@@ -151,8 +152,8 @@ export function domainToUnicode(value) { return toUnicode(value); }
 
 export function fileURLToPath(value) {
   const url = value instanceof URL ? value : new URL(string(value));
-  if (url.protocol !== "file:") { const error = new TypeError("The URL must be of scheme file"); error.code = "ERR_INVALID_URL_SCHEME"; throw error; }
-  if (url.hostname && url.hostname !== "localhost") { const error = new TypeError("File URL host must be \"localhost\" or empty"); error.code = "ERR_INVALID_FILE_URL_HOST"; throw error; }
+  if (url.protocol !== "file:") throw codedError(TypeError, "The URL must be of scheme file", "ERR_INVALID_URL_SCHEME");
+  if (url.hostname && url.hostname !== "localhost") throw codedError(TypeError, "File URL host must be \"localhost\" or empty", "ERR_INVALID_FILE_URL_HOST");
   return decodeURIComponent(url.pathname);
 }
 

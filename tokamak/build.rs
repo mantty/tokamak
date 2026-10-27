@@ -8,6 +8,14 @@ use walkdir::WalkDir;
 #[path = "src/compiler.rs"]
 mod compiler;
 
+/// The runtime modules shared with `@tokamakdev/plugin`, under `../plugins/core/src`.
+const PLUGIN_MODULES: [&str; 4] = [
+    "rpc/values.mjs",
+    "rpc/streams.mjs",
+    "rpc/http.mjs",
+    "native-protocol.mjs",
+];
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/compiler.rs");
@@ -32,7 +40,7 @@ fn compile_builtins() -> Result<(), Box<dyn std::error::Error>> {
         .into_iter()
         .partition(|module| module.starts_with("storage/"));
     let mut builtins = builtins;
-    builtins.extend(["values", "streams", "http"].map(|name| format!("rpc/{name}.mjs")));
+    builtins.extend(PLUGIN_MODULES.map(String::from));
     write_builtin_table(&output, "builtins.rs", "BUILTINS", &builtins)?;
     write_builtin_table(&output, "storage_builtins.rs", "STORAGE_BUILTINS", &storage)
 }
@@ -73,7 +81,7 @@ fn write_builtin_table(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut modules = format!("const {constant}: &[(&str, &[u8])] = &[\n");
     for module in sources {
-        let source = if module.starts_with("rpc/") {
+        let source = if PLUGIN_MODULES.contains(&module.as_str()) {
             Path::new("../plugins/core/src").join(module)
         } else {
             Path::new("src").join(module)

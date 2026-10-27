@@ -170,6 +170,7 @@ export async function run(handlerEnv, ctx, constructors) {
     return { signal, before, after: events, writeResult };
   });
   output.eventEmitterInitialization = {
+    eventTargetMethods: ["addEventListener", "removeEventListener", "dispatchEvent"].map(name => name in EventEmitter.prototype),
     bare: result(() => EventEmitter()),
     reinitialize: result(() => {
       const emitter = new EventEmitter();
@@ -836,6 +837,11 @@ export async function run(handlerEnv, ctx, constructors) {
         }),
         endTagMutation: await elementCase((element, returns) => {
           record(returns, element.onEndTag(end => end.before("before")));
+        }),
+        endTagChaining: await elementCase((element, returns) => {
+          record(returns, element.onEndTag(end => {
+            returns.push([end.before("<b>", { html: true }) === end, end.after("after") === end, end.remove() === end]);
+          }));
         }),
         document: await asyncResult(async () => {
           const returns = [];
@@ -1572,6 +1578,7 @@ export async function run(handlerEnv, ctx, constructors) {
         startTls: [typeof socket.startTls, typeof upgradedSocket.startTls],
         streams: [typeof socket.readable.getReader, typeof socket.writable.getWriter],
         close: [typeof socket.close(), typeof upgradedSocket.close()],
+        httpClient: [() => sockets.internalNewHttpClient(socket), () => sockets.internalNewHttpClient()].map(result),
         failedSocketLifecycle,
       },
       context: {
@@ -2513,11 +2520,24 @@ export async function run(handlerEnv, ctx, constructors) {
       const parsed = nodeQuerystring.parse("a+b=c+d&empty&x=");
       return { nullPrototype: Object.getPrototypeOf(parsed) === null, parsed, repeated: nodeQuerystring.parse("foo=bar&abc=xyz&abc=123"), stringified: nodeQuerystring.stringify({ foo: "bar", abc: ["xyz", "123"], empty: "", nil: null, undef: undefined, num: 42, bool: true, obj: { x: 1 } }), escaped: nodeQuerystring.escape("a b&c"), unescaped: nodeQuerystring.unescape("a+b%26c"), buffer: [...nodeQuerystring.unescapeBuffer("a+b%26c")], spaces: [...nodeQuerystring.unescapeBuffer("a+b", true)] };
     })(),
+    querystringBytes: {
+      bom: nodeQuerystring.unescape("%EF%BB%BFa%ZZ%EF%BB%BFb"),
+      fallback: [...nodeQuerystring.unescape("%ZZ\u20ac\u00e9\ud83d\ude00")].map(character => character.charCodeAt(0)),
+      buffer: [...nodeQuerystring.unescapeBuffer("\u20aca%41\ud83d\ude00+")],
+      bufferIsBuffer: nodeQuerystring.unescapeBuffer("a") instanceof nodeBuffer.Buffer,
+      unescapeSpaces: [nodeQuerystring.unescape("a+b%ZZ", true), nodeQuerystring.unescape("a+b%41", true)],
+      parse: Object.entries(nodeQuerystring.parse("k%ZZ\u00e9=v%ZZ\u20ac+x&e=%41%ZZ\u20ac")),
+    },
     util: {
       format: nodeUtil.format("%s:%d:%j:%o:%O:%%", "x", 2, { a: 1 }, { a: 1 }, { a: 1 }),
       inspect: [nodeUtil.inspect({ a: 1, b: "x", c: [true, null] }), nodeUtil.inspect({ a: { b: { c: 1 } } }, { depth: 1 }), nodeUtil.inspect(new Map([["a", 1]]))],
       predicates: [nodeUtil.isArray([]), nodeUtil.isBuffer(nodeBuffer.Buffer.from([1])), nodeUtil.isDeepStrictEqual({ a: 1 }, { a: 1 }), nodeUtil.types.isArrayBuffer(new ArrayBuffer(0)), nodeUtil.types.isTypedArray(new Uint8Array(0))],
       usv: nodeUtil.toUSVString("a\ud800b"),
+      usvBom: nodeUtil.toUSVString("\ufeffa\ud800b"),
+      systemErrors: [
+        () => nodeUtil.getSystemErrorName(-2), () => nodeUtil.getSystemErrorMessage(-2), () => nodeUtil.getSystemErrorMap(),
+        () => nodeUtil._errnoException(-2, "open"), () => nodeUtil._exceptionWithHostPort(-111, "connect", "1.2.3.4", 80),
+      ].map(detailedResult),
       mime: (() => { const value = new nodeUtil.MIMEType("text/html; charset=utf-8"); return { essence: value.essence, type: value.type, subtype: value.subtype, params: [...value.params], string: value.toString() }; })(),
       parseArgs: result(() => nodeUtil.parseArgs()),
       parseEnv: result(() => nodeUtil.parseEnv("A=1\nB=two\n# comment\nEMPTY=\nQUOTED=\"a b\"")),
@@ -2647,8 +2667,59 @@ export async function run(handlerEnv, ctx, constructors) {
         const socket = new nodeNet.Socket();
         return { prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(socket)).sort(), destroyed: socket.destroyed };
       }),
+      socketAddresses: await asyncResult(async () => {
+        const describe = socket => [
+          socket.address(), socket._getsockname(), socket._getpeername(),
+          socket.localAddress, socket.localPort, socket.localFamily, socket.remoteAddress, socket.remotePort, socket.remoteFamily,
+        ];
+        const unconnected = new nodeNet.Socket();
+        const states = [describe(unconnected)];
+        for (const host of ["127.0.0.1", "::1", "localhost"]) {
+          const socket = nodeNet.connect({ host, port: 0 });
+          const closed = new Promise(resolve => socket.on("close", resolve));
+          socket.on("error", () => {});
+          states.push(describe(socket));
+          socket.destroy();
+          states.push(describe(socket));
+          await closed;
+          states.push(describe(socket));
+        }
+        return states;
+      }),
       server: result(() => nodeNet.createServer()),
+      blockList: (() => {
+        const list = new nodeNet.BlockList();
+        const added = [
+          () => list.addAddress("8.8.8.8"), () => list.addRange("10.0.0.1", "10.0.0.10"), () => list.addSubnet("192.168.0.0", 16),
+          () => list.addAddress("::1", "ipv6"), () => list.addRange("fe80::1", "fe80::ff", "ipv6"), () => list.addSubnet("2001:db8::", 32, "ipv6"),
+          () => list.addAddress("1.2.3.4", "ipv6"), () => list.addRange("10.0.0.10", "10.0.0.1"), () => list.addSubnet("1.0.0.0", 33),
+          () => list.addSubnet("1.0.0.0", 1.5), () => list.addAddress("not an ip"), () => list.addAddress(1), () => list.addAddress("1.2.3.4", "ipv5"),
+        ].map(detailedResult);
+        const checks = [
+          ["8.8.8.8"], ["10.0.0.5"], ["10.0.0.11"], ["192.168.4.4"], ["192.169.0.0"], ["1.1.1.1"], ["::1", "ipv6"], ["::1"],
+          ["fe80::80", "ipv6"], ["fe80::100", "ipv6"], ["2001:db8:1::5", "ipv6"], ["::ffff:8.8.8.8", "ipv6"], ["::FFFF:10.0.0.5", "ipv6"],
+          ["::ffff:192.168.1.1", "ipv6"], ["8.8.8.8", "ipv6"], ["garbage"], ["8.8.8.8", "IPv4"], [123],
+        ].map(args => detailedResult(() => list.check(...args)));
+        const edges = [
+          () => list.addRange("10.0.0.1", "200.0.0.1"), () => list.check("::ffff:c0a8:5", "ipv6"), () => list.addSubnet("1.0.0.0", "8"),
+          () => list.addSubnet("1.0.0.0", 2 ** 31), () => list.addSubnet("::", 129, "ipv6"), () => list.addRange("1.1.1.1", 5),
+          () => list.addRange("::2", "::1", "ipv6"), () => list.addRange("::2", "1.1.1.1", "ipv6"), () => list.check(true), () => list.check({}),
+          () => { const other = new nodeNet.BlockList(); other.addRange("::1", "::ffff", "ipv6"); return [other.check("::ff", "ipv6"), other.check("::1:0", "ipv6")]; },
+          () => { const other = new nodeNet.BlockList(); other.addSubnet("0.0.0.0", 0); return [other.check("1.2.3.4"), other.check("::ffff:1.2.3.4", "ipv6"), other.check("::1", "ipv6")]; },
+        ].map(detailedResult);
+        return { added, checks, edges, own: Object.getOwnPropertyNames(list), rules: list.rules, json: result(() => list.toJSON()), isBlockList: result(() => [nodeNet.BlockList.isBlockList(list), nodeNet.BlockList.isBlockList({})]) };
+      })(),
     },
+    dns: await (async () => {
+      const dns = await import("node:dns");
+      const dnsPromises = await import("node:dns/promises");
+      const codes = module => [module.NOTFOUND, module.ADDRCONFIG, module.ALL, module.V4MAPPED, module.EOF, module.CANCELLED];
+      return {
+        namespace: Object.keys(dns).sort(),
+        promisesNamespace: Object.keys(dnsPromises).sort(),
+        codes: [dns, dns.default, dns.promises, dnsPromises, dnsPromises.default].map(codes),
+      };
+    })(),
     tls: {
       functions: [typeof nodeTls.connect, typeof nodeTls.createSecureContext, typeof nodeTls.createServer],
       context: result(() => ({ prototype: Object.getOwnPropertyNames(Object.getPrototypeOf(nodeTls.createSecureContext())).sort() })),

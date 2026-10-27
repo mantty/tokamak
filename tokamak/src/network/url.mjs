@@ -1,16 +1,12 @@
-import { hostObjectKinds, markHostObject } from "../globals/objects.mjs";
+import { defineHiddenProperty, hostObjectKinds, markHostObject } from "../globals/objects.mjs";
 import { urlDecodeParams, urlEncodeParams, urlParse, urlPatternCompile, urlPatternMatchInput, urlSetComponent } from "tokamak:host";
 import { string, usvString } from "../globals/conversions.mjs";
-
-function hidden(object, name, value) {
-  Object.defineProperty(object, name, { configurable: true, enumerable: false, writable: true, value });
-}
 
 export class URLSearchParams {
   constructor(init = "") {
     markHostObject(this);
-    hidden(this, "__values", []);
-    hidden(this, "__update", null);
+    defineHiddenProperty(this, "__values", []);
+    defineHiddenProperty(this, "__update", null);
     if (init instanceof URLSearchParams) this.__values = init.__values.map(pair => pair.slice());
     else if (typeof init === "string" || init instanceof String) parseParams(this, string(init));
     else if (init != null && typeof init[Symbol.iterator] === "function") {
@@ -74,7 +70,6 @@ function parseParams(params, input) {
 }
 
 function paramsChanged(params) { params.__update?.(params.toString()); }
-function connectParams(params, update) { params.__update = update; }
 function replaceParams(params, input) { params.__values = []; parseParams(params, input); }
 
 function applyComponent(url, component, value) {
@@ -84,10 +79,10 @@ function applyComponent(url, component, value) {
 export class URL {
   constructor(input, base) {
     markHostObject(this);
-    hidden(this, "__parts", urlParse(usvString(input), base === undefined ? undefined : usvString(base)));
+    defineHiddenProperty(this, "__parts", urlParse(usvString(input), base === undefined ? undefined : usvString(base)));
     const searchParams = new URLSearchParams(this.__parts.search);
-    hidden(this, "__searchParams", searchParams);
-    connectParams(searchParams, value => applyComponent(this, "search", value));
+    defineHiddenProperty(this, "__searchParams", searchParams);
+    searchParams.__update = value => applyComponent(this, "search", value);
   }
 
   get protocol() { return this.__parts.protocol; }
@@ -177,7 +172,7 @@ export class URLPattern {
     const baseIsString = typeof baseOrOptions === "string" || baseOrOptions instanceof String;
     const ignoreCase = ((baseIsString ? options : baseOrOptions) ?? {}).ignoreCase === true;
     const base = baseIsString ? usvString(baseOrOptions) : undefined;
-    hidden(this, "__components", urlPatternCompile(patternPayload(input), base, ignoreCase, runRegExp));
+    defineHiddenProperty(this, "__components", urlPatternCompile(patternPayload(input), base, ignoreCase, runRegExp));
   }
 
   get protocol() { return this.__components.protocol.pattern; }

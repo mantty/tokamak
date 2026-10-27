@@ -1,14 +1,6 @@
 import * as zlib from "node:zlib";
 import { Buffer } from "node:buffer";
-
-function outcome(callback) {
-  try { return callback(); }
-  catch (error) { return { error: error.name, code: error.code ?? null }; }
-}
-async function asyncOutcome(callback) {
-  try { return await callback(); }
-  catch (error) { return { error: error.name, code: error.code ?? null }; }
-}
+import { asyncOutcome, outcome } from "./outcome.mjs";
 
 export async function zlibContracts() {
   const result = {};

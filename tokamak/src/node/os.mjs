@@ -1,3 +1,5 @@
+import { codedError } from "./errors.mjs";
+
 export const EOL = "\n";
 export const devNull = "/dev/null";
 export function arch() { return "x64"; }
@@ -20,11 +22,7 @@ export function totalmem() { return 0; }
 export function uptime() { return 0; }
 export function getPriority() { return 0; }
 export function setPriority(pid, priority) {
-  if (priority === undefined) {
-    const error = new TypeError("The \"priority\" argument must be specified");
-    error.code = "ERR_INVALID_ARG_TYPE";
-    throw error;
-  }
+  if (priority === undefined) throw codedError(TypeError, "The \"priority\" argument must be specified", "ERR_INVALID_ARG_TYPE");
 }
 
 const errno = {

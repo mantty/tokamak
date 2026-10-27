@@ -24,7 +24,6 @@ super::host_functions! {
     pub(super),
     "digest" => digest,
     "cryptoCreateDigest" => digest::create,
-    "cryptoHmac" => hmac,
     "cryptoAesGcm" => aes_gcm,
     "cryptoCreateCipher" => cipher::create,
     "cryptoTimingSafeEqual" => timing_safe_equal,
@@ -82,21 +81,6 @@ pub(super) fn digest<'js>(
     ArrayBuffer::new_copy(ctx, hash.digest(&input))
 }
 
-pub(super) fn hmac<'js>(
-    ctx: Ctx<'js>,
-    algorithm: String,
-    key: TypedArray<'js, u8>,
-    input: TypedArray<'js, u8>,
-) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let hash = message_digest(&ctx, &algorithm)?;
-    let key = bytes(&ctx, key)?;
-    let input = bytes(&ctx, input)?;
-    let output = hash
-        .hmac(&key, &input)
-        .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?;
-    ArrayBuffer::new_copy(ctx, &output)
-}
-
 pub(super) fn pbkdf2<'js>(
     ctx: Ctx<'js>,
     algorithm: String,
@@ -150,13 +134,10 @@ pub(super) fn aes_gcm<'js>(
     let key = bytes(&ctx, key)?;
     let iv = bytes(&ctx, iv)?;
     let input = bytes(&ctx, input)?;
-    let tag_length = options.get::<_, Option<u32>>("tagLength")?.unwrap_or(128);
-    let mode: Option<String> = options.get("mode")?;
+    let tag_length: u32 = options.get("tagLength")?;
+    let mode: String = options.get("mode")?;
     let additional_data = optional_bytes(&ctx, &options, "additionalData")?;
-    if !aes::valid_key(&key) {
-        return Err(data_error(&ctx, "AES keys must be 128, 192, or 256 bits"));
-    }
-    let output = match mode.as_deref().unwrap_or("AES-GCM") {
+    let output = match mode.as_str() {
         "AES-GCM" => aes_gcm_operation(
             &ctx,
             encrypt,
@@ -195,9 +176,7 @@ fn aes_gcm_operation(
         tag_length,
     } = params;
     let tag_bytes = usize::try_from(tag_length / 8)
-        .ok()
-        .filter(|length| aes::valid_tag_length(*length))
-        .ok_or_else(|| operation_error(ctx, "Invalid AES-GCM tag length"))?;
+        .map_err(|_| operation_error(ctx, "Invalid AES-GCM tag length"))?;
     let failed = |error: aes::Failure| operation_error(ctx, error.0);
     let mut stream = aes::stream(Mode::Gcm, encrypt, key, iv, tag_bytes).map_err(failed)?;
     stream.set_aad(additional_data).map_err(failed)?;
@@ -343,10 +322,9 @@ fn key_object<'js>(ctx: &Ctx<'js>, material: &KeyMaterial) -> rquickjs::Result<O
 
 fn host_export_key<'js>(ctx: Ctx<'js>, options: Object<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
     let format = required_string(&ctx, &options, "format")?;
-    let key_format = option_string(&options, "keyFormat")?;
-    let parse_format = key_format.as_deref().unwrap_or(format.as_str());
+    let key_format = required_string(&ctx, &options, "keyFormat")?;
     let input = required_bytes(&ctx, &options, "key")?;
-    let material = parse_key_with_format(&ctx, &input, &options, parse_format)?;
+    let material = parse_key_with_format(&ctx, &input, &options, &key_format)?;
     let output = match format.as_str() {
         "spki" => public_der(&ctx, &material.public())?,
         "pkcs8" => private_der(&ctx, &material)?,
@@ -514,14 +492,10 @@ fn host_scrypt<'js>(
     ArrayBuffer::new_copy(ctx, &output)
 }
 
-/// The `curve` option, read by `parse` as `WebCrypto` or node:crypto spells it.
-fn required_curve(
-    ctx: &Ctx<'_>,
-    options: &Object<'_>,
-    parse: fn(&str) -> Option<Curve>,
-) -> rquickjs::Result<Curve> {
+/// The `curve` option, spelled as `WebCrypto` names it.
+fn required_curve(ctx: &Ctx<'_>, options: &Object<'_>) -> rquickjs::Result<Curve> {
     let name = required_string(ctx, options, "curve")?;
-    parse(&name)
+    Curve::parse(&name)
         .ok_or_else(|| not_supported_error(ctx, "The requested elliptic curve is not supported"))
 }
 
@@ -540,23 +514,18 @@ fn host_ecdh_public<'js>(
     ctx: Ctx<'js>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let curve = required_curve(&ctx, &options, Curve::parse_node)?;
+    let curve = required_curve(&ctx, &options)?;
     let private = required_bytes(&ctx, &options, "private")?;
     let key =
         curves::secret_from_scalar(curve, &private).map_err(|error| operation(&ctx, &error))?;
-    let format = option_string(&options, "format")?;
-    let compressed = point_format(&ctx, format.as_deref().unwrap_or("uncompressed"))?;
-    ArrayBuffer::new_copy(
-        ctx,
-        curves::encode_point(&curves::public_of(&key), compressed),
-    )
+    ArrayBuffer::new_copy(ctx, curves::encode_point(&curves::public_of(&key), false))
 }
 
 fn host_ecdh_compute<'js>(
     ctx: Ctx<'js>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let curve = required_curve(&ctx, &options, Curve::parse_node)?;
+    let curve = required_curve(&ctx, &options)?;
     let private = required_bytes(&ctx, &options, "private")?;
     let peer = required_bytes(&ctx, &options, "peer")?;
     let key =
@@ -572,7 +541,7 @@ fn host_ecdh_convert<'js>(
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let input = bytes(&ctx, input)?;
-    let curve = required_curve(&ctx, &options, Curve::parse_node)?;
+    let curve = required_curve(&ctx, &options)?;
     let point = curves::decode_point(curve, &input).map_err(|error| operation(&ctx, &error))?;
     let compressed = point_format(&ctx, &required_string(&ctx, &options, "format")?)?;
     ArrayBuffer::new_copy(ctx, curves::encode_point(&point, compressed))
@@ -658,11 +627,7 @@ fn generate_key(ctx: &Ctx<'_>, options: &Object<'_>) -> rquickjs::Result<Private
                     .map_err(|error| operation(ctx, &error))?,
             )
         }
-        "ec" => PrivateKey::Ec(curves::generate(required_curve(
-            ctx,
-            options,
-            Curve::parse,
-        )?)),
+        "ec" => PrivateKey::Ec(curves::generate(required_curve(ctx, options)?)),
         "ed25519" => PrivateKey::Ed25519(ed25519_dalek::SigningKey::generate(&mut rng())),
         "x25519" => PrivateKey::X25519(x25519_dalek::StaticSecret::random_from_rng(&mut rng())),
         _ => return Err(unsupported_algorithm(ctx)),
@@ -892,19 +857,32 @@ fn unsupported_format(ctx: &Ctx<'_>) -> rquickjs::Error {
     not_supported_error(ctx, "The requested key format is not supported")
 }
 
+/// The bytes the hexadecimal `text` spells.
+#[cfg(test)]
+fn hex(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&text[index..index + 2], 16))
+        .collect::<Result<_, _>>()
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use base64::Engine;
+    use rquickjs::function::Opt;
 
     #[test]
-    fn one_shot_hmac_accepts_an_empty_key() -> rquickjs::Result<()> {
+    fn hmac_accepts_an_empty_key() -> rquickjs::Result<()> {
         let runtime = rquickjs::Runtime::new()?;
         let context = rquickjs::Context::full(&runtime)?;
         context.with(|ctx| {
             let key = TypedArray::new(ctx.clone(), Vec::<u8>::new())?;
             let input = TypedArray::new(ctx.clone(), b"abc".to_vec())?;
-            let output = hmac(ctx.clone(), "SHA-256".into(), key, input)?;
+            let state = digest::create(ctx.clone(), "SHA-256".into(), Opt(Some(key)))?;
+            state.borrow_mut().update(input)?;
+            let output = state.borrow_mut().finish(ctx.clone())?;
             let bytes = output
                 .as_bytes()
                 .ok_or_else(|| Exception::throw_message(&ctx, "detached ArrayBuffer"))?;

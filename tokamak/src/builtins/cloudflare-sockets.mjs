@@ -2,14 +2,9 @@ import { socketConnect } from "tokamak:host";
 import { ReadableStream, WritableStream, writtenChunkBytes } from "../streams/web.mjs";
 
 function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  promise.catch(() => {});
-  return { promise, resolve, reject };
+  const value = Promise.withResolvers();
+  value.promise.catch(() => {});
+  return value;
 }
 
 function socketAddress(address) {
@@ -52,8 +47,8 @@ class Socket {
   get closed() { return socketStates.get(this).closed.promise; }
   get readable() { return socketStates.get(this).readable; }
   get writable() { return socketStates.get(this).writable; }
-  get secureTransport() { return socketStates.get(this).secureTransport; }
-  get upgraded() { return socketStates.get(this).upgraded; }
+  get secureTransport() { return socketStates.get(this).mode; }
+  get upgraded() { return socketStates.get(this).transferred; }
   get startTls() { return () => startTls(this); }
 
   close() {
@@ -68,13 +63,11 @@ function socketLabel(address) {
     : `${address.hostname}:${address.port}`;
 }
 
-function createState(address, mode, native, allowHalfOpen, shared = undefined) {
-  const closed = shared?.closed ?? deferred();
+function createState(address, mode, native, allowHalfOpen, closed = deferred()) {
   const opened = deferred();
   const state = {
     address,
     mode,
-    secureTransport: mode,
     native,
     allowHalfOpen,
     terminated: false,
@@ -82,7 +75,6 @@ function createState(address, mode, native, allowHalfOpen, shared = undefined) {
     writeEnded: false,
     opened,
     closed,
-    upgraded: false,
     transferred: false,
     readable: null,
     writable: null,
@@ -160,9 +152,8 @@ function startTls(socket) {
   }
   if (state.transferred) throw new TypeError("startTls has already been called on this socket, or the socket was transferred over RPC.");
   state.transferred = true;
-  state.upgraded = true;
   const native = state.native.startTls(state.address.hostname);
-  return new Socket(createState(state.address, "on", native, state.allowHalfOpen, state));
+  return new Socket(createState(state.address, "on", native, state.allowHalfOpen, state.closed));
 }
 
 export function connect(address, options = {}) {
@@ -173,6 +164,7 @@ export function connect(address, options = {}) {
   return new Socket(createState(target, mode, native, Boolean(options.allowHalfOpen)));
 }
 
-export function internalNewHttpClient() {
-  return { fetch: globalThis.fetch };
+// workerd provides the HTTP client only under its experimental compatibility flag.
+export function internalNewHttpClient(socket) {
+  throw new TypeError("sockets.internalNewHttpClient is not a function");
 }

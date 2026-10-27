@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::LazyLock;
 
 use icu::locale::Locale;
 use icu::locale::fallback::LocaleFallbackConfig;
@@ -8,6 +9,9 @@ use rquickjs::{Ctx, Exception};
 use serde_json::Value;
 
 include!("units_data.rs");
+
+/// The unit patterns of every locale, decompressed on first use.
+static DATA: LazyLock<std::io::Result<Vec<u8>>> = LazyLock::new(|| zstd::decode_all(DATA_ZST));
 
 thread_local! {
     static CACHE: RefCell<HashMap<usize, Rc<Value>>> = RefCell::new(HashMap::new());
@@ -77,7 +81,8 @@ fn locale_data(ctx: &Ctx<'_>, index: usize) -> rquickjs::Result<Rc<Value>> {
             return Ok(Rc::clone(data));
         }
         let (_, offset, length) = LOCALES[index];
-        let bytes = zstd::decode_all(DATA_ZST)
+        let bytes = DATA
+            .as_ref()
             .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
         let data = Rc::new(
             serde_json::from_slice(&bytes[offset..offset + length])

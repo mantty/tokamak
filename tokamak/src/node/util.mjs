@@ -3,6 +3,7 @@ import { TextDecoder, TextEncoder } from "../streams/text.mjs";
 import { AbortController } from "../events/abort.mjs";
 import { objectClass } from "tokamak:host";
 import { isDeepStrictEqual } from "./comparisons.mjs";
+import { codedError } from "./errors.mjs";
 
 const objectToString = Object.prototype.toString;
 const inspectCustom = Symbol.for("nodejs.util.inspect.custom");
@@ -146,7 +147,7 @@ export function callbackify(original) {
 }
 
 export function toUSVString(value) {
-  return new TextDecoder().decode(new TextEncoder().encode(String(value)));
+  return String(value).toWellFormed();
 }
 
 export function stripVTControlCharacters(value) {
@@ -165,14 +166,11 @@ export function deprecate(function_, message, code) {
 }
 
 export function _extend(target, source) { return Object.assign(target, source); }
-export function _errnoException(errorNumber, syscall, message) { const error = new Error(message ?? `${syscall} ${errorNumber}`); error.errno = errorNumber; error.code = getSystemErrorName(errorNumber); error.syscall = syscall; return error; }
-export function _exceptionWithHostPort(errorNumber, syscall, address, port) { const error = _errnoException(errorNumber, syscall); error.address = address; error.port = port; return error; }
-export function getSystemErrorName(errorNumber) { return errnoNames.get(Number(errorNumber)) ?? `Unknown system error ${errorNumber}`; }
-export function getSystemErrorMessage(errorNumber) { return errnoMessages.get(Number(errorNumber)) ?? `Unknown system error ${errorNumber}`; }
-export function getSystemErrorMap() { return new Map([...errnoNames].map(([number, name]) => [number, [name, errnoMessages.get(number)]])); }
-
-const errnoNames = new Map([[1, "EPERM"], [2, "ENOENT"], [5, "EIO"], [9, "EBADF"], [11, "EAGAIN"], [12, "ENOMEM"], [13, "EACCES"], [17, "EEXIST"], [20, "ENOTDIR"], [21, "EISDIR"], [22, "EINVAL"], [28, "ENOSPC"], [32, "EPIPE"], [34, "ERANGE"], [38, "ENOSYS"], [110, "ETIMEDOUT"]]);
-const errnoMessages = new Map(errnoNames);
+export function _errnoException() { throw codedError(Error, "The _errnoException method is not implemented", "ERR_METHOD_NOT_IMPLEMENTED"); }
+export function _exceptionWithHostPort() { throw codedError(Error, "The _exceptionWithHostPort method is not implemented", "ERR_METHOD_NOT_IMPLEMENTED"); }
+export function getSystemErrorName() { throw new Error("node:util getSystemErrorName is not implemented"); }
+export function getSystemErrorMessage() { throw new Error("node:util getSystemErrorMessage is not implemented"); }
+export function getSystemErrorMap() { throw new Error("node:util getSystemErrorMap is not implemented"); }
 
 function typeTag(value, tag) { return objectToString.call(value) === `[object ${tag}]`; }
 
@@ -316,9 +314,7 @@ export function parseEnv(content) {
 }
 
 function notImplemented(name) {
-  const error = new Error(`node:util ${name} is not implemented`);
-  error.code = "ERR_METHOD_NOT_IMPLEMENTED";
-  throw error;
+  throw codedError(Error, `node:util ${name} is not implemented`, "ERR_METHOD_NOT_IMPLEMENTED");
 }
 export function getCallSite() { notImplemented("getCallSite"); }
 export function getCallSites() { notImplemented("getCallSites"); }

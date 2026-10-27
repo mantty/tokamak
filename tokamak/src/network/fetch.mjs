@@ -1,5 +1,5 @@
 import { markHostObject } from "../globals/objects.mjs";
-import { httpFetch, httpStatusText } from "tokamak:host";
+import { cacheDelete, cacheMatch, cachePut, httpFetch, httpStatusText } from "tokamak:host";
 import { randomUUID } from "../globals/crypto.mjs";
 import { hostObjectCopies, uncloneable } from "../globals/structured-clone.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
@@ -23,7 +23,7 @@ function bytes(value) {
 function bodyStream(value) {
   const data = value instanceof Uint8Array ? value.slice() : bytes(value);
   const stream = new ReadableStream({ start(controller) {
-    if (data.byteLength > 0) controller.enqueue(data.slice());
+    if (data.byteLength > 0) controller.enqueue(data);
     controller.close();
   } });
   return setStreamLength(stream, data.byteLength);
@@ -303,7 +303,7 @@ function requestRedirect(value) {
   if (value === null) throw new TypeError("Invalid redirect mode");
   const redirect = string(value).toLowerCase();
   if (redirect === "error") throw new TypeError('Invalid redirect value, must be one of "follow" or "manual" ("error" won\'t be implemented since it does not make sense at the edge; use "manual" and check the response status code).');
-  if (!["error", "follow", "manual"].includes(redirect)) throw new TypeError("Invalid redirect mode");
+  if (!["follow", "manual"].includes(redirect)) throw new TypeError("Invalid redirect mode");
   return redirect;
 }
 
@@ -765,7 +765,7 @@ export class Cache {
   constructor(name = "default") { markHostObject(this); this.#name = string(name); }
   async match(request, options = {}) {
     if (!options.ignoreMethod && requestMethodForCache(request) !== "GET") return undefined;
-    const entry = await cacheHost("cacheMatch", [this.#name, cacheKey(request, options)]);
+    const entry = await cacheMatch(this.#name, cacheKey(request, options));
     if (entry === null || entry === undefined) return undefined;
     return new Response(entry.body, {
       status: entry.status,
@@ -781,7 +781,7 @@ export class Cache {
     if (requestMethodForCache(request) !== "GET") throw new TypeError("Cache.put only accepts GET requests");
     if (!(response instanceof Response)) throw new TypeError("Cache.put requires a Response");
     const copy = response.clone();
-    await cacheHost("cachePut", [
+    await cachePut(
       this.#name, cacheKey(request), {
         status: copy.status,
         statusText: copy.statusText,
@@ -790,11 +790,11 @@ export class Cache {
         redirected: copy.redirected,
         type: copy.type,
       }, new Uint8Array(await copy.arrayBuffer()),
-    ]);
+    );
   }
   async delete(request, options = {}) {
     if (!options.ignoreMethod && requestMethodForCache(request) !== "GET") return false;
-    return cacheHost("cacheDelete", [this.#name, cacheKey(request, options)]);
+    return cacheDelete(this.#name, cacheKey(request, options));
   }
   async keys() { throw cacheNotImplemented("Cache", "keys"); }
   async add() { throw cacheNotImplemented("Cache", "add"); }
@@ -829,7 +829,6 @@ function cacheKey(request, options = {}) {
   if (options.ignoreSearch) throw new Error("The 'ignoreSearch' field on 'CacheQueryOptions' is not implemented.");
   return url.href;
 }
-async function cacheHost(name, args) { return (await import("tokamak:host"))[name](...args); }
 function cacheNotImplemented(type, method) { return new Error(`Failed to execute '${method}' on '${type}': the method is not implemented.`); }
 
 const eventSourceStream = Symbol("event-source-stream");

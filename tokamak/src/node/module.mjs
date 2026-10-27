@@ -1,5 +1,6 @@
 import { isNodeBuiltin, nodeBuiltinNames } from "tokamak:host";
 import process from "../globals/process.mjs";
+import { codedError } from "./errors.mjs";
 
 const builtinModules = nodeBuiltinNames();
 
@@ -16,9 +17,7 @@ export function createRequire() {
 }
 
 function notImplemented(name) {
-  const error = new Error(`The module.${name} method is not implemented`);
-  error.code = "ERR_METHOD_NOT_IMPLEMENTED";
-  throw error;
+  throw codedError(Error, `The module.${name} method is not implemented`, "ERR_METHOD_NOT_IMPLEMENTED");
 }
 
 export function stripTypeScriptTypes() { return notImplemented("stripTypeScriptTypes"); }

@@ -73,7 +73,6 @@ super::host_functions! {
     pub(super),
     "intlCanonicalLocales" => canonical_locales,
     "intlDateTime" => date_time,
-    "intlDateTimeParts" => date_time_parts,
     "intlNumber" => number,
     "intlNumberParts" => number_parts,
     "intlPlural" => plural,
@@ -180,24 +179,6 @@ fn canonical_locales(ctx: Ctx<'_>, input: String) -> rquickjs::Result<String> {
     to_json(&ctx, &output)
 }
 
-fn date_time(
-    ctx: Ctx<'_>,
-    milliseconds: f64,
-    locales: String,
-    options: String,
-) -> rquickjs::Result<String> {
-    format_date_time(&ctx, milliseconds, &locales, &options, false)
-}
-
-fn date_time_parts(
-    ctx: Ctx<'_>,
-    milliseconds: f64,
-    locales: String,
-    options: String,
-) -> rquickjs::Result<String> {
-    format_date_time(&ctx, milliseconds, &locales, &options, true)
-}
-
 fn number(ctx: Ctx<'_>, value: f64, locales: String, options: String) -> rquickjs::Result<String> {
     let parts = format_number_parts(&ctx, value, &locales, &options)?;
     Ok(parts.into_iter().map(|(_, value)| value).collect())
@@ -269,8 +250,7 @@ fn list_parts(
     let values: Vec<String> = from_json(&ctx, &values)?;
     let formatter = list_formatter(&ctx, &locales, &options)?;
     let formatted_list = formatter.format(values.iter().map(String::as_str));
-    let parts = collect_parts(&ctx, &formatted_list, "Failed to format list parts")?;
-    to_json(&ctx, &parts)
+    to_json(&ctx, &collect_parts(&formatted_list))
 }
 
 fn relative(
@@ -446,13 +426,9 @@ fn collator(ctx: &Ctx<'_>, locales: &str, options: &str) -> rquickjs::Result<Col
     Collator::try_new_unstable(&*PROVIDER, prefs, collator_options).map_err(range_error(ctx))
 }
 
-fn segment(
-    ctx: Ctx<'_>,
-    text: String,
-    locales: String,
-    granularity: String,
-) -> rquickjs::Result<String> {
-    let _locale = first_locale(&ctx, &locales)?;
+/// The segments of `text` as JSON `[segment, UTF-16 index, isWordLike]`
+/// triples, with `isWordLike` null unless `granularity` is "word".
+fn segment(ctx: Ctx<'_>, text: String, granularity: String) -> rquickjs::Result<String> {
     let (mut boundaries, word_types): (Vec<usize>, _) = match granularity.as_str() {
         "grapheme" => {
             let segmenter = GraphemeClusterSegmenter::try_new_unstable(&*PROVIDER)
@@ -489,26 +465,18 @@ fn segment(
     if boundaries.is_empty() {
         boundaries.push(0);
     }
-    let values = boundaries
-        .windows(2)
-        .enumerate()
-        .map(|(index, window)| {
-            let start = window[0];
-            let end = window[1];
-            let mut value = serde_json::json!({
-                "segment": &text[start..end],
-                "index": text[..start].encode_utf16().count(),
-                "input": &text,
-            });
-            if let Some(word_types) = &word_types {
-                let is_word_like = word_types
-                    .get(index + 1)
-                    .is_some_and(|(_, word_type)| word_type.is_word_like());
-                value["isWordLike"] = Value::Bool(is_word_like);
-            }
-            value
-        })
-        .collect::<Vec<_>>();
+    let mut index = 0;
+    let mut values = Vec::with_capacity(boundaries.len());
+    for (position, window) in boundaries.windows(2).enumerate() {
+        let segment = &text[window[0]..window[1]];
+        let is_word_like = word_types.as_ref().map(|word_types| {
+            word_types
+                .get(position + 1)
+                .is_some_and(|(_, word_type)| word_type.is_word_like())
+        });
+        values.push((segment, index, is_word_like));
+        index += segment.encode_utf16().count();
+    }
     to_json(&ctx, &values)
 }
 
@@ -643,18 +611,13 @@ fn hour_cycle(ctx: Ctx<'_>, locales: String) -> rquickjs::Result<&'static str> {
     })
 }
 
-fn first_locale(ctx: &Ctx<'_>, locales: &str) -> rquickjs::Result<String> {
-    let values: Vec<String> = from_json(ctx, locales)?;
-    Ok(values
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| "en-US".to_owned()))
-}
-
 // Parses the first requested locale and maps it onto the bundled data set,
 // falling unsupported locales back to `en-US` exactly as workerd does.
 fn resolved_locale(ctx: &Ctx<'_>, locales: &str) -> rquickjs::Result<Locale> {
-    let locale = first_locale(ctx, locales)?
+    let values: Vec<String> = from_json(ctx, locales)?;
+    let locale = values
+        .first()
+        .map_or("en-US", String::as_str)
         .parse::<Locale>()
         .map_err(range_error(ctx))?;
     Ok(resolve(locale))
@@ -741,29 +704,26 @@ fn locale_keyword(locale: &Locale, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn format_date_time(
-    ctx: &Ctx<'_>,
+/// `milliseconds` formatted as a string, or as JSON parts when `parts` is set.
+fn date_time(
+    ctx: Ctx<'_>,
     milliseconds: f64,
-    locales: &str,
-    options_json: &str,
+    locales: String,
+    options_json: String,
     parts: bool,
 ) -> rquickjs::Result<String> {
-    if !milliseconds.is_finite() || milliseconds.abs() > 8_640_000_000_000_000.0 {
-        return Err(Exception::throw_range(ctx, "Invalid time value"));
-    }
-    let locale = resolved_locale(ctx, locales)?;
-    let options: Value = from_json(ctx, options_json)?;
-    let input = date_time_input(ctx, milliseconds, &options)?;
+    let locale = resolved_locale(&ctx, &locales)?;
+    let options: Value = from_json(&ctx, &options_json)?;
+    let input = date_time_input(&ctx, milliseconds, &options)?;
     let key = format!("{locales}\u{1}{options_json}");
     with_cached(
         &DATE_TIME_FORMATTERS,
         &key,
-        || date_time_formatter(ctx, locale, &options),
+        || date_time_formatter(&ctx, locale, &options),
         |formatter| {
             let formatted = formatter.format(&input);
             if parts {
-                let parts = collect_parts(ctx, &formatted, "Failed to format date parts")?;
-                to_json(ctx, &parts)
+                to_json(&ctx, &collect_parts(&formatted))
             } else {
                 Ok(formatted.to_string())
             }
@@ -1106,10 +1066,8 @@ fn decimal_parts(
     grouping: GroupingStrategy,
 ) -> rquickjs::Result<Vec<(String, String)>> {
     with_decimal_formatter(ctx, locale, grouping, |formatter| {
-        let formatted = formatter.format(decimal);
-        let parts = collect_parts(ctx, &formatted, "Failed to format number parts")?;
-        Ok(split_sign_marks(parts))
-    })?
+        split_sign_marks(collect_parts(&formatter.format(decimal)))
+    })
 }
 
 /// Bidi marks around a sign are literals of their own.
@@ -1146,11 +1104,7 @@ fn compact_parts(
         CompactDecimalFormatter::try_new_short_unstable(&*PROVIDER, preferences, formatter_options)
     }
     .map_err(range_error(ctx))?;
-    collect_parts(
-        ctx,
-        &formatter.format(decimal),
-        "Failed to format compact number parts",
-    )
+    Ok(collect_parts(&formatter.format(decimal)))
 }
 
 fn currency_parts(
@@ -1416,17 +1370,12 @@ fn numeric_range(value: &str) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
-/// The typed parts of `formatted`; `failure` is the error message if writing fails.
-fn collect_parts(
-    ctx: &Ctx<'_>,
-    formatted: &impl Writeable,
-    failure: &str,
-) -> rquickjs::Result<Vec<(String, String)>> {
+/// The typed parts of `formatted`. Writing cannot fail: formatters fail only
+/// through their sink, and `PartsCollector` never does.
+fn collect_parts(formatted: &impl Writeable) -> Vec<(String, String)> {
     let mut collector = PartsCollector::default();
-    formatted
-        .write_to_parts(&mut collector)
-        .map_err(|_| Exception::throw_internal(ctx, failure))?;
-    Ok(collector.parts)
+    let _ = formatted.write_to_parts(&mut collector);
+    collector.parts
 }
 
 #[derive(Default)]

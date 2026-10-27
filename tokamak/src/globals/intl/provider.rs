@@ -2,9 +2,8 @@
 //!
 //! Bundling all ~800 CLDR locales costs ~12 MB. Cloudflare Workers (workerd/V8)
 //! ships display data for only a curated set and falls unsupported locales back
-//! to the runtime default (`en-US`). We match that: `icu_data.postcard` holds the
-//! same set workerd localizes, and [`resolve`] sends anything outside it to
-//! `en-US`, so an app that works on Cloudflare formats identically here.
+//! to the runtime default (`en-US`). `icu_data.postcard` holds the same set
+//! workerd localizes, and [`resolve`] sends anything outside it to `en-US`.
 //!
 //! The `expect`s below load data embedded at compile time; a failure means the
 //! bundled blob is corrupt, which the `Intl` differential tests catch.
@@ -28,9 +27,8 @@ use icu_provider::buf::{AsDeserializingBufferProvider, DeserializingBufferProvid
 use icu_provider_adapters::fallback::LocaleFallbackProvider;
 use icu_provider_blob::BlobDataProvider;
 
-// The blob is stored zstd-compressed (~1.4 MB vs ~7 MB) so it costs little in the
-// binary, and is inflated once into a process-wide provider on first `Intl` use.
-// `zstd` is already linked for the compression codecs, so this adds no dependency.
+// The blob is stored zstd-compressed (~1.4 MB vs ~7 MB) and is inflated once
+// into a process-wide provider on first `Intl` use.
 static DATA_ZST: &[u8] = include_bytes!("icu_data.postcard.zst");
 
 static BLOB: LazyLock<BlobDataProvider> = LazyLock::new(|| {

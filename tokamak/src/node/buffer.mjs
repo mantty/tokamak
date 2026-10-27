@@ -2,6 +2,7 @@ import { atob as globalAtob, btoa as globalBtoa } from "../globals/base64.mjs";
 import { bufferBytes } from "../globals/conversions.mjs";
 import { Blob, File } from "../network/fetch.mjs";
 import { TextDecoder, TextEncoder } from "../streams/text.mjs";
+import { codedError } from "./errors.mjs";
 
 const encodingNames = new Set(["utf8", "utf-8", "ascii", "latin1", "binary", "base64", "base64url", "hex", "ucs2", "ucs-2", "utf16le", "utf-16le"]);
 
@@ -13,9 +14,7 @@ function normalizeEncoding(encoding) {
 }
 
 function unknownEncoding(name) {
-  const error = new TypeError(`Unknown encoding: ${name}`);
-  error.code = "ERR_UNKNOWN_ENCODING";
-  return error;
+  return codedError(TypeError, `Unknown encoding: ${name}`, "ERR_UNKNOWN_ENCODING");
 }
 
 function isArrayBufferLike(value) {
@@ -88,9 +87,7 @@ function index(value, length) {
 }
 
 function rangeError(name, value, min, max) {
-  const error = new RangeError(`The value of "${name}" is out of range. It must be >= ${min} && <= ${max}. Received ${value}`);
-  error.code = "ERR_OUT_OF_RANGE";
-  return error;
+  return codedError(RangeError, `The value of "${name}" is out of range. It must be >= ${min} && <= ${max}. Received ${value}`, "ERR_OUT_OF_RANGE");
 }
 
 function checkOffset(buffer, offset, size) {
@@ -340,11 +337,7 @@ function find(buffer, needle, byteOffset, reverse) {
 }
 
 function swap(buffer, size) {
-  if (buffer.length % size !== 0) {
-    const error = new RangeError(`Buffer size must be a multiple of ${size * 8}-bits`);
-    error.code = "ERR_INVALID_BUFFER_SIZE";
-    throw error;
-  }
+  if (buffer.length % size !== 0) throw codedError(RangeError, `Buffer size must be a multiple of ${size * 8}-bits`, "ERR_INVALID_BUFFER_SIZE");
   for (let offset = 0; offset < buffer.length; offset += size) for (let left = 0; left < size / 2; left += 1) {
     const right = size - left - 1;
     [buffer[offset + left], buffer[offset + right]] = [buffer[offset + right], buffer[offset + left]];

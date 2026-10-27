@@ -65,12 +65,6 @@ impl Hash {
         with_digest!(self, D => D::digest(data).to_vec())
     }
 
-    pub(super) fn hmac(self, key: &[u8], data: &[u8]) -> Result<Vec<u8>, InvalidLength> {
-        let mut mac = self.mac(key)?;
-        mac.update(data);
-        Ok(mac.finalize())
-    }
-
     pub(super) fn pbkdf2(self, password: &[u8], salt: &[u8], iterations: u32, output: &mut [u8]) {
         with_digest!(self, D => pbkdf2::pbkdf2_hmac::<D>(password, salt, iterations, output));
     }

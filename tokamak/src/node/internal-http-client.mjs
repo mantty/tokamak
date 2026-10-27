@@ -1,4 +1,4 @@
-import { ClientRequest } from "./internal-http.mjs";
+import { ClientRequest } from "./http.mjs";
 
 export { ClientRequest };
 export default { ClientRequest };

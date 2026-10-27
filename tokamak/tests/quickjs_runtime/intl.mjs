@@ -47,6 +47,16 @@ export function intlContracts() {
   result.ownProperties = [new Intl.DateTimeFormat("en"), new Intl.NumberFormat("en"), new Intl.PluralRules("en"), new Intl.Locale("en"), new Intl.ListFormat("en"), new Intl.RelativeTimeFormat("en"), new Intl.Collator("en"), new Intl.Segmenter("en"), new Intl.DisplayNames("en", { type: "region" })]
     .map(value => Reflect.ownKeys(value).map(String));
   result.collatorPrototype = Object.getOwnPropertyNames(Intl.Collator.prototype).sort();
+  result.segmentData = ["grapheme", "word", "sentence"].map(granularity => {
+    const text = "Hi 🙂 there. é́x! Done";
+    const segments = new Intl.Segmenter("en", { granularity }).segment(text);
+    const values = [...segments];
+    return {
+      keys: Object.keys(values[0]),
+      values: values.map(value => [value.segment, value.index, value.input === text, value.isWordLike]),
+      containing: [0, 3, 4, 5, 21, 22, 100, -1, NaN, 4.5, undefined].map(index => segments.containing(index)?.index),
+    };
+  });
   const localeTags = ["en", "en-GB", "en-AU", "en-IN", "es-MX", "fr-CA", "de", "ja", "zh-TW", "ko", "ar-EG", "he", "fa", "hi", "pt-BR", "ms", "pa-Arab", "ja-u-hc-h12", "en-u-hc-h23"];
   result.localeData = Object.fromEntries(localeTags.map(tag => {
     const locale = new Intl.Locale(tag);
