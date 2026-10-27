@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rquickjs::{Ctx, Exception, Function, Object, Promise};
+use rquickjs::{Ctx, Function, Object, Promise};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use super::{Message, Reply};
@@ -88,7 +88,7 @@ impl Streams {
             Promise::wrap_future(&ctx, async move {
                 request(&port, Command::Read)
                     .await
-                    .map_err(|error| Exception::throw_message(&calling, &error))?
+                    .map_err(|error| crate::errors::throw_message(&calling, &error))?
                     .into_js(&calling, &bootstrap, &streams)
             })
         })?;
@@ -103,7 +103,7 @@ impl Streams {
                 Promise::wrap_future(&ctx, async move {
                     request(&port, |reply| Command::Cancel(reason, reply))
                         .await
-                        .map_err(|error| Exception::throw_message(&calling, &error))?
+                        .map_err(|error| crate::errors::throw_message(&calling, &error))?
                         .into_js(&calling, &bootstrap, &streams)
                 })
             },

@@ -885,7 +885,7 @@ mod tests {
             let output = state.borrow_mut().finish(ctx.clone())?;
             let bytes = output
                 .as_bytes()
-                .ok_or_else(|| Exception::throw_message(&ctx, "detached ArrayBuffer"))?;
+                .ok_or_else(|| crate::errors::throw_message(&ctx, "detached ArrayBuffer"))?;
             // Pinned Workerd createHmac('sha256', '').update('abc').digest('base64').
             assert_eq!(
                 base64::engine::general_purpose::STANDARD.encode(bytes),

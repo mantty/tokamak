@@ -48,7 +48,7 @@ pub(super) fn create<'js>(
             match key {
                 Some(key) => State::Hmac(
                     hash.mac(key)
-                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                        .map_err(|error| crate::errors::throw_message(&ctx, &error.to_string()))?,
                 ),
                 None => State::Hash(hash.hasher()),
             }
@@ -67,7 +67,7 @@ impl DigestState {
         let state = self
             .state
             .as_mut()
-            .ok_or_else(|| Exception::throw_message(ctx, "Digest already called"))?;
+            .ok_or_else(|| crate::errors::throw_message(ctx, "Digest already called"))?;
         match state {
             State::Hash(state) => state.update(bytes),
             State::Hmac(state) => state.update(bytes),
@@ -79,7 +79,7 @@ impl DigestState {
         let state = self
             .state
             .take()
-            .ok_or_else(|| Exception::throw_message(&ctx, "Digest already called"))?;
+            .ok_or_else(|| crate::errors::throw_message(&ctx, "Digest already called"))?;
         let output = match state {
             State::Hash(state) => state.finalize().to_vec(),
             State::Hmac(state) => state.finalize(),

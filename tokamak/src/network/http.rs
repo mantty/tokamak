@@ -15,7 +15,7 @@ use hyper_rustls::{HttpsConnector, MaybeHttpsStream};
 use hyper_util::client::legacy::{self, connect::HttpConnector};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use rquickjs::{
-    Constructor, Ctx, Exception, Function, Object, Promise, TypedArray, Value,
+    Constructor, Ctx, Function, Object, Promise, TypedArray, Value,
     function::{Async, This},
 };
 use serde::Serialize;
@@ -278,7 +278,7 @@ fn cancel_source(reader: &Object<'_>, aborted: bool) -> rquickjs::Result<()> {
     let reason = if aborted {
         None
     } else {
-        let error = Exception::from_message(reader.ctx().clone(), "Network connection lost.")?;
+        let error = crate::errors::new_error(reader.ctx(), "Network connection lost.")?;
         error.set("retryable", true)?;
         Some(error)
     };

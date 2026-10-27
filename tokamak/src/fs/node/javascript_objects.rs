@@ -238,7 +238,7 @@ pub(super) fn file_handle_object<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, _options: Opt<Value<'js>>| {
-                Err::<(), rquickjs::Error>(Exception::throw_message(
+                Err::<(), rquickjs::Error>(crate::errors::throw_message(
                     &ctx,
                     "readLines is not implemented",
                 ))
@@ -411,7 +411,7 @@ pub(super) fn handle_descriptor(state: &FileHandleState) -> Option<u32> {
 /// The handle's descriptor, or an `EBADF` error once it is closed.
 fn open_descriptor(ctx: &Ctx<'_>, state: &FileHandleState) -> rquickjs::Result<u32> {
     handle_descriptor(state)
-        .ok_or_else(|| Exception::throw_message(ctx, "EBADF: file descriptor closed"))
+        .ok_or_else(|| crate::errors::throw_message(ctx, "EBADF: file descriptor closed"))
 }
 
 /// `{ [count_name]: count, [buffer_name]: buffer }`.

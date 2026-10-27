@@ -2,3 +2,7 @@ cognitive-complexity-threshold = 15
 too-many-arguments-threshold = 6
 too-many-lines-threshold = 80
 doc-valid-idents = ["SQLite", ".."]
+disallowed-methods = [
+  { path = "rquickjs::Exception::from_message", reason = "its `message` is enumerable; use `crate::errors::new_error`" },
+  { path = "rquickjs::Exception::throw_message", reason = "its `message` is enumerable; use `crate::errors::throw_message`" },
+]
