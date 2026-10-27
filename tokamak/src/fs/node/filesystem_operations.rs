@@ -236,7 +236,7 @@ fn path_text<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> rquickjs::Result<String
     if let Some(object) = value.as_object()
         && object.is_instance_of(buffer_class(ctx)?)
     {
-        let bytes = typed_array_bytes(object).unwrap_or_default();
+        let bytes = attached_bytes(ctx, value)?;
         return Ok(String::from_utf8_lossy(&bytes).into_owned());
     }
     Err(throw_type_error(
@@ -289,70 +289,6 @@ pub(super) fn path_or_fd<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Re
         return descriptor_value(ctx, value).map(PathOrFd::Fd);
     }
     path(ctx, value).map(PathOrFd::Path)
-}
-
-pub(super) fn bytes<'js>(
-    ctx: &Ctx<'js>,
-    value: Value<'js>,
-    encoding: Option<&str>,
-) -> rquickjs::Result<Vec<u8>> {
-    if value.is_string() {
-        let text = value
-            .into_string()
-            .ok_or_else(|| Exception::throw_type(ctx, "expected a string"))?
-            .to_string()?;
-        return match encoding.unwrap_or("utf8").to_ascii_lowercase().as_str() {
-            "base64" => Ok(decode_base64(&text)),
-            "hex" => decode_hex(ctx, &text),
-            "buffer" | "utf8" | "utf-8" => Ok(text.into_bytes()),
-            _ => Err(Exception::throw_type(ctx, "unsupported encoding")),
-        };
-    }
-    if let Some(buffer) = ArrayBuffer::from_value(value.clone()) {
-        return buffer
-            .as_bytes()
-            .map(ToOwned::to_owned)
-            .ok_or_else(|| Exception::throw_type(ctx, "array buffer is detached"));
-    }
-    value
-        .try_into_object()
-        .ok()
-        .and_then(|object| typed_array_bytes(&object))
-        .ok_or_else(|| {
-            Exception::throw_type(ctx, "data must be a string, ArrayBuffer, or typed array")
-        })
-}
-
-pub(super) fn write_buffer_value<'js>(
-    ctx: &Ctx<'js>,
-    value: &Value<'js>,
-    bytes: &[u8],
-) -> rquickjs::Result<Value<'js>> {
-    if value.is_string() {
-        Ok(TypedArray::<u8>::new_copy(ctx.clone(), bytes)?.into_value())
-    } else {
-        Ok(value.clone())
-    }
-}
-
-pub(super) fn typed_array_bytes(object: &Object<'_>) -> Option<Vec<u8>> {
-    macro_rules! typed_array {
-        ($type:ty) => {
-            object.as_typed_array::<$type>().map(TypedArray::as_bytes)
-        };
-    }
-    typed_array!(u8)
-        .or_else(|| typed_array!(i8))
-        .or_else(|| typed_array!(u16))
-        .or_else(|| typed_array!(i16))
-        .or_else(|| typed_array!(u32))
-        .or_else(|| typed_array!(i32))
-        .or_else(|| typed_array!(u64))
-        .or_else(|| typed_array!(i64))
-        .or_else(|| typed_array!(f32))
-        .or_else(|| typed_array!(f64))
-        .flatten()
-        .map(ToOwned::to_owned)
 }
 
 /// `bytes` as a `Buffer`, or as text in `encoding`.
@@ -428,11 +364,10 @@ pub(super) fn write_file_sync<'js>(
     data: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<()> {
-    let options_value = options.0;
-    let options = parse_options(&ctx, options_value.clone())?;
-    let flag = option_property(&ctx, options_value.as_ref(), "flag")?;
+    let options = options.0;
+    let bytes = attached_bytes(&ctx, &file_view(&ctx, data, options.as_ref())?)?;
+    let flag = option_property(&ctx, options.as_ref(), "flag")?;
     let append = flag_string(flag.as_ref())?.is_some_and(|flag| flag.contains('a'));
-    let bytes = bytes(&ctx, data, options.encoding.as_deref())?;
     match path_or_fd(&ctx, input)? {
         PathOrFd::Path(path) => {
             let open_options = if let Some(flag) = flag {
@@ -462,8 +397,7 @@ pub(super) fn append_file_sync<'js>(
     data: Value<'js>,
     options: Opt<Value<'js>>,
 ) -> rquickjs::Result<()> {
-    let options = parse_options(&ctx, options.0)?;
-    let bytes = bytes(&ctx, data, options.encoding.as_deref())?;
+    let bytes = attached_bytes(&ctx, &file_view(&ctx, data, options.0.as_ref())?)?;
     match path_or_fd(&ctx, input)? {
         PathOrFd::Path(path) => vfs_call(&ctx, |vfs| vfs.write_file(&path, &bytes, true)),
         PathOrFd::Fd(descriptor) => write_descriptor(&ctx, descriptor, &bytes, true).map(|_| ()),
@@ -1264,54 +1198,4 @@ fn with_code(ctx: &Ctx<'_>, code: &str) -> rquickjs::Error {
         return error;
     }
     ctx.throw(exception)
-}
-
-pub(super) fn decode_hex(ctx: &Ctx<'_>, value: &str) -> rquickjs::Result<Vec<u8>> {
-    if !value.len().is_multiple_of(2) {
-        return Err(Exception::throw_type(ctx, "invalid hex string"));
-    }
-    value
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|pair| Some((hex_digit(pair[0])? << 4) | hex_digit(pair[1])?))
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| Exception::throw_type(ctx, "invalid hex string"))
-}
-
-pub(super) fn hex_digit(value: u8) -> Option<u8> {
-    match value {
-        b'0'..=b'9' => Some(value - b'0'),
-        b'a'..=b'f' => Some(value - b'a' + 10),
-        b'A'..=b'F' => Some(value - b'A' + 10),
-        _ => None,
-    }
-}
-
-pub(super) fn decode_base64(value: &str) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    let mut buffer = 0_u32;
-    let mut bits = 0_u8;
-    for character in value.bytes() {
-        let Some(digit) = base64_digit(character) else {
-            continue;
-        };
-        buffer = (buffer << 6) | u32::from(digit);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            bytes.push(u8::try_from((buffer >> bits) & 0xff).unwrap_or_default());
-        }
-    }
-    bytes
-}
-
-pub(super) fn base64_digit(value: u8) -> Option<u8> {
-    match value {
-        b'A'..=b'Z' => Some(value - b'A'),
-        b'a'..=b'z' => Some(value - b'a' + 26),
-        b'0'..=b'9' => Some(value - b'0' + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
 }

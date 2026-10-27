@@ -207,6 +207,90 @@ function appendOutcome(position) {
   return { ...outcome, contents: [...fs.readFileSync(path)] };
 }
 
+// The data each whole-file write is given, made fresh for every use, and the
+// encoding it writes the data in.
+const fileWriteData = {
+  utf8: [() => "h\u00e9llo", "utf8"],
+  latin1: [() => "h\u00e9llo", "latin1"],
+  binary: [() => "h\u00e9llo", "binary"],
+  ascii: [() => "h\u00e9llo", "ascii"],
+  utf16le: [() => "h\u00e9", "utf16le"],
+  ucs2: [() => "h\u00e9", "ucs2"],
+  base64: [() => "aGk/Pz8+", "base64"],
+  urlSafeBase64: [() => "aGk_Pz8-", "base64"],
+  base64url: [() => "aGk_Pz8-", "base64url"],
+  hex: [() => "6869", "hex"],
+  oddHex: [() => "686", "hex"],
+  invalidHex: [() => "68zz69", "hex"],
+  upperCase: [() => "h\u00e9", "LATIN1"],
+  buffer: [() => "hi", "buffer"],
+  unknown: [() => "hi", "nope"],
+  ...Object.fromEntries(Object.entries(byteInputs).map(([name, input]) => [name, [input, undefined]])),
+};
+
+// A write stream's write of `data` in `encoding` to `path`, once the stream finishes.
+async function streamWrite(path, data, encoding) {
+  const stream = fs.createWriteStream(path);
+  try {
+    await new Promise((resolve, reject) => {
+      stream.on("error", reject);
+      stream.write(data, encoding);
+      stream.end(resolve);
+    });
+  } finally { stream.destroy(); }
+}
+
+// The file handle method `name` applied to `path`.
+async function withHandle(path, name, ...args) {
+  const handle = await fs.promises.open(path, "r+");
+  try { await handle[name](...args); }
+  finally { await handle.close(); }
+}
+
+// Each whole-file write of `data` in `encoding` to `path`.
+const fileWrites = {
+  writeFileSync: (path, data, encoding) => fs.writeFileSync(path, data, encoding),
+  writeFileSyncOptions: (path, data, encoding) => fs.writeFileSync(path, data, { encoding }),
+  appendFileSync: (path, data, encoding) => fs.appendFileSync(path, data, encoding),
+  writeFile: (path, data, encoding) => new Promise((resolve, reject) => fs.writeFile(path, data, encoding, error => error ? reject(error) : resolve())),
+  appendFile: (path, data, encoding) => new Promise((resolve, reject) => fs.appendFile(path, data, encoding, error => error ? reject(error) : resolve())),
+  promisesWriteFile: (path, data, encoding) => fs.promises.writeFile(path, data, encoding),
+  handleWriteFile: (path, data, encoding) => withHandle(path, "writeFile", data, encoding),
+  handleAppendFile: (path, data, encoding) => withHandle(path, "appendFile", data, encoding),
+  streamWrite,
+};
+
+// The file each whole-file write leaves from each data and encoding, over a
+// file holding [9], or the error it fails with.
+async function fileWriteContracts() {
+  const path = "/tmp/filesystem-file-write.bin";
+  const outcomes = {};
+  for (const [writeName, write] of Object.entries(fileWrites)) {
+    outcomes[writeName] = {};
+    for (const [dataName, [data, encoding]] of Object.entries(fileWriteData)) {
+      fs.writeFileSync(path, Uint8Array.from([9]));
+      try {
+        await write(path, data(), encoding);
+        outcomes[writeName][dataName] = { contents: [...fs.readFileSync(path)] };
+      } catch (error) { outcomes[writeName][dataName] = { error: failure(error) }; }
+    }
+  }
+  return outcomes;
+}
+
+// What `FileHandle.writeFile` resolves with for a string, and whether it
+// throws or rejects for a number.
+async function handleWriteFileResult() {
+  const handle = await fs.promises.open("/tmp/filesystem-handle-write.bin", "w+");
+  try {
+    const { bytesWritten, buffer } = await handle.writeFile("6869", "hex");
+    let rejection = "threw";
+    try { const pending = handle.writeFile(5); rejection = "rejected"; await pending; }
+    catch (error) { rejection = `${rejection} ${error.code}`; }
+    return { bytesWritten, isBuffer: Buffer.isBuffer(buffer), bytes: [...buffer], rejection };
+  } finally { await handle.close(); }
+}
+
 function sizeLimitOutcomes() {
   const path = "/tmp/filesystem-limit.bin";
   fs.writeFileSync(path, "");
@@ -871,6 +955,8 @@ export async function filesystemContracts() {
   for (const [name, write] of Object.entries(vectorWriters)) result.writev[name] = await vectorOutcomes(write);
   result.append = { uint32Bigint: appendOutcome(2n ** 32n), negativeBigint: appendOutcome(-1n), beyondSizeLimit: appendOutcome(SIZE_LIMIT) };
   result.sizeLimit = sizeLimitOutcomes();
+  result.fileWrites = await fileWriteContracts();
+  result.handleWriteFile = await handleWriteFileResult();
   result.order = await orderContracts();
   result.dirents = await direntContracts();
   result.readData = await readDataContracts();

@@ -20,6 +20,9 @@ pub(super) enum CallbackOperation {
     /// `(path, atime, mtime)`.
     Times(TimesOperation),
     Access,
+    /// `(path, data, options?)`, written as `writeFile` writes when given
+    /// options, as workerd does.
+    AppendFile,
     Exists,
     Close,
     CopyFile,
@@ -43,10 +46,7 @@ pub(super) fn callback_operations() -> &'static [(&'static str, CallbackOperatio
     &[
         ("access", CallbackOperation::Access),
         ("exists", CallbackOperation::Exists),
-        (
-            "appendFile",
-            CallbackOperation::PairOptions(append_file_sync),
-        ),
+        ("appendFile", CallbackOperation::AppendFile),
         ("chmod", CallbackOperation::Pair(chmod_sync)),
         ("chown", CallbackOperation::Owner(chown_sync)),
         ("close", CallbackOperation::Close),
@@ -180,6 +180,16 @@ pub(super) fn callback_call<'js>(
             let input = take_arg(&ctx, &mut args)?;
             let mode = take_opt_u32(&ctx, &mut args)?;
             reply(&ctx, access_sync(ctx.clone(), input, mode))
+        }
+        CallbackOperation::AppendFile => {
+            let input = take_arg(&ctx, &mut args)?;
+            let data = take_arg(&ctx, &mut args)?;
+            let write: PairOptionsOperation = if args.is_empty() {
+                append_file_sync
+            } else {
+                write_file_sync
+            };
+            reply(&ctx, write(ctx.clone(), input, data, Opt(args.pop())))
         }
         CallbackOperation::Exists => {
             let input = take_arg(&ctx, &mut args)?;

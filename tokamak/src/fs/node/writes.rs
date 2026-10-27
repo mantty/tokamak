@@ -143,11 +143,7 @@ fn view_write<'js>(
     args: Vec<Value<'js>>,
 ) -> rquickjs::Result<WriteRequest<'js>> {
     if !is_array_buffer_view(&value) {
-        return Err(throw_type_error(
-            ctx,
-            "ERR_INVALID_ARG_TYPE",
-            "The \"buffer\" argument must be of type string or an instance of Buffer, TypedArray, or DataView",
-        ));
+        return Err(invalid_bytes(ctx, "buffer"));
     }
     let view = Object::from_value(value.clone())?;
     let byte_length = index_property(ctx, &view, "byteLength")?;
@@ -191,6 +187,50 @@ fn write_fields(
         (!length.is_undefined()).then_some(length),
         defined(options.get("position")?),
     ))
+}
+
+/// The view a whole-file write of `data` writes once `options` pass
+/// workerd's checks: `data` itself, or the string `data` encoded as `options`
+/// name.
+pub(super) fn file_view<'js>(
+    ctx: &Ctx<'js>,
+    data: Value<'js>,
+    options: Option<&Value<'js>>,
+) -> rquickjs::Result<Value<'js>> {
+    check_encoding(ctx, options, EncodingCheck::NullRejected)?;
+    if is_array_buffer_view(&data) {
+        return Ok(data);
+    }
+    if !data.is_string() {
+        return Err(invalid_bytes(ctx, "data"));
+    }
+    let encoding = parse_options(ctx, options.cloned())?.encoding;
+    encoded(ctx, data, encoding.into_js(ctx)?)
+}
+
+/// The bytes `WriteStream.write` writes for `chunk`: a view's, or a string's
+/// encoded in `encoding`.
+pub(super) fn chunk_bytes<'js>(
+    ctx: &Ctx<'js>,
+    chunk: Value<'js>,
+    encoding: Value<'js>,
+) -> rquickjs::Result<Vec<u8>> {
+    if chunk.is_string() {
+        return view_bytes(ctx, &encoded(ctx, chunk, encoding)?);
+    }
+    if !is_array_buffer_view(&chunk) {
+        return Err(invalid_bytes(ctx, "chunk"));
+    }
+    view_bytes(ctx, &chunk)
+}
+
+/// The bytes `view` covers, with none when its buffer is detached.
+pub(super) fn attached_bytes<'js>(ctx: &Ctx<'js>, view: &Value<'js>) -> rquickjs::Result<Vec<u8>> {
+    // A detached view's length is 0.
+    if index_property(ctx, &Object::from_value(view.clone())?, "byteLength")? == 0 {
+        return Ok(Vec::new());
+    }
+    view_bytes(ctx, view)
 }
 
 /// The bytes `view` covers.
@@ -375,6 +415,16 @@ fn out_of_range(ctx: &Ctx<'_>, name: &str, range: &str) -> rquickjs::Error {
         ctx,
         "ERR_OUT_OF_RANGE",
         &format!("The value of \"{name}\" is out of range. It must be {range}"),
+    )
+}
+
+fn invalid_bytes(ctx: &Ctx<'_>, name: &str) -> rquickjs::Error {
+    throw_type_error(
+        ctx,
+        "ERR_INVALID_ARG_TYPE",
+        &format!(
+            "The \"{name}\" argument must be of type string or an instance of Buffer, TypedArray, or DataView"
+        ),
     )
 }
 

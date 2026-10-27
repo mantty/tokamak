@@ -283,12 +283,13 @@ pub(super) fn file_handle_object<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, data: Value<'js>, options: Opt<Value<'js>>| {
-                let descriptor = open_descriptor(&ctx, &write_file_state)?;
-                let options = parse_options(&ctx, options.0)?;
-                let bytes = bytes(&ctx, data.clone(), options.encoding.as_deref())?;
-                let bytes_written = write_descriptor(&ctx, descriptor, &bytes, false)?;
-                let buffer = write_buffer_value(&ctx, &data, &bytes)?;
-                transfer_result(&ctx, "bytesWritten", bytes_written, "buffer", buffer)
+                let written = open_descriptor(&ctx, &write_file_state).and_then(|descriptor| {
+                    let view = file_view(&ctx, data, options.0.as_ref())?;
+                    let bytes = attached_bytes(&ctx, &view)?;
+                    let count = write_descriptor(&ctx, descriptor, &bytes, false)?;
+                    transfer_value(&ctx, "bytesWritten", count, "buffer", view)
+                });
+                promise(ctx.clone(), written)
             },
         )?,
     )?;
@@ -298,11 +299,11 @@ pub(super) fn file_handle_object<'js>(
         Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, data: Value<'js>, options: Opt<Value<'js>>| {
-                let descriptor = open_descriptor(&ctx, &append_state)?;
-                let options = parse_options(&ctx, options.0)?;
-                let data = bytes(&ctx, data, options.encoding.as_deref())?;
-                write_descriptor(&ctx, descriptor, &data, true)?;
-                promise_unit(ctx, Ok(()))
+                let appended = open_descriptor(&ctx, &append_state).and_then(|descriptor| {
+                    let bytes = attached_bytes(&ctx, &file_view(&ctx, data, options.0.as_ref())?)?;
+                    write_descriptor(&ctx, descriptor, &bytes, true).map(|_| ())
+                });
+                promise_unit(ctx, appended)
             },
         )?,
     )?;
@@ -413,20 +414,6 @@ pub(super) fn handle_descriptor(state: &FileHandleState) -> Option<u32> {
 fn open_descriptor(ctx: &Ctx<'_>, state: &FileHandleState) -> rquickjs::Result<u32> {
     handle_descriptor(state)
         .ok_or_else(|| Exception::throw_message(ctx, "EBADF: file descriptor closed"))
-}
-
-/// A promise of `{ [count_name]: count, [buffer_name]: buffer }`.
-fn transfer_result<'js>(
-    ctx: &Ctx<'js>,
-    count_name: &str,
-    count: usize,
-    buffer_name: &str,
-    buffer: Value<'js>,
-) -> rquickjs::Result<Promise<'js>> {
-    promise(
-        ctx.clone(),
-        transfer_value(ctx, count_name, count, buffer_name, buffer),
-    )
 }
 
 /// `{ [count_name]: count, [buffer_name]: buffer }`.
@@ -735,10 +722,10 @@ pub(super) fn stream_write<'js>(
     let callback = pop_callback(&mut args);
     let encoding = args
         .first()
-        .and_then(|value| value.as_string())
-        .map(rquickjs::String::to_string)
-        .transpose()?;
-    let data = bytes(ctx, value, encoding.as_deref())?;
+        .filter(|encoding| encoding.is_string())
+        .cloned()
+        .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+    let data = chunk_bytes(ctx, value, encoding)?;
     let descriptor = open_descriptor(ctx, state)?;
     let result = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, None));
     let Some(callback) = callback else {

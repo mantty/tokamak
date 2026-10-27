@@ -399,7 +399,7 @@ fn writes_the_viewed_bytes_of_each_supported_typed_array() -> Result<(), Box<dyn
         )?;
         assert_eq!(
             result,
-            r#"["Uint8Array: 8,9,10,11,12,13,14,15","Int8Array: 8,9,10,11,12,13,14,15","Uint16Array: 8,9,10,11,12,13,14,15","Int16Array: 8,9,10,11,12,13,14,15","Uint32Array: 8,9,10,11,12,13,14,15","Int32Array: 8,9,10,11,12,13,14,15","BigUint64Array: 8,9,10,11,12,13,14,15","BigInt64Array: 8,9,10,11,12,13,14,15","Float32Array: 8,9,10,11,12,13,14,15","Float64Array: 8,9,10,11,12,13,14,15","Uint8ClampedArray: data must be a string, ArrayBuffer, or typed array"]"#
+            r#"["Uint8Array: 8,9,10,11,12,13,14,15","Int8Array: 8,9,10,11,12,13,14,15","Uint16Array: 8,9,10,11,12,13,14,15","Int16Array: 8,9,10,11,12,13,14,15","Uint32Array: 8,9,10,11,12,13,14,15","Int32Array: 8,9,10,11,12,13,14,15","BigUint64Array: 8,9,10,11,12,13,14,15","BigInt64Array: 8,9,10,11,12,13,14,15","Float32Array: 8,9,10,11,12,13,14,15","Float64Array: 8,9,10,11,12,13,14,15","Uint8ClampedArray: 8,9,10,11,12,13,14,15"]"#
         );
         Ok(())
     })
