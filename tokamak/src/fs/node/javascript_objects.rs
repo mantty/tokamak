@@ -455,7 +455,9 @@ pub(super) fn install_event_emitter<'js>(
     let Ok(Some(prototype)) = constructor.get::<_, Option<Object>>("prototype") else {
         return Ok(());
     };
-    object.set("__events", ctx.eval::<Object, _>("new Map()")?)?;
+    constructor
+        .get::<_, Function>("init")?
+        .call::<_, ()>((This(object.clone()),))?;
     for name in [
         "on",
         "addEventListener",

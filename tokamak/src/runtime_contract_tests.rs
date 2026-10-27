@@ -1167,17 +1167,20 @@ export default { fetch() {
       events.push("close");
       resolve(Response.json({ bytes, events, bounded }));
     });
+    // Once the paused socket has buffered data, it reads no more until resumed.
+    const sample = () => {
+      const buffered = socket.readableLength;
+      if (buffered === 0) return setTimeout(sample, 5);
+      const read = socket.bytesRead;
+      setTimeout(() => {
+        bounded = socket.readableLength === buffered && socket.bytesRead === read && read < 256 * 1024;
+        socket.resume();
+      }, 10);
+    };
     socket.on("connect", () => {
       socket.pause();
-      socket.once("readable", () => {
-        const buffered = socket.readableLength;
-        const read = socket.bytesRead;
-        setTimeout(() => {
-          bounded = buffered > 0 && socket.readableLength === buffered && socket.bytesRead === read;
-          socket.resume();
-        }, 10);
-      });
       socket.write("ping");
+      sample();
     });
   });
 } };

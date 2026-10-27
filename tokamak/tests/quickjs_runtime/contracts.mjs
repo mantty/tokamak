@@ -12,6 +12,7 @@ import { intlContracts } from "./intl.mjs";
 import { bytesContracts } from "./bytes.mjs";
 import { filesystemContracts } from "./filesystem.mjs";
 import { netContracts } from "./net.mjs";
+import { eventsContracts } from "./events.mjs";
 
 function errorResult(error) {
   return { error: error.name, dom: error instanceof DOMException, code: error.code ?? null };
@@ -145,6 +146,7 @@ export async function run(handlerEnv, ctx, constructors) {
   output.bytesDetails = await bytesContracts();
   output.filesystemDetails = await filesystemContracts();
   output.netDetails = await netContracts();
+  output.eventsDetails = await eventsContracts();
   output.asyncContextDetails = await asyncResult(async () => {
     const { AsyncLocalStorage } = await import("node:async_hooks");
     const storage = new AsyncLocalStorage({ name: "scope", defaultValue: "default" });

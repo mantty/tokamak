@@ -4,9 +4,10 @@ import { clearTimeout, setTimeout } from "../globals/timers.mjs";
 import { Duplex } from "../streams/node.mjs";
 import { Buffer } from "./buffer.mjs";
 import { ipVersion } from "tokamak:host";
-import { codedError } from "./errors.mjs";
+import { abortError, codedError } from "./errors.mjs";
 import { GATEWAY_ADDRESS, HOST_ADDRESS, bindPort, tcpPorts, validatePort } from "./tcp-ports.mjs";
 import { inspect, types } from "./util.mjs";
+import { invalidArgument, invalidType, invalidValue, outOfRange, validateAbortSignal, validateFunction, validateObject, validateType } from "./validators.mjs";
 
 const kLastWriteQueueSize = Symbol("kLastWriteQueueSize");
 const kTimeout = Symbol("kTimeout");
@@ -27,51 +28,6 @@ const kBoundSocketConsume = Symbol("kBoundSocketConsume");
 const DEFAULT_IPV4_ADDR = "0.0.0.0";
 const DEFAULT_IPV6_ADDR = "::";
 const TIMEOUT_MAX = 2 ** 31 - 1;
-
-function invalidArgument(message, code = "ERR_INVALID_ARG_VALUE") {
-  return codedError(TypeError, message, code);
-}
-
-function receivedValue(value) {
-  if (value === null || value === undefined) return String(value);
-  if (typeof value === "function" && value.name) return `function ${value.name}`;
-  if (typeof value === "object") return value.constructor?.name ? `an instance of ${value.constructor.name}` : inspect(value, { depth: -1 });
-  const inspected = inspect(value);
-  return `type ${typeof value} (${inspected.length > 25 ? `${inspected.slice(0, 25)}...` : inspected})`;
-}
-
-// "property" for a dotted name such as "options.port", "argument" otherwise.
-function nameKind(name) {
-  return name.includes(".") ? "property" : "argument";
-}
-
-function invalidType(name, expected, value) {
-  return invalidArgument(`The "${name}" ${nameKind(name)} must be ${expected}. Received ${receivedValue(value)}`, "ERR_INVALID_ARG_TYPE");
-}
-
-function validateType(value, name, type) {
-  if (typeof value !== type) throw invalidType(name, `of type ${type}`, value);
-}
-
-function validateObject(value, name) {
-  if (value === null || Array.isArray(value) || typeof value !== "object") throw invalidType(name, "of type object", value);
-}
-
-function validateFunction(value, name) {
-  if (typeof value !== "function") throw invalidType(name, "of type function", value);
-}
-
-function validateAbortSignal(signal, name) {
-  if (signal === null || typeof signal !== "object" || !("aborted" in signal)) throw invalidType(name, "an instance of AbortSignal", signal);
-}
-
-function invalidValue(name, value, reason) {
-  return invalidArgument(`The ${nameKind(name)} '${name}' ${reason}. Received ${inspect(value)}`);
-}
-
-function outOfRange(name, range, value) {
-  return codedError(RangeError, `The value of "${name}" is out of range. It must be ${range}. Received ${inspect(value)}`, "ERR_OUT_OF_RANGE");
-}
 
 function validateInt32(value, name, min) {
   validateType(value, name, "number");
@@ -103,12 +59,6 @@ function socketClosed() {
 
 function handleAdopted() {
   return codedError(Error, "The bound socket has already been adopted by a server or socket", "ERR_SOCKET_HANDLE_ADOPTED");
-}
-
-function abortError() {
-  const error = codedError(Error, "The operation was aborted", "ABORT_ERR");
-  error.name = "AbortError";
-  return error;
 }
 
 function familyOf(address) {
