@@ -64,11 +64,8 @@ final class TokamakSecureStoragePlugin: TokamakPlugin {
   #if os(macOS)
     /// macOS grants the data protection keychain only to apps whose provisioning
     /// profile provides an application identifier.
-    private static let hasApplicationIdentifier: Bool = {
-      guard let task = SecTaskCreateFromSelf(nil) else { return false }
-      let entitlement = "com.apple.application-identifier" as CFString
-      return SecTaskCopyValueForEntitlement(task, entitlement, nil) != nil
-    }()
+    private static let hasApplicationIdentifier =
+      tokamakEntitlement("com.apple.application-identifier") != nil
   #endif
 
   func create(_ name: String, _ value: String, _ options: StoreOptions) throws(TokamakPluginError) {

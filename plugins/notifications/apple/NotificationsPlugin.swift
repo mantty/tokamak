@@ -156,7 +156,7 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
   @MainActor
   func subscribeToPush() async throws -> Subscription {
     #if os(macOS)
-      guard Self.entitlement("com.apple.application-identifier") != nil else {
+      guard tokamakEntitlement("com.apple.application-identifier") != nil else {
         throw TokamakPluginError.notSupported("Push requires a team-signed build")
       }
       guard Self.apsEnvironment != nil else {
@@ -511,16 +511,9 @@ final class TokamakNotificationsPlugin: NSObject, TokamakPlugin,
       }
       return profileEntitlement(pushEntitlement, in: profileURL).flatMap(PushEnvironment.init)
     #else
-      return (entitlement(pushEntitlement) as? String).flatMap(PushEnvironment.init)
+      return (tokamakEntitlement(pushEntitlement) as? String).flatMap(PushEnvironment.init)
     #endif
   }()
-
-  #if os(macOS)
-    private static func entitlement(_ key: String) -> Any? {
-      guard let task = SecTaskCreateFromSelf(nil) else { return nil }
-      return SecTaskCopyValueForEntitlement(task, key as CFString, nil)
-    }
-  #endif
 
   #if os(iOS) && !targetEnvironment(simulator)
     /// An entitlement in a provisioning profile, which signing takes the push

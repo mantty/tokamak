@@ -36,7 +36,9 @@ final class TokamakCorePlugin: TokamakPlugin {
   /// Starts navigation to the app URL `path`, relative to the current page or
   /// the app origin.
   private func navigate(to path: Any) -> Result<Void, TokamakPluginError> {
-    guard let view = host.webView else { return .failure(noView) }
+    guard let view = host.webView else {
+      return .failure(.init(name: "InvalidStateError", message: "The app has no WebView"))
+    }
     let appHost = Bundle.main.tokamakHost ?? ""
     guard let path = path as? String,
       let base = view.url ?? URL(string: "https://\(appHost)/"),
@@ -59,9 +61,5 @@ final class TokamakCorePlugin: TokamakPlugin {
     ) { result in
       reply(result.map { _ in nil }.mapError { TokamakPluginError($0) })
     }
-  }
-
-  private var noView: TokamakPluginError {
-    .init(name: "InvalidStateError", message: "The app has no WebView")
   }
 }
