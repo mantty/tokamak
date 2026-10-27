@@ -1,12 +1,9 @@
 import fs from "node:fs";
 import process from "node:process";
 import { byteInputs } from "./bytes.mjs";
+import { failure } from "./outcome.mjs";
 
 const SIZE_LIMIT = 128 * 1024 * 1024;
-
-function failure(error) {
-  return { error: error.name, code: error.code ?? null };
-}
 
 // What `run` returns, or the failure it throws.
 function attempt(run) {
