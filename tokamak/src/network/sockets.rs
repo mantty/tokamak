@@ -7,7 +7,7 @@ use futures_util::{
     FutureExt,
     future::{LocalBoxFuture, Shared},
 };
-use rquickjs::{Ctx, Exception, Function, Object, Promise, TypedArray, function::Async};
+use rquickjs::{Ctx, Function, Object, Promise, TypedArray, function::Async};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
     net::TcpStream,
@@ -298,7 +298,7 @@ fn closed_error() -> io::Error {
 }
 
 fn failure(ctx: &Ctx<'_>, error: impl std::fmt::Display) -> rquickjs::Error {
-    Exception::throw_message(ctx, &error.to_string())
+    crate::errors::throw_message(ctx, &error.to_string())
 }
 
 #[cfg(test)]

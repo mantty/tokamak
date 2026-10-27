@@ -22,7 +22,7 @@ impl CodecError {
     }
 
     fn throw(self, ctx: &Ctx<'_>) -> rquickjs::Error {
-        Exception::from_message(ctx.clone(), &self.message)
+        crate::errors::new_error(ctx, &self.message)
             .and_then(|error| error.set("code", self.code).map(|()| error.throw()))
             .unwrap_or_else(|error| error)
     }

@@ -32,7 +32,7 @@ pub(super) fn create<'js>(
     let key = bytes(&ctx, key)?;
     let iv = bytes(&ctx, iv)?;
     let stream = aes::stream(mode, encrypt, &key, &iv, tag_length.unwrap_or(16))
-        .map_err(|error| Exception::throw_message(&ctx, error.0))?;
+        .map_err(|error| crate::errors::throw_message(&ctx, error.0))?;
     Class::instance(
         ctx,
         CipherState {
@@ -56,7 +56,7 @@ impl CipherState {
         let output = self
             .active(&ctx)?
             .update(&input)
-            .map_err(|error| Exception::throw_message(&ctx, error.0))?;
+            .map_err(|error| crate::errors::throw_message(&ctx, error.0))?;
         ArrayBuffer::new(ctx, output)
     }
 
@@ -68,7 +68,7 @@ impl CipherState {
             } else {
                 error.0
             };
-            Exception::throw_message(&ctx, message)
+            crate::errors::throw_message(&ctx, message)
         })?;
         if self.authenticated && self.encrypt {
             self.tag = finished.tag;
@@ -89,7 +89,7 @@ impl CipherState {
         data: TypedArray<'js, u8>,
     ) -> rquickjs::Result<()> {
         if !self.authenticated {
-            return Err(Exception::throw_message(
+            return Err(crate::errors::throw_message(
                 &ctx,
                 "Cipher does not support AAD",
             ));
@@ -97,7 +97,7 @@ impl CipherState {
         let data = bytes(&ctx, data)?;
         self.active(&ctx)?
             .set_aad(&data)
-            .map_err(|error| Exception::throw_message(&ctx, error.0))
+            .map_err(|error| crate::errors::throw_message(&ctx, error.0))
     }
 
     #[qjs(rename = "setAuthTag")]
@@ -107,12 +107,15 @@ impl CipherState {
         tag: TypedArray<'js, u8>,
     ) -> rquickjs::Result<()> {
         if self.tag_set {
-            return Err(Exception::throw_message(&ctx, "Auth tag is already set"));
+            return Err(crate::errors::throw_message(
+                &ctx,
+                "Auth tag is already set",
+            ));
         }
         let tag = bytes(&ctx, tag)?;
         self.active(&ctx)?
             .set_tag(&tag)
-            .map_err(|error| Exception::throw_message(&ctx, error.0))?;
+            .map_err(|error| crate::errors::throw_message(&ctx, error.0))?;
         self.tag_set = true;
         Ok(())
     }
@@ -120,13 +123,13 @@ impl CipherState {
     #[qjs(rename = "getAuthTag")]
     pub fn get_auth_tag<'js>(&mut self, ctx: Ctx<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
         if self.stream.is_some() {
-            return Err(Exception::throw_message(
+            return Err(crate::errors::throw_message(
                 &ctx,
                 "Auth tag is only available once cipher context has been finalized",
             ));
         }
         if !self.encrypt {
-            return Err(Exception::throw_message(
+            return Err(crate::errors::throw_message(
                 &ctx,
                 "Getting the auth tag is only support for cipher",
             ));
@@ -141,5 +144,5 @@ impl CipherState {
 }
 
 fn finalized(ctx: &Ctx<'_>) -> rquickjs::Error {
-    Exception::throw_message(ctx, "Cipher/decipher context has already been finalized")
+    crate::errors::throw_message(ctx, "Cipher/decipher context has already been finalized")
 }

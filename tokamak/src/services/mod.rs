@@ -244,7 +244,7 @@ pub(crate) fn install<'js>(
                 let result = registry
                     .invoke(target, method, message, lifetime)
                     .await
-                    .map_err(|error| Exception::throw_message(&calling, &error.to_string()))?;
+                    .map_err(|error| crate::errors::throw_message(&calling, &error.to_string()))?;
                 result.into_js(&calling, &bootstrap, &channels)
             })?;
             let operation = Object::new(ctx.clone())?;

@@ -33,6 +33,8 @@ mod dev_socket;
 #[cfg(feature = "native")]
 mod dispatcher;
 #[cfg(feature = "native")]
+mod errors;
+#[cfg(feature = "native")]
 mod event_loop;
 #[cfg(feature = "native")]
 mod fs;

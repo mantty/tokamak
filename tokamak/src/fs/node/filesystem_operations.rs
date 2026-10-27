@@ -1,7 +1,7 @@
 #![allow(clippy::wildcard_imports)]
 
 use super::*;
-use rquickjs::object::Property;
+use crate::errors::new_error;
 
 /// `(input, options?)` operations answering with a value.
 pub(super) type ValueOperation =
@@ -158,17 +158,17 @@ pub(super) fn path<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<S
         return Err(Exception::throw_type(ctx, "File path must be a file: URL"));
     }
     if url.host_str().is_some_and(|host| !host.is_empty()) {
-        return Err(Exception::throw_message(
+        return Err(crate::errors::throw_message(
             ctx,
             "File path must not have a host",
         ));
     }
     let path = stored_path(url);
     if path.len() > MAX_PATH_LENGTH {
-        return Err(Exception::throw_message(ctx, "File path is too long"));
+        return Err(crate::errors::throw_message(ctx, "File path is too long"));
     }
     if path.matches('/').count() > MAX_PATH_SEGMENTS {
-        return Err(Exception::throw_message(
+        return Err(crate::errors::throw_message(
             ctx,
             "File path has too many segments",
         ));
@@ -1394,15 +1394,6 @@ fn syscall_error<'js>(
     object.set("syscall", syscall)?;
     object.set("errno", errno)?;
     object.set("path", path)?;
-    Ok(exception)
-}
-
-/// A new `Error` whose `message`, as in V8, is not enumerable.
-fn new_error<'js>(ctx: &Ctx<'js>, message: &str) -> rquickjs::Result<Exception<'js>> {
-    let exception = Exception::from_message(ctx.clone(), message)?;
-    let object = exception.as_object();
-    object.remove("message")?;
-    object.prop("message", Property::from(message).writable().configurable())?;
     Ok(exception)
 }
 

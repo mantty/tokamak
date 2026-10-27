@@ -220,7 +220,7 @@ async fn r2_get(
     };
     let result = Object::new(ctx.clone())?;
     let object = serde_json::to_string(&object)
-        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
+        .map_err(|error| crate::errors::throw_message(&ctx, &error.to_string()))?;
     result.set("object", object)?;
     if let Some(body) = body {
         let body = Arc::new(Mutex::new(Some(body)));
@@ -404,7 +404,7 @@ fn writer(ctx: Ctx<'_>, body: BodyWriter) -> rquickjs::Result<Class<'_, Writer>>
 fn written(ctx: &Ctx<'_>, writer: &Class<'_, Writer>) -> rquickjs::Result<BodyWriter> {
     lock(&writer.borrow().body)
         .take()
-        .ok_or_else(|| Exception::throw_message(ctx, WRITTEN))
+        .ok_or_else(|| crate::errors::throw_message(ctx, WRITTEN))
 }
 
 /// Run `work` on the bucket the binding `binding` names, on the blocking
@@ -456,7 +456,7 @@ async fn run_blocking(ctx: &Ctx<'_>, job: Job) -> rquickjs::Result<Box<dyn Any +
         .await
         .map_err(text)
         .and_then(|result| result)
-        .map_err(|error| Exception::throw_message(ctx, &error))
+        .map_err(|error| crate::errors::throw_message(ctx, &error))
 }
 
 /// Seconds since the Unix epoch.
