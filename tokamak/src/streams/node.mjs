@@ -535,7 +535,7 @@ var require_errors = __commonJS({
     E("ERR_STREAM_CANNOT_PIPE", "Cannot pipe, not readable", Error);
     E("ERR_STREAM_DESTROYED", "Cannot call %s after a stream was destroyed", Error);
     E("ERR_STREAM_NULL_VALUES", "May not write null values to stream", TypeError);
-    E("ERR_STREAM_PREMATURE_CLOSE", "Premature close", Error);
+    E("ERR_STREAM_PREMATURE_CLOSE", "Premature close", TypeError);
     E("ERR_STREAM_PUSH_AFTER_EOF", "stream.push() after EOF", Error);
     E("ERR_STREAM_UNSHIFT_AFTER_END_EVENT", "stream.unshift() after end event", Error);
     E("ERR_STREAM_WRITE_AFTER_END", "write after end", Error);
@@ -2945,11 +2945,11 @@ var require_readable = __commonJS({
           }
         } else if (chunk instanceof Buffer2) {
           encoding = "";
-        } else if (Stream2._isUint8Array(chunk)) {
+        } else if (ArrayBuffer.isView(chunk)) {
           chunk = Stream2._uint8ArrayToBuffer(chunk);
           encoding = "";
         } else if (chunk != null) {
-          err = new ERR_INVALID_ARG_TYPE("chunk", ["string", "Buffer", "Uint8Array"], chunk);
+          err = new ERR_INVALID_ARG_TYPE("chunk", ["string", "Buffer", "TypedArray", "DataView"], chunk);
         }
       }
       if (err) {
@@ -3855,11 +3855,11 @@ var require_writable = __commonJS({
           }
         } else if (chunk instanceof Buffer2) {
           encoding = "buffer";
-        } else if (Stream2._isUint8Array(chunk)) {
+        } else if (ArrayBuffer.isView(chunk)) {
           chunk = Stream2._uint8ArrayToBuffer(chunk);
           encoding = "buffer";
         } else {
-          throw new ERR_INVALID_ARG_TYPE("chunk", ["string", "Buffer", "Uint8Array"], chunk);
+          throw new ERR_INVALID_ARG_TYPE("chunk", ["string", "Buffer", "TypedArray", "DataView"], chunk);
         }
       }
       let err;

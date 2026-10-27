@@ -129,6 +129,25 @@ function handleKnownInternalErrors(cause) {
   }
 }
 
+// workerd's streams take any ArrayBufferView chunk and report a premature
+// close as a TypeError.
+function matchWorkerd(buildDir) {
+  const packageRoot = path.join(buildDir, "node_modules/readable-stream/lib");
+  const patches = [
+    ["internal/streams/readable.js", "Stream._isUint8Array(chunk)", "ArrayBuffer.isView(chunk)"],
+    ["internal/streams/readable.js", "['string', 'Buffer', 'Uint8Array']", "['string', 'Buffer', 'TypedArray', 'DataView']"],
+    ["internal/streams/writable.js", "Stream._isUint8Array(chunk)", "ArrayBuffer.isView(chunk)"],
+    ["internal/streams/writable.js", "['string', 'Buffer', 'Uint8Array']", "['string', 'Buffer', 'TypedArray', 'DataView']"],
+    ["ours/errors.js", "E('ERR_STREAM_PREMATURE_CLOSE', 'Premature close', Error)", "E('ERR_STREAM_PREMATURE_CLOSE', 'Premature close', TypeError)"],
+  ];
+  for (const [name, before, after] of patches) {
+    const filename = path.join(packageRoot, name);
+    const original = readFileSync(filename, "utf8");
+    assert.equal(original.split(before).length, 2, `one patch target in ${name}`);
+    writeFileSync(filename, original.replace(before, after));
+  }
+}
+
 // Bundle entry: readable-stream's node:stream surface plus the pieces Node
 // exports that readable-stream lacks, plus legacy named exports kept for the
 // tokamak _stream_* shims.
@@ -327,6 +346,7 @@ try {
     stdio: "inherit",
   });
   await installWebAdapters(buildDir);
+  matchWorkerd(buildDir);
 
   const shimDir = path.join(buildDir, "shims");
   mkdirSync(shimDir);
