@@ -300,7 +300,7 @@ pub(super) fn file_handle_object<'js>(
             move |ctx: Ctx<'js>, options: Opt<Value<'js>>| {
                 let descriptor = open_descriptor(&ctx, &stat_state)?;
                 let options = parse_options(&ctx, options.0)?;
-                let stat = vfs_call(&ctx, |vfs| vfs.fstat(descriptor))?;
+                let stat = vfs_call(&ctx, "fstat", |vfs| vfs.fstat(descriptor))?;
                 promise(
                     ctx.clone(),
                     stat_object(&ctx, &stat, options.bigint).map(Object::into_value),
@@ -313,7 +313,9 @@ pub(super) fn file_handle_object<'js>(
         "truncate",
         Function::new(ctx.clone(), move |ctx: Ctx<'js>, length: Opt<u64>| {
             let descriptor = open_descriptor(&ctx, &truncate_state)?;
-            vfs_call(&ctx, |vfs| vfs.ftruncate(descriptor, length.0.unwrap_or(0)))?;
+            vfs_call(&ctx, "ftruncate", |vfs| {
+                vfs.ftruncate(descriptor, length.0.unwrap_or(0))
+            })?;
             promise_unit(ctx, Ok(()))
         })?,
     )?;
@@ -426,7 +428,7 @@ pub(super) fn close_handle<'js>(
 ) -> rquickjs::Result<()> {
     let descriptor = take_descriptor(state);
     if let Some(descriptor) = descriptor {
-        vfs_call(ctx, |vfs| vfs.close(descriptor))?;
+        close_descriptor(ctx, descriptor)?;
         object.set("fd", Value::new_undefined(ctx.clone()))?;
         if let Ok(Some(emit)) = object.get::<_, Option<Function>>("emit") {
             emit.call::<_, bool>((This(object.clone()), "close"))?;
@@ -488,7 +490,7 @@ pub(super) fn file_handle_sync<'js>(
     state: FileHandleState,
 ) -> rquickjs::Result<Function<'js>> {
     Function::new(ctx, move |ctx: Ctx<'js>| {
-        require_descriptor(&ctx, open_descriptor(&ctx, &state)?)?;
+        require_descriptor(&ctx, open_descriptor(&ctx, &state)?, "fstat")?;
         promise_unit(ctx, Ok(()))
     })
 }
@@ -585,7 +587,7 @@ fn create_read_stream<'js>(
     ))?;
     push.call::<_, ()>((stream.clone(), Value::new_null(ctx.clone())))?;
     if owns_descriptor {
-        let _ = vfs_call(ctx, |vfs| vfs.close(descriptor));
+        close_descriptor(ctx, descriptor)?;
         stream.set("fd", Value::new_null(ctx.clone()))?;
     }
     Ok(stream)
@@ -632,7 +634,7 @@ fn create_write_stream<'js>(
                 if destroy_state.owns_descriptor
                     && let Some(descriptor) = take_descriptor(&destroy_state)
                 {
-                    let _ = vfs_call(&ctx, |vfs| vfs.close(descriptor));
+                    close_descriptor(&ctx, descriptor)?;
                 }
                 Ok::<Object<'js>, rquickjs::Error>(this.0)
             },
@@ -661,7 +663,7 @@ fn stream_descriptor<'js>(
     let flags = option_property(options, "flags")?
         .or_else(|| default_flags.and_then(|flags| flags.into_js(ctx).ok()));
     let open_options = open_options(ctx, flags)?;
-    let descriptor = vfs_call(ctx, |vfs| vfs.open(open_path, open_options))?;
+    let descriptor = vfs_call(ctx, "open", |vfs| vfs.open(open_path, open_options))?;
     Ok((path, descriptor, true))
 }
 
@@ -714,7 +716,7 @@ pub(super) fn stream_write<'js>(
     let callback = pop_callback(&mut args);
     let data = chunk_bytes(ctx, value, stream_encoding(ctx, args.first())?)?;
     let descriptor = open_descriptor(ctx, state)?;
-    let result = vfs_call(ctx, |vfs| vfs.write(descriptor, &data, None));
+    let result = vfs_call(ctx, "write", |vfs| vfs.write(descriptor, &data, None));
     let Some(callback) = callback else {
         return Ok(true);
     };
@@ -767,7 +769,7 @@ pub(super) fn stream_end<'js>(
     if state.owns_descriptor
         && let Some(descriptor) = take_descriptor(state)
     {
-        vfs_call(ctx, |vfs| vfs.close(descriptor))?;
+        close_descriptor(ctx, descriptor)?;
     }
     if let Some(callback) = callback {
         callback.call::<_, ()>((Value::new_null(ctx.clone()),))?;

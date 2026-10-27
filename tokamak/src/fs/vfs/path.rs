@@ -7,37 +7,37 @@ use crate::lock;
 
 pub(super) fn absolute_components(path: &str) -> Result<Vec<String>> {
     if !path.starts_with('/') {
-        return Err(Error::new(ErrorKind::InvalidPath, path));
+        return Err(Error::new(ErrorKind::InvalidPath));
     }
-    target_components(&[], path, path)
+    target_components(&[], path)
 }
 
-pub(super) fn target_components(base: &[String], target: &str, path: &str) -> Result<Vec<String>> {
+pub(super) fn target_components(base: &[String], target: &str) -> Result<Vec<String>> {
     if target.contains('\0') || target.chars().count() > MAX_PATH_LENGTH {
-        return Err(Error::new(ErrorKind::InvalidPath, path));
+        return Err(Error::new(ErrorKind::InvalidPath));
     }
     let mut components = if target.starts_with('/') {
         Vec::new()
     } else {
         base.to_vec()
     };
-    apply_components(&mut components, target, path)?;
+    apply_components(&mut components, target)?;
     Ok(components)
 }
 
-fn apply_components(components: &mut Vec<String>, target: &str, path: &str) -> Result<()> {
+fn apply_components(components: &mut Vec<String>, target: &str) -> Result<()> {
     for part in target.split('/') {
         match part {
             "" | "." => {}
             ".." => {
                 if components.pop().is_none() {
-                    return Err(Error::new(ErrorKind::InvalidPath, path));
+                    return Err(Error::new(ErrorKind::InvalidPath));
                 }
             }
             part => {
                 components.push(part.to_owned());
                 if components.len() > MAX_PATH_SEGMENTS {
-                    return Err(Error::new(ErrorKind::InvalidPath, path));
+                    return Err(Error::new(ErrorKind::InvalidPath));
                 }
             }
         }
@@ -109,11 +109,11 @@ pub(super) fn path_from_components(components: &[String]) -> String {
     format!("/{}", components.join("/"))
 }
 
-pub(super) fn checked_size(size: u64, path: &str) -> Result<usize> {
+pub(super) fn checked_size(size: u64) -> Result<usize> {
     if size > MAX_FILE_SIZE {
-        return Err(Error::new(ErrorKind::FileTooLarge, path));
+        return Err(Error::new(ErrorKind::FileTooLarge));
     }
-    usize::try_from(size).map_err(|_| Error::new(ErrorKind::FileTooLarge, path))
+    usize::try_from(size).map_err(|_| Error::new(ErrorKind::FileTooLarge))
 }
 
 pub(super) fn random_suffix(bytes: &[u8]) -> String {
@@ -148,13 +148,13 @@ pub(super) fn write_memory(
     let start = if append {
         data.len()
     } else {
-        usize::try_from(offset).map_err(|_| Error::new(ErrorKind::FileTooLarge, ""))?
+        usize::try_from(offset).map_err(|_| Error::new(ErrorKind::FileTooLarge))?
     };
     let end = start
         .checked_add(input.len())
-        .ok_or_else(|| Error::new(ErrorKind::FileTooLarge, ""))?;
+        .ok_or_else(|| Error::new(ErrorKind::FileTooLarge))?;
     if end as u64 > MAX_FILE_SIZE {
-        return Err(Error::new(ErrorKind::FileTooLarge, ""));
+        return Err(Error::new(ErrorKind::FileTooLarge));
     }
     if end > data.len() {
         data.resize(end, 0);

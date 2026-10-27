@@ -773,11 +773,8 @@ async function overwriteOutcome(name, change) {
   return { result, tree: treeOf(root) };
 }
 
-// The path of a file in /bundle.
-function bundleFile() {
-  const name = fs.readdirSync("/bundle", { recursive: true }).find(name => fs.statSync(`/bundle/${name}`).isFile());
-  return `/bundle/${name}`;
-}
+// A file in /bundle: a Text module, which tokamak and workerd both keep there.
+const bundleFile = "/bundle/bundle.txt";
 
 // Writes `text` through a descriptor of `path` opened before `change`.
 function writeAfter(path, change, text) {
@@ -824,11 +821,11 @@ const renames = {
   replacedDescriptor: root => writeAfter(`${root}/b`, () => fs.renameSync(`${root}/a`, `${root}/b`), "Z"),
   renamedDescriptor: root => writeAfter(`${root}/a`, () => fs.renameSync(`${root}/a`, `${root}/c`), "Z"),
   url: root => fs.renameSync(new URL(`file://${root}/a`), new URL(`file://${root}/a?query#hash`)),
-  fromBundle: root => fs.renameSync(bundleFile(), `${root}/c`),
+  fromBundle: root => fs.renameSync(bundleFile, `${root}/c`),
   missingFromBundle: root => fs.renameSync("/bundle/missing", `${root}/c`),
   intoBundle: root => fs.renameSync(`${root}/a`, "/bundle/a"),
-  ontoBundleFile: root => fs.renameSync(`${root}/a`, bundleFile()),
-  bundleFileOntoItself: () => fs.renameSync(bundleFile(), bundleFile()),
+  ontoBundleFile: root => fs.renameSync(`${root}/a`, bundleFile),
+  bundleFileOntoItself: () => fs.renameSync(bundleFile, bundleFile),
   ontoBundle: root => fs.renameSync(`${root}/empty`, "/bundle"),
   bundle: root => fs.renameSync("/bundle", `${root}/c`),
   tmpOntoItself: () => fs.renameSync("/tmp", "/tmp"),
@@ -867,14 +864,14 @@ const copies = {
   parentIsFile: root => fs.copyFileSync(`${root}/a`, `${root}/b/c`),
   sourceParentIsFile: root => fs.copyFileSync(`${root}/a/c`, `${root}/c`),
   fromBundle: root => {
-    fs.copyFileSync(bundleFile(), `${root}/c`);
-    const copied = fs.readFileSync(`${root}/c`, "utf8") === fs.readFileSync(bundleFile(), "utf8");
+    fs.copyFileSync(bundleFile, `${root}/c`);
+    const copied = fs.readFileSync(`${root}/c`, "utf8") === fs.readFileSync(bundleFile, "utf8");
     fs.unlinkSync(`${root}/c`);
     return copied;
   },
   intoBundle: root => fs.copyFileSync(`${root}/a`, "/bundle/a"),
-  bundleFileOntoItself: () => fs.copyFileSync(bundleFile(), bundleFile()),
-  ontoBundleFile: root => fs.copyFileSync(`${root}/a`, bundleFile()),
+  bundleFileOntoItself: () => fs.copyFileSync(bundleFile, bundleFile),
+  ontoBundleFile: root => fs.copyFileSync(`${root}/a`, bundleFile),
   devices: root => ["null", "zero", "full", "random"].forEach(name => fs.copyFileSync(`/dev/${name}`, `${root}/${name}`)),
   ontoDevice: root => fs.copyFileSync(`${root}/a`, "/dev/null"),
   exclusive: root => fs.copyFileSync(`${root}/a`, `${root}/b`, fs.constants.COPYFILE_EXCL),

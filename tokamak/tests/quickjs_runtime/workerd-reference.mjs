@@ -13,11 +13,11 @@ const mf = new Miniflare(convertV4MiniflareOptions({
   compatibilityDate: "2026-08-25",
   compatibilityFlags: ["nodejs_compat"],
   bindings: { FLAG: "enabled" },
-  modules: ["startup.mjs", "contracts.mjs", "streams.mjs", "crypto.mjs", "html.mjs", "zlib.mjs", "clone.mjs", "performance.mjs", "intl.mjs", "bytes.mjs", "filesystem.mjs", "net.mjs", "events.mjs", "outcome.mjs"].map(name => ({
+  modules: [...["startup.mjs", "contracts.mjs", "streams.mjs", "crypto.mjs", "html.mjs", "zlib.mjs", "clone.mjs", "performance.mjs", "intl.mjs", "bytes.mjs", "filesystem.mjs", "net.mjs", "events.mjs", "outcome.mjs"].map(name => ({
     type: "ESModule",
     path: `${root}/${name}`,
     contents: readFileSync(`${root}/${name}`, "utf8"),
-  })),
+  })), { type: "Text", path: `${root}/bundle.txt`, contents: readFileSync(`${root}/bundle.txt`, "utf8") }],
 }));
 try {
   const response = await mf.dispatchFetch("http://localhost/");

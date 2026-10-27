@@ -46,7 +46,7 @@ pub(super) fn callback_operations() -> &'static [(&'static str, CallbackOperatio
         ("exists", CallbackOperation::Exists),
         ("appendFile", CallbackOperation::AppendFile),
         ("chmod", CallbackOperation::Pair(chmod_sync)),
-        ("chown", CallbackOperation::Owner(chown_sync)),
+        ("chown", CallbackOperation::Owner(chown_callback)),
         ("close", CallbackOperation::Close),
         ("copyFile", CallbackOperation::CopyFile),
         ("cp", CallbackOperation::PairOptions(cp_sync)),
@@ -198,7 +198,10 @@ pub(super) fn callback_call<'js>(
             let from = path(&ctx, take_arg(&ctx, &mut args)?)?;
             let to = path(&ctx, take_arg(&ctx, &mut args)?)?;
             check_copy_mode(&ctx, &to, take_front_value(&mut args))?;
-            reply(&ctx, vfs_call(&ctx, |vfs| vfs.copy_file(&from, &to)))
+            reply(
+                &ctx,
+                vfs_call(&ctx, "copy", |vfs| vfs.copy_file(&from, &to)),
+            )
         }
         CallbackOperation::Fchmod => {
             let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
@@ -442,17 +445,6 @@ pub(super) fn callback_values<'js>(
     } else {
         task.call::<_, ()>(())
     }
-}
-
-pub(super) fn flag_string<'js>(value: Option<&Value<'js>>) -> rquickjs::Result<Option<String>> {
-    value
-        .map(|value| {
-            value
-                .as_string()
-                .ok_or_else(|| rquickjs::Error::new_from_js("value", "string"))?
-                .to_string()
-        })
-        .transpose()
 }
 
 pub(super) fn open_options<'js>(

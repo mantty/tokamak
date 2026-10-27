@@ -42,7 +42,7 @@ pub fn change_directory<'js>(ctx: Ctx<'js>, directory: Value<'js>) -> rquickjs::
         ));
     };
     let directory = directory.to_string()?;
-    vfs_call(&ctx, |vfs| vfs.change_directory(&directory))
+    vfs_call(&ctx, "chdir", |vfs| vfs.change_directory(&directory))
 }
 
 /// The contents of `/bundle/<name>` in the request VFS.

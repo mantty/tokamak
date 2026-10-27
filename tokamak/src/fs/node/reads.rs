@@ -118,7 +118,7 @@ pub(super) fn read_views<'js>(
     }
     let position = file_position(ctx, read.position.clone())?;
     let lengths: Vec<usize> = read.targets.iter().map(|target| target.length).collect();
-    let chunks = vfs_call(ctx, |vfs| vfs.readv(descriptor, &lengths, position))?;
+    let chunks = vfs_call(ctx, "read", |vfs| vfs.readv(descriptor, &lengths, position))?;
     let mut total = 0;
     for (target, bytes) in read.targets.iter().zip(chunks) {
         target.bytes.write(target.offset, &bytes);

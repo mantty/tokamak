@@ -447,7 +447,7 @@ impl<'a, 'js> GlobWalk<'a, 'js> {
 
 fn read_listing(ctx: &Ctx<'_>, directory: &str) -> rquickjs::Result<Vec<DirectoryEntry>> {
     let directory = path(ctx, directory.into_js(ctx)?)?;
-    vfs_call(ctx, |vfs| vfs.read_dir(&directory))
+    vfs_call(ctx, "readdir", |vfs| vfs.read_dir(&directory))
 }
 
 /// The absolute and working-directory-relative paths of the child `name`.
