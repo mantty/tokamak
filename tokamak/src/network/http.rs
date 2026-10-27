@@ -4,10 +4,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::time::Duration;
 
-use futures_util::{
-    FutureExt, TryStreamExt,
-    future::{LocalBoxFuture, Shared},
-};
+use futures_util::{FutureExt, TryStreamExt, future::LocalBoxFuture};
 use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
 use hyper::{
     Method, Response, StatusCode, Uri,
@@ -38,10 +35,11 @@ pub(crate) type Client = legacy::Client<Connector, Body>;
 type Connector = BoxCloneSyncService<Uri, MaybeHttpsStream<TokioIo<TcpStream>>, BoxError>;
 type Reader = Pin<Box<dyn AsyncRead>>;
 type ResponseBody = Rc<Mutex<Option<Reader>>>;
-type UploadCompletion = Shared<LocalBoxFuture<'static, Result<(), String>>>;
+type UploadCompletion = LocalBoxFuture<'static, Result<(), String>>;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const TCP_KEEPALIVE: Duration = Duration::from_secs(15);
+const ONE_TIME_BODY_REDIRECT: &str = "A request with a one-time-use body (it was initialized from a stream, not a buffer) encountered a redirect requiring the body to be retransmitted. To avoid this error in the future, construct this request from a buffer-like body initializer.";
 
 pub(crate) fn status_text(status: u16) -> &'static str {
     if status == 203 {
@@ -143,8 +141,14 @@ pub(crate) fn start<'js>(
     body: Value<'js>,
     redirect: String,
 ) -> rquickjs::Result<Object<'js>> {
-    let cancelled = CancellationToken::new();
-    let (body, upload) = request_body(&ctx, body, cancelled.child_token())?;
+    // Cancelled when the fetch is aborted.
+    let aborted = CancellationToken::new();
+    // Cancelled when the fetch is aborted or its response body is cancelled.
+    let cancelled = aborted.child_token();
+    // Cancelled to stop sending the request body: when the fetch fails or redirects, or its
+    // response ends.
+    let upload_stopped = cancelled.child_token();
+    let (body, upload) = request_body(&ctx, body, upload_stopped.clone(), aborted.clone())?;
     let request = Request {
         url: Url::parse(&url).map_err(|error| failure(&ctx, error))?,
         method: Method::from_bytes(method.as_bytes()).map_err(|error| failure(&ctx, error))?,
@@ -154,26 +158,14 @@ pub(crate) fn start<'js>(
     };
     let task = Object::new(ctx.clone())?;
     let reader: ResponseBody = Rc::new(Mutex::new(None));
-    let cancel_token = cancelled.clone();
-    let cancel_reader = Rc::clone(&reader);
-    task.set(
-        "cancel",
-        Function::new(ctx.clone(), move || {
-            cancel_token.cancel();
-            if let Ok(mut body) = cancel_reader.try_lock() {
-                body.take();
-            }
-        })?,
-    )?;
+    task.set("abort", stop_function(&ctx, aborted, &reader)?)?;
+    task.set("cancel", stop_function(&ctx, cancelled.clone(), &reader)?)?;
     let client = client.clone();
-    let upload_done = upload.clone();
     let upload_ctx = ctx.clone();
     task.set(
         "upload",
         Promise::wrap_future(&ctx, async move {
-            upload_done
-                .await
-                .map_err(|error| failure(&upload_ctx, error))
+            upload.await.map_err(|error| failure(&upload_ctx, error))
         })?,
     )?;
     let future_ctx = ctx.clone();
@@ -181,18 +173,36 @@ pub(crate) fn start<'js>(
         let response = tokio::select! {
             biased;
             () = cancelled.cancelled() => return Err(failure(&future_ctx, "Fetch was aborted")),
-            response = send(&client, request, &upload) => match response {
+            response = send(&client, request, &upload_stopped) => match response {
                 Ok(response) => response,
                 Err(error) => {
-                    cancelled.cancel();
+                    upload_stopped.cancel();
                     return Err(failure(&future_ctx, error));
                 }
             },
         };
-        response_object(future_ctx, response, reader, cancelled, upload)
+        if response.bodyless {
+            upload_stopped.cancel();
+        }
+        response_object(future_ctx, response, reader, cancelled, upload_stopped)
     })?;
     task.set("response", response)?;
     Ok(task)
+}
+
+/// A function that cancels `token` and drops the response body.
+fn stop_function<'js>(
+    ctx: &Ctx<'js>,
+    token: CancellationToken,
+    reader: &ResponseBody,
+) -> rquickjs::Result<Function<'js>> {
+    let reader = Rc::clone(reader);
+    Function::new(ctx.clone(), move || {
+        token.cancel();
+        if let Ok(mut body) = reader.try_lock() {
+            body.take();
+        }
+    })
 }
 
 fn request_headers(ctx: &Ctx<'_>, json: &str) -> rquickjs::Result<HeaderMap> {
@@ -208,9 +218,10 @@ fn request_headers(ctx: &Ctx<'_>, json: &str) -> rquickjs::Result<HeaderMap> {
 fn request_body<'js>(
     ctx: &Ctx<'js>,
     value: Value<'js>,
-    cancelled: CancellationToken,
+    stopped: CancellationToken,
+    aborted: CancellationToken,
 ) -> rquickjs::Result<(RequestBody, UploadCompletion)> {
-    let ready = || futures_util::future::ready(Ok(())).boxed_local().shared();
+    let ready = || futures_util::future::ready(Ok(())).boxed_local();
     if value.is_null() || value.is_undefined() {
         return Ok((RequestBody::Bytes(Vec::new()), ready()));
     }
@@ -233,7 +244,7 @@ fn request_body<'js>(
     ctx.spawn(async move {
         let ended = tokio::select! {
             biased;
-            () = cancelled.cancelled() => Ok(false),
+            () = stopped.cancelled() => Ok(false),
             ended = pump_upload(&reader, &sender) => ended,
         };
         if let Err(error) = &ended {
@@ -241,27 +252,38 @@ fn request_body<'js>(
                 .send_async(Err(io::Error::other(error.to_string())))
                 .await;
         }
-        // workerd cancels a body the request stops reading, as it does when
-        // the fetch is aborted or its connection closes.
-        if (cancelled.is_cancelled() || matches!(ended, Ok(false)))
-            && let Ok(cancel) = reader.get::<_, Function>("cancel")
-        {
-            let _ = cancel.call::<_, Promise>((This(reader.clone()),));
+        // workerd cancels a body the request stops reading.
+        if stopped.is_cancelled() || matches!(ended, Ok(false)) {
+            let _ = cancel_source(&reader, aborted.is_cancelled());
         }
         if let Ok(release) = reader.get::<_, Function>("releaseLock") {
             let _ = release.call::<_, ()>((This(reader),));
         }
         let _ = finished.send(ended.map(|_| ()).map_err(|error| error.to_string()));
     });
-    let completion = async move { completion.await.map_err(|error| error.to_string())? }
-        .boxed_local()
-        .shared();
+    let completion =
+        async move { completion.await.map_err(|error| error.to_string())? }.boxed_local();
     let body = StreamBody::new(
         receiver
             .into_stream()
             .map_ok(|bytes| Frame::data(Bytes::from(bytes))),
     );
     Ok((RequestBody::Stream(Some(body.boxed())), completion))
+}
+
+/// Cancels the request body's source as workerd does: with no reason when the
+/// fetch is aborted, and otherwise with a lost connection's error.
+fn cancel_source(reader: &Object<'_>, aborted: bool) -> rquickjs::Result<()> {
+    let cancel: Function = reader.get("cancel")?;
+    let reason = if aborted {
+        None
+    } else {
+        let error = Exception::from_message(reader.ctx().clone(), "Network connection lost.")?;
+        error.set("retryable", true)?;
+        Some(error)
+    };
+    cancel.call::<_, Promise>((This(reader.clone()), reason))?;
+    Ok(())
 }
 
 /// Sends the body's chunks to the request, returning whether the body ended
@@ -291,7 +313,7 @@ async fn pump_upload(
 async fn send(
     client: &Client,
     mut request: Request,
-    upload: &UploadCompletion,
+    upload_stopped: &CancellationToken,
 ) -> Result<FetchResponse, BoxError> {
     for count in 0..=20 {
         let mut outgoing = hyper::Request::builder()
@@ -317,7 +339,10 @@ async fn send(
         }
         request.url = request.url.join(location.to_str()?)?;
         while response.body_mut().frame().await.transpose()?.is_some() {}
-        upload.clone().await?;
+        upload_stopped.cancel();
+        if status != 303 && matches!(request.body, RequestBody::Stream(_)) {
+            return Err(ONE_TIME_BODY_REDIRECT.into());
+        }
         redirect_as_get(&mut request, status);
     }
     unreachable!("redirect limit is checked before following a redirect")
@@ -347,7 +372,7 @@ fn response_object<'js>(
     response: FetchResponse,
     reader: ResponseBody,
     cancelled: CancellationToken,
-    upload: UploadCompletion,
+    upload_stopped: CancellationToken,
 ) -> rquickjs::Result<Object<'js>> {
     let result = Object::new(ctx.clone())?;
     result.set("redirected", response.redirected)?;
@@ -386,7 +411,7 @@ fn response_object<'js>(
             Async(move |ctx: Ctx<'js>| {
                 let reader = Rc::clone(&reader);
                 let cancelled = cancelled.clone();
-                let upload = upload.clone();
+                let upload_stopped = upload_stopped.clone();
                 async move {
                     let mut body = reader.lock().await;
                     let Some(stream) = body.as_mut() else {
@@ -401,7 +426,7 @@ fn response_object<'js>(
                     match count {
                         Ok(0) => {
                             body.take();
-                            upload.await.map_err(|error| failure(&ctx, error))?;
+                            upload_stopped.cancel();
                             Ok(None)
                         }
                         Ok(count) => {
@@ -410,6 +435,7 @@ fn response_object<'js>(
                         }
                         Err(error) => {
                             body.take();
+                            upload_stopped.cancel();
                             Err(failure(&ctx, error))
                         }
                     }
