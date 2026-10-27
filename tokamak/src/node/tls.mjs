@@ -17,8 +17,10 @@ export class Server extends EventEmitter {}
 
 export class TLSSocket extends Socket {
   constructor(options = {}) {
-    super({ ...options, secureTransport: "on" });
+    super(options);
     Object.defineProperty(this, "encrypted", { configurable: true, enumerable: true, value: true });
+    // The connection is encrypted from the start.
+    this.on("connect", () => this.emit("secureConnect"));
   }
 
   _destroySSL() {}
@@ -58,9 +60,7 @@ export function checkServerIdentity() { return undefined; }
 export function connect(...args) {
   const callback = typeof args.at(-1) === "function" ? args.at(-1) : undefined;
   const first = args[0];
-  const options = first !== null && typeof first === "object"
-    ? { ...first, secureTransport: "on" }
-    : { port: first, host: args[1], secureTransport: "on" };
+  const options = first !== null && typeof first === "object" ? { ...first } : { port: first, host: args[1] };
   const socket = new TLSSocket(options);
   socket.connect(options, callback);
   return socket;

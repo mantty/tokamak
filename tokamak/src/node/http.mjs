@@ -5,7 +5,9 @@ import { URL } from "../network/url.mjs";
 import { WebSocket } from "../network/websocket.mjs";
 import { Readable } from "../streams/node.mjs";
 import { Buffer } from "./buffer.mjs";
-import { listeningServers } from "./http-servers.mjs";
+import { codedError } from "./errors.mjs";
+import { _normalizeArgs } from "./net.mjs";
+import { bindPort, tcpPorts, validatePort } from "./tcp-ports.mjs";
 
 export class Agent {
   constructor(options = {}) { this.options = { ...options }; this.protocol = options.protocol ?? "http:"; }
@@ -48,7 +50,7 @@ export class IncomingMessage extends Readable {
     this.complete = false;
     this.readable = true;
     this.aborted = false;
-    this.cloudflare = { cf: source.cf ?? {} };
+    this.cloudflare = { cf: undefined, env: undefined, ctx: undefined };
     this.socket = {
       encrypted: source.url?.startsWith("https:") ?? false,
       remoteFamily: "IPv4",
@@ -199,41 +201,50 @@ export class ClientRequest extends OutgoingMessage {
 }
 
 export class Server extends EventEmitter {
+  #port = null;
+
   constructor(options, requestListener) {
     super();
     if (typeof options === "function") requestListener = options;
     this.options = typeof options === "object" && options !== null ? { ...options } : {};
-    this.listening = false;
     if (typeof requestListener === "function") this.on("request", requestListener);
   }
 
-  listen(port, callback) {
-    if (typeof port === "function") callback = port;
-    else if (port && typeof port === "object") port = port.port;
-    const requestedPort = port === undefined ? 0 : Number(port);
-    if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65535) throw new RangeError("Invalid port");
-    this.__port = requestedPort === 0 ? 32768 + Math.floor(Math.random() * 32768) : requestedPort;
-    listeningServers.set(this.__port, this);
-    this.listening = true;
-    callback?.();
+  // A server is reached through cloudflare:node's handlers by the port it
+  // reserves in the isolate's port table.
+  listen(...args) {
+    const [options, callback] = _normalizeArgs(args);
+    const port = typeof options.port === "number" || typeof options.port === "string" ? validatePort(options.port, "options.port") : 0;
+    if (this.#port != null) throw codedError(Error, "Listen method has been called more than once without closing.", "ERR_SERVER_ALREADY_LISTEN");
+    if (callback !== null) this.once("listening", callback);
+    this.#port = bindPort(typeof options.host === "string" ? options.host : "127.0.0.1", port);
+    tcpPorts.setHandler(this.#port, { fetch: (request, env, ctx) => this.#onRequest(request, env, ctx) });
     queueMicrotask(() => this.emit("listening"));
     return this;
   }
 
+  get listening() {
+    return this.#port != null;
+  }
+
   address() {
-    return this.listening ? { port: this.__port, family: "IPv4", address: "127.0.0.1" } : null;
+    return this.#port == null ? null : { port: this.#port, family: "IPv4", address: "127.0.0.1" };
   }
 
   close(callback) {
-    if (this.listening) listeningServers.delete(this.__port);
-    this.listening = false;
-    callback?.();
+    if (this.#port != null) {
+      tcpPorts.release(this.#port);
+      this.#port = null;
+    }
+    if (typeof callback === "function") this.once("close", callback);
     queueMicrotask(() => this.emit("close"));
     return this;
   }
 
-  async __handle(request) {
-    const incoming = new IncomingMessage(request, this.__port);
+  async #onRequest(request, env, ctx) {
+    const incoming = new IncomingMessage(request, this.#port);
+    incoming.cloudflare = { env, ctx };
+    if ("cf" in request) incoming.cloudflare.cf = request.cf;
     const response = new ServerResponse();
     try {
       this.emit("request", incoming, response);
