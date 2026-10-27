@@ -26,7 +26,7 @@ const ecCurves = ["P-256", "P-384", "P-521"];
 // A CryptoKey's usages are a set, listed in this order.
 const usageOrder = ["encrypt", "decrypt", "sign", "verify", "deriveKey", "deriveBits", "wrapKey", "unwrapKey"];
 // The members of a JsonWebKey, in workerd's order.
-const jwkMembers = ["kty", "use", "key_ops", "alg", "ext", "crv", "x", "y", "d", "n", "e", "p", "q", "dp", "dq", "qi", "oth", "k"];
+const jwkMembers = ["kty", "use", "key_ops", "alg", "ext", "crv", "x", "y", "d", "n", "e", "p", "q", "dp", "dq", "qi", "oth", "k", "pub", "priv"];
 // The converted members of each algorithm dictionary.
 const importMembers = { hash: requestedName, length: int32, namedCurve: string };
 const generateMembers = { hash: requestedName, modulusLength: int32, publicExponent: toBytes, length: int32, namedCurve: string };
