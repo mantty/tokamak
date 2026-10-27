@@ -2,25 +2,6 @@
 
 use super::*;
 
-pub(super) fn illegal_constructor(ctx: Ctx<'_>) -> rquickjs::Result<()> {
-    Err(Exception::throw_type(&ctx, "Illegal constructor"))
-}
-
-pub(super) fn constructor<'js>(
-    ctx: &Ctx<'js>,
-    name: &str,
-    prototype_name: &str,
-) -> rquickjs::Result<(Function<'js>, Object<'js>)> {
-    let function = Function::new(ctx.clone(), illegal_constructor)?;
-    function.set_name(name)?;
-    let function_object = Object::from_value(function.clone().into_value())?;
-    let prototype = Object::new(ctx.clone())?;
-    function_object.set("prototype", prototype.clone())?;
-    prototype.set("constructor", function.clone())?;
-    ctx.globals().set(prototype_name, prototype.clone())?;
-    Ok((function, prototype))
-}
-
 /// workerd's `Dirent` class, which holds an entry's libuv `UV_DIRENT_*` type
 /// under a private symbol.
 const DIRENT_CLASS: &str = r#"(() => {
@@ -127,7 +108,7 @@ pub(super) fn dir_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Construct
 
 /// The value `create` makes, made once per context and kept in the hidden
 /// global `name`.
-fn cached<'js, T: FromJs<'js> + IntoJs<'js> + Clone>(
+pub(super) fn cached<'js, T: FromJs<'js> + IntoJs<'js> + Clone>(
     ctx: &Ctx<'js>,
     name: &str,
     create: impl FnOnce(&Ctx<'js>) -> rquickjs::Result<T>,
@@ -160,7 +141,7 @@ pub(super) fn dir_object<'js>(
         let handle = Object::new(ctx.clone())?;
         handle.set("name", item.name.as_str())?;
         handle.set("type", dirent_type(&item.entry))?;
-        handle.set("parentPath", normalized_parent(&item.parent))?;
+        handle.set("parentPath", item.parent.as_str())?;
         handles.set(index, handle)?;
     }
     let options = Object::new(ctx.clone())?;
@@ -176,12 +157,7 @@ pub(super) fn item_dirent<'js>(
     encoding: Option<&str>,
 ) -> rquickjs::Result<Object<'js>> {
     let name = text_value(ctx, &item.name, encoding)?;
-    dirent(
-        ctx,
-        name,
-        dirent_type(&item.entry),
-        normalized_parent(&item.parent),
-    )
+    dirent(ctx, name, dirent_type(&item.entry), &item.parent)
 }
 
 #[derive(Clone)]
@@ -191,21 +167,31 @@ pub(super) struct FileHandleState {
 }
 
 pub(super) fn file_handle_constructor<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
-    constructor(ctx, "FileHandle", "__tokamak_node_fs_file_handle_proto")
-        .map(|(function, _)| function)
+    let function = Function::new(ctx.clone(), |ctx: Ctx<'_>| -> rquickjs::Result<()> {
+        Err(Exception::throw_type(&ctx, "Illegal constructor"))
+    })?;
+    function.set_name("FileHandle")?;
+    let prototype = Object::new(ctx.clone())?;
+    function.set("prototype", prototype.clone())?;
+    prototype.set("constructor", function.clone())?;
+    ctx.globals()
+        .set("__tokamak_node_fs_file_handle_proto", prototype)?;
+    Ok(function)
 }
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn file_handle_object<'js>(
     ctx: &Ctx<'js>,
-    state: FileHandleState,
+    descriptor: u32,
 ) -> rquickjs::Result<Object<'js>> {
     let prototype: Option<Object> = ctx.globals().get("__tokamak_node_fs_file_handle_proto")?;
     let object = Object::new_proto(ctx.clone(), prototype.as_ref())?;
     install_event_emitter(ctx, &object)?;
-    let descriptor = handle_descriptor(&state)
-        .ok_or_else(|| Exception::throw_internal(ctx, "file descriptor was closed"))?;
     object.set("fd", descriptor)?;
+    let state = FileHandleState {
+        descriptor: Arc::new(Mutex::new(Some(descriptor))),
+        owns_descriptor: true,
+    };
 
     let read_state = state.clone();
     object.set(
@@ -670,7 +656,7 @@ fn stream_descriptor<'js>(
     let open_path = path
         .as_deref()
         .ok_or_else(|| Exception::throw_type(ctx, "stream path is required"))?;
-    let flags = option_property(ctx, options, "flags")?
+    let flags = option_property(options, "flags")?
         .or_else(|| default_flags.and_then(|flags| flags.into_js(ctx).ok()));
     let open_options = open_options(ctx, flags)?;
     let descriptor = vfs_call(ctx, |vfs| vfs.open(open_path, open_options))?;
@@ -681,13 +667,10 @@ pub(super) fn option_descriptor<'js>(
     ctx: &Ctx<'js>,
     options: Option<&Value<'js>>,
 ) -> rquickjs::Result<Option<u32>> {
-    let Some(value) = defined(option_property(ctx, options, "fd")?) else {
+    let Some(value) = defined(option_property(options, "fd")?) else {
         return Ok(None);
     };
-    if value.is_object() {
-        let object = value
-            .try_into_object()
-            .map_err(|_| Exception::throw_type(ctx, "options.fd must be a file descriptor"))?;
+    if let Some(object) = value.as_object() {
         return object
             .get::<_, Option<Value>>("fd")?
             .map(|value| descriptor_value(ctx, value))
@@ -900,20 +883,6 @@ pub(super) fn stat_object<'js>(
     create.call((record, bigint))
 }
 
-pub(super) fn set_number_or_bigint<'js>(
-    ctx: &Ctx<'js>,
-    object: &Object<'js>,
-    name: &str,
-    value: u64,
-    bigint: bool,
-) -> rquickjs::Result<()> {
-    if bigint {
-        object.set(name, BigInt::from_u64(ctx.clone(), value)?)
-    } else {
-        object.set(name, value)
-    }
-}
-
 pub(super) fn text_value<'js>(
     ctx: &Ctx<'js>,
     value: &str,
@@ -924,10 +893,6 @@ pub(super) fn text_value<'js>(
         Some("buffer") => output(ctx.clone(), value.as_bytes(), None),
         Some(_) => output(ctx.clone(), value.as_bytes(), encoding),
     }
-}
-
-pub(super) fn normalized_parent(path: &str) -> &str {
-    if path.is_empty() { "/" } else { path }
 }
 
 pub(super) fn validate_mode<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<()> {
@@ -946,10 +911,15 @@ pub(super) fn validate_mode<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs:
 
 pub(super) fn statfs_object<'js>(ctx: &Ctx<'js>, bigint: bool) -> rquickjs::Result<Object<'js>> {
     let object = Object::new(ctx.clone())?;
+    let zero = if bigint {
+        BigInt::from_u64(ctx.clone(), 0)?.into_value()
+    } else {
+        0.into_js(ctx)?
+    };
     for name in [
         "type", "bsize", "blocks", "bfree", "bavail", "files", "ffree",
     ] {
-        set_number_or_bigint(ctx, &object, name, 0, bigint)?;
+        object.set(name, zero.clone())?;
     }
     Ok(object)
 }

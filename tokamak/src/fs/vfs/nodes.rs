@@ -117,8 +117,8 @@ pub(super) enum Directory {
 }
 
 impl Directory {
-    pub(super) fn memory(writable: bool) -> Self {
-        Self::with_entries(writable, IndexMap::new())
+    pub(super) fn memory() -> Self {
+        Self::with_entries(true, IndexMap::new())
     }
 
     pub(super) fn with_entries(writable: bool, entries: IndexMap<String, Node>) -> Self {

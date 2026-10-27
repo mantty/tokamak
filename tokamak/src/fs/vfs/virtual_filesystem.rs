@@ -115,12 +115,6 @@ impl ErrorKind {
     }
 }
 
-impl Display for ErrorKind {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.code())
-    }
-}
-
 /// A virtual filesystem failure.
 #[derive(Debug)]
 pub struct Error {
@@ -295,7 +289,7 @@ impl VirtualFileSystem {
     /// Create a filesystem with a shared readonly bundle and fresh `/tmp`.
     #[must_use]
     pub fn new(bundle: Bundle) -> Self {
-        let tmp = Directory::memory(true);
+        let tmp = Directory::memory();
         let bundle = Node::Directory(Directory::bundle(bundle, PathBuf::new()));
         let dev = Node::Directory(shared_devices());
         let root = Directory::with_entries(
@@ -456,7 +450,7 @@ impl VirtualFileSystem {
             self.mkdir_recursive(&components, path)
         } else {
             let (parent, name) = self.parent(path)?;
-            parent.insert(name, Node::Directory(Directory::memory(true)))
+            parent.insert(name, Node::Directory(Directory::memory()))
         }
     }
 
@@ -586,7 +580,7 @@ impl VirtualFileSystem {
             })?;
             let candidate = format!("{name}{}", random_suffix(&suffix));
             if parent.lookup(&candidate)?.is_none() {
-                parent.insert(candidate.clone(), Node::Directory(Directory::memory(true)))?;
+                parent.insert(candidate.clone(), Node::Directory(Directory::memory()))?;
                 components.push(candidate);
                 return Ok(path_from_components(&components));
             }
@@ -796,7 +790,7 @@ impl VirtualFileSystem {
                 Some(Node::Directory(directory)) => directory,
                 Some(_) => return Err(Error::new(ErrorKind::NotDirectory, path)),
                 None => {
-                    let child = Directory::memory(true);
+                    let child = Directory::memory();
                     current.insert(component.clone(), Node::Directory(child.clone()))?;
                     child
                 }
@@ -870,7 +864,7 @@ impl VirtualFileSystem {
                 self.copy_node(&resolved, path, dereference)
             }
             Node::Directory(directory) => {
-                let target = Directory::memory(true);
+                let target = Directory::memory();
                 for entry in directory.entries()? {
                     let child_path = join_child(path, &entry.name);
                     let child = directory

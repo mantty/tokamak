@@ -1,7 +1,3 @@
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::elidable_lifetime_names)]
-#![allow(clippy::needless_pass_by_value)]
-
 //! Native `node:fs` bindings for the tokamak `QuickJS` runtime.
 
 #[allow(clippy::wildcard_imports)]
@@ -57,48 +53,16 @@ pub fn read_bundle_file(ctx: &Ctx<'_>, name: &str) -> rquickjs::Result<Vec<u8>> 
         .map_err(|error| rquickjs::Error::new_loading_message(name, error.to_string()))
 }
 
-#[allow(clippy::wildcard_imports)]
-#[rquickjs::module]
-pub(crate) mod node_fs_module {
-    use super::*;
-
-    #[qjs(declare)]
-    pub fn declare(declare: &Declarations) -> rquickjs::Result<()> {
-        declare_exports(declare, false)
-    }
-
-    #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
-        export_module(ctx, exports, false)
-    }
-}
-
-#[allow(clippy::wildcard_imports)]
-#[rquickjs::module]
-pub(crate) mod node_fs_promises_module {
-    use super::*;
-
-    #[qjs(declare)]
-    pub fn declare(declare: &Declarations) -> rquickjs::Result<()> {
-        declare_exports(declare, true)
-    }
-
-    #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
-        export_module(ctx, exports, true)
-    }
-}
-
 /// The native `node:fs` module definition.
 pub struct NodeFsModule;
 
 impl ModuleDef for NodeFsModule {
     fn declare(declare: &Declarations) -> rquickjs::Result<()> {
-        <js_node_fs_module as ModuleDef>::declare(declare)
+        declare_exports(declare, false)
     }
 
     fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
-        <js_node_fs_module as ModuleDef>::evaluate(ctx, exports)
+        export_module(ctx, exports, false)
     }
 }
 
@@ -107,11 +71,11 @@ pub struct NodeFsPromisesModule;
 
 impl ModuleDef for NodeFsPromisesModule {
     fn declare(declare: &Declarations) -> rquickjs::Result<()> {
-        <js_node_fs_promises_module as ModuleDef>::declare(declare)
+        declare_exports(declare, true)
     }
 
     fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
-        <js_node_fs_promises_module as ModuleDef>::evaluate(ctx, exports)
+        export_module(ctx, exports, true)
     }
 }
 
@@ -215,49 +179,6 @@ fn declare_exports(declare: &Declarations, promises_only: bool) -> rquickjs::Res
             "FileWriteStream",
             "createReadStream",
             "createWriteStream",
-            "access",
-            "exists",
-            "appendFile",
-            "chmod",
-            "chown",
-            "close",
-            "copyFile",
-            "cp",
-            "fchmod",
-            "fchown",
-            "fdatasync",
-            "fstat",
-            "fsync",
-            "ftruncate",
-            "futimes",
-            "glob",
-            "lchmod",
-            "lchown",
-            "link",
-            "lstat",
-            "lutimes",
-            "mkdir",
-            "mkdtemp",
-            "open",
-            "opendir",
-            "read",
-            "readFile",
-            "readlink",
-            "readv",
-            "readdir",
-            "realpath",
-            "rename",
-            "rm",
-            "rmdir",
-            "stat",
-            "statfs",
-            "symlink",
-            "truncate",
-            "unlink",
-            "utimes",
-            "write",
-            "writeFile",
-            "writev",
             "unwatchFile",
             "watch",
             "watchFile",
@@ -268,6 +189,11 @@ fn declare_exports(declare: &Declarations, promises_only: bool) -> rquickjs::Res
     };
     for &name in names {
         declare.declare(name)?;
+    }
+    if !promises_only {
+        for &(name, _) in callback_operations() {
+            declare.declare(name)?;
+        }
     }
     Ok(())
 }

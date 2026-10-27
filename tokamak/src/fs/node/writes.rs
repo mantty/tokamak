@@ -313,20 +313,8 @@ pub(super) fn index_property<'js>(
 
 /// `value` as `validateInteger(value, name, 0)` accepts it.
 fn validate_integer<'js>(ctx: &Ctx<'js>, value: Value<'js>, name: &str) -> rquickjs::Result<u64> {
-    let Some(number) = value.as_number() else {
-        return Err(throw_type_error(
-            ctx,
-            "ERR_INVALID_ARG_TYPE",
-            &format!("The \"{name}\" argument must be of type number"),
-        ));
-    };
-    if !is_integer(number) {
-        return Err(out_of_range(ctx, name, "an integer"));
-    }
-    if !(0.0..=MAX_SAFE_INTEGER).contains(&number) {
-        return Err(out_of_range(ctx, name, ">= 0 && <= 9007199254740991"));
-    }
-    Coerced::<u64>::from_js(ctx, value).map(|value| value.0)
+    let range = 0.0..=MAX_SAFE_INTEGER;
+    validate_integer_range(ctx, &value, name, range, ">= 0 && <= 9007199254740991")
 }
 
 /// `value` validated as a position, with `undefined` read as `null`.
@@ -382,13 +370,13 @@ pub(super) fn descriptor_value<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> rquick
 }
 
 /// `value` when it is an integer number in `range`, which `text` describes.
-fn validate_integer_range<'js>(
+fn validate_integer_range<'js, T: TryFrom<i64>>(
     ctx: &Ctx<'js>,
     value: &Value<'js>,
     name: &str,
     range: std::ops::RangeInclusive<f64>,
     text: &str,
-) -> rquickjs::Result<u32> {
+) -> rquickjs::Result<T> {
     let Some(number) = value.as_number() else {
         return Err(throw_type_error(
             ctx,
@@ -403,7 +391,7 @@ fn validate_integer_range<'js>(
         return Err(out_of_range(ctx, name, text));
     }
     let integer = Coerced::<i64>::from_js(ctx, value.clone())?.0;
-    u32::try_from(integer).map_err(|_| out_of_range(ctx, name, text))
+    T::try_from(integer).map_err(|_| out_of_range(ctx, name, text))
 }
 
 fn is_integer(number: f64) -> bool {

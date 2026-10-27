@@ -60,14 +60,9 @@ pub(super) fn parse_options<'js>(
     if value.is_undefined() || value.is_null() || value.is_bool() {
         return Ok(FsOptions::default());
     }
-    if value.is_string() {
+    if let Some(encoding) = value.as_string() {
         return Ok(FsOptions {
-            encoding: Some(
-                value
-                    .into_string()
-                    .ok_or_else(|| Exception::throw_type(ctx, "expected a string"))?
-                    .to_string()?,
-            ),
+            encoding: Some(encoding.to_string()?),
             ..FsOptions::default()
         });
     }
@@ -153,21 +148,12 @@ fn is_encoding<'js>(ctx: &Ctx<'js>, encoding: &Value<'js>) -> rquickjs::Result<b
 }
 
 pub(super) fn option_property<'js>(
-    ctx: &Ctx<'js>,
     value: Option<&Value<'js>>,
     name: &str,
 ) -> rquickjs::Result<Option<Value<'js>>> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    if !value.is_object() {
-        return Ok(None);
-    }
-    let object = value
-        .clone()
-        .try_into_object()
-        .map_err(|_| Exception::throw_type(ctx, "filesystem options must be an object"))?;
-    object.get(name)
+    value
+        .and_then(Value::as_object)
+        .map_or(Ok(None), |object| object.get(name))
 }
 
 /// The virtual path `value` names: a string or `Buffer` resolved as a URL
@@ -311,15 +297,11 @@ pub(super) fn output<'js>(
 
 /// The `Buffer` class of `node:buffer`, loaded on first use.
 pub(super) fn buffer_class<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Object<'js>> {
-    const CACHE: &str = "__tokamak_node_fs_buffer";
-    if let Some(class) = ctx.globals().get::<_, Option<Object>>(CACHE)? {
-        return Ok(class);
-    }
-    let namespace = crate::runtime_modules::builtin_namespace(ctx.clone(), "node:buffer")?
-        .ok_or_else(|| Exception::throw_internal(ctx, "node:buffer is not a builtin module"))?;
-    let class: Object = namespace.get("Buffer")?;
-    ctx.globals().set(CACHE, class.clone())?;
-    Ok(class)
+    cached(ctx, "__tokamak_node_fs_buffer", |ctx| {
+        crate::runtime_modules::builtin_namespace(ctx.clone(), "node:buffer")?
+            .ok_or_else(|| Exception::throw_internal(ctx, "node:buffer is not a builtin module"))?
+            .get("Buffer")
+    })
 }
 
 pub(super) fn read_descriptor(ctx: &Ctx<'_>, descriptor: u32) -> rquickjs::Result<Vec<u8>> {
@@ -366,7 +348,7 @@ pub(super) fn write_file_sync<'js>(
 ) -> rquickjs::Result<()> {
     let options = options.0;
     let bytes = attached_bytes(&ctx, &file_view(&ctx, data, options.as_ref())?)?;
-    let flag = option_property(&ctx, options.as_ref(), "flag")?;
+    let flag = option_property(options.as_ref(), "flag")?;
     let append = flag_string(flag.as_ref())?.is_some_and(|flag| flag.contains('a'));
     match path_or_fd(&ctx, input)? {
         PathOrFd::Path(path) => {
@@ -531,7 +513,7 @@ pub(super) fn mkdir_sync<'js>(
         validate_mode(&ctx, value.clone())?;
         FsOptions::default()
     } else {
-        if let Some(mode) = option_property(&ctx, options_value.as_ref(), "mode")?
+        if let Some(mode) = option_property(options_value.as_ref(), "mode")?
             && !mode.is_undefined()
         {
             validate_mode(&ctx, mode)?;
@@ -582,15 +564,18 @@ fn dir_items(ctx: &Ctx<'_>, path: &str, recursive: bool) -> rquickjs::Result<Vec
         .into_iter()
         .map(|(entry_path, entry)| DirItem {
             name: entry_path.trim_start_matches('/').to_owned(),
-            parent: normalized_parent(parent_of(&entry_path)).to_owned(),
+            parent: parent_of(&entry_path).to_owned(),
             entry,
         })
         .collect())
 }
 
-/// Everything before the final slash of `path`; `"/"` without one.
-fn parent_of(path: &str) -> &str {
-    path.rsplit_once('/').map_or("/", |(parent, _)| parent)
+/// Everything before the final slash of `path`, or `"/"` when nothing is.
+pub(super) fn parent_of(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(0) | None => "/",
+        Some(slash) => &path[..slash],
+    }
 }
 
 pub(super) fn stat_sync<'js>(
@@ -736,7 +721,7 @@ pub(super) fn cp_sync<'js>(
     let from = path(&ctx, from)?;
     let to = path(&ctx, to)?;
     let options_value = options.0;
-    if let Some(mode) = option_property(&ctx, options_value.as_ref(), "mode")? {
+    if let Some(mode) = option_property(options_value.as_ref(), "mode")? {
         let mode = Coerced::<i64>::from_js(&ctx, mode)?.0;
         let mode = u32::try_from(mode)
             .map_err(|_| Exception::throw_range(&ctx, "options.mode is out of range"))?;
@@ -747,7 +732,7 @@ pub(super) fn cp_sync<'js>(
             ));
         }
     }
-    if let Some(filter) = option_property(&ctx, options_value.as_ref(), "filter")?
+    if let Some(filter) = option_property(options_value.as_ref(), "filter")?
         && !filter.is_undefined()
     {
         if !filter.is_function() {
@@ -762,11 +747,11 @@ pub(super) fn cp_sync<'js>(
         ));
     }
     for name in ["preserveTimestamps", "verbatimSymlinks"] {
-        option_property(&ctx, options_value.as_ref(), name)?
+        option_property(options_value.as_ref(), name)?
             .map(|value| bool::from_js(&ctx, value))
             .transpose()?;
     }
-    let force = option_property(&ctx, options_value.as_ref(), "force")?
+    let force = option_property(options_value.as_ref(), "force")?
         .map(|value| bool::from_js(&ctx, value))
         .transpose()?
         .unwrap_or(true);
@@ -1016,13 +1001,9 @@ pub(super) fn open_promise<'js>(
     mode: Opt<Value<'js>>,
 ) -> rquickjs::Result<Promise<'js>> {
     let descriptor = open_sync(ctx.clone(), input, flags, mode)?;
-    let state = FileHandleState {
-        descriptor: Arc::new(Mutex::new(Some(descriptor))),
-        owns_descriptor: true,
-    };
     promise(
         ctx.clone(),
-        file_handle_object(&ctx, state).map(Object::into_value),
+        file_handle_object(&ctx, descriptor).map(Object::into_value),
     )
 }
 

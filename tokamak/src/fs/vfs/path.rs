@@ -106,11 +106,7 @@ pub(crate) fn join_child(parent: &str, name: &str) -> String {
 }
 
 pub(super) fn path_from_components(components: &[String]) -> String {
-    if components.is_empty() {
-        "/".to_owned()
-    } else {
-        format!("/{}", components.join("/"))
-    }
+    format!("/{}", components.join("/"))
 }
 
 pub(super) fn checked_size(size: u64, path: &str) -> Result<usize> {

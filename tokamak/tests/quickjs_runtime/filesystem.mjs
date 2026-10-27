@@ -543,6 +543,7 @@ async function globDetailContracts() {
     slash: at("/"),
     encoding: at("beta.txt", { encoding: "buffer" }),
     rootDirents: globOutcome("tmp/filesystem-glob-order/*", { cwd: "/", withFileTypes: true }),
+    topDirents: globOutcome("tmp/.", { cwd: "/", withFileTypes: true }),
     slashDirents: globOutcome("filesystem-glob-order/zeta/*", { cwd: "/tmp/", withFileTypes: true }),
     dotDirents: globOutcome("zeta/*", { cwd: "/tmp/./filesystem-glob-order", withFileTypes: true }),
     relativeCwd: globOutcome("*.txt", { cwd: "../tmp/filesystem-glob-order" }),
