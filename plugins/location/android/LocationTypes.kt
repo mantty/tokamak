@@ -1,6 +1,7 @@
 package com.tokamak.plugins.location
 
 import android.location.Location
+import android.location.LocationRequest
 
 data class Coordinates(
     val latitude: Double,
@@ -45,8 +46,12 @@ data class PermissionRequest(val backgroundAlways: Boolean?, val precision: Prec
 
 data class SetupConfig(val significantChanges: Boolean?)
 
-/** The request's quality, precision traded against battery use. */
-enum class Accuracy { High, Balanced, Low }
+/** The request's quality, precision traded against battery use, as `LocationRequest.QUALITY_*` [quality] gives it. */
+enum class Accuracy(val quality: Int) {
+    High(LocationRequest.QUALITY_HIGH_ACCURACY),
+    Balanced(LocationRequest.QUALITY_BALANCED_POWER_ACCURACY),
+    Low(LocationRequest.QUALITY_LOW_POWER),
+}
 
 /** The foreground service's notification, set from JavaScript so apps can translate it. */
 data class ServiceNotification(val title: String, val body: String, val channel: String)

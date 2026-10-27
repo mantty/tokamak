@@ -10,6 +10,39 @@ agp_version=8.7.3
 kotlin_version=2.1.0
 coroutines_version=1.9.0
 
+# The start of a Gradle project's settings.gradle: the repositories it
+# resolves plugins and dependencies from.
+gradle_repositories() {
+  cat <<'EOF'
+pluginManagement {
+  repositories {
+    google()
+    mavenCentral()
+    gradlePluginPortal()
+  }
+}
+dependencyResolutionManagement {
+  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+  repositories {
+    google()
+    mavenCentral()
+  }
+}
+EOF
+}
+
+# The start of a Gradle project's build.gradle: the build tools its modules
+# apply.
+gradle_plugins() {
+  cat <<EOF
+plugins {
+  id 'com.android.application' version '$agp_version' apply false
+  id 'com.android.library' version '$agp_version' apply false
+  id 'org.jetbrains.kotlin.android' version '$kotlin_version' apply false
+}
+EOF
+}
+
 # Describes the methods PLUGIN/android/Exports.kt exports into
 # OUTPUT/description.json, with the dispatch that serves them,
 # OUTPUT/Exports.generated.kt. A JVM unit test of the plugin, compiled with
@@ -31,29 +64,11 @@ describe() {
   trap 'rm -rf "$temporary"' EXIT
   local module=$temporary/plugin
   mkdir -p "$module"
-  cat > "$temporary/settings.gradle" <<'EOF'
-pluginManagement {
-  repositories {
-    google()
-    mavenCentral()
-    gradlePluginPortal()
-  }
-}
-dependencyResolutionManagement {
-  repositories {
-    google()
-    mavenCentral()
-  }
-}
-rootProject.name = 'tokamak-describe'
-include ':plugin'
-EOF
-  cat > "$temporary/build.gradle" <<EOF
-plugins {
-  id 'com.android.library' version '$agp_version' apply false
-  id 'org.jetbrains.kotlin.android' version '$kotlin_version' apply false
-}
-EOF
+  {
+    gradle_repositories
+    printf '%s\n' "rootProject.name = 'tokamak-describe'" "include ':plugin'"
+  } > "$temporary/settings.gradle"
+  gradle_plugins > "$temporary/build.gradle"
   printf '%s\n' 'android.useAndroidX=true' > "$temporary/gradle.properties"
   cat > "$module/build.gradle" <<EOF
 plugins {
@@ -71,10 +86,6 @@ android {
   }
   defaultConfig {
     minSdk $(<"$pack/build/min-sdk")
-  }
-  compileOptions {
-    sourceCompatibility JavaVersion.VERSION_17
-    targetCompatibility JavaVersion.VERSION_17
   }
   testOptions {
     unitTests.returnDefaultValues = true
@@ -350,8 +361,12 @@ registry=$kotlin/TokamakPluginRegistry.kt
 printf '%s\n\n%s\n%s\n' 'package com.tokamak.runtime' 'internal fun tokamakPlugins(app: TokamakApplication): List<TokamakPlugin> =' '    listOf(' > "$registry"
 shopt -s nullglob
 raw_names=" "
+plugin_includes=
+plugin_dependencies=
 for plugin in "$input/plugins"/*/; do
   plugin_id=$(basename "$plugin")
+  plugin_includes+="include ':plugins:$plugin_id'"$'\n'
+  plugin_dependencies+="  implementation project(':plugins:$plugin_id')"$'\n'
   class=$(cat "$plugin/class" 2>/dev/null || true)
   if [[ ! "$class" =~ $kotlin_class ]]; then
     echo "plugin '$plugin_id' has invalid android class '$class'" >&2
@@ -409,51 +424,22 @@ for plugin in "$input/plugins"/*/; do
 done
 printf '%s\n' '    )' >> "$registry"
 
-mkdir -p "$project/app/src/main"
-cat > "$project/settings.gradle" <<'EOF'
-pluginManagement {
-  repositories {
-    google()
-    mavenCentral()
-    gradlePluginPortal()
-  }
-}
-dependencyResolutionManagement {
-  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-  repositories {
-    google()
-    mavenCentral()
-  }
-}
-rootProject.name = 'tokamak'
-include ':app', ':tokamak-plugin'
-EOF
-for plugin in "$input/plugins"/*/; do
-  printf "include ':plugins:%s'\n" "$(basename "$plugin")" >> "$project/settings.gradle"
-done
+{
+  gradle_repositories
+  printf '%s\n' "rootProject.name = 'tokamak'" "include ':app', ':tokamak-plugin'"
+  printf '%s' "$plugin_includes"
+} > "$project/settings.gradle"
 
-cat > "$project/build.gradle" <<EOF
-plugins {
-  id 'com.android.application' version '$agp_version' apply false
-  id 'com.android.library' version '$agp_version' apply false
-  id 'org.jetbrains.kotlin.android' version '$kotlin_version' apply false
-}
+{
+  gradle_plugins
+  cat <<EOF
 
 subprojects {
-  plugins.withId('com.android.library') {
+  plugins.withType(com.android.build.gradle.api.AndroidBasePlugin) {
     android {
       compileSdk 35
       defaultConfig {
         minSdk $min_sdk
-      }
-      sourceSets {
-        main {
-          kotlin.srcDirs += 'src/main/kotlin'
-        }
-      }
-      compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
       }
     }
   }
@@ -470,6 +456,7 @@ subprojects {
   }
 }
 EOF
+} > "$project/build.gradle"
 
 printf '%s\n' 'android.useAndroidX=true' > "$project/gradle.properties"
 cat > "$project/app/build.gradle" <<EOF
@@ -480,11 +467,9 @@ plugins {
 
 android {
   namespace 'com.tokamak.runtime'
-  compileSdk 35
 
   defaultConfig {
     applicationId '$identifier'
-    minSdk $min_sdk
     targetSdk 35
     versionCode 1
     versionName providers.gradleProperty('tokamak.version').get()
@@ -492,17 +477,6 @@ android {
 
   androidResources {
     ignoreAssetsPattern = ''
-  }
-
-  sourceSets {
-    main {
-      kotlin.srcDirs += 'src/main/kotlin'
-    }
-  }
-
-  compileOptions {
-    sourceCompatibility JavaVersion.VERSION_17
-    targetCompatibility JavaVersion.VERSION_17
   }
 
   lint {
@@ -526,10 +500,7 @@ dependencies {
   implementation 'androidx.webkit:webkit:1.12.1'
   implementation project(':tokamak-plugin')
 EOF
-for plugin in "$input/plugins"/*/; do
-  printf "  implementation project(':plugins:%s')\n" "$(basename "$plugin")" >> "$project/app/build.gradle"
-done
-printf '%s\n' '}' >> "$project/app/build.gradle"
+printf '%s}\n' "$plugin_dependencies" >> "$project/app/build.gradle"
 
 if [[ -n "$user_manifest" ]]; then
   mkdir -p "$app/user"

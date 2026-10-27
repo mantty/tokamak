@@ -13,7 +13,9 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import java.io.File
 import java.security.KeyStore
 import java.util.concurrent.Executors
+import kotlin.coroutines.resume
 import kotlin.reflect.KClass
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 private const val HOST_METADATA = "tokamak.host"
 private const val DEV_ENDPOINT_METADATA = "tokamak.dev.endpoint"
@@ -123,10 +125,10 @@ class TokamakApplication : Application(), TokamakPlugins {
             override fun wouldPrompt(permission: String): Boolean =
                 permissionRequests.wouldPrompt(permission)
 
-            override fun requestPermissions(
-                permissions: Set<String>,
-                callback: (Map<String, Boolean>) -> Unit,
-            ) = permissionRequests.request(permissions, callback)
+            override suspend fun requestPermissions(permissions: Set<String>): Map<String, Boolean> =
+                suspendCancellableCoroutine { continuation ->
+                    permissionRequests.request(permissions) { continuation.resume(it) }
+                }
 
             override fun emitBytes(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray =
                 emitEvent("$id.android.$name", payload, timeoutMillis)
@@ -149,11 +151,8 @@ class TokamakApplication : Application(), TokamakPlugins {
 
             private fun unregistered() = TokamakPluginError.typeError("$id has no android/Exports.kt")
 
-            override fun fetch(path: String, timeoutMillis: Long): ByteArray {
-                val deadline = SystemClock.elapsedRealtime() + timeoutMillis
-                val started = runtime
-                return started.fetch(path, deadline - SystemClock.elapsedRealtime())
-            }
+            override fun fetch(path: String, timeoutMillis: Long): ByteArray =
+                withRuntime(timeoutMillis) { runtime, remainingMillis -> runtime.fetch(path, remainingMillis) }
         }
 
     /** The activity to show UI in; throws `NeedsUIError` while the app is in the background. */
@@ -171,10 +170,17 @@ class TokamakApplication : Application(), TokamakPlugins {
      * Delivers the event [name] with its encoded [payload] to the Worker's listeners and returns
      * their encoded reply. Starts the runtime when it is not running. Blocks.
      */
-    private fun emitEvent(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray {
+    private fun emitEvent(name: String, payload: ByteArray, timeoutMillis: Long): ByteArray =
+        withRuntime(timeoutMillis) { runtime, remainingMillis -> runtime.emit(name, payload, remainingMillis) }
+
+    /**
+     * Runs [operation] with the runtime, starting it when it is not running, and the part of
+     * [timeoutMillis] that starting it left, which is negative once none is left.
+     */
+    private fun <T> withRuntime(timeoutMillis: Long, operation: (TokamakRuntime, Long) -> T): T {
         val deadline = SystemClock.elapsedRealtime() + timeoutMillis
         val started = runtime
-        return started.emit(name, payload, deadline - SystemClock.elapsedRealtime())
+        return operation(started, deadline - SystemClock.elapsedRealtime())
     }
 
     /** Records the app moving into or out of the foreground, once the runtime has started. */

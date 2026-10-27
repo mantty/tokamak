@@ -1,13 +1,21 @@
 package com.tokamak.plugins.notifications
 
+import android.app.Notification
+import android.app.NotificationManager
 import com.tokamak.runtime.TokamakTag
 import org.json.JSONObject
 
 /** Whether the app may show notifications. */
 enum class Permission { Granted, Denied, Prompt }
 
-/** A channel's importance. */
-enum class Importance { None, Min, Low, Default, High }
+/** A channel's importance, as `NotificationManager.IMPORTANCE_*` [value] gives it. */
+enum class Importance(val value: Int) {
+    None(NotificationManager.IMPORTANCE_NONE),
+    Min(NotificationManager.IMPORTANCE_MIN),
+    Low(NotificationManager.IMPORTANCE_LOW),
+    Default(NotificationManager.IMPORTANCE_DEFAULT),
+    High(NotificationManager.IMPORTANCE_HIGH),
+}
 
 data class ChannelImportance(val id: String, val importance: Importance)
 
@@ -153,14 +161,37 @@ sealed interface Chronometer {
     data class Countdown(val countDown: Boolean) : Chronometer
 }
 
-enum class Visibility { Public, Private, Secret }
+/** Where the lock screen shows a notification, as `Notification.VISIBILITY_*` [value] gives it. */
+enum class Visibility(val value: Int) {
+    Public(Notification.VISIBILITY_PUBLIC),
+    Private(Notification.VISIBILITY_PRIVATE),
+    Secret(Notification.VISIBILITY_SECRET),
+}
 
 data class PublicVersion(val title: String, val body: String?)
 
-/** The kinds of notification, as `Notification.CATEGORY_*` names them. */
-enum class AndroidCategory {
-    Alarm, Call, Email, Error, Event, LocationSharing, Message, MissedCall, Navigation, Progress,
-    Promo, Recommendation, Reminder, Service, Social, Status, Stopwatch, System, Transport, Workout,
+/** The kinds of notification, as `Notification.CATEGORY_*` [category] names them. */
+enum class AndroidCategory(val category: String) {
+    Alarm(Notification.CATEGORY_ALARM),
+    Call(Notification.CATEGORY_CALL),
+    Email(Notification.CATEGORY_EMAIL),
+    Error(Notification.CATEGORY_ERROR),
+    Event(Notification.CATEGORY_EVENT),
+    LocationSharing(Notification.CATEGORY_LOCATION_SHARING),
+    Message(Notification.CATEGORY_MESSAGE),
+    MissedCall(Notification.CATEGORY_MISSED_CALL),
+    Navigation(Notification.CATEGORY_NAVIGATION),
+    Progress(Notification.CATEGORY_PROGRESS),
+    Promo(Notification.CATEGORY_PROMO),
+    Recommendation(Notification.CATEGORY_RECOMMENDATION),
+    Reminder(Notification.CATEGORY_REMINDER),
+    Service(Notification.CATEGORY_SERVICE),
+    Social(Notification.CATEGORY_SOCIAL),
+    Status(Notification.CATEGORY_STATUS),
+    Stopwatch(Notification.CATEGORY_STOPWATCH),
+    System(Notification.CATEGORY_SYSTEM),
+    Transport(Notification.CATEGORY_TRANSPORT),
+    Workout(Notification.CATEGORY_WORKOUT),
 }
 
 /** When a scheduled notification shows; [exact] alarms need the exact alarm permission. */

@@ -1,7 +1,6 @@
 package com.tokamak.runtime
 
 import android.Manifest
-import android.content.pm.PackageManager
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 
@@ -47,8 +46,5 @@ internal class TokamakWebChromeClient(
     }
 
     private fun missingPermissions(request: PermissionRequest): List<String> =
-        request.resources.map(RESOURCE_PERMISSIONS::getValue).filterNot(::isGranted)
-
-    private fun isGranted(permission: String): Boolean =
-        tokamak.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+        request.resources.map(RESOURCE_PERMISSIONS::getValue).filterNot(tokamak.permissionRequests::isGranted)
 }

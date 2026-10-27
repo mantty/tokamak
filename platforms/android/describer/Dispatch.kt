@@ -33,7 +33,7 @@ internal fun dispatch(plugin: KClass<*>, exports: List<Export>, events: List<Eve
             "is not supported",
         ),
     )
-    val results = exports.filter { it.kind != "resource" }.map { if (it.kind == "stream") it.returns.arguments.single().type!! else it.returns }
+    val results = exports.filter { it.kind != "resource" }.map { it.returns }
     val parameters = exports.flatMap { export -> export.parameters.map { it.type } }
     val classes = jsonClasses(parameters + results + events.flatMap { listOfNotNull(it.type, it.reply) })
     val functions = requests.filter { it.isNotEmpty() }
@@ -89,7 +89,7 @@ private class Code(val packageName: String) {
             val type = event.type.classifier as KClass<*>
             "\"${event.name}\" -> encodeEvent(name, event, ${name(type)}::class) { ${encode(event.type, "it")} }"
         }
-        return switch("override fun eventPayload(name: String, event: Any): ByteArray =", branches, "super.eventPayload(name, event)")
+        return switch("override fun eventPayload(name: String, event: Any): ByteArray =", "name", branches, "super.eventPayload(name, event)")
     }
 
     /** The decoding of the events' replies, or nothing when no event takes one. */
@@ -97,7 +97,7 @@ private class Code(val packageName: String) {
         val branches = events.mapNotNull { event -> event.reply?.let { "\"${event.name}\" -> ${decode(it, "reply")}" } }
         if (branches.isEmpty()) return emptyList()
         imports += "com.tokamak.runtime.TokamakValue"
-        return switch("override fun eventReply(name: String, reply: TokamakValue): Any =", branches, "super.eventReply(name, reply)")
+        return switch("override fun eventReply(name: String, reply: TokamakValue): Any =", "name", branches, "super.eventReply(name, reply)")
     }
 
     /**
@@ -128,9 +128,7 @@ private class Code(val packageName: String) {
             switch("override fun decodeValue(json: TokamakValue, type: KClass<*>): Any =", "type", decodes, "super.decodeValue(json, type)")
     }
 
-    /** A function whose body switches on the event's name, leaving others to [otherwise]. */
-    private fun switch(signature: String, branches: List<String>, otherwise: String): List<String> = switch(signature, "name", branches, otherwise)
-
+    /** A function whose body switches on [subject], leaving others to [otherwise]. */
     private fun switch(signature: String, subject: String, branches: List<String>, otherwise: String): List<String> =
         listOf("    $signature", "        when ($subject) {") + branches.map { "            $it" } +
             "            else -> $otherwise" + "        }"
@@ -145,7 +143,7 @@ private class Code(val packageName: String) {
                 lambda(label, start, call) { encode(export.returns, it) }
             }
             export.kind == "stream" -> {
-                val encoded = encode(export.returns.arguments.single().type!!, "it")
+                val encoded = encode(export.returns, "it")
                 val each = if (encoded == "it") "" else " { $encoded }"
                 use(label, call) { "collect(method, reply, $it)$each" }
             }
@@ -355,10 +353,9 @@ private fun jsonClasses(types: List<KType>): Set<KClass<*>> {
 private val RAW = setOf(TokamakPluginBody::class, ByteArray::class)
 
 /** Kotlin's numeric types, which are JSON numbers. */
-private val NUMBERS = setOf(Int::class, Long::class, Short::class, Byte::class, Double::class, Float::class)
+internal val NUMBERS = setOf(Int::class, Long::class, Short::class, Byte::class, Double::class, Float::class)
 
 /** The types whose values are JSON, or bytes, as they are. */
-private val SCALARS = setOf(
-    String::class, Boolean::class, Int::class, Long::class, Short::class, Byte::class, Double::class, Float::class, Unit::class, ByteArray::class,
-    Any::class, JSONObject::class, JSONArray::class,
+private val SCALARS = NUMBERS + setOf(
+    String::class, Boolean::class, Unit::class, ByteArray::class, Any::class, JSONObject::class, JSONArray::class,
 )

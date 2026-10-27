@@ -2,7 +2,6 @@ package com.tokamak.plugins.securestorage
 
 import android.hardware.biometrics.BiometricManager.Authenticators
 import android.hardware.biometrics.BiometricPrompt
-import android.os.CancellationSignal
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyPermanentlyInvalidatedException
@@ -38,9 +37,7 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.OAEPParameterSpec
 import javax.crypto.spec.PSource
 import javax.crypto.spec.SecretKeySpec
-import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 
 /** When a stored value can be read. */
@@ -106,26 +103,23 @@ class TokamakSecureStoragePlugin(
     fun set(name: String, value: String, options: StoreOptions) = translated { store(name, value, options, Write.SET) }
 
     /** Reads the value, asking the device owner for the authentication it was stored with. */
-    suspend fun get(name: String, options: ReadOptions?): String {
-        requireNoGroup(options?.keychainGroup)
-        try {
+    suspend fun get(name: String, options: ReadOptions?): String =
+        translated {
+            requireNoGroup(options?.keychainGroup)
             val stored = read(file(name)) ?: throw itemNotFound()
             val privateKey = keyStore.getKey(alias(stored.keyId), null) as? PrivateKey ?: throw notReadable()
             val unwrap = Cipher.getInstance(WRAP).apply { init(Cipher.DECRYPT_MODE, privateKey, OAEP) }
             val info = KeyFactory.getInstance(privateKey.algorithm, KEYSTORE).getKeySpec(privateKey, KeyInfo::class.java)
             if (info.isUserAuthenticationRequired) {
                 val credential = (info.userAuthenticationType and KeyProperties.AUTH_DEVICE_CREDENTIAL) != 0
-                val authenticators =
-                    if (credential) Authenticators.BIOMETRIC_STRONG or Authenticators.DEVICE_CREDENTIAL
-                    else Authenticators.BIOMETRIC_STRONG
+                val authentication = if (credential) Authentication.BiometricsOrPasscode else Authentication.Biometrics
                 val title = options?.prompt?.takeIf { it.isNotEmpty() } ?: context.applicationInfo.loadLabel(context.packageManager)
-                withContext(Dispatchers.Main) { authenticate(title, authenticators, unwrap) }
+                withContext(Dispatchers.Main) {
+                    host.authenticateOwner(title, authentication.authenticators, BiometricPrompt.CryptoObject(unwrap))
+                }
             }
-            return open(stored, unwrap)
-        } catch (error: Exception) {
-            throw pluginError(error)
+            open(stored, unwrap)
         }
-    }
 
     fun delete(name: String, options: GroupOptions?) =
         translated {
@@ -149,16 +143,6 @@ class TokamakSecureStoragePlugin(
             if (!hadValues) {
                 throw TokamakPluginError("ItemNotFoundError", "No values are stored")
             }
-        }
-
-    /** Authorises [unwrap] with the device owner's authentication, in a prompt titled [title]. */
-    private suspend fun authenticate(title: CharSequence, authenticators: Int, unwrap: Cipher) =
-        suspendCancellableCoroutine { continuation ->
-            val cancellation = CancellationSignal()
-            continuation.invokeOnCancellation { cancellation.cancel() }
-            host.authenticateOwner(title, authenticators, BiometricPrompt.CryptoObject(unwrap), { failed ->
-                continuation.resumeWith(failed.map {})
-            }, cancellation) { continuation.resume(Unit) }
         }
 
     private fun requireNoGroup(keychainGroup: String?) {
@@ -272,7 +256,7 @@ class TokamakSecureStoragePlugin(
     private enum class Write { CREATE, REPLACE, SET }
 
     /** Runs [operation], translating Keystore failures into the errors the Worker receives. */
-    private fun <T> translated(operation: () -> T): T =
+    private inline fun <T> translated(operation: () -> T): T =
         try {
             operation()
         } catch (error: Exception) {

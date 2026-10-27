@@ -117,19 +117,9 @@ impl ToolchainMetadata {
 
 fn command_output(program: &str, arguments: &[&str]) -> Result<String> {
     let command = format!("{program} {}", arguments.join(" "));
-    let output = Command::new(program)
-        .args(arguments)
-        .output()
+    let output = crate::run(Command::new(program).args(arguments))
         .with_context(|| format!("run {command}"))?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        let detail = detail.trim();
-        if detail.is_empty() {
-            bail!("{command} failed with status {}", output.status);
-        }
-        bail!("{command} failed: {detail}");
-    }
-    let value = String::from_utf8(output.stdout)
+    let value = String::from_utf8(output)
         .with_context(|| format!("read output from {command}"))?
         .trim()
         .to_owned();
@@ -141,15 +131,7 @@ fn command_output(program: &str, arguments: &[&str]) -> Result<String> {
 
 fn read_platform_build(platform_path: &Path) -> Result<String> {
     let path = platform_path.join("version.plist");
-    let value = Value::from_file(&path)
-        .with_context(|| format!("read Apple platform plist {}", path.display()))?;
-    let dictionary = value.into_dictionary().with_context(|| {
-        format!(
-            "Apple platform plist root must be a dictionary: {}",
-            path.display()
-        )
-    })?;
-    dictionary
+    read_dictionary(&path)?
         .get("ProductBuildVersion")
         .and_then(Value::as_string)
         .map(str::to_owned)
@@ -235,13 +217,12 @@ fn add_generated_plist(
         insert_string(plist, "TokamakDevSessionToken", session_token);
     }
 
+    plist.insert(
+        "NSAppTransportSecurity".into(),
+        Dictionary::from_iter([("NSAllowsLocalNetworking", true)]).into(),
+    );
     match metadata.platform.as_str() {
         "macos" => {
-            insert_dictionary(
-                plist,
-                "NSAppTransportSecurity",
-                [("NSAllowsLocalNetworking", Value::Boolean(true))],
-            );
             plist.insert("NSHighResolutionCapable".into(), Value::Boolean(true));
         }
         "ios" => {
@@ -254,11 +235,6 @@ fn add_generated_plist(
                 plist,
                 "CFBundleSupportedPlatforms",
                 [Value::String(supported_platform.into())],
-            );
-            insert_dictionary(
-                plist,
-                "NSAppTransportSecurity",
-                [("NSAllowsLocalNetworking", Value::Boolean(true))],
             );
             insert_string(plist, "MinimumOSVersion", IOS_DEPLOYMENT_TARGET.trim_end());
             plist.insert("LSRequiresIPhoneOS".into(), Value::Boolean(true));
@@ -423,7 +399,9 @@ fn sorted_directories(path: &Path) -> Result<Vec<PathBuf>> {
 
 fn configured_user_plist(metadata: &Metadata) -> Result<Option<PathBuf>> {
     let variable = pack_variable(&metadata.platform, "PLIST");
-    user_plist_path(&variable, env::var_os(&variable))
+    env::var_os(&variable)
+        .map(|value| configured_file(&variable, value))
+        .transpose()
 }
 
 /// The environment variable that passes the pack variable `name`, in upper
@@ -432,10 +410,12 @@ fn pack_variable(platform: &str, name: &str) -> String {
     format!("TOKAMAK_{}_{name}", platform.to_ascii_uppercase())
 }
 
-fn user_plist_path(variable: &str, value: Option<OsString>) -> Result<Option<PathBuf>> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
+/// The file that the environment variable `variable` names with `value`.
+///
+/// # Errors
+///
+/// Returns an error when `value` is empty or does not name a file.
+pub(crate) fn configured_file(variable: &str, value: OsString) -> Result<PathBuf> {
     let path = PathBuf::from(value);
     if path.as_os_str().is_empty() {
         bail!("{variable} must not be empty");
@@ -443,10 +423,10 @@ fn user_plist_path(variable: &str, value: Option<OsString>) -> Result<Option<Pat
     if !path.is_file() {
         bail!("{variable} does not point to a file: {}", path.display());
     }
-    Ok(Some(path))
+    Ok(path)
 }
 
-fn read_dictionary(path: &Path) -> Result<Dictionary> {
+pub(crate) fn read_dictionary(path: &Path) -> Result<Dictionary> {
     let value =
         Value::from_file(path).with_context(|| format!("read Apple plist {}", path.display()))?;
     value
@@ -471,18 +451,6 @@ pub(crate) fn overlay_dictionary(destination: &mut Dictionary, source: Dictionar
 
 fn insert_string(plist: &mut Dictionary, key: &str, value: &str) {
     plist.insert(key.into(), Value::String(value.into()));
-}
-
-fn insert_dictionary<const N: usize>(
-    plist: &mut Dictionary,
-    key: &str,
-    values: [(&str, Value); N],
-) {
-    let dictionary = values
-        .into_iter()
-        .map(|(key, value)| (key.to_owned(), value))
-        .collect();
-    plist.insert(key.into(), Value::Dictionary(dictionary));
 }
 
 fn insert_array<const N: usize>(plist: &mut Dictionary, key: &str, values: [Value; N]) {
@@ -525,7 +493,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::{
-        Metadata, ToolchainMetadata, build_info_plist, parse_xcode_version, user_plist_path,
+        Metadata, ToolchainMetadata, build_info_plist, configured_file, parse_xcode_version,
         validate_build_number,
     };
     use anyhow::Context;
@@ -1042,10 +1010,10 @@ mod tests {
         let plist = temporary.path().join("Info.plist");
         std::fs::write(&plist, b"plist")?;
         assert_eq!(
-            user_plist_path("TOKAMAK_IOS_PLIST", Some(plist.clone().into()))?,
-            Some(plist)
+            configured_file("TOKAMAK_IOS_PLIST", plist.clone().into())?,
+            plist
         );
-        assert!(user_plist_path("TOKAMAK_IOS_PLIST", Some(temporary.path().into())).is_err());
+        assert!(configured_file("TOKAMAK_IOS_PLIST", temporary.path().into()).is_err());
         Ok(())
     }
 

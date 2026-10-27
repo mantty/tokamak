@@ -5,13 +5,15 @@
 
 mod entitlements;
 mod info_plist;
+#[cfg(target_os = "macos")]
+use info_plist::configured_file;
 pub use info_plist::write_info_plist;
 
 #[cfg(target_os = "macos")]
 use std::collections::BTreeMap;
 #[cfg(target_os = "macos")]
 use std::env;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 use std::fmt::Write as _;
 #[cfg(target_os = "macos")]
 use std::fs;
@@ -23,7 +25,8 @@ use std::path::Path;
 #[cfg(any(target_os = "macos", test))]
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
-use std::process::{Command, Output, Stdio};
+use std::process::Stdio;
+use std::process::{Command, Output};
 #[cfg(any(target_os = "macos", test))]
 use std::time::SystemTime;
 
@@ -577,9 +580,10 @@ fn select_signing(
             .map_err(|error| automatic_signing_error(platform, bundle_id, device_id, &error));
     }
 
-    let key = cache_key(project, bundle_id, device_id);
-    let mut cache = load_cache(platform);
-    let candidate = match cache.entries.get(&key).and_then(|cached| {
+    let cached = load_cache(platform)
+        .entries
+        .remove(&cache_key(project, bundle_id, device_id));
+    let candidate = match cached.and_then(|cached| {
         candidates.iter().find(|candidate| {
             candidate.identity.fingerprint == cached.identity_fingerprint
                 && candidate.profile.id == cached.profile_id
@@ -589,19 +593,30 @@ fn select_signing(
         None => choose_candidate(platform, &candidates)?,
     };
 
-    let selection = Selection {
+    remember(
+        request,
+        candidate.identity.fingerprint,
+        candidate.profile.id,
+    );
+    Ok(Selection {
         identity: candidate.identity.selector,
         profile: candidate.profile.path,
-    };
+    })
+}
+
+/// Records the identity and profile selected for `request`, which later
+/// builds of the same request prefer.
+#[cfg(target_os = "macos")]
+fn remember(request: &SigningRequest<'_>, identity_fingerprint: String, profile_id: String) {
+    let mut cache = load_cache(request.platform);
     cache.entries.insert(
-        key,
+        cache_key(request.project, request.bundle_id, request.device_id),
         CachedSelection {
-            identity_fingerprint: candidate.identity.fingerprint,
-            profile_id: candidate.profile.id,
+            identity_fingerprint,
+            profile_id,
         },
     );
-    save_cache(platform, &cache);
-    Ok(selection)
+    save_cache(request.platform, &cache);
 }
 
 #[cfg(target_os = "macos")]
@@ -675,7 +690,7 @@ fn codesign(bundle: &Path, identity: &str, entitlements: &Dictionary) -> Result<
     PlistValue::Dictionary(entitlements.clone())
         .to_file_xml(&entitlements_path)
         .context("write signing entitlements")?;
-    let output = Command::new("codesign")
+    run(Command::new("codesign")
         .args([
             "--force",
             "--timestamp=none",
@@ -685,25 +700,19 @@ fn codesign(bundle: &Path, identity: &str, entitlements: &Dictionary) -> Result<
             "--entitlements",
         ])
         .arg(&entitlements_path)
-        .arg(bundle)
-        .output()
-        .context("run codesign")?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        bail!("codesign failed: {}", command_output_detail(&output));
-    }
+        .arg(bundle))?;
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
 fn automatic_selection(request: &SigningRequest<'_>) -> Result<Selection> {
     let SigningRequest {
         platform,
-        project,
         bundle_id,
         device_id,
         team_id,
         entitlements: declared,
+        ..
     } = *request;
     println!(
         "No matching {} signing profile found; asking Xcode to provision {bundle_id} automatically",
@@ -736,16 +745,7 @@ fn automatic_selection(request: &SigningRequest<'_>) -> Result<Selection> {
             "Xcode generated a profile that does not match an installed Apple Development identity",
         )?;
     let profile_path = persist_profile(platform, &profile.id, &bytes)?;
-    let key = cache_key(project, bundle_id, device_id);
-    let mut cache = load_cache(platform);
-    cache.entries.insert(
-        key,
-        CachedSelection {
-            identity_fingerprint: identity.fingerprint.clone(),
-            profile_id: profile.id,
-        },
-    );
-    save_cache(platform, &cache);
+    remember(request, identity.fingerprint.clone(), profile.id);
     Ok(Selection {
         identity: identity.selector.clone(),
         profile: profile_path,
@@ -786,24 +786,14 @@ fn provision_signing_probe(request: &SigningRequest<'_>, root: &Path) -> Result<
     if request.device_id.is_some() {
         command.arg("-allowProvisioningDeviceRegistration");
     }
-    let output = command
+    run(command
         .args([
             "CODE_SIGN_STYLE=Automatic",
             "CODE_SIGN_IDENTITY=Apple Development",
         ])
         .arg(format!("DEVELOPMENT_TEAM={}", request.team_id))
         .arg("build")
-        .stdin(Stdio::inherit())
-        .output()
-        .with_context(|| {
-            format!(
-                "run xcodebuild for automatic {} provisioning",
-                platform.name()
-            )
-        })?;
-    if !output.status.success() {
-        bail!("xcodebuild failed: {}", command_output_detail(&output));
-    }
+        .stdin(Stdio::inherit()))?;
     Ok(derived_data
         .join(platform.probe_product())
         .join(platform.embedded_profile()))
@@ -988,7 +978,20 @@ fn pbx_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-#[cfg(target_os = "macos")]
+/// Runs `command` to completion and returns its standard output.
+///
+/// # Errors
+///
+/// Returns an error when the command cannot start or does not succeed.
+pub(crate) fn run(command: &mut Command) -> Result<Vec<u8>> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let output = command.output().with_context(|| format!("run {program}"))?;
+    if !output.status.success() {
+        bail!("{program} failed: {}", command_output_detail(&output));
+    }
+    Ok(output.stdout)
+}
+
 fn command_output_detail(output: &Output) -> String {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1050,7 +1053,7 @@ fn manual_command(device_id: Option<&str>) -> String {
 #[cfg(target_os = "macos")]
 fn explicit_selection(team_configured: bool, device_id: Option<&str>) -> Result<Option<Selection>> {
     let identity = env::var("TOKAMAK_IOS_SIGNING_IDENTITY").ok();
-    let profile = env::var_os("TOKAMAK_IOS_PROVISIONING_PROFILE").map(PathBuf::from);
+    let profile = env::var_os("TOKAMAK_IOS_PROVISIONING_PROFILE");
     match (identity, profile) {
         (Some(identity), Some(profile)) => {
             if team_configured {
@@ -1072,12 +1075,7 @@ fn explicit_selection(team_configured: bool, device_id: Option<&str>) -> Result<
             if identity.trim().is_empty() {
                 bail!("TOKAMAK_IOS_SIGNING_IDENTITY must not be empty");
             }
-            if !profile.is_file() {
-                bail!(
-                    "TOKAMAK_IOS_PROVISIONING_PROFILE does not point to a file: {}",
-                    profile.display()
-                );
-            }
+            let profile = configured_file("TOKAMAK_IOS_PROVISIONING_PROFILE", profile)?;
             let profile =
                 fs::canonicalize(profile).context("resolve TOKAMAK_IOS_PROVISIONING_PROFILE")?;
             Ok(Some(Selection { identity, profile }))
@@ -1103,28 +1101,18 @@ fn configured_team_id(variable: &str, environment: Option<&str>) -> Result<Optio
 
 #[cfg(target_os = "macos")]
 fn mac_provisioning_udid() -> Result<String> {
-    let output = Command::new("system_profiler")
-        .args(["-json", "SPHardwareDataType"])
-        .output()
-        .context("run system_profiler to identify this Mac")?;
-    if !output.status.success() {
-        bail!("system_profiler failed: {}", command_output_detail(&output));
-    }
-    provisioning_udid(&output.stdout)
+    let report = run(Command::new("system_profiler").args(["-json", "SPHardwareDataType"]))
+        .context("identify this Mac")?;
+    provisioning_udid(&report)
 }
 
 /// Whether this Mac's console session is locked, when Xcode cannot read the
 /// account credentials it keeps in the keychain.
 #[cfg(target_os = "macos")]
 fn screen_locked() -> Result<bool> {
-    let output = Command::new("ioreg")
-        .args(["-n", "Root", "-d1", "-a"])
-        .output()
-        .context("run ioreg to read the screen lock")?;
-    if !output.status.success() {
-        bail!("ioreg failed: {}", command_output_detail(&output));
-    }
-    console_locked(&output.stdout)
+    let registry = run(Command::new("ioreg").args(["-n", "Root", "-d1", "-a"]))
+        .context("read the screen lock")?;
+    console_locked(&registry)
 }
 
 /// Whether the console session in an `ioreg -n Root -d1 -a` report is locked.
@@ -1408,22 +1396,12 @@ fn app_identifier_matches(application_identifier: &str, bundle_id: &str) -> bool
 
 #[cfg(any(target_os = "macos", test))]
 fn fingerprint(bytes: &[u8]) -> String {
-    hex_digest(<Sha256 as Sha2Digest>::digest(bytes))
+    hex::encode(<Sha256 as Sha2Digest>::digest(bytes))
 }
 
 #[cfg(any(target_os = "macos", test))]
 fn sha1_fingerprint(bytes: &[u8]) -> String {
-    hex_digest(<Sha1 as Sha1Digest>::digest(bytes))
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
-    let bytes = bytes.as_ref();
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(output, "{byte:02x}");
-    }
-    output
+    hex::encode(<Sha1 as Sha1Digest>::digest(bytes))
 }
 
 #[cfg(target_os = "macos")]
