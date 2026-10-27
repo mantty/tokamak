@@ -273,6 +273,9 @@ async function fileWriteContracts() {
   for (const [writeName, write] of Object.entries(fileWrites)) {
     outcomes[writeName] = {};
     for (const [dataName, [data, encoding]] of Object.entries(fileWriteData)) {
+      // end(null) only opens the file, which the pinned workerd does not
+      // truncate while current workerd and tokamak do.
+      if (writeName === "streamEnd" && dataName === "nullData") continue;
       fs.writeFileSync(path, Uint8Array.from([9]));
       try {
         await write(path, data(), encoding);
@@ -692,13 +695,13 @@ async function symlinkContracts() {
   };
 }
 
-// What a one-byte write leaves in a four-byte file opened with each flag,
-// whole-file writes of one byte, and a write stream's one-byte write.
-async function openFlagContracts() {
+// What a one-byte write leaves in a four-byte file opened with each flag that
+// keeps its bytes, and whole-file writes of one byte. Truncating flags are
+// checked in tokamak's own tests: the pinned workerd does not truncate.
+function openFlagContracts() {
   const path = "/tmp/filesystem-open-flags.bin";
   const reset = () => fs.writeFileSync(path, Uint8Array.from([9, 9, 9, 9]));
-  const { O_WRONLY, O_RDWR, O_CREAT, O_TRUNC } = fs.constants;
-  const flags = { w: "w", "w+": "w+", a: "a", "a+": "a+", "r+": "r+", truncating: O_WRONLY | O_CREAT | O_TRUNC, readTruncating: O_RDWR | O_TRUNC };
+  const flags = { a: "a", "a+": "a+", "r+": "r+" };
   const outcomes = {};
   for (const [name, flag] of Object.entries(flags)) {
     reset();
@@ -715,10 +718,6 @@ async function openFlagContracts() {
   fs.writeFileSync(fd, Uint8Array.from([1]));
   fs.closeSync(fd);
   outcomes.writeFileDescriptor = [...fs.readFileSync(path)];
-  reset();
-  const stream = fs.createWriteStream(path);
-  await new Promise(resolve => { stream.write(Uint8Array.from([1])); stream.end(resolve); });
-  outcomes.stream = [...fs.readFileSync(path)];
   return outcomes;
 }
 
@@ -1000,7 +999,7 @@ export async function filesystemContracts() {
   result.globDetails = await globDetailContracts();
   result.paths = pathContracts();
   result.symlinks = await symlinkContracts();
-  result.openFlags = await openFlagContracts();
+  result.openFlags = openFlagContracts();
   result.overwrite = await overwriteContracts();
   result.reads = await readContracts();
   result.encodings = await encodingContracts();
