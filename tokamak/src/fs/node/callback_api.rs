@@ -32,7 +32,6 @@ pub(super) enum CallbackOperation {
     Ftruncate,
     Futimes,
     Open,
-    Read,
     Readv,
     Truncate,
     Unlink,
@@ -73,7 +72,6 @@ pub(super) fn callback_operations() -> &'static [(&'static str, CallbackOperatio
             "opendir",
             CallbackOperation::Value(opendir_sync, Some(EncodingCheck::ObjectOnly)),
         ),
-        ("read", CallbackOperation::Read),
         (
             "readFile",
             CallbackOperation::Value(read_file_sync, Some(EncodingCheck::NullAllowed)),
@@ -240,13 +238,6 @@ pub(super) fn callback_call<'js>(
             let mode = take_front_value(&mut args);
             reply(&ctx, open_sync(ctx.clone(), input, Opt(flags), Opt(mode)))
         }
-        CallbackOperation::Read => {
-            let descriptor = descriptor_value(&ctx, take_arg(&ctx, &mut args)?)?;
-            let arguments = normalize_read_arguments(&ctx, args)?;
-            let buffer = arguments.buffer.clone();
-            let read = node_read(&ctx, arguments, ReadOverrun::InvalidOffset)?;
-            reply_with_buffer(&ctx, read_views(&ctx, descriptor, &read), buffer)
-        }
         CallbackOperation::Readv => {
             let descriptor = take_arg(&ctx, &mut args)?;
             let buffers = take_arg(&ctx, &mut args)?;
@@ -290,6 +281,22 @@ pub(super) fn reply<'js>(
     Ok(vec![Value::new_null(ctx.clone()), result?.into_js(ctx)?])
 }
 
+/// `fs.read(fd, ...args)`, which takes its callback from among `args` and,
+/// as workerd does, passes it the error of an invalid descriptor.
+pub(super) fn read_callback<'js>(ctx: Ctx<'js>, args: Rest<Value<'js>>) -> rquickjs::Result<()> {
+    let mut args = args.0;
+    let descriptor =
+        take_front_value(&mut args).unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+    let (read, callback) = callback_read(&ctx, &args)?;
+    let count = if read.is_empty(&ctx)? {
+        Ok(0)
+    } else {
+        descriptor_value(&ctx, descriptor)
+            .and_then(|descriptor| read_views(&ctx, descriptor, &read.request(&ctx)?))
+    };
+    callback_values(&ctx, callback, reply_with_buffer(&ctx, count, read.buffer))
+}
+
 /// Callback arguments for a buffered transfer: `(null, count, buffer)`.
 fn reply_with_buffer<'js>(
     ctx: &Ctx<'js>,
@@ -322,92 +329,6 @@ fn take_opt_u32<'js>(ctx: &Ctx<'js>, args: &mut Vec<Value<'js>>) -> rquickjs::Re
         .map(|value| numeric_u32(ctx, value))
         .transpose()
         .map(Opt)
-}
-
-pub(super) struct ReadArguments<'js> {
-    pub(super) buffer: Value<'js>,
-    pub(super) offset: Option<Value<'js>>,
-    pub(super) length: Option<Value<'js>>,
-    pub(super) position: Option<Value<'js>>,
-}
-
-pub(super) fn normalize_read_arguments<'js>(
-    ctx: &Ctx<'js>,
-    mut args: Vec<Value<'js>>,
-) -> rquickjs::Result<ReadArguments<'js>> {
-    let Some(value) = args.first().cloned() else {
-        return Ok(ReadArguments {
-            buffer: default_read_buffer(ctx, None)?,
-            offset: None,
-            length: None,
-            position: None,
-        });
-    };
-    if is_array_buffer_view(&value) {
-        args.remove(0);
-        if let Some(options) = args
-            .first()
-            .filter(|value| !is_array_buffer_view(value))
-            .and_then(Value::as_object)
-        {
-            let (offset, length, position) = read_options(options)?;
-            return Ok(ReadArguments {
-                buffer: value,
-                offset,
-                length,
-                position,
-            });
-        }
-        Ok(ReadArguments {
-            buffer: value,
-            offset: take_front_value(&mut args),
-            length: take_front_value(&mut args),
-            position: take_front_value(&mut args),
-        })
-    } else if let Some(options) = value.as_object() {
-        let length = options.get::<_, Option<Value>>("length")?;
-        let buffer = options
-            .get::<_, Option<Value>>("buffer")?
-            .map_or_else(|| default_read_buffer(ctx, length.as_ref()), Ok)?;
-        Ok(ReadArguments {
-            buffer,
-            offset: options.get("offset")?,
-            length,
-            position: options.get("position")?,
-        })
-    } else {
-        Err(Exception::throw_type(
-            ctx,
-            "buffer or read options are required",
-        ))
-    }
-}
-
-/// The `offset`, `length`, and `position` of a read options object.
-fn read_options<'js>(
-    options: &Object<'js>,
-) -> rquickjs::Result<(Option<Value<'js>>, Option<Value<'js>>, Option<Value<'js>>)> {
-    Ok((
-        options.get("offset")?,
-        options.get("length")?,
-        options.get("position")?,
-    ))
-}
-
-pub(super) fn default_read_buffer<'js>(
-    ctx: &Ctx<'js>,
-    length: Option<&Value<'js>>,
-) -> rquickjs::Result<Value<'js>> {
-    let length = length
-        .map(|value| Coerced::<u64>::from_js(ctx, value.clone()))
-        .transpose()?
-        .map_or(16_384, |value| {
-            usize::try_from(*value).unwrap_or(usize::MAX)
-        });
-    if u32::try_from(length).is_err() {
-        return Err(Exception::throw_range(ctx, "read buffer is too large"));
-    }
-    TypedArray::<u8>::new(ctx.clone(), vec![0; length]).map(TypedArray::into_value)
 }
 
 /// `value` unless it is missing, `null`, or `undefined`.

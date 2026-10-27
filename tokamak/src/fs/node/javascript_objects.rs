@@ -501,11 +501,9 @@ pub(super) fn handle_read<'js>(
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<Promise<'js>> {
     let read = open_descriptor(ctx, state).and_then(|descriptor| {
-        let arguments = normalize_read_arguments(ctx, args.0)?;
-        let buffer = arguments.buffer.clone();
-        let read = node_read(ctx, arguments, ReadOverrun::OutOfRange)?;
-        let count = read_views(ctx, descriptor, &read)?;
-        transfer_value(ctx, "bytesRead", count as usize, "buffer", buffer)
+        let read = file_handle_read(ctx, &args.0)?;
+        let count = read_views(ctx, descriptor, &read.request(ctx)?)?;
+        transfer_value(ctx, "bytesRead", count as usize, "buffer", read.buffer)
     });
     promise(ctx.clone(), read)
 }

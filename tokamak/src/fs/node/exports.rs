@@ -194,6 +194,7 @@ fn declare_exports(declare: &Declarations, promises_only: bool) -> rquickjs::Res
         for &(name, _) in callback_operations() {
             declare.declare(name)?;
         }
+        declare.declare("read")?;
     }
     Ok(())
 }
@@ -323,7 +324,7 @@ fn export_callback<'js>(module: &ModuleExports<'_, 'js>) -> rquickjs::Result<()>
         }
         module.value(name, function.into_value())?;
     }
-    Ok(())
+    module.function("read", read_callback)
 }
 
 fn export_streams(module: &ModuleExports<'_, '_>) -> rquickjs::Result<()> {

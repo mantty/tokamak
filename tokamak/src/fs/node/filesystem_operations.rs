@@ -1060,7 +1060,7 @@ pub(super) fn read_sync<'js>(
     args: Rest<Value<'js>>,
 ) -> rquickjs::Result<u32> {
     let descriptor = descriptor_value(&ctx, descriptor)?;
-    let read = sync_read(&ctx, buffer, args.0, ReadOverrun::OutOfRange)?;
+    let read = sync_read(&ctx, buffer, args.0)?;
     read_views(&ctx, descriptor, &read)
 }
 

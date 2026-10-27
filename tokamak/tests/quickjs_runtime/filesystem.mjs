@@ -956,12 +956,53 @@ const readers = {
   },
 };
 
-// Reads that workerd's fs.read and fileHandle.read default differently from
-// readSync, by form.
-const unmatchedReads = {
-  callback: ["emptyOptions", "undefinedOptions", "nullOptions", "offset", "offsetAndLength", "undefinedLength", "nullLength", "nullPosition", "undefinedPosition", "bigintPosition", "stringPosition", "offsetOption", "negativeOffset", "fractionalOffset", "negativeLength", "lengthBeyondBuffer", "offsetBeyondBuffer", "bigintLength", "nullOffsetOption", "nullLengthOption", "emptyLength", "middleView", "data", "string", "stringOffset"],
-  handle: ["nullOffsetOption", "nullLengthOption", "stringOffset", "arrayOptions", "string"],
+// The full argument lists of callback reads given a descriptor and callback,
+// beyond a buffer and the trailing arguments above.
+const callbackReadForms = {
+  callbackOnly: (fd, callback) => [fd, callback],
+  optionsWithoutBuffer: (fd, callback) => [fd, { length: 2 }, callback],
+  optionsStringBuffer: (fd, callback) => [fd, { buffer: "abcd" }, callback],
+  optionsNullBuffer: (fd, callback) => [fd, { buffer: null }, callback],
+  argumentAfterCallback: (fd, callback) => [fd, new Uint8Array(4), callback, "extra"],
+  numberObjectOffset: (fd, callback) => [fd, new Uint8Array(4), new Number(1), 2, 0, callback],
+  stringLength: (fd, callback) => [fd, new Uint8Array(4), 1, "2", 0, callback],
+  objectLength: (fd, callback) => [fd, new Uint8Array(4), 1, { valueOf: () => 2 }, 0, callback],
+  badDescriptor: (fd, callback) => [1.5, new Uint8Array(4), callback],
+  badDescriptorEmptyBuffer: (fd, callback) => [1.5, new Uint8Array(0), callback],
 };
+
+// The argument lists of file handle reads beyond a buffer and the trailing
+// arguments above.
+const handleReadForms = {
+  noArguments: () => [],
+  nullOptions: () => [null],
+  numberOptions: () => [5],
+  spreadBuffer: () => [new Uint8Array(4), { buffer: new Uint8Array(2) }],
+  inheritedOffset: () => [new Uint8Array(4), Object.create({ offset: 1 })],
+  inheritedOffsetOptions: () => [Object.create({ offset: 1 })],
+};
+
+// What each callback and file handle read form reports over `path`: the
+// count and the size of the buffer it read into, or its failure.
+async function readFormContracts(path) {
+  const callback = {};
+  for (const [name, form] of Object.entries(callbackReadForms)) {
+    callback[name] = await withDescriptor(path, fd => new Promise(resolve => {
+      const done = (error, read, buffer) => resolve(error ? { error: failure(error) } : { read, size: buffer.byteLength });
+      try { fs.read(...form(fd, done)); }
+      catch (error) { resolve({ thrown: failure(error) }); }
+    }));
+  }
+  const handle = {};
+  for (const [name, form] of Object.entries(handleReadForms)) {
+    const fileHandle = await fs.promises.open(path, "r");
+    try {
+      handle[name] = await fileHandle.read(...form())
+        .then(result => ({ read: result.bytesRead, size: result.buffer.byteLength }), error => ({ error: failure(error) }));
+    } finally { await fileHandle.close(); }
+  }
+  return { callback, handle };
+}
 
 // What each reader reports for each argument list over a file of [1, ..., 8],
 // with the bytes of the memory under the buffer it read into.
@@ -978,7 +1019,6 @@ async function readContracts() {
   for (const [form, read] of Object.entries(readers)) {
     outcomes[form] = {};
     for (const [name, [buffer, argumentLists]] of Object.entries(reads)) {
-      if (unmatchedReads[form]?.includes(name)) continue;
       outcomes[form][name] = [];
       for (const args of argumentLists) {
         const view = buffer();
@@ -987,6 +1027,7 @@ async function readContracts() {
       }
     }
   }
+  outcomes.forms = await readFormContracts(path);
   const fd = fs.openSync(path, "r");
   try {
     const vectors = { none: [], nullPosition: [null], position: [3], negativePosition: [-1], stringPosition: ["1"], bigintPosition: [3n] };

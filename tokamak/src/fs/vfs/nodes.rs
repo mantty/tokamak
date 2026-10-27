@@ -268,9 +268,10 @@ impl FileNode {
                 lock(data).resize(size, 0);
                 Ok(())
             }
-            Self::Bundle { .. } => Err(Error::new(ErrorKind::NotPermitted)),
             Self::Device(Device::Null | Device::Zero) => Ok(()),
-            Self::Device(Device::Full | Device::Random) => Err(Error::new(ErrorKind::NotPermitted)),
+            Self::Bundle { .. } | Self::Device(Device::Full | Device::Random) => {
+                Err(Error::new(ErrorKind::NotPermitted))
+            }
         }
     }
 }
