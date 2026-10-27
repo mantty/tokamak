@@ -1054,6 +1054,43 @@ export default { fetch() {
 }
 
 #[test]
+fn byob_socket_reads_end_at_eof() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let server = thread::spawn(move || -> Result<(), String> {
+        let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
+        stream
+            .write_all(b"bytes before EOF")
+            .map_err(|error| error.to_string())?;
+        stream
+            .shutdown(Shutdown::Write)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    });
+    let directory = tempfile::tempdir()?;
+    let worker = WorkerBundle::of_source(
+        r#"
+import { connect } from "cloudflare:sockets";
+export default { async fetch() {
+  const socket = connect(`127.0.0.1:${process.env.FLAG}`);
+  const reader = socket.readable.getReader({ mode: "byob" });
+  let body = "";
+  while (true) {
+    const { value, done } = await reader.read(new Uint8Array(4));
+    if (done) return new Response(`${body}|${value.byteLength}`);
+    body += new TextDecoder().decode(value);
+  }
+} };
+"#,
+        directory.path(),
+    )?;
+    let body = request(&worker, &port.to_string())?;
+    server.join().map_err(|_| "socket fixture panicked")??;
+    assert_eq!(body, b"bytes before EOF|0");
+    Ok(())
+}
+
+#[test]
 fn node_socket_end_preserves_the_readable_half() -> TestResult {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
