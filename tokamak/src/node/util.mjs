@@ -16,51 +16,55 @@ function key(value) {
   return /^[A-Za-z_$][\w$]*$/.test(value) ? value : quote(value);
 }
 
+function braces(open, items, close) {
+  return items.length === 0 ? `${open}${close}` : `${open} ${items.join(", ")} ${close}`;
+}
+
+// What `value`'s own util.inspect.custom method returns, or `value` itself when none applies.
+function customInspection(value, options, level) {
+  const method = value[inspectCustom];
+  if (!options.customInspect || typeof method !== "function" || method === inspect) return value;
+  if (value.constructor && value.constructor.prototype === value) return value;
+  return method.call(value, options.depth === null ? null : options.depth - level, { ...options }, inspect);
+}
+
 function inspectValue(value, options, level, seen) {
   if (typeof value === "string") return quote(value);
   if (value === undefined) return "undefined";
   if (value === null) return "null";
   if (typeof value === "bigint") return `${value}n`;
-  if (typeof value === "symbol") return String(value);
-  if (typeof value === "function") return `[Function${value.name ? `: ${value.name}` : ""}]`;
-  if (typeof value !== "object") return String(value);
+  if (typeof value !== "object" && typeof value !== "function") return String(value);
+  const custom = customInspection(value, options, level);
+  if (custom !== value) return typeof custom === "string" ? custom : inspectValue(custom, options, level, seen);
+  if (typeof value === "function") return `[Function${value.name ? `: ${value.name}` : " (anonymous)"}]`;
   if (seen.includes(value)) return "[Circular]";
 
-  const depth = options.depth ?? 2;
-  if (depth !== null && level > depth) {
+  if (options.depth !== null && level > options.depth) {
     if (Array.isArray(value)) return "[Array]";
     if (value instanceof Map) return "[Map]";
     if (value instanceof Set) return "[Set]";
     return "[Object]";
   }
 
-  if (typeof value[inspectCustom] === "function") {
-    const custom = value[inspectCustom](depth === null ? null : depth - level, options, inspect);
-    if (typeof custom === "string") return custom;
-  }
   if (value instanceof Buffer) return value.inspect();
   if (objectClass(value) === "Date") return Number.isNaN(Date.prototype.getTime.call(value)) ? "Invalid Date" : Date.prototype.toISOString.call(value);
   if (objectClass(value) === "RegExp") return RegExp.prototype.toString.call(value);
   if (value instanceof Error) return `${value.name}: ${value.message}`;
 
   const nextSeen = [...seen, value];
-  if (Array.isArray(value)) return `[ ${value.map(item => inspectValue(item, options, level + 1, nextSeen)).join(", ")} ]`;
-  if (value instanceof Map) {
-    const entries = [...value].map(([entryKey, entryValue]) => `${inspectValue(entryKey, options, level + 1, nextSeen)} => ${inspectValue(entryValue, options, level + 1, nextSeen)}`);
-    return `Map(${value.size}) { ${entries.join(", ")} }`;
-  }
-  if (value instanceof Set) return `Set(${value.size}) { ${[...value].map(item => inspectValue(item, options, level + 1, nextSeen)).join(", ")} }`;
-  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
-    return `${value.constructor.name}(${value.length}) [ ${[...value].map(item => inspectValue(item, options, level + 1, nextSeen)).join(", ")} ]`;
-  }
-
-  const entries = Object.keys(value).map(name => `${key(name)}: ${inspectValue(value[name], options, level + 1, nextSeen)}`);
-  return `{ ${entries.join(", ")} }`;
+  const inspectItem = item => inspectValue(item, options, level + 1, nextSeen);
+  if (Array.isArray(value)) return braces("[", value.map(inspectItem), "]");
+  if (value instanceof Map) return `Map(${value.size}) ${braces("{", [...value].map(([entryKey, entryValue]) => `${inspectItem(entryKey)} => ${inspectItem(entryValue)}`), "}")}`;
+  if (value instanceof Set) return `Set(${value.size}) ${braces("{", [...value].map(inspectItem), "}")}`;
+  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) return `${value.constructor.name}(${value.length}) ${braces("[", [...value].map(inspectItem), "]")}`;
+  return braces("{", Object.keys(value).map(name => `${key(name)}: ${inspectItem(value[name])}`), "}");
 }
+
+function stylizeNoColor(text) { return text; }
 
 export function inspect(value, options = {}) {
   const settings = typeof options === "number" ? { depth: options } : options ?? {};
-  return inspectValue(value, settings, 0, []);
+  return inspectValue(value, { ...inspect.defaultOptions, stylize: stylizeNoColor, ...settings }, 0, []);
 }
 
 inspect.custom = inspectCustom;

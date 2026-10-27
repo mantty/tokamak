@@ -2528,6 +2528,30 @@ export async function run(handlerEnv, ctx, constructors) {
       unescapeSpaces: [nodeQuerystring.unescape("a+b%ZZ", true), nodeQuerystring.unescape("a+b%41", true)],
       parse: Object.entries(nodeQuerystring.parse("k%ZZ\u00e9=v%ZZ\u20ac+x&e=%41%ZZ\u20ac")),
     },
+    querystringScanner: (() => {
+      const entries = callback => () => Object.entries(callback());
+      const decoded = [];
+      const throwing = value => { decoded.push(value); if (value.includes("%")) throw new URIError("bad"); return `<${value}>`; };
+      const customDecoders = [
+        ["a=%ZZ&b=%41&c=x+y", throwing], ["%E2%82%AC=%ZZ%41+&k+=v", throwing], ["a=b&c", throwing], ["a=&=b&&c=", throwing], ["a+b=c+d&%41=%42", value => value.toUpperCase()],
+        ["a=%zz+%41", () => { throw new Error("always"); }], ["x=%ZZ%E2%82%AC", () => { throw 1; }],
+      ].map(([input, decoder]) => detailedResult(entries(() => nodeQuerystring.parse(input, null, null, { decodeURIComponent: decoder }))));
+      const parsed = [
+        ["a=1;b=2", ";"], ["a:1&b:2", "&", ":"], ["a==1"], ["=1"], ["&&a=1&&"], ["a=1&a=2&a=3"], ["a=1&b=2&c=3", "&", "=", { maxKeys: 2 }],
+        ...[0, -1, "1", 1.5, NaN].map(maxKeys => ["a=1&b=2", "&", "=", { maxKeys }]),
+        ["a=1&&b=2", "&&"], ["a=1aab=2", "ab"], ["a=1&b=2", ""], ["a=1&b=2", 0], ["a1b", "&", 1], ["a==1&b==2", "&", "=="], ["a=b==c", "&", "=="], ["a=1", [], []],
+        [5], [null], [{ toString: () => "a=1" }], ["a=%E2%82%AC&b=%zz%41&c=%"], ["%2B=%2b"], ["__proto__=1&constructor=2"], ["%41%42=\u20ac%"], ["a=%4+1"], ["a=1+&b=%2"],
+      ].map(args => detailedResult(entries(() => nodeQuerystring.parse(...args))));
+      const encodeBrackets = value => `[${value}]`;
+      const stringified = [
+        [{ a: 1, b: "x y", c: [1, 2], d: [], e: null, f: undefined, g: true, h: 1e21, i: NaN, j: Infinity, k: 10n, l: {}, m: -0, n: "" }],
+        [{ a: 1, b: 2 }, ";", ":"], [{ a: 1 }, "", ""], [{ a: [1, 2] }, null, null], ["abc"], [5], [[1, 2]], [{ a: [1, , 2] }], [{ "": ["", ""] }, "&", []],
+        [{ a: 1e21, b: -1e21, c: 1.5 }, "&", "=", { encodeURIComponent: encodeBrackets }], [{ a: [1, null, {}], b: 2n, c: true }, "&", "=", { encodeURIComponent: encodeBrackets }],
+        [{ "\ud800": 1 }], [{ a: "\ud800" }], [{ a: "\ud800b\udc00c" }],
+      ].map(args => detailedResult(() => nodeQuerystring.stringify(...args)));
+      const escaped = ["\ud800", "a\udc00", "\ud800\ud800", "\udc00x", "\ud83d\ude00", "!'()*-._~", { toString: () => "x y" }, true].map(value => detailedResult(() => nodeQuerystring.escape(value)));
+      return { customDecoders, decoded, parsed, stringified, escaped, symbol: result(() => nodeQuerystring.escape(Symbol("s"))) };
+    })(),
     util: {
       format: nodeUtil.format("%s:%d:%j:%o:%O:%%", "x", 2, { a: 1 }, { a: 1 }, { a: 1 }),
       inspect: [nodeUtil.inspect({ a: 1, b: "x", c: [true, null] }), nodeUtil.inspect({ a: { b: { c: 1 } } }, { depth: 1 }), nodeUtil.inspect(new Map([["a", 1]]))],
@@ -2541,6 +2565,26 @@ export async function run(handlerEnv, ctx, constructors) {
       mime: (() => { const value = new nodeUtil.MIMEType("text/html; charset=utf-8"); return { essence: value.essence, type: value.type, subtype: value.subtype, params: [...value.params], string: value.toString() }; })(),
       parseArgs: result(() => nodeUtil.parseArgs()),
       parseEnv: result(() => nodeUtil.parseEnv("A=1\nB=two\n# comment\nEMPTY=\nQUOTED=\"a b\"")),
+      inspectCustom: (() => {
+        const custom = nodeUtil.inspect.custom;
+        const calls = [];
+        const recorder = { [custom](depth, options) { calls.push([depth, options.depth, typeof options.stylize, options.showHidden, options.breakLength]); return "R"; } };
+        const prototype = function Thing() {}.prototype;
+        prototype[custom] = () => "instance";
+        const cycle = { [custom]: () => "cycle" };
+        cycle.self = cycle;
+        const describeDepth = { [custom]: (depth, options) => `d${depth}:${options.depth}` };
+        return {
+          empty: [{}, [], new Map(), new Set(), new Uint8Array(0), { a: {} }, [[]]].map(value => nodeUtil.inspect(value)),
+          depths: [[recorder], [{ a: recorder }], [{ a: { b: recorder } }, { depth: 0 }], [{ a: recorder }, { depth: 0 }], [recorder, { depth: null }], [recorder, { depth: -1 }]].map(args => nodeUtil.inspect(...args)),
+          calls,
+          results: [() => ({ x: 1 }), () => [1, 2], () => 5, () => undefined, () => null].map(method => nodeUtil.inspect({ [custom]: method })),
+          nestedResult: nodeUtil.inspect({ a: { [custom]: () => ({ x: { y: { z: 1 } } }) } }),
+          skipped: [nodeUtil.inspect(Object.create(prototype)), nodeUtil.inspect({ [custom]: () => "custom" }, { customInspect: false }) === "custom"],
+          cycles: [nodeUtil.inspect({ c: cycle }), nodeUtil.inspect({ x: { [custom]: () => "deep" } }, { depth: -1 })],
+          formats: [nodeUtil.format("%s", describeDepth), nodeUtil.format("%o", describeDepth), nodeUtil.format("%O", describeDepth)],
+        };
+      })(),
     },
     module: {
       aliases: [nodeModule === nodeModule.Module, nodeModule.builtinModules === nodeModule.Module.builtinModules, nodeModule.isBuiltin === nodeModule.Module.isBuiltin, nodeModule.createRequire === nodeModule.Module.createRequire, nodeModule === nodeModule.default],
@@ -2708,6 +2752,67 @@ export async function run(handlerEnv, ctx, constructors) {
           () => { const other = new nodeNet.BlockList(); other.addSubnet("0.0.0.0", 0); return [other.check("1.2.3.4"), other.check("::ffff:1.2.3.4", "ipv6"), other.check("::1", "ipv6")]; },
         ].map(detailedResult);
         return { added, checks, edges, own: Object.getOwnPropertyNames(list), rules: list.rules, json: result(() => list.toJSON()), isBlockList: result(() => [nodeNet.BlockList.isBlockList(list), nodeNet.BlockList.isBlockList({})]) };
+      })(),
+      blockListJSON: (() => {
+        const load = data => () => {
+          const list = new nodeNet.BlockList();
+          return { returned: list.fromJSON(data) === undefined, rules: list.rules };
+        };
+        const source = new nodeNet.BlockList();
+        source.addAddress("1.2.3.4"); source.addRange("10.0.0.1", "10.0.0.9"); source.addSubnet("192.168.0.0", 16);
+        source.addAddress("::1", "ipv6"); source.addRange("fe80::1", "fe80::ff", "ipv6"); source.addSubnet("2001:db8::", 32, "ipv6");
+        const loaded = [
+          source.toJSON(), JSON.stringify(source.toJSON()), [], ["garbage"], ["Address: IPv4 1.2.3.4567"], ["Subnet: IPv4 1.2.3.0/123"], ["Subnet: IPv4 1.2.3.0/33"],
+          ["xx Address: IPv4 5.6.7.8 yy"], ["Address: ipv6 ::1"], ["Address: IPv6 ABCD::1"], ["address: IPv6 ::2"], ["IPv4 Address: IPv6 ::3"], ["Range: IPv4 9.9.9.9-1.1.1.1"],
+          ["Subnet: IPv6 ::/129"], ["Subnet: IPv6 ::/1290"], ["Range: IPv6 ::1-::ff"], ["Address: IPv4 1.2.3.4", "Address: IPv4 1.2.3.4"], [["x"]], ["Address: IPv4 999.1.1.1"],
+          ["Range: IPv6 ::1-1.2.3.4"], "not json", "[1,2]", "{}", "null", "\"Address: IPv4 1.2.3.4\"", {}, null, undefined, 5, { length: 1, 0: "Address: IPv4 1.2.3.4" }, "x".repeat(200),
+        ].map(data => detailedResult(load(data)));
+        const unreadable = [["Address: IPv4 1.2.3.4", 5], [5], [null], [["IPv4"]]].map(data => result(load(data)));
+        return { loaded, unreadable, method: result(() => [typeof nodeNet.BlockList.prototype.fromJSON, nodeNet.BlockList.prototype.fromJSON.length, Object.getOwnPropertyNames(nodeNet.BlockList.prototype)]) };
+      })(),
+      blockListInspect: (() => {
+        const list = new nodeNet.BlockList();
+        list.addAddress("1.2.3.4");
+        return [[new nodeNet.BlockList()], [list], [list, { depth: 0 }], [list, { depth: -1 }], [{ a: list }, { depth: 0 }]].map(args => nodeUtil.inspect(...args));
+      })(),
+      socketAddress: (() => {
+        const { SocketAddress } = nodeNet;
+        const describe = callback => () => {
+          const value = callback();
+          return value instanceof SocketAddress ? { address: value.toJSON() } : { value: value === undefined ? "undefined" : value };
+        };
+        const constructed = [
+          undefined, null, "x", 1, [], () => {}, {}, { family: "IPv6" }, { family: "ipv5" }, { family: 4 }, { family: "" }, { family: null }, { family: { toLowerCase: () => "ipv6" } },
+          { address: 1 }, { address: "::1" }, { address: "::1", family: "ipv6" }, { address: "1.2.3.4", family: "ipv6" }, { address: "01.2.3.4" }, { address: "" },
+          { address: "1.2.3.4", port: "80" }, { port: -1 }, { port: 65536 }, { port: "65536" }, { port: 1.5 }, { port: "abc" }, { port: "" }, { port: null }, { port: true }, { port: NaN },
+          { port: " 80 " }, { port: "0x10" }, { port: 65535 }, { port: 80n }, { flowlabel: -1 }, { flowlabel: 2 ** 32 }, { flowlabel: 2 ** 32 - 1 }, { flowlabel: 1.5 }, { flowlabel: "1" },
+          { flowlabel: null }, { address: "fe80::1%eth0", family: "ipv6" }, { address: "::ffff:1.2.3.4", family: "ipv6" },
+        ].map(options => detailedResult(describe(() => new SocketAddress(options))));
+        const parsed = [
+          "1.2.3.4", "1.2.3.4:80", "[::1]:8080", "[::1]", "::1", "example.com:80", "1.2.3.4:99999", "1.2.3.4:abc", "", "1.2.3.4:080", "user@1.2.3.4:80", "1.2.3.4/path",
+          "0x7f.1", "1.2.3.4:", "[fe80::1%25eth0]:1", "127.1", "[::ffff:1.2.3.4]:5", "1.2.3.4:443", " 1.2.3.4", "1.2.3.4?x", "[::1]:65535", "%31.2.3.4", undefined, 1, null, {},
+        ].map(input => detailedResult(describe(() => SocketAddress.parse(input))));
+        const address = new SocketAddress({ address: "::1", family: "ipv6", port: 8080, flowlabel: 7 });
+        const shape = {
+          own: Object.getOwnPropertyNames(address), prototype: Object.getOwnPropertyNames(SocketAddress.prototype), statics: Object.getOwnPropertyNames(SocketAddress).sort(),
+          json: JSON.stringify(address), string: String(address), values: [address.address, address.port, address.family, address.flowlabel], length: SocketAddress.length,
+          is: [SocketAddress.isSocketAddress(address), SocketAddress.isSocketAddress({}), SocketAddress.isSocketAddress(address.toJSON())],
+          call: result(() => SocketAddress()), assign: result(() => { address.port = 1; }), noArguments: new SocketAddress().toJSON(),
+        };
+        const inspected = [
+          nodeUtil.inspect(address), nodeUtil.inspect(new SocketAddress()), nodeUtil.inspect(address, { depth: 0 }), nodeUtil.inspect(address, { depth: null }),
+          nodeUtil.format("%s", address), nodeUtil.format("%o", address), nodeUtil.format("%O", address), nodeUtil.format("%j", address), result(() => nodeUtil.inspect(SocketAddress.prototype).length > 0),
+        ];
+        const list = new nodeNet.BlockList();
+        const ipv4 = new SocketAddress({ address: "10.0.0.1" });
+        const ipv6 = new SocketAddress({ address: "::5", family: "ipv6" });
+        const blockList = [
+          () => list.addAddress(ipv4), () => list.addAddress(ipv6, "ipv4"), () => list.addRange(new SocketAddress({ address: "10.1.0.1" }), new SocketAddress({ address: "10.1.0.9" })),
+          () => list.addRange(ipv4, ipv6), () => list.addRange(ipv6, "::9"), () => list.addRange("::1", ipv6, "ipv6"), () => list.addRange("10.0.0.1", ipv6),
+          () => list.addSubnet(new SocketAddress({ address: "172.16.0.0" }), 12), () => list.addSubnet(ipv6, 200), () => list.addSubnet(ipv6, 120, "ipv5"), () => list.check(ipv4),
+          () => list.check(ipv6, "ipv4"), () => list.check(new SocketAddress({ address: "172.20.0.1" })), () => list.check(new SocketAddress({ address: "::ffff:10.0.0.1", family: "ipv6" })),
+        ].map(detailedResult);
+        return { constructed, parsed, shape, inspected, blockList, rules: list.rules };
       })(),
     },
     dns: await (async () => {
