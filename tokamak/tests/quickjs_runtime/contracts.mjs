@@ -2528,6 +2528,30 @@ export async function run(handlerEnv, ctx, constructors) {
       unescapeSpaces: [nodeQuerystring.unescape("a+b%ZZ", true), nodeQuerystring.unescape("a+b%41", true)],
       parse: Object.entries(nodeQuerystring.parse("k%ZZ\u00e9=v%ZZ\u20ac+x&e=%41%ZZ\u20ac")),
     },
+    querystringScanner: (() => {
+      const entries = callback => () => Object.entries(callback());
+      const decoded = [];
+      const throwing = value => { decoded.push(value); if (value.includes("%")) throw new URIError("bad"); return `<${value}>`; };
+      const customDecoders = [
+        ["a=%ZZ&b=%41&c=x+y", throwing], ["%E2%82%AC=%ZZ%41+&k+=v", throwing], ["a=b&c", throwing], ["a=&=b&&c=", throwing], ["a+b=c+d&%41=%42", value => value.toUpperCase()],
+        ["a=%zz+%41", () => { throw new Error("always"); }], ["x=%ZZ%E2%82%AC", () => { throw 1; }],
+      ].map(([input, decoder]) => detailedResult(entries(() => nodeQuerystring.parse(input, null, null, { decodeURIComponent: decoder }))));
+      const parsed = [
+        ["a=1;b=2", ";"], ["a:1&b:2", "&", ":"], ["a==1"], ["=1"], ["&&a=1&&"], ["a=1&a=2&a=3"], ["a=1&b=2&c=3", "&", "=", { maxKeys: 2 }],
+        ...[0, -1, "1", 1.5, NaN].map(maxKeys => ["a=1&b=2", "&", "=", { maxKeys }]),
+        ["a=1&&b=2", "&&"], ["a=1aab=2", "ab"], ["a=1&b=2", ""], ["a=1&b=2", 0], ["a1b", "&", 1], ["a==1&b==2", "&", "=="], ["a=b==c", "&", "=="], ["a=1", [], []],
+        [5], [null], [{ toString: () => "a=1" }], ["a=%E2%82%AC&b=%zz%41&c=%"], ["%2B=%2b"], ["__proto__=1&constructor=2"], ["%41%42=\u20ac%"], ["a=%4+1"], ["a=1+&b=%2"],
+      ].map(args => detailedResult(entries(() => nodeQuerystring.parse(...args))));
+      const encodeBrackets = value => `[${value}]`;
+      const stringified = [
+        [{ a: 1, b: "x y", c: [1, 2], d: [], e: null, f: undefined, g: true, h: 1e21, i: NaN, j: Infinity, k: 10n, l: {}, m: -0, n: "" }],
+        [{ a: 1, b: 2 }, ";", ":"], [{ a: 1 }, "", ""], [{ a: [1, 2] }, null, null], ["abc"], [5], [[1, 2]], [{ a: [1, , 2] }], [{ "": ["", ""] }, "&", []],
+        [{ a: 1e21, b: -1e21, c: 1.5 }, "&", "=", { encodeURIComponent: encodeBrackets }], [{ a: [1, null, {}], b: 2n, c: true }, "&", "=", { encodeURIComponent: encodeBrackets }],
+        [{ "\ud800": 1 }], [{ a: "\ud800" }], [{ a: "\ud800b\udc00c" }],
+      ].map(args => detailedResult(() => nodeQuerystring.stringify(...args)));
+      const escaped = ["\ud800", "a\udc00", "\ud800\ud800", "\udc00x", "\ud83d\ude00", "!'()*-._~", { toString: () => "x y" }, true].map(value => detailedResult(() => nodeQuerystring.escape(value)));
+      return { customDecoders, decoded, parsed, stringified, escaped, symbol: result(() => nodeQuerystring.escape(Symbol("s"))) };
+    })(),
     util: {
       format: nodeUtil.format("%s:%d:%j:%o:%O:%%", "x", 2, { a: 1 }, { a: 1 }, { a: 1 }),
       inspect: [nodeUtil.inspect({ a: 1, b: "x", c: [true, null] }), nodeUtil.inspect({ a: { b: { c: 1 } } }, { depth: 1 }), nodeUtil.inspect(new Map([["a", 1]]))],
