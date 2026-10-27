@@ -1,11 +1,9 @@
-function internal(object, name, value) {
-  Object.defineProperty(object, name, { configurable: true, enumerable: false, writable: true, value });
-}
+import { defineHiddenProperty } from "../globals/objects.mjs";
 
 export function EventEmitter(options) {
-  if (!Object.hasOwn(this, "__events")) internal(this, "__events", new Map());
-  if (!Object.hasOwn(this, "__maxListeners")) internal(this, "__maxListeners", undefined);
-  internal(this, "__captureRejections", Boolean(options?.captureRejections ?? EventEmitter.captureRejections));
+  if (!Object.hasOwn(this, "__events")) defineHiddenProperty(this, "__events", new Map());
+  if (!Object.hasOwn(this, "__maxListeners")) defineHiddenProperty(this, "__maxListeners", undefined);
+  defineHiddenProperty(this, "__captureRejections", Boolean(options?.captureRejections ?? EventEmitter.captureRejections));
 }
 
 EventEmitter.defaultMaxListeners = 10;
@@ -86,7 +84,7 @@ Object.assign(EventEmitter.prototype, {
 
   __add(name, listener, once, prepend) {
     if (typeof listener !== "function") throw new TypeError("listener must be a function");
-    if (!Object.hasOwn(this, "__events")) internal(this, "__events", new Map());
+    if (!Object.hasOwn(this, "__events")) defineHiddenProperty(this, "__events", new Map());
     if (this.__events.has("newListener")) this.emit("newListener", name, listener);
     const entry = { listener, once, wrapper: once ? (...args) => listener.apply(this, args) : listener };
     entry.wrapper.listener = listener;

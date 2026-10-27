@@ -26,16 +26,6 @@ impl Curve {
         }
     }
 
-    /// The OpenSSL curve names node:crypto's ECDH class accepts.
-    pub(super) fn parse_node(name: &str) -> Option<Self> {
-        match name {
-            "prime256v1" => Some(Self::P256),
-            "secp384r1" => Some(Self::P384),
-            "secp521r1" => Some(Self::P521),
-            _ => None,
-        }
-    }
-
     pub(super) fn name(self) -> &'static str {
         match self {
             Self::P256 => "P-256",

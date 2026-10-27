@@ -1,4 +1,4 @@
-import { Agent, globalAgent } from "./internal-http.mjs";
+import { Agent, globalAgent } from "./http.mjs";
 
 export { Agent, globalAgent };
 export default { Agent, globalAgent };

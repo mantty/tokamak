@@ -514,14 +514,10 @@ fn host_scrypt<'js>(
     ArrayBuffer::new_copy(ctx, &output)
 }
 
-/// The `curve` option, read by `parse` as `WebCrypto` or node:crypto spells it.
-fn required_curve(
-    ctx: &Ctx<'_>,
-    options: &Object<'_>,
-    parse: fn(&str) -> Option<Curve>,
-) -> rquickjs::Result<Curve> {
+/// The `curve` option, spelled as `WebCrypto` names it.
+fn required_curve(ctx: &Ctx<'_>, options: &Object<'_>) -> rquickjs::Result<Curve> {
     let name = required_string(ctx, options, "curve")?;
-    parse(&name)
+    Curve::parse(&name)
         .ok_or_else(|| not_supported_error(ctx, "The requested elliptic curve is not supported"))
 }
 
@@ -540,23 +536,18 @@ fn host_ecdh_public<'js>(
     ctx: Ctx<'js>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let curve = required_curve(&ctx, &options, Curve::parse_node)?;
+    let curve = required_curve(&ctx, &options)?;
     let private = required_bytes(&ctx, &options, "private")?;
     let key =
         curves::secret_from_scalar(curve, &private).map_err(|error| operation(&ctx, &error))?;
-    let format = option_string(&options, "format")?;
-    let compressed = point_format(&ctx, format.as_deref().unwrap_or("uncompressed"))?;
-    ArrayBuffer::new_copy(
-        ctx,
-        curves::encode_point(&curves::public_of(&key), compressed),
-    )
+    ArrayBuffer::new_copy(ctx, curves::encode_point(&curves::public_of(&key), false))
 }
 
 fn host_ecdh_compute<'js>(
     ctx: Ctx<'js>,
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
-    let curve = required_curve(&ctx, &options, Curve::parse_node)?;
+    let curve = required_curve(&ctx, &options)?;
     let private = required_bytes(&ctx, &options, "private")?;
     let peer = required_bytes(&ctx, &options, "peer")?;
     let key =
@@ -572,7 +563,7 @@ fn host_ecdh_convert<'js>(
     options: Object<'js>,
 ) -> rquickjs::Result<ArrayBuffer<'js>> {
     let input = bytes(&ctx, input)?;
-    let curve = required_curve(&ctx, &options, Curve::parse_node)?;
+    let curve = required_curve(&ctx, &options)?;
     let point = curves::decode_point(curve, &input).map_err(|error| operation(&ctx, &error))?;
     let compressed = point_format(&ctx, &required_string(&ctx, &options, "format")?)?;
     ArrayBuffer::new_copy(ctx, curves::encode_point(&point, compressed))
@@ -658,11 +649,7 @@ fn generate_key(ctx: &Ctx<'_>, options: &Object<'_>) -> rquickjs::Result<Private
                     .map_err(|error| operation(ctx, &error))?,
             )
         }
-        "ec" => PrivateKey::Ec(curves::generate(required_curve(
-            ctx,
-            options,
-            Curve::parse,
-        )?)),
+        "ec" => PrivateKey::Ec(curves::generate(required_curve(ctx, options)?)),
         "ed25519" => PrivateKey::Ed25519(ed25519_dalek::SigningKey::generate(&mut rng())),
         "x25519" => PrivateKey::X25519(x25519_dalek::StaticSecret::random_from_rng(&mut rng())),
         _ => return Err(unsupported_algorithm(ctx)),

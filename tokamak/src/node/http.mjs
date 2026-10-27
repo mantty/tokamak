@@ -29,7 +29,7 @@ export class IncomingMessage extends Readable {
     this.__reading = false;
     const { headers, rawHeaders } = incomingHeaders(source.headers);
     this.headers = headers;
-    if (source?.status !== undefined) {
+    if (source.status !== undefined) {
       this.statusCode = source.status;
       this.statusMessage = source.statusText;
       this.url = source.url;
@@ -37,7 +37,7 @@ export class IncomingMessage extends Readable {
     } else {
       const url = new URL(source.url);
       this.method = source.method;
-      this.url = url.pathname + (url.search || "");
+      this.url = url.pathname + url.search;
       this.statusCode = undefined;
       this.statusMessage = undefined;
     }
@@ -48,9 +48,9 @@ export class IncomingMessage extends Readable {
     this.complete = false;
     this.readable = true;
     this.aborted = false;
-    this.cloudflare = { cf: source?.cf ?? {} };
+    this.cloudflare = { cf: source.cf ?? {} };
     this.socket = {
-      encrypted: source?.url?.startsWith("https:") ?? false,
+      encrypted: source.url?.startsWith("https:") ?? false,
       remoteFamily: "IPv4",
       remoteAddress: "127.0.0.1",
       remotePort: 32768 + Math.floor(Math.random() * 32768),
@@ -58,7 +58,7 @@ export class IncomingMessage extends Readable {
       localPort,
       destroy: () => this.destroy(),
     };
-    if (source?.body) this.__reader = source.body.getReader();
+    if (source.body) this.__reader = source.body.getReader();
     else {
       this.complete = true;
       this.push(null);
@@ -158,7 +158,8 @@ export class ClientRequest extends OutgoingMessage {
     this.url = url;
     this.method = String(options.method ?? "GET").toUpperCase();
     this.agent = options.agent ?? globalAgent;
-    this.path = new URL(url).pathname + (new URL(url).search || "");
+    const { pathname, search } = new URL(url);
+    this.path = pathname + search;
     this._body = [];
     this._ended = false;
     if (typeof callback === "function") this.once("response", callback);

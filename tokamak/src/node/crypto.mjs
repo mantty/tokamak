@@ -22,10 +22,6 @@ function normalizeHash(algorithm) {
   return name.startsWith("SHA") && !name.startsWith("SHA-") ? "SHA-" + name.slice(3) : name;
 }
 
-function inputBytes(value, encoding) {
-  return Buffer.from(value, encoding);
-}
-
 function integerInRange(value, name, min) {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < min) {
@@ -84,7 +80,7 @@ export class Hash extends Transform {
 
   update(value, encoding) {
     if (this.__finalized) throw finalizedError();
-    this.__handle.update(inputBytes(value, encoding));
+    this.__handle.update(Buffer.from(value, encoding));
     return this;
   }
 
@@ -185,14 +181,14 @@ export class Hmac extends Transform {
   constructor(algorithm, key, token) {
     super();
     if (token !== hashToken) throw new Error("Illegal constructor");
-    const bytes = key instanceof KeyObject ? keyRecord(key).bytes : inputBytes(key);
+    const bytes = key instanceof KeyObject ? keyRecord(key).bytes : Buffer.from(key);
     this.__handle = cryptoCreateDigest(nodeHashAlgorithm(algorithm), bytes);
     this.__finalized = false;
   }
 
   update(value, encoding) {
     if (this.__finalized) throw finalizedError();
-    this.__handle.update(inputBytes(value, encoding));
+    this.__handle.update(Buffer.from(value, encoding));
     return this;
   }
 
@@ -258,7 +254,7 @@ export class DiffieHellman {
       prime: this.__prime,
       generator: this.__generator,
       private: this.__privateKey,
-      peer: inputBytes(otherPublicKey, inputEncoding),
+      peer: Buffer.from(otherPublicKey, inputEncoding),
     });
     return outputEncoding(Buffer.from(output), outputEncodingName);
   }
@@ -281,14 +277,14 @@ export class DiffieHellman {
     return outputEncoding(Buffer.from(this.__publicKey), encoding);
   }
   setPrivateKey(privateKey, encoding) {
-    const value = inputBytes(privateKey, encoding);
+    const value = Buffer.from(privateKey, encoding);
     const keys = cryptoDhGenerate({ prime: this.__prime, generator: this.__generator, private: value });
     this.__privateKey = Buffer.from(keys.private);
     this.__publicKey = Buffer.from(keys.public);
     return this;
   }
   setPublicKey(publicKey, encoding) {
-    this.__publicKey = Buffer.from(inputBytes(publicKey, encoding));
+    this.__publicKey = Buffer.from(publicKey, encoding);
     return this;
   }
   get verifyError() { return 0; }
@@ -299,7 +295,7 @@ export class DiffieHellmanGroup extends DiffieHellman {}
 export class ECDH {
   constructor(curve, token) {
     if (token !== keyAgreementToken) illegalConstructor();
-    this.__curve = nodeCurveName(curve);
+    this.__curve = webCurveName(curve);
     this.__privateKey = null;
     this.__publicKey = null;
   }
@@ -309,13 +305,13 @@ export class ECDH {
     const output = cryptoEcdhCompute({
       curve: this.__curve,
       private: this.__privateKey,
-      peer: inputBytes(otherPublicKey, inputEncoding),
+      peer: Buffer.from(otherPublicKey, inputEncoding),
     });
     return outputEncoding(Buffer.from(output), outputEncodingName);
   }
 
   generateKeys(encoding, format = "uncompressed") {
-    const jwk = exportJwk("pkcs8", "ec", cryptoGenerateKey({ kind: "ec", curve: webCurveName(this.__curve) }).private);
+    const jwk = exportJwk("pkcs8", "ec", cryptoGenerateKey({ kind: "ec", curve: this.__curve }).private);
     this.__privateKey = Buffer.from(jwk.d, "base64url");
     this.__publicKey = publicPoint(jwk);
     return this.getPublicKey(encoding, format);
@@ -333,18 +329,18 @@ export class ECDH {
   }
 
   setPrivateKey(privateKey, encoding) {
-    this.__privateKey = Buffer.from(inputBytes(privateKey, encoding));
-    this.__publicKey = Buffer.from(cryptoEcdhPublic({ curve: this.__curve, private: this.__privateKey, format: "uncompressed" }));
+    this.__privateKey = Buffer.from(privateKey, encoding);
+    this.__publicKey = Buffer.from(cryptoEcdhPublic({ curve: this.__curve, private: this.__privateKey }));
     return this;
   }
 
   setPublicKey(publicKey, encoding) {
-    this.__publicKey = Buffer.from(cryptoEcdhConvert(inputBytes(publicKey, encoding), { curve: this.__curve, format: "uncompressed" }));
+    this.__publicKey = Buffer.from(cryptoEcdhConvert(Buffer.from(publicKey, encoding), { curve: this.__curve, format: "uncompressed" }));
     return this;
   }
 
   static convertKey(key, curve, inputEncoding, outputEncodingName, format = "uncompressed") {
-    const value = Buffer.from(cryptoEcdhConvert(inputBytes(key, inputEncoding), { curve: nodeCurveName(curve), format }));
+    const value = Buffer.from(cryptoEcdhConvert(Buffer.from(key, inputEncoding), { curve: webCurveName(curve), format }));
     return outputEncoding(value, outputEncodingName);
   }
 }
@@ -501,7 +497,7 @@ export class Sign extends Transform {
   }
   update(value, encoding) {
     if (this.__finalized) throw finalizedError();
-    this.__chunks.push(inputBytes(value, encoding));
+    this.__chunks.push(Buffer.from(value, encoding));
     return this;
   }
   sign(key, options, callback) {
@@ -528,7 +524,7 @@ export class Verify extends Transform {
   }
   update(value, encoding) {
     if (this.__finalized) throw finalizedError();
-    this.__chunks.push(inputBytes(value, encoding));
+    this.__chunks.push(Buffer.from(value, encoding));
     return this;
   }
   verify(key, signature, callback) {
@@ -536,7 +532,7 @@ export class Verify extends Transform {
     return returnOrDeliver(callback, () => {
       const record = keyRecord(key instanceof KeyObject ? key : createPublicKey(key));
       const kind = signingKind(record);
-      const value = cryptoVerify(inputBytes(signature), { kind, format: record.format, key: record.bytes, hash: this.__algorithm, message: joinBytes(this.__chunks), saltLength: undefined });
+      const value = cryptoVerify(Buffer.from(signature), { kind, format: record.format, key: record.bytes, hash: this.__algorithm, message: joinBytes(this.__chunks), saltLength: undefined });
       this.__finalized = true;
       return value;
     });
@@ -557,7 +553,7 @@ function cipherInput(value, encoding) {
   if (typeof value === "string" && encoding === undefined) {
     throw codedError(TypeError, "The argument 'inputEncoding' If inputEncoding is not provided then the data must be a Buffer. Received undefined", "ERR_INVALID_ARG_VALUE");
   }
-  return inputBytes(value, encoding);
+  return Buffer.from(value, encoding);
 }
 
 function cipherSpec(algorithm) {
@@ -572,11 +568,11 @@ class CipherBase extends Transform {
   constructor(algorithm, key, iv, decrypt, options = {}) {
     super(options);
     const spec = cipherSpec(algorithm);
-    const keyBytes = key instanceof KeyObject ? keyRecord(key).bytes : inputBytes(key);
+    const keyBytes = key instanceof KeyObject ? keyRecord(key).bytes : Buffer.from(key);
     if (keyBytes.length !== spec.keyLength) throw new RangeError("Invalid key length");
     const tagLength = options.authLengthTag;
     if (spec.mode === "gcm" && tagLength !== undefined && !gcmTagLengths.includes(tagLength)) throw new Error("Invalid authentication tag length");
-    const ivBytes = inputBytes(iv);
+    const ivBytes = Buffer.from(iv);
     if (spec.mode !== "gcm" && ivBytes.length !== 16) throw new TypeError("Invalid initialization vector");
     if (spec.mode === "gcm" && ivBytes.length !== 12) throw new Error("Invalid initialization vector");
     this.__tagLength = tagLength;
@@ -588,7 +584,7 @@ class CipherBase extends Transform {
   final(outputEncodingName) {
     return outputEncoding(Buffer.from(this.__handle.finish()), outputEncodingName);
   }
-  setAAD(value, options = {}) { this.__handle.setAAD(inputBytes(value, options.encoding)); return this; }
+  setAAD(value, options = {}) { this.__handle.setAAD(Buffer.from(value, options.encoding)); return this; }
   setAutoPadding(value) { this.__handle.setAutoPadding(Boolean(value)); return this; }
   getAuthTag() { return Buffer.from(this.__handle.getAuthTag()); }
   _transform(chunk, encoding, callback) { try { callback(null, this.update(chunk, encoding)); } catch (error) { callback(error); } }
@@ -602,7 +598,7 @@ export class Cipheriv extends CipherBase {
 export class Decipheriv extends CipherBase {
   constructor(algorithm, key, iv, options) { super(algorithm, key, iv, true, options); }
   setAuthTag(value) {
-    const tag = inputBytes(value);
+    const tag = Buffer.from(value);
     if (!gcmTagLengths.includes(tag.length) || (this.__tagLength !== undefined && this.__tagLength !== tag.length)) throw new Error("Invalid authentication tag length");
     this.__handle.setAuthTag(tag);
     return this;
@@ -621,7 +617,7 @@ function primeChecks(options) {
 }
 
 export function checkPrimeSync(candidate, options = {}) {
-  return cryptoCheckPrime(inputBytes(candidate), { checks: primeChecks(options) });
+  return cryptoCheckPrime(Buffer.from(candidate), { checks: primeChecks(options) });
 }
 
 export function checkPrime(candidate, options, callback) {
@@ -635,8 +631,8 @@ function primeBytes(size, options = {}) {
   const value = cryptoGeneratePrime({
     bits,
     safe: Boolean(options.safe),
-    add: options.add === undefined ? undefined : inputBytes(options.add),
-    rem: options.rem === undefined ? undefined : inputBytes(options.rem),
+    add: options.add === undefined ? undefined : Buffer.from(options.add),
+    rem: options.rem === undefined ? undefined : Buffer.from(options.rem),
   });
   return Buffer.from(value);
 }
@@ -694,10 +690,10 @@ function diffieHellmanArgs(prime, primeEncoding, generator, generatorEncoding) {
     primeEncoding = undefined;
   }
   return {
-    prime: Buffer.from(inputBytes(prime, primeEncoding)),
+    prime: Buffer.from(prime, primeEncoding),
     generator: generator === undefined
       ? integerBytes(2)
-      : typeof generator === "number" ? integerBytes(generator) : Buffer.from(inputBytes(generator, generatorEncoding)),
+      : typeof generator === "number" ? integerBytes(generator) : Buffer.from(generator, generatorEncoding),
   };
 }
 
@@ -754,14 +750,14 @@ export function createPublicKey(input) {
   if (type === "private") return createPublicKey(createPrivateKey({ key: value, format }));
   return createAsymmetricObject(importDer(Buffer.from(value), format ?? "der", "public"));
 }
-export function createSecretKey(key, encoding) { return new SecretKeyObject(inputBytes(key, encoding), keyObjectToken); }
+export function createSecretKey(key, encoding) { return new SecretKeyObject(Buffer.from(key, encoding), keyObjectToken); }
 export function createCipheriv(algorithm, key, iv, options) { return new Cipheriv(algorithm, key, iv, options); }
 export function createDecipheriv(algorithm, key, iv, options) { return new Decipheriv(algorithm, key, iv, options); }
 function evpBytesToKey(password, keyLength, ivLength) {
   const output = [];
   let previous = new Uint8Array();
   while (output.reduce((length, value) => length + value.length, 0) < keyLength + ivLength) {
-    previous = new Uint8Array(digest("MD5", Buffer.concat([previous, inputBytes(password)])));
+    previous = new Uint8Array(digest("MD5", Buffer.concat([previous, Buffer.from(password)])));
     output.push(previous);
   }
   const bytes = Buffer.concat(output);
@@ -776,7 +772,7 @@ export function generateKeyPairSync(type, options = {}) {
   const generation = { kind };
   if (kind === "rsa") {
     generation.modulusLength = options.modulusLength ?? 2048;
-    generation.publicExponent = inputBytes(options.publicExponent ?? new Uint8Array([1, 0, 1]));
+    generation.publicExponent = Buffer.from(options.publicExponent ?? new Uint8Array([1, 0, 1]));
   }
   if (kind === "ec") generation.curve = options.namedCurve === "prime256v1" ? "P-256" : options.namedCurve === "secp384r1" ? "P-384" : options.namedCurve === "secp521r1" ? "P-521" : options.namedCurve;
   const key = cryptoGenerateKey(generation);
@@ -811,7 +807,7 @@ function hkdfBytes(hash, key, salt, info, length) {
 }
 
 export function hkdfSync(hash, key, salt, info, keylen) {
-  return hkdfBytes(hash, inputBytes(key), inputBytes(salt), inputBytes(info), integerInRange(keylen, "keylen", 0));
+  return hkdfBytes(hash, Buffer.from(key), Buffer.from(salt), Buffer.from(info), integerInRange(keylen, "keylen", 0));
 }
 
 export function hkdf(hash, key, salt, info, keylen, callback) {
@@ -820,7 +816,7 @@ export function hkdf(hash, key, salt, info, keylen, callback) {
 }
 
 export function pbkdf2Sync(password, salt, iterations, keylen, hash) {
-  return Buffer.from(new Uint8Array(cryptoPbkdf2(normalizeHash(hash), inputBytes(password), inputBytes(salt), integerInRange(iterations, "iterations", 1), integerInRange(keylen, "keylen", 0))));
+  return Buffer.from(new Uint8Array(cryptoPbkdf2(normalizeHash(hash), Buffer.from(password), Buffer.from(salt), integerInRange(iterations, "iterations", 1), integerInRange(keylen, "keylen", 0))));
 }
 
 export function pbkdf2(password, salt, iterations, keylen, hash, callback) {
@@ -844,7 +840,7 @@ function rsaOaep(operation, options, buffer, isPrivate) {
   const { settings, record } = rsaKeySettings(options, isPrivate);
   const padding = settings.padding;
   if (padding !== undefined && padding !== 4 && padding !== "RSA_PKCS1_OAEP_PADDING") throw new Error("Only RSA-OAEP is supported");
-  return Buffer.from(operation(inputBytes(buffer), { kind: "rsa-oaep", format: record.format, key: record.bytes, hash: normalizeHash(settings.oaepHash ?? "sha1"), label: settings.oaepLabel ? inputBytes(settings.oaepLabel) : new Uint8Array() }));
+  return Buffer.from(operation(Buffer.from(buffer), { kind: "rsa-oaep", format: record.format, key: record.bytes, hash: normalizeHash(settings.oaepHash ?? "sha1"), label: settings.oaepLabel ? Buffer.from(settings.oaepLabel) : new Uint8Array() }));
 }
 
 export function publicEncrypt(options, buffer) { return rsaOaep(cryptoEncrypt, options, buffer, false); }
@@ -859,7 +855,7 @@ function legacyRsaPadding(value) {
 
 function rsaLegacy(operation, options, buffer, isPrivate) {
   const { settings, record } = rsaKeySettings(options, isPrivate);
-  return Buffer.from(operation(inputBytes(buffer), { kind: "rsa", format: record.format, key: record.bytes, padding: legacyRsaPadding(settings.padding) }));
+  return Buffer.from(operation(Buffer.from(buffer), { kind: "rsa", format: record.format, key: record.bytes, padding: legacyRsaPadding(settings.padding) }));
 }
 
 export function privateEncrypt(options, buffer) { return rsaLegacy(cryptoRsaLegacyPrivateEncrypt, options, buffer, true); }
@@ -881,7 +877,7 @@ function scryptSettings(options, keylen) {
 
 export function scryptSync(password, salt, keylen, options = {}) {
   const settings = scryptSettings(options, keylen);
-  return Buffer.from(cryptoScrypt(inputBytes(password), { salt: inputBytes(salt), ...settings }));
+  return Buffer.from(cryptoScrypt(Buffer.from(password), { salt: Buffer.from(salt), ...settings }));
 }
 
 export function scrypt(password, salt, keylen, options, callback) {
