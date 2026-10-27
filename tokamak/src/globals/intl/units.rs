@@ -96,7 +96,10 @@ fn locale_data(ctx: &Ctx<'_>, index: usize) -> rquickjs::Result<Rc<Value>> {
 fn locale_bytes(index: usize) -> std::io::Result<Vec<u8>> {
     let (_, offset, length) = LOCALES[index];
     let mut decoder = zstd::stream::read::Decoder::with_buffer(DATA_ZST)?;
-    std::io::copy(&mut (&mut decoder).take(offset as u64), &mut std::io::sink())?;
+    std::io::copy(
+        &mut (&mut decoder).take(offset as u64),
+        &mut std::io::sink(),
+    )?;
     let mut bytes = vec![0; length];
     decoder.read_exact(&mut bytes)?;
     Ok(bytes)
