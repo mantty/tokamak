@@ -1,9 +1,21 @@
 import fs from "node:fs";
 import process from "node:process";
 import { byteInputs } from "./bytes.mjs";
-import { failure } from "./outcome.mjs";
+import { failure as namedFailure } from "./outcome.mjs";
 
 const SIZE_LIMIT = 128 * 1024 * 1024;
+
+// The name and code of a thrown error and, for a system error, its system
+// call details, message and enumerable property names.
+function failure(error) {
+  const details = namedFailure(error);
+  if (!Object.hasOwn(error, "syscall")) return details;
+  for (const key of ["errno", "syscall", "path", "dest", "message"]) {
+    if (Object.hasOwn(error, key)) details[key] = error[key];
+  }
+  details.keys = Object.keys(error);
+  return details;
+}
 
 // What `run` returns, or the failure it throws.
 function attempt(run) {
@@ -1124,6 +1136,110 @@ function workingDirectoryContracts() {
   } finally { process.chdir("/bundle"); }
 }
 
+// A failing call of each operation: its name and arguments, where `$` starts
+// a path in a fresh tree from `errorTree`.
+const errorCalls = {
+  accessMissing: ["access", "$/missing"],
+  appendFileDirectory: ["appendFile", "$/directory", "x"],
+  chmodMissing: ["chmod", "$/missing", 0o644],
+  chownMissing: ["chown", "$/missing", 0, 0],
+  copyFileMissing: ["copyFile", "$/missing", "$/copy"],
+  copyFileDirectory: ["copyFile", "$/directory", "$/copy"],
+  copyFileExclusive: ["copyFile", "$/file", "$/directory/entry", fs.constants.COPYFILE_EXCL],
+  cpMissing: ["cp", "$/missing", "$/copy"],
+  lchownMissing: ["lchown", "$/missing", 0, 0],
+  linkExisting: ["link", "$/file", "$/directory"],
+  linkMissing: ["link", "$/missing", "$/link"],
+  lstatMissing: ["lstat", "$/missing"],
+  lutimesMissing: ["lutimes", "$/missing", 0, 0],
+  mkdirExisting: ["mkdir", "$/directory"],
+  mkdirUnderMissing: ["mkdir", "$/missing/child"],
+  mkdirUnderFile: ["mkdir", "$/file/child", { recursive: true }],
+  mkdtempUnderMissing: ["mkdtemp", "$/missing/t-"],
+  openMissing: ["open", "$/missing", "r"],
+  openDirectoryForWriting: ["open", "$/directory", "w"],
+  openExclusive: ["open", "$/file", "wx"],
+  opendirMissing: ["opendir", "$/missing"],
+  opendirFile: ["opendir", "$/file"],
+  readdirFile: ["readdir", "$/file"],
+  readdirMissing: ["readdir", "$/missing"],
+  readFileMissing: ["readFile", "$/missing"],
+  readFileDirectory: ["readFile", "$/directory"],
+  readlinkFile: ["readlink", "$/file"],
+  readlinkMissing: ["readlink", "$/missing"],
+  realpathMissing: ["realpath", "$/missing"],
+  realpathLoop: ["realpath", "$/loop"],
+  renameMissing: ["rename", "$/missing", "$/renamed"],
+  renameDirectoryOntoFile: ["rename", "$/directory", "$/file"],
+  rmMissing: ["rm", "$/missing"],
+  rmDirectory: ["rm", "$/directory"],
+  rmdirFull: ["rmdir", "$/directory"],
+  rmdirFile: ["rmdir", "$/file"],
+  rmdirMissing: ["rmdir", "$/missing"],
+  statMissing: ["stat", "$/missing"],
+  statLoop: ["stat", "$/loop"],
+  statfsMissing: ["statfs", "$/missing"],
+  symlinkExisting: ["symlink", "$/file", "$/directory"],
+  truncateMissing: ["truncate", "$/missing"],
+  truncateDirectory: ["truncate", "$/directory"],
+  unlinkDirectory: ["unlink", "$/directory"],
+  unlinkMissing: ["unlink", "$/missing"],
+  utimesMissing: ["utimes", "$/missing", 0, 0],
+  writeFileDirectory: ["writeFile", "$/directory", "x"],
+  writeFileUnderMissing: ["writeFile", "$/missing/child", "x"],
+  writeFileBundle: ["writeFile", "/bundle/new", "x"],
+  closeBadDescriptor: ["close", 1000],
+  fchmodBadDescriptor: ["fchmod", 1000, 0o644],
+  fchownBadDescriptor: ["fchown", 1000, 0, 0],
+  fdatasyncBadDescriptor: ["fdatasync", 1000],
+  fstatBadDescriptor: ["fstat", 1000],
+  fsyncBadDescriptor: ["fsync", 1000],
+  ftruncateBadDescriptor: ["ftruncate", 1000],
+  futimesBadDescriptor: ["futimes", 1000, 0, 0],
+  readBadDescriptor: ["read", 1000, new Uint8Array(1)],
+  writeBadDescriptor: ["write", 1000, new Uint8Array(1)],
+};
+
+// A fresh tree holding a file, a directory with an entry and a symbolic link
+// to itself.
+function errorTree(index) {
+  const root = `/tmp/filesystem-errors/${index}`;
+  fs.mkdirSync(`${root}/directory`, { recursive: true });
+  fs.writeFileSync(`${root}/file`, "f");
+  fs.writeFileSync(`${root}/directory/entry`, "e");
+  fs.symlinkSync(`${root}/loop`, `${root}/loop`);
+  return root;
+}
+
+// What the sync, callback or promise `form` of `operation` reports for `args`:
+// "ok", the failure it throws, or the failure it reports later.
+async function errorOutcome(form, operation, args) {
+  if (form === "promise" && !fs.promises[operation]) return "absent";
+  const settled = Promise.withResolvers();
+  try {
+    if (form === "sync") fs[`${operation}Sync`](...args);
+    else if (form === "callback") fs[operation](...args, error => (error ? settled.reject(error) : settled.resolve()));
+    else fs.promises[operation](...args).then(settled.resolve, settled.reject);
+  } catch (error) { return { thrown: failure(error) }; }
+  if (form === "sync") return "ok";
+  try { await settled.promise; return "ok"; } catch (error) { return failure(error); }
+}
+
+// Each form of each failing call, each in a fresh tree.
+async function errorContracts() {
+  const outcomes = {};
+  let index = 0;
+  for (const [name, [operation, ...args]] of Object.entries(errorCalls)) {
+    outcomes[name] = {};
+    for (const form of ["sync", "callback", "promise"]) {
+      const root = errorTree(index++);
+      const resolved = args.map(arg => (typeof arg === "string" ? arg.replace(/^\$/, root) : arg));
+      outcomes[name][form] = await errorOutcome(form, operation, resolved);
+    }
+  }
+  return outcomes;
+}
+
 export async function filesystemContracts() {
   const result = { write: {} };
   for (const [name, write] of Object.entries(writers)) result.write[name] = await writerOutcomes(write);
@@ -1146,5 +1262,6 @@ export async function filesystemContracts() {
   result.encodings = await encodingContracts();
   result.shapes = await shapeContracts();
   result.workingDirectory = workingDirectoryContracts();
+  result.errors = await errorContracts();
   return result;
 }
