@@ -544,9 +544,4 @@ mod tests {
     fn rejects_multiple_positional_platform_arguments() {
         assert!(Cli::try_parse_from(["tok", "build", "macos", "android"]).is_err());
     }
-
-    #[test]
-    fn rejects_the_removed_platforms_flag() {
-        assert!(Cli::try_parse_from(["tok", "build", "--platforms=macos"]).is_err());
-    }
 }

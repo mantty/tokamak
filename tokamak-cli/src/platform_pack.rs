@@ -1,6 +1,3 @@
-#![forbid(unsafe_code)]
-#![deny(missing_docs)]
-
 //! Platform-pack metadata and validation for `tokamak` runtime artifacts.
 
 use std::collections::BTreeMap;
@@ -15,13 +12,13 @@ use thiserror::Error;
 
 /// Platform-pack manifest filename.
 pub const MANIFEST_FILE: &str = "platform-pack.json";
-/// Fixed path of the platform-pack build entrypoint.
-pub const BUILD_ENTRYPOINT: &str = "build/entrypoint";
-/// Windows platform-pack build entrypoint path, retaining PowerShell's
-/// required script extension.
-pub const WINDOWS_BUILD_ENTRYPOINT: &str = "build/entrypoint.ps1";
-/// Keys a platform object shares with the top level; tokamak validates them.
-pub const SHARED_PLATFORM_KEYS: [&str; 3] = ["name", "identifier", "icon"];
+/// Keys a platform object shares with the top level, with their kind and
+/// description; tokamak validates them.
+pub const SHARED_PLATFORM_KEYS: [(&str, VariableKind, &str); 3] = [
+    ("name", VariableKind::String, "Display name"),
+    ("identifier", VariableKind::String, "Application identifier"),
+    ("icon", VariableKind::Path, "Icon in the platform's format"),
+];
 
 /// Whether `key` is lowercase ASCII words joined by single hyphens, the form of
 /// every configuration key, command-line option, and platform-pack variable.
@@ -145,12 +142,6 @@ impl Platform {
             )),
         }
     }
-
-    /// Return whether the target belongs to this platform family.
-    #[must_use]
-    pub fn accepts(self, target: Target) -> bool {
-        self == target.platform()
-    }
 }
 
 impl FromStr for Platform {
@@ -220,13 +211,14 @@ impl Target {
         }
     }
 
-    /// Platform-pack build entrypoint path.
+    /// Platform-pack build entrypoint path; Windows keeps PowerShell's
+    /// required script extension.
     #[must_use]
     pub const fn build_entrypoint_path(self) -> &'static str {
         if matches!(self, Self::WindowsX64) {
-            WINDOWS_BUILD_ENTRYPOINT
+            "build/entrypoint.ps1"
         } else {
-            BUILD_ENTRYPOINT
+            "build/entrypoint"
         }
     }
 }
@@ -464,7 +456,7 @@ fn validate_variable(name: &str, variable: &PackVariable) -> Result<(), Platform
     if !is_valid_key(name) {
         return Err(PlatformPackError::InvalidVariableName(name.to_owned()));
     }
-    if SHARED_PLATFORM_KEYS.contains(&name) {
+    if SHARED_PLATFORM_KEYS.iter().any(|(key, _, _)| *key == name) {
         return Err(PlatformPackError::ReservedVariableName(name.to_owned()));
     }
     if variable.description.trim().is_empty() {

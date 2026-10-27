@@ -5605,7 +5605,6 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
- "tokamak",
  "tokamak-cli",
  "toml 1.1.2+spec-1.1.0",
 ]

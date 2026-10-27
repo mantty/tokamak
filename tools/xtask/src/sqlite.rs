@@ -20,8 +20,7 @@ const GENERATED: [&str; 3] = ["sqlite3.c", "sqlite3.h", "sqlite3ext.h"];
 /// Download the pinned SQLite source, apply the vendored patches, and write
 /// the single-file source built with the workspace's SQLite options.
 pub(crate) fn regenerate() -> Result<()> {
-    let workspace = WorkspaceLayout::from_source()
-        .context("source workspace is unavailable; run this command from a tokamak checkout")?;
+    let workspace = WorkspaceLayout::from_source()?;
     let options = options(&workspace.root().join(".cargo/config.toml"))?;
     let work = workspace.root().join("target/sqlite-source");
     reset_dir(&work)?;

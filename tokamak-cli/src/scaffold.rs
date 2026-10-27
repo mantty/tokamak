@@ -8,6 +8,7 @@ use serde_json::{Map, Value, json};
 use tokamak_cli::Platform;
 
 use super::plugin_api::{self, Family};
+use super::plugins;
 
 /// The description the native template's registration file gives, which `tok plugin generate`
 /// writes the template's TypeScript API from.
@@ -227,12 +228,7 @@ fn plugin_id(directory: &Path) -> Result<&str> {
         .file_name()
         .and_then(|name| name.to_str())
         .context("The directory must name the plugin")?;
-    if !tokamak_cli::is_valid_key(id)
-        || id.len() > 63
-        || crate::plugins::RESERVED_WORDS
-            .iter()
-            .any(|word| id == *word || id.starts_with(&format!("{word}-")))
-    {
+    if !plugins::valid_plugin_id(id) || plugins::reserved_prefix(id).is_some() {
         bail!(
             "Use a plugin directory name of lowercase words joined by single hyphens, without a reserved Tokamak prefix"
         );
