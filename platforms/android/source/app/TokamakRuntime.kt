@@ -60,8 +60,7 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
      * The client certificate and PKCS#8 private key, both DER, to present for
      * [host]. Null when tokamak cannot authenticate the connection.
      */
-    fun clientIdentity(host: String, previousFailures: Int): Array<ByteArray>? =
-        nativeClientIdentity(handle, host, previousFailures)
+    fun clientIdentity(host: String): Array<ByteArray>? = nativeClientIdentity(handle, host)
 
     companion object {
         init {
@@ -176,10 +175,6 @@ internal class TokamakRuntime private constructor(private val handle: Long) {
         private external fun nativeFetch(handle: Long, path: String, timeoutMillis: Long): ByteArray
 
         @JvmStatic
-        private external fun nativeClientIdentity(
-            handle: Long,
-            host: String,
-            previousFailures: Int,
-        ): Array<ByteArray>?
+        private external fun nativeClientIdentity(handle: Long, host: String): Array<ByteArray>?
     }
 }

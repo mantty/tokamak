@@ -258,7 +258,7 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativePort(
     runtime(handle).map_or(0, |runtime| jint::from(runtime.port()))
 }
 
-/// `value` milliseconds, or none when `value` is negative.
+/// `value` milliseconds, or zero when `value` is negative.
 fn millis(value: jlong) -> Duration {
     Duration::from_millis(u64::try_from(value).unwrap_or(0))
 }
@@ -315,7 +315,6 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeClientIdent
     _: JClass,
     handle: jlong,
     host: JString,
-    previous_failures: jint,
 ) -> JObjectArray<'local> {
     let Some(runtime) = runtime(handle) else {
         return null_object_array();
@@ -327,7 +326,8 @@ pub extern "system" fn Java_com_tokamak_runtime_TokamakRuntime_nativeClientIdent
         .certificates()
         .decide(&Challenge::ClientCertificate {
             host: &host,
-            previous_failures: usize::try_from(previous_failures).unwrap_or(usize::MAX),
+            // Android reports no failure count, so every request is a first attempt.
+            previous_failures: 0,
         });
     let Decision::PresentIdentity {
         certificate,

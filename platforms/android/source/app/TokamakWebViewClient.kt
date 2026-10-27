@@ -42,8 +42,7 @@ internal class TokamakWebViewClient(
     }
 
     override fun onReceivedClientCertRequest(view: WebView, request: ClientCertRequest) {
-        // Android reports no failure count, so every request is a first attempt.
-        val identity = runtime.clientIdentity(request.host, 0)
+        val identity = runtime.clientIdentity(request.host)
         if (identity == null) {
             // The gateway requires a certificate, so proceeding without one
             // ends the connection, which is the intended outcome.
