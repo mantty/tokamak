@@ -382,8 +382,8 @@ async function r2Contracts(r2) {
   await record("keyLong", () => r2.put("k".repeat(1025), "x"));
   await record("keyLongHead", () => r2.head("k".repeat(1025)));
   await record("keyLongDelete", () => r2.delete(["ok", "k".repeat(1025)]));
-  await record("metadataLarge", () => r2.put("m", "x", { customMetadata: { a: "\u0100".repeat(1024) } }));
-  await record("metadataFits", async () => (await r2.put("m", "x", { customMetadata: { a: "é".repeat(2047) } })).size);
+  await record("metadataLarge", () => r2.put("m", "x", { customMetadata: { a: "\u0100".repeat(4096) } }));
+  await record("metadataFits", async () => (await r2.put("m", "x", { customMetadata: { a: "é".repeat(8191) } })).size);
   await record("httpHeaders", async () => {
     const object = await r2.put("h", "x", { httpMetadata: new Headers({ "content-type": "t/x", expires: "Wed, 21 Oct 2015 07:28:00 GMT", "cache-control": "no-cache", "x-other": "1" }) });
     const headers = new Headers();
